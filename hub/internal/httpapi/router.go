@@ -228,7 +228,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/password", requireAdmin(AdminChangePasswordHandler(admins)))
 	mux.HandleFunc("POST /api/admin/profile", requireAdmin(AdminUpdateProfileHandler(admins)))
 	if tenantRepo != nil {
-		mux.HandleFunc("GET /api/admin/tenants", requireGlobalAdmin(AdminTenantsListHandler(tenantRepo)))
+		mux.HandleFunc("GET /api/admin/tenants", requireGlobalAdmin(AdminTenantsListWithAuthHandler(tenantRepo, centerSvc, nil, hubDB)))
 		mux.HandleFunc("POST /api/admin/tenants", requireGlobalAdmin(AdminTenantCreateWithPlatformCallbackHandler(system, tenantRepo, admins, adminAudit)))
 		mux.HandleFunc("GET /api/admin/tenants/{tenantId}", requireAdmin(AdminTenantDetailHandler(tenantRepo)))
 		mux.HandleFunc("PATCH /api/admin/tenants/{tenantId}/domains", requireAdmin(AdminTenantDomainsUpdateWithPlatformCallbackHandler(system, tenantRepo, adminAudit)))

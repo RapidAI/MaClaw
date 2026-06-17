@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	maxZipRatio    = 20    // 解压比率上限
+	maxZipRatio    = 20        // 解压比率上限
 	maxTotalSize   = 500 << 20 // 500MB
 	maxSingleFile  = 50 << 20  // 50MB
 	maxFileCount   = 1000
@@ -184,23 +184,39 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 
 	full := skill.HubSkillFull{
 		HubSkillMeta: skill.HubSkillMeta{
-			ID:             skillID,
-			Name:           meta.Name,
-			Description:    meta.Description,
-			Tags:           meta.Tags,
-			Version:        fmt.Sprintf("%d", versionNum),
-			Author:         meta.Author,
-			TrustLevel:     "community",
-			CreatedAt:      fmtTime(sub.CreatedAt),
-			UpdatedAt:      fmtTime(sub.CreatedAt),
-			Visible:        true,
-			SecurityLabels: securityLabels,
-			Permissions:    meta.Permissions,
-			RequiredEnv:    meta.RequiredEnv,
-			Platforms:      meta.Platforms,
-			RequiresGUI:    meta.RequiresGUI,
-			UploaderEmail:  sub.Email,
-			Fingerprint:    fingerprint,
+			ID:                           skillID,
+			Name:                         meta.Name,
+			Description:                  meta.Description,
+			Tags:                         meta.Tags,
+			Version:                      fmt.Sprintf("%d", versionNum),
+			Author:                       meta.Author,
+			TrustLevel:                   "community",
+			CreatedAt:                    fmtTime(sub.CreatedAt),
+			UpdatedAt:                    fmtTime(sub.CreatedAt),
+			Visible:                      true,
+			SecurityLabels:               securityLabels,
+			Permissions:                  meta.Permissions,
+			RequiredEnv:                  meta.RequiredEnv,
+			Platforms:                    meta.Platforms,
+			RequiresGUI:                  meta.RequiresGUI,
+			ProductKind:                  meta.ProductKind,
+			IsMaclawApp:                  meta.IsMaclawApp,
+			MaclawAppCount:               meta.MaclawAppCount,
+			MaclawAppEntry:               meta.MaclawAppEntry,
+			MaclawAppID:                  meta.MaclawAppID,
+			MaclawAppName:                meta.MaclawAppName,
+			MaclawAppDescription:         meta.MaclawAppDescription,
+			MaclawAppCategory:            meta.MaclawAppCategory,
+			MaclawAppIcon:                meta.MaclawAppIcon,
+			MaclawAppInputMode:           meta.MaclawAppInputMode,
+			MaclawAppOutputModes:         meta.MaclawAppOutputModes,
+			MaclawAppDefinitionSHA256:    meta.MaclawAppDefinitionSHA256,
+			MaclawAppTestEvidence:        hubMaclawAppTestEvidence(meta.MaclawAppTestEvidence),
+			ArtifactContractRequired:     meta.ArtifactContractRequired,
+			ArtifactContractOutputModes:  meta.ArtifactContractOutputModes,
+			ArtifactContractPresentation: meta.ArtifactContractPresentation,
+			UploaderEmail:                sub.Email,
+			Fingerprint:                  fingerprint,
 		},
 		Triggers: meta.Triggers,
 	}
@@ -209,7 +225,7 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 	full.Files = make(map[string]string)
 	allowedExts := map[string]bool{
 		".sh": true, ".py": true, ".js": true, ".yaml": true,
-		".txt": true, ".md": true,
+		".json": true, ".txt": true, ".md": true,
 	}
 	_ = filepath.Walk(pkgRoot, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil || info.IsDir() {
@@ -245,7 +261,7 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 		if p.trialManager == nil {
 			indexStatus = "published"
 		}
-		if err := p.searchSvc.IndexSkill(ctx, skillID, meta.Name, meta.Description, meta.Tags, 0, 0, 0, indexStatus, fmtTime(sub.CreatedAt), meta.Version, meta.Author); err != nil {
+		if err := p.searchSvc.IndexSkillWithProduct(ctx, skillID, meta.Name, meta.Description, meta.Tags, 0, 0, 0, indexStatus, fmtTime(sub.CreatedAt), meta.Version, meta.Author, skillSearchIndexProductOptions{ProductKind: meta.ProductKind, IsMaclawApp: meta.IsMaclawApp}); err != nil {
 			log.Printf("[skillmarket] index skill %s error: %v", skillID, err)
 		}
 	}
@@ -270,6 +286,19 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 		formatSkillNotificationBody(meta, skillID, versionNum))
 
 	return nil
+}
+
+func hubMaclawAppTestEvidence(e *MaclawAppTestEvidence) *skill.MaclawAppTestEvidence {
+	if e == nil {
+		return nil
+	}
+	return &skill.MaclawAppTestEvidence{
+		RunID:                 e.RunID,
+		VerifiedAt:            e.VerifiedAt,
+		DefinitionFingerprint: e.DefinitionFingerprint,
+		ArtifactPresent:       e.ArtifactPresent,
+		ArtifactName:          e.ArtifactName,
+	}
 }
 
 func (p *Processor) failSubmission(ctx context.Context, sub *SkillSubmission, errMsg string) error {

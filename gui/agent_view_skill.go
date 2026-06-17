@@ -977,6 +977,12 @@ func skillRunSummaryData(status *SkillRunStatus, runID string) map[string]interf
 	if status.Summary.ArtifactStatus != "" {
 		data["artifact_status"] = status.Summary.ArtifactStatus.String()
 	}
+	if len(status.Artifacts) > 0 {
+		data["artifacts"] = status.Artifacts
+	}
+	if len(status.Outputs) > 0 {
+		data["output_blocks"] = status.Outputs
+	}
 	if status.Summary.LastOutputSnippet != "" {
 		data["last_output"] = status.Summary.LastOutputSnippet
 	}

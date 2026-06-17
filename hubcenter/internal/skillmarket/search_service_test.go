@@ -2,7 +2,10 @@ package skillmarket
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	hubskill "github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 )
 
 // ── Task 31.5: 搜索功能测试 ─────────────────────────────────────────────
@@ -207,6 +210,121 @@ func TestSearch_ReturnsVersionAuthorCreatedAt(t *testing.T) {
 	}
 	if r.CreatedAt != "2025-06-15T10:30:00Z" {
 		t.Errorf("expected created_at '2025-06-15T10:30:00Z', got %q", r.CreatedAt)
+	}
+}
+
+func TestSearch_ReturnsMaclawAppProductMetadata(t *testing.T) {
+	store := newTestStore(t)
+	skillStore := hubskill.NewSkillStore(t.TempDir())
+	svc := &SearchService{store: store, skillStore: skillStore}
+	if err := svc.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	if err := skillStore.Publish(hubskill.HubSkillFull{HubSkillMeta: hubskill.HubSkillMeta{
+		ID:                           "app-skill",
+		Name:                         "Invoice App",
+		Description:                  "desc",
+		Visible:                      true,
+		ProductKind:                  "maclaw_app_skill",
+		IsMaclawApp:                  true,
+		MaclawAppID:                  "invoice-review",
+		MaclawAppName:                "Invoice Review",
+		MaclawAppDescription:         "Review invoices with a guided panel",
+		MaclawAppCategory:            "finance",
+		MaclawAppIcon:                "receipt",
+		MaclawAppInputMode:           "file",
+		MaclawAppOutputModes:         []string{"pdf", "docx"},
+		MaclawAppDefinitionSHA256:    "abc123",
+		MaclawAppTestEvidence:        &hubskill.MaclawAppTestEvidence{RunID: "run-ok-1", VerifiedAt: "2026-06-17T10:00:00Z", DefinitionFingerprint: "feedbeef", ArtifactPresent: true, ArtifactName: "invoice.pdf"},
+		ArtifactContractRequired:     true,
+		ArtifactContractOutputModes:  []string{"pdf", "docx"},
+		ArtifactContractPresentation: "preview_or_file",
+		Permissions:                  []string{"gui", "env:INVOICE_API_KEY", "tool:browser"},
+		RequiredEnv:                  []string{"INVOICE_API_KEY"},
+		RequiresGUI:                  true,
+		SecurityLabels:               []string{"network", "file-output"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = svc.IndexSkillWithProduct(ctx, "app-skill", "Invoice App", "desc", nil, 4.0, 100, 0, "published", "2026-01-01T00:00:00Z", "1.0.0", "alice", skillSearchIndexProductOptions{
+		ProductKind: "maclaw_app_skill",
+		IsMaclawApp: true,
+	})
+
+	results, err := svc.Search(ctx, "Invoice", nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].ProductKind != "maclaw_app_skill" || !results[0].IsMaclawApp {
+		t.Fatalf("missing maclaw app product metadata: %#v", results[0])
+	}
+	if results[0].MaclawAppID != "invoice-review" || results[0].MaclawAppName != "Invoice Review" || results[0].MaclawAppDescription != "Review invoices with a guided panel" || results[0].MaclawAppCategory != "finance" || results[0].MaclawAppIcon != "receipt" {
+		t.Fatalf("missing maclaw app preview metadata: %#v", results[0])
+	}
+	if results[0].MaclawAppInputMode != "file" || strings.Join(results[0].MaclawAppOutputModes, ",") != "pdf,docx" {
+		t.Fatalf("missing maclaw app IO metadata: %#v", results[0])
+	}
+	if results[0].MaclawAppDefinitionSHA256 != "abc123" {
+		t.Fatalf("missing maclaw app definition hash: %#v", results[0])
+	}
+	if results[0].MaclawAppTestEvidence == nil || results[0].MaclawAppTestEvidence.RunID != "run-ok-1" || results[0].MaclawAppTestEvidence.DefinitionFingerprint != "feedbeef" || !results[0].MaclawAppTestEvidence.ArtifactPresent || results[0].MaclawAppTestEvidence.ArtifactName != "invoice.pdf" {
+		t.Fatalf("missing maclaw app test evidence: %#v", results[0])
+	}
+	if !results[0].ArtifactContractRequired || strings.Join(results[0].ArtifactContractOutputModes, ",") != "pdf,docx" || results[0].ArtifactContractPresentation != "preview_or_file" {
+		t.Fatalf("missing artifact contract: %#v", results[0])
+	}
+	if strings.Join(results[0].Permissions, ",") != "gui,env:INVOICE_API_KEY,tool:browser" || strings.Join(results[0].RequiredEnv, ",") != "INVOICE_API_KEY" || !results[0].RequiresGUI || strings.Join(results[0].SecurityLabels, ",") != "network,file-output" {
+		t.Fatalf("missing review governance fields: %#v", results[0])
+	}
+}
+
+func TestReviewQueue_ReturnsPendingReviewAppMetadata(t *testing.T) {
+	store := newTestStore(t)
+	skillStore := hubskill.NewSkillStore(t.TempDir())
+	svc := &SearchService{store: store, skillStore: skillStore}
+	if err := svc.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	if err := skillStore.Publish(hubskill.HubSkillFull{HubSkillMeta: hubskill.HubSkillMeta{
+		ID:                        "pending-app",
+		Name:                      "Pending App",
+		Visible:                   true,
+		ProductKind:               "maclaw_app_skill",
+		IsMaclawApp:               true,
+		MaclawAppName:             "Pending Review App",
+		MaclawAppDefinitionSHA256: "sha-pending",
+		Permissions:               []string{"gui"},
+		RequiredEnv:               []string{"APP_KEY"},
+		RequiresGUI:               true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.IndexSkillWithProduct(ctx, "pending-app", "Pending App", "desc", nil, 4.0, 1, 0, "pending_review", "2026-01-02T00:00:00Z", "1.0.0", "alice", skillSearchIndexProductOptions{ProductKind: "maclaw_app_skill", IsMaclawApp: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.IndexSkill(ctx, "published-skill", "Published", "desc", nil, 4.0, 1, 0, "published", "2026-01-01T00:00:00Z", "1.0.0", "bob"); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := svc.ReviewQueue(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].ID != "pending-app" {
+		t.Fatalf("expected pending app only, got %#v", results)
+	}
+	if !results[0].IsMaclawApp || results[0].MaclawAppName != "Pending Review App" || results[0].MaclawAppDefinitionSHA256 != "sha-pending" {
+		t.Fatalf("missing pending app metadata: %#v", results[0])
+	}
+	if strings.Join(results[0].Permissions, ",") != "gui" || strings.Join(results[0].RequiredEnv, ",") != "APP_KEY" || !results[0].RequiresGUI {
+		t.Fatalf("missing pending app review governance: %#v", results[0])
 	}
 }
 

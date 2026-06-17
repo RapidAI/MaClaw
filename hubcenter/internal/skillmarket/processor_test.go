@@ -2,10 +2,14 @@ package skillmarket
 
 import (
 	"archive/zip"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	hubskill "github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 )
 
 // ── Task 4.5: Processor 单元测试 ────────────────────────────────────────
@@ -77,6 +81,100 @@ func TestSafeUnzip_SandboxCleanup(t *testing.T) {
 	os.RemoveAll(sandboxDir)
 	if _, err := os.Stat(sandboxDir); !os.IsNotExist(err) {
 		t.Error("sandbox dir should be removed after cleanup")
+	}
+}
+
+func TestProcessorPublishesMaclawAppJSONFile(t *testing.T) {
+	store := newTestStore(t)
+	skillStore := hubskill.NewSkillStore(t.TempDir())
+	processor := NewProcessor("", t.TempDir(), store, skillStore, nil, nil, nil)
+	ctx := context.Background()
+
+	zipPath := createTestZip(t, map[string]string{
+		"skill.yaml": `name: invoice-app
+description: Invoice review app
+triggers:
+  - invoice
+steps:
+  - action: craft_tool
+    params:
+      instructions: review invoice
+`,
+		"skill_package_manifest.json": `{
+  "package_kind": "maclaw-skill-market",
+  "product_kind": "maclaw_app_skill",
+  "is_maclaw_app": true,
+  "maclaw_app_count": 1,
+  "maclaw_app_entry": "maclaw.app.json",
+  "maclaw_app_id": "invoice-review",
+  "maclaw_app_name": "Invoice Review",
+  "maclaw_app_description": "Review invoices with a guided panel",
+  "maclaw_app_category": "finance",
+  "maclaw_app_icon": "receipt",
+  "maclaw_app_input_mode": "file",
+  "maclaw_app_output_modes": ["pdf", "docx"],
+  "maclaw_app_definition_sha256": "abc123",
+  "maclaw_app_test_evidence": {"run_id":"run-ok-1","verified_at":"2026-06-17T10:00:00Z","definition_fingerprint":"feedbeef","artifact_present":true,"artifact_name":"invoice.pdf"},
+  "artifact_contract_required": true,
+  "artifact_contract_output_modes": ["pdf", "docx"],
+  "artifact_contract_presentation": "preview_or_file",
+  "declared_permissions": ["gui", "env:INVOICE_API_KEY", "tool:browser"],
+  "declared_required_env": ["INVOICE_API_KEY"],
+  "declared_requires_gui": true
+}`,
+		"maclaw.app.json": `{
+  "schema": "maclaw.app.v1",
+  "privateMarker": "x_maclaw_apps",
+  "app": {"id": "invoice-review", "name": "Invoice Review", "description": "Review invoices with a guided panel", "category": "finance", "icon": "receipt"}
+}`,
+	})
+	sub := &SkillSubmission{
+		ID:        "sub-app-json",
+		Email:     "seller@test.com",
+		UserID:    "seller-1",
+		Status:    "pending",
+		ZipPath:   zipPath,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := store.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("CreateSubmission() error = %v", err)
+	}
+
+	if err := processor.processOne(ctx, sub.ID); err != nil {
+		t.Fatalf("processOne() error = %v", err)
+	}
+	gotSub, err := store.GetSubmissionByID(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GetSubmissionByID() error = %v", err)
+	}
+	published, err := skillStore.Get(gotSub.SkillID)
+	if err != nil {
+		t.Fatalf("Get(%q) error = %v", gotSub.SkillID, err)
+	}
+	if _, ok := published.Files["maclaw.app.json"]; !ok {
+		t.Fatalf("published files missing maclaw.app.json: %#v", published.Files)
+	}
+	if published.ProductKind != "maclaw_app_skill" || !published.IsMaclawApp || published.MaclawAppEntry != "maclaw.app.json" {
+		t.Fatalf("unexpected app product metadata: %#v", published.HubSkillMeta)
+	}
+	if published.MaclawAppID != "invoice-review" || published.MaclawAppName != "Invoice Review" || published.MaclawAppDescription != "Review invoices with a guided panel" || published.MaclawAppCategory != "finance" || published.MaclawAppIcon != "receipt" {
+		t.Fatalf("unexpected app preview metadata: %#v", published.HubSkillMeta)
+	}
+	if published.MaclawAppInputMode != "file" || strings.Join(published.MaclawAppOutputModes, ",") != "pdf,docx" {
+		t.Fatalf("unexpected app IO metadata: %#v", published.HubSkillMeta)
+	}
+	if published.MaclawAppDefinitionSHA256 != "abc123" {
+		t.Fatalf("unexpected app definition hash: %#v", published.HubSkillMeta)
+	}
+	if published.MaclawAppTestEvidence == nil || published.MaclawAppTestEvidence.RunID != "run-ok-1" || published.MaclawAppTestEvidence.DefinitionFingerprint != "feedbeef" || !published.MaclawAppTestEvidence.ArtifactPresent || published.MaclawAppTestEvidence.ArtifactName != "invoice.pdf" {
+		t.Fatalf("unexpected app test evidence: %#v", published.HubSkillMeta)
+	}
+	if !published.ArtifactContractRequired || strings.Join(published.ArtifactContractOutputModes, ",") != "pdf,docx" || published.ArtifactContractPresentation != "preview_or_file" {
+		t.Fatalf("unexpected artifact contract: %#v", published.HubSkillMeta)
+	}
+	if !published.RequiresGUI || strings.Join(published.RequiredEnv, ",") != "INVOICE_API_KEY" || strings.Join(published.Permissions, ",") != "gui,env:INVOICE_API_KEY,tool:browser" {
+		t.Fatalf("unexpected declared permissions: %#v", published.HubSkillMeta)
 	}
 }
 
@@ -248,5 +346,66 @@ func TestValidatePackage_WrappedLayout(t *testing.T) {
 	}
 	if result.PackageRoot != sub {
 		t.Errorf("expected PackageRoot %s, got %s", sub, result.PackageRoot)
+	}
+}
+
+func TestValidatePackageReadsMaclawAppProductManifest(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: invoice-app\ndescription: Invoice review app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill_package_manifest.json"), []byte(`{
+		"package_kind": "maclaw-skill-market",
+		"product_kind": "maclaw_app_skill",
+		"is_maclaw_app": true,
+		"maclaw_app_count": 1,
+		"maclaw_app_entry": "maclaw.app.json",
+		"maclaw_app_id": "invoice-review",
+		"maclaw_app_name": "Invoice Review",
+		"maclaw_app_description": "Review invoices with a guided panel",
+		"maclaw_app_category": "finance",
+		"maclaw_app_icon": "receipt",
+		"maclaw_app_input_mode": "file",
+		"maclaw_app_output_modes": ["pdf", "docx"],
+		"maclaw_app_definition_sha256": "abc123",
+		"maclaw_app_test_evidence": {"run_id":"run-ok-1","verified_at":"2026-06-17T10:00:00Z","definition_fingerprint":"feedbeef","artifact_present":true,"artifact_name":"invoice.pdf"},
+		"artifact_contract_required": true,
+		"artifact_contract_output_modes": ["pdf", "docx"],
+		"artifact_contract_presentation": "preview_or_file",
+		"declared_permissions": ["gui", "env:INVOICE_API_KEY", "tool:browser"],
+		"declared_required_env": ["INVOICE_API_KEY"],
+		"declared_requires_gui": true
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ValidatePackage(dir)
+	if err != nil {
+		t.Fatalf("ValidatePackage error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid, got errors: %v", result.Errors)
+	}
+	meta := result.Metadata
+	if meta.ProductKind != "maclaw_app_skill" || !meta.IsMaclawApp || meta.MaclawAppCount != 1 || meta.MaclawAppEntry != "maclaw.app.json" {
+		t.Fatalf("unexpected app product metadata: %#v", meta)
+	}
+	if meta.MaclawAppID != "invoice-review" || meta.MaclawAppName != "Invoice Review" || meta.MaclawAppDescription != "Review invoices with a guided panel" || meta.MaclawAppCategory != "finance" || meta.MaclawAppIcon != "receipt" {
+		t.Fatalf("unexpected app preview metadata: %#v", meta)
+	}
+	if meta.MaclawAppInputMode != "file" || strings.Join(meta.MaclawAppOutputModes, ",") != "pdf,docx" {
+		t.Fatalf("unexpected app IO metadata: %#v", meta)
+	}
+	if meta.MaclawAppDefinitionSHA256 != "abc123" {
+		t.Fatalf("unexpected app definition hash: %#v", meta)
+	}
+	if meta.MaclawAppTestEvidence == nil || meta.MaclawAppTestEvidence.RunID != "run-ok-1" || meta.MaclawAppTestEvidence.DefinitionFingerprint != "feedbeef" || !meta.MaclawAppTestEvidence.ArtifactPresent || meta.MaclawAppTestEvidence.ArtifactName != "invoice.pdf" {
+		t.Fatalf("unexpected app test evidence: %#v", meta)
+	}
+	if !meta.ArtifactContractRequired || strings.Join(meta.ArtifactContractOutputModes, ",") != "pdf,docx" || meta.ArtifactContractPresentation != "preview_or_file" {
+		t.Fatalf("unexpected artifact contract: %#v", meta)
+	}
+	if !meta.RequiresGUI || strings.Join(meta.RequiredEnv, ",") != "INVOICE_API_KEY" || strings.Join(meta.Permissions, ",") != "gui,env:INVOICE_API_KEY,tool:browser" {
+		t.Fatalf("unexpected declared permissions: %#v", meta)
 	}
 }

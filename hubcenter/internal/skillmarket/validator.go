@@ -1,6 +1,7 @@
 package skillmarket
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -117,7 +118,102 @@ func parsePackageMetadata(pkgRoot string) (*SkillMetadata, string, error) {
 	if err != nil {
 		return nil, "skill.yaml", err
 	}
+	enrichMetadataFromPackageManifest(pkgRoot, meta)
 	return meta, "skill.yaml", nil
+}
+
+func enrichMetadataFromPackageManifest(pkgRoot string, meta *SkillMetadata) {
+	if meta == nil {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(pkgRoot, "skill_package_manifest.json"))
+	if err != nil {
+		return
+	}
+	var manifest struct {
+		ProductKind                  string                 `json:"product_kind"`
+		IsMaclawApp                  bool                   `json:"is_maclaw_app"`
+		MaclawAppCount               int                    `json:"maclaw_app_count"`
+		MaclawAppEntry               string                 `json:"maclaw_app_entry"`
+		MaclawAppID                  string                 `json:"maclaw_app_id"`
+		MaclawAppName                string                 `json:"maclaw_app_name"`
+		MaclawAppDescription         string                 `json:"maclaw_app_description"`
+		MaclawAppCategory            string                 `json:"maclaw_app_category"`
+		MaclawAppIcon                string                 `json:"maclaw_app_icon"`
+		MaclawAppInputMode           string                 `json:"maclaw_app_input_mode"`
+		MaclawAppOutputModes         []string               `json:"maclaw_app_output_modes"`
+		MaclawAppDefinitionSHA256    string                 `json:"maclaw_app_definition_sha256"`
+		MaclawAppTestEvidence        *MaclawAppTestEvidence `json:"maclaw_app_test_evidence"`
+		ArtifactContractRequired     bool                   `json:"artifact_contract_required"`
+		ArtifactContractOutputModes  []string               `json:"artifact_contract_output_modes"`
+		ArtifactContractPresentation string                 `json:"artifact_contract_presentation"`
+		DeclaredPermissions          []string               `json:"declared_permissions"`
+		DeclaredRequiredEnv          []string               `json:"declared_required_env"`
+		DeclaredRequiresGUI          bool                   `json:"declared_requires_gui"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return
+	}
+	if strings.TrimSpace(manifest.ProductKind) != "" {
+		meta.ProductKind = strings.TrimSpace(manifest.ProductKind)
+	}
+	if manifest.IsMaclawApp || strings.EqualFold(meta.ProductKind, "maclaw_app_skill") {
+		meta.IsMaclawApp = true
+		if meta.ProductKind == "" {
+			meta.ProductKind = "maclaw_app_skill"
+		}
+	}
+	if manifest.MaclawAppCount > 0 {
+		meta.MaclawAppCount = manifest.MaclawAppCount
+	}
+	if strings.TrimSpace(manifest.MaclawAppEntry) != "" {
+		meta.MaclawAppEntry = strings.TrimSpace(manifest.MaclawAppEntry)
+	}
+	if strings.TrimSpace(manifest.MaclawAppID) != "" {
+		meta.MaclawAppID = strings.TrimSpace(manifest.MaclawAppID)
+	}
+	if strings.TrimSpace(manifest.MaclawAppName) != "" {
+		meta.MaclawAppName = strings.TrimSpace(manifest.MaclawAppName)
+	}
+	if strings.TrimSpace(manifest.MaclawAppDescription) != "" {
+		meta.MaclawAppDescription = strings.TrimSpace(manifest.MaclawAppDescription)
+	}
+	if strings.TrimSpace(manifest.MaclawAppCategory) != "" {
+		meta.MaclawAppCategory = strings.TrimSpace(manifest.MaclawAppCategory)
+	}
+	if strings.TrimSpace(manifest.MaclawAppIcon) != "" {
+		meta.MaclawAppIcon = strings.TrimSpace(manifest.MaclawAppIcon)
+	}
+	if strings.TrimSpace(manifest.MaclawAppInputMode) != "" {
+		meta.MaclawAppInputMode = strings.TrimSpace(manifest.MaclawAppInputMode)
+	}
+	if len(manifest.MaclawAppOutputModes) > 0 {
+		meta.MaclawAppOutputModes = append([]string(nil), manifest.MaclawAppOutputModes...)
+	}
+	if strings.TrimSpace(manifest.MaclawAppDefinitionSHA256) != "" {
+		meta.MaclawAppDefinitionSHA256 = strings.TrimSpace(manifest.MaclawAppDefinitionSHA256)
+	}
+	if manifest.MaclawAppTestEvidence != nil {
+		meta.MaclawAppTestEvidence = manifest.MaclawAppTestEvidence
+	}
+	if manifest.ArtifactContractRequired {
+		meta.ArtifactContractRequired = true
+	}
+	if len(manifest.ArtifactContractOutputModes) > 0 {
+		meta.ArtifactContractOutputModes = append([]string(nil), manifest.ArtifactContractOutputModes...)
+	}
+	if strings.TrimSpace(manifest.ArtifactContractPresentation) != "" {
+		meta.ArtifactContractPresentation = strings.TrimSpace(manifest.ArtifactContractPresentation)
+	}
+	if len(meta.Permissions) == 0 && len(manifest.DeclaredPermissions) > 0 {
+		meta.Permissions = append([]string(nil), manifest.DeclaredPermissions...)
+	}
+	if len(meta.RequiredEnv) == 0 && len(manifest.DeclaredRequiredEnv) > 0 {
+		meta.RequiredEnv = append([]string(nil), manifest.DeclaredRequiredEnv...)
+	}
+	if manifest.DeclaredRequiresGUI {
+		meta.RequiresGUI = true
+	}
 }
 
 // ValidateYAML 验证 YAML 文件语法。

@@ -221,6 +221,8 @@ func classifyOpenAIHTTPError(statusCode int, body []byte, providerName string) s
 	}
 
 	switch {
+	case typ == "overloaded_error" || strings.Contains(typ, "overloaded"):
+		return fmt.Sprintf("%s 服务器超载，请稍后再试 (overloaded)", providerDisplay)
 	case code == "insufficient_quota" || typ == "insufficient_quota":
 		return fmt.Sprintf("%s 账号额度不足，请检查账单和付费计划 (insufficient_quota)", providerDisplay)
 	case statusCode == http.StatusBadRequest && strings.TrimSpace(msg) != "":
@@ -249,6 +251,12 @@ func classifyOpenAIHTTPError(statusCode int, body []byte, providerName string) s
 	case statusCode >= 500:
 		return fmt.Sprintf("API server error; retry later (HTTP %d)", statusCode)
 	default:
+		// Check for overloaded signals in body even when JSON parse failed
+		// (e.g. body is wrapped with non-JSON prefix from SDK error formatting).
+		bodyLower := strings.ToLower(string(body))
+		if strings.Contains(bodyLower, "overloaded") {
+			return fmt.Sprintf("%s 服务器超载，请稍后再试 (overloaded)", providerDisplay)
+		}
 		return fmt.Sprintf("%s API 错误 (HTTP %d)", providerDisplay, statusCode)
 	}
 }

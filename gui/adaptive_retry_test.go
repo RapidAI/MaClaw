@@ -146,6 +146,25 @@ func TestClassify_Transient_Overloaded(t *testing.T) {
 	}
 }
 
+func TestClassify_Transient_ZhipuOverloadedError(t *testing.T) {
+	r := NewAdaptiveRetry(nil)
+	// Matches the exact error format from 智谱 GLM via Anthropic SDK
+	err := errors.New(`HTTP 200: body_len=302: POST "https://open.bigmodel.cn/api/anthropic/v1/messages": 200 OK {"type":"error","error":{"type":"overloaded_error","code":"1305","message":"[1305]请负载均衡"}}`)
+	cat := r.Classify("llm_request", err)
+	if cat != FailureTransient {
+		t.Errorf("expected FailureTransient for 智谱 overloaded_error, got %s", cat)
+	}
+}
+
+func TestClassify_Transient_ZhipuCode1305(t *testing.T) {
+	r := NewAdaptiveRetry(nil)
+	err := errors.New(`{"code":"1305","message":"服务繁忙"}`)
+	cat := r.Classify("llm_request", err)
+	if cat != FailureTransient {
+		t.Errorf("expected FailureTransient for 智谱 code:1305, got %s", cat)
+	}
+}
+
 func TestClassify_Transient_ZhipuCode1234(t *testing.T) {
 	r := NewAdaptiveRetry(nil)
 	err := errors.New(`{"code":"1234","message":"网络错误"}`)
@@ -181,23 +200,33 @@ func TestDecide_Transient_ExponentialBackoff(t *testing.T) {
 	r := NewAdaptiveRetry(nil)
 
 	d0 := r.Decide("llm_request", FailureTransient, 0)
-	if d0.Action != "retry" || d0.Delay != 5*time.Second {
-		t.Errorf("attempt 0: expected retry/5s, got %s/%v", d0.Action, d0.Delay)
+	if d0.Action != "retry" || d0.Delay != 10*time.Second {
+		t.Errorf("attempt 0: expected retry/10s, got %s/%v", d0.Action, d0.Delay)
 	}
 
 	d1 := r.Decide("llm_request", FailureTransient, 1)
-	if d1.Action != "retry" || d1.Delay != 10*time.Second {
-		t.Errorf("attempt 1: expected retry/10s, got %s/%v", d1.Action, d1.Delay)
+	if d1.Action != "retry" || d1.Delay != 20*time.Second {
+		t.Errorf("attempt 1: expected retry/20s, got %s/%v", d1.Action, d1.Delay)
 	}
 
 	d2 := r.Decide("llm_request", FailureTransient, 2)
-	if d2.Action != "retry" || d2.Delay != 20*time.Second {
-		t.Errorf("attempt 2: expected retry/20s, got %s/%v", d2.Action, d2.Delay)
+	if d2.Action != "retry" || d2.Delay != 40*time.Second {
+		t.Errorf("attempt 2: expected retry/40s, got %s/%v", d2.Action, d2.Delay)
 	}
 
 	d3 := r.Decide("llm_request", FailureTransient, 3)
-	if d3.Action != "skip" {
-		t.Errorf("attempt 3: expected skip, got %s", d3.Action)
+	if d3.Action != "retry" || d3.Delay != 60*time.Second {
+		t.Errorf("attempt 3: expected retry/60s (capped), got %s/%v", d3.Action, d3.Delay)
+	}
+
+	d4 := r.Decide("llm_request", FailureTransient, 4)
+	if d4.Action != "retry" || d4.Delay != 60*time.Second {
+		t.Errorf("attempt 4: expected retry/60s (capped), got %s/%v", d4.Action, d4.Delay)
+	}
+
+	d5 := r.Decide("llm_request", FailureTransient, 5)
+	if d5.Action != "skip" {
+		t.Errorf("attempt 5: expected skip, got %s", d5.Action)
 	}
 }
 

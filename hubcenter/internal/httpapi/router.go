@@ -732,6 +732,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/skillmarket/{id}/rate", smHandlers.RateSkill)
 		mux.HandleFunc("GET /api/v1/skillmarket/{id}/ratings", smHandlers.GetRatingStats)
 		// Admin review & config
+		mux.HandleFunc("GET /api/v1/admin/skillmarket/review", RequireAdmin(adminService, smHandlers.AdminReviewQueue))
 		mux.HandleFunc("POST /api/v1/admin/skillmarket/{id}/approve", RequireAdmin(adminService, smHandlers.AdminApproveSkill))
 		mux.HandleFunc("POST /api/v1/admin/skillmarket/{id}/reject", RequireAdmin(adminService, smHandlers.AdminRejectSkill))
 		mux.HandleFunc("GET /api/v1/admin/config/trial", RequireAdmin(adminService, smHandlers.GetTrialConfig))

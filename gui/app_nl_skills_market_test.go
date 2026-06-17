@@ -1615,6 +1615,90 @@ func TestInstallMixedSkillSkillMarketFailsOver(t *testing.T) {
 	}
 }
 
+func TestInstallMixedSkillSkillMarketPreservesMaclawAppDefinition(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	skillYAML := "name: Invoice App\ndescription: Invoice review app\ntriggers:\n  - invoice\nsteps:\n  - action: craft_tool\n    params:\n      instructions: review invoice\nmaclaw_app:\n  entry: maclaw.app.json\n"
+	appJSON := `{
+  "schema": "maclaw.app.v1",
+  "privateMarker": "x_maclaw_apps",
+  "app": {
+    "id": "invoice-review",
+    "name": "Invoice Review",
+    "binding": {"skill": {"skillId": "Invoice App", "appDefinitionFile": "maclaw.app.json"}}
+  }
+}`
+	var backup *httptest.Server
+	backup = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{backup.URL}})
+		case "/api/v1/skills/invoice-app/download":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":          "invoice-app",
+				"name":        "Invoice App",
+				"description": "Invoice review app",
+				"version":     "1.0.0",
+				"steps":       []map[string]any{{"action": "craft_tool", "params": map[string]any{"instructions": "review invoice"}}},
+				"files": map[string]string{
+					"skill.yaml":      base64.StdEncoding.EncodeToString([]byte(skillYAML)),
+					"maclaw.app.json": base64.StdEncoding.EncodeToString([]byte(appJSON)),
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backup.Close()
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: "http://127.0.0.1:1", RemoteHubCenterURLs: []string{backup.URL}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if err := app.InstallMixedSkill("skillmarket", "invoice-app", ""); err != nil {
+		t.Fatalf("InstallMixedSkill() error = %v", err)
+	}
+
+	var installed *corelib.NLSkillEntry
+	for _, skill := range app.skillExecutor.loadSkills() {
+		if skill.Name == "Invoice App" {
+			copied := skill
+			installed = &copied
+			break
+		}
+	}
+	if installed == nil {
+		t.Fatalf("expected Invoice App to be registered")
+	}
+	if _, err := os.Stat(filepath.Join(installed.SkillDir, "maclaw.app.json")); err != nil {
+		t.Fatalf("installed skill missing maclaw.app.json: %v", err)
+	}
+	manifests := app.ListSkillAppManifests()
+	if len(manifests) != 1 {
+		t.Fatalf("ListSkillAppManifests() len = %d, want 1: %#v", len(manifests), manifests)
+	}
+	if manifests[0].ID != "invoice-review" || manifests[0].SkillID != "Invoice App" || manifests[0].AppDefinitionFile != "maclaw.app.json" {
+		t.Fatalf("unexpected app manifest: %#v", manifests[0])
+	}
+}
+
 func TestImportNLSkillZipPathRejectsJSONSkillPackage(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

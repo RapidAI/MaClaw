@@ -43,9 +43,10 @@ const (
 	adaptiveRetryReviewedFailureCountPrefix = "reviewed_failure_count:"
 	defaultMaxFailures                      = 5
 	maxNetworkRetries                       = 3
-	maxTransientRetries                     = 3
+	maxTransientRetries                     = 5
 	baseRetryDelay                          = 1 * time.Second
-	baseTransientDelay                      = 5 * time.Second
+	baseTransientDelay                      = 10 * time.Second
+	maxTransientDelay                       = 60 * time.Second
 )
 
 // RetryDecision describes the next retry action.
@@ -184,9 +185,13 @@ func (r *AdaptiveRetry) Decide(toolName string, category FailureCategory, attemp
 				Attempt:      attempt,
 			}
 		}
+		delay := baseTransientDelay * time.Duration(1<<uint(attempt))
+		if delay > maxTransientDelay {
+			delay = maxTransientDelay
+		}
 		return RetryDecision{
 			Action:  RetryActionRetry,
-			Delay:   baseTransientDelay * time.Duration(1<<uint(attempt)),
+			Delay:   delay,
 			Attempt: attempt,
 		}
 	case FailureNetwork:

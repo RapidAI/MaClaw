@@ -45,22 +45,44 @@ const hubClientJSONMaxBytes = 5 << 20
 // Consumers map this to their own display types (views.SkillSearchResult,
 // MixedSkillSearchResult, etc.).
 type HubSearchResult struct {
-	ID             string  `json:"id"`
-	Name           string  `json:"name"`
-	Description    string  `json:"description"`
-	Version        string  `json:"version"`
-	Author         string  `json:"author"`
-	TrustLevel     string  `json:"trust_level"`
-	AvgRating      float64 `json:"avg_rating"`
-	Downloads      int     `json:"downloads"`
-	Score          float64 `json:"score"`
-	Source         string  `json:"source"`          // "skillhub", "clawhub", "github"
-	CapabilityType string  `json:"capability_type"` // "skill" or "mcp" (empty defaults to "skill")
+	ID                           string                 `json:"id"`
+	Name                         string                 `json:"name"`
+	Description                  string                 `json:"description"`
+	Version                      string                 `json:"version"`
+	Author                       string                 `json:"author"`
+	TrustLevel                   string                 `json:"trust_level"`
+	AvgRating                    float64                `json:"avg_rating"`
+	Downloads                    int                    `json:"downloads"`
+	Score                        float64                `json:"score"`
+	Source                       string                 `json:"source"`          // "skillhub", "clawhub", "github"
+	CapabilityType               string                 `json:"capability_type"` // "skill" or "mcp" (empty defaults to "skill")
+	ProductKind                  string                 `json:"product_kind,omitempty"`
+	IsMaclawApp                  bool                   `json:"is_maclaw_app,omitempty"`
+	MaclawAppID                  string                 `json:"maclaw_app_id,omitempty"`
+	MaclawAppName                string                 `json:"maclaw_app_name,omitempty"`
+	MaclawAppDescription         string                 `json:"maclaw_app_description,omitempty"`
+	MaclawAppCategory            string                 `json:"maclaw_app_category,omitempty"`
+	MaclawAppIcon                string                 `json:"maclaw_app_icon,omitempty"`
+	MaclawAppInputMode           string                 `json:"maclaw_app_input_mode,omitempty"`
+	MaclawAppOutputModes         []string               `json:"maclaw_app_output_modes,omitempty"`
+	MaclawAppDefinitionSHA256    string                 `json:"maclaw_app_definition_sha256,omitempty"`
+	MaclawAppTestEvidence        *MaclawAppTestEvidence `json:"maclaw_app_test_evidence,omitempty"`
+	ArtifactContractRequired     bool                   `json:"artifact_contract_required,omitempty"`
+	ArtifactContractOutputModes  []string               `json:"artifact_contract_output_modes,omitempty"`
+	ArtifactContractPresentation string                 `json:"artifact_contract_presentation,omitempty"`
 
 	// GitHub-specific fields (empty for other sources).
 	RepoURL    string `json:"repo_url,omitempty"`
 	FilePath   string `json:"file_path,omitempty"`
 	InstallRef string `json:"install_ref,omitempty"` // JSON-serialized GitHubSkillCandidate
+}
+
+type MaclawAppTestEvidence struct {
+	RunID                 string `json:"run_id,omitempty"`
+	VerifiedAt            string `json:"verified_at,omitempty"`
+	DefinitionFingerprint string `json:"definition_fingerprint,omitempty"`
+	ArtifactPresent       bool   `json:"artifact_present,omitempty"`
+	ArtifactName          string `json:"artifact_name,omitempty"`
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -198,18 +220,40 @@ func (c *HubClient) SearchSkillHub(ctx context.Context, hubURL, query string) []
 	results := make([]HubSearchResult, 0, len(raw.Skills))
 	for _, s := range raw.Skills {
 		results = append(results, HubSearchResult{
-			ID:          s.ID,
-			Name:        s.Name,
-			Description: s.Description,
-			Version:     s.Version,
-			Author:      s.Author,
-			TrustLevel:  s.TrustLevel,
-			AvgRating:   s.AvgRating,
-			Downloads:   s.Downloads,
-			Source:      "skillhub",
+			ID:                           s.ID,
+			Name:                         s.Name,
+			Description:                  s.Description,
+			Version:                      s.Version,
+			Author:                       s.Author,
+			TrustLevel:                   s.TrustLevel,
+			AvgRating:                    s.AvgRating,
+			Downloads:                    s.Downloads,
+			Source:                       "skillhub",
+			ProductKind:                  s.ProductKind,
+			IsMaclawApp:                  s.IsMaclawApp || strings.EqualFold(strings.TrimSpace(s.ProductKind), "maclaw_app_skill"),
+			MaclawAppID:                  s.MaclawAppID,
+			MaclawAppName:                s.MaclawAppName,
+			MaclawAppDescription:         s.MaclawAppDescription,
+			MaclawAppCategory:            s.MaclawAppCategory,
+			MaclawAppIcon:                s.MaclawAppIcon,
+			MaclawAppInputMode:           s.MaclawAppInputMode,
+			MaclawAppOutputModes:         append([]string(nil), s.MaclawAppOutputModes...),
+			MaclawAppDefinitionSHA256:    s.MaclawAppDefinitionSHA256,
+			MaclawAppTestEvidence:        cloneMaclawAppTestEvidence(s.MaclawAppTestEvidence),
+			ArtifactContractRequired:     s.ArtifactContractRequired,
+			ArtifactContractOutputModes:  append([]string(nil), s.ArtifactContractOutputModes...),
+			ArtifactContractPresentation: s.ArtifactContractPresentation,
 		})
 	}
 	return results
+}
+
+func cloneMaclawAppTestEvidence(e *MaclawAppTestEvidence) *MaclawAppTestEvidence {
+	if e == nil {
+		return nil
+	}
+	copy := *e
+	return &copy
 }
 
 // SearchClawHub queries the ClawHub China mirror.
@@ -430,16 +474,30 @@ type skillHubSearchResponse struct {
 }
 
 type skillHubItem struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Tags        []string `json:"tags"`
-	Version     string   `json:"version"`
-	Author      string   `json:"author"`
-	TrustLevel  string   `json:"trust_level"`
-	Downloads   int      `json:"downloads"`
-	AvgRating   float64  `json:"avg_rating"`
-	RatingCount int      `json:"rating_count"`
+	ID                           string                 `json:"id"`
+	Name                         string                 `json:"name"`
+	Description                  string                 `json:"description"`
+	Tags                         []string               `json:"tags"`
+	Version                      string                 `json:"version"`
+	Author                       string                 `json:"author"`
+	TrustLevel                   string                 `json:"trust_level"`
+	Downloads                    int                    `json:"downloads"`
+	AvgRating                    float64                `json:"avg_rating"`
+	RatingCount                  int                    `json:"rating_count"`
+	ProductKind                  string                 `json:"product_kind,omitempty"`
+	IsMaclawApp                  bool                   `json:"is_maclaw_app,omitempty"`
+	MaclawAppID                  string                 `json:"maclaw_app_id,omitempty"`
+	MaclawAppName                string                 `json:"maclaw_app_name,omitempty"`
+	MaclawAppDescription         string                 `json:"maclaw_app_description,omitempty"`
+	MaclawAppCategory            string                 `json:"maclaw_app_category,omitempty"`
+	MaclawAppIcon                string                 `json:"maclaw_app_icon,omitempty"`
+	MaclawAppInputMode           string                 `json:"maclaw_app_input_mode,omitempty"`
+	MaclawAppOutputModes         []string               `json:"maclaw_app_output_modes,omitempty"`
+	MaclawAppDefinitionSHA256    string                 `json:"maclaw_app_definition_sha256,omitempty"`
+	MaclawAppTestEvidence        *MaclawAppTestEvidence `json:"maclaw_app_test_evidence,omitempty"`
+	ArtifactContractRequired     bool                   `json:"artifact_contract_required,omitempty"`
+	ArtifactContractOutputModes  []string               `json:"artifact_contract_output_modes,omitempty"`
+	ArtifactContractPresentation string                 `json:"artifact_contract_presentation,omitempty"`
 }
 
 type skillHubDownloadResponse struct {

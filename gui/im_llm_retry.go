@@ -138,8 +138,8 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestFallback(
 	retryDelay := 2 * time.Second
 	retryMax := 1
 	if isTransient {
-		retryDelay = 5 * time.Second
-		retryMax = 3
+		retryDelay = baseTransientDelay
+		retryMax = maxTransientRetries
 	}
 	for retryAttempt := 0; retryAttempt < retryMax && result.Err != nil && !ctx.IsCancelled(); retryAttempt++ {
 		log.Printf("[LLM] request failed, retry after %v (%d/%d): %v", retryDelay, retryAttempt+1, retryMax, result.Err)
@@ -161,9 +161,14 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestFallback(
 			if newRetryKind := classifyLLMRetryError(result.Err); newRetryKind != retryKind {
 				retryKind = newRetryKind
 				isTransient = retryKind.TransientServer()
+				if !retryKind.Retryable() {
+					// Error category changed to non-retryable (e.g. permission, args).
+					// Stop retrying immediately.
+					return
+				}
 				if isTransient {
-					retryDelay = 5 * time.Second
-					retryMax = 3
+					retryDelay = baseTransientDelay
+					retryMax = maxTransientRetries
 				} else {
 					retryDelay = 2 * time.Second
 				}
@@ -171,6 +176,9 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestFallback(
 		}
 		if isTransient {
 			retryDelay *= 2
+			if retryDelay > maxTransientDelay {
+				retryDelay = maxTransientDelay
+			}
 		}
 	}
 	if ctx.IsCancelled() {
@@ -203,5 +211,5 @@ func reportLLMRetryWait(isTransient bool, onProgress tool.ProgressCallback, dela
 	if !isTransient || onProgress == nil {
 		return
 	}
-	onProgress(fmt.Sprintf("API is temporarily unavailable; retrying in %ds (%d/%d)...", int(delay.Seconds()), attempt, max))
+	onProgress(fmt.Sprintf("⏳ API 暂时不可用，%d 秒后重试 (%d/%d)...", int(delay.Seconds()), attempt, max))
 }

@@ -5,6 +5,42 @@ import (
 	"strings"
 )
 
+// documentParsingGuidance is the shared instruction block injected into any
+// phase where the user provides a document file path. All input-driven phases
+// share this single definition — add/fix parsing methods here once.
+const documentParsingGuidance = `
+## 文档解析方法
+
+用户提供了文件路径，请根据文件扩展名选择解析方式：
+
+### .docx 文件
+bash(command="python -c \"from docx import Document; doc=Document(r'路径'); print('\\n'.join(p.text for p in doc.paragraphs))\"")
+- 如果 python-docx 未安装：bash(command="pip install python-docx && python -c ...")
+- 注意：Windows 上用 python，Linux/Mac 上用 python3；如果一个不行换另一个
+
+### .doc 文件（旧格式 Word 97-2003）
+Windows（需要已安装 Word 或 WPS）：
+bash(command="python -c \"import win32com.client,os; w=win32com.client.Dispatch('Word.Application'); w.Visible=0; d=w.Documents.Open(os.path.abspath(r'路径')); print(d.Content.Text); d.Close(); w.Quit()\"")
+- 如果 win32com 未安装：bash(command="pip install pywin32 && python -c ...")
+- 备选（需要 LibreOffice）：bash(command="pip install doc2docx && python -c \"from doc2docx import convert; convert(r'路径')\"") 然后用 python-docx 读取生成的 .docx
+- 如果都失败：提示用户用 Word 将 .doc 另存为 .docx 格式后重新提供
+
+### .pdf 文件
+bash(command="pip install pymupdf && python -c \"import fitz; doc=fitz.open(r'路径'); print('\\n'.join(page.get_text() for page in doc))\"")
+
+### .txt/.md 文件
+直接使用 read_file 工具
+
+### 已安装的文档解析 Skill
+如果有已安装的文档解析类 Skill（如 doc-parser、any2pdf 等），优先使用 manage_skill(action="run") 调用。
+
+### 重要提示
+- Windows 路径在 Python 中用 r'原始字符串' 避免反斜杠转义问题
+- 如果 python 命令不存在尝试 python3，反之亦然
+- 如果所有方法都失败，告知用户将文件转换为 .docx 或 .txt 格式后重新提供
+- 【严禁】说"无法读取文件"或"无法访问本地文件"——你有 bash 工具可以用 Python 解析文档
+`
+
 // BuildPhasePrompt constructs the system prompt injection for the current phase.
 func BuildPhasePrompt(state *WorkflowState) string {
 	if state == nil {
@@ -91,10 +127,114 @@ func BuildPhasePrompt(state *WorkflowState) string {
 		sb.WriteString("\n")
 	}
 
+	// Auto-inject document parsing guidance when form data contains file paths.
+	// This is the mechanism-level fix: any phase that receives a file path from
+	// the user automatically gets parsing instructions — no need to repeat them
+	// in each phaseInstruction case.
+	//
+	// Two detection paths:
+	// 1. Form data contains a file path field/value (user submitted via InputSchema form)
+	// 2. No form data but state.Summary contains a file path (user typed path in chat)
+	needsParsingGuidance := formDataContainsFilePath(phase.FormData)
+	if !needsParsingGuidance && (phase.FormData == nil || len(phase.FormData) == 0) {
+		// Check if the user's original request message contains a file path.
+		needsParsingGuidance = textContainsFilePath(state.Summary)
+	}
+	if needsParsingGuidance && !phaseInstructionHasOwnParsingGuidance(phase.ID) {
+		sb.WriteString(documentParsingGuidance)
+		sb.WriteString("\n")
+	}
+
 	// Phase-specific instructions
 	sb.WriteString(phaseInstruction(phase.ID))
 
 	return sb.String()
+}
+
+// formDataContainsFilePath returns true if any value in the form data looks like
+// a file path (Windows drive letter path, Unix absolute path, or common document
+// extensions). This triggers automatic injection of documentParsingGuidance.
+func formDataContainsFilePath(formData map[string]interface{}) bool {
+	if len(formData) == 0 {
+		return false
+	}
+	for key, val := range formData {
+		if key == "" || strings.HasPrefix(key, "_") {
+			continue
+		}
+		s := fmt.Sprintf("%v", val)
+		if s == "" || s == "<nil>" {
+			continue
+		}
+		// Signal 1: field name contains "path" or "file" AND value is non-trivial.
+		// This is the strongest signal — template authors name file fields explicitly.
+		kl := strings.ToLower(key)
+		if strings.Contains(kl, "path") || strings.Contains(kl, "file") {
+			if len(s) > 2 {
+				return true
+			}
+		}
+		// Signal 2: value looks like a Windows drive-letter path (D:\... or C:/...).
+		if len(s) >= 4 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) &&
+			s[1] == ':' && (s[2] == '\\' || s[2] == '/') {
+			return true
+		}
+		// Signal 3: value looks like a Unix absolute path with depth (at least 2 segments).
+		// "/home/user/file.pdf" matches; "/yes" does not (too short, no depth).
+		if len(s) >= 5 && s[0] == '/' && strings.Count(s, "/") >= 2 {
+			// Exclude patterns that are clearly not paths (e.g. URLs handled by web_fetch).
+			if !strings.HasPrefix(s, "//") && !strings.Contains(s, "://") {
+				return true
+			}
+		}
+		// Signal 4: value ends with a document file extension.
+		sl := strings.ToLower(s)
+		for _, ext := range []string{".docx", ".doc", ".pdf", ".pptx", ".ppt", ".xlsx", ".xls"} {
+			if strings.HasSuffix(sl, ext) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// phaseInstructionHasOwnParsingGuidance returns true if the phase-specific
+// instruction already includes document parsing methods, in which case the
+// shared documentParsingGuidance should be skipped to avoid redundancy.
+func phaseInstructionHasOwnParsingGuidance(phaseID string) bool {
+	switch phaseID {
+	case "pa_disclosure_parsing":
+		return true
+	}
+	return false
+}
+
+// textContainsFilePath checks if a plain text string contains a file path
+// or document file extension. Used when no form data is available (user typed
+// a file path directly in chat).
+func textContainsFilePath(text string) bool {
+	if len(text) < 4 {
+		return false
+	}
+	// Check for Windows drive-letter paths anywhere in the text.
+	for i := 0; i+2 < len(text); i++ {
+		c := text[i]
+		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) &&
+			text[i+1] == ':' && (text[i+2] == '\\' || text[i+2] == '/') {
+			// Ensure this is a word boundary (not mid-word like "abc:\dir").
+			if i == 0 || text[i-1] == ' ' || text[i-1] == '\n' || text[i-1] == '\t' || text[i-1] >= 0x80 {
+				return true
+			}
+		}
+	}
+	// Check for document file extensions.
+	sl := strings.ToLower(text)
+	for _, ext := range []string{".docx", ".doc", ".pdf", ".pptx", ".ppt", ".xlsx", ".xls"} {
+		if strings.Contains(sl, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 func phaseInstruction(phaseID string) string {
@@ -253,6 +393,132 @@ func phaseInstruction(phaseID string) string {
 - 视觉风格建议
 
 输出完毕后等待用户确认。
+`
+
+	// --- Patent Analysis Workflow ---
+
+	case "tech_parsing":
+		return `## 阶段指令
+
+解析用户提供的专利文档/技术资料，提炼核心技术方案。
+
+根据用户输入方式处理：
+- **用户提供了文件路径**：先用上方"文档解析方法"中的 bash + Python 命令提取文本内容，再基于提取的文本进行分析。如果上方没有"文档解析方法"section，则自行用 bash 调 Python 解析（pymupdf 读 PDF、python-docx 读 docx）。
+- **用户粘贴了文本内容**：直接基于文本内容分析。
+- **用户只提供了专利号/关键词**：使用 web_search 搜索专利全文，获取后分析。
+
+## 生成文档内容
+
+基于获取的文本内容和用户表单信息，生成技术解析文档：
+1. **专利/技术概述**：技术领域、核心发明点、申请日/公开日（如有）
+2. **权利要求分析**（如为专利文件）：
+   - 独立权利要求的技术特征拆解
+   - 从属权利要求的附加技术特征
+   - 权利要求的保护范围评估
+3. **技术方案详解**：
+   - 关键技术特征（结构/步骤/参数/材料）
+   - 技术特征之间的逻辑关系
+   - 与已知技术的区别
+4. **技术效果**：有益效果、性能数据（如有）
+
+## 重要约束（违反将导致错误）
+- 如果用户提供了文件路径，必须先解析文件获取内容，不要凭文件名猜测内容。
+- 技术分析必须基于实际文档内容，不要臆造。
+- 只生成一份技术解析文档，输出完毕后立即停止。
+- 【严禁】输出确认提示语或后续内容。
+- 【严禁】自己模拟用户确认。
+`
+	case "prior_art":
+		return `## 阶段指令
+
+基于技术解析结果，进行现有技术检索和分析。
+
+使用 web_search 搜索相关现有技术：
+- 搜索关键技术特征相关的专利和论文
+- 搜索竞争对手（如用户提供了）的已公开专利
+- 搜索技术领域的背景文献
+
+生成文档内容：
+1. **检索策略**：使用的关键词组合、数据库范围
+2. **相关现有技术列表**：
+   - 专利号/论文标题、申请人/作者、日期
+   - 技术内容摘要
+   - 与目标专利的相关度评估
+3. **技术发展脉络**：该技术领域的发展历程
+4. **最接近的现有技术**：识别 1-3 篇最接近的对比文件
+
+## 重要约束
+- 使用 web_search 实际搜索，不要凭记忆编造专利号或论文。
+- 只生成一份现有技术分析文档，输出完毕后立即停止。
+- 【严禁】自己模拟用户确认。
+`
+	case "infringement":
+		return `## 阶段指令
+
+基于技术解析和现有技术分析，进行侵权风险评估。
+
+生成文档内容：
+1. **权利要求对比分析**：
+   - 逐项对比目标专利权利要求与分析对象的技术特征
+   - 标注"相同特征"、"等同特征"、"缺少特征"
+2. **侵权判定分析**：
+   - 全面覆盖原则分析
+   - 等同原则分析
+   - 禁止反悔原则考量
+3. **风险等级评估**：高/中/低风险，及判定依据
+4. **规避设计建议**（如分析目的为规避）：
+   - 可替换的技术特征
+   - 替换后的技术效果影响
+
+## 重要约束
+- 分析必须基于前两个阶段的实际数据。
+- 法律分析需谨慎，标注"本分析仅供参考，不构成法律意见"。
+- 只生成一份侵权评估文档，输出完毕后立即停止。
+- 【严禁】自己模拟用户确认。
+`
+	case "strategy":
+		return `## 阶段指令
+
+基于前序分析结果，提出知识产权策略建议。
+
+根据用户的分析目的（侵权风险评估/专利布局/无效宣告等），生成针对性策略：
+1. **总体策略建议**：基于分析结论的行动建议
+2. **具体措施**：
+   - 短期措施（立即可执行）
+   - 中期措施（3-6 个月）
+   - 长期措施（6-12 个月）
+3. **专利布局建议**（如适用）：
+   - 核心专利方向
+   - 外围专利方向
+   - 防御性专利建议
+4. **风险控制**：潜在风险及应对预案
+5. **成本估算**（如适用）：各项措施的预估投入
+
+## 重要约束
+- 策略必须基于前序阶段的分析数据。
+- 标注"本建议仅供参考，重要决策请咨询专利律师"。
+- 只生成一份策略建议文档，输出完毕后立即停止。
+- 【严禁】自己模拟用户确认。
+`
+	case "report":
+		return `## 阶段指令
+
+整合前序所有阶段的分析结果，生成完整的专利分析报告。
+
+报告结构：
+1. **封面信息**：报告标题、分析目的、分析对象、完成日期
+2. **摘要**：核心结论（1 段话）
+3. **技术解析**：核心技术方案概述（来自阶段一）
+4. **现有技术分析**：检索结果和技术发展概况（来自阶段二）
+5. **侵权/新颖性评估**：对比分析结论（来自阶段三）
+6. **策略建议**：行动建议（来自阶段四）
+7. **结论与免责声明**
+
+## 重要约束
+- 报告内容必须来自前序阶段的实际产出物，不要新增未经分析的结论。
+- 末尾必须包含免责声明："本报告由 AI 辅助生成，仅供参考。涉及法律判断的内容请咨询专利代理师或知识产权律师。"
+- 只生成一份报告，输出完毕后立即停止。
+- 【严禁】自己模拟用户确认。
 `
 
 	// --- Paper Reproduction Workflow ---

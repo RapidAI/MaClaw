@@ -3,7 +3,9 @@ package main
 import (
 	"archive/zip"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -67,20 +70,24 @@ type NLSkillDefinition struct {
 	SuccessRate         float64                     `json:"success_rate"` // computed: SuccessCount / UsageCount
 	LastUsedAt          *time.Time                  `json:"last_used_at,omitempty"`
 	LastError           string                      `json:"last_error,omitempty"`
+	IsMaclawApp         bool                        `json:"is_maclaw_app,omitempty"`
+	MaclawAppCount      int                         `json:"maclaw_app_count,omitempty"`
+	MaclawAppEntry      string                      `json:"maclaw_app_entry,omitempty"`
 }
 
 // SkillAppManifestEntry is the Wails-facing app extension declared by maclaw.apps.json.
 type SkillAppManifestEntry struct {
-	ID            string                  `json:"id"`
-	SkillID       string                  `json:"skill_id"`
-	Name          string                  `json:"name"`
-	Description   string                  `json:"description,omitempty"`
-	Category      string                  `json:"category,omitempty"`
-	Icon          string                  `json:"icon,omitempty"`
-	InputMode     string                  `json:"input_mode,omitempty"`
-	MultipleFiles bool                    `json:"multiple_files,omitempty"`
-	OutputModes   []string                `json:"output_modes,omitempty"`
-	Fields        []SkillAppManifestField `json:"fields,omitempty"`
+	ID                string                  `json:"id"`
+	SkillID           string                  `json:"skill_id"`
+	Name              string                  `json:"name"`
+	Description       string                  `json:"description,omitempty"`
+	Category          string                  `json:"category,omitempty"`
+	Icon              string                  `json:"icon,omitempty"`
+	InputMode         string                  `json:"input_mode,omitempty"`
+	MultipleFiles     bool                    `json:"multiple_files,omitempty"`
+	OutputModes       []string                `json:"output_modes,omitempty"`
+	Fields            []SkillAppManifestField `json:"fields,omitempty"`
+	AppDefinitionFile string                  `json:"app_definition_file,omitempty"`
 }
 
 // SkillAppManifestField describes one fixed form control exposed by a tool app.
@@ -936,6 +943,7 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			FailureCount:        s.FailureCount,
 			LastError:           s.LastError,
 		}
+		d.IsMaclawApp, d.MaclawAppCount, d.MaclawAppEntry = inspectMaclawAppSkillMetadata(s.SkillDir)
 		if s.UsageCount > 0 {
 			d.SuccessRate = float64(s.SuccessCount) / float64(s.UsageCount)
 		}
@@ -950,6 +958,68 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 		defs = append(defs, d)
 	}
 	return defs
+}
+
+func inspectMaclawAppSkillMetadata(skillDir string) (bool, int, string) {
+	skillDir = strings.TrimSpace(skillDir)
+	if skillDir == "" {
+		return false, 0, ""
+	}
+	if count := countMaclawAppsManifestEntries(filepath.Join(skillDir, "maclaw.apps.json")); count > 0 {
+		return true, count, "maclaw.apps.json"
+	}
+	if hasValidMaclawAppFile(filepath.Join(skillDir, "maclaw.app.json")) {
+		return true, 1, "maclaw.app.json"
+	}
+	if entry := readMaclawAppEntryFromSkillYAML(skillDir); entry != "" {
+		count := 0
+		if hasValidMaclawAppFile(filepath.Join(skillDir, entry)) {
+			count = 1
+		}
+		return true, count, entry
+	}
+	return false, 0, ""
+}
+
+func countMaclawAppsManifestEntries(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	var manifest skillAppManifestFile
+	if err := json.Unmarshal(data, &manifest); err != nil || strings.TrimSpace(manifest.PrivateMarker) != "v1" {
+		return 0
+	}
+	count := 0
+	for _, app := range manifest.Apps {
+		if strings.TrimSpace(app.ID) != "" && strings.TrimSpace(app.Name) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func hasValidMaclawAppFile(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return false
+	}
+	if stringMapValue(doc, "schema") != "maclaw.app.v1" || stringMapValue(doc, "privateMarker") != "x_maclaw_apps" {
+		return false
+	}
+	app, ok := doc["app"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(stringMapValue(app, "id")) != "" && strings.TrimSpace(stringMapValue(app, "name")) != ""
+}
+
+func readMaclawAppEntryFromSkillYAML(skillDir string) string {
+	return readMaclawAppYAMLMetadata(skillDir).Entry
 }
 
 // AsRegisteredTools converts all active NL Skills to corelib tool.RegisteredTool
@@ -2165,44 +2235,509 @@ func (a *App) ListSkillAppManifests() []SkillAppManifestEntry {
 	}
 	out := []SkillAppManifestEntry{}
 	seen := map[string]struct{}{}
+	addApp := func(skillName string, app SkillAppManifestEntry, definitionFile string) {
+		app.ID = strings.TrimSpace(app.ID)
+		app.Name = strings.TrimSpace(app.Name)
+		if app.ID == "" || app.Name == "" {
+			return
+		}
+		if app.SkillID == "" {
+			app.SkillID = skillName
+		}
+		app.SkillID = strings.TrimSpace(app.SkillID)
+		if app.Category == "" {
+			app.Category = "Skill"
+		}
+		app.Icon = normalizeSkillAppIconName(app.Icon)
+		app.InputMode = normalizeSkillAppInputMode(app.InputMode)
+		app.OutputModes = normalizeSkillAppOutputModes(app.OutputModes)
+		app.Fields = normalizeSkillAppFields(app.Fields)
+		app.AppDefinitionFile = strings.TrimSpace(definitionFile)
+		key := app.SkillID + ":" + app.ID
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, app)
+	}
 	for _, item := range a.skillExecutor.loadSkills() {
 		skillDir := strings.TrimSpace(item.SkillDir)
 		if skillDir == "" {
 			continue
 		}
+		if metadata := readMaclawAppYAMLMetadata(skillDir); metadata.AddToAppPanel != nil && !*metadata.AddToAppPanel {
+			continue
+		}
 		manifestPath := filepath.Join(skillDir, "maclaw.apps.json")
 		data, err := os.ReadFile(manifestPath)
+		if err == nil {
+			var manifest skillAppManifestFile
+			if err := json.Unmarshal(data, &manifest); err == nil && strings.TrimSpace(manifest.PrivateMarker) == "v1" {
+				for _, app := range manifest.Apps {
+					addApp(item.Name, app, "maclaw.apps.json")
+				}
+			}
+		}
+		for _, entry := range candidateMaclawAppDefinitionFiles(skillDir) {
+			app, ok := readMaclawAppDefinitionAsSkillApp(filepath.Join(skillDir, entry), item.Name)
+			if !ok {
+				continue
+			}
+			addApp(item.Name, app, entry)
+		}
+	}
+	return out
+}
+
+// SaveMaclawAppDefinitionForSkill writes a single-app MaClaw App definition into
+// an existing skill directory as maclaw.app.json.
+func (a *App) SaveMaclawAppDefinitionForSkill(skillName string, appJSON string) (map[string]any, error) {
+	a.ensureRemoteInfra()
+	if a.skillExecutor == nil {
+		return nil, fmt.Errorf("skill executor not initialized")
+	}
+	skillName = strings.TrimSpace(skillName)
+	if skillName == "" {
+		return nil, fmt.Errorf("skill name is required")
+	}
+	var target *corelib.NLSkillEntry
+	for _, item := range a.skillExecutor.loadSkills() {
+		if item.Name == skillName {
+			clone := item
+			target = &clone
+			break
+		}
+	}
+	if target == nil {
+		return nil, fmt.Errorf("skill %q not found", skillName)
+	}
+	skillDir := strings.TrimSpace(target.SkillDir)
+	if skillDir == "" {
+		return nil, fmt.Errorf("skill %q has no writable skill directory", skillName)
+	}
+	cleanDir, err := filepath.Abs(skillDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve skill directory: %w", err)
+	}
+	info, err := os.Stat(cleanDir)
+	if err != nil {
+		return nil, fmt.Errorf("stat skill directory: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("skill directory is not a directory")
+	}
+	doc, appID, appName, err := normalizeMaclawAppDefinitionForSkill(appJSON, skillName)
+	if err != nil {
+		return nil, err
+	}
+	outPath := filepath.Join(cleanDir, "maclaw.app.json")
+	resolvedOut, err := filepath.Abs(outPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve app definition path: %w", err)
+	}
+	if filepath.Dir(resolvedOut) != cleanDir {
+		return nil, fmt.Errorf("app definition path escapes skill directory")
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode maclaw app definition: %w", err)
+	}
+	if err := configfile.AtomicWrite(resolvedOut, append(data, '\n')); err != nil {
+		return nil, fmt.Errorf("write maclaw.app.json: %w", err)
+	}
+	skillYAMLUpdated, err := ensureMaclawAppEntryInSkillYAML(cleanDir, "maclaw.app.json")
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"skill_name":            skillName,
+		"app_id":                appID,
+		"app_name":              appName,
+		"app_definition_file":   "maclaw.app.json",
+		"app_definition_sha256": sha256Hex(data),
+		"skill_yaml_updated":    skillYAMLUpdated,
+	}, nil
+}
+
+func (a *App) RecordMaclawAppRunEvidenceForSkill(skillName string, appID string, definitionHash string, runID string, artifactPath string, verifiedAt string) (map[string]any, error) {
+	a.ensureRemoteInfra()
+	skillName = strings.TrimSpace(skillName)
+	if skillName == "" {
+		return nil, fmt.Errorf("skill name is required")
+	}
+	if strings.TrimSpace(runID) == "" {
+		return nil, fmt.Errorf("run id is required")
+	}
+	if strings.TrimSpace(verifiedAt) == "" {
+		verifiedAt = time.Now().Format(time.RFC3339)
+	}
+	skillDir, err := a.skillDirByName(skillName)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(skillDir, "maclaw.app.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read maclaw app definition: %w", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("decode maclaw app definition: %w", err)
+	}
+	app, _ := doc["app"].(map[string]any)
+	if app == nil {
+		return nil, fmt.Errorf("maclaw app definition app must be an object")
+	}
+	if id := strings.TrimSpace(stringMapValue(app, "id")); id != "" && strings.TrimSpace(appID) != "" && id != strings.TrimSpace(appID) && !strings.HasSuffix(strings.TrimSpace(appID), "-"+id) {
+		return nil, fmt.Errorf("maclaw app id %q does not match evidence app %q", id, strings.TrimSpace(appID))
+	}
+	governance, _ := app["governance"].(map[string]any)
+	if governance == nil {
+		governance = map[string]any{}
+		app["governance"] = governance
+	}
+	artifactName := ""
+	if trimmed := strings.TrimSpace(artifactPath); trimmed != "" {
+		artifactName = filepath.Base(trimmed)
+	}
+	governance["testEvidence"] = map[string]any{
+		"runId":           strings.TrimSpace(runID),
+		"verifiedAt":      strings.TrimSpace(verifiedAt),
+		"definitionHash":  strings.TrimSpace(definitionHash),
+		"artifactPresent": artifactName != "",
+		"artifactName":    artifactName,
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode maclaw app definition: %w", err)
+	}
+	if err := configfile.AtomicWrite(path, append(out, '\n')); err != nil {
+		return nil, fmt.Errorf("write maclaw app definition: %w", err)
+	}
+	return map[string]any{
+		"skill_name":            skillName,
+		"app_definition_file":   "maclaw.app.json",
+		"app_definition_sha256": sha256Hex(out),
+		"test_run_id":           strings.TrimSpace(runID),
+		"test_verified_at":      strings.TrimSpace(verifiedAt),
+		"test_definition_hash":  strings.TrimSpace(definitionHash),
+		"test_artifact_present": artifactName != "",
+		"test_artifact_name":    artifactName,
+	}, nil
+}
+
+func (a *App) skillDirByName(skillName string) (string, error) {
+	if a.skillExecutor == nil {
+		return "", fmt.Errorf("skill executor not initialized")
+	}
+	for _, item := range a.skillExecutor.loadSkills() {
+		if item.Name != skillName {
+			continue
+		}
+		skillDir := strings.TrimSpace(item.SkillDir)
+		if skillDir == "" {
+			return "", fmt.Errorf("skill %q has no writable skill directory", skillName)
+		}
+		cleanDir, err := filepath.Abs(skillDir)
+		if err != nil {
+			return "", fmt.Errorf("resolve skill directory: %w", err)
+		}
+		info, err := os.Stat(cleanDir)
+		if err != nil {
+			return "", fmt.Errorf("stat skill directory: %w", err)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("skill directory is not a directory")
+		}
+		return cleanDir, nil
+	}
+	return "", fmt.Errorf("skill %q not found", skillName)
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func ensureMaclawAppEntryInSkillYAML(skillDir string, entry string) (bool, error) {
+	defPath, _ := findSkillDefinitionFile(skillDir)
+	if defPath == "" {
+		return false, nil
+	}
+	data, err := os.ReadFile(defPath)
+	if err != nil {
+		return false, fmt.Errorf("read skill definition: %w", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return false, fmt.Errorf("parse skill definition: %w", err)
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+	block, _ := doc["maclaw_app"].(map[string]any)
+	if block == nil {
+		block = map[string]any{}
+		doc["maclaw_app"] = block
+	}
+	changed := false
+	if strings.TrimSpace(stringMapValue(block, "entry")) != entry {
+		block["entry"] = entry
+		changed = true
+	}
+	if strings.TrimSpace(stringMapValue(block, "status")) == "" {
+		block["status"] = "draft"
+		changed = true
+	}
+	if _, ok := block["add_to_app_panel"]; !ok {
+		block["add_to_app_panel"] = true
+		changed = true
+	}
+	if !changed {
+		return false, nil
+	}
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return false, fmt.Errorf("encode skill definition: %w", err)
+	}
+	if err := configfile.AtomicWrite(defPath, out); err != nil {
+		return false, fmt.Errorf("write skill definition: %w", err)
+	}
+	return true, nil
+}
+
+func normalizeMaclawAppDefinitionForSkill(appJSON string, skillName string) (map[string]any, string, string, error) {
+	if strings.TrimSpace(appJSON) == "" {
+		return nil, "", "", fmt.Errorf("maclaw app definition is empty")
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(appJSON), &doc); err != nil {
+		return nil, "", "", fmt.Errorf("decode maclaw app definition: %w", err)
+	}
+	if stringMapValue(doc, "schema") != "maclaw.app.v1" {
+		return nil, "", "", fmt.Errorf("maclaw app definition schema must be maclaw.app.v1")
+	}
+	if stringMapValue(doc, "privateMarker") != "x_maclaw_apps" {
+		return nil, "", "", fmt.Errorf("maclaw app definition privateMarker must be x_maclaw_apps")
+	}
+	app, ok := doc["app"].(map[string]any)
+	if !ok {
+		return nil, "", "", fmt.Errorf("maclaw app definition app must be an object")
+	}
+	appID := strings.TrimSpace(stringMapValue(app, "id"))
+	appName := strings.TrimSpace(stringMapValue(app, "name"))
+	if appID == "" {
+		return nil, "", "", fmt.Errorf("maclaw app definition app.id is required")
+	}
+	if appName == "" {
+		return nil, "", "", fmt.Errorf("maclaw app definition app.name is required")
+	}
+	kind := strings.TrimSpace(stringMapValue(app, "kind"))
+	if kind != "" && kind != "tool_app" {
+		return nil, "", "", fmt.Errorf("only tool_app can be saved into a skill package")
+	}
+	app["kind"] = "tool_app"
+	binding, _ := app["binding"].(map[string]any)
+	if binding == nil {
+		binding = map[string]any{}
+		app["binding"] = binding
+	}
+	skillBinding, _ := binding["skill"].(map[string]any)
+	if skillBinding == nil {
+		skillBinding = map[string]any{}
+		binding["skill"] = skillBinding
+	}
+	boundSkill := strings.TrimSpace(stringMapValue(skillBinding, "id"))
+	if boundSkill != "" && boundSkill != skillName {
+		return nil, "", "", fmt.Errorf("maclaw app binding skill id %q does not match target skill %q", boundSkill, skillName)
+	}
+	skillBinding["id"] = skillName
+	if stringMapValue(app, "launchMode") == "" {
+		app["launchMode"] = "fixed_skill_ui"
+	}
+	return doc, appID, appName, nil
+}
+
+func candidateMaclawAppDefinitionFiles(skillDir string) []string {
+	seen := map[string]struct{}{}
+	add := func(value string, out *[]string) {
+		value = strings.TrimSpace(filepath.Clean(value))
+		if value == "" || filepath.IsAbs(value) || strings.HasPrefix(value, "..") || value == "maclaw.apps.json" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		*out = append(*out, value)
+	}
+	out := []string{}
+	add("maclaw.app.json", &out)
+	add(readMaclawAppEntryFromSkillYAML(skillDir), &out)
+	return out
+}
+
+type maclawAppYAMLMetadata struct {
+	Entry         string
+	AddToAppPanel *bool
+}
+
+func readMaclawAppYAMLMetadata(skillDir string) maclawAppYAMLMetadata {
+	for _, name := range []string{"skill.yaml", "skill.yml"} {
+		data, err := os.ReadFile(filepath.Join(skillDir, name))
 		if err != nil {
 			continue
 		}
-		var manifest skillAppManifestFile
-		if err := json.Unmarshal(data, &manifest); err != nil || strings.TrimSpace(manifest.PrivateMarker) != "v1" {
+		var doc map[string]interface{}
+		if err := yaml.Unmarshal(data, &doc); err != nil {
 			continue
 		}
-		for _, app := range manifest.Apps {
-			app.ID = strings.TrimSpace(app.ID)
-			app.Name = strings.TrimSpace(app.Name)
-			if app.ID == "" || app.Name == "" {
-				continue
-			}
-			if app.SkillID == "" {
-				app.SkillID = item.Name
-			}
-			app.SkillID = strings.TrimSpace(app.SkillID)
-			if app.Category == "" {
-				app.Category = "Skill"
-			}
-			app.Icon = normalizeSkillAppIconName(app.Icon)
-			app.InputMode = normalizeSkillAppInputMode(app.InputMode)
-			app.OutputModes = normalizeSkillAppOutputModes(app.OutputModes)
-			app.Fields = normalizeSkillAppFields(app.Fields)
-			key := app.SkillID + ":" + app.ID
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			out = append(out, app)
+		block, ok := doc["maclaw_app"].(map[string]interface{})
+		if !ok {
+			continue
 		}
+		entry := strings.TrimSpace(stringMapValue(block, "entry"))
+		if entry == "" {
+			entry = "maclaw.app.json"
+		}
+		entry = filepath.Clean(entry)
+		if filepath.IsAbs(entry) || strings.HasPrefix(entry, "..") {
+			entry = ""
+		}
+		return maclawAppYAMLMetadata{
+			Entry:         entry,
+			AddToAppPanel: optionalBoolMapValue(block, "add_to_app_panel"),
+		}
+	}
+	return maclawAppYAMLMetadata{}
+}
+
+func readMaclawAppDefinitionAsSkillApp(path string, fallbackSkillID string) (SkillAppManifestEntry, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return SkillAppManifestEntry{}, false
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return SkillAppManifestEntry{}, false
+	}
+	if stringMapValue(doc, "schema") != "maclaw.app.v1" || stringMapValue(doc, "privateMarker") != "x_maclaw_apps" {
+		return SkillAppManifestEntry{}, false
+	}
+	app, ok := doc["app"].(map[string]interface{})
+	if !ok {
+		return SkillAppManifestEntry{}, false
+	}
+	kind := strings.TrimSpace(stringMapValue(app, "kind"))
+	if kind != "" && kind != "tool_app" {
+		return SkillAppManifestEntry{}, false
+	}
+	id := strings.TrimSpace(stringMapValue(app, "id"))
+	name := strings.TrimSpace(stringMapValue(app, "name"))
+	if id == "" || name == "" {
+		return SkillAppManifestEntry{}, false
+	}
+	entry := SkillAppManifestEntry{
+		ID:          id,
+		Name:        name,
+		Description: stringMapValue(app, "description"),
+		Category:    stringMapValue(app, "category"),
+		Icon:        stringMapValue(app, "icon"),
+		SkillID:     fallbackSkillID,
+	}
+	if binding, ok := app["binding"].(map[string]interface{}); ok {
+		if skillBinding, ok := binding["skill"].(map[string]interface{}); ok {
+			if skillID := strings.TrimSpace(stringMapValue(skillBinding, "id")); skillID != "" {
+				entry.SkillID = skillID
+			}
+			entry.InputMode = firstNonEmptySkillAppString(stringMapValue(skillBinding, "inputMode"), stringMapValue(skillBinding, "input_mode"))
+			entry.MultipleFiles = boolMapValue(skillBinding, "multipleFiles") || boolMapValue(skillBinding, "multiple_files")
+			entry.OutputModes = stringSliceMapValue(skillBinding, "outputModes")
+			if len(entry.OutputModes) == 0 {
+				entry.OutputModes = stringSliceMapValue(skillBinding, "output_modes")
+			}
+			entry.Fields = skillAppFieldsFromAny(skillBinding["fields"])
+		}
+	}
+	return entry, true
+}
+
+func firstNonEmptySkillAppString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func boolMapValue(m map[string]interface{}, key string) bool {
+	switch v := m[key].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	default:
+		return false
+	}
+}
+
+func optionalBoolMapValue(m map[string]interface{}, key string) *bool {
+	value, ok := m[key]
+	if !ok {
+		return nil
+	}
+	switch v := value.(type) {
+	case bool:
+		return &v
+	case string:
+		parsed := strings.EqualFold(strings.TrimSpace(v), "true") || strings.EqualFold(strings.TrimSpace(v), "yes") || strings.TrimSpace(v) == "1"
+		if strings.EqualFold(strings.TrimSpace(v), "false") || strings.EqualFold(strings.TrimSpace(v), "no") || strings.TrimSpace(v) == "0" {
+			parsed = false
+		}
+		return &parsed
+	default:
+		return nil
+	}
+}
+
+func stringSliceMapValue(m map[string]interface{}, key string) []string {
+	items, ok := m[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		text := strings.TrimSpace(fmt.Sprint(item))
+		if text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func skillAppFieldsFromAny(value interface{}) []SkillAppManifestField {
+	items, ok := value.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]SkillAppManifestField, 0, len(items))
+	for _, item := range items {
+		raw, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		field := SkillAppManifestField{
+			Name:     stringMapValue(raw, "name"),
+			Label:    stringMapValue(raw, "label"),
+			Type:     stringMapValue(raw, "type"),
+			Required: boolMapValue(raw, "required"),
+			Default:  raw["default"],
+		}
+		if options, ok := raw["options"].([]interface{}); ok {
+			field.Options = options
+		}
+		out = append(out, field)
 	}
 	return out
 }
@@ -3349,6 +3884,12 @@ func (a *App) packageSkillForMarketWithDirOptions(skillName string, strictOutbou
 		os.RemoveAll(tmpDir)
 		return "", "", err
 	}
+	if appEntry := firstExistingMaclawAppDefinitionFile(tmpDir); appEntry != "" {
+		if _, err := ensureMaclawAppEntryInSkillYAML(tmpDir, appEntry); err != nil {
+			os.RemoveAll(tmpDir)
+			return "", "", fmt.Errorf("write maclaw app metadata: %w", err)
+		}
+	}
 
 	_, report, err := prepareSkillDirForMarket(tmpDir, true, a)
 	if err != nil {
@@ -3379,6 +3920,16 @@ func (a *App) packageSkillForMarketWithDirOptions(skillName string, strictOutbou
 	}
 	return zipPath, tmpDir, nil
 }
+
+func firstExistingMaclawAppDefinitionFile(skillDir string) string {
+	for _, entry := range candidateMaclawAppDefinitionFiles(skillDir) {
+		if hasValidMaclawAppFile(filepath.Join(skillDir, entry)) {
+			return entry
+		}
+	}
+	return ""
+}
+
 func writePackageViewSkillYAML(dir string, entry *corelib.NLSkillEntry) error {
 	if strings.TrimSpace(dir) == "" {
 		return fmt.Errorf("skill package directory is empty")
@@ -3533,6 +4084,10 @@ func mergeSkillPackagingRuntimeFields(dst, src *corelib.NLSkillEntry) {
 	if dst == nil || src == nil {
 		return
 	}
+	declSrc := src
+	if strings.TrimSpace(src.SkillDir) != "" {
+		declSrc = skill.PackageViewFromRuntimeEntry(src, src.SkillDir)
+	}
 	dst.UsageCount = src.UsageCount
 	dst.SuccessCount = src.SuccessCount
 	dst.FailureCount = src.FailureCount
@@ -3541,6 +4096,24 @@ func mergeSkillPackagingRuntimeFields(dst, src *corelib.NLSkillEntry) {
 	dst.RepairAttemptCount = src.RepairAttemptCount
 	dst.LastRepairAt = src.LastRepairAt
 	dst.RepairHistory = append([]corelib.SkillRepairRecord(nil), src.RepairHistory...)
+	if declSrc.RequiresGUI {
+		dst.RequiresGUI = true
+	}
+	if len(dst.RequiredEnv) == 0 {
+		dst.RequiredEnv = cloneStringSlice(declSrc.RequiredEnv)
+	}
+	if len(dst.RequiredCredentialFiles) == 0 {
+		dst.RequiredCredentialFiles = cloneStringSlice(declSrc.RequiredCredentialFiles)
+	}
+	if len(dst.RequiresTools) == 0 {
+		dst.RequiresTools = cloneStringSlice(declSrc.RequiresTools)
+	}
+	if len(dst.RequiresToolsets) == 0 {
+		dst.RequiresToolsets = cloneStringSlice(declSrc.RequiresToolsets)
+	}
+	if len(dst.Capabilities) == 0 {
+		dst.Capabilities = cloneStringSlice(declSrc.Capabilities)
+	}
 }
 
 // executeBashStep runs a shell command as a skill step.

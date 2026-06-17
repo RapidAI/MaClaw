@@ -4,6 +4,7 @@
  */
 (function(global) {
   var tenantCache = [];
+  var tenantAuthorizationLoaded = false;
   var loginTenantOptionsCache = [];
   var tenantCreateBusy = false;
   var tenantAdminCreateBusy = false;
@@ -268,6 +269,51 @@
     return '<div class="tenant-pager"><button class="btn-ghost" type="button" ' + (page <= 1 ? 'disabled ' : '') + 'onclick="setTenantListPage(' + (page - 1) + ')">' + esc(tt('pagePrev')) + '</button><span class="item-meta">' + esc(tt('pageInfo', { page: page, pages: pages, total: total })) + '</span><button class="btn-ghost" type="button" ' + (page >= pages ? 'disabled ' : '') + 'onclick="setTenantListPage(' + (page + 1) + ')">' + esc(tt('pageNext')) + '</button></div>';
   }
 
+  function renderTenantAuthorizationBadges(item) {
+    if (!item) return '';
+    var parts = [];
+    // Digital employee authorization
+    var de = item.digital_employee_authorization;
+    if (de) {
+      var deActive = de.active;
+      var deBadge = deActive ? 'ok' : 'warn';
+      var deQuota = Number(de.quota) || 0;
+      var deUsed = Number(de.used) || 0;
+      var deExpiry = de.expires_at ? fmtTime(de.expires_at) : '';
+      var deLabel = lang() === 'zh' ? '\u6570\u5b57\u5458\u5de5' : 'Digital Employees';
+      var deStatus = deActive
+        ? (lang() === 'zh' ? '\u5df2\u6388\u6743 ' + deQuota + ' \u4e2a\u5e2d\u4f4d' + (deUsed > 0 ? '\uff08\u5df2\u7528 ' + deUsed + '\uff09' : '') : deQuota + ' seats' + (deUsed > 0 ? ' (' + deUsed + ' used)' : ''))
+        : (lang() === 'zh' ? '\u672a\u6388\u6743' : 'Not authorized');
+      var deTitle = deActive
+        ? (deExpiry ? (lang() === 'zh' ? '\u5230\u671f: ' + deExpiry : 'Expires: ' + deExpiry) : '')
+        : (de.reason || '');
+      parts.push('<div class="tenant-authz-badge" style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:#fff;border:1px solid #e2e8f0;font-size:12px"><span class="authz-icon" style="font-size:14px;line-height:1">\ud83e\udd16</span><span class="authz-label" style="font-weight:700;color:#475569;white-space:nowrap">' + esc(deLabel) + '</span><span class="badge ' + deBadge + '" title="' + esc(deTitle) + '">' + esc(deStatus) + '</span></div>');
+    }
+    // Compute module authorization
+    var compute = item.compute_authorization;
+    if (compute) {
+      var cActive = compute.active;
+      var cBadge = cActive ? 'ok' : 'warn';
+      var cRemaining = Math.round(Number(compute.remaining_credits) || 0);
+      var cTotal = Math.round(Number(compute.total_credits) || 0);
+      var cExpiry = compute.expires_at ? fmtTime(compute.expires_at) : '-';
+      var cLabel = lang() === 'zh' ? '\u7b97\u529b\u6a21\u5757' : 'Compute Module';
+      var cStatus = cActive
+        ? (lang() === 'zh' ? '\u5269\u4f59 ' + cRemaining + '/' + cTotal + ' \u7b97\u529b' : cRemaining + '/' + cTotal + ' credits')
+        : (lang() === 'zh' ? '\u672a\u6388\u6743' : 'Not authorized');
+      var cTitle = cActive
+        ? (lang() === 'zh' ? '\u5230\u671f: ' + cExpiry + (compute.allow_external ? ' | \u5141\u8bb8\u5916\u90e8\u63d0\u4f9b\u5546' : '') : 'Expires: ' + cExpiry + (compute.allow_external ? ' | External providers allowed' : ''))
+        : '';
+      parts.push('<div class="tenant-authz-badge" style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:#fff;border:1px solid #e2e8f0;font-size:12px"><span class="authz-icon" style="font-size:14px;line-height:1">\u26a1</span><span class="authz-label" style="font-weight:700;color:#475569;white-space:nowrap">' + esc(cLabel) + '</span><span class="badge ' + cBadge + '" title="' + esc(cTitle) + '">' + esc(cStatus) + '</span></div>');
+    }
+    // If neither authorization is present and data was loaded, show a hint
+    if (!de && !compute && tenantAuthorizationLoaded) {
+      var noAuthLabel = lang() === 'zh' ? '\u672a\u914d\u7f6e\u6388\u6743' : 'No authorization';
+      parts.push('<div class="tenant-authz-badge" style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:#fff;border:1px solid #e2e8f0;font-size:12px"><span class="authz-icon" style="font-size:14px">\u26a0\ufe0f</span><span class="authz-label" style="font-weight:700;color:#475569">' + esc(noAuthLabel) + '</span></div>');
+    }
+    return parts.join('');
+  }
+
   function applyTenantI18n() {
     setText('navTenants', 'nav'); setText('navTenantsDesc', tenantScoped() ? 'navDescTenant' : 'navDesc'); setText('loginTenantLabel', 'loginTenant'); setText('loginTenantHint', 'loginTenantHint'); setText('tenantsTitle', 'title'); setText('tenantsDesc', tenantScoped() ? 'descTenant' : 'desc');
     setText('tenantsReloadBtn', 'reload'); setText('tenantCreateTitle', 'createTitle'); setText('tenantCreateDesc', 'createDesc');
@@ -351,6 +397,7 @@
       var statusTitle = tt('updated') + ': ' + fmtTime(item.updated_at);
       if (item.deleted_at) statusTitle += ' / ' + tt('deleted') + ': ' + fmtTime(item.deleted_at);
       var canEditDomains = item && item.id && !isReservedTenantID(item.id) && tenantStatus(item) !== 'deleted';
+      var authzHTML = renderTenantAuthorizationBadges(item);
       return '<div class="tenant-card ' + (isDefaultTenantID(item.id) ? 'tenant-default' : '') + '">'
         + '<div class="tenant-summary">'
         + '<div class="tenant-identity"><span class="tenant-dot" aria-hidden="true"></span><div><div class="tenant-name" title="' + esc(tenantLabel(item)) + '">' + esc(tenantLabel(item)) + '</div><div class="tenant-id mono" title="' + esc(item.id || '') + '">' + esc(item.id || '') + '</div></div></div>'
@@ -359,6 +406,7 @@
         + '<div class="tenant-cell"><label>' + esc(tt('updated')) + '</label><div class="tenant-status-row"><span class="badge ' + esc(tenantBadgeClass(item)) + '" title="' + esc(statusTitle) + '">' + esc(tenantStatusText(item)) + '</span></div></div>'
         + tenantAdminActions(item)
         + '</div>'
+        + (authzHTML ? '<div class="tenant-authorization-row" style="display:flex;gap:12px;flex-wrap:wrap;padding:10px 16px;border-top:1px solid #e2e8f0;background:#f8fafc">' + authzHTML + '</div>' : '')
         + (canEditDomains ? '<div class="tenant-settings"><div><label>' + esc(tt('name')) + '</label><input id="tenantNameEdit_' + index + '" value="' + esc(item.name || '') + '"></div><div><label>' + esc(tt('domain')) + '</label><textarea id="tenantDomainsEdit_' + index + '" placeholder="acme.example.com\nsubsidiary.example.com">' + esc(domains.join('\n')) + '</textarea></div><label class="tenant-check"><input id="tenantRegistrationEdit_' + index + '" type="checkbox" ' + (registrationOpen ? 'checked ' : '') + '>' + esc(tt('acceptRegistration')) + '</label><button class="btn-secondary tenant-save" id="tenantDomainsSave_' + index + '" type="button" onclick="saveTenantDomains(' + index + ')">' + esc(tt('saveSettings')) + '</button></div>' : '')
         + '</div>';
     }).join('') + '</div>' + renderTenantPager(tenantListPage, pages, total);
@@ -401,8 +449,16 @@
       } else {
         var data = await global.api('/api/admin/tenants');
         tenantCache = Array.isArray(data.tenants) ? data.tenants : [];
+        tenantAuthorizationLoaded = !!(data && data.authorization_loaded);
       }
+      // Render immediately so user sees the tenant list without delay.
       renderTenants(tenantCache);
+      // Then fetch authorization data in background and re-render.
+      if (!isTenantAdminProfile(profile)) {
+        enrichTenantCacheWithAuthorization().then(function() {
+          renderTenants(tenantCache);
+        });
+      }
       return tenantCache;
     } catch (err) {
       if (err && err.staleAuth) return tenantCache;
@@ -416,6 +472,51 @@
       return tenantCache;
     }
   }
+
+  async function enrichTenantCacheWithAuthorization() {
+    if (!tenantCache || !tenantCache.length) return;
+    try {
+      // Digital employee authorization from center status API.
+      // Global admin sees full per-tenant map in digital_employee_authorizations.
+      var centerData = await global.api('/api/admin/center/status');
+      if (centerData) {
+        var deAuthMap = centerData.digital_employee_authorizations;
+        var deAuthDefault = centerData.digital_employee_authorization;
+        if (deAuthMap || deAuthDefault) {
+          tenantAuthorizationLoaded = true;
+          for (var i = 0; i < tenantCache.length; i++) {
+            var item = tenantCache[i];
+            if (!item || !item.id) continue;
+            if (item.digital_employee_authorization) continue;
+            var auth = (deAuthMap && deAuthMap[item.id]) || null;
+            if (!auth && isDefaultTenantID(item.id)) auth = deAuthDefault;
+            if (auth) item.digital_employee_authorization = auth;
+          }
+        }
+      }
+    } catch (_) {}
+    try {
+      // Compute module authorization from MaClaw compute status API.
+      var computeData = await global.api('/api/admin/llm/maclaw-compute-status');
+      if (computeData && computeData.authorizations && computeData.authorizations.length > 0) {
+        tenantAuthorizationLoaded = true;
+        var summary = {
+          active: computeData.authorizations.some(function(a) { return a.active; }),
+          total_credits: computeData.authorizations.reduce(function(s, a) { return s + (a.credits_total || 0); }, 0),
+          used_credits: computeData.authorizations.reduce(function(s, a) { return s + (a.credits_used || 0); }, 0),
+          remaining_credits: computeData.authorizations.reduce(function(s, a) { return s + (a.credits_remaining || 0); }, 0),
+          authorization_count: computeData.authorizations.length,
+          expires_at: computeData.authorizations.reduce(function(l, a) { return a.expires_at > l ? a.expires_at : l; }, ''),
+          allow_external: !!computeData.allow_external_providers
+        };
+        for (var j = 0; j < tenantCache.length; j++) {
+          var t = tenantCache[j];
+          if (t && t.id && !t.compute_authorization) t.compute_authorization = summary;
+        }
+      }
+    } catch (_) {}
+  }
+
   async function createTenant() {
     if (tenantCreateBusy) return;
     var createDomains = splitDomains(val('tenantDomain'));

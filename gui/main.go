@@ -134,7 +134,7 @@ func main() {
 		Title:                    brand.Current().WindowTitle,
 		Frameless:                frameless,
 		Width:                    1361,
-		Height:                   604,
+		Height:                   740,
 		EnableDefaultContextMenu: true,
 		StartHidden:              app.IsAutoStart,
 		OnStartup:                app.startup,

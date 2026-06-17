@@ -18,20 +18,44 @@ type HubSkillMeta struct {
 	AvgRating   float64  `json:"avg_rating"`
 
 	// SkillMarket 扩展字段
-	Price              int      `json:"price,omitempty"`               // Credits 价格，0 = 免费
-	UploaderID         string   `json:"uploader_id,omitempty"`         // 上传者 user_id
-	UploaderEmail      string   `json:"uploader_email,omitempty"`      // 上传者 email
-	DownloadCount      int      `json:"download_count,omitempty"`      // 下载计数（原子递增）
-	Status             string   `json:"status,omitempty"`              // pending/trial/published/pending_review/rejected/withdrawn/superseded
-	Fingerprint        string   `json:"fingerprint,omitempty"`         // uploader_email:skill_name
-	PreWithdrawnStatus string   `json:"pre_withdrawn_status,omitempty"` // 下架前的状态
-	TrialExpireAt      string   `json:"trial_expire_at,omitempty"`     // 试用期到期时间
-	SecurityLabels     []string `json:"security_labels,omitempty"`     // 安全标签
-	Permissions        []string `json:"permissions,omitempty"`         // 声明的权限
-	RequiredEnv        []string `json:"required_env,omitempty"`        // 需要的环境变量/API Key
-	Platforms          []string `json:"platforms,omitempty"`           // "windows","linux","macos"; empty = universal
-	RequiresGUI        bool     `json:"requires_gui,omitempty"`        // Linux 下是否需要 GUI 环境
-	SourceURL          string   `json:"source_url,omitempty"`          // 远程导入来源 URL
+	Price                        int                    `json:"price,omitempty"`                          // Credits 价格，0 = 免费
+	UploaderID                   string                 `json:"uploader_id,omitempty"`                    // 上传者 user_id
+	UploaderEmail                string                 `json:"uploader_email,omitempty"`                 // 上传者 email
+	DownloadCount                int                    `json:"download_count,omitempty"`                 // 下载计数（原子递增）
+	Status                       string                 `json:"status,omitempty"`                         // pending/trial/published/pending_review/rejected/withdrawn/superseded
+	Fingerprint                  string                 `json:"fingerprint,omitempty"`                    // uploader_email:skill_name
+	PreWithdrawnStatus           string                 `json:"pre_withdrawn_status,omitempty"`           // 下架前的状态
+	TrialExpireAt                string                 `json:"trial_expire_at,omitempty"`                // 试用期到期时间
+	SecurityLabels               []string               `json:"security_labels,omitempty"`                // 安全标签
+	Permissions                  []string               `json:"permissions,omitempty"`                    // 声明的权限
+	RequiredEnv                  []string               `json:"required_env,omitempty"`                   // 需要的环境变量/API Key
+	Platforms                    []string               `json:"platforms,omitempty"`                      // "windows","linux","macos"; empty = universal
+	RequiresGUI                  bool                   `json:"requires_gui,omitempty"`                   // Linux 下是否需要 GUI 环境
+	SourceURL                    string                 `json:"source_url,omitempty"`                     // 远程导入来源 URL
+	ProductKind                  string                 `json:"product_kind,omitempty"`                   // maclaw_app_skill 等产品类型
+	IsMaclawApp                  bool                   `json:"is_maclaw_app,omitempty"`                  // 是否为 MaClaw App Skill
+	MaclawAppCount               int                    `json:"maclaw_app_count,omitempty"`               // App 定义数量
+	MaclawAppEntry               string                 `json:"maclaw_app_entry,omitempty"`               // App 定义入口文件
+	MaclawAppID                  string                 `json:"maclaw_app_id,omitempty"`                  // App ID
+	MaclawAppName                string                 `json:"maclaw_app_name,omitempty"`                // App 展示名
+	MaclawAppDescription         string                 `json:"maclaw_app_description,omitempty"`         // App 描述
+	MaclawAppCategory            string                 `json:"maclaw_app_category,omitempty"`            // App 分类
+	MaclawAppIcon                string                 `json:"maclaw_app_icon,omitempty"`                // App 图标
+	MaclawAppInputMode           string                 `json:"maclaw_app_input_mode,omitempty"`          // App 输入模式
+	MaclawAppOutputModes         []string               `json:"maclaw_app_output_modes,omitempty"`        // App 输出类型
+	MaclawAppDefinitionSHA256    string                 `json:"maclaw_app_definition_sha256,omitempty"`   // App 描述文件 SHA256
+	MaclawAppTestEvidence        *MaclawAppTestEvidence `json:"maclaw_app_test_evidence,omitempty"`       // App 测试证据摘要
+	ArtifactContractRequired     bool                   `json:"artifact_contract_required,omitempty"`     // 是否声明输出产物
+	ArtifactContractOutputModes  []string               `json:"artifact_contract_output_modes,omitempty"` // 输出产物类型
+	ArtifactContractPresentation string                 `json:"artifact_contract_presentation,omitempty"` // 产物呈现方式
+}
+
+type MaclawAppTestEvidence struct {
+	RunID                 string `json:"run_id,omitempty"`
+	VerifiedAt            string `json:"verified_at,omitempty"`
+	DefinitionFingerprint string `json:"definition_fingerprint,omitempty"`
+	ArtifactPresent       bool   `json:"artifact_present,omitempty"`
+	ArtifactName          string `json:"artifact_name,omitempty"`
 }
 
 // SkillRating 记录单个 MaClaw 对 Skill 的评分。

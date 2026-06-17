@@ -58,8 +58,8 @@
     var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
     var tenantAdmin = isTenantAdminProfile(profile);
     var tasks = tenantAdmin
-      ? ['loadTenants', 'loadBlockedEmails', 'loadBoundUsers', 'loadInvites', 'loadMachines', 'loadPwaEnrollments', 'loadMarketplace', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs']
-      : ['loadCenterStatus', 'loadMailConfig', 'loadTenants'];
+      ? ['loadOverviewTenantInfo', 'loadTenants', 'loadBlockedEmails', 'loadBoundUsers', 'loadInvites', 'loadMachines', 'loadPwaEnrollments', 'loadMarketplace', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs']
+      : ['loadOverviewTenantInfo', 'loadCenterStatus', 'loadMailConfig', 'loadTenants'];
     var results = await Promise.allSettled(tasks.map(callIfAvailable));
     reportRefreshFailures(results);
   };

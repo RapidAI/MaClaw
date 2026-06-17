@@ -65,6 +65,7 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 				if err := json.Unmarshal([]byte(stepsJSON), &steps); err != nil {
 					return fmt.Sprintf("steps JSON parse failed: %v", err)
 				}
+				normalizeStepParams(stepsJSON, steps)
 				applyDefaultContentFormatToTypeSteps(steps, strVal(args, "content_format"))
 
 				spec := TaskSpec{
@@ -341,6 +342,66 @@ func RegisterRecorderTools(registry *tool.Registry, recorder *BrowserRecorder, r
 		t.Status = tool.StatusAvailable
 		t.Source = "builtin:browser-record"
 		registry.Register(t)
+	}
+}
+
+// normalizeStepParams handles LLM outputs that put step parameters at the
+// top level (e.g. {"action":"click","ref":"@e1"}) instead of inside a "params"
+// sub-object ({"action":"click","params":{"ref":"@e1"}}). This is a common
+// pattern with models that interpret the schema as flat. We re-parse the raw
+// JSON and move unrecognized top-level keys into Params.
+func normalizeStepParams(stepsJSON string, steps []StepSpec) {
+	var raw []map[string]interface{}
+	if err := json.Unmarshal([]byte(stepsJSON), &raw); err != nil {
+		return
+	}
+	// Known top-level StepSpec fields (should not be moved to Params).
+	knownFields := map[string]bool{
+		"action": true, "params": true, "verify": true,
+		"timeout": true, "target": true, "fallbacks": true,
+	}
+	for i := range steps {
+		if i >= len(raw) {
+			break
+		}
+		stepMap := raw[i]
+		// Collect top-level keys that aren't known struct fields → treat as params.
+		extras := map[string]string{}
+		for k, v := range stepMap {
+			if knownFields[k] {
+				continue
+			}
+			// Convert value to string for Params map[string]string.
+			switch val := v.(type) {
+			case string:
+				extras[k] = val
+			case float64:
+				// JSON numbers are float64; format without decimal for integers.
+				if val == float64(int64(val)) {
+					extras[k] = fmt.Sprintf("%d", int64(val))
+				} else {
+					extras[k] = fmt.Sprintf("%g", val)
+				}
+			case bool:
+				extras[k] = fmt.Sprintf("%v", val)
+			default:
+				// For arrays/objects, marshal back to JSON string.
+				if b, err := json.Marshal(val); err == nil {
+					extras[k] = string(b)
+				}
+			}
+		}
+		if len(extras) > 0 {
+			if steps[i].Params == nil {
+				steps[i].Params = make(map[string]string, len(extras))
+			}
+			for k, v := range extras {
+				// Don't overwrite params that were correctly nested in JSON.
+				if _, exists := steps[i].Params[k]; !exists {
+					steps[i].Params[k] = v
+				}
+			}
+		}
 	}
 }
 

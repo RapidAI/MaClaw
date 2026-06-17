@@ -670,17 +670,31 @@ func (a *App) GetHubRecommendations() ([]MixedSkillSearchResult, error) {
 	results := make([]MixedSkillSearchResult, 0, len(recs))
 	for _, r := range recs {
 		results = append(results, MixedSkillSearchResult{
-			ID:          r.ID,
-			Name:        r.Name,
-			Description: r.Description,
-			Source:      "skillhub",
-			SourceLabel: mixedSourceLabel("skillhub"),
-			TrustLevel:  r.TrustLevel,
-			Version:     r.Version,
-			Author:      r.Author,
-			AvgRating:   r.AvgRating,
-			RatingCount: r.RatingCount,
-			Downloads:   r.Downloads,
+			ID:                           r.ID,
+			Name:                         r.Name,
+			Description:                  r.Description,
+			Source:                       "skillhub",
+			SourceLabel:                  mixedSourceLabel("skillhub"),
+			TrustLevel:                   r.TrustLevel,
+			Version:                      r.Version,
+			Author:                       r.Author,
+			AvgRating:                    r.AvgRating,
+			RatingCount:                  r.RatingCount,
+			Downloads:                    r.Downloads,
+			ProductKind:                  r.ProductKind,
+			IsMaclawApp:                  r.IsMaclawApp || strings.EqualFold(strings.TrimSpace(r.ProductKind), "maclaw_app_skill"),
+			MaclawAppID:                  r.MaclawAppID,
+			MaclawAppName:                r.MaclawAppName,
+			MaclawAppDescription:         r.MaclawAppDescription,
+			MaclawAppCategory:            r.MaclawAppCategory,
+			MaclawAppIcon:                r.MaclawAppIcon,
+			MaclawAppInputMode:           r.MaclawAppInputMode,
+			MaclawAppOutputModes:         append([]string(nil), r.MaclawAppOutputModes...),
+			MaclawAppDefinitionSHA256:    r.MaclawAppDefinitionSHA256,
+			MaclawAppTestEvidence:        cloneSkillHubEvidenceForSearch(r.MaclawAppTestEvidence),
+			ArtifactContractRequired:     r.ArtifactContractRequired,
+			ArtifactContractOutputModes:  append([]string(nil), r.ArtifactContractOutputModes...),
+			ArtifactContractPresentation: r.ArtifactContractPresentation,
 		})
 	}
 	// Mark already-installed skills.
@@ -689,6 +703,19 @@ func (a *App) GetHubRecommendations() ([]MixedSkillSearchResult, error) {
 		searcher.enrichInstalledState(results)
 	}
 	return results, nil
+}
+
+func cloneSkillHubEvidenceForSearch(e *MaclawAppTestEvidence) *MaclawAppSearchEvidence {
+	if e == nil {
+		return nil
+	}
+	return &MaclawAppSearchEvidence{
+		RunID:                 e.RunID,
+		VerifiedAt:            e.VerifiedAt,
+		DefinitionFingerprint: e.DefinitionFingerprint,
+		ArtifactPresent:       e.ArtifactPresent,
+		ArtifactName:          e.ArtifactName,
+	}
 }
 
 // ---------------------------------------------------------------------------

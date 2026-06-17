@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
-import { CancelNLSkillRun, GetMISDataConfig, GetNLSkillRunStatus, ListSkillAppManifests, OpenFileOrShowInFolder, RunNLSkillAsync, ShowItemInFolder, StageSkillAppInputFile } from '../../../wailsjs/go/main/App';
+import { CancelNLSkillRun, GetMISDataConfig, GetNLSkillRunStatus, ListNLSkills, ListSkillAppManifests, OpenFileOrShowInFolder, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import './AppsPage.css';
 
 type AppKind = 'enterprise_app' | 'tool_app' | 'automation_app';
@@ -43,7 +43,7 @@ type AppManifestBinding = {
     };
     skill?: {
         id: string;
-        appDefinitionFile: 'maclaw.apps.json';
+        appDefinitionFile: string;
         inputMode: 'file' | 'form' | 'mixed';
         multipleFiles?: boolean;
         outputModes?: string[];
@@ -77,14 +77,38 @@ type SkillRunStatusView = {
         last_error_snippet?: string;
         artifact_path?: string;
         artifact_status?: string;
+        artifacts?: SkillRunArtifactView[];
+        output_blocks?: SkillRunOutputBlockView[];
         needs_artifact_verification?: boolean;
     };
+    artifacts?: SkillRunArtifactView[];
+    outputs?: SkillRunOutputBlockView[];
     session_progress?: {
         progress_summary?: string;
         current_task?: string;
         last_result?: string;
         waiting_for_user?: boolean;
     };
+};
+
+type SkillRunArtifactView = {
+    id?: string;
+    name?: string;
+    path?: string;
+    mime_type?: string;
+    size_bytes?: number;
+    status?: string;
+    presentation?: string;
+};
+
+type SkillRunOutputBlockView = {
+    id?: string;
+    kind?: string;
+    title?: string;
+    text?: string;
+    status?: string;
+    artifact_id?: string;
+    artifact?: SkillRunArtifactView;
 };
 
 type SkillRunStepView = {
@@ -110,6 +134,7 @@ type AppRunHistoryEntry = {
     runID: string;
     appID: string;
     status: 'done' | 'error' | 'cancelled';
+    definitionHash?: string;
     outputMode: string;
     inputSummary: string;
     message: string;
@@ -217,6 +242,14 @@ type SkillAppManifestEntry = {
     multiple_files?: boolean;
     output_modes?: string[];
     fields?: SkillAppField[];
+    app_definition_file?: string;
+};
+
+type SkillSummary = {
+    name?: string;
+    description?: string;
+    source?: string;
+    is_maclaw_app?: boolean;
 };
 
 const storageKey = 'maclaw:apps-panel:v1';
@@ -692,14 +725,14 @@ function makeDataSrvManifest(domain: string, preferredAction: string, preferredV
     };
 }
 
-function makeSkillManifest(id: string, inputMode: 'file' | 'form' | 'mixed', outputModes: string[] = ['docx', 'pdf'], fields: SkillAppField[] = [], multipleFiles = false): AppManifestBinding {
+function makeSkillManifest(id: string, inputMode: 'file' | 'form' | 'mixed', outputModes: string[] = ['docx', 'pdf'], fields: SkillAppField[] = [], multipleFiles = false, appDefinitionFile = 'maclaw.apps.json'): AppManifestBinding {
     return {
         schema: 'maclaw.app.v1',
         installUnit: 'skill',
         privateMarker: 'x_maclaw_apps',
         entryKind: 'tool_app',
         launchMode: 'fixed_skill_ui',
-        skill: { id, appDefinitionFile: 'maclaw.apps.json', inputMode, multipleFiles, outputModes: normalizeOutputModes(outputModes), fields: normalizeSkillAppFields(fields) },
+        skill: { id, appDefinitionFile, inputMode, multipleFiles, outputModes: normalizeOutputModes(outputModes), fields: normalizeSkillAppFields(fields) },
     };
 }
 
@@ -941,7 +974,7 @@ function skillManifestToApp(entry: SkillAppManifestEntry): AppEntry | null {
     if (!id || !name || !skillID) return null;
     const inputMode = entry.input_mode === 'form' || entry.input_mode === 'mixed' ? entry.input_mode : 'file';
     return {
-        id: `skill-app-${skillID}-${id}`,
+        id: skillPanelAppID(skillID, id),
         name,
         description: String(entry.description || ''),
         category: String(entry.category || 'Skill'),
@@ -950,8 +983,12 @@ function skillManifestToApp(entry: SkillAppManifestEntry): AppEntry | null {
         accent: '#7c3f58',
         version: normalizeAppVersion((entry as any).version),
         source: 'skill',
-        manifest: makeSkillManifest(skillID, inputMode, entry.output_modes, entry.fields, !!entry.multiple_files),
+        manifest: makeSkillManifest(skillID, inputMode, entry.output_modes, entry.fields, !!entry.multiple_files, entry.app_definition_file || 'maclaw.apps.json'),
     };
+}
+
+function skillPanelAppID(skillID: string, appID: string): string {
+    return `skill-app-${skillID}-${appID}`;
 }
 
 function normalizeSkillAppFields(fields?: SkillAppField[]): SkillAppField[] {
@@ -1066,6 +1103,20 @@ function skillRunOutputSuffix(status?: SkillRunStatusView | null) {
     return ` · ${snippet.slice(0, 120)}`;
 }
 
+function skillRunPrimaryArtifact(status?: SkillRunStatusView | null): SkillRunArtifactView | null {
+    const fromTop = Array.isArray(status?.artifacts) ? status?.artifacts?.find((item) => String(item?.path || '').trim()) : undefined;
+    if (fromTop) return fromTop;
+    const fromSummary = Array.isArray(status?.summary?.artifacts) ? status?.summary?.artifacts?.find((item) => String(item?.path || '').trim()) : undefined;
+    if (fromSummary) return fromSummary;
+    const artifactPath = String(status?.summary?.artifact_path || '').trim();
+    if (!artifactPath) return null;
+    return { path: artifactPath, status: status?.summary?.artifact_status };
+}
+
+function skillRunPrimaryArtifactPath(status?: SkillRunStatusView | null) {
+    return String(skillRunPrimaryArtifact(status)?.path || '').trim();
+}
+
 function skillRunProgressMessage(status: SkillRunStatusView | null, fallback: string, runID: string) {
     const progress = String(status?.session_progress?.progress_summary || status?.session_progress?.current_task || status?.summary?.current_step || '').trim();
     const statusText = String(status?.status || '').trim();
@@ -1081,7 +1132,7 @@ function compactStepDetail(step: SkillRunStepView) {
 }
 
 function artifactStatusLabel(status: SkillRunStatusView | null, text: typeof labels.zh) {
-    const artifactPath = String(status?.summary?.artifact_path || '').trim();
+    const artifactPath = skillRunPrimaryArtifactPath(status);
     const artifactStatus = String(status?.summary?.artifact_status || '').trim();
     if (artifactPath) return text.artifactReady;
     if (status?.expected_artifact || artifactStatus || status?.summary?.needs_artifact_verification) return text.artifactPending;
@@ -1395,7 +1446,8 @@ function mergePublishSubmissionsFromQueue(current: Record<string, AppPublishSubm
 }
 
 function latestAppRunEvidence(app: AppEntry): AppRunHistoryEntry | null {
-    return loadAppRunHistory(app.id).find((item) => item.status === 'done') || null;
+    const expectedHash = appDefinitionFingerprint(app);
+    return loadAppRunHistory(app.id).find((item) => item.status === 'done' && item.definitionHash === expectedHash) || null;
 }
 
 function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmission) {
@@ -1407,7 +1459,9 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
         requiredScopes: appRequiredScopes(app),
         testEvidence: {
             runId: evidence?.runID,
-            artifactPath: evidence?.artifactPath,
+            definitionHash: evidence?.definitionHash,
+            artifactPresent: !!evidence?.artifactPath,
+            artifactName: evidence?.artifactPath ? evidence.artifactPath.split(/[\\/]/).pop() : undefined,
             verifiedAt: localEvidenceAt || undefined,
         },
         submission: submission ? {
@@ -1498,6 +1552,11 @@ function makeLocalAppId(name: string) {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 28);
     localAppIdSequence += 1;
     return `local-app-${Date.now().toString(36)}-${localAppIdSequence.toString(36)}-${slug || 'app'}`;
+}
+
+function makeSkillAppDefinitionId(name: string) {
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+    return `app-${slug || 'tool-app'}`;
 }
 
 function makeDuplicateAppName(sourceName: string, suffix: string, existingNames: Set<string>) {
@@ -1661,6 +1720,20 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
         return () => { mounted = false; };
     }, []);
 
+    useEffect(() => {
+        if (skillDiscovery.status !== 'ready' || skillDiscovery.candidates.length === 0) return;
+        setApps((current) => {
+            let changed = false;
+            let next = current;
+            for (const candidate of skillDiscovery.candidates) {
+                if (next.some((app) => app.id === candidate.id)) continue;
+                next = [...next, appWithAvailablePin(candidate, next)];
+                changed = true;
+            }
+            return changed ? next : current;
+        });
+    }, [skillDiscovery.status, skillDiscovery.candidates]);
+
     const categories = useMemo(() => Array.from(new Set(apps.map((app) => app.category))), [apps]);
     const normalizedQuery = query.trim().toLowerCase();
     const queryMatchedApps = useMemo(() => apps.filter((app) => !normalizedQuery || buildAppSearchText(app, lang).includes(normalizedQuery)), [apps, normalizedQuery, lang]);
@@ -1793,12 +1866,12 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
         setApps((current) => current.some((item) => item.id === appId) ? current : [...current, appWithAvailablePin(app, current)]);
     };
 
-    const addDiscoveredApp = (app: AppEntry) => {
+    const addDiscoveredApp = (app: AppEntry, options?: { keepStudioCreate?: boolean }) => {
         setApps((current) => {
             if (current.some((item) => item.id === app.id)) return current;
             return [...current, appWithAvailablePin(app, current)];
         });
-        setStudioTab('manage');
+        if (!options?.keepStudioCreate) setStudioTab('manage');
     };
 
     const installMarketApp = (app: AppEntry) => {
@@ -2174,17 +2247,23 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                 setSkillRunStatus(status || null);
                 const lifecycle = normalizeSkillRunLifecycle(status?.status);
                 if (lifecycle === 'done') {
-                    const artifactPath = String(status?.summary?.artifact_path || '').trim();
+                    const artifactPath = skillRunPrimaryArtifactPath(status);
+                    const definitionHash = app ? appDefinitionFingerprint(app) : undefined;
+                    const verifiedAt = new Date().toISOString();
                     setValidationMessage('');
                     setRunState('done');
                     recordRunHistory({
                         runID,
                         status: 'done',
+                        definitionHash,
                         outputMode: currentRunContext.outputMode,
                         inputSummary: currentRunContext.inputSummary,
                         message: skillRunOutputSuffix(status).replace(/^ · /, '') || text.skillRunCompleted,
                         artifactPath,
                     });
+                    if (app?.source === 'skill' && app.manifest?.skill?.id) {
+                        void RecordMaclawAppRunEvidenceForSkill(app.manifest.skill.id, app.id, definitionHash || '', runID, artifactPath, verifiedAt).catch(() => undefined);
+                    }
                 } else if (lifecycle === 'error') {
                     const message = skillRunErrorMessage(status) || text.skillRunFailed;
                     setValidationMessage(message);
@@ -2547,9 +2626,14 @@ const SkillRunEvidence = ({ status, runState, text }: { status: SkillRunStatusVi
 };
 
 const AppRunOutput = ({ status, runState, resultText, isTool, text }: { status: SkillRunStatusView | null; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; resultText: string; isTool: boolean; text: typeof labels.zh }) => {
-    const artifactPath = String(status?.summary?.artifact_path || '').trim();
-    const artifactStatus = String(status?.summary?.artifact_status || '').trim();
+    const artifact = skillRunPrimaryArtifact(status);
+    const artifactPath = String(artifact?.path || '').trim();
+    const artifactID = String(artifact?.id || '').trim();
+    const runID = String(status?.run_id || '').trim();
+    const artifactStatus = String(artifact?.status || status?.summary?.artifact_status || '').trim();
     const artifactLabel = artifactStatusLabel(status, text);
+    const artifactName = String(artifact?.name || artifactPath.split(/[\\/]/).pop() || '').trim();
+    const artifactMeta = [artifactName, artifact?.mime_type, artifact?.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' · ');
     const showTextOutput = runState === 'done' && (!isTool || !artifactPath);
     return (
         <section className="apps-runtime-section apps-runtime-output">
@@ -2558,10 +2642,11 @@ const AppRunOutput = ({ status, runState, resultText, isTool, text }: { status: 
                 <div className="apps-run-artifact">
                     <span>{text.runArtifacts}</span>
                     <strong>{artifactLabel || artifactStatus || text.artifactReady}</strong>
+                    {artifactMeta && <span>{artifactMeta}</span>}
                     <code>{artifactPath}</code>
                     <div className="apps-run-artifact__actions">
-                        <button className="apps-link-button" type="button" onClick={() => void OpenFileOrShowInFolder(artifactPath)}>{text.openArtifact}</button>
-                        <button className="apps-link-button" type="button" onClick={() => void ShowItemInFolder(artifactPath)}>{text.revealArtifact}</button>
+                        <button className="apps-link-button" type="button" onClick={() => void (runID ? OpenSkillRunArtifact(runID, artifactID) : OpenFileOrShowInFolder(artifactPath))}>{text.openArtifact}</button>
+                        <button className="apps-link-button" type="button" onClick={() => void (runID ? RevealSkillRunArtifact(runID, artifactID) : ShowItemInFolder(artifactPath))}>{text.revealArtifact}</button>
                     </div>
                 </div>
             ) : showTextOutput ? (
@@ -2575,6 +2660,35 @@ const AppRunOutput = ({ status, runState, resultText, isTool, text }: { status: 
         </section>
     );
 };
+
+function stableStringify(value: any): string {
+    if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+    if (value && typeof value === 'object') {
+        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
+}
+
+function textHash(value: string): string {
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i += 1) {
+        hash ^= value.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function appDefinitionFingerprint(app: AppEntry): string {
+    return textHash(stableStringify({
+        name: app.name,
+        description: app.description,
+        category: app.category,
+        kind: app.kind,
+        icon: app.icon,
+        version: normalizeAppVersion(app.version),
+        manifest: app.manifest,
+    }));
+}
 
 function appToManifest(app: AppEntry, submission?: AppPublishSubmission) {
     const manifest = app.manifest;
@@ -2665,7 +2779,7 @@ function validateAppManifest(raw: any, path = 'maclaw.app.v1'): string {
     if (kind === 'tool_app' && !skill) return `${path} binding.skill is required for tool_app`;
     if (skill) {
         if (!String(skill.id || '').trim()) return `${path} binding.skill.id is required`;
-        if (skill.appDefinitionFile && skill.appDefinitionFile !== 'maclaw.apps.json') return `${path} binding.skill.appDefinitionFile must be maclaw.apps.json`;
+        if (skill.appDefinitionFile && !['maclaw.apps.json', 'maclaw.app.json'].includes(String(skill.appDefinitionFile))) return `${path} binding.skill.appDefinitionFile must be maclaw.apps.json or maclaw.app.json`;
         if (skill.inputMode && !['file', 'form', 'mixed'].includes(String(skill.inputMode))) return `${path} binding.skill.inputMode is invalid`;
         const outputError = validateOutputModes(skill.outputModes, `${path} binding.skill.outputModes`);
         if (outputError) return outputError;
@@ -2818,7 +2932,7 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
     datasrvDiscovery: DataSrvDiscovery;
     skillDiscovery: SkillAppDiscovery;
     onAddDiscoveredApp: (app: AppEntry) => void;
-    onCreateApp: (app: AppEntry) => void;
+    onCreateApp: (app: AppEntry, options?: { keepStudioCreate?: boolean }) => void;
     onInstallMarketApp: (app: AppEntry) => void;
     onEditApp: (appId: string) => void;
 }) => {
@@ -2914,7 +3028,7 @@ const SkillDiscoveryPanel = ({ discovery, apps, lang, onAddApp }: { discovery: S
         <section className="apps-discovery" data-status={discovery.status === 'ready' ? 'ready' : discovery.status}>
             <div>
                 <div className="apps-discovery__title">{text.skillApps}</div>
-                <div className="apps-discovery__meta">maclaw.apps.json · x_maclaw_apps</div>
+                <div className="apps-discovery__meta">maclaw.app.json / maclaw.apps.json · x_maclaw_apps</div>
                 {discovery.error && <div className="apps-discovery__error">{discovery.error}</div>}
             </div>
             <div className="apps-discovery__status">{statusLabel}</div>
@@ -2994,7 +3108,7 @@ const DiscoveryMetric = ({ label, value }: { label: string; value: number }) => 
     </div>
 );
 
-const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app: AppEntry) => void }) => {
+const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app: AppEntry, options?: { keepStudioCreate?: boolean }) => void }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const zh = isZh(lang);
     const [name, setName] = useState('');
@@ -3009,6 +3123,29 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const [description, setDescription] = useState('');
     const [draftPrompt, setDraftPrompt] = useState('');
     const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
+    const [availableSkills, setAvailableSkills] = useState<SkillSummary[]>([]);
+    const [selectedSkill, setSelectedSkill] = useState('');
+    const [skillAppSaveState, setSkillAppSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+    const [skillAppSaveMessage, setSkillAppSaveMessage] = useState('');
+    const [skillMarketUploadState, setSkillMarketUploadState] = useState<'idle' | 'uploading' | 'uploaded' | 'error'>('idle');
+    useEffect(() => {
+        let cancelled = false;
+        ListNLSkills()
+            .then((skills: SkillSummary[] = []) => {
+                if (cancelled) return;
+                const appReadySkills = skills.filter((skill) => skill?.name && !skill.is_maclaw_app);
+                setAvailableSkills(appReadySkills);
+                setSelectedSkill((current) => current || String(appReadySkills[0]?.name || ''));
+            })
+            .catch((error) => {
+                if (cancelled) return;
+                setSkillAppSaveState('error');
+                setSkillAppSaveMessage(error instanceof Error ? error.message : String(error || (zh ? '读取 Skill 列表失败' : 'Failed to read skills')));
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [zh]);
     const selectKind = (nextKind: AppKind, applyPreset = false) => {
         setKind(nextKind);
         setAccent(defaultAccentForKind(nextKind));
@@ -3020,6 +3157,9 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setOutputModes(nextKind === 'tool_app' ? ['docx', 'pdf'] : ['json']);
         setSkillFields([]);
         setCopyState('idle');
+        setSkillAppSaveState('idle');
+        setSkillAppSaveMessage('');
+        setSkillMarketUploadState('idle');
     };
     const generateDraftFromPrompt = () => {
         const prompt = draftPrompt.trim();
@@ -3048,7 +3188,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setDescription(prompt);
         setCopyState('idle');
     };
-    const buildDraftApp = (id: string, cleanName = name.trim() || (zh ? '\u672a\u547d\u540d\u5e94\u7528' : 'Untitled app')): AppEntry => {
+    const buildDraftApp = (id: string, cleanName = name.trim() || (zh ? '\u672a\u547d\u540d\u5e94\u7528' : 'Untitled app'), boundSkillID = id, appDefinitionFile = 'maclaw.apps.json'): AppEntry => {
         return {
             id,
             name: cleanName,
@@ -3063,10 +3203,15 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                 ? makeDataSrvManifest('custom', '', '', '', '')
                 : kind === 'automation_app'
                     ? makeAutomationManifest()
-                    : makeSkillManifest(id, inputMode, outputModes, skillFields, multipleFiles && inputMode !== 'form'),
+                    : makeSkillManifest(boundSkillID, inputMode, outputModes, skillFields, multipleFiles && inputMode !== 'form', appDefinitionFile),
         };
     };
-    const draftApp = buildDraftApp('draft-app');
+    const draftApp = buildDraftApp(
+        'draft-app',
+        undefined,
+        kind === 'tool_app' && selectedSkill ? selectedSkill : 'draft-app',
+        kind === 'tool_app' && selectedSkill ? 'maclaw.app.json' : 'maclaw.apps.json',
+    );
     const draftManifestText = JSON.stringify(appToManifest(draftApp), null, 2);
     const createApp = () => {
         const cleanName = name.trim();
@@ -3077,6 +3222,78 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setDescription('');
         setSkillFields([]);
         setMultipleFiles(false);
+    };
+    const persistSkillAppDefinition = async () => {
+        const cleanName = name.trim();
+        const skillID = selectedSkill.trim();
+        if (!cleanName || !skillID || kind !== 'tool_app') return null;
+        const appID = makeSkillAppDefinitionId(cleanName);
+        const app = buildDraftApp(appID, cleanName, skillID, 'maclaw.app.json');
+        const manifestText = JSON.stringify(appToManifest(app), null, 2);
+        await SaveMaclawAppDefinitionForSkill(skillID, manifestText);
+        onCreateApp({
+            ...app,
+            id: skillPanelAppID(skillID, appID),
+            source: 'skill',
+            manifest: makeSkillManifest(skillID, inputMode, outputModes, skillFields, multipleFiles && inputMode !== 'form', 'maclaw.app.json'),
+        }, { keepStudioCreate: true });
+        return skillID;
+    };
+    const saveAsSkillApp = async () => {
+        if (skillAppSaveState === 'saving') return;
+        setSkillAppSaveState('saving');
+        setSkillAppSaveMessage('');
+        try {
+            const skillID = await persistSkillAppDefinition();
+            if (!skillID) {
+                setSkillAppSaveState('idle');
+                return;
+            }
+            setSkillAppSaveState('saved');
+            setSkillMarketUploadState('idle');
+            setSkillAppSaveMessage(zh ? `已写入 ${skillID}/maclaw.app.json` : `Saved to ${skillID}/maclaw.app.json`);
+        } catch (error) {
+            setSkillAppSaveState('error');
+            setSkillAppSaveMessage(error instanceof Error ? error.message : String(error || (zh ? '保存失败' : 'Save failed')));
+        }
+    };
+    const uploadSelectedSkillApp = async () => {
+        const skillID = selectedSkill.trim();
+        if (!skillID || skillMarketUploadState === 'uploading') return;
+        const cleanName = name.trim();
+        if (!cleanName) return;
+        const appID = makeSkillAppDefinitionId(cleanName);
+        const panelApp: AppEntry = {
+            ...buildDraftApp(appID, cleanName, skillID, 'maclaw.app.json'),
+            id: skillPanelAppID(skillID, appID),
+            source: 'skill',
+            manifest: makeSkillManifest(skillID, inputMode, outputModes, skillFields, multipleFiles && inputMode !== 'form', 'maclaw.app.json'),
+        };
+        if (!latestAppRunEvidence(panelApp)) {
+            setSkillMarketUploadState('error');
+            setSkillAppSaveState('error');
+            setSkillAppSaveMessage(zh ? '请先保存到 Skill，并在应用面板成功测试一次当前版本，再上传到 SkillMarket。' : 'Save to Skill and run this version successfully in the app panel before uploading to SkillMarket.');
+            return;
+        }
+        setSkillMarketUploadState('uploading');
+        setSkillAppSaveMessage('');
+        try {
+            setSkillAppSaveState('saving');
+            const savedSkillID = await persistSkillAppDefinition();
+            if (!savedSkillID) {
+                setSkillMarketUploadState('idle');
+                setSkillAppSaveState('idle');
+                return;
+            }
+            setSkillAppSaveState('saved');
+            const submissionID = await UploadNLSkillToMarket(savedSkillID);
+            setSkillMarketUploadState('uploaded');
+            setSkillAppSaveMessage(zh ? `已提交到 SkillMarket: ${submissionID}` : `Submitted to SkillMarket: ${submissionID}`);
+        } catch (error) {
+            setSkillMarketUploadState('error');
+            setSkillAppSaveState('error');
+            setSkillAppSaveMessage(error instanceof Error ? error.message : String(error || (zh ? '上传失败' : 'Upload failed')));
+        }
     };
     return (
         <>
@@ -3136,6 +3353,21 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                 {kind === 'tool_app' && (
                     <>
                         <div className="apps-form-row">
+                            <label>{zh ? '现有 Skill' : 'Existing Skill'}</label>
+                            <select value={selectedSkill} onChange={(event) => {
+                                setSelectedSkill(event.target.value);
+                                setSkillAppSaveState('idle');
+                                setSkillAppSaveMessage('');
+                                setSkillMarketUploadState('idle');
+                            }}>
+                                {availableSkills.length === 0 && <option value="">{zh ? '暂无可用 Skill' : 'No skills available'}</option>}
+                                {availableSkills.map((skill) => {
+                                    const skillName = String(skill.name || '');
+                                    return <option key={skillName} value={skillName}>{skillName}</option>;
+                                })}
+                            </select>
+                        </div>
+                        <div className="apps-form-row">
                             <label>{zh ? '\u8f93\u5165\u6a21\u5f0f' : 'Input mode'}</label>
                             <select value={inputMode} onChange={(event) => {
                                 const nextMode = event.target.value as 'file' | 'form' | 'mixed';
@@ -3187,7 +3419,20 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                 </div>
                 <div className="apps-actions">
                     <button className="apps-primary-button" type="button" disabled={!name.trim()} onClick={createApp}>{text.createTab}</button>
+                    {kind === 'tool_app' && (
+                        <>
+                            <button className="apps-secondary-button" type="button" disabled={!name.trim() || !selectedSkill.trim() || skillAppSaveState === 'saving'} onClick={() => void saveAsSkillApp()}>
+                                {skillAppSaveState === 'saving' ? (zh ? '保存中...' : 'Saving...') : (zh ? '保存到 Skill' : 'Save to Skill')}
+                            </button>
+                            <button className="apps-secondary-button" type="button" disabled={!selectedSkill.trim() || skillMarketUploadState === 'uploading'} onClick={() => void uploadSelectedSkillApp()}>
+                                {skillMarketUploadState === 'uploading' ? (zh ? '上传中...' : 'Uploading...') : (zh ? '上传到 SkillMarket' : 'Upload to SkillMarket')}
+                            </button>
+                        </>
+                    )}
                 </div>
+                {skillAppSaveMessage && (
+                    <div className="apps-skill-save-message" data-state={skillAppSaveState} role={skillAppSaveState === 'error' ? 'alert' : 'status'}>{skillAppSaveMessage}</div>
+                )}
                 <div className="apps-create-preview">
                     <div className="apps-preview-title-row">
                         <div className="apps-definition__title">{text.manifestPreview}</div>

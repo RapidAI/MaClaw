@@ -25,11 +25,35 @@ type SkillMetadata struct {
 	PricingMode string `yaml:"pricing_mode,omitempty" json:"pricing_mode,omitempty"`
 
 	// 平台兼容性
-	Platforms   []string `yaml:"platforms,omitempty" json:"platforms,omitempty"`     // "windows","linux","macos"; empty = universal
-	RequiresGUI bool     `yaml:"requires_gui,omitempty" json:"requires_gui,omitempty"` // Linux 下是否需要 GUI 环境
+	Platforms                    []string               `yaml:"platforms,omitempty" json:"platforms,omitempty"`       // "windows","linux","macos"; empty = universal
+	RequiresGUI                  bool                   `yaml:"requires_gui,omitempty" json:"requires_gui,omitempty"` // Linux 下是否需要 GUI 环境
+	ProductKind                  string                 `yaml:"product_kind,omitempty" json:"product_kind,omitempty"`
+	IsMaclawApp                  bool                   `yaml:"is_maclaw_app,omitempty" json:"is_maclaw_app,omitempty"`
+	MaclawAppCount               int                    `yaml:"maclaw_app_count,omitempty" json:"maclaw_app_count,omitempty"`
+	MaclawAppEntry               string                 `yaml:"maclaw_app_entry,omitempty" json:"maclaw_app_entry,omitempty"`
+	MaclawAppID                  string                 `yaml:"maclaw_app_id,omitempty" json:"maclaw_app_id,omitempty"`
+	MaclawAppName                string                 `yaml:"maclaw_app_name,omitempty" json:"maclaw_app_name,omitempty"`
+	MaclawAppDescription         string                 `yaml:"maclaw_app_description,omitempty" json:"maclaw_app_description,omitempty"`
+	MaclawAppCategory            string                 `yaml:"maclaw_app_category,omitempty" json:"maclaw_app_category,omitempty"`
+	MaclawAppIcon                string                 `yaml:"maclaw_app_icon,omitempty" json:"maclaw_app_icon,omitempty"`
+	MaclawAppInputMode           string                 `yaml:"maclaw_app_input_mode,omitempty" json:"maclaw_app_input_mode,omitempty"`
+	MaclawAppOutputModes         []string               `yaml:"maclaw_app_output_modes,omitempty" json:"maclaw_app_output_modes,omitempty"`
+	MaclawAppDefinitionSHA256    string                 `yaml:"maclaw_app_definition_sha256,omitempty" json:"maclaw_app_definition_sha256,omitempty"`
+	MaclawAppTestEvidence        *MaclawAppTestEvidence `yaml:"maclaw_app_test_evidence,omitempty" json:"maclaw_app_test_evidence,omitempty"`
+	ArtifactContractRequired     bool                   `yaml:"artifact_contract_required,omitempty" json:"artifact_contract_required,omitempty"`
+	ArtifactContractOutputModes  []string               `yaml:"artifact_contract_output_modes,omitempty" json:"artifact_contract_output_modes,omitempty"`
+	ArtifactContractPresentation string                 `yaml:"artifact_contract_presentation,omitempty" json:"artifact_contract_presentation,omitempty"`
 
 	// Extra 保留未识别字段，确保 round-trip 安全。
 	Extra map[string]any `yaml:"-" json:"-"`
+}
+
+type MaclawAppTestEvidence struct {
+	RunID                 string `yaml:"run_id,omitempty" json:"run_id,omitempty"`
+	VerifiedAt            string `yaml:"verified_at,omitempty" json:"verified_at,omitempty"`
+	DefinitionFingerprint string `yaml:"definition_fingerprint,omitempty" json:"definition_fingerprint,omitempty"`
+	ArtifactPresent       bool   `yaml:"artifact_present,omitempty" json:"artifact_present,omitempty"`
+	ArtifactName          string `yaml:"artifact_name,omitempty" json:"artifact_name,omitempty"`
 }
 
 // ParseSkillYAML 解析 skill.yaml 为 SkillMetadata。
@@ -56,6 +80,13 @@ func ParseSkillYAML(data []byte) (*SkillMetadata, error) {
 		"triggers": true, "version": true, "author": true,
 		"price": true, "permissions": true, "required_env": true,
 		"pricing_mode": true, "platforms": true, "requires_gui": true,
+		"product_kind": true, "is_maclaw_app": true, "maclaw_app_count": true, "maclaw_app_entry": true,
+		"maclaw_app_id": true, "maclaw_app_name": true, "maclaw_app_description": true,
+		"maclaw_app_category": true, "maclaw_app_icon": true, "maclaw_app_input_mode": true,
+		"maclaw_app_output_modes": true, "maclaw_app_definition_sha256": true,
+		"maclaw_app_test_evidence":   true,
+		"artifact_contract_required": true, "artifact_contract_output_modes": true,
+		"artifact_contract_presentation": true,
 	}
 	extra := make(map[string]any)
 	for k, v := range raw {

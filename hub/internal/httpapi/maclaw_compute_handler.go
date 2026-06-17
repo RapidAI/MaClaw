@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
@@ -9,6 +10,13 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
+
+func refreshedAuthsSafe(s *llmservice.TenantAuthorizationStatus) []llmservice.AuthorizationSummary {
+	if s == nil {
+		return nil
+	}
+	return s.Authorizations
+}
 
 const heartbeatAuthorizationKeyLLMCompute = "llm_compute"
 
@@ -41,12 +49,19 @@ func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservic
 				if refreshed, err := currentAccessCtrl.RefreshAuthorizationStatus(r.Context(), tenantID); err == nil {
 					authStatus = refreshed
 					refreshedAuthorization = true
+					log.Printf("[maclaw-compute-status] refresh OK tenant=%s allow=%v auths=%d", tenantID, refreshed != nil && refreshed.AllowExternalProviders, len(refreshedAuthsSafe(refreshed)))
 				} else if err != nil {
 					result["authorization_error"] = err.Error()
+					log.Printf("[maclaw-compute-status] refresh ERROR tenant=%s err=%v", tenantID, err)
 				}
 			}
 			if authStatus == nil {
 				authStatus = currentAccessCtrl.GetAuthorizationStatus(r.Context(), tenantID)
+				if authStatus != nil {
+					log.Printf("[maclaw-compute-status] cache-hit tenant=%s allow=%v auths=%d", tenantID, authStatus.AllowExternalProviders, len(authStatus.Authorizations))
+				} else {
+					log.Printf("[maclaw-compute-status] cache-miss tenant=%s", tenantID)
+				}
 			}
 		}
 

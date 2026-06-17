@@ -23,17 +23,39 @@ import (
 
 // HubSkillMeta is the client-side Skill metadata returned from SkillHub searches.
 type HubSkillMeta struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Tags        []string `json:"tags"`
-	Version     string   `json:"version"`
-	Author      string   `json:"author"`
-	TrustLevel  string   `json:"trust_level"`
-	Downloads   int      `json:"downloads"`
-	HubURL      string   `json:"hub_url"`
-	AvgRating   float64  `json:"avg_rating"`
-	RatingCount int      `json:"rating_count"`
+	ID                           string                 `json:"id"`
+	Name                         string                 `json:"name"`
+	Description                  string                 `json:"description"`
+	Tags                         []string               `json:"tags"`
+	Version                      string                 `json:"version"`
+	Author                       string                 `json:"author"`
+	TrustLevel                   string                 `json:"trust_level"`
+	Downloads                    int                    `json:"downloads"`
+	HubURL                       string                 `json:"hub_url"`
+	AvgRating                    float64                `json:"avg_rating"`
+	RatingCount                  int                    `json:"rating_count"`
+	ProductKind                  string                 `json:"product_kind,omitempty"`
+	IsMaclawApp                  bool                   `json:"is_maclaw_app,omitempty"`
+	MaclawAppID                  string                 `json:"maclaw_app_id,omitempty"`
+	MaclawAppName                string                 `json:"maclaw_app_name,omitempty"`
+	MaclawAppDescription         string                 `json:"maclaw_app_description,omitempty"`
+	MaclawAppCategory            string                 `json:"maclaw_app_category,omitempty"`
+	MaclawAppIcon                string                 `json:"maclaw_app_icon,omitempty"`
+	MaclawAppInputMode           string                 `json:"maclaw_app_input_mode,omitempty"`
+	MaclawAppOutputModes         []string               `json:"maclaw_app_output_modes,omitempty"`
+	MaclawAppDefinitionSHA256    string                 `json:"maclaw_app_definition_sha256,omitempty"`
+	MaclawAppTestEvidence        *MaclawAppTestEvidence `json:"maclaw_app_test_evidence,omitempty"`
+	ArtifactContractRequired     bool                   `json:"artifact_contract_required,omitempty"`
+	ArtifactContractOutputModes  []string               `json:"artifact_contract_output_modes,omitempty"`
+	ArtifactContractPresentation string                 `json:"artifact_contract_presentation,omitempty"`
+}
+
+type MaclawAppTestEvidence struct {
+	RunID                 string `json:"run_id,omitempty"`
+	VerifiedAt            string `json:"verified_at,omitempty"`
+	DefinitionFingerprint string `json:"definition_fingerprint,omitempty"`
+	ArtifactPresent       bool   `json:"artifact_present,omitempty"`
+	ArtifactName          string `json:"artifact_name,omitempty"`
 }
 
 // cachedSearchResult holds a cached search response with expiry.
@@ -85,16 +107,30 @@ type hubSkillSearchResult struct {
 
 // hubSkillItem mirrors the hub's HubSkillMeta JSON.
 type hubSkillItem struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Tags        []string `json:"tags"`
-	Version     string   `json:"version"`
-	Author      string   `json:"author"`
-	TrustLevel  string   `json:"trust_level"`
-	Downloads   int      `json:"downloads"`
-	AvgRating   float64  `json:"avg_rating"`
-	RatingCount int      `json:"rating_count"`
+	ID                           string                 `json:"id"`
+	Name                         string                 `json:"name"`
+	Description                  string                 `json:"description"`
+	Tags                         []string               `json:"tags"`
+	Version                      string                 `json:"version"`
+	Author                       string                 `json:"author"`
+	TrustLevel                   string                 `json:"trust_level"`
+	Downloads                    int                    `json:"downloads"`
+	AvgRating                    float64                `json:"avg_rating"`
+	RatingCount                  int                    `json:"rating_count"`
+	ProductKind                  string                 `json:"product_kind,omitempty"`
+	IsMaclawApp                  bool                   `json:"is_maclaw_app,omitempty"`
+	MaclawAppID                  string                 `json:"maclaw_app_id,omitempty"`
+	MaclawAppName                string                 `json:"maclaw_app_name,omitempty"`
+	MaclawAppDescription         string                 `json:"maclaw_app_description,omitempty"`
+	MaclawAppCategory            string                 `json:"maclaw_app_category,omitempty"`
+	MaclawAppIcon                string                 `json:"maclaw_app_icon,omitempty"`
+	MaclawAppInputMode           string                 `json:"maclaw_app_input_mode,omitempty"`
+	MaclawAppOutputModes         []string               `json:"maclaw_app_output_modes,omitempty"`
+	MaclawAppDefinitionSHA256    string                 `json:"maclaw_app_definition_sha256,omitempty"`
+	MaclawAppTestEvidence        *MaclawAppTestEvidence `json:"maclaw_app_test_evidence,omitempty"`
+	ArtifactContractRequired     bool                   `json:"artifact_contract_required,omitempty"`
+	ArtifactContractOutputModes  []string               `json:"artifact_contract_output_modes,omitempty"`
+	ArtifactContractPresentation string                 `json:"artifact_contract_presentation,omitempty"`
 }
 
 // hubSkillFull mirrors the hub's HubSkillFull JSON for download.
@@ -133,18 +169,40 @@ type hubSkillStep struct {
 
 func hubItemToMeta(item hubSkillItem, hubURL string) HubSkillMeta {
 	return HubSkillMeta{
-		ID:          item.ID,
-		Name:        item.Name,
-		Description: item.Description,
-		Tags:        item.Tags,
-		Version:     item.Version,
-		Author:      item.Author,
-		TrustLevel:  item.TrustLevel,
-		Downloads:   item.Downloads,
-		HubURL:      hubURL,
-		AvgRating:   item.AvgRating,
-		RatingCount: item.RatingCount,
+		ID:                           item.ID,
+		Name:                         item.Name,
+		Description:                  item.Description,
+		Tags:                         item.Tags,
+		Version:                      item.Version,
+		Author:                       item.Author,
+		TrustLevel:                   item.TrustLevel,
+		Downloads:                    item.Downloads,
+		HubURL:                       hubURL,
+		AvgRating:                    item.AvgRating,
+		RatingCount:                  item.RatingCount,
+		ProductKind:                  item.ProductKind,
+		IsMaclawApp:                  item.IsMaclawApp || strings.EqualFold(strings.TrimSpace(item.ProductKind), "maclaw_app_skill"),
+		MaclawAppID:                  item.MaclawAppID,
+		MaclawAppName:                item.MaclawAppName,
+		MaclawAppDescription:         item.MaclawAppDescription,
+		MaclawAppCategory:            item.MaclawAppCategory,
+		MaclawAppIcon:                item.MaclawAppIcon,
+		MaclawAppInputMode:           item.MaclawAppInputMode,
+		MaclawAppOutputModes:         append([]string(nil), item.MaclawAppOutputModes...),
+		MaclawAppDefinitionSHA256:    item.MaclawAppDefinitionSHA256,
+		MaclawAppTestEvidence:        cloneSkillHubMaclawAppTestEvidence(item.MaclawAppTestEvidence),
+		ArtifactContractRequired:     item.ArtifactContractRequired,
+		ArtifactContractOutputModes:  append([]string(nil), item.ArtifactContractOutputModes...),
+		ArtifactContractPresentation: item.ArtifactContractPresentation,
 	}
+}
+
+func cloneSkillHubMaclawAppTestEvidence(e *MaclawAppTestEvidence) *MaclawAppTestEvidence {
+	if e == nil {
+		return nil
+	}
+	copy := *e
+	return &copy
 }
 
 // Search queries the hub's SkillHub API and returns matching skills.

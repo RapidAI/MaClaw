@@ -26,6 +26,40 @@ function smUploadAuthModeText(value) {
   const map = { both:'uploadAuthBoth', token:'uploadAuthToken', email:'uploadAuthEmail' };
   return map[key] ? smtr(map[key]) : (value || '-');
 }
+function smAdminLabel(key) {
+  const labels = {
+    en: { appSkill:'MaClaw App', appPreview:'App Preview', appCategory:'Category', inputMode:'Input', outputModes:'Outputs', artifactContract:'Artifact Contract', artifactRequired:'Required', presentation:'Presentation', permissions:'Permissions', requiredEnv:'Required Env', requiresGUI:'GUI', securityLabels:'Security', testEvidence:'Test Evidence', runID:'Run ID', verifiedAt:'Verified', artifact:'Artifact', definitionHash:'Definition SHA256', yes:'Yes', no:'No', none:'None' },
+    zh: { appSkill:'MaClaw App', appPreview:'App 预览', appCategory:'分类', inputMode:'输入', outputModes:'输出', artifactContract:'产物契约', artifactRequired:'必须产出', presentation:'呈现方式', permissions:'权限', requiredEnv:'环境变量', requiresGUI:'GUI', securityLabels:'安全标签', testEvidence:'测试证据', runID:'运行 ID', verifiedAt:'验证时间', artifact:'产物', definitionHash:'描述文件 SHA256', yes:'是', no:'否', none:'无' }
+  };
+  return (labels[currentLang] || labels.en)[key] || labels.en[key] || key;
+}
+function smValueList(values) {
+  return (Array.isArray(values) ? values : []).map(v => String(v || '').trim()).filter(Boolean);
+}
+function smReviewKV(label, value) {
+  const shown = value === undefined || value === null || value === '' ? smAdminLabel('none') : String(value);
+  return `<div class="item-meta"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(shown)}</div>`;
+}
+function smRenderReviewDetail(s) {
+  const isApp = !!(s && (s.is_maclaw_app || s.product_kind === 'maclaw_app_skill'));
+  if (!isApp) return '';
+  const outputs = smValueList(s.maclaw_app_output_modes).join(', ') || smAdminLabel('none');
+  const contractOutputs = smValueList(s.artifact_contract_output_modes).join(', ') || smAdminLabel('none');
+  const permissions = smValueList(s.permissions).join(', ') || smAdminLabel('none');
+  const env = smValueList(s.required_env).join(', ') || smAdminLabel('none');
+  const labels = smValueList(s.security_labels).join(', ') || smAdminLabel('none');
+  const evidence = s.maclaw_app_test_evidence || {};
+  const evidenceHTML = [
+    smReviewKV(smAdminLabel('runID'), evidence.run_id || '-'),
+    smReviewKV(smAdminLabel('verifiedAt'), evidence.verified_at || '-'),
+    smReviewKV(smAdminLabel('artifact'), evidence.artifact_present ? (evidence.artifact_name || smAdminLabel('yes')) : smAdminLabel('no')),
+  ].join('');
+  return `<div class="sm-stat-grid"><div class="sm-stat"><label>${escapeHtml(smAdminLabel('appPreview'))}</label><strong title="${escapeHtml(s.maclaw_app_name || s.name || '-')}">${escapeHtml(s.maclaw_app_name || s.name || '-')}</strong></div><div class="sm-stat"><label>${escapeHtml(smAdminLabel('appCategory'))}</label><strong>${escapeHtml(s.maclaw_app_category || '-')}</strong></div><div class="sm-stat"><label>${escapeHtml(smAdminLabel('inputMode'))}</label><strong>${escapeHtml(s.maclaw_app_input_mode || '-')}</strong></div></div><div class="item-meta">${escapeHtml(s.maclaw_app_description || s.description || '')}</div><div class="sm-stat-grid"><div class="sm-stat"><label>${escapeHtml(smAdminLabel('outputModes'))}</label><strong>${escapeHtml(outputs)}</strong></div><div class="sm-stat"><label>${escapeHtml(smAdminLabel('artifactRequired'))}</label><strong>${escapeHtml(s.artifact_contract_required ? smAdminLabel('yes') : smAdminLabel('no'))}</strong></div><div class="sm-stat"><label>${escapeHtml(smAdminLabel('presentation'))}</label><strong>${escapeHtml(s.artifact_contract_presentation || '-')}</strong></div></div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('artifactContract'))}:</strong> ${escapeHtml(contractOutputs)}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('permissions'))}:</strong> ${escapeHtml(permissions)}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('requiredEnv'))}:</strong> ${escapeHtml(env)} | <strong>${escapeHtml(smAdminLabel('requiresGUI'))}:</strong> ${escapeHtml(s.requires_gui ? smAdminLabel('yes') : smAdminLabel('no'))}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('securityLabels'))}:</strong> ${escapeHtml(labels)}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('definitionHash'))}:</strong> ${escapeHtml(s.maclaw_app_definition_sha256 || '-')}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('testEvidence'))}</strong></div>${evidenceHTML}`;
+}
+function smRenderReviewCard(s) {
+  const name=escapeHtml(s.name||'-'); const version=escapeHtml(s.version||'-'); const author=escapeHtml(s.author||'-'); const uploaded=escapeHtml(s.created_at?fmtDate(s.created_at):'-'); const rating=(s.avg_rating||0).toFixed(1); const ratings=s.rating_count||0; const rawStatus=s.status||'-'; const status=escapeHtml(smStatusText(rawStatus)); const idArg=smJsArg(s.id); const appBadge=(s.is_maclaw_app||s.product_kind==='maclaw_app_skill')?`<span class="badge info">${escapeHtml(smAdminLabel('appSkill'))}</span>`:'';
+  return `<div class="item sm-card"><div class="sm-card-top"><div class="sm-card-main"><div class="sm-title-row"><div class="item-title sm-title" title="${name}">${name}</div><span class="sm-pill">v${version}</span>${appBadge}</div><div class="item-meta sm-detail" title="${smtr('colAuthor')}: ${author}">${smtr('colAuthor')}: ${author}</div></div><span class="badge warn">${status}</span></div><div class="sm-stat-grid"><div class="sm-stat"><label>${smtr('colRating')}</label><strong>${rating}</strong></div><div class="sm-stat"><label>${smtr('colRatings')}</label><strong>${ratings}</strong></div><div class="sm-stat"><label>${smtr('colUploaded')}</label><strong title="${uploaded}">${uploaded}</strong></div></div>${smRenderReviewDetail(s)}<div class="actions"><button class="btn-secondary" onclick="smApprove(${idArg}, this)">${smtr('approve')}</button><button class="btn-danger" onclick="smReject(${idArg}, this)">${smtr('reject')}</button></div></div>`;
+}
 
 function setSmSectionState(section, mode, message) {
   const status = document.getElementById(section === 'review' ? 'smReviewStatus' : 'smPurchaseStatus');
@@ -51,7 +85,7 @@ async function loadSkillmarketReview() {
   setSmSectionState('review', 'loading', smtr('loading'));
   root.innerHTML = '';
   try {
-    const data = await api('/api/v1/skillmarket/search?q=&top_n=1000');
+    const data = await api('/api/v1/admin/skillmarket/review?top_n=1000');
     const list = (data.results || data || []).filter(s => s.status === 'pending_review' || s.status === 'trial');
     if (counter) counter.textContent = smtr('items', {count: list.length});
     if (!list.length) {
@@ -60,7 +94,7 @@ async function loadSkillmarketReview() {
       return;
     }
     setSmSectionState('review');
-    root.innerHTML = list.map(s => { const name=escapeHtml(s.name||'-'); const version=escapeHtml(s.version||'-'); const author=escapeHtml(s.author||'-'); const uploaded=escapeHtml(s.created_at?fmtDate(s.created_at):'-'); const rating=(s.avg_rating||0).toFixed(1); const ratings=s.rating_count||0; const rawStatus=s.status||'-'; const status=escapeHtml(smStatusText(rawStatus)); const idArg=smJsArg(s.id); return `<div class="item sm-card"><div class="sm-card-top"><div class="sm-card-main"><div class="sm-title-row"><div class="item-title sm-title" title="${name}">${name}</div><span class="sm-pill">v${version}</span></div><div class="item-meta sm-detail" title="${smtr('colAuthor')}: ${author}">${smtr('colAuthor')}: ${author}</div></div><span class="badge warn">${status}</span></div><div class="sm-stat-grid"><div class="sm-stat"><label>${smtr('colRating')}</label><strong>${rating}</strong></div><div class="sm-stat"><label>${smtr('colRatings')}</label><strong>${ratings}</strong></div><div class="sm-stat"><label>${smtr('colUploaded')}</label><strong title="${uploaded}">${uploaded}</strong></div></div><div class="actions"><button class="btn-secondary" onclick="smApprove(${idArg}, this)">${smtr('approve')}</button><button class="btn-danger" onclick="smReject(${idArg}, this)">${smtr('reject')}</button></div></div>`; }).join('');
+    root.innerHTML = list.map(smRenderReviewCard).join('');
   } catch (err) {
     if (counter) counter.textContent = smtr('items', {count: 0});
     root.innerHTML = '';

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -33,11 +34,54 @@ type ToolManager struct {
 	app *App
 }
 
+// toolStatusCache caches GetToolStatus results to avoid spawning child
+// processes (e.g. "claude --version") on every call. The cache is
+// invalidated by calling InvalidateToolStatusCache (after install/uninstall).
+var (
+	toolStatusCacheMu      sync.RWMutex
+	toolStatusCacheMap     = make(map[string]toolStatusCacheEntry)
+	toolStatusCacheTTL     = 10 * time.Minute // positive results (tool installed)
+	toolStatusCacheNegTTL  = 1 * time.Minute  // negative results (tool not found)
+)
+
+type toolStatusCacheEntry struct {
+	status    ToolStatus
+	cachedAt  time.Time
+}
+
+// InvalidateToolStatusCache clears the cached tool status for the given tool,
+// or all tools if name is empty. Call this after installing or uninstalling a tool.
+func InvalidateToolStatusCache(name string) {
+	toolStatusCacheMu.Lock()
+	defer toolStatusCacheMu.Unlock()
+	if name == "" {
+		toolStatusCacheMap = make(map[string]toolStatusCacheEntry)
+	} else {
+		delete(toolStatusCacheMap, remote.NormalizeRemoteToolName(name))
+	}
+}
+
 func NewToolManager(app *App) *ToolManager {
 	return &ToolManager{app: app}
 }
 
 func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
+	normalized := remote.NormalizeRemoteToolName(name)
+
+	// Check cache first — avoids spawning child processes on every UI tab switch.
+	toolStatusCacheMu.RLock()
+	if entry, ok := toolStatusCacheMap[normalized]; ok {
+		ttl := toolStatusCacheTTL
+		if !entry.status.Installed {
+			ttl = toolStatusCacheNegTTL
+		}
+		if time.Since(entry.cachedAt) < ttl {
+			toolStatusCacheMu.RUnlock()
+			return entry.status
+		}
+	}
+	toolStatusCacheMu.RUnlock()
+
 	status := ToolStatus{Name: name}
 
 	tm.app.log(fmt.Sprintf("GetToolStatus: Checking tool '%s'", name))
@@ -45,6 +89,9 @@ func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
 	path, found := remote.ResolveToolPath(name)
 	if !found {
 		tm.app.log(fmt.Sprintf("GetToolStatus: Tool '%s' NOT found", name))
+		toolStatusCacheMu.Lock()
+		toolStatusCacheMap[normalized] = toolStatusCacheEntry{status: status, cachedAt: time.Now()}
+		toolStatusCacheMu.Unlock()
 		return status
 	}
 
@@ -56,6 +103,11 @@ func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
 	if err == nil {
 		status.Version = version
 	}
+
+	// Cache positive result.
+	toolStatusCacheMu.Lock()
+	toolStatusCacheMap[normalized] = toolStatusCacheEntry{status: status, cachedAt: time.Now()}
+	toolStatusCacheMu.Unlock()
 
 	return status
 }
@@ -334,6 +386,7 @@ func (tm *ToolManager) InstallTool(name string) error {
 	tm.app.log(tm.app.tr("Verifying %s installation...", name))
 	time.Sleep(500 * time.Millisecond) // Brief wait for file system sync
 
+	InvalidateToolStatusCache(name)
 	status := tm.GetToolStatus(name)
 	if !status.Installed {
 		return fmt.Errorf("installation completed but tool verification failed - %s not found", name)
@@ -521,6 +574,7 @@ func (tm *ToolManager) UpdateTool(name string) error {
 		if strings.Contains(outputStr, "403") && strings.Contains(outputStr, "ripgrep") {
 			tm.app.log(tm.app.tr("Warning: ripgrep download failed (GitHub API limit), but %s may still work", name))
 			// Don't fail the update for ripgrep download issues
+			InvalidateToolStatusCache(name)
 			return nil
 		}
 
@@ -528,6 +582,7 @@ func (tm *ToolManager) UpdateTool(name string) error {
 	}
 
 	tm.app.log(tm.app.tr("Successfully updated %s in private directory", name))
+	InvalidateToolStatusCache(name)
 	return nil
 }
 
@@ -729,6 +784,7 @@ func (tm *ToolManager) installClaudeNative(target string) error {
 	tm.app.log(tm.app.tr("Verifying installation..."))
 	time.Sleep(500 * time.Millisecond)
 
+	InvalidateToolStatusCache("claude")
 	status := tm.GetToolStatus("claude")
 	if !status.Installed {
 		return fmt.Errorf("installation completed but verification failed - claude not found at expected path")

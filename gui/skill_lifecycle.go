@@ -58,11 +58,38 @@ type persistedSkillQualityStatus struct {
 }
 
 type skillPackageManifest struct {
-	SkillName   string                      `json:"skill_name"`
-	PackageKind string                      `json:"package_kind"`
-	GeneratedAt string                      `json:"generated_at"`
-	Quality     persistedSkillQualityStatus `json:"quality"`
-	Files       []skillPackageManifestFile  `json:"files"`
+	SkillName                    string                      `json:"skill_name"`
+	PackageKind                  string                      `json:"package_kind"`
+	ProductKind                  string                      `json:"product_kind,omitempty"`
+	IsMaclawApp                  bool                        `json:"is_maclaw_app,omitempty"`
+	MaclawAppCount               int                         `json:"maclaw_app_count,omitempty"`
+	MaclawAppEntry               string                      `json:"maclaw_app_entry,omitempty"`
+	MaclawAppID                  string                      `json:"maclaw_app_id,omitempty"`
+	MaclawAppName                string                      `json:"maclaw_app_name,omitempty"`
+	MaclawAppDescription         string                      `json:"maclaw_app_description,omitempty"`
+	MaclawAppCategory            string                      `json:"maclaw_app_category,omitempty"`
+	MaclawAppIcon                string                      `json:"maclaw_app_icon,omitempty"`
+	MaclawAppInputMode           string                      `json:"maclaw_app_input_mode,omitempty"`
+	MaclawAppOutputModes         []string                    `json:"maclaw_app_output_modes,omitempty"`
+	MaclawAppDefinitionSHA256    string                      `json:"maclaw_app_definition_sha256,omitempty"`
+	ArtifactContractRequired     bool                        `json:"artifact_contract_required,omitempty"`
+	ArtifactContractOutputModes  []string                    `json:"artifact_contract_output_modes,omitempty"`
+	ArtifactContractPresentation string                      `json:"artifact_contract_presentation,omitempty"`
+	MaclawAppTestEvidence        *maclawAppTestEvidence      `json:"maclaw_app_test_evidence,omitempty"`
+	DeclaredPermissions          []string                    `json:"declared_permissions,omitempty"`
+	DeclaredRequiredEnv          []string                    `json:"declared_required_env,omitempty"`
+	DeclaredRequiresGUI          bool                        `json:"declared_requires_gui,omitempty"`
+	GeneratedAt                  string                      `json:"generated_at"`
+	Quality                      persistedSkillQualityStatus `json:"quality"`
+	Files                        []skillPackageManifestFile  `json:"files"`
+}
+
+type maclawAppTestEvidence struct {
+	RunID                 string `json:"run_id,omitempty"`
+	VerifiedAt            string `json:"verified_at,omitempty"`
+	DefinitionFingerprint string `json:"definition_fingerprint,omitempty"`
+	ArtifactPresent       bool   `json:"artifact_present,omitempty"`
+	ArtifactName          string `json:"artifact_name,omitempty"`
 }
 
 type skillPackageManifestFile struct {
@@ -142,6 +169,35 @@ func writeSkillPackageManifest(skillDir string, entry *corelib.NLSkillEntry, qua
 		GeneratedAt: time.Now().Format(time.RFC3339),
 		Quality:     status,
 	}
+	manifest.DeclaredPermissions = skillPackageDeclaredPermissions(entry)
+	manifest.DeclaredRequiredEnv = cloneStringSlice(entry.RequiredEnv)
+	manifest.DeclaredRequiresGUI = entry.RequiresGUI
+	if isApp, count, appEntry := inspectMaclawAppSkillMetadata(skillDir); isApp {
+		manifest.ProductKind = "maclaw_app_skill"
+		manifest.IsMaclawApp = true
+		manifest.MaclawAppCount = count
+		manifest.MaclawAppEntry = appEntry
+		appPath := filepath.Join(skillDir, appEntry)
+		if data, err := os.ReadFile(appPath); err == nil {
+			sum := sha256.Sum256(data)
+			manifest.MaclawAppDefinitionSHA256 = hex.EncodeToString(sum[:])
+			manifest.MaclawAppTestEvidence = maclawAppTestEvidenceFromDefinition(data)
+		}
+		if app, ok := readMaclawAppDefinitionAsSkillApp(appPath, entry.Name); ok {
+			manifest.MaclawAppID = app.ID
+			manifest.MaclawAppName = app.Name
+			manifest.MaclawAppDescription = app.Description
+			manifest.MaclawAppCategory = app.Category
+			manifest.MaclawAppIcon = app.Icon
+			manifest.MaclawAppInputMode = app.InputMode
+			manifest.MaclawAppOutputModes = append([]string(nil), app.OutputModes...)
+			if len(app.OutputModes) > 0 {
+				manifest.ArtifactContractRequired = true
+				manifest.ArtifactContractOutputModes = append([]string(nil), app.OutputModes...)
+				manifest.ArtifactContractPresentation = "preview_or_file"
+			}
+		}
+	}
 	if err := filepath.WalkDir(skillDir, func(path string, dirEntry os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -183,6 +239,76 @@ func writeSkillPackageManifest(skillDir string, entry *corelib.NLSkillEntry, qua
 		return err
 	}
 	return os.WriteFile(filepath.Join(skillDir, "skill_package_manifest.json"), data, 0o644)
+}
+
+func skillPackageDeclaredPermissions(entry *corelib.NLSkillEntry) []string {
+	if entry == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := []string{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	if entry.RequiresGUI {
+		add("gui")
+	}
+	for _, env := range entry.RequiredEnv {
+		add("env:" + env)
+	}
+	for _, file := range entry.RequiredCredentialFiles {
+		if strings.TrimSpace(file) != "" {
+			add("credential_file")
+			break
+		}
+	}
+	for _, tool := range entry.RequiresTools {
+		add("tool:" + tool)
+	}
+	for _, toolset := range entry.RequiresToolsets {
+		add("toolset:" + toolset)
+	}
+	for _, capability := range entry.Capabilities {
+		add("capability:" + capability)
+	}
+	return out
+}
+
+func maclawAppTestEvidenceFromDefinition(data []byte) *maclawAppTestEvidence {
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil
+	}
+	app, _ := doc["app"].(map[string]any)
+	governance, _ := app["governance"].(map[string]any)
+	testEvidence, _ := governance["testEvidence"].(map[string]any)
+	if len(testEvidence) == 0 {
+		return nil
+	}
+	out := &maclawAppTestEvidence{
+		RunID:                 strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "runId"), stringMapValue(testEvidence, "run_id"))),
+		VerifiedAt:            strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "verifiedAt"), stringMapValue(testEvidence, "verified_at"))),
+		DefinitionFingerprint: strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "definitionHash"), stringMapValue(testEvidence, "definition_hash"), stringMapValue(testEvidence, "definitionFingerprint"), stringMapValue(testEvidence, "definition_fingerprint"))),
+		ArtifactName:          strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "artifactName"), stringMapValue(testEvidence, "artifact_name"))),
+	}
+	if boolMapValue(testEvidence, "artifactPresent") || boolMapValue(testEvidence, "artifact_present") {
+		out.ArtifactPresent = true
+	}
+	if out.ArtifactName == "" {
+		if path := strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "artifactPath"), stringMapValue(testEvidence, "artifact_path"))); path != "" {
+			out.ArtifactName = filepath.Base(path)
+			out.ArtifactPresent = true
+		}
+	}
+	if out.RunID == "" && out.VerifiedAt == "" && out.DefinitionFingerprint == "" && out.ArtifactName == "" && !out.ArtifactPresent {
+		return nil
+	}
+	return out
 }
 
 func skillYAMLFromEntry(entry *corelib.NLSkillEntry) *cskill.SkillYAMLFile {

@@ -12,9 +12,23 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/center"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
+
+// tenantListCenterStatusProvider is the minimal interface for querying center
+// registration state (digital employee authorizations) in the tenant list handler.
+type tenantListCenterStatusProvider interface {
+	Status(ctx context.Context) (*center.RegistrationState, error)
+}
+
+// tenantListComputeStatusProvider is the minimal interface for querying compute
+// module authorization status per tenant.
+type tenantListComputeStatusProvider interface {
+	GetAuthorizationStatus(ctx context.Context, tenantID string) *llmservice.TenantAuthorizationStatus
+}
 
 type tenantCreateRequest struct {
 	ID                    string   `json:"id"`
@@ -104,6 +118,12 @@ func tenantLoginOptionVisible(item *store.Tenant) bool {
 }
 
 func AdminTenantsListHandler(tenants store.TenantRepository) http.HandlerFunc {
+	return AdminTenantsListWithAuthHandler(tenants, nil, nil, nil)
+}
+
+// AdminTenantsListWithAuthHandler returns the tenant list enriched with per-tenant
+// digital employee authorization and compute module authorization info.
+func AdminTenantsListWithAuthHandler(tenants store.TenantRepository, centerSvc tenantListCenterStatusProvider, accessCtrl tenantListComputeStatusProvider, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !IsGlobalAdmin(r.Context()) {
 			writeError(w, http.StatusForbidden, "GLOBAL_ADMIN_REQUIRED", "Global admin authorization required")
@@ -129,7 +149,15 @@ func AdminTenantsListHandler(tenants store.TenantRepository) http.HandlerFunc {
 		if !seenDefault && defaultTenant != nil && !strings.EqualFold(strings.TrimSpace(defaultTenant.ID), auth.ExplicitGlobalAdminTenantScope) {
 			out = append(out, defaultTenant)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"tenants": tenantDTOs(out)})
+
+		dtos := tenantDTOs(out)
+
+		// Enrich each tenant DTO with authorization info.
+		// Primary source: local SQLite table (always available).
+		// Secondary source: center heartbeat cache (for real-time Active/Reason state).
+		authzLoaded := enrichTenantsWithAuthorization(r.Context(), dtos, out, db, centerSvc, accessCtrl)
+
+		writeJSON(w, http.StatusOK, map[string]any{"tenants": dtos, "authorization_loaded": authzLoaded})
 	}
 }
 
@@ -875,4 +903,162 @@ func normalizeTenantSlug(v string) string {
 
 func normalizeDomain(v string) string {
 	return strings.Trim(strings.ToLower(strings.TrimSpace(v)), ".")
+}
+
+// ---------------------------------------------------------------------------
+// Tenant list authorization enrichment
+// ---------------------------------------------------------------------------
+
+// tenantDigitalEmployeeAuthRow holds a row from tenant_digital_employee_authorizations.
+type tenantDigitalEmployeeAuthRow struct {
+	TenantID   string
+	Enabled    bool
+	Quota      int
+	Used       int
+	ValidUntil string
+	Status     string
+}
+
+// loadTenantDigitalEmployeeAuthorizations reads authorization data for all
+// tenants from the local SQLite table (the authoritative source).
+func loadTenantDigitalEmployeeAuthorizations(ctx context.Context, db *sql.DB) map[string]*tenantDigitalEmployeeAuthRow {
+	if db == nil {
+		return nil
+	}
+	rows, err := db.QueryContext(ctx, `SELECT tenant_id, enabled, quota, used, valid_until, status FROM tenant_digital_employee_authorizations`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	result := make(map[string]*tenantDigitalEmployeeAuthRow)
+	for rows.Next() {
+		var row tenantDigitalEmployeeAuthRow
+		var enabledInt int
+		var validUntil sql.NullString
+		if err := rows.Scan(&row.TenantID, &enabledInt, &row.Quota, &row.Used, &validUntil, &row.Status); err != nil {
+			continue
+		}
+		row.Enabled = enabledInt != 0
+		if validUntil.Valid {
+			row.ValidUntil = validUntil.String
+		}
+		result[row.TenantID] = &row
+	}
+	return result
+}
+
+// enrichTenantsWithAuthorization adds digital_employee_authorization and
+// compute_authorization fields to each tenant DTO.
+// Primary data source: local SQLite table (always available, even without HubCenter).
+// Secondary: center heartbeat cache for compute module status.
+// Returns true if at least the local DB was successfully queried.
+func enrichTenantsWithAuthorization(ctx context.Context, dtos []map[string]any, tenants []*store.Tenant, db *sql.DB, centerSvc tenantListCenterStatusProvider, accessCtrl tenantListComputeStatusProvider) bool {
+	if len(dtos) == 0 {
+		return false
+	}
+
+	// Primary source: local DB for digital employee authorization
+	localAuthz := loadTenantDigitalEmployeeAuthorizations(ctx, db)
+
+	// Secondary source: center status for real-time Active/Reason normalization
+	var centerStatus *center.RegistrationState
+	if centerSvc != nil {
+		centerStatus, _ = centerSvc.Status(ctx)
+	}
+
+	// Lazy resolve compute access control at request time
+	if accessCtrl == nil {
+		if ac := GetMaClawAccessControl(); ac != nil {
+			accessCtrl = ac
+		}
+	}
+
+	for i, dto := range dtos {
+		if i >= len(tenants) || tenants[i] == nil {
+			continue
+		}
+		tenantID := strings.TrimSpace(tenants[i].ID)
+		if tenantID == "" {
+			continue
+		}
+
+		// Digital employee authorization: prefer center heartbeat (has real-time
+		// Active/Reason/ExpiresAt), fall back to local DB row.
+		var deAuthDTO map[string]any
+		if centerStatus != nil {
+			if deAuth := centerStatusAuthorizationForTenant(centerStatus, tenantID); deAuth != nil {
+				deAuthDTO = map[string]any{
+					"enabled":    deAuth.Enabled,
+					"quota":      deAuth.Quota,
+					"active":     deAuth.Active,
+					"expires_at": deAuth.ExpiresAt,
+					"reason":     deAuth.Reason,
+				}
+			}
+		}
+		if deAuthDTO == nil && localAuthz != nil {
+			if row := localAuthz[tenantID]; row != nil {
+				active := row.Enabled && row.Quota > 0 && row.Status == "active"
+				reason := ""
+				if !row.Enabled {
+					reason = "disabled"
+				} else if row.Quota <= 0 {
+					reason = "quota_zero"
+				} else if row.Status != "active" {
+					reason = row.Status
+				}
+				deAuthDTO = map[string]any{
+					"enabled":    row.Enabled,
+					"quota":      row.Quota,
+					"used":       row.Used,
+					"active":     active,
+					"expires_at": row.ValidUntil,
+					"reason":     reason,
+				}
+			}
+		}
+		if deAuthDTO != nil {
+			dto["digital_employee_authorization"] = deAuthDTO
+		}
+
+		// Compute module authorization (LLM compute credits)
+		if accessCtrl != nil {
+			computeAuth := accessCtrl.GetAuthorizationStatus(ctx, tenantID)
+			if computeAuth != nil && len(computeAuth.Authorizations) > 0 {
+				dto["compute_authorization"] = tenantComputeAuthorizationSummary(computeAuth)
+			}
+		}
+	}
+	return localAuthz != nil || centerStatus != nil
+}
+
+// tenantComputeAuthorizationSummary builds a summary of compute module
+// authorization for display in the tenant card.
+func tenantComputeAuthorizationSummary(auth *llmservice.TenantAuthorizationStatus) map[string]any {
+	if auth == nil || len(auth.Authorizations) == 0 {
+		return nil
+	}
+	var totalCredits, usedCredits, remainingCredits float64
+	var activeCount int
+	var latestExpiry string
+	for _, a := range auth.Authorizations {
+		totalCredits += a.CreditsTotal
+		usedCredits += a.CreditsUsed
+		remainingCredits += a.CreditsRemaining
+		if a.Active {
+			activeCount++
+		}
+		if a.ExpiresAt > latestExpiry {
+			latestExpiry = a.ExpiresAt
+		}
+	}
+	return map[string]any{
+		"active":              activeCount > 0,
+		"total_credits":       totalCredits,
+		"used_credits":        usedCredits,
+		"remaining_credits":   remainingCredits,
+		"authorization_count": len(auth.Authorizations),
+		"expires_at":          latestExpiry,
+		"allow_external":      auth.AllowExternalProviders,
+	}
 }

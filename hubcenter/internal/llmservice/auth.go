@@ -105,7 +105,13 @@ func (c *AuthorizationChecker) HasExternalProviderAccess(ctx context.Context, hu
 	}
 	now := time.Now().UTC()
 	for _, auth := range auths {
-		if auth.IsActive(now) && isExternalProviderGrant(auth) {
+		// For external compute permission records, skip the credits check —
+		// they represent permissions, not quotas.
+		active := auth.IsActive(now)
+		if !active && isExternalComputePermissionRecord(auth) && isTimeWindowActive(auth, now) {
+			active = true
+		}
+		if active && isExternalProviderGrant(auth) {
 			return true, nil
 		}
 	}

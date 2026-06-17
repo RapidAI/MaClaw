@@ -366,6 +366,11 @@ function App() {
         navTabRef.current = tab;
         setNavTab(tab);
     }, []);
+    useEffect(() => {
+        const openAppsPanel = () => setNavTabNow('apps');
+        window.addEventListener('maclaw:open-apps-panel', openAppsPanel);
+        return () => window.removeEventListener('maclaw:open-apps-panel', openAppsPanel);
+    }, [setNavTabNow]);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
     const [bbsContent, setBbsContent] = useState<string>("");
     const [tutorialContent, setTutorialContent] = useState<string>("");

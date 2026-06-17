@@ -634,6 +634,22 @@
     padding: 0;
 }
 
+.apps-skill-save-message {
+    padding: 7px 9px;
+    border: 1px solid color-mix(in srgb, var(--theme-success) 24%, var(--theme-border));
+    border-radius: var(--radius-md);
+    color: var(--theme-success);
+    background: color-mix(in srgb, var(--theme-success-bg) 42%, var(--theme-surface));
+    font-size: 0.78rem;
+    font-weight: 800;
+}
+
+.apps-skill-save-message[data-state='error'] {
+    border-color: color-mix(in srgb, var(--theme-danger) 24%, var(--theme-border));
+    color: var(--theme-danger);
+    background: color-mix(in srgb, var(--theme-danger-bg) 42%, var(--theme-surface));
+}
+
 .apps-field-editor {
     display: grid;
     gap: 8px;

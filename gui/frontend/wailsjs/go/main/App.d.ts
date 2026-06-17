@@ -313,6 +313,10 @@ export function ShouldCheckEnvironment():Promise<boolean>;
 
 export function OpenFileOrShowInFolder(arg1:string):Promise<void>;
 
+export function OpenSkillRunArtifact(arg1:string,arg2:string):Promise<void>;
+
+export function RevealSkillRunArtifact(arg1:string,arg2:string):Promise<void>;
+
 export function ShowItemInFolder(arg1:string):Promise<void>;
 
 export function ShowMessage(arg1:string,arg2:string):Promise<void>;
@@ -1003,6 +1007,10 @@ export function ListMaclawAppPackageSubmissions(arg1:number):Promise<Array<any>>
 export function GetMaclawAppPackageSubmission(arg1:string):Promise<any>;
 export function WithdrawMaclawAppPackageSubmission(arg1:string):Promise<boolean>;
 export function UpdateMaclawAppPackageSubmissionStatus(arg1:string,arg2:any):Promise<boolean>;
+
+export function SaveMaclawAppDefinitionForSkill(arg1:string,arg2:string):Promise<any>;
+
+export function RecordMaclawAppRunEvidenceForSkill(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string):Promise<any>;
 
 // Digital Employee bindings
 export function ListVirtualEmployees():Promise<Array<any>>;

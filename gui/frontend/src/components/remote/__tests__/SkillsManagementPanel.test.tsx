@@ -92,6 +92,21 @@ const sampleSkills = [
         usage_count: 0,
         success_rate: 0,
     },
+    {
+        name: 'invoice_app',
+        description: 'Invoice review app',
+        triggers: ['invoice'],
+        steps: [{ action: 'run_skill', params: {}, on_error: 'stop' }],
+        status: 'active',
+        created_at: '2026-04-09T00:00:00Z',
+        source: 'manual',
+        execution_class: 'native_skill',
+        usage_count: 0,
+        success_rate: 0,
+        is_maclaw_app: true,
+        maclaw_app_count: 1,
+        maclaw_app_entry: 'maclaw.app.json',
+    },
 ];
 
 describe('SkillsManagementPanel execution class', () => {
@@ -116,6 +131,48 @@ describe('SkillsManagementPanel execution class', () => {
         expect(screen.getByText('原生 Skill')).toBeTruthy();
         expect(screen.getByTitle('导入的 Markdown 类 Skill，通过 agent skill 流程执行。')).toBeTruthy();
         expect(screen.getByTitle('常规 Skill，直接由原生 skill runner 执行。')).toBeTruthy();
+        expect(screen.queryByText('invoice_app')).toBeNull();
+    });
+    it('shows MaClaw App skills in their own category', async () => {
+        renderPanel();
+
+        await waitFor(() => {
+            expect(ListNLSkillsMock).toHaveBeenCalled();
+        });
+
+        fireEvent.click(screen.getByText('MaClaw App'));
+
+        expect(screen.getByText('invoice_app')).toBeTruthy();
+        expect(screen.getByText('maclaw.app.json')).toBeTruthy();
+        expect(screen.queryByText('paper_digest')).toBeNull();
+    });
+    it('opens the app panel from the MaClaw App category', async () => {
+        const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+        renderPanel();
+
+        await waitFor(() => {
+            expect(ListNLSkillsMock).toHaveBeenCalled();
+        });
+
+        fireEvent.click(screen.getByText('MaClaw App'));
+        fireEvent.click(screen.getByText('打开应用面板'));
+
+        expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'maclaw:open-apps-panel' }));
+    });
+    it('uploads a MaClaw App skill to the skill market', async () => {
+        UploadNLSkillToMarketMock.mockResolvedValue('submission-app-1');
+        renderPanel();
+
+        await waitFor(() => {
+            expect(ListNLSkillsMock).toHaveBeenCalled();
+        });
+
+        fireEvent.click(screen.getByText('MaClaw App'));
+        fireEvent.click(screen.getByText('上传'));
+
+        await waitFor(() => {
+            expect(UploadNLSkillToMarketMock).toHaveBeenCalledWith('invoice_app');
+        });
     });
     it('shows public and private market source badges with tooltips for search results', async () => {
         SearchMixedSkillsMock.mockResolvedValue([
@@ -159,7 +216,7 @@ describe('SkillsManagementPanel execution class', () => {
             expect(ListNLSkillsMock).toHaveBeenCalled();
         });
 
-        fireEvent.click(screen.getAllByRole('button')[1]);
+        fireEvent.click(screen.getByText('能力市场'));
 
         const input = document.querySelector('input.form-input') as HTMLInputElement;
         expect(input).toBeTruthy();
@@ -177,6 +234,95 @@ describe('SkillsManagementPanel execution class', () => {
         expect(screen.getByText('Public Paper Skill')).toBeTruthy();
         expect(screen.getByTitle('私有市场：来自你当前所属 Hub 或组织的能力市场。')).toBeTruthy();
         expect(screen.getByTitle('公共市场：来自 HubCenter 的公共 SkillMarket 能力市场。')).toBeTruthy();
+    });
+    it('marks MaClaw App Skill search results', async () => {
+        SearchMixedSkillsMock.mockResolvedValue([
+            {
+                id: 'invoice-app',
+                name: 'Invoice App',
+                description: 'Invoice review app skill',
+                tags: [],
+                source: 'skillmarket',
+                source_label: '公共市场',
+                avg_rating: 0,
+                rating_count: 0,
+                downloads: 0,
+                score: 100,
+                price: 0,
+                installed: false,
+                can_update: false,
+                has_update: false,
+                product_kind: 'maclaw_app_skill',
+                is_maclaw_app: true,
+                maclaw_app_name: 'Invoice Review',
+                maclaw_app_category: 'finance',
+                maclaw_app_icon: 'receipt',
+                maclaw_app_output_modes: ['pdf', 'docx'],
+                artifact_contract_output_modes: ['pdf'],
+            },
+        ]);
+
+        renderPanel();
+
+        await waitFor(() => {
+            expect(ListNLSkillsMock).toHaveBeenCalled();
+        });
+
+        fireEvent.click(screen.getByText('能力市场'));
+        fireEvent.change(document.querySelector('input.form-input') as HTMLInputElement, { target: { value: 'invoice' } });
+        fireEvent.click(document.querySelector('button.btn-primary') as HTMLButtonElement);
+
+        await waitFor(() => {
+            expect(SearchMixedSkillsMock).toHaveBeenCalledWith('invoice');
+        });
+        expect(screen.getByText('Invoice App')).toBeTruthy();
+        expect(screen.getByText(/Invoice Review/)).toBeTruthy();
+        expect(screen.getByText('finance')).toBeTruthy();
+        expect(screen.getByText('pdf')).toBeTruthy();
+        expect(screen.getByText('App Skill')).toBeTruthy();
+    });
+
+    it('marks MaClaw App Skill recommendations', async () => {
+        GetHubRecommendationsMock.mockResolvedValue([
+            {
+                id: 'invoice-app',
+                name: 'Invoice App',
+                description: 'Invoice review app skill',
+                tags: [],
+                source: 'skillhub',
+                source_label: '公共市场',
+                avg_rating: 0,
+                rating_count: 0,
+                downloads: 0,
+                score: 100,
+                price: 0,
+                installed: false,
+                can_update: false,
+                has_update: false,
+                product_kind: 'maclaw_app_skill',
+                is_maclaw_app: true,
+                maclaw_app_name: 'Invoice Review',
+                maclaw_app_category: 'finance',
+                maclaw_app_output_modes: ['pdf'],
+                artifact_contract_output_modes: ['pdf'],
+            },
+        ]);
+
+        renderPanel();
+
+        await waitFor(() => {
+            expect(ListNLSkillsMock).toHaveBeenCalled();
+        });
+
+        fireEvent.click(screen.getByText('能力市场'));
+
+        await waitFor(() => {
+            expect(GetHubRecommendationsMock).toHaveBeenCalled();
+        });
+        expect(screen.getByText('Invoice App')).toBeTruthy();
+        expect(screen.getByText(/Invoice Review/)).toBeTruthy();
+        expect(screen.getByText('pdf')).toBeTruthy();
+        expect(screen.getByText('App Skill')).toBeTruthy();
     });
 });
 

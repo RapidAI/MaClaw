@@ -705,6 +705,23 @@ func (h *SkillMarketHandlers) SearchSkillMarket(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]any{"results": results, "total": len(results)})
 }
 
+// AdminReviewQueue handles GET /api/v1/admin/skillmarket/review.
+func (h *SkillMarketHandlers) AdminReviewQueue(w http.ResponseWriter, r *http.Request) {
+	topN, _ := strconv.Atoi(r.URL.Query().Get("top_n"))
+	if topN <= 0 {
+		topN = 100
+	}
+	results, err := h.searchSvc.ReviewQueue(r.Context(), topN)
+	if err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if results == nil {
+		results = []skillmarket.SearchResult{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": results, "total": len(results)})
+}
+
 // ── Rating ───────────────────────────────────────────────────────────────
 
 // RateSkill handles POST /api/v1/skillmarket/{id}/rate.

@@ -126,7 +126,9 @@ func isTransientServerError(err error) bool {
 	if strings.Contains(s, "quota exceeded") ||
 		strings.Contains(s, "overloaded") ||
 		strings.Contains(s, "server is overloaded") ||
-		strings.Contains(s, "鏈嶅姟绻佸繖") ||
+		strings.Contains(s, "overloaded_error") ||
+		strings.Contains(s, `"code":"1305"`) ||
+		strings.Contains(s, `"code": "1305"`) ||
 		strings.Contains(s, "鏈嶅姟绻佸繖") ||
 		strings.Contains(s, "鏈嶅姟杩囪浇") {
 		return true

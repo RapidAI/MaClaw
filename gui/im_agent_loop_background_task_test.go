@@ -525,3 +525,132 @@ func TestLoopContextBackgroundTaskBoundaryExtensionKey(t *testing.T) {
 		t.Fatal("new background task key should be able to extend once")
 	}
 }
+
+func TestResponseNeutralToolDefersFinalizationForActiveBackgroundTask(t *testing.T) {
+	h := &IMMessageHandler{localBgTaskMgr: coretool.NewLocalBackgroundTaskManager(t.TempDir()), memory: agent.NewConversationMemory()}
+	defer h.memory.Stop()
+	ctx := NewLoopContext("response-neutral-bg-defer", 10, nil)
+
+	command := "sleep 30"
+	if runtime.GOOS == "windows" {
+		command = "Start-Sleep -Seconds 30"
+	}
+	task, err := h.localBgTaskMgr.Submit(command, "")
+	if err != nil {
+		t.Fatalf("submit background task: %v", err)
+	}
+	defer func() { _ = h.localBgTaskMgr.Kill(task.TaskID) }()
+
+	phase := &agentLoopPhase{}
+
+	// Simulate: LLM produced visible text + called compress_context (response-neutral tool)
+	result := h.handleAgentLoopPostToolBranch(agentLoopPostToolBranchOptions{
+		Context:                    ctx,
+		UserID:                     desktopUserID,
+		UserText:                   "update omniroute",
+		Iteration:                  5,
+		MessageContent:             "正在等待 Docker 构建完成。让我同时压缩一下上下文。",
+		AssistantHadVisibleContent: true,
+		ToolCalls:                  []llm.ToolCall{{ID: "call_1", Type: "function", Function: llm.ToolCallFunction{Name: "compress_context", Arguments: `{"summary":"building docker"}`}}},
+		ToolResults:                []string{"✅ 上下文压缩已排队。"},
+		ToolOutcomes:               []toolOutcome{toolOutcomeSucceeded},
+		Phase:                      phase,
+		History:                    []agent.ConversationEntry{{Role: "user", Content: "update omniroute"}},
+		AttachLLMTelemetry:         func(*IMAgentResponse) {},
+		AttachVisibleArtifacts:     func(*IMAgentResponse) {},
+	})
+
+	// Should NOT finalize — should defer to background task check
+	if result.Response != nil {
+		t.Fatalf("expected loop to continue (response=nil) when background task is active, got text=%q", result.Response.Text)
+	}
+	if phase.RecoverReason != agentRecoverBackgroundTaskPending {
+		t.Fatalf("recover reason = %q, want %q", phase.RecoverReason, agentRecoverBackgroundTaskPending)
+	}
+	if !strings.Contains(phase.RecoverPrompt, task.TaskID) {
+		t.Fatalf("recover prompt should mention the active task ID %q, got %q", task.TaskID, phase.RecoverPrompt)
+	}
+}
+
+func TestResponseNeutralToolFinalizesWhenNoBackgroundTask(t *testing.T) {
+	h := &IMMessageHandler{localBgTaskMgr: coretool.NewLocalBackgroundTaskManager(t.TempDir()), memory: agent.NewConversationMemory()}
+	defer h.memory.Stop()
+	ctx := NewLoopContext("response-neutral-no-bg", 10, nil)
+
+	phase := &agentLoopPhase{}
+
+	// No background task running
+	result := h.handleAgentLoopPostToolBranch(agentLoopPostToolBranchOptions{
+		Context:                    ctx,
+		UserID:                     desktopUserID,
+		UserText:                   "summarize work",
+		Iteration:                  5,
+		MessageContent:             "已完成所有工作。",
+		AssistantHadVisibleContent: true,
+		ToolCalls:                  []llm.ToolCall{{ID: "call_1", Type: "function", Function: llm.ToolCallFunction{Name: "compress_context", Arguments: `{"summary":"all done"}`}}},
+		ToolResults:                []string{"✅ 上下文压缩已排队。"},
+		ToolOutcomes:               []toolOutcome{toolOutcomeSucceeded},
+		Phase:                      phase,
+		History:                    []agent.ConversationEntry{{Role: "user", Content: "summarize work"}},
+		AttachLLMTelemetry:         func(*IMAgentResponse) {},
+		AttachVisibleArtifacts:     func(*IMAgentResponse) {},
+	})
+
+	// Should finalize — no background task
+	if result.Response == nil {
+		t.Fatal("expected finalization response when no background task is active")
+	}
+	if !strings.Contains(result.Response.Text, "已完成所有工作") {
+		t.Fatalf("finalized response should contain visible content, got %q", result.Response.Text)
+	}
+	if phase.Stage != agentStageFinalize {
+		t.Fatalf("phase stage = %q, want %q", phase.Stage, agentStageFinalize)
+	}
+}
+
+func TestResponseNeutralToolFinalizesWithHintWhenRecoverCapReached(t *testing.T) {
+	h := &IMMessageHandler{localBgTaskMgr: coretool.NewLocalBackgroundTaskManager(t.TempDir()), memory: agent.NewConversationMemory()}
+	defer h.memory.Stop()
+	ctx := NewLoopContext("response-neutral-bg-cap", 10, nil)
+
+	command := "sleep 30"
+	if runtime.GOOS == "windows" {
+		command = "Start-Sleep -Seconds 30"
+	}
+	task, err := h.localBgTaskMgr.Submit(command, "")
+	if err != nil {
+		t.Fatalf("submit background task: %v", err)
+	}
+	defer func() { _ = h.localBgTaskMgr.Kill(task.TaskID) }()
+
+	// Simulate: recover cap already reached
+	phase := &agentLoopPhase{TotalRecoverInjections: maxTotalRecoverInjections}
+
+	result := h.handleAgentLoopPostToolBranch(agentLoopPostToolBranchOptions{
+		Context:                    ctx,
+		UserID:                     desktopUserID,
+		UserText:                   "continue waiting",
+		Iteration:                  12,
+		MessageContent:             "Still waiting for build.",
+		AssistantHadVisibleContent: true,
+		ToolCalls:                  []llm.ToolCall{{ID: "call_1", Type: "function", Function: llm.ToolCallFunction{Name: "compress_context", Arguments: `{"summary":"waiting"}`}}},
+		ToolResults:                []string{"✅ 上下文压缩已排队。"},
+		ToolOutcomes:               []toolOutcome{toolOutcomeSucceeded},
+		Phase:                      phase,
+		History:                    []agent.ConversationEntry{{Role: "user", Content: "continue waiting"}},
+		AttachLLMTelemetry:         func(*IMAgentResponse) {},
+		AttachVisibleArtifacts:     func(*IMAgentResponse) {},
+	})
+
+	// Should finalize with task hint appended (recover cap reached, can't defer)
+	if result.Response == nil {
+		t.Fatal("expected finalization when recover cap is reached")
+	}
+	if !strings.Contains(result.Response.Text, task.TaskID) {
+		t.Fatalf("finalized response should include background task hint with task_id=%q, got %q", task.TaskID, result.Response.Text)
+	}
+	if !strings.Contains(result.Response.Text, "Still waiting for build") {
+		t.Fatalf("finalized response should preserve visible content, got %q", result.Response.Text)
+	}
+}
+

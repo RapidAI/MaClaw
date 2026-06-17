@@ -37,7 +37,7 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 			candidate := filepath.Join(staticDir, filepath.FromSlash(relPath))
 			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 				ext := strings.ToLower(filepath.Ext(relPath))
-				if ext == ".js" {
+				if ext == ".js" || ext == ".css" {
 					w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 				}
 				if ext == ".js" && brandName != "" && brandName != "MaClaw" {

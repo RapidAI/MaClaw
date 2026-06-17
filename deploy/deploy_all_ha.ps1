@@ -1000,7 +1000,11 @@ fi
 "@
 
     Write-Host ("Ensuring nginx proxy for {0} -> 127.0.0.1:{1} on {2}..." -f $serverName, $proxyPort, $Target.Host) -ForegroundColor Cyan
-    Invoke-Plink -PlinkExe $PlinkExe -ConnectionArgs $ConnectionArgs -CommandText $command
+    try {
+        Invoke-Plink -PlinkExe $PlinkExe -ConnectionArgs $ConnectionArgs -CommandText $command
+    } catch {
+        Write-Host ("  [WARN] nginx proxy fix skipped (non-fatal): {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+    }
 }
 
 function Invoke-UrlStatusCheck {

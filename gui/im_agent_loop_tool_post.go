@@ -118,13 +118,27 @@ func (h *IMMessageHandler) handleAgentLoopPostToolBranch(opts agentLoopPostToolB
 	// Some tools only maintain loop state after the answer is already complete.
 	// Do not make those tools force another LLM round and hide the visible answer.
 	if shouldFinalizeAssistantContentAfterResponseNeutralTools(opts.AssistantHadVisibleContent, result.MessageContent, opts.ToolCalls, opts.ToolOutcomes) {
+		// Before finalizing, check if there are active background tasks that
+		// the agent should continue monitoring. Without this check, calling
+		// compress_context while a background task is running causes the loop
+		// to exit prematurely — the no-tool branch's
+		// recoverForPendingBackgroundTaskNoToolReply never gets a chance to run
+		// because we're in the tool branch.
+		var taskHint string
+		if opts.Context != nil {
+			taskHint = h.pendingBackgroundTaskHint(opts.Context.StartedAt)
+		}
+		if taskHint != "" && opts.Phase != nil && opts.Phase.TotalRecoverInjections < maxTotalRecoverInjections {
+			log.Printf("[agent-loop] response-neutral tool with active background task; deferring finalize to check task status")
+			enterRecoverPhase(opts.Phase, agentRecoverBackgroundTaskPending, buildPendingBackgroundTaskRecoverPrompt(taskHint))
+			return result // result.Response == nil → loop continues
+		}
+
 		if opts.Phase != nil {
 			opts.Phase.Stage = agentStageFinalize
 		}
 		finalText := stripThinkingTags(opts.LengthContinuationText + result.MessageContent)
-		if opts.Context != nil {
-			finalText = appendPendingBackgroundTaskFinalHint(finalText, h.pendingBackgroundTaskHint(opts.Context.StartedAt))
-		}
+		finalText = appendPendingBackgroundTaskFinalHint(finalText, taskHint)
 		finalResp := &IMAgentResponse{Text: finalText}
 		if opts.StreamDone {
 			result.PostStreamReturnPrepTime = true

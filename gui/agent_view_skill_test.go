@@ -541,6 +541,8 @@ func TestBuildSkillRunStatusAgentViewShowsResultWhenFinished(t *testing.T) {
 	}
 	status.Summary.ArtifactPath = "out.pdf"
 	status.Summary.ArtifactStatus = skillArtifactStatusVerified
+	status.Artifacts = []SkillRunArtifact{{ID: "artifact-1", Name: "out.pdf", Path: "out.pdf", Status: skillArtifactStatusVerified}}
+	status.Outputs = []SkillRunOutputBlock{{ID: "artifact-1", Kind: "artifact", ArtifactID: "artifact-1"}}
 	view := buildSkillRunStatusAgentView(status, "run-1")
 	if view["type"] != "result_browser" {
 		t.Fatalf("finished status should render result browser, got %#v", view)
@@ -552,6 +554,12 @@ func TestBuildSkillRunStatusAgentViewShowsResultWhenFinished(t *testing.T) {
 	summary := results[0]["data"].(map[string]interface{})
 	if summary["artifact_path"] != "out.pdf" || summary["artifact_status"] != "verified" {
 		t.Fatalf("artifact summary missing: %#v", summary)
+	}
+	if artifacts, ok := summary["artifacts"].([]SkillRunArtifact); !ok || len(artifacts) != 1 || artifacts[0].Path != "out.pdf" {
+		t.Fatalf("artifact protocol missing: %#v", summary)
+	}
+	if blocks, ok := summary["output_blocks"].([]SkillRunOutputBlock); !ok || len(blocks) != 1 || blocks[0].Kind != "artifact" {
+		t.Fatalf("output protocol missing: %#v", summary)
 	}
 	stepData := results[1]["data"].(map[string]interface{})
 	if stepData["output"] != "final output" {

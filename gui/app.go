@@ -7745,6 +7745,33 @@ func (a *App) OpenFileOrShowInFolder(path string) error {
 		return fmt.Errorf("unsupported platform")
 	}
 }
+
+func (a *App) OpenSkillRunArtifact(runID string, artifactID string) error {
+	return a.openSkillRunArtifactByID(runID, artifactID, false)
+}
+
+func (a *App) RevealSkillRunArtifact(runID string, artifactID string) error {
+	return a.openSkillRunArtifactByID(runID, artifactID, true)
+}
+
+func (a *App) openSkillRunArtifactByID(runID string, artifactID string, reveal bool) error {
+	if a == nil || a.skillRunner == nil {
+		return fmt.Errorf("skill runner not initialized")
+	}
+	status, err := a.skillRunner.GetRunStatus(strings.TrimSpace(runID))
+	if err != nil {
+		return err
+	}
+	path, err := resolveSkillRunArtifactPath(status, artifactID)
+	if err != nil {
+		return err
+	}
+	if reveal {
+		return a.ShowItemInFolder(path)
+	}
+	return a.OpenFileOrShowInFolder(path)
+}
+
 func (a *App) GetSkillsDir(toolName string) string {
 	baseDir := filepath.Join(a.GetDataDir(), "skills")
 	storageDir := filepath.Join(baseDir, "storage")

@@ -2385,6 +2385,55 @@ func TestSummarizeSkillRunMarksExpectedArtifactMissing(t *testing.T) {
 	}
 }
 
+func TestSummarizeSkillRunBuildsOutputProtocol(t *testing.T) {
+	artifact := filepath.Join(t.TempDir(), "report.pdf")
+	if err := os.WriteFile(artifact, []byte("pdf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status := &SkillRunStatus{
+		Status:         "success",
+		ExpectedOutput: artifact,
+		Steps: []StepResult{{
+			Action: "bash",
+			Status: "success",
+			Output: "done",
+		}},
+	}
+
+	summarizeSkillRun(status)
+
+	if len(status.Artifacts) != 1 || status.Artifacts[0].Path != artifact || status.Artifacts[0].Name != "report.pdf" || status.Artifacts[0].Status != skillArtifactStatusVerified || status.Artifacts[0].Presentation != "preview_or_file" {
+		t.Fatalf("artifact protocol = %#v", status.Artifacts)
+	}
+	if len(status.Outputs) != 2 || status.Outputs[0].Kind != "artifact" || status.Outputs[0].Artifact == nil || status.Outputs[1].Kind != "text" || status.Outputs[1].Text != "done" {
+		t.Fatalf("output blocks = %#v", status.Outputs)
+	}
+	if len(status.Summary.Artifacts) != 1 || len(status.Summary.OutputBlocks) != 2 {
+		t.Fatalf("summary protocol missing: %#v", status.Summary)
+	}
+}
+
+func TestResolveSkillRunArtifactPathUsesArtifactIDAndFallback(t *testing.T) {
+	status := &SkillRunStatus{
+		Summary: SkillRunSummary{ArtifactPath: "legacy.pdf"},
+		Artifacts: []SkillRunArtifact{
+			{ID: "a1", Path: "one.pdf"},
+			{ID: "a2", Path: "two.pdf"},
+		},
+	}
+	got, err := resolveSkillRunArtifactPath(status, "a2")
+	if err != nil || got != "two.pdf" {
+		t.Fatalf("resolve by id = %q, %v", got, err)
+	}
+	got, err = resolveSkillRunArtifactPath(&SkillRunStatus{Summary: SkillRunSummary{ArtifactPath: "legacy.pdf"}}, "")
+	if err != nil || got != "legacy.pdf" {
+		t.Fatalf("resolve fallback = %q, %v", got, err)
+	}
+	if _, err := resolveSkillRunArtifactPath(status, "missing"); err == nil {
+		t.Fatal("expected missing artifact error")
+	}
+}
+
 func TestSkillRunExpectsArtifactFromContract(t *testing.T) {
 	if !skillRunExpectsArtifact(&corelib.NLSkillEntry{ProducesArtifact: true}, "") {
 		t.Fatal("produces_artifact should expect an artifact")

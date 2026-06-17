@@ -125,6 +125,12 @@ func BuildTenantAuthorizationStatus(ctx context.Context, checker *AuthorizationC
 	}
 	for _, a := range auths {
 		active := a.IsActive(current)
+		// External compute permission records are pure permission grants,
+		// not credit-based quotas. They remain active as long as status is
+		// "active" and the time window is valid, regardless of credits.
+		if !active && isExternalComputePermissionRecord(a) && isTimeWindowActive(a, current) {
+			active = true
+		}
 		if active {
 			result.Authorizations = append(result.Authorizations, TenantAuthorizationSummary{
 				ID:                     a.ID,
@@ -148,6 +154,37 @@ func BuildTenantAuthorizationStatus(ctx context.Context, checker *AuthorizationC
 		}
 	}
 	return result, nil
+}
+
+// isExternalComputePermissionRecord returns true for records that represent
+// a permission grant (not a credit-based quota). These records should not be
+// gated by CreditsRemaining > 0.
+func isExternalComputePermissionRecord(a *TenantAuthorization) bool {
+	if a == nil {
+		return false
+	}
+	return a.ServiceGroupID == ExternalComputePermissionServiceGroupID ||
+		a.Source == "external_provider_permission"
+}
+
+// isTimeWindowActive checks if the record is within its time validity window
+// and not explicitly expired/exhausted. Does NOT check credits.
+func isTimeWindowActive(a *TenantAuthorization, now time.Time) bool {
+	if a == nil {
+		return false
+	}
+	if a.Status == "expired" || a.Status == "exhausted" {
+		return false
+	}
+	// Treat zero StartsAt as "always started".
+	if !a.StartsAt.IsZero() && now.Before(a.StartsAt) {
+		return false
+	}
+	// Treat zero ExpiresAt as "never expires".
+	if !a.ExpiresAt.IsZero() && now.After(a.ExpiresAt) {
+		return false
+	}
+	return true
 }
 
 // AuthorizationQueryHandler returns an HTTP handler for querying tenant authorization status.

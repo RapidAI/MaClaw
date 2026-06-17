@@ -148,6 +148,7 @@ var DocOnlyAllowedTools = map[string]bool{
 	"open":                     true,
 	"set_nickname":             true,
 	"list_directory":           true,
+	"bash":                     true,
 	"manage_skill":             true,
 	"get_skill_run":            true,
 	"list_skills":              true,

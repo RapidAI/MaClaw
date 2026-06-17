@@ -20,15 +20,17 @@ import (
 
 // CDPClient is a low-level Chrome DevTools Protocol client over WebSocket.
 type CDPClient struct {
-	conn     *websocket.Conn
-	mu       sync.Mutex
-	nextID   atomic.Int64
-	pending  map[int64]chan json.RawMessage
-	pendMu   sync.Mutex
-	events   chan CDPEvent
-	closed   chan struct{}
-	closeErr error
-	stopPing chan struct{} // signals the keepalive goroutine to stop
+	conn            *websocket.Conn
+	mu              sync.Mutex
+	nextID          atomic.Int64
+	pending         map[int64]chan json.RawMessage
+	pendMu          sync.Mutex
+	events          chan CDPEvent
+	closed          chan struct{}
+	closeErr        error
+	stopPing        chan struct{} // signals the keepalive goroutine to stop
+	closeOnce       sync.Once    // ensures closed channel is closed exactly once
+	closeEventsOnce sync.Once    // ensures events channel is closed exactly once
 }
 
 // CDPEvent is a CDP event pushed by the browser.
@@ -266,7 +268,7 @@ func (c *CDPClient) Close() error {
 	}
 	c.closeErr = c.conn.Close()
 	log.Printf("[browser] CDP websocket close err=%v", c.closeErr)
-	close(c.closed)
+	c.closeOnce.Do(func() { close(c.closed) })
 	return c.closeErr
 }
 
@@ -327,15 +329,15 @@ func parseConsoleDomainEvent(method string, params json.RawMessage) *ConsoleDoma
 
 func (c *CDPClient) readLoop() {
 	defer func() {
-		select {
-		case <-c.closed:
-		default:
-			close(c.closed)
-		}
+		// Signal closure. closeOnce guarantees exactly-once semantics even
+		// if Close() and readLoop race (conn.Close() can cause ReadMessage
+		// to error out and readLoop to exit its defer concurrently with
+		// Close() executing close(c.closed)).
+		c.closeOnce.Do(func() { close(c.closed) })
 		// Close events channel so any goroutine selecting on Events() will
 		// unblock and observe ok=false. This prevents event pump goroutine
 		// leaks when the CDP connection dies and a new one is established.
-		close(c.events)
+		c.closeEventsOnce.Do(func() { close(c.events) })
 	}()
 	for {
 		_, data, err := c.conn.ReadMessage()

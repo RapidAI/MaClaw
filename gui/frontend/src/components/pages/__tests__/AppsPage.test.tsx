@@ -2,38 +2,113 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getMISDataConfigMock = vi.hoisted(() => vi.fn());
+const listNLSkillsMock = vi.hoisted(() => vi.fn());
 const listSkillAppManifestsMock = vi.hoisted(() => vi.fn());
+const saveMaclawAppDefinitionForSkillMock = vi.hoisted(() => vi.fn());
+const recordMaclawAppRunEvidenceForSkillMock = vi.hoisted(() => vi.fn());
+const uploadNLSkillToMarketMock = vi.hoisted(() => vi.fn());
 const runNLSkillAsyncMock = vi.hoisted(() => vi.fn());
 const getNLSkillRunStatusMock = vi.hoisted(() => vi.fn());
 const cancelNLSkillRunMock = vi.hoisted(() => vi.fn());
 const stageSkillAppInputFileMock = vi.hoisted(() => vi.fn());
 const openFileOrShowInFolderMock = vi.hoisted(() => vi.fn());
+const openSkillRunArtifactMock = vi.hoisted(() => vi.fn());
+const revealSkillRunArtifactMock = vi.hoisted(() => vi.fn());
 const showItemInFolderMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     CancelNLSkillRun: (...args: unknown[]) => cancelNLSkillRunMock(...args),
     GetMISDataConfig: (...args: unknown[]) => getMISDataConfigMock(...args),
     GetNLSkillRunStatus: (...args: unknown[]) => getNLSkillRunStatusMock(...args),
+    ListNLSkills: (...args: unknown[]) => listNLSkillsMock(...args),
     ListSkillAppManifests: (...args: unknown[]) => listSkillAppManifestsMock(...args),
     OpenFileOrShowInFolder: (...args: unknown[]) => openFileOrShowInFolderMock(...args),
+    OpenSkillRunArtifact: (...args: unknown[]) => openSkillRunArtifactMock(...args),
+    RecordMaclawAppRunEvidenceForSkill: (...args: unknown[]) => recordMaclawAppRunEvidenceForSkillMock(...args),
+    RevealSkillRunArtifact: (...args: unknown[]) => revealSkillRunArtifactMock(...args),
     RunNLSkillAsync: (...args: unknown[]) => runNLSkillAsyncMock(...args),
+    SaveMaclawAppDefinitionForSkill: (...args: unknown[]) => saveMaclawAppDefinitionForSkillMock(...args),
     ShowItemInFolder: (...args: unknown[]) => showItemInFolderMock(...args),
     StageSkillAppInputFile: (...args: unknown[]) => stageSkillAppInputFileMock(...args),
+    UploadNLSkillToMarket: (...args: unknown[]) => uploadNLSkillToMarketMock(...args),
 }));
 
 import { AppsPage } from '../AppsPage';
 
 const marketManifestPlaceholder = '粘贴 maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json';
+const runHistoryStorageKey = 'maclaw:apps-run-history:v1';
+
+function stableStringify(value: any): string {
+    if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+    if (value && typeof value === 'object') {
+        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
+}
+
+function textHash(value: string): string {
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i += 1) {
+        hash ^= value.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function seedSuccessfulSkillAppRun(skillID = 'invoice-review', name = '发票审核') {
+    const appID = `skill-app-${skillID}-app-tool-app`;
+    const definitionHash = textHash(stableStringify({
+        name,
+        description: '由应用程序工作室创建的应用入口。',
+        category: '文档处理',
+        kind: 'tool_app',
+        icon: 'shield',
+        version: 1,
+        manifest: {
+            schema: 'maclaw.app.v1',
+            installUnit: 'skill',
+            privateMarker: 'x_maclaw_apps',
+            entryKind: 'tool_app',
+            launchMode: 'fixed_skill_ui',
+            skill: {
+                id: skillID,
+                appDefinitionFile: 'maclaw.app.json',
+                inputMode: 'file',
+                multipleFiles: false,
+                outputModes: ['docx', 'pdf'],
+                fields: [],
+            },
+        },
+    }));
+    window.localStorage.setItem(runHistoryStorageKey, JSON.stringify({
+        [appID]: [{
+            runID: 'run-ok-1',
+            appID,
+            status: 'done',
+            definitionHash,
+            outputMode: 'pdf',
+            inputSummary: 'sample.pdf',
+            message: 'done',
+            at: new Date().toISOString(),
+        }],
+    }));
+}
 
 describe('AppsPage', () => {
     beforeEach(() => {
         window.localStorage.clear();
         getMISDataConfigMock.mockReset().mockResolvedValue({ enabled: false, endpoint: 'http://127.0.0.1:18180' });
+        listNLSkillsMock.mockReset().mockResolvedValue([]);
         listSkillAppManifestsMock.mockReset().mockResolvedValue([]);
+        saveMaclawAppDefinitionForSkillMock.mockReset().mockResolvedValue({ app_definition_file: 'maclaw.app.json' });
+        recordMaclawAppRunEvidenceForSkillMock.mockReset().mockResolvedValue({ app_definition_file: 'maclaw.app.json' });
+        uploadNLSkillToMarketMock.mockReset().mockResolvedValue('submission-app-1');
         runNLSkillAsyncMock.mockReset().mockResolvedValue('run-test-1');
         getNLSkillRunStatusMock.mockReset().mockResolvedValue({ run_id: 'run-test-1', status: 'success', summary: { last_output_snippet: 'done' } });
         cancelNLSkillRunMock.mockReset().mockResolvedValue(undefined);
         openFileOrShowInFolderMock.mockReset().mockResolvedValue(undefined);
+        openSkillRunArtifactMock.mockReset().mockResolvedValue(undefined);
+        revealSkillRunArtifactMock.mockReset().mockResolvedValue(undefined);
         showItemInFolderMock.mockReset().mockResolvedValue(undefined);
         stageSkillAppInputFileMock.mockReset().mockImplementation(async (name: string, type: string, lastModified: number) => ({
             name,
@@ -168,6 +243,69 @@ describe('AppsPage', () => {
         expect(screen.getAllByText('应用 manifest 模板').length).toBeGreaterThan(1);
         expect(screen.getAllByText(/x_maclaw_apps/).length).toBeGreaterThan(0);
         expect(screen.getByText(/document-redaction/)).not.toBeNull();
+    });
+
+    it('saves a tool app definition into an existing skill', async () => {
+        listNLSkillsMock.mockResolvedValue([
+            { name: 'invoice-review', description: '审核发票' },
+            { name: 'already-app', is_maclaw_app: true },
+        ]);
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        await waitFor(() => expect(screen.getByDisplayValue('invoice-review')).not.toBeNull());
+        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '发票审核' } });
+        fireEvent.click(screen.getByText('保存到 Skill'));
+
+        await waitFor(() => expect(saveMaclawAppDefinitionForSkillMock).toHaveBeenCalledTimes(1));
+        expect(saveMaclawAppDefinitionForSkillMock.mock.calls[0][0]).toBe('invoice-review');
+        const payload = JSON.parse(saveMaclawAppDefinitionForSkillMock.mock.calls[0][1]);
+        expect(payload.schema).toBe('maclaw.app.v1');
+        expect(payload.privateMarker).toBe('x_maclaw_apps');
+        expect(payload.installUnit).toBe('skill');
+        expect(payload.app.name).toBe('发票审核');
+        expect(payload.app.kind).toBe('tool_app');
+        expect(payload.app.binding.skill.id).toBe('invoice-review');
+        expect(payload.app.binding.skill.appDefinitionFile).toBe('maclaw.app.json');
+        await waitFor(() => expect(screen.getAllByText('发票审核').length).toBeGreaterThan(0));
+
+        seedSuccessfulSkillAppRun();
+        fireEvent.click(screen.getByText('上传到 SkillMarket'));
+        await waitFor(() => expect(uploadNLSkillToMarketMock).toHaveBeenCalledWith('invoice-review'));
+        await waitFor(() => expect(screen.getByText('已提交到 SkillMarket: submission-app-1')).not.toBeNull());
+    });
+
+    it('requires a successful current-version test before uploading a skill app', async () => {
+        listNLSkillsMock.mockResolvedValue([{ name: 'invoice-review', description: '审核发票' }]);
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        await waitFor(() => expect(screen.getByDisplayValue('invoice-review')).not.toBeNull());
+        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '发票审核' } });
+
+        fireEvent.click(screen.getByText('上传到 SkillMarket'));
+
+        await waitFor(() => expect(screen.getByText('请先保存到 Skill，并在应用面板成功测试一次当前版本，再上传到 SkillMarket。')).not.toBeNull());
+        expect(saveMaclawAppDefinitionForSkillMock).not.toHaveBeenCalled();
+        expect(uploadNLSkillToMarketMock).not.toHaveBeenCalled();
+    });
+
+    it('saves the latest tool app definition before uploading to SkillMarket', async () => {
+        listNLSkillsMock.mockResolvedValue([{ name: 'invoice-review', description: '审核发票' }]);
+        seedSuccessfulSkillAppRun();
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        await waitFor(() => expect(screen.getByDisplayValue('invoice-review')).not.toBeNull());
+        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '发票审核' } });
+
+        fireEvent.click(screen.getByText('上传到 SkillMarket'));
+
+        await waitFor(() => expect(saveMaclawAppDefinitionForSkillMock).toHaveBeenCalledWith('invoice-review', expect.any(String)));
+        await waitFor(() => expect(uploadNLSkillToMarketMock).toHaveBeenCalledWith('invoice-review'));
+        const payload = JSON.parse(saveMaclawAppDefinitionForSkillMock.mock.calls[0][1]);
+        expect(payload.app.name).toBe('发票审核');
+        expect(payload.app.binding.skill.appDefinitionFile).toBe('maclaw.app.json');
     });
 
     it('exposes app studio sections as accessible tabs', () => {
@@ -1375,8 +1513,10 @@ describe('AppsPage', () => {
         expect(screen.getAllByText('/tmp/out.docx').length).toBeGreaterThan(1);
         fireEvent.click(screen.getAllByText('打开')[0]);
         fireEvent.click(screen.getAllByText('定位')[0]);
-        expect(openFileOrShowInFolderMock).toHaveBeenCalledWith('/tmp/out.docx');
-        expect(showItemInFolderMock).toHaveBeenCalledWith('/tmp/out.docx');
+        expect(openSkillRunArtifactMock).toHaveBeenCalledWith('run-test-1', '');
+        expect(revealSkillRunArtifactMock).toHaveBeenCalledWith('run-test-1', '');
+        expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
+        expect(showItemInFolderMock).not.toHaveBeenCalled();
 
         expect(screen.getByText('运行历史')).not.toBeNull();
     });
@@ -2036,6 +2176,30 @@ describe('AppsPage', () => {
         expect(Array.from(outputSelect.options).map((option) => option.value)).toEqual(['xlsx']);
     });
 
+    it('auto-registers installed MaClaw App skills in the app panel', async () => {
+        listSkillAppManifestsMock.mockResolvedValue([
+            {
+                id: 'invoice-review',
+                skill_id: 'invoice-app',
+                name: '发票审核',
+                description: 'Review invoice files',
+                category: '财务',
+                icon: 'invoice',
+                input_mode: 'file',
+                output_modes: ['pdf'],
+                app_definition_file: 'maclaw.app.json',
+            },
+        ]);
+        const { container } = render(<AppsPage lang="zh-Hans" />);
+
+        await waitFor(() => expect(screen.getAllByText('发票审核').length).toBeGreaterThan(0));
+        fireEvent.click(screen.getAllByText('发票审核')[0]);
+
+        expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('发票审核');
+        const outputSelect = container.querySelector('.apps-form-row select') as HTMLSelectElement;
+        expect(Array.from(outputSelect.options).map((option) => option.value)).toEqual(['pdf']);
+    });
+
     it('installs apps from a pasted app pack manifest', () => {
         render(<AppsPage lang="zh-Hans" />);
 
@@ -2406,7 +2570,7 @@ describe('AppsPage', () => {
         expect(screen.getAllByText('人事').length).toBeGreaterThan(0);
     });
 
-    it('turns skill maclaw.apps.json entries into addable tool apps', async () => {
+    it('turns skill maclaw.apps.json entries into registered tool apps', async () => {
         listSkillAppManifestsMock.mockResolvedValue([
             { id: 'redact', skill_id: 'doc-tools', name: '文档脱敏 Plus', description: 'Redact files', category: '文档处理', icon: 'shield', input_mode: 'file' },
         ]);
@@ -2415,8 +2579,6 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByTitle('应用程序工作室'));
 
         await waitFor(() => expect(screen.getByText('文档脱敏 Plus')).not.toBeNull());
-        fireEvent.click(screen.getByText('加到面板'));
-
         expect(screen.getByText('已添加')).not.toBeNull();
         fireEvent.click(screen.getByText('关闭'));
         expect(screen.getAllByText('文档脱敏 Plus').length).toBeGreaterThan(0);

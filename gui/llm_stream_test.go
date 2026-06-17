@@ -163,6 +163,23 @@ func TestIsLLMHTTPStatusErrorUsesStructuredStatus(t *testing.T) {
 	}
 }
 
+func TestClassifyOpenAICompatibleHTTPError_ZhipuOverloadedHTTP200(t *testing.T) {
+	// Simulates the exact error format from 智谱 GLM overloaded_error via Anthropic SDK.
+	// The body is wrapped with non-JSON prefix, so json.Unmarshal fails, but the
+	// default branch should detect "overloaded" in the body text.
+	err := errors.New(`HTTP 200: body_len=302: POST "https://open.bigmodel.cn/api/anthropic/v1/messages": 200 OK {"type":"error","error":{"type":"overloaded_error","code":"1305","message":"[1305]请负载均衡"}}`)
+	got, ok := classifyOpenAICompatibleHTTPError(err, "智谱编程")
+	if !ok {
+		t.Fatal("expected HTTP 200 error to be classified")
+	}
+	if !strings.Contains(got, "超载") && !strings.Contains(got, "overloaded") {
+		t.Fatalf("expected overloaded message, got %q", got)
+	}
+	if strings.Contains(got, "body_len") || strings.Contains(got, `"type":"error"`) {
+		t.Fatalf("raw JSON should not leak into user-facing message: %q", got)
+	}
+}
+
 func TestClassifyOpenAIHTTPErrorReportsHubPeriodLimit(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":90,"retry_after_at":"2026-05-05T06:00:00Z"}`)
 	got := classifyOpenAIHTTPError(403, body, "MaClawOfficial")

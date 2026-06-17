@@ -14,18 +14,36 @@ import (
 
 // SearchResult 是搜索结果条目。
 type SearchResult struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	Description   string   `json:"description"`
-	Tags          []string `json:"tags"`
-	Score         float64  `json:"score"`
-	Price         int64    `json:"price"`
-	Status        string   `json:"status"`
-	AvgRating     float64  `json:"avg_rating"`
-	DownloadCount int      `json:"download_count"`
-	Version       string   `json:"version,omitempty"`
-	Author        string   `json:"author,omitempty"`
-	CreatedAt     string   `json:"created_at,omitempty"`
+	ID                           string                       `json:"id"`
+	Name                         string                       `json:"name"`
+	Description                  string                       `json:"description"`
+	Tags                         []string                     `json:"tags"`
+	Score                        float64                      `json:"score"`
+	Price                        int64                        `json:"price"`
+	Status                       string                       `json:"status"`
+	AvgRating                    float64                      `json:"avg_rating"`
+	DownloadCount                int                          `json:"download_count"`
+	Version                      string                       `json:"version,omitempty"`
+	Author                       string                       `json:"author,omitempty"`
+	CreatedAt                    string                       `json:"created_at,omitempty"`
+	ProductKind                  string                       `json:"product_kind,omitempty"`
+	IsMaclawApp                  bool                         `json:"is_maclaw_app,omitempty"`
+	MaclawAppID                  string                       `json:"maclaw_app_id,omitempty"`
+	MaclawAppName                string                       `json:"maclaw_app_name,omitempty"`
+	MaclawAppDescription         string                       `json:"maclaw_app_description,omitempty"`
+	MaclawAppCategory            string                       `json:"maclaw_app_category,omitempty"`
+	MaclawAppIcon                string                       `json:"maclaw_app_icon,omitempty"`
+	MaclawAppInputMode           string                       `json:"maclaw_app_input_mode,omitempty"`
+	MaclawAppOutputModes         []string                     `json:"maclaw_app_output_modes,omitempty"`
+	MaclawAppDefinitionSHA256    string                       `json:"maclaw_app_definition_sha256,omitempty"`
+	MaclawAppTestEvidence        *skill.MaclawAppTestEvidence `json:"maclaw_app_test_evidence,omitempty"`
+	ArtifactContractRequired     bool                         `json:"artifact_contract_required,omitempty"`
+	ArtifactContractOutputModes  []string                     `json:"artifact_contract_output_modes,omitempty"`
+	ArtifactContractPresentation string                       `json:"artifact_contract_presentation,omitempty"`
+	Permissions                  []string                     `json:"permissions,omitempty"`
+	RequiredEnv                  []string                     `json:"required_env,omitempty"`
+	RequiresGUI                  bool                         `json:"requires_gui,omitempty"`
+	SecurityLabels               []string                     `json:"security_labels,omitempty"`
 }
 
 // SearchService 提供 FTS5 全文搜索。
@@ -75,15 +93,28 @@ func (s *SearchService) migrate() error {
 	for _, alter := range []string{
 		`ALTER TABLE sm_skill_index ADD COLUMN version TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sm_skill_index ADD COLUMN author TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sm_skill_index ADD COLUMN product_kind TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sm_skill_index ADD COLUMN is_maclaw_app INTEGER NOT NULL DEFAULT 0`,
 	} {
 		_, _ = s.store.db.Exec(alter) // 列已存在时静默忽略
 	}
 	return nil
 }
 
+type skillSearchIndexProductOptions struct {
+	ProductKind string
+	IsMaclawApp bool
+}
+
 // IndexSkill 将 Skill 索引到 FTS5（发布/更新时调用）。
 func (s *SearchService) IndexSkill(ctx context.Context, id, name, description string, tags []string, avgRating float64, downloads int, price int64, status, createdAt, version, author string) error {
+	return s.IndexSkillWithProduct(ctx, id, name, description, tags, avgRating, downloads, price, status, createdAt, version, author, skillSearchIndexProductOptions{})
+}
+
+func (s *SearchService) IndexSkillWithProduct(ctx context.Context, id, name, description string, tags []string, avgRating float64, downloads int, price int64, status, createdAt, version, author string, product skillSearchIndexProductOptions) error {
 	tagsStr := strings.Join(tags, " ")
+	productKind := strings.TrimSpace(product.ProductKind)
+	isMaclawApp := product.IsMaclawApp || strings.EqualFold(productKind, "maclaw_app_skill")
 	tx, err := s.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -92,8 +123,8 @@ func (s *SearchService) IndexSkill(ctx context.Context, id, name, description st
 
 	// Upsert 索引元数据
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO sm_skill_index (skill_id, name, description, tags, avg_rating, downloads, price, status, created_at, updated_at, version, author)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
+		INSERT INTO sm_skill_index (skill_id, name, description, tags, avg_rating, downloads, price, status, created_at, updated_at, version, author, product_kind, is_maclaw_app)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?)
 		ON CONFLICT(skill_id) DO UPDATE SET
 			name = excluded.name,
 			description = excluded.description,
@@ -104,8 +135,10 @@ func (s *SearchService) IndexSkill(ctx context.Context, id, name, description st
 			status = excluded.status,
 			version = excluded.version,
 			author = excluded.author,
+			product_kind = excluded.product_kind,
+			is_maclaw_app = excluded.is_maclaw_app,
 			updated_at = datetime('now')`,
-		id, name, description, tagsStr, avgRating, downloads, price, status, createdAt, version, author)
+		id, name, description, tagsStr, avgRating, downloads, price, status, createdAt, version, author, productKind, boolToSearchIndexInt(isMaclawApp))
 	if err != nil {
 		return err
 	}
@@ -118,6 +151,13 @@ func (s *SearchService) IndexSkill(ctx context.Context, id, name, description st
 		return err
 	}
 	return tx.Commit()
+}
+
+func boolToSearchIndexInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 // RemoveSkill 从索引中移除 Skill。
@@ -137,9 +177,9 @@ func (s *SearchService) ReIndexSkill(ctx context.Context, id string) error {
 	if meta == nil || !meta.Visible {
 		return nil
 	}
-	return s.IndexSkill(ctx, meta.ID, meta.Name, meta.Description, meta.Tags,
+	return s.IndexSkillWithProduct(ctx, meta.ID, meta.Name, meta.Description, meta.Tags,
 		meta.AvgRating, meta.Downloads, int64(meta.Price), meta.Status, meta.CreatedAt,
-		meta.Version, meta.Author)
+		meta.Version, meta.Author, skillSearchIndexProductOptions{ProductKind: meta.ProductKind, IsMaclawApp: meta.IsMaclawApp})
 }
 
 // sanitizeFTS5Query 将用户输入转换为安全的 FTS5 前缀查询。
@@ -190,7 +230,7 @@ func (s *SearchService) Search(ctx context.Context, query string, tags []string,
 	if trimmedQuery == "" && len(tags) == 0 {
 		// 无搜索词：按 downloads 降序
 		rows, err = s.store.readDB.QueryContext(ctx, `
-			SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at
+			SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at, product_kind, is_maclaw_app
 			FROM sm_skill_index
 			WHERE status IN ('trial', 'published')
 			ORDER BY downloads DESC
@@ -205,7 +245,7 @@ func (s *SearchService) Search(ctx context.Context, query string, tags []string,
 		}
 		args = append(args, topN)
 		rows, err = s.store.readDB.QueryContext(ctx, `
-			SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at
+			SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at, product_kind, is_maclaw_app
 			FROM sm_skill_index
 			WHERE status IN ('trial', 'published') AND `+strings.Join(tagClauses, " AND ")+`
 			ORDER BY downloads DESC
@@ -217,7 +257,7 @@ func (s *SearchService) Search(ctx context.Context, query string, tags []string,
 		if ftsQuery == "" {
 			// 输入全是特殊字符，回退到 LIKE 模糊搜索
 			baseQuery := `
-				SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at
+				SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at, product_kind, is_maclaw_app
 				FROM sm_skill_index
 				WHERE status IN ('trial', 'published')
 				  AND (name LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\' OR tags LIKE ? ESCAPE '\')`
@@ -235,14 +275,14 @@ func (s *SearchService) Search(ctx context.Context, query string, tags []string,
 			// FTS5 前缀搜索 + LIKE 兜底（UNION 去重）
 			ftsQueryUsed = true
 			baseQuery := `
-				SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at, rank
+				SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at, product_kind, is_maclaw_app, rank
 				FROM (
-					SELECT i.skill_id, i.name, i.description, i.tags, i.avg_rating, i.downloads, i.price, i.status, i.version, i.author, i.created_at, f.rank
+					SELECT i.skill_id, i.name, i.description, i.tags, i.avg_rating, i.downloads, i.price, i.status, i.version, i.author, i.created_at, i.product_kind, i.is_maclaw_app, f.rank
 					FROM sm_skill_fts f
 					JOIN sm_skill_index i ON i.skill_id = f.skill_id
 					WHERE sm_skill_fts MATCH ? AND i.status IN ('trial', 'published')
 				  UNION
-					SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at, 0 as rank
+					SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at, product_kind, is_maclaw_app, 0 as rank
 					FROM sm_skill_index
 					WHERE status IN ('trial', 'published')
 					  AND (name LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\' OR tags LIKE ? ESCAPE '\')
@@ -279,16 +319,19 @@ func (s *SearchService) Search(ctx context.Context, query string, tags []string,
 		var r SearchResult
 		var tagsStr string
 		var ftsRank float64
+		var isMaclawApp int
 
 		if hasRankCol {
-			if err := rows.Scan(&r.ID, &r.Name, &r.Description, &tagsStr, &r.AvgRating, &r.DownloadCount, &r.Price, &r.Status, &r.Version, &r.Author, &r.CreatedAt, &ftsRank); err != nil {
+			if err := rows.Scan(&r.ID, &r.Name, &r.Description, &tagsStr, &r.AvgRating, &r.DownloadCount, &r.Price, &r.Status, &r.Version, &r.Author, &r.CreatedAt, &r.ProductKind, &isMaclawApp, &ftsRank); err != nil {
 				return nil, err
 			}
 		} else {
-			if err := rows.Scan(&r.ID, &r.Name, &r.Description, &tagsStr, &r.AvgRating, &r.DownloadCount, &r.Price, &r.Status, &r.Version, &r.Author, &r.CreatedAt); err != nil {
+			if err := rows.Scan(&r.ID, &r.Name, &r.Description, &tagsStr, &r.AvgRating, &r.DownloadCount, &r.Price, &r.Status, &r.Version, &r.Author, &r.CreatedAt, &r.ProductKind, &isMaclawApp); err != nil {
 				return nil, err
 			}
 		}
+		r.IsMaclawApp = isMaclawApp != 0 || strings.EqualFold(strings.TrimSpace(r.ProductKind), "maclaw_app_skill")
+		s.enrichSearchResultWithSkillMeta(&r)
 
 		if tagsStr != "" {
 			r.Tags = strings.Fields(tagsStr)
@@ -302,6 +345,78 @@ func (s *SearchService) Search(ctx context.Context, query string, tags []string,
 	})
 
 	return results, nil
+}
+
+// ReviewQueue 返回后台审核队列，包含试用和待审核状态，不走公开市场过滤。
+func (s *SearchService) ReviewQueue(ctx context.Context, topN int) ([]SearchResult, error) {
+	if topN <= 0 || topN > 1000 {
+		topN = 100
+	}
+	rows, err := s.store.readDB.QueryContext(ctx, `
+  SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at, product_kind, is_maclaw_app
+  FROM sm_skill_index
+  WHERE status IN ('pending_review', 'trial')
+  ORDER BY created_at DESC
+  LIMIT ?`, topN)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make([]SearchResult, 0)
+	for rows.Next() {
+		var r SearchResult
+		var tagsStr string
+		var isMaclawApp int
+		if err := rows.Scan(&r.ID, &r.Name, &r.Description, &tagsStr, &r.AvgRating, &r.DownloadCount, &r.Price, &r.Status, &r.Version, &r.Author, &r.CreatedAt, &r.ProductKind, &isMaclawApp); err != nil {
+			return nil, err
+		}
+		r.IsMaclawApp = isMaclawApp != 0 || strings.EqualFold(strings.TrimSpace(r.ProductKind), "maclaw_app_skill")
+		s.enrichSearchResultWithSkillMeta(&r)
+		if tagsStr != "" {
+			r.Tags = strings.Fields(tagsStr)
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}
+
+func (s *SearchService) enrichSearchResultWithSkillMeta(r *SearchResult) {
+	if s == nil || s.skillStore == nil || r == nil {
+		return
+	}
+	meta := s.skillStore.GetByID(r.ID)
+	if meta == nil {
+		return
+	}
+	if r.ProductKind == "" {
+		r.ProductKind = meta.ProductKind
+	}
+	r.IsMaclawApp = r.IsMaclawApp || meta.IsMaclawApp || strings.EqualFold(strings.TrimSpace(r.ProductKind), "maclaw_app_skill")
+	r.MaclawAppID = meta.MaclawAppID
+	r.MaclawAppName = meta.MaclawAppName
+	r.MaclawAppDescription = meta.MaclawAppDescription
+	r.MaclawAppCategory = meta.MaclawAppCategory
+	r.MaclawAppIcon = meta.MaclawAppIcon
+	r.MaclawAppInputMode = meta.MaclawAppInputMode
+	r.MaclawAppOutputModes = append([]string(nil), meta.MaclawAppOutputModes...)
+	r.MaclawAppDefinitionSHA256 = meta.MaclawAppDefinitionSHA256
+	r.MaclawAppTestEvidence = cloneHubMaclawAppTestEvidence(meta.MaclawAppTestEvidence)
+	r.ArtifactContractRequired = meta.ArtifactContractRequired
+	r.ArtifactContractOutputModes = append([]string(nil), meta.ArtifactContractOutputModes...)
+	r.ArtifactContractPresentation = meta.ArtifactContractPresentation
+	r.Permissions = append([]string(nil), meta.Permissions...)
+	r.RequiredEnv = append([]string(nil), meta.RequiredEnv...)
+	r.RequiresGUI = meta.RequiresGUI
+	r.SecurityLabels = append([]string(nil), meta.SecurityLabels...)
+}
+
+func cloneHubMaclawAppTestEvidence(e *skill.MaclawAppTestEvidence) *skill.MaclawAppTestEvidence {
+	if e == nil {
+		return nil
+	}
+	copy := *e
+	return &copy
 }
 
 // RebuildIndex 从 SkillStore 全量重建 FTS 索引。
@@ -326,7 +441,7 @@ func (s *SearchService) RebuildIndex(ctx context.Context) error {
 			break
 		}
 		for _, m := range result.Skills {
-			if err := s.IndexSkill(ctx, m.ID, m.Name, m.Description, m.Tags, m.AvgRating, m.Downloads, 0, "published", m.CreatedAt, m.Version, m.Author); err != nil {
+			if err := s.IndexSkillWithProduct(ctx, m.ID, m.Name, m.Description, m.Tags, m.AvgRating, m.Downloads, 0, "published", m.CreatedAt, m.Version, m.Author, skillSearchIndexProductOptions{ProductKind: m.ProductKind, IsMaclawApp: m.IsMaclawApp}); err != nil {
 				log.Printf("[skillmarket] rebuild index: skill %s error: %v", m.ID, err)
 			}
 		}

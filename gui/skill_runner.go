@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"os/exec"
@@ -46,17 +47,41 @@ type SkillRunSessionMeta struct {
 // SkillRunSummary provides a compact, user-facing summary of the most
 // important state for a skill run.
 type SkillRunSummary struct {
-	CurrentStepIndex          int                 `json:"current_step_index,omitempty"`
-	CurrentStep               string              `json:"current_step,omitempty"`
-	CurrentStepStatus         skillStepStatus     `json:"current_step_status,omitempty"`
-	LastCompletedStep         string              `json:"last_completed_step,omitempty"`
-	LastCompletedStepIndex    int                 `json:"last_completed_step_index,omitempty"`
-	LastOutputSnippet         string              `json:"last_output_snippet,omitempty"`
-	LastErrorSnippet          string              `json:"last_error_snippet,omitempty"`
-	HasSessionBinding         bool                `json:"has_session_binding,omitempty"`
-	NeedsArtifactVerification bool                `json:"needs_artifact_verification,omitempty"`
-	ArtifactPath              string              `json:"artifact_path,omitempty"`
-	ArtifactStatus            skillArtifactStatus `json:"artifact_status,omitempty"`
+	CurrentStepIndex          int                   `json:"current_step_index,omitempty"`
+	CurrentStep               string                `json:"current_step,omitempty"`
+	CurrentStepStatus         skillStepStatus       `json:"current_step_status,omitempty"`
+	LastCompletedStep         string                `json:"last_completed_step,omitempty"`
+	LastCompletedStepIndex    int                   `json:"last_completed_step_index,omitempty"`
+	LastOutputSnippet         string                `json:"last_output_snippet,omitempty"`
+	LastErrorSnippet          string                `json:"last_error_snippet,omitempty"`
+	HasSessionBinding         bool                  `json:"has_session_binding,omitempty"`
+	NeedsArtifactVerification bool                  `json:"needs_artifact_verification,omitempty"`
+	ArtifactPath              string                `json:"artifact_path,omitempty"`
+	ArtifactStatus            skillArtifactStatus   `json:"artifact_status,omitempty"`
+	Artifacts                 []SkillRunArtifact    `json:"artifacts,omitempty"`
+	OutputBlocks              []SkillRunOutputBlock `json:"output_blocks,omitempty"`
+}
+
+// SkillRunArtifact is the normalized file output contract exposed to UI.
+type SkillRunArtifact struct {
+	ID           string              `json:"id"`
+	Name         string              `json:"name,omitempty"`
+	Path         string              `json:"path,omitempty"`
+	MimeType     string              `json:"mime_type,omitempty"`
+	SizeBytes    int64               `json:"size_bytes,omitempty"`
+	Status       skillArtifactStatus `json:"status,omitempty"`
+	Presentation string              `json:"presentation,omitempty"`
+}
+
+// SkillRunOutputBlock is the normalized UI-facing output model for skill runs.
+type SkillRunOutputBlock struct {
+	ID         string            `json:"id"`
+	Kind       string            `json:"kind"`
+	Title      string            `json:"title,omitempty"`
+	Text       string            `json:"text,omitempty"`
+	Status     string            `json:"status,omitempty"`
+	ArtifactID string            `json:"artifact_id,omitempty"`
+	Artifact   *SkillRunArtifact `json:"artifact,omitempty"`
 }
 
 // SkillRunStatus represents one skill execution.
@@ -69,6 +94,8 @@ type SkillRunStatus struct {
 	Session           *SkillRunSessionMeta    `json:"session,omitempty"`
 	SessionProgress   *SessionProgressInfo    `json:"session_progress,omitempty"`
 	Summary           SkillRunSummary         `json:"summary,omitempty"`
+	Outputs           []SkillRunOutputBlock   `json:"outputs,omitempty"`
+	Artifacts         []SkillRunArtifact      `json:"artifacts,omitempty"`
 	ExpectedOutput    string                  `json:"expected_output,omitempty"`
 	ExpectedArtifact  bool                    `json:"expected_artifact,omitempty"`
 	StartedAt         string                  `json:"started_at"`
@@ -822,6 +849,95 @@ func summarizeSkillRun(status *SkillRunStatus) {
 		if snippet := strings.TrimSpace(status.Error); snippet != "" {
 			status.Summary.LastErrorSnippet = truncateSkillRunSnippet(snippet)
 		}
+	}
+	populateSkillRunOutputProtocol(status)
+}
+
+func populateSkillRunOutputProtocol(status *SkillRunStatus) {
+	if status == nil {
+		return
+	}
+	artifacts := make([]SkillRunArtifact, 0, 1)
+	blocks := make([]SkillRunOutputBlock, 0, 2)
+	if artifactPath := strings.TrimSpace(status.Summary.ArtifactPath); artifactPath != "" {
+		artifact := buildSkillRunArtifact("artifact-1", artifactPath, status.Summary.ArtifactStatus)
+		artifacts = append(artifacts, artifact)
+		blocks = append(blocks, SkillRunOutputBlock{
+			ID:         "artifact-1",
+			Kind:       "artifact",
+			Title:      artifact.Name,
+			Status:     artifact.Status.String(),
+			ArtifactID: artifact.ID,
+			Artifact:   &artifact,
+		})
+	}
+	if text := strings.TrimSpace(status.Summary.LastOutputSnippet); text != "" {
+		blocks = append(blocks, SkillRunOutputBlock{ID: "text-1", Kind: "text", Title: "Output", Text: text, Status: status.Status.String()})
+	}
+	if text := strings.TrimSpace(status.Summary.LastErrorSnippet); text != "" {
+		blocks = append(blocks, SkillRunOutputBlock{ID: "error-1", Kind: "error", Title: "Error", Text: text, Status: status.Status.String()})
+	}
+	status.Artifacts = artifacts
+	status.Outputs = blocks
+	status.Summary.Artifacts = artifacts
+	status.Summary.OutputBlocks = blocks
+}
+
+func resolveSkillRunArtifactPath(status *SkillRunStatus, artifactID string) (string, error) {
+	if status == nil {
+		return "", fmt.Errorf("skill run status is nil")
+	}
+	artifactID = strings.TrimSpace(artifactID)
+	artifacts := status.Artifacts
+	if len(artifacts) == 0 {
+		artifacts = status.Summary.Artifacts
+	}
+	for _, artifact := range artifacts {
+		if artifactID != "" && artifact.ID != artifactID {
+			continue
+		}
+		path := strings.TrimSpace(artifact.Path)
+		if path == "" {
+			continue
+		}
+		return path, nil
+	}
+	if artifactID == "" && strings.TrimSpace(status.Summary.ArtifactPath) != "" {
+		return strings.TrimSpace(status.Summary.ArtifactPath), nil
+	}
+	return "", fmt.Errorf("artifact %q not found", artifactID)
+}
+
+func buildSkillRunArtifact(id, artifactPath string, status skillArtifactStatus) SkillRunArtifact {
+	artifactPath = strings.TrimSpace(artifactPath)
+	artifact := SkillRunArtifact{
+		ID:           strings.TrimSpace(id),
+		Name:         filepath.Base(artifactPath),
+		Path:         artifactPath,
+		Status:       status,
+		Presentation: skillRunArtifactPresentation(artifactPath),
+	}
+	if artifact.ID == "" {
+		artifact.ID = "artifact-1"
+	}
+	if ext := strings.ToLower(filepath.Ext(artifactPath)); ext != "" {
+		artifact.MimeType = mime.TypeByExtension(ext)
+	}
+	if info, err := os.Stat(artifactPath); err == nil && !info.IsDir() {
+		artifact.SizeBytes = info.Size()
+		if artifact.Status == "" {
+			artifact.Status = skillArtifactStatusVerified
+		}
+	}
+	return artifact
+}
+
+func skillRunArtifactPresentation(path string) string {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(path))) {
+	case ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".txt", ".md", ".html", ".htm", ".csv", ".json":
+		return "preview_or_file"
+	default:
+		return "file"
 	}
 }
 

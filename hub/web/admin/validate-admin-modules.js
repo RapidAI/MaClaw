@@ -32,6 +32,7 @@ const expectedScripts = [
   'usage-stats-tab.js',
   'failure-logs-tab.js',
   'admin-module-health.js',
+  'overview-tenant-info.js',
   'admin-bootstrap.js'
 ];
 const removedLegacyFiles = [

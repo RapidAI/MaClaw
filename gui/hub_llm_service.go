@@ -29,6 +29,13 @@ const (
 // discover a missing viewer token concurrently.
 var ensureViewerTokenMu sync.Mutex
 
+// hubLLMSyncRespectLogThrottle suppresses the repetitive "respecting user
+// provider choice" log message. It fires at most once per minute.
+var hubLLMSyncRespectLogThrottle struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
 // ensureViewerToken checks whether the config has a RemoteViewerToken. If it
 // is missing but the registration credentials (RemoteEmail + RemoteHubURL) are
 // present, it performs a re-enroll to obtain a fresh viewer token.
@@ -580,7 +587,13 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 	} else {
 		// User has selected a third-party provider — respect their choice.
 		// Only forceCurrentProvider (ActivateRemote) can override this.
-		log.Printf("[hub-llm-sync] respecting user provider choice: %q (not overriding to hub)", cfg.MaclawLLMCurrentProvider)
+		// Throttle this log: hub sync fires every ~10s, this message is purely informational.
+		hubLLMSyncRespectLogThrottle.mu.Lock()
+		if time.Since(hubLLMSyncRespectLogThrottle.last) > time.Minute {
+			hubLLMSyncRespectLogThrottle.last = time.Now()
+			log.Printf("[hub-llm-sync] respecting user provider choice: %q (not overriding to hub)", cfg.MaclawLLMCurrentProvider)
+		}
+		hubLLMSyncRespectLogThrottle.mu.Unlock()
 	}
 	if cfg.MaclawLLMUrl != provider.URL || cfg.MaclawLLMKey != provider.Key || cfg.MaclawLLMModel != provider.Model || cfg.MaclawLLMProtocol != provider.Protocol || cfg.MaclawLLMTimeoutSec != provider.TimeoutSec || cfg.MaclawLLMContextLength != provider.ContextLength {
 		cfg.MaclawLLMUrl = provider.URL

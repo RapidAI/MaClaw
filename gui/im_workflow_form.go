@@ -5,7 +5,7 @@ import (
 	"log"
 	"strings"
 
-	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 const (
@@ -18,13 +18,13 @@ const (
 // emitWorkflowPhaseForm builds an AgentView form from the phase's InputSchema
 // and emits it to the frontend via the standard AG UI lifecycle protocol.
 // The form appears in the right-side task panel (AgentTaskPanel).
-func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow.PhaseInputSchemaSpec, phaseID string) {
+func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *v2.PhaseInputSchemaSpec, phaseID string) {
 	if h == nil || h.app == nil || schema == nil || len(schema.Fields) == 0 {
 		return
 	}
 	schema = localizeWorkflowPhaseInputSchema(schema, h.getWorkflowLang())
 
-	var ws *workflow.EngineState
+	var ws *v2.EngineState
 	workflowID := ""
 	if ws != nil {
 		workflowID = ws.ID
@@ -35,7 +35,7 @@ func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow
 	log.Printf("[workflow-form] emitted AG UI form: phase=%s fields=%d", phaseID, len(schema.Fields))
 }
 
-func buildWorkflowPhaseFormAgentView(userID, workflowID, phaseID string, schema *workflow.PhaseInputSchemaSpec) map[string]interface{} {
+func buildWorkflowPhaseFormAgentView(userID, workflowID, phaseID string, schema *v2.PhaseInputSchemaSpec) map[string]interface{} {
 	if schema == nil {
 		return nil
 	}
@@ -141,7 +141,7 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 
 	// Route to v2 workflow engine
 	if handler != nil && handler.isWorkflowV2Active(userID) {
-		resp := handler.handleWorkflowV2FormSubmit(userID, phaseID, data)
+		resp := handler.handleWorkflowV2FormSubmit(userID, phaseID, data, requestID)
 		if resp != nil {
 			resp.ResponseSource = imResponseSourceAgentViewSubmit.String()
 			return resp
@@ -237,7 +237,7 @@ func (a *App) handleWorkflowFormV1EngineSubmit(userID, phaseID string, data map[
 	}
 }
 
-func resolveWorkflowFormUserID(handler *IMMessageHandler, engine *workflow.WorkflowEngine, phaseID string, data map[string]interface{}) string {
+func resolveWorkflowFormUserID(handler *IMMessageHandler, engine *v2.WorkflowEngine, phaseID string, data map[string]interface{}) string {
 	if userID := workflowFormStringField(data, workflowFormUserIDField); userID != "" {
 		return userID
 	}
@@ -314,7 +314,7 @@ func workflowFormLifecyclePayloadWithFallback(workflowID, phaseID, userID string
 	return payload
 }
 
-func workflowFormMatchesActiveWorkflow(engine *workflow.WorkflowEngine, userID, phaseID string, data map[string]interface{}) bool {
+func workflowFormMatchesActiveWorkflow(engine *v2.WorkflowEngine, userID, phaseID string, data map[string]interface{}) bool {
 	if engine == nil || strings.TrimSpace(userID) == "" || strings.TrimSpace(phaseID) == "" {
 		return false
 	}
@@ -335,7 +335,7 @@ func workflowFormMatchesActiveWorkflow(engine *workflow.WorkflowEngine, userID, 
 // buildIMFormGuidanceText generates a structured text prompt for IM channels
 // (WeChat/Feishu/QQ) that cannot render AG UI forms. The text guides the user
 // to provide information in a numbered format.
-func buildIMFormGuidanceText(schema *workflow.PhaseInputSchemaSpec) string {
+func buildIMFormGuidanceText(schema *v2.PhaseInputSchemaSpec) string {
 	if schema == nil || len(schema.Fields) == 0 {
 		return ""
 	}
@@ -388,4 +388,159 @@ func buildFormSubmissionSummary(data map[string]interface{}) string {
 		summary = string([]rune(summary)[:200]) + "..."
 	}
 	return avTr("The user submitted workflow form data: ", "\u7528\u6237\u5df2\u63d0\u4ea4\u5de5\u4f5c\u6d41\u8868\u5355\u6570\u636e\uff1a") + summary
+}
+
+// buildFormSubmissionEcho creates a formatted echo of user-submitted form data
+// for display in the chat area. Uses field labels from InputSchema when available,
+// falls back to field names. Fields are rendered in the order defined by the schema.
+// Hidden fields and internal routing fields are excluded.
+func buildFormSubmissionEcho(state *v2.WorkflowState, cleanData map[string]interface{}) string {
+	if len(cleanData) == 0 {
+		return "✅ 信息已收到"
+	}
+
+	// Collect schema metadata from the active phase.
+	var orderedFields []v2.PhaseInputField
+	optionLabelMap := make(map[string]map[string]string) // field_name → {value → label}
+	if state != nil {
+		phase := state.ActivePhase()
+		if phase != nil && phase.InputSchema != nil {
+			orderedFields = append(orderedFields, phase.InputSchema.Fields...)
+			collectOptionLabels(phase.InputSchema.Fields, optionLabelMap)
+			// Also collect from the active variant if present.
+			if variantID, ok := cleanData["_agent_view_variant"]; ok && variantID != nil {
+				vid := fmt.Sprint(variantID)
+				for _, v := range phase.InputSchema.Variants {
+					if v.ID == vid {
+						orderedFields = append(orderedFields, v.Fields...)
+						collectOptionLabels(v.Fields, optionLabelMap)
+						break
+					}
+				}
+			}
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("✅ 信息已收到\n")
+
+	// Render fields in schema-defined order.
+	rendered := make(map[string]bool, len(orderedFields))
+	for _, f := range orderedFields {
+		if f.Name == "" || f.Type == "hidden" {
+			continue
+		}
+		v, exists := cleanData[f.Name]
+		if !exists || v == nil {
+			continue
+		}
+		valStr := formatFieldValue(f, v, optionLabelMap)
+		if valStr == "" {
+			continue
+		}
+		label := f.Label
+		if label == "" {
+			label = f.Name
+		}
+		sb.WriteString(fmt.Sprintf("- **%s**：%s\n", label, valStr))
+		rendered[f.Name] = true
+	}
+
+	// Render any remaining data fields not in schema (edge case: dynamic fields).
+	for k, v := range cleanData {
+		if k == "" || k == "_agent_view_variant" || rendered[k] {
+			continue
+		}
+		valStr := fmt.Sprintf("%v", v)
+		if valStr == "" || valStr == "[]" || valStr == "<nil>" {
+			continue
+		}
+		if len([]rune(valStr)) > 100 {
+			valStr = string([]rune(valStr)[:97]) + "..."
+		}
+		sb.WriteString(fmt.Sprintf("- **%s**：%s\n", k, valStr))
+	}
+
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// formatFieldValue formats a single field value for display, considering its type.
+func formatFieldValue(f v2.PhaseInputField, value interface{}, optionLabelMap map[string]map[string]string) string {
+	valStr := fmt.Sprintf("%v", value)
+	if valStr == "" || valStr == "[]" || valStr == "<nil>" {
+		return ""
+	}
+
+	switch f.Type {
+	case "boolean":
+		if valStr == "true" {
+			return "是"
+		}
+		return "否"
+	case "file", "directory":
+		// Show a meaningful tail of the path (last 80 chars) so context is preserved.
+		if len([]rune(valStr)) > 80 {
+			valStr = "..." + string([]rune(valStr)[len([]rune(valStr))-77:])
+		}
+		return valStr
+	case "select":
+		if optLabels, ok := optionLabelMap[f.Name]; ok {
+			if resolved, found := optLabels[valStr]; found {
+				return resolved
+			}
+		}
+	case "multiselect":
+		// Multiselect values are typically []interface{} from JSON.
+		if slice, ok := value.([]interface{}); ok && len(slice) > 0 {
+			optLabels := optionLabelMap[f.Name]
+			labels := make([]string, 0, len(slice))
+			for _, item := range slice {
+				s := fmt.Sprint(item)
+				if optLabels != nil {
+					if resolved, found := optLabels[s]; found {
+						s = resolved
+					}
+				}
+				labels = append(labels, s)
+			}
+			return strings.Join(labels, "、")
+		}
+		// Fallback: if it's a plain string, try to resolve as single value.
+		if optLabels, ok := optionLabelMap[f.Name]; ok {
+			if resolved, found := optLabels[valStr]; found {
+				return resolved
+			}
+		}
+	case "textarea":
+		// Multi-line: show first line + indicator if more lines exist.
+		lines := strings.SplitN(valStr, "\n", 2)
+		firstLine := strings.TrimSpace(lines[0])
+		if len(lines) > 1 && strings.TrimSpace(lines[1]) != "" {
+			if len([]rune(firstLine)) > 80 {
+				firstLine = string([]rune(firstLine)[:77]) + "..."
+			}
+			return firstLine + " (...)"
+		}
+		// Single line, fall through to truncation below.
+		valStr = firstLine
+	}
+
+	// General truncation for long values.
+	if len([]rune(valStr)) > 100 {
+		valStr = string([]rune(valStr)[:97]) + "..."
+	}
+	return valStr
+}
+
+// collectOptionLabels populates optionLabelMap from a slice of fields.
+func collectOptionLabels(fields []v2.PhaseInputField, optionLabelMap map[string]map[string]string) {
+	for _, f := range fields {
+		if len(f.Options) > 0 {
+			m := make(map[string]string, len(f.Options))
+			for _, opt := range f.Options {
+				m[opt.Value] = opt.Label
+			}
+			optionLabelMap[f.Name] = m
+		}
+	}
 }

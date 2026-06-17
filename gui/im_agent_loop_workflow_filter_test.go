@@ -267,14 +267,14 @@ func TestDocOnlyWorkflowPhaseBlocksImplementationTools(t *testing.T) {
 
 	filtered := handler.applyWorkflowToolFilter(userID, handler.getTools())
 	names := toolNameSetForWorkflowFilterTest(filtered)
-	for _, blocked := range []string{"bash", "write_file", "edit_file", "task", "delegate_task"} {
+	for _, blocked := range []string{"write_file", "edit_file", "task", "delegate_task"} {
 		if names[blocked] {
 			t.Fatalf("%s must not be exposed in doc-only workflow phase; got %#v", blocked, names)
 		}
 	}
-	for _, allowed := range []string{"read_file", "list_directory"} {
+	for _, allowed := range []string{"read_file", "list_directory", "bash"} {
 		if !names[allowed] {
-			t.Fatalf("%s should remain available for planning context; got %#v", allowed, names)
+			t.Fatalf("%s should remain available in doc-only phase; got %#v", allowed, names)
 		}
 	}
 

@@ -757,6 +757,15 @@ func (s *Session) clickAtLocked(selector string) error {
 	}
 
 	// Dispatch real mouse events.
+	// Move the mouse to the target first — React/Vue SPA frameworks rely on
+	// mousemove/mouseover to update internal hover state before processing
+	// click. Without this, some components ignore mousePressed entirely.
+	if _, err := s.client.Send("Input.dispatchMouseEvent", map[string]interface{}{
+		"type": "mouseMoved", "x": coord.X, "y": coord.Y,
+	}, DefaultCmdTimeout); err != nil {
+		// Non-fatal: some CDP targets don't accept mouseMoved pre-click.
+		_ = err
+	}
 	if _, err := s.client.Send("Input.dispatchMouseEvent", map[string]interface{}{
 		"type": "mousePressed", "x": coord.X, "y": coord.Y,
 		"button": "left", "clickCount": 1,

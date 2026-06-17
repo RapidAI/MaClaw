@@ -618,11 +618,11 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 }
 
 // handleWorkflowV2FormSubmit processes the user's AG UI form submission for a
-// workflow v2 phase. It stores the form data in the state machine and dismisses
-// the form panel. The next user message (e.g. "继续") will trigger HandleInput →
-// ActionRunPhase with FormData available, and the agent loop runs with form data
-// injected into the phase prompt.
-func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, data map[string]interface{}) *IMAgentResponse {
+// workflow v2 phase. It stores the form data in the state machine, dismisses
+// the form panel, and auto-triggers phase execution via an async message
+// ("继续") through the normal message path. The agent loop starts without
+// requiring the user to manually type "继续".
+func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, data map[string]interface{}, requestID string) *IMAgentResponse {
 	wf := h.getWorkflowV2()
 	if wf == nil {
 		return &IMAgentResponse{Text: "工作流未初始化", Error: "no workflow v2 state"}
@@ -664,27 +664,40 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 		h.app.emitAgentViewLifecycle("dismiss", map[string]interface{}{"view_id": "workflow:form:" + phaseID})
 	}
 
+	// Build echo text summarizing what the user submitted.
+	echoText := buildFormSubmissionEcho(state, cleanData)
+
 	// Auto-trigger phase execution immediately after form submission.
 	// No need to require user to type "继续" — the form was the data collection step,
 	// execution should begin automatically once data is available.
 	if state != nil {
 		phase := state.ActivePhase()
 		if phase != nil && phase.FormData != nil {
-			result := h.runWorkflowV2Phase(userID, state, "")
-			if result.Response != nil {
-				return result.Response
+			// Form submission is a synchronous Wails binding call — we cannot run
+			// the agent loop inline. Dispatch an async message through the normal
+			// message path so that the workflow routing kicks in (ActionRunPhase),
+			// sets the marker, and the agent loop actually starts.
+			//
+			// Return Deferred=true with the same RequestID so the frontend keeps
+			// the streaming round open and associates async tokens/response with it.
+			if h.app != nil {
+				go func() {
+					log.Printf("[workflow-v2] form auto-continue: dispatching agent loop for user=%s requestID=%s", userID, requestID)
+					if _, err := h.app.continueAIAssistantWorkflowMessage(userID, "继续", requestID); err != nil {
+						log.Printf("[workflow-v2] form auto-continue failed: user=%s err=%v", userID, err)
+					}
+				}()
 			}
-			// If runWorkflowV2Phase returns a marker for agent loop execution,
-			// we can't directly return it from here (form submission is a synchronous call).
-			// Fall through to the text response that tells user it's running.
 			return &IMAgentResponse{
-				Text: "✅ 信息已收到，正在生成文档...",
+				Text:      echoText,
+				RequestID: requestID,
+				Deferred:  true,
 			}
 		}
 	}
 
 	return &IMAgentResponse{
-		Text: "✅ 信息已收到！发送「继续」开始生成文档。",
+		Text: echoText + "\n\n发送「继续」开始生成文档。",
 	}
 }
 

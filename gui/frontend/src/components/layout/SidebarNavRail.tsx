@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
+import { AppsRailIcon } from './SidebarNavIcons';
 
 type SidebarNavRailProps = {
     navTab: string;
@@ -51,15 +52,6 @@ const icon = {
     system: '\u2699\uFE0F',
 };
 
-const AppsRailIcon = () => (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="4" y="4" width="6" height="6" rx="1.4" />
-        <rect x="14" y="4" width="6" height="6" rx="1.4" />
-        <rect x="4" y="14" width="6" height="6" rx="1.4" />
-        <path d="M17 14v6M14 17h6" />
-    </svg>
-);
-
 export const SidebarNavRail = ({
     navTab,
     brandInfo,
@@ -67,12 +59,9 @@ export const SidebarNavRail = ({
     brandSidebarName,
     switchTool,
     lang,
-    maclawLLMOnline,
-    remoteActivationStatus,
     runningTaskCount,
     t,
     gossipAllowed,
-    config,
     favoriteEmployees = [],
     veAuthorized = false,
     onStartVEConversation = () => {},
@@ -166,6 +155,20 @@ export const SidebarNavRail = ({
                 <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'apps' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}><AppsRailIcon /></span>
                 <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{appsLabel}</span>
             </div>
+
+            {/* Divider between Apps and Digital Employees */}
+            {veAuthorized && favoriteEmployees.length > 0 && (
+                <div
+                    aria-hidden="true"
+                    style={{
+                        width: '60%',
+                        height: '1px',
+                        margin: '6px 0',
+                        background: 'linear-gradient(90deg, transparent 0%, var(--theme-border) 25%, var(--theme-text-muted) 50%, var(--theme-border) 75%, transparent 100%)',
+                        opacity: 0.4,
+                    }}
+                />
+            )}
 
             {/* Favorite Employee Buttons */}
             <FavoriteEmployeeButtons

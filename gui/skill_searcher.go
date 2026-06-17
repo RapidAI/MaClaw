@@ -17,19 +17,41 @@ import (
 
 // SkillSearchResult is one SkillMarket search result.
 type SkillSearchResult struct {
-	ID            string                `json:"id"`
-	Name          string                `json:"name"`
-	Description   string                `json:"description"`
-	Tags          []string              `json:"tags"`
-	Score         float64               `json:"score"`
-	Price         int                   `json:"price"`
-	Status        skillSearchSourceKind `json:"status"`
-	InstallRef    string                `json:"install_ref,omitempty"`
-	AvgRating     float64               `json:"avg_rating"`
-	DownloadCount int                   `json:"download_count"`
-	Version       string                `json:"version,omitempty"`
-	Author        string                `json:"author,omitempty"`
-	CreatedAt     string                `json:"created_at,omitempty"`
+	ID                           string                   `json:"id"`
+	Name                         string                   `json:"name"`
+	Description                  string                   `json:"description"`
+	Tags                         []string                 `json:"tags"`
+	Score                        float64                  `json:"score"`
+	Price                        int                      `json:"price"`
+	Status                       skillSearchSourceKind    `json:"status"`
+	InstallRef                   string                   `json:"install_ref,omitempty"`
+	AvgRating                    float64                  `json:"avg_rating"`
+	DownloadCount                int                      `json:"download_count"`
+	Version                      string                   `json:"version,omitempty"`
+	Author                       string                   `json:"author,omitempty"`
+	CreatedAt                    string                   `json:"created_at,omitempty"`
+	ProductKind                  string                   `json:"product_kind,omitempty"`
+	IsMaclawApp                  bool                     `json:"is_maclaw_app,omitempty"`
+	MaclawAppID                  string                   `json:"maclaw_app_id,omitempty"`
+	MaclawAppName                string                   `json:"maclaw_app_name,omitempty"`
+	MaclawAppDescription         string                   `json:"maclaw_app_description,omitempty"`
+	MaclawAppCategory            string                   `json:"maclaw_app_category,omitempty"`
+	MaclawAppIcon                string                   `json:"maclaw_app_icon,omitempty"`
+	MaclawAppInputMode           string                   `json:"maclaw_app_input_mode,omitempty"`
+	MaclawAppOutputModes         []string                 `json:"maclaw_app_output_modes,omitempty"`
+	MaclawAppDefinitionSHA256    string                   `json:"maclaw_app_definition_sha256,omitempty"`
+	MaclawAppTestEvidence        *MaclawAppSearchEvidence `json:"maclaw_app_test_evidence,omitempty"`
+	ArtifactContractRequired     bool                     `json:"artifact_contract_required,omitempty"`
+	ArtifactContractOutputModes  []string                 `json:"artifact_contract_output_modes,omitempty"`
+	ArtifactContractPresentation string                   `json:"artifact_contract_presentation,omitempty"`
+}
+
+type MaclawAppSearchEvidence struct {
+	RunID                 string `json:"run_id,omitempty"`
+	VerifiedAt            string `json:"verified_at,omitempty"`
+	DefinitionFingerprint string `json:"definition_fingerprint,omitempty"`
+	ArtifactPresent       bool   `json:"artifact_present,omitempty"`
+	ArtifactName          string `json:"artifact_name,omitempty"`
 }
 
 func (r SkillSearchResult) SourceKind() skillSearchSourceKind {
@@ -38,28 +60,42 @@ func (r SkillSearchResult) SourceKind() skillSearchSourceKind {
 
 // MixedSkillSearchResult is the GUI-facing unified search result model.
 type MixedSkillSearchResult struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	Description   string   `json:"description"`
-	Tags          []string `json:"tags"`
-	Source        string   `json:"source"`
-	SourceLabel   string   `json:"source_label"`
-	InstallRef    string   `json:"install_ref,omitempty"`
-	FilePath      string   `json:"file_path,omitempty"`
-	Version       string   `json:"version,omitempty"`
-	Author        string   `json:"author,omitempty"`
-	CreatedAt     string   `json:"created_at,omitempty"`
-	TrustLevel    string   `json:"trust_level,omitempty"`
-	AvgRating     float64  `json:"avg_rating"`
-	RatingCount   int      `json:"rating_count"`
-	Downloads     int      `json:"downloads"`
-	Score         float64  `json:"score"`
-	Price         int      `json:"price"`
-	RepoURL       string   `json:"repo_url,omitempty"`
-	Installed     bool     `json:"installed"`
-	InstalledName string   `json:"installed_name,omitempty"`
-	CanUpdate     bool     `json:"can_update"`
-	HasUpdate     bool     `json:"has_update"`
+	ID                           string                   `json:"id"`
+	Name                         string                   `json:"name"`
+	Description                  string                   `json:"description"`
+	Tags                         []string                 `json:"tags"`
+	Source                       string                   `json:"source"`
+	SourceLabel                  string                   `json:"source_label"`
+	InstallRef                   string                   `json:"install_ref,omitempty"`
+	FilePath                     string                   `json:"file_path,omitempty"`
+	Version                      string                   `json:"version,omitempty"`
+	Author                       string                   `json:"author,omitempty"`
+	CreatedAt                    string                   `json:"created_at,omitempty"`
+	TrustLevel                   string                   `json:"trust_level,omitempty"`
+	AvgRating                    float64                  `json:"avg_rating"`
+	RatingCount                  int                      `json:"rating_count"`
+	Downloads                    int                      `json:"downloads"`
+	Score                        float64                  `json:"score"`
+	Price                        int                      `json:"price"`
+	RepoURL                      string                   `json:"repo_url,omitempty"`
+	Installed                    bool                     `json:"installed"`
+	InstalledName                string                   `json:"installed_name,omitempty"`
+	CanUpdate                    bool                     `json:"can_update"`
+	HasUpdate                    bool                     `json:"has_update"`
+	ProductKind                  string                   `json:"product_kind,omitempty"`
+	IsMaclawApp                  bool                     `json:"is_maclaw_app,omitempty"`
+	MaclawAppID                  string                   `json:"maclaw_app_id,omitempty"`
+	MaclawAppName                string                   `json:"maclaw_app_name,omitempty"`
+	MaclawAppDescription         string                   `json:"maclaw_app_description,omitempty"`
+	MaclawAppCategory            string                   `json:"maclaw_app_category,omitempty"`
+	MaclawAppIcon                string                   `json:"maclaw_app_icon,omitempty"`
+	MaclawAppInputMode           string                   `json:"maclaw_app_input_mode,omitempty"`
+	MaclawAppOutputModes         []string                 `json:"maclaw_app_output_modes,omitempty"`
+	MaclawAppDefinitionSHA256    string                   `json:"maclaw_app_definition_sha256,omitempty"`
+	MaclawAppTestEvidence        *MaclawAppSearchEvidence `json:"maclaw_app_test_evidence,omitempty"`
+	ArtifactContractRequired     bool                     `json:"artifact_contract_required,omitempty"`
+	ArtifactContractOutputModes  []string                 `json:"artifact_contract_output_modes,omitempty"`
+	ArtifactContractPresentation string                   `json:"artifact_contract_presentation,omitempty"`
 }
 
 // SkillSearcher handles mixed skill search across sources.
@@ -335,20 +371,34 @@ func (s *SkillSearcher) searchEnterpriseHubSkills(ctx context.Context, query str
 func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkillSearchResult {
 	source := string(r.SourceKind())
 	return MixedSkillSearchResult{
-		ID:          r.ID,
-		Name:        r.Name,
-		Description: r.Description,
-		Tags:        r.Tags,
-		Source:      source,
-		SourceLabel: mixedSourceLabel(source),
-		TrustLevel:  mixedTrustLevel(source),
-		AvgRating:   r.AvgRating,
-		Downloads:   r.DownloadCount,
-		Score:       r.Score,
-		Price:       r.Price,
-		Version:     r.Version,
-		Author:      r.Author,
-		CreatedAt:   r.CreatedAt,
+		ID:                           r.ID,
+		Name:                         r.Name,
+		Description:                  r.Description,
+		Tags:                         r.Tags,
+		Source:                       source,
+		SourceLabel:                  mixedSourceLabel(source),
+		TrustLevel:                   mixedTrustLevel(source),
+		AvgRating:                    r.AvgRating,
+		Downloads:                    r.DownloadCount,
+		Score:                        r.Score,
+		Price:                        r.Price,
+		Version:                      r.Version,
+		Author:                       r.Author,
+		CreatedAt:                    r.CreatedAt,
+		ProductKind:                  r.ProductKind,
+		IsMaclawApp:                  r.IsMaclawApp || strings.EqualFold(strings.TrimSpace(r.ProductKind), "maclaw_app_skill"),
+		MaclawAppID:                  r.MaclawAppID,
+		MaclawAppName:                r.MaclawAppName,
+		MaclawAppDescription:         r.MaclawAppDescription,
+		MaclawAppCategory:            r.MaclawAppCategory,
+		MaclawAppIcon:                r.MaclawAppIcon,
+		MaclawAppInputMode:           r.MaclawAppInputMode,
+		MaclawAppOutputModes:         append([]string(nil), r.MaclawAppOutputModes...),
+		MaclawAppDefinitionSHA256:    r.MaclawAppDefinitionSHA256,
+		MaclawAppTestEvidence:        cloneMaclawAppSearchEvidence(r.MaclawAppTestEvidence),
+		ArtifactContractRequired:     r.ArtifactContractRequired,
+		ArtifactContractOutputModes:  append([]string(nil), r.ArtifactContractOutputModes...),
+		ArtifactContractPresentation: r.ArtifactContractPresentation,
 	}
 }
 
@@ -367,20 +417,55 @@ func mixedTrustLevel(source string) string {
 // to the GUI-specific MixedSkillSearchResult display type.
 func hubSearchResultToMixed(r cskill.HubSearchResult) MixedSkillSearchResult {
 	return MixedSkillSearchResult{
-		ID:          r.ID,
-		Name:        r.Name,
-		Description: r.Description,
-		Source:      r.Source,
-		SourceLabel: mixedSourceLabel(r.Source),
-		TrustLevel:  mixedTrustLevel(r.Source),
-		Version:     r.Version,
-		Author:      r.Author,
-		AvgRating:   r.AvgRating,
-		Downloads:   r.Downloads,
-		Score:       r.Score,
-		InstallRef:  r.InstallRef,
-		FilePath:    r.FilePath,
-		RepoURL:     r.RepoURL,
+		ID:                           r.ID,
+		Name:                         r.Name,
+		Description:                  r.Description,
+		Source:                       r.Source,
+		SourceLabel:                  mixedSourceLabel(r.Source),
+		TrustLevel:                   mixedTrustLevel(r.Source),
+		Version:                      r.Version,
+		Author:                       r.Author,
+		AvgRating:                    r.AvgRating,
+		Downloads:                    r.Downloads,
+		Score:                        r.Score,
+		InstallRef:                   r.InstallRef,
+		FilePath:                     r.FilePath,
+		RepoURL:                      r.RepoURL,
+		ProductKind:                  r.ProductKind,
+		IsMaclawApp:                  r.IsMaclawApp || strings.EqualFold(strings.TrimSpace(r.ProductKind), "maclaw_app_skill"),
+		MaclawAppID:                  r.MaclawAppID,
+		MaclawAppName:                r.MaclawAppName,
+		MaclawAppDescription:         r.MaclawAppDescription,
+		MaclawAppCategory:            r.MaclawAppCategory,
+		MaclawAppIcon:                r.MaclawAppIcon,
+		MaclawAppInputMode:           r.MaclawAppInputMode,
+		MaclawAppOutputModes:         append([]string(nil), r.MaclawAppOutputModes...),
+		MaclawAppDefinitionSHA256:    r.MaclawAppDefinitionSHA256,
+		MaclawAppTestEvidence:        cloneCoreMaclawAppSearchEvidence(r.MaclawAppTestEvidence),
+		ArtifactContractRequired:     r.ArtifactContractRequired,
+		ArtifactContractOutputModes:  append([]string(nil), r.ArtifactContractOutputModes...),
+		ArtifactContractPresentation: r.ArtifactContractPresentation,
+	}
+}
+
+func cloneMaclawAppSearchEvidence(e *MaclawAppSearchEvidence) *MaclawAppSearchEvidence {
+	if e == nil {
+		return nil
+	}
+	copy := *e
+	return &copy
+}
+
+func cloneCoreMaclawAppSearchEvidence(e *cskill.MaclawAppTestEvidence) *MaclawAppSearchEvidence {
+	if e == nil {
+		return nil
+	}
+	return &MaclawAppSearchEvidence{
+		RunID:                 e.RunID,
+		VerifiedAt:            e.VerifiedAt,
+		DefinitionFingerprint: e.DefinitionFingerprint,
+		ArtifactPresent:       e.ArtifactPresent,
+		ArtifactName:          e.ArtifactName,
 	}
 }
 

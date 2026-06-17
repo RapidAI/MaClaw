@@ -197,7 +197,11 @@
       _computeAuthStatus = { allow_external_providers: false, authorization_error: e && e.message || 'request failed' };
       _computeAuthCheckedAt = Date.now();
     }
-    updateComputeUI();
+    // Full banner re-render with the freshly fetched data.
+    // refreshMaClawOfficialBanner internally calls updateComputeUI.
+    refreshMaClawOfficialBanner();
+    // Also update gating in case the banner DOM doesn't exist yet (e.g. tab not visible).
+    updateExternalProviderEntryVisibility();
     return _computeAuthStatus;
   };
 
@@ -318,6 +322,11 @@
   function renderComputeAuthorizationList() {
     if (!_computeAuthStatus) return '';
     var all = computeAuthorizations();
+    // Filter out pure permission records — they are not real credit purchases
+    // and should not appear as "充值记录" to the user.
+    all = all.filter(function(item) {
+      return String(item && item.service_group_id || '').trim() !== '__external_compute_permission__';
+    });
     if (!all.length) {
       if (_computeAuthStatus.authorization_error) {
         return '<div class="hint" style="margin-top:10px;padding:10px 12px;background:#fff8f0;border-color:#f2d3a6;color:#8a5b13">' + esc(t('authStatusError')) + ': ' + esc(_computeAuthStatus.authorization_error) + '</div>';

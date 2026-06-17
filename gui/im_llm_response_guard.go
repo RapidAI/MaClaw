@@ -40,7 +40,7 @@ func (h *IMMessageHandler) guardAgentLoopLLMResponse(
 		Err:          err,
 		Conversation: conversation,
 	}
-	if err != nil {
+	if result.Err != nil {
 		if ctx.IsCancelled() {
 			ctx.SetLoopState(LoopStateStopped)
 			result.Exit = h.cancelledExitResponse(userID, history, userText)
@@ -54,7 +54,13 @@ func (h *IMMessageHandler) guardAgentLoopLLMResponse(
 		result.Usage = contextRetry.Usage
 		if result.Err != nil {
 			inFlightLifecycle.PreserveOnFinish()
-			result.Exit = h.llmErrorExitResponse(userID, history, fmt.Sprintf("LLM request failed: %s [url=%s model=%s protocol=%s]", result.Err.Error(), cfg.URL, cfg.Model, cfg.Protocol))
+			// Try to produce a human-readable error message instead of raw
+			// technical details (JSON bodies, full URLs, etc.).
+			errMsg := result.Err.Error()
+			if friendly, ok := classifyOpenAICompatibleHTTPError(result.Err, cfg.ProviderName); ok && friendly != "" {
+				errMsg = friendly
+			}
+			result.Exit = h.llmErrorExitResponse(userID, history, fmt.Sprintf("LLM request failed: %s [url=%s model=%s protocol=%s]", errMsg, cfg.URL, cfg.Model, cfg.Protocol))
 			return result
 		}
 	}

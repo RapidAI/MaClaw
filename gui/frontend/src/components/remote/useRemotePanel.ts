@@ -707,10 +707,10 @@ const saveRemoteConfigField = async (patch: Partial<main.AppConfig>) => {
             })
             .catch((err) => console.error("Failed to load remote tool metadata:", err));
         refreshRemotePanel();
-        refreshRemoteReadiness();
-        if (!remotePTYProbe) {
-            refreshRemotePTYProbe();
-        }
+        // NOTE: refreshRemoteReadiness and refreshRemotePTYProbe are intentionally
+        // NOT called here. They spawn child processes (e.g. "claude --version") which
+        // flash a console window on Windows. Tool readiness detection should only run
+        // in the coding tool launch/diagnostics UI — not on every tab switch.
     }, [navTab]);
 
     // Auto-poll remote panel status every 10 seconds as a fallback

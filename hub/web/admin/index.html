@@ -301,6 +301,21 @@
           <div class="hint" id="centerStatusDetail"></div>
           <div class="item"><div class="item-title" data-i18n="endpointTitle"></div><div class="item-meta" data-i18n="endpointDesc"></div><div class="mono" id="centerAdvertisedURL" style="margin-top:8px;color:var(--text)"></div></div>
         </div>
+        <!-- Tenant Info Panel (visible for tenant admins) -->
+        <div id="overviewTenantInfoPanel" class="hidden" style="margin-top:18px">
+          <h4 id="overviewTenantInfoTitle" style="margin:0 0 12px 0;font-size:15px;font-weight:600;color:var(--text)"></h4>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px">
+            <div class="item" style="padding:14px 16px"><div class="item-title" id="overviewTenantIDLabel"></div><div class="mono" id="overviewTenantIDValue" style="margin-top:4px;color:var(--text);font-size:13px"></div></div>
+            <div class="item" style="padding:14px 16px"><div class="item-title" id="overviewTenantNameLabel"></div><div id="overviewTenantNameValue" style="margin-top:4px;color:var(--text);font-size:14px;font-weight:500"></div></div>
+            <div class="item" style="padding:14px 16px"><div class="item-title" id="overviewTenantStatusLabel"></div><div id="overviewTenantStatusValue" style="margin-top:4px;font-size:14px"></div></div>
+            <div class="item" style="padding:14px 16px"><div class="item-title" id="overviewTenantDomainLabel"></div><div class="mono" id="overviewTenantDomainValue" style="margin-top:4px;color:var(--text);font-size:13px"></div></div>
+          </div>
+          <h4 id="overviewAuthTitle" style="margin:20px 0 12px 0;font-size:15px;font-weight:600;color:var(--text)"></h4>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px">
+            <div class="item" style="padding:14px 16px"><div class="item-title" id="overviewDEAuthLabel"></div><div id="overviewDEAuthStatus" style="margin-top:4px;font-size:14px"></div><div id="overviewDEAuthDetail" style="margin-top:6px;font-size:12px;color:var(--muted)"></div></div>
+            <div class="item" style="padding:14px 16px"><div class="item-title" id="overviewComputeAuthLabel"></div><div id="overviewComputeAuthStatus" style="margin-top:4px;font-size:14px"></div><div id="overviewComputeAuthDetail" style="margin-top:6px;font-size:12px;color:var(--muted)"></div></div>
+          </div>
+        </div>
       </section>
 
       <!-- Tab: Center -->
@@ -1376,6 +1391,7 @@
 <script src="/admin/usage-stats-tab.js"></script>
 <script src="/admin/failure-logs-tab.js"></script>
 <script src="/admin/admin-module-health.js"></script>
+<script src="/admin/overview-tenant-info.js"></script>
 <script src="/admin/admin-bootstrap.js"></script>
 </body>
 </html>

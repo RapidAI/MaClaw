@@ -627,6 +627,14 @@ export function OpenFileOrShowInFolder(arg1) {
   return window['go']['main']['App']['OpenFileOrShowInFolder'](arg1);
 }
 
+export function OpenSkillRunArtifact(arg1, arg2) {
+  return window['go']['main']['App']['OpenSkillRunArtifact'](arg1, arg2);
+}
+
+export function RevealSkillRunArtifact(arg1, arg2) {
+  return window['go']['main']['App']['RevealSkillRunArtifact'](arg1, arg2);
+}
+
 export function ShowItemInFolder(arg1) {
   return window['go']['main']['App']['ShowItemInFolder'](arg1);
 }
@@ -1995,6 +2003,14 @@ export function WithdrawMaclawAppPackageSubmission(arg1) {
 
 export function UpdateMaclawAppPackageSubmissionStatus(arg1, arg2) {
   return window['go']['main']['App']['UpdateMaclawAppPackageSubmissionStatus'](arg1, arg2);
+}
+
+export function SaveMaclawAppDefinitionForSkill(arg1, arg2) {
+  return window['go']['main']['App']['SaveMaclawAppDefinitionForSkill'](arg1, arg2);
+}
+
+export function RecordMaclawAppRunEvidenceForSkill(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['RecordMaclawAppRunEvidenceForSkill'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 // Digital Employee bindings

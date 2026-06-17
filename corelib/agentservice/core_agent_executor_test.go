@@ -1531,12 +1531,12 @@ func TestCoreAgentDocOnlyToolPolicyBlocksImplementationTools(t *testing.T) {
 	for _, tool := range tools {
 		seen[tooldef.Name(tool)] = true
 	}
-	for _, name := range []string{"read_file", "list_directory"} {
+	for _, name := range []string{"read_file", "list_directory", "bash"} {
 		if !seen[name] {
 			t.Fatalf("expected %s to remain available for doc-only context, got %#v", name, seen)
 		}
 	}
-	for _, name := range []string{"bash", "write_file", "edit_file", "task"} {
+	for _, name := range []string{"write_file", "edit_file", "task"} {
 		if seen[name] {
 			t.Fatalf("expected %s to be filtered out by doc-only policy, got %#v", name, seen)
 		}
@@ -1798,10 +1798,12 @@ func TestCoreAgentDescribeCapabilitiesHonorsWorkflowToolPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DescribeCapabilities: %v", err)
 	}
-	if caps.SupportsLocalBash {
-		t.Fatalf("doc-only workflow policy must disable local bash support, got %#v", caps)
+	// bash is allowed in doc-only phases (needed for document parsing via Python).
+	// Execution safety is enforced by AllowLocalBash + tenant scoping, not by ToolPolicy.
+	if !caps.SupportsLocalBash {
+		t.Fatalf("doc-only workflow policy should allow local bash (for document parsing), got %v", caps.SupportsLocalBash)
 	}
-	if caps.Metadata["bash_enabled"] != "false" || caps.Metadata["tool_policy"] != string(workflow.ToolFilterDocOnly) {
+	if caps.Metadata["bash_enabled"] != "true" || caps.Metadata["tool_policy"] != string(workflow.ToolFilterDocOnly) {
 		t.Fatalf("unexpected policy metadata: %#v", caps.Metadata)
 	}
 	var bash, readFile *AgentToolCapability
@@ -1813,8 +1815,8 @@ func TestCoreAgentDescribeCapabilitiesHonorsWorkflowToolPolicy(t *testing.T) {
 			readFile = &caps.Tools[i]
 		}
 	}
-	if bash == nil || bash.Enabled || !strings.Contains(bash.DisabledReason, "is not allowed") {
-		t.Fatalf("expected bash disabled by workflow policy, got %#v", bash)
+	if bash == nil || !bash.Enabled {
+		t.Fatalf("expected bash enabled in doc-only policy (for document parsing), got %#v", bash)
 	}
 	if readFile == nil || !readFile.Enabled {
 		t.Fatalf("expected read_file to remain enabled under doc-only policy, got %#v", readFile)

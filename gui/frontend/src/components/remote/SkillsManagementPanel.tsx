@@ -3,6 +3,10 @@ import { useDialog } from "../CustomDialog";
 import { useToast } from "../Toast";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { SkillInstallProgressPanel } from "./SkillInstallProgressPanel";
+import { MaclawAppSkillsTab } from "./MaclawAppSkillsTab";
+import { MaclawAppMarketPreview } from "./MaclawAppMarketPreview";
+import { SkillProductBadge } from "./SkillProductBadge";
+import { SkillSourceBadge } from "./SkillSourceBadge";
 import {
     executionClassBadgeStyle,
     statusDotStyle,
@@ -92,6 +96,9 @@ interface NLSkillDefinition {
     success_rate?: number;
     last_used_at?: string;
     last_error?: string;
+    is_maclaw_app?: boolean;
+    maclaw_app_count?: number;
+    maclaw_app_entry?: string;
 }
 
 interface HubSkillUpdateInfo {
@@ -124,48 +131,26 @@ interface MixedSkillSearchResult {
     installed_name?: string;
     can_update: boolean;
     has_update: boolean;
-}
-
-function getSkillSourceTooltip(skill: MixedSkillSearchResult, localizeText: (en: string, zhHans: string, zhHant: string) => string): string {
-    switch ((skill.source || "").trim().toLowerCase()) {
-        case "enterprise_hub":
-            return localizeText(
-                "Private market: capability market from your current Hub or organization.",
-                "私有市场：来自你当前所属 Hub 或组织的能力市场。",
-                "私有市場：來自你目前所屬 Hub 或組織的能力市場。"
-            );
-        case "skillmarket":
-        case "skillhub":
-            return localizeText(
-                "Public market: public SkillMarket from HubCenter.",
-                "公共市场：来自 HubCenter 的公共 SkillMarket 能力市场。",
-                "公共市場：來自 HubCenter 的公共 SkillMarket 能力市場。"
-            );
-        case "clawhub":
-            return localizeText(
-                "ClawHub marketplace mirror. Security checks run before install.",
-                "ClawHub 市场镜像，安装前会进行安全检查。",
-                "ClawHub 市場鏡像，安裝前會進行安全檢查。"
-            );
-        case "github":
-            return localizeText(
-                "GitHub repository search result. Security checks run before install.",
-                "GitHub 仓库搜索结果，安装前会进行安全检查。",
-                "GitHub 倉庫搜尋結果，安裝前會進行安全檢查。"
-            );
-        default:
-            return skill.source_label || skill.source || "";
-    }
-}
-
-function SkillSourceBadge({ skill, localizeText }: { skill: MixedSkillSearchResult; localizeText: Props["localizeText"] }) {
-    const label = (skill.source_label || skill.source || "").trim();
-    if (!label) return null;
-    return (
-        <span style={skillSourceBadgeStyle} title={getSkillSourceTooltip(skill, localizeText)}>
-            {label}
-        </span>
-    );
+    product_kind?: string;
+    is_maclaw_app?: boolean;
+    maclaw_app_id?: string;
+    maclaw_app_name?: string;
+    maclaw_app_description?: string;
+    maclaw_app_category?: string;
+    maclaw_app_icon?: string;
+    maclaw_app_input_mode?: string;
+    maclaw_app_output_modes?: string[];
+    maclaw_app_definition_sha256?: string;
+    maclaw_app_test_evidence?: {
+        run_id?: string;
+        verified_at?: string;
+        definition_fingerprint?: string;
+        artifact_present?: boolean;
+        artifact_name?: string;
+    };
+    artifact_contract_required?: boolean;
+    artifact_contract_output_modes?: string[];
+    artifact_contract_presentation?: string;
 }
 
 type Props = {
@@ -424,7 +409,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         }
     };
     const backdropMouseDownRef = useRef(false);
-    const [activeTab, setActiveTab] = useState<"local" | "hub" | "learned" | "extdirs">("local");
+    const [activeTab, setActiveTab] = useState<"local" | "maclaw_app" | "hub" | "learned" | "extdirs">("local");
     const [skills, setSkills] = useState<NLSkillDefinition[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
@@ -1039,7 +1024,12 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
     // Installed skills: exclude auto-generated (learned/crafted/auto-installed) skills
     const installedSkills = useMemo(
-        () => skills.filter((s) => !isLearnedSource(s.source ?? "")),
+        () => skills.filter((s) => !isLearnedSource(s.source ?? "") && !s.is_maclaw_app),
+        [skills]
+    );
+
+    const maclawAppSkills = useMemo(
+        () => skills.filter((s) => !isLearnedSource(s.source ?? "") && !!s.is_maclaw_app),
         [skills]
     );
 
@@ -1176,6 +1166,15 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     onClick={() => setActiveTab("local")}
                 >
                     {localizeText("Installed Skills", "已安装 Skills", "已安裝 Skills")}
+                </button>
+                <button
+                    style={{
+                        ...tabBtnStyle,
+                        ...(activeTab === "maclaw_app" ? tabBtnActiveStyle : {}),
+                    }}
+                    onClick={() => setActiveTab("maclaw_app")}
+                >
+                    {localizeText("MaClaw Apps", "MaClaw App", "MaClaw App")}
                 </button>
                 <button
                     style={{
@@ -1376,6 +1375,35 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 </>
             )}
 
+            {/* === MaClaw App Skills Tab === */}
+            {activeTab === "maclaw_app" && (
+                <MaclawAppSkillsTab
+                    skills={maclawAppSkills}
+                    loading={loading}
+                    error={error}
+                    busy={busy}
+                    localizeText={localizeText}
+                    onRefresh={() => { loadData(); setDiagEntries(null); }}
+                    onOpenAppPanel={() => window.dispatchEvent(new CustomEvent("maclaw:open-apps-panel", { detail: { source: "skills-maclaw-app" } }))}
+                    onOpenMarket={() => setActiveTab("hub")}
+                    onEdit={(skill) => openEditForm(skill as NLSkillDefinition)}
+                    onDelete={handleDelete}
+                    uploadingSkill={uploadingSkill}
+                    onUpload={async (skillName) => {
+                        setUploadingSkill(skillName);
+                        try {
+                            const sid = await UploadNLSkillToMarket(skillName);
+                            showToast(`${localizeText("Submission ID", "提交ID", "提交ID")}: ${sid}`, "success");
+                            await loadData();
+                        } catch (e: any) {
+                            showToast(`${e?.message || e}`, "error");
+                        } finally {
+                            setUploadingSkill(null);
+                        }
+                    }}
+                />
+            )}
+
             {/* === Hub Market Tab === */}
             {activeTab === "hub" && (
                 <>
@@ -1457,6 +1485,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                                                 <span style={{ fontWeight: 600, fontSize: "0.82rem", color: colors.text }}>{skill.name}</span>
                                                 <SkillSourceBadge skill={skill} localizeText={localizeText} />
+                                                <SkillProductBadge skill={skill} localizeText={localizeText} />
                                                 {skill.trust_level && (
                                                     <span style={trustBadgeStyle(skill.trust_level)}>
                                                         {skill.trust_level === "official" ? localizeText("Official", "官方", "官方") : skill.trust_level === "community" ? localizeText("Community", "社区", "社區") : localizeText("Unknown", "未知", "未知")}
@@ -1492,6 +1521,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             <div style={hubSkillDescriptionStyle} title={skill.description || undefined}>
                                                 {skill.description || localizeText("No description", "暂无描述", "暫無描述")}
                                             </div>
+                                            <MaclawAppMarketPreview skill={skill} localizeText={localizeText} />
                                             <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "6px", flexWrap: "wrap" }}>
                                                 {(skill.tags || []).map((tag, i) => (
                                                     <span key={i} style={tagStyle}>{tag}</span>
@@ -1551,6 +1581,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                                                         <span style={{ fontWeight: 600, fontSize: "0.82rem", color: colors.text }}>{skill.name}</span>
                                                         <SkillSourceBadge skill={skill} localizeText={localizeText} />
+                                                        <SkillProductBadge skill={skill} localizeText={localizeText} />
                                                         {skill.version && (
                                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>v{skill.version}</span>
                                                         )}
@@ -1558,6 +1589,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     <div style={hubSkillDescriptionStyle} title={skill.description || undefined}>
                                                         {skill.description || localizeText("No description", "暂无描述", "暫無描述")}
                                                     </div>
+                                                    <MaclawAppMarketPreview skill={skill} localizeText={localizeText} />
                                                     <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "6px", fontSize: "0.68rem", color: colors.textMuted }}>
                                                         {skill.author && <span>{skill.author}</span>}
                                                         {skill.downloads > 0 && <span>⬇ {formatDownloads(skill.downloads)}</span>}
@@ -2324,18 +2356,6 @@ const tabBtnActiveStyle: CSSProperties = {
 
 const hubCardStyle: CSSProperties = {
     ...remoteCardStyle,
-};
-
-const skillSourceBadgeStyle: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "4px",
-    fontSize: "0.66rem",
-    padding: "2px 6px",
-    borderRadius: "999px",
-    background: colors.surfaceMuted,
-    color: colors.textSecondary,
-    border: `1px solid ${colors.borderLight}`,
 };
 
 const sourceTextStyle: CSSProperties = {

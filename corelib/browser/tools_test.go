@@ -428,3 +428,112 @@ func containsAll(text string, parts []string) bool {
 	}
 	return true
 }
+
+func TestNormalizeStepParams_FlatFormatMovedToParams(t *testing.T) {
+	// LLM often outputs flat step format: {"action":"click","ref":"@e19"}
+	// instead of nested: {"action":"click","params":{"ref":"@e19"}}
+	stepsJSON := `[{"action":"click","ref":"@e19"},{"action":"wait","duration_ms":1500},{"action":"navigate","url":"https://www.zhihu.com/"},{"action":"type","text":"hello","selector":".input"}]`
+	var steps []StepSpec
+	if err := json.Unmarshal([]byte(stepsJSON), &steps); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	normalizeStepParams(stepsJSON, steps)
+
+	// click step: ref should be in Params
+	if steps[0].Params["ref"] != "@e19" {
+		t.Errorf("click step: Params[ref] = %q, want @e19", steps[0].Params["ref"])
+	}
+	// wait step: duration_ms should be in Params as string "1500"
+	if steps[1].Params["duration_ms"] != "1500" {
+		t.Errorf("wait step: Params[duration_ms] = %q, want 1500", steps[1].Params["duration_ms"])
+	}
+	// navigate step: url should be in Params
+	if steps[2].Params["url"] != "https://www.zhihu.com/" {
+		t.Errorf("navigate step: Params[url] = %q, want https://www.zhihu.com/", steps[2].Params["url"])
+	}
+	// type step: text and selector should be in Params
+	if steps[3].Params["text"] != "hello" {
+		t.Errorf("type step: Params[text] = %q, want hello", steps[3].Params["text"])
+	}
+	if steps[3].Params["selector"] != ".input" {
+		t.Errorf("type step: Params[selector] = %q, want .input", steps[3].Params["selector"])
+	}
+}
+
+func TestNormalizeStepParams_NestedFormatPreserved(t *testing.T) {
+	// When LLM correctly uses nested format, normalizeStepParams should not interfere.
+	stepsJSON := `[{"action":"click","params":{"ref":"@e19"}},{"action":"navigate","params":{"url":"https://example.com"}}]`
+	var steps []StepSpec
+	if err := json.Unmarshal([]byte(stepsJSON), &steps); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	normalizeStepParams(stepsJSON, steps)
+
+	if steps[0].Params["ref"] != "@e19" {
+		t.Errorf("click step: Params[ref] = %q, want @e19", steps[0].Params["ref"])
+	}
+	if steps[1].Params["url"] != "https://example.com" {
+		t.Errorf("navigate step: Params[url] = %q, want https://example.com", steps[1].Params["url"])
+	}
+}
+
+func TestNormalizeStepParams_MixedFormat(t *testing.T) {
+	// Some steps nested, some flat — both should work.
+	stepsJSON := `[{"action":"click","params":{"ref":"@e1"}},{"action":"wait","duration_ms":2000},{"action":"navigate","url":"https://test.com"}]`
+	var steps []StepSpec
+	if err := json.Unmarshal([]byte(stepsJSON), &steps); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	normalizeStepParams(stepsJSON, steps)
+
+	if steps[0].Params["ref"] != "@e1" {
+		t.Errorf("step 0: Params[ref] = %q, want @e1", steps[0].Params["ref"])
+	}
+	if steps[1].Params["duration_ms"] != "2000" {
+		t.Errorf("step 1: Params[duration_ms] = %q, want 2000", steps[1].Params["duration_ms"])
+	}
+	if steps[2].Params["url"] != "https://test.com" {
+		t.Errorf("step 2: Params[url] = %q, want https://test.com", steps[2].Params["url"])
+	}
+}
+
+func TestNormalizeStepParams_HybridParamsAndTopLevel(t *testing.T) {
+	// LLM puts some keys in params and some at top level.
+	// Top-level extras should be merged into Params without overwriting existing.
+	stepsJSON := `[{"action":"click","ref":"@e19","params":{"snapshot_id":"snap-1"}},{"action":"type","text":"hello","params":{"content_format":"markdown"}}]`
+	var steps []StepSpec
+	if err := json.Unmarshal([]byte(stepsJSON), &steps); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	normalizeStepParams(stepsJSON, steps)
+
+	// click step: ref merged from top-level, snapshot_id preserved from nested params
+	if steps[0].Params["ref"] != "@e19" {
+		t.Errorf("click: Params[ref] = %q, want @e19", steps[0].Params["ref"])
+	}
+	if steps[0].Params["snapshot_id"] != "snap-1" {
+		t.Errorf("click: Params[snapshot_id] = %q, want snap-1", steps[0].Params["snapshot_id"])
+	}
+	// type step: text merged from top-level, content_format preserved from nested params
+	if steps[1].Params["text"] != "hello" {
+		t.Errorf("type: Params[text] = %q, want hello", steps[1].Params["text"])
+	}
+	if steps[1].Params["content_format"] != "markdown" {
+		t.Errorf("type: Params[content_format] = %q, want markdown", steps[1].Params["content_format"])
+	}
+}
+
+func TestNormalizeStepParams_NestedTakesPrecedence(t *testing.T) {
+	// If same key exists in both nested params and top-level, nested wins.
+	stepsJSON := `[{"action":"click","ref":"@top","params":{"ref":"@nested"}}]`
+	var steps []StepSpec
+	if err := json.Unmarshal([]byte(stepsJSON), &steps); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	normalizeStepParams(stepsJSON, steps)
+
+	// Nested params should take precedence.
+	if steps[0].Params["ref"] != "@nested" {
+		t.Errorf("Params[ref] = %q, want @nested (nested takes precedence)", steps[0].Params["ref"])
+	}
+}
