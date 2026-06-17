@@ -1047,6 +1047,9 @@ func (s *Session) waitForLoad(timeout time.Duration) {
 }
 
 func (s *Session) WaitForStable(timeout, quiet time.Duration) error {
+	if s == nil || s.client == nil {
+		return fmt.Errorf("browser session not connected")
+	}
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}
@@ -1055,27 +1058,81 @@ func (s *Session) WaitForStable(timeout, quiet time.Duration) error {
 	}
 	deadline := time.Now().Add(timeout)
 	stableSince := time.Time{}
-	lastSig := ""
+	lastReady := ""
+	lastURL := ""
+	lastTextLen := 0
+	consecutiveErrors := 0
 	for time.Now().Before(deadline) {
 		result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
-			"expression":    `JSON.stringify({ready:document.readyState,url:location.href,text:(document.body&&(document.body.innerText||document.body.textContent)||'').length,active:document.activeElement&&(document.activeElement.tagName||'')})`,
+			"expression":    `JSON.stringify({ready:document.readyState,url:location.href,text:(document.body&&(document.body.innerText||document.body.textContent)||'').length})`,
 			"returnByValue": true,
 		}, 2*time.Second)
-		if err == nil {
-			sig := extractStringValue(result)
-			ready := strings.Contains(sig, `"ready":"complete"`) || strings.Contains(sig, `"ready":"interactive"`)
-			if ready && sig == lastSig {
-				if stableSince.IsZero() {
-					stableSince = time.Now()
-				} else if time.Since(stableSince) >= quiet {
-					return nil
-				}
-			} else {
-				lastSig = sig
-				stableSince = time.Time{}
+		if err != nil {
+			consecutiveErrors++
+			// If CDP is consistently failing, bail early instead of polling
+			// until deadline. 3 consecutive failures = connection is dead.
+			if consecutiveErrors >= 3 {
+				return fmt.Errorf("page stability check failed: %w", err)
 			}
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		consecutiveErrors = 0
+		sig := extractStringValue(result)
+		ready, url, textLen := parseStabilitySignature(sig)
+		isReady := ready == "complete" || ready == "interactive"
+		// Structural stability: readyState and URL must match exactly;
+		// text length must be within ±5% (tolerates minor dynamic content
+		// like clocks, counters, blinking cursors on SPA pages).
+		structurallyStable := isReady &&
+			ready == lastReady &&
+			url == lastURL &&
+			textLenWithinTolerance(textLen, lastTextLen, 0.05)
+		if structurallyStable {
+			if stableSince.IsZero() {
+				stableSince = time.Now()
+			} else if time.Since(stableSince) >= quiet {
+				return nil
+			}
+		} else {
+			lastReady = ready
+			lastURL = url
+			lastTextLen = textLen
+			stableSince = time.Time{}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("page not stable within %v", timeout)
+}
+
+// parseStabilitySignature extracts ready, url, and text length from the
+// JSON signature produced by the stability polling expression.
+func parseStabilitySignature(sig string) (ready, url string, textLen int) {
+	// Fast path: parse the simple JSON without full unmarshal.
+	var payload struct {
+		Ready string `json:"ready"`
+		URL   string `json:"url"`
+		Text  int    `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(sig), &payload); err == nil {
+		return payload.Ready, payload.URL, payload.Text
+	}
+	return "", "", 0
+}
+
+// textLenWithinTolerance returns true if current and previous text lengths
+// are within the given fractional tolerance of each other.
+func textLenWithinTolerance(current, previous int, tolerance float64) bool {
+	if previous == 0 && current == 0 {
+		return true
+	}
+	if previous == 0 {
+		// First measurement — treat as "changed" so we record it.
+		return false
+	}
+	diff := current - previous
+	if diff < 0 {
+		diff = -diff
+	}
+	return float64(diff) <= float64(previous)*tolerance
 }

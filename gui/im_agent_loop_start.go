@@ -97,7 +97,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 			ctx.Runtime.RequestID, opts.UserID, ctx.Runtime.Execution.Layer, ctx.Runtime.Execution.TaskType, ctx.Runtime.Execution.PromptProfile, ctx.Runtime.Execution.Confidence, ctx.Runtime.Execution.Reason, ctx.Runtime.Execution.ToolBudget, ctx.Runtime.Execution.IterationBudget)
 	}
 
-	// V1 coding gate removed; tools pass through unfiltered.
+	// Legacy coding gate removed; tools pass through unfiltered.
 
 	return agentLoopStartState{
 		Config:                        cfg,

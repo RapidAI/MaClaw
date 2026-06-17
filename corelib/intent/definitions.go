@@ -308,7 +308,7 @@ func DefaultDefinitions() []IntentDefinition {
 				"grant_proposal", "paper_writing", "project_proposal",
 				"event_planning", "competitive_analysis",
 				"bid_response", "contract_review", "due_diligence",
-				"compliance_audit", "patent_analysis",
+				"compliance_audit", "patent_analysis", "patent_application",
 			},
 			TreeText: "用户要启动一个需要多阶段设计决策的复杂项目。" +
 				"核心判据：产出物是否需要多阶段设计决策？同一输入能否产出截然不同的结果？" +
@@ -320,7 +320,8 @@ func DefaultDefinitions() []IntentDefinition {
 				"project_proposal=项目立项, event_planning=活动策划, " +
 				"competitive_analysis=竞品分析, bid_response=招投标, " +
 				"contract_review=合同审查, due_diligence=尽职调查(对公司做商业评估), " +
-				"compliance_audit=合规审计, patent_analysis=专利分析。",
+				"compliance_audit=合规审计, patent_analysis=专利分析, " +
+				"patent_application=专利申请/撰写(根据交底书生成权利要求书+说明书)。",
 			EmbedTexts: []string{
 				"帮我做一份产品设计文档",
 				"写一份商业计划书",
@@ -339,6 +340,8 @@ func DefaultDefinitions() []IntentDefinition {
 				"写一份基金申请书",
 				"做一个创新方案",
 				"写一份测试方案",
+				"帮我写一份专利申请书",
+				"根据交底书撰写发明专利",
 				"write a business plan",
 				"do a competitive analysis",
 				"review this contract for risks",
@@ -346,6 +349,7 @@ func DefaultDefinitions() []IntentDefinition {
 				"write a literature review paper",
 				"plan an event for product launch",
 				"design a testing strategy",
+				"draft a patent application from disclosure",
 			},
 			ToolNames: []string{"generate_pdf"},
 		},

@@ -29,7 +29,7 @@ import (
 // nil/zero when both the direct field and h.app are nil).
 type StandaloneConfig struct {
 	// WorkflowEngine is retained for test compatibility but not used at runtime.
-	// V2 is the sole workflow engine. Tests that create a V1 engine assign it here
+	// WorkflowEngine is retained for test compatibility. Tests assign it here
 	// and the test helper sets h.app.workflowEngine directly.
 	WorkflowEngine *workflow.WorkflowEngine
 

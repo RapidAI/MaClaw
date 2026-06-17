@@ -3,6 +3,7 @@ package cardstore
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -85,7 +86,7 @@ func CreateOrderHandler(svc *Service) http.HandlerFunc {
 }
 
 // ListOrdersHandler lists orders for a hub/tenant.
-// GET /api/cardstore/orders?hub_id=X&tenant_id=Y&status=Z&offset=0&limit=20
+// GET /api/cardstore/orders?hub_id=X&tenant_id=Y&status=Z&statuses=A,B&offset=0&limit=20
 func ListOrdersHandler(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -101,6 +102,7 @@ func ListOrdersHandler(svc *Service) http.HandlerFunc {
 			Email:          q.Get("email"),
 			ServiceGroupID: q.Get("service_group_id"),
 			Status:         q.Get("status"),
+			Statuses:       parseStatusList(q),
 			ArchivedOnly:   q.Get("archived") == "1" || strings.EqualFold(q.Get("archived"), "true"),
 			IncludeArchived: strings.EqualFold(q.Get("include_archived"), "1") ||
 				strings.EqualFold(q.Get("include_archived"), "true"),
@@ -117,6 +119,30 @@ func ListOrdersHandler(svc *Service) http.HandlerFunc {
 			"total":  total,
 		})
 	}
+}
+
+func parseStatusList(q url.Values) []string {
+	seen := make(map[string]bool)
+	var statuses []string
+	add := func(raw string) {
+		for _, part := range strings.Split(raw, ",") {
+			status := strings.TrimSpace(part)
+			if status == "" || seen[status] {
+				continue
+			}
+			seen[status] = true
+			statuses = append(statuses, status)
+		}
+	}
+	for _, raw := range q["statuses"] {
+		add(raw)
+	}
+	if len(statuses) == 0 {
+		for _, raw := range q["status"] {
+			add(raw)
+		}
+	}
+	return statuses
 }
 
 // DeleteOrderHandler deletes an unpaid order owned by a Hub tenant admin.

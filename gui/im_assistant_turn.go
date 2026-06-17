@@ -107,7 +107,7 @@ func (h *IMMessageHandler) handleAgentLoopPostLLMTurn(opts agentLoopPostLLMTurnO
 	result.AssistantMessageElapsed = assistantCommit.AssistantMsgElapsed
 	result.HistoryAppendElapsed = assistantCommit.HistoryAppendElapsed
 
-	// V1 coding gate removed — no post-assistant-turn gate processing.
+	// Legacy coding gate removed — no post-assistant-turn gate processing.
 	result.Choice = choice
 	return result
 }

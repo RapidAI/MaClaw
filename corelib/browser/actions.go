@@ -3,14 +3,83 @@ package browser
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
+
+// observeWithRecovery attempts Observe, and if it fails due to target-gone
+// (common after click-triggered navigations that destroy the old target),
+// tries to recover by re-discovering page targets and switching to the new one.
+// This prevents false-failure reports to the LLM when the action itself
+// succeeded but the post-action observation fails.
+func (s *BrowserAgentSession) observeWithRecovery() (*BrowserObservation, error) {
+	obs, err := s.Observe(false)
+	if err == nil {
+		return obs, nil
+	}
+	// Only attempt recovery if the failure is target-gone.
+	if s.IsTargetAlive() {
+		return nil, err // different error, don't mask it
+	}
+	// Target is gone — likely a navigation created a new page.
+	// Try to find and switch to the new target.
+	if s.session == nil {
+		return nil, err
+	}
+	addr := s.session.addr
+	if addr == "" {
+		return nil, err
+	}
+	targets, discErr := DiscoverTargets(addr)
+	if discErr != nil || len(targets) == 0 {
+		return nil, err // can't recover, return original error
+	}
+	newTargetID := ""
+	for _, t := range targets {
+		if t.Type == "page" && t.ID != "" && t.ID != s.TargetID {
+			newTargetID = t.ID
+			break
+		}
+	}
+	if newTargetID == "" {
+		// No new page found; try any page target
+		for _, t := range targets {
+			if t.Type == "page" && t.ID != "" {
+				newTargetID = t.ID
+				break
+			}
+		}
+	}
+	if newTargetID == "" {
+		return nil, err
+	}
+	log.Printf("[browser] observeWithRecovery: target gone, switching to %s session=%s", newTargetID, s.ID)
+	// SwitchPage makes HTTP calls (DiscoverTargets) and opens a new WebSocket —
+	// do NOT hold s.mu during this to avoid blocking TargetGone()/IsTargetAlive()
+	// readers for seconds.
+	if switchErr := s.session.SwitchPage(newTargetID); switchErr != nil {
+		return nil, err // switch failed, return original error
+	}
+	s.mu.Lock()
+	s.TargetID = newTargetID
+	s.snapshots = map[string]*BrowserSnapshot{}
+	s.lastSnapshotID = ""
+	s.resetTargetGone()
+	s.mu.Unlock()
+	// Restart event pump for the new client (SwitchPage replaces the CDP client).
+	s.startEventPump()
+	// Retry observe on the new target.
+	return s.Observe(false)
+}
 
 // Navigate performs a browser navigation under the agent session.
 func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error) {
 	if s == nil || s.session == nil {
 		return nil, fmt.Errorf("browser session not connected")
+	}
+	if !s.IsTargetAlive() {
+		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
 	}
 	url = strings.TrimSpace(url)
 	if url == "" {
@@ -23,7 +92,7 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 		return nil, err
 	}
 	s.waitForActionSettle(3*time.Second, 300*time.Millisecond)
-	obs, err := s.Observe(false)
+	obs, err := s.observeWithRecovery()
 	if err != nil {
 		return nil, err
 	}
@@ -47,8 +116,29 @@ func (s *BrowserAgentSession) waitForActionSettle(timeout, quiet time.Duration) 
 	if s == nil || s.session == nil {
 		return
 	}
-	if err := s.session.WaitForStable(timeout, quiet); err != nil {
-		s.appendActionTrace("settle", fmt.Sprintf("page settle skipped: %v", err))
+	// Fast path: target already gone, no point starting a settle wait.
+	if !s.IsTargetAlive() {
+		return
+	}
+	// Capture session pointer at spawn time. Even if s.session is later replaced
+	// by a reconnect, the goroutine safely uses the old (self-contained) Session.
+	sess := s.session
+	// Run WaitForStable in a goroutine so we can abort on target destruction.
+	// The goroutine will self-terminate within 'timeout' even if we abandon it,
+	// because WaitForStable respects its deadline.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = sess.WaitForStable(timeout, quiet)
+	}()
+	select {
+	case <-done:
+		// Settle completed normally.
+	case <-s.TargetGone():
+		// Target destroyed — no point waiting for stability.
+		// The goroutine will exit on its own within 'timeout' (WaitForStable
+		// respects its deadline). It holds no locks, so this is safe.
+		s.appendActionTrace("settle", "page settle aborted: target gone")
 	}
 }
 
@@ -249,6 +339,9 @@ func (s *BrowserAgentSession) Click(snapshotID, ref, selector string) (*BrowserA
 	if s == nil || s.session == nil {
 		return nil, fmt.Errorf("browser session not connected")
 	}
+	if !s.IsTargetAlive() {
+		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
+	}
 	ref = strings.TrimSpace(ref)
 	selector = strings.TrimSpace(selector)
 	var resolvedRef *BrowserElementRef
@@ -273,7 +366,7 @@ func (s *BrowserAgentSession) Click(snapshotID, ref, selector string) (*BrowserA
 	}
 	s.rememberSubmitClick(submitKey)
 	s.waitForActionSettle(2*time.Second, 250*time.Millisecond)
-	obs, err := s.Observe(false)
+	obs, err := s.observeWithRecovery()
 	if err != nil {
 		return nil, err
 	}
@@ -302,6 +395,9 @@ func (s *BrowserAgentSession) ClickText(snapshotID, text string) (*BrowserAction
 	if s == nil || s.session == nil {
 		return nil, fmt.Errorf("browser session not connected")
 	}
+	if !s.IsTargetAlive() {
+		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
+	}
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil, fmt.Errorf("missing text")
@@ -323,7 +419,7 @@ func (s *BrowserAgentSession) ClickText(snapshotID, text string) (*BrowserAction
 	}
 	s.rememberSubmitClick(submitKey)
 	s.waitForActionSettle(2*time.Second, 250*time.Millisecond)
-	obs, err := s.Observe(false)
+	obs, err := s.observeWithRecovery()
 	if err != nil {
 		return nil, err
 	}
@@ -358,6 +454,9 @@ func (s *BrowserAgentSession) TypeContent(snapshotID, ref, selector, text, conte
 	if s == nil || s.session == nil {
 		return nil, fmt.Errorf("browser session not connected")
 	}
+	if !s.IsTargetAlive() {
+		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
+	}
 	ref = strings.TrimSpace(ref)
 	selector = strings.TrimSpace(selector)
 	contentFormat = normalizeBrowserContentFormat(contentFormat)
@@ -366,7 +465,7 @@ func (s *BrowserAgentSession) TypeContent(snapshotID, ref, selector, text, conte
 			return nil, err
 		}
 		s.waitForActionSettle(1*time.Second, 200*time.Millisecond)
-		obs, err := s.Observe(false)
+		obs, err := s.observeWithRecovery()
 		if err != nil {
 			return nil, err
 		}
@@ -403,7 +502,7 @@ func (s *BrowserAgentSession) TypeContent(snapshotID, ref, selector, text, conte
 		s.appendActionTrace("retry", fmt.Sprintf("type fallback selector succeeded %s -> %s", ref, resolvedSelector))
 	}
 	s.waitForActionSettle(1*time.Second, 200*time.Millisecond)
-	obs, err := s.Observe(false)
+	obs, err := s.observeWithRecovery()
 	if err != nil {
 		return nil, err
 	}
@@ -433,6 +532,9 @@ func (s *BrowserAgentSession) TypeContent(snapshotID, ref, selector, text, conte
 func (s *BrowserAgentSession) Wait(snapshotID, ref, selector string, durationMS int) (*BrowserActionResult, error) {
 	if s == nil || s.session == nil {
 		return nil, fmt.Errorf("browser session not connected")
+	}
+	if !s.IsTargetAlive() {
+		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
 	}
 	var resolvedRef *BrowserElementRef
 	var err error
@@ -474,7 +576,7 @@ func (s *BrowserAgentSession) Wait(snapshotID, ref, selector string, durationMS 
 		}
 		time.Sleep(time.Duration(durationMS) * time.Millisecond)
 	}
-	obs, err := s.Observe(false)
+	obs, err := s.observeWithRecovery()
 	if err != nil {
 		return nil, err
 	}
@@ -498,6 +600,9 @@ func (s *BrowserAgentSession) Refresh() (*BrowserActionResult, error) {
 	if s == nil || s.session == nil {
 		return nil, fmt.Errorf("browser session not connected")
 	}
+	if !s.IsTargetAlive() {
+		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
+	}
 	info, err := s.session.Info()
 	if err != nil || info == nil || strings.TrimSpace(info.URL) == "" {
 		return nil, fmt.Errorf("unable to determine current page for refresh")
@@ -518,11 +623,14 @@ func (s *BrowserAgentSession) Back() (*BrowserActionResult, error) {
 	if s == nil || s.session == nil {
 		return nil, fmt.Errorf("browser session not connected")
 	}
+	if !s.IsTargetAlive() {
+		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
+	}
 	if err := s.session.Back(); err != nil {
 		return nil, err
 	}
 	s.waitForActionSettle(3*time.Second, 300*time.Millisecond)
-	obs, err := s.Observe(false)
+	obs, err := s.observeWithRecovery()
 	if err != nil {
 		return nil, err
 	}
@@ -545,6 +653,9 @@ func (s *BrowserAgentSession) Back() (*BrowserActionResult, error) {
 func (s *BrowserAgentSession) Extract(snapshotID, ref, selector, query, format string, offset, maxChars int) (*BrowserActionResult, error) {
 	if s == nil || s.session == nil {
 		return nil, fmt.Errorf("browser session not connected")
+	}
+	if !s.IsTargetAlive() {
+		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
 	}
 	query = strings.TrimSpace(query)
 	value := ""
@@ -589,7 +700,7 @@ func (s *BrowserAgentSession) Extract(snapshotID, ref, selector, query, format s
 			return nil, err
 		}
 	} else {
-		obs, err := s.Observe(false)
+		obs, err := s.observeWithRecovery()
 		if err != nil {
 			return nil, err
 		}

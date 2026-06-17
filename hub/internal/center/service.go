@@ -75,6 +75,7 @@ type RegistrationState struct {
 	LastRegisteredAt              int64                                            `json:"last_registered_at,omitempty"`
 	DigitalEmployeeAuthorization  *corelib.DigitalEmployeeAuthorization            `json:"digital_employee_authorization,omitempty"`
 	DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations,omitempty"`
+	Authorizations                map[string]json.RawMessage                       `json:"authorizations,omitempty"`
 }
 
 type registrationRecord struct {
@@ -89,6 +90,7 @@ type registrationRecord struct {
 	LastRegisteredAt              int64                                            `json:"last_registered_at,omitempty"`
 	DigitalEmployeeAuthorization  *corelib.DigitalEmployeeAuthorization            `json:"digital_employee_authorization,omitempty"`
 	DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations,omitempty"`
+	Authorizations                map[string]json.RawMessage                       `json:"authorizations,omitempty"`
 }
 
 type centerQualityProbe struct {
@@ -303,6 +305,7 @@ func (s *Service) Status(ctx context.Context) (*RegistrationState, error) {
 		LastRegisteredAt:              record.LastRegisteredAt,
 		DigitalEmployeeAuthorization:  registrationDigitalEmployeeAuthorizationForStatus(record),
 		DigitalEmployeeAuthorizations: registrationDigitalEmployeeAuthorizationsForStatus(record),
+		Authorizations:                cloneAuthorizationPayloads(record.Authorizations),
 	}, nil
 }
 func (s *Service) SetBaseURL(ctx context.Context, baseURL string) (*RegistrationState, error) {
@@ -1015,6 +1018,33 @@ func mergeTenantDigitalEmployeeAuthorizations(record *registrationRecord, incomi
 	}
 }
 
+func mergeAuthorizationPayloads(record *registrationRecord, incoming map[string]json.RawMessage) {
+	if record == nil || len(incoming) == 0 {
+		return
+	}
+	if record.Authorizations == nil {
+		record.Authorizations = map[string]json.RawMessage{}
+	}
+	for key, payload := range incoming {
+		key = strings.TrimSpace(key)
+		if key == "" || len(payload) == 0 || string(payload) == "null" {
+			continue
+		}
+		record.Authorizations[key] = append(json.RawMessage(nil), payload...)
+	}
+}
+
+func cloneAuthorizationPayloads(in map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]json.RawMessage, len(in))
+	for key, payload := range in {
+		out[key] = append(json.RawMessage(nil), payload...)
+	}
+	return out
+}
+
 func disabledDigitalEmployeeAuthorizationsFrom(existing map[string]*corelib.DigitalEmployeeAuthorization) map[string]*corelib.DigitalEmployeeAuthorization {
 	if len(existing) == 0 {
 		return existing
@@ -1608,6 +1638,7 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 			var okResp struct {
 				DigitalEmployeeAuthorization  *corelib.DigitalEmployeeAuthorization            `json:"digital_employee_authorization"`
 				DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations"`
+				Authorizations                map[string]json.RawMessage                       `json:"authorizations"`
 			}
 			_ = json.Unmarshal(body, &okResp)
 			if okResp.DigitalEmployeeAuthorization != nil {
@@ -1620,6 +1651,7 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 				}
 			}
 			mergeTenantDigitalEmployeeAuthorizations(&record, okResp.DigitalEmployeeAuthorizations)
+			mergeAuthorizationPayloads(&record, okResp.Authorizations)
 			record.Registered = true
 			record.PendingConfirmation = false
 			record.Disabled = false
@@ -1665,6 +1697,7 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 			record.DisabledReason = message
 			record.DigitalEmployeeAuthorization = disabledDigitalEmployeeAuthorization()
 			record.DigitalEmployeeAuthorizations = disabledDigitalEmployeeAuthorizationsFrom(record.DigitalEmployeeAuthorizations)
+			record.Authorizations = nil
 			record.LastError = message
 			record.LastBaseURL = baseURL
 			record.LastRegisteredAt = time.Now().Unix()
@@ -1682,6 +1715,7 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 		record.DisabledReason = ""
 		record.DigitalEmployeeAuthorization = nil
 		record.DigitalEmployeeAuthorizations = nil
+		record.Authorizations = nil
 		msg := "hub registration was removed by Hub Center"
 		s.recordFailure(ctx, "heartbeat", "hub_unregistered", msg, record.HubID, "", nil)
 		record.LastError = msg

@@ -201,7 +201,7 @@ type App struct {
 	aiAssistantReadyAt                atomic.Int64
 	aiAssistantFirstChatLogged        atomic.Bool
 	docGenerator                      *swarm.SwarmDocGenerator        // cached PDF doc generator
-	workflowEngine                    *workflow.WorkflowEngine        // V1 engine retained for compatibility while V2 runs independently.
+	workflowEngine                    *workflow.WorkflowEngine        // TEST ONLY: never instantiated in production. Always nil at runtime.
 	workflowV2                        *workflowV2State                // V2 workflow engine (clean state machine)
 	workflowArtifactSaver             *deferredArtifactSaver          // shared artifact saver for OwnerID injection
 	workflowDisabled                  atomic.Bool                     // true when user disables workflow in settings; checked by getWorkflowEngine()
@@ -293,7 +293,7 @@ func (a *App) resolveExperienceProviderForAttribution() lifecycle.Provider {
 			providers = append(providers, skill.NewGovernanceDraftProvider(skills, skill.SkillMaintenancePlanOptions{MaxActions: 12}))
 		}
 	}
-	// V1 workflowEngine experience provider removed - V2 doesn't provide experience context.
+	// workflowEngine experience provider not used.
 	return lifecycle.NewCompositeProvider(providers...)
 }
 
@@ -1933,7 +1933,7 @@ func (a *App) startup(ctx context.Context) {
 			}(config)
 		}
 
-		// V1 workflow engine disabled �?V2 is the sole workflow engine.
+		// Legacy workflow engine init disabled — V2 is sole engine.
 		// go a.initWorkflowEngine()
 		// Initialize V2 workflow engine (clean state machine).
 		a.workflowV2 = a.initWorkflowV2()
@@ -2784,7 +2784,7 @@ func (a *App) SelectWorkingDir() string {
 }
 
 // SetWorkflowWorkingDir sets the working directory for the current coding
-// SetWorkflowWorkingDir is a frontend binding �?V1 engine removed, now no-op.
+// SetWorkflowWorkingDir is a frontend binding — no-op.
 // V2 workflow project path is set at workflow creation time and is immutable.
 func (a *App) SetWorkflowWorkingDir(dir string) {
 	// V2 project path is set at creation and stored in WorkflowState.ProjectPath.

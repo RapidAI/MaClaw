@@ -39,7 +39,7 @@ type failingWorkflowStateStoreGUI struct {
 	fail bool
 }
 
-func (s *failingWorkflowStateStoreGUI) SaveWorkflowState(_ *v2.V1WorkflowState) error {
+func (s *failingWorkflowStateStoreGUI) SaveWorkflowState(_ *v2.EngineState) error {
 	if s != nil && s.fail {
 		return errors.New("save workflow state failed")
 	}
@@ -51,7 +51,7 @@ func (m *mockEngineCallbacksGUI) SendTextToUser(userID, text string) error {
 	return nil
 }
 
-func (m *mockEngineCallbacksGUI) EmitPhaseUpdate(userID string, state *v2.V1WorkflowState) error {
+func (m *mockEngineCallbacksGUI) EmitPhaseUpdate(userID string, state *v2.EngineState) error {
 	return nil
 }
 
@@ -65,8 +65,8 @@ func (m *mockEngineCallbacksGUI) EmitGateResult(userID, phaseID string, result *
 
 func (m *mockEngineCallbacksGUI) GetLang() string { return "zh" }
 
-// setupWorkflowTestHandler creates BOTH a V1 engine AND a V2 machine, syncing
-// templates between them. This allows existing tests to use V1 engine methods
+// setupWorkflowTestHandler creates BOTH a WorkflowEngine AND a StateMachine, syncing
+// templates between them. This allows existing tests to use WorkflowEngine methods
 // (StartWorkflow, GetActiveWorkflow, etc.) while having a V2 machine available.
 //
 // For new tests, prefer using V2 directly:
@@ -76,7 +76,7 @@ func (m *mockEngineCallbacksGUI) GetLang() string { return "zh" }
 //	v2.RegisterBuiltinTemplates(reg)
 //	machine := v2.NewStateMachine(store, reg)
 //
-// This avoids the V1↔V2 bridge overhead and tests the actual production path.
+// This avoids the bridge overhead and tests the actual production path.
 func setupWorkflowTestHandler(llmCaller v2.LLMCaller) (*IMMessageHandler, *mockEngineCallbacksGUI) {
 	// V2 infrastructure: MemoryStore (in-memory, no file I/O) + TemplateRegistry + StateMachine.
 	v2Store := v2.NewMemoryStore()
@@ -84,16 +84,20 @@ func setupWorkflowTestHandler(llmCaller v2.LLMCaller) (*IMMessageHandler, *mockE
 	v2.RegisterBuiltinTemplates(v2Registry)
 	v2Machine := v2.NewStateMachine(v2Store, v2Registry)
 
-	// V1 WorkflowRegistry populated from V2 templates so that existing test
-	// code (h.app.workflowEngine.StartWorkflow) continues to work. The V1
+	// Register test-only templates in V2 registry so machine.Create works.
+	registerTestTemplatesInV2Registry(v2Registry)
+
+	// WorkflowRegistry populated from templates so that existing test
+	// code (h.app.workflowEngine.StartWorkflow) continues to work. The
 	// RegisterBuiltinTemplates is intentionally empty (T12); we bridge V2
-	// template data into V1 format here.
+	// template data into TemplateSpec format here.
 	v1Registry := v2.NewWorkflowRegistry()
 	registerV2TemplatesIntoV1Registry(v1Registry, v2Registry)
 
 	cb := &mockEngineCallbacksGUI{}
 	understanding := v2.NewIntentUnderstandingManager(v2.NullStore{}, llmCaller, v1Registry)
 	engine := v2.NewWorkflowEngine(v1Registry, understanding, v2.NullStore{}, cb)
+	engine.SetMachine(v2Machine) // Sync engine StartWorkflow to V2 StateMachine
 
 	app := &App{
 		workflowEngine: engine,
@@ -107,8 +111,16 @@ func setupWorkflowTestHandler(llmCaller v2.LLMCaller) (*IMMessageHandler, *mockE
 	return handler, cb
 }
 
-// newPopulatedWorkflowRegistry creates a V1 WorkflowRegistry populated from
-// V2 templates. Standalone tests that create their own V1 engine should use
+// syncPhaseToV2Machine advances the V2 StateMachine state to match the engine
+// state's PhaseIndex. Called after test code manually sets state.PhaseIndex.
+func syncPhaseToV2Machine(handler *IMMessageHandler, userID string, phaseIndex int) {
+	if wf := handler.getWorkflowV2(); wf != nil && wf.machine != nil {
+		wf.machine.SetActivePhaseForTest(userID, phaseIndex)
+	}
+}
+
+// newPopulatedWorkflowRegistry creates a WorkflowRegistry populated from
+// templates. Standalone tests that create their own WorkflowEngine should use
 // this instead of the empty v2.NewWorkflowRegistry().
 func newPopulatedWorkflowRegistry() *v2.WorkflowRegistry {
 	v2Reg := v2.NewTemplateRegistry()
@@ -119,11 +131,11 @@ func newPopulatedWorkflowRegistry() *v2.WorkflowRegistry {
 }
 
 // registerV2TemplatesIntoV1Registry iterates known V2 template types and
-// registers equivalent V1 WorkflowTemplate entries so that V1 engine's
+// registers equivalent TemplateSpec entries so that WorkflowEngine.s
 // StartWorkflow/Match calls succeed in tests.
 //
 // Deprecated: This bridge exists solely for backward compat with 50+ test files
-// that create V1 WorkflowEngine instances via setupWorkflowTestHandler. New tests
+// that create WorkflowEngine instances via setupWorkflowTestHandler. New tests
 // should use V2 directly:
 //
 //	reg := v2.NewTemplateRegistry()
@@ -147,22 +159,23 @@ func registerV2TemplatesIntoV1Registry(v1Reg *v2.WorkflowRegistry, v2Reg *v2.Tem
 		"bid_response", "contract_review", "due_diligence",
 		"compliance_audit", "patent_analysis", "experiment_design",
 		"grant_proposal", "paper_writing", "paper_reproduction",
+		"patent_application",
 	}
 	for _, typ := range knownTypes {
 		v2Tmpl := v2Reg.Get(typ)
 		if v2Tmpl == nil {
 			continue
 		}
-		v1Phases := make([]v2.V1PhaseTemplate, 0, len(v2Tmpl.Phases))
+		v1Phases := make([]v2.PhaseSpec, 0, len(v2Tmpl.Phases))
 		for _, p := range v2Tmpl.Phases {
-			v1Phases = append(v1Phases, v2.V1PhaseTemplate{
+			v1Phases = append(v1Phases, v2.PhaseSpec{
 				ID:           p.ID,
 				Name:         p.Name,
 				NeedsConfirm: p.NeedsConfirm,
-				ToolPolicy:   mapV2ToolPolicyToV1Filter(p.ToolPolicy),
+				ToolPolicy:   mapToolPolicyToFilterPolicy(p.ToolPolicy),
 			})
 		}
-		v1Reg.MustRegister(&v2.V1WorkflowTemplate{
+		v1Reg.MustRegister(&v2.TemplateSpec{
 			Type:          v2.WorkflowType(v2Tmpl.Type),
 			Name:          v2Tmpl.Name,
 			Description:   v2Tmpl.Description,
@@ -172,19 +185,43 @@ func registerV2TemplatesIntoV1Registry(v1Reg *v2.WorkflowRegistry, v2Reg *v2.Tem
 		})
 	}
 
-	// Register V1-only workflow types that exist in tests but not in V2.
+	// Register test-only workflow types that exist in tests but not in production.
 	// These provide minimal phase data for backward compat.
 	registerV1OnlyTestTemplates(v1Reg)
+}
+
+// registerTestTemplatesInV2Registry registers test-only workflow templates in the
+// V2 TemplateRegistry so that machine.Create can find them during tests.
+func registerTestTemplatesInV2Registry(reg *v2.TemplateRegistry) {
+	reg.Register(&v2.WorkflowTemplate{
+		Type: "ops_maintenance",
+		Name: "运维操作",
+		Phases: []v2.PhaseTemplate{
+			{ID: "ops_intake", Name: "运维需求确认", NeedsConfirm: true, ToolPolicy: v2.ToolPolicyDocOnly},
+			{ID: "readonly_collection", Name: "信息采集", NeedsConfirm: true, ToolPolicy: v2.ToolPolicyDocOnly},
+			{ID: "risk_policy", Name: "风险策略", NeedsConfirm: true, ToolPolicy: v2.ToolPolicyDocOnly},
+			{ID: "controlled_execution", Name: "受控执行", NeedsConfirm: false, ToolPolicy: v2.ToolPolicyOpsControlled},
+			{ID: "verification", Name: "验证", NeedsConfirm: true, ToolPolicy: v2.ToolPolicyDocOnly},
+		},
+	})
+	reg.Register(&v2.WorkflowTemplate{
+		Type: "changjiang_scholar",
+		Name: "长江学者申报",
+		Phases: []v2.PhaseTemplate{
+			{ID: "eligibility", Name: "资格审查", NeedsConfirm: true, ToolPolicy: v2.ToolPolicyDocOnly},
+			{ID: "materials", Name: "材料准备", NeedsConfirm: true, ToolPolicy: v2.ToolPolicyDocOnly},
+		},
+	})
 }
 
 // registerV1OnlyTestTemplates registers workflow types that are used in test
 // code but not (yet) present in V2. These are minimal stubs.
 func registerV1OnlyTestTemplates(v1Reg *v2.WorkflowRegistry) {
 	// ops_maintenance — used extensively in ops-guard and tool-execution tests.
-	v1Reg.MustRegister(&v2.V1WorkflowTemplate{
+	v1Reg.MustRegister(&v2.TemplateSpec{
 		Type: v2.WorkflowOpsMaintenance,
 		Name: "运维操作",
-		Phases: []v2.V1PhaseTemplate{
+		Phases: []v2.PhaseSpec{
 			{ID: "ops_intake", Name: "运维需求确认", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 			{ID: "readonly_collection", Name: "信息采集", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 			{ID: "risk_policy", Name: "风险策略", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
@@ -194,10 +231,10 @@ func registerV1OnlyTestTemplates(v1Reg *v2.WorkflowRegistry) {
 	})
 
 	// changjiang_scholar — used in workflow interception tests.
-	v1Reg.MustRegister(&v2.V1WorkflowTemplate{
+	v1Reg.MustRegister(&v2.TemplateSpec{
 		Type: v2.WorkflowChangjiangScholar,
 		Name: "长江学者申报",
-		Phases: []v2.V1PhaseTemplate{
+		Phases: []v2.PhaseSpec{
 			{ID: "applicant_info", Name: "申请人信息", Description: "长江学者申请人信息收集", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 			{ID: "research_profile", Name: "科研概况", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 			{ID: "application_doc", Name: "申报材料", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
@@ -205,16 +242,16 @@ func registerV1OnlyTestTemplates(v1Reg *v2.WorkflowRegistry) {
 	})
 
 	// changjiang_scholar_review — used in persistence test tables.
-	v1Reg.MustRegister(&v2.V1WorkflowTemplate{
+	v1Reg.MustRegister(&v2.TemplateSpec{
 		Type: v2.WorkflowChangjiangScholarReview,
 		Name: "长江学者评审",
-		Phases: []v2.V1PhaseTemplate{
+		Phases: []v2.PhaseSpec{
 			{ID: "review_criteria", Name: "评审标准", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 		},
 	})
 }
 
-// mapV2ToolPolicyToV1Filter converts a V2 ToolPolicy to V1 ToolFilterPolicy.
+// mapToolPolicyToFilterPolicy converts ToolPolicy to ToolFilterPolicy alias.
 //
 // Note: Since ToolFilterPolicy is now a type alias for ToolPolicy
 // (type ToolFilterPolicy = ToolPolicy), this function is semantically a no-op
@@ -223,7 +260,7 @@ func registerV1OnlyTestTemplates(v1Reg *v2.WorkflowRegistry) {
 // values are handled, this function could be replaced with a direct assignment.
 //
 // Deprecated: New test code should use v2.ToolPolicy constants directly.
-func mapV2ToolPolicyToV1Filter(p v2.ToolPolicy) v2.ToolFilterPolicy {
+func mapToolPolicyToFilterPolicy(p v2.ToolPolicy) v2.ToolFilterPolicy {
 	switch p {
 	case v2.ToolPolicyDocOnly:
 		return v2.ToolFilterDocOnly
@@ -235,7 +272,7 @@ func mapV2ToolPolicyToV1Filter(p v2.ToolPolicy) v2.ToolFilterPolicy {
 }
 
 // inferRequiresInputFromV2 checks if a V2 template's first phase has an
-// InputSchema, which in V1 semantics means the workflow requires user input
+// InputSchema, which semantically means the workflow requires user input
 // before it can start. Input-driven templates (contract_review, due_diligence,
 // etc.) use this pattern.
 func inferRequiresInputFromV2(tmpl *v2.WorkflowTemplate) *v2.InputRequirement {
@@ -933,6 +970,7 @@ func TestApplyWorkflowToolFilterUsesActiveOpsPhasePolicy(t *testing.T) {
 			break
 		}
 	}
+	syncPhaseToV2Machine(handler, userID, state.PhaseIndex)
 
 	tools := []map[string]interface{}{
 		toolDef("bash", "bash", nil, nil),
@@ -966,6 +1004,7 @@ func TestWorkflowToolExecutionGuardBlocksDisallowedTool(t *testing.T) {
 			break
 		}
 	}
+	syncPhaseToV2Machine(handler, userID, state.PhaseIndex)
 
 	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
 		UserID: userID,
@@ -1044,6 +1083,7 @@ func TestWorkflowToolExecutionGuardBlocksHighRiskCommandArguments(t *testing.T) 
 			break
 		}
 	}
+	syncPhaseToV2Machine(handler, userID, state.PhaseIndex)
 
 	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
 		UserID: userID,
@@ -1090,6 +1130,7 @@ allowed_commands:
 			break
 		}
 	}
+	syncPhaseToV2Machine(handler, userID, state.PhaseIndex)
 
 	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
 		UserID: userID,
@@ -1128,6 +1169,7 @@ func TestWorkflowToolExecutionGuardBlocksMutatingCommandWithoutManifest(t *testi
 			break
 		}
 	}
+	syncPhaseToV2Machine(handler, userID, state.PhaseIndex)
 
 	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
 		UserID: userID,
@@ -1166,6 +1208,7 @@ func TestWorkflowToolExecutionGuardBlocksSSHUploadWithoutManifest(t *testing.T) 
 			break
 		}
 	}
+	syncPhaseToV2Machine(handler, userID, state.PhaseIndex)
 
 	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
 		UserID: userID,
@@ -1214,6 +1257,7 @@ allowed_commands:
 			break
 		}
 	}
+	syncPhaseToV2Machine(handler, userID, state.PhaseIndex)
 
 	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
 		UserID: userID,
@@ -1266,6 +1310,7 @@ func TestWorkflowToolExecutionGuardRejectsSkipNeedsConfirmGateWhenWorkflowActive
 			break
 		}
 	}
+	syncPhaseToV2Machine(handler, userID, state.PhaseIndex)
 
 	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
 		UserID:           userID,
@@ -1403,17 +1448,17 @@ func TestSubmitWorkflowInputIfWaitingStopsAtFirstPhaseFormGate(t *testing.T) {
 	engine := handler.app.workflowEngine
 	userID := "test-submit-input-form-gate"
 	workflowType := v2.WorkflowType("gui_input_form_gate_test")
-	engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
+	engine.GetRegistry().Register(&v2.TemplateSpec{
 		Type:          workflowType,
 		Name:          "gui input form gate test",
 		Description:   "test template",
 		RequiresInput: &v2.InputRequirement{Description: "source document", AcceptText: true},
-		Phases: []v2.V1PhaseTemplate{{
+		Phases: []v2.PhaseSpec{{
 			ID:          "collect_context",
 			Name:        "Collect Context",
 			Prompt:      "collect context",
 			Deliverable: "context document",
-			InputSchema: &v2.V1PhaseInputSchema{Title: "Context", Fields: []v2.V1PhaseInputField{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
+			InputSchema: &v2.PhaseInputSchemaSpec{Title: "Context", Fields: []v2.PhaseInputFieldSpec{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
 			ToolPolicy:  v2.ToolFilterDocOnly,
 		}},
 	})
@@ -1435,7 +1480,7 @@ func TestSubmitWorkflowInputIfWaitingStopsAtFirstPhaseFormGate(t *testing.T) {
 }
 
 func TestWorkflowFormSubmitContinuesSameWorkflowUser(t *testing.T) {
-	t.Skip("V1 workflow engine disabled — this test exercises V1-only form submit path")
+	t.Skip("WorkflowEngine disabled — this test exercises engine-only form submit path")
 	userID := "desktop-user:C:/Users/ma139"
 	registry := v2.NewWorkflowRegistry()
 	understanding := v2.NewIntentUnderstandingManager(v2.NullStore{}, &mockLLMCallerGUI{}, registry)
@@ -1494,7 +1539,7 @@ func TestBuildWorkflowPhaseFormAgentViewPreservesCodingDirectoryField(t *testing
 	if tmpl == nil {
 		t.Fatal("coding workflow template not found")
 	}
-	var schema *v2.V1PhaseInputSchema
+	var schema *v2.PhaseInputSchemaSpec
 	for _, phase := range tmpl.Phases {
 		if phase.ID == v2.PhaseCodingRequirements {
 			schema = phase.InputSchema
@@ -1699,17 +1744,17 @@ func TestSubmitWorkflowInputIfWaitingIMUsesTextFormGate(t *testing.T) {
 	engine := handler.app.workflowEngine
 	userID := "test-submit-input-form-gate-im"
 	workflowType := v2.WorkflowType("gui_input_form_gate_im_test")
-	engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
+	engine.GetRegistry().Register(&v2.TemplateSpec{
 		Type:          workflowType,
 		Name:          "gui input form gate im test",
 		Description:   "test template",
 		RequiresInput: &v2.InputRequirement{Description: "source document", AcceptText: true},
-		Phases: []v2.V1PhaseTemplate{{
+		Phases: []v2.PhaseSpec{{
 			ID:          "collect_context",
 			Name:        "Collect Context",
 			Prompt:      "collect context",
 			Deliverable: "context document",
-			InputSchema: &v2.V1PhaseInputSchema{Title: "Context", Fields: []v2.V1PhaseInputField{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
+			InputSchema: &v2.PhaseInputSchemaSpec{Title: "Context", Fields: []v2.PhaseInputFieldSpec{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
 			ToolPolicy:  v2.ToolFilterDocOnly,
 		}},
 	})
@@ -1862,12 +1907,12 @@ func TestBuildFormSubmissionSummaryLocalizesChinese(t *testing.T) {
 }
 
 func TestWorkflowFormSchemaLocalizesBusinessPlanForChineseUI(t *testing.T) {
-	schema := &v2.V1PhaseInputSchema{
+	schema := &v2.PhaseInputSchemaSpec{
 		Title:     "Business plan brief",
 		TitleI18N: map[string]string{"zh": "商业计划简报"},
-		Fields: []v2.V1PhaseInputField{
+		Fields: []v2.PhaseInputFieldSpec{
 			{Name: "project_name", Label: "Project or company name", LabelI18N: map[string]string{"zh": "项目或公司名称"}, Type: "text", Required: true, Placeholder: "Example: AI customer support SaaS platform"},
-			{Name: "target_audience", Label: "Target reader", Type: "select", Required: true, Options: []v2.V1PhaseInputOption{{Label: "Investors (angel/VC/PE)", Value: "investor", LabelI18N: map[string]string{"zh": "投资人（天使/VC/PE）"}}}},
+			{Name: "target_audience", Label: "Target reader", Type: "select", Required: true, Options: []v2.PhaseInputOptionSpec{{Label: "Investors (angel/VC/PE)", Value: "investor", LabelI18N: map[string]string{"zh": "投资人（天使/VC/PE）"}}}},
 			{Name: "core_description", Label: "Project summary", Type: "textarea", Required: true, Placeholder: "In 2-3 sentences, explain what it does, what problem it solves, and who it serves.", PlaceholderI18N: map[string]string{"zh": "用 2-3 句话说明它做什么、解决什么问题、服务谁。"}},
 		},
 	}
@@ -1875,7 +1920,7 @@ func TestWorkflowFormSchemaLocalizesBusinessPlanForChineseUI(t *testing.T) {
 	if localized.Title != "商业计划简报" {
 		t.Fatalf("expected localized title, got %q", localized.Title)
 	}
-	fields := map[string]v2.V1PhaseInputField{}
+	fields := map[string]v2.PhaseInputFieldSpec{}
 	for _, field := range localized.Fields {
 		fields[field.Name] = field
 	}
@@ -1894,10 +1939,10 @@ func TestWorkflowFormSchemaLocalizesBusinessPlanForChineseUI(t *testing.T) {
 }
 
 func TestWorkflowFormSchemaLocalizesWithExplicitMetadataBeforeFallback(t *testing.T) {
-	schema := &v2.V1PhaseInputSchema{
+	schema := &v2.PhaseInputSchemaSpec{
 		Title:     "Unknown English title",
 		TitleI18N: map[string]string{"zh": "显式标题"},
-		Fields: []v2.V1PhaseInputField{{
+		Fields: []v2.PhaseInputFieldSpec{{
 			Name:            "custom",
 			Label:           "Unknown English label",
 			LabelI18N:       map[string]string{"zh": "显式字段"},
@@ -1906,7 +1951,7 @@ func TestWorkflowFormSchemaLocalizesWithExplicitMetadataBeforeFallback(t *testin
 			DescriptionI18N: map[string]string{"zh": "显式说明"},
 			Placeholder:     "Unknown English placeholder",
 			PlaceholderI18N: map[string]string{"zh": "显式占位"},
-			Options:         []v2.V1PhaseInputOption{{Label: "Unknown English option", Value: "x", LabelI18N: map[string]string{"zh": "显式选项"}}},
+			Options:         []v2.PhaseInputOptionSpec{{Label: "Unknown English option", Value: "x", LabelI18N: map[string]string{"zh": "显式选项"}}},
 		}},
 	}
 
@@ -1920,10 +1965,10 @@ func TestWorkflowFormSchemaLocalizesWithExplicitMetadataBeforeFallback(t *testin
 }
 
 func TestWorkflowFormSchemaAppliesExplicitEnglishMetadata(t *testing.T) {
-	schema := &v2.V1PhaseInputSchema{
+	schema := &v2.PhaseInputSchemaSpec{
 		Title:     "Default title",
 		TitleI18N: map[string]string{"en": "English title", "en-US": "US title"},
-		Fields: []v2.V1PhaseInputField{{
+		Fields: []v2.PhaseInputFieldSpec{{
 			Name:            "custom",
 			Label:           "Default label",
 			LabelI18N:       map[string]string{"en": "English label"},
@@ -1932,7 +1977,7 @@ func TestWorkflowFormSchemaAppliesExplicitEnglishMetadata(t *testing.T) {
 			DescriptionI18N: map[string]string{"en": "English description"},
 			Placeholder:     "Default placeholder",
 			PlaceholderI18N: map[string]string{"en": "English placeholder"},
-			Options:         []v2.V1PhaseInputOption{{Label: "Default option", Value: "x", LabelI18N: map[string]string{"en": "English option"}}},
+			Options:         []v2.PhaseInputOptionSpec{{Label: "Default option", Value: "x", LabelI18N: map[string]string{"en": "English option"}}},
 		}},
 	}
 
@@ -1943,7 +1988,7 @@ func TestWorkflowFormSchemaAppliesExplicitEnglishMetadata(t *testing.T) {
 }
 
 func TestWorkflowFormSchemaEmptyLangDefaultsChineseFallback(t *testing.T) {
-	schema := &v2.V1PhaseInputSchema{Title: "Business plan brief"}
+	schema := &v2.PhaseInputSchemaSpec{Title: "Business plan brief"}
 	localized := localizeWorkflowPhaseInputSchema(schema, "")
 	if localized.Title != "商业计划简报" {
 		t.Fatalf("empty lang should use Chinese fallback, got %q", localized.Title)
@@ -2208,17 +2253,17 @@ func TestWorkflowReviewConfirmInvalidCodingTaskBreakdownRegenerates(t *testing.T
 }
 
 func TestWorkflowReviewFastConfirmBypassesPendingUserReply(t *testing.T) {
-	t.Skip("V1 workflow engine disabled — this test exercises V1-only review/confirm path")
+	t.Skip("WorkflowEngine disabled — this test exercises engine-only review/confirm path")
 	llm := &mockLLMCallerGUI{Response: "other"}
 	handler, _ := setupWorkflowTestHandler(llm)
 	engine := handler.app.workflowEngine
 	userID := "test-review-pending-reply-priority"
 	workflowType := v2.WorkflowType("gui_review_pending_reply_priority")
-	if err := engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
+	if err := engine.GetRegistry().Register(&v2.TemplateSpec{
 		Type:        workflowType,
 		Name:        "review pending reply priority",
 		Description: "test template",
-		Phases: []v2.V1PhaseTemplate{
+		Phases: []v2.PhaseSpec{
 			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: v2.ToolFilterFull, Kind: v2.PhaseKindExecution, MutationScope: v2.MutationScopeProject},
 		},
@@ -2270,11 +2315,11 @@ func TestWorkflowReviewOkBypassesShortChitChatAndAdvances(t *testing.T) {
 	engine := handler.app.workflowEngine
 	userID := "test-review-ok-not-short-chitchat"
 	workflowType := v2.WorkflowType("gui_review_ok_not_short_chitchat")
-	if err := engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
+	if err := engine.GetRegistry().Register(&v2.TemplateSpec{
 		Type:        workflowType,
 		Name:        "review ok not short chitchat",
 		Description: "test template",
-		Phases: []v2.V1PhaseTemplate{
+		Phases: []v2.PhaseSpec{
 			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: v2.ToolFilterFull, Kind: v2.PhaseKindExecution, MutationScope: v2.MutationScopeProject},
 		},
@@ -2312,17 +2357,17 @@ func TestWorkflowReviewOkBypassesShortChitChatAndAdvances(t *testing.T) {
 }
 
 func TestWorkflowReviewExecutionRequestDoesNotStartAgentLoop(t *testing.T) {
-	t.Skip("V1 workflow engine disabled — this test exercises V1-only review execution path")
+	t.Skip("WorkflowEngine disabled — this test exercises engine-only review execution path")
 	llm := &mockLLMCallerGUI{Response: "confirm"}
 	handler, _ := setupWorkflowTestHandler(llm)
 	engine := handler.app.workflowEngine
 	userID := "test-review-execution-request-blocked"
 	workflowType := v2.WorkflowType("gui_review_execution_request_blocked")
-	if err := engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
+	if err := engine.GetRegistry().Register(&v2.TemplateSpec{
 		Type:        workflowType,
 		Name:        "review execution request blocked",
 		Description: "test template",
-		Phases: []v2.V1PhaseTemplate{
+		Phases: []v2.PhaseSpec{
 			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: v2.ToolFilterFull, Kind: v2.PhaseKindExecution, MutationScope: v2.MutationScopeProject},
 		},
@@ -2370,11 +2415,11 @@ func TestWorkflowReviewExecutionBlockedResponseUsesConfiguredLanguage(t *testing
 	engine := handler.app.workflowEngine
 	userID := "test-review-execution-blocked-lang"
 	workflowType := v2.WorkflowType("gui_review_execution_blocked_lang")
-	if err := engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
+	if err := engine.GetRegistry().Register(&v2.TemplateSpec{
 		Type:        workflowType,
 		Name:        "review execution blocked language",
 		Description: "test template",
-		Phases: []v2.V1PhaseTemplate{
+		Phases: []v2.PhaseSpec{
 			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: v2.ToolFilterFull, Kind: v2.PhaseKindExecution, MutationScope: v2.MutationScopeProject},
 		},
@@ -2736,18 +2781,18 @@ func TestWorkflowReviewAdvanceIMUsesTextFormGate(t *testing.T) {
 	engine := handler.app.workflowEngine
 	userID := "test-review-advance-im-form"
 	workflowType := v2.WorkflowType("gui_review_form_gate_im_test")
-	engine.GetRegistry().Register(&v2.V1WorkflowTemplate{
+	engine.GetRegistry().Register(&v2.TemplateSpec{
 		Type:        workflowType,
 		Name:        "gui review form gate im test",
 		Description: "test template",
-		Phases: []v2.V1PhaseTemplate{
+		Phases: []v2.PhaseSpec{
 			{ID: "reviewed", Name: "Reviewed", Prompt: "make reviewed output", Deliverable: "reviewed output", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 			{
 				ID:          "collect_more",
 				Name:        "Collect More",
 				Prompt:      "collect more",
 				Deliverable: "more context",
-				InputSchema: &v2.V1PhaseInputSchema{Title: "More", Fields: []v2.V1PhaseInputField{{Name: "scope", Label: "Scope", Type: "text", Required: true}}},
+				InputSchema: &v2.PhaseInputSchemaSpec{Title: "More", Fields: []v2.PhaseInputFieldSpec{{Name: "scope", Label: "Scope", Type: "text", Required: true}}},
 				ToolPolicy:  v2.ToolFilterDocOnly,
 			},
 		},

@@ -3,6 +3,7 @@ package llmservice
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -62,6 +63,10 @@ type TenantAuthorizationRepository interface {
 	DeductCredits(ctx context.Context, id string, credits float64, now time.Time) error
 }
 
+type tenantAuthorizationHubLister interface {
+	ListByHub(ctx context.Context, hubID string) ([]*TenantAuthorization, error)
+}
+
 // AuthorizationChecker validates tenant access to LLM services.
 type AuthorizationChecker struct {
 	repo TenantAuthorizationRepository
@@ -75,7 +80,7 @@ func NewAuthorizationChecker(repo TenantAuthorizationRepository) *AuthorizationC
 // CheckAccess finds an active authorization for the given hub+tenant that
 // covers the requested service group. Returns the authorization to deduct from.
 func (c *AuthorizationChecker) CheckAccess(ctx context.Context, hubID, tenantID, serviceGroupID string) (*TenantAuthorization, error) {
-	auths, err := c.repo.ListByHubTenant(ctx, hubID, tenantID)
+	auths, err := c.ListByHubTenantAliases(ctx, hubID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list authorizations: %w", err)
 	}
@@ -94,7 +99,7 @@ func (c *AuthorizationChecker) CheckAccess(ctx context.Context, hubID, tenantID,
 // HasExternalProviderAccess checks if a tenant has any authorization with
 // AllowExternalProviders=true (needed for Hub to unlock third-party providers).
 func (c *AuthorizationChecker) HasExternalProviderAccess(ctx context.Context, hubID, tenantID string) (bool, error) {
-	auths, err := c.repo.ListByHubTenant(ctx, hubID, tenantID)
+	auths, err := c.ListByHubTenantAliases(ctx, hubID, tenantID)
 	if err != nil {
 		return false, err
 	}
@@ -127,6 +132,26 @@ func (c *AuthorizationChecker) ListAll(ctx context.Context) ([]*TenantAuthorizat
 	return c.repo.ListAll(ctx)
 }
 
+// ListByHub returns authorizations for a Hub when the repository supports an
+// indexed Hub lookup. It falls back to ListAll for in-memory test repositories.
+func (c *AuthorizationChecker) ListByHub(ctx context.Context, hubID string) ([]*TenantAuthorization, error) {
+	if repo, ok := c.repo.(tenantAuthorizationHubLister); ok {
+		return repo.ListByHub(ctx, hubID)
+	}
+	all, err := c.repo.ListAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []*TenantAuthorization
+	hubID = strings.TrimSpace(hubID)
+	for _, auth := range all {
+		if auth != nil && strings.TrimSpace(auth.HubID) == hubID {
+			out = append(out, auth)
+		}
+	}
+	return out, nil
+}
+
 // GetByID returns a single tenant authorization by ID.
 func (c *AuthorizationChecker) GetByID(ctx context.Context, id string) (*TenantAuthorization, error) {
 	return c.repo.GetByID(ctx, id)
@@ -135,6 +160,81 @@ func (c *AuthorizationChecker) GetByID(ctx context.Context, id string) (*TenantA
 // ListByHubTenant returns tenant authorizations for a Hub tenant.
 func (c *AuthorizationChecker) ListByHubTenant(ctx context.Context, hubID, tenantID string) ([]*TenantAuthorization, error) {
 	return c.repo.ListByHubTenant(ctx, hubID, tenantID)
+}
+
+// ListByHubTenantAliases returns authorizations for the requested tenant ID and
+// compatible legacy IDs. Hub tenants are usually "tenant_x"; older HubCenter
+// grants may store the same tenant as "x".
+func (c *AuthorizationChecker) ListByHubTenantAliases(ctx context.Context, hubID, tenantID string) ([]*TenantAuthorization, error) {
+	seen := map[string]struct{}{}
+	var out []*TenantAuthorization
+	for _, candidate := range tenantAuthorizationLookupIDs(tenantID) {
+		auths, err := c.repo.ListByHubTenant(ctx, hubID, candidate)
+		if err != nil {
+			return nil, err
+		}
+		for _, auth := range auths {
+			if auth == nil {
+				continue
+			}
+			key := tenantAuthorizationDedupKey(auth)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, auth)
+		}
+	}
+	return out, nil
+}
+
+func tenantAuthorizationDedupKey(auth *TenantAuthorization) string {
+	if auth.ID != "" {
+		return auth.ID
+	}
+	return auth.HubID + "\x00" + auth.TenantID + "\x00" + auth.ServiceGroupID + "\x00" + auth.Source
+}
+
+func tenantAuthorizationLookupIDs(tenantID string) []string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	add := func(id string, out *[]string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		*out = append(*out, id)
+	}
+	addDefaultStorageID := func(out *[]string) {
+		if _, ok := seen[""]; ok {
+			return
+		}
+		seen[""] = struct{}{}
+		*out = append(*out, "")
+	}
+	var out []string
+	add(tenantID, &out)
+	if tenantID == "tenant_default" {
+		add("default", &out)
+		addDefaultStorageID(&out)
+	}
+	if tenantID == "default" {
+		add("tenant_default", &out)
+		addDefaultStorageID(&out)
+	}
+	if strings.HasPrefix(tenantID, "tenant_") {
+		add(strings.TrimPrefix(tenantID, "tenant_"), &out)
+	} else {
+		add("tenant_"+tenantID, &out)
+	}
+	return out
 }
 
 // ListByServiceGroup returns tenant authorizations bound to a service group.

@@ -356,7 +356,7 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 		msg.Text = confirmationApprovedText(pending)
 		*trimmed = strings.TrimSpace(msg.Text)
 		result := pendingExecutionConfirmationResult{ConfirmedResume: true}
-		// V1 workflow interception removed — V2 handles routing in im_entry_context.
+		// Legacy workflow interception removed — routing handled in im_entry_context.
 		return result
 	}
 

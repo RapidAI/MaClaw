@@ -79,7 +79,11 @@ func (r *orderTestRepo) GetByOrderNo(_ context.Context, orderNo string) (*Purcha
 }
 
 func (r *orderTestRepo) List(_ context.Context, _ OrderFilter) ([]*PurchaseOrder, int, error) {
-	return nil, 0, nil
+	var orders []*PurchaseOrder
+	for _, order := range r.byNo {
+		orders = append(orders, order)
+	}
+	return orders, len(orders), nil
 }
 
 func (r *orderTestRepo) UpdateStatus(_ context.Context, orderNo, status string, _ time.Time) error {
@@ -400,6 +404,73 @@ func TestDeleteUnprocessedOrderRejectsPaidOrder(t *testing.T) {
 	}
 	if _, ok := orderRepo.byNo["HC-PAID"]; !ok {
 		t.Fatalf("activated order was deleted")
+	}
+}
+
+func TestListOrdersHydratesMissingSemiManualPaymentDetails(t *testing.T) {
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-PENDING": {
+			Order: corecardstore.Order{
+				OrderNo:     "HC-PENDING",
+				Email:       "owner@example.com",
+				Status:      corecardstore.StatusPersonalCreated,
+				PaymentMode: corecardstore.PaymentModeSemiManual,
+				PayChannel:  "bank_transfer",
+				Amount:      88,
+			},
+			HubID: "hub-1", TenantID: "tenant-a",
+		},
+	}}
+	svc := NewService(nil, orderRepo, nil)
+	svc.SetPaymentConfig(corecardstore.PersonalPaymentConfig{
+		Instruction: "pay manually",
+		Channels: []corecardstore.PersonalPaymentChannel{{
+			ID: "bank_transfer", Label: "Bank", Enabled: true, BankName: "Bank", BankAccount: "123", BankHolder: "MaClaw",
+		}},
+	}, corecardstore.AlipayDirectConfig{})
+
+	orders, total, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	if total != 1 || len(orders) != 1 {
+		t.Fatalf("total=%d len=%d, want 1", total, len(orders))
+	}
+	if orders[0].PayInstruction == "" {
+		t.Fatalf("PayInstruction was not hydrated")
+	}
+	if !strings.Contains(orders[0].PayInstruction, "HC-PENDING") {
+		t.Fatalf("PayInstruction = %q, want order number", orders[0].PayInstruction)
+	}
+}
+
+func TestListOrdersDoesNotHydrateActivatedOrderPaymentDetails(t *testing.T) {
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-ACTIVE": {
+			Order: corecardstore.Order{
+				OrderNo:     "HC-ACTIVE",
+				Email:       "owner@example.com",
+				Status:      corecardstore.StatusActivated,
+				PaymentMode: corecardstore.PaymentModeSemiManual,
+				PayChannel:  "wechat",
+				Amount:      88,
+			},
+			HubID: "hub-1", TenantID: "tenant-a",
+		},
+	}}
+	svc := NewService(nil, orderRepo, nil)
+	svc.SetPaymentConfig(corecardstore.PersonalPaymentConfig{
+		Channels: []corecardstore.PersonalPaymentChannel{{
+			ID: "wechat", Label: "WeChat", ImageURL: "https://pay.example/qr.png", Enabled: true,
+		}},
+	}, corecardstore.AlipayDirectConfig{})
+
+	orders, _, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	if orders[0].PayQRURL != "" {
+		t.Fatalf("PayQRURL = %q, want empty for activated order", orders[0].PayQRURL)
 	}
 }
 

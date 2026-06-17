@@ -407,7 +407,8 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowed(userID, name, argsJSON stri
 }
 
 // hasActiveWorkflowForPolicy returns true if the user has an active workflow
-// (either in the V2 StateMachine or the V1 compat engine). Used to override
+// hasActiveWorkflowForPolicy checks whether a workflow is active for the user
+// (in the StateMachine or WorkflowEngine adapter). Used to override
 // SkipWorkflowGate when a workflow is active — workflow tool policy must always
 // be enforced regardless of the gate bypass flag.
 func (h *IMMessageHandler) hasActiveWorkflowForPolicy(policyUserID string) bool {
@@ -415,15 +416,8 @@ func (h *IMMessageHandler) hasActiveWorkflowForPolicy(policyUserID string) bool 
 	if policyUserID == "" {
 		return false
 	}
-	// Check V2 StateMachine
 	if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
 		if wf.machine.GetActive(policyUserID) != nil {
-			return true
-		}
-	}
-	// Check V1 compat engine
-	if h.app != nil && h.app.workflowEngine != nil {
-		if h.app.workflowEngine.GetActiveWorkflow(policyUserID) != nil {
 			return true
 		}
 	}
@@ -488,7 +482,7 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 			return false, reason
 		}
 	}
-	if h.isV1WorkflowArtifactPhase(policyUserID) {
+	if h.isWorkflowArtifactPhase(policyUserID) {
 		if reason := validateWorkflowArtifactPhaseToolCall(name, args); reason != "" {
 			return false, reason
 		}

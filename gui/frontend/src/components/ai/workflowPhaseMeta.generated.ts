@@ -177,6 +177,13 @@ export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]> = {
     { id: "strategy", name: "策略建议", index: 3, expectsDocument: false, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "report", name: "分析报告", index: 4, expectsDocument: false, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
   ],
+  "patent_application": [
+    { id: "pa_disclosure_parsing", name: "交底书解析与技术提炼", index: 0, expectsDocument: false, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
+    { id: "pa_claims_drafting", name: "权利要求书撰写", index: 1, expectsDocument: false, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "pa_figures_organization", name: "附图整理与说明", index: 2, expectsDocument: false, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "pa_description_writing", name: "说明书撰写", index: 3, expectsDocument: false, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "pa_document_assembly", name: "申请文件组装与检查", index: 4, expectsDocument: false, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+  ],
   "presentation_design": [
     { id: "audience_goal", name: "受众与目标", index: 0, expectsDocument: false, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "outline", name: "内容大纲", index: 1, expectsDocument: false, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },

@@ -446,11 +446,11 @@ allowed_commands:
 func TestTUIDocOnlyWorkflowPhaseBlocksImplementationTools(t *testing.T) {
 	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
 	workflowType := workflow.WorkflowType("tui_doc_only_policy_boundary")
-	app.workflowEngine.GetRegistry().Register(&workflow.V1WorkflowTemplate{
+	app.workflowEngine.GetRegistry().Register(&workflow.TemplateSpec{
 		Type:        workflowType,
 		Name:        "tui doc only policy boundary",
 		Description: "test template",
-		Phases: []workflow.V1PhaseTemplate{{
+		Phases: []workflow.PhaseSpec{{
 			ID:          "analysis",
 			Name:        "Analysis",
 			Prompt:      "write analysis",
@@ -557,11 +557,11 @@ func TestTUIPlanningWorkflowPhaseAllowsInspectionOnly(t *testing.T) {
 func TestTUIArtifactWorkflowPhaseBlocksProjectMutation(t *testing.T) {
 	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
 	workflowType := workflow.WorkflowType("tui_artifact_scope_tools")
-	if err := app.workflowEngine.GetRegistry().Register(&workflow.V1WorkflowTemplate{
+	if err := app.workflowEngine.GetRegistry().Register(&workflow.TemplateSpec{
 		Type:        workflowType,
 		Name:        "tui artifact scope tools",
 		Description: "test template",
-		Phases: []workflow.V1PhaseTemplate{{
+		Phases: []workflow.PhaseSpec{{
 			ID:            "generate",
 			Name:          "Generate",
 			Prompt:        "generate artifact",
@@ -744,9 +744,9 @@ func TestTUIWorkflowAutoAdvanceIntoFormReturnsGuidance(t *testing.T) {
 	guidance := app.applyWorkflowAutoAdvanceTUI("tui-user", &workflow.WorkflowResponse{
 		Text:     "Advanced to input collection",
 		ShowForm: true,
-		FormSchema: &workflow.V1PhaseInputSchema{
+		FormSchema: &workflow.PhaseInputSchemaSpec{
 			Title:  "Collect details",
-			Fields: []workflow.V1PhaseInputField{{Name: "scope", Label: "Scope", Type: "text", Required: true}},
+			Fields: []workflow.PhaseInputFieldSpec{{Name: "scope", Label: "Scope", Type: "text", Required: true}},
 		},
 	})
 	if !strings.Contains(guidance, "Advanced to input collection") || !strings.Contains(guidance, "1.") {

@@ -8,7 +8,7 @@ package main
 // - SQLiteStore (persistence) or MemoryStore (fallback)
 // - WorkflowRouter (message routing decisions)
 //
-// The deprecated V1 WorkflowEngine field is retained only for test backward
+// The WorkflowEngine field is retained only for test backward
 // compatibility. Production code never uses it (initWorkflowEngine removed).
 
 import (
@@ -28,8 +28,8 @@ type tuiWorkflowV2State struct {
 	machine       *v2.StateMachine
 	store         v2.WorkflowStore
 	registry      *v2.TemplateRegistry
-	understanding *v2.IntentUnderstandingManager // shared with V1, needed for TUI workflow interception
-	filter        *v2.QuickFilter               // shared with V1, needed for TUI workflow interception
+	understanding *v2.IntentUnderstandingManager // needed for TUI workflow interception
+	filter        *v2.QuickFilter               // needed for TUI workflow interception
 }
 
 // initWorkflowV2TUI creates and wires the V2 workflow engine for the TUI.
@@ -70,13 +70,13 @@ func (app *TUIApp) initWorkflowV2TUI() *tuiWorkflowV2State {
 		router != nil, machine != nil, store)
 
 	// Create IntentUnderstandingManager for V2 workflow routing.
-	// Reuse the V1 persistence store for understanding sessions (in-memory no-op).
+	// Reuse the persistence store for understanding sessions (in-memory no-op).
 	v1Store := &tuiWorkflowStore{}
 	llmCaller := &tuiWorkflowLLMCaller{
 		app:    app,
 		client: &http.Client{},
 	}
-	// Use the V1 registry for understanding (it expects *v2.WorkflowRegistry).
+	// Use the WorkflowRegistry for understanding.
 	v1Registry := v2.NewWorkflowRegistry()
 	understanding := v2.NewIntentUnderstandingManager(v1Store, llmCaller, v1Registry)
 	understanding.SetLanguage(app.workflowLang())
@@ -181,8 +181,8 @@ func (c *tuiV2WorkflowChecker) HasActiveUnderstanding(userID string) bool {
 }
 
 
-// mapV2ToolPolicyToV1 converts V2 ToolPolicy to V1 ToolFilterPolicy.
-func mapV2ToolPolicyToV1(policy v2.ToolPolicy) v2.ToolFilterPolicy {
+// mapToolPolicyToFilterPolicy converts native ToolPolicy to ToolFilterPolicy alias.
+func mapToolPolicyToFilterPolicy(policy v2.ToolPolicy) v2.ToolFilterPolicy {
 	switch policy {
 	case v2.ToolPolicyDocOnly:
 		return v2.ToolFilterDocOnly
@@ -208,7 +208,7 @@ func (app *TUIApp) currentWorkflowToolFilterV2() v2.ToolFilterPolicy {
 	if phase == nil {
 		return v2.ToolFilterNone
 	}
-	return mapV2ToolPolicyToV1(phase.ToolPolicy)
+	return mapToolPolicyToFilterPolicy(phase.ToolPolicy)
 }
 
 // isWorkflowV2Active returns true if there's an active V2 v2.
@@ -223,7 +223,7 @@ func (app *TUIApp) isWorkflowV2Active() bool {
 
 // routeWithV2Router uses the V2 Router to handle messages for active V2 workflows.
 // Returns a non-empty string if the message was handled by V2 (the string is the
-// response to show the user). Returns empty string to fall through to V1 engine.
+// response to show the user). Returns empty string to fall through to engine.
 //
 // This handles the case where a V2 workflow was created (via machine.Create) and
 // the user sends confirmation/modification/cancellation messages. The V2 Router

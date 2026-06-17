@@ -108,7 +108,7 @@ func TestTUIWorkflowEmitPhaseUpdateUsesSharedDeriver(t *testing.T) {
 		log.SetFlags(origFlags)
 	})
 
-	state := &workflow.V1WorkflowState{Type: workflow.WorkflowCoding}
+	state := &workflow.EngineState{Type: workflow.WorkflowCoding}
 	if err := callbacks.EmitPhaseUpdate("tui-user", state); err != nil {
 		t.Fatalf("EmitPhaseUpdate returned error: %v", err)
 	}

@@ -138,7 +138,7 @@ func (h *IMMessageHandler) getTaskOrchestratorReadOnly(userID string) *TaskExecu
 //  1. Goals[0]: structured callers store the raw user task here
 //  2. Summary: only used when no explicit goal is available
 //  3. "": text is already the original request
-func extractOriginalRequest(state *v2.V1WorkflowState, currentText string) string {
+func extractOriginalRequest(state *v2.EngineState, currentText string) string {
 	if state == nil {
 		return ""
 	}
@@ -225,7 +225,7 @@ func (h *IMMessageHandler) routeWorkflowIMMessage(msg IMUserMessage, trimmed str
 		return result
 	}
 	engine := h.app.workflowEngine
-	// Check V2 machine first; fall back to V1 engine for compat.
+	// Check StateMachine first; fall back to WorkflowEngine adapter.
 	hasActiveWorkflow := wf.machine.GetActive(msg.UserID) != nil
 	if !hasActiveWorkflow && engine != nil {
 		hasActiveWorkflow = engine.GetActiveWorkflow(msg.UserID) != nil
@@ -435,7 +435,7 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowStartError, lang, err)}}
 	}
 	state := mapV2StateToV1(v2State)
-	// Store in V1 engine so that HandleInput/GetActiveWorkflow can find it.
+	// Store in WorkflowEngine adapter so HandleInput/GetActiveWorkflow can find it.
 	if engine := h.app.workflowEngine; engine != nil {
 		engine.StoreActiveState(userID, state)
 	}
@@ -457,7 +457,7 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 func (h *IMMessageHandler) handlePostStartWorkflow(
 	engine *v2.WorkflowEngine,
 	userID, text string,
-	state *v2.V1WorkflowState,
+	state *v2.EngineState,
 	extraText string,
 	platform string,
 ) *IMAgentResponse {
@@ -478,9 +478,11 @@ func (h *IMMessageHandler) handlePostStartWorkflow(
 	//
 	// NOTE: We only clear memory here, NOT clearPerUserSessionState; that
 	// would cancel the workflow we just started (it calls cancelWorkflowForUser).
-	if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
-		adapter.CleanPersistedWorkflowDocs()
-		adapter.EmitSuggestMaximize(userID, string(state.Type))
+	if engine != nil {
+		if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+			adapter.CleanPersistedWorkflowDocs()
+			adapter.EmitSuggestMaximize(userID, string(state.Type))
+		}
 	}
 	if h.memory != nil {
 		entries := h.memory.Load(userID)
@@ -496,21 +498,25 @@ func (h *IMMessageHandler) handlePostStartWorkflow(
 	}
 
 	// Input-required workflows must wait for user to provide documents.
-	if req := engine.GetInputRequirement(userID); req != nil {
-		overview += i18n.Tf(i18n.MsgWorkflowInputRequired, lang, req.Description)
-		if len(req.FileTypes) > 0 {
-			overview += i18n.Tf(i18n.MsgWorkflowInputFormats, lang, strings.Join(req.FileTypes, ", "))
+	if engine != nil {
+		if req := engine.GetInputRequirement(userID); req != nil {
+			overview += i18n.Tf(i18n.MsgWorkflowInputRequired, lang, req.Description)
+			if len(req.FileTypes) > 0 {
+				overview += i18n.Tf(i18n.MsgWorkflowInputFormats, lang, strings.Join(req.FileTypes, ", "))
+			}
+			if req.AcceptText {
+				overview += i18n.T(i18n.MsgWorkflowInputPasteHint, lang)
+			}
+			return &IMAgentResponse{Text: overview}
 		}
-		if req.AcceptText {
-			overview += i18n.T(i18n.MsgWorkflowInputPasteHint, lang)
-		}
-		return &IMAgentResponse{Text: overview}
 	}
 
 	// Non-input workflows: send overview, then re-route to handleActiveWorkflow
 	// which calls HandleInput -> PhasePrompt + RunAgentLoop -> agent loop runs.
-	if cb := engine.GetCallbacks(); cb != nil {
-		_ = cb.SendTextToUser(userID, overview)
+	if engine != nil {
+		if cb := engine.GetCallbacks(); cb != nil {
+			_ = cb.SendTextToUser(userID, overview)
+		}
 	}
 
 	// Stash the original task request.
@@ -1169,6 +1175,28 @@ func (h *IMMessageHandler) applyWorkflowReviewIntent(engine *v2.WorkflowEngine, 
 		intent = v2.ReviewIntentSupplement
 		feedback = invalidCodingTaskBreakdownFeedbackText()
 	}
+
+	// Use V2 StateMachine directly for review intent processing.
+	wf := h.getWorkflowV2()
+	if wf != nil && wf.machine != nil && wf.machine.GetActive(userID) != nil {
+		hr, err := wf.machine.ApplyReviewIntent(userID, string(intent), feedback)
+		if err != nil {
+			log.Printf("[workflow-review] V2 ApplyReviewIntent error: user=%s intent=%s err=%v", userID, intent, err)
+			return h.reviewBarrierResponse(engine, userID)
+		}
+		h.recordWorkflowReviewFeedbackExperience(userID, intent, feedback)
+		if intent == v2.ReviewIntentSwitchTask {
+			return h.handleWorkflowInterception(userID, feedback, platform)
+		}
+		if hr == nil {
+			return nil
+		}
+		// Map HandleResult to WorkflowResponse for existing handler.
+		resp := mapHandleResultToWorkflowResponse(hr)
+		return h.handleWorkflowEngineResponse(engine, userID, resp, platform)
+	}
+
+	// Fallback: engine stub (returns nil, nil).
 	resp, err := engine.ApplyReviewIntent(userID, intent, feedback)
 	if err != nil {
 		log.Printf("[workflow-review] ApplyReviewIntent error: user=%s intent=%s err=%v", userID, intent, err)
@@ -1179,6 +1207,69 @@ func (h *IMMessageHandler) applyWorkflowReviewIntent(engine *v2.WorkflowEngine, 
 		return h.handleWorkflowInterception(userID, feedback, platform)
 	}
 	return h.handleWorkflowEngineResponse(engine, userID, resp, platform)
+}
+
+// mapHandleResultToWorkflowResponse converts a V2 HandleResult to the WorkflowResponse
+// format that handleWorkflowEngineResponse expects.
+func mapHandleResultToWorkflowResponse(hr *v2.HandleResult) *v2.WorkflowResponse {
+	if hr == nil {
+		return nil
+	}
+	resp := &v2.WorkflowResponse{}
+	switch hr.Action {
+	case v2.ActionRunPhase, v2.ActionModify:
+		resp.RunAgentLoop = true
+		if hr.Phase != nil {
+			resp.PhasePrompt = v2.BuildPhasePrompt(hr.State)
+		}
+		if hr.ModifyHint != "" {
+			resp.PhasePrompt += "\n\nUser modification request: " + hr.ModifyHint
+		}
+	case v2.ActionConfirmed:
+		// Phase advanced — check if next phase needs agent loop.
+		if hr.State != nil && hr.State.Status == v2.StatusCompleted {
+			resp.Complete = true
+		} else {
+			resp.Advance = true
+			resp.RunAgentLoop = true
+			resp.PhasePrompt = v2.BuildPhasePrompt(hr.State)
+		}
+	case v2.ActionShowForm:
+		resp.ShowForm = true
+		if hr.Phase != nil && hr.Phase.InputSchema != nil {
+			resp.FormSchema = v2MapPhaseInputSchema(hr.Phase.InputSchema)
+		}
+	case v2.ActionCancelled, v2.ActionCancelAndExecute:
+		// Caller handles these before reaching here.
+	}
+	return resp
+}
+
+// v2MapPhaseInputSchema converts V2 PhaseInputSchema to PhaseInputSchemaSpec.
+func v2MapPhaseInputSchema(schema *v2.PhaseInputSchema) *v2.PhaseInputSchemaSpec {
+	if schema == nil {
+		return nil
+	}
+	spec := &v2.PhaseInputSchemaSpec{
+		Title:       schema.Title,
+		Description: schema.Description,
+	}
+	for _, f := range schema.Fields {
+		field := v2.PhaseInputFieldSpec{
+			Name:        f.Name,
+			Label:       f.Label,
+			Type:        f.Type,
+			Required:    f.Required,
+			Description: f.Description,
+			Placeholder: f.Placeholder,
+			Default:     f.Default,
+		}
+		for _, o := range f.Options {
+			field.Options = append(field.Options, v2.PhaseInputOptionSpec{Label: o.Label, Value: o.Value})
+		}
+		spec.Fields = append(spec.Fields, field)
+	}
+	return spec
 }
 
 func (h *IMMessageHandler) recordWorkflowReviewFeedbackExperience(userID string, intent v2.ReviewIntent, feedback string) {
@@ -1507,7 +1598,7 @@ func (h *IMMessageHandler) getUnifiedClassifier() *intent.UnifiedIntentClassifie
 // cancelWorkflowForUser cancels any active workflow and understanding session
 // for the given user. Called from /new, /reset, /clear, and /cancel handlers.
 func (h *IMMessageHandler) cancelWorkflowForUser(userID string) {
-	// Always cancel V2 workflow regardless of V1 engine state.
+	// Always cancel workflow regardless of engine adapter state.
 	h.cancelWorkflowV2(userID)
 	// Clear any pending ask_user state.
 	h.pendingAskUser.Delete(userID)
@@ -1549,13 +1640,10 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalogV2Compat(userID str
 			}
 		}
 	}
-	if policy == v2.ToolFilterNone && h != nil && h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.GetActiveWorkflow(userID) != nil {
-		policy = h.app.workflowEngine.GetActivePhaseToolFilter(userID)
-	}
 	if len(allTools) == 0 && h != nil {
 		allTools = h.getTools()
 	}
-	if h != nil && h.isV1WorkflowArtifactPhase(userID) {
+	if h != nil && h.isWorkflowArtifactPhase(userID) {
 		tools = ensureWorkflowRequiredToolsForNames(workflowArtifactPhaseRequiredTools(), tools, allTools)
 		return filterWorkflowArtifactPhaseTools(tools)
 	}

@@ -12,7 +12,7 @@ import (
 )
 
 func TestNormalizeWorkflowStateForFrontendCanonicalizesAllPhaseFields(t *testing.T) {
-	state := &workflow.V1WorkflowState{
+	state := &workflow.EngineState{
 		CurrentPhase:         "tech_design",
 		PendingReviewPhaseID: "task_breakdown",
 		PhaseOutputs: map[string]string{
@@ -52,7 +52,7 @@ func TestNormalizeWorkflowStateForFrontendCanonicalizesAllPhaseFields(t *testing
 
 func TestNormalizeWorkflowStateForFrontendIncludesCanonicalTemplatePhases(t *testing.T) {
 	registry := newPopulatedWorkflowRegistry()
-	state := &workflow.V1WorkflowState{
+	state := &workflow.EngineState{
 		Type:         workflow.WorkflowCoding,
 		CurrentPhase: "tech_design",
 	}
@@ -84,7 +84,7 @@ func TestNormalizeWorkflowStateForFrontendIncludesCanonicalTemplatePhases(t *tes
 
 func TestNormalizeWorkflowStateForFrontendIncludesOpsMaintenancePhases(t *testing.T) {
 	registry := newPopulatedWorkflowRegistry()
-	state := &workflow.V1WorkflowState{
+	state := &workflow.EngineState{
 		Type:         workflow.WorkflowOpsMaintenance,
 		CurrentPhase: "risk_policy",
 	}
@@ -107,7 +107,7 @@ func TestNormalizeWorkflowStateForFrontendIncludesOpsMaintenancePhases(t *testin
 }
 
 func TestNormalizeWorkflowStateForFrontendDoesNotMutateEngineState(t *testing.T) {
-	state := &workflow.V1WorkflowState{
+	state := &workflow.EngineState{
 		CurrentPhase: "tech_design",
 		PhaseOutputs: map[string]string{
 			"tech_design": "design doc",
@@ -320,13 +320,13 @@ func TestGUIWorkflowAdapterClearsStaleWorkingDirForNewWorkflowWithoutProjectPath
 	}
 	adapter := NewGUIWorkflowAdapter(app, nil)
 
-	if err := adapter.EmitPhaseUpdate("u1", &workflow.V1WorkflowState{ID: "wf-first", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: firstProject}); err != nil {
+	if err := adapter.EmitPhaseUpdate("u1", &workflow.EngineState{ID: "wf-first", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: firstProject}); err != nil {
 		t.Fatalf("EmitPhaseUpdate(first) error = %v", err)
 	}
 	if got := adapter.GetWorkingDir(); got != firstProject {
 		t.Fatalf("first working dir = %q, want %q", got, firstProject)
 	}
-	if err := adapter.EmitPhaseUpdate("u1", &workflow.V1WorkflowState{ID: "wf-second", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding}); err != nil {
+	if err := adapter.EmitPhaseUpdate("u1", &workflow.EngineState{ID: "wf-second", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding}); err != nil {
 		t.Fatalf("EmitPhaseUpdate(second) error = %v", err)
 	}
 	if got := adapter.GetWorkingDir(); got != "" {
@@ -356,13 +356,13 @@ func TestGUIWorkflowAdapterDoesNotUseUnpreparedWorkflowProjectPath(t *testing.T)
 	}
 	adapter := NewGUIWorkflowAdapter(app, nil)
 
-	if err := adapter.EmitPhaseUpdate("u1", &workflow.V1WorkflowState{ID: "wf-first", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: staleProject}); err != nil {
+	if err := adapter.EmitPhaseUpdate("u1", &workflow.EngineState{ID: "wf-first", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: staleProject}); err != nil {
 		t.Fatalf("EmitPhaseUpdate(first) error = %v", err)
 	}
 	if got := adapter.GetWorkingDir(); got != staleProject {
 		t.Fatalf("first working dir = %q, want %q", got, staleProject)
 	}
-	if err := adapter.EmitPhaseUpdate("u1", &workflow.V1WorkflowState{ID: "wf-second", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: invalidProject}); err != nil {
+	if err := adapter.EmitPhaseUpdate("u1", &workflow.EngineState{ID: "wf-second", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: invalidProject}); err != nil {
 		t.Fatalf("EmitPhaseUpdate(second) error = %v", err)
 	}
 	if got := adapter.GetWorkingDir(); got != "" {
@@ -388,7 +388,7 @@ func TestGUIWorkflowAdapterWorkflowStateProjectPathChangeInvalidatesProjectStora
 	firstProject := t.TempDir()
 	secondProject := t.TempDir()
 	adapter := NewGUIWorkflowAdapter(app, nil)
-	state := &workflow.V1WorkflowState{ID: "wf-same", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: firstProject}
+	state := &workflow.EngineState{ID: "wf-same", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: firstProject}
 
 	if err := adapter.EmitPhaseUpdate("u1", state); err != nil {
 		t.Fatalf("EmitPhaseUpdate(first) error = %v", err)
@@ -414,7 +414,7 @@ func TestGUIWorkflowAdapterWorkflowStateEmptyProjectPathClearsWorkingDirForSameW
 	app := &App{testHomeDir: t.TempDir()}
 	project := filepath.Join(t.TempDir(), "workflow-project")
 	adapter := NewGUIWorkflowAdapter(app, nil)
-	state := &workflow.V1WorkflowState{ID: "wf-same", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: project}
+	state := &workflow.EngineState{ID: "wf-same", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: project}
 
 	if err := adapter.EmitPhaseUpdate("u1", state); err != nil {
 		t.Fatalf("EmitPhaseUpdate(first) error = %v", err)
@@ -439,7 +439,7 @@ func TestGUIWorkflowAdapterCompletionUsesWorkflowStateProjectPathForManifest(t *
 	adapter.activeWorkflowType = workflow.WorkflowCoding
 	adapter.workflowStartDate = time.Date(2026, 5, 31, 9, 0, 0, 0, time.Local)
 
-	state := &workflow.V1WorkflowState{
+	state := &workflow.EngineState{
 		ID:          "wf-complete",
 		Status:      workflow.WorkflowCompleted,
 		Type:        workflow.WorkflowCoding,
@@ -471,7 +471,7 @@ func TestGUIWorkflowAdapterCompletionInvalidProjectPathDoesNotUseStaleWorkingDir
 	adapter.activeWorkflowType = workflow.WorkflowCoding
 	adapter.workflowStartDate = time.Date(2026, 5, 31, 9, 0, 0, 0, time.Local)
 
-	state := &workflow.V1WorkflowState{
+	state := &workflow.EngineState{
 		ID:          "wf-complete",
 		Status:      workflow.WorkflowCompleted,
 		Type:        workflow.WorkflowCoding,
@@ -508,7 +508,7 @@ func TestGUIWorkflowAdapterCompletionInvalidProjectPathClearsCachedProjectStorag
 	}
 	adapter.workingDir = ""
 
-	state := &workflow.V1WorkflowState{
+	state := &workflow.EngineState{
 		ID:          "wf-complete",
 		Status:      workflow.WorkflowCompleted,
 		Type:        workflow.WorkflowCoding,

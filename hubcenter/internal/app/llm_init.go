@@ -135,6 +135,7 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 
 	// 6. Register LLM route hook — will be called during NewRouter
 	statsSvc := llmservice.NewStatsService(usageRepo)
+	httpapi.SetLLMAuthorizationSyncChecker(authChecker)
 	httpapi.SetLLMRouteHook(func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service) {
 		httpapi.RegisterLLMRoutes(mux, adminService, hubService, llmSvc, proxyCfg, authChecker, cardStoreSvc, statsSvc)
 	})

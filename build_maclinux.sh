@@ -364,12 +364,19 @@ codesign_bundle() {
             xattr -d com.apple.ResourceFork "$item" 2>/dev/null || true
             xattr -d com.apple.provenance "$item" 2>/dev/null || true
             xattr -d 'com.apple.fileprovider.fpfs#P' "$item" 2>/dev/null || true
+            xattr -d 'com.apple.fileprovider.dir#N' "$item" 2>/dev/null || true
         done < <(find "$BUNDLE" -print0)
-        local CLEAN_BUNDLE="${BUNDLE}.clean"
-        rm -rf "$CLEAN_BUNDLE"
-        ditto --noextattr --norsrc "$BUNDLE" "$CLEAN_BUNDLE"
-        rm -rf "$BUNDLE"
-        mv "$CLEAN_BUNDLE" "$BUNDLE"
+        if command -v ditto >/dev/null 2>&1; then
+            local CLEAN_BUNDLE="${BUNDLE}.clean"
+            rm -rf "$CLEAN_BUNDLE"
+            ditto --noextattr --norsrc "$BUNDLE" "$CLEAN_BUNDLE"
+            rm -rf "$BUNDLE"
+            mv "$CLEAN_BUNDLE" "$BUNDLE"
+        fi
+        xattr -d com.apple.FinderInfo "$BUNDLE" 2>/dev/null || true
+        xattr -d com.apple.ResourceFork "$BUNDLE" 2>/dev/null || true
+        xattr -d 'com.apple.fileprovider.fpfs#P' "$BUNDLE" 2>/dev/null || true
+        xattr -d 'com.apple.fileprovider.dir#N' "$BUNDLE" 2>/dev/null || true
         codesign --force --sign "$SIGN_IDENTITY" \
             --identifier "$IDENTIFIER" \
             --options runtime \

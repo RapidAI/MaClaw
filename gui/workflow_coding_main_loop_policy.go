@@ -36,22 +36,28 @@ func (h *IMMessageHandler) shouldConstrainCodingWorkflowImplementationMainLoop(p
 			return state.Status == v2.StatusActive && state.IsExecutionPhase()
 		}
 	}
-	if state, _ := h.v1ActiveWorkflowPhase(policyUserID); state != nil {
+	if state, _ := h.activeWorkflowPhaseFromEngine(policyUserID); state != nil {
 		return state.Type == v2.WorkflowCoding && state.CurrentPhase == v2.PhaseCodingImplementation
 	}
 	return false
 }
 
-func (h *IMMessageHandler) v1ActiveWorkflowPhase(policyUserID string) (*v2.V1WorkflowState, *v2.V1PhaseTemplate) {
+func (h *IMMessageHandler) activeWorkflowPhaseFromEngine(policyUserID string) (*v2.EngineState, *v2.PhaseSpec) {
 	policyUserID = strings.TrimSpace(policyUserID)
-	if policyUserID == "" || h == nil || h.app == nil || h.app.workflowEngine == nil {
+	if policyUserID == "" || h == nil || h.app == nil {
 		return nil, nil
 	}
-	state := h.app.workflowEngine.GetActiveWorkflow(policyUserID)
-	if state == nil || h.app.workflowEngine.GetRegistry() == nil {
+	// workflowEngine is never instantiated in production — this path only
+	// executes in tests that explicitly set h.app.workflowEngine.
+	engine := h.app.workflowEngine
+	if engine == nil {
+		return nil, nil
+	}
+	state := engine.GetActiveWorkflow(policyUserID)
+	if state == nil || engine.GetRegistry() == nil {
 		return state, nil
 	}
-	tmpl := h.app.workflowEngine.GetRegistry().Match(state.Type)
+	tmpl := engine.GetRegistry().Match(state.Type)
 	if tmpl == nil {
 		return state, nil
 	}
@@ -129,8 +135,8 @@ func workflowArtifactPhaseRequiredTools() []string {
 	return []string{"write_file", "office", "generate_pdf", "send_file"}
 }
 
-func (h *IMMessageHandler) isV1WorkflowArtifactPhase(policyUserID string) bool {
-	_, phase := h.v1ActiveWorkflowPhase(policyUserID)
+func (h *IMMessageHandler) isWorkflowArtifactPhase(policyUserID string) bool {
+	_, phase := h.activeWorkflowPhaseFromEngine(policyUserID)
 	return phase != nil && (phase.Kind == v2.PhaseKindArtifactGeneration || phase.MutationScope == v2.MutationScopeArtifact)
 }
 

@@ -11,7 +11,7 @@ import workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 // is unavailable, the field is absent and the dashboard degrades to its fallback
 // maps.
 type frontendWorkflowState struct {
-	*workflow.V1WorkflowState
+	*workflow.EngineState
 	Phases []workflow.PhaseMeta `json:"phases,omitempty"`
 }
 
@@ -22,11 +22,11 @@ func canonicalWorkflowPhaseID(phaseID string) string {
 	return phaseID
 }
 
-func normalizeWorkflowStateForFrontend(state *workflow.V1WorkflowState) *frontendWorkflowState {
+func normalizeWorkflowStateForFrontend(state *workflow.EngineState) *frontendWorkflowState {
 	return normalizeWorkflowStateForFrontendWithRegistry(state, nil)
 }
 
-func normalizeWorkflowStateForFrontendWithRegistry(state *workflow.V1WorkflowState, registry *workflow.WorkflowRegistry) *frontendWorkflowState {
+func normalizeWorkflowStateForFrontendWithRegistry(state *workflow.EngineState, registry *workflow.WorkflowRegistry) *frontendWorkflowState {
 	if state == nil {
 		return nil
 	}
@@ -44,7 +44,7 @@ func normalizeWorkflowStateForFrontendWithRegistry(state *workflow.V1WorkflowSta
 		phases = workflow.PhaseMetadata(registry.Match(state.Type))
 	}
 	return &frontendWorkflowState{
-		V1WorkflowState: &cp,
+		EngineState: &cp,
 		Phases:          phases,
 	}
 }

@@ -3,12 +3,15 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/center"
+	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 )
 
@@ -192,5 +195,161 @@ func TestMaClawComputeStatusRefreshesStaleAuthorizationCache(t *testing.T) {
 	}
 	if !payload.AllowExternalProviders {
 		t.Fatalf("allow_external_providers = false, want true after refresh")
+	}
+}
+
+func TestMaClawComputeStatusUsesHeartbeatAuthorizationPayload(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	globalToken := issueHubAdminToken(t, services.handler)
+	tenantToken := issueTenantAdminToken(t, services.handler, globalToken, "acme", "acme-admin")
+	record := `{
+		"registered": true,
+		"hub_id": "hub_acme",
+		"hub_secret": "secret",
+		"last_base_url": "https://hubs.example.com",
+		"authorizations": {
+			"llm_compute": {
+				"tenants": {
+					"tenant_acme": {
+						"hub_id": "hub_acme",
+						"tenant_id": "tenant_acme",
+						"allow_external_providers": true,
+						"authorizations": [{"id": "external_heartbeat", "active": true}]
+					}
+				}
+			}
+		}
+	}`
+	if err := services.store.System.Set(context.Background(), "center_registration", record); err != nil {
+		t.Fatalf("set center registration: %v", err)
+	}
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodGet, "/api/admin/llm/maclaw-compute-status", nil, tenantToken)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		AllowExternalProviders bool `json:"allow_external_providers"`
+		Authorizations         []struct {
+			ID string `json:"id"`
+		} `json:"authorizations"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !payload.AllowExternalProviders || len(payload.Authorizations) != 1 || payload.Authorizations[0].ID != "external_heartbeat" {
+		t.Fatalf("compute status from heartbeat payload = %#v body=%s", payload, resp.Body.String())
+	}
+}
+
+func TestMaClawComputeStatusUsesHeartbeatAuthorizationTenantAlias(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	globalToken := issueHubAdminToken(t, services.handler)
+	tenantToken := issueTenantAdminToken(t, services.handler, globalToken, "acme", "acme-admin")
+	record := `{
+		"registered": true,
+		"hub_id": "hub_acme",
+		"hub_secret": "secret",
+		"last_base_url": "https://hubs.example.com",
+		"authorizations": {
+			"llm_compute": {
+				"tenants": {
+					"acme": {
+						"hub_id": "hub_acme",
+						"tenant_id": "acme",
+						"allow_external_providers": true,
+						"authorizations": [{"id": "external_alias_heartbeat", "active": true}]
+					}
+				}
+			}
+		}
+	}`
+	if err := services.store.System.Set(context.Background(), "center_registration", record); err != nil {
+		t.Fatalf("set center registration: %v", err)
+	}
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodGet, "/api/admin/llm/maclaw-compute-status", nil, tenantToken)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		AllowExternalProviders bool `json:"allow_external_providers"`
+		Authorizations         []struct {
+			ID string `json:"id"`
+		} `json:"authorizations"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !payload.AllowExternalProviders || len(payload.Authorizations) != 1 || payload.Authorizations[0].ID != "external_alias_heartbeat" {
+		t.Fatalf("compute status from heartbeat tenant alias = %#v body=%s", payload, resp.Body.String())
+	}
+}
+
+func TestMaClawComputeStatusHeartbeatEmptyPayloadOverridesStaleCache(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	globalToken := issueHubAdminToken(t, services.handler)
+	tenantToken := issueTenantAdminToken(t, services.handler, globalToken, "acme", "acme-admin")
+	record := `{
+		"registered": true,
+		"hub_id": "hub_acme",
+		"hub_secret": "secret",
+		"last_base_url": "https://hubs.example.com",
+		"authorizations": {
+			"llm_compute": {"tenants": {}}
+		}
+	}`
+	if err := services.store.System.Set(context.Background(), "center_registration", record); err != nil {
+		t.Fatalf("set center registration: %v", err)
+	}
+	accessCtrl := llmservice.NewTenantLLMAccessControl(nil)
+	accessCtrl.UpdateFromHeartbeat("tenant_acme", &llmservice.TenantAuthorizationStatus{
+		HubID:                  "hub_acme",
+		TenantID:               "tenant_acme",
+		AllowExternalProviders: true,
+	})
+
+	centerSvc := center.NewService(config.Default(), services.store.System)
+	resp := doHubAdminJSONRequest(t, MaClawComputeStatusHandler(centerSvc, accessCtrl), http.MethodGet, "/api/admin/llm/maclaw-compute-status", nil, tenantToken)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		AllowExternalProviders bool `json:"allow_external_providers"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.AllowExternalProviders {
+		t.Fatalf("allow_external_providers = true, want false after empty heartbeat payload; body=%s", resp.Body.String())
+	}
+}
+
+func TestMaClawComputeStatusReportsRefreshError(t *testing.T) {
+	client := llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+		HubCenterURL: "https://hubcenter.example.com",
+		HubID:        "hub_acme",
+		MachineToken: "secret",
+	})
+	client.HTTPClient = &http.Client{Transport: maclawComputeRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return nil, errors.New("hubcenter unavailable")
+	})}
+	accessCtrl := llmservice.NewTenantLLMAccessControl(client)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/maclaw-compute-status?tenant_id=tenant_acme&refresh=1", nil)
+	rec := httptest.NewRecorder()
+	MaClawComputeStatusHandler(nil, accessCtrl)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		AuthorizationError string `json:"authorization_error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(payload.AuthorizationError, "hubcenter unavailable") {
+		t.Fatalf("authorization_error = %q", payload.AuthorizationError)
 	}
 }

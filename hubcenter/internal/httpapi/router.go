@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -13,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -28,10 +31,28 @@ type EntryResolveRequest struct {
 // LLMRouteHook is called during router setup to register LLM service routes.
 // Set by the application layer after constructing LLM dependencies.
 var llmRouteHook func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service)
+var llmAuthorizationSyncMu sync.RWMutex
+var llmAuthorizationSyncChecker *llmservice.AuthorizationChecker
+
+const heartbeatAuthorizationKeyLLMCompute = "llm_compute"
 
 // SetLLMRouteHook sets the hook for registering LLM routes.
 func SetLLMRouteHook(hook func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service)) {
 	llmRouteHook = hook
+}
+
+// SetLLMAuthorizationSyncChecker sets the checker used to publish LLM
+// authorization state through the generic Hub heartbeat authorization payload.
+func SetLLMAuthorizationSyncChecker(checker *llmservice.AuthorizationChecker) {
+	llmAuthorizationSyncMu.Lock()
+	defer llmAuthorizationSyncMu.Unlock()
+	llmAuthorizationSyncChecker = checker
+}
+
+func currentLLMAuthorizationSyncChecker() *llmservice.AuthorizationChecker {
+	llmAuthorizationSyncMu.RLock()
+	defer llmAuthorizationSyncMu.RUnlock()
+	return llmAuthorizationSyncChecker
 }
 
 type AdminRouteQueryRequest struct {
@@ -148,12 +169,12 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 			writeError(w, http.StatusInternalServerError, "HEARTBEAT_FAILED", err.Error())
 			return
 		}
-		auths, authErr := service.HubDigitalEmployeeAuthorizations(r.Context(), hubID)
-		if authErr != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "online"})
-			return
+		auths := map[string]*corelib.DigitalEmployeeAuthorization{}
+		if loaded, authErr := service.HubDigitalEmployeeAuthorizations(r.Context(), hubID); authErr == nil && loaded != nil {
+			auths = loaded
 		}
 		resp := map[string]any{"ok": true, "status": "online"}
+		authPayloads := map[string]any{}
 		if auth := auths[""]; auth != nil {
 			resp["digital_employee_authorization"] = auth
 		}
@@ -167,9 +188,73 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 			if len(tenantAuths) > 0 {
 				resp["digital_employee_authorizations"] = tenantAuths
 			}
+			authPayloads["digital_employee"] = map[string]any{
+				"default": auths[""],
+				"tenants": tenantAuths,
+			}
+		}
+		if checker := currentLLMAuthorizationSyncChecker(); checker != nil {
+			authPayloads[heartbeatAuthorizationKeyLLMCompute] = map[string]any{
+				"tenants": buildHeartbeatLLMComputeAuthorizationPayload(r.Context(), checker, hubID),
+			}
+		}
+		if len(authPayloads) > 0 {
+			resp["authorizations"] = authPayloads
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+func buildHeartbeatLLMComputeAuthorizationPayload(ctx context.Context, checker *llmservice.AuthorizationChecker, hubID string) map[string]*llmservice.TenantAuthorizationStatus {
+	if checker == nil || strings.TrimSpace(hubID) == "" {
+		return map[string]*llmservice.TenantAuthorizationStatus{}
+	}
+	all, err := checker.ListByHub(ctx, hubID)
+	if err != nil {
+		return map[string]*llmservice.TenantAuthorizationStatus{}
+	}
+	tenantIDs := map[string]struct{}{}
+	for _, auth := range all {
+		if auth == nil {
+			continue
+		}
+		for _, tenantID := range heartbeatLLMComputeTenantKeys(auth.TenantID) {
+			tenantIDs[tenantID] = struct{}{}
+		}
+		if auth.TenantID == "" || auth.TenantID == "default" || auth.TenantID == "tenant_default" {
+			tenantIDs["tenant_default"] = struct{}{}
+		}
+	}
+	if len(tenantIDs) == 0 {
+		return map[string]*llmservice.TenantAuthorizationStatus{}
+	}
+	out := map[string]*llmservice.TenantAuthorizationStatus{}
+	for tenantID := range tenantIDs {
+		responseTenantID := adminExternalTenantID(tenantID)
+		status, err := llmservice.BuildTenantAuthorizationStatus(ctx, checker, hubID, responseTenantID)
+		if err != nil || status == nil {
+			continue
+		}
+		if !status.AllowExternalProviders && len(status.Authorizations) == 0 {
+			continue
+		}
+		out[responseTenantID] = status
+	}
+	return out
+}
+
+func heartbeatLLMComputeTenantKeys(tenantID string) []string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" || tenantID == "default" || tenantID == "tenant_default" {
+		return []string{"tenant_default"}
+	}
+	out := []string{tenantID}
+	if strings.HasPrefix(tenantID, "tenant_") {
+		out = append(out, strings.TrimPrefix(tenantID, "tenant_"))
+	} else {
+		out = append(out, "tenant_"+tenantID)
+	}
+	return out
 }
 
 func heartbeatHasRegistrationUpdate(req HubHeartbeatRequest) bool {

@@ -1,6 +1,7 @@
 package llmservice
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -85,15 +86,18 @@ func ProxyHandler(cfg *ProxyConfig) http.HandlerFunc {
 	}
 }
 
-type tenantAuthorizationStatus struct {
+type TenantAuthorizationStatus struct {
 	HubID                  string                       `json:"hub_id"`
 	TenantID               string                       `json:"tenant_id"`
+	LookupTenantIDs        []string                     `json:"lookup_tenant_ids,omitempty"`
 	AllowExternalProviders bool                         `json:"allow_external_providers"`
-	Authorizations         []tenantAuthorizationSummary `json:"authorizations,omitempty"`
+	Authorizations         []TenantAuthorizationSummary `json:"authorizations,omitempty"`
 }
 
-type tenantAuthorizationSummary struct {
+type TenantAuthorizationSummary struct {
 	ID                     string  `json:"id"`
+	HubID                  string  `json:"hub_id,omitempty"`
+	TenantID               string  `json:"tenant_id,omitempty"`
 	ServiceGroupID         string  `json:"service_group_id"`
 	CreditsTotal           float64 `json:"credits_total"`
 	CreditsUsed            float64 `json:"credits_used"`
@@ -107,22 +111,25 @@ type tenantAuthorizationSummary struct {
 	CardOrderID            string  `json:"card_order_id,omitempty"`
 }
 
-func buildTenantAuthorizationStatus(r *http.Request, checker *AuthorizationChecker, hubID, tenantID string) (*tenantAuthorizationStatus, error) {
-	auths, err := checker.repo.ListByHubTenant(r.Context(), hubID, tenantID)
+func BuildTenantAuthorizationStatus(ctx context.Context, checker *AuthorizationChecker, hubID, tenantID string) (*TenantAuthorizationStatus, error) {
+	auths, err := checker.ListByHubTenantAliases(ctx, hubID, tenantID)
 	if err != nil {
 		return nil, err
 	}
 
 	current := now()
-	result := &tenantAuthorizationStatus{
-		HubID:    hubID,
-		TenantID: tenantID,
+	result := &TenantAuthorizationStatus{
+		HubID:           hubID,
+		TenantID:        tenantID,
+		LookupTenantIDs: tenantAuthorizationLookupIDs(tenantID),
 	}
 	for _, a := range auths {
 		active := a.IsActive(current)
 		if active {
-			result.Authorizations = append(result.Authorizations, tenantAuthorizationSummary{
+			result.Authorizations = append(result.Authorizations, TenantAuthorizationSummary{
 				ID:                     a.ID,
+				HubID:                  a.HubID,
+				TenantID:               a.TenantID,
 				ServiceGroupID:         a.ServiceGroupID,
 				CreditsTotal:           a.CreditsTotal,
 				CreditsUsed:            a.CreditsUsed,
@@ -154,7 +161,7 @@ func AuthorizationQueryHandler(checker *AuthorizationChecker) http.HandlerFunc {
 			return
 		}
 
-		result, err := buildTenantAuthorizationStatus(r, checker, hubID, tenantID)
+		result, err := BuildTenantAuthorizationStatus(r.Context(), checker, hubID, tenantID)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -172,7 +179,7 @@ func AuthorizationBatchQueryHandler(checker *AuthorizationChecker) http.HandlerF
 		TenantIDs []string `json:"tenant_ids"`
 	}
 	type batchResponse struct {
-		Tenants map[string]*tenantAuthorizationStatus `json:"tenants,omitempty"`
+		Tenants map[string]*TenantAuthorizationStatus `json:"tenants,omitempty"`
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +195,7 @@ func AuthorizationBatchQueryHandler(checker *AuthorizationChecker) http.HandlerF
 			return
 		}
 
-		resp := batchResponse{Tenants: map[string]*tenantAuthorizationStatus{}}
+		resp := batchResponse{Tenants: map[string]*TenantAuthorizationStatus{}}
 		seen := map[string]struct{}{}
 		for _, rawTenantID := range req.TenantIDs {
 			tenantID := strings.TrimSpace(rawTenantID)
@@ -199,7 +206,7 @@ func AuthorizationBatchQueryHandler(checker *AuthorizationChecker) http.HandlerF
 				continue
 			}
 			seen[tenantID] = struct{}{}
-			status, err := buildTenantAuthorizationStatus(r, checker, hubID, tenantID)
+			status, err := BuildTenantAuthorizationStatus(r.Context(), checker, hubID, tenantID)
 			if err != nil {
 				writeJSONError(w, http.StatusInternalServerError, err.Error())
 				return

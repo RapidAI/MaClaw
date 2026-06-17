@@ -70,3 +70,147 @@ func TestLLMOrderRepoArchiveFiltersDefaultList(t *testing.T) {
 		t.Fatalf("all list = total %d len %d, want 2", total, len(all))
 	}
 }
+
+func TestLLMOrderRepoListFiltersMultipleStatuses(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-orders-statuses.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+
+	ctx := context.Background()
+	repo := NewLLMOrderRepo(provider)
+	now := time.Now().UTC().Truncate(time.Second)
+	orders := []*cardstore.PurchaseOrder{
+		{
+			Order: corecardstore.Order{OrderNo: "HC-PENDING", ProductID: "ct1", Email: "owner@example.com", Amount: 10, Status: corecardstore.StatusPending, CreatedAt: now, UpdatedAt: now},
+			HubID: "hub-1", TenantID: "tenant-a", CardTypeID: "ct1", ServiceGroupID: "group-1", Credits: 100, Period: "month",
+		},
+		{
+			Order: corecardstore.Order{OrderNo: "HC-OPENED", ProductID: "ct1", Email: "owner@example.com", Amount: 10, Status: corecardstore.StatusPersonalOpened, CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second)},
+			HubID: "hub-1", TenantID: "tenant-a", CardTypeID: "ct1", ServiceGroupID: "group-1", Credits: 100, Period: "month",
+		},
+		{
+			Order: corecardstore.Order{OrderNo: "HC-ACTIVATED", ProductID: "ct1", Email: "owner@example.com", Amount: 10, Status: corecardstore.StatusActivated, CreatedAt: now.Add(2 * time.Second), UpdatedAt: now.Add(2 * time.Second)},
+			HubID: "hub-1", TenantID: "tenant-a", CardTypeID: "ct1", ServiceGroupID: "group-1", Credits: 100, Period: "month",
+		},
+	}
+	for _, order := range orders {
+		if err := repo.Create(ctx, order); err != nil {
+			t.Fatalf("Create(%s) error = %v", order.OrderNo, err)
+		}
+	}
+
+	got, total, err := repo.List(ctx, cardstore.OrderFilter{
+		Email:    "owner@example.com",
+		Statuses: []string{corecardstore.StatusPending, corecardstore.StatusPersonalCreated, corecardstore.StatusPersonalOpened},
+		Limit:    10,
+	})
+	if err != nil {
+		t.Fatalf("List(statuses) error = %v", err)
+	}
+	if total != 2 || len(got) != 2 {
+		t.Fatalf("List(statuses) total=%d len=%d, want 2", total, len(got))
+	}
+	if got[0].OrderNo != "HC-OPENED" || got[1].OrderNo != "HC-PENDING" {
+		t.Fatalf("List(statuses) order nos = %s, %s; want HC-OPENED, HC-PENDING", got[0].OrderNo, got[1].OrderNo)
+	}
+}
+
+func TestLLMOrderRepoListTreatsDefaultTenantAliasesAsSameScope(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-orders-default-tenant.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+
+	ctx := context.Background()
+	repo := NewLLMOrderRepo(provider)
+	now := time.Now().UTC().Truncate(time.Second)
+	orders := []*cardstore.PurchaseOrder{
+		{
+			Order: corecardstore.Order{OrderNo: "HC-TENANT-DEFAULT", ProductID: "ct1", Email: "owner@example.com", Amount: 10, Status: corecardstore.StatusPersonalCreated, CreatedAt: now, UpdatedAt: now},
+			HubID: "hub-1", TenantID: "tenant_default", CardTypeID: "ct1", ServiceGroupID: "group-1", Credits: 100, Period: "month",
+		},
+		{
+			Order: corecardstore.Order{OrderNo: "HC-DEFAULT", ProductID: "ct1", Email: "owner@example.com", Amount: 10, Status: corecardstore.StatusPersonalCreated, CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second)},
+			HubID: "hub-1", TenantID: "default", CardTypeID: "ct1", ServiceGroupID: "group-1", Credits: 100, Period: "month",
+		},
+		{
+			Order: corecardstore.Order{OrderNo: "HC-OTHER", ProductID: "ct1", Email: "owner@example.com", Amount: 10, Status: corecardstore.StatusPersonalCreated, CreatedAt: now.Add(2 * time.Second), UpdatedAt: now.Add(2 * time.Second)},
+			HubID: "hub-1", TenantID: "tenant-b", CardTypeID: "ct1", ServiceGroupID: "group-1", Credits: 100, Period: "month",
+		},
+	}
+	for _, order := range orders {
+		if err := repo.Create(ctx, order); err != nil {
+			t.Fatalf("Create(%s) error = %v", order.OrderNo, err)
+		}
+	}
+
+	got, total, err := repo.List(ctx, cardstore.OrderFilter{HubID: "hub-1", TenantID: "tenant_default", Email: "owner@example.com", Limit: 10})
+	if err != nil {
+		t.Fatalf("List(tenant_default) error = %v", err)
+	}
+	if total != 2 || len(got) != 2 {
+		t.Fatalf("List(tenant_default) total=%d len=%d, want 2", total, len(got))
+	}
+	if got[0].OrderNo != "HC-DEFAULT" || got[1].OrderNo != "HC-TENANT-DEFAULT" {
+		t.Fatalf("order nos = %s, %s; want HC-DEFAULT, HC-TENANT-DEFAULT", got[0].OrderNo, got[1].OrderNo)
+	}
+}
+
+func TestLLMOrderRepoPersistsPaymentDetails(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-orders-payment.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+
+	ctx := context.Background()
+	repo := NewLLMOrderRepo(provider)
+	now := time.Now().UTC().Truncate(time.Second)
+	order := &cardstore.PurchaseOrder{
+		Order: corecardstore.Order{
+			OrderNo:        "HC-PAY",
+			ProductID:      "ct1",
+			Email:          "owner@example.com",
+			Amount:         10,
+			Status:         corecardstore.StatusPersonalCreated,
+			PayQRURL:       "https://pay.example/qr.png",
+			PayDeepLink:    "alipays://pay",
+			PayInstruction: "transfer with order number HC-PAY",
+			PayURL:         "https://pay.example/checkout",
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+		HubID: "hub-1", TenantID: "tenant-a", CardTypeID: "ct1", ServiceGroupID: "group-1", Credits: 100, Period: "month",
+	}
+	if err := repo.Create(ctx, order); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	got, err := repo.GetByOrderNo(ctx, "HC-PAY")
+	if err != nil {
+		t.Fatalf("GetByOrderNo() error = %v", err)
+	}
+	if got.PayQRURL != order.PayQRURL || got.PayDeepLink != order.PayDeepLink || got.PayInstruction != order.PayInstruction || got.PayURL != order.PayURL {
+		t.Fatalf("payment details = qr %q deep %q instruction %q url %q", got.PayQRURL, got.PayDeepLink, got.PayInstruction, got.PayURL)
+	}
+}

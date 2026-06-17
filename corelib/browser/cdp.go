@@ -5,6 +5,7 @@
 package browser
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -206,12 +207,41 @@ func (c *CDPClient) Send(method string, params interface{}, timeout time.Duratio
 
 	select {
 	case result := <-ch:
+		// Check for CDP protocol error encoded by readLoop.
+		if isCDPProtocolError(result) {
+			return nil, parseCDPProtocolError(result)
+		}
 		return result, nil
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("cdp timeout: %s (id=%d)", method, id)
 	case <-c.closed:
 		return nil, fmt.Errorf("cdp connection closed")
 	}
+}
+
+// isCDPProtocolError checks if a result from readLoop is a CDP protocol error.
+func isCDPProtocolError(result json.RawMessage) bool {
+	// Fast check: sentinel marker must be in the first portion of the JSON.
+	n := len(result)
+	if n < 20 {
+		return false
+	}
+	if n > 40 {
+		n = 40
+	}
+	return bytes.Contains(result[:n], []byte(`"__cdp_error__"`))
+}
+
+// parseCDPProtocolError extracts the error message from a CDP protocol error.
+func parseCDPProtocolError(result json.RawMessage) error {
+	var payload struct {
+		Error string `json:"error"`
+		Code  int    `json:"code"`
+	}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		return fmt.Errorf("cdp protocol error (unparsable)")
+	}
+	return fmt.Errorf("cdp error %d: %s", payload.Code, payload.Error)
 }
 
 // Events returns the channel for receiving CDP events.
@@ -302,6 +332,10 @@ func (c *CDPClient) readLoop() {
 		default:
 			close(c.closed)
 		}
+		// Close events channel so any goroutine selecting on Events() will
+		// unblock and observe ok=false. This prevents event pump goroutine
+		// leaks when the CDP connection dies and a new one is established.
+		close(c.events)
 	}()
 	for {
 		_, data, err := c.conn.ReadMessage()
@@ -320,10 +354,13 @@ func (c *CDPClient) readLoop() {
 			c.pendMu.Unlock()
 			if ok {
 				if msg.Error != nil {
-					// Encode error as JSON so caller can inspect.
+					// CDP protocol error: encode as a sentinel JSON value that
+					// Send() can detect and convert to a Go error. The prefix
+					// allows Send() to distinguish errors from valid results.
 					errJSON, _ := json.Marshal(map[string]interface{}{
-						"error": msg.Error.Message,
-						"code":  msg.Error.Code,
+						"__cdp_error__": true,
+						"error":         msg.Error.Message,
+						"code":          msg.Error.Code,
 					})
 					ch <- json.RawMessage(errJSON)
 				} else {

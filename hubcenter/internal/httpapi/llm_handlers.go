@@ -542,7 +542,7 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 		}
 		var supersededExternal []*llmservice.TenantAuthorization
 		if isExternalComputeGrant {
-			existing, err := checker.ListByHubTenant(r.Context(), auth.HubID, auth.TenantID)
+			existing, err := checker.ListByHubTenantAliases(r.Context(), auth.HubID, auth.TenantID)
 			if err != nil {
 				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return

@@ -1,12 +1,16 @@
 package v2
 
-// types_compat.go — V1 → V2 type compatibility layer.
+// types.go — Workflow domain types.
 //
-// This file provides type aliases and bridge functions that were originally
-// defined in the V1 package (corelib/workflow/types.go). They now live here
-// as canonical definitions, allowing consumers to use V1 type names (e.g.
-// V1WorkflowState, V1WorkflowTemplate) without import path changes.
-// The "V1" prefix distinguishes them from V2's native types where conflicts exist.
+// This file contains domain-level types used across the workflow system:
+// WorkflowType constants, StructuredIntent, tool policy maps and functions,
+// OpsApprovedCommand, EngineState (GUI runtime state), TemplateSpec (template
+// definitions for the engine adapter), and supporting types.
+//
+// The EngineState type (formerly EngineState) is the in-memory state used
+// by the WorkflowEngine adapter that bridges V2 StateMachine to GUI consumers.
+// It is distinct from v2.WorkflowState (state.go) which is the native V2
+// serializable state used by StateMachine and Store.
 
 import (
 	"fmt"
@@ -52,6 +56,7 @@ const (
 	WorkflowNSFCGeneral             WorkflowType = "nsfc_general"
 	WorkflowNSFCKey                 WorkflowType = "nsfc_key"
 	WorkflowPaperReproduction       WorkflowType = "paper_reproduction"
+	WorkflowPatentApplication       WorkflowType = "patent_application"
 )
 
 // Phase IDs for the coding workflow.
@@ -64,10 +69,10 @@ const (
 )
 
 // ---------------------------------------------------------------------------
-// ToolFilterPolicy — V1 alias for ToolPolicy
+// ToolFilterPolicy — legacy alias for ToolPolicy
 // ---------------------------------------------------------------------------
 
-// ToolFilterPolicy is the V1 name for ToolPolicy. Kept as a type alias so
+// ToolFilterPolicy is a legacy alias for ToolPolicy. Kept as a type alias so
 // consumers that reference workflow.ToolFilterPolicy continue to compile
 // after migrating to the v2 import path.
 type ToolFilterPolicy = ToolPolicy
@@ -529,7 +534,7 @@ type GateCheckItem struct {
 // EngineCallbacks defines the adapter interface that GUI/TUI must implement.
 type EngineCallbacks interface {
 	SendTextToUser(userID, text string) error
-	EmitPhaseUpdate(userID string, state *V1WorkflowState) error
+	EmitPhaseUpdate(userID string, state *EngineState) error
 	EmitDocUpdate(userID, phaseID, content string) error
 	EmitGateResult(userID, phaseID string, result *QualityGateResult) error
 	GetLang() string
@@ -556,35 +561,35 @@ type PersistenceStore interface {
 	SaveUnderstandingSession(session *UnderstandingSession) error
 	LoadUnderstandingSession(userID string) (*UnderstandingSession, error)
 	DeleteUnderstandingSession(userID string) error
-	SaveWorkflowState(state *V1WorkflowState) error
-	LoadWorkflowState(userID string) (*V1WorkflowState, error)
+	SaveWorkflowState(state *EngineState) error
+	LoadWorkflowState(userID string) (*EngineState, error)
 	DeleteWorkflowState(id string) error
-	ListActiveWorkflows() ([]*V1WorkflowState, error)
+	ListActiveWorkflows() ([]*EngineState, error)
 	CleanupExpired(olderThan time.Duration) error
 }
 
-// V1NullStore is a no-op V1 PersistenceStore implementation.
-type V1NullStore struct{}
+// NullPersistenceStore is a no-op PersistenceStore implementation.
+type NullPersistenceStore struct{}
 
-var _ PersistenceStore = (*V1NullStore)(nil)
+var _ PersistenceStore = (*NullPersistenceStore)(nil)
 
-func (V1NullStore) SaveUnderstandingSession(_ *UnderstandingSession) error           { return nil }
-func (V1NullStore) LoadUnderstandingSession(_ string) (*UnderstandingSession, error) { return nil, nil }
-func (V1NullStore) DeleteUnderstandingSession(_ string) error                        { return nil }
-func (V1NullStore) SaveWorkflowState(_ *V1WorkflowState) error                      { return nil }
-func (V1NullStore) LoadWorkflowState(_ string) (*V1WorkflowState, error)             { return nil, nil }
-func (V1NullStore) DeleteWorkflowState(_ string) error                               { return nil }
-func (V1NullStore) ListActiveWorkflows() ([]*V1WorkflowState, error)                 { return nil, nil }
-func (V1NullStore) CleanupExpired(_ time.Duration) error                             { return nil }
+func (NullPersistenceStore) SaveUnderstandingSession(_ *UnderstandingSession) error           { return nil }
+func (NullPersistenceStore) LoadUnderstandingSession(_ string) (*UnderstandingSession, error) { return nil, nil }
+func (NullPersistenceStore) DeleteUnderstandingSession(_ string) error                        { return nil }
+func (NullPersistenceStore) SaveWorkflowState(_ *EngineState) error                      { return nil }
+func (NullPersistenceStore) LoadWorkflowState(_ string) (*EngineState, error)             { return nil, nil }
+func (NullPersistenceStore) DeleteWorkflowState(_ string) error                               { return nil }
+func (NullPersistenceStore) ListActiveWorkflows() ([]*EngineState, error)                 { return nil, nil }
+func (NullPersistenceStore) CleanupExpired(_ time.Duration) error                             { return nil }
 
 // ---------------------------------------------------------------------------
-// V1WorkflowState — the V1 runtime state (distinct from v2.WorkflowState)
+// EngineState — GUI runtime state (distinct from WorkflowState in state.go)
 // ---------------------------------------------------------------------------
 
-// V1WorkflowState holds the runtime state used by the V1 engine compat layer
-// and its consumers. Named V1WorkflowState to avoid collision with the V2
+// EngineState holds the runtime state used by the WorkflowEngine adapter layer
+// and its consumers. Named EngineState to avoid collision with the V2
 // WorkflowState in the same package.
-type V1WorkflowState struct {
+type EngineState struct {
 	ID                             string                        `json:"id"`
 	UserID                         string                        `json:"user_id"`
 	Type                           WorkflowType                  `json:"type"`
@@ -607,7 +612,7 @@ type V1WorkflowState struct {
 }
 
 // IsWaitingForInput returns true if the workflow is waiting for user input.
-func (ws *V1WorkflowState) IsWaitingForInput(tmpl *V1WorkflowTemplate) bool {
+func (ws *EngineState) IsWaitingForInput(tmpl *TemplateSpec) bool {
 	if ws == nil || tmpl == nil {
 		return false
 	}
@@ -615,11 +620,11 @@ func (ws *V1WorkflowState) IsWaitingForInput(tmpl *V1WorkflowTemplate) bool {
 }
 
 // ---------------------------------------------------------------------------
-// V1WorkflowTemplate / V1PhaseTemplate — the V1 template types
+// TemplateSpec / PhaseSpec — extended template types for WorkflowEngine
 // ---------------------------------------------------------------------------
 
-// V1PhaseTemplate defines a single phase within a V1 workflow template.
-type V1PhaseTemplate struct {
+// PhaseSpec defines a single phase within a TemplateSpec.
+type PhaseSpec struct {
 	ID                  string           `json:"id"`
 	Name                string           `json:"name"`
 	Description         string           `json:"description"`
@@ -631,39 +636,39 @@ type V1PhaseTemplate struct {
 	ToolPolicy          ToolFilterPolicy `json:"tool_policy"`
 	Kind                PhaseKind        `json:"kind,omitempty"`
 	MutationScope       MutationScope    `json:"mutation_scope,omitempty"`
-	InputSchema         *V1PhaseInputSchema `json:"input_schema,omitempty"`
+	InputSchema         *PhaseInputSchemaSpec `json:"input_schema,omitempty"`
 	DisableOrchestrator bool             `json:"disable_orchestrator,omitempty"`
 }
 
-// V1PhaseInputSchema declares a structured form for a V1 phase.
-type V1PhaseInputSchema struct {
+// PhaseInputSchemaSpec declares a structured form for a phase.
+type PhaseInputSchemaSpec struct {
 	Title           string                `json:"title"`
 	Description     string                `json:"description,omitempty"`
 	TitleI18N       map[string]string     `json:"title_i18n,omitempty"`
 	DescriptionI18N map[string]string     `json:"description_i18n,omitempty"`
-	Fields          []V1PhaseInputField   `json:"fields"`
+	Fields          []PhaseInputFieldSpec   `json:"fields"`
 }
 
-// Clone returns a deep copy of the V1PhaseInputSchema.
-func (s *V1PhaseInputSchema) Clone() *V1PhaseInputSchema {
+// Clone returns a deep copy of the PhaseInputSchemaSpec.
+func (s *PhaseInputSchemaSpec) Clone() *PhaseInputSchemaSpec {
 	if s == nil {
 		return nil
 	}
 	cp := *s
-	cp.TitleI18N = cloneStringMapCompat(s.TitleI18N)
-	cp.DescriptionI18N = cloneStringMapCompat(s.DescriptionI18N)
-	cp.Fields = make([]V1PhaseInputField, len(s.Fields))
+	cp.TitleI18N = cloneStringMap(s.TitleI18N)
+	cp.DescriptionI18N = cloneStringMap(s.DescriptionI18N)
+	cp.Fields = make([]PhaseInputFieldSpec, len(s.Fields))
 	copy(cp.Fields, s.Fields)
 	for i := range cp.Fields {
-		cp.Fields[i].LabelI18N = cloneStringMapCompat(s.Fields[i].LabelI18N)
-		cp.Fields[i].DescriptionI18N = cloneStringMapCompat(s.Fields[i].DescriptionI18N)
-		cp.Fields[i].PlaceholderI18N = cloneStringMapCompat(s.Fields[i].PlaceholderI18N)
-		cp.Fields[i].Options = append([]V1PhaseInputOption(nil), s.Fields[i].Options...)
+		cp.Fields[i].LabelI18N = cloneStringMap(s.Fields[i].LabelI18N)
+		cp.Fields[i].DescriptionI18N = cloneStringMap(s.Fields[i].DescriptionI18N)
+		cp.Fields[i].PlaceholderI18N = cloneStringMap(s.Fields[i].PlaceholderI18N)
+		cp.Fields[i].Options = append([]PhaseInputOptionSpec(nil), s.Fields[i].Options...)
 	}
 	return &cp
 }
 
-func cloneStringMapCompat(src map[string]string) map[string]string {
+func cloneStringMap(src map[string]string) map[string]string {
 	if src == nil {
 		return nil
 	}
@@ -674,8 +679,8 @@ func cloneStringMapCompat(src map[string]string) map[string]string {
 	return cp
 }
 
-// V1PhaseInputField defines a single form field in V1.
-type V1PhaseInputField struct {
+// PhaseInputFieldSpec defines a single form field.
+type PhaseInputFieldSpec struct {
 	Name            string               `json:"name"`
 	Label           string               `json:"label"`
 	Type            string               `json:"type"`
@@ -685,7 +690,7 @@ type V1PhaseInputField struct {
 	LabelI18N       map[string]string    `json:"label_i18n,omitempty"`
 	DescriptionI18N map[string]string    `json:"description_i18n,omitempty"`
 	PlaceholderI18N map[string]string    `json:"placeholder_i18n,omitempty"`
-	Options         []V1PhaseInputOption `json:"options,omitempty"`
+	Options         []PhaseInputOptionSpec `json:"options,omitempty"`
 	Default         interface{}          `json:"default,omitempty"`
 	Min             *float64             `json:"min,omitempty"`
 	Max             *float64             `json:"max,omitempty"`
@@ -694,25 +699,25 @@ type V1PhaseInputField struct {
 	Pattern         string               `json:"pattern,omitempty"`
 }
 
-// V1PhaseInputOption defines a selectable option in V1.
-type V1PhaseInputOption struct {
+// PhaseInputOptionSpec defines a selectable option.
+type PhaseInputOptionSpec struct {
 	Label     string            `json:"label"`
 	Value     string            `json:"value"`
 	LabelI18N map[string]string `json:"label_i18n,omitempty"`
 }
 
-// V1WorkflowTemplate defines a complete V1 workflow with ordered phases.
-type V1WorkflowTemplate struct {
+// TemplateSpec defines a complete workflow template with ordered phases.
+type TemplateSpec struct {
 	Type          WorkflowType      `json:"type"`
 	Name          string            `json:"name"`
 	Description   string            `json:"description"`
 	Keywords      []string          `json:"keywords"`
-	Phases        []V1PhaseTemplate `json:"phases"`
+	Phases        []PhaseSpec `json:"phases"`
 	RequiresInput *InputRequirement `json:"requires_input,omitempty"`
 }
 
 // NeedsInputDocument returns true if the template requires user input.
-func (t *V1WorkflowTemplate) NeedsInputDocument() bool {
+func (t *TemplateSpec) NeedsInputDocument() bool {
 	return t != nil && t.RequiresInput != nil && t.RequiresInput.Description != ""
 }
 
@@ -731,7 +736,7 @@ type WorkflowResponse struct {
 	DocContent           string             `json:"doc_content,omitempty"`
 	GateResult           *QualityGateResult `json:"gate_result,omitempty"`
 	ShowForm             bool               `json:"show_form,omitempty"`
-	FormSchema           *V1PhaseInputSchema `json:"form_schema,omitempty"`
+	FormSchema           *PhaseInputSchemaSpec `json:"form_schema,omitempty"`
 	DefaultInput         bool               `json:"default_input,omitempty"`
 	PendingReview        bool               `json:"pending_review,omitempty"`
 	PendingConfirm       bool               `json:"pending_confirm,omitempty"`
@@ -744,23 +749,6 @@ type WorkflowResponse struct {
 // ---------------------------------------------------------------------------
 // Ops types
 // ---------------------------------------------------------------------------
-
-// OpsCommandRisk classifies the risk level of a shell/SSH command.
-type OpsCommandRisk string
-
-const (
-	OpsCommandRiskLow      OpsCommandRisk = "low"
-	OpsCommandRiskMedium   OpsCommandRisk = "medium"
-	OpsCommandRiskHigh     OpsCommandRisk = "high"
-	OpsCommandRiskCritical OpsCommandRisk = "critical"
-)
-
-// OpsCommandAssessment is the result of assessing a command's risk.
-type OpsCommandAssessment struct {
-	Command string
-	Risk    OpsCommandRisk
-	Reason  string
-}
 
 // OpsRiskDecision is the LLM's high-level decision about an ops plan.
 type OpsRiskDecision string
@@ -805,14 +793,10 @@ const (
 	OpsApprovalRequirementDouble  OpsApprovalRequirement = "double"
 )
 
-// Stub functions for ops assessment (compat).
-func AssessOpsCommand(_ string) OpsCommandAssessment        { return OpsCommandAssessment{} }
-func ExtractOpsRiskDecision(_ string) OpsRiskDecision       { return OpsRiskDecisionUnknown }
-func ExtractOpsRiskLevel(_ string) OpsRiskLevel             { return OpsRiskLevelUnknown }
+// Stub functions for ops assessment — only ExtractOpsRiskDecision,
+// ExtractOpsApprovalRequirement, and OpsApprovalDigest have production consumers.
+func ExtractOpsRiskDecision(_ string) OpsRiskDecision             { return OpsRiskDecisionUnknown }
 func ExtractOpsApprovalRequirement(_ string) OpsApprovalRequirement {
 	return OpsApprovalRequirementUnknown
-}
-func OpsRiskDecisionAllowsExecution(_ OpsRiskDecision, _ OpsRiskLevel, _ OpsApprovalRequirement) bool {
-	return true
 }
 func OpsApprovalDigest(_ string) string { return "" }

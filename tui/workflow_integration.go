@@ -3,7 +3,7 @@ package main
 // workflow_integration.go adds V2 workflow engine support to the TUI.
 //
 // The V2 engine (StateMachine + Router + SQLiteStore) is the sole runtime
-// engine. V1 initWorkflowEngine() and getWorkflowEngine() have been removed.
+// engine. initWorkflowEngine() and getWorkflowEngine() have been removed.
 // The intent understanding LLM caller is wired to the same LLM config as
 // the agent loop.
 //
@@ -80,7 +80,7 @@ func (c *TUIWorkflowCallbacks) SendTextToUser(userID, text string) error {
 	return nil
 }
 
-func (c *TUIWorkflowCallbacks) EmitPhaseUpdate(userID string, state *v2.V1WorkflowState) error {
+func (c *TUIWorkflowCallbacks) EmitPhaseUpdate(userID string, state *v2.EngineState) error {
 	if state == nil {
 		return nil
 	}
@@ -135,12 +135,12 @@ func (c *TUIWorkflowCallbacks) GetLang() string {
 // to survive restarts (the conversation history does, via ConversationMemory).
 type tuiWorkflowStore struct{}
 
-func (s *tuiWorkflowStore) SaveWorkflowState(state *v2.V1WorkflowState) error { return nil }
-func (s *tuiWorkflowStore) LoadWorkflowState(userID string) (*v2.V1WorkflowState, error) {
+func (s *tuiWorkflowStore) SaveWorkflowState(state *v2.EngineState) error { return nil }
+func (s *tuiWorkflowStore) LoadWorkflowState(userID string) (*v2.EngineState, error) {
 	return nil, nil
 }
 func (s *tuiWorkflowStore) DeleteWorkflowState(id string) error                     { return nil }
-func (s *tuiWorkflowStore) ListActiveWorkflows() ([]*v2.V1WorkflowState, error) { return nil, nil }
+func (s *tuiWorkflowStore) ListActiveWorkflows() ([]*v2.EngineState, error) { return nil, nil }
 func (s *tuiWorkflowStore) SaveUnderstandingSession(session *v2.UnderstandingSession) error {
 	return nil
 }
@@ -584,7 +584,7 @@ func (app *TUIApp) buildWorkflowStartOverviewV2(userID string, state *v2.Workflo
 	return overview
 }
 
-func buildTUIPhaseInputGuidance(schema *v2.V1PhaseInputSchema) string {
+func buildTUIPhaseInputGuidance(schema *v2.PhaseInputSchemaSpec) string {
 	if schema == nil || len(schema.Fields) == 0 {
 		return ""
 	}

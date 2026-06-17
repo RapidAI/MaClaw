@@ -226,7 +226,7 @@ func (h *IMMessageHandler) buildSituationReport(userID string) string {
 		CurrentTime: time.Now(),
 	}
 
-	// Active workflow — V1 engine removed, always nil.
+	// Active workflow — legacy engine removed, always nil.
 
 	// Active SSH sessions (check if sshMgr is available)
 	if h.sshMgr != nil {

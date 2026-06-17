@@ -1556,7 +1556,7 @@ func TestCoreAgentDocOnlyToolPolicyBlocksImplementationTools(t *testing.T) {
 	if result.Outcome != agent.ToolExecutionOutcomeError {
 		t.Fatalf("Outcome = %q, want %q", result.Outcome, agent.ToolExecutionOutcomeError)
 	}
-	if !strings.Contains(result.Result, "workflow tool policy") {
+	if !strings.Contains(result.Result, "is not allowed") {
 		t.Fatalf("expected workflow policy rejection, got %q", result.Result)
 	}
 }
@@ -1813,7 +1813,7 @@ func TestCoreAgentDescribeCapabilitiesHonorsWorkflowToolPolicy(t *testing.T) {
 			readFile = &caps.Tools[i]
 		}
 	}
-	if bash == nil || bash.Enabled || !strings.Contains(bash.DisabledReason, "workflow tool policy") {
+	if bash == nil || bash.Enabled || !strings.Contains(bash.DisabledReason, "is not allowed") {
 		t.Fatalf("expected bash disabled by workflow policy, got %#v", bash)
 	}
 	if readFile == nil || !readFile.Enabled {

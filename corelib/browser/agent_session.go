@@ -180,6 +180,7 @@ func startAgentSessionForOwner(ownerID, requestedAddr string, policy BrowserPoli
 		ManagedUserDataDir: managedUserDataDir,
 		session:            session,
 		stopCh:             make(chan struct{}),
+		targetGoneCh:       make(chan struct{}),
 		snapshots:          map[string]*BrowserSnapshot{},
 		recentConsole:      []string{},
 		recentNetwork:      []string{},
@@ -269,14 +270,63 @@ func GetAgentSession(sessionID string) (*BrowserAgentSession, error) {
 		return nil, fmt.Errorf("browser session not found: %s", sessionID)
 	}
 	if sess.session == nil || sess.session.client == nil || !sess.session.client.IsAlive() {
+		// Close old client explicitly so its readLoop exits, events channel
+		// closes, and the old event pump goroutine terminates cleanly.
+		if sess.session != nil && sess.session.client != nil {
+			_ = sess.session.client.Close()
+		}
 		reconnected, err := connectToAddr(sess.Addr)
 		if err != nil {
 			return nil, err
 		}
+		sess.mu.Lock()
 		sess.session = reconnected
 		sess.TargetID = activeTargetID(reconnected)
 		sess.UpdatedAt = time.Now()
+		// Clear stale snapshots from the old target — refs are no longer valid.
+		sess.snapshots = map[string]*BrowserSnapshot{}
+		sess.lastSnapshotID = ""
+		// Reset the target-gone signal so operations on the new target work.
+		sess.resetTargetGone()
+		sess.mu.Unlock()
 		sess.startEventPump()
+	} else if !sess.IsTargetAlive() {
+		// Connection is alive but target was destroyed/detached (e.g. page
+		// navigated away, tab closed by user). Re-attach to the first available
+		// page target in the same browser.
+		log.Printf("[browser] target gone but connection alive session=%s; re-attaching to new target", sessionID)
+		targets, err := DiscoverTargets(sess.Addr)
+		if err != nil {
+			return nil, fmt.Errorf("browser target gone and cannot discover new targets: %w", err)
+		}
+		newTargetID := ""
+		for _, t := range targets {
+			if t.Type == "page" && t.ID != "" {
+				newTargetID = t.ID
+				break
+			}
+		}
+		if newTargetID == "" {
+			return nil, fmt.Errorf("browser target gone and no page targets available; call browser(action=\"navigate\", url=\"...\") to open a new page")
+		}
+		// SwitchPage makes HTTP calls and creates a new WebSocket connection —
+		// don't hold sess.mu during it to avoid blocking IsTargetAlive/TargetGone
+		// callers for seconds.
+		if err := sess.session.SwitchPage(newTargetID); err != nil {
+			return nil, fmt.Errorf("browser target gone and failed to attach to new target: %w", err)
+		}
+		sess.mu.Lock()
+		sess.TargetID = newTargetID
+		sess.UpdatedAt = time.Now()
+		sess.snapshots = map[string]*BrowserSnapshot{}
+		sess.lastSnapshotID = ""
+		sess.resetTargetGone()
+		sess.mu.Unlock()
+		// SwitchPage replaces the underlying CDPClient (closes old, creates new).
+		// The old event pump goroutine exits when old client's events channel closes.
+		// Must start a new pump for the new client's events channel.
+		sess.startEventPump()
+		log.Printf("[browser] re-attached to target=%s session=%s", newTargetID, sessionID)
 	}
 	// Touch activity on every access to reset the inactivity timer.
 	sess.TouchActivity()
@@ -377,6 +427,14 @@ func (s *BrowserAgentSession) startEventPump() {
 	}
 	events := s.session.client.Events()
 	stopCh := s.stopCh
+	// Capture the current targetGoneCh. If it changes (due to resetTargetGone
+	// after re-attach), this pump is stale and should not signal target-gone
+	// on the new channel. handleCDPEvent uses s.targetGoneCh (current), so
+	// stale events from old clients that arrive after re-attach are harmless
+	// only if this pump stops before processing them. Since events channel
+	// will be closed when the old client is closed, this pump naturally exits.
+	// This capture is purely for defensive logging.
+	pumpClient := s.session.client
 	go func() {
 		log.Printf("[browser] event pump started session=%s target=%s", s.ID, s.TargetID)
 		for {
@@ -387,6 +445,12 @@ func (s *BrowserAgentSession) startEventPump() {
 			case evt, ok := <-events:
 				if !ok {
 					log.Printf("[browser] event pump stopped session=%s reason=events_closed target=%s", s.ID, s.TargetID)
+					return
+				}
+				// Guard: if the session's client has been replaced (re-attach
+				// or full reconnect), this pump is stale. Exit gracefully.
+				if s.session != nil && s.session.client != pumpClient {
+					log.Printf("[browser] event pump exiting session=%s reason=client_replaced", s.ID)
 					return
 				}
 				s.handleCDPEvent(evt)
@@ -461,6 +525,9 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 		_ = json.Unmarshal(evt.Params, &payload)
 		log.Printf("[browser] target destroyed session=%s active_target=%s destroyed_target=%s", s.ID, s.TargetID, payload.TargetID)
 		s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "target", Summary: "target destroyed: " + payload.TargetID, CreatedAt: time.Now().UnixMilli()}, browserAgentConsoleLimit)
+		if payload.TargetID == s.TargetID {
+			s.signalTargetGone()
+		}
 	case "Target.detachedFromTarget":
 		var payload struct {
 			SessionID string `json:"sessionId"`
@@ -469,9 +536,13 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 		_ = json.Unmarshal(evt.Params, &payload)
 		log.Printf("[browser] target detached session=%s active_target=%s detached_target=%s target_session=%s", s.ID, s.TargetID, payload.TargetID, payload.SessionID)
 		s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "target", Summary: "target detached: " + payload.TargetID, CreatedAt: time.Now().UnixMilli()}, browserAgentConsoleLimit)
+		if payload.TargetID == s.TargetID {
+			s.signalTargetGone()
+		}
 	case "Inspector.detached":
 		log.Printf("[browser] inspector detached session=%s target=%s params=%s", s.ID, s.TargetID, compactJSONString(evt.Params))
 		s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "target", Summary: "inspector detached", CreatedAt: time.Now().UnixMilli()}, browserAgentConsoleLimit)
+		s.signalTargetGone()
 	case "Runtime.consoleAPICalled":
 		var payload struct {
 			Args []struct {
@@ -525,6 +596,71 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 				s.recentNetworkEntries = appendCappedNetworkEntries(s.recentNetworkEntries, BrowserNetworkEvent{Method: payload.Request.Method, URL: payload.Request.URL, Kind: "request", CreatedAt: now}, browserAgentNetworkLimit)
 			}
 		}
+	}
+}
+
+// signalTargetGone closes targetGoneCh to abort any in-flight operations waiting
+// on CDP responses for the now-dead target. Must be called with s.mu write-lock
+// held (from handleCDPEvent). The select guards against double-close if the
+// channel was already closed by a prior event in the same session.
+func (s *BrowserAgentSession) signalTargetGone() {
+	if s.targetGoneCh == nil {
+		return
+	}
+	select {
+	case <-s.targetGoneCh:
+		// already closed
+	default:
+		log.Printf("[browser] signaling target gone session=%s target=%s", s.ID, s.TargetID)
+		close(s.targetGoneCh)
+	}
+}
+
+// closedCh is a pre-closed channel returned by TargetGone() for nil sessions.
+// Avoids per-call allocation.
+var closedCh = func() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}()
+
+// TargetGone returns a channel that is closed when the active target is
+// destroyed, detached, or the inspector disconnects. Operations can select on
+// this to abort immediately instead of waiting the full CDP timeout.
+func (s *BrowserAgentSession) TargetGone() <-chan struct{} {
+	if s == nil {
+		return closedCh
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.targetGoneCh
+}
+
+// IsTargetAlive returns false if the active target has been destroyed or
+// the inspector has been detached. Fast check before starting operations.
+func (s *BrowserAgentSession) IsTargetAlive() bool {
+	if s == nil {
+		return false
+	}
+	select {
+	case <-s.TargetGone():
+		return false
+	default:
+		return true
+	}
+}
+
+// resetTargetGone re-creates the targetGoneCh channel, allowing the session
+// to be reused after reconnection to a new target. Must be called with s.mu
+// write-lock held (it mutates targetGoneCh which is read by TargetGone under
+// s.mu.RLock).
+func (s *BrowserAgentSession) resetTargetGone() {
+	select {
+	case <-s.targetGoneCh:
+		// was closed, create fresh channel
+		s.targetGoneCh = make(chan struct{})
+	default:
+		// still open, no-op
 	}
 }
 

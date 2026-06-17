@@ -89,6 +89,9 @@ func (s *BrowserAgentSession) Observe(_ bool) (*BrowserObservation, error) {
 	if s == nil {
 		return nil, fmt.Errorf("browser session is nil")
 	}
+	if !s.IsTargetAlive() {
+		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.session == nil {

@@ -384,6 +384,25 @@ func (m *StateMachine) GetStore() WorkflowStore {
 	return m.store
 }
 
+// SetActivePhaseForTest advances the stored workflow state to the phase at
+// the given index. This is a test helper — production code uses HandleInput
+// and advanceLocked for proper phase transitions.
+func (m *StateMachine) SetActivePhaseForTest(userID string, phaseIndex int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, _ := m.store.Load(userID)
+	if state == nil || phaseIndex < 0 || phaseIndex >= len(state.Phases) {
+		return
+	}
+	state.CurrentPhase = phaseIndex
+	for i := 0; i < phaseIndex; i++ {
+		state.Phases[i].Status = PhaseCompleted
+	}
+	state.Phases[phaseIndex].Status = PhaseRunning
+	state.UpdatedAt = time.Now()
+	m.store.Save(state)
+}
+
 // SkipPhaseForm marks the current phase's form gate as skipped.
 // In V2, this sets FormData to an empty map (non-nil) so the InputSchema
 // check in HandleInput passes through, allowing the phase to proceed to

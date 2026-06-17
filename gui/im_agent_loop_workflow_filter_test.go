@@ -113,11 +113,11 @@ func TestFullWorkflowPhasePinsLocalCodingTools(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "workflow-full-phase-pins-local-tools-user"
 	workflowType := workflow.WorkflowType("full_policy_local_tools")
-	if err := handler.app.workflowEngine.GetRegistry().Register(&workflow.V1WorkflowTemplate{
+	if err := handler.app.workflowEngine.GetRegistry().Register(&workflow.TemplateSpec{
 		Type:        workflowType,
 		Name:        "full policy local tools",
 		Description: "test template",
-		Phases: []workflow.V1PhaseTemplate{{
+		Phases: []workflow.PhaseSpec{{
 			ID:            "implementation",
 			Name:          "Implementation",
 			Prompt:        "implement the project",
@@ -160,11 +160,11 @@ func TestArtifactWorkflowPhaseDoesNotExposeProjectMutationTools(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "workflow-artifact-scope-tools-user"
 	workflowType := workflow.WorkflowType("artifact_scope_tools")
-	if err := handler.app.workflowEngine.GetRegistry().Register(&workflow.V1WorkflowTemplate{
+	if err := handler.app.workflowEngine.GetRegistry().Register(&workflow.TemplateSpec{
 		Type:        workflowType,
 		Name:        "artifact scope tools",
 		Description: "test template",
-		Phases: []workflow.V1PhaseTemplate{{
+		Phases: []workflow.PhaseSpec{{
 			ID:            "generate",
 			Name:          "Generate",
 			Prompt:        "generate artifact",
@@ -236,11 +236,11 @@ func TestDocOnlyWorkflowPhaseBlocksImplementationTools(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "workflow-doc-only-blocks-implementation-tools-user"
 	workflowType := workflow.WorkflowType("doc_only_policy_boundary")
-	handler.app.workflowEngine.GetRegistry().Register(&workflow.V1WorkflowTemplate{
+	handler.app.workflowEngine.GetRegistry().Register(&workflow.TemplateSpec{
 		Type:        workflowType,
 		Name:        "doc only policy boundary",
 		Description: "test template",
-		Phases: []workflow.V1PhaseTemplate{{
+		Phases: []workflow.PhaseSpec{{
 			ID:          "analysis",
 			Name:        "Analysis",
 			Prompt:      "write analysis",
@@ -816,7 +816,7 @@ func TestWorkflowAgentLoopStillHonorsNeedsConfirmGateAfterSkip(t *testing.T) {
 
 	plainSkip := handler.shouldNeedsConfirmToolBranch(&LoopContext{SkipNeedsConfirmGate: true}, userID, 1)
 	if plainSkip {
-		t.Fatal("V2: shouldNeedsConfirmToolBranch must return false (V1 NeedsConfirm gate removed)")
+		t.Fatal("shouldNeedsConfirmToolBranch must return false (NeedsConfirm gate removed)")
 	}
 	workflowLoop := handler.shouldNeedsConfirmToolBranch(&LoopContext{SkipNeedsConfirmGate: true, WorkflowAgentLoop: true}, userID, 1)
 	if workflowLoop {
@@ -924,16 +924,16 @@ func TestPrepareAgentLoopToolsBlockedPhaseWithNoPolicyExposesNoTools(t *testing.
 	userID := "workflow-blocked-none-filter-user"
 	engine := handler.app.workflowEngine
 	workflowType := workflow.WorkflowType("blocked_none_policy")
-	engine.GetRegistry().Register(&workflow.V1WorkflowTemplate{
+	engine.GetRegistry().Register(&workflow.TemplateSpec{
 		Type:        workflowType,
 		Name:        "blocked none policy",
 		Description: "test template",
-		Phases: []workflow.V1PhaseTemplate{{
+		Phases: []workflow.PhaseSpec{{
 			ID:          "collect",
 			Name:        "Collect",
 			Prompt:      "collect input",
 			Deliverable: "input",
-			InputSchema: &workflow.V1PhaseInputSchema{Fields: []workflow.V1PhaseInputField{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
+			InputSchema: &workflow.PhaseInputSchemaSpec{Fields: []workflow.PhaseInputFieldSpec{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
 			ToolPolicy:  workflow.ToolFilterNone,
 		}},
 	})
@@ -979,7 +979,7 @@ func TestWorkflowGateHelpersTolerateNilLoopContext(t *testing.T) {
 		t.Fatalf("nil context should keep workflow filter active, got %#v", names)
 	}
 	if handler.shouldNeedsConfirmToolBranch(nil, userID, 1) {
-		t.Fatal("V2: nil context should return false (V1 NeedsConfirm gate removed)")
+		t.Fatal("nil context should return false (NeedsConfirm gate removed)")
 	}
 }
 

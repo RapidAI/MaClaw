@@ -22,6 +22,7 @@
       lockedBadge: 'Built-in',
       authStatusActive: 'Compute Active',
       authStatusInactive: 'No Compute Auth',
+      authStatusError: 'Compute Auth Sync Failed',
       authStatusLoading: 'Checking Compute Auth',
       unlockHint: 'Ask HubCenter to grant compute access before adding external LLM providers.',
       storeContextMissing: 'Hub Center registration is missing. Register this Hub with HubCenter before purchasing compute.',
@@ -47,6 +48,7 @@
       lockedBadge: '\u5185\u7f6e',
       authStatusActive: '\u7b97\u529b\u5df2\u6388\u6743',
       authStatusInactive: '\u672a\u6388\u6743\u7b97\u529b\u6a21\u5757',
+      authStatusError: '\u7b97\u529b\u6388\u6743\u540c\u6b65\u5931\u8d25',
       authStatusLoading: '\u6b63\u5728\u68c0\u67e5\u7b97\u529b\u6388\u6743',
       unlockHint: '\u9700\u8981\u5148\u5728 HubCenter \u6388\u4e88\u79df\u6237\u7b97\u529b\uff0c\u624d\u80fd\u65b0\u5efa\u5916\u90e8 LLM \u670d\u52a1\u5546\u3002',
       storeContextMissing: '\u7f3a\u5c11 HubCenter \u6ce8\u518c\u4fe1\u606f\uff0c\u8bf7\u5148\u5c06\u6b64 Hub \u6ce8\u518c\u5230 HubCenter \u540e\u518d\u8d2d\u4e70\u7b97\u529b\u3002',
@@ -184,16 +186,30 @@
 
   var _computeAuthStatus = null; // cached
   var _showInactiveComputeAuthorizations = false;
+  var _computeAuthCheckedAt = 0;
+  var _computeAuthRefreshInFlight = null;
 
   window.checkComputeAuthorization = async function() {
     try {
       _computeAuthStatus = await loadComputeStatus();
+      _computeAuthCheckedAt = Date.now();
     } catch (e) {
-      _computeAuthStatus = { allow_external_providers: false };
+      _computeAuthStatus = { allow_external_providers: false, authorization_error: e && e.message || 'request failed' };
+      _computeAuthCheckedAt = Date.now();
     }
     updateComputeUI();
     return _computeAuthStatus;
   };
+
+  function refreshComputeAuthorizationIfStale(maxAgeMS) {
+    if (_computeAuthRefreshInFlight) return _computeAuthRefreshInFlight;
+    var age = _computeAuthCheckedAt ? Date.now() - _computeAuthCheckedAt : Infinity;
+    if (age <= maxAgeMS) return Promise.resolve(_computeAuthStatus);
+    _computeAuthRefreshInFlight = window.checkComputeAuthorization().finally(function() {
+      _computeAuthRefreshInFlight = null;
+    });
+    return _computeAuthRefreshInFlight;
+  }
 
   window.canAddExternalProvider = function() {
     if (!_computeAuthStatus) return false;
@@ -231,9 +247,14 @@
       } else if (hasActiveComputeAuthorization()) {
         badge.className = 'badge ok';
         badge.textContent = t('authStatusActive');
+      } else if (_computeAuthStatus.authorization_error) {
+        badge.className = 'badge warn';
+        badge.textContent = t('authStatusError');
+        badge.title = String(_computeAuthStatus.authorization_error || '');
       } else {
         badge.className = 'badge warn';
         badge.textContent = t('authStatusInactive');
+        badge.title = '';
       }
     }
   }
@@ -298,6 +319,9 @@
     if (!_computeAuthStatus) return '';
     var all = computeAuthorizations();
     if (!all.length) {
+      if (_computeAuthStatus.authorization_error) {
+        return '<div class="hint" style="margin-top:10px;padding:10px 12px;background:#fff8f0;border-color:#f2d3a6;color:#8a5b13">' + esc(t('authStatusError')) + ': ' + esc(_computeAuthStatus.authorization_error) + '</div>';
+      }
       return '<div class="hint" style="margin-top:10px;padding:10px 12px;background:#fbfcfd;border-color:#e7eaf0">' + esc(t('noActiveAuthorizations')) + '</div>';
     }
     var visible = all.filter(function(item) {
@@ -384,6 +408,7 @@
     if (!banner) return;
     banner.innerHTML = window.renderMaClawOfficialBanner();
     updateComputeUI();
+    refreshComputeAuthorizationIfStale(3000);
   }
 
   // Inject MaClaw Official banner at the top of the provider list after render
@@ -399,6 +424,23 @@
     banner.innerHTML = window.renderMaClawOfficialBanner();
     list.parentElement.insertBefore(banner, list);
     updateComputeUI();
+    refreshComputeAuthorizationIfStale(3000);
+  }
+
+  function observeLLMProviderListForBanner() {
+    if (typeof MutationObserver !== 'function' || !document.body) return;
+    var pending = false;
+    var observer = new MutationObserver(function() {
+      if (pending) return;
+      pending = true;
+      setTimeout(function() {
+        pending = false;
+        if (document.getElementById('llmProviderList') && !document.getElementById('maclawOfficialBanner')) {
+          injectMaClawBannerToProviderList();
+        }
+      }, 0);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   // Monkey-patch renderLLMProviders to inject the banner after each render
@@ -460,9 +502,15 @@
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function() { window.checkComputeAuthorization(); });
+    document.addEventListener('DOMContentLoaded', function() {
+      window.checkComputeAuthorization();
+      injectMaClawBannerToProviderList();
+      observeLLMProviderListForBanner();
+    });
   } else {
     window.checkComputeAuthorization();
+    injectMaClawBannerToProviderList();
+    observeLLMProviderListForBanner();
   }
   updateComputeUI();
 })();

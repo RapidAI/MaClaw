@@ -131,29 +131,38 @@ static const void* captureFullScreenPNG(size_t* outLen) {
 import "C"
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"time"
 	"unsafe"
 )
 
-// nativeCaptureScreenshot uses CoreGraphics CGWindowListCreateImage (loaded via
-// dlsym at runtime) to capture all displays directly in-process. Each display is
-// captured individually by its bounds and stitched horizontally to avoid
-// CGRectInfinite coordinate issues with rotated secondary displays.
+// nativeCaptureScreenshot captures the screen directly in-process on macOS.
 //
-// ScreenCaptureKit is intentionally NOT used because on macOS 26+, SCK's
-// getShareableContent triggers its own TCC permission dialog independently of
-// the legacy API's permission. CGWindowListCreateImage works and doesn't trigger
-// any dialog when screen recording permission is already granted.
+// Strategy on macOS 26+:
+//   1. Try screencapture CLI first — it's Apple-signed with full TCC privileges,
+//      can see all windows. Does NOT trigger a TCC dialog (tested on macOS 26.5).
+//   2. If screencapture fails, fall back to CGWindowListCreateImage per-display
+//      stitch (limited to own windows on self-signed apps).
 //
 // Returns base64-encoded PNG data on success.
 func nativeCaptureScreenshot() (string, error) {
-	// Use CGWindowListCreateImage per-display + stitch.
-	// ScreenCaptureKit (SCK) is intentionally NOT used here because on macOS 26+,
-	// SCK's getShareableContent triggers its own TCC permission dialog independently
-	// of CGWindowListCreateImage's permission. Since legacy capture works and doesn't
-	// trigger any dialog, we use it exclusively.
+	// Try screencapture first — Apple-signed, has full screen recording privilege.
+	// Does not trigger TCC dialog because EnsureScreenRecordingPermission is NOT called.
+	b64, err := captureViaScreencapture()
+	if err == nil && b64 != "" {
+		return b64, nil
+	}
+	if err != nil {
+		log.Printf("[screenshot-native] screencapture failed, trying CGWindowListCreateImage: %v", err)
+	}
+
+	// Fallback: CGWindowListCreateImage per-display + stitch.
+	// On self-signed apps this only captures own windows + desktop.
 	var outLen C.size_t
 	ptr := C.captureFullScreenPNG(&outLen)
 	if ptr == nil {
@@ -167,7 +176,33 @@ func nativeCaptureScreenshot() (string, error) {
 		return "", fmt.Errorf("CGWindowListCreateImage returned 0 bytes")
 	}
 
-	log.Printf("[screenshot-native] capture succeeded: pngBytes=%d", len(pngBytes))
-	b64 := base64.StdEncoding.EncodeToString(pngBytes)
+	log.Printf("[screenshot-native] CGWindowListCreateImage capture succeeded: pngBytes=%d", len(pngBytes))
+	b64 = base64.StdEncoding.EncodeToString(pngBytes)
 	return b64, nil
+}
+
+// captureViaScreencapture runs /usr/sbin/screencapture and returns base64 PNG.
+// screencapture is Apple-signed and has full TCC screen recording privilege
+// independent of the calling app's TCC status.
+func captureViaScreencapture() (string, error) {
+	tmpFile := fmt.Sprintf("/tmp/maclaw_sc_%d.png", time.Now().UnixNano())
+	defer os.Remove(tmpFile)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "/usr/sbin/screencapture", "-x", tmpFile)
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("screencapture failed: %w", err)
+	}
+
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		return "", fmt.Errorf("read screenshot file: %w", err)
+	}
+	if len(data) == 0 {
+		return "", fmt.Errorf("screencapture produced empty file")
+	}
+
+	return base64.StdEncoding.EncodeToString(data), nil
 }

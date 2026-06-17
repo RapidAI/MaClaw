@@ -248,7 +248,6 @@ const labels = {
         appRunning: '\u8fd0\u884c\u4e2d',
         apps: '\u5e94\u7528',
         appStudio: '\u5e94\u7528\u7a0b\u5e8f\u5de5\u4f5c\u5ba4',
-        appStudioShort: '\u5de5\u4f5c\u5ba4',
         studioSubtitle: '\u521b\u5efa\u3001\u7ba1\u7406\u3001\u4ece\u4f01\u4e1a\u80fd\u529b\u5e02\u573a\u6dfb\u52a0\u5e94\u7528\u3002',
         createTab: '\u521b\u5efa\u5e94\u7528',
         promptDraft: '\u7528\u5bf9\u8bdd\u751f\u6210\u8349\u7a3f',
@@ -307,7 +306,6 @@ const labels = {
         reviewRevoked: '\u5df2\u64a4\u56de',
         submissionId: '\u63d0\u4ea4\u7f16\u53f7',
         withdrawSubmission: '\u64a4\u56de\u63d0\u4ea4',
-        open: '\u6253\u5f00\u5e94\u7528',
         run: '\u6267\u884c',
         reset: '\u91cd\u7f6e',
         output: '\u8f93\u51fa\u7ed3\u679c',
@@ -329,6 +327,9 @@ const labels = {
         runtimeOutput: '\u8f93\u51fa',
         outputText: '\u6587\u672c\u7ed3\u679c',
         noOutputYet: '\u6267\u884c\u5b8c\u6210\u540e\uff0c\u8fd9\u91cc\u663e\u793a\u8f93\u51fa\u6587\u4ef6\u6216\u6587\u672c\u7ed3\u679c\u3002',
+        runCompleted: '\u6267\u884c\u5b8c\u6210',
+        setAsPinned: '\u8bbe\u4e3a\u5e38\u7528',
+        removeFromPinned: '\u79fb\u51fa\u5e38\u7528',
         artifactPending: '\u7b49\u5f85\u4ea7\u7269',
         artifactReady: '\u4ea7\u7269\u5df2\u751f\u6210',
         openArtifact: '\u6253\u5f00',
@@ -341,7 +342,7 @@ const labels = {
         clearHistory: '\u6e05\u7a7a\u5386\u53f2',
         submitted: '\u5df2\u63d0\u4ea4',
         noOpenAppTitle: '\u9009\u62e9\u5e94\u7528',
-        noOpenAppHint: '\u70b9\u51fb\u5de6\u4fa7\u56fe\u6807\u540e\uff0c\u5e94\u7528\u5c06\u5728\u8fd9\u91cc\u4ee5 tab \u6253\u5f00\u3002',
+        noOpenAppHint: '\u70b9\u51fb\u5de6\u4fa7\u5e94\u7528\u56fe\u6807\uff0c\u4ee5\u6253\u5f00\u5e94\u7528\u3002',
         noApps: '\u6ca1\u6709\u5339\u914d\u7684\u5e94\u7528',
         noMoreApps: '\u6ca1\u6709\u66f4\u591a\u5e94\u7528',
         pin: '\u7f6e\u9876',
@@ -434,7 +435,6 @@ const labels = {
         appRunning: 'Running',
         apps: 'Apps',
         appStudio: 'App Studio',
-        appStudioShort: 'Studio',
         studioSubtitle: 'Create, manage, and add apps from the capability market.',
         createTab: 'Create app',
         promptDraft: 'Generate draft from chat',
@@ -493,7 +493,6 @@ const labels = {
         reviewRevoked: 'Revoked',
         submissionId: 'Submission ID',
         withdrawSubmission: 'Withdraw submission',
-        open: 'Open app',
         run: 'Run',
         reset: 'Reset',
         output: 'Output',
@@ -515,6 +514,9 @@ const labels = {
         runtimeOutput: 'Output',
         outputText: 'Text result',
         noOutputYet: 'Output files or text results appear here after execution.',
+        runCompleted: 'Run completed',
+        setAsPinned: 'Pin to favorites',
+        removeFromPinned: 'Remove from favorites',
         artifactPending: 'Waiting for artifact',
         artifactReady: 'Artifact generated',
         openArtifact: 'Open',
@@ -527,7 +529,7 @@ const labels = {
         clearHistory: 'Clear history',
         submitted: 'Submitted',
         noOpenAppTitle: 'Choose an app',
-        noOpenAppHint: 'Click an icon on the left to open the app here as a tab.',
+        noOpenAppHint: 'Click an app icon on the left to open the app.',
         noApps: 'No matching apps',
         noMoreApps: 'No more apps',
         pin: 'Pin',
@@ -1600,18 +1602,38 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
     const [apps, setApps] = useState(() => applyLayoutState(initialApps, readLayoutState()));
     const [query, setQuery] = useState('');
     const [category, setCategory] = useState('all');
-    const [selectedId, setSelectedId] = useState('');
     const [openTabs, setOpenTabs] = useState<string[]>([]);
     const [activeTabId, setActiveTabId] = useState('');
     const [studioOpen, setStudioOpen] = useState(false);
     const [studioTab, setStudioTab] = useState<StudioTab>('create');
     const [studioEditAppId, setStudioEditAppId] = useState('');
+    const [tileMenu, setTileMenu] = useState<{ appId: string; x: number; y: number } | null>(null);
     const [datasrvDiscovery, setDataSrvDiscovery] = useState<DataSrvDiscovery>(emptyDiscovery);
     const [skillDiscovery, setSkillDiscovery] = useState<SkillAppDiscovery>(emptySkillDiscovery);
 
     useEffect(() => {
         persistLayoutState(apps);
     }, [apps]);
+
+    useEffect(() => {
+        if (!tileMenu) return;
+        const close = () => setTileMenu(null);
+        const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+            if (event.key === 'Escape') close();
+        };
+        document.addEventListener('click', close);
+        document.addEventListener('keydown', closeOnEscape);
+        window.addEventListener('blur', close);
+        window.addEventListener('resize', close);
+        window.addEventListener('scroll', close, true);
+        return () => {
+            document.removeEventListener('click', close);
+            document.removeEventListener('keydown', closeOnEscape);
+            window.removeEventListener('blur', close);
+            window.removeEventListener('resize', close);
+            window.removeEventListener('scroll', close, true);
+        };
+    }, [tileMenu]);
 
     useEffect(() => {
         let mounted = true;
@@ -1666,14 +1688,15 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
     const pinnedSectionIds = new Set(pinnedApps.map((app) => app.id));
     const visibleListApps = pinnedSectionIds.size > 0 ? filteredApps.filter((app) => !pinnedSectionIds.has(app.id)) : filteredApps;
     const panelFilterSummary = filterSummaryText({ query, category, count: filteredApps.length, lang, allLabel: text.all });
-    const selectedApp = apps.find((app) => app.id === selectedId);
+    const tileMenuApp = tileMenu ? apps.find((app) => app.id === tileMenu.appId) : undefined;
+    const tileMenuPinDisabled = !!tileMenuApp && !tileMenuApp.pinned && apps.filter((app) => app.pinned).length >= maxPinnedApps;
     const openTabApps = openTabs.map((id) => apps.find((app) => app.id === id)).filter((app): app is AppEntry => !!app);
     const activeApp = apps.find((app) => app.id === activeTabId) ?? openTabApps[0];
     const hiddenApps = initialApps.filter((app) => !apps.some((item) => item.id === app.id));
 
     const openApp = (app: AppEntry) => {
         markAppUsed(app.id);
-        setSelectedId(app.id);
+        setTileMenu(null);
         setOpenTabs((current) => current.includes(app.id) ? current : [...current, app.id]);
         setActiveTabId(app.id);
         setStudioOpen(false);
@@ -1746,7 +1769,6 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
             } : undefined,
         };
         setApps((current) => [...current, cloned]);
-        setSelectedId(id);
         setStudioTab('manage');
         setStudioEditAppId(id);
     };
@@ -1763,14 +1785,12 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
             }
             return next;
         });
-        setSelectedId((current) => current === appId ? '' : current);
     };
 
     const restoreApp = (appId: string) => {
         const app = initialApps.find((item) => item.id === appId);
         if (!app) return;
         setApps((current) => current.some((item) => item.id === appId) ? current : [...current, appWithAvailablePin(app, current)]);
-        setSelectedId(appId);
     };
 
     const addDiscoveredApp = (app: AppEntry) => {
@@ -1778,7 +1798,6 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
             if (current.some((item) => item.id === app.id)) return current;
             return [...current, appWithAvailablePin(app, current)];
         });
-        setSelectedId(app.id);
         setStudioTab('manage');
     };
 
@@ -1803,11 +1822,9 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
             }
             return [...current, appWithAvailablePin(app, current)];
         });
-        setSelectedId(existing?.id || app.id);
     };
 
     const editAppFromStudio = (appId: string) => {
-        setSelectedId(appId);
         setStudioOpen(true);
         setStudioTab('manage');
         setStudioEditAppId(appId);
@@ -1823,10 +1840,28 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
         return { key: 'available', label: text.appAvailable };
     };
 
+    const openTileMenu = (appId: string, x: number, y: number) => {
+        const width = 168;
+        const height = 44;
+        const maxX = typeof window === 'undefined' ? x : Math.max(8, window.innerWidth - width);
+        const maxY = typeof window === 'undefined' ? y : Math.max(8, window.innerHeight - height);
+        setTileMenu({
+            appId,
+            x: Math.min(Math.max(8, x), maxX),
+            y: Math.min(Math.max(8, y), maxY),
+        });
+    };
+
     const renderTile = (app: AppEntry) => {
         const status = appStatusInfo(app);
         const moveTileFocus = (event: KeyboardEvent<HTMLButtonElement>) => {
-            const keyOffsets: Record<string, number> = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -3, ArrowDown: 3 };
+            if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+                event.preventDefault();
+                const rect = event.currentTarget.getBoundingClientRect();
+                openTileMenu(app.id, rect.left + 8, rect.bottom + 4);
+                return;
+            }
+            const keyOffsets: Record<string, number> = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -4, ArrowDown: 4 };
             const offset = keyOffsets[event.key];
             if (offset === undefined && event.key !== 'Home' && event.key !== 'End') return;
             const list = event.currentTarget.closest('.apps-list');
@@ -1844,16 +1879,18 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
         return (
             <button
                 key={app.id}
-                className={`apps-app-tile ${selectedApp?.id === app.id && !studioOpen ? 'is-active' : ''}`}
+                className={`apps-app-tile ${activeApp?.id === app.id && !studioOpen ? 'is-active' : ''}`}
                 data-status={status.key}
                 style={{ '--apps-icon-color': app.accent } as CSSProperties}
                 title={buildAppTileTooltip(app, text, status.label, lang)}
                 aria-label={buildAppTileAriaLabel(app, text, status.label, lang)}
                 onClick={() => openApp(app)}
+                onContextMenu={(event) => {
+                    event.preventDefault();
+                    openTileMenu(app.id, event.clientX, event.clientY);
+                }}
                 onKeyDown={moveTileFocus}
             >
-                <span className="apps-app-status-dot" aria-hidden="true" />
-                {app.pinned && <span className="apps-app-badge" aria-hidden="true" />}
                 <span className="apps-app-icon"><Icon name={app.icon} /></span>
                 <span className="apps-app-name">{app.name}</span>
             </button>
@@ -1881,8 +1918,9 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                         )}
                     </div>
                     <button className="apps-studio-button" type="button" title={text.appStudio} aria-label={text.appStudio} onClick={() => setStudioOpen(true)}>
-                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-                        <span>{text.appStudioShort}</span>
+                        <span className="apps-studio-button__icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+                        </span>
                     </button>
                     <div className="apps-filter-row">
                         <span className="apps-filter-label">{text.category}</span>
@@ -1922,6 +1960,29 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                         {visibleListApps.length > 0 ? <div className="apps-grid">{visibleListApps.map(renderTile)}</div> : <div className="apps-empty">{pinnedApps.length > 0 ? text.noMoreApps : text.noApps}</div>}
                     </section>
                 </div>
+                {tileMenuApp && tileMenu && (
+                    <div
+                        className="apps-tile-menu"
+                        role="menu"
+                        style={{ left: tileMenu.x, top: tileMenu.y } as CSSProperties}
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <button
+                            type="button"
+                            role="menuitem"
+                            autoFocus
+                            disabled={tileMenuPinDisabled}
+                            title={tileMenuPinDisabled ? text.pinLimitReached : tileMenuApp.pinned ? text.removeFromPinned : text.setAsPinned}
+                            onClick={() => {
+                                if (tileMenuPinDisabled) return;
+                                togglePin(tileMenuApp.id);
+                                setTileMenu(null);
+                            }}
+                        >
+                            {tileMenuApp.pinned ? text.removeFromPinned : text.setAsPinned}
+                        </button>
+                    </div>
+                )}
             </aside>
 
             <main className="apps-detail">
@@ -1952,12 +2013,9 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                     <AppRuntime
                         tabs={openTabApps}
                         activeApp={activeApp}
-                        selectedApp={selectedApp}
                         lang={lang}
-                        onOpen={openApp}
                         onActivate={(appId) => {
                             setActiveTabId(appId);
-                            setSelectedId(appId);
                         }}
                         onClose={closeAppTab}
                         onUse={markAppUsed}
@@ -1968,21 +2026,17 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
     );
 };
 
-const AppRuntime = ({ tabs, activeApp, selectedApp, lang, onOpen, onActivate, onClose, onUse }: {
+const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse }: {
     tabs: AppEntry[];
     activeApp?: AppEntry;
-    selectedApp?: AppEntry;
     lang?: string;
-    onOpen: (app: AppEntry) => void;
     onActivate: (appId: string) => void;
     onClose: (appId: string) => void;
     onUse: (appId: string) => void;
 }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     if (tabs.length === 0) {
-        return selectedApp
-            ? <AppPreview app={selectedApp} lang={lang} onOpen={() => onOpen(selectedApp)} onUse={onUse} />
-            : <EmptyRuntime text={text} />;
+        return <EmptyRuntime text={text} />;
     }
     const activateTab = (appId: string, shouldFocus = false) => {
         onActivate(appId);
@@ -2065,7 +2119,7 @@ const getRuntimeSafeId = (appId: string) => appId.replace(/[^A-Za-z0-9_-]/g, '-'
 const getRuntimeTabId = (appId: string) => `app-tab-${getRuntimeSafeId(appId)}`;
 const getRuntimePanelId = (appId: string) => `app-panel-${getRuntimeSafeId(appId)}`;
 
-const AppPreview = ({ app, lang, onOpen, onUse }: { app?: AppEntry; lang?: string; onOpen?: () => void; onUse?: (appId: string) => void }) => {
+const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse?: (appId: string) => void }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const [fileName, setFileName] = useState('');
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -2156,8 +2210,6 @@ const AppPreview = ({ app, lang, onOpen, onUse }: { app?: AppEntry; lang?: strin
         };
     }, [runID, runState, text.skillRunCancelled, text.skillRunCompleted, text.skillRunFailed, currentRunContext]);
     if (!app) return <div className="apps-empty">{text.noApps}</div>;
-    const kindLabel = appKinds[app.kind][isZh(lang) ? 'zh' : 'en'];
-    const sourceLabel = sourceLabels[app.source][isZh(lang) ? 'zh' : 'en'];
     const isTool = app.kind === 'tool_app';
     const isAutomation = app.kind === 'automation_app';
     const outputModes = normalizeOutputModes(app.manifest?.skill?.outputModes);
@@ -2283,21 +2335,9 @@ const AppPreview = ({ app, lang, onOpen, onUse }: { app?: AppEntry; lang?: strin
                     <h2 className="apps-detail__title">{app.name}</h2>
                     <p className="apps-detail__subtitle">{app.description}</p>
                 </div>
-                {onOpen && <button className="apps-primary-button" type="button" onClick={onOpen}>{text.open}</button>}
             </div>
             <div className="apps-detail__body elegant-scrollbar">
                 <div className="apps-preview">
-                    <div className="apps-preview__summary">
-                        <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><Icon name={app.icon} /></span>
-                        <div>
-                            <div className="apps-preview__meta">
-                                <span className="apps-pill">{kindLabel}</span>
-                                <span className="apps-pill">{app.category}</span>
-                                <span className="apps-pill">{sourceLabel}</span>
-                                {app.pinned && <span className="apps-pill">{text.pinned}</span>}
-                            </div>
-                        </div>
-                    </div>
                     <div className="apps-preview__mock">
                         <section className="apps-runtime-section">
                             <div className="apps-runtime-section__title">{text.runtimeInput}</div>
@@ -2405,7 +2445,7 @@ const AppPreview = ({ app, lang, onOpen, onUse }: { app?: AppEntry; lang?: strin
                         <section className="apps-runtime-section">
                             <div className="apps-runtime-section__title">{text.runtimeStatus}</div>
                             <div className="apps-result-panel" data-state={runState}>
-                                <span>{runState === 'done' ? resultText : runState === 'running' ? skillRunProgressMessage(skillRunStatus, text.skillRunRunning, runID) : runState === 'error' ? validationMessage : runState === 'cancelled' ? text.skillRunCancelled : text.readyOutput}</span>
+                                <span>{runState === 'done' ? text.runCompleted : runState === 'running' ? skillRunProgressMessage(skillRunStatus, text.skillRunRunning, runID) : runState === 'error' ? validationMessage : runState === 'cancelled' ? text.skillRunCancelled : text.readyOutput}</span>
                             </div>
                             {isTool && <SkillRunEvidence status={skillRunStatus} runState={runState} text={text} />}
                         </section>

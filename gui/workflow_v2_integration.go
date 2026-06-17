@@ -451,7 +451,7 @@ func (h *IMMessageHandler) getWorkflowV2() *workflowV2State {
 }
 
 // emitWorkflowV2Progress sends workflow phase update events to the frontend.
-// Uses the same event name and data format as V1 so the frontend preview panel works.
+// Uses the same event name and data format so the frontend preview panel works.
 func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.WorkflowState) {
 	if h.app == nil || state == nil {
 		return
@@ -573,8 +573,48 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 			"phase_id": phase.ID,
 		},
 	}
+	// Pass through variants (mutually exclusive field groups) if defined.
+	if len(schema.Variants) > 0 {
+		variants := make([]map[string]interface{}, 0, len(schema.Variants))
+		for _, v := range schema.Variants {
+			variantFields := make([]map[string]interface{}, 0, len(v.Fields))
+			for _, f := range v.Fields {
+				vf := map[string]interface{}{
+					"name":  f.Name,
+					"label": f.Label,
+					"type":  f.Type,
+				}
+				if f.Required {
+					vf["required"] = true
+				}
+				if f.Description != "" {
+					vf["description"] = f.Description
+				}
+				if f.Placeholder != "" {
+					vf["placeholder"] = f.Placeholder
+				}
+				if len(f.Options) > 0 {
+					opts := make([]map[string]string, len(f.Options))
+					for i, o := range f.Options {
+						opts[i] = map[string]string{"label": o.Label, "value": o.Value}
+					}
+					vf["options"] = opts
+				}
+				if f.Default != nil {
+					vf["value"] = f.Default
+				}
+				variantFields = append(variantFields, vf)
+			}
+			variants = append(variants, map[string]interface{}{
+				"id":     v.ID,
+				"label":  v.Label,
+				"fields": variantFields,
+			})
+		}
+		view["variants"] = variants
+	}
 	h.app.emitAgentView(view)
-	log.Printf("[workflow-v2] emitted AG UI form: phase=%s fields=%d", phase.ID, len(schema.Fields))
+	log.Printf("[workflow-v2] emitted AG UI form: phase=%s fields=%d variants=%d", phase.ID, len(schema.Fields), len(schema.Variants))
 }
 
 // handleWorkflowV2FormSubmit processes the user's AG UI form submission for a
@@ -588,12 +628,17 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 		return &IMAgentResponse{Text: "工作流未初始化", Error: "no workflow v2 state"}
 	}
 
-	// Strip hidden routing fields from form data before storing
+	// Strip hidden routing fields from form data before storing.
+	// Preserve _agent_view_variant (needed by BuildPhasePrompt to identify active variant).
 	cleanData := make(map[string]interface{}, len(data))
 	for k, v := range data {
-		if k != "" && k[0] != '_' {
-			cleanData[k] = v
+		if k == "" {
+			continue
 		}
+		if k[0] == '_' && k != "_agent_view_variant" {
+			continue
+		}
+		cleanData[k] = v
 	}
 
 	if err := wf.machine.SubmitForm(userID, cleanData); err != nil {
@@ -763,7 +808,7 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *
 	// Notify frontend that we've entered the execution phase.
 	h.emitWorkflowV2Progress(userID, state)
 
-	// Build SubAgent bridge: V2 TaskItem → V1 RunTaskWithSubAgent
+	// Build SubAgent bridge: TaskItem → RunTaskWithSubAgent
 	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client
 	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, onToken func(string), onProgress func(string)) *v2.TaskRunResult {

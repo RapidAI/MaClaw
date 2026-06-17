@@ -12,7 +12,7 @@ import (
 
 const executableCodingBreakdown = "### T1: Create CMake project scaffold\n- **Description**: Create build files and source directory.\n- **Files**: `CMakeLists.txt`, `src/main.cpp`\n- **Dependencies**: None\n- **Priority**: P0\n- **Effort**: Small\n\n### T2: Implement game loop\n- **Description**: Add gameplay loop.\n- **Files**: `src/main.cpp`\n- **Dependencies**: T1\n- **Priority**: P0\n- **Effort**: Medium"
 
-func moveWorkflowStateToPhase(t *testing.T, engine *workflow.WorkflowEngine, state *workflow.V1WorkflowState, phaseID string) {
+func moveWorkflowStateToPhase(t *testing.T, engine *workflow.WorkflowEngine, state *workflow.EngineState, phaseID string) {
 	t.Helper()
 	tmpl := engine.GetRegistry().Match(state.Type)
 	if tmpl == nil {
@@ -22,6 +22,10 @@ func moveWorkflowStateToPhase(t *testing.T, engine *workflow.WorkflowEngine, sta
 		if phase.ID == phaseID {
 			state.PhaseIndex = i
 			state.CurrentPhase = phase.ID
+			// Sync to V2 StateMachine if wired.
+			if m := engine.GetMachine(); m != nil {
+				m.SetActivePhaseForTest(state.UserID, i)
+			}
 			return
 		}
 	}
@@ -149,10 +153,10 @@ func TestHandleWorkflowEngineResponseBlocksWhenProjectPathInvalid(t *testing.T) 
 func TestBackfillExecutionOrchestratorActivationRequiresOrchestratorPhase(t *testing.T) {
 	engine := workflow.NewWorkflowEngine(workflow.NewWorkflowRegistry(), nil, nil, nil)
 	workflowType := workflow.WorkflowType("full_non_orchestrator_backfill")
-	if err := engine.GetRegistry().Register(&workflow.V1WorkflowTemplate{
+	if err := engine.GetRegistry().Register(&workflow.TemplateSpec{
 		Type: workflowType,
 		Name: "full non orchestrator backfill",
-		Phases: []workflow.V1PhaseTemplate{{
+		Phases: []workflow.PhaseSpec{{
 			ID:                  "generate_artifact",
 			Name:                "Generate artifact",
 			Prompt:              "generate artifact",

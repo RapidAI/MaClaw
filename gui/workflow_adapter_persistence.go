@@ -131,7 +131,7 @@ func (a *GUIWorkflowAdapter) workflowDocDir() string {
 // the engine's registry (the single source of truth for phase order). Returns nil
 // when the engine, registry, type, or matching template is unavailable, in which
 // case file naming falls back to the flat knownPhaseFileNames map.
-func (a *GUIWorkflowAdapter) activeTemplate() *workflow.V1WorkflowTemplate {
+func (a *GUIWorkflowAdapter) activeTemplate() *workflow.TemplateSpec {
 	if a == nil || a.engine == nil {
 		return nil
 	}
@@ -473,7 +473,7 @@ func (a *GUIWorkflowAdapter) writeWorkflowManifest(status string, phases []Manif
 // This method must be called BEFORE the adapter's activeWorkflowType and
 // workflowStartDate fields are cleared, because writeWorkflowManifest depends
 // on them (via resolveProjectStorageDir).
-func (a *GUIWorkflowAdapter) writeManifestOnCompletion(state *workflow.V1WorkflowState) {
+func (a *GUIWorkflowAdapter) writeManifestOnCompletion(state *workflow.EngineState) {
 	if state == nil {
 		return
 	}
@@ -498,7 +498,7 @@ func (a *GUIWorkflowAdapter) writeManifestOnCompletion(state *workflow.V1Workflo
 	a.writeWorkflowManifest(status, phases)
 }
 
-func (a *GUIWorkflowAdapter) publishPhaseOutputsToProjectStorage(state *workflow.V1WorkflowState, phases []ManifestPhaseEntry) {
+func (a *GUIWorkflowAdapter) publishPhaseOutputsToProjectStorage(state *workflow.EngineState, phases []ManifestPhaseEntry) {
 	if state == nil || len(state.PhaseOutputs) == 0 {
 		return
 	}
@@ -523,13 +523,13 @@ func (a *GUIWorkflowAdapter) publishPhaseOutputsToProjectStorage(state *workflow
 // from the workflow state's PhaseOutputs. It uses the template's phase ordering
 // (from the registry) to produce deterministic output. Only phases that have
 // non-empty output in PhaseOutputs are included.
-func (a *GUIWorkflowAdapter) buildManifestPhaseEntries(state *workflow.V1WorkflowState) []ManifestPhaseEntry {
+func (a *GUIWorkflowAdapter) buildManifestPhaseEntries(state *workflow.EngineState) []ManifestPhaseEntry {
 	if state == nil || len(state.PhaseOutputs) == 0 {
 		return nil
 	}
 
 	// Try to get the template for ordered phase iteration.
-	var tmpl *workflow.V1WorkflowTemplate
+	var tmpl *workflow.TemplateSpec
 	if a.engine != nil {
 		if reg := a.engine.GetRegistry(); reg != nil {
 			tmpl = reg.Match(state.Type)

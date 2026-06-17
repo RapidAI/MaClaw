@@ -186,6 +186,7 @@ type OrderFilter struct {
 	Email           string
 	ServiceGroupID  string
 	Status          string
+	Statuses        []string
 	ArchivedOnly    bool
 	IncludeArchived bool
 	Offset          int
@@ -514,7 +515,49 @@ func (s *Service) ConfirmOrder(ctx context.Context, orderNo, reviewer string) er
 
 // ListOrders returns orders matching the filter.
 func (s *Service) ListOrders(ctx context.Context, filter OrderFilter) ([]*PurchaseOrder, int, error) {
-	return s.orders.List(ctx, filter)
+	orders, total, err := s.orders.List(ctx, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+	for _, order := range orders {
+		s.hydrateOrderPaymentDetails(order)
+	}
+	return orders, total, nil
+}
+
+func (s *Service) hydrateOrderPaymentDetails(order *PurchaseOrder) {
+	if order == nil {
+		return
+	}
+	if order.PayQRURL != "" || order.PayURL != "" || order.PayDeepLink != "" || order.PayInstruction != "" {
+		return
+	}
+	switch order.Status {
+	case corecardstore.StatusPending, corecardstore.StatusPersonalCreated, corecardstore.StatusPersonalOpened:
+	default:
+		return
+	}
+	if order.PaymentMode == corecardstore.PaymentModeAlipay && s.alipay.AppID != "" {
+		clone := order.Order
+		if _, err := corecardstore.CreateAlipayOrder(&clone, &s.alipay); err == nil {
+			order.PayURL = clone.PayURL
+		}
+		return
+	}
+	if order.PaymentMode == corecardstore.PaymentModeSemiManual || order.PayChannel != "" {
+		clone := order.Order
+		if err := corecardstore.CreateSemiManualOrder(&clone, &s.payment, order.PayChannel); err == nil {
+			order.PayQRURL = clone.PayQRURL
+			order.PayDeepLink = clone.PayDeepLink
+			order.PayInstruction = clone.PayInstruction
+			if order.PayChannel == "" {
+				order.PayChannel = clone.PayChannel
+			}
+			if order.PayChannelLabel == "" {
+				order.PayChannelLabel = clone.PayChannelLabel
+			}
+		}
+	}
 }
 
 // ArchiveOrder hides an order from the default admin order queue without changing its payment status.

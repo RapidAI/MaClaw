@@ -534,6 +534,58 @@ func TestSendHeartbeatUsesStoredRegistration(t *testing.T) {
 	}
 }
 
+func TestSendHeartbeatStoresGenericAuthorizationPayloads(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"ok": true,
+			"status": "online",
+			"authorizations": {
+				"llm_compute": {
+					"tenants": {
+						"tenant_acme": {
+							"hub_id": "hub_auth_payload",
+							"tenant_id": "tenant_acme",
+							"allow_external_providers": true,
+							"authorizations": [{"id": "external_payload", "active": true}]
+						}
+					}
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.BaseURL = server.URL
+	cfg.Center.Enabled = true
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+
+	settings := newFakeSettingsRepo()
+	svc := NewService(cfg, settings)
+	if err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true,
+		HubID:      "hub_auth_payload",
+		HubSecret:  "secret_payload",
+	})); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := svc.sendHeartbeat(context.Background()); err != nil {
+		t.Fatalf("sendHeartbeat() error = %v", err)
+	}
+	status, err := svc.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if len(status.Authorizations["llm_compute"]) == 0 {
+		t.Fatalf("missing llm_compute authorization payload: %#v", status.Authorizations)
+	}
+	if !strings.Contains(string(status.Authorizations["llm_compute"]), "external_payload") {
+		t.Fatalf("llm_compute authorization payload = %s", string(status.Authorizations["llm_compute"]))
+	}
+}
+
 func TestStartBackgroundSyncStartsHeartbeatForRegisteredHub(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

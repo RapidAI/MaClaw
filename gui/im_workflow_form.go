@@ -18,13 +18,13 @@ const (
 // emitWorkflowPhaseForm builds an AgentView form from the phase's InputSchema
 // and emits it to the frontend via the standard AG UI lifecycle protocol.
 // The form appears in the right-side task panel (AgentTaskPanel).
-func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow.V1PhaseInputSchema, phaseID string) {
+func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow.PhaseInputSchemaSpec, phaseID string) {
 	if h == nil || h.app == nil || schema == nil || len(schema.Fields) == 0 {
 		return
 	}
 	schema = localizeWorkflowPhaseInputSchema(schema, h.getWorkflowLang())
 
-	var ws *workflow.V1WorkflowState
+	var ws *workflow.EngineState
 	workflowID := ""
 	if ws != nil {
 		workflowID = ws.ID
@@ -35,7 +35,7 @@ func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow
 	log.Printf("[workflow-form] emitted AG UI form: phase=%s fields=%d", phaseID, len(schema.Fields))
 }
 
-func buildWorkflowPhaseFormAgentView(userID, workflowID, phaseID string, schema *workflow.V1PhaseInputSchema) map[string]interface{} {
+func buildWorkflowPhaseFormAgentView(userID, workflowID, phaseID string, schema *workflow.PhaseInputSchemaSpec) map[string]interface{} {
 	if schema == nil {
 		return nil
 	}
@@ -152,7 +152,7 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 		}
 	}
 
-	// Fallback: V1 engine has an active workflow (test path or no V2 machine configured).
+	// Fallback: WorkflowEngine adapter (only instantiated in tests).
 	if a.workflowEngine != nil && a.workflowEngine.HasActiveWorkflow(userID) {
 		return a.handleWorkflowFormV1EngineSubmit(userID, phaseID, data)
 	}
@@ -165,7 +165,7 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 }
 
 // handleWorkflowFormV1EngineSubmit handles form submission when V2 machine is
-// not available but V1 engine has an active workflow. It validates project_path,
+// not available but WorkflowEngine adapter has an active workflow. It validates project_path,
 // stores form data via engine.SubmitPhaseForm, and returns success or error.
 func (a *App) handleWorkflowFormV1EngineSubmit(userID, phaseID string, data map[string]interface{}) *IMAgentResponse {
 	engine := a.workflowEngine
@@ -219,7 +219,7 @@ func (a *App) handleWorkflowFormV1EngineSubmit(userID, phaseID string, data map[
 		cleanData[k] = v
 	}
 
-	// Submit form data through the V1 engine.
+	// Submit form data through the WorkflowEngine adapter.
 	_, err := engine.SubmitPhaseForm(userID, cleanData)
 	if err != nil {
 		return &IMAgentResponse{
@@ -335,7 +335,7 @@ func workflowFormMatchesActiveWorkflow(engine *workflow.WorkflowEngine, userID, 
 // buildIMFormGuidanceText generates a structured text prompt for IM channels
 // (WeChat/Feishu/QQ) that cannot render AG UI forms. The text guides the user
 // to provide information in a numbered format.
-func buildIMFormGuidanceText(schema *workflow.V1PhaseInputSchema) string {
+func buildIMFormGuidanceText(schema *workflow.PhaseInputSchemaSpec) string {
 	if schema == nil || len(schema.Fields) == 0 {
 		return ""
 	}

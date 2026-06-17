@@ -51,7 +51,7 @@ func (h *IMMessageHandler) backfillExecutionOrchestratorActivation(engine *workf
 	log.Printf("[WorkflowInterception] backfilled orchestrator activation for active execution phase: user=%s phase=%s", userID, ws.CurrentPhase)
 }
 
-func activeWorkflowExecutionPhase(engine *workflow.WorkflowEngine, userID string) (*workflow.V1WorkflowState, *workflow.V1WorkflowTemplate, bool) {
+func activeWorkflowExecutionPhase(engine *workflow.WorkflowEngine, userID string) (*workflow.EngineState, *workflow.TemplateSpec, bool) {
 	if engine == nil {
 		return nil, nil, false
 	}

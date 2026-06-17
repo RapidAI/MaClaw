@@ -323,6 +323,55 @@ func TestGetLLMProvidersHandlerShowsProvidersWithComputeGrant(t *testing.T) {
 	}
 }
 
+func TestGetLLMProvidersHandlerRefreshesStaleComputeGrant(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{
+		CurrentProviderID: "provider-a",
+		Providers:         []im.LLMProvider{{ID: "provider-a", Name: "Provider A", APIURL: "https://example.com/v1", Model: "test-model"}},
+	}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	client := llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+		HubCenterURL: "https://hubcenter.example.com",
+		HubID:        "hub_default",
+		MachineToken: "secret",
+	})
+	client.HTTPClient = &http.Client{Transport: maclawComputeRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/api/llm/v1/authorization" {
+			t.Fatalf("path = %q, want authorization endpoint", r.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"hub_id":"hub_default","tenant_id":"default","allow_external_providers":true}`)),
+			Request:    r,
+		}, nil
+	})}
+	accessCtrl := llmservice.NewTenantLLMAccessControl(client)
+	accessCtrl.UpdateFromHeartbeat(store.DefaultTenantID, &llmservice.TenantAuthorizationStatus{
+		TenantID:               store.DefaultTenantID,
+		AllowExternalProviders: false,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/providers", nil)
+	rr := httptest.NewRecorder()
+	GetLLMProvidersHandler(system, accessCtrl).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		CurrentProviderID string `json:"current_provider_id"`
+		Providers         []any  `json:"providers"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.CurrentProviderID != "provider-a" || len(payload.Providers) != 1 {
+		t.Fatalf("providers should be visible after refreshed compute grant: %#v", payload)
+	}
+}
+
 func TestGetLLMProvidersHandlerUsesCurrentComputeGrantWhenCapturedNil(t *testing.T) {
 	previous := GetMaClawModule()
 	defer SetMaClawModule(previous)

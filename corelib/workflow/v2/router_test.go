@@ -206,3 +206,28 @@ func TestExtractProjectPath(t *testing.T) {
 		}
 	}
 }
+
+func TestRoute_PatentApplication_NotConfusedWithPatentAnalysis(t *testing.T) {
+	r := setupTestRouter()
+
+	// "写专利申请书" should route to patent_application
+	cases := []struct {
+		input    string
+		wantType string
+	}{
+		{"帮我根据交底书写一份发明专利申请", "patent_application"},
+		{"撰写专利申请书，交底书在D盘", "patent_application"},
+		{"分析这个专利的侵权风险", "patent_analysis"},
+		{"帮我做个专利布局分析", "patent_analysis"},
+	}
+	for _, tc := range cases {
+		result := r.Route("user1", tc.input, nil)
+		if result.Target != RouteToWorkflow {
+			t.Errorf("Route(%q): target = %q, want workflow", tc.input, result.Target)
+			continue
+		}
+		if result.WorkflowType != tc.wantType {
+			t.Errorf("Route(%q): type = %q, want %q", tc.input, result.WorkflowType, tc.wantType)
+		}
+	}
+}

@@ -44,7 +44,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		return resp
 	}
 	// V2 workflow: skip execution confirmation gate — V2 has its own three-phase
-	// document review mechanism. The confirmation panel is a V1 artifact.
+	// document review mechanism. The confirmation panel is a legacy artifact.
 	if !opts.WorkflowAgentLoop {
 		if resp, handled := h.handleExecutionConfirmationGate(opts.FreshTask, msg, opts.Trimmed, opts.HTTPClient); handled {
 			return resp

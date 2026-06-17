@@ -10,6 +10,8 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
+const heartbeatAuthorizationKeyLLMCompute = "llm_compute"
+
 // MaClawComputeStatusHandler returns the MaClaw compute authorization status
 // for the current tenant. Used by the admin frontend to gate the "add provider" button
 // and to construct the compute-store URL (hub_id, center_base_url).
@@ -24,6 +26,7 @@ func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservic
 
 		hubID := ""
 		centerBaseURL := ""
+		var authStatus *llmservice.TenantAuthorizationStatus
 		result := map[string]any{
 			"allow_external_providers": false,
 			"hub_id":                   "",
@@ -32,27 +35,31 @@ func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservic
 		}
 
 		currentAccessCtrl := currentMaClawAccessControl(accessCtrl)
+		refreshedAuthorization := false
 		if currentAccessCtrl != nil {
-			var status *llmservice.TenantAuthorizationStatus
 			if shouldRefreshMaClawComputeStatus(r) {
 				if refreshed, err := currentAccessCtrl.RefreshAuthorizationStatus(r.Context(), tenantID); err == nil {
-					status = refreshed
+					authStatus = refreshed
+					refreshedAuthorization = true
+				} else if err != nil {
+					result["authorization_error"] = err.Error()
 				}
 			}
-			if status == nil {
-				status = currentAccessCtrl.GetAuthorizationStatus(r.Context(), tenantID)
-			}
-			if status != nil {
-				result["allow_external_providers"] = status.AllowExternalProviders
-				result["authorizations"] = status.Authorizations
-				if status.HubID != "" {
-					hubID = status.HubID
-				}
+			if authStatus == nil {
+				authStatus = currentAccessCtrl.GetAuthorizationStatus(r.Context(), tenantID)
 			}
 		}
 
 		if centerSvc != nil {
 			if status, err := centerSvc.Status(r.Context()); err == nil && status != nil {
+				if heartbeatStatus := llmComputeStatusFromCenterAuthorizationPayload(status, tenantID); heartbeatStatus != nil {
+					if currentAccessCtrl != nil {
+						currentAccessCtrl.UpdateFromHeartbeat(tenantID, heartbeatStatus)
+					}
+					if !refreshedAuthorization {
+						authStatus = heartbeatStatus
+					}
+				}
 				if strings.TrimSpace(hubID) == "" {
 					hubID = strings.TrimSpace(status.HubID)
 				}
@@ -62,6 +69,15 @@ func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservic
 						centerBaseURL = strings.TrimSpace(status.BaseURL)
 					}
 				}
+			}
+		}
+		if authStatus != nil {
+			result["allow_external_providers"] = authStatus.AllowExternalProviders
+			result["authorizations"] = authStatus.Authorizations
+			result["authorization_tenant_id"] = strings.TrimSpace(authStatus.TenantID)
+			result["authorization_lookup_tenant_ids"] = authStatus.LookupTenantIDs
+			if authStatus.HubID != "" {
+				hubID = authStatus.HubID
 			}
 		}
 
@@ -87,6 +103,54 @@ func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservic
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 	}
+}
+
+func llmComputeStatusFromCenterAuthorizationPayload(status *center.RegistrationState, tenantID string) *llmservice.TenantAuthorizationStatus {
+	if status == nil || len(status.Authorizations) == 0 {
+		return nil
+	}
+	raw := status.Authorizations[heartbeatAuthorizationKeyLLMCompute]
+	if len(raw) == 0 {
+		return nil
+	}
+	var payload struct {
+		Tenants map[string]*llmservice.TenantAuthorizationStatus `json:"tenants"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	for _, candidate := range llmComputeAuthorizationTenantKeys(tenantID) {
+		if auth := payload.Tenants[candidate]; auth != nil {
+			return auth
+		}
+	}
+	return &llmservice.TenantAuthorizationStatus{TenantID: tenantID}
+}
+
+func llmComputeAuthorizationTenantKeys(tenantID string) []string {
+	tenantID = store.NormalizeTenantID(tenantID)
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	add(tenantID)
+	if tenantID == store.DefaultTenantID {
+		add("")
+		add("default")
+	}
+	if strings.HasPrefix(tenantID, "tenant_") {
+		add(strings.TrimPrefix(tenantID, "tenant_"))
+	} else {
+		add("tenant_" + tenantID)
+	}
+	return out
 }
 
 func tenantIDFromRequest(r *http.Request) string {

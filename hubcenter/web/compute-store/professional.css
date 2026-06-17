@@ -529,7 +529,6 @@ h3 { font-size: 18px; line-height: 1.3; font-weight: 720; }
 }
 
 .checkout-panel,
-.order-result,
 .orders-panel {
   margin-top: 24px;
   padding: 22px;
@@ -825,18 +824,6 @@ a:focus-visible,
   font-weight: 750;
 }
 
-.order-result {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, .46fr);
-  gap: 18px;
-  border-color: #b8dece;
-  background: linear-gradient(135deg, #f2fff9 0%, #f7fbff 56%, #fff 100%);
-}
-
-.order-result .lead {
-  font-size: 14px;
-}
-
 .payment-result {
   display: grid;
   align-content: center;
@@ -947,11 +934,10 @@ a:focus-visible,
   gap: 10px;
 }
 
+.pay-order-btn,
 .delete-order-btn {
   min-height: 30px;
   padding: 0 10px;
-  color: var(--danger);
-  border: 1px solid #f0c4c0;
   border-radius: 8px;
   background: #fff;
   cursor: pointer;
@@ -959,11 +945,27 @@ a:focus-visible,
   font-weight: 760;
 }
 
+.pay-order-btn {
+  color: var(--primary);
+  border: 1px solid #bdd4f4;
+}
+
+.pay-order-btn:hover {
+  border-color: #8db7ee;
+  background: var(--primary-soft);
+}
+
+.delete-order-btn {
+  color: var(--danger);
+  border: 1px solid #f0c4c0;
+}
+
 .delete-order-btn:hover {
   border-color: #e6a29b;
   background: #fff7f6;
 }
 
+.pay-order-btn:disabled,
 .delete-order-btn:disabled {
   opacity: .6;
   cursor: not-allowed;
@@ -1015,8 +1017,7 @@ a:focus-visible,
 @media (max-width: 980px) {
   .hero,
   .status-grid,
-  .purchase-layout,
-  .order-result {
+  .purchase-layout {
     grid-template-columns: 1fr;
   }
 
@@ -1056,7 +1057,6 @@ a:focus-visible,
 
   .hero,
   .checkout-panel,
-  .order-result,
   .orders-panel {
     padding: 18px;
   }

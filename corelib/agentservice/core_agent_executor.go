@@ -410,7 +410,7 @@ func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req Execut
 			"ssh_direct_connect_enabled": boolString(e.AllowDirectSSH && cb.IsToolAllowed("ssh")),
 			"ssh_file_transfer_enabled":  boolString(e.AllowSSHFileTransfer && cb.IsToolAllowed("ssh")),
 			"tool_policy":                string(req.ToolPolicy),
-			"mutation_scope":             string(v2.PhaseContractFromPolicy(req.ToolPolicy, req.MutationScope).MutationScope),
+			"mutation_scope":             string(req.MutationScope),
 		},
 	}, nil
 }
@@ -856,12 +856,11 @@ func (c *coreAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.ExecuteToolStructured(name, argsJSON).Result
 }
 
-func (c *coreAgentCallbacks) phaseContract() v2.PhaseContract {
-	return v2.PhaseContractFromPolicy(c.toolPolicy, c.mutationScope)
-}
-
 func (c *coreAgentCallbacks) IsToolAllowed(name string) bool {
-	return v2.IsToolAllowedByContract(c.phaseContract(), name)
+	if !v2.IsToolAllowedByPolicy(c.toolPolicy, name) {
+		return false
+	}
+	return isMutationScopeAllowed(c.mutationScope, name)
 }
 
 func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
@@ -869,8 +868,16 @@ func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, str
 	if err != nil {
 		return false, fmt.Sprintf("invalid tool arguments: %v", err)
 	}
-	if err := v2.ValidateToolCallByContractWithApproval(c.phaseContract(), strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
-		return false, err.Error()
+	if !v2.IsToolAllowedByPolicy(c.toolPolicy, strings.TrimSpace(name)) {
+		return false, fmt.Sprintf("%s is not allowed in current workflow phase", strings.TrimSpace(name))
+	}
+	if !isMutationScopeAllowed(c.mutationScope, strings.TrimSpace(name)) {
+		return false, fmt.Sprintf("%s is not allowed under mutation scope %s", name, c.mutationScope)
+	}
+	if c.toolPolicy == v2.ToolPolicyOpsControlled {
+		if err := v2.ValidateToolCallByPolicyWithApproval(c.toolPolicy, strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
+			return false, err.Error()
+		}
 	}
 	if ok, reason := clientsecurity.EnforceConfig(c.appCfg, strings.TrimSpace(name), args); !ok {
 		return false, reason
@@ -894,7 +901,7 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 			Outcome: agent.ToolExecutionOutcomeError,
 		}
 	}
-	if err := v2.ValidateToolCallByContractWithApproval(c.phaseContract(), strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
+	if err := v2.ValidateToolCallByPolicyWithApproval(c.toolPolicy, strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
 		return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
 	}
 	if ok, reason := clientsecurity.EnforceConfig(c.appCfg, strings.TrimSpace(name), args); !ok {
@@ -966,6 +973,33 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		}
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: unknown tool %s", name), Outcome: agent.ToolExecutionOutcomeError}
 	}
+}
+
+// isMutationScopeAllowed returns true if the tool is permitted under the given
+// mutation scope. MutationScopeArtifact restricts to deliverable-creation tools
+// (write_file, generate_pdf, send_file) and blocks project-mutating tools
+// (edit_file, task, delegate_task, ssh, bash with mutating commands).
+func isMutationScopeAllowed(scope v2.MutationScope, name string) bool {
+	if scope == "" || scope == v2.MutationScopeUnknown || scope == v2.MutationScopeProject {
+		return true
+	}
+	if scope == v2.MutationScopeNone {
+		// No mutation allowed — block all write tools.
+		switch name {
+		case "write_file", "edit_file", "bash", "ssh", "task", "delegate_task":
+			return false
+		}
+		return true
+	}
+	if scope == v2.MutationScopeArtifact {
+		// Only deliverable-creation tools allowed, not project mutation.
+		switch name {
+		case "edit_file", "task", "delegate_task", "ssh":
+			return false
+		}
+		return true
+	}
+	return true
 }
 
 func parseCoreAgentToolArguments(argsJSON string) (map[string]interface{}, error) {

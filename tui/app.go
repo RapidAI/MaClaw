@@ -2555,9 +2555,6 @@ func (app *TUIApp) isWorkflowToolAllowedTUI(name string) bool {
 	if app.isWorkflowPhaseExecutionBlockedTUI() {
 		return false
 	}
-	if contract, ok := app.currentWorkflowPhaseContractTUI(); ok {
-		return v2.IsToolAllowedByContract(contract, name)
-	}
 	return v2.IsToolAllowedByPolicy(app.currentWorkflowToolFilterTUI(), name)
 }
 
@@ -2582,13 +2579,7 @@ func (app *TUIApp) isWorkflowToolCallAllowedTUI(name, argsJSON string) (bool, st
 			approved = v2.ExtractOpsApprovedCommands(outputs["risk_policy"])
 		}
 	}
-	// Build phase contract from V2 active phase ToolPolicy + MutationScope.
-	if contract, ok := app.currentWorkflowPhaseContractTUI(); ok {
-		if err := v2.ValidateToolCallByContractWithApproval(contract, strings.TrimSpace(name), args, approved); err != nil {
-			return false, err.Error()
-		}
-		return true, ""
-	}
+	// Use policy-based validation directly.
 	if err := v2.ValidateToolCallByPolicyWithApproval(app.currentWorkflowToolFilterTUI(), strings.TrimSpace(name), args, approved); err != nil {
 		return false, err.Error()
 	}
@@ -2616,27 +2607,6 @@ func (app *TUIApp) currentWorkflowToolFilterTUI() v2.ToolFilterPolicy {
 	}
 	// V2 state machine is the sole source for tool filter policy.
 	return app.currentWorkflowToolFilterV2()
-}
-
-func (app *TUIApp) currentWorkflowPhaseContractTUI() (v2.PhaseContract, bool) {
-	if app == nil {
-		return v2.PhaseContract{}, false
-	}
-	// Build PhaseContract from V2 active phase's ToolPolicy + MutationScope.
-	wf := app.getWorkflowV2TUI()
-	if wf == nil {
-		return v2.PhaseContract{}, false
-	}
-	state := wf.machine.GetActive("tui-user")
-	if state == nil {
-		return v2.PhaseContract{}, false
-	}
-	phase := state.ActivePhase()
-	if phase == nil {
-		return v2.PhaseContract{}, false
-	}
-	policy := mapV2ToolPolicyToV1(phase.ToolPolicy)
-	return v2.PhaseContractFromPolicy(policy, v2.MutationScopeNone), true
 }
 
 func (c *tuiCallbacks) OnToken(delta string) {

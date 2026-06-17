@@ -268,6 +268,15 @@ func canAddExternalProviderForMutation(ctx context.Context, accessCtrl *llmservi
 	return false, message
 }
 
+func canViewExternalProvidersForRequest(ctx context.Context, accessCtrl *llmservice.TenantLLMAccessControl, tenantID string) bool {
+	ok, _ := accessCtrl.CanAddExternalProvider(ctx, tenantID)
+	if ok {
+		return true
+	}
+	status, err := accessCtrl.RefreshAuthorizationStatus(ctx, tenantID)
+	return err == nil && status != nil && status.AllowExternalProviders
+}
+
 func filterLLMProviderRegistryForRequest(r *http.Request, accessCtrl *llmservice.TenantLLMAccessControl, reg *im.LLMProviderRegistry) *im.LLMProviderRegistry {
 	if reg == nil {
 		return reg
@@ -277,7 +286,7 @@ func filterLLMProviderRegistryForRequest(r *http.Request, accessCtrl *llmservice
 		tenantID = store.DefaultTenantID
 	}
 	if accessCtrl != nil {
-		if ok, _ := accessCtrl.CanAddExternalProvider(r.Context(), store.NormalizeTenantID(tenantID)); ok {
+		if canViewExternalProvidersForRequest(r.Context(), accessCtrl, store.NormalizeTenantID(tenantID)) {
 			return reg
 		}
 	}

@@ -41,7 +41,7 @@ func findRepoRoot(t *testing.T) string {
 	}
 }
 
-// buildPopulatedV1Registry creates a V1 WorkflowRegistry populated from V2
+// buildPopulatedRegistry creates a WorkflowRegistry populated from
 // templates — the same logic used in main(). This ensures the contract test
 // validates against the same data source as the actual code generator.
 func buildPopulatedV1Registry() *v2.WorkflowRegistry {
@@ -54,16 +54,16 @@ func buildPopulatedV1Registry() *v2.WorkflowRegistry {
 		if v2Tmpl == nil {
 			continue
 		}
-		v1Phases := make([]v2.V1PhaseTemplate, 0, len(v2Tmpl.Phases))
+		v1Phases := make([]v2.PhaseSpec, 0, len(v2Tmpl.Phases))
 		for _, p := range v2Tmpl.Phases {
-			v1Phases = append(v1Phases, v2.V1PhaseTemplate{
+			v1Phases = append(v1Phases, v2.PhaseSpec{
 				ID:           p.ID,
 				Name:         p.Name,
 				NeedsConfirm: p.NeedsConfirm,
-				ToolPolicy:   mapV2ToolPolicyToV1(p.ToolPolicy),
+				ToolPolicy:   mapToolPolicyToFilterPolicy(p.ToolPolicy),
 			})
 		}
-		v1Reg.MustRegister(&v2.V1WorkflowTemplate{
+		v1Reg.MustRegister(&v2.TemplateSpec{
 			Type:        v2.WorkflowType(v2Tmpl.Type),
 			Name:        v2Tmpl.Name,
 			Description: v2Tmpl.Description,

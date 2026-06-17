@@ -298,7 +298,7 @@ func TestExecutionProfileSemanticResultReusedByCodingGate(t *testing.T) {
 	ctx := NewLoopContext("chat", 300, nil)
 	ctx.Runtime.Execution = profile
 	ctx.Runtime.SemanticIntent = semantic
-	// V1 coding gate removed — UIC classification happens during execution profile.
+	// Legacy coding gate removed — UIC classification happens during execution profile.
 	if calls != 1 {
 		t.Fatalf("UIC calls = %d, want 1", calls)
 	}

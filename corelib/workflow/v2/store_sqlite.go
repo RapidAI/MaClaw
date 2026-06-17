@@ -9,7 +9,7 @@ import (
 )
 
 // SQLiteStore persists workflow state to a SQLite database.
-// Uses a separate file (workflow_v2.db) from V1.
+// Uses a separate file (workflow_v2.db).
 type SQLiteStore struct {
 	db *sql.DB
 }

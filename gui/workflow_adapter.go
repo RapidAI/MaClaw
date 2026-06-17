@@ -10,9 +10,9 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// mapV2StateToV1 converts a V2 native WorkflowState to the V1WorkflowState
+// mapV2StateToV1 converts a V2 native WorkflowState to the EngineState
 // type used by the GUI workflow engine compat layer.
-func mapV2StateToV1(s *workflow.WorkflowState) *workflow.V1WorkflowState {
+func mapV2StateToV1(s *workflow.WorkflowState) *workflow.EngineState {
 	if s == nil {
 		return nil
 	}
@@ -37,7 +37,7 @@ func mapV2StateToV1(s *workflow.WorkflowState) *workflow.V1WorkflowState {
 			phaseOutputs[p.ID] = p.Output
 		}
 	}
-	return &workflow.V1WorkflowState{
+	return &workflow.EngineState{
 		ID:           s.ID,
 		UserID:       s.UserID,
 		Type:         workflow.WorkflowType(s.Type),
@@ -119,7 +119,7 @@ func (a *GUIWorkflowAdapter) GetLang() string {
 }
 
 // EmitPhaseUpdate notifies the frontend of a phase change.
-func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.V1WorkflowState) error {
+func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.EngineState) error {
 	if state != nil {
 		stateProjectPath := ""
 		validStateProjectPath := ""

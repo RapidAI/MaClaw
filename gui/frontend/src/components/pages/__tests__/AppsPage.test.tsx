@@ -85,10 +85,44 @@ describe('AppsPage', () => {
         expect(document.activeElement?.textContent).toContain('采购入库');
 
         fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' });
-        expect(document.activeElement?.textContent).toContain('合同审查');
+        expect(document.activeElement?.textContent).toContain('PDF 转 Word');
 
         fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'End' });
         expect(document.activeElement?.textContent).toContain('数据同步');
+    });
+
+    it('shows pin actions from the app tile context menu', () => {
+        render(<AppsPage lang="zh-Hans" />);
+
+        const fullRedactTile = screen.getAllByText('文档脱敏')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        fireEvent.contextMenu(fullRedactTile, { clientX: 90, clientY: 180 });
+        const disabledPinAction = screen.getByRole('menuitem', { name: '设为常用' }) as HTMLButtonElement;
+        expect(disabledPinAction.disabled).toBe(true);
+        expect(disabledPinAction.title).toBe('常用应用已满 6 个，请先取消一个');
+        fireEvent.click(document.body);
+
+        const expenseTile = screen.getAllByText('报销申请')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        fireEvent.contextMenu(expenseTile, { clientX: 120, clientY: 140 });
+        const unpinAction = screen.getByRole('menuitem', { name: '移出常用' });
+        fireEvent.click(unpinAction);
+
+        let sections = document.querySelectorAll('.apps-section');
+        expect(within(sections[0] as HTMLElement).queryByText('报销申请')).toBeNull();
+
+        const redactTile = screen.getAllByText('文档脱敏')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        fireEvent.keyDown(redactTile, { key: 'F10', shiftKey: true });
+        const pinAction = screen.getByRole('menuitem', { name: '设为常用' });
+        expect((pinAction as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.click(pinAction);
+
+        sections = document.querySelectorAll('.apps-section');
+        expect(within(sections[0] as HTMLElement).getByText('文档脱敏')).not.toBeNull();
+
+        const syncTile = screen.getAllByText('数据同步')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        fireEvent.contextMenu(syncTile, { clientX: 9999, clientY: 9999 });
+        const menu = screen.getByRole('menu');
+        expect(Number.parseFloat(menu.style.left)).toBeLessThan(9999);
+        expect(Number.parseFloat(menu.style.top)).toBeLessThan(9999);
     });
 
     it('shows app name, status, source, and recent usage in tile tooltips', () => {
@@ -104,7 +138,7 @@ describe('AppsPage', () => {
         fireEvent.click(expenseTile);
         const updatedTile = screen.getAllByText('报销申请')[0].closest('.apps-app-tile') as HTMLButtonElement;
         expect(updatedTile.dataset.status).toBe('running');
-        expect(updatedTile.querySelector('.apps-app-status-dot')).not.toBeNull();
+        expect(updatedTile.querySelector('.apps-app-status-dot')).toBeNull();
         expect(updatedTile.title).toContain('状态: 运行中');
         expect(updatedTile.getAttribute('aria-label')).toContain('状态: 运行中');
         expect(updatedTile.title).toContain('最近使用:');
@@ -962,7 +996,7 @@ describe('AppsPage', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
         expect(screen.getByText('选择应用')).not.toBeNull();
-        expect(screen.getByText('点击左侧图标后，应用将在这里以 tab 打开。')).not.toBeNull();
+        expect(screen.getByText('点击左侧应用图标，以打开应用。')).not.toBeNull();
         expect(container.querySelector('.apps-runtime-tabs')).toBeNull();
 
         fireEvent.click(screen.getAllByText('报销申请')[0]);
@@ -979,6 +1013,17 @@ describe('AppsPage', () => {
 
         expect(container.querySelectorAll('.apps-runtime-tab').length).toBe(1);
         expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('报销申请');
+    });
+
+    it('returns to the empty runtime when the last app tab is closed', () => {
+        const { container } = render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getAllByText('报销申请')[0]);
+        fireEvent.click(screen.getByLabelText('关闭 报销申请'));
+
+        expect(screen.getByText('选择应用')).not.toBeNull();
+        expect(container.querySelector('.apps-runtime-tabs')).toBeNull();
+        expect(container.querySelector('.apps-app-tile.is-active')).toBeNull();
     });
 
     it('runs a fixed skill app with file input and output mode', async () => {

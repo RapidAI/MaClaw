@@ -247,6 +247,7 @@ func (c *MaClawProviderClient) resetFailures() {
 type TenantAuthorizationStatus struct {
 	HubID                  string                 `json:"hub_id"`
 	TenantID               string                 `json:"tenant_id"`
+	LookupTenantIDs        []string               `json:"lookup_tenant_ids,omitempty"`
 	AllowExternalProviders bool                   `json:"allow_external_providers"`
 	Authorizations         []AuthorizationSummary `json:"authorizations,omitempty"`
 }
@@ -254,6 +255,8 @@ type TenantAuthorizationStatus struct {
 // AuthorizationSummary mirrors HubCenter's tenant authorization summary.
 type AuthorizationSummary struct {
 	ID                     string  `json:"id"`
+	HubID                  string  `json:"hub_id,omitempty"`
+	TenantID               string  `json:"tenant_id,omitempty"`
 	ServiceGroupID         string  `json:"service_group_id"`
 	CreditsTotal           float64 `json:"credits_total"`
 	CreditsUsed            float64 `json:"credits_used"`

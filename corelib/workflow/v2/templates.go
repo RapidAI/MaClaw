@@ -29,9 +29,20 @@ const (
 // ActionShowForm on first entry into the phase. The form data submitted by the
 // user is stored in Phase.FormData and injected into the phase prompt.
 type PhaseInputSchema struct {
-	Title       string            `json:"title"`
-	Description string            `json:"description,omitempty"`
-	Fields      []PhaseInputField `json:"fields"`
+	Title       string              `json:"title"`
+	Description string              `json:"description,omitempty"`
+	Fields      []PhaseInputField   `json:"fields"`
+	Variants    []PhaseInputVariant `json:"variants,omitempty"`
+}
+
+// PhaseInputVariant defines a mutually exclusive field group.
+// When Variants is non-empty, the form renders a mode selector allowing the
+// user to choose one variant. Only the selected variant's fields are visible
+// and submitted. The submitted data includes "_agent_view_variant" = ID.
+type PhaseInputVariant struct {
+	ID     string            `json:"id"`
+	Label  string            `json:"label"`
+	Fields []PhaseInputField `json:"fields"`
 }
 
 // PhaseInputField defines a single form field.
@@ -1210,6 +1221,57 @@ func NSFCKeyReviewTemplate() *WorkflowTemplate {
 	}
 }
 
+func PatentApplicationTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:        "patent_application",
+		Name:        "专利申请",
+		Description: "交底书解析 → 权利要求撰写 → 附图整理 → 说明书撰写 → 申请文件组装",
+		Keywords:    []string{"专利申请", "专利撰写", "发明专利", "实用新型", "专利交底书", "权利要求书", "patent application"},
+		Phases: []PhaseTemplate{
+			{ID: "pa_disclosure_parsing", Name: "交底书解析与技术提炼", NeedsConfirm: true, ToolPolicy: ToolPolicyFull,
+				InputSchema: &PhaseInputSchema{
+					Title:       "专利申请信息",
+					Description: "选择输入方式：提供交底书文件，或手工输入技术内容。",
+					Fields: []PhaseInputField{
+						{Name: "patent_type", Label: "专利类型", Type: "select", Required: true, Options: []PhaseInputOption{
+							{Label: "发明专利", Value: "invention"},
+							{Label: "实用新型", Value: "utility_model"},
+						}, Default: "invention"},
+						{Name: "applicant", Label: "申请人（单位/个人）", Type: "text", Required: true, Placeholder: "如：XX科技有限公司"},
+						{Name: "inventors", Label: "发明人", Type: "text", Required: true, Placeholder: "如：张三、李四（逗号分隔）"},
+						{Name: "tech_field", Label: "技术领域", Type: "text", Required: true, Placeholder: "如：人工智能、新能源电池、机械加工"},
+					},
+					Variants: []PhaseInputVariant{
+						{
+							ID:    "file_mode",
+							Label: "交底书文件",
+							Fields: []PhaseInputField{
+								{Name: "disclosure_path", Label: "交底书文件路径", Type: "text", Required: true, Placeholder: "输入文件路径，如：D:\\专利\\交底书.docx"},
+							},
+						},
+						{
+							ID:    "manual_mode",
+							Label: "手工输入",
+							Fields: []PhaseInputField{
+								{Name: "technical_problem", Label: "要解决的技术问题", Type: "textarea", Required: true, Placeholder: "描述现有技术的不足，以及本发明要解决的核心技术问题"},
+								{Name: "technical_solution", Label: "技术方案", Type: "textarea", Required: true, Placeholder: "详细描述本发明的技术方案（结构、步骤、连接关系、参数等）"},
+								{Name: "beneficial_effects", Label: "有益效果", Type: "textarea", Placeholder: "描述本发明相比现有技术的改进效果，尽量量化"},
+								{Name: "figures_paths", Label: "附图文件路径（每行一个）", Type: "textarea", Placeholder: "如：\nD:\\专利\\图1-系统架构.png\nD:\\专利\\图2-流程图.png"},
+								{Name: "figures_descriptions", Label: "附图说明（每行对应一张图）", Type: "textarea", Placeholder: "如：\n图1：系统整体架构示意图，展示各模块连接关系\n图2：数据处理流程图"},
+								{Name: "prior_art", Label: "已知的现有技术/对比文件（可选）", Type: "textarea", Placeholder: "列出已知的相关专利号或文献，每行一个"},
+							},
+						},
+					},
+				},
+			},
+			{ID: "pa_claims_drafting", Name: "权利要求书撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "pa_figures_organization", Name: "附图整理与说明", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "pa_description_writing", Name: "说明书撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "pa_document_assembly", Name: "申请文件组装与检查", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
 // RegisterBuiltinTemplates registers all built-in templates.
 func RegisterBuiltinTemplates(r *TemplateRegistry) {
 	if r == nil {
@@ -1248,4 +1310,5 @@ func RegisterBuiltinTemplates(r *TemplateRegistry) {
 	r.Register(NSFCYouthReviewTemplate())
 	r.Register(NSFCGeneralReviewTemplate())
 	r.Register(NSFCKeyReviewTemplate())
+	r.Register(PatentApplicationTemplate())
 }

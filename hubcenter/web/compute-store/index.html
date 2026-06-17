@@ -134,26 +134,16 @@
 
     </div>
 
-    <section id="orderResult" class="order-result" hidden aria-live="polite">
-      <div>
-        <p class="kicker" data-i18n="orderCreatedKicker">Order Created</p>
-        <h2 data-i18n="orderCreated">订单已创建</h2>
-        <p class="lead" data-i18n="orderCreatedLead">请按下方方式完成支付。到账确认后，额度会自动写入租户授权。</p>
-      </div>
-      <div id="paymentQR" class="payment-result"></div>
-      <dl id="orderInfo" class="order-info"></dl>
-    </section>
-
     <section id="ordersPanel" class="orders-panel">
       <div class="section-head">
         <div>
-          <p class="kicker" data-i18n="ordersKicker">History</p>
-          <h2 data-i18n="ordersTitle">我的订单</h2>
+          <p class="kicker" data-i18n="ordersKicker">Pending</p>
+          <h2 data-i18n="ordersTitle">待处理订单</h2>
         </div>
         <button class="secondary-button" id="refreshOrdersBtn" type="button" data-i18n="refreshOrders">刷新</button>
       </div>
       <div id="ordersList" class="orders-list">
-        <div class="empty" data-i18n="ordersNeedEmail">输入邮箱后可查看历史订单。</div>
+        <div class="empty" data-i18n="ordersNeedEmail">输入邮箱后可查看待处理订单。</div>
       </div>
     </section>
   </main>
@@ -171,6 +161,8 @@
       paymentMode: '',
       alipayDirect: false
     };
+    var pendingOrderStatuses = ['pending', 'personal_created', 'personal_opened', 'created', 'payment_started', 'payment_failed'];
+    var deletableOrderStatuses = ['pending', 'personal_created', 'personal_opened'];
 
     var TEXT = {
       zh: {
@@ -220,14 +212,92 @@
         amount: '金额',
         status: '状态',
         close: '关闭',
+        payOrder: '继续支付',
         deleteOrder: '删除',
         deleteOrderConfirm: '删除这笔未处理订单？',
         deleteFailed: '删除失败：',
-        ordersKicker: 'History',
-        ordersTitle: '我的订单',
+        ordersKicker: 'Pending',
+        ordersTitle: '待处理订单',
         refreshOrders: '刷新',
-        ordersNeedEmail: '输入邮箱后可查看历史订单。',
-        noOrders: '暂无订单。',
+        ordersNeedEmail: '输入邮箱后可查看待处理订单。',
+        noOrders: '暂无待处理订单。',
+        emailRequired: '请输入管理员邮箱。',
+        cardRequired: '请选择一个卡型。',
+        purchaseFailed: '购买失败：',
+        month: '月卡',
+        quarter: '季卡',
+        year: '年卡',
+        credits: '额度',
+        selectCard: '选择此卡',
+        selected: '已选择',
+        computeAgent: '算力代理商',
+        serviceGroup: '服务组',
+        period: '周期',
+        created: '待支付',
+        payment_started: '待支付',
+        payment_failed: '支付失败',
+        pending: '待支付',
+        personal_created: '待支付',
+        personal_opened: '待确认',
+        paid: '已支付',
+        activated: '已充值',
+        cancelled: '已取消',
+        bank_transfer: '银行转账',
+        wechat: '微信',
+        alipay: '支付宝'
+      },
+      /*
+      zh_legacy_corrupt: {
+        brandTitle: 'MaClaw LLM 算力市场',
+        brandSubtitle: 'HubCenter 托管额度与模型服务组',
+        tenantUnknown: '未绑定 Hub 租户',
+        heroKicker: 'LLM Compute Access',
+        heroTitle: '为 Hub 租户开通稳定、可审计的 LLM 算力额度',
+        heroLead: '选择算力卡后创建订单。支付确认后，额度会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。',
+        browseCards: '查看算力卡',
+        checkOrders: '查询订单',
+        routeTitle: '接入链路',
+        metricCredit: '额度',
+        metricSettle: '确认',
+        metricSettleValue: '人工/直连',
+        metricAudit: '审计',
+        metricAuditValue: '用量明细',
+        loading: '加载中...',
+        ready: '市场已就绪',
+        storeStateDesc: '卡型由 HubCenter 管理员配置，支持模型服务组绑定。',
+        paymentTitle: '支付确认',
+        paymentDesc: '支持扫码、转账或支付网关。确认后自动生成租户授权。',
+        usageTitle: '用量可追踪',
+        usageDesc: '输入、输出、请求量和额度消耗统一沉淀在 HubCenter。',
+        productsKicker: 'Plans',
+        productsTitle: '可购买算力卡',
+        productsDesc: '按周期和额度选择适合的 LLM 服务预算。',
+        noProducts: '暂无可购买的算力卡。',
+        loadFailed: '加载失败，请刷新重试。',
+        checkoutKicker: 'Checkout',
+        checkoutTitle: '创建算力订单',
+        notSelected: '未选择卡型',
+        adminEmail: '管理员邮箱',
+        hubTenant: 'Hub / 租户',
+        paymentChannel: '支付方式',
+        alipayDirectHint: '将通过支付宝官方收银台完成支付。',
+        selectBeforeBuy: '选择卡型后购买',
+        buyNow: '立即购买',
+        submitting: '提交中...',
+        checkoutHint: '订单提交前不会扣减额度。支付确认由管理员或网关完成。',
+        orderCreatedKicker: 'Order Created',
+        orderCreated: '订单已创建',
+        orderCreatedLead: '请按下方方式完成支付。到账确认后，额度会自动写入租户授权。',
+        scanToPay: '请扫码支付后等待管理员确认。',
+        goPay: '前往支付',
+        orderNo: '订单号',
+        amount: '金额',
+        status: '状态',
+        ordersKicker: 'Pending',
+        ordersTitle: '待处理订单',
+        refreshOrders: '刷新',
+        ordersNeedEmail: '输入邮箱后可查看待处理订单。',
+        noOrders: '暂无待处理订单。',
         emailRequired: '请输入管理员邮箱。',
         cardRequired: '请选择一个卡型。',
         purchaseFailed: '购买失败：',
@@ -297,85 +367,11 @@
         orderNo: '订单号',
         amount: '金额',
         status: '状态',
-        ordersKicker: 'History',
-        ordersTitle: '我的订单',
+        ordersKicker: 'Pending',
+        ordersTitle: '待处理订单',
         refreshOrders: '刷新',
-        ordersNeedEmail: '输入邮箱后可查看历史订单。',
-        noOrders: '暂无订单。',
-        emailRequired: '请输入管理员邮箱。',
-        cardRequired: '请选择一个卡型。',
-        purchaseFailed: '购买失败：',
-        month: '月卡',
-        quarter: '季卡',
-        year: '年卡',
-        credits: '额度',
-        selectCard: '选择此卡',
-        selected: '已选择',
-        computeAgent: '算力代理商',
-        serviceGroup: '服务组',
-        period: '周期',
-        pending: '待支付',
-        personal_created: '待支付',
-        personal_opened: '待确认',
-        paid: '已支付',
-        activated: '已充值',
-        cancelled: '已取消',
-        bank_transfer: '银行转账',
-        wechat: '微信',
-        alipay: '支付宝'
-      },
-      /*
-      zh_legacy_corrupt: {
-        brandTitle: 'MaClaw LLM 算力市场',
-        brandSubtitle: 'HubCenter 托管额度与模型服务组',
-        tenantUnknown: '未绑定 Hub 租户',
-        heroKicker: 'LLM Compute Access',
-        heroTitle: '为 Hub 租户开通稳定、可审计的 LLM 算力额度',
-        heroLead: '选择算力卡后创建订单。支付确认后，额度会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。',
-        browseCards: '查看算力卡',
-        checkOrders: '查询订单',
-        routeTitle: '接入链路',
-        metricCredit: '额度',
-        metricSettle: '确认',
-        metricSettleValue: '人工/直连',
-        metricAudit: '审计',
-        metricAuditValue: '用量明细',
-        loading: '加载中...',
-        ready: '市场已就绪',
-        storeStateDesc: '卡型由 HubCenter 管理员配置，支持模型服务组绑定。',
-        paymentTitle: '支付确认',
-        paymentDesc: '支持扫码、转账或支付网关。确认后自动生成租户授权。',
-        usageTitle: '用量可追踪',
-        usageDesc: '输入、输出、请求量和额度消耗统一沉淀在 HubCenter。',
-        productsKicker: 'Plans',
-        productsTitle: '可购买算力卡',
-        productsDesc: '按周期和额度选择适合的 LLM 服务预算。',
-        noProducts: '暂无可购买的算力卡。',
-        loadFailed: '加载失败，请刷新重试。',
-        checkoutKicker: 'Checkout',
-        checkoutTitle: '创建算力订单',
-        notSelected: '未选择卡型',
-        adminEmail: '管理员邮箱',
-        hubTenant: 'Hub / 租户',
-        paymentChannel: '支付方式',
-        alipayDirectHint: '将通过支付宝官方收银台完成支付。',
-        selectBeforeBuy: '选择卡型后购买',
-        buyNow: '立即购买',
-        submitting: '提交中...',
-        checkoutHint: '订单提交前不会扣减额度。支付确认由管理员或网关完成。',
-        orderCreatedKicker: 'Order Created',
-        orderCreated: '订单已创建',
-        orderCreatedLead: '请按下方方式完成支付。到账确认后，额度会自动写入租户授权。',
-        scanToPay: '请扫码支付后等待管理员确认。',
-        goPay: '前往支付',
-        orderNo: '订单号',
-        amount: '金额',
-        status: '状态',
-        ordersKicker: 'History',
-        ordersTitle: '我的订单',
-        refreshOrders: '刷新',
-        ordersNeedEmail: '输入邮箱后可查看历史订单。',
-        noOrders: '暂无订单。',
+        ordersNeedEmail: '输入邮箱后可查看待处理订单。',
+        noOrders: '暂无待处理订单。',
         emailRequired: '请输入管理员邮箱。',
         cardRequired: '请选择一个卡型。',
         purchaseFailed: '购买失败：',
@@ -446,14 +442,15 @@
         amount: 'Amount',
         status: 'Status',
         close: 'Close',
+        payOrder: 'Continue payment',
         deleteOrder: 'Delete',
         deleteOrderConfirm: 'Delete this unprocessed order?',
         deleteFailed: 'Delete failed: ',
-        ordersKicker: 'History',
-        ordersTitle: 'My orders',
+        ordersKicker: 'Pending',
+        ordersTitle: 'Pending orders',
         refreshOrders: 'Refresh',
-        ordersNeedEmail: 'Enter email to view order history.',
-        noOrders: 'No orders yet.',
+        ordersNeedEmail: 'Enter email to view pending orders.',
+        noOrders: 'No pending orders.',
         emailRequired: 'Enter admin email.',
         cardRequired: 'Choose a compute card.',
         purchaseFailed: 'Purchase failed: ',
@@ -466,6 +463,9 @@
         computeAgent: 'Compute agent',
         serviceGroup: 'Service group',
         period: 'Period',
+        created: 'Pending',
+        payment_started: 'Pending',
+        payment_failed: 'Payment failed',
         pending: 'Pending',
         personal_created: 'Pending',
         personal_opened: 'Confirming',
@@ -547,7 +547,7 @@
       });
       var tenantChip = document.getElementById('tenantChip');
       var hub = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
-      var tenant = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'default');
+      var tenant = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
       if (hub) {
         tenantChip.textContent = hub + ' / ' + tenant;
         tenantChip.classList.remove('is-empty');
@@ -688,7 +688,7 @@
     async function submitPurchase() {
       var email = document.getElementById('adminEmail').value.trim();
       var hubID = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
-      var tenantID = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'default');
+      var tenantID = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
       if (!email) { showStoreNotice(tr('emailRequired'), 'error'); return; }
       if (!state.selectedCardTypeID) { showStoreNotice(tr('cardRequired'), 'error'); return; }
       if (!hubID || !tenantID) { showStoreNotice(tenantRequiredMessage(), 'error'); return; }
@@ -728,6 +728,8 @@
         var paymentHTML = '<img src="' + esc(order.pay_qr_url) + '" alt="Payment QR"><p>' + esc(tr('scanToPay')) + '</p>';
       } else if (order.pay_url) {
         var paymentHTML = '<a class="primary-link" href="' + esc(order.pay_url) + '" target="_blank" rel="noopener">' + esc(tr('goPay')) + '</a>';
+      } else if (order.pay_deep_link) {
+        var paymentHTML = '<a class="primary-link" href="' + esc(order.pay_deep_link) + '">' + esc(tr('goPay')) + '</a>';
       } else if (order.pay_instruction) {
         var paymentHTML = '<pre class="instruction">' + esc(order.pay_instruction) + '</pre>';
       } else {
@@ -771,15 +773,23 @@
         return;
       }
       try {
-        var qs = new URLSearchParams({ email: email, limit: '20' });
+        var qs = new URLSearchParams({ email: email, limit: '100' });
         var hubID = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
-        var tenantID = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'default');
+        var tenantID = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
         if (hubID) qs.set('hub_id', hubID);
         if (tenantID) qs.set('tenant_id', tenantID);
         var resp = await fetch('/api/cardstore/orders?' + qs.toString());
         if (!resp.ok) throw new Error(resp.statusText);
         var data = await resp.json();
-        renderOrders(data.orders || []);
+        var seen = Object.create(null);
+        var orders = [];
+        (data.orders || []).forEach(function(order) {
+          if (!isPendingOrder(order) || seen[order.order_no]) return;
+          seen[order.order_no] = true;
+          orders.push(order);
+        });
+        orders.sort(function(a, b) { return new Date(b.created_at || 0) - new Date(a.created_at || 0); });
+        renderOrders(orders);
       } catch (e) {
         document.getElementById('ordersList').innerHTML = '<div class="empty">' + esc(tr('loadFailed')) + '</div>';
       }
@@ -794,26 +804,42 @@
       el.innerHTML = orders.map(function(o) {
         var statusClass = o.status === 'activated' ? 'activated' : 'pending';
         var canDelete = isDeletableOrder(o);
+        var payBtn = canPayOrder(o) ? '<button type="button" class="pay-order-btn" data-pay-order="' + esc(o.order_no || '') + '">' + esc(tr('payOrder')) + '</button>' : '';
         var deleteBtn = canDelete ? '<button type="button" class="delete-order-btn" data-delete-order="' + esc(o.order_no || '') + '">' + esc(tr('deleteOrder')) + '</button>' : '';
         return '<article class="order-row">'
           + '<div><strong>' + esc(o.product_label || o.product_id || '-') + '</strong><span>' + esc(o.order_no || '-') + ' · ' + esc(new Date(o.created_at || Date.now()).toLocaleDateString()) + '</span></div>'
-          + '<div class="order-row-side"><b>' + esc(money(o.amount)) + '</b><span class="order-status ' + statusClass + '">' + esc(statusLabel(o.status)) + '</span>' + deleteBtn + '</div>'
+          + '<div class="order-row-side"><b>' + esc(money(o.amount)) + '</b><span class="order-status ' + statusClass + '">' + esc(statusLabel(o.status)) + '</span>' + payBtn + deleteBtn + '</div>'
           + '</article>';
       }).join('');
+      el.querySelectorAll('[data-pay-order]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var orderNo = btn.getAttribute('data-pay-order');
+          var order = orders.find(function(item) { return String(item.order_no || '') === String(orderNo || ''); });
+          if (order) showOrderResult(order);
+        });
+      });
       el.querySelectorAll('[data-delete-order]').forEach(function(btn) {
         btn.addEventListener('click', function() { deleteOrder(btn.getAttribute('data-delete-order'), btn); });
       });
     }
 
+    function canPayOrder(order) {
+      return isPendingOrder(order) && !!(order && (order.pay_qr_url || order.pay_url || order.pay_deep_link || order.pay_instruction));
+    }
+
+    function isPendingOrder(order) {
+      return pendingOrderStatuses.indexOf(String(order && order.status || '')) >= 0;
+    }
+
     function isDeletableOrder(order) {
-      return ['pending', 'personal_created', 'personal_opened'].indexOf(String(order && order.status || '')) >= 0;
+      return deletableOrderStatuses.indexOf(String(order && order.status || '')) >= 0;
     }
 
     async function deleteOrder(orderNo, button) {
       if (!orderNo || !confirm(tr('deleteOrderConfirm'))) return;
       var email = document.getElementById('adminEmail').value.trim();
       var hubID = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
-      var tenantID = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'default');
+      var tenantID = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
       if (button) button.disabled = true;
       try {
         var qs = new URLSearchParams({ email: email, hub_id: hubID, tenant_id: tenantID });
@@ -852,7 +878,7 @@
         emailEl.readOnly = true;
       }
       var hub = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
-      if (hub) document.getElementById('hubTenantInfo').value = hub + ' / ' + getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'default');
+      if (hub) document.getElementById('hubTenantInfo').value = hub + ' / ' + getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
       else showStoreNotice(tenantRequiredMessage(), 'error');
       applyI18n();
       loadCardTypes();

@@ -87,6 +87,8 @@ func EnsureLLMTables(db *sql.DB) error {
 			status TEXT NOT NULL DEFAULT 'pending',
 			pay_channel TEXT NOT NULL DEFAULT '',
 			pay_qr_url TEXT NOT NULL DEFAULT '',
+			pay_deep_link TEXT NOT NULL DEFAULT '',
+			pay_instruction TEXT NOT NULL DEFAULT '',
 			pay_url TEXT NOT NULL DEFAULT '',
 			payment_id TEXT NOT NULL DEFAULT '',
 			payment_msg TEXT NOT NULL DEFAULT '',
@@ -120,6 +122,9 @@ func EnsureLLMTables(db *sql.DB) error {
 		return err
 	}
 	if err := ensureLLMCardOrderArchivedColumn(db); err != nil {
+		return err
+	}
+	if err := ensureLLMCardOrderPaymentDetailColumns(db); err != nil {
 		return err
 	}
 	return nil
@@ -184,6 +189,24 @@ func ensureLLMCardOrderArchivedColumn(db *sql.DB) error {
 	return nil
 }
 
+func ensureLLMCardOrderPaymentDetailColumns(db *sql.DB) error {
+	columns, err := tableColumns(db, "llm_card_orders")
+	if err != nil {
+		return err
+	}
+	if !columns["pay_deep_link"] {
+		if _, err := db.Exec(`ALTER TABLE llm_card_orders ADD COLUMN pay_deep_link TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_card_orders.pay_deep_link: %w", err)
+		}
+	}
+	if !columns["pay_instruction"] {
+		if _, err := db.Exec(`ALTER TABLE llm_card_orders ADD COLUMN pay_instruction TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_card_orders.pay_instruction: %w", err)
+		}
+	}
+	return nil
+}
+
 func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
 	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
@@ -242,6 +265,15 @@ func (r *llmAuthRepo) GetByID(ctx context.Context, id string) (*llmservice.Tenan
 
 func (r *llmAuthRepo) ListByHubTenant(ctx context.Context, hubID, tenantID string) ([]*llmservice.TenantAuthorization, error) {
 	rows, err := r.read.QueryContext(ctx, `SELECT id, hub_id, tenant_id, admin_email, service_group_id, credits_total, credits_used, starts_at, expires_at, allow_external_providers, source, card_order_id, bound_node_id, bound_at, status, created_at, updated_at FROM llm_tenant_authorizations WHERE hub_id = ? AND tenant_id = ?`, hubID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAuthRows(rows)
+}
+
+func (r *llmAuthRepo) ListByHub(ctx context.Context, hubID string) ([]*llmservice.TenantAuthorization, error) {
+	rows, err := r.read.QueryContext(ctx, `SELECT id, hub_id, tenant_id, admin_email, service_group_id, credits_total, credits_used, starts_at, expires_at, allow_external_providers, source, card_order_id, bound_node_id, bound_at, status, created_at, updated_at FROM llm_tenant_authorizations WHERE hub_id = ? ORDER BY created_at DESC`, hubID)
 	if err != nil {
 		return nil, err
 	}

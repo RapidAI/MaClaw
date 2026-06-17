@@ -274,6 +274,13 @@ func TestMaClawComputeModuleShowsActiveAuthorizationBadge(t *testing.T) {
 		`hasActiveComputeAuthorization()`,
 		`return computeAuthorizations().some(isAuthorizationActive);`,
 		`return !!_computeAuthStatus.allow_external_providers;`,
+		`refreshComputeAuthorizationIfStale(3000);`,
+		`_computeAuthCheckedAt = Date.now();`,
+		`observeLLMProviderListForBanner()`,
+		`document.getElementById('llmProviderList') && !document.getElementById('maclawOfficialBanner')`,
+		`authStatusError: 'Compute Auth Sync Failed'`,
+		`authStatusError: '\u7b97\u529b\u6388\u6743\u540c\u6b65\u5931\u8d25'`,
+		`_computeAuthStatus.authorization_error`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("MaClaw compute module missing %s", want)

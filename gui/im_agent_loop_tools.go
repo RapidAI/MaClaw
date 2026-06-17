@@ -123,11 +123,6 @@ func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID strin
 			}
 		}
 	}
-	if h != nil && h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.GetActiveWorkflow(policyOwnerID) != nil {
-		if policy := v2.ToolFilterPolicy(h.app.workflowEngine.GetActivePhaseToolFilter(policyOwnerID)); policy != v2.ToolFilterNone {
-			return policyOwnerID, policy, true
-		}
-	}
 	return policyOwnerID, v2.ToolFilterNone, false
 }
 

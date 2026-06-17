@@ -185,6 +185,11 @@ type BrowserAgentSession struct {
 	session *Session
 	stopCh  chan struct{}
 
+	// targetGoneCh is closed when the active target is destroyed, detached, or
+	// the inspector disconnects. Operations waiting on CDP responses can select
+	// on this channel to abort immediately instead of waiting the full timeout.
+	targetGoneCh chan struct{}
+
 	recentConsole        []string
 	recentNetwork        []string
 	recentErrors         []string

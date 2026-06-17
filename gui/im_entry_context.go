@@ -100,7 +100,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	lastPhaseAt = time.Now()
 
 	// V2 workflow engine is the sole workflow routing path.
-	// V1 routeWorkflowIMMessage is kept for compilation but never called.
+	// routeWorkflowIMMessage is kept for compilation but never called.
 	var workflowRoute workflowIMRouteResult
 	v2State := h.getWorkflowV2()
 	v2Disabled := h.app != nil && h.app.workflowDisabled.Load()
@@ -112,7 +112,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	if v2State != nil && !v2Disabled && !opts.SkipWorkflowRouting {
 		workflowRoute = h.routeWithWorkflowV2(*msg, trimmed)
 	}
-	// V1 fallback removed — V2 is the only workflow engine.
+	// Legacy fallback removed — StateMachine is the only workflow engine.
 	if workflowRoute.Response != nil {
 		workflowRouteElapsed = time.Since(lastPhaseAt)
 		result.Handled = true

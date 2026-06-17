@@ -50,13 +50,14 @@ var knownV2Types = []string{
 	"changjiang_scholar", "changjiang_scholar_review",
 	"nsfc_distinguished_youth", "nsfc_excellent_youth",
 	"nsfc_youth", "nsfc_general", "nsfc_key",
+	"patent_application",
 }
 
 func main() {
 	outPath := flag.String("out", generatedFilePath, "output path for the generated TypeScript artifact")
 	flag.Parse()
 
-	// Build a V1 WorkflowRegistry populated from V2 templates (the single source of truth).
+	// Build a WorkflowRegistry populated from templates (the single source of truth).
 	v2Reg := v2.NewTemplateRegistry()
 	v2.RegisterBuiltinTemplates(v2Reg)
 
@@ -66,16 +67,16 @@ func main() {
 		if v2Tmpl == nil {
 			continue
 		}
-		v1Phases := make([]v2.V1PhaseTemplate, 0, len(v2Tmpl.Phases))
+		v1Phases := make([]v2.PhaseSpec, 0, len(v2Tmpl.Phases))
 		for _, p := range v2Tmpl.Phases {
-			v1Phases = append(v1Phases, v2.V1PhaseTemplate{
+			v1Phases = append(v1Phases, v2.PhaseSpec{
 				ID:           p.ID,
 				Name:         p.Name,
 				NeedsConfirm: p.NeedsConfirm,
-				ToolPolicy:   mapV2ToolPolicyToV1(p.ToolPolicy),
+				ToolPolicy:   mapToolPolicyToFilterPolicy(p.ToolPolicy),
 			})
 		}
-		v1Reg.MustRegister(&v2.V1WorkflowTemplate{
+		v1Reg.MustRegister(&v2.TemplateSpec{
 			Type:        v2.WorkflowType(v2Tmpl.Type),
 			Name:        v2Tmpl.Name,
 			Description: v2Tmpl.Description,
@@ -92,7 +93,7 @@ func main() {
 	fmt.Printf("genphasemeta: wrote %s\n", *outPath)
 }
 
-func mapV2ToolPolicyToV1(policy v2.ToolPolicy) v2.ToolFilterPolicy {
+func mapToolPolicyToFilterPolicy(policy v2.ToolPolicy) v2.ToolFilterPolicy {
 	switch policy {
 	case v2.ToolPolicyFull:
 		return v2.ToolFilterFull

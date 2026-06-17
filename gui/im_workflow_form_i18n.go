@@ -6,7 +6,7 @@ import (
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
-func localizeWorkflowPhaseInputSchema(schema *workflow.V1PhaseInputSchema, lang string) *workflow.V1PhaseInputSchema {
+func localizeWorkflowPhaseInputSchema(schema *workflow.PhaseInputSchemaSpec, lang string) *workflow.PhaseInputSchemaSpec {
 	if schema == nil {
 		return schema
 	}
