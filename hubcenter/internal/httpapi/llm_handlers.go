@@ -519,6 +519,7 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
+			revokedAt := time.Now().UTC()
 			revoked := false
 			for _, old := range existing {
 				if !isExternalComputeAccessAuthorization(old) {
@@ -526,7 +527,8 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 				}
 				old.AllowExternalProviders = false
 				old.Status = "expired"
-				old.UpdatedAt = time.Now().UTC()
+				old.ExpiresAt = revokedAt
+				old.UpdatedAt = revokedAt
 				if err := checker.UpdateAuthorization(r.Context(), old); err != nil {
 					writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 					return
@@ -629,9 +631,11 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 			}
 		}
 		for _, old := range supersededExternal {
+			expiredAt := time.Now().UTC()
 			old.AllowExternalProviders = false
 			old.Status = "expired"
-			old.UpdatedAt = time.Now().UTC()
+			old.ExpiresAt = expiredAt
+			old.UpdatedAt = expiredAt
 			if err := checker.UpdateAuthorization(r.Context(), old); err != nil {
 				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return

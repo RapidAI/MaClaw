@@ -343,17 +343,19 @@ if (typeof I18N_EN !== 'undefined') {
       }
     } catch (e) { /* best-effort */ }
 
-    // Populate Tenant dropdown from authorizations (unique tenant IDs)
+    // Populate Tenant dropdown from compute orders. Compute authorization is
+    // managed from Hub node configuration, not from this LLM access page.
     try {
-      var data = await api('/api/admin/llm/authorizations');
-      var auths = data.authorizations || [];
+      var data = await api('/api/admin/cardstore/orders?limit=200');
+      var orders = data.orders || [];
       var seen = {};
       var tenants = [];
-      auths.forEach(function(a) {
-        var key = (a.hub_id || '') + '/' + (a.tenant_id || '');
+      orders.forEach(function(o) {
+        if (!o || !o.tenant_id) return;
+        var key = (o.hub_id || '') + '/' + (o.tenant_id || '');
         if (!seen[key]) {
           seen[key] = true;
-          tenants.push({ hub_id: a.hub_id, tenant_id: a.tenant_id });
+          tenants.push({ hub_id: o.hub_id, tenant_id: o.tenant_id });
         }
       });
       var tenantSelect = document.getElementById('cmStatsTenant');
@@ -431,10 +433,10 @@ if (typeof I18N_EN !== 'undefined') {
     try {
       const pd = await api('/api/admin/llm/providers').catch(function () { return { providers: [] }; });
       const gd = await api('/api/admin/llm/service-groups').catch(function () { return { service_groups: [] }; });
-      const ad = await api('/api/admin/llm/authorizations').catch(function () { return { authorizations: [] }; });
+      const odSummary = await api('/api/admin/cardstore/orders?limit=50').catch(function () { return { orders: [] }; });
       var el1 = document.getElementById('cmProviderCount'); if (el1) el1.textContent = String((pd.providers || []).length);
       var el2 = document.getElementById('cmGroupCount'); if (el2) el2.textContent = String((gd.service_groups || []).length);
-      var el3 = document.getElementById('cmAuthCount'); if (el3) el3.textContent = String((ad.authorizations || []).length);
+      var el3 = document.getElementById('cmPendingOrderCount'); if (el3) el3.textContent = String((odSummary.orders || []).filter(function (o) { return CONFIRMABLE_STATUSES.indexOf(o.status) >= 0; }).length);
     } catch (e) { /* best-effort */ }
     // Pre-check for pending orders and auto-switch to Orders tab if any exist
     try {

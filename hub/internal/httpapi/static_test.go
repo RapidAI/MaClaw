@@ -279,6 +279,9 @@ func TestMaClawComputeModuleShowsModuleAuthorizationBadge(t *testing.T) {
 		`document.getElementById('llmProviderList') && !document.getElementById('maclawOfficialBanner')`,
 		`authStatusError: 'Compute Auth Sync Failed'`,
 		`authStatusError: '\u7b97\u529b\u6388\u6743\u540c\u6b65\u5931\u8d25'`,
+		`noComputeCredits: 'Compute module authorized. No active compute credits yet.'`,
+		`noComputeCredits: '\u7b97\u529b\u6a21\u5757\u5df2\u6388\u6743\uff0c\u6682\u65e0\u53ef\u7528\u7b97\u529b\u989d\u5ea6\u3002'`,
+		`hasComputeModuleAuthorization() ? t('noComputeCredits') : t('noActiveAuthorizations')`,
 		`_computeAuthStatus.authorization_error`,
 	} {
 		if !strings.Contains(content, want) {

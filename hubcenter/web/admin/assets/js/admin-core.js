@@ -391,11 +391,11 @@ Object.assign(I18N_ZH,{skillhubTitle:'能力目录',skillhubDesc:'管理能力�
 // --- Compute Market + LLM Service i18n ---
 Object.assign(I18N_EN, {
   navComputeMarket: 'Compute Store', navComputeMarketDesc: 'Card types, orders, and usage stats',
-  navLLMService: 'LLM Service', navLLMServiceDesc: 'Providers, service groups, and authorizations',
+  navLLMService: 'LLM Service', navLLMServiceDesc: 'Providers, agents, and service groups',
   computeMarketTitle: 'Compute Store', computeMarketDesc: 'Manage compute credit card types, purchase orders, and usage statistics.',
   computeMarketStatProviders: 'Providers', computeMarketStatProvidersHint: 'Configured LLM backends',
   computeMarketStatGroups: 'Service Groups', computeMarketStatGroupsHint: 'Model routing groups',
-  computeMarketStatAuths: 'Authorizations', computeMarketStatAuthsHint: 'Active tenant grants',
+  computeMarketStatPendingOrders: 'Pending Orders', computeMarketStatPendingOrdersHint: 'Awaiting confirmation',
   computeMarketCards: 'Card Types', computeMarketOrders: 'Orders', computeMarketStats: 'Usage Stats',
   computeMarketCardTypesTitle: 'Card Types', computeMarketCardTypesDesc: 'Define credit card products for the compute store.',
   computeMarketAddCard: 'Add Card Type',
@@ -411,8 +411,8 @@ Object.assign(I18N_EN, {
   computeMarketViewArchivedOrders: 'View archived orders', computeMarketViewActiveOrders: 'View active orders',
   computeMarketArchiveOrder: 'Archive', computeMarketArchivedOrdersDesc: 'Viewing archived old orders. These orders are hidden from the active queue.',
   computeMarketStatsTitle: 'Usage Statistics', computeMarketStatsDesc: 'Token consumption by Hub and Tenant.',
-  llmServiceTitle: 'LLM Service', llmServiceDesc: 'Manage LLM providers, model service groups, and tenant compute authorizations.',
-  llmServiceProviders: 'Providers', llmServiceGroups: 'Service Groups', llmServiceAuth: 'Authorizations',
+  llmServiceTitle: 'LLM Service', llmServiceDesc: 'Manage LLM providers, compute agents, and model service groups.',
+  llmServiceProviders: 'Providers', llmServiceGroups: 'Service Groups',
   llmServiceAddProvider: 'Add Provider', llmServiceNoProviders: 'No providers configured.',
   llmServiceProviderName: 'Name', llmServiceProviderURL: 'API URL', llmServiceProviderKey: 'API Key',
   llmServiceProviderProtocol: 'Protocol', llmServiceProviderModels: 'Models',
@@ -422,8 +422,6 @@ Object.assign(I18N_EN, {
   llmServiceGroupName: 'Group Name', llmServiceGroupDesc: 'Description', llmServiceGroupModels: 'Models',
   llmServiceGroupsTitle: 'Model Service Groups', llmServiceGroupsDesc: 'Route models to providers with dispatch policies.',
   llmServiceProvidersTitle: 'LLM Providers', llmServiceProvidersDesc: 'Backend LLM API endpoints for model routing.',
-  llmServiceAuthTitle: 'Tenant External Compute Access', llmServiceAuthDesc: 'Allow Hub tenants to use their own external compute providers. Usage quotas are not configured here.',
-  llmServiceAddAuth: 'Grant Compute', llmServiceNoAuths: 'No tenant compute access records.',
   llmServiceSave: 'Save', llmServiceCancel: 'Cancel'
 });
 Object.assign(I18N_ZH, {
@@ -432,7 +430,7 @@ Object.assign(I18N_ZH, {
   computeMarketTitle: '\u7b97\u529b\u5546\u5e97', computeMarketDesc: '\u7ba1\u7406\u7b97\u529b\u5361\u578b\u3001\u8d2d\u4e70\u8ba2\u5355\u548c\u4f7f\u7528\u7edf\u8ba1\u3002',
   computeMarketStatProviders: '\u670d\u52a1\u5546', computeMarketStatProvidersHint: '\u5df2\u914d\u7f6e\u7684 LLM \u540e\u7aef',
   computeMarketStatGroups: '\u670d\u52a1\u7ec4', computeMarketStatGroupsHint: '\u6a21\u578b\u8def\u7531\u7ec4',
-  computeMarketStatAuths: '\u6388\u6743', computeMarketStatAuthsHint: '\u6d3b\u8dc3\u79df\u6237\u6388\u6743',
+  computeMarketStatPendingOrders: '\u5f85\u786e\u8ba4\u8ba2\u5355', computeMarketStatPendingOrdersHint: '\u7b49\u5f85\u786e\u8ba4',
   computeMarketCards: '\u5361\u578b\u7ba1\u7406', computeMarketOrders: '\u8ba2\u5355\u7ba1\u7406', computeMarketStats: '\u4f7f\u7528\u7edf\u8ba1',
   computeMarketCardTypesTitle: '\u5361\u578b\u5217\u8868', computeMarketCardTypesDesc: '\u5b9a\u4e49\u7b97\u529b\u5546\u5e97\u4e2d\u7684\u5361\u7247\u4ea7\u54c1\u3002',
   computeMarketAddCard: '\u6dfb\u52a0\u5361\u578b',
@@ -448,8 +446,8 @@ Object.assign(I18N_ZH, {
   computeMarketViewArchivedOrders: '\u67e5\u770b\u5f52\u6863\u8ba2\u5355', computeMarketViewActiveOrders: '\u67e5\u770b\u5f53\u524d\u8ba2\u5355',
   computeMarketArchiveOrder: '\u5f52\u6863', computeMarketArchivedOrdersDesc: '\u6b63\u5728\u67e5\u770b\u5df2\u5f52\u6863\u7684\u65e7\u8ba2\u5355\uff0c\u8fd9\u4e9b\u8ba2\u5355\u4e0d\u4f1a\u51fa\u73b0\u5728\u5f53\u524d\u961f\u5217\u3002',
   computeMarketStatsTitle: '\u4f7f\u7528\u7edf\u8ba1', computeMarketStatsDesc: '\u6309 Hub/\u79df\u6237\u7ef4\u5ea6\u7684 Token \u6d88\u8017\u7edf\u8ba1\u3002',
-  llmServiceTitle: 'LLM \u63a5\u5165', llmServiceDesc: '\u7ba1\u7406 LLM \u670d\u52a1\u5546\u3001\u6a21\u578b\u670d\u52a1\u7ec4\u548c\u79df\u6237\u7b97\u529b\u6388\u6743\u3002',
-  llmServiceProviders: '\u670d\u52a1\u5546', llmServiceGroups: '\u670d\u52a1\u7ec4', llmServiceAuth: '\u6388\u6743\u7ba1\u7406',
+  llmServiceTitle: 'LLM \u63a5\u5165', llmServiceDesc: '\u7ba1\u7406 LLM \u670d\u52a1\u5546\u3001\u7b97\u529b\u4ee3\u7406\u5546\u548c\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
+  llmServiceProviders: '\u670d\u52a1\u5546', llmServiceGroups: '\u670d\u52a1\u7ec4',
   llmServiceAddProvider: '\u6dfb\u52a0\u670d\u52a1\u5546', llmServiceNoProviders: '\u672a\u914d\u7f6e\u670d\u52a1\u5546\u3002',
   llmServiceProviderName: '\u540d\u79f0', llmServiceProviderURL: 'API \u5730\u5740', llmServiceProviderKey: 'API \u5bc6\u94a5',
   llmServiceProviderProtocol: '\u534f\u8bae', llmServiceProviderModels: '\u6a21\u578b',
@@ -459,8 +457,6 @@ Object.assign(I18N_ZH, {
   llmServiceGroupName: '\u7ec4\u540d\u79f0', llmServiceGroupDesc: '\u63cf\u8ff0', llmServiceGroupModels: '\u6a21\u578b\u914d\u7f6e',
   llmServiceGroupsTitle: '\u6a21\u578b\u670d\u52a1\u7ec4', llmServiceGroupsDesc: '\u5c06\u6a21\u578b\u8def\u7531\u5230\u670d\u52a1\u5546\uff0c\u914d\u7f6e\u8c03\u5ea6\u7b56\u7565\u3002',
   llmServiceProvidersTitle: 'LLM \u670d\u52a1\u5546\u7ba1\u7406', llmServiceProvidersDesc: '\u540e\u7aef LLM API \u7aef\u70b9\u914d\u7f6e\u3002',
-  llmServiceAuthTitle: '\u79df\u6237\u5916\u90e8\u7b97\u529b\u6388\u6743', llmServiceAuthDesc: '\u4ec5\u914d\u7f6e\u79df\u6237\u662f\u5426\u53ef\u4f7f\u7528\u81ea\u6709\u5916\u90e8\u7b97\u529b\uff0c\u4e0d\u5728\u6b64\u914d\u7f6e\u4f7f\u7528\u989d\u5ea6\u3002',
-  llmServiceAddAuth: '\u6388\u4e88\u7b97\u529b', llmServiceNoAuths: '\u6682\u65e0\u79df\u6237\u7b97\u529b\u6743\u9650\u8bb0\u5f55\u3002',
   llmServiceSave: '\u4fdd\u5b58', llmServiceCancel: '\u53d6\u6d88'
 });
 

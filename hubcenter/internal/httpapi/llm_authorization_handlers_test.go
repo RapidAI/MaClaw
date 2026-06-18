@@ -341,6 +341,9 @@ func TestAdminCreateLLMAuthorizationKeepsPreviousGrantWhenCreateFails(t *testing
 	if repo.auths[0].Status != "expired" {
 		t.Fatalf("old external grant status = %q, want expired", repo.auths[0].Status)
 	}
+	if !repo.auths[0].ExpiresAt.Before(mustParseTime(t, "2099-12-31T23:59:59Z")) {
+		t.Fatalf("old external grant expires_at = %s, want revoked timestamp before original far-future expiry", repo.auths[0].ExpiresAt)
+	}
 }
 
 func TestAdminCreateLLMAuthorizationUpdatesExistingExternalComputeGrant(t *testing.T) {

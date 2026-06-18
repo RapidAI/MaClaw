@@ -28,6 +28,7 @@
       storeContextMissing: 'Hub Center registration is missing. Register this Hub with HubCenter before purchasing compute.',
       activeAuthorizations: 'Active Compute',
       noActiveAuthorizations: 'No active compute authorization.',
+      noComputeCredits: 'Compute module authorized. No active compute credits yet.',
       showInactiveAuthorizations: 'Show expired/invalid',
       hideInactiveAuthorizations: 'Hide expired/invalid',
       creditsRemaining: 'Remaining',
@@ -54,6 +55,7 @@
       storeContextMissing: '\u7f3a\u5c11 HubCenter \u6ce8\u518c\u4fe1\u606f\uff0c\u8bf7\u5148\u5c06\u6b64 Hub \u6ce8\u518c\u5230 HubCenter \u540e\u518d\u8d2d\u4e70\u7b97\u529b\u3002',
       activeAuthorizations: '\u5df2\u6fc0\u6d3b\u7b97\u529b',
       noActiveAuthorizations: '\u6682\u65e0\u6709\u6548\u7b97\u529b\u6388\u6743\u3002',
+      noComputeCredits: '\u7b97\u529b\u6a21\u5757\u5df2\u6388\u6743\uff0c\u6682\u65e0\u53ef\u7528\u7b97\u529b\u989d\u5ea6\u3002',
       showInactiveAuthorizations: '\u663e\u793a\u8fc7\u671f/\u5931\u6548',
       hideInactiveAuthorizations: '\u9690\u85cf\u8fc7\u671f/\u5931\u6548',
       creditsRemaining: '\u5269\u4f59',
@@ -329,7 +331,7 @@
       if (_computeAuthStatus.authorization_error) {
         return '<div class="hint" style="margin-top:10px;padding:10px 12px;background:#fff8f0;border-color:#f2d3a6;color:#8a5b13">' + esc(t('authStatusError')) + ': ' + esc(_computeAuthStatus.authorization_error) + '</div>';
       }
-      return '<div class="hint" style="margin-top:10px;padding:10px 12px;background:#fbfcfd;border-color:#e7eaf0">' + esc(t('noActiveAuthorizations')) + '</div>';
+      return '<div class="hint" style="margin-top:10px;padding:10px 12px;background:#fbfcfd;border-color:#e7eaf0">' + esc(hasComputeModuleAuthorization() ? t('noComputeCredits') : t('noActiveAuthorizations')) + '</div>';
     }
     var visible = all.filter(function(item) {
       return _showInactiveComputeAuthorizations || isAuthorizationActive(item);
@@ -353,7 +355,7 @@
         + '</div>';
     }).join('');
     if (!rows) {
-      rows = '<div class="hint" style="padding:10px 12px;background:#fbfcfd;border-color:#e7eaf0">' + esc(t('noActiveAuthorizations')) + '</div>';
+      rows = '<div class="hint" style="padding:10px 12px;background:#fbfcfd;border-color:#e7eaf0">' + esc(hasComputeModuleAuthorization() ? t('noComputeCredits') : t('noActiveAuthorizations')) + '</div>';
     }
     return '<div style="margin-top:10px;display:grid;gap:8px">'
       + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap"><div class="item-meta" style="font-weight:700;color:var(--text,var(--ink))">' + esc(t('activeAuthorizations')) + '</div>' + toggle + '</div>'
