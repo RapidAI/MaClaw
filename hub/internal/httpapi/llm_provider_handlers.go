@@ -973,7 +973,7 @@ func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.Sys
 			return
 		}
 		system = scopedSystemSettingsForTenant(principal.TenantID, system)
-		ctx := withLLMPromptCacheTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID)
+		ctx := withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID)
 		r = r.WithContext(ctx)
 		status, err := llmservice.ResolveServiceStatus(ctx, system, securitySvc, principal.Email, externalLLMBaseURL(r))
 		if err != nil {
@@ -1150,7 +1150,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			return
 		}
 		system = scopedSystemSettingsForTenant(principal.TenantID, system)
-		ctx := withLLMPromptCacheTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID)
+		ctx := withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID)
 		r = r.WithContext(ctx)
 		providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 		if err != nil {
@@ -1311,7 +1311,8 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 					return
 				}
 				if statusCode >= 500 {
-					writeLoggedError(upstreamGatewayStatus(statusCode), "LLM_UPSTREAM_FAILED", llmEndpointUpstreamFailureMessage(usedProviderID, statusCode, err))
+					status, code, detail := providerUnavailableError(statusCode, usedProviderID, []byte(strings.TrimSpace(fmt.Sprint(err))))
+					writeLoggedError(status, code, detail)
 					return
 				}
 				writeLoggedError(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
@@ -1392,43 +1393,13 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		// from "upstream provider API key invalid". Without this, the client
 		// sees a raw 401 and tells the user their own credentials are wrong.
 		if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests {
-			providerName := usedProviderID
-			if providerName == "" {
-				providerName = "unknown"
-			}
-			upstreamMsg := extractUpstreamErrorMessage(respBody)
-			var detail string
-			switch statusCode {
-			case http.StatusUnauthorized:
-				detail = fmt.Sprintf("upstream LLM provider %q rejected the configured API key", providerName)
-			case http.StatusForbidden:
-				detail = fmt.Sprintf("upstream LLM provider %q denied access for the configured API key or model", providerName)
-			case http.StatusTooManyRequests:
-				detail = fmt.Sprintf("upstream LLM provider %q is rate limited", providerName)
-			}
-			if upstreamMsg != "" {
-				detail += " (" + upstreamMsg + ")"
-			}
-			hubCode := "LLM_UPSTREAM_AUTH_FAILED"
-			hubStatus := http.StatusBadGateway
-			if statusCode == http.StatusTooManyRequests {
-				hubCode = "LLM_UPSTREAM_RATE_LIMITED"
-				hubStatus = http.StatusTooManyRequests
-			}
+			hubStatus, hubCode, detail := providerAuthOrRateError(statusCode, usedProviderID, respBody)
 			writeLoggedError(hubStatus, hubCode, detail)
 			return
 		}
 		if statusCode >= 500 {
-			providerName := usedProviderID
-			if providerName == "" {
-				providerName = "unknown"
-			}
-			upstreamMsg := extractUpstreamErrorMessage(respBody)
-			detail := fmt.Sprintf("upstream LLM provider %q is temporarily unavailable", providerName)
-			if upstreamMsg != "" {
-				detail += " (" + upstreamMsg + ")"
-			}
-			writeLoggedError(upstreamGatewayStatus(statusCode), "LLM_UPSTREAM_FAILED", detail)
+			hubStatus, hubCode, detail := providerUnavailableError(statusCode, usedProviderID, respBody)
+			writeLoggedError(hubStatus, hubCode, detail)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -1466,7 +1437,7 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			return
 		}
 		system = scopedSystemSettingsForTenant(principal.TenantID, system)
-		ctx := withLLMPromptCacheTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID)
+		ctx := withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID)
 		r = r.WithContext(ctx)
 		providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 		if err != nil {
@@ -1622,7 +1593,8 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 					return
 				}
 				if statusCode >= 500 {
-					writeLoggedError(upstreamGatewayStatus(statusCode), "LLM_UPSTREAM_FAILED", llmEndpointUpstreamFailureMessage(usedProviderID, statusCode, err))
+					status, code, detail := providerUnavailableError(statusCode, usedProviderID, []byte(strings.TrimSpace(fmt.Sprint(err))))
+					writeLoggedError(status, code, detail)
 					return
 				}
 				writeLoggedError(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
@@ -1680,41 +1652,13 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			enqueueLLMUsage(system, usedProviderID, usageStat, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
 		}
 		if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests {
-			providerName := usedProviderID
-			if providerName == "" {
-				providerName = "unknown"
-			}
-			upstreamMsg := extractUpstreamErrorMessage(respBody)
-			var detail string
-			switch statusCode {
-			case http.StatusUnauthorized:
-				detail = fmt.Sprintf("upstream LLM provider %q rejected the configured API key", providerName)
-			case http.StatusForbidden:
-				detail = fmt.Sprintf("upstream LLM provider %q denied access for the configured API key or model", providerName)
-			case http.StatusTooManyRequests:
-				detail = fmt.Sprintf("upstream LLM provider %q is rate limited", providerName)
-			}
-			if upstreamMsg != "" {
-				detail += " (" + upstreamMsg + ")"
-			}
-			if statusCode == http.StatusTooManyRequests {
-				writeLoggedError(http.StatusTooManyRequests, "LLM_UPSTREAM_RATE_LIMITED", detail)
-				return
-			}
-			writeLoggedError(http.StatusBadGateway, "LLM_UPSTREAM_AUTH_FAILED", detail)
+			hubStatus, hubCode, detail := providerAuthOrRateError(statusCode, usedProviderID, respBody)
+			writeLoggedError(hubStatus, hubCode, detail)
 			return
 		}
 		if statusCode >= 500 {
-			providerName := usedProviderID
-			if providerName == "" {
-				providerName = "unknown"
-			}
-			upstreamMsg := extractUpstreamErrorMessage(respBody)
-			detail := fmt.Sprintf("upstream LLM provider %q is temporarily unavailable", providerName)
-			if upstreamMsg != "" {
-				detail += " (" + upstreamMsg + ")"
-			}
-			writeLoggedError(upstreamGatewayStatus(statusCode), "LLM_UPSTREAM_FAILED", detail)
+			hubStatus, hubCode, detail := providerUnavailableError(statusCode, usedProviderID, respBody)
+			writeLoggedError(hubStatus, hubCode, detail)
 			return
 		}
 		if statusCode < 400 && !rawResponses {
@@ -1777,6 +1721,24 @@ func forwardAuthorizedResponsesRequestWithCache(r *http.Request, reg *im.LLMProv
 	var lastProviderID string
 	request := r.Clone(r.Context())
 	for _, providerID := range llmservice.OrderProvidersForRequest(chatBody, model) {
+		if IsMaClawProviderRequest(providerID) {
+			singleProviderModel := *model
+			singleProviderModel.ProviderIDs = []string{providerID}
+			respBody, statusCode, usedProviderID, serviceGroupIDs, usageStat, localCacheHit, err := forwardAuthorizedModelRequestWithCache(r, reg, &singleProviderModel, chatBody, externalModel, promptCacheSource, cacheCfg)
+			if err != nil {
+				lastErr = err
+				lastProviderID = providerID
+				continue
+			}
+			if shouldTryNextProviderStatusForProvider(usedProviderID, statusCode) {
+				lastBody = respBody
+				lastStatus = statusCode
+				lastProviderID = usedProviderID
+				lastErr = fmt.Errorf("provider %q returned http %d", usedProviderID, statusCode)
+				continue
+			}
+			return respBody, statusCode, usedProviderID, serviceGroupIDs, usageStat, localCacheHit, false, nil
+		}
 		provider := reg.FindProvider(providerID)
 		if provider == nil {
 			lastErr = fmt.Errorf("provider %q not configured", providerID)
@@ -1791,9 +1753,7 @@ func forwardAuthorizedResponsesRequestWithCache(r *http.Request, reg *im.LLMProv
 				lastProviderID = providerID
 				continue
 			}
-			if statusCode >= 500 || statusCode == http.StatusNotFound || statusCode == http.StatusUnprocessableEntity ||
-				statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden ||
-				statusCode == http.StatusTooManyRequests {
+			if shouldTryNextProviderStatusForProvider(usedProviderID, statusCode) {
 				lastBody = respBody
 				lastStatus = statusCode
 				lastProviderID = usedProviderID
@@ -1853,6 +1813,40 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 	var lastProviderID string
 	var lastStatus int
 	for _, providerID := range llmservice.OrderProvidersForRequest(chatBody, model) {
+		if IsMaClawProviderRequest(providerID) {
+			resp, err := openMaClawOfficialStreamRequest(request, chatBody)
+			if err != nil {
+				lastErr = err
+				lastProviderID = providerID
+				continue
+			}
+			statusCode := resp.StatusCode
+			lastStatus = statusCode
+			lastProviderID = providerID
+			if shouldTryNextProviderStatusForProvider(providerID, statusCode) {
+				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+				_ = resp.Body.Close()
+				lastErr = fmt.Errorf("provider %q returned http %d: %s", providerID, statusCode, strings.TrimSpace(string(bodyBytes)))
+				log.Printf("[LLM-V1] provider %q returned %d for responses stream, trying next provider", providerID, statusCode)
+				continue
+			}
+			if isTerminalProviderStatus(providerID, statusCode) {
+				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+				_ = resp.Body.Close()
+				return statusCode, providerID, nil, corelib.TokenUsageStat{}, false, fmt.Errorf("%s", strings.TrimSpace(string(bodyBytes)))
+			}
+			provider := maclawOfficialStreamProvider()
+			streamModel := strings.TrimSpace(responseModel)
+			if streamModel == "" {
+				streamModel = externalModel
+			}
+			usageStat, wroteStream, copyErr := writeOpenAIChatAsResponsesStreamResponse(w, resp, provider, model, streamModel, selectedModelDebug)
+			_ = resp.Body.Close()
+			if copyErr != nil {
+				return statusCode, providerID, llmservice.ServiceGroupIDsForProvider(model, providerID), usageStat, wroteStream, copyErr
+			}
+			return statusCode, providerID, llmservice.ServiceGroupIDsForProvider(model, providerID), usageStat, wroteStream, nil
+		}
 		provider := reg.FindProvider(providerID)
 		if provider == nil {
 			lastErr = fmt.Errorf("provider %q not configured", providerID)
@@ -2013,6 +2007,36 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 	var lastProviderID string
 	var lastStatus int
 	for _, providerID := range llmservice.OrderProvidersForRequest(body, model) {
+		if IsMaClawProviderRequest(providerID) {
+			resp, err := openMaClawOfficialStreamRequest(request, body)
+			if err != nil {
+				lastErr = err
+				lastProviderID = providerID
+				continue
+			}
+			statusCode := resp.StatusCode
+			lastStatus = statusCode
+			lastProviderID = providerID
+			if shouldTryNextProviderStatusForProvider(providerID, statusCode) {
+				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+				_ = resp.Body.Close()
+				lastErr = fmt.Errorf("provider %q returned http %d: %s", providerID, statusCode, strings.TrimSpace(string(bodyBytes)))
+				log.Printf("[LLM-V1] provider %q returned %d for stream, trying next provider", providerID, statusCode)
+				continue
+			}
+			if isTerminalProviderStatus(providerID, statusCode) {
+				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+				_ = resp.Body.Close()
+				return statusCode, providerID, nil, corelib.TokenUsageStat{}, false, fmt.Errorf("%s", strings.TrimSpace(string(bodyBytes)))
+			}
+			provider := maclawOfficialStreamProvider()
+			usageStat, wroteStream, copyErr := writeOpenAIStreamResponse(w, resp, provider, model, externalModel, selectedModelDebug)
+			_ = resp.Body.Close()
+			if copyErr != nil {
+				return statusCode, providerID, llmservice.ServiceGroupIDsForProvider(model, providerID), usageStat, wroteStream, copyErr
+			}
+			return statusCode, providerID, llmservice.ServiceGroupIDsForProvider(model, providerID), usageStat, wroteStream, nil
+		}
 		provider := reg.FindProvider(providerID)
 		if provider == nil {
 			lastErr = fmt.Errorf("provider %q not configured", providerID)
@@ -2065,6 +2089,30 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
 	}
 	return lastStatus, lastProviderID, nil, corelib.TokenUsageStat{}, false, lastErr
+}
+
+func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any) (*http.Response, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal maclaw official stream request: %w", err)
+	}
+	resp, err := ForwardStreamViaMaClaw(r.Context(), payload, store.TenantIDFromContext(r.Context()))
+	if err != nil {
+		return nil, err
+	}
+	if resp.Body == nil {
+		resp.Body = http.NoBody
+	}
+	return resp, nil
+}
+
+func maclawOfficialStreamProvider() *im.LLMProvider {
+	return &im.LLMProvider{
+		ID:       llmservice.MaClawOfficialProviderID,
+		Name:     llmservice.MaClawOfficialProviderName,
+		Protocol: "openai",
+		WireAPI:  "chat",
+	}
 }
 
 func openLLMStreamRequest(r *http.Request, p *im.LLMProvider, body map[string]any) (*http.Response, func(), error) {
@@ -3050,33 +3098,42 @@ func llmEndpointUpstreamFailureMessage(providerID string, statusCode int, err er
 	return msg
 }
 
-func llmEndpointUpstreamAuthOrRateError(upstreamStatus int, providerID string, err error) (int, string, string, bool) {
+func providerUnavailableError(statusCode int, providerID string, respBody []byte) (int, string, string) {
 	providerName := strings.TrimSpace(providerID)
 	if providerName == "" {
 		providerName = "unknown"
 	}
-	var status int
-	var code string
-	var detail string
+	upstreamMsg := extractUpstreamErrorMessage(respBody)
+	if upstreamMsg == "" {
+		upstreamMsg = strings.TrimSpace(string(respBody))
+		if upstreamMsg == "<nil>" {
+			upstreamMsg = ""
+		}
+		if len(upstreamMsg) > 200 {
+			upstreamMsg = upstreamMsg[:200] + "..."
+		}
+	}
+	appendDetail := func(detail string) string {
+		if upstreamMsg != "" {
+			return detail + " (" + upstreamMsg + ")"
+		}
+		return detail
+	}
+	if IsMaClawProviderRequest(providerName) {
+		return upstreamGatewayStatus(statusCode), "LLM_OFFICIAL_UNAVAILABLE", appendDetail("MaClaw official service is temporarily unavailable")
+	}
+	return upstreamGatewayStatus(statusCode), "LLM_UPSTREAM_FAILED", appendDetail(fmt.Sprintf("upstream LLM provider %q is temporarily unavailable", providerName))
+}
+
+func llmEndpointUpstreamAuthOrRateError(upstreamStatus int, providerID string, err error) (int, string, string, bool) {
 	switch upstreamStatus {
 	case http.StatusUnauthorized:
-		status = http.StatusBadGateway
-		code = "LLM_UPSTREAM_AUTH_FAILED"
-		detail = fmt.Sprintf("upstream LLM provider %q rejected the configured API key", providerName)
 	case http.StatusForbidden:
-		status = http.StatusBadGateway
-		code = "LLM_UPSTREAM_AUTH_FAILED"
-		detail = fmt.Sprintf("upstream LLM provider %q denied access for the configured API key or model", providerName)
 	case http.StatusTooManyRequests:
-		status = http.StatusTooManyRequests
-		code = "LLM_UPSTREAM_RATE_LIMITED"
-		detail = fmt.Sprintf("upstream LLM provider %q is rate limited", providerName)
 	default:
 		return 0, "", "", false
 	}
-	if errText := strings.TrimSpace(fmt.Sprint(err)); errText != "" && errText != "<nil>" {
-		detail += " (" + errText + ")"
-	}
+	status, code, detail := providerAuthOrRateError(upstreamStatus, providerID, []byte(strings.TrimSpace(fmt.Sprint(err))))
 	return status, code, detail, true
 }
 
@@ -3187,6 +3244,49 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 	var lastProviderID string
 	request := r.Clone(ctx)
 	for _, providerID := range llmservice.OrderProvidersForRequest(body, model) {
+		if IsMaClawProviderRequest(providerID) {
+			payload, marshalErr := json.Marshal(body)
+			if marshalErr != nil {
+				lastErr = fmt.Errorf("marshal maclaw official request: %w", marshalErr)
+				lastProviderID = providerID
+				continue
+			}
+			respBody, statusCode, fwdErr := ForwardViaMaClaw(ctx, payload, store.TenantIDFromContext(ctx))
+			if fwdErr != nil {
+				lastErr = fwdErr
+				lastProviderID = providerID
+				continue
+			}
+			if shouldTryNextProviderStatusForProvider(providerID, statusCode) {
+				lastBody = respBody
+				lastStatus = statusCode
+				lastProviderID = providerID
+				lastErr = fmt.Errorf("provider %q returned http %d", providerID, statusCode)
+				log.Printf("[LLM-V1] provider %q returned %d, trying next provider", providerID, statusCode)
+				continue
+			}
+			usageStat := parseUsageStats(respBody)
+			serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, providerID)
+			if isTerminalProviderStatus(providerID, statusCode) {
+				return authorizedModelForwardResult{
+					respBody:        respBody,
+					statusCode:      statusCode,
+					providerID:      providerID,
+					serviceGroupIDs: serviceGroupIDs,
+					usageStat:       usageStat,
+					localCacheHit:   false,
+				}, nil
+			}
+			_ = putCachedAuthorizedModelResponse(ctx, promptCache, model, body, externalModel, respBody, statusCode, providerID, serviceGroupIDs, usageStat, cacheCfg)
+			return authorizedModelForwardResult{
+				respBody:        respBody,
+				statusCode:      statusCode,
+				providerID:      providerID,
+				serviceGroupIDs: serviceGroupIDs,
+				usageStat:       usageStat,
+				localCacheHit:   false,
+			}, nil
+		}
 		provider := reg.FindProvider(providerID)
 		if provider == nil {
 			lastErr = fmt.Errorf("provider %q not configured", providerID)
@@ -3236,6 +3336,72 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
 	}
 	return authorizedModelForwardResult{}, lastErr
+}
+
+func shouldTryNextProviderStatus(statusCode int) bool {
+	return statusCode >= 500 ||
+		statusCode == http.StatusNotFound ||
+		statusCode == http.StatusUnprocessableEntity ||
+		statusCode == http.StatusUnauthorized ||
+		statusCode == http.StatusForbidden ||
+		statusCode == http.StatusTooManyRequests
+}
+
+func shouldTryNextProviderStatusForProvider(providerID string, statusCode int) bool {
+	if isTerminalProviderStatus(providerID, statusCode) {
+		return false
+	}
+	return shouldTryNextProviderStatus(statusCode)
+}
+
+func isTerminalProviderStatus(providerID string, statusCode int) bool {
+	if !IsMaClawProviderRequest(providerID) {
+		return false
+	}
+	return statusCode == http.StatusUnauthorized ||
+		statusCode == http.StatusForbidden ||
+		statusCode == http.StatusTooManyRequests
+}
+
+func providerAuthOrRateError(statusCode int, providerID string, respBody []byte) (int, string, string) {
+	providerName := strings.TrimSpace(providerID)
+	if providerName == "" {
+		providerName = "unknown"
+	}
+	upstreamMsg := extractUpstreamErrorMessage(respBody)
+	if upstreamMsg == "" {
+		upstreamMsg = strings.TrimSpace(string(respBody))
+		if upstreamMsg == "<nil>" {
+			upstreamMsg = ""
+		}
+		if len(upstreamMsg) > 200 {
+			upstreamMsg = upstreamMsg[:200] + "..."
+		}
+	}
+	appendDetail := func(detail string) string {
+		if upstreamMsg != "" {
+			return detail + " (" + upstreamMsg + ")"
+		}
+		return detail
+	}
+	if IsMaClawProviderRequest(providerName) {
+		switch statusCode {
+		case http.StatusTooManyRequests:
+			return http.StatusTooManyRequests, "LLM_OFFICIAL_RATE_LIMITED", appendDetail("MaClaw official service is rate limited")
+		case http.StatusUnauthorized:
+			return http.StatusBadGateway, "LLM_OFFICIAL_AUTH_FAILED", appendDetail("MaClaw official service rejected Hub credentials")
+		default:
+			return http.StatusForbidden, "LLM_OFFICIAL_AUTHORIZATION_DENIED", appendDetail("MaClaw official service denied this tenant authorization")
+		}
+	}
+	switch statusCode {
+	case http.StatusTooManyRequests:
+		return http.StatusTooManyRequests, "LLM_UPSTREAM_RATE_LIMITED", appendDetail(fmt.Sprintf("upstream LLM provider %q is rate limited", providerName))
+	case http.StatusUnauthorized:
+		return http.StatusBadGateway, "LLM_UPSTREAM_AUTH_FAILED", appendDetail(fmt.Sprintf("upstream LLM provider %q rejected the configured API key", providerName))
+	default:
+		return http.StatusBadGateway, "LLM_UPSTREAM_AUTH_FAILED", appendDetail(fmt.Sprintf("upstream LLM provider %q denied access for the configured API key or model", providerName))
+	}
 }
 
 func firstPromptCacheSource(sources []any) llmPromptCacheStore {
@@ -3970,6 +4136,8 @@ func normalizeProviderWireAPI(v string) string {
 	return corelib.NormalizeLLMProviderWireAPI(v)
 }
 
+const legacyHubLLMConfigKey = "hub_llm_config"
+
 func syncLegacyHubLLMConfig(ctx context.Context, system store.SystemSettingsRepository, reg *im.LLMProviderRegistry) error {
 	cfg := reg.ToHubLLMConfig()
 	if cfg == nil {
@@ -3979,7 +4147,7 @@ func syncLegacyHubLLMConfig(ctx context.Context, system store.SystemSettingsRepo
 	if err != nil {
 		return err
 	}
-	return system.Set(ctx, hubLLMConfigKey, string(data))
+	return system.Set(ctx, legacyHubLLMConfigKey, string(data))
 }
 
 func forwardLLMRequest(r *http.Request, p *im.LLMProvider, body map[string]any, externalModel string) ([]byte, int, error) {

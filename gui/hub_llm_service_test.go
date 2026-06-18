@@ -450,17 +450,17 @@ func TestSyncHubLLMServiceStatusPatchesWithoutStaleOverwrite(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
-	cfg, err := app.LoadConfig()
-	if err != nil {
+	if _, err := app.LoadConfig(); err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.RemoteEmail = "owner@example.com"
-	cfg.RemoteViewerToken = "viewer-token"
-	cfg.LogDetailEnabled = true
-	cfg.MaclawLLMCurrentProvider = "Custom1"
-	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test"}}
-	if err := app.SaveConfig(cfg); err != nil {
-		t.Fatalf("SaveConfig() error = %v", err)
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteEmail = "owner@example.com"
+		cfg.RemoteViewerToken = "viewer-token"
+		cfg.LogDetailEnabled = true
+		cfg.MaclawLLMCurrentProvider = "Custom1"
+		cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test"}}
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
 	}
 
 	changed, err := app.syncHubLLMServiceStatusToConfig(HubLLMServiceStatus{

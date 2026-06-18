@@ -213,6 +213,17 @@ func TestClassifyOpenAIHTTPErrorSurfacesTopLevelHubUpstreamAuthFailure(t *testin
 	}
 }
 
+func TestClassifyOpenAIHTTPErrorSurfacesOfficialUnavailable(t *testing.T) {
+	body := []byte(`{"ok":false,"code":"LLM_OFFICIAL_UNAVAILABLE","message":"MaClaw official service is temporarily unavailable"}`)
+	got := classifyOpenAIHTTPError(503, body, "MaClawOfficial")
+	if got != "MaClaw official service is temporarily unavailable" {
+		t.Fatalf("expected official unavailable message, got %q", got)
+	}
+	if strings.Contains(got, "HTTP 503") {
+		t.Fatalf("official unavailable should not be presented as generic 503: %q", got)
+	}
+}
+
 func TestClassifyOpenAIHTTPErrorReportsHubCreditsExhausted(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_CREDITS_EXHAUSTED","message":"selected model grant credits are exhausted"}`)
 	got := classifyOpenAIHTTPError(403, body, "MaClawOfficial")

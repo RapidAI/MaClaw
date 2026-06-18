@@ -254,6 +254,489 @@ func TestForwardAuthorizedModelRequestUsesLocalCacheWhenAvailable(t *testing.T) 
 	}
 }
 
+func TestForwardAuthorizedModelRequestRoutesVirtualMaClawProviderWithTenant(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	var seenTenant string
+	var seenAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		seenTenant = r.Header.Get("X-Tenant-ID")
+		seenAuth = r.Header.Get("Authorization")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":    "maclaw-official",
+			"model": "auto",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "ok"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+		})
+	}))
+	defer server.Close()
+
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: server.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+
+	reg := &im.LLMProviderRegistry{}
+	model := &llmservice.AuthorizedModel{
+		Name:            "auto",
+		ProviderIDs:     []string{llmservice.MaClawOfficialProviderID},
+		ServiceGroupIDs: []string{llmservice.MaClawOfficialServiceGroupID},
+		ProviderServiceGroups: map[string][]string{
+			llmservice.MaClawOfficialProviderID: {llmservice.MaClawOfficialServiceGroupID},
+		},
+	}
+	body := map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", nil)
+	req = req.WithContext(store.WithTenant(req.Context(), "tenant_acme"))
+
+	respBody, statusCode, providerID, serviceGroupIDs, usage, cacheHit, err := forwardAuthorizedModelRequestWithCache(req, reg, model, body, "auto", nil, defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("forwardAuthorizedModelRequestWithCache() error = %v", err)
+	}
+	if statusCode != http.StatusOK || providerID != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("status/provider = %d/%q", statusCode, providerID)
+	}
+	if cacheHit {
+		t.Fatal("unexpected cache hit")
+	}
+	if seenTenant != "tenant_acme" {
+		t.Fatalf("X-Tenant-ID = %q, want tenant_acme", seenTenant)
+	}
+	if seenAuth != "Bearer machine-token" {
+		t.Fatalf("Authorization = %q", seenAuth)
+	}
+	if len(serviceGroupIDs) != 1 || serviceGroupIDs[0] != llmservice.MaClawOfficialServiceGroupID {
+		t.Fatalf("serviceGroupIDs = %#v", serviceGroupIDs)
+	}
+	if usage.TotalTokens != 5 {
+		t.Fatalf("usage = %#v", usage)
+	}
+	if !bytes.Contains(respBody, []byte("maclaw-official")) {
+		t.Fatalf("respBody = %s", string(respBody))
+	}
+}
+
+func TestForwardAuthorizedModelRequestPreservesMaClawUnavailableStatus(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+	SetMaClawModule(nil)
+
+	reg := &im.LLMProviderRegistry{}
+	model := &llmservice.AuthorizedModel{
+		Name:        "auto",
+		ProviderIDs: []string{llmservice.MaClawOfficialProviderID},
+	}
+	body := map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", nil)
+	req = req.WithContext(store.WithTenant(req.Context(), "tenant_acme"))
+
+	respBody, statusCode, providerID, _, _, _, err := forwardAuthorizedModelRequestWithCache(req, reg, model, body, "auto", nil, defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("forwardAuthorizedModelRequestWithCache() error = %v", err)
+	}
+	if statusCode != http.StatusServiceUnavailable || providerID != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("status/provider = %d/%q, want 503/%q", statusCode, providerID, llmservice.MaClawOfficialProviderID)
+	}
+	if !strings.Contains(string(respBody), "not configured") {
+		t.Fatalf("respBody = %s", string(respBody))
+	}
+}
+
+func TestStreamAuthorizedModelRequestRoutesVirtualMaClawProviderWithTenant(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	var seenTenant string
+	var seenAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		seenTenant = r.Header.Get("X-Tenant-ID")
+		seenAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-official\",\"object\":\"chat.completion.chunk\",\"model\":\"auto\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: server.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+
+	reg := &im.LLMProviderRegistry{}
+	model := &llmservice.AuthorizedModel{
+		Name:            "auto",
+		ProviderIDs:     []string{llmservice.MaClawOfficialProviderID},
+		ServiceGroupIDs: []string{llmservice.MaClawOfficialServiceGroupID},
+		ProviderServiceGroups: map[string][]string{
+			llmservice.MaClawOfficialProviderID: {llmservice.MaClawOfficialServiceGroupID},
+		},
+	}
+	body := map[string]any{
+		"model":    "auto",
+		"stream":   true,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", nil)
+	req = req.WithContext(store.WithTenant(req.Context(), "tenant_acme"))
+	rec := httptest.NewRecorder()
+
+	statusCode, providerID, serviceGroupIDs, usage, wroteStream, err := streamAuthorizedModelRequest(rec, req, reg, model, body, "auto", nil)
+	if err != nil {
+		t.Fatalf("streamAuthorizedModelRequest() error = %v", err)
+	}
+	if statusCode != http.StatusOK || providerID != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("status/provider = %d/%q", statusCode, providerID)
+	}
+	if !wroteStream {
+		t.Fatal("wroteStream = false")
+	}
+	if seenTenant != "tenant_acme" {
+		t.Fatalf("X-Tenant-ID = %q, want tenant_acme", seenTenant)
+	}
+	if seenAuth != "Bearer machine-token" {
+		t.Fatalf("Authorization = %q", seenAuth)
+	}
+	if len(serviceGroupIDs) != 1 || serviceGroupIDs[0] != llmservice.MaClawOfficialServiceGroupID {
+		t.Fatalf("serviceGroupIDs = %#v", serviceGroupIDs)
+	}
+	if usage.TotalTokens != 5 {
+		t.Fatalf("usage = %#v", usage)
+	}
+	if !strings.Contains(rec.Body.String(), "chatcmpl-official") {
+		t.Fatalf("stream body = %s", rec.Body.String())
+	}
+}
+
+func TestForwardAuthorizedModelRequestDoesNotFallbackAfterMaClawAuthorizationDenied(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]any{"message": "authorization denied: no active authorization"}})
+	}))
+	defer server.Close()
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: server.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+
+	var fallbackHits atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":    "fallback",
+			"model": "fallback-model",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "fallback"},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer fallback.Close()
+
+	reg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-fallback", APIURL: fallback.URL, Model: "fallback-model"}}}
+	model := &llmservice.AuthorizedModel{
+		Name:        "auto",
+		ProviderIDs: []string{llmservice.MaClawOfficialProviderID, "provider-fallback"},
+	}
+	body := map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", nil)
+	req = req.WithContext(store.WithTenant(req.Context(), "tenant_acme"))
+
+	respBody, statusCode, providerID, _, _, _, err := forwardAuthorizedModelRequestWithCache(req, reg, model, body, "auto", nil, defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("forwardAuthorizedModelRequestWithCache() error = %v", err)
+	}
+	if statusCode != http.StatusForbidden || providerID != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("status/provider = %d/%q, want 403/%q", statusCode, providerID, llmservice.MaClawOfficialProviderID)
+	}
+	if fallbackHits.Load() != 0 {
+		t.Fatalf("fallback provider should not be called after official auth denial, hits = %d", fallbackHits.Load())
+	}
+	status, code, detail := providerAuthOrRateError(statusCode, providerID, respBody)
+	if status != http.StatusForbidden || code != "LLM_OFFICIAL_AUTHORIZATION_DENIED" || !strings.Contains(detail, "authorization denied") {
+		t.Fatalf("classified error = %d/%s/%s", status, code, detail)
+	}
+}
+
+func TestStreamAuthorizedModelRequestDoesNotFallbackAfterMaClawAuthorizationDenied(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]any{"message": "authorization denied: no active authorization"}})
+	}))
+	defer server.Close()
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: server.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+
+	var fallbackHits atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer fallback.Close()
+
+	reg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-fallback", APIURL: fallback.URL, Model: "fallback-model"}}}
+	model := &llmservice.AuthorizedModel{
+		Name:        "auto",
+		ProviderIDs: []string{llmservice.MaClawOfficialProviderID, "provider-fallback"},
+	}
+	body := map[string]any{
+		"model":    "auto",
+		"stream":   true,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", nil)
+	req = req.WithContext(store.WithTenant(req.Context(), "tenant_acme"))
+	rec := httptest.NewRecorder()
+
+	statusCode, providerID, _, _, wroteStream, err := streamAuthorizedModelRequest(rec, req, reg, model, body, "auto", nil)
+	if err == nil {
+		t.Fatal("streamAuthorizedModelRequest() error = nil, want official auth denial")
+	}
+	if statusCode != http.StatusForbidden || providerID != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("status/provider = %d/%q, want 403/%q", statusCode, providerID, llmservice.MaClawOfficialProviderID)
+	}
+	if wroteStream {
+		t.Fatal("wroteStream = true, want false")
+	}
+	if fallbackHits.Load() != 0 {
+		t.Fatalf("fallback provider should not be called after official auth denial, hits = %d", fallbackHits.Load())
+	}
+	status, code, detail, ok := llmEndpointUpstreamAuthOrRateError(statusCode, providerID, err)
+	if !ok || status != http.StatusForbidden || code != "LLM_OFFICIAL_AUTHORIZATION_DENIED" || !strings.Contains(detail, "authorization denied") {
+		t.Fatalf("classified stream error = ok:%v %d/%s/%s", ok, status, code, detail)
+	}
+}
+
+func TestForwardAuthorizedResponsesRequestDoesNotFallbackAfterMaClawAuthorizationDenied(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]any{"message": "authorization denied: no active authorization"}})
+	}))
+	defer server.Close()
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: server.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+
+	var fallbackHits atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":    "fallback",
+			"model": "fallback-model",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "fallback"},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer fallback.Close()
+
+	reg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-fallback", APIURL: fallback.URL, Model: "fallback-model"}}}
+	model := &llmservice.AuthorizedModel{
+		Name:        "auto",
+		ProviderIDs: []string{llmservice.MaClawOfficialProviderID, "provider-fallback"},
+	}
+	responsesBody := map[string]any{
+		"model": "auto",
+		"input": "hello",
+	}
+	chatBody := map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/responses", nil)
+	req = req.WithContext(store.WithTenant(req.Context(), "tenant_acme"))
+
+	respBody, statusCode, providerID, _, _, _, rawResponses, err := forwardAuthorizedResponsesRequestWithCache(req, reg, model, responsesBody, chatBody, "auto", nil, defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("forwardAuthorizedResponsesRequestWithCache() error = %v", err)
+	}
+	if statusCode != http.StatusForbidden || providerID != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("status/provider = %d/%q, want 403/%q", statusCode, providerID, llmservice.MaClawOfficialProviderID)
+	}
+	if rawResponses {
+		t.Fatal("rawResponses = true, want chat-compatible official path")
+	}
+	if fallbackHits.Load() != 0 {
+		t.Fatalf("fallback provider should not be called after official auth denial, hits = %d", fallbackHits.Load())
+	}
+	status, code, detail := providerAuthOrRateError(statusCode, providerID, respBody)
+	if status != http.StatusForbidden || code != "LLM_OFFICIAL_AUTHORIZATION_DENIED" || !strings.Contains(detail, "authorization denied") {
+		t.Fatalf("classified responses error = %d/%s/%s", status, code, detail)
+	}
+}
+
+func TestStreamAuthorizedResponsesRequestDoesNotFallbackAfterMaClawAuthorizationDenied(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]any{"message": "authorization denied: no active authorization"}})
+	}))
+	defer server.Close()
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: server.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+
+	var fallbackHits atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer fallback.Close()
+
+	reg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-fallback", APIURL: fallback.URL, Model: "fallback-model"}}}
+	model := &llmservice.AuthorizedModel{
+		Name:        "auto",
+		ProviderIDs: []string{llmservice.MaClawOfficialProviderID, "provider-fallback"},
+	}
+	responsesBody := map[string]any{
+		"model":  "auto",
+		"input":  "hello",
+		"stream": true,
+	}
+	chatBody := map[string]any{
+		"model":    "auto",
+		"stream":   true,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/responses", nil)
+	req = req.WithContext(store.WithTenant(req.Context(), "tenant_acme"))
+	rec := httptest.NewRecorder()
+
+	statusCode, providerID, _, _, wroteStream, err := streamAuthorizedResponsesRequest(rec, req, reg, model, responsesBody, chatBody, "auto", "auto", nil)
+	if err == nil {
+		t.Fatal("streamAuthorizedResponsesRequest() error = nil, want official auth denial")
+	}
+	if statusCode != http.StatusForbidden || providerID != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("status/provider = %d/%q, want 403/%q", statusCode, providerID, llmservice.MaClawOfficialProviderID)
+	}
+	if wroteStream {
+		t.Fatal("wroteStream = true, want false")
+	}
+	if fallbackHits.Load() != 0 {
+		t.Fatalf("fallback provider should not be called after official auth denial, hits = %d", fallbackHits.Load())
+	}
+	status, code, detail, ok := llmEndpointUpstreamAuthOrRateError(statusCode, providerID, err)
+	if !ok || status != http.StatusForbidden || code != "LLM_OFFICIAL_AUTHORIZATION_DENIED" || !strings.Contains(detail, "authorization denied") {
+		t.Fatalf("classified responses stream error = ok:%v %d/%s/%s", ok, status, code, detail)
+	}
+}
+
+func TestProviderAuthOrRateErrorClassifiesMaClawAuthorization(t *testing.T) {
+	status, code, detail := providerAuthOrRateError(http.StatusForbidden, llmservice.MaClawOfficialProviderID, []byte(`{"error":{"message":"authorization denied: no active authorization"}}`))
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", status)
+	}
+	if code != "LLM_OFFICIAL_AUTHORIZATION_DENIED" {
+		t.Fatalf("code = %q", code)
+	}
+	if !strings.Contains(detail, "tenant authorization") || !strings.Contains(detail, "authorization denied") {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
+func TestLLMEndpointUpstreamAuthOrRateErrorClassifiesMaClawAuthorization(t *testing.T) {
+	status, code, detail, ok := llmEndpointUpstreamAuthOrRateError(http.StatusForbidden, llmservice.MaClawOfficialProviderID, errors.New("authorization denied: no active authorization"))
+	if !ok {
+		t.Fatal("ok = false")
+	}
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", status)
+	}
+	if code != "LLM_OFFICIAL_AUTHORIZATION_DENIED" {
+		t.Fatalf("code = %q", code)
+	}
+	if !strings.Contains(detail, "tenant authorization") || !strings.Contains(detail, "authorization denied") {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
+func TestProviderUnavailableErrorClassifiesMaClawOfficial(t *testing.T) {
+	status, code, detail := providerUnavailableError(http.StatusServiceUnavailable, llmservice.MaClawOfficialProviderID, []byte(`{"error":{"message":"all providers failed"}}`))
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", status)
+	}
+	if code != "LLM_OFFICIAL_UNAVAILABLE" {
+		t.Fatalf("code = %q", code)
+	}
+	if !strings.Contains(detail, "official service") || !strings.Contains(detail, "all providers failed") {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
 func TestLLMV1ChatCompletionsHandlerRejectsGrantRequiredServiceWithoutCredits(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken, _ := issueViewerToken(t, identity, "grant-required@example.com")
@@ -1297,7 +1780,7 @@ func TestLLMV1ChatCompletionsHandlerReturnsOpenAIErrorWhenStreamUpstream503Empty
 		t.Fatalf("decode error body: %v body=%s", err, rr.Body.String())
 	}
 	errObj := payload["error"].(map[string]any)
-	if errObj["code"] != "LLM_UPSTREAM_FAILED" || !strings.Contains(fmt.Sprint(errObj["message"]), "HTTP 503") {
+	if errObj["code"] != "LLM_UPSTREAM_FAILED" || !strings.Contains(fmt.Sprint(errObj["message"]), "temporarily unavailable") {
 		t.Fatalf("error object = %#v", errObj)
 	}
 }

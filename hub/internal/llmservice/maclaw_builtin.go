@@ -156,6 +156,75 @@ func (c *MaClawProviderClient) Forward(ctx context.Context, body []byte, tenantI
 	return respBody, resp.StatusCode, nil
 }
 
+// ForwardStream sends an LLM streaming request to HubCenter. The caller must
+// close the returned response body.
+func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, tenantID string) (*http.Response, error) {
+	c.mu.RLock()
+	targetURL := c.boundURL
+	c.mu.RUnlock()
+
+	if targetURL == "" {
+		return nil, fmt.Errorf("maclaw official provider: no HubCenter URL configured")
+	}
+	hubID, token := c.ensureCredentials()
+	if hubID == "" || token == "" {
+		return nil, fmt.Errorf("maclaw official provider: hub not registered to HubCenter yet")
+	}
+
+	endpoint := strings.TrimRight(targetURL, "/") + "/api/llm/v1/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("maclaw official: create stream request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Hub-ID", hubID)
+	req.Header.Set("X-Tenant-ID", tenantID)
+
+	httpClient := c.streamHTTPClient()
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		c.recordFailure()
+		return nil, fmt.Errorf("maclaw official: stream forward failed: %w", err)
+	}
+	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusConflict {
+		c.recordFailure()
+	} else {
+		c.resetFailures()
+	}
+	return resp, nil
+}
+
+func (c *MaClawProviderClient) streamHTTPClient() *http.Client {
+	if c == nil || c.HTTPClient == nil {
+		return &http.Client{Transport: defaultStreamTransport(120 * time.Second)}
+	}
+	if c.HTTPClient.Timeout == 0 {
+		if c.HTTPClient.Transport == nil {
+			client := *c.HTTPClient
+			client.Transport = defaultStreamTransport(120 * time.Second)
+			return &client
+		}
+		return c.HTTPClient
+	}
+	client := *c.HTTPClient
+	if client.Transport == nil {
+		client.Transport = defaultStreamTransport(c.HTTPClient.Timeout)
+	}
+	client.Timeout = 0
+	return &client
+}
+
+func defaultStreamTransport(responseHeaderTimeout time.Duration) http.RoundTripper {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return http.DefaultTransport
+	}
+	clone := transport.Clone()
+	clone.ResponseHeaderTimeout = responseHeaderTimeout
+	return clone
+}
+
 // QueryAuthorization queries the tenant's LLM authorization status from HubCenter.
 func (c *MaClawProviderClient) QueryAuthorization(ctx context.Context, tenantID string) (*TenantAuthorizationStatus, error) {
 	c.mu.RLock()

@@ -184,7 +184,7 @@ func classifyHubErrorBody(body []byte) string {
 	if friendly := classifyHubLLMServiceError(hubCode, hubMessage, retryAfterSeconds, retryAfterAt); friendly != "" {
 		return friendly
 	}
-	if strings.HasPrefix(hubCode, "LLM_UPSTREAM_") && strings.TrimSpace(hubMessage) != "" {
+	if (strings.HasPrefix(hubCode, "LLM_UPSTREAM_") || strings.HasPrefix(hubCode, "LLM_OFFICIAL_")) && strings.TrimSpace(hubMessage) != "" {
 		return hubMessage
 	}
 	return ""

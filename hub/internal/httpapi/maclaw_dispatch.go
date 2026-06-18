@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -41,9 +42,23 @@ func IsMaClawProviderRequest(providerID string) bool {
 func ForwardViaMaClaw(ctx context.Context, body []byte, tenantID string) ([]byte, int, error) {
 	module := GetMaClawModule()
 	if module == nil || module.Client == nil {
-		return nil, http.StatusServiceUnavailable, nil
+		return []byte(`{"error":{"message":"MaClaw official service is not configured"}}`), http.StatusServiceUnavailable, nil
 	}
 	return module.Client.Forward(ctx, body, tenantID)
+}
+
+// ForwardStreamViaMaClaw forwards a streaming request through the MaClaw Official provider.
+// The caller must close the returned response body.
+func ForwardStreamViaMaClaw(ctx context.Context, body []byte, tenantID string) (*http.Response, error) {
+	module := GetMaClawModule()
+	if module == nil || module.Client == nil {
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"MaClaw official service is not configured"}}`)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	}
+	return module.Client.ForwardStream(ctx, body, tenantID)
 }
 
 // GetMaClawAccessControl returns the access control instance for permission checks.

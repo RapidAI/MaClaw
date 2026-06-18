@@ -179,7 +179,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		resp, fwdErr := forwardToProvider(ctx, cfg.HTTPClient, provider, req.Body, model)
 		release()
 
-		if fwdErr != nil || (resp != nil && resp.StatusCode >= 500) {
+		if fwdErr != nil || (resp != nil && shouldRetryProxyProviderStatus(resp.StatusCode)) {
 			if cfg.Resilience != nil {
 				cfg.Resilience.RecordFailure(providerID, provider.CircuitBreakerThreshold, provider.CircuitBreakerCooldownMS)
 			}
@@ -258,6 +258,15 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		return nil, fmt.Errorf("all providers failed, last error: %w", lastErr)
 	}
 	return nil, fmt.Errorf("no available providers for model %q", model)
+}
+
+func shouldRetryProxyProviderStatus(statusCode int) bool {
+	return statusCode >= 500 ||
+		statusCode == http.StatusNotFound ||
+		statusCode == http.StatusUnprocessableEntity ||
+		statusCode == http.StatusUnauthorized ||
+		statusCode == http.StatusForbidden ||
+		statusCode == http.StatusTooManyRequests
 }
 
 // ---------------------------------------------------------------------------
