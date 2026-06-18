@@ -9,8 +9,8 @@
 if (typeof I18N_EN !== 'undefined') {
   Object.assign(I18N_EN, {llmServiceTitle:'LLM Service',llmServiceDesc:'Manage LLM providers, compute agents, and model service groups.',llmServiceProviders:'Providers',llmServiceGroups:'Service Groups',llmServiceProvidersTitle:'LLM Providers',llmServiceProvidersDesc:'Backend LLM API endpoints for model routing.',llmServiceGroupsTitle:'Model Service Groups',llmServiceGroupsDesc:'Route models to providers with dispatch policies.',llmServiceAddProvider:'Add Provider',llmServiceNoProviders:'No providers configured.',llmServiceProviderName:'Name',llmServiceProviderURL:'API URL',llmServiceProviderKey:'API Key',llmServiceProviderProtocol:'Protocol',llmServiceProviderModels:'Models',llmServiceProviderPriority:'Priority',llmServiceProviderConcurrency:'Max Concurrency',llmServiceProviderCapabilities:'Capabilities',llmServiceAddGroup:'Add Service Group',llmServiceNoGroups:'No service groups.',llmServiceGroupName:'Group Name',llmServiceGroupDesc:'Description',llmServiceGroupModels:'Models',llmServiceSave:'Save',llmServiceCancel:'Cancel',sgRouteHint:'Exposed model alias with provider failover',sgRemoveRoute:'Remove',sgExposedModel:'Exposed Model',sgNoProviders:'No providers assigned. Add a provider above.',sgAccessPolicy:'Access Policy',sgPolicyFreeHint:'no grant needed',sgPolicyGrantHint:'needs card/grant',sgRoutes:'Provider Routes',sgAddRoute:'+ Add Route',sgProviderAlreadyAdded:'Provider already added to this route.',sgProviderConfigTitle:'Provider Config',sgCapabilityTags:'Capability Tags',sgExtraTags:'Extra Tags (custom)',sgPriority:'Priority',sgResolutionTier:'Resolution Tier',sgCreditMultiplier:'Credit Multiplier',sgIDNameRequired:'ID and Name are required.',sgRouteNeedsProvider:'Each route needs at least one provider.',sgAvailableProviders:'Available providers',chooseProvider:'Choose Provider'});
   Object.assign(I18N_ZH, {llmServiceTitle:'LLM \u63a5\u5165',llmServiceDesc:'\u7ba1\u7406 LLM \u670d\u52a1\u5546\u3001\u7b97\u529b\u4ee3\u7406\u5546\u548c\u6a21\u578b\u670d\u52a1\u7ec4\u3002',llmServiceProviders:'\u670d\u52a1\u5546',llmServiceGroups:'\u670d\u52a1\u7ec4',llmServiceProvidersTitle:'LLM \u670d\u52a1\u5546\u7ba1\u7406',llmServiceProvidersDesc:'\u540e\u7aef LLM API \u7aef\u70b9\u914d\u7f6e\u3002',llmServiceGroupsTitle:'\u6a21\u578b\u670d\u52a1\u7ec4',llmServiceGroupsDesc:'\u5c06\u6a21\u578b\u8def\u7531\u5230\u670d\u52a1\u5546\uff0c\u914d\u7f6e\u8c03\u5ea6\u7b56\u7565\u3002',llmServiceAddProvider:'\u6dfb\u52a0\u670d\u52a1\u5546',llmServiceNoProviders:'\u672a\u914d\u7f6e\u670d\u52a1\u5546\u3002',llmServiceProviderName:'\u540d\u79f0',llmServiceProviderURL:'API \u5730\u5740',llmServiceProviderKey:'API \u5bc6\u94a5',llmServiceProviderProtocol:'\u534f\u8bae',llmServiceProviderModels:'\u6a21\u578b',llmServiceProviderPriority:'\u4f18\u5148\u7ea7',llmServiceProviderConcurrency:'\u6700\u5927\u5e76\u53d1',llmServiceProviderCapabilities:'\u80fd\u529b\u6807\u7b7e',llmServiceAddGroup:'\u6dfb\u52a0\u670d\u52a1\u7ec4',llmServiceNoGroups:'\u672a\u914d\u7f6e\u670d\u52a1\u7ec4\u3002',llmServiceGroupName:'\u7ec4\u540d\u79f0',llmServiceGroupDesc:'\u63cf\u8ff0',llmServiceGroupModels:'\u6a21\u578b\u914d\u7f6e',llmServiceSave:'\u4fdd\u5b58',llmServiceCancel:'\u53d6\u6d88',sgRouteHint:'\u66b4\u9732\u6a21\u578b\u522b\u540d\uff0c\u6309\u670d\u52a1\u5546\u4f18\u5148\u7ea7\u5b9e\u73b0\u6545\u969c\u8f6c\u79fb',sgRemoveRoute:'\u5220\u9664',sgExposedModel:'\u66b4\u9732\u6a21\u578b\u540d',sgNoProviders:'\u672a\u5206\u914d\u670d\u52a1\u5546\u3002\u8bf7\u5728\u4e0a\u65b9\u6dfb\u52a0\u3002',sgAccessPolicy:'\u8bbf\u95ee\u7b56\u7565',sgPolicyFreeHint:'\u65e0\u9700\u6388\u6743',sgPolicyGrantHint:'\u9700\u8981\u5361/\u6388\u6743',sgRoutes:'\u670d\u52a1\u5546\u8def\u7531',sgAddRoute:'+ \u6dfb\u52a0\u8def\u7531',sgProviderAlreadyAdded:'\u8be5\u670d\u52a1\u5546\u5df2\u6dfb\u52a0\u3002',sgProviderConfigTitle:'\u670d\u52a1\u5546\u914d\u7f6e',sgCapabilityTags:'\u80fd\u529b\u6807\u7b7e',sgExtraTags:'\u989d\u5916\u6807\u7b7e\uff08\u81ea\u5b9a\u4e49\uff09',sgPriority:'\u4f18\u5148\u7ea7',sgResolutionTier:'\u89e3\u6790\u5c42\u7ea7',sgCreditMultiplier:'\u989d\u5ea6\u500d\u7387',sgIDNameRequired:'ID \u548c\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002',sgRouteNeedsProvider:'\u6bcf\u4e2a\u8def\u7531\u81f3\u5c11\u9700\u8981\u4e00\u4e2a\u670d\u52a1\u5546\u3002',sgAvailableProviders:'\u53ef\u7528\u670d\u52a1\u5546',chooseProvider:'\u9009\u62e9\u670d\u52a1\u5546'});
-  Object.assign(I18N_EN, {providerProbeModels:'Probe',providerProbing:'Probing models...',providerProbeEmpty:'No models returned.',providerProbeFailed:'Probe failed',providerCapabilityPreset:'Preset capabilities',testProvider:'Test',providerTesting:'Testing...',providerTestOK:'Available',providerTestFailed:'Unavailable',providerTestLatency:'Latency',providerTestModels:'Models'});
-  Object.assign(I18N_ZH, {providerProbeModels:'\u63a2\u6d4b',providerProbing:'\u6b63\u5728\u63a2\u6d4b\u6a21\u578b...',providerProbeEmpty:'\u672a\u8fd4\u56de\u6a21\u578b\u5217\u8868\u3002',providerProbeFailed:'\u63a2\u6d4b\u5931\u8d25',providerCapabilityPreset:'\u9884\u7f6e\u80fd\u529b',testProvider:'\u6d4b\u8bd5',providerTesting:'\u6d4b\u8bd5\u4e2d...',providerTestOK:'\u53ef\u7528',providerTestFailed:'\u5f02\u5e38',providerTestLatency:'\u8017\u65f6',providerTestModels:'\u6a21\u578b'});
+  Object.assign(I18N_EN, {providerProbeModels:'Probe',providerProbing:'Probing models...',providerProbeEmpty:'No models returned.',providerProbeFailed:'Probe failed',providerCapabilityPreset:'Preset capabilities',testProvider:'Test Status',providerTesting:'Testing...',providerTestOK:'Available',providerTestFailed:'Unavailable',providerTestLatency:'Latency',providerTestModels:'Models'});
+  Object.assign(I18N_ZH, {providerProbeModels:'\u63a2\u6d4b',providerProbing:'\u6b63\u5728\u63a2\u6d4b\u6a21\u578b...',providerProbeEmpty:'\u672a\u8fd4\u56de\u6a21\u578b\u5217\u8868\u3002',providerProbeFailed:'\u63a2\u6d4b\u5931\u8d25',providerCapabilityPreset:'\u9884\u7f6e\u80fd\u529b',testProvider:'\u6d4b\u8bd5\u72b6\u6001',providerTesting:'\u6d4b\u8bd5\u4e2d...',providerTestOK:'\u53ef\u7528',providerTestFailed:'\u5f02\u5e38',providerTestLatency:'\u8017\u65f6',providerTestModels:'\u6a21\u578b'});
   Object.assign(I18N_EN, {llmServiceAgents:'Agents',llmServiceAgentsTitle:'Compute Agents',llmServiceAgentsDesc:'Manage upstream compute resellers for settlement.',llmServiceAddAgent:'Add Agent',llmServiceNoAgents:'No agents configured.'});
   Object.assign(I18N_ZH, {llmServiceAgents:'\u4ee3\u7406\u5546',llmServiceAgentsTitle:'\u7b97\u529b\u4ee3\u7406\u5546',llmServiceAgentsDesc:'\u7ba1\u7406\u4e0a\u6e38\u7b97\u529b\u4ee3\u7406\u4e0e\u7ed3\u7b97\u5f52\u5c5e\u3002',llmServiceAddAgent:'\u6dfb\u52a0\u4ee3\u7406\u5546',llmServiceNoAgents:'\u672a\u914d\u7f6e\u4ee3\u7406\u5546\u3002'});
 }
@@ -58,6 +58,8 @@ if (typeof I18N_EN !== 'undefined') {
       // Common
       save: 'Save', cancel: 'Cancel', confirm: 'Confirm', delete: 'Delete',
       saved: 'Saved successfully.', deleted: 'Deleted.', error: 'Error',
+      testProvider: 'Test Status', providerTesting: 'Testing...', providerTestOK: 'Available', providerTestFailed: 'Unavailable',
+      providerTestLatency: 'Latency', providerTestModels: 'Models',
       status: 'Status', credits: 'Credits', expires: 'Expires', active: 'Active',
     },
     zh: {
@@ -93,12 +95,15 @@ if (typeof I18N_EN !== 'undefined') {
       fieldHubRequired: '\u8bf7\u9009\u62e9 Hub', fieldTenantRequired: '\u8bf7\u9009\u62e9\u79df\u6237', noHubs: '\u6682\u65e0\u5df2\u6ce8\u518c Hub\u3002', defaultTenant: '\u9ed8\u8ba4\u79df\u6237',
       save: '\u4fdd\u5b58', cancel: '\u53d6\u6d88', confirm: '\u786e\u8ba4', delete: '\u5220\u9664',
       saved: '\u4fdd\u5b58\u6210\u529f\u3002', deleted: '\u5df2\u5220\u9664\u3002', error: '\u9519\u8bef',
+      testProvider: '\u6d4b\u8bd5\u72b6\u6001', providerTesting: '\u6d4b\u8bd5\u4e2d...', providerTestOK: '\u53ef\u7528', providerTestFailed: '\u5f02\u5e38',
+      providerTestLatency: '\u8017\u65f6', providerTestModels: '\u6a21\u578b',
       status: '\u72b6\u6001', credits: '\u989d\u5ea6', expires: '\u6709\u6548\u671f', active: '\u6d3b\u8dc3',
     }
   };
   function t(k) { var l = (window.currentLang || 'en').startsWith('zh') ? 'zh' : 'en'; return (I18N[l]||I18N.en)[k] || I18N.en[k] || k; }
   function isZh() { return (window.currentLang || 'en').startsWith('zh'); }
   function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function jsArg(s) { return esc(JSON.stringify(String(s || ''))); }
 
   // ---------------------------------------------------------------------------
   // API
@@ -158,14 +163,15 @@ if (typeof I18N_EN !== 'undefined') {
       var testState = providerTestStates[p.id];
       var testHTML = renderProviderTestState(testState);
       var testDisabled = testState && testState.status === 'testing' ? ' disabled' : '';
+      var providerArg = jsArg(p.id);
       return '<div class="data-row"><div class="data-row-main"><strong>' + esc(p.name||p.id) + '</strong>'
         + '<span class="data-row-meta">' + esc(p.api_url) + ' \u00b7 ' + esc(p.protocol||'openai')
         + (p.has_api_key ? ' \u00b7 \u{1f511}' : '') + '</span>'
         + testHTML + '</div>'
         + '<div class="data-row-actions">'
-        + '<button class="btn-ghost provider-test-btn" onclick="testLLMProvider(\'' + esc(p.id) + '\')"' + testDisabled + '>' + esc(testState && testState.status === 'testing' ? t('providerTesting') : t('testProvider')) + '</button>'
-        + '<button class="btn-ghost" onclick="editLLMProvider(\'' + esc(p.id) + '\')">' + esc(t('editProvider')) + '</button>'
-        + '<button class="btn-danger-ghost" onclick="deleteLLMProvider(\'' + esc(p.id) + '\')">' + esc(t('deleteProvider')) + '</button>'
+        + '<button class="btn-ghost provider-test-btn" onclick="testLLMProvider(' + providerArg + ')"' + testDisabled + '>' + esc(testState && testState.status === 'testing' ? t('providerTesting') : t('testProvider')) + '</button>'
+        + '<button class="btn-ghost" onclick="editLLMProvider(' + providerArg + ')">' + esc(t('editProvider')) + '</button>'
+        + '<button class="btn-danger-ghost" onclick="deleteLLMProvider(' + providerArg + ')">' + esc(t('deleteProvider')) + '</button>'
         + '</div></div>';
     }).join('');
   }
