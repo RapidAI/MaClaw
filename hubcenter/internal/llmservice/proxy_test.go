@@ -1,7 +1,10 @@
 package llmservice
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,6 +13,12 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
+
+type proxyRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f proxyRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 // --- mock auth repo ---
 
@@ -386,6 +395,57 @@ func TestHandleProxyRequest_FreeAccessPolicySkipsAuthorization(t *testing.T) {
 	}
 	if len(authRepo.auths) != 0 {
 		t.Fatalf("free group should not create or deduct authorizations: %#v", authRepo.auths)
+	}
+}
+
+func TestForwardToProviderUsesSharedCorelibCompatibility(t *testing.T) {
+	var seen map[string]any
+	client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "codegen.qianxin-inc.cn" || req.URL.Path != "/api/v1/chat/completions" {
+			t.Fatalf("upstream URL = %s, want CodeGen chat completions endpoint", req.URL.String())
+		}
+		if err := json.NewDecoder(req.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"id":"ok","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+			Request:    req,
+		}, nil
+	})}
+	provider := &llmpool.ProviderConfig{
+		ID:       "codegen",
+		Name:     "CodeGen",
+		APIURL:   "https://codegen.qianxin-inc.cn/api/v1",
+		APIKey:   "secret",
+		Protocol: "openai",
+	}
+	body := map[string]any{
+		"model":           "auto",
+		"stream":          true,
+		"stream_options":  map[string]any{"include_usage": true},
+		"response_format": map[string]any{"type": "json_schema"},
+		"messages":        []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+
+	resp, err := forwardToProvider(context.Background(), client, provider, body, "auto")
+	if err != nil {
+		t.Fatalf("forwardToProvider() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if seen["model"] != "qax-codegen/Auto" {
+		t.Fatalf("model = %#v, want CodeGen auto model", seen["model"])
+	}
+	for _, key := range []string{"stream_options", "response_format"} {
+		if _, ok := seen[key]; ok {
+			t.Fatalf("%s leaked upstream: %#v", key, seen)
+		}
+	}
+	if seen["stream"] != false {
+		t.Fatalf("stream = %#v, want false for HubCenter non-stream proxy", seen["stream"])
 	}
 }
 

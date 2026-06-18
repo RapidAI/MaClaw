@@ -220,7 +220,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const previewStateMapRef = useRef<Map<string, { workflow: WorkflowUIState; code: CodePreviewUIState; previewMode: "workflow" | "code" }>>(new Map());
     const previewOwnerTabRef = useRef<string>(canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.id : "local");
     const previewOwnerResetPendingRef = useRef(false);
-    const agentViewOwnerTabRef = useRef<string>("");
+    const agentViewOwnerTabRef = useRef<string>(activeTab.id);
     useEffect(() => {
         const prevTabId = prevActiveTabIdRef.current;
         const currentTabId = activeTab.id;
@@ -802,7 +802,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (state) { restoreWorkflowState(state.workflow); restoreCodePreviewState(state.code); }
         else { resetWorkflowState(); resetCodePreviewState(); }
     }, [activeTab.id, restoreWorkflowState, restoreCodePreviewState, resetWorkflowState, resetCodePreviewState]);
-    const showAgentView = !!agentView && agentViewOwnerTabRef.current === activeTab.id;
+    const showAgentView = !!agentView && (agentViewOwnerTabRef.current === activeTab.id || (agentView.id?.startsWith("workflow:form:") ?? false));
     const codingPreviewAllowed = canShowAssistantCodingPreviewForTab(activeTab);
     const showWorkflowPreview = codingPreviewAllowed && workflowState.splitMode;
     const showCodePreview = codingPreviewAllowed && !showAgentView && codePreviewState.active;

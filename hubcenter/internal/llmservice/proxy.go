@@ -1,17 +1,15 @@
 package llmservice
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
 
@@ -288,62 +286,32 @@ type providerForwardResponse struct {
 }
 
 func forwardToProvider(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, body map[string]any, model string) (*providerForwardResponse, error) {
-	if client == nil {
-		client = &http.Client{Timeout: 120 * time.Second}
+	if provider == nil {
+		return nil, fmt.Errorf("provider is required")
 	}
-
-	// Per-request timeout based on provider config (default 120s)
-	timeout := 120 * time.Second
-	if provider.UpstreamTimeoutSec > 0 {
-		timeout = time.Duration(provider.UpstreamTimeoutSec) * time.Second
+	endpointProvider := corelib.LLMEndpointProvider{
+		ID:                       provider.ID,
+		Name:                     provider.Name,
+		APIURL:                   provider.APIURL,
+		APIKey:                   provider.APIKey,
+		Model:                    model,
+		Protocol:                 provider.Protocol,
+		WireAPI:                  provider.WireAPI,
+		UpstreamTimeoutSec:       provider.UpstreamTimeoutSec,
+		MaxConcurrency:           provider.MaxConcurrency,
+		MaxQueueWaiters:          provider.MaxQueueWaiters,
+		QueueTimeoutMS:           provider.QueueTimeoutMS,
+		CircuitBreakerThreshold:  provider.CircuitBreakerThreshold,
+		CircuitBreakerCooldownMS: provider.CircuitBreakerCooldownMS,
+		FailureBackoffBaseMS:     provider.FailureBackoffBaseMS,
+		FailureBackoffMaxMS:      provider.FailureBackoffMaxMS,
 	}
-	reqCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	// Override model in body if provider has a specific model mapping
-	reqBody := make(map[string]any)
-	for k, v := range body {
-		reqBody[k] = v
-	}
-	// Keep original model name — provider should handle it
-
-	payload, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-
-	apiURL := provider.APIURL
-	if !strings.HasSuffix(apiURL, "/chat/completions") && !strings.HasSuffix(apiURL, "/v1/messages") {
-		trimmed := strings.TrimRight(apiURL, "/")
-		if strings.HasSuffix(trimmed, "/v1") {
-			apiURL = trimmed + "/chat/completions"
-		} else {
-			apiURL = trimmed + "/v1/chat/completions"
-		}
-	}
-
-	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, apiURL, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if provider.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+provider.APIKey)
-	}
-
-	resp, err := client.Do(httpReq)
+	respBody, statusCode, err := corelib.ForwardLLMEndpointProviderRequest(ctx, endpointProvider, body, client, model)
 	if err != nil {
 		return nil, fmt.Errorf("forward to %s: %w", provider.ID, err)
 	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response from %s: %w", provider.ID, err)
-	}
-
 	return &providerForwardResponse{
-		StatusCode: resp.StatusCode,
+		StatusCode: statusCode,
 		Body:       respBody,
 	}, nil
 }

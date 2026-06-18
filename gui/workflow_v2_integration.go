@@ -46,19 +46,86 @@ func (a *App) buildWorkflowV2StateWithLLM(store v2.WorkflowStore) *workflowV2Sta
 	st.machine.SetConfirmClassifier(a.workflowV2ConfirmClassifier)
 	log.Printf("[workflow-v2] engine ready: router=%v machine=%v store=%v", st.router != nil, st.machine != nil, st.store != nil)
 
+	// Self-heal: cancel stale active workflows that were left over from a previous
+	// session (e.g. app crash, forced quit, or update restart). Without this, the
+	// stale active state causes routing conflicts when the user starts a new workflow.
+	staleCancelled := a.cancelStaleWorkflowsOnStartup(st.machine)
+
 	// On startup, dismiss any stale frontend workflow board state.
 	// The frontend persists board state to ai_assistant_ui_state.json and restores it
 	// on reload, but the backend workflow may have been cancelled or completed since then.
 	// We emit a dismiss event so the frontend starts clean; if there's an active workflow,
 	// the next user message will re-emit the correct phase_update via routeWithWorkflowV2.
-	go func() {
-		time.Sleep(500 * time.Millisecond) // Wait for Wails runtime to be ready
-		emitWorkflowV2Event(a, "workflow:suggest_maximize_dismiss", nil)
-		emitWorkflowV2Event(a, "workflow:phase_update", nil)
-		log.Printf("[workflow-v2] startup: emitted board reset to clear stale frontend state")
-	}()
+	//
+	// Skip the delayed emit if we already cancelled a stale workflow above — the state
+	// is already clean, and the delayed emit could race with a new workflow the user
+	// starts within the 500ms window.
+	if !staleCancelled {
+		go func() {
+			time.Sleep(500 * time.Millisecond) // Wait for Wails runtime to be ready
+			emitWorkflowV2Event(a, "workflow:suggest_maximize_dismiss", nil)
+			emitWorkflowV2Event(a, "workflow:phase_update", nil)
+			log.Printf("[workflow-v2] startup: emitted board reset to clear stale frontend state")
+		}()
+	}
 
 	return st
+}
+
+// cancelStaleWorkflowsOnStartup auto-cancels active workflows that are stale from
+// a previous session. This prevents stale state from interfering with new workflow
+// creation after app restarts. Returns true if a stale workflow was cancelled.
+//
+// Two thresholds:
+//   - Form-waiting workflows (InputSchema != nil, FormData == nil): cancelled after 5 minutes.
+//     These are the most problematic — they intercept routing via ActionShowForm and prevent
+//     new workflow creation from reaching the correct path.
+//   - All other active workflows: cancelled after 4 hours.
+func (a *App) cancelStaleWorkflowsOnStartup(machine *v2.StateMachine) bool {
+	if machine == nil {
+		return false
+	}
+	// The SQLite store uses user_id as primary key — desktop has one user.
+	// Check the desktop-user's active workflow.
+	const desktopUser = "desktop-user"
+	state := machine.GetActive(desktopUser)
+	if state == nil {
+		return false
+	}
+	staleDuration := time.Since(state.UpdatedAt)
+
+	// Determine the staleness threshold based on workflow phase state.
+	threshold := 4 * time.Hour
+	if phase := state.ActivePhase(); phase != nil && phase.InputSchema != nil && phase.FormData == nil {
+		// Workflow is waiting for form input — use aggressive threshold.
+		// On startup, a form-waiting workflow is almost certainly stale from a previous
+		// session. The user can't have submitted a form within seconds of app launch.
+		threshold = 5 * time.Minute
+	}
+
+	if staleDuration > threshold {
+		if err := machine.Cancel(desktopUser); err != nil {
+			log.Printf("[workflow-v2] startup: failed to cancel stale workflow %s: %v", state.ID, err)
+			return false
+		}
+		log.Printf("[workflow-v2] startup: auto-cancelled stale workflow %s (type=%s, stale=%s, reason=%s)",
+			state.ID, state.Type, staleDuration.Truncate(time.Minute), func() string {
+				if threshold == 5*time.Minute {
+					return "form_waiting"
+				}
+				return "general_staleness"
+			}())
+		// Emit board reset after cancel — the frontend may have restored the old workflow's
+		// progress board from ai_assistant_ui_state.json. Use a short delay (same as the
+		// non-stale path) to ensure Wails runtime is ready.
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			emitWorkflowV2Event(a, "workflow:suggest_maximize_dismiss", nil)
+			emitWorkflowV2Event(a, "workflow:phase_update", nil)
+		}()
+		return true
+	}
+	return false
 }
 
 // workflowV2ConfirmClassifier uses LLM to classify user intent during workflow confirmation.

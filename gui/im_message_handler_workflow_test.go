@@ -102,7 +102,18 @@ func setupWorkflowTestHandler(llmCaller v2.LLMCaller) (*IMMessageHandler, *mockE
 	engine := v2.NewWorkflowEngine(v1Registry, understanding, v2.NullStore{}, cb)
 	engine.SetMachine(v2Machine) // Sync engine StartWorkflow to V2 StateMachine
 
+	// Use an isolated temp directory for config to prevent tests from polluting
+	// the real ~/.maclaw/config.json (root cause of stale test paths leaking into
+	// production config, e.g. TestWorkflowStartProjectPathPrefersProjectScopedOwner).
+	//
+	// Note: os.MkdirTemp is used instead of t.TempDir() because this helper doesn't
+	// accept *testing.T (changing its signature would break 30+ callers). The temp dir
+	// is not auto-cleaned, but this is acceptable for test environments — the OS
+	// cleans temp dirs periodically, and each dir is <4KB (one config.json file).
+	testHome, _ := os.MkdirTemp("", "maclaw-workflow-test-*")
+
 	app := &App{
+		testHomeDir:    testHome,
 		workflowEngine: engine,
 		workflowV2: &workflowV2State{
 			machine:  v2Machine,
