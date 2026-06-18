@@ -337,7 +337,7 @@ describe('AIAssistantPanel property tests', () => {
                 executeAction: async () => {},
                 refreshNews: () => {},
             },
-            state: { messages: [], sending: false, streaming: false, ready: true },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
         });
 
         const titleBar = getByTestId('ai-title-bar');
@@ -459,7 +459,7 @@ describe('AIAssistantPanel property tests', () => {
     it('top-aligns input actions after the composer is resized taller', () => {
         const { getByTestId } = renderPanel({
             window: { inline: true },
-            state: { messages: [], sending: false, streaming: false, ready: true },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
         });
 
         const handle = getByTestId('ai-input-resize-handle');
@@ -608,6 +608,15 @@ describe('AIAssistantPanel property tests', () => {
 
         // With only news messages and no conversation, the welcome view should be shown
         // (news cards are integrated into the welcome view).
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
+    });
+
+    it('shows welcome view in inline (embedded panel) mode when no conversation exists', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
         expect(getByTestId('ai-welcome-container')).toBeTruthy();
     });
 
@@ -2953,7 +2962,7 @@ describe('AIAssistantPanel property tests', () => {
             },
             onPendingProjectTabOpenHandled: onHandled,
             state: {
-                messages: [],
+                messages: [{ id: 'local-msg-1', role: 'user', content: 'earlier question' }],
                 sending: true,
                 sendingSessionKey: 'desktop-user:D:/tasks/project-busy-local-idle',
                 streaming: true,
@@ -3056,7 +3065,7 @@ describe('AIAssistantPanel property tests', () => {
             },
             onPendingProjectTabOpenHandled: onHandled,
             state: {
-                messages: [],
+                messages: [{ id: 'local-msg-1', role: 'user', content: 'earlier question' }],
                 sending: false,
                 busySessionKeys: ['desktop-user:D:/tasks/detached-project-streaming'],
                 streaming: false,

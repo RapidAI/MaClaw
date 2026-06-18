@@ -81,6 +81,12 @@ type LoopContext struct {
 	// model output before it reaches workflow persistence or UI.
 	WorkflowPhaseID string
 
+	// WorkflowWrittenFiles tracks files written via write_file during a workflow
+	// agent loop. Used by captureWorkflowDocAfterAgentLoop to read the actual
+	// document content when the LLM writes to disk instead of outputting text.
+	// Each entry is an absolute file path that was successfully written.
+	WorkflowWrittenFiles []string
+
 	// IsAskUserResponse is true when the current message is a response to a
 	// previous ask_user tool question. In this case the user's text is a
 	// continuation of an existing task, not a new independent request. The

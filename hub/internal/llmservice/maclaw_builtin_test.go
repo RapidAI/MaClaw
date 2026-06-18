@@ -221,3 +221,59 @@ func TestTenantLLMAccessControlFetchCachesAuthorizationTenantAliases(t *testing.
 		t.Fatalf("requests = %d, want 1", requests)
 	}
 }
+
+func TestEnsureBuiltinProviderDefaultsOfficialGroupToGrantRequired(t *testing.T) {
+	reg := &Registry{}
+
+	if !EnsureBuiltinProvider(reg) {
+		t.Fatal("EnsureBuiltinProvider changed = false, want true")
+	}
+
+	group := reg.FindModelServiceGroup(MaClawOfficialServiceGroupID)
+	if group == nil {
+		t.Fatal("missing official service group")
+	}
+	if group.AccessPolicy != AccessPolicyGrantRequired {
+		t.Fatalf("access policy = %q, want %q", group.AccessPolicy, AccessPolicyGrantRequired)
+	}
+}
+
+func TestEnsureBuiltinProviderRepairsLegacyFreeOfficialGroup(t *testing.T) {
+	reg := &Registry{ModelServiceGroups: []ModelServiceGroup{{
+		ID:           MaClawOfficialServiceGroupID,
+		Name:         MaClawOfficialServiceGroupName,
+		Description:  "MaClaw 官方 LLM 服务，通过 HubCenter 提供算力",
+		AccessPolicy: AccessPolicyFree,
+		Models: []ModelServiceModel{{
+			Name:        "auto",
+			ProviderIDs: []string{MaClawOfficialProviderID},
+		}},
+	}}}
+
+	if !EnsureBuiltinProvider(reg) {
+		t.Fatal("EnsureBuiltinProvider changed = false, want true")
+	}
+	if got := reg.ModelServiceGroups[0].AccessPolicy; got != AccessPolicyGrantRequired {
+		t.Fatalf("access policy = %q, want %q", got, AccessPolicyGrantRequired)
+	}
+}
+
+func TestEnsureBuiltinProviderDoesNotOverrideCustomizedOfficialGroupPolicy(t *testing.T) {
+	reg := &Registry{ModelServiceGroups: []ModelServiceGroup{{
+		ID:           MaClawOfficialServiceGroupID,
+		Name:         MaClawOfficialServiceGroupName,
+		Description:  "Custom tenant policy",
+		AccessPolicy: AccessPolicyFree,
+		Models: []ModelServiceModel{{
+			Name:        "auto",
+			ProviderIDs: []string{MaClawOfficialProviderID},
+		}},
+	}}}
+
+	if EnsureBuiltinProvider(reg) {
+		t.Fatal("EnsureBuiltinProvider changed customized group")
+	}
+	if got := reg.ModelServiceGroups[0].AccessPolicy; got != AccessPolicyFree {
+		t.Fatalf("access policy = %q, want %q", got, AccessPolicyFree)
+	}
+}

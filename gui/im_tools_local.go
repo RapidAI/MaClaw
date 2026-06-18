@@ -30,6 +30,32 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 	if command == "" {
 		return "缺少 command 参数"
 	}
+	background, _ := args["background"].(bool)
+
+	// --- Auto-spill: if command is an oversized inline python script, write it to
+	// a temp file and execute that file instead. This is transparent to the LLM.
+	var autoSpillTempFile string
+	if len([]rune(command)) > maxAgentLoopInlineBashCommandRunes && bashCommandIsAutoSpillable(command) {
+		result, err := autoSpillPythonScript(command, h.resolveToolWorkDirForOwner(stringVal(args, "working_dir"), ownerID))
+		if err == nil {
+			log.Printf("[bash-auto-spill] rewrote python -c (%d runes) to temp script: %s", len([]rune(command)), result.Command)
+			autoSpillTempFile = result.TempFile
+			command = result.Command
+			if result.TempFile != "" {
+				if background {
+					// Background tasks run asynchronously — append shell cleanup so the temp
+					// file is removed after python finishes, regardless of exit code.
+					cleanupCmd := shellRemoveCommand(result.TempFile)
+					command = command + "; " + cleanupCmd
+				} else {
+					// Synchronous execution — defer cleanup after toolBash returns.
+					defer os.Remove(result.TempFile)
+				}
+			}
+		} else {
+			log.Printf("[bash-auto-spill] failed to spill: %v, proceeding with original command", err)
+		}
+	}
 
 	if rejection, rejected := coretool.RejectRawSSHCommand(command); rejected {
 		return rejection
@@ -45,7 +71,7 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 	}
 
 	// --- Background mode: submit to LocalBackgroundTaskManager ---
-	if bg, ok := args["background"].(bool); ok && bg {
+	if background {
 		return h.toolBashBackgroundForOwner(command, stringVal(args, "working_dir"), stringVal(args, "task_role"), ownerID)
 	}
 
@@ -143,7 +169,14 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 	if b.Len() == 0 {
 		return "(命令执行完成，无输出)"
 	}
-	return b.String()
+	output := b.String()
+	// Scrub auto-spill temp file path from output (e.g. Python tracebacks)
+	// to prevent LLM from trying to read/edit the already-deleted temp file.
+	if autoSpillTempFile != "" {
+		output = strings.ReplaceAll(output, autoSpillTempFile, "<inline-script>")
+		output = strings.ReplaceAll(output, filepath.ToSlash(autoSpillTempFile), "<inline-script>")
+	}
+	return output
 }
 
 func resolveFileToolPath(path string) (string, error) {

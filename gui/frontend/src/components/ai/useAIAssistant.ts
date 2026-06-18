@@ -4420,13 +4420,19 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
     const submitAgentView = useCallback(async (viewId: string | undefined, data: Record<string, unknown>) => {
         const isWorkflowFormSubmit = typeof viewId === 'string' && viewId.startsWith('workflow:form:');
-        if (!isWorkflowFormSubmit) updateVisibleAgentViewForSession(activeSessionKeyForEvents() || 'desktop-user', null);
+        const activeSubmitSessionKey = normalizeRuntimeSessionKey(activeSessionKeyForEvents() || 'desktop-user');
+        const workflowOwnerFromPayload = typeof data._workflow_user_id === 'string' ? data._workflow_user_id : '';
+        const visibleAgentView = isWorkflowFormSubmit ? (agentViewsBySessionRef.current.get(activeAgentViewSessionKeyRef.current) || null) : null;
+        const workflowOwnerFromVisibleView = visibleAgentView?.id === viewId ? agentViewFieldValue(visibleAgentView, '_workflow_user_id') : '';
+        const workflowSubmitSessionKey = normalizeRuntimeSessionKey(workflowOwnerFromPayload || workflowOwnerFromVisibleView || activeSubmitSessionKey);
+        const submitRoundSessionKey = isWorkflowFormSubmit ? workflowSubmitSessionKey : activeSubmitSessionKey;
+        if (!isWorkflowFormSubmit) updateVisibleAgentViewForSession(activeSubmitSessionKey, null);
         const payload = JSON.stringify({ view_id: viewId || "", data });
         let workflowSubmitRound: { generation: number; assistantMessageId: string; requestId: string } | null = null;
         const startAgentViewSubmitRound = (requestId: string) => {
             const generation = activeRoundRef.current.generation + 1;
             const assistantMessageId = nextId();
-            const sessionKey = activeSessionKeyForEvents() || 'desktop-user';
+            const sessionKey = submitRoundSessionKey;
             clearTransientProgress(sessionKey);
             setRoundState({ generation, phase: 'requesting', assistantMessageId, requestId, sessionKey, userText: '' });
             setMessages(prev => appendAssistantPlaceholder(prev, assistantMessageId, requestId, sessionKey));
@@ -4437,11 +4443,15 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         };
         try {
             if (isWorkflowFormSubmit) {
-                await waitForForegroundIdle(activeSessionKeyForEvents() || 'desktop-user');
+                await waitForForegroundIdle(submitRoundSessionKey);
                 workflowSubmitRound = startAgentViewSubmitRound(createForegroundRequestID());
             }
             const rawResponse = await SubmitAgentView({ view_id: viewId || "", data, request_id: workflowSubmitRound?.requestId || undefined }) as AIAssistantSendResult | null | undefined;
             const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);
+            const workflowSubmitAccepted = isWorkflowFormSubmit && !response.error;
+            if (workflowSubmitAccepted) {
+                updateVisibleAgentViewForSession(workflowSubmitSessionKey, current => current?.id === viewId ? null : current);
+            }
             if (response?.deferred && !workflowSubmitRound) {
                 const requestId = resolveSendRequestID(response) || createForegroundRequestID();
                 startAgentViewSubmitRound(requestId);

@@ -933,11 +933,19 @@ func (s *HTTPServer) handlePlatformUpdateVirtualEmployeeConfig(w http.ResponseWr
 		return
 	}
 	var in struct {
-		TenantID         string                  `json:"tenant_id"`
-		PlatformTenantID string                  `json:"platform_tenant_id"`
-		VirtualEmail     string                  `json:"virtual_email"`
-		AvatarDataURL    *string                 `json:"avatar_data_url"`
-		MaclawSrvConfig  platformMaclawSrvConfig `json:"maclawsrv_config"`
+		TenantID          string                  `json:"tenant_id"`
+		PlatformTenantID  string                  `json:"platform_tenant_id"`
+		VirtualEmail      string                  `json:"virtual_email"`
+		AvatarDataURL     *string                 `json:"avatar_data_url"`
+		DefaultLLM        string                  `json:"default_llm"`
+		LLMServiceGroupID string                  `json:"llm_service_group_id"`
+		HubLLMEndpoint    string                  `json:"hub_llm_endpoint"`
+		HubLLMAPIKey      string                  `json:"hub_llm_api_key"`
+		LLMModel          string                  `json:"llm_model"`
+		HubLLMViewerToken string                  `json:"hub_llm_viewer_token"`
+		ViewerToken       string                  `json:"viewer_token"`
+		AccessToken       string                  `json:"access_token"`
+		MaclawSrvConfig   platformMaclawSrvConfig `json:"maclawsrv_config"`
 	}
 	if !decodePlatformJSON(w, r, &in) {
 		return
@@ -971,12 +979,41 @@ func (s *HTTPServer) handlePlatformUpdateVirtualEmployeeConfig(w http.ResponseWr
 		return
 	}
 	principal := agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}
+	llmURL := strings.TrimSpace(in.HubLLMEndpoint)
+	llmKey := firstPlatformNonEmpty(in.HubLLMViewerToken, in.ViewerToken, in.AccessToken, in.HubLLMAPIKey)
+	llmGroupID := firstPlatformNonEmpty(in.LLMServiceGroupID, in.DefaultLLM)
+	llmModel := strings.TrimSpace(in.LLMModel)
+	if llmModel == "" && (llmURL != "" || llmGroupID != "") {
+		llmModel = platformHubLLMModel
+	}
+	if llmKey != "" {
+		if llmURL == "" || llmModel == "" {
+			cfg, err := s.svc.GetUserConfig(r.Context(), principal)
+			if err != nil {
+				writeRedactedError(w, err, s.svc.DataRoot())
+				return
+			}
+			llmURL = firstPlatformNonEmpty(llmURL, cfg.AppConfig.MaclawLLMUrl)
+			llmModel = firstPlatformNonEmpty(llmModel, cfg.AppConfig.MaclawLLMModel)
+		}
+		if err := s.updatePlatformUserLLMConfig(r, principal, firstPlatformNonEmpty(llmURL, "http://127.0.0.1/managed-by-hub"), llmKey, firstPlatformNonEmpty(llmModel, platformHubLLMModel)); err != nil {
+			writeRedactedError(w, err, s.svc.DataRoot())
+			return
+		}
+	}
 	if err := s.updatePlatformUserMaclawSrvConfig(r, principal, in.MaclawSrvConfig); err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	metadataPatch := map[string]string{}
 	if in.AvatarDataURL != nil {
-		metadata := mergePlatformInstanceMetadata(binding.Instance.Metadata, map[string]string{"ve_avatar_data_url": avatarDataURL})
+		metadataPatch["ve_avatar_data_url"] = avatarDataURL
+	}
+	if llmGroupID != "" {
+		metadataPatch["llm_service_group_id"] = llmGroupID
+	}
+	if len(metadataPatch) > 0 {
+		metadata := mergePlatformInstanceMetadata(binding.Instance.Metadata, metadataPatch)
 		if !stringMapEqual(binding.Instance.Metadata, metadata) {
 			if _, err := s.svc.UpdateInstance(r.Context(), principal, binding.Instance.ID, agentservice.UpdateInstanceInput{Metadata: metadata}); err != nil {
 				writeRedactedError(w, err, s.svc.DataRoot())

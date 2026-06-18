@@ -461,7 +461,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		})
 		httpapi.SetMaClawModule(maclawMod)
 	}
-	llmservice.EnsureRegistryBuiltins(context.Background(), st.System)
+	ensureLLMRegistryBuiltinsForAllTenants(context.Background(), st.System, st.Tenants)
 
 	router := httpapi.NewRouter(
 		adminService,
@@ -655,6 +655,25 @@ func scopedSystemSettingsForTenant(tenantID string, base store.SystemSettingsRep
 		return base
 	}
 	return tenantScopedSystemSettings{tenantID: tenantID, base: base}
+}
+
+func ensureLLMRegistryBuiltinsForAllTenants(ctx context.Context, system store.SystemSettingsRepository, tenants store.TenantRepository) {
+	llmservice.EnsureRegistryBuiltins(ctx, system)
+	if tenants == nil {
+		return
+	}
+	items, err := tenants.List(ctx)
+	if err != nil {
+		log.Printf("[maclaw-init] failed to list tenants for LLM registry builtins: %v", err)
+		return
+	}
+	for _, tenant := range items {
+		tenantID := strings.TrimSpace(tenant.ID)
+		if tenantID == "" || tenantID == store.DefaultTenantID {
+			continue
+		}
+		llmservice.EnsureRegistryBuiltins(ctx, scopedSystemSettingsForTenant(tenantID, system))
+	}
 }
 
 func (s tenantScopedSystemSettings) Set(ctx context.Context, key, valueJSON string) error {

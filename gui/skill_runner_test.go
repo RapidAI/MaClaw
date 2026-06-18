@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,21 @@ import (
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
+
+var testLogOutputMu sync.Mutex
+
+func captureLogOutputForTest(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	testLogOutputMu.Lock()
+	var buf bytes.Buffer
+	originalWriter := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() {
+		log.SetOutput(originalWriter)
+		testLogOutputMu.Unlock()
+	})
+	return &buf
+}
 
 func TestSkillDocHelpersAcceptMixedCaseSkillMarkdown(t *testing.T) {
 	dir := t.TempDir()
@@ -84,6 +100,214 @@ func TestSkillRunnerFinalizeRefusesCleanupOutsideAppTemp(t *testing.T) {
 	}
 	if len(run.status.Warnings) == 0 || !strings.Contains(run.status.Warnings[0], "outside temp dir") {
 		t.Fatalf("expected outside-temp warning, got %#v", run.status.Warnings)
+	}
+}
+
+func TestSkillRunnerFinalizeFailureLogsSkillAndReason(t *testing.T) {
+	logs := captureLogOutputForTest(t)
+
+	runner := NewSkillRunner(&SkillExecutor{})
+	run := &skillRun{
+		status: SkillRunStatus{
+			RunID:   "run-log-failure",
+			Skill:   "broken-skill",
+			OwnerID: "owner-1",
+			Status:  skillRunStatusRunning,
+			Error:   "dependency missing",
+		},
+	}
+
+	runner.finalizeRunOutcome(run, skillRunStatusFailed, time.Now())
+
+	got := logs.String()
+	if !strings.Contains(got, "skill_failure") {
+		t.Fatalf("log = %q, want skill_failure marker", got)
+	}
+	if !strings.Contains(got, `skill="broken-skill"`) {
+		t.Fatalf("log = %q, want skill name", got)
+	}
+	if !strings.Contains(got, `reason="dependency missing"`) {
+		t.Fatalf("log = %q, want failure reason", got)
+	}
+}
+
+func TestSkillRunnerFinalizeFailureLogsFailedStepReason(t *testing.T) {
+	logs := captureLogOutputForTest(t)
+
+	runner := NewSkillRunner(&SkillExecutor{})
+	run := &skillRun{
+		status: SkillRunStatus{
+			RunID:   "run-step-log-failure",
+			Skill:   "step-broken-skill",
+			Status:  skillRunStatusRunning,
+			OwnerID: "owner-2",
+			Steps: []StepResult{{
+				Index:  1,
+				Name:   "download data",
+				Action: "bash",
+				Status: skillStepStatusFailed,
+				Error:  "exit status 7",
+			}},
+		},
+	}
+
+	runner.finalizeRunOutcome(run, skillRunStatusFailed, time.Now())
+
+	got := logs.String()
+	if !strings.Contains(got, `skill="step-broken-skill"`) {
+		t.Fatalf("log = %q, want skill name", got)
+	}
+	if !strings.Contains(got, `reason="step 2 (download data) failed: exit status 7"`) {
+		t.Fatalf("log = %q, want failed step reason", got)
+	}
+}
+
+func TestSkillRunnerFinalizeFailureLogsUnnamedStepReason(t *testing.T) {
+	logs := captureLogOutputForTest(t)
+
+	runner := NewSkillRunner(&SkillExecutor{})
+	run := &skillRun{
+		status: SkillRunStatus{
+			RunID:  "run-unnamed-step-log-failure",
+			Skill:  "unnamed-step-skill",
+			Status: skillRunStatusRunning,
+			Steps: []StepResult{{
+				Index:  0,
+				Status: skillStepStatusFailed,
+				Error:  "boom",
+			}},
+		},
+	}
+
+	runner.finalizeRunOutcome(run, skillRunStatusFailed, time.Now())
+
+	got := logs.String()
+	if !strings.Contains(got, `reason="step 1 failed: boom"`) {
+		t.Fatalf("log = %q, want clean unnamed step reason", got)
+	}
+}
+
+func TestSkillRunnerFinalizeFailureLogsWhitespaceStepReason(t *testing.T) {
+	logs := captureLogOutputForTest(t)
+
+	runner := NewSkillRunner(&SkillExecutor{})
+	run := &skillRun{
+		status: SkillRunStatus{
+			RunID:  "run-whitespace-step-log-failure",
+			Skill:  "whitespace-step-skill",
+			Status: skillRunStatusRunning,
+			Steps: []StepResult{{
+				Index:  0,
+				Name:   "  ",
+				Action: "\t",
+				Status: skillStepStatusFailed,
+				Error:  "boom",
+			}},
+		},
+	}
+
+	runner.finalizeRunOutcome(run, skillRunStatusFailed, time.Now())
+
+	got := logs.String()
+	if !strings.Contains(got, `reason="step 1 failed: boom"`) {
+		t.Fatalf("log = %q, want clean whitespace step reason", got)
+	}
+}
+
+func TestSkillRunnerFinalizeSuccessDoesNotLogSkillFailure(t *testing.T) {
+	logs := captureLogOutputForTest(t)
+
+	runner := NewSkillRunner(&SkillExecutor{})
+	run := &skillRun{
+		status: SkillRunStatus{
+			RunID:  "run-success-no-failure-log",
+			Skill:  "healthy-skill",
+			Status: skillRunStatusRunning,
+		},
+	}
+
+	runner.finalizeRunOutcome(run, skillRunStatusSuccess, time.Now())
+
+	if got := logs.String(); strings.Contains(got, "skill_failure") {
+		t.Fatalf("log = %q, want no skill_failure marker for success", got)
+	}
+}
+
+func TestSkillRunnerStartRunFailureLogsSkillAndReason(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	logs := captureLogOutputForTest(t)
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	_, err := runner.StartRun("missing-skill-for-log", nil)
+	if err == nil {
+		t.Fatal("StartRun() error = nil, want missing skill error")
+	}
+
+	got := logs.String()
+	if !strings.Contains(got, "skill_failure") {
+		t.Fatalf("log = %q, want skill_failure marker", got)
+	}
+	if !strings.Contains(got, "stage=start_run") {
+		t.Fatalf("log = %q, want start_run stage", got)
+	}
+	if !strings.Contains(got, `skill="missing-skill-for-log"`) {
+		t.Fatalf("log = %q, want requested skill name", got)
+	}
+	if !strings.Contains(got, `reason="skill \"missing-skill-for-log\" not found`) {
+		t.Fatalf("log = %q, want missing skill reason", got)
+	}
+}
+
+func TestSkillRunnerStartRunFailureLogsUninitializedRunner(t *testing.T) {
+	logs := captureLogOutputForTest(t)
+
+	runner := NewSkillRunner(nil)
+	_, err := runner.StartRun("needs-runner", nil)
+	if err == nil {
+		t.Fatal("StartRun() error = nil, want uninitialized runner error")
+	}
+	if !strings.Contains(err.Error(), "skill runner not initialized") {
+		t.Fatalf("StartRun() error = %v, want uninitialized runner", err)
+	}
+
+	got := logs.String()
+	if !strings.Contains(got, "skill_failure") {
+		t.Fatalf("log = %q, want skill_failure marker", got)
+	}
+	if !strings.Contains(got, `skill="needs-runner"`) {
+		t.Fatalf("log = %q, want requested skill name", got)
+	}
+	if !strings.Contains(got, `reason="skill runner not initialized"`) {
+		t.Fatalf("log = %q, want uninitialized runner reason", got)
+	}
+}
+
+func TestSkillRunnerStartRunFailureLogsNilRunner(t *testing.T) {
+	logs := captureLogOutputForTest(t)
+
+	var runner *SkillRunner
+	_, err := runner.StartRun("nil-runner-skill", nil)
+	if err == nil {
+		t.Fatal("StartRun() error = nil, want nil runner error")
+	}
+	if !strings.Contains(err.Error(), "skill runner not initialized") {
+		t.Fatalf("StartRun() error = %v, want uninitialized runner", err)
+	}
+
+	got := logs.String()
+	if !strings.Contains(got, "skill_failure") {
+		t.Fatalf("log = %q, want skill_failure marker", got)
+	}
+	if !strings.Contains(got, `skill="nil-runner-skill"`) {
+		t.Fatalf("log = %q, want requested skill name", got)
+	}
+	if !strings.Contains(got, `reason="skill runner not initialized"`) {
+		t.Fatalf("log = %q, want uninitialized runner reason", got)
 	}
 }
 
@@ -290,10 +514,7 @@ func TestSkillExecutorLogsOwnerForSyncSkillRun(t *testing.T) {
 			},
 		}},
 	}
-	var logs bytes.Buffer
-	originalWriter := log.Writer()
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(originalWriter) })
+	logs := captureLogOutputForTest(t)
 
 	exec := NewSkillExecutor(&App{}, nil, nil)
 	result := exec.executeSkillStepsDetailed(entry, map[string]interface{}{"_skill_owner_id": "desktop-user:D:/tasks/owner"})

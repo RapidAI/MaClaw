@@ -6177,3 +6177,50 @@ RemoteCodingSubAgent 启动后注册到 GUI 的任务监控系统：
 4. 前端：任务监控面板中显示 RemoteCodingSubAgent 状态
 5. 迭代改进阶段 `ExecMode` 改为新的 `ExecModeRemoteSubAgent`
 6. IM 通知与用户交互联动
+
+
+### 108. ToolPolicyFull 工作流阶段 LLM 用 write_file 产出文档——面板无内容 + 阶段产出物只有短评论文本
+
+**来源**：用户启动专利申请工作流（`patent_application`），第一阶段 `pa_disclosure_parsing`（交底书解析与技术提炼）完成后，右侧工作流面板没有显示文档内容。LLM 将完整文档通过 `write_file` 写入磁盘（14947 字节），但面板只捕获到 889 字节的 LLM 短评论文本。
+
+**根因**：`captureWorkflowDocAfterAgentLoop` 使用两个数据源确定阶段产出物：
+1. `WorkflowDocBuffer`：累积 LLM 的 `msgContent`（纯文本输出）
+2. `resp.Text`：最后一轮迭代的文本
+
+当 `ToolPolicy=ToolPolicyFull` 时，LLM 选择调用 `write_file` 将文档写入磁盘，而不是在聊天流中输出文本。`msgContent` 只有短评论（"win32com 可用！让我..."、"文档已完整写入..."），`write_file` 的 `content` 参数从不经过 `WorkflowDocBuffer`（它只捕获 LLM text output，不捕获 tool call arguments）。
+
+**修复**：
+
+#### 1. `LoopContext` 新增 `WorkflowWrittenFiles` 字段（`gui/agent_loop_context.go`）
+
+追踪 workflow agent loop 期间通过 `write_file` 成功写入的文件路径列表。
+
+#### 2. 工具执行后追踪写入文件（`gui/im_agent_loop_tool_exec.go`）
+
+在 `executeAgentLoopToolCalls` 中，当 `write_file` 执行成功且处于 workflow agent loop 时，从 tool call 参数中提取 `path` 字段，去重后追加到 `WorkflowWrittenFiles`。
+
+新增 `extractWriteFilePathFromArgs()` 辅助函数。
+
+#### 3. `captureWorkflowDocAfterAgentLoop` 新增第三数据源（`gui/im_post_loop.go`）
+
+内容解析优先级变为：
+1. `WorkflowDocBuffer`（LLM 纯文本输出累积）
+2. **`WorkflowWrittenFiles`（从磁盘读取 write_file 产出的文件内容）**— 当文件内容比 buffer 更长时使用
+3. `resp.Text`（最后一轮文本）
+4. `resp.Error`（错误信息）
+
+新增 `readWorkflowWrittenFiles()` 函数：读取追踪到的文件，跳过二进制/超大/空文件，拼接为阶段产出物。
+新增 `looksLikeBinary()` 辅助函数：检测二进制内容。
+
+**机制性特征**：
+- **不依赖 LLM 行为**：无论 LLM 选择输出文本还是 write_file，阶段产出物都能正确捕获
+- **通用**：对所有 `ToolPolicyFull` 阶段通用（专利解析、权利要求撰写、PPT 生成等），不硬编码任何阶段 ID
+- **安全**：跳过二进制文件、超大文件（>100KB），总输出截断到 50000 rune
+- **去重**：同一文件被 `mode=append` 多次写入时只追踪一次路径，`os.ReadFile` 读取最终完整内容
+
+**验收标准**：
+- 专利工作流 `pa_disclosure_parsing` 阶段 LLM 用 write_file 写入文档 → 面板显示完整文档内容
+- `WorkflowDocBuffer` 有大量文本输出（如编码工作流的设计文档）→ 行为不变，buffer 优先
+- LLM 同时输出文本 + write_file（如短摘要 + 完整文件）→ 取更长的内容作为产出物
+- 二进制文件（如 .docx/.pdf）→ 跳过，不作为产出物
+- GUI 编译通过

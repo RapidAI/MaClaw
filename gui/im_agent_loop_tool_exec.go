@@ -324,6 +324,29 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		h.pinConditionalToolAfterSuccess(tc.Function.Name, execResult)
 		logSlow("post_exec_pre_observation", stageStartedAt, tc)
 
+		// Track files written during workflow agent loops for phase output capture.
+		// When LLM writes documents to disk via write_file instead of outputting text,
+		// the file path is recorded so post-loop capture can read the actual content.
+		// We extract the resolved absolute path from the tool result (e.g. "已写入 F:\...\file.md（1234 字节）")
+		// rather than from args, because toolWriteFile resolves relative paths.
+		if opts.Context != nil && opts.Context.WorkflowAgentLoop &&
+			execResult.Outcome == toolOutcomeSucceeded &&
+			strings.TrimSpace(tc.Function.Name) == "write_file" {
+			if writtenPath := extractWrittenPathFromResult(rawResult); writtenPath != "" {
+				// Deduplicate: append mode writes to the same file multiple times.
+				found := false
+				for _, existing := range opts.Context.WorkflowWrittenFiles {
+					if existing == writtenPath {
+						found = true
+						break
+					}
+				}
+				if !found {
+					opts.Context.WorkflowWrittenFiles = append(opts.Context.WorkflowWrittenFiles, writtenPath)
+				}
+			}
+		}
+
 		stageStartedAt = time.Now()
 		payloadObservation := parseToolPayloadResult(rawResult)
 		traceResult := payloadObservation.TraceResult
@@ -400,4 +423,36 @@ func derefAgentLoopPhase(phase *agentLoopPhase) agentLoopPhase {
 		return agentLoopPhase{}
 	}
 	return *phase
+}
+
+// extractWrittenPathFromResult extracts the resolved absolute file path from
+// a successful write_file tool result string. The result format is one of:
+//   - "已写入 /path/to/file（1234 字节）"
+//   - "已追加到 /path/to/file（当前 1234 字节）"
+//   - "已清空 /path/to/file（0 字节）"
+//
+// This is more reliable than parsing args because toolWriteFile resolves
+// relative paths to absolute paths before writing.
+func extractWrittenPathFromResult(result string) string {
+	// Match Chinese write_file success patterns.
+	// "已写入 PATH（N 字节）" or "已追加到 PATH（当前 N 字节）" or "已清空 PATH（N 字节）"
+	for _, prefix := range []string{"已写入 ", "已追加到 ", "已清空 "} {
+		if !strings.HasPrefix(result, prefix) {
+			continue
+		}
+		rest := result[len(prefix):]
+		// Path ends at the LAST "（" (full-width parenthesis) that is followed by
+		// digits or "当前". We search from the end because paths may contain "（".
+		// The toolWriteFile format always ends with "（N 字节）" or "（当前 N 字节）".
+		if idx := strings.LastIndex(rest, "（"); idx > 0 {
+			return strings.TrimSpace(rest[:idx])
+		}
+		// Fallback: last " (" (half-width, unlikely but defensive).
+		if idx := strings.LastIndex(rest, " ("); idx > 0 {
+			return strings.TrimSpace(rest[:idx])
+		}
+		// No size suffix found — return the rest as path (defensive).
+		return strings.TrimSpace(rest)
+	}
+	return ""
 }

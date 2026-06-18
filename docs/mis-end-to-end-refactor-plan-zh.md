@@ -1,0 +1,1897 @@
+# MaClaw MIS 端到端重构方案
+
+日期：2026-06-18  
+状态：重构决策稿  
+范围：MaClawDataSrv、MIS Tools、Skill Generator、MaClaw App、AG UI、App Studio
+
+## 结论
+
+彻底重构 MIS 业务逻辑。
+
+不再以 `dataset / field / action / token` 作为产品主入口。它们保留为底层实现概念。
+
+新的主入口是：
+
+```text
+业务对象
+业务应用
+业务 Skill
+AG UI
+统一 MIS Tool
+```
+
+目标链路：
+
+```text
+用户提出业务需求
+  -> 系统识别业务对象
+  -> DataSrv 创建/复用数据模型
+  -> Skill Generator 生成业务 Skill
+  -> MaClaw App 包装成应用入口
+  -> AG UI 提供输入输出
+  -> MIS Tool 统一访问 DataSrv
+  -> DataSrv 做权限、审批、审计
+```
+
+## 新架构分层
+
+### 0. MaClaw App 分类边界
+
+MaClaw App 是应用入口里的统一展示单位，本质上都是超级 Skill。
+
+后端真正干活的都是 Skill。App 只是给 Skill 加上：
+
+```text
+固定入口
+图标/名称/分类
+默认参数
+AG UI 输入输出
+权限声明
+发布和治理信息
+```
+
+区别不在“是不是 Skill”，而在 Skill 绑定哪些能力。
+
+应用入口至少包含：
+
+```text
+企业应用 enterprise_app
+  面向 CRM、进销存、财务、ERP、报销、审批、库存等企业 MIS 场景
+  本质是超级 Skill + AG UI + MIS tool + DataSrv
+  可以关联审批工作流
+
+工具应用 tool_app
+  面向文件处理、文档生成、PDF、图片、数据清洗、爬取、分析等工具场景
+  本质也是超级 Skill，但只绑定普通 skill 能力
+  不依赖 DataSrv
+  不关联 MIS 审批工作流
+
+自动化应用 automation_app
+  面向定时任务、同步任务、监控任务、批处理
+  本质也是超级 Skill 的自动化包装
+  可选择调用 MIS tool，但不是默认 MIS 应用
+```
+
+所以审批只和企业应用有关，而且也只是企业应用的可选能力：
+
+```text
+企业应用可以有关联审批工作流
+工具应用不应该出现审批配置
+普通 Skill 不应该因为 App 体系而被迫理解 MIS
+```
+
+manifest 边界：
+
+```json
+{
+  "kind": "enterprise_app",
+  "binding": {
+    "skill": {"id": "mis-expense-claim"},
+    "mis": {
+      "appId": "mis.expense",
+      "requiredRoles": ["expense_report"],
+      "requiredScopes": ["action:expense.submit"],
+      "approvalBindings": [
+        {"event": "expense.submitted", "workflowId": "expense_approval"}
+      ]
+    }
+  }
+}
+```
+
+工具应用：
+
+```json
+{
+  "kind": "tool_app",
+  "binding": {
+    "skill": {"id": "pdf-summarizer"}
+  }
+}
+```
+
+自动化应用：
+
+```json
+{
+  "kind": "automation_app",
+  "binding": {
+    "automation": {"id": "nightly-sync"}
+  }
+}
+```
+
+设计原则：
+
+- `binding.mis` 只出现在企业应用。
+- `approvalBindings` 只出现在企业应用的 `binding.mis` 下。
+- 工具应用不依赖 DataSrv token，除非它显式声明需要 MIS 能力。
+- App Studio 根据 app kind 展示不同配置面板。
+
+### 1. DataSrv：语义数据底座
+
+DataSrv 不只是表存储。
+
+它要维护：
+
+- `BusinessObjectCatalog`：客户、订单、报销单、库存、付款等业务对象。
+- `RoleBinding`：`expense_report -> expense.reports`。
+- `RelationshipCatalog`：对象间关系。
+- `FieldAliasCatalog`：业务字段和真实字段映射。
+- `Blueprint`：CRM、进销存、报销、财务、ERP 模板。
+- `AppInstallation`：某个 tenant 安装了哪些 MIS 应用。
+- `ChangePlan`：所有结构变更先预览。
+- `ApprovalBinding`：业务事件到独立审批工作流的绑定。
+- `AuditLog`：所有读写、审批、付款留痕。
+
+### 2. MIS Tools：统一访问层
+
+Agent 和 Skill 都只能通过 MIS Tool 操作企业数据。
+
+第一批工具：
+
+```text
+mis.app.list_templates
+mis.app.preview
+mis.app.create
+mis.app.get
+mis.app.check_access
+
+mis.object.list
+mis.object.resolve
+mis.object.describe
+
+mis.data.query
+mis.data.get_record
+mis.data.upsert_record
+mis.data.execute_action
+
+mis.change.plan
+mis.change.apply
+
+mis.graph.get
+mis.import.preview
+mis.import.apply
+```
+
+工具入参使用业务语义：
+
+```text
+app_id
+object_role
+action_role
+field_alias
+actor
+data
+```
+
+不让 Skill 传真实 dataset。
+
+### 3. Skill Generator：业务 Skill 生成器
+
+Skill 是业务执行单元。
+
+Skill Generator 输入：
+
+- 用户业务需求。
+- 已安装 MIS 应用。
+- DataSrv 蓝图。
+- 业务对象目录。
+- 可用 view/action。
+- 用户确认的映射。
+
+输出：
+
+- `SKILL.md`
+- skill manifest
+- AG UI schema
+- workflow steps
+- MIS tool call plan
+- tests
+- MaClaw App Entry
+
+### 4. MaClaw App：超级 Skill
+
+所有 MaClaw App 本质都是：
+
+```text
+可放到应用入口的超级 Skill
+```
+
+分类区别：
+
+```text
+enterprise_app = Skill + AG UI + binding.mis + 可选审批工作流
+tool_app = Skill + AG UI + 文件/表单/artifact 输入输出
+automation_app = Skill + 触发器/计划/运行记录
+```
+
+所有 App 都不直接干活，后端工作由 skill 执行。
+
+企业 App 不直接访问 DataSrv，而是通过 Skill 调 MIS tool。
+
+App 绑定：
+
+```json
+{
+  "binding": {
+    "skill": {"id": "mis-expense-claim", "ui": "ag_ui"},
+    "mis": {
+      "appId": "mis.expense",
+      "requiredRoles": ["employee", "expense_report", "approval", "payment"],
+      "requiredScopes": ["action:expense.submit", "view:expense.my_reports"]
+    }
+  }
+}
+```
+
+### 5. AG UI：企业应用交互层
+
+第一版支持：
+
+- `form`
+- `table`
+- `resource_picker`
+- `approval`
+- `result_browser`
+- `field_mapper`
+
+后续支持：
+
+- `relationship_graph`
+- `dashboard`
+- `timeline`
+
+这主要服务 `enterprise_app`。
+
+`tool_app` 可以继续使用更轻的 Skill 表单/文件输入输出，不需要完整企业应用布局。
+
+### 6. App Studio：按应用类型分流
+
+App Studio 不再以 manifest JSON 编辑为核心。
+
+它先让用户选择 App 类型：
+
+```text
+企业应用
+工具应用
+自动化应用
+```
+
+企业应用流程：
+
+```text
+描述业务需求
+  -> 选择模板或已有 MIS 应用
+  -> 确认业务对象
+  -> 确认缺失字段/关系
+  -> 生成 Skill Plan
+  -> 预览 AG UI
+  -> dry-run 测试
+  -> 发布到应用入口
+```
+
+工具应用流程：
+
+```text
+选择/创建普通 Skill
+  -> 配置输入模式：文件 / 表单 / 混合
+  -> 配置输出：文本 / 文件 / artifact
+  -> 预览简单 AG UI
+  -> 测试运行
+  -> 发布到应用入口
+```
+
+自动化应用流程：
+
+```text
+选择触发器
+  -> 选择任务 skill/tool
+  -> 设置计划/条件
+  -> 测试一次
+  -> 启用
+```
+
+只有企业应用面板出现：
+
+- MIS 应用模板。
+- 业务对象。
+- `binding.mis`。
+- 审批工作流绑定。
+- DataSrv 权限检查。
+
+## 核心数据模型
+
+### BusinessObject
+
+```json
+{
+  "role": "expense_report",
+  "title": "报销单",
+  "aliases": ["报销", "报销申请", "费用报销"],
+  "dataset": "expense.reports",
+  "display_field": "report_no",
+  "search_fields": ["report_no", "applicant_name", "description"],
+  "fields": [
+    {"key": "applicant_ref", "title": "报销人", "type": "record_ref", "target_role": "employee"},
+    {"key": "amount", "title": "金额", "type": "money"},
+    {"key": "status", "title": "状态", "type": "enum"}
+  ]
+}
+```
+
+### AppInstallation
+
+```json
+{
+  "app_id": "mis.expense",
+  "blueprint_id": "mis.expense",
+  "role_bindings": {
+    "employee": "company.users",
+    "department": "company.departments",
+    "expense_report": "expense.reports",
+    "expense_item": "expense.items",
+    "approval": "workflow.approvals",
+    "payment": "finance.payments"
+  }
+}
+```
+
+### ApprovalBinding
+
+```json
+{
+  "event": "expense.submitted",
+  "record_role": "expense_report",
+  "workflow_id": "expense_approval",
+  "workflow_version": "1.0.0",
+  "input_mapping": {
+    "applicant": "expense_report.applicant_ref",
+    "amount": "expense_report.amount",
+    "department": "expense_report.department_ref"
+  },
+  "on_approved": {"set_status": "pending_finance_payment"},
+  "on_rejected": {"set_status": "rejected"}
+}
+```
+
+## 权限模型
+
+全局 MIS 设置保存 DataSrv URL/token。
+
+每次调用还要传 actor。
+
+```text
+token = 调用凭证
+actor = 当前业务操作人
+scope = 可调用范围
+approval_workflow = 独立审批工作流是否通过
+```
+
+DataSrv 校验顺序：
+
+```text
+1. token 是否有效
+2. scope 是否允许
+3. actor 是否存在
+4. object/action 是否存在
+5. 业务规则是否通过
+6. 若动作需要审批，是否已有关联审批工作流通过结果
+7. dry-run 或正式执行
+8. 写审计
+```
+
+## API 规划
+
+新 API 用 `/api/v1/mis/*`。
+
+```http
+GET  /api/v1/mis/apps/templates
+POST /api/v1/mis/apps/preview
+POST /api/v1/mis/apps
+GET  /api/v1/mis/apps/{appId}
+POST /api/v1/mis/apps/{appId}/access/check
+
+GET  /api/v1/mis/apps/{appId}/objects
+POST /api/v1/mis/apps/{appId}/objects/resolve
+GET  /api/v1/mis/apps/{appId}/objects/{role}
+
+POST /api/v1/mis/apps/{appId}/data/query
+POST /api/v1/mis/apps/{appId}/data/upsert
+POST /api/v1/mis/apps/{appId}/actions/{actionRole}/execute
+
+POST /api/v1/mis/apps/{appId}/changes/plan
+POST /api/v1/mis/apps/{appId}/changes/{planId}/apply
+
+GET  /api/v1/mis/apps/{appId}/graph
+```
+
+## 重构阶段
+
+### Phase 1：DataSrv 语义层
+
+- 加 `BusinessObjectCatalog`。
+- 加 `RoleBinding`。
+- 加 `AppInstallation`。
+- 加 object resolve API。
+- 做 `mis.expense` 和 `mis.inventory` 两个蓝图。
+
+验收：
+
+```text
+用户选择“报销”
+系统能预览会创建/复用哪些业务对象
+安装后能通过 object_role 找到真实 dataset
+```
+
+### Phase 2：MIS Tool 层
+
+- 增加 `mis.*` tool registry。
+- agent 和 skill 共用。
+- tool 内部读取全局 MIS 设置。
+- 所有 tool 支持 actor。
+
+验收：
+
+```text
+agent 和 skill 都能用 mis.data.query(object_role=expense_report)
+不需要知道真实表名
+```
+
+### Phase 3：Skill Generator
+
+- 从模板生成 Skill Plan。
+- 从自然语言生成 Skill Plan。
+- 生成 AG UI schema。
+- 生成 tests。
+- 先支持报销申请、库存盘点。
+
+验收：
+
+```text
+输入“做一个报销申请 App”
+输出可运行 skill + AG UI + app entry
+```
+
+### Phase 4：MaClaw App 超级 Skill
+
+- `enterprise_app` 改为绑定 `skill + mis`。
+- App 入口启动 skill。
+- 启动前做 `mis.app.check_access`。
+- App 不保存 DataSrv token。
+
+验收：
+
+```text
+应用入口点击“报销申请”
+打开 AG UI
+提交后 skill 调 MIS tool 写 DataSrv
+```
+
+### Phase 5：AG UI / App Studio
+
+- App Studio 增加应用生成向导。
+- 支持业务对象选择。
+- 支持 AG UI 预览。
+- 支持发布到应用入口。
+
+验收：
+
+```text
+非技术用户能通过向导创建“客户跟进”App 草稿
+```
+
+### Phase 6：审批闭环
+
+- 标准化 `company.users`、部门、主管关系。
+- 复用现有 Workflow V2 作为业务流程编排引擎。
+- 扩展 DataSrv `RecordApproval` 为 MIS 单据审批事实记录。
+- 报销审批和付款跑通。
+
+验收：
+
+```text
+主管能审批下属报销
+非主管不能审批
+超额度不能审批
+所有动作有审计
+```
+
+## 现有审批/工作流 Review 结论
+
+当前代码里已经有两类审批相关能力，重构时不能重复造轮子。
+
+更正后的结论：
+
+```text
+审批流程设计
+  复用现有独立审批工作流和工作流设计器
+
+审批流程执行
+  复用现有工作流/VE 审批能力
+
+业务数据落账
+  由 DataSrv 负责单据、状态、审批结果、审计、timeline
+
+MaClaw App / Skill
+  只发起审批、展示待办和结果，不自己实现审批流
+```
+
+### 1. GUI Workflow V2
+
+现有 Workflow V2 是状态机式流程引擎。
+
+已有能力：
+
+- workflow template。
+- phase。
+- `NeedsConfirm` 确认门。
+- `ToolPolicy` 工具限制。
+- structured form / AG UI 表单收集。
+- review intent：confirm / supplement / skip / cancel。
+- workflow progress event。
+- AgentView / AG UI 集成。
+
+适合承担：
+
+```text
+业务流程编排
+多步骤流转
+人机交互
+AG UI 表单/确认/结果
+Skill 执行过程控制
+```
+
+不适合直接承担：
+
+```text
+企业单据事实存储
+财务/库存/报销主数据
+跨应用业务对象目录
+最终审计账本
+```
+
+### 2. 独立审批工作流和工作流设计器
+
+现有系统已经有独立审批工作流能力，不应该在 MIS 重构里重做。
+
+已发现能力：
+
+- 工作流设计器入口：`VirtualEmployeeSettingsPanel` 可打开 Hub visual workflow designer。
+- 审批节点支持 VE approver。
+- `veApprovalCapabilityCheck.ts` 会在设计器里校验 VE 是否具备审批能力。
+- `ValidateVEApproverAssignment` 后端绑定用于防止把无审批能力的 VE 分配为审批人。
+- `WorkflowDirectoryPanel` / `InstanceConfirmationPanel` 已有工作流目录和实例确认 UI。
+- A2A/Hub 消息里已有 approval workflow request / decision 结构。
+
+这说明审批工作流应该是独立产品能力：
+
+```text
+流程设计：工作流设计器
+审批节点：人工 / VE / fallback approver
+执行实例：工作流运行时
+决策消息：approve / reject / timeout / fallback
+```
+
+MIS 要做的是接入：
+
+```text
+报销单提交
+  -> 发起审批工作流实例
+  -> 传入业务上下文和 DataSrv record ref
+  -> 审批工作流决定通过/驳回
+  -> DataSrv 根据结果更新单据状态并写审计
+```
+
+不是在 DataSrv 里画审批流。
+
+### 2.1 审批定义、审批实例、业务记录三层
+
+审批 workflow-skill 是流程定义，不是审批实例。
+
+必须分三层：
+
+```text
+Approval Workflow Skill
+  审批流程定义
+  由工作流设计器创建
+  描述节点、条件、审批人、VE、超时、fallback
+
+Approval Instance
+  一次具体审批运行
+  由某个企业 App/Skill 触发
+  保存节点轨迹、审批人、决策、时间、评论、附件、超时、fallback
+
+Business Record / DataSrv Approval Link
+  业务单据和审批实例的关联
+  保存 record_role、record_id、workflow_skill_id、approval_instance_id、最终结果、业务状态、审计
+```
+
+工具类 App 不需要这套保存。
+
+只有企业 App 触发需要审批的业务动作时，才创建审批实例。
+
+### 2.2 审批实例保存在哪里
+
+完整审批实例应由审批工作流系统保存。
+
+它包含：
+
+```text
+instance_id
+workflow_skill_id
+workflow_version
+trigger_event
+started_by
+started_at
+status
+current_node
+nodes[]
+decisions[]
+comments[]
+attachments[]
+timeouts[]
+fallbacks[]
+completed_at
+final_decision
+```
+
+因为工作流节点不固定，不能用固定列保存“第一审批人、第二审批人、第三审批人”。
+
+审批实例存储要用三类结构：
+
+```text
+WorkflowInstance
+  实例头：instance_id、workflow_skill_id、版本、状态、发起人、当前节点
+
+WorkflowNodeInstance[]
+  可变节点实例：每个节点一条记录，数量不限
+
+WorkflowEventLog[]
+  事件日志：节点进入、分派、审批、驳回、转交、加签、超时、fallback、完成
+```
+
+推荐结构：
+
+```json
+{
+  "instance_id": "appr_inst_123",
+  "workflow_skill_id": "approval-expense",
+  "workflow_version": "1.0.0",
+  "definition_snapshot": {
+    "nodes": [],
+    "edges": []
+  },
+  "status": "running",
+  "current_node_ids": ["manager_approval"],
+  "business_ref": {
+    "app_id": "mis.expense",
+    "object_role": "expense_report",
+    "record_id": "EXP-001"
+  },
+  "nodes": [
+    {
+      "node_instance_id": "node_inst_001",
+      "node_id": "manager_approval",
+      "title": "主管审批",
+      "type": "approval",
+      "status": "pending",
+      "assignees": [{"type": "user", "id": "u_lijingli"}],
+      "entered_at": "2026-06-18T09:10:00Z"
+    }
+  ],
+  "events": [
+    {
+      "event_id": "evt_001",
+      "type": "node_entered",
+      "node_instance_id": "node_inst_001",
+      "at": "2026-06-18T09:10:00Z"
+    }
+  ]
+}
+```
+
+关键点：
+
+- `definition_snapshot` 保存发起时的流程定义快照，防止流程后来被改导致旧实例解释不清。
+- `nodes[]` 数量不限，支持任意多节点。
+- `current_node_ids[]` 支持并行审批。
+- `events[]` 是完整审计轨迹。
+- 节点动态加签/转交/fallback 也只是新增 node/event，不改固定 schema。
+
+DataSrv 不复制完整节点图和轨迹。
+
+DataSrv 只保存业务关联索引和结果摘要：
+
+```json
+{
+  "app_id": "mis.expense",
+  "object_role": "expense_report",
+  "record_id": "EXP-20260618-001",
+  "workflow_skill_id": "approval-expense",
+  "workflow_version": "1.0.0",
+  "approval_instance_id": "appr_inst_123",
+  "trigger_event": "expense.submitted",
+  "status": "approved",
+  "final_decision": "approved",
+  "started_by": "u_zhangsan",
+  "completed_by": "u_lijingli",
+  "started_at": "2026-06-18T09:00:00Z",
+  "completed_at": "2026-06-18T11:00:00Z",
+  "from_status": "submitted",
+  "to_status": "pending_finance_payment"
+}
+```
+
+### 2.3 为什么 DataSrv 还要保存关联
+
+因为企业 MIS 查询通常从业务单据出发：
+
+```text
+查看这张报销单审批到哪了？
+谁审批的？
+审批结果是什么？
+为什么现在是 pending_finance_payment？
+审计链路在哪里？
+```
+
+DataSrv 要能回答：
+
+```text
+这张单据关联 approval_instance_id=appr_inst_123
+最终结果 approved
+业务状态从 submitted 变成 pending_finance_payment
+完整审批轨迹请查看审批实例
+```
+
+所以 DataSrv 保存的是索引和落账事实，不是流程引擎本体。
+
+### 2.4 推荐数据模型：ApprovalLink
+
+建议新增 `ApprovalLink` 或扩展 `RecordApproval` 成语义化关联记录。
+
+```json
+{
+  "id": "approval_link_001",
+  "tenant_id": "default",
+  "app_id": "mis.expense",
+  "object_role": "expense_report",
+  "dataset_id": "expense.reports",
+  "record_id": "EXP-20260618-001",
+  "trigger_event": "expense.submitted",
+  "workflow_skill_id": "approval-expense",
+  "workflow_version": "1.0.0",
+  "approval_instance_id": "appr_inst_123",
+  "status": "pending",
+  "final_decision": "",
+  "started_by": "u_zhangsan",
+  "started_at": "2026-06-18T09:00:00Z",
+  "completed_at": "",
+  "result_payload": {},
+  "audit_id": "audit_001"
+}
+```
+
+审批完成后更新：
+
+```json
+{
+  "status": "approved",
+  "final_decision": "approved",
+  "completed_at": "2026-06-18T11:00:00Z",
+  "result_payload": {
+    "approved_by": "u_lijingli",
+    "comment": "同意，金额合理"
+  }
+}
+```
+
+### 2.5 运行链路
+
+```text
+1. 用户在企业 App 提交业务动作
+2. Skill 写业务单据到 DataSrv
+3. Skill 发出业务事件 expense.submitted
+4. MIS tool 根据 approvalBindings 找 workflow_skill_id
+5. MIS tool 调审批工作流系统创建 Approval Instance
+6. 审批系统返回 approval_instance_id
+7. DataSrv 保存 ApprovalLink/RecordApproval 关联
+8. 审批系统运行审批节点
+9. 审批完成后回调或由 MIS tool sync_result
+10. DataSrv 更新 ApprovalLink 状态
+11. DataSrv 按 onApproved/onRejected 更新业务单据状态
+12. 写 AuditLog / Timeline
+```
+
+### 2.6 查询链路
+
+企业 App 查询审批状态：
+
+```text
+mis.approval.get(app_id, object_role, record_id)
+```
+
+返回：
+
+```json
+{
+  "record_id": "EXP-20260618-001",
+  "approval_instance_id": "appr_inst_123",
+  "status": "pending",
+  "current_node": "主管审批",
+  "assignee": "李经理",
+  "started_at": "2026-06-18T09:00:00Z",
+  "detail_url": "approval://instances/appr_inst_123"
+}
+```
+
+如果用户要看完整轨迹，打开审批实例详情，由审批系统/工作流 UI 展示。
+
+### 2.7 审批查看入口
+
+带审批的企业 App 必须解决“从哪里看审批”。
+
+建议有五个入口。
+
+#### 入口 0：应用面板固定入口
+
+需要有面板入口。
+
+应用入口里建议内置一个固定企业 App：
+
+```text
+审批中心
+```
+
+它显示在企业应用分类里，类似：
+
+```text
+企业应用
+  报销申请
+  采购申请
+  合同审批
+  审批中心
+```
+
+审批中心不是设计器，是运行入口。
+
+普通用户从这里处理：
+
+```text
+待我审批
+我发起的
+我已处理
+抄送我的
+超时/异常
+```
+
+实施/管理员从这里查看：
+
+```text
+全部审批
+异常实例
+超时实例
+按流程/业务类型筛选
+```
+
+工作流设计器入口不要放在这里第一层。
+
+设计器属于管理/配置：
+
+```text
+审批中心 -> 管理 -> 打开工作流设计器
+```
+
+或：
+
+```text
+Settings / VE Approval / Workflow Designer
+```
+
+#### 入口 A：企业 App 内查看
+
+普通用户最常用。
+
+例如“报销申请” App 内有：
+
+```text
+我的报销
+待我处理
+全部报销（管理员/财务）
+```
+
+列表显示：
+
+```text
+单号
+金额
+当前状态
+当前审批节点
+当前处理人
+提交时间
+审批结果
+```
+
+点开单据详情：
+
+```text
+报销内容
+明细
+附件
+审批进度
+审批评论
+操作按钮
+```
+
+企业 App 通过：
+
+```text
+mis.approval.get
+mis.approval.list_by_record
+mis.approval.my_pending
+```
+
+获取审批摘要。
+
+#### 入口 B：统一审批中心
+
+给主管、财务、管理员。
+
+应用入口里需要有一个企业 App：
+
+```text
+审批中心
+```
+
+它本质也是超级 Skill。
+
+功能：
+
+```text
+待我审批
+我发起的
+我已审批
+抄送我的
+超时/异常
+按业务类型筛选：报销、采购、付款、合同
+```
+
+它不替代审批工作流系统，而是统一聚合入口。
+
+底层查询：
+
+```text
+审批系统实例待办
+DataSrv ApprovalLink
+DataSrv 业务单据摘要
+```
+
+#### 入口 C：单据详情里的审批轨迹
+
+任何业务单据详情页都要有审批卡片：
+
+```text
+审批状态：主管审批中
+当前处理人：李经理
+提交时间：2026-06-18 09:00
+最近意见：同意/驳回原因
+[查看完整流程]
+```
+
+“查看完整流程”打开审批实例详情：
+
+```text
+approval://instances/appr_inst_123
+```
+
+完整节点轨迹由审批工作流 UI 展示。
+
+#### 入口 D：通知和待办
+
+审批节点变化要进入通知/待办。
+
+事件：
+
+```text
+approval.instance.started
+approval.task.assigned
+approval.task.approved
+approval.task.rejected
+approval.instance.completed
+approval.instance.timeout
+```
+
+通知示例：
+
+```text
+你有一条报销审批待处理：张三 1280 元。
+```
+
+点通知打开：
+
+```text
+审批中心 -> 对应审批任务
+```
+
+或：
+
+```text
+报销申请 App -> 单据详情
+```
+
+### 2.8 审批查看数据边界
+
+查看分两类。
+
+DataSrv 提供业务摘要：
+
+```json
+{
+  "record_id": "EXP-001",
+  "record_title": "张三差旅报销",
+  "amount": 1280,
+  "business_status": "pending_manager_approval",
+  "approval_status": "pending",
+  "current_node": "主管审批",
+  "current_assignee": "李经理",
+  "approval_instance_id": "appr_inst_123"
+}
+```
+
+审批系统提供完整流程轨迹：
+
+```json
+{
+  "approval_instance_id": "appr_inst_123",
+  "nodes": [
+    {"name": "提交", "actor": "张三", "time": "..."},
+    {"name": "主管审批", "actor": "李经理", "decision": "approved", "comment": "同意"}
+  ]
+}
+```
+
+企业 App 默认展示 DataSrv 摘要。
+
+用户点“完整流程”才进入审批系统详情。
+
+### 3. DataSrv RecordApproval
+
+DataSrv 现在已有 `RecordApproval`：
+
+```text
+CreateRecordApproval
+ListRecordApprovals
+GetRecordApproval
+ReviewRecordApproval
+MIS Inbox
+Timeline
+AuditLog
+```
+
+当前模型：
+
+```json
+{
+  "dataset_id": "expense.reports",
+  "record_id": "EXP-001",
+  "status": "pending",
+  "kind": "finance",
+  "assigned_to": "finance_manager",
+  "decision": "approve",
+  "reason": "...",
+  "created_by": "...",
+  "reviewed_by": "..."
+}
+```
+
+适合承担：
+
+```text
+单据审批记录
+审批状态事实
+审批审计
+待办 inbox
+record timeline
+```
+
+当前不足：
+
+- 主要按 `dataset_id/record_id` 工作，不懂业务 `object_role`。
+- 不应承担完整审批流程设计。
+- 不应替代独立审批工作流实例。
+- 需要能记录外部审批工作流实例和节点结果。
+
+### 4. 正确分工
+
+不要再造第三套审批，也不要把审批流硬编码进 DataSrv。
+
+采用：
+
+```text
+独立审批工作流 / 工作流设计器
+  负责“审批流程怎么设计、怎么流转、谁审批、VE 如何参与”
+
+DataSrv RecordApproval
+  负责记录“哪张业务单据关联了哪个审批实例，审批结果是什么”
+
+MIS Tool
+  负责把 skill/app 调用转成“发起审批工作流 + 更新 DataSrv 单据”
+
+AG UI
+  负责显示待办、表单、审批确认、结果
+
+DataSrv
+  负责业务对象、单据状态、数据校验、审计、timeline
+```
+
+### 5. 报销审批目标链路
+
+```text
+用户打开“报销申请” MaClaw App
+  -> 启动 mis-expense-claim skill
+  -> AG UI 填报销单
+  -> mis.data.upsert_record(object_role=expense_report, status=draft)
+  -> 用户提交
+  -> mis.approval.start(workflow_id=expense_approval)
+  -> 审批工作流实例创建
+  -> DataSrv 记录 RecordApproval(workflow_instance_id, status=pending)
+  -> 主管/VE 在审批工作流中处理
+  -> 审批工作流返回 decision=approved/rejected
+  -> mis.approval.sync_result 写回 DataSrv
+  -> 更新 RecordApproval approved/rejected
+  -> 更新报销单 status=pending_finance_payment 或 rejected
+  -> 财务付款可进入另一个付款审批工作流或付款确认 App
+  -> 更新报销单 status=paid
+  -> 全程写 AuditLog / Timeline
+```
+
+### 6. API/Tool 调整
+
+新增 MIS tool，对接独立审批工作流，不直接让 Skill 操作底层 dataset approval：
+
+```text
+mis.approval.start
+mis.approval.list
+mis.approval.get
+mis.approval.sync_result
+mis.approval.my_inbox
+```
+
+入参使用业务语义：
+
+```json
+{
+  "app_id": "mis.expense",
+  "object_role": "expense_report",
+  "record_id": "EXP-001",
+  "approval_workflow_id": "expense_approval",
+  "actor": {"user_id": "u_manager"}
+}
+```
+
+MIS tool 内部解析：
+
+```text
+object_role -> dataset_id
+approval_workflow_id -> Hub/Workflow Designer 定义
+record_id -> DataSrv 单据引用
+actor -> 当前提交人
+workflow result -> DataSrv RecordApproval + record status
+```
+
+### 7. DataSrv 需要扩展，不是推倒
+
+保留并扩展 `RecordApproval`：
+
+```text
+新增：
+  app_id
+  object_role
+  approval_workflow_id
+  workflow_instance_id
+  workflow_node_id
+  workflow_decision_id
+  submitted_by
+  current_assignee
+  current_assignee_type
+  from_status
+  to_status
+```
+
+保留：
+
+```text
+dataset_id
+record_id
+status
+kind
+assigned_to
+created_by
+reviewed_by
+audit
+timeline
+inbox
+```
+
+这样能兼容 DataSrv 已有审计/inbox/timeline，又能关联独立审批工作流实例。
+
+### 8. 工作流设计器需要暴露给 MIS 模板绑定
+
+DataSrv 蓝图和 Skill Generator 不生成审批流程图本身，而是引用已有审批工作流模板。
+
+例如报销模板：
+
+```json
+{
+  "blueprint_id": "mis.expense",
+  "approval_bindings": [
+    {
+      "event": "expense.submitted",
+      "workflow_id": "expense_approval",
+      "record_role": "expense_report",
+      "on_approved": {"set_status": "pending_finance_payment"},
+      "on_rejected": {"set_status": "rejected"}
+    },
+    {
+      "event": "expense.payment_requested",
+      "workflow_id": "expense_payment_approval",
+      "record_role": "expense_report",
+      "on_approved": {"set_status": "paid"}
+    }
+  ]
+}
+```
+
+App Studio / Skill Generator 需要能做：
+
+```text
+选择已有审批工作流
+检查审批工作流输入参数是否匹配 MIS 对象
+把 record ref、申请人、金额、部门等上下文传给工作流
+保存 approval_bindings
+```
+
+工作流设计器仍负责：
+
+```text
+审批节点
+审批人/VE
+条件分支
+超时
+fallback approver
+加签/转交
+```
+
+### 9. 设计原则
+
+- 不新造孤立审批引擎。
+- 独立审批工作流和设计器管审批流程。
+- DataSrv 管业务单据事实和审计。
+- AG UI 管交互。
+- Skill 管业务动作编排。
+- MIS tool 是唯一桥。
+- DataSrv 只引用审批工作流实例和决策结果，不复制审批图。
+
+## 第一条样板：报销申请
+
+覆盖：
+
+- 员工
+- 部门
+- 报销单
+- 报销明细
+- 附件
+- 审批
+- 付款
+
+流程：
+
+```text
+员工提交
+  -> 主管审批
+  -> 财务付款
+  -> 员工查询记录
+```
+
+## 第二条样板：库存盘点
+
+覆盖：
+
+- 商品
+- 仓库
+- 库存
+- 库存流水
+
+流程：
+
+```text
+选择仓库
+  -> 查询库存
+  -> 录入盘点数
+  -> dry-run 差异
+  -> 确认
+  -> 写库存流水
+```
+
+## 不做的事
+
+第一版不做：
+
+- 复杂低代码平台。
+- 任意拖拽生成全系统。
+- 跨 tenant 数据共享。
+- 完整财务总账。
+- 复杂 BPMN 工作流。
+- App 内独立 token 管理。
+
+## 重构护栏
+
+这些是重构时不能省的基础约束。
+
+### 1. 租户和组织模型先定
+
+审批、权限和数据隔离都依赖组织模型。
+
+第一版至少要标准化：
+
+```text
+tenant
+organization
+department
+user
+position
+manager
+approval_role
+```
+
+推荐最小关系：
+
+```text
+tenant -> organization -> department -> user
+user -> manager
+user -> approval_role
+user -> approval_limit
+```
+
+否则无法判断：
+
+- 谁能看哪些数据。
+- 谁是谁的主管。
+- 谁能审批哪类单据。
+- 金额超过多少需要更高级审批。
+
+### 2. 必须有内置种子数据
+
+端到端样板不能空跑。
+
+报销样板需要：
+
+```text
+用户：
+  张三：员工
+  李经理：主管
+  财务王五：财务
+
+部门：
+  销售部
+  财务部
+
+关系：
+  张三.manager = 李经理
+  李经理.approval_limit = 5000
+  财务王五.approval_role = finance_payable
+```
+
+库存样板需要：
+
+```text
+商品：
+  A 商品
+  B 商品
+
+仓库：
+  主仓
+
+库存：
+  A 商品 主仓 100
+  B 商品 主仓 50
+```
+
+验收必须用这些种子数据跑通。
+
+### 3. App/Skill 必须有测试协议
+
+生成的 Skill 不能只保存代码或 prompt。
+
+每个 Skill 必须带：
+
+```text
+sample_input
+expected_tool_calls
+expected_output
+required_roles
+required_scopes
+risk_level
+```
+
+示例：
+
+```json
+{
+  "sample_input": {
+    "applicant": "张三",
+    "amount": 1280,
+    "description": "客户拜访差旅"
+  },
+  "expected_tool_calls": [
+    {"tool": "mis.app.check_access"},
+    {"tool": "mis.data.upsert_record", "object_role": "expense_report"},
+    {"tool": "mis.data.execute_action", "action_role": "submit_expense"}
+  ],
+  "expected_output": {
+    "status": "pending_manager_approval"
+  }
+}
+```
+
+没有测试协议的 Skill 不能发布成 MaClaw App。
+
+### 4. 所有核心对象必须版本化
+
+必须版本化：
+
+```text
+blueprint_version
+component_version
+business_object_version
+object_schema_version
+skill_version
+app_entry_version
+approval_policy_version
+approval_workflow_version
+```
+
+版本用途：
+
+- 模板升级。
+- 字段新增。
+- Skill 兼容旧对象。
+- App 回滚。
+- 审批工作流绑定和版本变更可追溯。
+
+安装记录要保存当时版本：
+
+```json
+{
+  "app_id": "mis.expense",
+  "blueprint_id": "mis.expense",
+  "blueprint_version": "1.0.0",
+  "installed_at": "2026-06-18T10:00:00Z",
+  "role_bindings": {
+    "expense_report": "expense.reports"
+  }
+}
+```
+
+### 5. 错误必须业务化解释
+
+MIS tool 和 DataSrv 不能只返回技术错误。
+
+不合格：
+
+```text
+403 forbidden
+validation failed
+policy denied
+```
+
+合格：
+
+```text
+李经理不能审批该报销，因为金额 8000 超过审批额度 5000。
+```
+
+错误结构：
+
+```json
+{
+  "code": "approval_limit_exceeded",
+  "message": "李经理不能审批该报销，因为金额 8000 超过审批额度 5000。",
+  "actor": "李经理",
+  "target": "报销单 EXP-20260618-001",
+  "required": "approval_limit >= 8000",
+  "actual": "approval_limit = 5000",
+  "next_actions": [
+    {"label": "提交给上级主管", "action": "route_to_next_approver"},
+    {"label": "退回申请人修改金额", "action": "reject_for_revision"}
+  ]
+}
+```
+
+AG UI 应展示 `message` 和可选 `next_actions`。
+
+### 6. 安全边界必须明确
+
+明确禁止：
+
+```text
+Skill 保存 DataSrv token
+MaClaw App 保存 DataSrv token
+前端绕过 MIS tool 直接写 DataSrv
+AI 直接 apply 高风险 schema 变更
+低置信度对象映射自动提交
+审批 action 只靠 token scope 放行
+```
+
+必须执行：
+
+```text
+DataSrv URL/token 只在全局 MIS 设置保存
+Skill/App 只声明 requiredRoles/requiredScopes
+所有写入经过 MIS tool
+所有结构变更经过 ChangePlan
+所有审批经过独立审批工作流
+所有关键动作写 AuditLog
+```
+
+## 最终目标
+
+用户只需要懂业务：
+
+```text
+我要报销
+我要查库存
+我要建客户
+我要审批付款
+```
+
+系统负责：
+
+```text
+找业务对象
+找真实数据
+生成 Skill
+生成 AG UI
+校验权限
+执行审批
+写审计
+发布 App
+```
+
+## 企业 App + 审批工作流完整流程
+
+这一节固定作为后续产品和研发对齐用的主流程。
+
+### 1. 先有 DataSrv 语义底座
+
+DataSrv 提供企业数据和业务对象映射：
+
+```text
+业务对象：
+  员工
+  报销单
+  采购单
+  合同
+  库存
+
+role_bindings：
+  employee -> company.users
+  expense_report -> expense.reports
+  purchase_order -> procurement.purchase_orders
+
+审批关联：
+  业务事件 -> approval workflow-skill
+```
+
+DataSrv 不负责画审批流程，但负责业务对象、单据、状态、审计和审批实例关联。
+
+### 2. 先有审批 workflow-skill 定义
+
+工作流设计器创建审批 workflow-skill：
+
+```text
+approval-expense
+  主管审批
+  财务复核
+  超时 fallback
+  VE 可审批/不可审批
+```
+
+它是流程定义，不是审批实例。
+
+保存内容包括：
+
+```text
+节点
+条件
+审批人/审批角色
+VE 审批能力
+超时规则
+fallback approver
+输出决策：approved / rejected / cancelled
+```
+
+### 3. 创建企业 App
+
+App Studio 创建企业 App：
+
+```text
+App：报销申请
+Skill：mis-expense-claim
+MIS 应用：mis.expense
+审批绑定：
+  expense.submitted -> approval-expense
+```
+
+用户/管理员确认：
+
+```text
+提交报销时使用哪个审批 workflow-skill？
+需要传给审批流哪些字段？
+审批通过/驳回后业务状态怎么变？
+```
+
+保存成：
+
+```json
+{
+  "kind": "enterprise_app",
+  "binding": {
+    "skill": {"id": "mis-expense-claim"},
+    "mis": {
+      "appId": "mis.expense",
+      "approvalBindings": [
+        {
+          "event": "expense.submitted",
+          "workflowSkillId": "approval-expense",
+          "recordRole": "expense_report",
+          "inputMapping": {
+            "applicant": "expense_report.applicant_ref",
+            "department": "expense_report.department_ref",
+            "amount": "expense_report.amount",
+            "reason": "expense_report.description",
+            "attachments": "expense_report.attachments"
+          },
+          "onApproved": {"setStatus": "pending_finance_payment"},
+          "onRejected": {"setStatus": "rejected"}
+        }
+      ]
+    }
+  }
+}
+```
+
+### 4. 用户运行企业 App
+
+用户从应用入口打开：
+
+```text
+企业应用 -> 报销申请
+```
+
+AG UI 展示业务表单：
+
+```text
+报销人
+金额
+事由
+报销明细
+附件
+```
+
+用户不需要知道：
+
+```text
+dataset
+field key
+workflow instance
+approval link
+```
+
+### 5. Skill 写业务数据
+
+Skill 调 MIS tool：
+
+```json
+{
+  "tool": "mis.data.upsert_record",
+  "args": {
+    "app_id": "mis.expense",
+    "object_role": "expense_report",
+    "data": {
+      "报销人": "张三",
+      "金额": 1280,
+      "事由": "客户拜访差旅"
+    }
+  }
+}
+```
+
+MIS tool 解析：
+
+```text
+expense_report -> expense.reports
+报销人 -> applicant_ref
+张三 -> company.users record id
+```
+
+DataSrv 保存报销单：
+
+```text
+status = draft / submitted
+```
+
+### 6. Skill 发起审批
+
+用户点击提交。
+
+Skill 发出业务事件：
+
+```text
+expense.submitted
+```
+
+MIS tool 查审批绑定：
+
+```text
+expense.submitted -> approval-expense
+```
+
+然后创建审批实例：
+
+```text
+approval_instance_id = appr_inst_123
+```
+
+审批实例由审批工作流系统保存。
+
+### 7. DataSrv 保存审批关联
+
+DataSrv 保存 `ApprovalLink`：
+
+```json
+{
+  "app_id": "mis.expense",
+  "object_role": "expense_report",
+  "record_id": "EXP-001",
+  "workflow_skill_id": "approval-expense",
+  "approval_instance_id": "appr_inst_123",
+  "trigger_event": "expense.submitted",
+  "status": "pending"
+}
+```
+
+同时业务单据状态变为：
+
+```text
+pending_manager_approval
+```
+
+### 8. 审批系统跑流程
+
+审批 workflow-skill 实例运行：
+
+```text
+主管审批
+  -> 财务复核
+  -> 完成
+```
+
+审批系统保存完整轨迹：
+
+```text
+节点
+审批人
+意见
+时间
+附件
+超时
+fallback
+最终决策
+```
+
+节点数量不固定，所以审批系统按实例头、节点实例列表、事件日志保存：
+
+```text
+WorkflowInstance
+WorkflowNodeInstance[]
+WorkflowEventLog[]
+```
+
+DataSrv 不复制这些细节，只保存关联和结果摘要。
+
+### 9. 结果同步回 DataSrv
+
+审批通过：
+
+```text
+final_decision = approved
+```
+
+MIS tool 或 webhook 同步结果：
+
+```text
+ApprovalLink.status = approved
+expense_report.status = pending_finance_payment
+AuditLog 写入
+Timeline 写入
+```
+
+审批驳回：
+
+```text
+ApprovalLink.status = rejected
+expense_report.status = rejected
+AuditLog 写入
+Timeline 写入
+```
+
+### 10. 用户查看
+
+常用入口：
+
+```text
+报销申请 App -> 我的报销 -> 单据详情
+审批中心 -> 待我审批 / 我发起的 / 我已处理
+通知/待办 -> 打开对应审批任务
+```
+
+企业 App 内显示摘要：
+
+```text
+当前节点
+当前处理人
+审批状态
+最近意见
+提交时间
+完成时间
+```
+
+完整轨迹跳转到审批实例详情：
+
+```text
+approval://instances/appr_inst_123
+```
+
+### 11. 总结
+
+```text
+企业 App
+  填业务数据
+  发起审批
+  查看业务状态
+
+审批 workflow-skill
+  定义审批流程
+  运行审批实例
+  保存完整审批轨迹
+
+DataSrv
+  保存业务数据
+  保存审批关联
+  更新业务状态
+  写审计和 timeline
+
+审批中心
+  统一查看和处理审批
+```

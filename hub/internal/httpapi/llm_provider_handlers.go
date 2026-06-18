@@ -2103,6 +2103,51 @@ func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any) (*htt
 	if resp.Body == nil {
 		resp.Body = http.NoBody
 	}
+	if resp.StatusCode != http.StatusBadRequest {
+		return resp, nil
+	}
+	if retryBody, ok := maclawOfficialSanitizedRetryBody(body); ok {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		retryPayload, marshalErr := json.Marshal(retryBody)
+		if marshalErr != nil {
+			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			return resp, nil
+		}
+		log.Printf("[LLM-V1] maclaw official returned 400 for stream; retrying with sanitized OpenAI-compatible body")
+		retryResp, retryErr := ForwardStreamViaMaClaw(r.Context(), retryPayload, store.TenantIDFromContext(r.Context()))
+		if retryErr != nil {
+			return nil, retryErr
+		}
+		if retryResp.Body == nil {
+			retryResp.Body = http.NoBody
+		}
+		if retryResp.StatusCode != http.StatusBadRequest {
+			return retryResp, nil
+		}
+		resp = retryResp
+	}
+	if retryBody, ok := maclawOfficialToollessRetryBody(body); ok {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		retryPayload, marshalErr := json.Marshal(retryBody)
+		if marshalErr != nil {
+			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			return resp, nil
+		}
+		log.Printf("[LLM-V1] maclaw official returned 400 for stream; retrying without tool schemas")
+		retryResp, retryErr := ForwardStreamViaMaClaw(r.Context(), retryPayload, store.TenantIDFromContext(r.Context()))
+		if retryErr != nil {
+			return nil, retryErr
+		}
+		if retryResp.Body == nil {
+			retryResp.Body = http.NoBody
+		}
+		if retryResp.StatusCode != http.StatusBadRequest {
+			return retryResp, nil
+		}
+		resp = retryResp
+	}
 	return resp, nil
 }
 
@@ -3245,13 +3290,7 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 	request := r.Clone(ctx)
 	for _, providerID := range llmservice.OrderProvidersForRequest(body, model) {
 		if IsMaClawProviderRequest(providerID) {
-			payload, marshalErr := json.Marshal(body)
-			if marshalErr != nil {
-				lastErr = fmt.Errorf("marshal maclaw official request: %w", marshalErr)
-				lastProviderID = providerID
-				continue
-			}
-			respBody, statusCode, fwdErr := ForwardViaMaClaw(ctx, payload, store.TenantIDFromContext(ctx))
+			respBody, statusCode, fwdErr := forwardMaClawOfficialRequestWithCompatRetry(ctx, body, store.TenantIDFromContext(ctx))
 			if fwdErr != nil {
 				lastErr = fwdErr
 				lastProviderID = providerID
@@ -3336,6 +3375,140 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
 	}
 	return authorizedModelForwardResult{}, lastErr
+}
+
+func forwardMaClawOfficialRequestWithCompatRetry(ctx context.Context, body map[string]any, tenantID string) ([]byte, int, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("marshal maclaw official request: %w", err)
+	}
+	respBody, statusCode, err := ForwardViaMaClaw(ctx, payload, tenantID)
+	if err != nil || statusCode != http.StatusBadRequest {
+		return respBody, statusCode, err
+	}
+	if retryBody, ok := maclawOfficialSanitizedRetryBody(body); ok {
+		retryPayload, marshalErr := json.Marshal(retryBody)
+		if marshalErr != nil {
+			return respBody, statusCode, nil
+		}
+		log.Printf("[LLM-V1] maclaw official returned 400; retrying with sanitized OpenAI-compatible body")
+		retryRespBody, retryStatusCode, retryErr := ForwardViaMaClaw(ctx, retryPayload, tenantID)
+		if retryErr == nil && retryStatusCode != http.StatusBadRequest {
+			return retryRespBody, retryStatusCode, nil
+		}
+		if retryErr != nil {
+			return retryRespBody, retryStatusCode, retryErr
+		}
+		respBody, statusCode = retryRespBody, retryStatusCode
+	}
+	if retryBody, ok := maclawOfficialToollessRetryBody(body); ok {
+		retryPayload, marshalErr := json.Marshal(retryBody)
+		if marshalErr != nil {
+			return respBody, statusCode, nil
+		}
+		log.Printf("[LLM-V1] maclaw official returned 400; retrying without tool schemas")
+		retryRespBody, retryStatusCode, retryErr := ForwardViaMaClaw(ctx, retryPayload, tenantID)
+		if retryErr == nil && retryStatusCode != http.StatusBadRequest {
+			return retryRespBody, retryStatusCode, nil
+		}
+		if retryErr != nil {
+			return retryRespBody, retryStatusCode, retryErr
+		}
+		respBody, statusCode = retryRespBody, retryStatusCode
+	}
+	return respBody, statusCode, nil
+}
+
+func maclawOfficialSanitizedRetryBody(body map[string]any) (map[string]any, bool) {
+	if !maclawOfficialBodyHasCompatRisk(body) {
+		return nil, false
+	}
+	retry := cloneLLMEndpointBody(body)
+	corelib.SanitizeCodeGenOpenAICompatBody(retry)
+	return retry, true
+}
+
+func maclawOfficialToollessRetryBody(body map[string]any) (map[string]any, bool) {
+	if !maclawOfficialBodyHasCompatRisk(body) || maclawOfficialBodyHasToolHistory(body) {
+		return nil, false
+	}
+	retry := cloneLLMEndpointBody(body)
+	for _, key := range []string{
+		"tools",
+		"tool_choice",
+		"functions",
+		"function_call",
+		"parallel_tool_calls",
+		"response_format",
+		"stream_options",
+	} {
+		delete(retry, key)
+	}
+	return retry, true
+}
+
+func maclawOfficialBodyHasCompatRisk(body map[string]any) bool {
+	for _, key := range []string{
+		"tools",
+		"tool_choice",
+		"functions",
+		"function_call",
+		"parallel_tool_calls",
+		"response_format",
+		"stream_options",
+	} {
+		if _, ok := body[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func maclawOfficialBodyHasToolHistory(body map[string]any) bool {
+	messages, ok := body["messages"].([]any)
+	if !ok {
+		if items, ok := body["messages"].([]interface{}); ok {
+			messages = items
+		}
+	}
+	for _, item := range messages {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			if m, ok := item.(map[string]interface{}); ok {
+				msg = m
+			} else {
+				continue
+			}
+		}
+		role := strings.TrimSpace(fmt.Sprint(msg["role"]))
+		if role == "tool" || role == "function" {
+			return true
+		}
+		if calls, ok := msg["tool_calls"]; ok && maclawOfficialToolFieldPresent(calls) {
+			return true
+		}
+		if call, ok := msg["function_call"]; ok && maclawOfficialToolFieldPresent(call) {
+			return true
+		}
+	}
+	return false
+}
+
+func maclawOfficialToolFieldPresent(value any) bool {
+	if value == nil {
+		return false
+	}
+	switch v := value.(type) {
+	case []any:
+		return len(v) > 0
+	case map[string]any:
+		return len(v) > 0
+	case string:
+		return strings.TrimSpace(v) != ""
+	default:
+		rv := reflect.ValueOf(value)
+		return rv.IsValid() && !rv.IsZero()
+	}
 }
 
 func shouldTryNextProviderStatus(statusCode int) bool {

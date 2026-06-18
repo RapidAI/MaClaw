@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -81,12 +83,25 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 		}
 		// Prefer the accumulated WorkflowDocBuffer (captures all iterations' text)
 		// over resp.Text (which only contains the last iteration's finalized text).
+		// However, when the LLM uses write_file to produce the phase document (common
+		// in ToolPolicyFull phases like patent parsing), the buffer only contains short
+		// commentary text. In that case, read the written file(s) as the actual output.
 		var docText string
 		source := "resp.Text"
 		if loopCtx != nil && loopCtx.WorkflowDocBuffer.Len() > 0 {
 			if t := strings.TrimSpace(loopCtx.WorkflowDocBuffer.String()); t != "" {
 				docText = t
 				source = "buffer"
+			}
+		}
+		// If buffer content is short (just LLM commentary) but files were written,
+		// read the written files as the actual phase output. This is the common path
+		// for ToolPolicyFull phases where LLM writes documents to disk.
+		if loopCtx != nil && len(loopCtx.WorkflowWrittenFiles) > 0 {
+			fileContent := readWorkflowWrittenFiles(loopCtx.WorkflowWrittenFiles)
+			if fileContent != "" && len([]rune(fileContent)) > len([]rune(docText)) {
+				docText = fileContent
+				source = "written_files"
 			}
 		}
 		if docText == "" {
@@ -101,7 +116,11 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 			if completedPhaseID != "" {
 				h.recordWorkflowPhaseCompletedExperience(msg, loopCtx, completedPhaseID)
 			}
-			log.Printf("[workflow-v2] post-loop doc capture: user=%s len=%d source=%s", ownerID, len([]rune(docText)), source)
+			logSource := source
+			if source == "written_files" && loopCtx != nil {
+				logSource = fmt.Sprintf("written_files(%s)", strings.Join(loopCtx.WorkflowWrittenFiles, ", "))
+			}
+			log.Printf("[workflow-v2] post-loop doc capture: user=%s len=%d source=%s", ownerID, len([]rune(docText)), logSource)
 			// After recording, check if the next phase is ExecModeAutoFromPrev
 			// and auto-complete it (same logic as SubAgent path).
 			if wf := h.getWorkflowV2(); wf != nil {
@@ -125,6 +144,14 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 			if t := strings.TrimSpace(loopCtx.WorkflowDocBuffer.String()); t != "" {
 				docText = t
 				source = "buffer"
+			}
+		}
+		// Same written_files fallback as the primary V2 path above.
+		if loopCtx != nil && len(loopCtx.WorkflowWrittenFiles) > 0 {
+			fileContent := readWorkflowWrittenFiles(loopCtx.WorkflowWrittenFiles)
+			if fileContent != "" && len([]rune(fileContent)) > len([]rune(docText)) {
+				docText = fileContent
+				source = "written_files"
 			}
 		}
 		if docText == "" {
@@ -259,4 +286,69 @@ func (h *IMMessageHandler) recordExperienceLifecycleEvent(event lifecycle.Event)
 
 func (h *IMMessageHandler) applyWorkflowAutoAdvanceResponse(userID string, advResp *v2.WorkflowResponse, platform string) {
 	return
+}
+
+// readWorkflowWrittenFiles reads files written during the workflow agent loop
+// and concatenates their content. This captures the actual phase document when
+// the LLM uses write_file to produce output instead of streaming text.
+// Files are read in order and separated by newlines. Only text files <= 100KB
+// are read to avoid memory issues with binary or oversized files.
+func readWorkflowWrittenFiles(paths []string) string {
+	const maxFileSize = 100 * 1024 // 100KB per file
+	const maxTotalRunes = 50000   // cap total output to avoid oversized phase output
+
+	var parts []string
+	totalRunes := 0
+	for _, p := range paths {
+		if totalRunes >= maxTotalRunes {
+			break
+		}
+		info, err := os.Stat(p)
+		if err != nil || info.IsDir() || info.Size() > maxFileSize || info.Size() == 0 {
+			continue
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			continue
+		}
+		// Skip binary-looking content (high ratio of non-printable bytes).
+		if looksLikeBinary(data) {
+			continue
+		}
+		parts = append(parts, content)
+		totalRunes += len([]rune(content))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	result := strings.Join(parts, "\n\n---\n\n")
+	// Truncate to maxTotalRunes if needed.
+	runes := []rune(result)
+	if len(runes) > maxTotalRunes {
+		result = string(runes[:maxTotalRunes])
+	}
+	return result
+}
+
+// looksLikeBinary returns true if data appears to be binary (>10% non-text bytes).
+func looksLikeBinary(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	checkLen := len(data)
+	if checkLen > 512 {
+		checkLen = 512
+	}
+	nonText := 0
+	for i := 0; i < checkLen; i++ {
+		b := data[i]
+		if b == 0 || (b < 0x20 && b != '\n' && b != '\r' && b != '\t') {
+			nonText++
+		}
+	}
+	return float64(nonText)/float64(checkLen) > 0.10
 }

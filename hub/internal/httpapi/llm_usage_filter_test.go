@@ -461,6 +461,58 @@ func TestEnqueueLLMUsageIgnoresRemoteCodingToolProviders(t *testing.T) {
 	}
 }
 
+func TestEnqueueLLMUsageChargesBuiltinProviderServiceGroupCredits(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		TokensPerCredit: 10000,
+		Grants: []llmservice.Grant{{
+			ID:             "grant-1",
+			Email:          "remote@example.com",
+			ServiceGroupID: llmservice.MaClawOfficialServiceGroupID,
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(time.Hour),
+			CreatedAt:      now,
+			CreditsTotal:   10,
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{TokenUsage: map[string]*corelib.TokenUsageStat{}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	globalLLMUsageAccumulator.mu.Lock()
+	savedPending := globalLLMUsageAccumulator.pending
+	globalLLMUsageAccumulator.pending = map[store.SystemSettingsRepository]*pendingSystemUsage{}
+	globalLLMUsageAccumulator.mu.Unlock()
+	defer func() {
+		globalLLMUsageAccumulator.mu.Lock()
+		globalLLMUsageAccumulator.pending = savedPending
+		globalLLMUsageAccumulator.mu.Unlock()
+	}()
+
+	enqueueLLMUsage(system, llmservice.MaClawOfficialProviderID, corelib.TokenUsageStat{InputTokens: 1200, OutputTokens: 80, TotalTokens: 1280, Requests: 1}, "remote@example.com", []string{llmservice.MaClawOfficialServiceGroupID}, []string{"group-a"}, 1)
+	globalLLMUsageAccumulator.flush(ctx)
+
+	providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("load provider registry: %v", err)
+	}
+	if stat := providerReg.TokenUsage[llmservice.MaClawOfficialProviderID]; stat == nil || stat.TotalTokens != 1280 || stat.Requests != 1 {
+		t.Fatalf("builtin provider usage not recorded: %#v", stat)
+	}
+	serviceReg, err := llmservice.LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("load service registry: %v", err)
+	}
+	if len(serviceReg.Grants) != 1 || serviceReg.Grants[0].CreditsUsed != 1 {
+		t.Fatalf("builtin provider usage credits = %#v, want 1 credit charged", serviceReg.Grants)
+	}
+}
+
 func TestFlushProviderUsageSkipsPersistedRemoteCodingToolKeys(t *testing.T) {
 	ctx := context.Background()
 	system := newTestLLMServiceSystemSettings()

@@ -868,7 +868,7 @@ describe('useAIAssistant property tests', () => {
             await result.current.sendMessage('/clear');
         });
 
-        expect(messageContents(result.current.messages)).toEqual(['history cleared']);
+        expect(messageContents(result.current.messages)).toEqual([]);
         expect(localStorage.getItem(AI_ASSISTANT_HISTORY_STORAGE_KEY)).toBeNull();
 
         await act(async () => {
@@ -3176,7 +3176,7 @@ describe('useAIAssistant property tests', () => {
                 category: 'tip',
                 title: 'Read this',
                 body: 'Structured news body',
-                icon: '💡',
+                icon: 'TIP',
             });
             expect(newsMessages[0].content).toBe('Structured news body');
         });
@@ -3885,6 +3885,109 @@ describe('useAIAssistant property tests', () => {
 
         await waitFor(() => expect(result.current.sending).toBe(false));
         expect(messageContents(result.current.messages)).toContain('early token');
+    });
+
+    it('closes workflow form when structured submit is accepted and deferred', async () => {
+        (SubmitAgentView as any).mockImplementationOnce(async (payload: { request_id?: string }) => ({
+            text: '',
+            error: '',
+            request_id: payload.request_id || '',
+            deferred: true,
+        }));
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                view: {
+                    id: 'workflow:form:requirements',
+                    type: 'form',
+                    title: 'Requirements',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'requirements' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-new' },
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:C:/new' },
+                    ],
+                },
+            });
+        });
+        expect(result.current.agentView?.id).toBe('workflow:form:requirements');
+
+        await act(async () => {
+            await result.current.submitAgentView('workflow:form:requirements', {
+                _workflow_phase: 'requirements',
+                _workflow_id: 'wf-new',
+                _workflow_user_id: 'desktop-user:C:/new',
+            });
+        });
+
+        expect(result.current.agentView).toBeNull();
+    });
+
+    it('closes workflow form from active view owner when submitted data omits workflow user id', async () => {
+        (SubmitAgentView as any).mockImplementationOnce(async (payload: { request_id?: string }) => ({
+            text: '',
+            error: '',
+            request_id: payload.request_id || '',
+            deferred: true,
+        }));
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                view: {
+                    id: 'workflow:form:requirements',
+                    type: 'form',
+                    title: 'Requirements',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'requirements' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-new' },
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:C:/new' },
+                        { name: 'project_name', label: 'Project', type: 'text', value: 'snake' },
+                    ],
+                },
+            });
+        });
+        expect(result.current.agentView?.id).toBe('workflow:form:requirements');
+
+        await act(async () => {
+            await result.current.submitAgentView('workflow:form:requirements', {
+                project_name: 'snake',
+            });
+        });
+
+        expect(result.current.agentView).toBeNull();
+    });
+
+    it('uses workflow owner session for workflow form submit rounds', async () => {
+        (SubmitAgentView as any).mockImplementationOnce(async (payload: { request_id?: string }) => ({
+            text: '',
+            error: '',
+            request_id: payload.request_id || '',
+            deferred: true,
+        }));
+        const { result } = renderAssistantHook({ activeSessionKey: 'desktop-user' });
+
+        await act(async () => {
+            await result.current.submitAgentView('workflow:form:requirements', {
+                _workflow_phase: 'requirements',
+                _workflow_id: 'wf-new',
+                _workflow_user_id: 'desktop-user:C:/project',
+                project_name: 'snake',
+            });
+        });
+
+        const assistantMsg = result.current.messages.find(message => message.role === 'assistant' && message.requestId);
+        expect(assistantMsg?.sessionKey).toBe('desktop-user:C:/project');
     });
 
     it('keeps workflow forms visible when submit backend rejects without lifecycle dismiss', async () => {

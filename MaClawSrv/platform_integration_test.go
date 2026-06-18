@@ -130,6 +130,70 @@ func TestPlatformVirtualEmployeeConfigUpdatesAvatarMetadata(t *testing.T) {
 	}
 }
 
+func TestPlatformVirtualEmployeeConfigRefreshesHubLLM(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	provisionPlatformEmployeeForTest(t, server)
+	tenant, user, _ := platformRuntimeForTest(t, svc, "emp-001")
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+
+	postPlatformJSONForTest(t, server, "/api/platform/virtual-employees/emp-001/config", map[string]any{
+		"tenant_id":            "hub-tenant-001",
+		"virtual_email":        "contract_reviewer@example.test",
+		"hub_llm_endpoint":     "https://hub.example.test/api/llm/v1",
+		"hub_llm_viewer_token": "viewer-token-refresh",
+		"llm_service_group_id": "group-refreshed",
+	}, http.StatusOK)
+
+	cfg, err := svc.GetUserConfig(t.Context(), principal)
+	if err != nil {
+		t.Fatalf("GetUserConfig: %v", err)
+	}
+	if cfg.AppConfig.MaclawLLMCurrentProvider != "hub-llm" || cfg.AppConfig.MaclawLLMUrl != "https://hub.example.test/api/llm/v1" || cfg.AppConfig.MaclawLLMKey == "" || cfg.AppConfig.MaclawLLMKey == "viewer-token-refresh" || cfg.AppConfig.MaclawLLMModel != "auto" {
+		t.Fatalf("expected refreshed Hub LLM config, got %#v", cfg.AppConfig)
+	}
+	if len(cfg.AppConfig.MaclawLLMProviders) != 1 || cfg.AppConfig.MaclawLLMProviders[0].URL != "https://hub.example.test/api/llm/v1" || cfg.AppConfig.MaclawLLMProviders[0].Key == "" || cfg.AppConfig.MaclawLLMProviders[0].Key == "viewer-token-refresh" || cfg.AppConfig.MaclawLLMProviders[0].Model != "auto" {
+		t.Fatalf("expected refreshed Hub LLM provider, got %#v", cfg.AppConfig.MaclawLLMProviders)
+	}
+	_, _, inst := platformRuntimeForTest(t, svc, "emp-001")
+	if inst.Metadata["llm_service_group_id"] != "group-refreshed" {
+		t.Fatalf("expected refreshed LLM service group metadata, got %#v", inst.Metadata)
+	}
+
+	postPlatformJSONForTest(t, server, "/api/platform/virtual-employees/emp-001/config", map[string]any{
+		"tenant_id":            "hub-tenant-001",
+		"virtual_email":        "contract_reviewer@example.test",
+		"llm_service_group_id": "group-metadata-only",
+	}, http.StatusOK)
+	cfg, err = svc.GetUserConfig(t.Context(), principal)
+	if err != nil {
+		t.Fatalf("GetUserConfig after metadata-only refresh: %v", err)
+	}
+	if cfg.AppConfig.MaclawLLMKey == "" || cfg.AppConfig.MaclawLLMKey == "managed-by-hub" || cfg.AppConfig.MaclawLLMUrl != "https://hub.example.test/api/llm/v1" {
+		t.Fatalf("metadata-only refresh should preserve Hub LLM credential, got %#v", cfg.AppConfig)
+	}
+	_, _, inst = platformRuntimeForTest(t, svc, "emp-001")
+	if inst.Metadata["llm_service_group_id"] != "group-metadata-only" {
+		t.Fatalf("expected metadata-only service group refresh, got %#v", inst.Metadata)
+	}
+
+	postPlatformJSONForTest(t, server, "/api/platform/virtual-employees/emp-001/config", map[string]any{
+		"tenant_id":            "hub-tenant-001",
+		"virtual_email":        "contract_reviewer@example.test",
+		"hub_llm_viewer_token": "viewer-token-rotated",
+	}, http.StatusOK)
+	cfg, err = svc.GetUserConfig(t.Context(), principal)
+	if err != nil {
+		t.Fatalf("GetUserConfig after token-only refresh: %v", err)
+	}
+	if cfg.AppConfig.MaclawLLMUrl != "https://hub.example.test/api/llm/v1" || cfg.AppConfig.MaclawLLMModel != "auto" || cfg.AppConfig.MaclawLLMKey == "" || cfg.AppConfig.MaclawLLMKey == "managed-by-hub" || cfg.AppConfig.MaclawLLMKey == "viewer-token-rotated" {
+		t.Fatalf("token-only refresh should preserve URL/model and store protected key, got %#v", cfg.AppConfig)
+	}
+}
+
 func TestPlatformVirtualEmployeeProvisionRejectsInvalidAvatarDataURL(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {

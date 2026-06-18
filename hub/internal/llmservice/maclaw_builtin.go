@@ -25,16 +25,16 @@ const (
 	MaClawOfficialServiceGroupName = "MaClaw 官方服务组"
 )
 
-// IsBuiltinProvider returns true for the MaClaw Official provider that
-// cannot be deleted or edited by Hub administrators.
+// IsBuiltinProvider returns true for the MaClaw Official provider that routes
+// through HubCenter instead of the local provider registry.
 func IsBuiltinProvider(id string) bool {
-	return id == MaClawOfficialProviderID
+	return strings.EqualFold(strings.TrimSpace(id), MaClawOfficialProviderID)
 }
 
-// IsBuiltinServiceGroup returns true for the MaClaw Official service group
-// that cannot be deleted or edited by Hub administrators.
+// IsBuiltinServiceGroup returns true for the default MaClaw Official service
+// group. The group still follows normal service-group billing/access rules.
 func IsBuiltinServiceGroup(id string) bool {
-	return id == MaClawOfficialServiceGroupID
+	return strings.EqualFold(strings.TrimSpace(id), MaClawOfficialServiceGroupID)
 }
 
 // ---------------------------------------------------------------------------
@@ -365,9 +365,9 @@ func ComputeStoreURL(hubCenterURL, hubID, tenantID, adminEmail string) string {
 // EnsureBuiltinProvider ensures the MaClaw Official provider exists in the registry.
 // Returns true if it was added (registry was modified).
 func EnsureBuiltinProvider(reg *Registry) bool {
-	for _, group := range reg.ModelServiceGroups {
-		if group.ID == MaClawOfficialServiceGroupID {
-			return false // already present
+	for i := range reg.ModelServiceGroups {
+		if strings.EqualFold(strings.TrimSpace(reg.ModelServiceGroups[i].ID), MaClawOfficialServiceGroupID) {
+			return ensureBuiltinProviderServiceGroupPolicy(&reg.ModelServiceGroups[i])
 		}
 	}
 	// Add the builtin service group
@@ -375,7 +375,7 @@ func EnsureBuiltinProvider(reg *Registry) bool {
 		ID:           MaClawOfficialServiceGroupID,
 		Name:         MaClawOfficialServiceGroupName,
 		Description:  "MaClaw 官方 LLM 服务，通过 HubCenter 提供算力",
-		AccessPolicy: AccessPolicyFree, // no grant needed, credits managed by HubCenter
+		AccessPolicy: AccessPolicyGrantRequired,
 		Models: []ModelServiceModel{
 			{
 				Name:        "auto",
@@ -384,5 +384,39 @@ func EnsureBuiltinProvider(reg *Registry) bool {
 			},
 		},
 	}}, reg.ModelServiceGroups...)
+	return true
+}
+
+func ensureBuiltinProviderServiceGroupPolicy(group *ModelServiceGroup) bool {
+	if group == nil {
+		return false
+	}
+	if !isDefaultMaClawOfficialServiceGroup(*group) {
+		return false
+	}
+	if NormalizeAccessPolicy(group.AccessPolicy) != AccessPolicyFree {
+		return false
+	}
+	group.AccessPolicy = AccessPolicyGrantRequired
+	return true
+}
+
+func isDefaultMaClawOfficialServiceGroup(group ModelServiceGroup) bool {
+	if !strings.EqualFold(strings.TrimSpace(group.ID), MaClawOfficialServiceGroupID) {
+		return false
+	}
+	if strings.TrimSpace(group.Description) != "MaClaw 官方 LLM 服务，通过 HubCenter 提供算力" {
+		return false
+	}
+	if len(group.Models) != 1 {
+		return false
+	}
+	model := group.Models[0]
+	if strings.TrimSpace(model.Name) != "auto" {
+		return false
+	}
+	if len(model.ProviderIDs) != 1 || !IsBuiltinProvider(model.ProviderIDs[0]) {
+		return false
+	}
 	return true
 }

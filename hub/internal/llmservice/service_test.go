@@ -317,6 +317,57 @@ func TestRegistryNormalizeDefaultsAccessPolicyToFree(t *testing.T) {
 	}
 }
 
+func TestMaClawOfficialServiceGroupStillRequiresGrant(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:           "redeem",
+			Name:         "Redeem",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models: []ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{MaClawOfficialProviderID},
+				ProviderConfigs: []ModelServiceProviderConfig{{
+					ProviderID: MaClawOfficialProviderID,
+				}},
+			}},
+		}},
+		DefaultNewUserServiceGroups: []string{"redeem"},
+	}
+
+	status, models, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example/api/llm/v1")
+	if err != nil {
+		t.Fatalf("ResolveStatusFromRegistry: %v", err)
+	}
+	if status.Active {
+		t.Fatalf("official service group should require a local grant: %+v", status)
+	}
+	if len(models) != 1 || len(models[0].ProviderIDs) != 1 || models[0].ProviderIDs[0] != MaClawOfficialProviderID {
+		t.Fatalf("models without grant = %#v, want official model listed but inactive", models)
+	}
+
+	now := time.Now().UTC()
+	reg.Grants = append(reg.Grants, Grant{
+		ID:             "grant-1",
+		Email:          "user@example.com",
+		ServiceGroupID: "redeem",
+		Source:         "test",
+		StartsAt:       now.Add(-time.Hour),
+		ExpiresAt:      now.Add(time.Hour),
+		CreatedAt:      now.Add(-time.Hour),
+		CreditsTotal:   100,
+	})
+	status, models, err = ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example/api/llm/v1")
+	if err != nil {
+		t.Fatalf("ResolveStatusFromRegistry with grant: %v", err)
+	}
+	if !status.Active {
+		t.Fatalf("official service group with grant should be active: %+v", status)
+	}
+	if len(models) != 1 || len(models[0].ProviderIDs) != 1 || models[0].ProviderIDs[0] != MaClawOfficialProviderID {
+		t.Fatalf("authorized models = %#v", models)
+	}
+}
+
 func TestRegistryNormalizeEnsuresBuiltinDefaultGroup(t *testing.T) {
 	reg := &Registry{}
 	reg.Normalize()

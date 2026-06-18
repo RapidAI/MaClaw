@@ -223,11 +223,19 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 }
 
 // StartRunForOwner starts a skill run under an explicit workflow policy owner.
-func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs map[string]interface{}) (string, error) {
+func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs map[string]interface{}) (runID string, retErr error) {
 	startedAt := time.Now()
 	policyOwnerID = strings.TrimSpace(policyOwnerID)
 	log.Printf("[skill-runner] start_run requested owner=%q skill=%q args=%d", policyOwnerID, skillName, len(runArgs))
-	if r != nil && r.executor != nil && r.executor.app != nil {
+	defer func() {
+		if retErr != nil {
+			logSkillRunnerFailure("", policyOwnerID, skillName, "start_run", retErr.Error())
+		}
+	}()
+	if r == nil || r.executor == nil {
+		return "", fmt.Errorf("skill runner not initialized")
+	}
+	if r.executor.app != nil {
 		policyStart := time.Now()
 		if err := r.executor.app.ensureWorkflowAllowsRemoteToolCallForOwner(policyOwnerID, "manage_skill", map[string]interface{}{"action": "run", "name": skillName, "args": runArgs}); err != nil {
 			log.Printf("[skill-runner] start_run policy_denied owner=%q skill=%q elapsed=%s err=%v", policyOwnerID, skillName, time.Since(policyStart).Round(time.Millisecond), err)
@@ -414,7 +422,7 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 		log.Printf("[skill-runner] start_run runner_lock_wait owner=%q skill=%q waited=%s", policyOwnerID, skillName, waited.Round(time.Millisecond))
 	}
 	r.counter++
-	runID := fmt.Sprintf("run-%d-%d", time.Now().UnixMilli(), r.counter)
+	runID = fmt.Sprintf("run-%d-%d", time.Now().UnixMilli(), r.counter)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &skillRun{
@@ -598,6 +606,9 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 		}
 		if execErr == nil {
 			execErr = fmt.Errorf("pipeline status: %s", result.Status)
+		}
+		if strings.TrimSpace(run.status.Error) == "" {
+			run.status.Error = execErr.Error()
 		}
 	}
 	r.mu.Unlock()
@@ -1388,12 +1399,19 @@ func (r *SkillRunner) resolveStepSessionID(runID string, step corelib.NLSkillSte
 // it is only safe to call where the prior mutation already released the lock
 // (i.e. not fused into a single lock-hold with other status writes).
 func (r *SkillRunner) finalizeRunOutcome(run *skillRun, status skillRunLifecycleStatus, execStart time.Time) {
+	if r == nil || run == nil {
+		return
+	}
 	r.mu.Lock()
 	run.status.Status = status
 	run.status.EndedAt = time.Now().Format(time.RFC3339)
 	run.status.DurationMs = time.Since(execStart).Milliseconds()
+	statusSnapshot := snapshotRunStatus(&run.status)
 	r.mu.Unlock()
-	if run == nil || r == nil || r.executor == nil || r.executor.app == nil {
+	if status == skillRunStatusFailed {
+		logSkillRunnerFailure(statusSnapshot.RunID, statusSnapshot.OwnerID, statusSnapshot.Skill, "execution", skillRunFailureReason(statusSnapshot))
+	}
+	if r.executor == nil || r.executor.app == nil {
 		return
 	}
 	if err := r.executor.app.cleanupStagedSkillAppInputFilesFromRunArgs(run.runArgs); err != nil {
@@ -1401,6 +1419,37 @@ func (r *SkillRunner) finalizeRunOutcome(run *skillRun, status skillRunLifecycle
 		run.status.Warnings = append(run.status.Warnings, err.Error())
 		r.mu.Unlock()
 	}
+}
+
+func logSkillRunnerFailure(runID, ownerID, skillName, stage, reason string) {
+	log.Printf("[skill-runner] skill_failure stage=%s run=%s owner=%q skill=%q reason=%q",
+		strings.TrimSpace(stage),
+		strings.TrimSpace(runID),
+		strings.TrimSpace(ownerID),
+		strings.TrimSpace(skillName),
+		strings.TrimSpace(reason),
+	)
+}
+
+func skillRunFailureReason(status SkillRunStatus) string {
+	if reason := strings.TrimSpace(status.Error); reason != "" {
+		return reason
+	}
+	for _, step := range status.Steps {
+		if step.LifecycleStatus() != skillStepStatusFailed {
+			continue
+		}
+		if reason := strings.TrimSpace(step.Error); reason != "" {
+			if name := strings.TrimSpace(step.Name); name != "" {
+				return fmt.Sprintf("step %d (%s) failed: %s", step.Index+1, name, reason)
+			}
+			if action := strings.TrimSpace(step.Action); action != "" {
+				return fmt.Sprintf("step %d (%s) failed: %s", step.Index+1, action, reason)
+			}
+			return fmt.Sprintf("step %d failed: %s", step.Index+1, reason)
+		}
+	}
+	return "skill run failed"
 }
 
 // failRunPendingSkipped marks all still-pending steps as skipped, records

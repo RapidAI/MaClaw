@@ -331,6 +331,83 @@ func TestForwardAuthorizedModelRequestRoutesVirtualMaClawProviderWithTenant(t *t
 	}
 }
 
+func TestForwardAuthorizedModelRequestRetriesMaClawOfficialWithSanitizedBody(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if _, hasResponseFormat := got["response_format"]; hasResponseFormat {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "response_format unsupported"}})
+			return
+		}
+		if _, hasTools := got["tools"]; !hasTools {
+			t.Fatalf("sanitized retry should preserve tools before toolless fallback: %#v", got)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":    "maclaw-official-sanitized",
+			"model": "auto",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "ok"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+		})
+	}))
+	defer server.Close()
+
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: server.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+
+	reg := &im.LLMProviderRegistry{}
+	model := &llmservice.AuthorizedModel{
+		Name:        "auto",
+		ProviderIDs: []string{llmservice.MaClawOfficialProviderID},
+	}
+	body := map[string]any{
+		"model":           "auto",
+		"messages":        []any{map[string]any{"role": "user", "content": "hello"}},
+		"response_format": map[string]any{"type": "json_schema"},
+		"tools": []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":       "lookup",
+				"parameters": map[string]any{"type": "object", "additionalProperties": false},
+			},
+		}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", nil)
+	req = req.WithContext(store.WithTenant(req.Context(), "tenant_acme"))
+
+	respBody, statusCode, providerID, _, usage, _, err := forwardAuthorizedModelRequestWithCache(req, reg, model, body, "auto", nil, defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("forwardAuthorizedModelRequestWithCache() error = %v", err)
+	}
+	if statusCode != http.StatusOK || providerID != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("status/provider = %d/%q", statusCode, providerID)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts.Load())
+	}
+	if usage.TotalTokens != 6 {
+		t.Fatalf("usage = %#v", usage)
+	}
+	if !bytes.Contains(respBody, []byte("maclaw-official-sanitized")) {
+		t.Fatalf("respBody = %s", string(respBody))
+	}
+}
+
 func TestForwardAuthorizedModelRequestPreservesMaClawUnavailableStatus(t *testing.T) {
 	previous := GetMaClawModule()
 	defer SetMaClawModule(previous)
@@ -429,6 +506,78 @@ func TestStreamAuthorizedModelRequestRoutesVirtualMaClawProviderWithTenant(t *te
 		t.Fatalf("usage = %#v", usage)
 	}
 	if !strings.Contains(rec.Body.String(), "chatcmpl-official") {
+		t.Fatalf("stream body = %s", rec.Body.String())
+	}
+}
+
+func TestStreamAuthorizedModelRequestRetriesMaClawOfficialWithoutTools(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if _, hasTools := got["tools"]; hasTools {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "tools unsupported"}})
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-official-toolless\",\"object\":\"chat.completion.chunk\",\"model\":\"auto\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":3,\"total_tokens\":7}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: server.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+
+	reg := &im.LLMProviderRegistry{}
+	model := &llmservice.AuthorizedModel{
+		Name:        "auto",
+		ProviderIDs: []string{llmservice.MaClawOfficialProviderID},
+	}
+	body := map[string]any{
+		"model":    "auto",
+		"stream":   true,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		"tools": []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":       "lookup",
+				"parameters": map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+		}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", nil)
+	req = req.WithContext(store.WithTenant(req.Context(), "tenant_acme"))
+	rec := httptest.NewRecorder()
+
+	statusCode, providerID, _, usage, wroteStream, err := streamAuthorizedModelRequest(rec, req, reg, model, body, "auto", nil)
+	if err != nil {
+		t.Fatalf("streamAuthorizedModelRequest() error = %v", err)
+	}
+	if statusCode != http.StatusOK || providerID != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("status/provider = %d/%q", statusCode, providerID)
+	}
+	if attempts.Load() != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts.Load())
+	}
+	if !wroteStream {
+		t.Fatal("wroteStream = false")
+	}
+	if usage.TotalTokens != 7 {
+		t.Fatalf("usage = %#v", usage)
+	}
+	if !strings.Contains(rec.Body.String(), "chatcmpl-official-toolless") {
 		t.Fatalf("stream body = %s", rec.Body.String())
 	}
 }

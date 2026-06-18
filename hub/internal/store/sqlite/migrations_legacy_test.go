@@ -1,9 +1,12 @@
 package sqlite
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/workflow"
 )
 
 func TestRunMigrationsPreservesLegacyUsersWhenAddingFailureLogs(t *testing.T) {
@@ -124,5 +127,75 @@ func TestRunMigrationsUpgradesLegacyFailureEventLogsWithoutTenantID(t *testing.T
 
 	if _, err := db.Exec(`INSERT INTO failure_event_logs (id, tenant_id, category, event_code, message, entity_id, email, client_ip, details_json, created_at) VALUES ('log_new', 'tenant_default', 'registration', 'new', 'ok', '', 'new@example.com', '', '{}', ?)`, now); err != nil {
 		t.Fatalf("insert failure log after migration: %v", err)
+	}
+}
+
+func TestRunMigrationsUpgradesLegacyWorkflowDefinitionsWithoutTenantID(t *testing.T) {
+	provider, err := NewProvider(Config{
+		DSN:               filepath.Join(t.TempDir(), "hub-legacy-workflow-definitions.db"),
+		WAL:               true,
+		BusyTimeoutMS:     5000,
+		MaxReadOpenConns:  4,
+		MaxReadIdleConns:  2,
+		MaxWriteOpenConns: 1,
+		MaxWriteIdleConns: 1,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	defer provider.Close()
+
+	db := provider.Write
+	now := time.Date(2026, 6, 18, 9, 45, 0, 0, time.UTC).Format(time.RFC3339)
+	legacySchema := []string{
+		`CREATE TABLE workflow_definitions (
+			id TEXT PRIMARY KEY,
+			owner_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE workflow_versions (
+			id TEXT PRIMARY KEY,
+			workflow_id TEXT NOT NULL REFERENCES workflow_definitions(id),
+			version_number TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'draft',
+			graph_json TEXT NOT NULL DEFAULT '{}',
+			submitted_at TEXT,
+			published_at TEXT,
+			rejection_reason TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`INSERT INTO workflow_definitions (id, owner_id, name, description, created_at, updated_at)
+		 VALUES ('wf_legacy', 'owner_1', 'Legacy approval', '', '` + now + `', '` + now + `');`,
+		`INSERT INTO workflow_versions (id, workflow_id, version_number, status, graph_json, submitted_at, created_at, updated_at)
+		 VALUES ('ver_legacy', 'wf_legacy', '1.0.0', 'pending_review', '{}', '` + now + `', '` + now + `', '` + now + `');`,
+	}
+	for _, stmt := range legacySchema {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("create legacy workflow schema: %v", err)
+		}
+	}
+
+	if err := RunMigrations(db); err != nil {
+		t.Fatalf("RunMigrations: %v", err)
+	}
+
+	var tenantID string
+	if err := db.QueryRow(`SELECT tenant_id FROM workflow_definitions WHERE id = 'wf_legacy'`).Scan(&tenantID); err != nil {
+		t.Fatalf("query migrated workflow tenant_id: %v", err)
+	}
+	if tenantID != "tenant_default" {
+		t.Fatalf("tenant_id = %q, want tenant_default", tenantID)
+	}
+
+	reviews, total, err := NewWorkflowStore(db).ListPendingReviews(context.Background(), 1, 50)
+	if err != nil {
+		t.Fatalf("ListPendingReviews after legacy migration: %v", err)
+	}
+	if total != 1 || len(reviews) != 1 || reviews[0].ID != "ver_legacy" || reviews[0].Status != workflow.VersionPendingReview {
+		t.Fatalf("pending reviews = total %d items %+v, want ver_legacy", total, reviews)
 	}
 }

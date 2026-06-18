@@ -1265,10 +1265,10 @@ func PatentApplicationTemplate() *WorkflowTemplate {
 					},
 				},
 			},
-			{ID: "pa_claims_drafting", Name: "权利要求书撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "pa_claims_drafting", Name: "权利要求书撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
 			{ID: "pa_figures_organization", Name: "附图整理与说明", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
-			{ID: "pa_description_writing", Name: "说明书撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
-			{ID: "pa_document_assembly", Name: "申请文件组装与检查", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "pa_description_writing", Name: "说明书撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+			{ID: "pa_document_assembly", Name: "申请文件组装与检查", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
 		},
 	}
 }

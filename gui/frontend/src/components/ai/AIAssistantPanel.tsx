@@ -162,6 +162,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             clearTabConversation(activeTab.id);
             return;
         }
+        // Reset queue interaction state so the welcome view can reappear.
+        setQueueInteractionStarted(false);
+        setQueueEditDraftActive(false);
+        setEditingEntryId(null);
         await clearHistory();
     }, [activeTab.id, activeTab.type, activeTab.veId, clearHistory, clearTabConversation]);
     const isLocalTabActive = activeTab.id === "local";
@@ -1031,8 +1035,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
     }, [displayMessages]);
-    // Show welcome only for an idle, empty conversation; active work/queues need the full composer.
-    const showWelcomeView = ready && !inline && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && tabState.tabs.length === 1;
+    // Show welcome only for an idle, empty local conversation; active work/queues need the full composer.
+    // Use isLocalTabActive instead of tabState.tabs.length === 1 so that the welcome/guide
+    // interface still appears after "New Session" even when project tabs exist.
+    // NOTE: welcome view is shown in both inline (embedded panel) and overlay (standalone window)
+    // modes — the embedded panel is now the primary usage mode.
+    const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && isLocalTabActive;
     const hasConversation = otherMessages.length + displayProgressMessages.length > 0;
     const { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ hasConversation, messages: displayMessages, ready, scrollToTopSeq });
     const handleInputResizeEnd = useCallback(() => {

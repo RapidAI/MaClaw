@@ -979,6 +979,16 @@ func preCheckAgentLoopInlinePayloadLimit(name, argsJSON string, iteration int) *
 	if value == "" || valueRunes <= limit {
 		return nil
 	}
+
+	// --- Auto-spill for bash: if the command is an inline python script (python -c / python3 -c),
+	// let it pass through to toolBash which will auto-spill it to a temp file.
+	// This is transparent to the LLM — it called bash(command="python -c ..."), toolBash
+	// writes the script to a temp .py file and executes it.
+	if name == "bash" && bashCommandIsAutoSpillable(value) {
+		log.Printf("[agent-loop] bash auto-spill: allowing oversized python script (%d runes > %d limit) to pass through for temp-file execution (iter=%d)", valueRunes, limit, iteration)
+		return nil
+	}
+
 	text := fmt.Sprintf("Tool %s parameter %s is too large for one agent-loop call (%d runes, limit %d). %s", name, field, valueRunes, limit, agentLoopInlinePayloadLimitInstruction())
 	if name == "write_file" {
 		text += " Split the content into chunks: first call mode=overwrite, then mode=append for later chunks."

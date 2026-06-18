@@ -51,6 +51,12 @@ func (h *IMMessageHandler) initialAgentLoopPhase(userText string, ctx *LoopConte
 	if ctx != nil && ctx.IsAskUserResponse {
 		return phase
 	}
+	// Workflow agent loops have their execution method defined by phase instructions;
+	// skill preference must not override them (the system-generated phase text often
+	// contains trigger words like "文档" that would incorrectly activate skill search).
+	if ctx != nil && ctx.WorkflowAgentLoop {
+		return phase
+	}
 	if !shouldPreferSkillForTask(userText) {
 		return phase
 	}

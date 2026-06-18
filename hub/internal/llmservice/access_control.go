@@ -215,7 +215,7 @@ func FilterProvidersForTenant(ctx context.Context, ac *TenantLLMAccessControl, t
 	for _, m := range allProviders {
 		hasBuiltin := false
 		for _, pid := range m.ProviderIDs {
-			if pid == MaClawOfficialProviderID {
+			if IsBuiltinProvider(pid) {
 				hasBuiltin = true
 				break
 			}
