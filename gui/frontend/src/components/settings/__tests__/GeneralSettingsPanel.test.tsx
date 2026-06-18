@@ -54,6 +54,17 @@ describe('GeneralSettingsPanel', () => {
         expect((toggle as HTMLInputElement).checked).toBe(true);
     });
 
+    it('shows and persists the MaClaw app entry switch after language', () => {
+        renderPanel({}, 'zh-Hans');
+
+        const toggle = screen.getByLabelText('MaClaw应用入口') as HTMLInputElement;
+        expect(toggle.checked).toBe(false);
+
+        fireEvent.click(toggle);
+
+        expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ show_app_entry: true });
+    });
+
     it('persists chat gossip auto-post changes', () => {
         const { setConfig } = renderPanel({ gossip_auto_publish: true });
 

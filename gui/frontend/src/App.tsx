@@ -366,11 +366,17 @@ function App() {
         navTabRef.current = tab;
         setNavTab(tab);
     }, []);
+    const showAppEntryEnabled = config?.show_app_entry === true;
     useEffect(() => {
-        const openAppsPanel = () => setNavTabNow('apps');
+        const openAppsPanel = () => {
+            if (showAppEntryEnabled) setNavTabNow('apps');
+        };
         window.addEventListener('maclaw:open-apps-panel', openAppsPanel);
         return () => window.removeEventListener('maclaw:open-apps-panel', openAppsPanel);
-    }, [setNavTabNow]);
+    }, [setNavTabNow, showAppEntryEnabled]);
+    useEffect(() => {
+        if (!showAppEntryEnabled && navTab === 'apps') setNavTabNow('ai');
+    }, [navTab, setNavTabNow, showAppEntryEnabled]);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
     const [bbsContent, setBbsContent] = useState<string>("");
     const [tutorialContent, setTutorialContent] = useState<string>("");
@@ -3106,6 +3112,7 @@ ${instruction}`;
                 onRemoveFavoriteEmployee={(ve) => handleRemoveFavoriteEmployee(ve.id)}
                 favoriteEmployeeIds={userFavoriteEmployeeIds}
                 favoriteEmployeeNames={favoriteEmployeeNames}
+                showAppEntry={showAppEntryEnabled}
                 showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
             />
             <div className="main-container" data-ai-theme={aiThemeMode}>
@@ -3237,7 +3244,7 @@ ${instruction}`;
                         />
                     )}
 
-                    {navTab === 'apps' && (
+                    {navTab === 'apps' && showAppEntryEnabled && (
                         <AppsPage lang={lang} />
                     )}
 

@@ -78,6 +78,7 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     onRemoveFavoriteEmployeeById?: (veId: string) => void;
     favoriteEmployeeIds?: string[]; favoriteEmployeeNames?: Record<string, string>;
     showCodingToolEntry?: boolean;
+    showAppEntry?: boolean;
 }
 
 export const AppSidebarShell = ({
@@ -154,6 +155,7 @@ export const AppSidebarShell = ({
     onRemoveFavoriteEmployeeById,
     favoriteEmployeeIds = [], favoriteEmployeeNames = {},
     showCodingToolEntry = false,
+    showAppEntry = false,
 }: AppSidebarShellProps) => (
 <>
             <div style={{
@@ -186,6 +188,7 @@ export const AppSidebarShell = ({
                     onReorderFavorites={onReorderFavorites || (() => {})}
                     onRemoveFavorite={onRemoveFavoriteEmployeeById || (() => {})}
                     onRenameFavorite={onRenameFavoriteEmployee || (() => {})}
+                    showAppEntry={showAppEntry}
                 />        {navTab === 'ai' && (
                     <SidebarAiPane
                         recentTasksPaneWidth={recentTasksPaneWidth}

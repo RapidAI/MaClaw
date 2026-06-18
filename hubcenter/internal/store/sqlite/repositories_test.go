@@ -35,6 +35,10 @@ func newCenterTestStore(t *testing.T) *store.Store {
 	return NewStore(provider)
 }
 
+func timePtr(t time.Time) *time.Time {
+	return &t
+}
+
 func TestAdminAndSystemRepositoriesRoundTrip(t *testing.T) {
 	st := newCenterTestStore(t)
 	ctx := context.Background()
@@ -131,20 +135,25 @@ func TestReplaceConflictingHubInstanceMergesEndpointDuplicate(t *testing.T) {
 		t.Fatal("hub repository does not support ReplaceConflictingHubInstance")
 	}
 	remote := &store.HubInstance{
-		ID:               "hub-remote",
-		InstallationID:   "inst-remote",
-		OwnerEmail:       "new@example.com",
-		Name:             "Remote Hub",
-		BaseURL:          "https://hub.example.com",
-		Host:             "hub.example.com",
-		Port:             443,
-		Visibility:       "shared",
-		EnrollmentMode:   "approval",
-		Status:           "online",
-		CapabilitiesJSON: "{}",
-		HubSecretHash:    "new-secret",
-		CreatedAt:        now.Add(time.Minute),
-		UpdatedAt:        now.Add(time.Minute),
+		ID:                                    "hub-remote",
+		InstallationID:                        "inst-remote",
+		OwnerEmail:                            "new@example.com",
+		Name:                                  "Remote Hub",
+		BaseURL:                               "https://hub.example.com",
+		Host:                                  "hub.example.com",
+		Port:                                  443,
+		Visibility:                            "shared",
+		EnrollmentMode:                        "approval",
+		Status:                                "online",
+		CapabilitiesJSON:                      "{}",
+		HubSecretHash:                         "new-secret",
+		InvitationCodeRequired:                true,
+		DigitalEmployeeQuota:                  9,
+		DigitalEmployeeAuthorizationEnabled:   true,
+		DigitalEmployeeAuthorizationExpiresAt: timePtr(now.AddDate(1, 0, 0)),
+		AllowExternalProviders:                true,
+		CreatedAt:                             now.Add(time.Minute),
+		UpdatedAt:                             now.Add(time.Minute),
 	}
 	if err := replacer.ReplaceConflictingHubInstance(ctx, remote); err != nil {
 		t.Fatalf("replace conflicting hub: %v", err)
@@ -164,6 +173,9 @@ func TestReplaceConflictingHubInstanceMergesEndpointDuplicate(t *testing.T) {
 	}
 	if got == nil || got.BaseURL != "https://hub.example.com" || got.OwnerEmail != "new@example.com" {
 		t.Fatalf("unexpected remote hub: %#v", got)
+	}
+	if !got.InvitationCodeRequired || got.DigitalEmployeeQuota != 9 || !got.DigitalEmployeeAuthorizationEnabled || got.DigitalEmployeeAuthorizationExpiresAt == nil || !got.AllowExternalProviders {
+		t.Fatalf("authorization fields not merged into remote hub: %#v", got)
 	}
 	links, err := st.HubUserLinks.ListAll(ctx)
 	if err != nil {
@@ -228,6 +240,11 @@ func TestHubRepositoriesRoundTrip(t *testing.T) {
 	gotHub.HubOrigin = "self_hosted"
 	gotHub.DefaultSignupScope = "domain_restricted"
 	gotHub.RegistrationPolicyJSON = `{"tenants":{}}`
+	gotHub.InvitationCodeRequired = true
+	gotHub.DigitalEmployeeQuota = 7
+	gotHub.DigitalEmployeeAuthorizationEnabled = true
+	gotHub.DigitalEmployeeAuthorizationExpiresAt = timePtr(now.AddDate(1, 0, 0))
+	gotHub.AllowExternalProviders = true
 	gotHub.UpdatedAt = now.Add(30 * time.Second)
 	if err := st.Hubs.UpdateRegistration(ctx, gotHub); err != nil {
 		t.Fatalf("update hub registration policy fields: %v", err)
@@ -238,6 +255,9 @@ func TestHubRepositoriesRoundTrip(t *testing.T) {
 	}
 	if updatedHub == nil || updatedHub.HubOrigin != "self_hosted" || updatedHub.DefaultSignupScope != "domain_restricted" || updatedHub.RegistrationPolicyJSON != `{"tenants":{}}` {
 		t.Fatalf("registration policy fields not persisted: %#v", updatedHub)
+	}
+	if !updatedHub.InvitationCodeRequired || updatedHub.DigitalEmployeeQuota != 7 || !updatedHub.DigitalEmployeeAuthorizationEnabled || updatedHub.DigitalEmployeeAuthorizationExpiresAt == nil || !updatedHub.AllowExternalProviders {
+		t.Fatalf("authorization fields not persisted by UpdateRegistration: %#v", updatedHub)
 	}
 
 	if err := st.Hubs.UpdateHeartbeat(ctx, hub.ID, now.Add(time.Minute)); err != nil {

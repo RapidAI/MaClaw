@@ -30,7 +30,6 @@ This folder now uses a thin-shell structure.
 - machines-tab.js: machine list and session inspection
 - group-discussion-tab.js: current-Hub MaClaw expert list, discussions, and results
 - im-tab.js: IM sub-pane routing and bridge integrations
-- hub-llm-tab.js: legacy Hub LLM pane runtime
 - feishu-tab.js: Feishu settings and bindings
 - invitation-tab.js: recharge/invitation code management
 - pwa-tab.js: PWA approvals and pending logins
@@ -61,4 +60,5 @@ These files were intentionally deleted and should not be restored:
 - usagestats.js
 - admin-check.js
 - hub-admin-check.js
+- hub-llm-tab.js
 - _extra.js

@@ -2,7 +2,6 @@
  * HubCenter Admin: LLM Service Tab
  * - LLM 接入 (Provider CRUD with form dialog)
  * - 模型服务 (Service Group CRUD with form dialog)
- * - 租户算力授权 (per-hub tenant authorization management)
  * ASCII only. Chinese via \uXXXX or data-i18n.
  */
 
@@ -134,7 +133,7 @@ if (typeof I18N_EN !== 'undefined') {
   // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
-  var providers = [], agents = [], serviceGroups = [], authorizations = [], registeredHubs = [];
+  var providers = [], agents = [], serviceGroups = [];
   var providerDialogID = '';
   var providerCapabilityOptions = ['chat','streaming','json','tools','reasoning','vision','document','code','search','audio','embedding','rerank'];
   var llmInitInFlight = null;
@@ -147,7 +146,7 @@ if (typeof I18N_EN !== 'undefined') {
     llmInitInFlight = (async function() {
     // Re-apply i18n for dynamically registered keys
     if (typeof applyI18n === 'function') applyI18n();
-    await Promise.all([loadProviders(), loadAgents(), loadServiceGroups(), loadAuthorizations(), loadRegisteredHubs()]);
+    await Promise.all([loadProviders(), loadAgents(), loadServiceGroups()]);
     })();
     try { return await llmInitInFlight; }
     finally { llmInitInFlight = null; }
@@ -527,123 +526,6 @@ if (typeof I18N_EN !== 'undefined') {
   };
 
   // ---------------------------------------------------------------------------
-  // HUB / TENANT OPTIONS
-  // ---------------------------------------------------------------------------
-  async function loadRegisteredHubs() {
-    try {
-      var data = await api('/api/admin/hubs');
-      registeredHubs = Array.isArray(data.hubs) ? data.hubs : (Array.isArray(data) ? data : []);
-    } catch(e) {
-      registeredHubs = [];
-    }
-  }
-
-  function hubID(h) { return String(h && (h.id || h.hub_id) || ''); }
-  function hubLabel(h) {
-    var id = hubID(h);
-    var name = String(h && h.name || id || '-');
-    return name === id ? id : name + ' (' + id + ')';
-  }
-  function tenantID(tn) { return String(tn && tn.tenant_id || ''); }
-  function tenantLabel(tn) {
-    var id = tenantID(tn);
-    var name = String(tn && tn.tenant_name || '') || (id === 'tenant_default' ? t('defaultTenant') : id);
-    return name === id ? id : name + ' (' + id + ')';
-  }
-  function hubTenants(h) {
-    var tenants = Array.isArray(h && h.tenants) ? h.tenants.slice() : [];
-    if (!tenants.some(function(t) { return tenantID(t) === 'tenant_default'; })) {
-      tenants.unshift({ tenant_id: 'tenant_default', tenant_name: t('defaultTenant') });
-    }
-    return tenants;
-  }
-  function selectedAuthHub() {
-    var hubSelect = document.getElementById('llmAuthHub');
-    var id = hubSelect ? hubSelect.value : '';
-    return registeredHubs.find(function(h) { return hubID(h) === id; }) || registeredHubs[0] || null;
-  }
-  window.updateAuthTenantOptions = function() {
-    var tenantSelect = document.getElementById('llmAuthTenant');
-    if (!tenantSelect) return;
-    var hub = selectedAuthHub();
-    var tenants = hubTenants(hub);
-    tenantSelect.innerHTML = tenants.map(function(tn) {
-      return '<option value="' + esc(tenantID(tn)) + '">' + esc(tenantLabel(tn)) + '</option>';
-    }).join('');
-  };
-
-  // ---------------------------------------------------------------------------
-  // TENANT AUTHORIZATIONS
-  // ---------------------------------------------------------------------------
-  async function loadAuthorizations() {
-    try { var data = await api('/api/admin/llm/authorizations'); authorizations = data.authorizations || []; } catch(e) { authorizations = []; }
-    renderAuthorizations();
-  }
-
-  function renderAuthorizations() {
-    var el = document.getElementById('llmAuthList') || document.getElementById('llmAuthorizationsList');
-    if (!el) return;
-    var externalAuths = authorizations.filter(function(a) {
-      return !!(a && a.is_external_compute_access);
-    });
-    externalAuths.sort(function(a, b) {
-      return Date.parse(b.updated_at || b.created_at || b.expires_at || 0) - Date.parse(a.updated_at || a.created_at || a.expires_at || 0);
-    });
-    var seen = {};
-    externalAuths = externalAuths.filter(function(a) {
-      var key = String(a.hub_id || '') + '/' + String(a.tenant_id || '');
-      if (seen[key]) return false;
-      seen[key] = true;
-      return true;
-    });
-    if (!externalAuths.length) { el.innerHTML = '<div class="hint">' + esc(t('noAuths')) + '</div>'; return; }
-    el.innerHTML = externalAuths.map(function(a) {
-      var extBadge = a.allow_external_providers ? '<span class="badge ok">' + esc(t('computeAllowed')) + '</span>' : '<span class="badge warn">' + esc(t('computeNotAllowed')) + '</span>';
-      return '<div class="data-row"><div class="data-row-main">'
-        + '<strong>' + esc(a.hub_id) + ' / ' + esc(a.tenant_id) + '</strong> ' + extBadge
-        + '</div></div>';
-    }).join('');
-  }
-
-  window.showAuthDialog = async function() {
-    if (!registeredHubs.length) await loadRegisteredHubs();
-    var hubOptions = registeredHubs.map(function(h) {
-      return '<option value="' + esc(hubID(h)) + '">' + esc(hubLabel(h)) + '</option>';
-    }).join('');
-    var firstHub = registeredHubs[0] || null;
-    var tenantOptions = hubTenants(firstHub).map(function(tn) {
-      return '<option value="' + esc(tenantID(tn)) + '">' + esc(tenantLabel(tn)) + '</option>';
-    }).join('');
-    var noHubs = !registeredHubs.length;
-    var html = '<h3>' + esc(t('authDialogTitle')) + '</h3>'
-      + (noHubs ? '<div class="hint section-gap-sm">' + esc(t('noHubs')) + '</div>' : '')
-      + '<div class="grid2">'
-      + '<div><label for="llmAuthHub">' + esc(t('fieldHubID')) + '</label><select id="llmAuthHub" onchange="updateAuthTenantOptions()" ' + (noHubs ? 'disabled' : '') + '>' + hubOptions + '</select></div>'
-      + '<div><label for="llmAuthTenant">' + esc(t('fieldTenantID')) + '</label><select id="llmAuthTenant" ' + (noHubs ? 'disabled' : '') + '>' + tenantOptions + '</select></div>'
-      + '</div>'
-      + '<div class="inline-check section-gap-sm"><input type="checkbox" id="llmAuthExternal" checked><label for="llmAuthExternal">' + esc(t('fieldAllowExternal')) + '</label></div>'
-      + '<div class="actions section-gap">'
-      + '<button class="btn-primary" onclick="saveAuthorization()" ' + (noHubs ? 'disabled' : '') + '>' + esc(t('addAuth')) + '</button>'
-      + '<button class="btn-ghost" onclick="closeDialog()">' + esc(t('cancel')) + '</button></div>';
-    openDialog(html);
-  };
-
-  window.saveAuthorization = async function() {
-    var hubID = val('llmAuthHub');
-    var tenantID = val('llmAuthTenant');
-    if (!hubID) { toast(t('fieldHubRequired'), 'error'); return; }
-    if (!tenantID) { toast(t('fieldTenantRequired'), 'error'); return; }
-    var payload = {
-      hub_id: hubID, tenant_id: tenantID,
-      allow_external_providers: document.getElementById('llmAuthExternal').checked,
-    };
-    try {
-      await api('/api/admin/llm/authorizations', { method: 'POST', body: JSON.stringify(payload) });
-      closeDialog(); toast(t('saved'), 'success'); loadAuthorizations();
-    } catch(e) { toast(e.message, 'error'); }
-  };
-
-  // ---------------------------------------------------------------------------
   // Dialog helpers
   // ---------------------------------------------------------------------------
   function openDialog(html) {
@@ -676,7 +558,7 @@ if (typeof I18N_EN !== 'undefined') {
   // ---------------------------------------------------------------------------
 
   window.switchLLMSubTab = function(tab) {
-    ['providers', 'agents', 'groups', 'auth'].forEach(function(t) {
+    ['providers', 'agents', 'groups'].forEach(function(t) {
       var view = document.getElementById('llmSubView' + t.charAt(0).toUpperCase() + t.slice(1));
       var btn = document.getElementById('llmSubTab' + t.charAt(0).toUpperCase() + t.slice(1));
       var active = (t === tab);

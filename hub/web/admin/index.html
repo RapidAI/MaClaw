@@ -251,7 +251,6 @@
         <button data-tab="governance" onclick="openTab('governance')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6h14"></path><path d="M7 12h10"></path><path d="M9 18h6"></path><path d="M12 6v12"></path></svg></span><div class="nav-copy"><span data-i18n="navGovernance"></span><small data-i18n="navGovernanceDesc"></small></div></div></button>
         <button data-tab="marketplace" onclick="openTab('marketplace')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M6 7l1 13h10l1-13"></path><path d="M9 7a3 3 0 0 1 6 0"></path><path d="M9 12h6"></path></svg></span><div class="nav-copy"><span data-i18n="navMarketplace"></span><small data-i18n="navMarketplaceDesc"></small></div></div></button>
         <button data-tab="im" onclick="openTab('im')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 7h14v9H9l-4 3V7Z"></path><path d="M9 11h6"></path></svg></span><div class="nav-copy"><span id="navIM"></span><small id="navIMDesc"></small></div></div></button>
-        <button data-tab="hubllm" onclick="openTab('hubllm')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v3"></path><path d="M12 18v3"></path><path d="M4.6 7.5 7.2 9"></path><path d="m16.8 15 2.6 1.5"></path><path d="m19.4 7.5-2.6 1.5"></path><path d="M7.2 15l-2.6 1.5"></path><circle cx="12" cy="12" r="4"></circle><path d="M10.5 12h3"></path></svg></span><div class="nav-copy"><span id="navHubLlm"></span><small id="navHubLlmDesc"></small></div></div></button>
         <button data-tab="machines" onclick="openTab('machines')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"></rect><path d="M8 19h8"></path><path d="M12 16v3"></path></svg></span><div class="nav-copy"><span data-i18n="navMachines"></span><small data-i18n="navMachinesDesc"></small></div></div></button>
         <button data-tab="virtualemployees" onclick="openTab('virtualemployees')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg></span><div class="nav-copy"><span id="navVirtualEmployees"></span><small id="navVirtualEmployeesDesc"></small></div></div></button>
         <button data-tab="invitationcodes" onclick="openTab('invitationcodes')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 9a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9Z"></path><path d="M12 10v8"></path><path d="M9 13h6"></path></svg></span><div class="nav-copy"><span id="navInvitationCodes"></span><small id="navInvitationCodesDesc"></small></div></div></button>
@@ -860,74 +859,6 @@
         </div>
       </section>
 
-      <!-- Tab: Hub LLM -->
-      <section id="tab-hubllm" class="panel card">
-        <div class="head"><div><h3 id="hubLlmPaneTitle"></h3><div class="desc" id="hubLlmPaneDesc"></div></div></div>
-        <div class="item">
-          <div class="grid2">
-            <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmEnabled"> <span id="hubLlmEnabledLabel"></span></label></div>
-            <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmSmartRouteSingle"> <span id="hubLlmSmartRouteSingleLabel"></span></label></div>
-          </div>
-          <div class="grid2" style="margin-top:10px">
-            <div><label for="hubLlmApiUrl" id="hubLlmApiUrlLabel"></label><input id="hubLlmApiUrl" placeholder="https://api.example.com/v1"></div>
-            <div><label for="hubLlmApiKey" id="hubLlmApiKeyLabel"></label><input id="hubLlmApiKey" type="password" placeholder="sk-..."></div>
-          </div>
-          <div class="grid2" style="margin-top:10px">
-            <div><label for="hubLlmModel" id="hubLlmModelLabel"></label><input id="hubLlmModel" placeholder="gpt-4o-mini"></div>
-            <div><label for="hubLlmProtocol" id="hubLlmProtocolLabel"></label><select id="hubLlmProtocol"><option value="openai" id="hubLlmProtocolOpenAI"></option><option value="anthropic" id="hubLlmProtocolAnthropic"></option></select></div>
-          </div>
-          <div class="actions" style="margin-top:10px">
-            <button class="btn-secondary" onclick="saveHubLlmConfig()" id="hubLlmSaveBtn"></button>
-            <button class="btn-primary" onclick="testHubLlm()" id="hubLlmTestBtn"></button>
-            <span id="hubLlmStatusBadge" class="badge info" style="font-size:12px"></span>
-          </div>
-          <div class="item" style="margin-top:10px">
-            <div class="item-title" id="hubLlmCacheConfigTitle"></div>
-            <div class="item-meta" id="hubLlmCacheConfigDesc"></div>
-            <div class="grid3" style="margin-top:10px">
-              <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheEnabled"> <span id="hubLlmPromptCacheEnabledLabel"></span></label></div>
-              <div><label for="hubLlmPromptCacheTTL" id="hubLlmPromptCacheTTLLabel"></label><input id="hubLlmPromptCacheTTL" type="number" min="1" step="1"></div>
-              <div><label for="hubLlmPromptCacheMemoryEntries" id="hubLlmPromptCacheMemoryEntriesLabel"></label><input id="hubLlmPromptCacheMemoryEntries" type="number" min="1" step="1"></div>
-            </div>
-            <div class="grid2" style="margin-top:10px">
-              <div><label for="hubLlmPromptCacheMemoryMB" id="hubLlmPromptCacheMemoryMBLabel"></label><input id="hubLlmPromptCacheMemoryMB" type="number" min="1" step="1"></div>
-              <div><label for="hubLlmPromptCacheDiskMB" id="hubLlmPromptCacheDiskMBLabel"></label><input id="hubLlmPromptCacheDiskMB" type="number" min="1" step="1"></div>
-            </div>
-            <div class="grid2" style="margin-top:10px">
-              <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheNormalizeDeterministic"> <span id="hubLlmPromptCacheNormalizeDeterministicLabel"></span></label></div>
-              <div><label for="hubLlmPromptCacheSingleflightTimeoutMS" id="hubLlmPromptCacheSingleflightTimeoutMSLabel"></label><input id="hubLlmPromptCacheSingleflightTimeoutMS" type="number" min="1" step="100"></div>
-            </div>
-            <div class="grid3" style="margin-top:10px">
-              <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheIgnoreModel"> <span id="hubLlmPromptCacheIgnoreModelLabel"></span></label></div>
-              <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheIgnoreUser"> <span id="hubLlmPromptCacheIgnoreUserLabel"></span></label></div>
-              <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheIgnoreMetadata"> <span id="hubLlmPromptCacheIgnoreMetadataLabel"></span></label></div>
-            </div>
-            <div class="actions" style="margin-top:10px">
-              <button class="btn-secondary" onclick="saveHubLlmPromptCacheConfig()" id="hubLlmPromptCacheSaveBtn"></button>
-              <button class="btn-ghost" onclick="refreshHubLlmPromptCache()" id="hubLlmPromptCacheRefreshBtn"></button>
-              <button class="btn-danger" onclick="clearHubLlmPromptCache()" id="hubLlmPromptCacheClearBtn"></button>
-            </div>
-            <div class="hint" style="margin-top:10px"><div id="hubLlmCacheSummary" style="font-size:13px;line-height:1.8"></div></div>
-          </div>
-          <div class="item" style="margin-top:10px"><div class="item-title" id="hubLlmCacheHitBreakdownTitle"></div><div id="hubLlmCacheHitBreakdown" style="margin-top:10px"></div></div>
-          <div class="item" style="margin-top:10px"><div class="item-title" id="hubLlmCacheRuntimeTitle"></div><div id="hubLlmCacheRuntime" style="margin-top:10px;display:grid;gap:10px"></div></div>
-          <div class="item" style="margin-top:10px">
-            <div class="item-title" id="hubLlmCacheEntriesTitle"></div>
-            <div class="item-meta" id="hubLlmCacheEntriesDesc"></div>
-            <div class="grid3" style="margin-top:10px">
-              <div><label for="hubLlmCacheEntriesProvider" id="hubLlmCacheEntriesProviderLabel"></label><select id="hubLlmCacheEntriesProvider" onchange="document.getElementById('hubLlmCacheEntriesModel').value='';refreshHubLlmPromptCacheEntries()"></select></div>
-              <div><label for="hubLlmCacheEntriesModel" id="hubLlmCacheEntriesModelLabel"></label><select id="hubLlmCacheEntriesModel" onchange="refreshHubLlmPromptCacheEntries()"></select></div>
-              <div style="display:flex;align-items:flex-end"><button class="btn-ghost" style="width:100%" onclick="refreshHubLlmPromptCacheEntries()" id="hubLlmCacheEntriesRefreshBtn"></button></div>
-            </div>
-            <div id="hubLlmCacheEntries" style="margin-top:10px"></div>
-            <div id="hubLlmCacheEntriesPager" class="pager hidden"><div id="hubLlmCacheEntriesPagerMeta" class="pager-meta"></div><div class="pager-actions"><button id="hubLlmCacheEntriesPrevBtn" class="btn-ghost" type="button" onclick="changeHubLlmCacheEntriesPage(-1)"></button><button id="hubLlmCacheEntriesNextBtn" class="btn-ghost" type="button" onclick="changeHubLlmCacheEntriesPage(1)"></button></div></div>
-          </div>
-          <div class="item" style="margin-top:10px"><div class="item-title" id="hubLlmCacheEntryDetailTitle"></div><div class="item-meta" id="hubLlmCacheEntryDetailDesc"></div><div id="hubLlmCacheEntryDetail" style="margin-top:10px"></div></div>
-          <div id="hubLlmTestResult" class="hint hidden" style="margin-top:10px"></div>
-          <div class="hint" style="margin-top:10px"><div style="font-weight:700;margin-bottom:8px" id="hubLlmGuideTitle"></div><div style="font-size:13px;line-height:1.8" id="hubLlmGuideContent"></div></div>
-        </div>
-      </section>
-
       <!-- Tab: Machines -->
       <section id="tab-machines" class="panel card">
         <div class="head">
@@ -1378,7 +1309,6 @@
 <script src="/admin/machines-tab.js"></script>
 <script src="/admin/ve-tab.js"></script>
 <script src="/admin/im-tab.js"></script>
-<script src="/admin/hub-llm-tab.js"></script>
 <script src="/admin/feishu-tab.js"></script>
 <script src="/admin/invitation-tab.js"></script>
 <script src="/admin/pwa-tab.js"></script>

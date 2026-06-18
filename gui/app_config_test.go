@@ -73,6 +73,9 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	if !cfg.IsIMProgressNudgeEnabled() {
 		t.Fatal("IMProgressNudgeEnabled = false, want true for first-run default config")
 	}
+	if cfg.ShowAppEntry {
+		t.Fatal("ShowAppEntry = true, want false for first-run default config")
+	}
 
 	matches, err := filepath.Glob(configPath + ".tmp*")
 	if err != nil {
@@ -756,6 +759,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 		},
 		"use_windows_terminal":       false,
 		"show_ai_trace_entry":        true,
+		"show_app_entry":             true,
 		"show_coding_tool_entry":     true,
 		"show_codex":                 false,
 		"screen_dim_timeout_min":     float64(9),
@@ -782,7 +786,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PatchConfigFields() error = %v", err)
 	}
-	if !patched.PauseEnvCheck || !patched.EnvCheckDone || patched.UseWindowsTerminal || !patched.ShowAITraceEntry || !patched.ShowCodingToolEntry || patched.ShowCodex {
+	if !patched.PauseEnvCheck || !patched.EnvCheckDone || patched.UseWindowsTerminal || !patched.ShowAITraceEntry || !patched.ShowAppEntry || !patched.ShowCodingToolEntry || patched.ShowCodex {
 		t.Fatalf("boolean patch fields not applied: %#v", patched)
 	}
 	if patched.Language != "zh-Hans" || patched.ActiveTool != "codex" || patched.CurrentProject != "p2" || len(patched.Projects) != 2 || len(patched.FavoriteEmployees) != 2 || patched.FavoriteEmployeeNames["ve1"] != "Reviewer" {

@@ -480,8 +480,8 @@ func (r *hubRepo) ReplaceConflictingHubInstance(ctx context.Context, hub *store.
 		INSERT INTO hub_instances (
 			id, installation_id, hub_origin, default_signup_scope, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
 			accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, registration_policy_json, hub_secret_hash,
-			invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, last_seen_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, allow_external_providers, last_seen_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			installation_id = excluded.installation_id,
 			hub_origin = excluded.hub_origin,
@@ -506,6 +506,7 @@ func (r *hubRepo) ReplaceConflictingHubInstance(ctx context.Context, hub *store.
 			digital_employee_quota = excluded.digital_employee_quota,
 			digital_employee_authorization_enabled = excluded.digital_employee_authorization_enabled,
 			digital_employee_authorization_expires_at = excluded.digital_employee_authorization_expires_at,
+			allow_external_providers = excluded.allow_external_providers,
 			last_seen_at = excluded.last_seen_at,
 			created_at = excluded.created_at,
 			updated_at = excluded.updated_at
@@ -534,6 +535,7 @@ func (r *hubRepo) ReplaceConflictingHubInstance(ctx context.Context, hub *store.
 		hub.DigitalEmployeeQuota,
 		boolToInt(hub.DigitalEmployeeAuthorizationEnabled),
 		timePtrString(hub.DigitalEmployeeAuthorizationExpiresAt),
+		boolToInt(hub.AllowExternalProviders),
 		timePtrString(hub.LastSeenAt),
 		hub.CreatedAt.Format(time.RFC3339),
 		hub.UpdatedAt.Format(time.RFC3339),
@@ -801,7 +803,8 @@ func (r *hubRepo) UpdateRegistration(ctx context.Context, hub *store.HubInstance
 		SET installation_id = ?, hub_origin = ?, default_signup_scope = ?, owner_email = ?, name = ?, description = ?, base_url = ?,
 		    host = ?, port = ?, visibility = ?, enrollment_mode = ?, corporate_email_domain = ?, accept_public_signup = ?, status = ?,
 		    is_disabled = ?, disabled_reason = ?, capabilities_json = ?, registration_policy_json = ?, hub_secret_hash = ?,
-		    last_seen_at = ?, updated_at = ?
+		    invitation_code_required = ?, digital_employee_quota = ?, digital_employee_authorization_enabled = ?,
+		    digital_employee_authorization_expires_at = ?, allow_external_providers = ?, last_seen_at = ?, updated_at = ?
 		WHERE id = ?
 	`,
 		hub.InstallationID,
@@ -823,6 +826,11 @@ func (r *hubRepo) UpdateRegistration(ctx context.Context, hub *store.HubInstance
 		hub.CapabilitiesJSON,
 		hub.RegistrationPolicyJSON,
 		hub.HubSecretHash,
+		boolToInt(hub.InvitationCodeRequired),
+		hub.DigitalEmployeeQuota,
+		boolToInt(hub.DigitalEmployeeAuthorizationEnabled),
+		timePtrString(hub.DigitalEmployeeAuthorizationExpiresAt),
+		boolToInt(hub.AllowExternalProviders),
 		timePtrString(hub.LastSeenAt),
 		hub.UpdatedAt.Format(time.RFC3339),
 		hub.ID,

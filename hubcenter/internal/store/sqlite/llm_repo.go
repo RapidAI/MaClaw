@@ -300,6 +300,11 @@ func (r *llmAuthRepo) ListAll(ctx context.Context) ([]*llmservice.TenantAuthoriz
 }
 
 func (r *llmAuthRepo) Update(ctx context.Context, auth *llmservice.TenantAuthorization) error {
+	updatedAt := auth.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+		auth.UpdatedAt = updatedAt
+	}
 	_, err := r.write.ExecContext(ctx,
 		`UPDATE llm_tenant_authorizations SET
 			hub_id=?, tenant_id=?, admin_email=?, service_group_id=?,
@@ -312,7 +317,7 @@ func (r *llmAuthRepo) Update(ctx context.Context, auth *llmservice.TenantAuthori
 		auth.StartsAt.Format(time.RFC3339), auth.ExpiresAt.Format(time.RFC3339),
 		boolToInt(auth.AllowExternalProviders), auth.Source, auth.CardOrderID,
 		auth.BoundNodeID, formatTimeOrEmpty(auth.BoundAt), auth.Status,
-		time.Now().UTC().Format(time.RFC3339), auth.ID,
+		updatedAt.Format(time.RFC3339), auth.ID,
 	)
 	return err
 }

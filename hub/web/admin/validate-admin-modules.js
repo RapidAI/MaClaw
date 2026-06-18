@@ -20,7 +20,6 @@ const expectedScripts = [
   'machines-tab.js',
   've-tab.js',
   'im-tab.js',
-  'hub-llm-tab.js',
   'feishu-tab.js',
   'invitation-tab.js',
   'pwa-tab.js',
@@ -40,7 +39,8 @@ const removedLegacyFiles = [
   'usagestats.js',
   'admin-check.js',
   'hub-admin-check.js',
-  '_extra.js'
+  '_extra.js',
+  'hub-llm-tab.js'
 ];
 const expectedExports = {
   'machines-tab.js': ['renderMachineList', 'loadMachines'],
@@ -143,9 +143,7 @@ function assertTenantAdminUIHooks() {
   [
     'id="loginTenant"',
     'data-tab="tenants"',
-    'data-tab="hubllm"',
     'id="tab-tenants"',
-    'id="tab-hubllm"',
     'id="tenantCreatePanel"',
     'id="currentTenantChip"',
     'id="currentTenantName"',
@@ -209,19 +207,50 @@ function assertTenantAdminUIHooks() {
       fail('im-tab.js is missing scoped IM marker: ' + marker);
     }
   });
-  if (/HUB_LLM_PANE_I18N|loadHubLlmConfig|loadHubLlmStatus|PromptCache/i.test(im)) {
-    fail('im-tab.js must not own Hub LLM or prompt-cache logic. Keep it in hub-llm-tab.js.');
+  if (/HUB_LLM_PANE_I18N|loadHubLlmPromptCacheConfig|loadHubLlmStatus|PromptCache/i.test(im)) {
+    fail('im-tab.js must not own removed LLM prompt-cache admin UI.');
   }
-  const imSection = html.slice(html.indexOf('id="tab-im"'), html.indexOf('id="tab-hubllm"'));
+  const imSectionEnd = html.indexOf('id="tab-machines"');
+  const imSection = html.slice(html.indexOf('id="tab-im"'), imSectionEnd >= 0 ? imSectionEnd : undefined);
   ['imSubHubLlm', 'hubLlmPromptCache', 'hubLlmCacheConfig'].forEach(function(marker) {
     if (imSection.includes(marker)) {
-      fail('index.html IM section still contains Hub LLM marker: ' + marker);
+      fail('index.html IM section still contains LLM prompt-cache marker: ' + marker);
     }
   });
-  const hubllm = read('hub-llm-tab.js');
-  ['registerTab', "id: 'hubllm'", 'navHubLlm', 'loadHubLlmConfig', 'loadHubLlmStatus'].forEach(function(marker) {
-    if (!hubllm.includes(marker)) {
-      fail('hub-llm-tab.js is missing standalone Hub LLM marker: ' + marker);
+  const adminSources = html + '\n' + expectedScripts.map(function(name) { return read(name); }).join('\n');
+  [
+    'data-tab="hubllm"',
+    'hubllm',
+    'id="tab-hubllm"',
+    'src="/admin/hub-llm-tab.js"',
+    'LLM Prompt Cache',
+    'hub_llm_config',
+    'hub_llm_test',
+    'hub_llm_prompt_cache_config',
+    'hub_llm_prompt_cache_clear',
+    'hub_llm_prompt_cache_entries',
+    'hub_llm_prompt_cache_entry',
+    'loadHubLlmConfig',
+    'saveHubLlmConfig',
+    'testHubLlm',
+    'loadHubLlmPromptCacheConfig',
+    'saveHubLlmPromptCacheConfig',
+    'refreshHubLlmPromptCache',
+    'clearHubLlmPromptCache',
+    'loadHubLlmStatus',
+    'navHubLlm',
+    'hubLlmApiUrl',
+    'hubLlmApiKey',
+    'hubLlmModel',
+    'hubLlmProtocol',
+    'hubLlmEnabled',
+    'hubLlmTestBtn',
+    'hubLlmSaveBtn',
+    'hubLlmPromptCache',
+    'hubLlmCache'
+  ].forEach(function(marker) {
+    if (adminSources.includes(marker)) {
+      fail('Hub LLM / prompt-cache admin UI must stay removed: ' + marker);
     }
   });
   const tenant = read('tenant-tab.js');
@@ -254,8 +283,7 @@ function assertEmptyTextNodesAreOwned() {
   const html = fs.readFileSync(indexPath, 'utf8');
   const scripts = expectedScripts.map(function(name) { return read(name); }).join('\n');
   const allowedDynamic = {
-    setupGateList: true,
-    hubLlmTestResult: true
+    setupGateList: true
   };
   const emptyNode = /<([a-z0-9]+)\b([^>]*\bid="([^"]+)"[^>]*)>\s*<\/\1>/gi;
   let match;
@@ -453,6 +481,15 @@ function assertLegacyMirrorRemoved() {
   }
 }
 
+function assertRemovedLegacyFilesDocumented() {
+  const docs = read('MODULES.md');
+  removedLegacyFiles.forEach(function(name) {
+    if (!docs.includes('- ' + name)) {
+      fail('MODULES.md must document removed legacy file: ' + name);
+    }
+  });
+}
+
 function assertLLMProviderPricingHooks() {
   const content = read('llm-provider-tab.js');
   [
@@ -508,15 +545,6 @@ function assertMaClawComputeProviderGate() {
   if (!providerTab.includes('window.addLLMProvider = addLLMProvider')) {
     fail('llm-provider-tab.js must export addLLMProvider so compute gating can wrap inline add actions');
   }
-}
-
-function assertHubLlmStatusTextIsIconFree() {
-  const content = read('hub-llm-tab.js');
-  ['\\u2705', '\\u274c', '\\u26aa', '\\ud83d\\udfe2', '\\ud83d\\udfe1', '\\ud83d\\udd34'].forEach(function(marker) {
-    if (content.includes(marker)) {
-      fail('hub-llm-tab.js status/test text must stay icon-free: ' + marker);
-    }
-  });
 }
 
 function assertSecurityCapabilityComplianceExportHooks() {
@@ -646,7 +674,7 @@ assertAdminApiRoutesRegistered();
 assertGlobalAdminRuntimeHooks();
 assertScopedRefreshHooks();
 assertLegacyMirrorRemoved();
-assertHubLlmStatusTextIsIconFree();
+assertRemovedLegacyFilesDocumented();
 assertLLMProviderPricingHooks();
 assertMaClawComputeProviderGate();
 assertSecurityDefaultGroupUsesName();

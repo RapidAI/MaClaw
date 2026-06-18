@@ -250,6 +250,25 @@ func issueTenantAdminToken(t *testing.T, handler http.Handler, globalToken, tena
 	return token
 }
 
+func TestLegacyHubLLMConfigAdminRoutesRemoved(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, ctx.handler)
+	for _, endpoint := range []struct {
+		method string
+		target string
+		body   any
+	}{
+		{http.MethodGet, "/api/admin/hub_llm_config", nil},
+		{http.MethodPut, "/api/admin/hub_llm_config", map[string]any{"enabled": true}},
+		{http.MethodPost, "/api/admin/hub_llm_test", map[string]any{}},
+	} {
+		resp := doHubAdminJSONRequest(t, ctx.handler, endpoint.method, endpoint.target, endpoint.body, token)
+		if resp.Code != http.StatusNotFound {
+			t.Fatalf("%s %s status = %d body=%s, want 404", endpoint.method, endpoint.target, resp.Code, resp.Body.String())
+		}
+	}
+}
+
 func TestTenantBridgeConfigDoesNotRewriteSharedConfigFile(t *testing.T) {
 	ctx := newAdminRouterTestContext(t)
 	bridgeDir := t.TempDir()
@@ -1047,15 +1066,12 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 		{http.MethodGet, "/api/admin/mail/config", nil},
 		{http.MethodPost, "/api/admin/mail/config", map[string]any{"enabled": true}},
 		{http.MethodPost, "/api/admin/mail/test", map[string]any{"email": "ops@example.com"}},
-		{http.MethodGet, "/api/admin/hub_llm_config", nil},
-		{http.MethodPut, "/api/admin/hub_llm_config", map[string]any{"enabled": true, "api_url": "https://tenant.example/v1", "api_key": "tenant-key", "model": "tenant-model"}},
 		{http.MethodGet, "/api/admin/hub_llm_prompt_cache_config", nil},
 		{http.MethodPut, "/api/admin/hub_llm_prompt_cache_config", map[string]any{"enabled": true}},
 		{http.MethodPost, "/api/admin/hub_llm_prompt_cache_clear", nil},
 		{http.MethodGet, "/api/admin/hub_llm_prompt_cache_entries", nil},
 		{http.MethodGet, "/api/admin/hub_llm_prompt_cache_entry?cache_key=test", nil},
 		{http.MethodDelete, "/api/admin/hub_llm_prompt_cache_entry?cache_key=test", nil},
-		{http.MethodPost, "/api/admin/hub_llm_test", map[string]any{}},
 		{http.MethodGet, "/api/admin/hub_llm_status", nil},
 	} {
 		assertTenantForbidden(endpoint.method, endpoint.target, endpoint.body)

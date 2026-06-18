@@ -40,7 +40,7 @@ export function useAssistantInputHistory({ applyInputValue, inputRef, inputValue
 
         const currentEdits = historyEdits;
         const currentHistoryIndex = historyIndex;
-        const currentInputValue = inputValue;
+        const currentInputValue = inputRef.current?.value ?? inputValue;
 
         const rememberCurrentEntry = () => {
             if (currentHistoryIndex < 0) return;
@@ -70,7 +70,7 @@ export function useAssistantInputHistory({ applyInputValue, inputRef, inputValue
         setHistoryIndex(nextIndex);
         applyInputValue(currentEdits[nextIndex] ?? submittedPrompts[nextIndex]);
         return true;
-    }, [submittedPrompts, historyIndex, inputValue, draftBeforeHistory, historyEdits, applyInputValue]);
+    }, [submittedPrompts, historyIndex, inputValue, draftBeforeHistory, historyEdits, applyInputValue, inputRef]);
 
     const exitHistoryBrowsing = useCallback(() => {
         if (historyIndex < 0) return false;

@@ -152,6 +152,7 @@ func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
 	cursor, err := s.svc.cursors.Get(ctx, peer.NodeID)
 	if err != nil {
 		s.svc.markPeerError(peer.NodeID, err.Error())
+		s.recordPeerCursorError(ctx, peer.NodeID, 0, nil, err.Error())
 		return
 	}
 	afterSeq := int64(0)
@@ -162,6 +163,7 @@ func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
 		resp, err := s.pullOps(ctx, peer, afterSeq)
 		if err != nil {
 			s.svc.markPeerError(peer.NodeID, err.Error())
+			s.recordPeerCursorError(ctx, peer.NodeID, afterSeq, cursor, err.Error())
 			return
 		}
 		now := time.Now().UTC()
@@ -197,6 +199,38 @@ func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
 			return
 		}
 	}
+}
+
+func (s *Syncer) recordPeerCursorError(ctx context.Context, nodeID string, lastSeq int64, cursor *store.HAPeerCursor, msg string) {
+	if s == nil || s.svc == nil || s.svc.cursors == nil || strings.TrimSpace(nodeID) == "" {
+		return
+	}
+	now := time.Now().UTC()
+	if cursor == nil {
+		current, err := s.svc.cursors.Get(ctx, nodeID)
+		if err == nil {
+			cursor = current
+		}
+	}
+	if cursor != nil {
+		if cursor.LastPulledSeq > lastSeq {
+			lastSeq = cursor.LastPulledSeq
+		}
+		_ = s.svc.cursors.Upsert(ctx, &store.HAPeerCursor{
+			PeerNodeID:    nodeID,
+			LastPulledSeq: lastSeq,
+			LastPulledAt:  &now,
+			LastSuccessAt: cursor.LastSuccessAt,
+			LastError:     strings.TrimSpace(msg),
+		})
+		return
+	}
+	_ = s.svc.cursors.Upsert(ctx, &store.HAPeerCursor{
+		PeerNodeID:    nodeID,
+		LastPulledSeq: lastSeq,
+		LastPulledAt:  &now,
+		LastError:     strings.TrimSpace(msg),
+	})
 }
 
 func (s *Syncer) pullOps(ctx context.Context, peer *PeerRuntimeState, afterSeq int64) (*PullOpsResponse, error) {

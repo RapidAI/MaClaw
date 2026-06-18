@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -184,6 +185,61 @@ func TestTenantLifecycleRejectsTenantAdmin(t *testing.T) {
 	AdminTenantDeleteHandler(repo)(deleteRec, tenantAdminHandlerReqWithScope(http.MethodDelete, "/api/admin/tenants/tenant_a", nil, admin, "tenant_a"))
 	if deleteRec.Code != http.StatusForbidden {
 		t.Fatalf("tenant admin delete code=%d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+}
+
+func TestTenantComputeAuthorizationSummarySeparatesModuleGrantFromCreditCards(t *testing.T) {
+	future := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	past := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	summary := tenantComputeAuthorizationSummary(&llmservice.TenantAuthorizationStatus{
+		TenantID:               store.DefaultTenantID,
+		AllowExternalProviders: false,
+		Authorizations: []llmservice.AuthorizationSummary{
+			{
+				ID:               "permission_revoked",
+				ServiceGroupID:   "__external_compute_permission__",
+				CreditsTotal:     1000000,
+				CreditsRemaining: 1000000,
+				Status:           "expired",
+				ExpiresAt:        past,
+			},
+			{
+				ID:               "active_credit",
+				ServiceGroupID:   "redeem",
+				CreditsTotal:     100,
+				CreditsUsed:      25,
+				CreditsRemaining: 75,
+				Status:           "active",
+				Active:           true,
+				ExpiresAt:        future,
+			},
+			{
+				ID:               "expired_credit",
+				ServiceGroupID:   "redeem",
+				CreditsTotal:     500,
+				CreditsRemaining: 500,
+				Status:           "expired",
+				ExpiresAt:        past,
+			},
+		},
+	})
+	if summary == nil {
+		t.Fatal("summary is nil")
+	}
+	if got := summary["active"]; got != false {
+		t.Fatalf("active = %v, want false because module grant is revoked", got)
+	}
+	if got := summary["allow_external"]; got != false {
+		t.Fatalf("allow_external = %v, want false", got)
+	}
+	if got := summary["authorization_count"]; got != 1 {
+		t.Fatalf("authorization_count = %v, want 1 active credit card only", got)
+	}
+	if got := summary["total_credits"]; got != float64(100) {
+		t.Fatalf("total_credits = %v, want 100", got)
+	}
+	if got := summary["remaining_credits"]; got != float64(75) {
+		t.Fatalf("remaining_credits = %v, want 75", got)
 	}
 }
 

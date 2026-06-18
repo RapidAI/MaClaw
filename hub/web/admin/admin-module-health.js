@@ -13,7 +13,6 @@
     { name: 'MachinesTab', ok: function() { return typeof global.loadMachines === 'function' && typeof global.renderMachineList === 'function'; } },
     { name: 'VETab', ok: function() { return typeof global.loadVEList === 'function'; } },
     { name: 'ImTab', ok: function() { return typeof global.openImSub === 'function'; } },
-    { name: 'HubLlmTab', ok: function() { return typeof global.loadHubLlmConfig === 'function' && typeof global.loadHubLlmStatus === 'function'; } },
     { name: 'FeishuTab', ok: function() { return typeof global.loadFeishuConfig === 'function'; } },
     { name: 'InvitationTab', ok: function() { return typeof global.loadInvitationCodes === 'function'; } },
     { name: 'PwaTab', ok: function() { return typeof global.loadPwaEnrollments === 'function'; } },

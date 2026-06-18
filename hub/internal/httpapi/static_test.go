@@ -264,15 +264,14 @@ func TestHubAdminPageIncludesFailureLogsUI(t *testing.T) {
 	}
 }
 
-func TestMaClawComputeModuleShowsActiveAuthorizationBadge(t *testing.T) {
+func TestMaClawComputeModuleShowsModuleAuthorizationBadge(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "maclaw-compute-module.js"))
 	if err != nil {
 		t.Fatalf("read MaClaw compute module: %v", err)
 	}
 	content := string(body)
 	for _, want := range []string{
-		`hasActiveComputeAuthorization()`,
-		`return computeAuthorizations().some(isAuthorizationActive);`,
+		`hasComputeModuleAuthorization()`,
 		`return !!_computeAuthStatus.allow_external_providers;`,
 		`refreshComputeAuthorizationIfStale(3000);`,
 		`_computeAuthCheckedAt = Date.now();`,
@@ -286,9 +285,44 @@ func TestMaClawComputeModuleShowsActiveAuthorizationBadge(t *testing.T) {
 			t.Fatalf("MaClaw compute module missing %s", want)
 		}
 	}
-	if strings.Contains(content, `} else if (_computeAuthStatus.allow_external_providers) {
+	if !strings.Contains(content, `} else if (hasComputeModuleAuthorization()) {
         badge.className = 'badge ok';`) {
-		t.Fatalf("MaClaw compute badge must not depend only on allow_external_providers")
+		t.Fatalf("MaClaw compute badge must depend on module authorization, not active credit cards")
+	}
+	if strings.Contains(content, `hasActiveComputeAuthorization()`) {
+		t.Fatalf("MaClaw compute module must not keep active-credit helper for module authorization")
+	}
+}
+
+func TestTenantComputeSummariesDoNotTreatCreditCardsAsModuleAuthorization(t *testing.T) {
+	for _, file := range []string{"overview-tenant-info.js", "tenant-tab.js"} {
+		body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", file))
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		content := string(body)
+		for _, want := range []string{
+			`computeCardIsActive`,
+			`var computeAuthorizations = Array.isArray`,
+			`activeComputeCards`,
+			`active: !!compute`,
+			`__external_compute_permission__`,
+		} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s missing %s", file, want)
+			}
+		}
+		for _, forbidden := range []string{
+			`authorizations.some(function(a) { return a.active; })`,
+			`authorization_count: computeData.authorizations.length`,
+			`authorization_count: computeRaw.authorizations.length`,
+			`computeData && computeData.authorizations && computeData.authorizations.length > 0`,
+			`computeRaw && computeRaw.authorizations && computeRaw.authorizations.length > 0`,
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("%s must not contain stale compute summary pattern %s", file, forbidden)
+			}
+		}
 	}
 }
 

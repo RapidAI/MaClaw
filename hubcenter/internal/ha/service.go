@@ -19,6 +19,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/diagnostics"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -36,6 +37,7 @@ const (
 	EntitySkillHubSnapshot    = "skillhub_snapshot"
 	EntitySkillMarketSnapshot = "skillmarket_snapshot"
 	EntityLLMCardType         = "llm_card_type"
+	EntityLLMTenantAuth       = "llm_tenant_authorization"
 
 	OpUpsert = "upsert"
 	OpDelete = "delete"
@@ -82,6 +84,7 @@ type Service struct {
 	skillStore               *skill.SkillStore
 	skillMarket              *skillmarket.Store
 	cardTypes                cardstore.CardTypeRepository
+	llmAuthorizations        llmservice.TenantAuthorizationRepository
 	heartbeatSync            store.HAHeartbeatSyncStateRepository
 	heartbeatSyncMinInterval time.Duration
 
@@ -140,11 +143,12 @@ type historyPruner interface {
 }
 
 func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []StaticPeer) *Service {
+	nodeID = strings.TrimSpace(nodeID)
 	peerMap := make(map[string]*PeerRuntimeState, len(peers))
 	peerKeys := make(map[string]*rsa.PublicKey, len(peers))
 	for _, peer := range peers {
 		id := strings.TrimSpace(peer.NodeID)
-		if id == "" {
+		if id == "" || id == nodeID {
 			continue
 		}
 		peerMap[id] = &PeerRuntimeState{
@@ -161,7 +165,7 @@ func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []St
 	}
 
 	return &Service{
-		nodeID:                   strings.TrimSpace(nodeID),
+		nodeID:                   nodeID,
 		nodeName:                 strings.TrimSpace(nodeName),
 		advertiseURL:             strings.TrimRight(strings.TrimSpace(advertiseURL), "/"),
 		clusterSecret:            strings.TrimSpace(clusterSecret),
@@ -226,6 +230,13 @@ func (s *Service) AttachCardTypes(repo cardstore.CardTypeRepository) {
 		return
 	}
 	s.cardTypes = repo
+}
+
+func (s *Service) AttachLLMAuthorizations(repo llmservice.TenantAuthorizationRepository) {
+	if s == nil {
+		return
+	}
+	s.llmAuthorizations = repo
 }
 
 func (s *Service) SetRouteSnapshotRefresher(refresher interface{ Rebuild(context.Context) error }) {
@@ -523,7 +534,7 @@ func adminSyncCategorySpecs() []adminSyncCategorySpec {
 		{Key: "gossip", Label: "Gossip Wall", EntityTypes: map[string]struct{}{EntityGossipSnapshot: {}}},
 		{Key: "skillhub", Label: "Skill Library", EntityTypes: map[string]struct{}{EntitySkillHubSnapshot: {}}},
 		{Key: "skillmarket", Label: "Skill Market", EntityTypes: map[string]struct{}{EntitySkillMarketSnapshot: {}}},
-		{Key: "compute_market", Label: "Compute Market", EntityTypes: map[string]struct{}{EntityLLMCardType: {}}},
+		{Key: "compute_market", Label: "Compute Market", EntityTypes: map[string]struct{}{EntityLLMCardType: {}, EntityLLMTenantAuth: {}}},
 		{Key: "news", Label: "News", EntityTypes: map[string]struct{}{EntityNewsArticle: {}}},
 	}
 }
@@ -1388,7 +1399,7 @@ func validateRemoteOp(op *store.HASyncOp) error {
 
 func isSupportedEntityType(entityType string) bool {
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot, EntityLLMCardType:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot, EntityLLMCardType, EntityLLMTenantAuth:
 		return true
 	default:
 		return false
@@ -1489,7 +1500,7 @@ func remoteOpPayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "", "", err
 		}
 		return "ip", payload.IP, nil
-	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType:
+	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType, EntityLLMTenantAuth:
 		var payload struct {
 			ID string `json:"id"`
 		}
@@ -1592,6 +1603,8 @@ func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
 		return s.applySkillMarketSnapshotOp(ctx, op)
 	case EntityLLMCardType:
 		return s.applyLLMCardTypeOp(ctx, op)
+	case EntityLLMTenantAuth:
+		return s.applyLLMTenantAuthOp(ctx, op)
 	default:
 		return fmt.Errorf("unsupported entity type: %s", op.EntityType)
 	}
@@ -1904,6 +1917,29 @@ func (s *Service) applyLLMCardTypeOp(ctx context.Context, op *store.HASyncOp) er
 	}
 }
 
+func (s *Service) applyLLMTenantAuthOp(ctx context.Context, op *store.HASyncOp) error {
+	if s.llmAuthorizations == nil {
+		return nil
+	}
+	switch op.OpType {
+	case OpUpsert:
+		var item llmservice.TenantAuthorization
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &item); err != nil {
+			return err
+		}
+		existing, err := s.llmAuthorizations.GetByID(ctx, item.ID)
+		if err != nil {
+			return err
+		}
+		if existing == nil {
+			return s.llmAuthorizations.Create(ctx, &item)
+		}
+		return s.llmAuthorizations.Update(ctx, &item)
+	default:
+		return fmt.Errorf("unsupported llm tenant authorization op: %s", op.OpType)
+	}
+}
+
 func (s *Service) markApplied(ctx context.Context, op *store.HASyncOp) error {
 	return s.ops.MarkApplied(ctx, &store.HAAppliedOp{OpID: op.OpID, SourceNodeID: op.SourceNodeID, EntityType: op.EntityType, EntityID: op.EntityID, AppliedAt: time.Now().UTC()})
 }
@@ -1964,6 +2000,20 @@ func (s *Service) AppendLLMCardType(ctx context.Context, item *cardstore.CardTyp
 	if err := s.AppendUpsert(ctx, EntityLLMCardType, item.ID, item, item.UpdatedAt); err != nil {
 		log.Printf("[hubcenter][ha] append llm card type: %v", err)
 		s.recordFailure(ctx, "ha_sync", "append_llm_card_type_failed", err.Error(), item.ID, nil)
+	}
+}
+
+func (s *Service) AppendLLMAuthorization(ctx context.Context, item *llmservice.TenantAuthorization) {
+	if item == nil {
+		return
+	}
+	updatedAt := item.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	if err := s.AppendUpsert(ctx, EntityLLMTenantAuth, item.ID, item, updatedAt); err != nil {
+		log.Printf("[hubcenter][ha] append llm tenant authorization: %v", err)
+		s.recordFailure(ctx, "ha_sync", "append_llm_tenant_authorization_failed", err.Error(), item.ID, map[string]any{"tenant_id": item.TenantID, "hub_id": item.HubID})
 	}
 }
 

@@ -1024,7 +1024,7 @@ func enrichTenantsWithAuthorization(ctx context.Context, dtos []map[string]any, 
 		// Compute module authorization (LLM compute credits)
 		if accessCtrl != nil {
 			computeAuth := accessCtrl.GetAuthorizationStatus(ctx, tenantID)
-			if computeAuth != nil && len(computeAuth.Authorizations) > 0 {
+			if computeAuth != nil && (len(computeAuth.Authorizations) > 0 || computeAuth.AllowExternalProviders) {
 				dto["compute_authorization"] = tenantComputeAuthorizationSummary(computeAuth)
 			}
 		}
@@ -1035,30 +1035,51 @@ func enrichTenantsWithAuthorization(ctx context.Context, dtos []map[string]any, 
 // tenantComputeAuthorizationSummary builds a summary of compute module
 // authorization for display in the tenant card.
 func tenantComputeAuthorizationSummary(auth *llmservice.TenantAuthorizationStatus) map[string]any {
-	if auth == nil || len(auth.Authorizations) == 0 {
+	if auth == nil {
 		return nil
 	}
 	var totalCredits, usedCredits, remainingCredits float64
-	var activeCount int
+	var creditAuthorizationCount int
 	var latestExpiry string
+	now := time.Now().UTC()
 	for _, a := range auth.Authorizations {
+		if strings.TrimSpace(a.ServiceGroupID) == "__external_compute_permission__" {
+			continue
+		}
+		if !tenantComputeAuthorizationSummaryCardActive(a, now) {
+			continue
+		}
 		totalCredits += a.CreditsTotal
 		usedCredits += a.CreditsUsed
 		remainingCredits += a.CreditsRemaining
-		if a.Active {
-			activeCount++
-		}
+		creditAuthorizationCount++
 		if a.ExpiresAt > latestExpiry {
 			latestExpiry = a.ExpiresAt
 		}
 	}
 	return map[string]any{
-		"active":              activeCount > 0,
+		"active":              auth.AllowExternalProviders,
 		"total_credits":       totalCredits,
 		"used_credits":        usedCredits,
 		"remaining_credits":   remainingCredits,
-		"authorization_count": len(auth.Authorizations),
+		"authorization_count": creditAuthorizationCount,
 		"expires_at":          latestExpiry,
 		"allow_external":      auth.AllowExternalProviders,
 	}
+}
+
+func tenantComputeAuthorizationSummaryCardActive(auth llmservice.AuthorizationSummary, now time.Time) bool {
+	if auth.Active {
+		return true
+	}
+	status := strings.ToLower(strings.TrimSpace(auth.Status))
+	if status == "expired" || status == "exhausted" || status == "inactive" || status == "invalid" {
+		return false
+	}
+	if strings.TrimSpace(auth.ExpiresAt) != "" {
+		if expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(auth.ExpiresAt)); err == nil && !expiresAt.After(now) {
+			return false
+		}
+	}
+	return auth.CreditsRemaining > 0
 }

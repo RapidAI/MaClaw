@@ -519,6 +519,7 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
+			revoked := false
 			for _, old := range existing {
 				if !isExternalComputeAccessAuthorization(old) {
 					continue
@@ -527,6 +528,25 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 				old.Status = "expired"
 				old.UpdatedAt = time.Now().UTC()
 				if err := checker.UpdateAuthorization(r.Context(), old); err != nil {
+					writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+				revoked = true
+			}
+			if !revoked {
+				tombstone := newExternalComputeRevocationAuthorization(auth.HubID, auth.TenantID, auth.AdminEmail)
+				existingByID, err := checker.GetByID(r.Context(), tombstone.ID)
+				if err != nil {
+					writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+				if existingByID != nil {
+					tombstone.CreatedAt = existingByID.CreatedAt
+					if err := checker.UpdateAuthorization(r.Context(), tombstone); err != nil {
+						writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+						return
+					}
+				} else if err := checker.CreateAuthorization(r.Context(), tombstone); err != nil {
 					writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 					return
 				}
@@ -618,6 +638,27 @@ func adminCreateLLMAuthorization(checker *llmservice.AuthorizationChecker) http.
 			}
 		}
 		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok", "id": auth.ID})
+	}
+}
+
+func newExternalComputeRevocationAuthorization(hubID, tenantID, adminEmail string) *llmservice.TenantAuthorization {
+	now := time.Now().UTC()
+	startsAt := now.Add(-time.Second)
+	return &llmservice.TenantAuthorization{
+		ID:                     "auth_admin_" + hubID + "_" + tenantID + "_" + llmservice.ExternalComputePermissionServiceGroupID,
+		HubID:                  hubID,
+		TenantID:               tenantID,
+		AdminEmail:             strings.TrimSpace(adminEmail),
+		ServiceGroupID:         llmservice.ExternalComputePermissionServiceGroupID,
+		CreditsTotal:           0,
+		CreditsUsed:            0,
+		StartsAt:               startsAt,
+		ExpiresAt:              startsAt,
+		Status:                 "expired",
+		Source:                 "external_provider_permission",
+		AllowExternalProviders: false,
+		CreatedAt:              now,
+		UpdatedAt:              now,
 	}
 }
 

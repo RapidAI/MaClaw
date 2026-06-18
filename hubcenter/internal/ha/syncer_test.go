@@ -100,6 +100,47 @@ func TestSyncPeerAdvancesCursorFromEmptyResponseNextSeq(t *testing.T) {
 	}
 }
 
+func TestSyncPeerRecordsPullErrorInCursor(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "invalid cluster secret", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	oldSuccess := time.Now().UTC().Add(-time.Hour)
+	peer := &PeerRuntimeState{NodeID: "hc-2", NodeName: "HubCenter 2", BaseURL: server.URL}
+	cursors := &fakeHAPeerCursorRepo{items: map[string]*store.HAPeerCursor{"hc-2": {
+		PeerNodeID:    "hc-2",
+		LastPulledSeq: 200,
+		LastSuccessAt: &oldSuccess,
+	}}}
+	svc := &Service{
+		nodeID:  "hc-1",
+		peers:   map[string]*PeerRuntimeState{"hc-2": peer},
+		cursors: cursors,
+		ops:     &fakeHASyncOpRepo{},
+	}
+	syncer := NewSyncer(svc, time.Second, 200)
+
+	syncer.syncPeer(context.Background(), peer)
+
+	got, err := cursors.Get(context.Background(), "hc-2")
+	if err != nil {
+		t.Fatalf("cursor Get() error = %v", err)
+	}
+	if got == nil || got.LastPulledSeq != 200 {
+		t.Fatalf("LastPulledSeq = %#v, want 200", got)
+	}
+	if got.LastPulledAt == nil {
+		t.Fatalf("LastPulledAt = nil, want pull attempt timestamp")
+	}
+	if got.LastSuccessAt == nil || !got.LastSuccessAt.Equal(oldSuccess) {
+		t.Fatalf("LastSuccessAt = %#v, want preserved %v", got.LastSuccessAt, oldSuccess)
+	}
+	if got.LastError != "pull ops failed: 401 Unauthorized" {
+		t.Fatalf("LastError = %q", got.LastError)
+	}
+}
+
 func TestSyncAllSkipsPeerAlreadyRunning(t *testing.T) {
 	var mu sync.Mutex
 	requests := 0

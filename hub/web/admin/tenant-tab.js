@@ -124,6 +124,15 @@
     if (isNaN(d.getTime())) return value;
     return d.toLocaleString();
   }
+  function computeCardIsActive(item) {
+    if (!item) return false;
+    if (typeof item.active === 'boolean') return item.active;
+    var status = String(item.status || '').toLowerCase();
+    if (status === 'expired' || status === 'exhausted' || status === 'inactive' || status === 'invalid') return false;
+    var expiresAt = item.expires_at ? new Date(item.expires_at) : null;
+    if (expiresAt && !isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now()) return false;
+    return Number(item.credits_remaining || 0) > 0;
+  }
   function tenantLabel(item) { return String(item && (item.name || item.slug || item.id) || ''); }
   function tenantOptionLabel(item) {
     if (!item) return '';
@@ -498,15 +507,20 @@
     try {
       // Compute module authorization from MaClaw compute status API.
       var computeData = await global.api('/api/admin/llm/maclaw-compute-status');
-      if (computeData && computeData.authorizations && computeData.authorizations.length > 0) {
+      if (computeData) {
         tenantAuthorizationLoaded = true;
+        var computeAuthorizations = Array.isArray(computeData.authorizations) ? computeData.authorizations : [];
+        var computeCards = computeAuthorizations.filter(function(a) {
+          return String(a && a.service_group_id || '').trim() !== '__external_compute_permission__';
+        });
+        var activeComputeCards = computeCards.filter(computeCardIsActive);
         var summary = {
-          active: computeData.authorizations.some(function(a) { return a.active; }),
-          total_credits: computeData.authorizations.reduce(function(s, a) { return s + (a.credits_total || 0); }, 0),
-          used_credits: computeData.authorizations.reduce(function(s, a) { return s + (a.credits_used || 0); }, 0),
-          remaining_credits: computeData.authorizations.reduce(function(s, a) { return s + (a.credits_remaining || 0); }, 0),
-          authorization_count: computeData.authorizations.length,
-          expires_at: computeData.authorizations.reduce(function(l, a) { return a.expires_at > l ? a.expires_at : l; }, ''),
+          active: !!computeData.allow_external_providers,
+          total_credits: activeComputeCards.reduce(function(s, a) { return s + (a.credits_total || 0); }, 0),
+          used_credits: activeComputeCards.reduce(function(s, a) { return s + (a.credits_used || 0); }, 0),
+          remaining_credits: activeComputeCards.reduce(function(s, a) { return s + (a.credits_remaining || 0); }, 0),
+          authorization_count: activeComputeCards.length,
+          expires_at: activeComputeCards.reduce(function(l, a) { return a.expires_at > l ? a.expires_at : l; }, ''),
           allow_external: !!computeData.allow_external_providers
         };
         for (var j = 0; j < tenantCache.length; j++) {
@@ -739,7 +753,7 @@
     var tenantAdmin = isTenantAdminProfile(profile);
     var hasProfile = !!profile;
     updateTenantAdminRoleOptions(profile);
-    var globalOnly = global.adminGlobalOnlyTabs || { center: true, console: true, hubllm: true };
+    var globalOnly = global.adminGlobalOnlyTabs || { center: true, console: true };
     var tenantOnly = global.adminTenantOnlyTabs || { governance: true, marketplace: true, im: true, machines: true, virtualemployees: true, invitationcodes: true, pwarequests: true, security: true, llmproviders: true, usagestats: true, modelservices: true, servicecards: true, failurelogs: true };
     global.document.querySelectorAll('.nav button[data-tab]').forEach(function(button) {
       var tab = button.dataset.tab || '';
@@ -797,5 +811,3 @@
   global.deleteTenant = deleteTenant;
   applyAdminScopeUI();
 })(window);
-
-

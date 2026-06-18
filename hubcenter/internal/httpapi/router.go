@@ -178,9 +178,7 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 		if auth := auths[""]; auth != nil {
 			resp["digital_employee_authorization"] = auth
 		}
-		// Allow external providers — top-level field, same mechanism as DE auth.
-		// Does NOT depend on LLM module being initialized.
-		resp["allow_external_providers"] = service.HubAllowExternalProviders(r.Context(), hubID)
+		allowExternalProviders := service.HubAllowExternalProviders(r.Context(), hubID)
 		if len(auths) > 0 {
 			tenantAuths := map[string]*corelib.DigitalEmployeeAuthorization{}
 			for tenantID, auth := range auths {
@@ -197,15 +195,29 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 			}
 		}
 		if checker := currentLLMAuthorizationSyncChecker(); checker != nil {
+			llmComputeTenants := buildHeartbeatLLMComputeAuthorizationPayload(r.Context(), checker, hubID)
+			allowExternalProviders = heartbeatLLMComputeAllowsExternal(llmComputeTenants)
 			authPayloads[heartbeatAuthorizationKeyLLMCompute] = map[string]any{
-				"tenants": buildHeartbeatLLMComputeAuthorizationPayload(r.Context(), checker, hubID),
+				"tenants": llmComputeTenants,
 			}
 		}
+		// Backward-compatible top-level field for older Hub/UI code. Newer
+		// clients also read authorizations.llm_compute per tenant.
+		resp["allow_external_providers"] = allowExternalProviders
 		if len(authPayloads) > 0 {
 			resp["authorizations"] = authPayloads
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+func heartbeatLLMComputeAllowsExternal(tenants map[string]*llmservice.TenantAuthorizationStatus) bool {
+	for _, status := range tenants {
+		if status != nil && status.AllowExternalProviders {
+			return true
+		}
+	}
+	return false
 }
 
 func buildHeartbeatLLMComputeAuthorizationPayload(ctx context.Context, checker *llmservice.AuthorizationChecker, hubID string) map[string]*llmservice.TenantAuthorizationStatus {

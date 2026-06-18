@@ -248,7 +248,7 @@
       if (!_computeAuthStatus) {
         badge.className = 'badge info';
         badge.textContent = t('authStatusLoading');
-      } else if (hasActiveComputeAuthorization()) {
+      } else if (hasComputeModuleAuthorization()) {
         badge.className = 'badge ok';
         badge.textContent = t('authStatusActive');
       } else if (_computeAuthStatus.authorization_error) {
@@ -274,10 +274,8 @@
     return _computeAuthStatus.authorizations.slice();
   }
 
-  function hasActiveComputeAuthorization() {
-    if (!_computeAuthStatus) return false;
-    if (_computeAuthStatus.allow_external_providers) return true;
-    return computeAuthorizations().some(isAuthorizationActive);
+  function hasComputeModuleAuthorization() {
+    return !!(_computeAuthStatus && _computeAuthStatus.allow_external_providers);
   }
 
   function isAuthorizationActive(item) {

@@ -186,6 +186,38 @@ func TestAdminCreateLLMAuthorizationDisablesPreviousExternalComputeGrant(t *test
 	}
 }
 
+func TestAdminCreateLLMAuthorizationRevocationCreatesInactiveStateWhenMissingGrant(t *testing.T) {
+	repo := &llmDeleteAuthRepo{}
+	checker := llmservice.NewAuthorizationChecker(repo)
+	body := bytes.NewReader([]byte(`{
+		"hub_id":"hub1",
+		"tenant_id":"tenant1",
+		"allow_external_providers":false
+	}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/authorizations", body)
+	rr := httptest.NewRecorder()
+
+	adminCreateLLMAuthorization(checker).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(repo.auths) != 1 {
+		t.Fatalf("auth count = %d, want revocation tombstone", len(repo.auths))
+	}
+	got := repo.auths[0]
+	if got.AllowExternalProviders || got.Status != "expired" || got.ServiceGroupID != llmservice.ExternalComputePermissionServiceGroupID {
+		t.Fatalf("revocation tombstone = %#v", got)
+	}
+	status, err := llmservice.BuildTenantAuthorizationStatus(context.Background(), checker, "hub1", "tenant1")
+	if err != nil {
+		t.Fatalf("BuildTenantAuthorizationStatus: %v", err)
+	}
+	if status.AllowExternalProviders || len(status.Authorizations) != 1 || status.Authorizations[0].Active {
+		t.Fatalf("authorization status = %#v, want explicit inactive state", status)
+	}
+}
+
 func TestAdminCreateLLMAuthorizationDisablesPreviousExternalComputeGrantTenantAlias(t *testing.T) {
 	repo := &llmDeleteAuthRepo{auths: []*llmservice.TenantAuthorization{{
 		ID:                     "old_external_alias",
@@ -647,7 +679,8 @@ func TestHubHeartbeatIncludesGenericLLMComputeAuthorizationPayload(t *testing.T)
 		t.Fatalf("heartbeat status = %d body=%s, want 200", resp.Code, resp.Body.String())
 	}
 	var payload struct {
-		Authorizations map[string]struct {
+		AllowExternalProviders bool `json:"allow_external_providers"`
+		Authorizations         map[string]struct {
 			Tenants map[string]struct {
 				AllowExternalProviders bool `json:"allow_external_providers"`
 				Authorizations         []struct {
@@ -659,6 +692,9 @@ func TestHubHeartbeatIncludesGenericLLMComputeAuthorizationPayload(t *testing.T)
 	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode heartbeat response: %v", err)
 	}
+	if !payload.AllowExternalProviders {
+		t.Fatalf("top-level allow_external_providers = false, want true for legacy Hub/UI compatibility")
+	}
 	compute := payload.Authorizations["llm_compute"].Tenants["tenant_acme"]
 	if !compute.AllowExternalProviders {
 		t.Fatalf("llm compute heartbeat authorization = %#v body=%s, want allow_external_providers=true", compute, resp.Body.String())
@@ -666,6 +702,73 @@ func TestHubHeartbeatIncludesGenericLLMComputeAuthorizationPayload(t *testing.T)
 	// Pure permission grants don't appear in the authorizations list
 	if len(compute.Authorizations) != 0 {
 		t.Fatalf("llm compute heartbeat authorizations len = %d, want 0 (permission-only)", len(compute.Authorizations))
+	}
+}
+
+func TestHubHeartbeatIncludesInactiveLLMComputeRevocationPayload(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	ctx := context.Background()
+	secret := "hub-heartbeat-llm-revoked-secret"
+	now := time.Now().UTC()
+	if err := svc.store.Hubs.Create(ctx, &store.HubInstance{
+		ID:                     "hub_heartbeat_llm_revoked",
+		OwnerEmail:             "owner@example.com",
+		Name:                   "Heartbeat Revoked LLM Hub",
+		BaseURL:                "https://hub.example.com",
+		Status:                 "online",
+		HubSecretHash:          testHashToken(secret),
+		AllowExternalProviders: true,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+	}); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+
+	checker := llmservice.NewAuthorizationChecker(&llmDeleteAuthRepo{auths: []*llmservice.TenantAuthorization{{
+		ID:                     "external_revoked_heartbeat",
+		HubID:                  "hub_heartbeat_llm_revoked",
+		TenantID:               "tenant_acme",
+		ServiceGroupID:         llmservice.ExternalComputePermissionServiceGroupID,
+		StartsAt:               now.Add(-time.Hour),
+		ExpiresAt:              now.Add(-time.Hour),
+		Status:                 "expired",
+		AllowExternalProviders: false,
+		Source:                 "external_provider_permission",
+	}}})
+	previous := currentLLMAuthorizationSyncChecker()
+	SetLLMAuthorizationSyncChecker(checker)
+	defer SetLLMAuthorizationSyncChecker(previous)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/hubs/{id}/heartbeat", HubHeartbeatHandler(svc.hubs))
+	req := httptest.NewRequest(http.MethodPost, "/api/hubs/hub_heartbeat_llm_revoked/heartbeat", bytes.NewReader([]byte(`{"hub_secret":"`+secret+`"}`)))
+	resp := httptest.NewRecorder()
+	mux.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("heartbeat status = %d body=%s, want 200", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		AllowExternalProviders bool `json:"allow_external_providers"`
+		Authorizations         map[string]struct {
+			Tenants map[string]struct {
+				AllowExternalProviders bool `json:"allow_external_providers"`
+				Authorizations         []struct {
+					ID     string `json:"id"`
+					Active bool   `json:"active"`
+					Status string `json:"status"`
+				} `json:"authorizations"`
+			} `json:"tenants"`
+		} `json:"authorizations"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode heartbeat response: %v", err)
+	}
+	if payload.AllowExternalProviders {
+		t.Fatalf("top-level allow_external_providers = true, want false for revoked compute authorization")
+	}
+	compute := payload.Authorizations["llm_compute"].Tenants["tenant_acme"]
+	if compute.AllowExternalProviders || len(compute.Authorizations) != 1 || compute.Authorizations[0].Active || compute.Authorizations[0].Status != "expired" {
+		t.Fatalf("llm compute revoked heartbeat authorization = %#v body=%s", compute, resp.Body.String())
 	}
 }
 

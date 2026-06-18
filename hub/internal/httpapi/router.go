@@ -320,16 +320,14 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/bridge/channels", requireTenantAdmin(SaveBridgeChannelHandler(system, bridgeDir)))
 	mux.HandleFunc("GET /api/admin/bridge/status", requireTenantAdmin(BridgeStatusHandler(system)))
 	mux.HandleFunc("POST /api/admin/bridge/install", requireGlobalAdmin(InstallBridgeDepsHandler(bridgeDir)))
-	// Hub LLM configuration
-	mux.HandleFunc("GET /api/admin/hub_llm_config", requireGlobalAdmin(GetHubLLMConfigHandler(system)))
-	mux.HandleFunc("PUT /api/admin/hub_llm_config", requireGlobalAdmin(UpdateHubLLMConfigHandler(system)))
+	// LLM prompt cache compatibility/operations APIs. There is no standalone
+	// global-admin UI; model endpoints are tenant-scoped under /api/admin/llm.
 	mux.HandleFunc("GET /api/admin/hub_llm_prompt_cache_config", requireGlobalAdmin(GetHubLLMPromptCacheConfigHandler(system, llmPromptCache)))
 	mux.HandleFunc("PUT /api/admin/hub_llm_prompt_cache_config", requireGlobalAdmin(UpdateHubLLMPromptCacheConfigHandler(system, llmPromptCache)))
 	mux.HandleFunc("POST /api/admin/hub_llm_prompt_cache_clear", requireGlobalAdmin(ClearHubLLMPromptCacheHandler(llmPromptCache)))
 	mux.HandleFunc("GET /api/admin/hub_llm_prompt_cache_entries", requireGlobalAdmin(GetHubLLMPromptCacheEntriesHandler(llmPromptCache)))
 	mux.HandleFunc("GET /api/admin/hub_llm_prompt_cache_entry", requireGlobalAdmin(GetHubLLMPromptCacheEntryHandler(llmPromptCache)))
 	mux.HandleFunc("DELETE /api/admin/hub_llm_prompt_cache_entry", requireGlobalAdmin(DeleteHubLLMPromptCacheEntryHandler(llmPromptCache)))
-	mux.HandleFunc("POST /api/admin/hub_llm_test", requireGlobalAdmin(TestHubLLMHandler(system)))
 	mux.HandleFunc("GET /api/admin/hub_llm_status", requireGlobalAdmin(HubLLMStatusHandler(hubLLMStatusFn, system, llmPromptCache)))
 	mux.HandleFunc("GET /api/admin/llm/services/diagnose", requireTenantAdmin(GetLLMServiceEntitlementDiagnosticHandler(system, securitySvc)))
 	mux.HandleFunc("GET /api/admin/llm/providers", requireTenantAdmin(GetLLMProvidersHandler(system, GetMaClawAccessControl())))

@@ -94,6 +94,16 @@
     return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   }
 
+  function computeCardIsActive(item) {
+    if (!item) return false;
+    if (typeof item.active === 'boolean') return item.active;
+    var status = String(item.status || '').toLowerCase();
+    if (status === 'expired' || status === 'exhausted' || status === 'inactive' || status === 'invalid') return false;
+    var expiresAt = item.expires_at ? new Date(item.expires_at) : null;
+    if (expiresAt && !isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now()) return false;
+    return Number(item.credits_remaining || 0) > 0;
+  }
+
   function isTenantAdminScope() {
     var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
     return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant');
@@ -297,19 +307,19 @@
 
     // Normalize compute data into a summary
     var computeData = null;
-    if (computeRaw && computeRaw.authorizations && computeRaw.authorizations.length > 0) {
+    if (computeRaw) {
+      var computeAuthorizations = Array.isArray(computeRaw.authorizations) ? computeRaw.authorizations : [];
+      var computeCards = computeAuthorizations.filter(function(a) {
+        return String(a && a.service_group_id || '').trim() !== '__external_compute_permission__';
+      });
+      var activeComputeCards = computeCards.filter(computeCardIsActive);
       computeData = {
-        active: computeRaw.authorizations.some(function(a) { return a.active; }),
-        total_credits: computeRaw.authorizations.reduce(function(s, a) { return s + (a.credits_total || 0); }, 0),
-        used_credits: computeRaw.authorizations.reduce(function(s, a) { return s + (a.credits_used || 0); }, 0),
-        remaining_credits: computeRaw.authorizations.reduce(function(s, a) { return s + (a.credits_remaining || 0); }, 0),
-        authorization_count: computeRaw.authorizations.length,
-        expires_at: computeRaw.authorizations.reduce(function(l, a) { return a.expires_at > l ? a.expires_at : l; }, ''),
-        allow_external: !!computeRaw.allow_external_providers
-      };
-    } else if (computeRaw) {
-      computeData = {
-        active: false,
+        active: !!computeRaw.allow_external_providers,
+        total_credits: activeComputeCards.reduce(function(s, a) { return s + (a.credits_total || 0); }, 0),
+        used_credits: activeComputeCards.reduce(function(s, a) { return s + (a.credits_used || 0); }, 0),
+        remaining_credits: activeComputeCards.reduce(function(s, a) { return s + (a.credits_remaining || 0); }, 0),
+        authorization_count: activeComputeCards.length,
+        expires_at: activeComputeCards.reduce(function(l, a) { return a.expires_at > l ? a.expires_at : l; }, ''),
         allow_external: !!computeRaw.allow_external_providers,
         error: computeRaw.authorization_error || ''
       };

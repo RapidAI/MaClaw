@@ -5,9 +5,11 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -50,6 +52,88 @@ type haCardTypeRepo struct {
 type haCardTypeRecorder interface {
 	AppendLLMCardType(ctx context.Context, item *cardstore.CardType)
 	DeleteLLMCardType(ctx context.Context, id string)
+}
+
+type haLLMAuthorizationRepo struct {
+	inner llmservice.TenantAuthorizationRepository
+	sync  haLLMAuthorizationRecorder
+}
+
+type haLLMAuthorizationRecorder interface {
+	AppendLLMAuthorization(ctx context.Context, item *llmservice.TenantAuthorization)
+}
+
+func (r *haLLMAuthorizationRepo) Create(ctx context.Context, auth *llmservice.TenantAuthorization) error {
+	if err := r.inner.Create(ctx, auth); err != nil {
+		return err
+	}
+	r.syncAuthorization(ctx, auth)
+	return nil
+}
+
+func (r *haLLMAuthorizationRepo) GetByID(ctx context.Context, id string) (*llmservice.TenantAuthorization, error) {
+	return r.inner.GetByID(ctx, id)
+}
+
+func (r *haLLMAuthorizationRepo) ListByHubTenant(ctx context.Context, hubID, tenantID string) ([]*llmservice.TenantAuthorization, error) {
+	return r.inner.ListByHubTenant(ctx, hubID, tenantID)
+}
+
+func (r *haLLMAuthorizationRepo) ListByServiceGroup(ctx context.Context, serviceGroupID string) ([]*llmservice.TenantAuthorization, error) {
+	return r.inner.ListByServiceGroup(ctx, serviceGroupID)
+}
+
+func (r *haLLMAuthorizationRepo) ListAll(ctx context.Context) ([]*llmservice.TenantAuthorization, error) {
+	return r.inner.ListAll(ctx)
+}
+
+func (r *haLLMAuthorizationRepo) ListByHub(ctx context.Context, hubID string) ([]*llmservice.TenantAuthorization, error) {
+	if lister, ok := r.inner.(interface {
+		ListByHub(context.Context, string) ([]*llmservice.TenantAuthorization, error)
+	}); ok {
+		return lister.ListByHub(ctx, hubID)
+	}
+	all, err := r.inner.ListAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []*llmservice.TenantAuthorization
+	for _, auth := range all {
+		if auth != nil && strings.TrimSpace(auth.HubID) == strings.TrimSpace(hubID) {
+			out = append(out, auth)
+		}
+	}
+	return out, nil
+}
+
+func (r *haLLMAuthorizationRepo) Update(ctx context.Context, auth *llmservice.TenantAuthorization) error {
+	if err := r.inner.Update(ctx, auth); err != nil {
+		return err
+	}
+	r.syncAuthorizationByID(ctx, auth.ID, auth)
+	return nil
+}
+
+func (r *haLLMAuthorizationRepo) DeductCredits(ctx context.Context, id string, credits float64, now time.Time) error {
+	if err := r.inner.DeductCredits(ctx, id, credits, now); err != nil {
+		return err
+	}
+	r.syncAuthorizationByID(ctx, id, nil)
+	return nil
+}
+
+func (r *haLLMAuthorizationRepo) syncAuthorizationByID(ctx context.Context, id string, fallback *llmservice.TenantAuthorization) {
+	auth, err := r.inner.GetByID(ctx, id)
+	if err != nil || auth == nil {
+		auth = fallback
+	}
+	r.syncAuthorization(ctx, auth)
+}
+
+func (r *haLLMAuthorizationRepo) syncAuthorization(ctx context.Context, auth *llmservice.TenantAuthorization) {
+	if r.sync != nil && auth != nil {
+		r.sync.AppendLLMAuthorization(ctx, auth)
+	}
 }
 
 func (r *haCardTypeRepo) Create(ctx context.Context, ct *cardstore.CardType) error {

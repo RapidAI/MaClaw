@@ -239,7 +239,7 @@ export const baseInputBtnStyle: React.CSSProperties = {
     transition: "transform 120ms ease, box-shadow 120ms ease, background 120ms ease, border-color 120ms ease, opacity 120ms ease",
 };
 
-export type AssistantInputIconName = "paperclip" | "mic" | "cornerDownLeft" | "stop" | "edit" | "trash";
+export type AssistantInputIconName = "paperclip" | "mic" | "cornerDownLeft" | "stop" | "edit" | "trash" | "eraser";
 
 export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIconName; size?: number }) {
     const common = {
@@ -280,6 +280,13 @@ export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIc
                     <path {...common} d="M6 6l1 14h10l1-14" />
                     <path {...common} d="M10 11v5" />
                     <path {...common} d="M14 11v5" />
+                </>
+            )}
+            {name === "eraser" && (
+                <>
+                    <path {...common} d="m7 21-4-4L14.5 5.5a2.8 2.8 0 0 1 4 4L7 21Z" />
+                    <path {...common} d="m11 8 5 5" />
+                    <path {...common} d="M7 21h10" />
                 </>
             )}
         </svg>

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import * as fc from 'fast-check';
-import { AIAssistantPanel } from '../AIAssistantPanel';
+import { AIAssistantPanel, canShowAssistantCodingPreviewForTab } from '../AIAssistantPanel';
 import { openCurrentTenantCardStore } from '../AssistantTitleBar';
 import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } from '../useAIAssistant';
 import type { AgentView } from '../agentViewTypes';
@@ -183,6 +183,135 @@ describe('AIAssistantPanel property tests', () => {
         else delete (URL as any).createObjectURL;
         if (originalRevokeObjectURL) Object.defineProperty(URL, 'revokeObjectURL', originalRevokeObjectURL);
         else delete (URL as any).revokeObjectURL;
+    });
+
+    it('does not allow coding preview panes on digital employee tabs', () => {
+        expect(canShowAssistantCodingPreviewForTab({ type: 'local' })).toBe(true);
+        expect(canShowAssistantCodingPreviewForTab({ type: 'project' })).toBe(true);
+        expect(canShowAssistantCodingPreviewForTab({ type: 've' })).toBe(false);
+        expect(canShowAssistantCodingPreviewForTab({ type: 'group' })).toBe(false);
+    });
+
+    it('keeps local coding preview off digital employee tabs and restores it on local tab', async () => {
+        const props = defaultPanelProps();
+        props.window = { inline: true };
+        const { getByRole, getByTestId, queryByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const codeFileHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'code:file_update').at(-1)?.[1];
+        expect(codeFileHandler).toBeTypeOf('function');
+
+        act(() => codeFileHandler({
+            file_path: '/tmp/hello/main.cpp',
+            file_name: 'main.cpp',
+            content: '#include <iostream>\nint main(){ std::cout << "Hello, World!"; }\n',
+            op_type: 'create',
+            language: 'cpp',
+            session_id: 'local-coding-session',
+        }));
+
+        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
+
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingVEOpen={{
+                id: 've-a',
+                machine_id: 've-a',
+                name: 'Agent A',
+                online_status: 'online',
+                status: 'active',
+                access_policy: 'public',
+                skill_description: '',
+            } as any}
+            onPendingVEOpenHandled={vi.fn()}
+        />);
+
+        await waitFor(() => expect(getByRole('tab', { name: 'Agent A' })).toBeTruthy());
+        act(() => codeFileHandler({
+            file_path: '/tmp/other-project/app.cpp',
+            file_name: 'app.cpp',
+            content: 'int polluted_project_preview = 1;',
+            op_type: 'create',
+            language: 'cpp',
+            session_id: 'other-project-session',
+            project_path: 'D:/other-project',
+        }));
+        act(() => codeFileHandler({
+            file_path: '/tmp/hello/main.cpp',
+            file_name: 'main.cpp',
+            content: '#include <iostream>\nint main(){ std::cout << "Hello from hidden local"; }\n',
+            op_type: 'modify',
+            language: 'cpp',
+            session_id: 'local-coding-session',
+        }));
+        await waitFor(() => expect(queryByTestId('code-preview-header')).toBeNull());
+
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingVEOpen={null}
+            pendingProjectTabOpen={{ projectPath: 'D:/next-project', taskTitle: 'Next project', autoSend: false }}
+            onPendingProjectTabOpenHandled={vi.fn()}
+        />);
+        await waitFor(() => expect(getByRole('tab', { name: 'Next project' })).toBeTruthy());
+
+        fireEvent.click(getByTestId('ai-tab-local'));
+        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
+        expect(document.body.textContent || '').toContain('Hello from hidden local');
+        expect(document.body.textContent || '').not.toContain('polluted_project_preview');
+    });
+
+    it('falls back to local preview ownership after closing the project owner tab', async () => {
+        const props = defaultPanelProps();
+        props.window = { inline: true };
+        const { getByRole, getByTestId, queryByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={{ projectPath: 'D:/owner-project', taskTitle: 'Owner project', autoSend: false }}
+            onPendingProjectTabOpenHandled={vi.fn()}
+        />);
+        await waitFor(() => expect(getByRole('tab', { name: 'Owner project' })).toBeTruthy());
+
+        const projectTab = document.querySelector('[data-testid^="ai-tab-proj-"]') as HTMLElement | null;
+        expect(projectTab).toBeTruthy();
+        const projectTabId = projectTab!.getAttribute('data-testid')!.replace('ai-tab-', '');
+        const latestCodeFileHandler = () => runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'code:file_update').at(-1)?.[1];
+
+        act(() => latestCodeFileHandler()({
+            file_path: 'D:/owner-project/main.cpp',
+            file_name: 'main.cpp',
+            content: 'int project_owner_preview = 1;',
+            op_type: 'create',
+            language: 'cpp',
+            session_id: 'project-owner-session',
+            project_path: 'D:/owner-project',
+        }));
+        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
+        expect(document.body.textContent || '').toContain('project_owner_preview');
+
+        fireEvent.click(getByTestId(`ai-tab-close-${projectTabId}`));
+        await waitFor(() => expect(queryByTestId(`ai-tab-${projectTabId}`)).toBeNull());
+        await waitFor(() => expect(document.body.textContent || '').not.toContain('project_owner_preview'));
+
+        act(() => latestCodeFileHandler()({
+            file_path: 'D:/owner-project/stale.cpp',
+            file_name: 'stale.cpp',
+            content: 'int stale_project_after_close = 2;',
+            op_type: 'modify',
+            language: 'cpp',
+            session_id: 'project-owner-session',
+            project_path: 'D:/owner-project',
+        }));
+        expect(document.body.textContent || '').not.toContain('stale_project_after_close');
+
+        act(() => latestCodeFileHandler()({
+            file_path: '/tmp/local.cpp',
+            file_name: 'local.cpp',
+            content: 'int local_after_project_close = 3;',
+            op_type: 'create',
+            language: 'cpp',
+            session_id: 'local-after-close-session',
+        }));
+        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
+        expect(document.body.textContent || '').toContain('local_after_project_close');
     });
 
     it('keeps inline root as a flex item with clipped overflow', () => {
@@ -498,6 +627,23 @@ describe('AIAssistantPanel property tests', () => {
             expect(cancelSession).toHaveBeenCalledTimes(1);
             expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('repeat this request');
         });
+    });
+
+    it('clears textarea content when the clear input button is clicked', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const setDraftInputValue = vi.fn();
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage, setDraftInputValue },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'draft to clear' } });
+        fireEvent.click(getByTestId('ai-clear-input'));
+
+        await waitFor(() => expect(input.value).toBe(''));
+        expect(setDraftInputValue).toHaveBeenLastCalledWith('');
+        expect(sendMessage).not.toHaveBeenCalled();
     });
 
     it('allows typing in the textarea while a foreground request is still sending even after streaming stops', () => {
@@ -2400,7 +2546,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(titleStatus.textContent).toContain('T2');
         expect(titleStatus.getAttribute('aria-label')).toContain('Fix stale edit guard');
         expect(titleStatus.textContent).toContain('T2');
-        expect(titleStatus.style.color).toBe('rgb(37, 99, 235)');
+        expect(titleStatus.style.color).toBe('rgb(47, 95, 152)');
         expect(titleStatus.getAttribute('role')).toBe('status');
         expect(titleStatus.getAttribute('aria-live')).toBe('polite');
         expect(titleStatus.getAttribute('data-agent')).toBe('coding');

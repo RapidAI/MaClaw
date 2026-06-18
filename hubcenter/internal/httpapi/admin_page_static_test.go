@@ -277,22 +277,26 @@ func TestAdminPageRoutePreviewStaticContract(t *testing.T) {
 	})
 }
 
-func TestAdminPageLLMComputeGrantUsesHubTenantSelectors(t *testing.T) {
+func TestAdminPageLLMServiceDoesNotExposeComputeGrant(t *testing.T) {
 	html := readAdminPageBundle(t)
 
-	assertContainsAll(t, html, "admin LLM compute grant contract", []string{
-		`loadRegisteredHubs()`,
-		`api('/api/admin/hubs')`,
-		`<select id="llmAuthHub"`,
-		`onchange="updateAuthTenantOptions()"`,
-		`<select id="llmAuthTenant"`,
-		`authDialogTitle: '\u6388\u4e88\u7b97\u529b'`,
-		`addAuth: '\u6388\u4e88\u7b97\u529b'`,
-		`a.is_external_compute_access`,
-		`computeNotAllowed: '\u672a\u5141\u8bb8'`,
-		`seen[key] = true`,
+	assertContainsAll(t, html, "node config compute grant contract", []string{
+		`id="hubComputeExternal-'+escapeHtml(domID)+'"`,
+		`function grantHubComputeAuth(id,tenantID)`,
+		`/api/admin/llm/authorizations`,
+		`hubComputeAuthTitle:'算力模块授权'`,
 	})
 	for _, forbidden := range []string{
+		`id="llmSubTabAuth"`,
+		`id="llmSubViewAuth"`,
+		`showAuthDialog()`,
+		`window.showAuthDialog`,
+		`window.saveAuthorization`,
+		`loadRegisteredHubs()`,
+		`updateAuthTenantOptions`,
+		`<select id="llmAuthHub"`,
+		`<select id="llmAuthTenant"`,
+		`id="llmAuthExternal"`,
 		`field('llmAuthHub'`,
 		`field('llmAuthTenant'`,
 		`llmAuthCredits`,
@@ -319,7 +323,7 @@ func TestAdminPageLLMComputeGrantUsesHubTenantSelectors(t *testing.T) {
 	fn := regexp.MustCompile(`async function loadHubComputeAuthData[\s\S]*?async function grantHubComputeAuth`)
 	match := fn.FindString(html)
 	if match == "" {
-		t.Fatalf("admin LLM compute grant contract missing loadHubComputeAuthData")
+		t.Fatalf("node compute grant contract missing loadHubComputeAuthData")
 	}
 	if strings.Contains(match, `/api/admin/llm/service-groups`) {
 		t.Fatalf("node compute grant must not load service groups")

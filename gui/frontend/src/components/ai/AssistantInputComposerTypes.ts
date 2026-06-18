@@ -13,6 +13,7 @@ export interface AssistantInputComposerProps {
     exitHistoryBrowsing: () => boolean;
     finishVoicePointer: (event: PointerEvent<HTMLButtonElement>) => void;
     handleCancel: () => void;
+    handleClearInput: () => void;
     handlePaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
     handleSend: () => void;
     handleTextareaClick?: (event: MouseEvent<HTMLTextAreaElement>) => void;

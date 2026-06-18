@@ -43,11 +43,14 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	}
 
 	// 2. Create repositories
-	authRepo := sqlite.NewLLMAuthRepo(provider)
+	baseAuthRepo := sqlite.NewLLMAuthRepo(provider)
+	authRepo := llmservice.TenantAuthorizationRepository(baseAuthRepo)
 	usageRepo := sqlite.NewLLMUsageRepo(provider)
 	baseCardTypeRepo := sqlite.NewLLMCardTypeRepo(provider)
 	cardTypeRepo := cardstore.CardTypeRepository(baseCardTypeRepo)
 	if haSvc != nil {
+		haSvc.AttachLLMAuthorizations(baseAuthRepo)
+		authRepo = &haLLMAuthorizationRepo{inner: baseAuthRepo, sync: haSvc}
 		haSvc.AttachCardTypes(baseCardTypeRepo)
 		cardTypeRepo = &haCardTypeRepo{inner: baseCardTypeRepo, sync: haSvc}
 	}
@@ -58,6 +61,9 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	authChecker := llmservice.NewAuthorizationChecker(authRepo)
 	usageRecorder := llmservice.NewUsageRecorder(usageRepo)
 	bindingMgr := ha.NewLLMBindingManager(nodeID, bindingRepo)
+	if haSvc != nil {
+		seedLLMAuthorizationHAOps(context.Background(), haSvc, baseAuthRepo)
+	}
 
 	// 4. Create proxy config
 	proxyCfg := &llmservice.ProxyConfig{
@@ -149,6 +155,31 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 		CardStoreSvc:   cardStoreSvc,
 		BindingManager: bindingMgr,
 		UsageRecorder:  usageRecorder,
+	}
+}
+
+func seedLLMAuthorizationHAOps(ctx context.Context, haSvc *ha.Service, repo llmservice.TenantAuthorizationRepository) {
+	if haSvc == nil || repo == nil {
+		return
+	}
+	seeded, err := haSvc.HasEntityTypeOps(ctx, ha.EntityLLMTenantAuth)
+	if err != nil {
+		log.Printf("[llm-init] inspect llm authorization HA seed state failed: %v", err)
+		return
+	}
+	if seeded {
+		return
+	}
+	auths, err := repo.ListAll(ctx)
+	if err != nil {
+		log.Printf("[llm-init] seed llm authorization HA ops failed: %v", err)
+		return
+	}
+	for _, auth := range auths {
+		haSvc.AppendLLMAuthorization(ctx, auth)
+	}
+	if len(auths) > 0 {
+		log.Printf("[llm-init] seeded llm authorization HA ops: count=%d", len(auths))
 	}
 }
 

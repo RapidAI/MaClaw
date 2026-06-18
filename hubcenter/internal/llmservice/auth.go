@@ -103,17 +103,8 @@ func (c *AuthorizationChecker) HasExternalProviderAccess(ctx context.Context, hu
 	if err != nil {
 		return false, err
 	}
-	now := time.Now().UTC()
-	for _, auth := range auths {
-		// For external compute permission records, skip the credits check —
-		// they represent permissions, not quotas.
-		active := auth.IsActive(now)
-		if !active && isExternalComputePermissionRecord(auth) && isTimeWindowActive(auth, now) {
-			active = true
-		}
-		if active && isExternalProviderGrant(auth) {
-			return true, nil
-		}
+	if known, allowed := latestExternalProviderAuthorizationState(auths, time.Now().UTC()); known {
+		return allowed, nil
 	}
 	return false, nil
 }
@@ -126,6 +117,105 @@ func isExternalProviderGrant(auth *TenantAuthorization) bool {
 		return true
 	}
 	return auth.Source == "card" && auth.ServiceGroupID == ExternalComputePermissionServiceGroupID
+}
+
+func latestExternalProviderAuthorizationState(auths []*TenantAuthorization, current time.Time) (bool, bool) {
+	var latestGrant *TenantAuthorization
+	var latestRevocation *TenantAuthorization
+	for _, auth := range auths {
+		if !isExternalProviderAuthorizationState(auth) {
+			continue
+		}
+		if authorizationStateAllowsExternal(auth, current) {
+			if latestGrant == nil || compareAuthorizationState(auth, latestGrant, current) > 0 {
+				latestGrant = auth
+			}
+			continue
+		}
+		if isExternalProviderRevocationState(auth) {
+			if latestRevocation == nil || compareAuthorizationState(auth, latestRevocation, current) > 0 {
+				latestRevocation = auth
+			}
+		}
+	}
+	if latestGrant == nil && latestRevocation == nil {
+		return false, false
+	}
+	if latestGrant == nil {
+		return true, false
+	}
+	if latestRevocation != nil && compareAuthorizationState(latestRevocation, latestGrant, current) > 0 {
+		return true, false
+	}
+	return true, true
+}
+
+func compareAuthorizationState(a, b *TenantAuthorization, current time.Time) int {
+	if a == b {
+		return 0
+	}
+	if a == nil {
+		return -1
+	}
+	if b == nil {
+		return 1
+	}
+	if at, bt := authorizationStateTime(a), authorizationStateTime(b); !at.Equal(bt) {
+		if at.After(bt) {
+			return 1
+		}
+		return -1
+	}
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		if a.CreatedAt.After(b.CreatedAt) {
+			return 1
+		}
+		return -1
+	}
+	aAllowed := authorizationStateAllowsExternal(a, current)
+	bAllowed := authorizationStateAllowsExternal(b, current)
+	if aAllowed != bAllowed {
+		if aAllowed {
+			return 1
+		}
+		return -1
+	}
+	return strings.Compare(a.ID, b.ID)
+}
+
+func authorizationStateAllowsExternal(auth *TenantAuthorization, current time.Time) bool {
+	if auth == nil {
+		return false
+	}
+	active := auth.IsActive(current)
+	if !active && isExternalComputePermissionRecord(auth) && isTimeWindowActive(auth, current) {
+		active = true
+	}
+	return active && isExternalProviderGrant(auth)
+}
+
+func isExternalProviderAuthorizationState(auth *TenantAuthorization) bool {
+	return auth != nil && (auth.AllowExternalProviders || auth.ServiceGroupID == ExternalComputePermissionServiceGroupID)
+}
+
+func isExternalProviderRevocationState(auth *TenantAuthorization) bool {
+	if auth == nil || auth.AllowExternalProviders || auth.ServiceGroupID != ExternalComputePermissionServiceGroupID {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(auth.ID), "auth_admin_")
+}
+
+func authorizationStateTime(auth *TenantAuthorization) time.Time {
+	if auth == nil {
+		return time.Time{}
+	}
+	if !auth.UpdatedAt.IsZero() {
+		return auth.UpdatedAt
+	}
+	if !auth.CreatedAt.IsZero() {
+		return auth.CreatedAt
+	}
+	return auth.StartsAt
 }
 
 // DeductCredits subtracts credits from an authorization after a successful LLM request.

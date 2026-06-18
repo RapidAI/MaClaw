@@ -117,6 +117,7 @@ type AppConfig struct {
 	CapabilityMarketPolicy CapabilityMarketPolicy `json:"capability_market_policy,omitempty"`
 	MaclawDebugToolCalls   bool                   `json:"maclaw_debug_tool_calls,omitempty"`
 	ShowAITraceEntry       bool                   `json:"show_ai_trace_entry,omitempty"`
+	ShowAppEntry           bool                   `json:"show_app_entry"`
 	ShowAssistantEntry     bool                   `json:"show_assistant_entry"`
 	PetEnabled             bool                   `json:"pet_enabled,omitempty"`
 	PetSkin                string                 `json:"pet_skin,omitempty"`

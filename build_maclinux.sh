@@ -327,11 +327,12 @@ create_app_bundle arm64
 # Create Universal Binary
 echo "  - Creating Universal Binary..."
 UNIVERSAL_BUNDLE="${OUTPUT_DIR}/${APP_NAME}.app"
+rm -rf "${UNIVERSAL_BUNDLE}"
 mkdir -p "${UNIVERSAL_BUNDLE}/Contents/MacOS"
 mkdir -p "${UNIVERSAL_BUNDLE}/Contents/Resources"
 lipo -create "${BIN_DIR}/${APP_NAME}_amd64" "${BIN_DIR}/${APP_NAME}_arm64" -output "${UNIVERSAL_BUNDLE}/Contents/MacOS/${APP_NAME}"
 cp "${OUTPUT_DIR}/${APP_NAME}_arm64.app/Contents/Info.plist" "${UNIVERSAL_BUNDLE}/Contents/Info.plist"
-cp -R "${OUTPUT_DIR}/${APP_NAME}_arm64.app/Contents/Resources/" "${UNIVERSAL_BUNDLE}/Contents/Resources/"
+ditto --noextattr --norsrc "${OUTPUT_DIR}/${APP_NAME}_arm64.app/Contents/Resources/" "${UNIVERSAL_BUNDLE}/Contents/Resources/"
 touch "${UNIVERSAL_BUNDLE}"
 
 # Code Sign macOS App Bundles
@@ -349,45 +350,46 @@ else
     echo "    Without it, TCC permissions (screen recording) reset on every build."
 fi
 
+SIGNED_BUNDLE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maclaw-signed-bundles.XXXXXX")"
+
 codesign_bundle() {
     local BUNDLE="$1"
     if [ -d "$BUNDLE" ]; then
+        local SIGN_TMP_DIR=""
+        SIGN_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maclaw-sign.XXXXXX")"
+        local SIGN_BUNDLE="${SIGN_TMP_DIR}/$(basename "$BUNDLE")"
         # codesign rejects bundles with FinderInfo/resource-fork metadata.
         # xattr -cr can leave FinderInfo behind on some file-provider backed
-        # volumes, so clear the known offenders explicitly before signing.
+        # volumes, so sign from a local temp copy and then copy the clean signed
+        # bundle back into the workspace.
+        ditto --noextattr --norsrc "$BUNDLE" "$SIGN_BUNDLE"
         if command -v dot_clean >/dev/null 2>&1; then
-            dot_clean -m "$BUNDLE" 2>/dev/null || true
+            dot_clean -m "$SIGN_BUNDLE" 2>/dev/null || true
         fi
-        xattr -cr "$BUNDLE" 2>/dev/null || true
+        xattr -cr "$SIGN_BUNDLE" 2>/dev/null || true
         while IFS= read -r -d '' item; do
             xattr -d com.apple.FinderInfo "$item" 2>/dev/null || true
             xattr -d com.apple.ResourceFork "$item" 2>/dev/null || true
             xattr -d com.apple.provenance "$item" 2>/dev/null || true
             xattr -d 'com.apple.fileprovider.fpfs#P' "$item" 2>/dev/null || true
             xattr -d 'com.apple.fileprovider.dir#N' "$item" 2>/dev/null || true
-        done < <(find "$BUNDLE" -print0)
-        if command -v ditto >/dev/null 2>&1; then
-            local CLEAN_BUNDLE="${BUNDLE}.clean"
-            rm -rf "$CLEAN_BUNDLE"
-            ditto --noextattr --norsrc "$BUNDLE" "$CLEAN_BUNDLE"
-            rm -rf "$BUNDLE"
-            mv "$CLEAN_BUNDLE" "$BUNDLE"
-        fi
-        xattr -d com.apple.FinderInfo "$BUNDLE" 2>/dev/null || true
-        xattr -d com.apple.ResourceFork "$BUNDLE" 2>/dev/null || true
-        xattr -d 'com.apple.fileprovider.fpfs#P' "$BUNDLE" 2>/dev/null || true
-        xattr -d 'com.apple.fileprovider.dir#N' "$BUNDLE" 2>/dev/null || true
+        done < <(find "$SIGN_BUNDLE" -print0)
         codesign --force --sign "$SIGN_IDENTITY" \
             --identifier "$IDENTIFIER" \
             --options runtime \
             --entitlements build/darwin/entitlements.plist \
             --deep \
-            "$BUNDLE" 2>/dev/null || \
+            "$SIGN_BUNDLE" 2>/dev/null || \
         codesign --force --sign "$SIGN_IDENTITY" \
             --identifier "$IDENTIFIER" \
             --deep \
-            "$BUNDLE"
-        echo "    Signed: $(basename $BUNDLE)"
+            "$SIGN_BUNDLE"
+        rm -rf "${SIGNED_BUNDLE_DIR}/$(basename "$BUNDLE")"
+        ditto --noextattr --norsrc "$SIGN_BUNDLE" "${SIGNED_BUNDLE_DIR}/$(basename "$BUNDLE")"
+        rm -rf "$BUNDLE"
+        ditto --noextattr --norsrc "$SIGN_BUNDLE" "$BUNDLE"
+        rm -rf "$SIGN_TMP_DIR"
+        echo "    Signed: $(basename "$BUNDLE")"
     fi
 }
 
@@ -405,13 +407,18 @@ create_pkg() {
         BUNDLE_PATH="${OUTPUT_DIR}/${APP_NAME}_${ARCH}.app"
         PKG_NAME="${APP_NAME}-${ARCH}.pkg"
     fi
+    SIGNED_BUNDLE_PATH="${SIGNED_BUNDLE_DIR}/$(basename "$BUNDLE_PATH")"
+    if [ -d "$SIGNED_BUNDLE_PATH" ]; then
+        BUNDLE_PATH="$SIGNED_BUNDLE_PATH"
+    fi
     
-    # Temporary root for pkgbuild
-    TEMP_ROOT="build/pkg_root_${ARCH}"
+    # Temporary root for pkgbuild. Keep app bundles off file-provider backed
+    # workspace paths so FinderInfo metadata does not poison the signature.
+    TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/maclaw-pkg-root-${ARCH}.XXXXXX")"
     rm -rf "$TEMP_ROOT"
     mkdir -p "$TEMP_ROOT/Applications"
     # Always install as MaClaw.app regardless of arch-specific bundle name
-    cp -R "$BUNDLE_PATH" "$TEMP_ROOT/Applications/${APP_NAME}.app"
+    ditto --noextattr --norsrc "$BUNDLE_PATH" "$TEMP_ROOT/Applications/${APP_NAME}.app"
     
     SCRIPTS_DIR="build/scripts_x64"
     if [ "$ARCH" == "arm64" ] || [ "$ARCH" == "universal" ]; then
@@ -606,6 +613,7 @@ done
 create_pkg amd64
 create_pkg arm64
 create_pkg universal
+rm -rf "$SIGNED_BUNDLE_DIR"
 create_maclawsrv_pkg amd64
 create_maclawsrv_pkg arm64
 create_maclawsrv_pkg universal

@@ -70,14 +70,20 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
 
     return <div className="settings-panel general-settings-panel">
         <section className="general-settings-card general-settings-card--compact">
-            <label className="general-settings-field">
-                <span>{t("language")}</span>
-                <select value={lang} onChange={onLanguageChange} className="form-input">
-                    <option value="en">English</option>
-                    <option value="zh-Hans">{'\u7b80\u4f53\u4e2d\u6587'}</option>
-                    <option value="zh-Hant">{'\u7e41\u9ad4\u4e2d\u6587'}</option>
-                </select>
-            </label>
+            <div className="general-settings-language-row">
+                <label className="general-settings-field">
+                    <span>{t("language")}</span>
+                    <select value={lang} onChange={onLanguageChange} className="form-input">
+                        <option value="en">English</option>
+                        <option value="zh-Hans">{'\u7b80\u4f53\u4e2d\u6587'}</option>
+                        <option value="zh-Hant">{'\u7e41\u9ad4\u4e2d\u6587'}</option>
+                    </select>
+                </label>
+                <label className="general-settings-option general-settings-option--inline general-settings-option--plain">
+                    <input type="checkbox" checked={effectiveConfig?.show_app_entry === true} onChange={(e) => saveConfigPatch({ show_app_entry: e.target.checked })} />
+                    <span>{textForLang(lang, 'MaClaw app entry', 'MaClaw\u5e94\u7528\u5165\u53e3', 'MaClaw\u61c9\u7528\u5165\u53e3')}</span>
+                </label>
+            </div>
         </section>
 
         <section className="general-settings-card general-settings-card--stacked">

@@ -31,6 +31,7 @@ import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTur
 import { findLatestToolProgressText, formatToolProgressStatus, isToolProgressMessage } from "./aiAssistantProgressUtils";
 import { AITabBar } from "./AITabBar";
 import { getAITabDisplayTitle } from "./AITabItem";
+import type { AITab } from "./AITabTypes";
 import { useAITabManager } from "./useAITabManager";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { useAddGroupParticipantToTab } from "./useAddGroupParticipantToTab";
@@ -51,6 +52,9 @@ import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_PROJECT_TASK_CLOSED } from "../../constants/events";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
+
+const LOCAL_CODING_PREVIEW_EVENT_SCOPE = "__maclaw_local_coding_preview__";
+export function canShowAssistantCodingPreviewForTab(tab: Pick<AITab, "type"> | null | undefined): boolean { return tab?.type === "local" || tab?.type === "project"; }
 
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppUpdate, onDismissAppUpdate } = props;
@@ -169,6 +173,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const firingEntryIdsRef = useRef<Set<string>>(new Set());
     const drainingEntryIdsRef = useRef<Set<string>>(new Set());
     const [queueInFlightVersion, setQueueInFlightVersion] = useState(0);
+    const [queueInteractionStarted, setQueueInteractionStarted] = useState(false);
     const refreshQueueInFlight = useCallback(() => setQueueInFlightVersion(version => version + 1), []);
     useEffect(() => {
         setActiveSessionKey(activeSessionKey);
@@ -209,35 +214,38 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, []);
     const prevActiveTabIdRef = useRef<string>(activeTab.id);
     const previewStateMapRef = useRef<Map<string, { workflow: WorkflowUIState; code: CodePreviewUIState; previewMode: "workflow" | "code" }>>(new Map());
+    const previewOwnerTabRef = useRef<string>(canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.id : "local");
+    const previewOwnerResetPendingRef = useRef(false);
     const agentViewOwnerTabRef = useRef<string>("");
     useEffect(() => {
         const prevTabId = prevActiveTabIdRef.current;
         const currentTabId = activeTab.id;
         if (prevTabId === currentTabId) return;
-
-        // --- Per-tab preview state save/restore ---
-        // Only execute when multiple tabs exist (single tab = zero overhead)
         const multipleTabsExist = tabState.tabs.length > 1;
         if (multipleTabsExist) {
-            // Determine the current preview mode before saving
+            const currentTabCanOwnPreview = canShowAssistantCodingPreviewForTab(activeTab);
             const currentPreviewMode: "workflow" | "code" = codePreviewState.active ? "code" : "workflow";
+            const ownerTabId = previewOwnerTabRef.current;
+            const ownerTab = tabState.tabs.find(t => t.id === ownerTabId);
 
-            // Save previous tab's preview state
-            previewStateMapRef.current.set(prevTabId, {
-                workflow: getWorkflowSnapshot(),
-                code: { ...codePreviewState, files: new Map(codePreviewState.files) },
-                previewMode: currentPreviewMode,
-            });
+            if (canShowAssistantCodingPreviewForTab(ownerTab) && ownerTabId !== currentTabId) {
+                previewStateMapRef.current.set(ownerTabId, {
+                    workflow: getWorkflowSnapshot(),
+                    code: { ...codePreviewState, files: new Map(codePreviewState.files) },
+                    previewMode: currentPreviewMode,
+                });
+            }
 
-            // Restore the new tab's preview state (or reset to initial if not found)
-            const savedState = previewStateMapRef.current.get(currentTabId);
-            if (savedState) {
-                restoreWorkflowState(savedState.workflow);
-                restoreCodePreviewState(savedState.code);
-            } else {
-                // New tab with no saved state — reset to initial/empty state
-                resetWorkflowState();
-                resetCodePreviewState();
+            if (currentTabCanOwnPreview && ownerTabId !== currentTabId) {
+                const savedState = previewStateMapRef.current.get(currentTabId);
+                if (savedState) {
+                    restoreWorkflowState(savedState.workflow);
+                    restoreCodePreviewState(savedState.code);
+                } else {
+                    resetWorkflowState();
+                    resetCodePreviewState();
+                }
+                previewOwnerTabRef.current = currentTabId;
             }
         }
 
@@ -719,8 +727,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [getTabs, messages, persistProjectTabMsgIds, setProjectTabPreparing]);
     const closeTabWithProjectCleanup = useCallback((tabId: string) => {
         clearProjectRoundTrackingForTab(tabId);
-        // Clean up per-tab preview state to prevent memory leak over long sessions
         previewStateMapRef.current.delete(tabId);
+        if (previewOwnerTabRef.current === tabId) { previewOwnerTabRef.current = "local"; previewOwnerResetPendingRef.current = true; }
         closeTab(tabId);
     }, [clearProjectRoundTrackingForTab, closeTab]);
     const createProjectTabFromSearch = useCallback((projectPath: string, taskTitle: string, options?: { autoSend?: boolean }) => {
@@ -780,11 +788,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const timer = setTimeout(clearTabLimitError, 3000);
         return () => clearTimeout(timer);
     }, [tabLimitError, clearTabLimitError]);
-    const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(activeTab.projectPath || undefined);
-    const { state: codePreviewState, closePanel: closeCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(activeTab.projectPath);
+    const codingPreviewOwnerTab = tabState.tabs.find(tab => tab.id === previewOwnerTabRef.current);
+    const codingPreviewEventScope = (canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.projectPath : codingPreviewOwnerTab?.projectPath) || LOCAL_CODING_PREVIEW_EVENT_SCOPE;
+    const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(codingPreviewEventScope);
+    const { state: codePreviewState, closePanel: closeCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codingPreviewEventScope);
+    useEffect(() => {
+        if (!previewOwnerResetPendingRef.current) return; previewOwnerResetPendingRef.current = false;
+        const state = previewStateMapRef.current.get("local");
+        if (state) { restoreWorkflowState(state.workflow); restoreCodePreviewState(state.code); }
+        else { resetWorkflowState(); resetCodePreviewState(); }
+    }, [activeTab.id, restoreWorkflowState, restoreCodePreviewState, resetWorkflowState, resetCodePreviewState]);
     const showAgentView = !!agentView && agentViewOwnerTabRef.current === activeTab.id;
-    const showWorkflowPreview = workflowState.splitMode;
-    const showCodePreview = !showAgentView && codePreviewState.active;
+    const codingPreviewAllowed = canShowAssistantCodingPreviewForTab(activeTab);
+    const showWorkflowPreview = codingPreviewAllowed && workflowState.splitMode;
+    const showCodePreview = codingPreviewAllowed && !showAgentView && codePreviewState.active;
     const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;
     const startPreviewResize = useAssistantPreviewResize(setWorkflowSplitRatio);
@@ -792,6 +809,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     codePreviewStateRef.current = codePreviewState;
     // Toggle the entire right-side area (workflow doc preview + code preview) open/closed
     const handleTogglePreviewPanel = useCallback(() => {
+        if (!codingPreviewAllowed) return;
         if (workflowState.splitMode || codePreviewStateRef.current.active) {
             closeDocPreview();
             closeCodePreview();
@@ -802,7 +820,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 activateCodePreviewPassive();
             }
         }
-    }, [workflowState.splitMode, closeDocPreview, closeCodePreview, openDocPreview, activateCodePreviewPassive]);
+    }, [codingPreviewAllowed, workflowState.splitMode, closeDocPreview, closeCodePreview, openDocPreview, activateCodePreviewPassive]);
     // Keep ref updated so clearActiveHistory (defined earlier) can close all preview panels
     closeAllPreviewPanelsRef.current = () => {
         closeDocPreview();
@@ -1013,9 +1031,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
     }, [displayMessages]);
-    // Show welcome view when there are no real conversation messages (news-only is still "empty").
-    // Also hide welcome view if there are active progress messages (session is working).
-    const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0;
+    // Show welcome only for an idle, empty conversation; active work/queues need the full composer.
+    const showWelcomeView = ready && !inline && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && tabState.tabs.length === 1;
     const hasConversation = otherMessages.length + displayProgressMessages.length > 0;
     const { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ hasConversation, messages: displayMessages, ready, scrollToTopSeq });
     const handleInputResizeEnd = useCallback(() => {
@@ -1065,6 +1082,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
     }, [resizeInput, updateInputValue]);
     const { exitHistoryBrowsing, isSelectionCollapsedAtBoundary, recallHistory, rememberHistoryEdit, resetHistoryBrowsing } = useAssistantInputHistory({ applyInputValue, inputRef, inputValue, submittedPrompts });
+    const handleClearInput = useCallback(() => {
+        resetHistoryBrowsing();
+        updateInputValue("");
+        if (inputRef.current) inputRef.current.style.height = "auto";
+        requestAnimationFrame(() => inputRef.current?.focus());
+    }, [resetHistoryBrowsing, updateInputValue]);
     const submitRecognizedVoiceText = useCallback(async (text: string, _source?: VoiceInputSource) => {
         const trimmed = text.trim();
         if (!trimmed || !ready || inputLocked) return;
@@ -1085,7 +1108,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         voiceInput,
     });
     const handleSend = useCallback(async () => {
-        const text = inputValue.trim();
+        const rawInputValue = inputRef.current?.value ?? inputValue;
+        const text = rawInputValue.trim();
         if ((text === '/btw' || text.startsWith('/btw ')) && sendBtwMessage) {
             const btwQuery = text.slice(4).trim(); // strip "/btw" prefix
             recordSubmittedPrompt?.(text);
@@ -1125,7 +1149,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 activeSessionIsSending,
                 activeSessionIsStreaming,
                 cancelPending,
-                textLength: inputValue.trim().length,
+                textLength: text.length,
                 attachmentCount: pendingAttachments.length + selectedFilePaths.length,
             });
             const attachments: AttachmentInfo[] = [...pendingAttachments];
@@ -1134,7 +1158,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 const ext = "." + (fileName.split(".").pop() || "").toLowerCase();
                 attachments.push({ filePath: fp, isImage: isImageFilePath(fp), fileName, extension: ext });
             }
-            addEntry(inputValue, attachments, { autoDrain: submitLocked });
+            setQueueInteractionStarted(true);
+            addEntry(rawInputValue, attachments, { autoDrain: submitLocked });
             if (submitLocked) {
                 queueAutoDrainArmedRef.current = true;
             }
@@ -1269,6 +1294,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id)) return;
         const entry = extractEntry(id);
         if (!entry) return;
+        setQueueInteractionStarted(true);
         setEditingEntryId(null);
         setQueueEditDraftActive(true);
         updateInputValue(entry.text);
@@ -1320,7 +1346,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     return (
         <div data-testid="ai-panel-root" style={containerStyle}>
             {inline && <AssistantDragHandle />}
-            <AssistantTitleBar clearHistory={clearActiveHistory} codingAgentProgress={null} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
+            <AssistantTitleBar clearHistory={clearActiveHistory} codingAgentProgress={codingAgentProgress} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
             <div data-testid="ai-panel-content-row" style={{ display: "flex", flexDirection: "row", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
             <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }}>
             <KnowledgeDialog open={knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
@@ -1359,6 +1385,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 exitHistoryBrowsing,
                                 finishVoicePointer,
                                 handleCancel,
+                                handleClearInput,
                                 handlePaste,
                                 handleSend,
                                 handleVoiceClick,
@@ -1398,7 +1425,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         <div style={{ width: "38%", height: "100%", borderRadius: "inherit", background: t.headingColor, animation: "sidebar-task-restore-progress 0.9s ease-in-out infinite alternate" }} />
                     </div>
                 </div>}
-                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={isBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
+                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={isBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
             </>}
             <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} />
             {renameGroupTargetTab && (

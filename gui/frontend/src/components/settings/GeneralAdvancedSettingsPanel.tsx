@@ -62,6 +62,18 @@ export const GeneralAdvancedSettingsPanel = ({
                         <span>{t("useWindowsTerminal")}</span>
                     </label>
                 )}
+
+                <label
+                    className="general-settings-option general-settings-option--inline"
+                    title={textForLang(lang, 'When enabled, AI assistant messages show a Trace / run details entry. Disabled by default.', '开启后，AI 助手消息中会显示 Trace / 运行详情入口；默认关闭。', '開啟後，AI 助手消息中會顯示 Trace / 執行詳情入口；預設關閉。')}
+                >
+                    <input
+                        type="checkbox"
+                        checked={config?.show_ai_trace_entry || false}
+                        onChange={(e) => saveConfigPatch(config, setConfig, { show_ai_trace_entry: e.target.checked })}
+                    />
+                    <span>{textForLang(lang, 'Show AI run details', '显示 AI 运行详情', '顯示 AI 執行詳情')}</span>
+                </label>
             </div>
 
             {config?.pause_env_check && (
@@ -83,15 +95,5 @@ export const GeneralAdvancedSettingsPanel = ({
                 </label>
             )}
         </section>
-
-        <label className="general-settings-option general-settings-option--wide">
-            <input
-                type="checkbox"
-                checked={config?.show_ai_trace_entry || false}
-                onChange={(e) => saveConfigPatch(config, setConfig, { show_ai_trace_entry: e.target.checked })}
-            />
-            <span>{textForLang(lang, 'Show AI run details', '显示 AI 运行详情', '顯示 AI 執行詳情')}</span>
-            <small>{textForLang(lang, 'When enabled, AI assistant messages show a Trace / run details entry. Disabled by default.', '开启后，AI 助手消息中会显示 Trace / 运行详情入口；默认关闭。', '開啟後，AI 助手消息中會顯示 Trace / 執行詳情入口；預設關閉。')}</small>
-        </label>
     </div>
 );

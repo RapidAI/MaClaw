@@ -461,6 +461,7 @@ export namespace main {
 	    skill_hub_urls: any[];
 	    maclaw_debug_tool_calls: boolean;
 	    show_ai_trace_entry: boolean;
+	    show_app_entry: boolean;
 	    log_detail_enabled: boolean;
 	    security_policy_mode: string;
 	    sandbox_mode: string;
@@ -639,6 +640,7 @@ export namespace main {
 	        this.image_outbound_enabled = source["image_outbound_enabled"];
 	        this.maclaw_debug_tool_calls = source["maclaw_debug_tool_calls"];
 	        this.show_ai_trace_entry = source["show_ai_trace_entry"];
+	        this.show_app_entry = source["show_app_entry"];
 	        this.log_detail_enabled = source["log_detail_enabled"];
 	        this.qqbot_enabled = source["qqbot_enabled"];
 	        this.qqbot_app_id = source["qqbot_app_id"];

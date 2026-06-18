@@ -6,7 +6,7 @@ import { useTextCompositionGuard } from "./useTextCompositionGuard";
 import { MemoryUsageRing } from "./MemoryUsageRing";
 
 export function AssistantInputComposer(props: AssistantInputComposerProps) {
-    const { attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, exitHistoryBrowsing, finishVoicePointer, handleCancel, handlePaste, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId = "ai-input-bar", inputLocked, inputOverlay, inputRef, inputRowTestId = "ai-input-row", inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments, pendingAttachmentsTestId, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile, resizeInput, selectedFilePaths, sendButtonStyle, sendButtonTestId, setPendingAttachments, showBusySpinner, showMemoryUsage = true, showVoiceInput = true, textareaAriaLabel, textareaTestId = "ai-input", theme: t, themeMode, toolbarTestId = "ai-input-toolbar", updateInputValue, voiceInput } = props;
+    const { attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, exitHistoryBrowsing, finishVoicePointer, handleCancel, handleClearInput, handlePaste, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId = "ai-input-bar", inputLocked, inputOverlay, inputRef, inputRowTestId = "ai-input-row", inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments, pendingAttachmentsTestId, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile, resizeInput, selectedFilePaths, sendButtonStyle, sendButtonTestId, setPendingAttachments, showBusySpinner, showMemoryUsage = true, showVoiceInput = true, textareaAriaLabel, textareaTestId = "ai-input", theme: t, themeMode, toolbarTestId = "ai-input-toolbar", updateInputValue, voiceInput } = props;
     const textComposition = useTextCompositionGuard();
     const isExpandedInput = inputAreaHeight !== null;
     const { inputBarStyle, inputRowStyle, textareaStyle, toolbarStyle, toolbarLeftStyle, toolbarRightStyle } = getAssistantInputComposerStyles({
@@ -55,7 +55,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                     <span aria-hidden="true" style={{ fontSize: "11px", color: t.textMuted, userSelect: "none", whiteSpace: "nowrap" }}>
                         {lang?.startsWith("zh") ? "Enter \u53d1\u9001" : "Enter to send"}
                     </span>
-                    <AssistantInputActionsRight canSend={canSend} cancelSession={cancelSession} handleCancel={handleCancel} handleSend={handleSend} isBusy={isBusy} lang={lang} ready={ready} sendButtonStyle={sendButtonStyle} sendButtonTestId={sendButtonTestId} showBusySpinner={showBusySpinner} theme={t} themeMode={themeMode} />
+                    <AssistantInputActionsRight canSend={canSend} cancelSession={cancelSession} handleCancel={handleCancel} handleClearInput={handleClearInput} handleSend={handleSend} inputValue={inputValue} isBusy={isBusy} lang={lang} ready={ready} sendButtonStyle={sendButtonStyle} sendButtonTestId={sendButtonTestId} showBusySpinner={showBusySpinner} theme={t} themeMode={themeMode} />
                 </div>
             </div>
         </div>

@@ -368,6 +368,7 @@ export interface WelcomeComposerProps {
     exitHistoryBrowsing: () => boolean;
     finishVoicePointer: (event: React.PointerEvent<HTMLButtonElement>) => void;
     handleCancel: () => void;
+    handleClearInput: () => void;
     handlePaste: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
     handleSend: () => void;
     handleVoiceClick: () => void;
@@ -510,6 +511,7 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                     exitHistoryBrowsing={cp.exitHistoryBrowsing}
                     finishVoicePointer={cp.finishVoicePointer}
                     handleCancel={cp.handleCancel}
+                    handleClearInput={cp.handleClearInput}
                     handlePaste={cp.handlePaste}
                     handleSend={cp.handleSend}
                     handleVoiceClick={cp.handleVoiceClick}

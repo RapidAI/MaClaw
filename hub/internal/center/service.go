@@ -1033,8 +1033,97 @@ func mergeAuthorizationPayloads(record *registrationRecord, incoming map[string]
 		if key == "" || len(payload) == 0 || string(payload) == "null" {
 			continue
 		}
+		if !shouldAcceptAuthorizationPayloadUpdate(key, record.Authorizations[key], payload) {
+			continue
+		}
 		record.Authorizations[key] = append(json.RawMessage(nil), payload...)
 	}
+}
+
+func shouldAcceptAuthorizationPayloadUpdate(key string, local, incoming json.RawMessage) bool {
+	key = strings.TrimSpace(key)
+	if !strings.EqualFold(key, "llm_compute") {
+		return true
+	}
+	if jsonPayloadEmptyOrNull(incoming) {
+		return false
+	}
+	if _, ok := parseLLMComputeAuthorizationPayload(incoming); !ok {
+		return false
+	}
+	if !llmComputePayloadHasActiveAuthorization(local) {
+		return true
+	}
+	return llmComputePayloadHasExplicitAuthorizationState(incoming)
+}
+
+func jsonPayloadEmptyOrNull(payload json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(payload)
+	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
+}
+
+func llmComputePayloadHasActiveAuthorization(payload json.RawMessage) bool {
+	state, ok := parseLLMComputeAuthorizationPayload(payload)
+	if !ok {
+		return false
+	}
+	for _, tenant := range state.Tenants {
+		if tenant == nil {
+			continue
+		}
+		if tenant.AllowExternalProviders {
+			return true
+		}
+		for _, auth := range tenant.Authorizations {
+			if auth.Active || auth.AllowExternalProviders {
+				return true
+			}
+			if strings.EqualFold(strings.TrimSpace(auth.Status), "active") && auth.CreditsRemaining > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func llmComputePayloadHasExplicitAuthorizationState(payload json.RawMessage) bool {
+	state, ok := parseLLMComputeAuthorizationPayload(payload)
+	if !ok {
+		return false
+	}
+	for _, tenant := range state.Tenants {
+		if tenant != nil {
+			return true
+		}
+	}
+	return false
+}
+
+type llmComputeAuthorizationPayload struct {
+	Tenants map[string]*llmComputeTenantAuthorizationStatus `json:"tenants"`
+}
+
+type llmComputeTenantAuthorizationStatus struct {
+	AllowExternalProviders bool                             `json:"allow_external_providers"`
+	Authorizations         []llmComputeAuthorizationSummary `json:"authorizations"`
+}
+
+type llmComputeAuthorizationSummary struct {
+	Status                 string  `json:"status"`
+	Active                 bool    `json:"active"`
+	AllowExternalProviders bool    `json:"allow_external_providers"`
+	CreditsRemaining       float64 `json:"credits_remaining"`
+}
+
+func parseLLMComputeAuthorizationPayload(payload json.RawMessage) (llmComputeAuthorizationPayload, bool) {
+	var state llmComputeAuthorizationPayload
+	if len(payload) == 0 {
+		return state, false
+	}
+	if err := json.Unmarshal(payload, &state); err != nil {
+		return state, false
+	}
+	return state, true
 }
 
 func cloneAuthorizationPayloads(in map[string]json.RawMessage) map[string]json.RawMessage {

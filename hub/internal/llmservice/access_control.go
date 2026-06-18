@@ -64,7 +64,9 @@ func (ac *TenantLLMAccessControl) RefreshAuthorizationStatus(ctx context.Context
 // InvalidateCache clears the cached status for a tenant (e.g., after heartbeat sync).
 func (ac *TenantLLMAccessControl) InvalidateCache(tenantID string) {
 	ac.mu.Lock()
-	delete(ac.cache, tenantID)
+	for _, key := range authorizationCacheTenantKeys(tenantID) {
+		delete(ac.cache, key)
+	}
 	ac.mu.Unlock()
 }
 
@@ -136,9 +138,17 @@ func authorizationCacheTenantKeys(ids ...string) []string {
 }
 
 func (ac *TenantLLMAccessControl) getStatus(ctx context.Context, tenantID string) *TenantAuthorizationStatus {
+	keys := authorizationCacheTenantKeys(tenantID)
+
 	// Check cache first
 	ac.mu.RLock()
-	cached := ac.cache[tenantID]
+	var cached *cachedAuthStatus
+	for _, key := range keys {
+		cached = ac.cache[key]
+		if cached != nil {
+			break
+		}
+	}
 	ac.mu.RUnlock()
 
 	if cached != nil && time.Since(cached.fetchedAt) < authCacheTTL {
@@ -159,12 +169,7 @@ func (ac *TenantLLMAccessControl) getStatus(ctx context.Context, tenantID string
 	}
 
 	// Update cache
-	ac.mu.Lock()
-	ac.cache[tenantID] = &cachedAuthStatus{
-		status:    status,
-		fetchedAt: time.Now(),
-	}
-	ac.mu.Unlock()
+	ac.UpdateFromHeartbeat(tenantID, status)
 	return status
 }
 

@@ -410,51 +410,6 @@ func TestHubLLMPromptCacheConfigHandlersIgnoreTenantAdminScope(t *testing.T) {
 	}
 }
 
-func TestHubLLMConfigHandlersIgnoreTenantAdminScope(t *testing.T) {
-	settings := &testSystemSettingsRepo{}
-	globalCfg := im.HubLLMConfig{Enabled: true, APIURL: "https://global.example/v1", APIKey: "global-key", Model: "global-model"}
-	data, _ := json.Marshal(globalCfg)
-	if err := settings.Set(context.Background(), hubLLMConfigKey, string(data)); err != nil {
-		t.Fatalf("save global llm config: %v", err)
-	}
-	tenantReq := httptest.NewRequest(http.MethodPut, "/api/admin/hub_llm_config", strings.NewReader(`{"enabled":true,"api_url":"https://tenant-a.example/v1","api_key":"tenant-key","model":"tenant-model"}`))
-	tenantReq = tenantReq.WithContext(context.WithValue(tenantReq.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
-	tenantRR := httptest.NewRecorder()
-	UpdateHubLLMConfigHandler(settings).ServeHTTP(tenantRR, tenantReq)
-	if tenantRR.Code != http.StatusOK {
-		t.Fatalf("tenant update status = %d body=%s", tenantRR.Code, tenantRR.Body.String())
-	}
-
-	globalReq := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_config", nil)
-	globalRR := httptest.NewRecorder()
-	GetHubLLMConfigHandler(settings).ServeHTTP(globalRR, globalReq)
-	if globalRR.Code != http.StatusOK {
-		t.Fatalf("global get status = %d body=%s", globalRR.Code, globalRR.Body.String())
-	}
-	var gotGlobal map[string]any
-	if err := json.Unmarshal(globalRR.Body.Bytes(), &gotGlobal); err != nil {
-		t.Fatalf("decode global: %v", err)
-	}
-	if gotGlobal["api_url"] != "https://tenant-a.example/v1" || gotGlobal["model"] != "tenant-model" {
-		t.Fatalf("Hub LLM config should be global regardless of tenant context: %#v", gotGlobal)
-	}
-
-	tenantGet := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_config", nil)
-	tenantGet = tenantGet.WithContext(context.WithValue(tenantGet.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
-	tenantGetRR := httptest.NewRecorder()
-	GetHubLLMConfigHandler(settings).ServeHTTP(tenantGetRR, tenantGet)
-	if tenantGetRR.Code != http.StatusOK {
-		t.Fatalf("tenant get status = %d body=%s", tenantGetRR.Code, tenantGetRR.Body.String())
-	}
-	var gotTenant map[string]any
-	if err := json.Unmarshal(tenantGetRR.Body.Bytes(), &gotTenant); err != nil {
-		t.Fatalf("decode tenant: %v", err)
-	}
-	if gotTenant["api_url"] != "https://tenant-a.example/v1" || gotTenant["model"] != "tenant-model" || gotTenant["has_api_key"] != true {
-		t.Fatalf("tenant context should read global Hub LLM config: %#v", gotTenant)
-	}
-}
-
 func TestClearHubLLMPromptCacheHandlerPurgesRuntimeCache(t *testing.T) {
 	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1024})
 	now := time.Now().UTC()

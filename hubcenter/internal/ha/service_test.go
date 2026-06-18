@@ -25,6 +25,21 @@ type fakeHASyncOpRepo struct {
 	listLimits []int
 }
 
+func TestNewServiceSkipsSelfPeer(t *testing.T) {
+	svc := NewService("hc-1", "hc-1", "https://hc-1.example.com", "secret", []StaticPeer{
+		{NodeID: "hc-1", NodeName: "self", BaseURL: "https://hc-1.example.com"},
+		{NodeID: "hc-2", NodeName: "peer", BaseURL: "https://hc-2.example.com"},
+	})
+
+	peers := svc.listPeerStates()
+	if len(peers) != 1 {
+		t.Fatalf("peers len = %d, want 1", len(peers))
+	}
+	if peers[0].NodeID != "hc-2" {
+		t.Fatalf("peer NodeID = %q, want hc-2", peers[0].NodeID)
+	}
+}
+
 func (r *fakeHASyncOpRepo) Append(_ context.Context, op *store.HASyncOp) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

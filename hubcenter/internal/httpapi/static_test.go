@@ -290,7 +290,7 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		`tenant_id:'tenant_default'`,
 		`function hubComputeTenantAliases`,
 		`aliases.includes(String(a&&a.tenant_id||'').trim())`,
-		`id="hubComputeExternal-'+escapeHtml(domID)+'" checked`,
+		`id="hubComputeExternal-'+escapeHtml(domID)+'"`,
 		`hub_id:String(id||'')`,
 		`function isAdminHubActionRouteMiss`,
 		`function hubAdminLegacyPath`,

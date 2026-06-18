@@ -27,8 +27,27 @@ function renderRail(overrides: Partial<React.ComponentProps<typeof SidebarNavRai
 }
 
 describe('SidebarNavRail favorite employees', () => {
+    it('hides the apps entry by default', () => {
+        renderRail();
+
+        expect(screen.queryByTitle('Apps')).toBeNull();
+    });
+
+    it('hides the apps entry when disabled', () => {
+        renderRail({ showAppEntry: false });
+
+        expect(screen.queryByTitle('Apps')).toBeNull();
+        expect(screen.getByTestId('fav-ve-ve-1')).toBeTruthy();
+    });
+
+    it('shows the apps entry when enabled', () => {
+        renderRail({ showAppEntry: true });
+
+        expect(screen.getByTitle('Apps')).toBeTruthy();
+    });
+
     it('switches to AI before opening a favorite digital employee conversation', () => {
-        const props = renderRail();
+        const props = renderRail({ showAppEntry: true });
 
         fireEvent.click(screen.getByTestId('fav-ve-ve-1'));
 

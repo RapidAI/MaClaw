@@ -650,6 +650,14 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     }, [resizeInput, scheduleInputFocus]);
 
     const { exitHistoryBrowsing, isSelectionCollapsedAtBoundary, recallHistory, rememberHistoryEdit, resetHistoryBrowsing } = useAssistantInputHistory({ applyInputValue, inputRef, inputValue: inputText, submittedPrompts: participantIdentityMatches(promptHistoryState.veId, veId) ? promptHistoryState.history : [] });
+    const handleClearInput = useCallback(() => {
+        if (!inputText) return;
+        resetHistoryBrowsing();
+        setInputText("");
+        closeMentionPopover();
+        if (inputRef.current) inputRef.current.style.height = "auto";
+        requestAnimationFrame(() => inputRef.current?.focus());
+    }, [closeMentionPopover, inputText, resetHistoryBrowsing]);
 
     const recordSubmittedPrompt = useCallback((prompt: string) => {
         setPromptHistoryState(prev => {
@@ -1661,6 +1669,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 finishVoicePointer={() => {}}
                 handleCancel={() => {}}
                 handleCancelEdit={handleQueuedCancelEdit}
+                handleClearInput={handleClearInput}
                 handleEditEntry={handleQueuedEdit}
                 handleFireEntry={handleQueuedFire}
                 handlePaste={handlePaste}

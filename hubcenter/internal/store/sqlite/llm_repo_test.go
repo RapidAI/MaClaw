@@ -53,6 +53,7 @@ func TestLLMAuthRepoUpdateRefreshesValidityFields(t *testing.T) {
 	auth.Status = "active"
 	auth.AllowExternalProviders = true
 	auth.Source = "external_provider_permission"
+	auth.UpdatedAt = refreshedStart.Add(30 * time.Minute)
 	if err := repo.Update(ctx, auth); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -69,6 +70,9 @@ func TestLLMAuthRepoUpdateRefreshesValidityFields(t *testing.T) {
 	}
 	if !got.StartsAt.Equal(refreshedStart) || !got.ExpiresAt.Equal(refreshedExpiry) {
 		t.Fatalf("validity = %s..%s, want %s..%s", got.StartsAt, got.ExpiresAt, refreshedStart, refreshedExpiry)
+	}
+	if !got.UpdatedAt.Equal(auth.UpdatedAt) {
+		t.Fatalf("updated_at = %s, want preserved %s", got.UpdatedAt, auth.UpdatedAt)
 	}
 }
 

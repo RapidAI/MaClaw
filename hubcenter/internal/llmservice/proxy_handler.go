@@ -123,6 +123,9 @@ func BuildTenantAuthorizationStatus(ctx context.Context, checker *AuthorizationC
 		TenantID:        tenantID,
 		LookupTenantIDs: tenantAuthorizationLookupIDs(tenantID),
 	}
+	if _, allowed := latestExternalProviderAuthorizationState(auths, current); allowed {
+		result.AllowExternalProviders = true
+	}
 	for _, a := range auths {
 		active := a.IsActive(current)
 		// External compute permission records are pure permission grants,
@@ -131,30 +134,25 @@ func BuildTenantAuthorizationStatus(ctx context.Context, checker *AuthorizationC
 		if !active && isExternalComputePermissionRecord(a) && isTimeWindowActive(a, current) {
 			active = true
 		}
-		if active && isExternalProviderGrant(a) {
-			result.AllowExternalProviders = true
+		if active && isExternalComputePermissionRecord(a) {
+			continue
 		}
-		if active && !isExternalComputePermissionRecord(a) {
-			// Only include credit-based authorizations in the list.
-			// Pure permission grants (external_provider_permission) are not
-			// credit quotas and should not appear as "充值记录" to the user.
-			result.Authorizations = append(result.Authorizations, TenantAuthorizationSummary{
-				ID:                     a.ID,
-				HubID:                  a.HubID,
-				TenantID:               a.TenantID,
-				ServiceGroupID:         a.ServiceGroupID,
-				CreditsTotal:           a.CreditsTotal,
-				CreditsUsed:            a.CreditsUsed,
-				CreditsRemaining:       a.CreditsRemaining(),
-				StartsAt:               a.StartsAt.Format(time.RFC3339),
-				ExpiresAt:              a.ExpiresAt.Format(time.RFC3339),
-				Status:                 a.Status,
-				Active:                 true,
-				AllowExternalProviders: a.AllowExternalProviders,
-				Source:                 a.Source,
-				CardOrderID:            a.CardOrderID,
-			})
-		}
+		result.Authorizations = append(result.Authorizations, TenantAuthorizationSummary{
+			ID:                     a.ID,
+			HubID:                  a.HubID,
+			TenantID:               a.TenantID,
+			ServiceGroupID:         a.ServiceGroupID,
+			CreditsTotal:           a.CreditsTotal,
+			CreditsUsed:            a.CreditsUsed,
+			CreditsRemaining:       a.CreditsRemaining(),
+			StartsAt:               a.StartsAt.Format(time.RFC3339),
+			ExpiresAt:              a.ExpiresAt.Format(time.RFC3339),
+			Status:                 a.Status,
+			Active:                 active,
+			AllowExternalProviders: a.AllowExternalProviders,
+			Source:                 a.Source,
+			CardOrderID:            a.CardOrderID,
+		})
 	}
 	return result, nil
 }

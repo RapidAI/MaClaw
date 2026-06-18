@@ -1,6 +1,7 @@
 package center
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -45,6 +46,46 @@ func TestShouldAcceptAuthorizationUpdate(t *testing.T) {
 			got := shouldAcceptAuthorizationUpdate(tt.local, tt.incoming)
 			if got != tt.want {
 				t.Errorf("shouldAcceptAuthorizationUpdate(%+v, %+v) = %v, want %v", tt.local, tt.incoming, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShouldAcceptLLMComputeAuthorizationPayloadUpdate(t *testing.T) {
+	activeLocal := json.RawMessage(`{"tenants":{"tenant_acme":{"allow_external_providers":true,"authorizations":[{"id":"auth_active","active":true,"status":"active","credits_remaining":10}]}}}`)
+	emptyIncoming := json.RawMessage(`{"tenants":{}}`)
+	revokedEmptyTenantIncoming := json.RawMessage(`{"tenants":{"tenant_acme":{"allow_external_providers":false,"authorizations":[]}}}`)
+	revokedIncoming := json.RawMessage(`{"tenants":{"tenant_acme":{"allow_external_providers":false,"authorizations":[{"id":"auth_active","active":false,"status":"expired","credits_remaining":0}]}}}`)
+	activeIncoming := json.RawMessage(`{"tenants":{"tenant_acme":{"allow_external_providers":true}}}`)
+	nullIncoming := json.RawMessage(`  null  `)
+	malformedIncoming := json.RawMessage(`{"tenants":`)
+
+	tests := []struct {
+		name     string
+		local    json.RawMessage
+		incoming json.RawMessage
+		want     bool
+	}{
+		{"no local accepts empty initial state", nil, emptyIncoming, true},
+		{"active local rejects empty lagging state", activeLocal, emptyIncoming, false},
+		{"active local accepts explicit empty tenant revocation", activeLocal, revokedEmptyTenantIncoming, true},
+		{"active local accepts explicit revoked state", activeLocal, revokedIncoming, true},
+		{"active local accepts active incoming state", activeLocal, activeIncoming, true},
+		{"active local rejects null state", activeLocal, nullIncoming, false},
+		{"active local rejects malformed state", activeLocal, malformedIncoming, false},
+		{"no local rejects malformed state", nil, malformedIncoming, false},
+		{"non compute payload keeps generic merge", activeLocal, emptyIncoming, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := "llm_compute"
+			if tt.name == "non compute payload keeps generic merge" {
+				key = "other"
+			}
+			got := shouldAcceptAuthorizationPayloadUpdate(key, tt.local, tt.incoming)
+			if got != tt.want {
+				t.Fatalf("shouldAcceptAuthorizationPayloadUpdate() = %v, want %v", got, tt.want)
 			}
 		})
 	}

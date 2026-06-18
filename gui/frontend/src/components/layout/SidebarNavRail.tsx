@@ -23,6 +23,7 @@ type SidebarNavRailProps = {
     onReorderFavorites?: (newOrder: string[]) => void;
     onRemoveFavorite?: (veId: string) => void;
     onRenameFavorite?: (veId: string, name: string) => void | Promise<void>;
+    showAppEntry?: boolean;
 };
 
 const zhHans = {
@@ -68,6 +69,7 @@ export const SidebarNavRail = ({
     onReorderFavorites = () => {},
     onRemoveFavorite = () => {},
     onRenameFavorite = () => {},
+    showAppEntry = false,
 }: SidebarNavRailProps) => {
     const [systemMenuOpen, setSystemMenuOpen] = useState(false);
 
@@ -76,7 +78,6 @@ export const SidebarNavRail = ({
     const systemLabel = lang === 'zh-Hans' ? zhHans.system : lang === 'zh-Hant' ? zhHant.system : 'System';
     const isTigerClaw = brandInfo?.id === 'qianxin';
 
-    // Build system popup menu items
     const systemMenuItems: SystemMenuItem[] = [
         { id: 'settings', icon: <span>{icon.settings}</span>, label: lang === 'zh-Hans' ? zhHans.settings : lang === 'zh-Hant' ? zhHant.settings : 'Settings', visible: true },
         { id: 'remote', icon: <span>{icon.monitor}</span>, label: lang === 'zh-Hans' ? zhHans.monitor : lang === 'zh-Hant' ? zhHant.monitor : 'Monitor', visible: true, badge: runningTaskCount > 0 ? runningTaskCount : undefined },
@@ -97,7 +98,6 @@ export const SidebarNavRail = ({
             flexShrink: 0,
             position: 'relative',
         }}>
-            {/* Logo + Brand Name */}
             <div className="sidebar-header" style={{ height: '56px', padding: '4px 0 2px 0', justifyContent: 'flex-start', width: '100%', flexDirection: 'column', gap: '1px' }}>
                 {brandInfo?.id === 'qianxin' ? (
                     <img src={currentIcon} alt="Logo" className="sidebar-logo" style={{ width: '30px', height: '30px', objectFit: 'contain' }} />
@@ -109,7 +109,6 @@ export const SidebarNavRail = ({
                 <div style={{ color: isTigerClaw ? 'var(--theme-primary-strong)' : 'var(--theme-primary)', fontSize: isTigerClaw ? '0.64rem' : '0.72rem', fontWeight: 800, lineHeight: 1, fontFamily: 'Georgia, serif' }}>{brandSidebarName}</div>
             </div>
 
-            {/* AI Assistant Button — clear entry point style */}
             <div
                 className={'sidebar-item left-nav-item left-nav-item--ai ' + (navTab === 'ai' ? 'active' : '')}
                 onClick={() => { switchTool('ai'); }}
@@ -142,22 +141,21 @@ export const SidebarNavRail = ({
                 <span style={{ fontSize: '0.68rem', lineHeight: 1, fontWeight: 700, color: navTab === 'ai' ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}>{aiAssistantLabel}</span>
             </div>
 
-            {/* Textured horizontal divider */}
             <div style={{ width: '70%', height: '2px', margin: '4px 0 6px 0', borderRadius: '1px', background: 'linear-gradient(90deg, transparent 0%, var(--theme-border) 20%, var(--theme-text-muted) 50%, var(--theme-border) 80%, transparent 100%)', opacity: 0.5 }} />
 
-            {/* Apps Button */}
-            <div
-                className={'sidebar-item left-nav-item ' + (navTab === 'apps' ? 'active' : '')}
-                onClick={() => switchTool('apps')}
-                style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'apps' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
-                title={appsLabel}
-            >
-                <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'apps' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}><AppsRailIcon /></span>
-                <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{appsLabel}</span>
-            </div>
+            {showAppEntry && (
+                <div
+                    className={'sidebar-item left-nav-item ' + (navTab === 'apps' ? 'active' : '')}
+                    onClick={() => switchTool('apps')}
+                    style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'apps' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
+                    title={appsLabel}
+                >
+                    <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'apps' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}><AppsRailIcon /></span>
+                    <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{appsLabel}</span>
+                </div>
+            )}
 
-            {/* Divider between Apps and Digital Employees */}
-            {veAuthorized && favoriteEmployees.length > 0 && (
+            {showAppEntry && veAuthorized && favoriteEmployees.length > 0 && (
                 <div
                     aria-hidden="true"
                     style={{
@@ -170,7 +168,6 @@ export const SidebarNavRail = ({
                 />
             )}
 
-            {/* Favorite Employee Buttons */}
             <FavoriteEmployeeButtons
                 slots={favoriteEmployees}
                 veAuthorized={veAuthorized}
@@ -184,10 +181,8 @@ export const SidebarNavRail = ({
                 lang={lang}
             />
 
-            {/* Spacer */}
             <div style={{ flex: 1 }} />
 
-            {/* System button (opens popup menu) */}
             <div
                 className={'sidebar-item left-nav-item ' + (systemMenuOpen ? 'active' : '')}
                 onClick={() => setSystemMenuOpen(prev => !prev)}
@@ -198,13 +193,11 @@ export const SidebarNavRail = ({
                 <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{systemLabel}</span>
             </div>
 
-            {/* About button */}
             <div className={'sidebar-item left-nav-item ' + (navTab === 'about' ? 'active' : '')} onClick={() => switchTool('about')} style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'about' ? 'inset -1px 0 0 var(--theme-text-muted)' : 'none', justifyContent: 'center' }} title={t('about')}>
                 <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.08rem' }}>{icon.about}</span>
                 <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{t('about')}</span>
             </div>
 
-            {/* System Popup Menu */}
             {systemMenuOpen && (
                 <SystemPopupMenu
                     items={systemMenuItems}

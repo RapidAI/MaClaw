@@ -2,130 +2,11 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"math"
 	"net/http"
-	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
-
-const hubLLMConfigKey = "hub_llm_config"
-
-// GetHubLLMConfigHandler returns the current Hub LLM configuration.
-// The API key is never sent to the frontend; instead a boolean flag
-// indicates whether a key has been configured.
-func GetHubLLMConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		raw, err := system.Get(r.Context(), hubLLMConfigKey)
-		if err != nil || raw == "" {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"enabled": false, "api_url": "", "api_key": "",
-				"model": "", "protocol": "", "smart_route_single_device": false,
-				"has_api_key": false,
-			})
-			return
-		}
-		var cfg im.HubLLMConfig
-		if json.Unmarshal([]byte(raw), &cfg) != nil {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"enabled": false, "api_url": "", "api_key": "",
-				"model": "", "protocol": "", "smart_route_single_device": false,
-				"has_api_key": false,
-			})
-			return
-		}
-		hasKey := cfg.APIKey != ""
-		cfg.APIKey = ""
-		writeJSON(w, http.StatusOK, map[string]any{
-			"enabled":                   cfg.Enabled,
-			"api_url":                   cfg.APIURL,
-			"api_key":                   "",
-			"model":                     cfg.Model,
-			"protocol":                  cfg.Protocol,
-			"smart_route_single_device": cfg.SmartRouteSingleDevice,
-			"has_api_key":               hasKey,
-		})
-	}
-}
-
-// UpdateHubLLMConfigHandler saves the Hub LLM configuration.
-// If the API key is empty (frontend never receives the real key), the old
-// key is preserved so that saving other fields doesn't wipe the key.
-func UpdateHubLLMConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var cfg im.HubLLMConfig
-		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
-			return
-		}
-
-		// Empty key means the user did not change it; preserve the stored one.
-		if cfg.APIKey == "" {
-			old := loadHubLLMConfig(r, system)
-			if old != nil {
-				cfg.APIKey = old.APIKey
-			}
-		}
-
-		data, _ := json.Marshal(cfg)
-		if err := system.Set(r.Context(), hubLLMConfigKey, string(data)); err != nil {
-			writeError(w, http.StatusInternalServerError, "HUB_LLM_CONFIG_SAVE_FAILED", err.Error())
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"enabled":                   cfg.Enabled,
-			"api_url":                   cfg.APIURL,
-			"api_key":                   "",
-			"model":                     cfg.Model,
-			"protocol":                  cfg.Protocol,
-			"smart_route_single_device": cfg.SmartRouteSingleDevice,
-			"has_api_key":               cfg.APIKey != "",
-		})
-	}
-}
-
-// TestHubLLMHandler sends a simple prompt to verify the LLM API is reachable
-// and the key is valid. Returns success/failure + latency.
-func TestHubLLMHandler(system store.SystemSettingsRepository) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		cfg := loadHubLLMConfig(r, system)
-		if cfg == nil || cfg.APIURL == "" || cfg.APIKey == "" {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"success": false,
-				"error":   "Hub LLM config requires API URL / Key",
-			})
-			return
-		}
-
-		llmCfg := cfg.ToMaclawLLMConfig()
-		messages := []interface{}{
-			map[string]string{"role": "user", "content": "Reply with exactly: pong"},
-		}
-
-		start := time.Now()
-		resp, err := agent.DoSimpleLLMRequest(llmCfg, messages, http.DefaultClient, 10*time.Second)
-		elapsed := time.Since(start)
-
-		if err != nil {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      err.Error(),
-				"latency_ms": elapsed.Milliseconds(),
-			})
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"success":    true,
-			"reply":      resp.Content,
-			"latency_ms": elapsed.Milliseconds(),
-		})
-	}
-}
 
 type hubLLMCacheStorageStatus struct {
 	MemoryEntries    int   `json:"memory_entries"`
@@ -158,6 +39,8 @@ type hubLLMCacheStatus struct {
 
 func HubLLMStatusHandler(statusFn func(context.Context) string, system store.SystemSettingsRepository, promptCacheSources ...any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// "status" is retained for older API callers; the standalone Hub LLM
+		// admin UI has been removed.
 		status := "not_configured"
 		if statusFn != nil {
 			status = statusFn(r.Context())
@@ -225,18 +108,6 @@ func hubLLMRate(hit int64, total int64) float64 {
 		return 0
 	}
 	return math.Round((float64(hit)/float64(total))*1000) / 10
-}
-
-func loadHubLLMConfig(r *http.Request, system store.SystemSettingsRepository) *im.HubLLMConfig {
-	raw, err := system.Get(r.Context(), hubLLMConfigKey)
-	if err != nil || raw == "" {
-		return nil
-	}
-	var cfg im.HubLLMConfig
-	if json.Unmarshal([]byte(raw), &cfg) != nil {
-		return nil
-	}
-	return &cfg
 }
 
 // ConversationStatsProvider returns active context count and total rounds.

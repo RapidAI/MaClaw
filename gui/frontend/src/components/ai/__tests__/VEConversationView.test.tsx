@@ -2237,6 +2237,19 @@ describe("VEConversationView", () => {
             expect(textarea.value).toBe("");
         });
 
+        it("clears typed text with the clear input button without sending", async () => {
+            const { send, sendWithAttachments } = renderConversation();
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
+            fireEvent.change(textarea, { target: { value: "Draft for VE" } });
+            fireEvent.click(screen.getByTestId("ai-clear-input"));
+
+            expect(textarea.value).toBe("");
+            expect(send).not.toHaveBeenCalled();
+            expect(sendWithAttachments).not.toHaveBeenCalled();
+        });
+
         it("syncs a late existing session id into the mounted view", async () => {
             const ref = createRef<VEConversationHandle>();
             const initiate = vi.fn().mockResolvedValue({ session_id: "created-session", ve_id: "ve-1", ve_name: "Test VE" });
