@@ -57,12 +57,25 @@ describe('GeneralSettingsPanel', () => {
     it('shows and persists the MaClaw app entry switch after language', () => {
         renderPanel({}, 'zh-Hans');
 
+        const languageSelect = screen.getByRole('combobox');
         const toggle = screen.getByLabelText('MaClaw应用入口') as HTMLInputElement;
         expect(toggle.checked).toBe(false);
+        expect(languageSelect.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
         fireEvent.click(toggle);
 
         expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ show_app_entry: true });
+    });
+
+    it('persists disabling the MaClaw app entry switch', () => {
+        renderPanel({ show_app_entry: true }, 'zh-Hans');
+
+        const toggle = screen.getByLabelText('MaClaw应用入口') as HTMLInputElement;
+        expect(toggle.checked).toBe(true);
+
+        fireEvent.click(toggle);
+
+        expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ show_app_entry: false });
     });
 
     it('persists chat gossip auto-post changes', () => {
