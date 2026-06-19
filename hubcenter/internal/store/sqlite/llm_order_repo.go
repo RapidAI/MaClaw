@@ -153,10 +153,12 @@ func (r *llmOrderRepo) UpdateStatus(ctx context.Context, orderNo, status string,
 
 func (r *llmOrderRepo) Update(ctx context.Context, order *hcCardstore.PurchaseOrder) error {
 	_, err := r.write.ExecContext(ctx,
-		`UPDATE llm_card_orders SET status=?, payment_mode=?, pay_channel=?, pay_qr_url=?, pay_deep_link=?, pay_instruction=?, pay_url=?, payment_id=?, payment_msg=?, reviewed_by=?, reviewed_at=?, paid_at=?, updated_at=? WHERE order_no=?`,
+		`UPDATE llm_card_orders SET card_type_id=?, admin_email=?, hub_id=?, tenant_id=?, service_group_id=?, agent_id=?, agent_name=?, credits=?, period=?, amount=?, status=?, payment_mode=?, pay_channel=?, pay_qr_url=?, pay_deep_link=?, pay_instruction=?, pay_url=?, payment_id=?, payment_msg=?, reviewed_by=?, reviewed_at=?, paid_at=?, archived_at=?, created_at=?, updated_at=? WHERE order_no=?`,
+		order.CardTypeID, order.Email, order.HubID, order.TenantID, order.ServiceGroupID, order.AgentID, order.AgentName, order.Credits, order.Period, order.Amount,
 		order.Status, order.PaymentMode, order.PayChannel, order.PayQRURL, order.PayDeepLink, order.PayInstruction, order.PayURL,
 		order.PaymentID, order.PaymentMsg, order.ReviewedBy,
 		formatTimeOrEmpty(order.ReviewedAt), formatTimeOrEmpty(order.PaidAt),
+		order.ArchivedAt, order.CreatedAt.Format(time.RFC3339),
 		order.UpdatedAt.Format(time.RFC3339), order.OrderNo,
 	)
 	return err

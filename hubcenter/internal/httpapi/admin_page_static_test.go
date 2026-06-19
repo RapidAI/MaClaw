@@ -37,6 +37,14 @@ func readAdminPageHTML(t *testing.T) string {
 	return string(content)
 }
 
+func readAdminAsset(t *testing.T, ref string) string {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join("..", "..", "web", filepath.FromSlash(ref)))
+	if err != nil {
+		t.Fatalf("read admin asset %s: %v", ref, err)
+	}
+	return string(content)
+}
 func adminPageBundleAssetRefs(t *testing.T, html string) []string {
 	t.Helper()
 	assetRef := regexp.MustCompile(`(?:href|src)="/([^"]+)"`)
@@ -119,8 +127,8 @@ func TestAdminPageHAStaticContract(t *testing.T) {
 	assertContainsAll(t, html, "admin page HA contract", required)
 
 	altRequired := [][2]string{
-		{`haRuntimeMatches: '\u5f53\u524d\u8fd0\u884c\u4e2d\u7684\u70ed\u5907\u5173\u952e\u53c2\u6570\u4e0e\u672c\u9875\u5df2\u4fdd\u5b58\u914d\u7f6e\u4e00\u81f4\u3002'`, "haRuntimeMatches: '当前运行中的热备关键参数与本页已保存配置一致。'"},
-		{`haNodePlanTitle: '\u4e09\u8282\u70b9\u90e8\u7f72\u5361\u7247'`, "haNodePlanTitle: '三节点部署卡片'"},
+		{`haRuntimeMatches: '\u5f53\u524d\u8fd0\u884c\u4e2d\u7684\u70ed\u5907\u5173\u952e\u53c2\u6570\u4e0e\u672c\u9875\u5df2\u4fdd\u5b58\u914d\u7f6e\u4e00\u81f4\u3002'`, `haRuntimeMatches: '\u5f53\u524d\u8fd0\u884c\u4e2d\u7684\u70ed\u5907\u5173\u952e\u53c2\u6570\u4e0e\u672c\u9875\u5df2\u4fdd\u5b58\u914d\u7f6e\u4e00\u81f4\u3002'`},
+		{`haNodePlanTitle: '\u4e09\u8282\u70b9\u90e8\u7f72\u5361\u7247'`, `haNodePlanTitle: '\u4e09\u8282\u70b9\u90e8\u7f72\u5361\u7247'`},
 	}
 	for _, pair := range altRequired {
 		if !strings.Contains(html, pair[0]) && !strings.Contains(html, pair[1]) {
@@ -184,9 +192,9 @@ func TestAdminPageBundleIncludesSharedAndSplitAssets(t *testing.T) {
 
 func TestAdminPageStylesheetOrder(t *testing.T) {
 	html := readAdminPageHTML(t)
-	assertContainsAll(t, html, "admin page stylesheet contract", []string{`href="/pro-ui.css"`, `href="/admin/assets/css/admin-shell.css"`, `href="/admin/assets/css/admin-responsive.css"`})
+	assertContainsAll(t, html, "admin page stylesheet contract", []string{`href="/pro-ui.css"`, `href="/admin/assets/css/admin-shell.css`, `href="/admin/assets/css/admin-responsive.css"`})
 	shared := strings.Index(html, `href="/pro-ui.css"`)
-	shell := strings.Index(html, `href="/admin/assets/css/admin-shell.css"`)
+	shell := strings.Index(html, `href="/admin/assets/css/admin-shell.css`)
 	responsive := strings.Index(html, `href="/admin/assets/css/admin-responsive.css"`)
 	if !(shared < shell && shell < responsive) {
 		t.Fatalf("admin stylesheet order must be shared baseline, shell, responsive; got indexes %d, %d, %d", shared, shell, responsive)
@@ -243,6 +251,54 @@ func TestAdminPageSplitScriptOrder(t *testing.T) {
 	}
 }
 
+func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/compute-market-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+
+	assertContainsAll(t, html, "compute market cache busting", []string{
+		`/admin/assets/css/admin-shell.css?v=archived-order-delete-20260619`,
+		`/admin/assets/js/compute-market-tab.js?v=archived-order-delete-20260619`,
+	})
+	assertContainsAll(t, js, "compute market archived delete contract", []string{
+		"computeMarketDeleteArchivedOrder",
+		"deleteArchivedComputeOrder",
+		"cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0",
+		"/api/admin/cardstore/orders/",
+		"method: 'DELETE'",
+		"\\u00b7 \\u00a5",
+	})
+	assertContainsAll(t, css, "compute market delete button style", []string{
+		".btn-danger-ghost{background:rgba(214,93,87,.06)",
+		".btn-danger-ghost:hover{background:rgba(214,93,87,.1)",
+	})
+	if strings.HasPrefix(js, "\ufeff") {
+		t.Fatal("compute-market-tab.js must not start with UTF-8 BOM")
+	}
+}
+
+func TestAdminPageComputeMarketUsageStatsLayoutContract(t *testing.T) {
+	js := readAdminAsset(t, "admin/assets/js/compute-market-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+
+	assertContainsAll(t, js, "compute market usage stats layout contract", []string{
+		"renderComputeStatsTable",
+		"cmNumber(value)",
+		"cmRows(data)",
+		"new URLSearchParams({ period: period })",
+		"cm-stats-table-shell",
+		"cm-stats-identity legacy",
+		"computeMarketStatsLegacyIdentity",
+		"<colgroup><col class=\"cm-col-scope\">",
+	})
+	assertContainsAll(t, css, "compute market usage stats table style", []string{
+		".cm-stats-table-shell{width:100%;overflow:auto;overscroll-behavior-x:contain",
+		".cm-data-table{width:100%;min-width:860px;table-layout:fixed",
+		".cm-col-scope{width:34%}",
+		".cm-data-table .num{text-align:right;font-variant-numeric:tabular-nums}",
+	})
+}
+
 type adminPageScriptRef struct {
 	tag   string
 	src   string
@@ -284,7 +340,7 @@ func TestAdminPageLLMServiceDoesNotExposeComputeGrant(t *testing.T) {
 		`id="hubComputeExternal-'+escapeHtml(domID)+'"`,
 		`function grantHubComputeAuth(id,tenantID)`,
 		`/api/admin/llm/authorizations`,
-		`hubComputeAuthTitle:'算力模块授权'`,
+		`hubComputeAuthTitle:'Compute module authorization'`,
 	})
 	for _, forbidden := range []string{
 		`id="llmSubTabAuth"`,

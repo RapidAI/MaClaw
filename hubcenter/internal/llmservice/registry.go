@@ -114,6 +114,7 @@ func normalizeRegistry(reg *Registry) {
 	}
 	ensureDefaultComputeAgent(reg)
 	for i := range reg.ServiceGroups {
+		normalizeServiceGroupModels(&reg.ServiceGroups[i])
 		normalizeServiceGroupAgent(reg, &reg.ServiceGroups[i])
 	}
 }
@@ -163,6 +164,92 @@ func normalizeServiceGroupAccessPolicy(policy string) string {
 	default:
 		return AccessPolicyFree
 	}
+}
+
+func normalizeServiceGroupModels(group *llmpool.ServiceGroup) {
+	if group == nil {
+		return
+	}
+	for i := range group.Models {
+		model := &group.Models[i]
+		configs := modelProviderConfigs(*model)
+		normalized := make([]llmpool.ModelProviderConfig, 0, len(configs))
+		providerIDs := make([]string, 0, len(configs))
+		seenProviderIDs := map[string]struct{}{}
+		for _, pc := range configs {
+			providerID := strings.TrimSpace(pc.ProviderID)
+			if providerID == "" {
+				continue
+			}
+			pc.ProviderID = providerID
+			pc.Model = strings.TrimSpace(pc.Model)
+			normalized = append(normalized, pc)
+			if _, ok := seenProviderIDs[providerID]; !ok {
+				providerIDs = append(providerIDs, providerID)
+				seenProviderIDs[providerID] = struct{}{}
+			}
+		}
+		model.ProviderConfigs = normalized
+		model.ProviderIDs = providerIDs
+	}
+}
+
+func validateServiceGroupProviderRoutes(reg *Registry, group llmpool.ServiceGroup) error {
+	for _, model := range group.Models {
+		seen := map[string]struct{}{}
+		for _, pc := range modelProviderConfigs(model) {
+			providerID := strings.TrimSpace(pc.ProviderID)
+			if providerID == "" {
+				continue
+			}
+			key := providerID + "\x00" + effectiveProviderRouteModel(reg, pc)
+			if _, ok := seen[key]; ok {
+				modelName := strings.TrimSpace(model.Name)
+				if modelName == "" {
+					modelName = "auto"
+				}
+				upstreamModel := strings.TrimSpace(pc.Model)
+				if upstreamModel == "" {
+					upstreamModel = "(provider default)"
+				}
+				return fmt.Errorf("duplicate provider route in model %q: provider %q with upstream model %q", modelName, providerID, upstreamModel)
+			}
+			seen[key] = struct{}{}
+		}
+	}
+	return nil
+}
+
+func effectiveProviderRouteModel(reg *Registry, pc llmpool.ModelProviderConfig) string {
+	providerID := strings.TrimSpace(pc.ProviderID)
+	model := strings.TrimSpace(pc.Model)
+	if model != "" {
+		return model
+	}
+	if reg == nil {
+		return ""
+	}
+	for _, provider := range reg.Providers {
+		if provider.ID == providerID && len(provider.Models) == 1 {
+			return strings.TrimSpace(provider.Models[0])
+		}
+	}
+	return ""
+}
+
+func modelProviderConfigs(model llmpool.ModelConfig) []llmpool.ModelProviderConfig {
+	if len(model.ProviderConfigs) > 0 {
+		return model.ProviderConfigs
+	}
+	configs := make([]llmpool.ModelProviderConfig, 0, len(model.ProviderIDs))
+	for _, providerID := range model.ProviderIDs {
+		providerID = strings.TrimSpace(providerID)
+		if providerID == "" {
+			continue
+		}
+		configs = append(configs, llmpool.ModelProviderConfig{ProviderID: providerID})
+	}
+	return configs
 }
 
 func findComputeAgent(reg *Registry, id string) *ComputeAgent {
@@ -385,6 +472,10 @@ func (s *Service) AddServiceGroup(ctx context.Context, group llmpool.ServiceGrou
 	if group.AgentID == "" {
 		group.AgentID = DefaultComputeAgentID
 	}
+	normalizeServiceGroupModels(&group)
+	if err := validateServiceGroupProviderRoutes(reg, group); err != nil {
+		return err
+	}
 	if findComputeAgent(reg, group.AgentID) == nil {
 		return fmt.Errorf("agent %s not found", group.AgentID)
 	}
@@ -409,6 +500,10 @@ func (s *Service) UpdateServiceGroup(ctx context.Context, group llmpool.ServiceG
 	}
 	if group.AgentID == "" {
 		group.AgentID = DefaultComputeAgentID
+	}
+	normalizeServiceGroupModels(&group)
+	if err := validateServiceGroupProviderRoutes(reg, group); err != nil {
+		return err
 	}
 	if findComputeAgent(reg, group.AgentID) == nil {
 		return fmt.Errorf("agent %s not found", group.AgentID)
@@ -503,19 +598,33 @@ func buildDispatchModel(reg *Registry, model *llmpool.ModelConfig) *llmpool.Disp
 		ProviderResolutionTiers:   map[string]int{},
 		ProviderCreditMultipliers: map[string]float64{},
 	}
-	for _, pc := range model.ProviderConfigs {
-		dm.ProviderIDs = append(dm.ProviderIDs, pc.ProviderID)
+	for _, pc := range modelProviderConfigs(*model) {
+		providerID := strings.TrimSpace(pc.ProviderID)
+		upstreamModel := strings.TrimSpace(pc.Model)
+		if providerID == "" {
+			continue
+		}
+		dm.ProviderIDs = append(dm.ProviderIDs, providerID)
+		dm.ProviderRoutes = append(dm.ProviderRoutes, llmpool.DispatchProviderRoute{
+			ProviderID:       providerID,
+			Model:            upstreamModel,
+			CapabilityTags:   pc.CapabilityTags,
+			Priority:         pc.Priority,
+			ResolutionTier:   pc.ResolutionTier,
+			CreditMultiplier: pc.CreditMultiplier,
+			OriginalIndex:    len(dm.ProviderRoutes),
+		})
 		if len(pc.CapabilityTags) > 0 {
-			dm.ProviderCapabilityTags[pc.ProviderID] = pc.CapabilityTags
+			dm.ProviderCapabilityTags[providerID] = pc.CapabilityTags
 		}
 		if pc.Priority != 0 {
-			dm.ProviderPriorities[pc.ProviderID] = pc.Priority
+			dm.ProviderPriorities[providerID] = pc.Priority
 		}
 		if pc.ResolutionTier != 0 {
-			dm.ProviderResolutionTiers[pc.ProviderID] = pc.ResolutionTier
+			dm.ProviderResolutionTiers[providerID] = pc.ResolutionTier
 		}
 		if pc.CreditMultiplier > 0 {
-			dm.ProviderCreditMultipliers[pc.ProviderID] = pc.CreditMultiplier
+			dm.ProviderCreditMultipliers[providerID] = pc.CreditMultiplier
 		}
 	}
 	return dm

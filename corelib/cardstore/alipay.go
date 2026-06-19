@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net/url"
@@ -37,12 +38,16 @@ func CreateAlipayOrder(order *Order, cfg *AlipayDirectConfig) (string, error) {
 	subject = subject + " - " + order.ProductLabel
 
 	// Build biz_content
-	bizContent := fmt.Sprintf(`{"out_trade_no":"%s","total_amount":"%.2f","subject":"%s","product_code":"%s"}`,
-		order.OrderNo,
-		order.Amount,
-		subject,
-		alipayProductCode(cfg),
-	)
+	bizContentBytes, err := json.Marshal(map[string]string{
+		"out_trade_no": order.OrderNo,
+		"total_amount": fmt.Sprintf("%.2f", order.Amount),
+		"subject":      subject,
+		"product_code": alipayProductCode(cfg),
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal alipay biz_content: %w", err)
+	}
+	bizContent := string(bizContentBytes)
 
 	// Build request params
 	params := map[string]string{
@@ -140,15 +145,28 @@ func buildAlipaySignString(params map[string]string) string {
 	return strings.Join(pairs, "&")
 }
 
-func rsaSign(content, privateKeyPEM string) (string, error) {
-	block, _ := pem.Decode([]byte(privateKeyPEM))
-	if block == nil {
-		// Try wrapping raw key in PEM format
-		wrapped := "-----BEGIN RSA PRIVATE KEY-----\n" + privateKeyPEM + "\n-----END RSA PRIVATE KEY-----"
-		block, _ = pem.Decode([]byte(wrapped))
-		if block == nil {
-			return "", fmt.Errorf("invalid private key PEM")
+func decodePEMBlock(raw string, labels ...string) (*pem.Block, []byte) {
+	block, rest := pem.Decode([]byte(raw))
+	if block != nil {
+		return block, rest
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	for _, label := range labels {
+		wrapped := "-----BEGIN " + label + "-----\n" + raw + "\n-----END " + label + "-----"
+		block, rest = pem.Decode([]byte(wrapped))
+		if block != nil {
+			return block, rest
 		}
+	}
+	return nil, nil
+}
+func rsaSign(content, privateKeyPEM string) (string, error) {
+	block, _ := decodePEMBlock(privateKeyPEM, "RSA PRIVATE KEY", "PRIVATE KEY")
+	if block == nil {
+		return "", fmt.Errorf("invalid private key PEM")
 	}
 	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
@@ -170,22 +188,26 @@ func rsaSign(content, privateKeyPEM string) (string, error) {
 }
 
 func rsaVerify(content, signBase64, publicKeyPEM string) error {
-	block, _ := pem.Decode([]byte(publicKeyPEM))
+	block, _ := decodePEMBlock(publicKeyPEM, "PUBLIC KEY", "RSA PUBLIC KEY")
 	if block == nil {
-		wrapped := "-----BEGIN PUBLIC KEY-----\n" + publicKeyPEM + "\n-----END PUBLIC KEY-----"
-		block, _ = pem.Decode([]byte(wrapped))
-		if block == nil {
-			return fmt.Errorf("invalid public key PEM")
-		}
+		return fmt.Errorf("invalid public key PEM")
 	}
 	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		return fmt.Errorf("parse public key: %w", err)
+		rsaPub, pkcs1Err := x509.ParsePKCS1PublicKey(block.Bytes)
+		if pkcs1Err != nil {
+			return fmt.Errorf("parse public key: %w", err)
+		}
+		return verifyRSASHA256(rsaPub, content, signBase64)
 	}
 	rsaPub, ok := pub.(*rsa.PublicKey)
 	if !ok {
 		return fmt.Errorf("key is not RSA public key")
 	}
+	return verifyRSASHA256(rsaPub, content, signBase64)
+}
+
+func verifyRSASHA256(rsaPub *rsa.PublicKey, content, signBase64 string) error {
 	sig, err := base64.StdEncoding.DecodeString(signBase64)
 	if err != nil {
 		return fmt.Errorf("decode signature: %w", err)

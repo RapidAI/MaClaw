@@ -19,7 +19,7 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 	return h.buildSystemPromptBase(false)
 }
 
-func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history []agent.ConversationEntry, loopCtx *LoopContext, workflowAgentLoop bool, askUserContext, pendingUserReplyContext, capabilityGapContext string) string {
+func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history []agent.ConversationEntry, loopCtx *LoopContext, workflowAgentLoop bool, phasePromptDirect string, askUserContext, pendingUserReplyContext, capabilityGapContext string) string {
 	promptBuildStart := time.Now()
 	profile := ExecutionProfile{}
 	if loopCtx != nil {
@@ -47,8 +47,26 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 
 	policyOwnerID := h.workflowPolicyOwnerID(msg.UserID, loopCtx)
 	if workflowAgentLoop {
-		if stashed, ok := h.stashedPhasePrompt.LoadAndDelete(policyOwnerID); ok {
+		// Prefer directly-passed phase prompt (synchronous, no race window).
+		// Fall back to sync.Map lookup for backward compat (other callers).
+		if phasePromptDirect != "" {
+			systemPrompt += "\n" + phasePromptDirect
+			// Clean up the sync.Map entry since we already have the prompt.
+			h.stashedPhasePrompt.Delete(policyOwnerID)
+			if policyOwnerID != msg.UserID {
+				h.stashedPhasePrompt.Delete(msg.UserID)
+			}
+		} else if stashed, ok := h.stashedPhasePrompt.LoadAndDelete(policyOwnerID); ok {
 			systemPrompt += "\n" + stashed.(string)
+		} else {
+			// Diagnostic: phase prompt was expected but not found.
+			log.Printf("[buildIMEntrySystemPrompt] WARNING: no phase prompt available (direct=%d, stashed key=%q, msg.UserID=%q)", len(phasePromptDirect), policyOwnerID, msg.UserID)
+			if policyOwnerID != msg.UserID {
+				if stashed2, ok2 := h.stashedPhasePrompt.LoadAndDelete(msg.UserID); ok2 {
+					log.Printf("[buildIMEntrySystemPrompt] RECOVERED: found stashed prompt under msg.UserID=%q", msg.UserID)
+					systemPrompt += "\n" + stashed2.(string)
+				}
+			}
 		}
 	} else {
 		h.stashedPhasePrompt.Delete(msg.UserID)
@@ -209,7 +227,27 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 	}
 
 	// Epilogue: memory section + knowledge auto-recall + knowledge skills + repairs + bundle + profile.
+	// During V2 workflow agent loops, suppress proactive memory recall — the phase
+	// prompt already contains all required context (FormData, previous outputs,
+	// phase instructions). Proactive recall of old project memories actively hurts
+	// by distracting the LLM from the current task's structured input.
+	//
+	// We only suppress the DYNAMIC proactive recall, not the full epilogue.
+	// The static memory section (user_fact summary) and knowledge/skill sections
+	// are still useful for context (e.g. user preferences, device status).
+	isV2AgentLoop := loopCtx != nil && loopCtx.WorkflowAgentLoop && h.isWorkflowV2Active(promptUserID)
 	deps.Epilogue = func(b *strings.Builder) {
+		if isV2AgentLoop {
+			// V2 workflow: only inject static user identity section, skip
+			// proactive recall (which injects old project memories that distract
+			// the LLM from the current phase's FormData/instructions).
+			log.Printf("[prompt-bundle] V2 workflow agent loop: suppressing proactive recall for user=%q", promptUserID)
+			// Still inject static memory (user_fact) so LLM knows user preferences.
+			if h.memoryStore != nil && promptUserID != "" {
+				h.appendStaticMemoryOnly(b, promptUserID)
+			}
+			return
+		}
 		h.appendGUIEpilogue(b, includeMemoryGuide, msg, eventContext, promptUserID)
 	}
 
@@ -446,6 +484,34 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 	// exclude other projects' entries.
 	strictProject := isProjectTabUserID(userID)
 	h.appendProactiveRecallForUser(b, msg, strictProject, userID, eventContext)
+}
+
+// appendStaticMemoryOnly injects only the static (frozen) user_fact summary
+// into the prompt, WITHOUT dynamic proactive recall. Used during V2 workflow
+// agent loops where the phase prompt is self-sufficient and proactive recall
+// of old project memories would distract the LLM.
+func (h *IMMessageHandler) appendStaticMemoryOnly(b *strings.Builder, userID string) {
+	if h.memoryStore == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		userID = desktopUserID
+	}
+	// Reuse the frozen snapshot if available (same caching logic as appendMemorySection).
+	if initialized, ok := h.snapshotInitialized.Load(userID); ok && initialized.(bool) {
+		if snapshot, ok := h.frozenMemorySnapshots.Load(userID); ok {
+			b.WriteString(snapshot.(string))
+			return
+		}
+	}
+	// Generate and cache if not yet available.
+	var staticBuf strings.Builder
+	h.generateStaticMemorySection(&staticBuf, false)
+	snapshot := staticBuf.String()
+	h.frozenMemorySnapshots.Store(userID, snapshot)
+	h.snapshotInitialized.Store(userID, true)
+	b.WriteString(snapshot)
 }
 
 // generateStaticMemorySection builds the frozen part of the memory section:

@@ -26,13 +26,16 @@ var helperCode = [
   extractFunction('latestVersion'),
   extractFunction('compareWorkflowVersions'),
   extractFunction('parseVersionNumber'),
+  extractFunction('clampContextMenuPosition'),
+  extractFunction('isContextMenuKey'),
+  extractFunction('cloneConfig'),
   extractFunction('workflowVersionBlocksDesignerDelete'),
   extractFunction('workflowHasPublishedHistory'),
   extractFunction('workflowVersionHistoryUnavailable'),
   extractFunction('workflowLibraryStatus')
 ].join('\n');
 
-var helpers = new Function('state', helperCode + '\nreturn { latestVersion: latestVersion, parseVersionNumber: parseVersionNumber, workflowHasPublishedHistory: workflowHasPublishedHistory, workflowVersionHistoryUnavailable: workflowVersionHistoryUnavailable, workflowLibraryStatus: workflowLibraryStatus };');
+var helpers = new Function('state', helperCode + '\nreturn { latestVersion: latestVersion, parseVersionNumber: parseVersionNumber, clampContextMenuPosition: clampContextMenuPosition, isContextMenuKey: isContextMenuKey, cloneConfig: cloneConfig, workflowHasPublishedHistory: workflowHasPublishedHistory, workflowVersionHistoryUnavailable: workflowVersionHistoryUnavailable, workflowLibraryStatus: workflowLibraryStatus };');
 var state = { workflowVersionsById: {} };
 var workflowHelpers = helpers(state);
 
@@ -89,6 +92,30 @@ latest = workflowHelpers.latestVersion([
 assertEqual(latest.id, 'new-same-version', 'uses timestamp only as same-version tie breaker');
 
 assertEqual(workflowHelpers.parseVersionNumber('bad.version').join('.'), '0.0.0', 'invalid version parses to safe floor');
+var menuPos = workflowHelpers.clampContextMenuPosition(790, 590, 180, 120, 800, 600);
+assertEqual(menuPos.x + ',' + menuPos.y, '612,472', 'keeps context menu inside viewport');
+menuPos = workflowHelpers.clampContextMenuPosition(-20, -10, 180, 120, 800, 600);
+assertEqual(menuPos.x + ',' + menuPos.y, '8,8', 'keeps context menu away from top-left viewport edge');
+assertEqual(workflowHelpers.isContextMenuKey({ key: 'ContextMenu' }), true, 'recognizes keyboard context menu key');
+assertEqual(workflowHelpers.isContextMenuKey({ key: 'F10', shiftKey: true }), true, 'recognizes Shift+F10 context menu shortcut');
+assertEqual(workflowHelpers.isContextMenuKey({ key: 'F10', shiftKey: false }), false, 'does not treat plain F10 as context menu shortcut');
+var clonedConfig = workflowHelpers.cloneConfig({ nested: { enabled: true }, list: [1, 2] });
+clonedConfig.nested.enabled = false;
+assertEqual(clonedConfig.list.join(','), '1,2', 'clones node config arrays');
+assertEqual(workflowHelpers.cloneConfig({ nested: { enabled: true } }).nested.enabled, true, 'deep clones node config objects');
+assertTrue(source.indexOf("CONTEXT_MENU_ADD_NODE_TYPES = ['trigger', 'form', 'approval', 'condition_branch', 'action', 'notification', 'sub_process', 'terminal']") !== -1, 'canvas context menu offers every palette node type');
+assertTrue(extractFunction('buildContextMenuItems').indexOf("action: 'duplicate_node'") !== -1, 'node context menu offers duplicate action');
+assertTrue(extractFunction('ensureContextMenu').indexOf("menu.setAttribute('aria-label', tr('contextMenuLabel'));") !== -1, 'refreshes context menu aria label when reused');
+assertTrue(extractFunction('ensureContextMenu').indexOf('e.stopPropagation();') !== -1, 'context menu Escape does not bubble to global shortcuts');
+assertTrue(extractFunction('ensureContextMenu').indexOf("e.key === 'Home'") !== -1 && extractFunction('ensureContextMenu').indexOf("e.key === 'End'") !== -1, 'context menu supports Home and End keyboard navigation');
+assertTrue(extractFunction('showContextMenu').indexOf('state.contextMenuReturnFocus = document.activeElement') !== -1, 'stores return focus before opening context menu');
+assertTrue(extractFunction('hideContextMenu').indexOf('opts.restoreFocus') !== -1, 'context menu can restore trigger focus on close');
+assertTrue(extractFunction('runContextMenuAction').indexOf('hideContextMenu({ restoreFocus: false });') !== -1, 'context menu actions do not restore stale focus before mutating graph');
+assertTrue(extractFunction('runContextMenuAction').indexOf("duplicateNode(targetId);") !== -1, 'duplicate action routes through duplicateNode');
+assertTrue(extractFunction('duplicateNode').indexOf('config: cloneConfig(source.config)') !== -1, 'duplicate node copies config without sharing object references');
+assertTrue(extractFunction('isContextMenuOpen').indexOf('!menu.hidden') !== -1, 'detects an open context menu');
+assertTrue(source.indexOf("if (isContextMenuOpen()) {\n        e.preventDefault();\n        return;\n      }") !== -1, 'global Delete and Backspace ignore open context menu without browser defaults');
+assertTrue(source.indexOf("if (e.key === 'Escape') {\n      if (isContextMenuOpen()) {\n        e.preventDefault();\n        hideContextMenu({ restoreFocus: true });\n        return;\n      }") !== -1, 'global Escape closes an open context menu before clearing selection');
 assertEqual(approverHelpers.normalizeApproverIds([' m1 ', 'm1', '', ' ve1 ']).join(','), 'm1,ve1', 'normalizes approver ids without duplicates');
 
 state.approverDirectory = null;

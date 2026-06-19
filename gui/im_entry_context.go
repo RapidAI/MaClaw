@@ -27,6 +27,7 @@ type imEntryContextResult struct {
 	WorkflowAgentLoop         bool
 	WorkflowDocPhase          bool
 	WorkflowPhaseID           string
+	PhasePrompt               string // Carried synchronously from runWorkflowV2Phase; avoids sync.Map race
 	SkipNeedsConfirmGate      bool
 	AskUserContext            string
 	PendingUserReplyContext   string
@@ -129,6 +130,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	result.WorkflowAgentLoop = workflowRoute.WorkflowAgentLoop
 	result.WorkflowDocPhase = workflowRoute.WorkflowDocPhase
 	result.WorkflowPhaseID = workflowRoute.WorkflowPhaseID
+	result.PhasePrompt = workflowRoute.PhasePrompt
 	result.SkipNeedsConfirmGate = workflowRoute.SkipNeedsConfirmGate
 	workflowRouteElapsed = time.Since(lastPhaseAt)
 	lastPhaseAt = time.Now()

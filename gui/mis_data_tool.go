@@ -882,6 +882,18 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		if assignedTo := strings.TrimSpace(stringArg(args, "assigned_to")); assignedTo != "" {
 			values.Set("assigned_to", assignedTo)
 		}
+		if workflowSkillID := strings.TrimSpace(stringArg(args, "workflow_skill_id")); workflowSkillID != "" {
+			values.Set("workflow_skill_id", workflowSkillID)
+		}
+		if workflowInstanceID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_instance_id"), stringArg(args, "approval_instance_id"))); workflowInstanceID != "" {
+			values.Set("workflow_instance_id", workflowInstanceID)
+		}
+		if businessStatus := strings.TrimSpace(stringArg(args, "business_status")); businessStatus != "" {
+			values.Set("business_status", businessStatus)
+		}
+		if resultStatus := strings.TrimSpace(stringArg(args, "result_status")); resultStatus != "" {
+			values.Set("result_status", resultStatus)
+		}
 		if misBoolArg(args, "overdue") {
 			values.Set("overdue", "true")
 		}
@@ -902,7 +914,21 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		if recordID == "" {
 			return "missing id"
 		}
-		body := map[string]interface{}{"kind": stringArg(args, "kind"), "priority": stringArg(args, "priority"), "summary": stringArg(args, "summary"), "assigned_to": stringArg(args, "assigned_to"), "due_at": stringArg(args, "due_at"), "request": args["request"]}
+		body := map[string]interface{}{
+			"kind":                 stringArg(args, "kind"),
+			"priority":             stringArg(args, "priority"),
+			"summary":              stringArg(args, "summary"),
+			"assigned_to":          stringArg(args, "assigned_to"),
+			"due_at":               stringArg(args, "due_at"),
+			"request":              args["request"],
+			"workflow_skill_id":    stringArg(args, "workflow_skill_id"),
+			"workflow_version":     stringArg(args, "workflow_version"),
+			"workflow_instance_id": firstNonEmptyMISAgentView(stringArg(args, "workflow_instance_id"), stringArg(args, "approval_instance_id")),
+			"workflow_node_id":     stringArg(args, "workflow_node_id"),
+			"workflow_decision_id": stringArg(args, "workflow_decision_id"),
+			"business_status":      stringArg(args, "business_status"),
+			"result_status":        stringArg(args, "result_status"),
+		}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/"+pathEscape(recordID)+"/approvals", compactPayload(body))
 	case "get_record_approval":
 		approvalID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "approval_id"), stringArg(args, "id")))
@@ -915,7 +941,14 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		if approvalID == "" {
 			return "missing approval_id"
 		}
-		body := map[string]interface{}{"decision": stringArg(args, "decision"), "reason": stringArg(args, "reason")}
+		body := map[string]interface{}{
+			"decision":             stringArg(args, "decision"),
+			"reason":               stringArg(args, "reason"),
+			"workflow_node_id":     stringArg(args, "workflow_node_id"),
+			"workflow_decision_id": stringArg(args, "workflow_decision_id"),
+			"business_status":      stringArg(args, "business_status"),
+			"result_status":        stringArg(args, "result_status"),
+		}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/approvals/"+pathEscape(approvalID)+"/review", compactPayload(body))
 	case "list_audit_logs", "export_audit_logs_csv":
 		values := url.Values{}

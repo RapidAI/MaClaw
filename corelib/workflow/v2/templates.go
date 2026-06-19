@@ -1225,7 +1225,7 @@ func PatentApplicationTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
 		Type:        "patent_application",
 		Name:        "专利申请",
-		Description: "交底书解析 → 权利要求撰写 → 附图整理 → 说明书撰写 → 申请文件组装",
+		Description: "交底书解析 → 查新检索 → 权利要求撰写 → 附图整理 → 说明书撰写 → 申请文件组装",
 		Keywords:    []string{"专利申请", "专利撰写", "发明专利", "实用新型", "专利交底书", "权利要求书", "patent application"},
 		Phases: []PhaseTemplate{
 			{ID: "pa_disclosure_parsing", Name: "交底书解析与技术提炼", NeedsConfirm: true, ToolPolicy: ToolPolicyFull,
@@ -1265,8 +1265,9 @@ func PatentApplicationTemplate() *WorkflowTemplate {
 					},
 				},
 			},
+			{ID: "pa_prior_art_search", Name: "查新检索与新颖性分析", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
 			{ID: "pa_claims_drafting", Name: "权利要求书撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
-			{ID: "pa_figures_organization", Name: "附图整理与说明", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "pa_figures_organization", Name: "附图生成与整理", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
 			{ID: "pa_description_writing", Name: "说明书撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
 			{ID: "pa_document_assembly", Name: "申请文件组装与检查", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
 		},

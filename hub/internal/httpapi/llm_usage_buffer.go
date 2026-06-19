@@ -103,7 +103,7 @@ func (a *llmUsageAccumulator) enqueue(system store.SystemSettingsRepository, pro
 	if buf.reports == nil {
 		buf.reports = &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
 	}
-	buf.reports.addUsage(time.Now(), email, userGroupIDs, usage, credits)
+	buf.reports.addUsage(time.Now(), email, userGroupIDs, usage, credits, providerID)
 	return charge
 }
 

@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal EnableDelayedExpansion
 
 REM ==============================================================================
@@ -56,7 +56,7 @@ powershell -NoProfile -Command "@('export const buildNumber = ''%BUILD_NUM%'';',
 
 REM -- Build Frontend --
 echo [Step 4/14] Building frontend...
-cd "%~dp0gui\frontend"
+cd /d "%~dp0gui\frontend"
 if not exist "node_modules" (
     call npm.cmd install --cache ./.npm_cache
     if !errorlevel! neq 0 (
@@ -341,3 +341,4 @@ endlocal & exit /b 0
 echo.
 echo [FAILED] The build process failed. Please check the output above for errors.
 endlocal & exit /b 1
+

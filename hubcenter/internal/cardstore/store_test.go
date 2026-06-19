@@ -3,6 +3,7 @@ package cardstore
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -396,6 +397,43 @@ func TestCreateOrderUsesConfiguredManualChannelWhenPayChannelEmpty(t *testing.T)
 	}
 }
 
+func TestCreateOrderUsesPublicBaseURLProviderForAlipayCallbacks(t *testing.T) {
+	cardRepo := &cardTypeTestRepo{byID: map[string]*CardType{
+		"ct1": {ID: "ct1", ServiceGroupID: "group-1", Label: "Plan", Credits: 100, Period: "month", PriceRMB: 10, Template: "enterprise_monthly_blue", Enabled: true},
+	}}
+	orderRepo := &orderTestRepo{}
+	svc := NewService(cardRepo, orderRepo, &authTestRepo{})
+	svc.SetPaymentConfig(corecardstore.PersonalPaymentConfig{}, corecardstore.AlipayDirectConfig{
+		AppID:      "app-1",
+		PrivateKey: testRSAPrivateKeyPEM(t),
+	})
+	svc.SetPublicBaseURLProvider(func(context.Context) (string, error) {
+		return "https://center.example.com/", nil
+	})
+
+	order, err := svc.CreateOrder(context.Background(), "ct1", "owner@example.com", "hub-1", "tenant-a", "")
+	if err != nil {
+		t.Fatalf("CreateOrder: %v", err)
+	}
+	payURL, err := url.Parse(order.PayURL)
+	if err != nil {
+		t.Fatalf("parse pay_url: %v", err)
+	}
+	if got := payURL.Query().Get("notify_url"); got != "https://center.example.com/api/cardstore/payment/notify" {
+		t.Fatalf("notify_url = %q", got)
+	}
+	returnURL, err := url.Parse(payURL.Query().Get("return_url"))
+	if err != nil {
+		t.Fatalf("parse return_url: %v", err)
+	}
+	if got := returnURL.Scheme + "://" + returnURL.Host + returnURL.Path; got != "https://center.example.com/api/cardstore/payment/return" {
+		t.Fatalf("return_url path = %q", got)
+	}
+	q := returnURL.Query()
+	if q.Get("ctx_email") != "owner@example.com" || q.Get("ctx_hub_id") != "hub-1" || q.Get("ctx_tenant_id") != "tenant-a" || q.Get("ctx_order_no") != order.OrderNo {
+		t.Fatalf("return_url query = %s", returnURL.RawQuery)
+	}
+}
 func TestDeleteUnprocessedOrderRemovesOwnedPendingOrder(t *testing.T) {
 	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
 		"HC-PENDING": {
@@ -512,6 +550,45 @@ func TestArchiveOrderKeepsPaymentStatus(t *testing.T) {
 	}
 	if got.ArchivedAt == "" {
 		t.Fatalf("ArchivedAt was not set")
+	}
+}
+
+func TestDeleteArchivedUnprocessedOrderRequiresArchivedPendingOrder(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-ACTIVE": {
+			Order: corecardstore.Order{OrderNo: "HC-ACTIVE", Email: "owner@example.com", Status: corecardstore.StatusPending, CreatedAt: now, UpdatedAt: now},
+			HubID: "hub-1", TenantID: "tenant-a",
+		},
+		"HC-ACTIVATED": {
+			Order:      corecardstore.Order{OrderNo: "HC-ACTIVATED", Email: "owner@example.com", Status: corecardstore.StatusActivated, CreatedAt: now, UpdatedAt: now},
+			HubID:      "hub-1",
+			TenantID:   "tenant-a",
+			ArchivedAt: now.Format(time.RFC3339),
+		},
+		"HC-ARCHIVED-PENDING": {
+			Order:      corecardstore.Order{OrderNo: "HC-ARCHIVED-PENDING", Email: "owner@example.com", Status: corecardstore.StatusPending, CreatedAt: now, UpdatedAt: now},
+			HubID:      "hub-1",
+			TenantID:   "tenant-a",
+			ArchivedAt: now.Format(time.RFC3339),
+		},
+	}}
+	svc := NewService(nil, orderRepo, nil)
+
+	if err := svc.DeleteArchivedUnprocessedOrder(context.Background(), "HC-ACTIVE"); err == nil || !strings.Contains(err.Error(), "not archived") {
+		t.Fatalf("DeleteArchivedUnprocessedOrder(active) error = %v, want not archived", err)
+	}
+	if err := svc.DeleteArchivedUnprocessedOrder(context.Background(), "HC-ACTIVATED"); err == nil || !strings.Contains(err.Error(), "cannot be deleted") {
+		t.Fatalf("DeleteArchivedUnprocessedOrder(activated) error = %v, want cannot be deleted", err)
+	}
+	if err := svc.DeleteArchivedUnprocessedOrder(context.Background(), "HC-ARCHIVED-PENDING"); err != nil {
+		t.Fatalf("DeleteArchivedUnprocessedOrder(archived pending) error = %v", err)
+	}
+	if got := orderRepo.byNo["HC-ARCHIVED-PENDING"]; got != nil {
+		t.Fatalf("archived pending order still exists: %+v", got)
+	}
+	if orderRepo.byNo["HC-ACTIVE"] == nil || orderRepo.byNo["HC-ACTIVATED"] == nil {
+		t.Fatalf("non-deletable orders were removed: %+v", orderRepo.byNo)
 	}
 }
 

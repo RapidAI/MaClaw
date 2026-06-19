@@ -20,6 +20,18 @@ func (f proxyRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error)
 	return f(req)
 }
 
+type recordingUsageRecorder struct {
+	records  []*llmpool.UsageRecord
+	contexts []usageContextData
+}
+
+func (r *recordingUsageRecorder) RecordUsage(ctx context.Context, record *llmpool.UsageRecord) error {
+	hubID, tenantID := usageContextValues(ctx)
+	r.records = append(r.records, record)
+	r.contexts = append(r.contexts, usageContextData{HubID: hubID, TenantID: tenantID})
+	return nil
+}
+
 // --- mock auth repo ---
 
 type mockAuthRepo struct {
@@ -91,6 +103,41 @@ func (s *mockSystemSettings) List(_ context.Context) ([]*store.SystemSettingEntr
 
 // --- tests ---
 
+func TestHandleProxyRequestRequiresRequestAndBody(t *testing.T) {
+	cfg := &ProxyConfig{
+		Service:     NewService(&mockSystemSettings{}),
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+	}
+	if _, err := HandleProxyRequest(context.Background(), cfg, nil); err == nil || err.Error() != "proxy request is required" {
+		t.Fatalf("nil request error = %v, want proxy request is required", err)
+	}
+	if _, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{}); err == nil || err.Error() != "proxy request body is required" {
+		t.Fatalf("nil body error = %v, want proxy request body is required", err)
+	}
+}
+
+func TestHandleProxyRequestTrimsModel(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers:     []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{ID: "g1", Name: "G1", Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}}}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: upstream.Client()}
+	if _, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "  gpt-4  "}}); err != nil {
+		t.Fatalf("trimmed body model should match: %v", err)
+	}
+	if _, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Model: "   ", Body: map[string]any{}}); err == nil || err.Error() != "model not specified in request" {
+		t.Fatalf("blank explicit model error = %v, want model not specified in request", err)
+	}
+}
 func TestHandleProxyRequest_NoModel(t *testing.T) {
 	cfg := &ProxyConfig{
 		Service:     NewService(&mockSystemSettings{}),
@@ -299,7 +346,7 @@ func TestHandleProxyRequest_AuthDenied(t *testing.T) {
 		ServiceGroups: []llmpool.ServiceGroup{{ID: "g1", Name: "G1", AccessPolicy: AccessPolicyGrantRequired, Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}}}},
 	})
 
-	// No authorizations → access denied
+	// No authorizations: access denied
 	cfg := &ProxyConfig{
 		Service:     svc,
 		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
@@ -429,7 +476,7 @@ func TestForwardToProviderUsesSharedCorelibCompatibility(t *testing.T) {
 		"messages":        []any{map[string]any{"role": "user", "content": "hello"}},
 	}
 
-	resp, err := forwardToProvider(context.Background(), client, provider, body, "auto")
+	resp, err := forwardToProvider(context.Background(), client, provider, body, "auto", "auto")
 	if err != nil {
 		t.Fatalf("forwardToProvider() error = %v", err)
 	}
@@ -446,6 +493,455 @@ func TestForwardToProviderUsesSharedCorelibCompatibility(t *testing.T) {
 	}
 	if seen["stream"] != false {
 		t.Fatalf("stream = %#v, want false for HubCenter non-stream proxy", seen["stream"])
+	}
+}
+
+func TestHandleProxyRequestUsesProviderConfiguredUpstreamModel(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","model":"qax-codegen/Auto","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "official", Name: "MaClaw Official", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "maclaw-official",
+			Name:         "MaClaw Official",
+			AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+				ProviderID: "official",
+				Model:      "qax-codegen/Auto",
+			}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  upstream.Client(),
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if seen["model"] != "qax-codegen/Auto" {
+		t.Fatalf("upstream model = %#v, want qax-codegen/Auto", seen["model"])
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["model"] != "auto" {
+		t.Fatalf("response model = %#v, want logical model auto", payload["model"])
+	}
+}
+
+func TestHandleProxyRequestEstimatesAndInjectsUsageWhenUpstreamOmitsUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","model":"qax-codegen/Auto","choices":[{"message":{"content":"estimated answer"}}]}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "official", Name: "MaClaw Official", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "maclaw-official",
+			Name:         "MaClaw Official",
+			AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+				ProviderID: "official",
+				Model:      "qax-codegen/Auto",
+			}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	usage := &recordingUsageRecorder{}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  upstream.Client(),
+		Usage:       usage,
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello official usage"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if len(usage.records) != 1 {
+		t.Fatalf("usage records = %d, want 1", len(usage.records))
+	}
+	if len(usage.contexts) != 1 || usage.contexts[0].HubID != "hub1" || usage.contexts[0].TenantID != "t1" {
+		t.Fatalf("usage context = %+v, want hub1/t1", usage.contexts)
+	}
+	if usage.records[0].InputTokens <= 0 || usage.records[0].OutputTokens <= 0 {
+		t.Fatalf("usage record = %+v, want estimated input/output tokens", usage.records[0])
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	usagePayload, _ := payload["usage"].(map[string]any)
+	if usagePayload == nil || usagePayload["estimated"] != true {
+		t.Fatalf("response usage not injected as estimated: %#v", payload["usage"])
+	}
+	if usagePayload["total_tokens"].(float64) <= 0 {
+		t.Fatalf("total_tokens = %#v, want positive", usagePayload["total_tokens"])
+	}
+}
+
+func TestHandleProxyRequestCompletesPartialUsageFromEstimate(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","model":"qax-codegen/Auto","choices":[{"message":{"content":"partial usage answer"}}],"usage":{"prompt_tokens":13}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "official", Name: "MaClaw Official", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "maclaw-official",
+			Name:         "MaClaw Official",
+			AccessPolicy: AccessPolicyFree,
+			Models:       []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "official", Model: "qax-codegen/Auto"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	usage := &recordingUsageRecorder{}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: upstream.Client(), Usage: usage}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if len(usage.records) != 1 || usage.records[0].InputTokens != 13 || usage.records[0].OutputTokens <= 0 {
+		t.Fatalf("usage record = %+v, want input=13 and estimated output", usage.records)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	usagePayload, _ := payload["usage"].(map[string]any)
+	if usagePayload["prompt_tokens"].(float64) != 13 || usagePayload["completion_tokens"].(float64) <= 0 || usagePayload["estimated"] != true {
+		t.Fatalf("usage payload = %#v, want completed estimated usage", usagePayload)
+	}
+}
+
+func TestHandleProxyRequestPreservesInputOutputUsageShape(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","model":"qax-codegen/Auto","choices":[{"message":{"content":"ok"}}],"usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "official", Name: "MaClaw Official", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "maclaw-official",
+			Name:         "MaClaw Official",
+			AccessPolicy: AccessPolicyFree,
+			Models:       []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "official", Model: "qax-codegen/Auto"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	usage := &recordingUsageRecorder{}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  upstream.Client(),
+		Usage:       usage,
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if len(usage.records) != 1 {
+		t.Fatalf("usage records = %d, want 1", len(usage.records))
+	}
+	if usage.records[0].InputTokens != 11 || usage.records[0].OutputTokens != 7 {
+		t.Fatalf("usage record = %+v, want input=11 output=7", usage.records[0])
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	usagePayload, _ := payload["usage"].(map[string]any)
+	if usagePayload["estimated"] == true {
+		t.Fatalf("existing input/output usage should not be marked estimated: %#v", usagePayload)
+	}
+	if usagePayload["input_tokens"].(float64) != 11 || usagePayload["output_tokens"].(float64) != 7 {
+		t.Fatalf("usage payload = %#v, want original input/output fields", usagePayload)
+	}
+}
+
+func TestProxyResponseUsageWithFallbackPatchesMissingUsageShapes(t *testing.T) {
+	reqBody := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+
+	input, output, patched := proxyResponseUsageWithFallback(reqBody, []byte(`{"choices":[{"message":{"content":"fallback answer"}}]}`))
+	if input <= 0 || output <= 0 || !bytes.Contains(patched, []byte(`"estimated":true`)) {
+		t.Fatalf("missing usage fallback = %d/%d %s, want estimated usage", input, output, patched)
+	}
+
+	input, output, patched = proxyResponseUsageWithFallback(reqBody, []byte(`{"choices":[{"message":{"content":"fallback answer"}}],"usage":{"prompt_tokens":9}}`))
+	if input != 9 || output <= 0 || !bytes.Contains(patched, []byte(`"completion_tokens"`)) {
+		t.Fatalf("partial usage fallback = %d/%d %s, want completed output usage", input, output, patched)
+	}
+
+	body := []byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`)
+	input, output, patched = proxyResponseUsageWithFallback(reqBody, body)
+	if input != 3 || output != 2 || string(patched) != string(body) {
+		t.Fatalf("complete usage fallback = %d/%d %s, want original body", input, output, patched)
+	}
+}
+func TestExtractTokenUsageAcceptsStringNumbers(t *testing.T) {
+	input, output := extractTokenUsage([]byte(`{"usage":{"prompt_tokens":"12.0","completion_tokens":"8","total_tokens":"20"}}`))
+	if input != 12 || output != 8 {
+		t.Fatalf("usage = %d/%d, want 12/8", input, output)
+	}
+}
+
+func TestExtractTokenUsageInfersMissingSideFromTotal(t *testing.T) {
+	input, output := extractTokenUsage([]byte(`{"usage":{"completion_tokens":8,"total_tokens":20}}`))
+	if input != 12 || output != 8 {
+		t.Fatalf("usage = %d/%d, want 12/8", input, output)
+	}
+	input, output = extractTokenUsage([]byte(`{"usage":{"prompt_tokens":12,"total_tokens":20}}`))
+	if input != 12 || output != 8 {
+		t.Fatalf("usage = %d/%d, want 12/8", input, output)
+	}
+}
+
+func TestEstimateProxyResponseTokensIncludesStructuredContentAndToolCalls(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"content":[{"type":"text","text":"structured answer"}],"tool_calls":[{"function":{"name":"lookup","arguments":"{\"id\":\"T-1\"}"}}],"function_call":{"name":"legacy_lookup","arguments":"{\"id\":\"T-2\"}"}}},{"text":"legacy completion text"}]}`)
+	if got := estimateProxyResponseTokens(body); got <= 0 {
+		t.Fatalf("estimateProxyResponseTokens() = %d, want positive", got)
+	}
+}
+
+func TestEstimateProxyTokenUsageIncludesResponsesInputAndOutput(t *testing.T) {
+	input, output := estimateProxyTokenUsage(
+		map[string]any{"input": "hello responses", "instructions": "be concise"},
+		[]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"responses answer"}]}]}`),
+	)
+	if input <= 0 || output <= 0 {
+		t.Fatalf("usage = %d/%d, want positive input/output", input, output)
+	}
+}
+
+func TestEstimateProxyTokenUsageCountsToolSchemas(t *testing.T) {
+	input, _ := estimateProxyTokenUsage(
+		map[string]any{
+			"messages":        []any{map[string]any{"role": "user", "content": "use tool"}},
+			"response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "ticket", "schema": map[string]any{"type": "object", "properties": map[string]any{"status": map[string]any{"type": "string"}}}}},
+			"tool_choice":     map[string]any{"type": "function", "function": map[string]any{"name": "lookup_ticket"}},
+			"tools": []any{map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "lookup_ticket",
+					"description": "look up a ticket by id",
+					"parameters":  map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string", "description": "ticket id"}}},
+				},
+			}},
+		},
+		[]byte(`{"choices":[{"message":{"content":"ok"}}]}`),
+	)
+	withoutTools, _ := estimateProxyTokenUsage(
+		map[string]any{"messages": []any{map[string]any{"role": "user", "content": "use tool"}}},
+		[]byte(`{"choices":[{"message":{"content":"ok"}}]}`),
+	)
+	if input <= withoutTools {
+		t.Fatalf("input with tools = %d, without tools = %d, want tool schema counted", input, withoutTools)
+	}
+}
+
+func TestHandleProxyRequestFallsBackToSingleProviderModel(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "official", Name: "MaClaw Official", APIURL: upstream.URL, Models: []string{"qax-codegen/Auto"}}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "maclaw-official",
+			Name:         "MaClaw Official",
+			AccessPolicy: AccessPolicyFree,
+			Models:       []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "official"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  upstream.Client(),
+	}
+	if _, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "auto", "messages": []any{}},
+	}); err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if seen["model"] != "qax-codegen/Auto" {
+		t.Fatalf("upstream model = %#v, want provider model fallback", seen["model"])
+	}
+}
+
+func TestHandleProxyRequestSupportsLegacyProviderIDs(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "legacy", Name: "Legacy", APIURL: upstream.URL, Models: []string{"legacy-auto"}}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "legacy-group",
+			Name:         "Legacy Group",
+			AccessPolicy: AccessPolicyFree,
+			Models:       []llmpool.ModelConfig{{Name: "auto", ProviderIDs: []string{"legacy"}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  upstream.Client(),
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "auto", "messages": []any{}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if seen["model"] != "legacy-auto" {
+		t.Fatalf("upstream model = %#v, want legacy provider single-model fallback", seen["model"])
+	}
+}
+
+func TestHandleProxyRequestAllowsSameProviderWithDifferentModelRoutes(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "redeem",
+			Name:         "Redeem",
+			AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "deepseek", Model: "deepseek-v4-flash", Priority: 10, ResolutionTier: 1, CreditMultiplier: 1},
+				{ProviderID: "deepseek", Model: "deepseek-v4-pro", Priority: 50, ResolutionTier: 2, CreditMultiplier: 2},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  upstream.Client(),
+	}
+	if _, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "auto", "messages": []any{}},
+	}); err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if seen["model"] != "deepseek-v4-pro" {
+		t.Fatalf("upstream model = %#v, want priority-selected deepseek-v4-pro", seen["model"])
+	}
+}
+
+func TestProxyCreditMultiplierForRouteHandlesNilModel(t *testing.T) {
+	got := proxyCreditMultiplierForRoute(nil, llmpool.DispatchProviderRoute{ProviderID: "p1"})
+	if got != 1 {
+		t.Fatalf("multiplier = %v, want 1", got)
+	}
+}
+
+func TestProxyCreditMultiplierForRouteDoesNotFallBackToProviderMapInRouteMode(t *testing.T) {
+	model := &llmpool.DispatchModel{
+		CreditMultiplier: 1.5,
+		ProviderRoutes: []llmpool.DispatchProviderRoute{
+			{ProviderID: "deepseek", Model: "deepseek-v4-flash", CreditMultiplier: 0},
+			{ProviderID: "deepseek", Model: "deepseek-v4-pro", CreditMultiplier: 5},
+		},
+		ProviderCreditMultipliers: map[string]float64{"deepseek": 5},
+	}
+
+	got := proxyCreditMultiplierForRoute(model, model.ProviderRoutes[0])
+	if got != 1.5 {
+		t.Fatalf("multiplier = %v, want model fallback 1.5 without provider-map cross-talk", got)
 	}
 }
 
@@ -559,7 +1055,7 @@ func TestHandleProxyRequest_CacheHit(t *testing.T) {
 		CacheKey:   cacheKey,
 		ProviderID: "p1",
 		Model:      "gpt-4",
-		Payload:    []byte(`{"choices":[{"message":{"content":"cached"}}]}`),
+		Payload:    []byte(`{"choices":[{"message":{"content":"cached"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`),
 	})
 
 	cfg := &ProxyConfig{
@@ -577,6 +1073,9 @@ func TestHandleProxyRequest_CacheHit(t *testing.T) {
 	}
 	if resp.ProviderID != "p1" {
 		t.Fatalf("expected provider p1, got %s", resp.ProviderID)
+	}
+	if bytes.Contains(resp.Body, []byte(`"usage"`)) {
+		t.Fatalf("cache hit response should not include billable usage: %s", resp.Body)
 	}
 }
 

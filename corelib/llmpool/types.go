@@ -44,6 +44,7 @@ type ServiceGroup struct {
 // ModelConfig maps a logical model name to one or more provider backends.
 type ModelConfig struct {
 	Name             string                `json:"name"`
+	ProviderIDs      []string              `json:"provider_ids,omitempty"`
 	ProviderConfigs  []ModelProviderConfig `json:"provider_configs"`
 	CapabilityTags   []string              `json:"capability_tags,omitempty"`
 	Priority         int                   `json:"priority,omitempty"`
@@ -54,6 +55,7 @@ type ModelConfig struct {
 // ModelProviderConfig holds per-provider overrides for a specific model.
 type ModelProviderConfig struct {
 	ProviderID       string   `json:"provider_id"`
+	Model            string   `json:"model,omitempty"`
 	CapabilityTags   []string `json:"capability_tags,omitempty"`
 	Priority         int      `json:"priority,omitempty"`
 	ResolutionTier   int      `json:"resolution_tier,omitempty"`

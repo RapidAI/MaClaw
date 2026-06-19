@@ -48,11 +48,15 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	usageRepo := sqlite.NewLLMUsageRepo(provider)
 	baseCardTypeRepo := sqlite.NewLLMCardTypeRepo(provider)
 	cardTypeRepo := cardstore.CardTypeRepository(baseCardTypeRepo)
+	baseOrderRepo := sqlite.NewLLMOrderRepo(provider)
+	orderRepo := cardstore.PurchaseOrderRepository(baseOrderRepo)
 	if haSvc != nil {
 		haSvc.AttachLLMAuthorizations(baseAuthRepo)
 		authRepo = &haLLMAuthorizationRepo{inner: baseAuthRepo, sync: haSvc}
 		haSvc.AttachCardTypes(baseCardTypeRepo)
 		cardTypeRepo = &haCardTypeRepo{inner: baseCardTypeRepo, sync: haSvc}
+		haSvc.AttachCardOrders(baseOrderRepo)
+		orderRepo = &haCardOrderRepo{inner: baseOrderRepo, sync: haSvc}
 	}
 	bindingRepo := sqlite.NewLLMBindingRepo(provider)
 
@@ -63,6 +67,7 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	bindingMgr := ha.NewLLMBindingManager(nodeID, bindingRepo)
 	if haSvc != nil {
 		seedLLMAuthorizationHAOps(context.Background(), haSvc, baseAuthRepo)
+		seedLLMCardOrderHAOps(context.Background(), haSvc, baseOrderRepo)
 	}
 
 	// 4. Create proxy config
@@ -94,7 +99,6 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	}
 
 	// 5. Create card store service
-	orderRepo := sqlite.NewLLMOrderRepo(provider)
 	cardStoreSvc := cardstore.NewService(cardTypeRepo, orderRepo, authRepo)
 	cardStoreSvc.SetServiceGroupResolver(func(ctx context.Context, serviceGroupID string) (string, string, string) {
 		reg, err := llmSvc.LoadRegistry(ctx)
@@ -143,6 +147,9 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	statsSvc := llmservice.NewStatsService(usageRepo)
 	httpapi.SetLLMAuthorizationSyncChecker(authChecker)
 	httpapi.SetLLMRouteHook(func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service) {
+		if hubService != nil {
+			cardStoreSvc.SetPublicBaseURLProvider(hubService.PublicBaseURL)
+		}
 		httpapi.RegisterLLMRoutes(mux, adminService, hubService, llmSvc, proxyCfg, authChecker, cardStoreSvc, statsSvc)
 	})
 
@@ -155,6 +162,36 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 		CardStoreSvc:   cardStoreSvc,
 		BindingManager: bindingMgr,
 		UsageRecorder:  usageRecorder,
+	}
+}
+
+func seedLLMCardOrderHAOps(ctx context.Context, haSvc *ha.Service, repo cardstore.PurchaseOrderRepository) {
+	if haSvc == nil || repo == nil {
+		return
+	}
+	orders, _, err := repo.List(ctx, cardstore.OrderFilter{IncludeArchived: true, Limit: 10000})
+	if err != nil {
+		log.Printf("[llm-init] seed llm card order HA ops failed: %v", err)
+		return
+	}
+	seeded := 0
+	for _, order := range orders {
+		if order == nil {
+			continue
+		}
+		exists, err := haSvc.HasEntityVersion(ctx, ha.EntityLLMCardOrder, order.OrderNo)
+		if err != nil {
+			log.Printf("[llm-init] inspect llm card order HA entity version failed: order=%s err=%v", order.OrderNo, err)
+			continue
+		}
+		if exists {
+			continue
+		}
+		haSvc.AppendLLMCardOrder(ctx, order)
+		seeded++
+	}
+	if seeded > 0 {
+		log.Printf("[llm-init] seeded llm card order HA ops: count=%d", seeded)
 	}
 }
 

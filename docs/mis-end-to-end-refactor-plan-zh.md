@@ -9,6 +9,34 @@
 彻底重构 MIS 业务逻辑。
 
 不再以 `dataset / field / action / token` 作为产品主入口。它们保留为底层实现概念。
+本轮按重新开发处理，不以兼容现有 `binding.datasrv`、`mis_data(action=...)`、`/api/v1/data/approvals` 等旧入口为设计前提。
+旧实现只作为领域经验和可复用代码片段参考，不作为新架构的兼容约束。
+
+界面风格继续沿用现有 MaClaw / App Studio 的产品气质：
+
+```text
+安静、清晰、偏工作台
+应用面板、向导、表单、表格、审批卡片延续现有交互习惯
+不做营销式首页
+不做重装饰视觉
+不打断用户已有认知
+```
+
+也就是说：
+
+```text
+后端和业务模型可以重做
+前端视觉语言和操作路径要连续
+```
+
+第一版前端不是重新发明一套 UI，而是在现有风格下替换企业应用内核：
+
+```text
+应用入口仍是 App 面板
+创建入口仍是 App Studio 向导
+业务录入仍是 AG UI 表单/表格/选择器
+审批仍以审批中心、单据审批卡片、通知待办为主要入口
+```
 
 新的主入口是：
 
@@ -31,6 +59,679 @@ AG UI
   -> AG UI 提供输入输出
   -> MIS Tool 统一访问 DataSrv
   -> DataSrv 做权限、审批、审计
+```
+
+## MaClaw App 本质和产品形态
+
+MaClaw App 的本质不是独立业务运行时，而是：
+
+```text
+Skill / Workflow Skill 的 UI 化封装
+能力市场里的分发单位
+用户可点击、可配置、可测试、可发布的应用入口
+```
+
+Skill 提供能力，MaClaw App 提供传统软件式可视化操作界面。
+App 不应该退化成聊天入口，也不应该只是一个表单。
+
+核心公式：
+
+```text
+MaClaw App = Skill + 动态 UI 布局 + 运行契约 + 测试证据 + 市场分发信息
+```
+
+所有 MaClaw App 的界面都应动态生成。
+应用设计时，系统根据 Skill 输入输出、工作流节点、结果类型自动生成界面初稿。
+用户在 App Studio 里可视化调整位置、字段、列、按钮、导航和输出区域。
+设计结果保存到应用信息文件，再经本地测试后上传 Hub 能力市场。
+
+应用信息文件至少保存：
+
+```text
+app metadata
+  名称、图标、分类、版本、来源
+
+binding
+  绑定 Skill 或 Workflow Skill
+
+workspace layout
+  传统软件式工作界面布局
+
+runtime contract
+  输入、输出、结果类型、权限需求
+
+governance
+  风险等级、测试证据、审核状态、发布状态
+```
+
+### App 三种产品形态
+
+第一版 MaClaw App 分三类：
+
+```text
+企业审批型应用 enterprise_approval_app
+  连接企业后台数据
+  带审批/流转
+  需要审批实例数据管理
+  例：报销审批、采购申请、合同审批、付款审批
+
+企业普通应用 enterprise_normal_app
+  连接企业后台数据
+  不带审批实例
+  用于一次性数据录入、查询、业务功能调用
+  例：客户建档、库存查询、发票录入、库存盘点提交
+
+工具型应用 tool_app
+  不连接企业后台数据
+  只做独立功能处理
+  例：PDF 翻译、Excel 清洗、文档生成、图片处理
+```
+
+抽象关系：
+
+```text
+企业审批型应用 = 审批工作流 Skill 的 UI 化封装
+企业普通应用 = 业务操作 Skill 的 UI 化封装
+工具型应用 = 工具 Skill 的 UI 化封装
+```
+
+审批实例数据管理只属于企业审批型应用，不属于所有企业应用。
+
+### 企业审批型应用
+
+企业审批型应用的本质是：
+
+```text
+企业审批型应用
+= 数据录入
++ 审批工作流 Skill 运行
++ 审批实例数据管理
++ 审批实例视图
++ 结果反馈
+```
+
+#### 1. 数据录入
+
+发起节点 UI 收集业务数据、附件、业务对象引用和基础校验结果。
+它生成发起 payload，不直接承担审批流转。
+
+```text
+发起表单
+附件上传
+业务对象选择器
+字段校验
+提交按钮
+```
+
+#### 2. 审批工作流 Skill 运行
+
+审批工作流 Skill 负责流程定义和节点编排。
+节点可以是人工审批、VE 审批、自动判断、MIS 操作、通知、结果处理。
+
+```text
+start_form
+approval
+condition
+mis_operation
+notification
+result
+```
+
+#### 3. 审批实例数据管理
+
+每次提交都会创建审批实例。
+审批实例保存一次运行的事实，不是流程定义，也不是 App manifest。
+
+至少包含：
+
+```text
+实例头
+节点状态
+审批任务
+审批决策
+意见/评论
+附件引用
+事件日志
+当前节点
+当前处理人
+最终结果
+```
+
+#### 4. 审批实例视图
+
+审批型应用内部必须能看实例状态，不只负责发起。
+
+应用内固定视图：
+
+```text
+我的申请
+待我审批
+已处理
+需关注
+全部（有权限才显示）
+```
+
+列表至少显示：
+
+```text
+单号/标题
+发起人
+发起时间
+当前节点
+当前处理人
+状态
+最近意见
+更新时间
+```
+
+详情至少显示：
+
+```text
+录入数据
+附件
+当前节点状态
+审批轨迹
+评论/意见
+操作按钮
+最终结果
+```
+
+审批中心是跨应用聚合入口，不替代每个审批型应用自己的实例视图。
+
+#### 5. 结果反馈
+
+结果反馈可返回审批结果、业务状态、文件、文本、通知或后续动作。
+审批型应用必须让发起人和审批人都能看到当前状态和最终结果。
+
+### 企业普通应用
+
+企业普通应用是一次性业务操作型软件。
+它连接企业后台数据，但不创建审批实例。
+
+典型能力：
+
+```text
+数据录入
+数据查询
+状态更新
+业务功能调用
+外部系统同步
+结果展示
+```
+
+企业普通应用的运行链路：
+
+```text
+用户输入
+  -> 业务 Skill 运行
+  -> MIS 操作
+  -> 返回业务记录/状态/表格/文件/文本
+```
+
+它需要 MIS 能力和业务对象映射，但不需要审批实例数据管理。
+
+### 工具型应用
+
+工具型应用不连接企业后台数据。
+它只做独立能力处理，通常输入文件或参数，输出 artifact 或文本。
+
+典型能力：
+
+```text
+PDF 翻译
+文档生成
+Excel 清洗
+图片处理
+合同摘要
+```
+
+工具型应用不应该出现企业后台、审批、DataSrv、审批实例等概念。
+
+## 动态 UI 和传统软件式工作台
+
+MaClaw App 的界面要像传统业务软件/工具软件，而不是只有表单。
+表单只是组件之一，不是 App 的整体形态。
+
+动态 UI 生成目标是工作台布局：
+
+```text
+应用窗口
+工具栏
+左侧导航或页签
+主工作区
+列表/表格
+详情区
+操作按钮
+状态栏
+输出/附件/历史面板
+```
+
+workspace layout 支持的组件至少包括：
+
+```text
+toolbar
+sidebar
+tabs
+table
+detail_panel
+form_panel
+timeline
+approval_actions
+file_queue
+preview_panel
+output_panel
+status_bar
+dashboard
+split_view
+```
+
+### 企业审批型应用界面
+
+例如报销审批 App：
+
+```text
+顶部工具栏
+  发起报销 / 刷新 / 导出 / 筛选
+
+左侧或页签视图
+  我的申请 / 待我审批 / 已处理 / 需关注 / 全部
+
+中间列表
+  单号 / 申请人 / 金额 / 当前节点 / 状态 / 更新时间
+
+右侧详情
+  基本信息 / 报销明细 / 附件 / 审批轨迹 / 意见
+
+操作区
+  通过 / 拒绝 / 转交 / 加签 / 仅关注
+```
+
+### 企业普通应用界面
+
+例如客户管理 App：
+
+```text
+顶部工具栏
+  新建客户 / 导入 / 刷新 / 导出
+
+左侧导航
+  客户列表 / 最近跟进 / 待完善 / 标签分组
+
+主区表格
+  客户名 / 联系人 / 阶段 / 负责人 / 最近跟进
+
+右侧详情
+  基本资料 / 联系记录 / 附件 / 操作历史
+
+操作区
+  保存 / 新增跟进 / 生成报告
+```
+
+### 工具型应用界面
+
+例如 PDF 翻译 App：
+
+```text
+顶部工具栏
+  添加文件 / 开始翻译 / 取消 / 打开输出目录
+
+左侧文件队列
+  文件列表 / 状态 / 页数 / 进度
+
+主区预览
+  原文/译文对照 / 当前页 / 处理日志
+
+右侧设置
+  目标语言 / 输出格式 / 术语表 / 保留版式
+
+底部输出
+  生成文件 / 文本摘要 / 错误提示
+```
+
+## App 输出结果类型
+
+App 输出不能只理解成文件或文本。
+企业应用还需要状态、记录、任务、回执和业务化错误。
+
+标准输出类型：
+
+```text
+approval_result
+  审批结果：approved / rejected / attention / cancelled / timeout
+  attention 表示需关注、仅查看，不等同通过或拒绝
+
+business_status
+  业务对象状态变化
+
+business_record
+  新建、更新或查询到的企业数据
+
+artifact
+  文件或文档：PDF、DOCX、XLSX、CSV、图片、压缩包
+
+text
+  直接展示的文本内容：摘要、翻译、说明、意见
+
+table
+  结构化结果集：库存列表、客户列表、交易明细
+
+dashboard
+  图表或仪表盘
+
+notification
+  通知、待办、抄送、提醒
+
+external_receipt
+  外部系统动作回执：邮件已发送、ERP 已同步、付款指令已提交
+
+requires_input
+  需补充信息：缺附件、缺字段、需选择对象
+
+error
+  业务化错误：额度不足、权限不够、状态不允许
+```
+
+各类 App 的常见输出：
+
+```text
+企业审批型应用
+  approval_result
+  business_status
+  business_record
+  notification
+  artifact
+  requires_input
+  error
+
+企业普通应用
+  business_record
+  business_status
+  table
+  dashboard
+  artifact
+  text
+  external_receipt
+  requires_input
+  error
+
+工具型应用
+  artifact
+  text
+  table
+  dashboard
+  requires_input
+  error
+```
+
+## MaClaw App 超级 Skill 和依赖模型
+
+MaClaw App 本质上是一个带特殊 App 数据的超级 Skill。
+它不是普通 Skill 的外部快捷方式，而是一个可分发、可安装、可运行的 Skill 产品包。
+
+```text
+MaClaw App Skill
+  = 普通 Skill 能力
+  + app metadata
+  + workspace layout
+  + runtime contract
+  + governance metadata
+  + dependency declaration
+  + market distribution metadata
+```
+
+它自己可以承担入口、编排和 UI，也可以依赖其它 Skill 执行实际动作。
+这些依赖必须显式声明、安装时检查，并能从当前 Hub 或能力市场下载安装。
+
+### 依赖类型
+
+MaClaw App 可声明多类依赖：
+
+```text
+runtime skill
+  实际动作 Skill，例如 PDF 翻译、发票识别、客户建档、报销单写入
+
+workflow skill
+  审批工作流 Skill，例如 expense-approval-workflow
+
+ui component skill
+  可复用 UI/AG UI 组件能力，例如字段映射器、文件预览器
+
+connector skill
+  外部系统连接能力，例如 ERP 同步、邮件发送、企业微信通知
+
+policy skill
+  权限、风控、校验能力，例如额度检查、合同风险检查
+```
+
+### 应用信息文件中的依赖声明
+
+应用信息文件必须能表达依赖 Skill：
+
+```json
+{
+  "schema": "maclaw.app.v1",
+  "app": {
+    "id": "expense-approval",
+    "name": "报销审批",
+    "kind": "enterprise_approval_app",
+    "binding": {
+      "appSkill": {
+        "id": "expense-approval-app",
+        "version": "1.0.0"
+      }
+    },
+    "dependencies": {
+      "skills": [
+        {
+          "id": "expense-approval-workflow",
+          "version": ">=1.0.0 <2.0.0",
+          "kind": "workflow_skill",
+          "required": true,
+          "source": "hub"
+        },
+        {
+          "id": "invoice-ocr",
+          "version": ">=0.3.0",
+          "kind": "runtime_skill",
+          "required": false,
+          "source": "market"
+        }
+      ]
+    }
+  }
+}
+```
+
+关键字段：
+
+```text
+id
+  Skill 标识
+
+version
+  版本约束，不只固定版本
+
+kind
+  依赖用途：runtime_skill / workflow_skill / ui_component_skill / connector_skill / policy_skill
+
+required
+  是否必须安装；可选依赖缺失时应用仍可安装，但相关能力降级
+
+source
+  优先来源：local / hub / market / builtin
+
+capabilities
+  可选，声明需要该 Skill 提供哪些能力
+```
+
+### 安装时依赖检查
+
+安装 MaClaw App 时必须执行依赖检查：
+
+```text
+1. 读取 app manifest
+2. 解析 dependencies.skills
+3. 检查本地已安装 Skill
+4. 检查版本是否满足约束
+5. 缺失或版本不满足时，从本 Hub 查询
+6. Hub 没有时按策略查询能力市场
+7. 展示安装计划
+8. 用户确认
+9. 安装/升级依赖 Skill
+10. 安装 App Skill
+11. 写安装记录和审计
+12. 运行依赖健康检查
+```
+
+当前落地接口：
+
+```text
+PlanMaclawAppInstall(packageJSON)
+  后端权威解析 maclaw.app.v1 / maclaw.app.pack.v1，汇总 appSkill 和 dependencies.skills，返回已安装、缺失、可选缺失、阻断信息。
+
+InstallMaclawAppDependencies(packageJSON)
+  安装缺失的必需 Skill 依赖；hub/skillhub 走 SkillHub，market/skillmarket 走 SkillMarket，enterprise_hub 走企业 Hub；local/builtin 等不能自动安装的来源保持 blocked。
+
+RecordMaclawAppInstall(packageJSON, source)
+  写入本机 app_install_records.json，保存 App、安装来源、包指纹、依赖快照、必需依赖是否仍缺失。重复安装同一 App 时按 app_id upsert，保留最新记录。
+
+ListMaclawAppInstalls(limit)
+  读取本机安装记录，用于后续管理页、审计页和故障诊断。
+
+前端市场导入流程
+  粘贴应用包后先预览依赖；点击安装时如有必需依赖缺失，先调用 InstallMaclawAppDependencies，再安装 MaClaw App 面板入口，并后台写安装记录。
+
+运行前健康检查
+  已安装的 market/local/skill App 如显式声明 appSkill 或 dependencies.skills，执行前先调用 PlanMaclawAppInstall 检查必需依赖；缺失时阻止运行并展示依赖错误。
+```
+
+安装计划必须可视化展示：
+
+```text
+将安装 App：报销审批
+将安装依赖：expense-approval-workflow 1.2.0
+将升级依赖：invoice-ocr 0.2.1 -> 0.3.4
+可选依赖缺失：erp-sync，安装后可启用财务同步
+风险权限变化：action:expense.submit、file:invoice.read
+```
+
+### 依赖失败处理
+
+依赖处理规则：
+
+```text
+必需依赖缺失
+  阻止安装或阻止启用
+
+必需依赖版本不满足
+  提示升级，升级失败则阻止安装
+
+可选依赖缺失
+  允许安装，但 UI 中标记相关功能不可用
+
+依赖权限超出 App 已声明权限
+  阻止安装，要求重新审核
+
+依赖来源不可信
+  进入人工确认或企业审核
+```
+
+### 运行时依赖检查
+
+App 启动前仍需快速检查依赖状态：
+
+```text
+依赖是否存在
+版本是否仍满足
+Skill 是否启用
+权限是否仍有效
+Hub/本地运行器是否可用
+```
+
+如果依赖失效，应用不应该静默失败。
+应显示业务化状态：
+
+```text
+报销审批暂不可用：审批工作流 Skill 未安装或已停用。
+[安装依赖] [查看详情]
+```
+
+### 能力市场分发要求
+
+Hub 能力市场发布 MaClaw App 时，必须带依赖清单和测试证据：
+
+```text
+app skill 包
+依赖 skill 清单
+依赖版本约束
+依赖权限摘要
+workspace layout
+runtime contract
+测试运行证据
+依赖安装验证结果
+```
+
+市场审核需要检查：
+
+```text
+依赖是否存在
+依赖是否可信
+版本约束是否合理
+权限是否过宽
+是否能完整安装
+是否能在干净环境中跑通测试
+```
+
+## App Studio 和能力市场闭环
+
+用户的一切设计操作都必须可视化。
+App Studio 不以 JSON 编辑器为主入口。
+
+设计流程：
+
+```text
+1. 选择应用类型
+   企业审批型 / 企业普通 / 工具型
+
+2. 选择或生成 Skill
+   审批型：workflow skill
+   企业普通：business skill
+   工具型：tool skill
+
+3. 自动生成 UI 初稿
+   根据 Skill 输入输出、工作流节点、字段、结果类型生成
+
+4. 用户可视化调节界面
+   字段顺序
+   分组
+   显隐
+   表格列
+   默认筛选
+   详情区模块
+   按钮位置
+   输出展示方式
+
+5. 保存应用信息文件
+   maclaw.app.json / maclaw.apps.json
+
+6. 本地测试
+   工具型至少跑通一次 Skill
+   企业普通至少跑通一次业务操作
+   企业审批型至少发起一条测试实例并验证实例视图
+
+7. 上传 Hub 能力市场
+   上传 Skill + App manifest + UI layout + 测试证据
+```
+
+能力市场分发的不是单一脚本，而是完整 App 能力包：
+
+```text
+Skill / Workflow Skill
+App manifest
+workspace layout
+runtime contract
+test evidence
+governance metadata
 ```
 
 ## 新架构分层

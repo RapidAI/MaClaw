@@ -43,6 +43,8 @@
     draggingNodeType: null,
     connectingFrom: null, // node ID when drawing an edge
     selectedEdgeId: null,
+    contextMenu: null,
+    contextMenuReturnFocus: null,
   };
 
   // --- DOM refs ---
@@ -187,6 +189,19 @@
     connectHint: 'Connect mode: click a source node, then click a target node.',
     deleteEdgeHint: 'Delete line mode: click a connector line to remove it.',
     edgeConnectorLabel: 'Connector from {source} to {target}',
+    contextMenuLabel: 'Canvas context menu',
+    editNode: 'Edit Node',
+    duplicateNode: 'Duplicate Node',
+    copySuffix: '{label} Copy',
+    startConnection: 'Start Connection',
+    deleteIncomingEdges: 'Delete Incoming Lines',
+    deleteOutgoingEdges: 'Delete Outgoing Lines',
+    deleteConnectedEdges: 'Delete Connected Lines',
+    deleteEdge: 'Delete Line',
+    addNodeType: 'Add {type}',
+    canvasContextSelect: 'Switch to Select',
+    canvasContextConnect: 'Switch to Connect',
+    contextMenuReadOnly: 'Review preview is read-only',
     trigger: 'Trigger',
     form: 'Form',
     approval: 'Approval',
@@ -215,6 +230,7 @@
     sub_process: { labelKey: 'subProcess', icon: '\u21C4', color: '#ede7f6', textColor: '#4527a0' },
     terminal: { labelKey: 'terminal', icon: '\u25A0', color: '#efebe9', textColor: '#4e342e' },
   };
+  const CONTEXT_MENU_ADD_NODE_TYPES = ['trigger', 'form', 'approval', 'condition_branch', 'action', 'notification', 'sub_process', 'terminal'];
 
   function nodeTypeLabel(type) {
     return NODE_TYPES[type] ? tr(NODE_TYPES[type].labelKey) : type;
@@ -227,6 +243,44 @@
 
   function generateEdgeId() {
     return 'edge_' + (state.nextEdgeId++);
+  }
+
+  function clampContextMenuPosition(x, y, menuWidth, menuHeight, viewportWidth, viewportHeight) {
+    var margin = 8;
+    var maxX = Math.max(margin, viewportWidth - menuWidth - margin);
+    var maxY = Math.max(margin, viewportHeight - menuHeight - margin);
+    return {
+      x: Math.min(Math.max(margin, x), maxX),
+      y: Math.min(Math.max(margin, y), maxY)
+    };
+  }
+
+  function isContextMenuKey(e) {
+    return e && (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey));
+  }
+
+  function cloneConfig(config) {
+    try {
+      return JSON.parse(JSON.stringify(config || {}));
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function elementCenterPoint(el) {
+    var rect = el.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2
+    };
+  }
+
+  function canvasDropPositionFromClient(clientX, clientY) {
+    var rect = canvasArea.getBoundingClientRect();
+    return {
+      x: Math.max(0, clientX - rect.left - 80),
+      y: Math.max(0, clientY - rect.top - 30)
+    };
   }
 
   function getWorkflowName() {
@@ -936,6 +990,172 @@
     });
   });
 
+  function ensureContextMenu() {
+    var menu = document.getElementById('workflowContextMenu');
+    if (!menu) {
+      menu = document.createElement('div');
+      menu.id = 'workflowContextMenu';
+      menu.className = 'workflow-context-menu';
+      menu.setAttribute('role', 'menu');
+      menu.hidden = true;
+      document.body.appendChild(menu);
+      menu.addEventListener('click', function (e) {
+        var item = e.target.closest('[data-context-action]');
+        if (!item || item.getAttribute('aria-disabled') === 'true') return;
+        e.preventDefault();
+        runContextMenuAction(item.getAttribute('data-context-action'));
+      });
+      menu.addEventListener('keydown', function (e) {
+        var items = Array.prototype.slice.call(menu.querySelectorAll('[data-context-action]:not([aria-disabled="true"])'));
+        var index = items.indexOf(document.activeElement);
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          hideContextMenu({ restoreFocus: true });
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          (items[index + 1] || items[0] || menu).focus();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          (items[index - 1] || items[items.length - 1] || menu).focus();
+        } else if (e.key === 'Home') {
+          e.preventDefault();
+          (items[0] || menu).focus();
+        } else if (e.key === 'End') {
+          e.preventDefault();
+          (items[items.length - 1] || menu).focus();
+        } else if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          if (document.activeElement && document.activeElement.hasAttribute('data-context-action')) {
+            runContextMenuAction(document.activeElement.getAttribute('data-context-action'));
+          }
+        }
+      });
+    }
+    menu.setAttribute('aria-label', tr('contextMenuLabel'));
+    return menu;
+  }
+
+  function showContextMenu(targetType, targetId, clientX, clientY, canvasPosition) {
+    hideContextMenu();
+    var menu = ensureContextMenu();
+    var items = buildContextMenuItems(targetType, targetId);
+    if (!items.length) return;
+    state.contextMenu = { targetType: targetType, targetId: targetId, canvasPosition: canvasPosition || null };
+    state.contextMenuReturnFocus = document.activeElement && typeof document.activeElement.focus === 'function' ? document.activeElement : null;
+    menu.innerHTML = items.map(renderContextMenuItem).join('');
+    menu.hidden = false;
+    var rect = menu.getBoundingClientRect();
+    var pos = clampContextMenuPosition(clientX, clientY, rect.width || 200, rect.height || 40, window.innerWidth || 1024, window.innerHeight || 768);
+    menu.style.left = pos.x + 'px';
+    menu.style.top = pos.y + 'px';
+    var firstEnabled = menu.querySelector('[data-context-action]:not([aria-disabled="true"])');
+    if (firstEnabled) firstEnabled.focus({ preventScroll: true });
+  }
+
+  function hideContextMenu(options) {
+    var opts = options || {};
+    var menu = document.getElementById('workflowContextMenu');
+    state.contextMenu = null;
+    if (!menu) return;
+    menu.hidden = true;
+    menu.innerHTML = '';
+    if (opts.restoreFocus && state.contextMenuReturnFocus && document.contains(state.contextMenuReturnFocus)) {
+      state.contextMenuReturnFocus.focus({ preventScroll: true });
+    }
+    state.contextMenuReturnFocus = null;
+  }
+
+  function isContextMenuOpen() {
+    var menu = document.getElementById('workflowContextMenu');
+    return !!(menu && !menu.hidden);
+  }
+
+  function renderContextMenuItem(item) {
+    if (item.separator) return '<div class="workflow-context-menu-separator" role="separator"></div>';
+    var disabled = item.disabled ? ' aria-disabled="true" tabindex="-1"' : ' aria-disabled="false" tabindex="0"';
+    var danger = item.danger ? ' danger' : '';
+    var icon = item.icon ? '<span class="workflow-context-menu-icon" aria-hidden="true">' + escapeHtml(item.icon) + '</span>' : '';
+    return '<button type="button" role="menuitem" class="workflow-context-menu-item' + danger + '" data-context-action="' + escapeAttr(item.action) + '"' + disabled + '>' + icon + '<span>' + escapeHtml(item.label) + '</span></button>';
+  }
+
+  function buildContextMenuItems(targetType, targetId) {
+    var readOnly = isReadOnlyPreview();
+    if (targetType === 'node') {
+      var node = state.nodes.find(function (n) { return n.id === targetId; });
+      if (!node) return [];
+      var incoming = state.edges.some(function (e) { return e.target_id === targetId; });
+      var outgoing = state.edges.some(function (e) { return e.source_id === targetId; });
+      return [
+        { action: 'edit_node', label: tr('editNode'), icon: '\u2699' },
+        { action: 'duplicate_node', label: tr('duplicateNode'), icon: '\u29c9', disabled: readOnly },
+        { action: 'start_connection', label: tr('startConnection'), icon: '\u2192', disabled: readOnly || state.nodes.length < 2 },
+        { separator: true },
+        { action: 'delete_incoming_edges', label: tr('deleteIncomingEdges'), icon: '\u2193', disabled: readOnly || !incoming },
+        { action: 'delete_outgoing_edges', label: tr('deleteOutgoingEdges'), icon: '\u2191', disabled: readOnly || !outgoing },
+        { action: 'delete_connected_edges', label: tr('deleteConnectedEdges'), icon: '\u2573', disabled: readOnly || (!incoming && !outgoing) },
+        { separator: true },
+        { action: 'delete_node', label: tr('deleteNode'), icon: '\u232b', danger: true, disabled: readOnly }
+      ];
+    }
+    if (targetType === 'edge') {
+      var edge = state.edges.find(function (e) { return e.id === targetId; });
+      if (!edge) return [];
+      return [
+        { action: 'select_edge', label: edgeAriaLabel(edge), icon: '\u2501' },
+        { separator: true },
+        { action: 'delete_edge', label: tr('deleteEdge'), icon: '\u232b', danger: true, disabled: readOnly }
+      ];
+    }
+    if (targetType === 'canvas') {
+      var addItems = CONTEXT_MENU_ADD_NODE_TYPES.map(function (type) {
+        return { action: 'add_node:' + type, label: tr('addNodeType', { type: nodeTypeLabel(type) }), icon: NODE_TYPES[type].icon, disabled: readOnly };
+      });
+      return addItems.concat([
+        { separator: true },
+        { action: 'set_select_mode', label: tr('canvasContextSelect'), icon: '\u25a1' },
+        { action: 'set_connect_mode', label: tr('canvasContextConnect'), icon: '\u2192', disabled: readOnly || state.nodes.length < 2 }
+      ]);
+    }
+    return readOnly ? [{ action: 'noop', label: tr('contextMenuReadOnly'), disabled: true }] : [];
+  }
+
+  function runContextMenuAction(action) {
+    var menuState = state.contextMenu;
+    if (!menuState) return;
+    var targetId = menuState.targetId;
+    var canvasPosition = menuState.canvasPosition;
+    hideContextMenu({ restoreFocus: false });
+    if (action === 'noop') return;
+    if (action === 'edit_node') {
+      selectNode(targetId);
+    } else if (action === 'duplicate_node') {
+      duplicateNode(targetId);
+    } else if (action === 'start_connection') {
+      setToolMode('connect');
+      var el = canvasNodes.querySelector('[data-node-id="' + targetId + '"]');
+      if (el) handleConnectNodeClick(targetId, el);
+    } else if (action === 'delete_incoming_edges') {
+      deleteEdgesForNode(targetId, 'incoming');
+    } else if (action === 'delete_outgoing_edges') {
+      deleteEdgesForNode(targetId, 'outgoing');
+    } else if (action === 'delete_connected_edges') {
+      deleteEdgesForNode(targetId, 'connected');
+    } else if (action === 'delete_node') {
+      deleteNode(targetId);
+    } else if (action === 'select_edge') {
+      selectEdge(targetId);
+    } else if (action === 'delete_edge') {
+      deleteEdge(targetId);
+    } else if (action.indexOf('add_node:') === 0) {
+      addNodeToCanvas(action.slice('add_node:'.length), canvasPosition || { x: 120, y: 90 });
+    } else if (action === 'set_select_mode') {
+      setToolMode('select');
+    } else if (action === 'set_connect_mode') {
+      setToolMode('connect');
+    }
+  }
+
   function addNodeToCanvas(nodeType, position) {
     if (isReadOnlyPreview()) return;
     if (!nodeType || !NODE_TYPES[nodeType]) return;
@@ -947,6 +1167,30 @@
       label_is_default: true,
       position: position,
       config: getDefaultConfig(nodeType),
+    };
+    state.nodes.push(node);
+    markDirty();
+    renderNode(node);
+    updateEmptyState();
+    if (state.toolMode !== 'select') setToolMode('select');
+    selectNode(node.id);
+  }
+
+  function duplicateNode(nodeId) {
+    if (isReadOnlyPreview()) return;
+    var source = state.nodes.find(function (n) { return n.id === nodeId; });
+    if (!source) return;
+    var node = {
+      id: generateNodeId(),
+      type: source.type,
+      label: tr('copySuffix', { label: source.label || nodeTypeLabel(source.type) }),
+      default_label_key: source.default_label_key,
+      label_is_default: false,
+      position: {
+        x: Math.max(0, Number(source.position && source.position.x || 0) + 32),
+        y: Math.max(0, Number(source.position && source.position.y || 0) + 32)
+      },
+      config: cloneConfig(source.config),
     };
     state.nodes.push(node);
     markDirty();
@@ -1080,6 +1324,13 @@
     });
 
     el.addEventListener('keydown', function (e) {
+      if (isContextMenuKey(e)) {
+        e.preventDefault();
+        selectNode(node.id);
+        var point = elementCenterPoint(el);
+        showContextMenu('node', node.id, point.x, point.y);
+        return;
+      }
       if (e.key !== 'Enter' && e.key !== ' ') return;
       e.preventDefault();
       if (isReadOnlyPreview()) {
@@ -1100,6 +1351,13 @@
       if (isReadOnlyPreview()) return;
       if (state.toolMode === 'delete_edge') return;
       handleConnectNodeClick(node.id, el);
+    });
+
+    el.addEventListener('contextmenu', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      selectNode(node.id);
+      showContextMenu('node', node.id, e.clientX, e.clientY);
     });
 
     canvasNodes.appendChild(el);
@@ -1443,6 +1701,7 @@
     updateToolModeUI();
     renderWorkflowLibrary();
     updateDocumentTitle();
+    hideContextMenu();
     if (state.selectedNodeId) showConfigPanel(state.selectedNodeId);
   }
 
@@ -1821,6 +2080,21 @@
     markDirty();
   }
 
+  function deleteEdgesForNode(nodeId, direction) {
+    if (isReadOnlyPreview()) return;
+    var before = state.edges.length;
+    state.edges = state.edges.filter(function (edge) {
+      if (direction === 'incoming') return edge.target_id !== nodeId;
+      if (direction === 'outgoing') return edge.source_id !== nodeId;
+      return edge.source_id !== nodeId && edge.target_id !== nodeId;
+    });
+    if (state.edges.length === before) return;
+    if (state.selectedEdgeId && !state.edges.some(function (edge) { return edge.id === state.selectedEdgeId; })) state.selectedEdgeId = null;
+    renderEdges();
+    updateToolModeUI();
+    markDirty();
+  }
+
   function selectEdge(edgeId) {
     state.selectedEdgeId = edgeId;
     state.selectedNodeId = null;
@@ -1915,7 +2189,20 @@
         e.stopPropagation();
         activateEdge(edge.id);
       });
+      hitPath.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        selectEdge(edge.id);
+        showContextMenu('edge', edge.id, e.clientX, e.clientY);
+      });
       hitPath.addEventListener('keydown', function (e) {
+        if (isContextMenuKey(e)) {
+          e.preventDefault();
+          selectEdge(edge.id);
+          var point = elementCenterPoint(hitPath);
+          showContextMenu('edge', edge.id, point.x, point.y);
+          return;
+        }
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           activateEdge(edge.id);
@@ -1946,9 +2233,28 @@
     deselectNode();
   });
 
+  canvasArea.addEventListener('contextmenu', function (e) {
+    if (!(e.target === canvasArea || e.target === canvasEdges || e.target.tagName === 'svg' || e.target.classList.contains('canvas-grid') || e.target === canvasNodes)) return;
+    e.preventDefault();
+    deselectNode();
+    showContextMenu('canvas', null, e.clientX, e.clientY, canvasDropPositionFromClient(e.clientX, e.clientY));
+  });
+
+  document.addEventListener('mousedown', function (e) {
+    var menu = document.getElementById('workflowContextMenu');
+    if (menu && !menu.hidden && !menu.contains(e.target)) hideContextMenu();
+  });
+
+  window.addEventListener('resize', hideContextMenu);
+  window.addEventListener('blur', hideContextMenu);
+
   // --- Keyboard shortcuts ---
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (isContextMenuOpen()) {
+        e.preventDefault();
+        return;
+      }
       if (state.selectedNodeId && !isEditingField()) {
         e.preventDefault();
         deleteNode(state.selectedNodeId);
@@ -1958,6 +2264,12 @@
       }
     }
     if (e.key === 'Escape') {
+      if (isContextMenuOpen()) {
+        e.preventDefault();
+        hideContextMenu({ restoreFocus: true });
+        return;
+      }
+      hideContextMenu();
       deselectNode();
       clearConnectingState();
       if (state.toolMode !== 'select') setToolMode('select');

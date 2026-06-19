@@ -258,6 +258,9 @@ type App struct {
 
 	// Capability market sync: permanently skipped capabilities (with TTL).
 	capabilitySyncPermanentSkips sync.Map // capability ID -> time.Time
+
+	// Skill operation recorder: records tool calls and generates portable skills.
+	skillRecorder *SkillOperationRecorder
 }
 
 func (a *App) ensureExperienceLifecycleSink() lifecycle.EventSink {

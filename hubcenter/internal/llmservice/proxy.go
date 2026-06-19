@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -49,17 +50,24 @@ type ProxyResponse struct {
 }
 
 // HandleProxyRequest processes an incoming LLM proxy request from a Hub.
-// Flow: auth → cache check → provider dispatch → forward → record usage → cache write.
+// Flow: auth -> cache check -> provider dispatch -> forward -> record usage -> cache write.
 func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest) (*ProxyResponse, error) {
 	if cfg == nil || cfg.Service == nil || cfg.AuthChecker == nil {
 		return nil, fmt.Errorf("proxy not configured")
 	}
+	if req == nil {
+		return nil, fmt.Errorf("proxy request is required")
+	}
+	if req.Body == nil {
+		return nil, fmt.Errorf("proxy request body is required")
+	}
+	ctx = WithUsageContext(ctx, req.HubID, req.TenantID)
 
 	// 1. Extract model from request body
-	model := req.Model
+	model := strings.TrimSpace(req.Model)
 	if model == "" {
 		if m, ok := req.Body["model"].(string); ok {
-			model = m
+			model = strings.TrimSpace(m)
 		}
 	}
 	if model == "" {
@@ -81,10 +89,10 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 	var matchedGroup *llmpool.ServiceGroup
 	var dispatchModel *llmpool.DispatchModel
 	for i, group := range reg.ServiceGroups {
-		for _, m := range group.Models {
+		for j, m := range group.Models {
 			if m.Name == model {
 				matchedGroup = &reg.ServiceGroups[i]
-				dispatchModel = buildDispatchModel(reg, &m)
+				dispatchModel = buildDispatchModel(reg, &reg.ServiceGroups[i].Models[j])
 				break
 			}
 		}
@@ -130,7 +138,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 			}
 			return &ProxyResponse{
 				StatusCode: http.StatusOK,
-				Body:       cached.Payload,
+				Body:       stripProxyResponseUsage(cached.Payload),
 				ProviderID: cached.ProviderID,
 				CacheHit:   true,
 			}, nil
@@ -138,14 +146,15 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 	}
 
 	// 5. Order providers by capability match
-	orderedProviderIDs := llmpool.OrderProviders(req.Body, dispatchModel)
-	if len(orderedProviderIDs) == 0 {
+	orderedRoutes := llmpool.OrderProviderRoutes(req.Body, dispatchModel)
+	if len(orderedRoutes) == 0 {
 		return nil, fmt.Errorf("no providers configured for model %q", model)
 	}
 
 	// 6. Try providers in order (with concurrency + resilience)
 	var lastErr error
-	for _, providerID := range orderedProviderIDs {
+	for _, route := range orderedRoutes {
+		providerID := route.ProviderID
 		provider := findProvider(reg, providerID)
 		if provider == nil {
 			lastErr = fmt.Errorf("provider %s referenced in model but not found in registry", providerID)
@@ -174,7 +183,8 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		}
 
 		// Forward request
-		resp, fwdErr := forwardToProvider(ctx, cfg.HTTPClient, provider, req.Body, model)
+		upstreamModel := proxyUpstreamModelForRoute(route, provider, model)
+		resp, fwdErr := forwardToProvider(ctx, cfg.HTTPClient, provider, req.Body, upstreamModel, model)
 		release()
 
 		if fwdErr != nil || (resp != nil && shouldRetryProxyProviderStatus(resp.StatusCode)) {
@@ -194,11 +204,21 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 			cfg.Resilience.RecordSuccess(providerID)
 		}
 
+		if resp.StatusCode >= http.StatusBadRequest {
+			return &ProxyResponse{
+				StatusCode: resp.StatusCode,
+				Body:       resp.Body,
+				ProviderID: providerID,
+				CacheHit:   false,
+			}, nil
+		}
+
 		// Parse token usage from response
-		inputTokens, outputTokens := extractTokenUsage(resp.Body)
+		inputTokens, outputTokens, respBody := proxyResponseUsageWithFallback(req.Body, resp.Body)
+		resp.Body = respBody
 
 		// Calculate credits
-		multiplier := proxyCreditMultiplier(dispatchModel, providerID)
+		multiplier := proxyCreditMultiplierForRoute(dispatchModel, route)
 		if multiplier <= 0 {
 			multiplier = 1
 		}
@@ -207,7 +227,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		// Deduct credits
 		if requiresGrant && auth != nil {
 			if err := cfg.AuthChecker.DeductCredits(ctx, auth.ID, credits); err != nil {
-				// Log but don't fail — tokens already consumed upstream.
+				// Log but don't fail: tokens already consumed upstream.
 				// Reconciliation can fix this from usage records.
 				log.Printf("[llm-proxy] WARN: credits deduction failed auth=%s credits=%.2f: %v", auth.ID, credits, err)
 			}
@@ -285,7 +305,26 @@ type providerForwardResponse struct {
 	Body       []byte
 }
 
-func forwardToProvider(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, body map[string]any, model string) (*providerForwardResponse, error) {
+func proxyUpstreamModelForRoute(route llmpool.DispatchProviderRoute, provider *llmpool.ProviderConfig, logicalModel string) string {
+	if route.Model != "" {
+		return route.Model
+	}
+	if provider != nil {
+		switch len(provider.Models) {
+		case 1:
+			return provider.Models[0]
+		default:
+			for _, m := range provider.Models {
+				if m == logicalModel {
+					return logicalModel
+				}
+			}
+		}
+	}
+	return logicalModel
+}
+
+func forwardToProvider(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string) (*providerForwardResponse, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("provider is required")
 	}
@@ -294,7 +333,7 @@ func forwardToProvider(ctx context.Context, client *http.Client, provider *llmpo
 		Name:                     provider.Name,
 		APIURL:                   provider.APIURL,
 		APIKey:                   provider.APIKey,
-		Model:                    model,
+		Model:                    upstreamModel,
 		Protocol:                 provider.Protocol,
 		WireAPI:                  provider.WireAPI,
 		UpstreamTimeoutSec:       provider.UpstreamTimeoutSec,
@@ -306,7 +345,7 @@ func forwardToProvider(ctx context.Context, client *http.Client, provider *llmpo
 		FailureBackoffBaseMS:     provider.FailureBackoffBaseMS,
 		FailureBackoffMaxMS:      provider.FailureBackoffMaxMS,
 	}
-	respBody, statusCode, err := corelib.ForwardLLMEndpointProviderRequest(ctx, endpointProvider, body, client, model)
+	respBody, statusCode, err := corelib.ForwardLLMEndpointProviderRequest(ctx, endpointProvider, body, client, responseModel)
 	if err != nil {
 		return nil, fmt.Errorf("forward to %s: %w", provider.ID, err)
 	}
@@ -317,16 +356,253 @@ func forwardToProvider(ctx context.Context, client *http.Client, provider *llmpo
 }
 
 func extractTokenUsage(respBody []byte) (inputTokens, outputTokens int64) {
-	var parsed struct {
-		Usage struct {
-			PromptTokens     int64 `json:"prompt_tokens"`
-			CompletionTokens int64 `json:"completion_tokens"`
-		} `json:"usage"`
+	var payload map[string]any
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return 0, 0
 	}
-	if err := json.Unmarshal(respBody, &parsed); err == nil {
-		return parsed.Usage.PromptTokens, parsed.Usage.CompletionTokens
+	usage, _ := payload["usage"].(map[string]any)
+	if usage == nil {
+		return 0, 0
 	}
-	return 0, 0
+	return extractTokenUsageFromMap(usage)
+}
+
+func proxyResponseUsageWithFallback(reqBody map[string]any, respBody []byte) (inputTokens, outputTokens int64, patchedBody []byte) {
+	patchedBody = respBody
+	inputTokens, outputTokens = extractTokenUsage(respBody)
+	if inputTokens > 0 && outputTokens > 0 {
+		return inputTokens, outputTokens, patchedBody
+	}
+
+	estimatedInput, estimatedOutput := estimateProxyTokenUsage(reqBody, respBody)
+	if inputTokens == 0 && outputTokens == 0 {
+		inputTokens, outputTokens = estimatedInput, estimatedOutput
+		if inputTokens > 0 || outputTokens > 0 {
+			patchedBody = ensureProxyResponseUsage(respBody, inputTokens, outputTokens)
+		}
+		return inputTokens, outputTokens, patchedBody
+	}
+
+	if inputTokens == 0 {
+		inputTokens = estimatedInput
+	}
+	if outputTokens == 0 {
+		outputTokens = estimatedOutput
+	}
+	if inputTokens > 0 && outputTokens > 0 {
+		patchedBody = completeProxyResponseUsage(respBody, inputTokens, outputTokens)
+	}
+	return inputTokens, outputTokens, patchedBody
+}
+func estimateProxyTokenUsage(reqBody map[string]any, respBody []byte) (inputTokens, outputTokens int64) {
+	if reqBody != nil {
+		for _, key := range []string{"messages", "input", "instructions", "tools", "tool_choice", "response_format"} {
+			if value, ok := reqBody[key]; ok {
+				inputTokens += estimateProxyRequestTokens(key, value)
+			}
+		}
+	}
+	outputTokens = estimateProxyResponseTokens(respBody)
+	return inputTokens, outputTokens
+}
+
+func estimateProxyRequestTokens(key string, v any) int64 {
+	switch key {
+	case "tools", "tool_choice", "response_format":
+		return estimateProxyJSONTokens(v)
+	default:
+		return estimateProxyAnyTokens(v)
+	}
+}
+
+func estimateProxyAnyTokens(v any) int64 {
+	if text := strings.TrimSpace(flattenProxyText(v)); text != "" {
+		return int64(corelib.EstimateTextTokens(text))
+	}
+	return estimateProxyJSONTokens(v)
+}
+
+func estimateProxyJSONTokens(v any) int64 {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return 0
+	}
+	return int64(corelib.EstimateTextTokens(string(data)))
+}
+
+func estimateProxyResponseTokens(respBody []byte) int64 {
+	var payload map[string]any
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return int64(corelib.EstimateTextTokens(string(respBody)))
+	}
+	var text strings.Builder
+	appendPart := func(part string) {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return
+		}
+		text.WriteString(part)
+		text.WriteByte('\n')
+	}
+	if choices, ok := payload["choices"].([]any); ok {
+		for _, item := range choices {
+			choice, _ := item.(map[string]any)
+			message, _ := choice["message"].(map[string]any)
+			appendPart(flattenProxyText(message["content"]))
+			appendPart(flattenProxyText(message["tool_calls"]))
+			appendPart(flattenProxyText(message["function_call"]))
+			appendPart(flattenProxyText(choice["text"]))
+		}
+	}
+	appendPart(flattenProxyText(payload["output"]))
+	if text.Len() == 0 {
+		if data, err := json.Marshal(payload); err == nil {
+			return int64(corelib.EstimateTextTokens(string(data)))
+		}
+	}
+	return int64(corelib.EstimateTextTokens(text.String()))
+}
+
+func flattenProxyText(v any) string {
+	switch val := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return val
+	case []any:
+		parts := make([]string, 0, len(val))
+		for _, item := range val {
+			parts = append(parts, flattenProxyText(item))
+		}
+		return strings.Join(parts, " ")
+	case map[string]any:
+		parts := make([]string, 0, len(val))
+		for _, key := range []string{"text", "content", "input", "output", "input_text", "output_text", "arguments", "name", "description", "function", "parameters", "schema"} {
+			parts = append(parts, flattenProxyText(val[key]))
+		}
+		return strings.Join(parts, " ")
+	default:
+		return ""
+	}
+}
+
+func completeProxyResponseUsage(respBody []byte, inputTokens, outputTokens int64) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return respBody
+	}
+	usage, _ := payload["usage"].(map[string]any)
+	if usage == nil {
+		return ensureProxyResponseUsage(respBody, inputTokens, outputTokens)
+	}
+	if usageNumber(usage["prompt_tokens"]) == 0 && usageNumber(usage["input_tokens"]) == 0 {
+		usage["prompt_tokens"] = inputTokens
+	}
+	if usageNumber(usage["completion_tokens"]) == 0 && usageNumber(usage["output_tokens"]) == 0 {
+		usage["completion_tokens"] = outputTokens
+	}
+	if usageNumber(usage["total_tokens"]) == 0 {
+		usage["total_tokens"] = inputTokens + outputTokens
+	}
+	usage["estimated"] = true
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return respBody
+	}
+	return data
+}
+
+func ensureProxyResponseUsage(respBody []byte, inputTokens, outputTokens int64) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return respBody
+	}
+	if usage, ok := payload["usage"].(map[string]any); ok {
+		in, out := extractTokenUsageFromMap(usage)
+		if in > 0 || out > 0 {
+			return respBody
+		}
+	}
+	payload["usage"] = map[string]any{
+		"prompt_tokens":     inputTokens,
+		"completion_tokens": outputTokens,
+		"total_tokens":      inputTokens + outputTokens,
+		"estimated":         true,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return respBody
+	}
+	return data
+}
+
+func stripProxyResponseUsage(respBody []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return respBody
+	}
+	if _, ok := payload["usage"]; !ok {
+		return respBody
+	}
+	delete(payload, "usage")
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return respBody
+	}
+	return data
+}
+
+func extractTokenUsageFromMap(usage map[string]any) (inputTokens, outputTokens int64) {
+	inputTokens = firstPositiveInt64(usageNumber(usage["prompt_tokens"]), usageNumber(usage["input_tokens"]))
+	outputTokens = firstPositiveInt64(usageNumber(usage["completion_tokens"]), usageNumber(usage["output_tokens"]))
+	totalTokens := usageNumber(usage["total_tokens"])
+	if totalTokens > 0 {
+		switch {
+		case inputTokens == 0 && outputTokens == 0:
+			inputTokens = totalTokens
+		case inputTokens == 0 && totalTokens > outputTokens:
+			inputTokens = totalTokens - outputTokens
+		case outputTokens == 0 && totalTokens > inputTokens:
+			outputTokens = totalTokens - inputTokens
+		}
+	}
+	return inputTokens, outputTokens
+}
+
+func firstPositiveInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func usageNumber(v any) int64 {
+	switch n := v.(type) {
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	case json.Number:
+		return usageJSONNumber(n)
+	case string:
+		return usageJSONNumber(json.Number(strings.TrimSpace(n)))
+	default:
+		return 0
+	}
+}
+
+func usageJSONNumber(n json.Number) int64 {
+	if i, err := n.Int64(); err == nil {
+		return i
+	}
+	if f, err := n.Float64(); err == nil {
+		return int64(f)
+	}
+	return 0
 }
 
 func buildCacheKey(model string, body map[string]any) string {
@@ -357,6 +633,9 @@ func sha256Bytes(data []byte) [32]byte {
 }
 
 func proxyCreditMultiplier(model *llmpool.DispatchModel, providerID string) float64 {
+	if model == nil {
+		return 1
+	}
 	if model.ProviderCreditMultipliers != nil {
 		if m, ok := model.ProviderCreditMultipliers[providerID]; ok && m > 0 {
 			return m
@@ -366,4 +645,17 @@ func proxyCreditMultiplier(model *llmpool.DispatchModel, providerID string) floa
 		return model.CreditMultiplier
 	}
 	return 1
+}
+
+func proxyCreditMultiplierForRoute(model *llmpool.DispatchModel, route llmpool.DispatchProviderRoute) float64 {
+	if route.CreditMultiplier > 0 {
+		return route.CreditMultiplier
+	}
+	if model != nil && len(model.ProviderRoutes) > 0 {
+		if model.CreditMultiplier > 0 {
+			return model.CreditMultiplier
+		}
+		return 1
+	}
+	return proxyCreditMultiplier(model, route.ProviderID)
 }

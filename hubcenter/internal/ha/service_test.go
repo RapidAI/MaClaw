@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	corecardstore "github.com/RapidAI/CodeClaw/corelib/cardstore"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
@@ -118,6 +121,10 @@ type fakeHANewsRepo struct {
 	items map[string]*store.NewsArticle
 }
 
+type fakeHACardOrderRepo struct {
+	items map[string]*cardstore.PurchaseOrder
+}
+
 type fakeRouteSnapshotRefresher struct {
 	mu    sync.Mutex
 	calls int
@@ -176,6 +183,62 @@ func (r *fakeHANewsRepo) ListLatest(_ context.Context, _ int) ([]*store.NewsArti
 
 func (r *fakeHANewsRepo) CountPinned(_ context.Context) (int, error) {
 	return 0, nil
+}
+
+func (r *fakeHACardOrderRepo) Create(_ context.Context, order *cardstore.PurchaseOrder) error {
+	if r.items == nil {
+		r.items = map[string]*cardstore.PurchaseOrder{}
+	}
+	cp := *order
+	r.items[order.OrderNo] = &cp
+	return nil
+}
+
+func (r *fakeHACardOrderRepo) GetByOrderNo(_ context.Context, orderNo string) (*cardstore.PurchaseOrder, error) {
+	if r.items == nil {
+		return nil, nil
+	}
+	item := r.items[orderNo]
+	if item == nil {
+		return nil, nil
+	}
+	cp := *item
+	return &cp, nil
+}
+
+func (r *fakeHACardOrderRepo) List(_ context.Context, _ cardstore.OrderFilter) ([]*cardstore.PurchaseOrder, int, error) {
+	return nil, 0, nil
+}
+
+func (r *fakeHACardOrderRepo) UpdateStatus(_ context.Context, orderNo, status string, now time.Time) error {
+	item, _ := r.GetByOrderNo(context.Background(), orderNo)
+	if item == nil {
+		return nil
+	}
+	item.Status = status
+	item.UpdatedAt = now
+	r.items[orderNo] = item
+	return nil
+}
+
+func (r *fakeHACardOrderRepo) Update(_ context.Context, order *cardstore.PurchaseOrder) error {
+	return r.Create(context.Background(), order)
+}
+
+func (r *fakeHACardOrderRepo) Delete(_ context.Context, orderNo string) error {
+	delete(r.items, orderNo)
+	return nil
+}
+
+func (r *fakeHACardOrderRepo) Archive(_ context.Context, orderNo string, archivedAt time.Time) error {
+	item, _ := r.GetByOrderNo(context.Background(), orderNo)
+	if item == nil {
+		return nil
+	}
+	item.ArchivedAt = archivedAt.Format(time.RFC3339)
+	item.UpdatedAt = archivedAt
+	r.items[orderNo] = item
+	return nil
 }
 
 func (r *fakeHAPeerCursorRepo) Get(_ context.Context, peerNodeID string) (*store.HAPeerCursor, error) {
@@ -412,6 +475,132 @@ func TestApplyRemoteOpRecordsRemoteOpForTransitiveSync(t *testing.T) {
 	}
 	if !applied {
 		t.Fatal("remote op was not marked applied")
+	}
+}
+
+func TestApplyRemoteLLMCardOrderUpsertAndDelete(t *testing.T) {
+	opsRepo := &fakeHASyncOpRepo{}
+	versionsRepo := &fakeHAEntityVersionRepo{items: make(map[string]*store.HAEntityVersion)}
+	ordersRepo := &fakeHACardOrderRepo{}
+	svc := &Service{
+		nodeID:     "hc-1",
+		ops:        opsRepo,
+		versions:   versionsRepo,
+		cardOrders: ordersRepo,
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	order := &cardstore.PurchaseOrder{
+		Order: corecardstore.Order{
+			OrderNo:   "HC-REMOTE",
+			ProductID: "ct-old",
+			Email:     "owner@example.com",
+			Amount:    10,
+			Status:    corecardstore.StatusPending,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		HubID: "hub-1", TenantID: "tenant-a", CardTypeID: "ct-old", ServiceGroupID: "group-old", Credits: 100, Period: "month",
+	}
+	payloadBytes, err := json.Marshal(order)
+	if err != nil {
+		t.Fatalf("Marshal(order) error = %v", err)
+	}
+	upsert := &store.HASyncOp{
+		OpID:          "op-card-order-upsert-1",
+		SourceNodeID:  "hc-2",
+		EntityType:    EntityLLMCardOrder,
+		EntityID:      order.OrderNo,
+		OpType:        OpUpsert,
+		EntityVersion: 1,
+		OccurredAt:    now,
+		PayloadJSON:   string(payloadBytes),
+		PayloadHash:   testPayloadHash(string(payloadBytes)),
+	}
+	if err := svc.ApplyRemoteOp(context.Background(), upsert); err != nil {
+		t.Fatalf("ApplyRemoteOp(upsert create) error = %v", err)
+	}
+	got, err := ordersRepo.GetByOrderNo(context.Background(), order.OrderNo)
+	if err != nil {
+		t.Fatalf("GetByOrderNo() error = %v", err)
+	}
+	if got == nil || got.CardTypeID != "ct-old" || got.Credits != 100 {
+		t.Fatalf("created order = %+v", got)
+	}
+
+	order.CardTypeID = "ct-new"
+	order.ProductID = "ct-new"
+	order.ServiceGroupID = "group-new"
+	order.Credits = 200
+	order.Amount = 25000
+	order.UpdatedAt = now.Add(time.Minute)
+	payloadBytes, err = json.Marshal(order)
+	if err != nil {
+		t.Fatalf("Marshal(updated order) error = %v", err)
+	}
+	upsert2 := &store.HASyncOp{
+		OpID:          "op-card-order-upsert-2",
+		SourceNodeID:  "hc-2",
+		EntityType:    EntityLLMCardOrder,
+		EntityID:      order.OrderNo,
+		OpType:        OpUpsert,
+		EntityVersion: 2,
+		OccurredAt:    now.Add(time.Minute),
+		PayloadJSON:   string(payloadBytes),
+		PayloadHash:   testPayloadHash(string(payloadBytes)),
+	}
+	if err := svc.ApplyRemoteOp(context.Background(), upsert2); err != nil {
+		t.Fatalf("ApplyRemoteOp(upsert update) error = %v", err)
+	}
+	got, err = ordersRepo.GetByOrderNo(context.Background(), order.OrderNo)
+	if err != nil {
+		t.Fatalf("GetByOrderNo(updated) error = %v", err)
+	}
+	if got.CardTypeID != "ct-new" || got.ServiceGroupID != "group-new" || got.Credits != 200 || got.Amount != 25000 {
+		t.Fatalf("updated order = %+v", got)
+	}
+
+	deletePayload := `{"order_no":"HC-REMOTE"}`
+	del := &store.HASyncOp{
+		OpID:          "op-card-order-delete",
+		SourceNodeID:  "hc-2",
+		EntityType:    EntityLLMCardOrder,
+		EntityID:      order.OrderNo,
+		OpType:        OpDelete,
+		EntityVersion: 3,
+		OccurredAt:    now.Add(2 * time.Minute),
+		PayloadJSON:   deletePayload,
+		PayloadHash:   testPayloadHash(deletePayload),
+	}
+	if err := svc.ApplyRemoteOp(context.Background(), del); err != nil {
+		t.Fatalf("ApplyRemoteOp(delete) error = %v", err)
+	}
+	got, err = ordersRepo.GetByOrderNo(context.Background(), order.OrderNo)
+	if err != nil {
+		t.Fatalf("GetByOrderNo(deleted) error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("order after delete = %+v, want nil", got)
+	}
+}
+
+func TestValidateRemoteLLMCardOrderRejectsMismatchedOrderNo(t *testing.T) {
+	payload := `{"order_no":"HC-OTHER"}`
+	op := &store.HASyncOp{
+		OpID:          "op-card-order-bad-id",
+		SourceNodeID:  "hc-2",
+		EntityType:    EntityLLMCardOrder,
+		EntityID:      "HC-EXPECTED",
+		OpType:        OpUpsert,
+		EntityVersion: 1,
+		OccurredAt:    time.Now().UTC(),
+		PayloadJSON:   payload,
+		PayloadHash:   testPayloadHash(payload),
+	}
+
+	err := validateRemoteOp(op)
+	var invalid InvalidRemoteOpError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("validateRemoteOp() error = %v, want InvalidRemoteOpError", err)
 	}
 }
 

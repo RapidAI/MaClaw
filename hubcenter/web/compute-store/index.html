@@ -20,7 +20,7 @@
         </span>
         <span>
           <strong data-i18n="brandTitle">MaClaw LLM 算力市场</strong>
-          <small data-i18n="brandSubtitle">HubCenter 托管额度与模型服务组</small>
+          <small data-i18n="brandSubtitle">HubCenter 托管信用点与模型服务组</small>
         </span>
       </a>
       <nav class="top-actions" aria-label="Store actions">
@@ -35,8 +35,8 @@
     <section class="hero" aria-labelledby="heroTitle">
       <div class="hero-copy">
         <p class="kicker" data-i18n="heroKicker">LLM Compute Access</p>
-        <h1 id="heroTitle" data-i18n="heroTitle">为 Hub 租户开通稳定、可审计的 LLM 算力额度</h1>
-        <p class="lead" data-i18n="heroLead">选择算力卡后创建订单。支付确认后，额度会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。</p>
+        <h1 id="heroTitle" data-i18n="heroTitle">为 Hub 租户开通稳定、可审计的 LLM 算力信用点</h1>
+        <p class="lead" data-i18n="heroLead">选择算力卡后创建订单。支付确认后，信用点会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。</p>
         <div class="hero-actions">
           <a class="primary-link" href="#products" data-i18n="browseCards">查看算力卡</a>
           <a class="secondary-link" href="#ordersPanel" data-i18n="checkOrders">查询订单</a>
@@ -56,7 +56,7 @@
             <span>Provider Pool</span>
           </div>
           <div class="route-metrics">
-            <div><span data-i18n="metricCredit">额度</span><strong id="heroCredit">-</strong></div>
+            <div><span data-i18n="metricCredit">信用点</span><strong id="heroCredit">-</strong></div>
             <div><span data-i18n="metricSettle">确认</span><strong data-i18n="metricSettleValue">人工/直连</strong></div>
             <div><span data-i18n="metricAudit">审计</span><strong data-i18n="metricAuditValue">用量明细</strong></div>
           </div>
@@ -78,7 +78,7 @@
       <article>
         <span class="status-dot neutral"></span>
         <strong data-i18n="usageTitle">用量可追踪</strong>
-        <p data-i18n="usageDesc">输入、输出、请求量和额度消耗统一沉淀在 HubCenter。</p>
+        <p data-i18n="usageDesc">输入、输出、请求量和信用点消耗统一沉淀在 HubCenter。</p>
       </article>
     </section>
 
@@ -87,7 +87,7 @@
         <p class="kicker" data-i18n="productsKicker">Plans</p>
         <h2 data-i18n="productsTitle">可购买算力卡</h2>
       </div>
-      <p data-i18n="productsDesc">按周期和额度选择适合的 LLM 服务预算。</p>
+      <p data-i18n="productsDesc">按周期和信用点选择适合的 LLM 服务预算。</p>
     </section>
 
     <div class="purchase-layout">
@@ -127,7 +127,7 @@
         <button class="purchase-btn" id="purchaseBtn" type="button" disabled>
           <span data-i18n="selectBeforeBuy">选择卡型后购买</span>
         </button>
-        <p id="checkoutHint" data-i18n="checkoutHint">订单提交前不会扣减额度。支付确认由管理员或网关完成。</p>
+        <p id="checkoutHint" data-i18n="checkoutHint">订单提交前不会扣减信用点。支付确认由管理员或网关完成。</p>
       </div>
       <div id="checkoutNotice" class="checkout-notice" hidden role="alert"></div>
     </section>
@@ -167,15 +167,15 @@
     var TEXT = {
       zh: {
         brandTitle: 'MaClaw LLM 算力市场',
-        brandSubtitle: 'HubCenter 托管额度与模型服务组',
+        brandSubtitle: 'HubCenter 托管信用点与模型服务组',
         tenantUnknown: '未绑定 Hub 租户',
         heroKicker: 'LLM Compute Access',
-        heroTitle: '为 Hub 租户开通稳定、可审计的 LLM 算力额度',
-        heroLead: '选择算力卡后创建订单。支付确认后，额度会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。',
+        heroTitle: '为 Hub 租户开通稳定、可审计的 LLM 算力信用点',
+        heroLead: '选择算力卡后创建订单。支付确认后，信用点会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。',
         browseCards: '查看算力卡',
         checkOrders: '查询订单',
         routeTitle: '接入链路',
-        metricCredit: '额度',
+        metricCredit: '信用点',
         metricSettle: '确认',
         metricSettleValue: '人工/直连',
         metricAudit: '审计',
@@ -186,10 +186,10 @@
         paymentTitle: '支付确认',
         paymentDesc: '支持扫码、转账或支付网关。确认后自动生成租户授权。',
         usageTitle: '用量可追踪',
-        usageDesc: '输入、输出、请求量和额度消耗统一沉淀在 HubCenter。',
+        usageDesc: '输入、输出、请求量和信用点消耗统一沉淀在 HubCenter。',
         productsKicker: 'Plans',
         productsTitle: '可购买算力卡',
-        productsDesc: '按周期和额度选择适合的 LLM 服务预算。',
+        productsDesc: '按周期和信用点选择适合的 LLM 服务预算。',
         noProducts: '暂无可购买的算力卡。',
         loadFailed: '加载失败，请刷新重试。',
         checkoutKicker: 'Checkout',
@@ -202,10 +202,10 @@
         selectBeforeBuy: '选择卡型后购买',
         buyNow: '立即购买',
         submitting: '提交中...',
-        checkoutHint: '订单提交前不会扣减额度。支付确认由管理员或网关完成。',
+        checkoutHint: '订单提交前不会扣减信用点。支付确认由管理员或网关完成。',
         orderCreatedKicker: 'Order Created',
         orderCreated: '订单已创建',
-        orderCreatedLead: '请按下方方式完成支付。到账确认后，额度会自动写入租户授权。',
+        orderCreatedLead: '请按下方方式完成支付。到账确认后，信用点会自动写入租户授权。',
         scanToPay: '请扫码支付后等待管理员确认。',
         goPay: '前往支付',
         orderNo: '订单号',
@@ -227,7 +227,7 @@
         month: '月卡',
         quarter: '季卡',
         year: '年卡',
-        credits: '额度',
+        credits: '信用点',
         selectCard: '选择此卡',
         selected: '已选择',
         computeAgent: '算力代理商',
@@ -249,15 +249,15 @@
       /*
       zh_legacy_corrupt: {
         brandTitle: 'MaClaw LLM 算力市场',
-        brandSubtitle: 'HubCenter 托管额度与模型服务组',
+        brandSubtitle: 'HubCenter 托管信用点与模型服务组',
         tenantUnknown: '未绑定 Hub 租户',
         heroKicker: 'LLM Compute Access',
-        heroTitle: '为 Hub 租户开通稳定、可审计的 LLM 算力额度',
-        heroLead: '选择算力卡后创建订单。支付确认后，额度会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。',
+        heroTitle: '为 Hub 租户开通稳定、可审计的 LLM 算力信用点',
+        heroLead: '选择算力卡后创建订单。支付确认后，信用点会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。',
         browseCards: '查看算力卡',
         checkOrders: '查询订单',
         routeTitle: '接入链路',
-        metricCredit: '额度',
+        metricCredit: '信用点',
         metricSettle: '确认',
         metricSettleValue: '人工/直连',
         metricAudit: '审计',
@@ -268,10 +268,10 @@
         paymentTitle: '支付确认',
         paymentDesc: '支持扫码、转账或支付网关。确认后自动生成租户授权。',
         usageTitle: '用量可追踪',
-        usageDesc: '输入、输出、请求量和额度消耗统一沉淀在 HubCenter。',
+        usageDesc: '输入、输出、请求量和信用点消耗统一沉淀在 HubCenter。',
         productsKicker: 'Plans',
         productsTitle: '可购买算力卡',
-        productsDesc: '按周期和额度选择适合的 LLM 服务预算。',
+        productsDesc: '按周期和信用点选择适合的 LLM 服务预算。',
         noProducts: '暂无可购买的算力卡。',
         loadFailed: '加载失败，请刷新重试。',
         checkoutKicker: 'Checkout',
@@ -284,10 +284,10 @@
         selectBeforeBuy: '选择卡型后购买',
         buyNow: '立即购买',
         submitting: '提交中...',
-        checkoutHint: '订单提交前不会扣减额度。支付确认由管理员或网关完成。',
+        checkoutHint: '订单提交前不会扣减信用点。支付确认由管理员或网关完成。',
         orderCreatedKicker: 'Order Created',
         orderCreated: '订单已创建',
-        orderCreatedLead: '请按下方方式完成支付。到账确认后，额度会自动写入租户授权。',
+        orderCreatedLead: '请按下方方式完成支付。到账确认后，信用点会自动写入租户授权。',
         scanToPay: '请扫码支付后等待管理员确认。',
         goPay: '前往支付',
         orderNo: '订单号',
@@ -304,7 +304,7 @@
         month: '月卡',
         quarter: '季卡',
         year: '年卡',
-        credits: '额度',
+        credits: '信用点',
         selectCard: '选择此卡',
         selected: '已选择',
         computeAgent: '算力代理商',
@@ -323,15 +323,15 @@
       /*
       zh_legacy_corrupt: {
         brandTitle: 'MaClaw LLM 算力市场',
-        brandSubtitle: 'HubCenter 托管额度与模型服务组',
+        brandSubtitle: 'HubCenter 托管信用点与模型服务组',
         tenantUnknown: '未绑定 Hub 租户',
         heroKicker: 'LLM Compute Access',
-        heroTitle: '为 Hub 租户开通稳定、可审计的 LLM 算力额度',
-        heroLead: '选择算力卡后创建订单。支付确认后，额度会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。',
+        heroTitle: '为 Hub 租户开通稳定、可审计的 LLM 算力信用点',
+        heroLead: '选择算力卡后创建订单。支付确认后，信用点会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。',
         browseCards: '查看算力卡',
         checkOrders: '查询订单',
         routeTitle: '接入链路',
-        metricCredit: '额度',
+        metricCredit: '信用点',
         metricSettle: '确认',
         metricSettleValue: '人工/直连',
         metricAudit: '审计',
@@ -342,10 +342,10 @@
         paymentTitle: '支付确认',
         paymentDesc: '支持扫码、转账或支付网关。确认后自动生成租户授权。',
         usageTitle: '用量可追踪',
-        usageDesc: '输入、输出、请求量和额度消耗统一沉淀在 HubCenter。',
+        usageDesc: '输入、输出、请求量和信用点消耗统一沉淀在 HubCenter。',
         productsKicker: 'Plans',
         productsTitle: '可购买算力卡',
-        productsDesc: '按周期和额度选择适合的 LLM 服务预算。',
+        productsDesc: '按周期和信用点选择适合的 LLM 服务预算。',
         noProducts: '暂无可购买的算力卡。',
         loadFailed: '加载失败，请刷新重试。',
         checkoutKicker: 'Checkout',
@@ -358,10 +358,10 @@
         selectBeforeBuy: '选择卡型后购买',
         buyNow: '立即购买',
         submitting: '提交中...',
-        checkoutHint: '订单提交前不会扣减额度。支付确认由管理员或网关完成。',
+        checkoutHint: '订单提交前不会扣减信用点。支付确认由管理员或网关完成。',
         orderCreatedKicker: 'Order Created',
         orderCreated: '订单已创建',
-        orderCreatedLead: '请按下方方式完成支付。到账确认后，额度会自动写入租户授权。',
+        orderCreatedLead: '请按下方方式完成支付。到账确认后，信用点会自动写入租户授权。',
         scanToPay: '请扫码支付后等待管理员确认。',
         goPay: '前往支付',
         orderNo: '订单号',
@@ -378,7 +378,7 @@
         month: '月卡',
         quarter: '季卡',
         year: '年卡',
-        credits: '额度',
+        credits: '信用点',
         selectCard: '选择此卡',
         selected: '已选择',
         computeAgent: '算力代理商',
@@ -494,13 +494,100 @@
     function money(v) { return '¥' + Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }); }
     function periodLabel(period) { return tr(period) || period || '-'; }
     function statusLabel(status) { return tr(status) || status || '-'; }
+    var contextStorageKey = 'maclaw.computeStore.context';
+
     function getParam(k) { return new URLSearchParams(location.search).get(k) || ''; }
+    function readStoredContext() {
+      var raw = '';
+      try { raw = localStorage.getItem(contextStorageKey) || ''; } catch (e) {}
+      if (!raw) {
+        try { raw = sessionStorage.getItem(contextStorageKey) || ''; } catch (e) {}
+      }
+      if (!raw) return {};
+      try {
+        var ctx = JSON.parse(raw);
+        return ctx && typeof ctx === 'object' ? ctx : {};
+      } catch (e) {
+        return {};
+      }
+    }
+    function writeStoredContext(next) {
+      var prev = readStoredContext();
+      var ctx = {
+        email: next.email || prev.email || '',
+        hub_id: next.hub_id || prev.hub_id || '',
+        tenant_id: next.tenant_id || prev.tenant_id || ''
+      };
+      if (!ctx.email && !ctx.hub_id && !ctx.tenant_id) return;
+      var raw = JSON.stringify(ctx);
+      try { localStorage.setItem(contextStorageKey, raw); return; } catch (e) {}
+      try { sessionStorage.setItem(contextStorageKey, raw); } catch (e) {}
+    }
+    function storedContextValue(keys) {
+      var ctx = readStoredContext();
+      for (var i = 0; i < keys.length; i++) {
+        var value = ctx[keys[i]];
+        if (value) return value;
+      }
+      return '';
+    }
     function getContextParam(keys, fallback) {
       for (var i = 0; i < keys.length; i++) {
         var value = getParam(keys[i]);
         if (value) return value;
       }
+      var stored = storedContextValue(keys);
+      if (stored) return stored;
       return fallback || '';
+    }
+    function rememberCurrentContext(email) {
+      writeStoredContext({
+        email: email || getParam('email') || storedContextValue(['email']),
+        hub_id: getContextParam(['hub_id', 'hubId', 'hubID', 'hub']),
+        tenant_id: getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default')
+      });
+    }
+    function rememberOrderContext(order) {
+      if (!order) return;
+      writeStoredContext({
+        email: order.email || order.admin_email || document.getElementById('adminEmail').value.trim(),
+        hub_id: order.hub_id || getContextParam(['hub_id', 'hubId', 'hubID', 'hub']),
+        tenant_id: order.tenant_id || getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default')
+      });
+    }
+    function returnContextURL(order) {
+      var u = new URL('/api/cardstore/payment/return', location.origin);
+      var email = (order && (order.email || order.admin_email)) || document.getElementById('adminEmail').value.trim() || storedContextValue(['email']);
+      var hubID = (order && order.hub_id) || getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
+      var tenantID = (order && order.tenant_id) || getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
+      if (order && order.order_no) u.searchParams.set('ctx_order_no', order.order_no);
+      if (email) u.searchParams.set('ctx_email', email);
+      if (hubID) u.searchParams.set('ctx_hub_id', hubID);
+      if (tenantID) u.searchParams.set('ctx_tenant_id', tenantID);
+      return u.toString();
+    }
+    function paymentURLWithContext(raw, order) {
+      if (!raw) return raw;
+      try {
+        var u = new URL(raw, location.href);
+        var ret = u.searchParams.get('return_url') || '';
+        if (shouldRewritePaymentReturnURL(ret)) {
+          u.searchParams.set('return_url', returnContextURL(order));
+        }
+        return u.toString();
+      } catch (e) {
+        return raw;
+      }
+    }
+    function shouldRewritePaymentReturnURL(raw) {
+      if (!raw) return true;
+      try {
+        var ret = new URL(raw, location.origin);
+        if (ret.searchParams.get('ctx_hub_id') && ret.searchParams.get('ctx_tenant_id')) return false;
+        return ret.pathname === '/compute-store' || ret.pathname === '/api/cardstore/payment/return';
+      } catch (e) {
+        return raw.indexOf('/compute-store') >= 0 || raw.indexOf('/api/cardstore/payment/return') >= 0;
+      }
     }
     function findTemplate(id) { return TEMPLATES.find(function(t){ return t.id === id; }) || TEMPLATES[0]; }
     function idSafe(s) { return String(s || 'card').replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 42) || 'card'; }
@@ -692,6 +779,7 @@
       if (!email) { showStoreNotice(tr('emailRequired'), 'error'); return; }
       if (!state.selectedCardTypeID) { showStoreNotice(tr('cardRequired'), 'error'); return; }
       if (!hubID || !tenantID) { showStoreNotice(tenantRequiredMessage(), 'error'); return; }
+      rememberCurrentContext(email);
       var btn = document.getElementById('purchaseBtn');
       btn.disabled = true;
       btn.textContent = tr('submitting');
@@ -720,6 +808,7 @@
     }
 
     function showOrderResult(order) {
+      rememberOrderContext(order);
       closeOrderDialog();
       var modal = document.createElement('div');
       modal.className = 'order-dialog';
@@ -727,7 +816,7 @@
       if (order.pay_qr_url) {
         var paymentHTML = '<img src="' + esc(order.pay_qr_url) + '" alt="Payment QR"><p>' + esc(tr('scanToPay')) + '</p>';
       } else if (order.pay_url) {
-        var paymentHTML = '<a class="primary-link" href="' + esc(order.pay_url) + '" target="_blank" rel="noopener">' + esc(tr('goPay')) + '</a>';
+        var paymentHTML = '<a class="primary-link" href="' + esc(paymentURLWithContext(order.pay_url, order)) + '" target="_blank" rel="noopener">' + esc(tr('goPay')) + '</a>';
       } else if (order.pay_deep_link) {
         var paymentHTML = '<a class="primary-link" href="' + esc(order.pay_deep_link) + '">' + esc(tr('goPay')) + '</a>';
       } else if (order.pay_instruction) {
@@ -867,19 +956,26 @@
       document.getElementById('refreshOrdersBtn').addEventListener('click', loadOrders);
       document.getElementById('adminEmail').addEventListener('input', function() {
         clearStoreNotice();
+        rememberCurrentContext(document.getElementById('adminEmail').value.trim());
         clearTimeout(window.__orderTimer);
         window.__orderTimer = setTimeout(loadOrders, 350);
       });
 
-      var email = getParam('email');
+      var urlEmail = getParam('email');
+      var email = urlEmail || storedContextValue(['email']);
+      var emailEl = document.getElementById('adminEmail');
       if (email) {
-        var emailEl = document.getElementById('adminEmail');
         emailEl.value = email;
-        emailEl.readOnly = true;
+        emailEl.readOnly = !!urlEmail;
       }
       var hub = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
-      if (hub) document.getElementById('hubTenantInfo').value = hub + ' / ' + getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
-      else showStoreNotice(tenantRequiredMessage(), 'error');
+      var tenant = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
+      if (hub) {
+        document.getElementById('hubTenantInfo').value = hub + ' / ' + tenant;
+        rememberCurrentContext(email);
+      } else {
+        showStoreNotice(tenantRequiredMessage(), 'error');
+      }
       applyI18n();
       loadCardTypes();
       if (email) loadOrders();

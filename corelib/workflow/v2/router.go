@@ -163,6 +163,16 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 		return &RouteResult{Target: RouteToAgentLoop}
 	}
 
+	// Step 4.6: Strong action keyword fallback hint — when embedder is not
+	// confident enough (semanticHint=="") but hasWorkflowStartSignal passed
+	// due to a strong coding action verb ("开发"/"实现"/"搭建"/"构建"/etc),
+	// infer semanticHint="coding" so Step 5's BM25 fallback can activate.
+	// This covers arbitrary target names ("hello world", "flappy bird", etc.)
+	// that BM25 can't match against template descriptions.
+	if semanticHint == "" && hasStrongCodingActionInText(strings.ToLower(text)) {
+		semanticHint = "coding"
+	}
+
 	// Step 5: Structured template match.
 	matched := r.templates.MatchByText(text)
 	if matched == nil && semanticHint != "" {
@@ -246,9 +256,14 @@ const ambiguousTemplateRatio = 0.85
 // --- Skip Signals ---
 
 var skipSignals = []string{
+	// Simplified Chinese
 	"直接做", "不用问了", "按你的想法来", "跳过文档", "不需要文档",
-	"直接开始", "不用三阶段", "skip workflow", "直接编码",
-	"不要文档", "别废话",
+	"直接开始", "不用三阶段", "直接编码", "不要文档", "别废话",
+	// Traditional Chinese (only items that differ from simplified)
+	"不用問了", "跳過文檔", "不需要文檔",
+	"直接開始", "不用三階段", "直接編碼", "不要文檔",
+	// English
+	"skip workflow", "just do it", "skip docs",
 }
 
 func hasSkipSignal(text string) bool {
@@ -313,6 +328,10 @@ func hasWorkflowStartSignal(text string) bool {
 			return true
 		}
 	}
+	// Check strong coding action first — these are sufficient on their own.
+	if hasStrongCodingActionInText(lower) && len([]rune(lower)) >= 6 {
+		return true
+	}
 	hasAction := false
 	for _, action := range workflowActionSignals {
 		if strings.Contains(lower, action) {
@@ -331,26 +350,91 @@ func hasWorkflowStartSignal(text string) bool {
 	return false
 }
 
+// strongCodingActionSignalsChinese are Chinese verbs that unambiguously indicate
+// the user wants to CREATE a new project/program. They have very low false-positive
+// risk because Chinese doesn't use these verbs for trivial operations.
+// Includes both simplified and traditional Chinese variants.
+var strongCodingActionSignalsChinese = []string{
+	// Simplified
+	"开发", "实现", "搭建", "构建",
+	// Traditional
+	"開發", "實現", "構建",
+}
+
+// strongCodingActionSignalsEnglish are English verbs that, combined with
+// sufficient message length, suggest creating a new project. "build" and "create"
+// are excluded because they are too ambiguous in short commands
+// ("build the project", "create a folder").
+var strongCodingActionSignalsEnglish = []string{
+	"develop", "implement",
+}
+
+// hasStrongCodingActionInText checks if text contains a strong coding action verb.
+// Used by both hasWorkflowStartSignal (Step 4.5 gate) and RouteWithHint (Step 4.6 hint).
+func hasStrongCodingActionInText(lowerText string) bool {
+	for _, action := range strongCodingActionSignalsChinese {
+		if strings.Contains(lowerText, action) {
+			return true
+		}
+	}
+	for _, action := range strongCodingActionSignalsEnglish {
+		if strings.Contains(lowerText, action) {
+			return true
+		}
+	}
+	// "创建"/"創建" is borderline — it can mean "create a folder" in Chinese too.
+	// Accept it only when message length > 8 runes (rules out "创建文件夹" etc).
+	if (strings.Contains(lowerText, "创建") || strings.Contains(lowerText, "創建")) && len([]rune(lowerText)) > 8 {
+		return true
+	}
+	return false
+}
+
 var explicitWorkflowObjectSignals = []string{
+	// Simplified Chinese
 	"工作流", "申请书", "申报书", "项目申请", "基金申请", "国自然", "国家自然科学基金",
 	"青年基金", "青年科学基金", "青基", "优青", "杰青", "长江学者",
+	// Traditional Chinese (only items that differ from simplified)
+	"工作流程", "申請書", "項目申請", "基金申請",
+	"傑青", "長江學者",
+	// English
 	"business plan", "slide deck", "grant proposal", "research proposal",
 }
 
 var workflowActionSignals = []string{
+	// Simplified Chinese
 	"写", "做", "生成", "制作", "设计", "开发", "实现", "创建", "起草", "撰写",
 	"打磨", "预审", "审查", "分析", "策划", "规划", "准备", "申请", "申报",
-	"复现", "跑实验", "输出", "build", "create", "generate", "make", "design",
+	"复现", "跑实验", "输出",
+	// Traditional Chinese (only items that differ from simplified)
+	"寫", "製作", "設計", "開發", "實現", "創建", "撰寫",
+	"預審", "策劃", "規劃", "準備", "申請",
+	"複現",
+	// English
+	"build", "create", "generate", "make", "design",
 	"develop", "implement", "write", "draft", "review", "analyze", "plan",
 	"prepare", "apply", "reproduce",
 }
 
 var workflowObjectSignals = []string{
-	"项目", "应用", "系统", "工具", "游戏", "代码", "软件", "ppt", "幻灯片",
-	"演示文稿", "产品", "prd", "方案", "商业计划", "bp", "测试", "文献综述",
-	"研究报告", "调研报告", "竞品", "立项", "活动", "投标", "标书", "合同",
-	"尽调", "审计", "专利", "实验", "基金", "论文", "申请", "申报", "复现",
+	// Simplified Chinese
+	"项目", "应用", "系统", "工具", "游戏", "代码", "软件", "程序", "脚本",
+	"网站", "网页", "页面", "接口", "服务", "平台", "插件", "组件", "模块",
+	"ppt", "幻灯片", "演示文稿", "产品", "prd", "方案", "商业计划", "bp",
+	"测试", "文献综述", "研究报告", "调研报告", "竞品", "立项", "活动",
+	"投标", "标书", "合同", "尽调", "审计", "专利", "实验", "基金", "论文",
+	"申请", "申报", "复现",
+	// Traditional Chinese (only items that differ from simplified)
+	"項目", "應用", "系統", "工具", "遊戲", "軟體", "程式", "腳本",
+	"網站", "網頁", "頁面", "介面", "平台", "組件", "模組",
+	"簡報", "產品", "商業計劃", "商業計畫",
+	"測試", "文獻綜述", "研究報告", "競品",
+	"投標", "標書", "合約", "專利", "實驗", "論文",
+	"企劃", "企劃書",
+	// English
 	"application", "app", "service", "tool", "game", "code", "software",
+	"program", "script", "website", "webpage", "api", "server", "plugin",
+	"component", "module",
 	"presentation", "slides", "deck", "proposal", "report", "review",
 	"analysis", "experiment", "paper", "contract", "patent", "tender",
 }

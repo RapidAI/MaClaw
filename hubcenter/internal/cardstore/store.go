@@ -5,6 +5,7 @@ package cardstore
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -50,7 +51,7 @@ func DefaultComputeCardTypes(serviceGroupID string) []*CardType {
 			ID:             "maclaw_compute_month_10000",
 			ServiceGroupID: serviceGroupID,
 			Label:          "MaClaw 官方月卡",
-			Description:    "适合轻量研发与日常问答的官方算力额度。",
+			Description:    "适合轻量研发与日常问答的官方算力信用点。",
 			Credits:        10000,
 			Period:         "month",
 			PriceRMB:       99,
@@ -61,7 +62,7 @@ func DefaultComputeCardTypes(serviceGroupID string) []*CardType {
 			ID:             "maclaw_compute_quarter_100000",
 			ServiceGroupID: serviceGroupID,
 			Label:          "MaClaw 官方季度卡",
-			Description:    "适合团队持续使用的季度算力额度。",
+			Description:    "适合团队持续使用的季度算力信用点。",
 			Credits:        100000,
 			Period:         "quarter",
 			PriceRMB:       799,
@@ -207,6 +208,7 @@ type Service struct {
 	verifyTenant func(ctx context.Context, hubID, tenantID, email string) error // security check
 	auditLog     func(ctx context.Context, action, detail string)               // audit trail
 	resolveGroup func(ctx context.Context, serviceGroupID string) (serviceGroupName, agentID, agentName string)
+	publicURL    func(ctx context.Context) (string, error)
 }
 
 // NewService creates a card store service.
@@ -241,6 +243,11 @@ func (s *Service) SetAuditLogger(fn func(ctx context.Context, action, detail str
 func (s *Service) SetPaymentConfig(personal corecardstore.PersonalPaymentConfig, alipay corecardstore.AlipayDirectConfig) {
 	s.payment = personal
 	s.alipay = alipay
+}
+
+// SetPublicBaseURLProvider sets the trusted base URL used for payment callbacks.
+func (s *Service) SetPublicBaseURLProvider(fn func(ctx context.Context) (string, error)) {
+	s.publicURL = fn
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +386,12 @@ func (s *Service) enrichCardTypes(ctx context.Context, types []*CardType) {
 
 // CreateOrder creates a purchase order for a card type.
 func (s *Service) CreateOrder(ctx context.Context, cardTypeID, adminEmail, hubID, tenantID, payChannel string) (*PurchaseOrder, error) {
+	return s.CreateOrderWithAlipayConfig(ctx, cardTypeID, adminEmail, hubID, tenantID, payChannel, s.alipayConfigForContext(ctx))
+}
+
+// CreateOrderWithAlipayConfig creates an order using a request-scoped Alipay
+// config. It lets HTTP handlers fill callback URLs from the current host.
+func (s *Service) CreateOrderWithAlipayConfig(ctx context.Context, cardTypeID, adminEmail, hubID, tenantID, payChannel string, alipay corecardstore.AlipayDirectConfig) (*PurchaseOrder, error) {
 	cardTypeID = strings.TrimSpace(cardTypeID)
 	adminEmail = strings.TrimSpace(adminEmail)
 	hubID = strings.TrimSpace(hubID)
@@ -435,9 +448,10 @@ func (s *Service) CreateOrder(ctx context.Context, cardTypeID, adminEmail, hubID
 		if err := corecardstore.CreateSemiManualOrder(&order.Order, &s.payment, payChannel); err != nil {
 			return nil, fmt.Errorf("create semi-manual order: %w", err)
 		}
-	} else if s.alipay.AppID != "" {
+	} else if alipay.AppID != "" {
 		// Alipay direct
-		if _, err := corecardstore.CreateAlipayOrder(&order.Order, &s.alipay); err != nil {
+		alipay = alipayConfigWithOrderContext(alipay, order)
+		if _, err := corecardstore.CreateAlipayOrder(&order.Order, &alipay); err != nil {
 			return nil, fmt.Errorf("create alipay order: %w", err)
 		}
 	} else {
@@ -450,6 +464,31 @@ func (s *Service) CreateOrder(ctx context.Context, cardTypeID, adminEmail, hubID
 	return order, nil
 }
 
+func alipayConfigWithOrderContext(cfg corecardstore.AlipayDirectConfig, order *PurchaseOrder) corecardstore.AlipayDirectConfig {
+	if order == nil || strings.TrimSpace(cfg.ReturnURL) == "" {
+		return cfg
+	}
+	u, err := url.Parse(cfg.ReturnURL)
+	if err != nil {
+		return cfg
+	}
+	q := u.Query()
+	if strings.TrimSpace(order.OrderNo) != "" {
+		q.Set("ctx_order_no", strings.TrimSpace(order.OrderNo))
+	}
+	if strings.TrimSpace(order.Email) != "" {
+		q.Set("ctx_email", strings.TrimSpace(order.Email))
+	}
+	if strings.TrimSpace(order.HubID) != "" {
+		q.Set("ctx_hub_id", strings.TrimSpace(order.HubID))
+	}
+	if strings.TrimSpace(order.TenantID) != "" {
+		q.Set("ctx_tenant_id", strings.TrimSpace(order.TenantID))
+	}
+	u.RawQuery = q.Encode()
+	cfg.ReturnURL = u.String()
+	return cfg
+}
 func hasEnabledPaymentChannel(cfg corecardstore.PersonalPaymentConfig) bool {
 	for _, ch := range cfg.Channels {
 		if ch.Enabled {
@@ -524,21 +563,38 @@ func (s *Service) ConfirmOrder(ctx context.Context, orderNo, reviewer string) er
 
 // ListOrders returns orders matching the filter.
 func (s *Service) ListOrders(ctx context.Context, filter OrderFilter) ([]*PurchaseOrder, int, error) {
+	return s.ListOrdersWithAlipayConfig(ctx, filter, s.alipayConfigForContext(ctx))
+}
+
+// ListOrdersWithAlipayConfig returns orders and hydrates missing payment links
+// with the supplied request-scoped Alipay config.
+func (s *Service) ListOrdersWithAlipayConfig(ctx context.Context, filter OrderFilter, alipay corecardstore.AlipayDirectConfig) ([]*PurchaseOrder, int, error) {
 	orders, total, err := s.orders.List(ctx, filter)
 	if err != nil {
 		return nil, 0, err
 	}
 	for _, order := range orders {
-		s.hydrateOrderPaymentDetails(order)
+		s.hydrateOrderPaymentDetails(order, alipay)
 	}
 	return orders, total, nil
 }
 
-func (s *Service) hydrateOrderPaymentDetails(order *PurchaseOrder) {
-	if order == nil {
-		return
+func (s *Service) alipayConfigForContext(ctx context.Context) corecardstore.AlipayDirectConfig {
+	cfg := s.alipay
+	if s.publicURL == nil {
+		return cfg
 	}
-	if order.PayQRURL != "" || order.PayURL != "" || order.PayDeepLink != "" || order.PayInstruction != "" {
+	base, err := s.publicURL(ctx)
+	if err != nil || strings.TrimSpace(base) == "" {
+		return cfg
+	}
+	cfg.NotifyURL = absoluteCallbackURL(base, cfg.NotifyURL, "/api/cardstore/payment/notify")
+	cfg.ReturnURL = absoluteCallbackURL(base, cfg.ReturnURL, "/api/cardstore/payment/return")
+	return cfg
+}
+
+func (s *Service) hydrateOrderPaymentDetails(order *PurchaseOrder, alipay corecardstore.AlipayDirectConfig) {
+	if order == nil {
 		return
 	}
 	switch order.Status {
@@ -546,11 +602,18 @@ func (s *Service) hydrateOrderPaymentDetails(order *PurchaseOrder) {
 	default:
 		return
 	}
-	if order.PaymentMode == corecardstore.PaymentModeAlipay && s.alipay.AppID != "" {
+	if order.PaymentMode == corecardstore.PaymentModeAlipay && alipay.AppID != "" {
+		alipay = alipayConfigWithOrderContext(alipay, order)
+		if !shouldRefreshAlipayPayURL(order.PayURL, alipay) {
+			return
+		}
 		clone := order.Order
-		if _, err := corecardstore.CreateAlipayOrder(&clone, &s.alipay); err == nil {
+		if _, err := corecardstore.CreateAlipayOrder(&clone, &alipay); err == nil {
 			order.PayURL = clone.PayURL
 		}
+		return
+	}
+	if order.PayQRURL != "" || order.PayDeepLink != "" || order.PayInstruction != "" {
 		return
 	}
 	if order.PaymentMode == corecardstore.PaymentModeSemiManual || order.PayChannel != "" {
@@ -567,6 +630,25 @@ func (s *Service) hydrateOrderPaymentDetails(order *PurchaseOrder) {
 			}
 		}
 	}
+}
+
+func shouldRefreshAlipayPayURL(payURL string, alipay corecardstore.AlipayDirectConfig) bool {
+	payURL = strings.TrimSpace(payURL)
+	if payURL == "" {
+		return true
+	}
+	u, err := url.Parse(payURL)
+	if err != nil {
+		return true
+	}
+	q := u.Query()
+	if strings.TrimSpace(alipay.NotifyURL) != "" && q.Get("notify_url") != strings.TrimSpace(alipay.NotifyURL) {
+		return true
+	}
+	if strings.TrimSpace(alipay.ReturnURL) != "" && q.Get("return_url") != strings.TrimSpace(alipay.ReturnURL) {
+		return true
+	}
+	return false
 }
 
 // ArchiveOrder hides an order from the default admin order queue without changing its payment status.
@@ -611,9 +693,7 @@ func (s *Service) DeleteUnprocessedOrder(ctx context.Context, orderNo, email, hu
 	if !strings.EqualFold(strings.TrimSpace(order.Email), email) || strings.TrimSpace(order.HubID) != hubID || strings.TrimSpace(order.TenantID) != tenantID {
 		return fmt.Errorf("order %s does not match requester", orderNo)
 	}
-	switch order.Status {
-	case corecardstore.StatusPending, corecardstore.StatusPersonalCreated, corecardstore.StatusPersonalOpened:
-	default:
+	if !isUnprocessedOrderStatus(order.Status) {
 		return fmt.Errorf("order %s has status %s and cannot be deleted", orderNo, order.Status)
 	}
 	if err := s.orders.Delete(ctx, orderNo); err != nil {
@@ -623,6 +703,43 @@ func (s *Service) DeleteUnprocessedOrder(ctx context.Context, orderNo, email, hu
 		s.auditLog(ctx, "cardstore.order.deleted", fmt.Sprintf("order=%s hub=%s tenant=%s", orderNo, hubID, tenantID))
 	}
 	return nil
+}
+
+// DeleteArchivedUnprocessedOrder permanently removes an archived unpaid order from the admin cleanup queue.
+func (s *Service) DeleteArchivedUnprocessedOrder(ctx context.Context, orderNo string) error {
+	orderNo = strings.TrimSpace(orderNo)
+	if orderNo == "" {
+		return fmt.Errorf("order_no is required")
+	}
+	order, err := s.orders.GetByOrderNo(ctx, orderNo)
+	if err != nil {
+		return fmt.Errorf("get order: %w", err)
+	}
+	if order == nil {
+		return fmt.Errorf("order %s not found", orderNo)
+	}
+	if strings.TrimSpace(order.ArchivedAt) == "" {
+		return fmt.Errorf("order %s is not archived", orderNo)
+	}
+	if !isUnprocessedOrderStatus(order.Status) {
+		return fmt.Errorf("order %s has status %s and cannot be deleted", orderNo, order.Status)
+	}
+	if err := s.orders.Delete(ctx, orderNo); err != nil {
+		return fmt.Errorf("delete order: %w", err)
+	}
+	if s.auditLog != nil {
+		s.auditLog(ctx, "cardstore.order.archived_deleted", fmt.Sprintf("order=%s hub=%s tenant=%s", orderNo, order.HubID, order.TenantID))
+	}
+	return nil
+}
+
+func isUnprocessedOrderStatus(status string) bool {
+	switch status {
+	case corecardstore.StatusPending, corecardstore.StatusPersonalCreated, corecardstore.StatusPersonalOpened:
+		return true
+	default:
+		return false
+	}
 }
 
 // ---------------------------------------------------------------------------

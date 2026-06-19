@@ -211,6 +211,37 @@ func TestPlatformVirtualEmployeeProvisionRejectsInvalidAvatarDataURL(t *testing.
 	}, http.StatusBadRequest)
 }
 
+func TestPlatformVirtualEmployeeStageErrorReturnsDiagnostics(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	w := httptest.NewRecorder()
+	in := platformVirtualEmployeeRequest{
+		EmployeeID:       "emp-stage-error",
+		TenantID:         "hub-tenant-001",
+		PlatformTenantID: "platform-tenant-001",
+	}
+	server.writePlatformVirtualEmployeeStageError(w, "update_llm_config", in, fmt.Errorf("config failed"))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("stage error status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Error            string `json:"error"`
+		Stage            string `json:"stage"`
+		EmployeeID       string `json:"employee_id"`
+		TenantID         string `json:"tenant_id"`
+		PlatformTenantID string `json:"platform_tenant_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Stage != "update_llm_config" || resp.EmployeeID != "emp-stage-error" || resp.TenantID != "hub-tenant-001" || resp.PlatformTenantID != "platform-tenant-001" || resp.Error != "config failed" {
+		t.Fatalf("missing stage diagnostics: %#v", resp)
+	}
+}
+
 func TestNormalizePlatformAvatarAcceptsOneMiBImageDataURL(t *testing.T) {
 	payload := append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, make([]byte, platformAvatarImageMaxBytes-8)...)
 	avatar := "data:image/png;base64," + base64.StdEncoding.EncodeToString(payload)

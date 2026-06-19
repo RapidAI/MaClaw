@@ -233,41 +233,84 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 		attachments = append(attachments, v2.Attachment{Type: a.Type, Name: a.FileName})
 	}
 
-	// Use UIC embedding-only classification (<100ms) as a semantic signal for the router.
+	// Use UIC full classification (embedding + tree LLM fusion) as a semantic
+	// signal for the router. This replaces the previous embedding-only approach
+	// which was too unreliable for short messages (< 0.70 confidence on messages
+	// like "开发一个hello world").
+	//
+	// The full Classify() runs embedding (~30ms) and tree LLM (~7s) in parallel.
+	// Although the tree channel adds latency, this cost is NOT additional — the
+	// same UIC.Classify() would be called later in classifyTaskIntentForExecution
+	// (confirmation gate). Since UIC has a built-in cache, the second call hits
+	// cache and returns instantly. We're just moving the cost earlier so the
+	// routing decision benefits from it.
+	//
+	// Optimization: skip UIC when user has an active workflow — Step 1 in the
+	// router will handle the message directly (confirm/modify/continue) without
+	// needing a semantic hint. This saves 7s of LLM latency on the common path.
 	//
 	// The hint serves two purposes in the router:
 	// 1. Veto (Step 4.5): when hint doesn't match any template type → skip BM25,
 	//    preventing false positives (e.g. "服务器" matching paper_reproduction).
 	// 2. Fallback (Step 5): when BM25 fails but hint matches a template type →
 	//    activate that template (handles path/framework name dilution).
-	//
-	// For non-workflow intents (ssh, search, etc.): always pass as hint → veto works.
-	// For workflow-candidate intents: pass the label (or its mapped template type)
-	// so the router can use it as a fallback when BM25 fails.
 	var semanticHint string
+	hasActiveWorkflow := wf.machine != nil && wf.machine.GetActive(msg.UserID) != nil
 	if uic := h.getUnifiedClassifier(); uic != nil {
-		embResult := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: trimmed, UserID: msg.UserID})
-		if embResult.Confidence >= 0.70 {
-			label := string(embResult.Primary)
-			if !uic.IsWorkflowCandidate(embResult.Primary) {
-				// Non-workflow intent → pass for veto.
-				semanticHint = label
-			} else if wf.router != nil && wf.router.HasTemplate(label) {
-				// Workflow-candidate whose label is also a template type → pass for fallback.
-				semanticHint = label
-			} else if mapped := intentLabelToTemplateType(label); mapped != "" && wf.router != nil && wf.router.HasTemplate(mapped) {
-				// Workflow-candidate whose label maps to a known template type.
-				// e.g. "office" → "presentation_design", enables fallback activation.
-				semanticHint = mapped
+		if hasActiveWorkflow {
+			// Active workflow: use fast embedding-only (~30ms) to avoid 7s LLM latency.
+			// Step 1 in the router handles most cases directly. The hint is only needed
+			// for ActionPassThrough fall-through (user starting a different workflow).
+			embResult := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: trimmed, UserID: msg.UserID})
+			if embResult.Confidence >= 0.70 {
+				label := string(embResult.Primary)
+				if !uic.IsWorkflowCandidate(embResult.Primary) {
+					semanticHint = label
+				} else if wf.router != nil && wf.router.HasTemplate(label) {
+					semanticHint = label
+				} else if mapped := intentLabelToTemplateType(label); mapped != "" && wf.router != nil && wf.router.HasTemplate(mapped) {
+					semanticHint = mapped
+				}
 			}
-			// else: workflow-candidate with no mapping → leave empty (safe, won't veto).
+		} else {
+			// No active workflow: use full fusion classification (embedding + tree LLM).
+			// The tree LLM adds ~7s latency but produces high-quality intent signals.
+			// This cost is NOT additional — the same Classify() would be called later
+			// in the confirmation gate. UIC's built-in cache makes the second call free.
+			fullResult := uic.Classify(intent.MessageContext{Text: trimmed, UserID: msg.UserID})
+			// Confidence threshold depends on classification quality:
+			// - Full fusion (Layer >= 23): 0.60 — high reliability
+			// - Embedding-only fallback (Layer == 2): 0.70 — lower reliability for short text
+			minConf := 0.60
+			if fullResult.Layer == 2 {
+				minConf = 0.70
+			}
+			if fullResult.Confidence >= minConf {
+				label := string(fullResult.Primary)
+				if !uic.IsWorkflowCandidate(fullResult.Primary) {
+					semanticHint = label
+				} else if fullResult.WorkflowType != "" && wf.router != nil && wf.router.HasTemplate(fullResult.WorkflowType) {
+					semanticHint = fullResult.WorkflowType
+				} else if wf.router != nil && wf.router.HasTemplate(label) {
+					semanticHint = label
+				} else if mapped := intentLabelToTemplateType(label); mapped != "" && wf.router != nil && wf.router.HasTemplate(mapped) {
+					semanticHint = mapped
+				}
+			}
 		}
+	}
+
+	if semanticHint != "" || hasActiveWorkflow {
+		log.Printf("[workflow-v2] route_decision: user=%s hint=%q active_workflow=%v uic_path=%s",
+			msg.UserID, semanticHint, hasActiveWorkflow,
+			map[bool]string{true: "embedding-only", false: "full-fusion"}[hasActiveWorkflow])
 	}
 
 	result := wf.router.RouteWithHint(msg.UserID, trimmed, attachments, semanticHint)
 
 	switch result.Target {
 	case v2.RouteToAgentLoop:
+		log.Printf("[workflow-v2] route_result: user=%s target=agent_loop hint=%q", msg.UserID, semanticHint)
 		return workflowIMRouteResult{}
 
 	case v2.RouteToDirectCoding:
@@ -476,6 +519,7 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 	}
 
 	// Store phase prompt for the agent loop to consume.
+	log.Printf("[workflow-v2] stashedPhasePrompt.Store: key=%q len=%d", userID, len(phasePrompt))
 	h.stashedPhasePrompt.Store(userID, phasePrompt)
 	h.workflowAgentLoopMarker.Store(userID, true)
 
@@ -489,9 +533,15 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 	}
 
 	// Set explicit userText for the agent loop so the LLM knows what to do.
+	// When form data is available, the userText explicitly anchors the LLM's
+	// attention to the structured information in the system prompt. Without this,
+	// the LLM may ignore the FormData section and waste iterations searching
+	// memory/project directories for input that's already provided.
 	phaseUserText := fmt.Sprintf("请现在生成「%s」阶段的完整文档内容。不要引用或指向之前的对话，直接在本次回复中输出完整文档。", phase.Name)
 	if modifyHint != "" {
 		phaseUserText = fmt.Sprintf("请根据修改意见重新生成「%s」的完整文档。直接输出完整内容。", phase.Name)
+	} else if phase.FormData != nil && len(phase.FormData) > 0 {
+		phaseUserText = fmt.Sprintf("请基于上方系统提示中「用户提供的结构化信息」section 的表单数据，直接生成「%s」阶段的完整文档。所有必要的输入信息（包括文件路径、技术领域等）已在该 section 中列出，无需再搜索或询问。直接在本次回复中输出完整文档。", phase.Name)
 	}
 	h.workflowOriginalRequest.Store(userID, phaseUserText)
 
@@ -499,13 +549,19 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 		userID, state.Type, phase.ID, state.ProjectPath)
 
 	// WorkflowAgentLoop=true signals the agent loop to use the stashed prompt.
-	// WorkflowDocPhase distinguishes doc phases (text-only output, no tool calls expected)
-	// from execution phases (LLM should call tools like bash/write_file).
-	isDocPhase := phase.ToolPolicy != v2.ToolPolicyFull
+	// WorkflowDocPhase distinguishes doc phases (produce structured output, wait for
+	// user confirmation before proceeding) from execution phases (LLM freely uses
+	// tools to complete the task without intermediate confirmation).
+	// Determined by NeedsConfirm: phases that require user confirmation are doc phases
+	// regardless of their ToolPolicy (a phase can need tools to READ input while still
+	// requiring confirmation of its OUTPUT — e.g. patent disclosure parsing reads .doc
+	// files but produces a structured analysis report for user review).
+	isDocPhase := phase.NeedsConfirm
 	return workflowIMRouteResult{
 		WorkflowAgentLoop: true,
 		WorkflowDocPhase:  isDocPhase,
 		WorkflowPhaseID:   phase.ID,
+		PhasePrompt:       phasePrompt,
 	}
 }
 

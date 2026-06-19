@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -39,5 +41,105 @@ func TestRunGitCmd_InvalidDir(t *testing.T) {
 	_, err := runGitCmd("/nonexistent_dir_xyz", "status")
 	if err == nil {
 		t.Error("expected error for invalid dir")
+	}
+}
+
+
+func TestSearchFilesInProject_FindsMatch(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("line1\nfoo bar baz\nline3\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "binary.png"), []byte{0x89, 0x50, 0x4E, 0x47}, 0644)
+
+	result := searchFilesInProject(dir, "foo bar", "")
+	if !strings.Contains(result, "hello.txt") {
+		t.Errorf("expected hello.txt in results, got %q", result)
+	}
+	if strings.Contains(result, "binary.png") {
+		t.Errorf("binary file should be skipped, got %q", result)
+	}
+	if !strings.Contains(result, ":2:") {
+		t.Errorf("expected line number 2, got %q", result)
+	}
+}
+
+func TestSearchFilesInProject_RegexPattern(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "code.go"), []byte("func main() {}\nfunc helper() {}\n"), 0644)
+
+	result := searchFilesInProject(dir, `func \w+\(\)`, "")
+	if !strings.Contains(result, "code.go") {
+		t.Errorf("expected code.go match, got %q", result)
+	}
+}
+
+func TestSearchFilesInProject_FilePatternFilter(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "app.go"), []byte("package main\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "app.py"), []byte("import main\n"), 0644)
+
+	result := searchFilesInProject(dir, "main", "*.go")
+	if !strings.Contains(result, "app.go") {
+		t.Errorf("expected app.go, got %q", result)
+	}
+	if strings.Contains(result, "app.py") {
+		t.Errorf("app.py should be filtered out, got %q", result)
+	}
+}
+
+func TestSearchFilesInProject_SkipsGitDir(t *testing.T) {
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	os.MkdirAll(gitDir, 0755)
+	os.WriteFile(filepath.Join(gitDir, "config"), []byte("secret_pattern\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("no match here\n"), 0644)
+
+	result := searchFilesInProject(dir, "secret_pattern", "")
+	if strings.Contains(result, "secret_pattern") {
+		t.Errorf(".git should be skipped, got %q", result)
+	}
+}
+
+func TestIsBinaryExtension(t *testing.T) {
+	cases := []struct {
+		name   string
+		binary bool
+	}{
+		{"main.go", false},
+		{"readme.md", false},
+		{"photo.png", true},
+		{"app.exe", true},
+		{"archive.zip", true},
+		{"data.json", false},
+		{"doc.pdf", true},
+		{"style.css", false},
+		{"UPPER.PNG", true},
+	}
+	for _, tc := range cases {
+		if got := isBinaryExtension(tc.name); got != tc.binary {
+			t.Errorf("isBinaryExtension(%q) = %v, want %v", tc.name, got, tc.binary)
+		}
+	}
+}
+
+func TestIsOverlyBroadSearchPath(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	cases := []struct {
+		path  string
+		broad bool
+	}{
+		{"/", true},
+		{"D:\\workprj\\aicoder", false},
+		{"D:\\专利申请测试1", false},
+	}
+	if home != "" {
+		cases = append(cases, struct {
+			path  string
+			broad bool
+		}{home, true})
+	}
+	for _, tc := range cases {
+		if got := isOverlyBroadSearchPath(tc.path); got != tc.broad {
+			t.Errorf("isOverlyBroadSearchPath(%q) = %v, want %v", tc.path, got, tc.broad)
+		}
 	}
 }

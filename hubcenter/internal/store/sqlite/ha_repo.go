@@ -128,7 +128,7 @@ func normalizedNoisyHAPayload(entityType, payloadJSON string) (map[string]any, b
 	}
 	delete(payload, "updated_at")
 	switch entityType {
-	case "hub_user_link", "hub_domain_route":
+	case "hub_user_link", "hub_domain_route", "llm_card_order":
 		return payload, true
 	case "hub_instance":
 		delete(payload, "last_seen_at")

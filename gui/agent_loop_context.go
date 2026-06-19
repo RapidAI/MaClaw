@@ -72,9 +72,13 @@ type LoopContext struct {
 	WorkflowDocBuffer strings.Builder
 
 	// WorkflowDocPhase is true when this V2 workflow agent loop is running a
-	// document generation phase (requirements, design, tasks) that produces only
-	// text output and does NOT require tool execution. When false (implementation,
-	// verification), the loop expects the LLM to call tools.
+	// phase that requires user confirmation (NeedsConfirm=true). The LLM produces
+	// structured output (analysis report, design doc, task list) and the system
+	// waits for user review before advancing to the next phase.
+	// The phase MAY still use tools (e.g. read_file to parse a disclosure document)
+	// but its primary output is a confirmable document, not free-form execution.
+	// When false (implementation, verification), the LLM freely uses tools to
+	// complete the task without intermediate confirmation.
 	WorkflowDocPhase bool
 
 	// WorkflowPhaseID is the active V2 phase ID for protocol-aware cleanup of

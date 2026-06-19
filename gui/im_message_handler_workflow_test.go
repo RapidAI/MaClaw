@@ -2209,7 +2209,7 @@ func TestBuildIMEntrySystemPromptUsesRuntimeOwnerStashedPhasePrompt(t *testing.T
 	handler.stashedPhasePrompt.Store(remoteOwnerID, "PHASE_PROMPT_SENTINEL")
 	handler.stashedPhasePrompt.Store(desktopID, "WRONG_PROMPT")
 
-	prompt := handler.buildIMEntrySystemPrompt(IMUserMessage{UserID: desktopID, Text: "continue"}, nil, ctx, true, "", "", "")
+	prompt := handler.buildIMEntrySystemPrompt(IMUserMessage{UserID: desktopID, Text: "continue"}, nil, ctx, true, "", "", "", "")
 
 	if !strings.Contains(prompt, "PHASE_PROMPT_SENTINEL") {
 		t.Fatalf("system prompt missing runtime-owner stashed phase prompt")

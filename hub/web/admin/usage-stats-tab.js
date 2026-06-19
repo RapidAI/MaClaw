@@ -7,11 +7,12 @@ const USAGE_STATS_I18N = {
     navLabel: 'Usage Stats',
     navDesc: 'Daily and monthly LLM usage analytics',
     tabTitle: 'Usage Stats',
-    tabSubtitle: 'View token usage by user or security group, with daily 24-hour trends.',
+    tabSubtitle: 'View token usage by user, security group, or LLM provider, with daily 24-hour trends.',
     reload: 'Reload',
     scope: 'Scope',
     scopeUser: 'By User',
     scopeGroup: 'By Security Group',
+    scopeProvider: 'By LLM Provider',
     period: 'Period',
     periodDaily: 'Daily',
     periodMonthly: 'Monthly',
@@ -48,11 +49,12 @@ const USAGE_STATS_I18N = {
     navLabel: '\u4f7f\u7528\u7edf\u8ba1',
     navDesc: '\u6309\u65e5\u3001\u6309\u6708\u7684 LLM \u7528\u91cf\u62a5\u8868',
     tabTitle: '\u4f7f\u7528\u7edf\u8ba1',
-    tabSubtitle: '\u67e5\u770b\u6309\u7528\u6237\u6216\u5b89\u5168\u7ec4\u7684 token \u7528\u91cf\uff0c\u5305\u542b\u6bcf\u65e5 24 \u5c0f\u65f6\u8d8b\u52bf\u3002',
+    tabSubtitle: '\u67e5\u770b\u6309\u7528\u6237\u3001\u5b89\u5168\u7ec4\u6216 LLM \u670d\u52a1\u5546\u7684 token \u7528\u91cf\uff0c\u5305\u542b\u6bcf\u65e5 24 \u5c0f\u65f6\u8d8b\u52bf\u3002',
     reload: '\u91cd\u65b0\u52a0\u8f7d',
     scope: '\u7edf\u8ba1\u7ef4\u5ea6',
     scopeUser: '\u6309\u7528\u6237',
     scopeGroup: '\u6309\u5b89\u5168\u7ec4',
+    scopeProvider: '\u6309 LLM \u670d\u52a1\u5546',
     period: '\u5468\u671f',
     periodDaily: '\u6309\u65e5',
     periodMonthly: '\u6309\u6708',
@@ -143,7 +145,7 @@ function ensureUsageStatsUI() {
   host.id = 'usageStatsRoot';
   host.innerHTML = '' +
     '<div class="item" style="padding:12px 14px"><div class="grid2" style="gap:8px">' +
-    '<div><label id="usageStatsScopeLabel"></label><select id="usageStatsScope" style="height:36px" onchange="onUsageStatsFilterChange()"><option value="user" id="usageStatsScopeUser"></option><option value="group" id="usageStatsScopeGroup"></option></select></div>' +
+    '<div><label id="usageStatsScopeLabel"></label><select id="usageStatsScope" style="height:36px" onchange="onUsageStatsFilterChange()"><option value="user" id="usageStatsScopeUser"></option><option value="group" id="usageStatsScopeGroup"></option><option value="provider" id="usageStatsScopeProvider"></option></select></div>' +
     '<div><label id="usageStatsPeriodLabel"></label><select id="usageStatsPeriod" style="height:36px" onchange="onUsageStatsFilterChange()"><option value="daily" id="usageStatsPeriodDaily"></option><option value="monthly" id="usageStatsPeriodMonthly"></option></select></div>' +
     '<div id="usageStatsDateWrap"><label id="usageStatsDateLabel"></label><input id="usageStatsDate" style="height:36px" type="date" onchange="onUsageStatsFilterChange()"></div>' +
     '<div id="usageStatsMonthWrap"><label id="usageStatsMonthLabel"></label><input id="usageStatsMonth" style="height:36px" type="month" onchange="onUsageStatsFilterChange()"></div>' +
@@ -167,6 +169,7 @@ function applyUsageStatsI18n() {
   _s('usageStatsScopeLabel', 'textContent', ust('scope'));
   _s('usageStatsScopeUser', 'textContent', ust('scopeUser'));
   _s('usageStatsScopeGroup', 'textContent', ust('scopeGroup'));
+  _s('usageStatsScopeProvider', 'textContent', ust('scopeProvider'));
   _s('usageStatsPeriodLabel', 'textContent', ust('period'));
   _s('usageStatsPeriodDaily', 'textContent', ust('periodDaily'));
   _s('usageStatsPeriodMonthly', 'textContent', ust('periodMonthly'));
@@ -304,11 +307,13 @@ function onUsageStatsFilterChange() {
   const dateEl = document.getElementById('usageStatsDate');
   const monthEl = document.getElementById('usageStatsMonth');
   const entityEl = document.getElementById('usageStatsEntity');
-  usageStatsState.scope = scopeEl && scopeEl.value || 'user';
+  const nextScope = scopeEl && scopeEl.value || 'user';
+  const scopeChanged = usageStatsState.scope !== nextScope;
+  usageStatsState.scope = nextScope;
   usageStatsState.period = periodEl && periodEl.value || 'daily';
   usageStatsState.date = dateEl && dateEl.value || usageStatsState.date;
   usageStatsState.month = monthEl && monthEl.value || usageStatsState.month;
-  usageStatsState.entity = entityEl && entityEl.value || '';
+  usageStatsState.entity = scopeChanged ? '' : (entityEl && entityEl.value || '');
   loadUsageStats();
 }
 async function loadUsageStats() {

@@ -102,6 +102,56 @@ func TestLLMUsageReportIncludesRMBCostCounters(t *testing.T) {
 	}
 }
 
+func TestLLMUsageReportSupportsProviderScope(t *testing.T) {
+	rep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	ts := time.Date(2026, 4, 21, 9, 30, 0, 0, time.UTC)
+	rep.addUsage(ts, "alice@example.com", nil, corelib.TokenUsageStat{
+		InputTokens:  100,
+		OutputTokens: 20,
+		TotalTokens:  120,
+		Requests:     1,
+	}, 0.12, "provider-a")
+	rep.addUsage(ts.Add(time.Hour), "bob@example.com", nil, corelib.TokenUsageStat{
+		InputTokens:  300,
+		OutputTokens: 60,
+		TotalTokens:  360,
+		Requests:     1,
+	}, 0.36, "provider-b")
+	rep.addUsage(ts.Add(2*time.Hour), "alice@example.com", nil, corelib.TokenUsageStat{
+		InputTokens:  40,
+		OutputTokens: 10,
+		TotalTokens:  50,
+		Requests:     1,
+	}, 0.05, "provider-a")
+	rep.addUsage(ts.Add(3*time.Hour), "legacy@example.com", nil, corelib.TokenUsageStat{
+		InputTokens:  900,
+		OutputTokens: 99,
+		TotalTokens:  999,
+		Requests:     1,
+	}, 0.99)
+
+	resp := buildLLMUsageReportResponse(context.Background(), rep, nil, "provider", "daily", "2026-04-21", "2026-04", "", ts, map[string]string{
+		"provider-a": "Provider A",
+		"provider-b": "Provider B",
+	})
+	if resp.Summary.TotalTokens != 530 || len(resp.Rows) != 2 {
+		t.Fatalf("provider daily summary=%+v rows=%#v", resp.Summary, resp.Rows)
+	}
+	if resp.Rows[0].ID != "provider-b" || resp.Rows[0].Name != "Provider B" || resp.Rows[0].TotalTokens != 360 {
+		t.Fatalf("provider rows not sorted/named by usage: %#v", resp.Rows)
+	}
+	if len(resp.Trend) != 24 || resp.Trend[9].TotalTokens != 120 || resp.Trend[10].TotalTokens != 360 || resp.Trend[11].TotalTokens != 50 {
+		t.Fatalf("provider trend not aggregated: %#v", resp.Trend)
+	}
+
+	filtered := buildLLMUsageReportResponse(context.Background(), rep, nil, "provider", "monthly", "", "2026-04", "provider-a", ts, map[string]string{
+		"provider-a": "Provider A",
+	})
+	if filtered.Summary.TotalTokens != 170 || len(filtered.Rows) != 1 || filtered.Rows[0].Name != "Provider A" {
+		t.Fatalf("provider monthly filtered summary=%+v rows=%#v", filtered.Summary, filtered.Rows)
+	}
+}
+
 func TestMonthlyUsageReportEntitySummaryDoesNotLeakGlobalTotals(t *testing.T) {
 	rep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
 	now := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)

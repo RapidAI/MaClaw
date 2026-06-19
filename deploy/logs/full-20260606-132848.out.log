@@ -1,0 +1,247 @@
+
+[1/9] Deployment topology
+  - hubs.mypapers.top: hubcenter[/data/soft/hubcenter] + hub[/data/soft/hub]
+  - hubs.maclaw.top: hubcenter[/data/soft/hubcenter] + hub[/data/soft/hub]
+  - hubs2.maclaw.top: hubcenter[/data/soft/hubcenter] + hub[/data/soft/hub]
+  Shared cluster secret: existing-inventory
+
+[2/9] Running remote prechecks...
+  - checking hubs.mypapers.top
+  - checking hubs.maclaw.top
+  - checking hubs2.maclaw.top
+[3/9] Preparing build workspace...
+[4/9] Rendering hubcenter/hub configs...
+Wrote D:\workprj\aicoder\deploy\rendered-configs-temp\hubcenter-hc-1.yaml
+Wrote D:\workprj\aicoder\deploy\rendered-configs-temp\hubcenter-hc-2.yaml
+Wrote D:\workprj\aicoder\deploy\rendered-configs-temp\hubcenter-hc-3.yaml
+Wrote D:\workprj\aicoder\deploy\rendered-configs-temp\hub-mypapers.yaml
+Wrote D:\workprj\aicoder\deploy\rendered-configs-temp\hub-maclaw.yaml
+Wrote D:\workprj\aicoder\deploy\rendered-configs-temp\hub2-maclaw.yaml
+[5/9] Building local Linux binaries and staging deploy assets...
+  - target: linux/amd64, CGO_ENABLED=0
+  - building hubcenter locally...
+  - building hub locally...
+[6/9] Creating deploy archive...
+[7/9] Writing remote deployment script...
+
+[8/9][1/3] Uploading artifacts to hubs.mypapers.top...
+maclaw-deploy.tar.gz      | 4 kB |   4.0 kB/s | ETA: 01:47:27 |   0%maclaw-deploy.tar.gz      | 12300 kB | 12300.0 kB/s | ETA: 00:00:01 |  47%maclaw-deploy.tar.gz      | 18288 kB | 9144.0 kB/s | ETA: 00:00:00 |  70% maclaw-deploy.tar.gz      | 22360 kB | 7453.3 kB/s | ETA: 00:00:00 |  86%maclaw-deploy.tar.gz      | 25792 kB | 8597.5 kB/s | ETA: 00:00:00 | 100%
+remote_deploy.sh          | 4 kB |   4.0 kB/s | ETA: 00:00:02 |  31%remote_deploy.sh          | 12 kB |  12.6 kB/s | ETA: 00:00:00 | 100%
+hubcenter-hc-1.yaml       | 1 kB |   1.5 kB/s | ETA: 00:00:00 | 100%
+hub-mypapers.yaml         | 1 kB |   1.2 kB/s | ETA: 00:00:00 | 100%
+[9/9][1/3] Deploying uploaded binaries on hubs.mypapers.top...
+[remote] Using uploaded local binaries.
+[remote] Deploying hubcenter files...
+[remote] Stopping hubcenter process before DB rebuild: 30585
+[remote] Stopping hubcenter process from deploy dir before update: 10449
+[remote] Deploying hub files...
+[remote] Deploying openclaw-bridge...
+[WARN] npm not found on remote host, skipping openclaw-bridge dependencies
+[remote] Restarting hubcenter...
+Stopping hubcenter process from deploy dir: 10506
+Starting maclaw-hubcenter...
+maclaw-hubcenter started with PID 10516
+[remote] Restarting hub...
+Stopping existing maclaw-hub process: 30617
+Starting maclaw-hub...
+maclaw-hub started with PID 10552
+Remote build and deploy finished.
+
+[8/9][2/3] Uploading artifacts to hubs.maclaw.top...
+maclaw-deploy.tar.gz      | 4 kB |   4.0 kB/s | ETA: 01:47:27 |   0%maclaw-deploy.tar.gz      | 104 kB | 104.0 kB/s | ETA: 00:04:07 |   0%maclaw-deploy.tar.gz      | 2548 kB | 1274.0 kB/s | ETA: 00:00:18 |   9%maclaw-deploy.tar.gz      | 6828 kB | 2276.0 kB/s | ETA: 00:00:08 |  26%maclaw-deploy.tar.gz      | 12880 kB | 3220.0 kB/s | ETA: 00:00:04 |  49%maclaw-deploy.tar.gz      | 19068 kB | 3813.6 kB/s | ETA: 00:00:01 |  73%maclaw-deploy.tar.gz      | 23936 kB | 3989.3 kB/s | ETA: 00:00:00 |  92%maclaw-deploy.tar.gz      | 25792 kB | 4298.8 kB/s | ETA: 00:00:00 | 100%
+remote_deploy.sh          | 4 kB |   4.0 kB/s | ETA: 00:00:02 |  31%remote_deploy.sh          | 12 kB |  12.6 kB/s | ETA: 00:00:00 | 100%
+hubcenter-hc-2.yaml       | 1 kB |   1.5 kB/s | ETA: 00:00:00 | 100%
+hub-maclaw.yaml           | 1 kB |   1.1 kB/s | ETA: 00:00:00 | 100%
+[9/9][2/3] Deploying uploaded binaries on hubs.maclaw.top...
+[remote] Using uploaded local binaries.
+[remote] Deploying hubcenter files...
+[remote] Stopping hubcenter process before DB rebuild: 406974
+[remote] Stopping hubcenter process from deploy dir before update: 411609
+[remote] Deploying hub files...
+[remote] Deploying openclaw-bridge...
+[remote] Running npm install in openclaw-bridge...
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: 'openclaw@2026.5.27',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: '@earendil-works/pi-agent-core@0.75.5',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: '@earendil-works/pi-ai@0.75.5',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: '@earendil-works/pi-coding-agent@0.75.5',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: '@earendil-works/pi-tui@0.75.5',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: '@openclaw/proxyline@0.3.3',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: 'file-type@22.0.1',
+npm warn EBADENGINE   required: { node: '>=22' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: 'kysely@0.29.2',
+npm warn EBADENGINE   required: { node: '>=22.0.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: 'pdfjs-dist@5.7.284',
+npm warn EBADENGINE   required: { node: '>=22.13.0 || >=24' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: 'undici@8.3.0',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+
+added 15 packages, and audited 428 packages in 3s
+
+76 packages are looking for funding
+  run `npm fund` for details
+
+1 moderate severity vulnerability
+
+To address all issues, run:
+  npm audit fix
+
+Run `npm audit` for details.
+[remote] Building openclaw-bridge...
+[remote] Pruning dev dependencies...
+npm warn config production Use `--omit=dev` instead.
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: 'openclaw@2026.5.27',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: '@earendil-works/pi-agent-core@0.75.5',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: '@earendil-works/pi-ai@0.75.5',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: '@earendil-works/pi-coding-agent@0.75.5',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: '@earendil-works/pi-tui@0.75.5',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: '@openclaw/proxyline@0.3.3',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: 'file-type@22.0.1',
+npm warn EBADENGINE   required: { node: '>=22' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: 'kysely@0.29.2',
+npm warn EBADENGINE   required: { node: '>=22.0.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: 'pdfjs-dist@5.7.284',
+npm warn EBADENGINE   required: { node: '>=22.13.0 || >=24' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: 'undici@8.3.0',
+npm warn EBADENGINE   required: { node: '>=22.19.0' },
+npm warn EBADENGINE   current: { node: 'v20.20.2', npm: '10.8.2' }
+npm warn EBADENGINE }
+
+up to date, audited 413 packages in 2s
+
+76 packages are looking for funding
+  run `npm fund` for details
+
+1 moderate severity vulnerability
+
+To address all issues, run:
+  npm audit fix
+
+Run `npm audit` for details.
+[remote] Restarting hubcenter...
+Stopping hubcenter process from deploy dir: 411715
+Starting maclaw-hubcenter...
+maclaw-hubcenter started with PID 411721
+[remote] Restarting hub...
+Stopping existing maclaw-hub process: 407002
+Starting maclaw-hub...
+maclaw-hub started with PID 411774
+Remote build and deploy finished.
+
+[8/9][3/3] Uploading artifacts to hubs2.maclaw.top...
+maclaw-deploy.tar.gz      | 4 kB |   4.0 kB/s | ETA: 01:47:27 |   0%maclaw-deploy.tar.gz      | 104 kB | 104.0 kB/s | ETA: 00:04:07 |   0%maclaw-deploy.tar.gz      | 2040 kB | 1020.0 kB/s | ETA: 00:00:23 |   7%maclaw-deploy.tar.gz      | 4116 kB | 1372.0 kB/s | ETA: 00:00:15 |  15%maclaw-deploy.tar.gz      | 7000 kB | 1750.0 kB/s | ETA: 00:00:10 |  27%maclaw-deploy.tar.gz      | 12376 kB | 2475.2 kB/s | ETA: 00:00:05 |  47%maclaw-deploy.tar.gz      | 16604 kB | 2767.3 kB/s | ETA: 00:00:03 |  64%maclaw-deploy.tar.gz      | 22528 kB | 3218.3 kB/s | ETA: 00:00:01 |  87%maclaw-deploy.tar.gz      | 25792 kB | 3684.7 kB/s | ETA: 00:00:00 | 100%
+remote_deploy.sh          | 4 kB |   4.0 kB/s | ETA: 00:00:02 |  31%remote_deploy.sh          | 12 kB |  12.6 kB/s | ETA: 00:00:00 | 100%
+hubcenter-hc-3.yaml       | 1 kB |   1.5 kB/s | ETA: 00:00:00 | 100%
+hub2-maclaw.yaml          | 1 kB |   1.1 kB/s | ETA: 00:00:00 | 100%
+[9/9][3/3] Deploying uploaded binaries on hubs2.maclaw.top...
+[remote] Using uploaded local binaries.
+[remote] Deploying hubcenter files...
+[remote] Stopping hubcenter process before DB rebuild: 879893
+[remote] Stopping hubcenter process from deploy dir before update: 883330
+[remote] Deploying hub files...
+[remote] Deploying openclaw-bridge...
+[WARN] npm not found on remote host, skipping openclaw-bridge dependencies
+[remote] Restarting hubcenter...
+Stopping hubcenter process from deploy dir: 883380
+Starting maclaw-hubcenter...
+maclaw-hubcenter started with PID 883411
+[remote] Restarting hub...
+Stopping existing maclaw-hub process: 879952
+Starting maclaw-hub...
+maclaw-hub started with PID 883443
+Remote build and deploy finished.
+
+Running post-deploy smoke checks...
+  - hubs.mypapers.top: hubcenter healthz -> 200
+  - hubs.mypapers.top: hubcenter admin -> 200
+  - hubs.mypapers.top: hubcenter hub action route -> 401
+  - hubs.mypapers.top: hub healthz -> 200
+  - hubs.mypapers.top: hub admin -> 200
+  - hubs.mypapers.top: hub card store page -> 200
+  - hubs.mypapers.top: hub card store public api -> 200
+  - hubs.mypapers.top: hub card store admin api -> 401
+  - hubs.maclaw.top: hubcenter healthz -> 200
+  - hubs.maclaw.top: hubcenter admin -> 200
+  - hubs.maclaw.top: hubcenter hub action route -> 401
+  - hubs.maclaw.top: hub healthz -> 200
+  - hubs.maclaw.top: hub admin -> 200
+  - hubs.maclaw.top: hub card store page -> 200
+  - hubs.maclaw.top: hub card store public api -> 404
+  - hubs.maclaw.top: hub card store admin api -> 404
+  - hubs2.maclaw.top: hubcenter healthz -> 200
+  - hubs2.maclaw.top: hubcenter admin -> 200
+  - hubs2.maclaw.top: hubcenter hub action route -> 401
+  - hubs2.maclaw.top: hub healthz -> 200
+  - hubs2.maclaw.top: hub admin -> 200
+  - hubs2.maclaw.top: hub card store page -> 200
+  - hubs2.maclaw.top: hub card store public api -> 200
+  - hubs2.maclaw.top: hub card store admin api -> 401

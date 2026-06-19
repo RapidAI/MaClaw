@@ -337,20 +337,41 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		}
 	}
 
-	// V2 workflow doc phase: force finalize after the first iteration that produces
-	// substantial text output. Doc phases should only run one LLM round — any
-	// ContinueLoop from downstream logic (coding gate, hallucination correction,
-	// no-tool stall recovery, etc.) is incorrect for text-only doc generation.
-	if opts.Context != nil && opts.Context.WorkflowDocPhase && opts.Iteration == 0 {
+	// V2 workflow doc phase: force finalize when LLM produces substantial text
+	// output without tool calls. This prevents the agent loop from running
+	// indefinitely in NeedsConfirm phases that also use tools (e.g. patent
+	// disclosure parsing: read_file to parse → then output analysis report).
+	//
+	// Two convergence conditions:
+	// 1. Current iteration has >= 200 rune text output + no tool calls
+	//    (LLM produced a complete document in one shot)
+	// 2. WorkflowDocBuffer has accumulated >= 500 rune across iterations +
+	//    current iteration has no tool calls (LLM finished using tools and
+	//    is now outputting summary/conclusion text)
+	if opts.Context != nil && opts.Context.WorkflowDocPhase && len(choice.Message.ToolCalls) == 0 {
 		cleanedDoc := v2.SanitizePhaseOutput(opts.Context.WorkflowPhaseID, msgContent)
 		trimmed := strings.TrimSpace(cleanedDoc)
-		if len([]rune(trimmed)) >= 200 && len(choice.Message.ToolCalls) == 0 {
-			// Substantial doc output produced in iteration 0 with no tool calls.
-			// Force finalize — do not allow any continue path to trigger iteration 1.
+		bufLen := len([]rune(opts.Context.WorkflowDocBuffer.String()))
+		currentLen := len([]rune(trimmed))
+
+		shouldFinalize := false
+		if currentLen >= 200 {
+			// Condition 1: substantial output in current iteration
+			shouldFinalize = true
+		} else if bufLen >= 500 && opts.Iteration > 0 {
+			// Condition 2: enough accumulated across iterations, LLM is wrapping up
+			shouldFinalize = true
+		}
+
+		if shouldFinalize {
 			if opts.Phase != nil {
 				opts.Phase.Stage = agentStageFinalize
 			}
+			// Use the full buffer if it has more content than current iteration alone
 			finalText := cleanedDoc
+			if bufLen > currentLen {
+				finalText = strings.TrimSpace(opts.Context.WorkflowDocBuffer.String())
+			}
 			resp := &IMAgentResponse{Text: finalText}
 			if opts.AttachLLMTelemetry != nil {
 				opts.AttachLLMTelemetry(resp)

@@ -200,6 +200,68 @@ func TestHASyncOpRepoAppendLocalKeepsChangedRoutingPayload(t *testing.T) {
 	}
 }
 
+func TestHASyncOpRepoAppendLocalSkipsUnchangedLLMCardOrderPayload(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ha-card-order-dedupe-test.db")
+	provider, err := NewProvider(Config{DSN: dbPath, WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	defer provider.Close()
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	repo := &haSyncOpRepo{db: provider.Write, readDB: provider.Read}
+	ctx := context.Background()
+	first := `{"order_no":"HC-1","product_id":"quarter_100k","email":"owner@example.com","amount":5150,"status":"pending","created_at":"2026-06-19T00:00:00Z","updated_at":"2026-06-19T00:00:00Z","hub_id":"hub-1","tenant_id":"tenant_default","card_type_id":"quarter_100k","service_group_id":"redeem","credits":520000,"period":"quarter"}`
+	second := `{"order_no":"HC-1","product_id":"quarter_100k","email":"owner@example.com","amount":5150,"status":"pending","created_at":"2026-06-19T00:00:00Z","updated_at":"2026-06-19T00:05:00Z","hub_id":"hub-1","tenant_id":"tenant_default","card_type_id":"quarter_100k","service_group_id":"redeem","credits":520000,"period":"quarter"}`
+
+	if version, err := repo.AppendLocalWithVersion(ctx, &store.HASyncOp{OpID: "op-order-1", SourceNodeID: "hc-1", EntityType: "llm_card_order", EntityID: "HC-1", OpType: "upsert", OccurredAt: time.Now().UTC(), PayloadJSON: first, PayloadHash: "hash-1"}); err != nil || version != 1 {
+		t.Fatalf("first AppendLocalWithVersion() version=%d err=%v, want version=1", version, err)
+	}
+	if version, err := repo.AppendLocalWithVersion(ctx, &store.HASyncOp{OpID: "op-order-2", SourceNodeID: "hc-1", EntityType: "llm_card_order", EntityID: "HC-1", OpType: "upsert", OccurredAt: time.Now().UTC().Add(time.Minute), PayloadJSON: second, PayloadHash: "hash-2"}); err != nil || version != 0 {
+		t.Fatalf("unchanged AppendLocalWithVersion() version=%d err=%v, want skipped version=0", version, err)
+	}
+
+	items, err := repo.ListAfterSeq(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("ListAfterSeq() error = %v", err)
+	}
+	if len(items) != 1 || items[0].OpID != "op-order-1" {
+		t.Fatalf("items = %+v, want one original order op", items)
+	}
+}
+
+func TestHASyncOpRepoAppendLocalKeepsChangedLLMCardOrderPayload(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ha-card-order-change-test.db")
+	provider, err := NewProvider(Config{DSN: dbPath, WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	defer provider.Close()
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	repo := &haSyncOpRepo{db: provider.Write, readDB: provider.Read}
+	ctx := context.Background()
+	first := `{"order_no":"HC-1","product_id":"quarter_100k","email":"owner@example.com","amount":5150,"status":"pending","created_at":"2026-06-19T00:00:00Z","updated_at":"2026-06-19T00:00:00Z","hub_id":"hub-1","tenant_id":"tenant_default","card_type_id":"quarter_100k","service_group_id":"redeem","credits":520000,"period":"quarter"}`
+	second := `{"order_no":"HC-1","product_id":"quarter_100k","email":"owner@example.com","amount":5150,"status":"activated","created_at":"2026-06-19T00:00:00Z","updated_at":"2026-06-19T00:05:00Z","hub_id":"hub-1","tenant_id":"tenant_default","card_type_id":"quarter_100k","service_group_id":"redeem","credits":520000,"period":"quarter"}`
+
+	if version, err := repo.AppendLocalWithVersion(ctx, &store.HASyncOp{OpID: "op-order-1", SourceNodeID: "hc-1", EntityType: "llm_card_order", EntityID: "HC-1", OpType: "upsert", OccurredAt: time.Now().UTC(), PayloadJSON: first, PayloadHash: "hash-1"}); err != nil || version != 1 {
+		t.Fatalf("first AppendLocalWithVersion() version=%d err=%v, want version=1", version, err)
+	}
+	if version, err := repo.AppendLocalWithVersion(ctx, &store.HASyncOp{OpID: "op-order-2", SourceNodeID: "hc-1", EntityType: "llm_card_order", EntityID: "HC-1", OpType: "upsert", OccurredAt: time.Now().UTC().Add(time.Minute), PayloadJSON: second, PayloadHash: "hash-2"}); err != nil || version != 2 {
+		t.Fatalf("changed AppendLocalWithVersion() version=%d err=%v, want version=2", version, err)
+	}
+
+	items, err := repo.ListAfterSeq(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("ListAfterSeq() error = %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items len = %d, want 2", len(items))
+	}
+}
+
 func TestHASyncOpRepoAppendLocalDoesNotSkipAfterDelete(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "ha-recreate-after-delete-test.db")
 	provider, err := NewProvider(Config{DSN: dbPath, WAL: false})

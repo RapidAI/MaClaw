@@ -42,7 +42,7 @@ ps -eo pid=,args= | awk -v cmd="$APP_DIR/$BIN_NAME" '$2 == cmd { print $1 }' | w
 done
 
 ps -eo pid=,args= | awk -v dir="$APP_DIR/" '
-  index($0, dir) && ($0 ~ /maclaw-hubcenter/ || $0 ~ /tigerclaw-hubcenter/) { print $1 }
+  index($2, dir) == 1 && ($2 ~ /\/maclaw-hubcenter$/ || $2 ~ /\/tigerclaw-hubcenter$/) { print $1 }
 ' | while read -r pid; do
   if [ -n "${pid:-}" ] && [ "$pid" != "$$" ]; then
     echo "Stopping hubcenter process from deploy dir: $pid"
@@ -55,7 +55,7 @@ ps -eo pid=,args= | awk -v dir="$APP_DIR/" '
 done
 
 ps -eo pid=,args= | awk '
-  $0 ~ /(^|[\/ ])(maclaw-hubcenter|tigerclaw-hubcenter)( |$)/ { print $1 }
+  $2 ~ /(^|\/)(maclaw-hubcenter|tigerclaw-hubcenter)$/ { print $1 }
 ' | while read -r pid; do
   if [ -n "${pid:-}" ] && [ "$pid" != "$$" ]; then
     echo "Stopping hubcenter process by binary name: $pid"

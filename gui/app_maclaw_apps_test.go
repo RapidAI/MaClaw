@@ -2,10 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestSubmitMaclawAppPackageQueuesLocalSubmission(t *testing.T) {
@@ -16,7 +20,14 @@ func TestSubmitMaclawAppPackageQueuesLocalSubmission(t *testing.T) {
 		"apps": [{
 			"schema": "maclaw.app.v1",
 			"privateMarker": "x_maclaw_apps",
-			"app": {"id": "local-contract", "name": "Contract"}
+			"app": {
+				"id": "local-contract",
+				"name": "Contract",
+				"binding": {
+					"appSkill": {"id": "contract-super-app", "version": "1.0.0"},
+					"dependencies": {"skills": [{"id": "contract-workflow", "version": "2.0.0", "kind": "workflow_skill", "required": true, "source": "market"}]}
+				}
+			}
 		}]
 	}`
 
@@ -29,6 +40,9 @@ func TestSubmitMaclawAppPackageQueuesLocalSubmission(t *testing.T) {
 	}
 	if result["package_sha256"] == "" || result["package_bytes"].(int) <= 0 {
 		t.Fatalf("expected package fingerprint in result: %#v", result)
+	}
+	if result["dependency_count"] != 2 {
+		t.Fatalf("expected dependency count in result: %#v", result)
 	}
 	submissionID, _ := result["submission_id"].(string)
 	if !strings.HasPrefix(submissionID, "local-review-local-contract-") {
@@ -55,6 +69,12 @@ func TestSubmitMaclawAppPackageQueuesLocalSubmission(t *testing.T) {
 	if len(queue.Submissions[0].Events) != 1 || queue.Submissions[0].Events[0].Status != "submitted" {
 		t.Fatalf("expected initial submission event: %#v", queue.Submissions[0].Events)
 	}
+	if len(queue.Submissions[0].Dependencies) != 2 || queue.Submissions[0].Dependencies[0].ID != "contract-super-app" || queue.Submissions[0].Dependencies[1].ID != "contract-workflow" {
+		t.Fatalf("expected dependency audit metadata: %#v", queue.Submissions[0].Dependencies)
+	}
+	if queue.Submissions[0].Dependencies[1].Kind != "workflow_skill" || queue.Submissions[0].Dependencies[1].Source != "market" || queue.Submissions[0].Dependencies[1].AppIDs[0] != "local-contract" {
+		t.Fatalf("expected workflow dependency audit detail: %#v", queue.Submissions[0].Dependencies[1])
+	}
 
 	summaries, err := app.ListMaclawAppPackageSubmissions(10)
 	if err != nil {
@@ -68,6 +88,9 @@ func TestSubmitMaclawAppPackageQueuesLocalSubmission(t *testing.T) {
 	}
 	if summaries[0].EventCount != 1 || summaries[0].LastEventAt == "" {
 		t.Fatalf("expected summary event metadata: %#v", summaries[0])
+	}
+	if len(summaries[0].Dependencies) != 2 || summaries[0].Dependencies[1].ID != "contract-workflow" {
+		t.Fatalf("expected summary dependency audit metadata: %#v", summaries[0].Dependencies)
 	}
 }
 
@@ -412,11 +435,11 @@ func TestUpdateMaclawAppPackageSubmissionStatusStoresReviewIssues(t *testing.T) 
 		ReviewIssues: []maclawAppReviewIssue{{
 			Path:       "apps[0].app.governance.testEvidence",
 			Severity:   "error",
-			Message:    "缺少运行证据",
-			Suggestion: "先运行一次应用并重新提交",
+			Message:    "missing test evidence",
+			Suggestion: "run a local test before publishing",
 		}, {
 			Severity: "invalid",
-			Message:  "补充权限说明",
+			Message:  "unknown severity",
 		}, {
 			Path: "empty-message",
 		}},
@@ -431,7 +454,7 @@ func TestUpdateMaclawAppPackageSubmissionStatusStoresReviewIssues(t *testing.T) 
 	if len(summaries) != 1 || len(summaries[0].ReviewIssues) != 2 {
 		t.Fatalf("expected two review issues: %#v", summaries)
 	}
-	if summaries[0].ReviewIssues[0].Severity != "error" || summaries[0].ReviewIssues[0].Message != "缺少运行证据" {
+	if summaries[0].ReviewIssues[0].Severity != "error" || summaries[0].ReviewIssues[0].Message != "missing test evidence" {
 		t.Fatalf("unexpected first issue: %#v", summaries[0].ReviewIssues[0])
 	}
 	if summaries[0].ReviewIssues[1].Severity != "warning" {
@@ -446,7 +469,422 @@ func TestUpdateMaclawAppPackageSubmissionStatusStoresReviewIssues(t *testing.T) 
 	if err != nil {
 		t.Fatalf("detail again: %v", err)
 	}
-	if again.ReviewIssues[0].Message != "缺少运行证据" {
+	if again.ReviewIssues[0].Message != "missing test evidence" {
 		t.Fatalf("review issues should be cloned: %#v", again.ReviewIssues)
 	}
+}
+func TestPlanMaclawAppInstallSingleAppChecksDependencies(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "expense-approval-app")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# Expense approval app\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "expense-approval-app", SkillDir: skillDir, Status: "active"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "expense-approval",
+			"name": "Expense Approval",
+			"kind": "enterprise_approval_app",
+			"binding": { "appSkill": { "id": "expense-approval-app", "version": "1.0.0" } },
+			"dependencies": {
+				"skills": [
+					{ "id": "expense-approval-workflow", "version": ">=1.0.0 <2.0.0", "kind": "workflow_skill", "required": true, "source": "hub" },
+					{ "id": "expense-exporter", "kind": "runtime_skill", "required": false }
+				]
+			}
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	if plan.Schema != "maclaw.app.install_plan.v1" || len(plan.Apps) != 1 || plan.Apps[0].Kind != "enterprise_approval_app" {
+		t.Fatalf("unexpected apps plan: %#v", plan)
+	}
+	if !plan.HasMissingRequired || len(plan.Dependencies) != 3 {
+		t.Fatalf("unexpected dependency summary: %#v", plan)
+	}
+	if dep := maclawAppPlanDepForTest(plan, "expense-approval-app"); dep == nil || !dep.Installed || dep.Action != "skip" || dep.Kind != "runtime_skill" {
+		t.Fatalf("runtime app skill should be installed: %#v", dep)
+	}
+	if dep := maclawAppPlanDepForTest(plan, "expense-approval-workflow"); dep == nil || dep.Installed || dep.Action != "blocked" || !dep.Required {
+		t.Fatalf("required workflow should block: %#v", dep)
+	}
+	if dep := maclawAppPlanDepForTest(plan, "expense-exporter"); dep == nil || dep.Action != "optional_missing" || dep.Required {
+		t.Fatalf("optional dependency should not block: %#v", dep)
+	}
+}
+
+func TestPlanMaclawAppInstallPackDedupesDependenciesAndNormalizesLegacyKind(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [{
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {
+				"id": "legacy-enterprise",
+				"name": "Legacy Enterprise",
+				"kind": "enterprise_app",
+				"binding": { "appSkill": { "id": "shared-workflow" } }
+			}
+		}, {
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {
+				"id": "normal-enterprise",
+				"name": "Normal Enterprise",
+				"kind": "enterprise_normal_app",
+				"dependencies": { "skills": [{ "id": "shared-workflow", "required": true }] }
+			}
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	if len(plan.Apps) != 2 || plan.Apps[0].Kind != "enterprise_normal_app" {
+		t.Fatalf("legacy kind was not normalized: %#v", plan.Apps)
+	}
+	dep := maclawAppPlanDepForTest(plan, "shared-workflow")
+	if dep == nil || dep.Action != "blocked" || len(dep.AppIDs) != 2 {
+		t.Fatalf("shared dependency should be deduped across apps: %#v", dep)
+	}
+}
+
+func TestInstallMaclawAppDependenciesSkipsInstalledAndBlocksUnsupportedSource(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "installed-app-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# Installed app skill\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "installed-app-skill", SkillDir: skillDir, Status: "active"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "dependency-install-app",
+			"name": "Dependency Install App",
+			"kind": "enterprise_approval_app",
+			"binding": { "appSkill": { "id": "installed-app-skill" } },
+			"dependencies": { "skills": [{ "id": "manual-only-skill", "required": true, "source": "local" }] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	if !plan.HasMissingRequired {
+		t.Fatalf("manual-only required dependency should remain missing: %#v", plan)
+	}
+	if dep := maclawAppPlanDepForTest(plan, "installed-app-skill"); dep == nil || dep.Action != "skip" || !dep.Installed {
+		t.Fatalf("installed app skill should be skipped: %#v", dep)
+	}
+	if dep := maclawAppPlanDepForTest(plan, "manual-only-skill"); dep == nil || dep.Action != "blocked" || !strings.Contains(dep.Message, "cannot be installed automatically") {
+		t.Fatalf("unsupported required dependency should be blocked: %#v", dep)
+	}
+}
+
+func TestMaclawAppInstallSkillSourceNormalizesHubAndMarket(t *testing.T) {
+	cases := map[string]string{
+		"":               "skillhub",
+		"hub":            "skillhub",
+		"skillhub":       "skillhub",
+		"market":         "skillmarket",
+		"skillmarket":    "skillmarket",
+		"enterprise_hub": "enterprise_hub",
+	}
+	for input, want := range cases {
+		got, ok := maclawAppInstallSkillSource(input)
+		if !ok || got != want {
+			t.Fatalf("maclawAppInstallSkillSource(%q) = %q,%v want %q,true", input, got, ok, want)
+		}
+	}
+	if got, ok := maclawAppInstallSkillSource("local"); ok || got != "" {
+		t.Fatalf("local source should not auto-install, got %q,%v", got, ok)
+	}
+}
+func TestPlanMaclawAppInstallTreatsBindingSkillAsDependency(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"installUnit": "skill",
+		"app": {
+			"id": "tool-binding-skill",
+			"name": "Tool Binding Skill",
+			"kind": "tool_app",
+			"binding": { "skill": { "id": "doc-archive", "version": "1.0.0" } }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "doc-archive")
+	if dep == nil || dep.Kind != "runtime_skill" || !dep.Required || dep.Action != "blocked" {
+		t.Fatalf("binding.skill should be a required runtime dependency: %#v", dep)
+	}
+}
+
+func TestRecordMaclawAppInstallPersistsNewestInstallAudit(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "doc-archive")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# Doc archive\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "doc-archive", SkillDir: skillDir, Status: "active"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	pkg := `{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"installUnit": "skill",
+		"app": {
+			"id": "market-doc-archive",
+			"name": "Doc Archive",
+			"kind": "tool_app",
+			"binding": { "skill": { "id": "doc-archive" } }
+		}
+	}`
+	result, err := app.RecordMaclawAppInstall(pkg, "market")
+	if err != nil {
+		t.Fatalf("RecordMaclawAppInstall() error = %v", err)
+	}
+	if result["app_count"] != 1 || result["package_sha"] == "" {
+		t.Fatalf("unexpected record result: %#v", result)
+	}
+	records, err := app.ListMaclawAppInstalls(10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppInstalls() error = %v", err)
+	}
+	if len(records) != 1 || records[0].AppID != "market-doc-archive" || records[0].Source != "market" {
+		t.Fatalf("unexpected install records: %#v", records)
+	}
+	if records[0].HasMissingRequired || len(records[0].Dependencies) != 1 || !records[0].Dependencies[0].Installed {
+		t.Fatalf("expected installed dependency snapshot: %#v", records[0])
+	}
+	if _, err := app.RecordMaclawAppInstall(pkg, "market"); err != nil {
+		t.Fatalf("RecordMaclawAppInstall second call error = %v", err)
+	}
+	records, err = app.ListMaclawAppInstalls(10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppInstalls after upsert error = %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("install records should upsert by app id: %#v", records)
+	}
+}
+func TestMaclawAppApprovalInstancesPersistAndFilter(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	created, err := app.RecordMaclawAppApprovalInstance(maclawAppApprovalInstance{
+		AppID:           "expense-approval",
+		Title:           "Expense #1",
+		Lane:            "pending_my_approval",
+		Status:          "pending",
+		CurrentNode:     "manager_approval",
+		Owner:           "alice",
+		Approver:        "manager",
+		Result:          "waiting",
+		WorkflowSkillID: "expense-approval-workflow",
+		BusinessStatus:  "approval_pending",
+		ResultStatus:    "pending",
+	})
+	if err != nil {
+		t.Fatalf("RecordMaclawAppApprovalInstance() error = %v", err)
+	}
+	if created.InstanceID == "" || created.AppID != "expense-approval" || created.Lane != "pending_my_approval" || len(created.Events) != 1 {
+		t.Fatalf("unexpected created instance: %#v", created)
+	}
+	if _, err := os.Stat(app.maclawAppApprovalRegistryPath()); err != nil {
+		t.Fatalf("approval registry should exist: %v", err)
+	}
+	if _, err := app.RecordMaclawAppApprovalInstance(maclawAppApprovalInstance{AppID: "other-app", Title: "Other", Lane: "my_requests"}); err != nil {
+		t.Fatalf("record other app: %v", err)
+	}
+	pending, err := app.ListMaclawAppApprovalInstances("expense-approval", "pending_my_approval", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstances() error = %v", err)
+	}
+	if len(pending) != 1 || pending[0].InstanceID != created.InstanceID || pending[0].WorkflowSkillID != "expense-approval-workflow" {
+		t.Fatalf("unexpected filtered approval instances: %#v", pending)
+	}
+	handled, err := app.RecordMaclawAppApprovalInstance(maclawAppApprovalInstance{
+		AppID:              "expense-approval",
+		InstanceID:         created.InstanceID,
+		Title:              "Expense #1",
+		Lane:               "handled",
+		Status:             "approved",
+		CurrentNode:        "completed",
+		Owner:              "alice",
+		Approver:           "manager",
+		Result:             "approved",
+		WorkflowSkillID:    "expense-approval-workflow",
+		WorkflowDecisionID: "decision-test-1",
+		BusinessStatus:     "approved",
+		ResultStatus:       "approved",
+	})
+	if err != nil {
+		t.Fatalf("RecordMaclawAppApprovalInstance decision error = %v", err)
+	}
+	if handled.WorkflowDecisionID != "decision-test-1" || handled.BusinessStatus != "approved" || handled.ResultStatus != "approved" {
+		t.Fatalf("decision result fields should persist: %#v", handled)
+	}
+	pending, err = app.ListMaclawAppApprovalInstances("expense-approval", "pending_my_approval", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstances pending after decision error = %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("handled approval should move out of pending lane: %#v", pending)
+	}
+	again, err := app.ListMaclawAppApprovalInstances("expense-approval", "all", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstances all error = %v", err)
+	}
+	if len(again) != 1 || again[0].WorkflowDecisionID != "decision-test-1" {
+		t.Fatalf("unexpected all approval instances after decision: %#v", again)
+	}
+	again[0].Events[0].Decision = "mutated"
+	again, err = app.ListMaclawAppApprovalInstances("expense-approval", "all", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstances all after mutation error = %v", err)
+	}
+	if len(again) != 1 || again[0].Events[0].Decision == "mutated" {
+		t.Fatalf("approval instances should be cloned: %#v", again)
+	}
+	if _, err := app.ListMaclawAppApprovalInstances(" ", "all", 10); err == nil {
+		t.Fatal("expected app_id required error")
+	}
+}
+func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
+	type capturedRequest struct {
+		Method string
+		Path   string
+		Body   map[string]interface{}
+	}
+	captured := []capturedRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&item.Body)
+		}
+		captured = append(captured, item)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"approval-remote-1","ok":true}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "alice", Role: "approver"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+	base := maclawAppApprovalInstance{
+		AppID:           "expense",
+		InstanceID:      "appr-1",
+		Title:           "Expense approval",
+		Lane:            "pending_my_approval",
+		Status:          "pending",
+		CurrentNode:     "manager_review",
+		Owner:           "alice",
+		Approver:        "manager",
+		Result:          "waiting",
+		WorkflowSkillID: "expense-approval-workflow",
+		BusinessStatus:  "approval_pending",
+		ResultStatus:    "pending",
+	}
+	created, err := app.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{DatasetID: "finance.expenses", RecordID: "exp-1", Instance: base})
+	if err != nil {
+		t.Fatalf("SyncMaclawAppApprovalInstanceToDataSrv create error = %v", err)
+	}
+	if created["synced"] != true || created["action"] != "create_record_approval" {
+		t.Fatalf("unexpected create sync result: %#v", created)
+	}
+	base.Status = "approved"
+	base.Lane = "handled"
+	base.Result = "approved"
+	base.WorkflowDecisionID = "decision-1"
+	base.BusinessStatus = "approved"
+	base.ResultStatus = "approved"
+	reviewed, err := app.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{DatasetID: "finance.expenses", RecordID: "exp-1", ApprovalID: "approval-remote-1", Instance: base})
+	if err != nil {
+		t.Fatalf("SyncMaclawAppApprovalInstanceToDataSrv review error = %v", err)
+	}
+	if reviewed["synced"] != true || reviewed["action"] != "review_record_approval" {
+		t.Fatalf("unexpected review sync result: %#v", reviewed)
+	}
+	if len(captured) != 2 {
+		t.Fatalf("captured %d requests, want 2: %#v", len(captured), captured)
+	}
+	if captured[0].Method != http.MethodPost || captured[0].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1/approvals" {
+		t.Fatalf("unexpected create request: %#v", captured[0])
+	}
+	if captured[0].Body["workflow_instance_id"] != "appr-1" || captured[0].Body["business_status"] != "approval_pending" || captured[0].Body["result_status"] != "pending" {
+		t.Fatalf("create body missing approval link fields: %#v", captured[0].Body)
+	}
+	if captured[1].Method != http.MethodPost || captured[1].Path != "/api/v1/data/approvals/approval-remote-1/review" {
+		t.Fatalf("unexpected review request: %#v", captured[1])
+	}
+	if captured[1].Body["decision"] != "approved" || captured[1].Body["workflow_decision_id"] != "decision-1" || captured[1].Body["business_status"] != "approved" || captured[1].Body["result_status"] != "approved" {
+		t.Fatalf("review body missing decision fields: %#v", captured[1].Body)
+	}
+}
+
+func TestPlanMaclawAppInstallRejectsUnknownSchema(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if _, err := app.PlanMaclawAppInstall(`{"schema":"unknown","privateMarker":"x_maclaw_apps"}`); err == nil || !strings.Contains(err.Error(), "schema") {
+		t.Fatalf("expected schema error, got %v", err)
+	}
+}
+
+func maclawAppPlanDepForTest(plan maclawAppInstallPlan, id string) *maclawAppInstallPlanDependency {
+	for i := range plan.Dependencies {
+		if plan.Dependencies[i].ID == id {
+			return &plan.Dependencies[i]
+		}
+	}
+	return nil
 }

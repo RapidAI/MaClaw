@@ -1,0 +1,17 @@
+=sunion123 : 无法将“=sunion123”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。请检查名称的拼写，如果包括路径，请
+确保路径正确，然后再试一次。
+所在位置 行:1 字符: 1
++ ='sunion123'; ='ssh-ed25519 255 SHA256:e4P6+FeRZk+ERuReXtR+bE95uZCm1v ...
++ ~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (=sunion123:String) [], CommandNotFoundException
+    + FullyQualifiedErrorId : CommandNotFoundException
+ 
+=ssh-ed25519 255 SHA256:e4P6+FeRZk+ERuReXtR+bE95uZCm1v2Ebei97bdJ5s4 : 无法将“=ssh-ed25519 255 SHA256:e4P6+FeRZk+ERuReX
+tR+bE95uZCm1v2Ebei97bdJ5s4”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。请检查名称的拼写，如果包括路径，请确保路
+径正确，然后再试一次。
+所在位置 行:1 字符: 15
++ ... sunion123'; ='ssh-ed25519 255 SHA256:e4P6+FeRZk+ERuReXtR+bE95uZCm1v2E ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (=ssh-ed25519 25...1v2Ebei97bdJ5s4:String) [], CommandNotFoundException
+    + FullyQualifiedErrorId : CommandNotFoundException
+ 

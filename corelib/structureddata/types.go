@@ -1042,51 +1042,73 @@ type DashboardReport struct {
 }
 
 type RecordApproval struct {
-	ID         string         `json:"id"`
-	TenantID   string         `json:"tenant_id,omitempty"`
-	DatasetID  string         `json:"dataset_id"`
-	RecordID   string         `json:"record_id"`
-	Status     string         `json:"status"`
-	Kind       string         `json:"kind,omitempty"`
-	Priority   string         `json:"priority,omitempty"`
-	Summary    string         `json:"summary,omitempty"`
-	Request    map[string]any `json:"request,omitempty"`
-	Decision   string         `json:"decision,omitempty"`
-	Reason     string         `json:"reason,omitempty"`
-	AssignedTo string         `json:"assigned_to,omitempty"`
-	Reused     bool           `json:"reused,omitempty"`
-	CreatedBy  string         `json:"created_by,omitempty"`
-	ReviewedBy string         `json:"reviewed_by,omitempty"`
-	CreatedAt  time.Time      `json:"created_at"`
-	DueAt      time.Time      `json:"due_at,omitempty"`
-	ReviewedAt time.Time      `json:"reviewed_at,omitempty"`
-	UpdatedAt  time.Time      `json:"updated_at"`
+	ID                 string         `json:"id"`
+	TenantID           string         `json:"tenant_id,omitempty"`
+	DatasetID          string         `json:"dataset_id"`
+	RecordID           string         `json:"record_id"`
+	Status             string         `json:"status"`
+	Kind               string         `json:"kind,omitempty"`
+	Priority           string         `json:"priority,omitempty"`
+	Summary            string         `json:"summary,omitempty"`
+	Request            map[string]any `json:"request,omitempty"`
+	WorkflowSkillID    string         `json:"workflow_skill_id,omitempty"`
+	WorkflowVersion    string         `json:"workflow_version,omitempty"`
+	WorkflowInstanceID string         `json:"workflow_instance_id,omitempty"`
+	WorkflowNodeID     string         `json:"workflow_node_id,omitempty"`
+	WorkflowDecisionID string         `json:"workflow_decision_id,omitempty"`
+	BusinessStatus     string         `json:"business_status,omitempty"`
+	ResultStatus       string         `json:"result_status,omitempty"`
+	Decision           string         `json:"decision,omitempty"`
+	Reason             string         `json:"reason,omitempty"`
+	AssignedTo         string         `json:"assigned_to,omitempty"`
+	Reused             bool           `json:"reused,omitempty"`
+	CreatedBy          string         `json:"created_by,omitempty"`
+	ReviewedBy         string         `json:"reviewed_by,omitempty"`
+	CreatedAt          time.Time      `json:"created_at"`
+	DueAt              time.Time      `json:"due_at,omitempty"`
+	ReviewedAt         time.Time      `json:"reviewed_at,omitempty"`
+	UpdatedAt          time.Time      `json:"updated_at"`
 }
 
 type CreateRecordApprovalInput struct {
-	Kind       string         `json:"kind,omitempty"`
-	Priority   string         `json:"priority,omitempty"`
-	Summary    string         `json:"summary,omitempty"`
-	Request    map[string]any `json:"request,omitempty"`
-	AssignedTo string         `json:"assigned_to,omitempty"`
-	DueAt      string         `json:"due_at,omitempty"`
+	Kind               string         `json:"kind,omitempty"`
+	Priority           string         `json:"priority,omitempty"`
+	Summary            string         `json:"summary,omitempty"`
+	Request            map[string]any `json:"request,omitempty"`
+	WorkflowSkillID    string         `json:"workflow_skill_id,omitempty"`
+	WorkflowVersion    string         `json:"workflow_version,omitempty"`
+	WorkflowInstanceID string         `json:"workflow_instance_id,omitempty"`
+	WorkflowNodeID     string         `json:"workflow_node_id,omitempty"`
+	WorkflowDecisionID string         `json:"workflow_decision_id,omitempty"`
+	BusinessStatus     string         `json:"business_status,omitempty"`
+	ResultStatus       string         `json:"result_status,omitempty"`
+	AssignedTo         string         `json:"assigned_to,omitempty"`
+	DueAt              string         `json:"due_at,omitempty"`
 }
 
 type QueryRecordApprovalsInput struct {
-	DatasetID  string `json:"dataset_id,omitempty"`
-	RecordID   string `json:"record_id,omitempty"`
-	Status     string `json:"status,omitempty"`
-	Kind       string `json:"kind,omitempty"`
-	AssignedTo string `json:"assigned_to,omitempty"`
-	Overdue    bool   `json:"overdue,omitempty"`
-	Limit      int    `json:"limit,omitempty"`
-	Before     string `json:"before,omitempty"`
-	BeforeID   string `json:"before_id,omitempty"`
+	DatasetID          string `json:"dataset_id,omitempty"`
+	RecordID           string `json:"record_id,omitempty"`
+	Status             string `json:"status,omitempty"`
+	Kind               string `json:"kind,omitempty"`
+	WorkflowSkillID    string `json:"workflow_skill_id,omitempty"`
+	WorkflowInstanceID string `json:"workflow_instance_id,omitempty"`
+	BusinessStatus     string `json:"business_status,omitempty"`
+	ResultStatus       string `json:"result_status,omitempty"`
+	AssignedTo         string `json:"assigned_to,omitempty"`
+	Overdue            bool   `json:"overdue,omitempty"`
+	Limit              int    `json:"limit,omitempty"`
+	Before             string `json:"before,omitempty"`
+	BeforeID           string `json:"before_id,omitempty"`
 }
 
 type ReviewRecordApprovalInput struct {
-	Decision string `json:"decision"`
-	Reason   string `json:"reason,omitempty"`
+	Decision           string `json:"decision"`
+	Reason             string `json:"reason,omitempty"`
+	WorkflowNodeID     string `json:"workflow_node_id,omitempty"`
+	WorkflowDecisionID string `json:"workflow_decision_id,omitempty"`
+	BusinessStatus     string `json:"business_status,omitempty"`
+	ResultStatus       string `json:"result_status,omitempty"`
 }
 
 type OperationPlan struct {

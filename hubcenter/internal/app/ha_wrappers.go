@@ -54,6 +54,16 @@ type haCardTypeRecorder interface {
 	DeleteLLMCardType(ctx context.Context, id string)
 }
 
+type haCardOrderRepo struct {
+	inner cardstore.PurchaseOrderRepository
+	sync  haCardOrderRecorder
+}
+
+type haCardOrderRecorder interface {
+	AppendLLMCardOrder(ctx context.Context, item *cardstore.PurchaseOrder)
+	DeleteLLMCardOrder(ctx context.Context, orderNo string)
+}
+
 type haLLMAuthorizationRepo struct {
 	inner llmservice.TenantAuthorizationRepository
 	sync  haLLMAuthorizationRecorder
@@ -176,6 +186,71 @@ func (r *haCardTypeRepo) Delete(ctx context.Context, id string) error {
 		r.sync.DeleteLLMCardType(ctx, id)
 	}
 	return nil
+}
+
+func (r *haCardOrderRepo) Create(ctx context.Context, order *cardstore.PurchaseOrder) error {
+	if err := r.inner.Create(ctx, order); err != nil {
+		return err
+	}
+	r.syncOrder(ctx, order.OrderNo, order)
+	return nil
+}
+
+func (r *haCardOrderRepo) GetByOrderNo(ctx context.Context, orderNo string) (*cardstore.PurchaseOrder, error) {
+	return r.inner.GetByOrderNo(ctx, orderNo)
+}
+
+func (r *haCardOrderRepo) List(ctx context.Context, filter cardstore.OrderFilter) ([]*cardstore.PurchaseOrder, int, error) {
+	return r.inner.List(ctx, filter)
+}
+
+func (r *haCardOrderRepo) UpdateStatus(ctx context.Context, orderNo, status string, now time.Time) error {
+	if err := r.inner.UpdateStatus(ctx, orderNo, status, now); err != nil {
+		return err
+	}
+	r.syncOrder(ctx, orderNo, nil)
+	return nil
+}
+
+func (r *haCardOrderRepo) Update(ctx context.Context, order *cardstore.PurchaseOrder) error {
+	if err := r.inner.Update(ctx, order); err != nil {
+		return err
+	}
+	if order != nil {
+		r.syncOrder(ctx, order.OrderNo, order)
+	}
+	return nil
+}
+
+func (r *haCardOrderRepo) Delete(ctx context.Context, orderNo string) error {
+	if err := r.inner.Delete(ctx, orderNo); err != nil {
+		return err
+	}
+	if r.sync != nil {
+		r.sync.DeleteLLMCardOrder(ctx, orderNo)
+	}
+	return nil
+}
+
+func (r *haCardOrderRepo) Archive(ctx context.Context, orderNo string, archivedAt time.Time) error {
+	if err := r.inner.Archive(ctx, orderNo, archivedAt); err != nil {
+		return err
+	}
+	r.syncOrder(ctx, orderNo, nil)
+	return nil
+}
+
+func (r *haCardOrderRepo) syncOrder(ctx context.Context, orderNo string, fallback *cardstore.PurchaseOrder) {
+	if r.sync == nil {
+		return
+	}
+	order, err := r.inner.GetByOrderNo(ctx, orderNo)
+	if err != nil || order == nil {
+		order = fallback
+	}
+	if order != nil {
+		r.sync.AppendLLMCardOrder(ctx, order)
+	}
 }
 
 type haGossipRepo struct {

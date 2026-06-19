@@ -619,7 +619,7 @@ func TestBuildIMEntrySystemPromptWorkflowLoopOverridesLightProfile(t *testing.T)
 		UserID:   userID,
 		Text:     "\u7ee7\u7eed\u63a8\u8fdb",
 		Platform: "desktop",
-	}, nil, ctx, true, "", "", "")
+	}, nil, ctx, true, "", "", "", "")
 
 	for _, bad := range []string{"low-complexity lookup task", "Do not inspect local files"} {
 		if containsText(prompt, bad) {

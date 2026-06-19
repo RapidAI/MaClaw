@@ -5,6 +5,10 @@
 if (typeof I18N_EN !== 'undefined') {
   Object.assign(I18N_EN, {computeMarketStatsHub:'Hub Filter',computeMarketStatsTenant:'Tenant Filter',computeMarketStatsPeriod:'Period',computeMarketPeriodDaily:'Daily',computeMarketPeriodWeekly:'Weekly',computeMarketPeriodMonthly:'Monthly',computeMarketStartDate:'Start Date',computeMarketEndDate:'End Date',computeMarketQuery:'Query',computeMarketStatsHint:'Select filters and click Query.',computeMarketStatsEmpty:'No usage data.',computeMarketStatsError:'Query failed',computeMarketStatsTotalInput:'Input Tokens',computeMarketStatsTotalOutput:'Output Tokens',computeMarketStatsTotalCredits:'Credits Used',computeMarketStatsTotalRequests:'Requests',computeMarketStatsCacheHitRate:'Cache Hit Rate',computeMarketStatsPeriodStart:'Period',computeMarketStatsAllHubs:'All Hubs',computeMarketStatsAllTenants:'All Tenants',computeMarketStatusEnabled:'Enabled',computeMarketStatusDisabled:'Disabled',computeMarketEdit:'Edit',computeMarketCardNameRequired:'Card name is required',computeMarketCardGroupRequired:'Service group is required',computeMarketCardCreditsRequired:'Credits must be greater than 0',computeMarketCardPriceRequired:'Price must be greater than 0',computeMarketConfirmOrderPrompt:'Confirm this order is paid? Credits will be added immediately.',computeMarketOrderConfirmed:'Order confirmed.',computeMarketArchiveOrder:'Archive',computeMarketArchiveOrderPrompt:'Archive this order? It will leave the active order list.',computeMarketOrderArchived:'Order archived.',computeMarketViewArchivedOrders:'View archived orders',computeMarketViewActiveOrders:'View active orders',computeMarketArchivedOrdersDesc:'Viewing archived old orders. These orders are hidden from the active queue.',computeMarketArchivedAt:'Archived at',computeMarketCardDescription:'Detailed Description',computeMarketCardDescriptionHint:'Visible in admin list and storefront. Include suitable tenant, duration, model capability, and usage boundary.',computeMarketCardDescriptionEmpty:'No description yet',computeMarketCardServiceGroup:'Service group',computeMarketCardAgent:'Compute agent',computeMarketCardCreditsUnit:'credits',computeMarketCardPriceUnit:'RMB'});
   Object.assign(I18N_ZH, {computeMarketStatsHub:'Hub \u7b5b\u9009',computeMarketStatsTenant:'\u79df\u6237\u7b5b\u9009',computeMarketStatsPeriod:'\u7edf\u8ba1\u5468\u671f',computeMarketPeriodDaily:'\u6309\u65e5',computeMarketPeriodWeekly:'\u6309\u5468',computeMarketPeriodMonthly:'\u6309\u6708',computeMarketStartDate:'\u5f00\u59cb\u65e5\u671f',computeMarketEndDate:'\u7ed3\u675f\u65e5\u671f',computeMarketQuery:'\u67e5\u8be2',computeMarketStatsHint:'\u9009\u62e9\u7b5b\u9009\u6761\u4ef6\u540e\u70b9\u51fb\u67e5\u8be2\u3002',computeMarketStatsEmpty:'\u6240\u9009\u671f\u95f4\u6682\u65e0\u7528\u91cf\u6570\u636e\u3002',computeMarketStatsError:'\u67e5\u8be2\u5931\u8d25',computeMarketStatsTotalInput:'\u8f93\u5165 Token',computeMarketStatsTotalOutput:'\u8f93\u51fa Token',computeMarketStatsTotalCredits:'\u6d88\u8017\u989d\u5ea6',computeMarketStatsTotalRequests:'\u8bf7\u6c42\u6570',computeMarketStatsCacheHitRate:'\u7f13\u5b58\u547d\u4e2d\u7387',computeMarketStatsPeriodStart:'\u65f6\u6bb5',computeMarketStatsAllHubs:'\u5168\u90e8 Hub',computeMarketStatsAllTenants:'\u5168\u90e8\u79df\u6237',computeMarketStatusEnabled:'\u4e0a\u67b6',computeMarketStatusDisabled:'\u4e0b\u67b6',computeMarketEdit:'\u7f16\u8f91',computeMarketCardNameRequired:'\u8bf7\u586b\u5199\u5361\u540d\u79f0',computeMarketCardGroupRequired:'\u8bf7\u5148\u9009\u62e9\u670d\u52a1\u7ec4',computeMarketCardCreditsRequired:'\u7b97\u529b\u989d\u5ea6\u5fc5\u987b\u5927\u4e8e 0',computeMarketCardPriceRequired:'\u4ef7\u683c\u5fc5\u987b\u5927\u4e8e 0',computeMarketConfirmOrderPrompt:'\u786e\u8ba4\u8be5\u8ba2\u5355\u5df2\u5230\u8d26\uff1f\u5c06\u7acb\u5373\u4e3a\u79df\u6237\u5145\u503c\u3002',computeMarketOrderConfirmed:'\u5df2\u786e\u8ba4\u3002',computeMarketArchiveOrder:'\u5f52\u6863',computeMarketArchiveOrderPrompt:'\u5f52\u6863\u8be5\u8ba2\u5355\uff1f\u5b83\u5c06\u4e0d\u518d\u663e\u793a\u5728\u5f53\u524d\u8ba2\u5355\u5217\u8868\u3002',computeMarketOrderArchived:'\u5df2\u5f52\u6863\u3002',computeMarketViewArchivedOrders:'\u67e5\u770b\u5f52\u6863\u8ba2\u5355',computeMarketViewActiveOrders:'\u67e5\u770b\u5f53\u524d\u8ba2\u5355',computeMarketArchivedOrdersDesc:'\u6b63\u5728\u67e5\u770b\u5df2\u5f52\u6863\u7684\u65e7\u8ba2\u5355\uff0c\u8fd9\u4e9b\u8ba2\u5355\u4e0d\u4f1a\u51fa\u73b0\u5728\u5f53\u524d\u961f\u5217\u3002',computeMarketArchivedAt:'\u5f52\u6863\u65f6\u95f4',computeMarketCardDescription:'\u8be6\u7ec6\u63cf\u8ff0',computeMarketCardDescriptionHint:'\u4f1a\u5728\u7ba1\u7406\u5217\u8868\u548c\u8d2d\u4e70\u9875\u663e\u793a\uff0c\u53ef\u5199\u9002\u7528\u79df\u6237\u3001\u5468\u671f\u3001\u6a21\u578b\u80fd\u529b\u548c\u4f7f\u7528\u8fb9\u754c\u3002',computeMarketCardDescriptionEmpty:'\u6682\u65e0\u8be6\u7ec6\u63cf\u8ff0',computeMarketCardServiceGroup:'\u670d\u52a1\u7ec4',computeMarketCardAgent:'\u7b97\u529b\u4ee3\u7406\u5546',computeMarketCardCreditsUnit:'\u70b9',computeMarketCardPriceUnit:'\u5143'});
+  Object.assign(I18N_EN, {computeMarketDeleteArchivedOrder:'Delete',computeMarketDeleteArchivedOrderPrompt:'Delete this archived unpaid order? This cannot be undone.',computeMarketOrderDeleted:'Order deleted.'});
+  Object.assign(I18N_ZH, {computeMarketDeleteArchivedOrder:'\u5220\u9664',computeMarketDeleteArchivedOrderPrompt:'\u5220\u9664\u8fd9\u7b14\u5df2\u5f52\u6863\u4e14\u672a\u652f\u4ed8\u7684\u8ba2\u5355\uff1f\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\u3002',computeMarketOrderDeleted:'\u8ba2\u5355\u5df2\u5220\u9664\u3002'});
+  Object.assign(I18N_EN, {computeMarketStatsIdentity:'Scope',computeMarketStatsHubLabel:'Hub',computeMarketStatsTenantLabel:'Tenant',computeMarketStatsLegacyIdentity:'Historical record without identity',computeMarketStatsLegacyHint:'Hub and tenant were not captured on this usage row.',computeMarketStatsRows:'Rows'});
+  Object.assign(I18N_ZH, {computeMarketStatsIdentity:'\u7edf\u8ba1\u5bf9\u8c61',computeMarketStatsHubLabel:'Hub',computeMarketStatsTenantLabel:'\u79df\u6237',computeMarketStatsLegacyIdentity:'\u5386\u53f2\u672a\u8bb0\u5f55\u8eab\u4efd',computeMarketStatsLegacyHint:'\u8be5\u7528\u91cf\u8bb0\u5f55\u672a\u91c7\u96c6 Hub \u548c\u79df\u6237\u4fe1\u606f\u3002',computeMarketStatsRows:'\u884c\u6570'});
 }
 
 (function () {
@@ -290,9 +294,10 @@ if (typeof I18N_EN !== 'undefined') {
       var statusClass = o.status === 'activated' ? 'ok' : (CONFIRMABLE_STATUSES.indexOf(o.status) >= 0 ? 'warn' : '');
       var confirmBtn = (!cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0) ? '<button class="btn-primary compact-btn" onclick="confirmComputeOrder(\'' + esc(o.order_no) + '\')">' + tr('computeMarketConfirmOrder') + '</button>' : '';
       var archiveBtn = !cmOrdersArchived ? '<button class="btn-ghost compact-btn" onclick="archiveComputeOrder(\'' + esc(o.order_no) + '\')">' + tr('computeMarketArchiveOrder') + '</button>' : '';
-      var agent = o.agent_name ? ' · ' + tr('computeMarketCardAgent') + ': ' + esc(o.agent_name) : '';
-      var archivedMeta = cmOrdersArchived && o.archived_at ? ' · ' + tr('computeMarketArchivedAt') + ': ' + esc(new Date(o.archived_at).toLocaleString()) : '';
-      return '<div class="data-row"><div class="data-row-main"><strong>' + esc(o.order_no) + '</strong> <span class="badge ' + statusClass + '">' + esc(o.status) + '</span><span class="data-row-meta">' + esc(o.email || '') + ' · ¥' + (o.amount || 0) + ' · ' + esc(o.product_label || o.product_id || '') + agent + archivedMeta + '</span></div><div class="data-row-actions">' + confirmBtn + archiveBtn + '</div></div>';
+      var deleteBtn = (cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0) ? '<button class="btn-danger-ghost compact-btn" onclick="deleteArchivedComputeOrder(\'' + esc(o.order_no) + '\')">' + tr('computeMarketDeleteArchivedOrder') + '</button>' : '';
+      var agent = o.agent_name ? ' \u00b7 ' + tr('computeMarketCardAgent') + ': ' + esc(o.agent_name) : '';
+      var archivedMeta = cmOrdersArchived && o.archived_at ? ' \u00b7 ' + tr('computeMarketArchivedAt') + ': ' + esc(new Date(o.archived_at).toLocaleString()) : '';
+      return '<div class="data-row"><div class="data-row-main"><strong>' + esc(o.order_no) + '</strong> <span class="badge ' + statusClass + '">' + esc(o.status) + '</span><span class="data-row-meta">' + esc(o.email || '') + ' \u00b7 \u00a5' + (o.amount || 0) + ' \u00b7 ' + esc(o.product_label || o.product_id || '') + agent + archivedMeta + '</span></div><div class="data-row-actions">' + confirmBtn + archiveBtn + deleteBtn + '</div></div>';
     }).join('');
   }
 
@@ -326,6 +331,14 @@ if (typeof I18N_EN !== 'undefined') {
     } catch (e) { if (window.showToast) showToast(e.message, 'error'); }
   }
 
+  async function deleteArchivedComputeOrder(orderNo) {
+    if (!confirm(tr('computeMarketDeleteArchivedOrderPrompt'))) return;
+    try {
+      await api('/api/admin/cardstore/orders/' + encodeURIComponent(orderNo), { method: 'DELETE' });
+      loadComputeOrders();
+      if (window.showToast) showToast(tr('computeMarketOrderDeleted'), 'success');
+    } catch (e) { if (window.showToast) showToast(e.message, 'error'); }
+  }
   // ---------------------------------------------------------------------------
   // Usage Stats
   // ---------------------------------------------------------------------------
@@ -367,6 +380,66 @@ if (typeof I18N_EN !== 'undefined') {
     } catch (e) { /* best-effort */ }
   }
 
+  function formatCMNumber(value) {
+    var n = cmNumber(value);
+    return Number.isFinite(n) ? n.toLocaleString() : '0';
+  }
+
+  function formatCMCredits(value) {
+    var n = cmNumber(value);
+    return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '0';
+  }
+
+  function cmNumber(value) {
+    var n = Number(value || 0);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function cmText(value) {
+    return String(value || '').trim();
+  }
+
+  function cmRows(data) {
+    var rows = data && (data.rows || data.usage);
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  function renderCMIdentity(r) {
+    r = r || {};
+    var hubID = cmText(r.hub_id);
+    var tenantID = cmText(r.tenant_id);
+    if (!hubID && !tenantID) {
+      return '<div class="cm-stats-identity legacy"><strong>' + esc(tr('computeMarketStatsLegacyIdentity')) + '</strong><span>' + esc(tr('computeMarketStatsLegacyHint')) + '</span></div>';
+    }
+    return '<div class="cm-stats-identity">'
+      + '<strong>' + esc(hubID || '-') + '</strong>'
+      + '<span>' + esc(tr('computeMarketStatsTenantLabel')) + ': ' + esc(tenantID || '-') + '</span>'
+      + '</div>';
+  }
+
+  function renderComputeStatsTable(rows) {
+    var body = rows.map(function(r) {
+      r = r || {};
+      return '<tr>'
+        + '<td class="cm-stats-scope-cell">' + renderCMIdentity(r) + '</td>'
+        + '<td class="cm-stats-period-cell">' + esc(r.period_start || '-') + '</td>'
+        + '<td class="num">' + formatCMNumber(r.input_tokens) + '</td>'
+        + '<td class="num">' + formatCMNumber(r.output_tokens) + '</td>'
+        + '<td class="num">' + formatCMCredits(r.total_credits) + '</td>'
+        + '<td class="num strong">' + formatCMNumber(r.total_requests) + '</td>'
+        + '</tr>';
+    }).join('');
+    return '<div class="cm-stats-table-shell">'
+      + '<table class="data-table cm-data-table" aria-label="' + esc(tr('computeMarketStatsTitle')) + '"><colgroup><col class="cm-col-scope"><col class="cm-col-period"><col class="cm-col-number"><col class="cm-col-number"><col class="cm-col-number"><col class="cm-col-number"></colgroup><thead><tr>'
+      + '<th>' + tr('computeMarketStatsIdentity') + '</th>'
+      + '<th>' + tr('computeMarketStatsPeriodStart') + '</th>'
+      + '<th class="num">' + tr('computeMarketStatsTotalInput') + '</th>'
+      + '<th class="num">' + tr('computeMarketStatsTotalOutput') + '</th>'
+      + '<th class="num">' + tr('computeMarketStatsTotalCredits') + '</th>'
+      + '<th class="num">' + tr('computeMarketStatsTotalRequests') + '</th>'
+      + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+
   async function queryComputeStats() {
     const hub = (document.getElementById('cmStatsHub') || {}).value || '';
     const tenant = (document.getElementById('cmStatsTenant') || {}).value || '';
@@ -377,26 +450,33 @@ if (typeof I18N_EN !== 'undefined') {
     const summaryEl = document.getElementById('cmStatsSummary');
     if (!container) return;
     try {
-      var params = 'period=' + period;
-      if (hub) params += '&hub_id=' + encodeURIComponent(hub);
-      if (tenant) params += '&tenant_id=' + encodeURIComponent(tenant);
-      if (start) params += '&start=' + start;
-      if (end) params += '&end=' + end;
-      const data = await api('/api/admin/llm/usage?' + params);
-      const rows = data.rows || data.usage || [];
+      var params = new URLSearchParams({ period: period });
+      if (hub) params.set('hub_id', hub);
+      if (tenant) params.set('tenant_id', tenant);
+      if (start) params.set('start', start);
+      if (end) params.set('end', end);
+      const data = await api('/api/admin/llm/usage?' + params.toString());
+      const rows = cmRows(data);
       if (!rows.length) { container.innerHTML = '<div class="hint">' + tr('computeMarketStatsEmpty') + '</div>'; if (summaryEl) summaryEl.innerHTML = ''; return; }
       // Summary
       var totalInput = 0, totalOutput = 0, totalCredits = 0, totalReqs = 0, totalCacheHits = 0;
-      rows.forEach(function(r) { totalInput += r.input_tokens||0; totalOutput += r.output_tokens||0; totalCredits += r.total_credits||0; totalReqs += r.total_requests||0; totalCacheHits += r.cache_hits||0; });
+      rows.forEach(function(r) {
+        r = r || {};
+        totalInput += cmNumber(r.input_tokens);
+        totalOutput += cmNumber(r.output_tokens);
+        totalCredits += cmNumber(r.total_credits);
+        totalReqs += cmNumber(r.total_requests);
+        totalCacheHits += cmNumber(r.cache_hits);
+      });
       if (summaryEl) {
-        summaryEl.innerHTML = '<div class="metric"><label>' + tr('computeMarketStatsTotalInput') + '</label><strong>' + totalInput.toLocaleString() + '</strong></div>'
-          + '<div class="metric"><label>' + tr('computeMarketStatsTotalOutput') + '</label><strong>' + totalOutput.toLocaleString() + '</strong></div>'
-          + '<div class="metric"><label>' + tr('computeMarketStatsTotalCredits') + '</label><strong>' + totalCredits.toLocaleString() + '</strong></div>'
-          + '<div class="metric"><label>' + tr('computeMarketStatsTotalRequests') + '</label><strong>' + totalReqs.toLocaleString() + '</strong></div>'
+        summaryEl.innerHTML = '<div class="metric"><label>' + tr('computeMarketStatsRows') + '</label><strong>' + formatCMNumber(rows.length) + '</strong></div>'
+          + '<div class="metric"><label>' + tr('computeMarketStatsTotalInput') + '</label><strong>' + formatCMNumber(totalInput) + '</strong></div>'
+          + '<div class="metric"><label>' + tr('computeMarketStatsTotalOutput') + '</label><strong>' + formatCMNumber(totalOutput) + '</strong></div>'
+          + '<div class="metric"><label>' + tr('computeMarketStatsTotalCredits') + '</label><strong>' + formatCMCredits(totalCredits) + '</strong></div>'
+          + '<div class="metric"><label>' + tr('computeMarketStatsTotalRequests') + '</label><strong>' + formatCMNumber(totalReqs) + '</strong></div>'
           + '<div class="metric"><label>' + tr('computeMarketStatsCacheHitRate') + '</label><strong>' + (totalReqs > 0 ? ((totalCacheHits*100/totalReqs).toFixed(1) + '%') : '0%') + '</strong></div>';
       }
-      // Table
-      container.innerHTML = '<table class="data-table cm-data-table"><thead><tr><th>Hub</th><th>' + tr('computeMarketStatsTenant') + '</th><th>' + tr('computeMarketStatsPeriodStart') + '</th><th>' + tr('computeMarketStatsTotalInput') + '</th><th>' + tr('computeMarketStatsTotalOutput') + '</th><th>' + tr('computeMarketStatsTotalCredits') + '</th><th>' + tr('computeMarketStatsTotalRequests') + '</th></tr></thead><tbody>' + rows.map(function (r) { return '<tr><td>' + esc(r.hub_id || '-') + '</td><td>' + esc(r.tenant_id || '-') + '</td><td>' + esc(r.period_start || '-') + '</td><td>' + (r.input_tokens || 0).toLocaleString() + '</td><td>' + (r.output_tokens || 0).toLocaleString() + '</td><td>' + (r.total_credits || 0).toFixed(1) + '</td><td>' + (r.total_requests || 0) + '</td></tr>'; }).join('') + '</tbody></table>';
+      container.innerHTML = renderComputeStatsTable(rows);
     } catch (e) { container.innerHTML = '<div class="hint">' + tr('computeMarketStatsError') + ': ' + esc(e.message) + '</div>'; }
   }
 
@@ -407,11 +487,11 @@ if (typeof I18N_EN !== 'undefined') {
   function applyComputeMarketPlaceholders() {
     var zh = (document.documentElement.lang || '').toLowerCase().startsWith('zh');
     var values = {
-      cmPaymentInstruction: zh ? '扫码支付后请等待管理员确认，通常 1-24 小时内处理。' : 'After scanning to pay, wait for admin confirmation. Processing usually takes 1-24 hours.',
-      cmPaymentAlipayPayee: zh ? '收款人姓名' : 'Payee name',
-      cmPaymentWechatPayee: zh ? '收款人姓名' : 'Payee name',
-      cmPaymentBankName: zh ? '中国银行' : 'Bank of China',
-      cmPaymentBankHolder: zh ? '张三' : 'Account holder'
+      cmPaymentInstruction: zh ? '\u626b\u7801\u652f\u4ed8\u540e\u8bf7\u7b49\u5f85\u7ba1\u7406\u5458\u786e\u8ba4\uff0c\u901a\u5e38 1-24 \u5c0f\u65f6\u5185\u5904\u7406\u3002' : 'After scanning to pay, wait for admin confirmation. Processing usually takes 1-24 hours.',
+      cmPaymentAlipayPayee: zh ? '\u6536\u6b3e\u4eba\u59d3\u540d' : 'Payee name',
+      cmPaymentWechatPayee: zh ? '\u6536\u6b3e\u4eba\u59d3\u540d' : 'Payee name',
+      cmPaymentBankName: zh ? '\u4e2d\u56fd\u94f6\u884c' : 'Bank of China',
+      cmPaymentBankHolder: zh ? '\u5f20\u4e09' : 'Account holder'
     };
     Object.keys(values).forEach(function(id) {
       var el = document.getElementById(id);
@@ -473,6 +553,7 @@ if (typeof I18N_EN !== 'undefined') {
   window.loadComputeOrders = loadComputeOrders;
   window.confirmComputeOrder = confirmComputeOrder;
   window.archiveComputeOrder = archiveComputeOrder;
+  window.deleteArchivedComputeOrder = deleteArchivedComputeOrder;
   window.toggleComputeArchivedOrders = toggleComputeArchivedOrders;
   window.queryComputeStats = queryComputeStats;
   window.loadStatsFilters = loadStatsFilters;

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -360,6 +361,24 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		result.PendingArtifacts.ApplyObservation(payloadObservation)
 		h.recordAgentLoopToolUsage(opts.Context, opts.UserText, tc, execResult.Outcome, agentLoopToolUsageFollowUp(tcIdx, opts.ToolCalls, execResult.Outcome))
 		logSlow("record_usage", stageStartedAt, tc)
+
+		// Skill operation recording: capture successful tool calls for skill generation.
+		if h.app != nil && h.app.skillRecorder != nil && h.app.skillRecorder.IsRecording() {
+			isSuccess := execResult.Outcome == toolOutcomeSucceeded
+			toolName := strings.TrimSpace(tc.Function.Name)
+			if isRecordableToolForSkill(toolName) {
+				var argsMap map[string]interface{}
+				if tc.Function.Arguments != "" {
+					_ = json.Unmarshal([]byte(tc.Function.Arguments), &argsMap)
+				}
+				h.app.skillRecorder.Record(toolName, argsMap, truncateString(traceResult, 200), isSuccess)
+				// Emit count update to frontend
+				h.app.emitEvent("skill-recording-state-changed", map[string]interface{}{
+					"recording": true,
+					"count":     h.app.skillRecorder.EntryCount(),
+				})
+			}
+		}
 
 		stageStartedAt = time.Now()
 		h.recordAgentLoopToolTrace(opts.Context, tc, traceResult, rawResult, execResult)

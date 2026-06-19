@@ -432,36 +432,60 @@ if (typeof I18N_EN !== 'undefined') {
     (m && m.provider_configs || []).forEach(function(c){ if (c && c.provider_id && ids.indexOf(c.provider_id) < 0) ids.push(c.provider_id); });
     return ids;
   }
+  function sgProviderByID(id){return providers.find(function(x){return x.id===id;})||null;}
+  function sgProviderModels(id){var p=sgProviderByID(id);return (p&&p.models||[]).map(function(x){return String(x||'').trim();}).filter(Boolean);}
+  function sgEffectiveRouteModel(c){var m=(c&&c.model||'').trim();if(m)return m;var models=sgProviderModels(c&&c.provider_id||'');return models.length===1?models[0]:'';}
+  function sgRouteKey(c){return (c&&c.provider_id||'').trim()+'\u0000'+sgEffectiveRouteModel(c);}
+  function sgProviderConfigsFromModel(m){
+    var configs=(m&&m.provider_configs||[]).map(function(c){return{provider_id:(c.provider_id||'').trim(),model:(c.model||'').trim(),capability_tags:(c.capability_tags||[]).slice(),priority:c.priority||0,resolution_tier:c.resolution_tier||0,credit_multiplier:c.credit_multiplier||1};}).filter(function(c){return c.provider_id;});
+    if(!configs.length){
+      configs=(m&&m.provider_ids||[]).map(function(pid){return{provider_id:pid,model:'',capability_tags:[],priority:0,resolution_tier:0,credit_multiplier:1};});
+    }
+    return configs;
+  }
+  function sgRouteDuplicateIndex(model,cfg,skipIndex){
+    var key=sgRouteKey(cfg);
+    for(var i=0;i<(model.provider_configs||[]).length;i++){
+      if(i===skipIndex)continue;
+      if(sgRouteKey(model.provider_configs[i])===key)return i;
+    }
+    return -1;
+  }
+  function sgDuplicateRouteMessage(cfg){return 'Duplicate route: '+sgProviderName(cfg.provider_id)+' / '+((cfg.model||'').trim()||'provider default');}
 
   function sgCloneGroup(g) {
     return {id:(g&&g.id||'').trim(),name:(g&&g.name||'').trim(),description:(g&&g.description||'').trim(),
       agent_id:(g&&g.agent_id)||'maclaw_official',agent_name:(g&&g.agent_name)||agentNameByID(g&&g.agent_id)||'',
       access_policy:g&&g.access_policy||'free',
-      models:(g&&g.models||[]).map(function(m){return{name:m.name||'auto',provider_ids:sgProviderIDsFromModel(m),provider_configs:(m.provider_configs||[]).map(function(c){return{provider_id:c.provider_id,capability_tags:(c.capability_tags||[]).slice(),priority:c.priority||0,resolution_tier:c.resolution_tier||0,credit_multiplier:c.credit_multiplier||1};}),capability_tags:(m.capability_tags||[]).slice(),priority:m.priority||50,resolution_tier:m.resolution_tier||0,credit_multiplier:m.credit_multiplier||1};})};
+      models:(g&&g.models||[]).map(function(m){return{name:m.name||'auto',provider_ids:sgProviderIDsFromModel(m),provider_configs:sgProviderConfigsFromModel(m),capability_tags:(m.capability_tags||[]).slice(),priority:m.priority||50,resolution_tier:m.resolution_tier||0,credit_multiplier:m.credit_multiplier||1};})};
   }
   function sgEmptyGroup(){return{id:'',name:'',description:'',agent_id:'maclaw_official',agent_name:agentNameByID('maclaw_official')||'MaClaw官方',access_policy:'free',models:[{name:'auto',provider_ids:[],provider_configs:[],capability_tags:[],priority:50,resolution_tier:0,credit_multiplier:1}]};}
   function sgProviderName(id){var p=providers.find(function(x){return x.id===id;});return p?(p.name||p.id):id;}
-  function sgGetProviderConfig(model,providerID){if(!model)return null;model.provider_configs=model.provider_configs||[];var existing=model.provider_configs.find(function(c){return c.provider_id===providerID;});if(existing)return existing;var cfg={provider_id:providerID,capability_tags:[],priority:0,resolution_tier:0,credit_multiplier:1};model.provider_configs.push(cfg);return cfg;}
+  function sgGetProviderConfig(model,routeIndex){if(!model)return null;model.provider_configs=model.provider_configs||[];return model.provider_configs[routeIndex]||null;}
 
-  function sgRenderProviderCard(rowIndex,providerID,providerIndex,total){
+  function sgRenderProviderCard(rowIndex,routeIndex,total){
     var model=sgDraft&&sgDraft.models&&sgDraft.models[rowIndex];
-    var cfg=sgGetProviderConfig(model,providerID);
+    var cfg=sgGetProviderConfig(model,routeIndex);
+    if(!cfg)return '';
+    var providerID=cfg.provider_id;
     var features=(cfg&&cfg.capability_tags||[]).join(', ')||'-';
+    var upstreamModel=(cfg&&cfg.model)||'-';
     return '<div class="sg-provider-card">'
       +'<div class="sg-row-head">'
-      +'<strong>'+esc(sgProviderName(providerID))+' #'+(providerIndex+1)+'</strong>'
+      +'<strong>'+esc(sgProviderName(providerID))+' #'+(routeIndex+1)+'</strong>'
       +'<div class="sg-actions">'
-      +'<button class="btn-ghost sg-tiny-btn" onclick="sgEditProviderConfig('+rowIndex+',\''+esc(providerID)+'\')">'+esc(t('editGroup'))+'</button>'
-      +(providerIndex>0?'<button class="btn-ghost sg-icon-btn" onclick="sgMoveProvider('+rowIndex+',\''+esc(providerID)+'\',-1)">\u2191</button>':'')
-      +(providerIndex<total-1?'<button class="btn-ghost sg-icon-btn" onclick="sgMoveProvider('+rowIndex+',\''+esc(providerID)+'\',1)">\u2193</button>':'')
-      +'<button class="btn-danger-ghost sg-tiny-btn" onclick="sgRemoveProvider('+rowIndex+',\''+esc(providerID)+'\')">\u2715</button>'
+      +'<button class="btn-ghost sg-tiny-btn" onclick="sgEditProviderConfig('+rowIndex+','+routeIndex+')">'+esc(t('editGroup'))+'</button>'
+      +(routeIndex>0?'<button class="btn-ghost sg-icon-btn" onclick="sgMoveProvider('+rowIndex+','+routeIndex+',-1)">\u2191</button>':'')
+      +(routeIndex<total-1?'<button class="btn-ghost sg-icon-btn" onclick="sgMoveProvider('+rowIndex+','+routeIndex+',1)">\u2193</button>':'')
+      +'<button class="btn-danger-ghost sg-tiny-btn" onclick="sgRemoveProvider('+rowIndex+','+routeIndex+')">\u2715</button>'
       +'</div></div>'
-      +'<div class="sg-provider-meta">'+esc(t('fieldCapabilities'))+': '+esc(features)+' \u00b7 P:'+(cfg&&cfg.priority||0)+' \u00b7 T:'+(cfg&&cfg.resolution_tier||0)+' \u00b7 x'+(cfg&&cfg.credit_multiplier||1)+'</div>'
+      +'<div class="sg-provider-meta">Upstream: '+esc(upstreamModel)+' \u00b7 '+esc(t('fieldCapabilities'))+': '+esc(features)+' \u00b7 P:'+(cfg&&cfg.priority||0)+' \u00b7 T:'+(cfg&&cfg.resolution_tier||0)+' \u00b7 x'+(cfg&&cfg.credit_multiplier||1)+'</div>'
       +'</div>';
   }
 
   function sgRenderRouteRow(model,rowIndex){
-    var providerCards=(model.provider_ids||[]).map(function(pid,pi){return sgRenderProviderCard(rowIndex,pid,pi,(model.provider_ids||[]).length);}).join('');
+    model.provider_configs=sgProviderConfigsFromModel(model);
+    var providerCards=(model.provider_configs||[]).map(function(cfg,pi){return sgRenderProviderCard(rowIndex,pi,(model.provider_configs||[]).length);}).join('');
     var providerOptions=!providers.length?'<option value="">('+esc(t('noProviders'))+')</option>'
       :'<option value="">-- '+esc(t('chooseProvider'))+' --</option>'+providers.map(function(p){return'<option value="'+esc(p.id)+'">'+esc(p.name||p.id)+'</option>';}).join('');
     return '<div class="sg-route-card">'
@@ -503,18 +527,23 @@ if (typeof I18N_EN !== 'undefined') {
   window.sgSetRouteField=function(i,k,v){if(sgDraft&&sgDraft.models&&sgDraft.models[i])sgDraft.models[i][k]=v.trim();};
   window.sgAddRoute=function(){if(!sgDraft)sgDraft=sgEmptyGroup();sgDraft.models.push({name:'auto',provider_ids:[],provider_configs:[],capability_tags:[],priority:50,resolution_tier:0,credit_multiplier:1});sgRenderGroupDialog();};
   window.sgRemoveRoute=function(i){if(sgDraft&&sgDraft.models){sgDraft.models.splice(i,1);sgRenderGroupDialog();}};
-  window.sgAddProviderToRoute=function(i){var sel=document.getElementById('sgProviderAdd'+i);var id=sel&&sel.value;if(!id){toast(t('chooseProvider'),'info');return;}var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;if((m.provider_ids||[]).indexOf(id)>=0){toast(t('sgProviderAlreadyAdded'),'info');return;}m.provider_ids=(m.provider_ids||[]).concat([id]);sgGetProviderConfig(m,id);sgRenderGroupDialog();};
-  window.sgMoveProvider=function(i,pid,delta){var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;var list=m.provider_ids||[];var from=list.indexOf(pid);if(from<0)return;var to=from+delta;if(to<0||to>=list.length)return;list.splice(from,1);list.splice(to,0,pid);sgRenderGroupDialog();};
-  window.sgRemoveProvider=function(i,pid){var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_ids=(m.provider_ids||[]).filter(function(v){return v!==pid;});m.provider_configs=(m.provider_configs||[]).filter(function(c){return c.provider_id!==pid;});sgRenderGroupDialog();};
+  window.sgAddProviderToRoute=function(i){var sel=document.getElementById('sgProviderAdd'+i);var id=sel&&sel.value;if(!id){toast(t('chooseProvider'),'info');return;}var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);var models=sgProviderModels(id);var chosen='';if(models.length){for(var mi=0;mi<models.length;mi++){if(sgRouteDuplicateIndex(m,{provider_id:id,model:models[mi]},-1)<0){chosen=models[mi];break;}}if(!chosen){toast(sgDuplicateRouteMessage({provider_id:id,model:models[0]}),'error');return;}}else if(sgRouteDuplicateIndex(m,{provider_id:id,model:''},-1)>=0){toast(sgDuplicateRouteMessage({provider_id:id,model:''}),'error');return;}m.provider_configs.push({provider_id:id,model:chosen,capability_tags:[],priority:0,resolution_tier:0,credit_multiplier:1});m.provider_ids=sgProviderIDsFromModel(m);sgRenderGroupDialog();};
+  window.sgMoveProvider=function(i,routeIndex,delta){var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);var to=routeIndex+delta;if(routeIndex<0||to<0||routeIndex>=m.provider_configs.length||to>=m.provider_configs.length)return;var item=m.provider_configs.splice(routeIndex,1)[0];m.provider_configs.splice(to,0,item);m.provider_ids=sgProviderIDsFromModel(m);sgRenderGroupDialog();};
+  window.sgRemoveProvider=function(i,routeIndex){var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);m.provider_configs.splice(routeIndex,1);m.provider_ids=sgProviderIDsFromModel(m);sgRenderGroupDialog();};
 
   // Provider config sub-dialog
-  window.sgEditProviderConfig=function(rowIndex,providerID){var model=sgDraft&&sgDraft.models&&sgDraft.models[rowIndex];var cfg=sgGetProviderConfig(model,providerID);sgProviderDraft={rowIndex:rowIndex,providerID:providerID,draft:{capability_tags:(cfg&&cfg.capability_tags||[]).slice(),priority:cfg&&cfg.priority||0,resolution_tier:cfg&&cfg.resolution_tier||0,credit_multiplier:cfg&&cfg.credit_multiplier||1}};sgRenderProviderDialog();};
+  window.sgEditProviderConfig=function(rowIndex,routeIndex){var model=sgDraft&&sgDraft.models&&sgDraft.models[rowIndex];var cfg=sgGetProviderConfig(model,routeIndex);if(!cfg)return;sgProviderDraft={rowIndex:rowIndex,routeIndex:routeIndex,providerID:cfg.provider_id,draft:{model:cfg&&cfg.model||'',capability_tags:(cfg&&cfg.capability_tags||[]).slice(),priority:cfg&&cfg.priority||0,resolution_tier:cfg&&cfg.resolution_tier||0,credit_multiplier:cfg&&cfg.credit_multiplier||1}};sgRenderProviderDialog();};
 
   function sgRenderProviderDialog(){
     if(!sgProviderDraft)return;var d=sgProviderDraft.draft;
     var featureChecks=sgCapabilityOptions.map(function(f){var checked=(d.capability_tags||[]).indexOf(f)>=0?' checked':'';return'<label class="sg-feature-check"><input type="checkbox"'+checked+' onchange="sgToggleFeature(\''+f+'\',this.checked)">'+esc(f)+'</label>';}).join('');
     var extraTags=(d.capability_tags||[]).filter(function(v){return sgCapabilityOptions.indexOf(v)<0;}).join(', ');
+    var modelOptions=sgProviderModels(sgProviderDraft.providerID);
+    var modelField=modelOptions.length
+      ? '<select class="sg-field-full" onchange="sgSetProviderField(\'model\',this.value)"><option value="">provider default</option>'+modelOptions.map(function(v){return'<option value="'+esc(v)+'"'+(d.model===v?' selected':'')+'>'+esc(v)+'</option>';}).join('')+'</select>'
+      : '<input class="sg-field-full" value="'+esc(d.model||'')+'" placeholder="empty = exposed model / provider default" oninput="sgSetProviderField(\'model\',this.value)">';
     var html='<h3>'+esc(t('sgProviderConfigTitle'))+': '+esc(sgProviderName(sgProviderDraft.providerID))+'</h3>'
+      +'<div class="sg-block-xs"><label class="sg-label-sm">Upstream model</label>'+modelField+'</div>'
       +'<div class="sg-block-sm"><label class="sg-label-strong">'+esc(t('sgCapabilityTags'))+'</label><div class="sg-block-xs">'+featureChecks+'</div></div>'
       +'<div class="sg-block-xs"><label class="sg-label-sm">'+esc(t('sgExtraTags'))+'</label><input class="sg-field-full" value="'+esc(extraTags)+'" placeholder="custom1, custom2" oninput="sgSetExtraTags(this.value)"></div>'
       +'<div class="grid2 sg-block-sm">'
@@ -528,25 +557,25 @@ if (typeof I18N_EN !== 'undefined') {
 
   window.sgToggleFeature=function(f,on){if(!sgProviderDraft)return;var s=new Set(sgProviderDraft.draft.capability_tags||[]);if(on)s.add(f);else s.delete(f);sgProviderDraft.draft.capability_tags=Array.from(s);};
   window.sgSetExtraTags=function(v){if(!sgProviderDraft)return;var keep=(sgProviderDraft.draft.capability_tags||[]).filter(function(x){return sgCapabilityOptions.indexOf(x)>=0;});var extra=v.split(/[,;\s]+/).map(function(x){return x.trim();}).filter(Boolean);sgProviderDraft.draft.capability_tags=Array.from(new Set(keep.concat(extra)));};
-  window.sgSetProviderField=function(k,v){if(sgProviderDraft)sgProviderDraft.draft[k]=v;};
-  window.sgSaveProviderConfig=function(){if(!sgProviderDraft||!sgDraft)return;var model=sgDraft.models&&sgDraft.models[sgProviderDraft.rowIndex];if(!model)return;var cfg=sgGetProviderConfig(model,sgProviderDraft.providerID);cfg.capability_tags=(sgProviderDraft.draft.capability_tags||[]).slice();cfg.priority=sgProviderDraft.draft.priority||0;cfg.resolution_tier=sgProviderDraft.draft.resolution_tier||0;cfg.credit_multiplier=sgProviderDraft.draft.credit_multiplier||1;sgProviderDraft=null;sgRenderGroupDialog();};
+  window.sgSetProviderField=function(k,v){if(sgProviderDraft)sgProviderDraft.draft[k]=(k==='model'?String(v||'').trim():v);};
+  window.sgSaveProviderConfig=function(){if(!sgProviderDraft||!sgDraft)return;var model=sgDraft.models&&sgDraft.models[sgProviderDraft.rowIndex];if(!model)return;var cfg=sgGetProviderConfig(model,sgProviderDraft.routeIndex);if(!cfg)return;var next={provider_id:cfg.provider_id,model:(sgProviderDraft.draft.model||'').trim()};if(sgRouteDuplicateIndex(model,next,sgProviderDraft.routeIndex)>=0){toast(sgDuplicateRouteMessage(next),'error');return;}cfg.model=next.model;cfg.capability_tags=(sgProviderDraft.draft.capability_tags||[]).slice();cfg.priority=sgProviderDraft.draft.priority||0;cfg.resolution_tier=sgProviderDraft.draft.resolution_tier||0;cfg.credit_multiplier=sgProviderDraft.draft.credit_multiplier||1;sgProviderDraft=null;sgRenderGroupDialog();};
   window.sgCancelProviderConfig=function(){sgProviderDraft=null;sgRenderGroupDialog();};
 
   window.sgSaveGroup=async function(){
     if(!sgDraft||!sgDraft.id||!sgDraft.name){toast(t('sgIDNameRequired'),'error');return;}
     if(!sgDraft.agent_id){toast(t('sgAgentRequired'),'error');return;}
     if(sgMode!=='edit'){
-      for(var r=0;r<(sgDraft.models||[]).length;r++){if(!(sgProviderIDsFromModel(sgDraft.models[r])||[]).length){toast(t('sgRouteNeedsProvider'),'error');return;}}
+      for(var r=0;r<(sgDraft.models||[]).length;r++){if(!(sgProviderConfigsFromModel(sgDraft.models[r])||[]).length){toast(t('sgRouteNeedsProvider'),'error');return;}}
     }
     var payload=sgCloneGroup(sgDraft);
     for(var i=0;i<(payload.models||[]).length;i++){
       var model=payload.models[i];
-      if(!(model.provider_ids||[]).length&&(model.provider_configs||[]).length){
-        model.provider_ids=sgProviderIDsFromModel(model);
+      model.provider_configs=sgProviderConfigsFromModel(model);
+      for(var ri=0;ri<model.provider_configs.length;ri++){
+        var dup=sgRouteDuplicateIndex(model,model.provider_configs[ri],ri);
+        if(dup>=0){toast(sgDuplicateRouteMessage(model.provider_configs[ri]),'error');return;}
       }
-      if((model.provider_ids||[]).length&&!model.provider_configs.length){
-        model.provider_configs=model.provider_ids.map(function(pid){return{provider_id:pid,capability_tags:[],priority:0,resolution_tier:0,credit_multiplier:1};});
-      }
+      model.provider_ids=sgProviderIDsFromModel(model);
     }
     try{
       if(sgMode==='edit'){await api('/api/admin/llm/service-groups/'+payload.id,{method:'PUT',body:JSON.stringify(payload)});}

@@ -539,3 +539,58 @@ func TestFlushProviderUsageSkipsPersistedRemoteCodingToolKeys(t *testing.T) {
 		t.Fatalf("normal provider usage was not persisted: %#v", stat)
 	}
 }
+
+func TestEnqueueLLMUsageWritesProviderScopedReport(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{
+		Providers:  []im.LLMProvider{{ID: "provider-a", Name: "Provider A", APIURL: "https://example.com/v1", Model: "test-model"}},
+		TokenUsage: map[string]*corelib.TokenUsageStat{},
+	}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	globalLLMUsageAccumulator.mu.Lock()
+	savedPending := globalLLMUsageAccumulator.pending
+	globalLLMUsageAccumulator.pending = map[store.SystemSettingsRepository]*pendingSystemUsage{}
+	globalLLMUsageAccumulator.mu.Unlock()
+	defer func() {
+		globalLLMUsageAccumulator.mu.Lock()
+		globalLLMUsageAccumulator.pending = savedPending
+		globalLLMUsageAccumulator.mu.Unlock()
+	}()
+
+	enqueueLLMUsage(system, "provider-a", corelib.TokenUsageStat{InputTokens: 10, OutputTokens: 5, TotalTokens: 15, Requests: 1}, "user@example.com", nil, nil, 0)
+	globalLLMUsageAccumulator.flush(ctx)
+
+	rep, err := loadLLMUsageReports(ctx, system)
+	if err != nil {
+		t.Fatalf("load usage reports: %v", err)
+	}
+	monthKey := ""
+	for dayKey := range rep.Days {
+		if len(dayKey) >= len("2006-01") {
+			monthKey = dayKey[:len("2006-01")]
+			break
+		}
+	}
+	if monthKey == "" {
+		t.Fatalf("usage report day was not persisted: %#v", rep.Days)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/usage-report?scope=provider&period=monthly&month="+monthKey, nil)
+	rr := httptest.NewRecorder()
+	GetLLMUsageReportHandler(system, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp llmUsageReportResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Scope != "provider" || resp.Summary.TotalTokens != 15 || len(resp.Rows) != 1 {
+		t.Fatalf("provider scoped report not written: summary=%+v rows=%#v", resp.Summary, resp.Rows)
+	}
+	if resp.Rows[0].ID != "provider-a" || resp.Rows[0].Name != "Provider A" || resp.Rows[0].TotalTokens != 15 {
+		t.Fatalf("provider report row = %#v", resp.Rows[0])
+	}
+}

@@ -231,3 +231,84 @@ func TestRoute_PatentApplication_NotConfusedWithPatentAnalysis(t *testing.T) {
 		}
 	}
 }
+
+func TestRoute_StrongActionWithArbitraryTarget(t *testing.T) {
+	r := setupTestRouter()
+
+	// Strong action verbs ("开发"/"实现"/"搭建"/"构建"/"develop"/"implement")
+	// should trigger workflow even when the target is not in the object signals list.
+	cases := []struct {
+		input    string
+		wantType string
+	}{
+		{"开发一个hello world", "coding"},
+		{"开发一个计算器", "coding"},
+		{"实现一个flappy bird", "coding"},
+		{"构建一个微服务框架", "coding"},
+		{"develop a tic-tac-toe game", "coding"},
+		{"implement a chat server in go", "coding"},
+	}
+	for _, tc := range cases {
+		result := r.Route("user1", tc.input, nil)
+		if result.Target != RouteToWorkflow {
+			t.Errorf("Route(%q): target = %q, want workflow", tc.input, result.Target)
+			continue
+		}
+		if result.WorkflowType != tc.wantType {
+			t.Errorf("Route(%q): type = %q, want %q", tc.input, result.WorkflowType, tc.wantType)
+		}
+	}
+}
+
+func TestRoute_StrongActionTooShort_NoWorkflow(t *testing.T) {
+	r := setupTestRouter()
+	// Very short messages with strong action ("开发" = 2 runes, total < 6 runes)
+	// should NOT trigger workflow — likely incomplete input.
+	result := r.Route("user1", "开发", nil)
+	if result.Target != RouteToAgentLoop {
+		t.Fatalf("Route(\"开发\"): target = %q, want agent_loop (too short)", result.Target)
+	}
+}
+
+func TestRoute_AmbiguousEnglishAction_NoWorkflow(t *testing.T) {
+	r := setupTestRouter()
+	// "build" and "create" are excluded from strong signals because they are
+	// too ambiguous for short commands. These should NOT trigger workflow
+	// unless they also contain an object signal word.
+	cases := []string{
+		"build the project",   // operational command, not "create new project"
+		"create a folder",     // filesystem operation
+		"create a new branch", // git operation
+	}
+	for _, input := range cases {
+		result := r.Route("user1", input, nil)
+		if result.Target == RouteToWorkflow {
+			t.Errorf("Route(%q): target = %q, want agent_loop (ambiguous action)", input, result.Target)
+		}
+	}
+}
+
+func TestRoute_TraditionalChinese(t *testing.T) {
+	r := setupTestRouter()
+
+	// Traditional Chinese users should trigger workflow via strong action verbs.
+	// Note: without UIC (test environment), non-coding templates may not match
+	// precisely because BM25 template descriptions are in simplified Chinese.
+	// The key assertion is that strong coding actions route to workflow.
+	cases := []struct {
+		input string
+	}{
+		{"開發一個計算機程式"},
+		{"實現一個聊天機器人"},
+	}
+	for _, tc := range cases {
+		result := r.Route("user1", tc.input, nil)
+		if result.Target != RouteToWorkflow {
+			t.Errorf("Route(%q): target = %q, want workflow", tc.input, result.Target)
+			continue
+		}
+		if result.WorkflowType != "coding" {
+			t.Errorf("Route(%q): type = %q, want coding", tc.input, result.WorkflowType)
+		}
+	}
+}

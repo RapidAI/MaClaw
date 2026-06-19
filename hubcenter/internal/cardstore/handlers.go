@@ -76,7 +76,8 @@ func CreateOrderHandler(svc *Service) http.HandlerFunc {
 			return
 		}
 
-		order, err := svc.CreateOrder(r.Context(), req.CardTypeID, req.AdminEmail, req.HubID, req.TenantID, req.PayChannel)
+		alipay := alipayConfigForRequest(r, svc)
+		order, err := svc.CreateOrderWithAlipayConfig(r.Context(), req.CardTypeID, req.AdminEmail, req.HubID, req.TenantID, req.PayChannel, alipay)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -109,7 +110,8 @@ func ListOrdersHandler(svc *Service) http.HandlerFunc {
 			Limit:  limit,
 			Offset: offset,
 		}
-		orders, total, err := svc.ListOrders(r.Context(), filter)
+		alipay := alipayConfigForRequest(r, svc)
+		orders, total, err := svc.ListOrdersWithAlipayConfig(r.Context(), filter, alipay)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -143,6 +145,75 @@ func parseStatusList(q url.Values) []string {
 		}
 	}
 	return statuses
+}
+
+func alipayConfigForRequest(r *http.Request, svc *Service) corecardstore.AlipayDirectConfig {
+	if svc == nil {
+		return corecardstore.AlipayDirectConfig{}
+	}
+	cfg := svc.alipay
+	base := trustedPublicBaseURL(r, svc)
+	if base == "" {
+		return cfg
+	}
+	cfg.NotifyURL = absoluteCallbackURL(base, cfg.NotifyURL, "/api/cardstore/payment/notify")
+	cfg.ReturnURL = absoluteCallbackURL(base, cfg.ReturnURL, "/api/cardstore/payment/return")
+	return cfg
+}
+
+func trustedPublicBaseURL(r *http.Request, svc *Service) string {
+	if svc != nil && svc.publicURL != nil {
+		base, err := svc.publicURL(r.Context())
+		if err == nil && strings.TrimSpace(base) != "" {
+			return strings.TrimRight(strings.TrimSpace(base), "/")
+		}
+	}
+	return publicBaseURL(r)
+}
+
+func publicBaseURL(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
+	if proto == "" {
+		proto = strings.TrimSpace(r.Header.Get("X-Forwarded-Scheme"))
+	}
+	if proto == "" {
+		if r.TLS != nil {
+			proto = "https"
+		} else {
+			proto = "http"
+		}
+	}
+	if comma := strings.Index(proto, ","); comma >= 0 {
+		proto = strings.TrimSpace(proto[:comma])
+	}
+	host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(r.Host)
+	}
+	if comma := strings.Index(host, ","); comma >= 0 {
+		host = strings.TrimSpace(host[:comma])
+	}
+	if host == "" || (proto != "http" && proto != "https") {
+		return ""
+	}
+	return proto + "://" + host
+}
+
+func absoluteCallbackURL(base, configured, fallbackPath string) string {
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		configured = fallbackPath
+	}
+	if u, err := url.Parse(configured); err == nil && u.IsAbs() {
+		return configured
+	}
+	if !strings.HasPrefix(configured, "/") {
+		configured = "/" + configured
+	}
+	return strings.TrimRight(base, "/") + configured
 }
 
 // DeleteOrderHandler deletes an unpaid order owned by a Hub tenant admin.
@@ -284,6 +355,23 @@ func AdminArchiveOrderHandler(svc *Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "archived"})
+	}
+}
+
+// AdminDeleteArchivedOrderHandler deletes an archived unpaid order.
+// DELETE /api/admin/cardstore/orders/:orderNo
+func AdminDeleteArchivedOrderHandler(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		orderNo := extractPathParam(r, "orderNo")
+		if orderNo == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "orderNo is required"})
+			return
+		}
+		if err := svc.DeleteArchivedUnprocessedOrder(r.Context(), orderNo); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	}
 }
 

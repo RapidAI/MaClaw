@@ -575,6 +575,72 @@
     background: transparent;
 }
 
+.apps-preview--layout-classic_split,
+.apps-preview--layout-left_nav,
+.apps-preview--layout-document_workspace {
+    max-width: 1180px;
+}
+
+.apps-runtime-layout {
+    align-items: start;
+}
+
+.apps-runtime-layout[data-template='classic_split'] {
+    grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.25fr) minmax(260px, 0.9fr);
+}
+
+.apps-runtime-layout[data-template='left_nav'] {
+    grid-template-columns: minmax(210px, 0.68fr) minmax(0, 1.45fr) minmax(260px, 0.85fr);
+}
+
+.apps-runtime-layout[data-template='document_workspace'] {
+    grid-template-columns: minmax(250px, 0.82fr) minmax(0, 1.35fr) minmax(280px, 0.95fr);
+}
+
+.apps-runtime-layout[data-density='compact'] {
+    gap: 8px;
+}
+
+.apps-runtime-layout[data-density='compact'] .apps-runtime-section,
+.apps-runtime-layout[data-density='compact'] .apps-run-history {
+    gap: 7px;
+}
+
+.apps-runtime-layout > [data-region='left'] {
+    grid-column: 1;
+}
+
+.apps-runtime-layout > [data-region='center'] {
+    grid-column: 2;
+}
+
+.apps-runtime-layout > [data-region='right'],
+.apps-runtime-layout > [data-region='modal'] {
+    grid-column: 3;
+}
+
+.apps-runtime-layout > [data-region='bottom'] {
+    grid-column: 1 / -1;
+}
+
+.apps-runtime-layout .apps-runtime-section,
+.apps-runtime-layout .apps-run-history {
+    min-width: 0;
+    padding: 11px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--theme-surface-muted) 52%, var(--theme-surface));
+}
+
+.apps-runtime-layout .apps-runtime-section + .apps-runtime-section {
+    padding-top: 11px;
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.apps-runtime-layout .apps-runtime-actions {
+    align-self: stretch;
+}
+
 .apps-runtime-section {
     display: grid;
     gap: 10px;
@@ -738,6 +804,226 @@
     font-size: 0.76rem;
 }
 
+.apps-approval-workspace {
+    gap: 8px;
+}
+
+.apps-approval-layout {
+    display: grid;
+    grid-template-columns: 150px minmax(0, 1.1fr) minmax(220px, 0.9fr);
+    gap: 8px;
+    align-items: stretch;
+}
+
+.apps-approval-nav,
+.apps-approval-list,
+.apps-approval-detail {
+    min-width: 0;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+}
+
+.apps-approval-nav {
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    padding: 6px;
+}
+
+.apps-approval-nav button {
+    min-width: 0;
+    min-height: 30px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    padding: 0 7px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    color: var(--theme-text-secondary);
+    background: transparent;
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.apps-approval-nav button span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+}
+
+.apps-approval-nav button strong {
+    color: var(--theme-text-muted);
+    font-size: 0.68rem;
+}
+
+.apps-approval-nav button:hover,
+.apps-approval-nav button:focus-visible,
+.apps-approval-nav button.is-active {
+    color: var(--theme-primary-strong);
+    background: color-mix(in srgb, var(--theme-primary-soft) 54%, var(--theme-surface));
+    outline: none;
+}
+
+.apps-approval-list {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    padding: 7px;
+}
+
+.apps-approval-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface-muted);
+}
+
+.apps-approval-row[data-state='attention'] {
+    border-color: color-mix(in srgb, var(--theme-warning) 34%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-warning-bg) 42%, var(--theme-surface));
+}
+
+.apps-approval-row strong,
+.apps-approval-row span,
+.apps-approval-row small {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-approval-row strong {
+    color: var(--theme-text-primary);
+    font-size: 0.78rem;
+}
+
+.apps-approval-row span,
+.apps-approval-row small {
+    color: var(--theme-text-secondary);
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+
+.apps-approval-row em {
+    padding: 3px 7px;
+    border-radius: var(--radius-sm);
+    color: var(--theme-primary-strong);
+    background: color-mix(in srgb, var(--theme-primary-soft) 58%, var(--theme-surface));
+    font-size: 0.68rem;
+    font-style: normal;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.apps-approval-detail {
+    display: grid;
+    align-content: start;
+    gap: 8px;
+    padding: 9px;
+}
+
+.apps-approval-detail__head strong,
+.apps-approval-detail__head span {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-approval-detail__head strong {
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
+}
+
+.apps-approval-detail__head span {
+    margin-top: 2px;
+    color: var(--theme-text-secondary);
+    font-size: 0.7rem;
+    font-weight: 700;
+}
+
+.apps-approval-facts {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin: 0;
+}
+
+.apps-approval-facts div {
+    min-width: 0;
+    padding: 7px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface-muted);
+}
+
+.apps-approval-facts dt,
+.apps-approval-facts dd {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-approval-facts dt {
+    color: var(--theme-text-muted);
+    font-size: 0.64rem;
+    font-weight: 800;
+}
+
+.apps-approval-facts dd {
+    margin-top: 2px;
+    color: var(--theme-text-primary);
+    font-size: 0.72rem;
+    font-weight: 800;
+}
+
+.apps-approval-timeline {
+    display: grid;
+    gap: 5px;
+}
+
+.apps-approval-timeline div {
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr);
+    gap: 7px;
+    align-items: center;
+    color: var(--theme-text-secondary);
+    font-size: 0.7rem;
+    font-weight: 700;
+}
+
+.apps-approval-timeline span {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--theme-primary);
+}
+
+.apps-approval-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+}
+
+.apps-approval-actions button {
+    min-height: 28px;
+    padding: 0 8px;
+    font-size: 0.72rem;
+}
 .apps-result-panel {
     min-height: 38px;
     display: flex;
@@ -1619,6 +1905,91 @@
     color: var(--theme-success);
 }
 
+.apps-install-records {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface);
+}
+
+.apps-install-records__list {
+    display: grid;
+    gap: 6px;
+}
+
+.apps-install-records__empty {
+    padding: 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--theme-text-secondary);
+    background: var(--theme-surface-muted);
+    font-size: 0.74rem;
+    font-weight: 700;
+}
+
+.apps-install-record {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface-muted);
+}
+
+.apps-install-record[data-missing='true'] {
+    border-color: color-mix(in srgb, var(--theme-warning) 34%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-warning-bg) 42%, var(--theme-surface));
+}
+
+.apps-install-record__main {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+
+.apps-install-record strong,
+.apps-install-record span,
+.apps-install-record small {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-install-record strong {
+    color: var(--theme-text-primary);
+    font-size: 0.76rem;
+}
+
+.apps-install-record span,
+.apps-install-record small {
+    color: var(--theme-text-secondary);
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+
+.apps-install-record em {
+    padding: 3px 7px;
+    border: 1px solid color-mix(in srgb, var(--theme-success) 30%, var(--theme-border));
+    border-radius: var(--radius-sm);
+    color: var(--theme-success);
+    background: color-mix(in srgb, var(--theme-success-bg) 55%, var(--theme-surface));
+    font-size: 0.68rem;
+    font-style: normal;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.apps-install-record[data-missing='true'] em {
+    border-color: color-mix(in srgb, var(--theme-warning) 38%, var(--theme-border));
+    color: var(--theme-warning);
+    background: var(--theme-warning-bg);
+}
 .apps-install-result {
     align-self: stretch;
     display: grid;
@@ -2302,6 +2673,25 @@
     height: 28px;
 }
 
+.apps-layout-designer {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--theme-surface-muted) 70%, var(--theme-surface));
+}
+
+.apps-layout-designer__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+}
+
+.apps-layout-designer .apps-form-row {
+    grid-template-columns: minmax(96px, 0.42fr) minmax(0, 1fr);
+}
+
 @media (max-width: 980px) {
     .apps-page {
         grid-template-columns: 1fr;
@@ -2326,6 +2716,13 @@
 }
 
 @media (max-width: 520px) {
+    .apps-approval-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .apps-approval-facts {
+        grid-template-columns: 1fr;
+    }
     .apps-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -2369,6 +2766,14 @@
     }
 
     .apps-form-row {
+        grid-template-columns: 1fr;
+    }
+
+    .apps-layout-designer__grid {
+        grid-template-columns: 1fr;
+    }
+
+    .apps-layout-designer .apps-form-row {
         grid-template-columns: 1fr;
     }
 

@@ -640,7 +640,7 @@ describe('HubServiceRedeemPanel', () => {
         });
     });
 
-    it('opens HubCenter compute store with hub id when configured', async () => {
+    it('prefers Hub card_store over HubCenter compute-store even when hub_id is configured', async () => {
         LoadConfigMock.mockResolvedValue({
             remote_hub_id: 'hub_1',
             remote_hub_url: 'https://hub.example.com/',
@@ -655,7 +655,7 @@ describe('HubServiceRedeemPanel', () => {
         fireEvent.click(buyCredits);
 
         await waitFor(() => {
-            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hubs.example.com/compute-store?hub_id=hub_1&tenant_id=tenant%20acme&email=dev%40example.com');
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token');
         });
     });
 

@@ -269,12 +269,12 @@ func (s *HTTPServer) handlePlatformCreateVirtualEmployee(w http.ResponseWriter, 
 	runtimeTenantKey := firstPlatformNonEmpty(in.TenantID, in.PlatformTenantID, "default")
 	tenant, err := s.findOrCreatePlatformTenant(r, runtimeTenantKey, in)
 	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
+		s.writePlatformVirtualEmployeeStageError(w, "find_or_create_tenant", in, err)
 		return
 	}
 	user, err := s.findOrCreatePlatformUser(r, tenant.ID, in)
 	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
+		s.writePlatformVirtualEmployeeStageError(w, "find_or_create_user", in, err)
 		return
 	}
 	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
@@ -282,16 +282,16 @@ func (s *HTTPServer) handlePlatformCreateVirtualEmployee(w http.ResponseWriter, 
 	llmModel := platformLLMModelFromRequest(in)
 	llmKey := firstPlatformNonEmpty(platformLLMCredential(in), "managed-by-hub")
 	if err := s.updatePlatformUserLLMConfig(r, principal, llmURL, llmKey, llmModel); err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
+		s.writePlatformVirtualEmployeeStageError(w, "update_llm_config", in, err)
 		return
 	}
 	if err := s.updatePlatformUserSSHHosts(r, principal, in.SSHHosts); err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
+		s.writePlatformVirtualEmployeeStageError(w, "update_ssh_hosts", in, err)
 		return
 	}
 	if !in.MaclawSrvConfig.isZero() {
 		if err := s.updatePlatformUserMaclawSrvConfig(r, principal, in.MaclawSrvConfig); err != nil {
-			writeRedactedError(w, err, s.svc.DataRoot())
+			s.writePlatformVirtualEmployeeStageError(w, "update_maclawsrv_config", in, err)
 			return
 		}
 	}
@@ -302,7 +302,7 @@ func (s *HTTPServer) handlePlatformCreateVirtualEmployee(w http.ResponseWriter, 
 				return
 			}
 		}
-		writeRedactedError(w, err, s.svc.DataRoot())
+		s.writePlatformVirtualEmployeeStageError(w, "find_or_create_instance", in, err)
 		return
 	}
 	status := "ready"
@@ -310,6 +310,19 @@ func (s *HTTPServer) handlePlatformCreateVirtualEmployee(w http.ResponseWriter, 
 		status = "attention"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": status, "created": created, "tenant_id": tenant.ID, "user_id": user.ID, "instance_id": inst.ID, "employee_id": employeeID, "readiness": inst.Readiness})
+}
+
+func (s *HTTPServer) writePlatformVirtualEmployeeStageError(w http.ResponseWriter, stage string, in platformVirtualEmployeeRequest, err error) {
+	status := errorStatusCode(err)
+	redacted := redactSupportBundleText(s.svc.DataRoot(), err.Error())
+	log.Printf("[platform-runtime] virtual employee create failed stage=%s employee=%s hub_tenant=%s platform_tenant=%s status=%d err=%s", stage, platformRuntimeLogID(in.EmployeeID), strings.TrimSpace(in.TenantID), strings.TrimSpace(in.PlatformTenantID), status, redacted)
+	writeJSON(w, status, map[string]any{
+		"error":              redacted,
+		"stage":              stage,
+		"employee_id":        strings.TrimSpace(in.EmployeeID),
+		"tenant_id":          strings.TrimSpace(in.TenantID),
+		"platform_tenant_id": strings.TrimSpace(in.PlatformTenantID),
+	})
 }
 
 func (s *HTTPServer) handleRuntimeVirtualEmployeeDiscussionMessage(w http.ResponseWriter, r *http.Request) {

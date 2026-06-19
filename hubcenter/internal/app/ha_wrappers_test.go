@@ -2,15 +2,19 @@ package app
 
 import (
 	"context"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	corecardstore "github.com/RapidAI/CodeClaw/corelib/cardstore"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
 )
 
 type fakeSeedSync struct {
@@ -177,6 +181,93 @@ func (f *fakeSeedSystemSettingsRepo) List(context.Context) ([]*store.SystemSetti
 		{Key: "llm_moderation_config", ValueJSON: `{"enabled":true}`},
 		{Key: "admin_email", ValueJSON: `{"value":"admin@example.com"}`},
 	}, nil
+}
+
+type fakeSeedCardOrderRepo struct {
+	orders []*cardstore.PurchaseOrder
+}
+
+func (f *fakeSeedCardOrderRepo) Create(context.Context, *cardstore.PurchaseOrder) error { return nil }
+func (f *fakeSeedCardOrderRepo) GetByOrderNo(context.Context, string) (*cardstore.PurchaseOrder, error) {
+	return nil, nil
+}
+func (f *fakeSeedCardOrderRepo) List(context.Context, cardstore.OrderFilter) ([]*cardstore.PurchaseOrder, int, error) {
+	return f.orders, len(f.orders), nil
+}
+func (f *fakeSeedCardOrderRepo) UpdateStatus(context.Context, string, string, time.Time) error {
+	return nil
+}
+func (f *fakeSeedCardOrderRepo) Update(context.Context, *cardstore.PurchaseOrder) error { return nil }
+func (f *fakeSeedCardOrderRepo) Delete(context.Context, string) error                   { return nil }
+func (f *fakeSeedCardOrderRepo) Archive(context.Context, string, time.Time) error       { return nil }
+
+type fakeHACardOrderInnerRepo struct {
+	byNo    map[string]*cardstore.PurchaseOrder
+	deleted []string
+}
+
+func (f *fakeHACardOrderInnerRepo) Create(_ context.Context, order *cardstore.PurchaseOrder) error {
+	if f.byNo == nil {
+		f.byNo = map[string]*cardstore.PurchaseOrder{}
+	}
+	f.byNo[order.OrderNo] = order
+	return nil
+}
+
+func (f *fakeHACardOrderInnerRepo) GetByOrderNo(_ context.Context, orderNo string) (*cardstore.PurchaseOrder, error) {
+	if f.byNo == nil {
+		return nil, nil
+	}
+	return f.byNo[orderNo], nil
+}
+
+func (f *fakeHACardOrderInnerRepo) List(context.Context, cardstore.OrderFilter) ([]*cardstore.PurchaseOrder, int, error) {
+	return nil, 0, nil
+}
+
+func (f *fakeHACardOrderInnerRepo) UpdateStatus(_ context.Context, orderNo, status string, now time.Time) error {
+	if f.byNo != nil && f.byNo[orderNo] != nil {
+		f.byNo[orderNo].Status = status
+		f.byNo[orderNo].UpdatedAt = now
+	}
+	return nil
+}
+
+func (f *fakeHACardOrderInnerRepo) Update(_ context.Context, order *cardstore.PurchaseOrder) error {
+	if f.byNo == nil {
+		f.byNo = map[string]*cardstore.PurchaseOrder{}
+	}
+	f.byNo[order.OrderNo] = order
+	return nil
+}
+
+func (f *fakeHACardOrderInnerRepo) Delete(_ context.Context, orderNo string) error {
+	f.deleted = append(f.deleted, orderNo)
+	if f.byNo != nil {
+		delete(f.byNo, orderNo)
+	}
+	return nil
+}
+
+func (f *fakeHACardOrderInnerRepo) Archive(_ context.Context, orderNo string, archivedAt time.Time) error {
+	if f.byNo != nil && f.byNo[orderNo] != nil {
+		f.byNo[orderNo].ArchivedAt = archivedAt.Format(time.RFC3339)
+		f.byNo[orderNo].UpdatedAt = archivedAt
+	}
+	return nil
+}
+
+type fakeHACardOrderSync struct {
+	upserts []*cardstore.PurchaseOrder
+	deletes []string
+}
+
+func (f *fakeHACardOrderSync) AppendLLMCardOrder(_ context.Context, item *cardstore.PurchaseOrder) {
+	f.upserts = append(f.upserts, item)
+}
+
+func (f *fakeHACardOrderSync) DeleteLLMCardOrder(_ context.Context, orderNo string) {
+	f.deletes = append(f.deletes, orderNo)
 }
 
 type fakeHASystemSettingsRepo struct {
@@ -434,6 +525,87 @@ func TestSeedInitialHASnapshotsAlwaysChecksNewsForMissingOrStaleOps(t *testing.T
 	}
 	if refresher.calls != 1 {
 		t.Fatalf("refresher calls = %d, want 1", refresher.calls)
+	}
+}
+
+func TestSeedLLMCardOrderHAOpsOnlySeedsMissingEntityVersions(t *testing.T) {
+	provider, err := sqlite.NewProvider(sqlite.Config{DSN: filepath.Join(t.TempDir(), "ha-card-order-seed.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	st := sqlite.NewStore(provider)
+	svc := ha.NewService("hc-1", "hc-1", "https://hc-1.example.com", "secret", nil)
+	svc.AttachStore(st)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	repo := &fakeSeedCardOrderRepo{orders: []*cardstore.PurchaseOrder{
+		{
+			Order: corecardstore.Order{OrderNo: "HC-SEEDED", ProductID: "ct1", Email: "owner@example.com", Amount: 10, Status: corecardstore.StatusPending, CreatedAt: now, UpdatedAt: now},
+			HubID: "hub-1", TenantID: "tenant-a", CardTypeID: "ct1", ServiceGroupID: "group-1", Credits: 100, Period: "month",
+		},
+		{
+			Order: corecardstore.Order{OrderNo: "HC-MISSING", ProductID: "ct1", Email: "owner@example.com", Amount: 10, Status: corecardstore.StatusPending, CreatedAt: now, UpdatedAt: now},
+			HubID: "hub-1", TenantID: "tenant-a", CardTypeID: "ct1", ServiceGroupID: "group-1", Credits: 100, Period: "month",
+		},
+	}}
+	svc.AppendLLMCardOrder(ctx, repo.orders[0])
+
+	ops, err := st.HASyncOps.ListAfterSeq(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("ListAfterSeq(before) error = %v", err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("ops before seed = %d, want 1", len(ops))
+	}
+
+	seedLLMCardOrderHAOps(ctx, svc, repo)
+	ops, err = st.HASyncOps.ListAfterSeq(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("ListAfterSeq(after) error = %v", err)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("ops after first seed = %d, want 2", len(ops))
+	}
+	if ops[1].EntityID != "HC-MISSING" {
+		t.Fatalf("seeded entity = %s, want HC-MISSING", ops[1].EntityID)
+	}
+
+	seedLLMCardOrderHAOps(ctx, svc, repo)
+	ops, err = st.HASyncOps.ListAfterSeq(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("ListAfterSeq(second) error = %v", err)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("ops after second seed = %d, want 2", len(ops))
+	}
+}
+
+func TestHACardOrderRepoDeleteSyncsDeleteOp(t *testing.T) {
+	ctx := context.Background()
+	inner := &fakeHACardOrderInnerRepo{byNo: map[string]*cardstore.PurchaseOrder{
+		"HC-DELETE": {
+			Order: corecardstore.Order{OrderNo: "HC-DELETE", Email: "owner@example.com", Status: corecardstore.StatusPending, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()},
+			HubID: "hub-1", TenantID: "tenant-a", ArchivedAt: time.Now().UTC().Format(time.RFC3339),
+		},
+	}}
+	sync := &fakeHACardOrderSync{}
+	repo := &haCardOrderRepo{inner: inner, sync: sync}
+
+	if err := repo.Delete(ctx, "HC-DELETE"); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if len(inner.deleted) != 1 || inner.deleted[0] != "HC-DELETE" {
+		t.Fatalf("inner deletes = %+v, want HC-DELETE", inner.deleted)
+	}
+	if len(sync.deletes) != 1 || sync.deletes[0] != "HC-DELETE" {
+		t.Fatalf("sync deletes = %+v, want HC-DELETE", sync.deletes)
+	}
+	if len(sync.upserts) != 0 {
+		t.Fatalf("unexpected upsert syncs = %+v", sync.upserts)
 	}
 }
 

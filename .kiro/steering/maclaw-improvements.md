@@ -6224,3 +6224,56 @@ RemoteCodingSubAgent 启动后注册到 GUI 的任务监控系统：
 - LLM 同时输出文本 + write_file（如短摘要 + 完整文件）→ 取更长的内容作为产出物
 - 二进制文件（如 .docx/.pdf）→ 跳过，不作为产出物
 - GUI 编译通过
+
+
+### 109. V2 工作流表单数据被 LLM 忽略——Proactive Recall 干扰 + userText 未锚定 FormData
+
+**来源**：用户在 AI 助手面板提交专利申请工作流（patent_application）表单后，LLM 忽略表单数据，重新向用户索要所有信息。
+
+**根因**：不是代码 bug（FormData 确实被正确注入到了 system prompt 的 phase prompt section 中）。问题是 **LLM 注意力失焦**——28K 字符的 system prompt 中，FormData section 被 proactive recall 注入的 9 条旧项目记忆（"终端OCR"、"智能文件类型识别"等其他专利项目）淹没。LLM 被这些旧记忆误导，认为应该从记忆/目录中搜索数据，而不是直接使用 system prompt 中已有的结构化信息。
+
+**触发链路**：
+1. 用户提交表单（专利类型=发明、申请人=奇安信、交底书路径=D:\专利交底书\...）
+2. form auto-continue 触发 agent loop
+3. `BuildPhasePrompt` 正确注入 FormData 到 system prompt
+4. `appendGUIEpilogue` → `appendProactiveRecallForUser` 注入 9 条旧项目记忆
+5. LLM 收到的 user message 是通用的"请现在生成「交底书解析与技术提炼」阶段的完整文档内容"——没有提及 FormData
+6. LLM 看到旧项目记忆 + 空项目目录，忽略 FormData section，开始搜索/询问
+
+**修复（三层机制性修复）**：
+
+#### 1. userText 显式锚定 FormData（`gui/workflow_v2_integration.go`）
+
+`runWorkflowV2Phase` 中 `phaseUserText` 从通用指令改为明确指向 FormData：
+- 有 FormData 时："请基于上方系统提示中「用户提供的结构化信息」section 的表单数据，直接生成...所有必要的输入信息已在该 section 中列出，无需再搜索或询问。"
+- 无 FormData 时：保持原有通用指令
+- modifyHint 时：保持原有修改指令
+
+#### 2. V2 工作流 agent loop 抑制 proactive recall（`gui/im_system_prompt.go`）
+
+`deps.Epilogue` 闭包新增 `isV2AgentLoop` 检查。V2 工作流 agent loop 中：
+- 保留静态 user_fact summary（用户偏好/身份，通过 `appendStaticMemoryOnly` 注入）
+- 抑制动态 proactive recall（旧项目记忆、知识库自动检索等）——phase prompt 已自足
+
+新增 `appendStaticMemoryOnly()` 方法：只注入 frozen snapshot 中的静态 user_fact 部分，不触发 `appendProactiveRecallForUser`。
+
+与已有的 steering 抑制模式一致（同文件 SteeringResolver 闭包中 `if loopCtx != nil && loopCtx.WorkflowAgentLoop && h.isWorkflowV2Active(promptUserID) { return nil }`）。
+
+#### 3. FormData section 标题强化（`corelib/workflow/v2/phase_prompt.go`）
+
+`BuildPhasePrompt` 中 FormData section 的标题和说明改为强制性指令：
+- "## ⚠️ 用户提供的结构化信息（必须使用，禁止再询问）"
+- "请**直接基于这些信息**生成本阶段文档。禁止向用户重复索要这些已提供的信息"
+
+**效果**：
+- System prompt 从 ~28K 缩减到 ~15K（去掉 proactive recall + knowledge auto-recall 噪音）
+- userText 明确指向 FormData section，消除"该从哪里获取输入"的歧义
+- FormData header 使用 ⚠️ + "禁止" 强指令，防止模型忽略
+
+**验收标准**：
+- 专利申请工作流表单提交后 → LLM 直接读取交底书文件并生成解析文档，不再询问已提供的信息
+- 其他 V2 工作流阶段（无 FormData）→ 使用通用 userText，行为不变
+- 非 V2 工作流消息 → proactive recall 正常工作（不受影响）
+- 静态 user_fact（如用户偏好）→ 在 V2 工作流中仍然可见
+- 所有 BuildPhasePrompt / FormData / SubmitWorkflowInput / WorkflowV2 测试通过
+- GUI / corelib 编译通过（go vet 仅 pre-existing llm_stream.go unreachable code 警告）

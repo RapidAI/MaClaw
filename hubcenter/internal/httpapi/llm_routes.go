@@ -74,6 +74,7 @@ func RegisterLLMRoutes(
 		mux.HandleFunc("GET /api/cardstore/orders", cardstore.ListOrdersHandler(cardStoreSvc))
 		mux.HandleFunc("DELETE /api/cardstore/orders/{orderNo}", cardstore.DeleteOrderHandler(cardStoreSvc))
 		mux.HandleFunc("GET /api/cardstore/templates", cardstore.TemplatesHandler())
+		mux.HandleFunc("GET /api/cardstore/payment/return", cardstore.AlipayReturnHandler(cardStoreSvc))
 		mux.HandleFunc("POST /api/cardstore/payment/notify", cardstore.AlipayNotifyHandler(cardStoreSvc))
 
 		// Admin: Card Type management
@@ -83,6 +84,7 @@ func RegisterLLMRoutes(
 
 		// Admin: Order management
 		mux.HandleFunc("GET /api/admin/cardstore/orders", RequireAdmin(adminService, cardstore.AdminListOrdersHandler(cardStoreSvc)))
+		mux.HandleFunc("DELETE /api/admin/cardstore/orders/{orderNo}", RequireAdmin(adminService, cardstore.AdminDeleteArchivedOrderHandler(cardStoreSvc)))
 		mux.HandleFunc("POST /api/admin/cardstore/orders/{orderNo}/confirm", RequireAdmin(adminService, cardstore.AdminConfirmOrderHandler(cardStoreSvc, adminEmailFromRequest)))
 		mux.HandleFunc("POST /api/admin/cardstore/orders/{orderNo}/archive", RequireAdmin(adminService, cardstore.AdminArchiveOrderHandler(cardStoreSvc)))
 

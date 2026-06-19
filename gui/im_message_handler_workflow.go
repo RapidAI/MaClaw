@@ -211,10 +211,11 @@ func (h *IMMessageHandler) confirmWorkflowStart(userID, text string, intent v2.S
 type workflowIMRouteResult struct {
 	Response             *IMAgentResponse
 	WorkflowAgentLoop    bool
-	WorkflowDocPhase     bool // true for doc phases (requirements/design/tasks), false for execution phases
+	WorkflowDocPhase     bool // true for confirmable phases (NeedsConfirm), false for free execution phases
 	WorkflowPhaseID      string
 	SkipNeedsConfirmGate bool
 	ReplayText           string // When non-empty, replace the current msg.Text with this for agent loop processing
+	PhasePrompt          string // Phase prompt built by runWorkflowV2Phase, passed synchronously to avoid sync.Map race
 }
 
 func (h *IMMessageHandler) routeWorkflowIMMessage(msg IMUserMessage, trimmed string, confirmedResume, hasPendingUserReply bool) workflowIMRouteResult {
@@ -237,7 +238,7 @@ func (h *IMMessageHandler) routeWorkflowIMMessage(msg IMUserMessage, trimmed str
 			if state := wf.machine.GetActive(msg.UserID); state != nil {
 				if phase := state.ActivePhase(); phase != nil {
 					result.WorkflowPhaseID = phase.ID
-					result.WorkflowDocPhase = phase.ToolPolicy != v2.ToolPolicyFull
+					result.WorkflowDocPhase = phase.NeedsConfirm
 				}
 			}
 			return result

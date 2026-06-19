@@ -23,6 +23,7 @@ import { AssistantConversationBody } from "./AssistantConversationBody";
 import { AssistantTitleBar } from "./AssistantTitleBar";
 import { KnowledgeDialog } from "./KnowledgeDialog";
 import { AssistantInputStack } from "./AssistantInputStack";
+import { InlineChatCard } from "./InlineChatCard";
 import { AssistantWelcomeView } from "./AssistantWelcomeView";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
@@ -72,9 +73,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [queueEditDraftActive, setQueueEditDraftActive] = useState(false);
     const [knowledgeDialogOpen, setKnowledgeDialogOpen] = useState(false);
     const [workflowEnabled, setWorkflowEnabled] = useState(false);
+    const [skillRecording, setSkillRecording] = useState(false);
+    const [skillRecordingCount, setSkillRecordingCount] = useState(0);
+    const [skillRecordingCard, setSkillRecordingCard] = useState<any>(null);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
     const closeAllPreviewPanelsRef = useRef<(() => void) | null>(null);
+    const pendingSkillRecDataRef = useRef<any>(null);
+    const skillRecResolvedRef = useRef(false);
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
     const { ttsEnabled, setTtsEnabled, ttsPlaying } = useTTSReadback(audioOutputDeviceId);
     const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
@@ -108,6 +114,124 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             });
             return next;
         });
+    }, []);
+    // Skill recording: sync state from backend events
+    useEffect(() => {
+        const off = EventsOn("skill-recording-state-changed", (state: any) => {
+            if (state && typeof state.recording === "boolean") {
+                setSkillRecording(state.recording);
+            }
+            if (state && typeof state.count === "number") {
+                setSkillRecordingCount(state.count);
+            }
+        });
+        // Check initial state on mount
+        (window as any).go?.main?.App?.IsSkillRecording?.().then((recording: boolean) => {
+            setSkillRecording(recording);
+            if (recording) {
+                (window as any).go?.main?.App?.GetSkillRecordingCount?.().then((count: number) => {
+                    setSkillRecordingCount(count || 0);
+                });
+            }
+        }).catch(() => { /* ignore */ });
+        return () => { if (typeof off === "function") off(); };
+    }, []);
+    const handleToggleSkillRecording = useCallback(() => {
+        if (skillRecording) {
+            // Immediately update UI state (don't wait for backend event)
+            setSkillRecording(false);
+            // Stop recording → show result card
+            (window as any).go?.main?.App?.StopSkillRecording?.().then((data: any) => {
+                if (data && !data.error) {
+                    // Has recorded operations → show save card
+                    pendingSkillRecDataRef.current = data;
+                    setSkillRecordingCard({
+                        id: `skill-rec-card-${Date.now()}`,
+                        type: "skill_recording_done",
+                        title: lang === "en"
+                            ? `🎬 Recording complete! ${data.count} operations captured.`
+                            : `🎬 录制完成！共记录 ${data.count} 个操作步骤。`,
+                        description: lang === "en"
+                            ? "Save as a self-learned Skill?"
+                            : "是否保存为自学习 Skill？",
+                        fields: [
+                            { key: "name", label: lang === "en" ? "Skill Name" : "Skill 名称", type: "text", defaultValue: data.suggested_name || "", placeholder: "my-skill" },
+                            { key: "description", label: lang === "en" ? "Description" : "描述", type: "text", defaultValue: data.suggested_description || "" },
+                        ],
+                        actions: [
+                            { key: "save", label: lang === "en" ? "Save as Skill" : "保存为 Skill", style: "primary" },
+                            { key: "cancel", label: lang === "en" ? "Discard" : "放弃", style: "default" },
+                        ],
+                        metadata: { summary: data.summary || [], security_warnings: data.security_warnings || [] },
+                    });
+                } else {
+                    // No operations recorded → show info card (no fields, just dismiss button)
+                    setSkillRecordingCard({
+                        id: `skill-rec-empty-${Date.now()}`,
+                        type: "skill_recording_empty",
+                        title: lang === "en"
+                            ? "⚠️ Recording stopped — no operations captured."
+                            : "⚠️ 录制已停止 — 没有记录到可用操作。",
+                        description: lang === "en"
+                            ? "Only the following operations are recorded as Skill steps:\n• Commands (bash)\n• File writes (write_file)\n• File edits (edit_file)\n\nSearch, read, screenshot and other query operations are not included.\nTry again after letting the AI execute some commands or write files."
+                            : "只有以下操作会被记录为 Skill 步骤：\n• 命令执行（bash）\n• 文件写入（write_file）\n• 文件编辑（edit_file）\n\n搜索、读取、截图等查询操作不会被录制。\n请让 AI 执行一些命令或写入文件后再试。",
+                        fields: [],
+                        actions: [
+                            { key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" },
+                        ],
+                        metadata: {},
+                    });
+                }
+            }).catch(() => {
+                // On failure, revert UI state
+                setSkillRecording(true);
+            });
+        } else {
+            // Start recording
+            (window as any).go?.main?.App?.StartSkillRecording?.().then((result: string) => {
+                if (result === "ok") {
+                    setSkillRecording(true);
+                    setSkillRecordingCount(0);
+                    setSkillRecordingCard(null);
+                    skillRecResolvedRef.current = false;
+                    // Show recording started as a non-interactive info card
+                    setSkillRecordingCard({
+                        id: `skill-rec-start-${Date.now()}`,
+                        type: "skill_recording_started",
+                        title: lang === "en" ? "🔴 Skill Recording Started" : "🔴 Skill 录制已开始",
+                        description: lang === "en"
+                            ? "All commands, file writes, and edits will be recorded. Click REC again to stop.\n\n💡 Just tell the AI what to do as usual — recording runs silently."
+                            : "所有命令执行、文件写入、文件编辑将被记录。再次点击录制按钮停止。\n\n💡 像平时一样让 AI 工作即可，录制在后台静默进行。",
+                        fields: [],
+                        actions: [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
+                        metadata: {},
+                    });
+                }
+            }).catch(() => { /* ignore */ });
+        }
+    }, [skillRecording, lang]);
+    // Handle inline card resolve for skill recording
+    const handleResolveSkillRecordingCard = useCallback((action: string, values: Record<string, string>) => {
+        // For empty/info cards (no pending data), just dismiss
+        const data = pendingSkillRecDataRef.current;
+        if (!data) {
+            // No pending recording data — this is the "empty recording" info card
+            // Just mark it resolved, no backend call needed
+            return;
+        }
+        // Prevent double-submit
+        if (skillRecResolvedRef.current) return;
+        skillRecResolvedRef.current = true;
+        pendingSkillRecDataRef.current = null;
+
+        if (action === "cancel") {
+            (window as any).go?.main?.App?.ResolveSkillRecording?.("cancel", "", "");
+        } else {
+            // action === "save"
+            const name = (values.name || "").trim() || data.suggested_name || "my-skill";
+            const desc = (values.description || "").trim() || data.suggested_description || "";
+            (window as any).go?.main?.App?.ResolveSkillRecording?.("save", name, desc).catch(() => { /* ignore */ });
+        }
     }, []);
     const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, closeTab, clearTabConversation, saveTabState, getTabState, getLastActiveAt, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
     const [renameGroupTargetTabId, setRenameGroupTargetTabId] = useState<string | null>(null);
@@ -153,6 +277,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const clearActiveHistory = useCallback(async () => {
         // Close all right-side preview panels (workflow doc, code preview, agent view)
         closeAllPreviewPanelsRef.current?.();
+        // Clear any pending skill recording card
+        setSkillRecordingCard(null);
         if (activeTab.type === "project") {
             clearTabConversation(activeTab.id);
             setProjectTabMessages([]);
@@ -1354,7 +1480,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     return (
         <div data-testid="ai-panel-root" style={containerStyle}>
             {inline && <AssistantDragHandle />}
-            <AssistantTitleBar clearHistory={clearActiveHistory} codingAgentProgress={codingAgentProgress} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
+            <AssistantTitleBar clearHistory={clearActiveHistory} codingAgentProgress={codingAgentProgress} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecording} skillRecordingCount={skillRecordingCount} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
             <div data-testid="ai-panel-content-row" style={{ display: "flex", flexDirection: "row", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
             <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }}>
             <KnowledgeDialog open={knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
@@ -1433,6 +1559,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         <div style={{ width: "38%", height: "100%", borderRadius: "inherit", background: t.headingColor, animation: "sidebar-task-restore-progress 0.9s ease-in-out infinite alternate" }} />
                     </div>
                 </div>}
+                {!showWelcomeView && skillRecordingCard && <InlineChatCard card={skillRecordingCard} onResolve={(cardId, action, values) => { const resolvedCardId = cardId; setSkillRecordingCard((prev: any) => prev ? { ...prev, resolved: true, resolvedAction: action, resolvedValues: values } : null); handleResolveSkillRecordingCard(action, values); setTimeout(() => setSkillRecordingCard((prev: any) => prev && prev.id === resolvedCardId ? null : prev), 2000); }} theme={{ cardBg: t.fieldBg, cardBorder: t.titleBarBorder, textColor: t.text, mutedColor: t.promptColor, accentColor: "#4f7f6f", inputBg: t.fieldBg, inputBorder: t.titleBarBorder, buttonBg: "#4f7f6f", buttonText: "#fff", dangerColor: "#dc2626" }} lang={lang} />}
                 {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={isBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
             </>}
             <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} />

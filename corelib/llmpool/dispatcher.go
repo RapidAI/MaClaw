@@ -10,6 +10,7 @@ import (
 type DispatchModel struct {
 	Name                      string
 	ProviderIDs               []string
+	ProviderRoutes            []DispatchProviderRoute
 	CapabilityTags            []string
 	Priority                  int
 	ResolutionTier            int
@@ -20,30 +21,50 @@ type DispatchModel struct {
 	ProviderCreditMultipliers map[string]float64
 }
 
+type DispatchProviderRoute struct {
+	ProviderID       string
+	Model            string
+	CapabilityTags   []string
+	Priority         int
+	ResolutionTier   int
+	CreditMultiplier float64
+	OriginalIndex    int
+}
+
 // OrderProviders selects and sorts providers for a given request body,
 // scoring by capability match, resolution tier, credit cost, and priority.
 // This is the shared dispatcher logic used by both Hub and HubCenter.
 func OrderProviders(body map[string]any, model *DispatchModel) []string {
-	if model == nil || len(model.ProviderIDs) == 0 {
+	routes := OrderProviderRoutes(body, model)
+	if len(routes) == 0 {
+		return nil
+	}
+	ordered := make([]string, 0, len(routes))
+	for _, route := range routes {
+		ordered = append(ordered, route.ProviderID)
+	}
+	return ordered
+}
+
+func OrderProviderRoutes(body map[string]any, model *DispatchModel) []DispatchProviderRoute {
+	routes := dispatchRoutes(model)
+	if len(routes) == 0 {
 		return nil
 	}
 
 	type scoredProvider struct {
-		providerID       string
-		originalIndex    int
-		score            int
-		resolutionTier   int
-		priority         int
-		creditMultiplier float64
+		route          DispatchProviderRoute
+		score          int
+		resolutionTier int
 	}
 
 	capabilityNeeds := DetectCapabilityNeeds(body)
-	scored := make([]scoredProvider, 0, len(model.ProviderIDs))
+	scored := make([]scoredProvider, 0, len(routes))
 
-	for idx, providerID := range model.ProviderIDs {
+	for _, route := range routes {
 		score := 0
 		tags := map[string]struct{}{}
-		for _, tag := range capabilityTagsForProvider(model, providerID) {
+		for _, tag := range routeCapabilityTags(model, route) {
 			tag = strings.ToLower(strings.TrimSpace(tag))
 			if tag == "" {
 				continue
@@ -55,16 +76,13 @@ func OrderProviders(body map[string]any, model *DispatchModel) []string {
 				score += weight * 100
 			}
 		}
-		priority := priorityForProvider(model, providerID)
+		priority := routePriority(model, route)
 		score += priority
 
 		scored = append(scored, scoredProvider{
-			providerID:       providerID,
-			originalIndex:    idx,
-			score:            score,
-			resolutionTier:   normalizedResolutionTier(resolutionTierForProvider(model, providerID)),
-			priority:         priority,
-			creditMultiplier: normalizeCreditMultiplier(creditMultiplierForProvider(model, providerID)),
+			route:          normalizeDispatchRoute(model, route),
+			score:          score,
+			resolutionTier: normalizedResolutionTier(routeResolutionTier(model, route)),
 		})
 	}
 
@@ -75,18 +93,18 @@ func OrderProviders(body map[string]any, model *DispatchModel) []string {
 		if scored[i].resolutionTier != scored[j].resolutionTier {
 			return scored[i].resolutionTier < scored[j].resolutionTier
 		}
-		if scored[i].creditMultiplier != scored[j].creditMultiplier {
-			return scored[i].creditMultiplier < scored[j].creditMultiplier
+		if scored[i].route.CreditMultiplier != scored[j].route.CreditMultiplier {
+			return scored[i].route.CreditMultiplier < scored[j].route.CreditMultiplier
 		}
-		if scored[i].priority != scored[j].priority {
-			return scored[i].priority > scored[j].priority
+		if scored[i].route.Priority != scored[j].route.Priority {
+			return scored[i].route.Priority > scored[j].route.Priority
 		}
-		return scored[i].originalIndex < scored[j].originalIndex
+		return scored[i].route.OriginalIndex < scored[j].route.OriginalIndex
 	})
 
-	ordered := make([]string, 0, len(scored))
+	ordered := make([]DispatchProviderRoute, 0, len(scored))
 	for _, item := range scored {
-		ordered = append(ordered, item.providerID)
+		ordered = append(ordered, item.route)
 	}
 	return ordered
 }
@@ -131,6 +149,85 @@ func capabilityTagsForProvider(model *DispatchModel, providerID string) []string
 		}
 	}
 	return model.CapabilityTags
+}
+
+func dispatchRoutes(model *DispatchModel) []DispatchProviderRoute {
+	if model == nil {
+		return nil
+	}
+	if len(model.ProviderRoutes) > 0 {
+		routes := make([]DispatchProviderRoute, 0, len(model.ProviderRoutes))
+		for idx, route := range model.ProviderRoutes {
+			if strings.TrimSpace(route.ProviderID) == "" {
+				continue
+			}
+			if route.OriginalIndex == 0 && idx != 0 {
+				route.OriginalIndex = idx
+			}
+			routes = append(routes, route)
+		}
+		return routes
+	}
+	routes := make([]DispatchProviderRoute, 0, len(model.ProviderIDs))
+	for idx, providerID := range model.ProviderIDs {
+		providerID = strings.TrimSpace(providerID)
+		if providerID == "" {
+			continue
+		}
+		routes = append(routes, DispatchProviderRoute{ProviderID: providerID, OriginalIndex: idx})
+	}
+	return routes
+}
+
+func normalizeDispatchRoute(model *DispatchModel, route DispatchProviderRoute) DispatchProviderRoute {
+	route.CapabilityTags = routeCapabilityTags(model, route)
+	route.Priority = routePriority(model, route)
+	route.ResolutionTier = normalizedResolutionTier(routeResolutionTier(model, route))
+	route.CreditMultiplier = normalizeCreditMultiplier(routeCreditMultiplier(model, route))
+	return route
+}
+
+func routeCapabilityTags(model *DispatchModel, route DispatchProviderRoute) []string {
+	if len(route.CapabilityTags) > 0 {
+		return route.CapabilityTags
+	}
+	if len(model.ProviderRoutes) > 0 {
+		return model.CapabilityTags
+	}
+	return capabilityTagsForProvider(model, route.ProviderID)
+}
+
+func routePriority(model *DispatchModel, route DispatchProviderRoute) int {
+	if len(model.ProviderRoutes) > 0 {
+		return route.Priority
+	}
+	if route.Priority != 0 {
+		return route.Priority
+	}
+	return priorityForProvider(model, route.ProviderID)
+}
+
+func routeResolutionTier(model *DispatchModel, route DispatchProviderRoute) int {
+	if len(model.ProviderRoutes) > 0 {
+		return route.ResolutionTier
+	}
+	if route.ResolutionTier != 0 {
+		return route.ResolutionTier
+	}
+	return resolutionTierForProvider(model, route.ProviderID)
+}
+
+func routeCreditMultiplier(model *DispatchModel, route DispatchProviderRoute) float64 {
+	if len(model.ProviderRoutes) > 0 {
+		if route.CreditMultiplier > 0 {
+			return route.CreditMultiplier
+		}
+		return model.CreditMultiplier
+	}
+	if route.CreditMultiplier > 0 {
+		return route.CreditMultiplier
+	}
+	return creditMultiplierForProvider(model, route.ProviderID)
 }
 
 func priorityForProvider(model *DispatchModel, providerID string) int {

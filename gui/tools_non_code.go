@@ -1,12 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -144,14 +151,14 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 	// --- File search tool ---
 	registry.Register(RegisteredTool{
 		Name:        "search_files",
-		Description: "在项目中搜索文件内容（支持正则表达式）",
+		Description: "搜索项目目录中的文件内容（纯 Go 实现，支持正则表达式）。自动跳过二进制文件、.git、node_modules 等目录。限制：最多返回 50 条匹配，单次搜索超时 60 秒。",
 		Category:    ToolCategoryNonCode,
 		Tags:        []string{"file", "search", "grep"},
 		Status:      RegToolAvailable,
 		InputSchema: map[string]interface{}{
-			"project_path": map[string]string{"type": "string", "description": "项目路径"},
-			"pattern":      map[string]string{"type": "string", "description": "搜索模式（支持正则）"},
-			"file_pattern": map[string]string{"type": "string", "description": "文件名过滤（如 *.go, *.py）"},
+			"project_path": map[string]string{"type": "string", "description": "要搜索的目录路径。必须是具体的项目目录（如 D:\\myproject），不要传用户家目录或磁盘根目录。留空则使用当前工作目录。"},
+			"pattern":      map[string]string{"type": "string", "description": "搜索模式，支持 Go 正则表达式语法。如果正则无效则按字面子串匹配。"},
+			"file_pattern": map[string]string{"type": "string", "description": "文件名过滤 glob（如 *.go, *.py, *.md）。留空搜索所有文本文件。"},
 		},
 		Required: []string{"pattern"},
 		Source:   "non_code",
@@ -234,64 +241,231 @@ func runGitCmd(dir string, args ...string) (string, error) {
 }
 
 // searchFilesInProject searches for a pattern in project files.
+// searchMatch is a single grep result (file + line + content).
+type searchMatch struct {
+	Path string
+	Line int
+	Text string
+}
+
 func searchFilesInProject(projectPath, pattern, filePattern string) string {
 	if projectPath == "" {
 		return "未指定项目路径"
 	}
 
-	// Try ripgrep first, fall back to simple search.
-	args := []string{"-n", "--max-count=50", pattern}
-	if filePattern != "" {
-		args = append(args, "-g", filePattern)
-	}
-	args = append(args, projectPath)
-
-	cmd := exec.Command("rg", args...)
-	hideCommandWindow(cmd)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		result := string(out)
-		if len(result) > 5000 {
-			result = result[:5000] + "\n...(结果已截断)"
-		}
-		return result
+	// Quick sanity check: reject overly broad paths that would waste time.
+	// Common mistake: LLM passes user home dir or drive root as project_path.
+	if isOverlyBroadSearchPath(projectPath) {
+		return fmt.Sprintf("project_path=%q 范围过大（用户家目录或磁盘根目录）。请指定具体的项目目录，如 %s 下的某个子文件夹。", projectPath, projectPath)
 	}
 
-	// Fallback: simple file walk with strings.Contains.
-	var results []string
-	count := 0
-	_ = filepath.Walk(projectPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
-		}
-		if count >= 50 {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		// Pattern is not valid regex — fall back to literal substring match.
+		re = nil
+	}
+
+	var (
+		results []searchMatch
+		mu      sync.Mutex
+		wg      sync.WaitGroup
+		sem     = make(chan struct{}, runtime.NumCPU()) // concurrency limiter
+		count   atomic.Int32
+	)
+
+	const (
+		maxResults  = 50
+		maxFileSize = 1 << 20 // 1 MB
+		maxLineLen  = 500
+	)
+
+	done := func() bool {
+		return count.Load() >= maxResults
+	}
+
+	_ = filepath.WalkDir(projectPath, func(path string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil || done() {
 			return filepath.SkipAll
 		}
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if name == ".git" || name == "node_modules" || name == ".gocache" ||
+				name == "__pycache__" || name == ".venv" || name == "vendor" ||
+				name == ".maclaw" || name == ".claude" || name == ".aicoder" ||
+				name == "dist" || name == "build" || name == ".next" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// File pattern filter
 		if filePattern != "" {
-			matched, _ := filepath.Match(filePattern, info.Name())
+			matched, _ := filepath.Match(filePattern, d.Name())
 			if !matched {
 				return nil
 			}
 		}
-		if info.Size() > 1024*1024 { // skip files > 1MB
+		// Skip large files
+		info, err := d.Info()
+		if err != nil || info.Size() > maxFileSize || info.Size() == 0 {
 			return nil
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
+		// Skip likely binary extensions
+		if isBinaryExtension(d.Name()) {
 			return nil
 		}
-		if strings.Contains(string(data), pattern) {
-			rel, _ := filepath.Rel(projectPath, path)
-			results = append(results, rel)
-			count++
+
+		wg.Add(1)
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Done()
+			return filepath.SkipAll
 		}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			if ctx.Err() != nil || done() {
+				return
+			}
+
+			f, err := os.Open(path)
+			if err != nil {
+				return
+			}
+			defer f.Close()
+
+			scanner := bufio.NewScanner(f)
+			scanner.Buffer(make([]byte, 64*1024), 256*1024)
+			lineNum := 0
+			for scanner.Scan() {
+				if ctx.Err() != nil || done() {
+					return
+				}
+				lineNum++
+				line := scanner.Text()
+				matched := false
+				if re != nil {
+					matched = re.MatchString(line)
+				} else {
+					matched = strings.Contains(line, pattern)
+				}
+				if matched {
+					rel, _ := filepath.Rel(projectPath, path)
+					if rel == "" {
+						rel = path
+					}
+					text := line
+					if len(text) > maxLineLen {
+						text = text[:maxLineLen] + "..."
+					}
+					mu.Lock()
+					if len(results) < maxResults {
+						results = append(results, searchMatch{Path: rel, Line: lineNum, Text: text})
+						count.Add(1)
+					}
+					mu.Unlock()
+					if count.Load() >= maxResults {
+						return
+					}
+					// Continue scanning for more matches in same file (up to global limit)
+				}
+			}
+		}()
 		return nil
 	})
+
+	wg.Wait()
+
+	if ctx.Err() == context.DeadlineExceeded {
+		log.Printf("[search_files] timed out (60s) path=%s pattern=%q found=%d", projectPath, pattern, len(results))
+		if len(results) > 0 {
+			return formatSearchResults(results, true)
+		}
+		return "搜索超时（60秒），目录可能过大。请缩小搜索范围或指定更具体的 project_path。"
+	}
 
 	if len(results) == 0 {
 		return "未找到匹配结果"
 	}
-	return fmt.Sprintf("找到 %d 个匹配文件:\n%s", len(results), strings.Join(results, "\n"))
+	return formatSearchResults(results, false)
+}
+
+func formatSearchResults(results []searchMatch, truncated bool) string {
+	var sb strings.Builder
+	suffix := ""
+	if truncated {
+		suffix = "（搜索超时，结果可能不完整）"
+	}
+	sb.WriteString(fmt.Sprintf("找到 %d 个匹配%s:\n", len(results), suffix))
+	for _, m := range results {
+		line := fmt.Sprintf("%s:%d: %s\n", m.Path, m.Line, m.Text)
+		if sb.Len()+len(line) > 5000 {
+			sb.WriteString("...(结果已截断)\n")
+			break
+		}
+		sb.WriteString(line)
+	}
+	return sb.String()
+}
+
+// isOverlyBroadSearchPath returns true if the path is a drive root, user home
+// directory, or other location known to contain hundreds of thousands of files.
+// Searching these wastes time and produces irrelevant results.
+func isOverlyBroadSearchPath(path string) bool {
+	clean := filepath.Clean(path)
+
+	// Unix root (or Windows path separator root)
+	if clean == "/" || clean == "\\" || clean == "//" {
+		return true
+	}
+
+	// Drive root: C:\, D:\ (Windows)
+	vol := filepath.VolumeName(clean)
+	if vol != "" && (clean == vol+string(filepath.Separator) || clean == vol) {
+		return true
+	}
+
+	// User home directory (Windows: C:\Users\xxx, Unix: /home/xxx or /Users/xxx)
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if strings.EqualFold(filepath.Clean(home), clean) {
+			return true
+		}
+	}
+
+	// Windows: C:\Users itself (parent of all user profiles)
+	if vol != "" {
+		usersDir := filepath.Clean(vol + `\Users`)
+		if strings.EqualFold(usersDir, clean) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isBinaryExtension returns true for file extensions that are almost certainly binary.
+func isBinaryExtension(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".exe", ".dll", ".so", ".dylib", ".bin", ".obj", ".o", ".a", ".lib",
+		".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp", ".tif", ".tiff",
+		".mp3", ".mp4", ".avi", ".mov", ".mkv", ".flac", ".wav", ".ogg", ".webm",
+		".zip", ".gz", ".tar", ".rar", ".7z", ".bz2", ".xz", ".zst",
+		".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+		".woff", ".woff2", ".ttf", ".otf", ".eot",
+		".pyc", ".pyo", ".class", ".jar", ".war",
+		".db", ".sqlite", ".sqlite3", ".ldb",
+		".pack", ".idx":
+		return true
+	}
+	return false
 }
 
 // checkProjectHealth checks if a project can build/compile.

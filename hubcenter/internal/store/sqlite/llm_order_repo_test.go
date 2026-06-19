@@ -123,6 +123,129 @@ func TestLLMOrderRepoListFiltersMultipleStatuses(t *testing.T) {
 	}
 }
 
+func TestLLMOrderRepoUpdatePersistsArchivedAt(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-orders-update-archive.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+
+	ctx := context.Background()
+	repo := NewLLMOrderRepo(provider)
+	now := time.Now().UTC().Truncate(time.Second)
+	order := &cardstore.PurchaseOrder{
+		Order: corecardstore.Order{
+			OrderNo:   "HC-UPDATE-ARCHIVE",
+			ProductID: "ct1",
+			Email:     "owner@example.com",
+			Amount:    10,
+			Status:    corecardstore.StatusPending,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		HubID: "hub-1", TenantID: "tenant-a", CardTypeID: "ct1", ServiceGroupID: "group-1", Credits: 100, Period: "month",
+	}
+	if err := repo.Create(ctx, order); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	archivedAt := now.Add(time.Minute).Format(time.RFC3339)
+	order.ArchivedAt = archivedAt
+	order.UpdatedAt = now.Add(time.Minute)
+	if err := repo.Update(ctx, order); err != nil {
+		t.Fatalf("Update(archive) error = %v", err)
+	}
+	got, err := repo.GetByOrderNo(ctx, order.OrderNo)
+	if err != nil {
+		t.Fatalf("GetByOrderNo(archive) error = %v", err)
+	}
+	if got.ArchivedAt != archivedAt {
+		t.Fatalf("ArchivedAt after archive = %q, want %q", got.ArchivedAt, archivedAt)
+	}
+
+	order.ArchivedAt = ""
+	order.UpdatedAt = now.Add(2 * time.Minute)
+	if err := repo.Update(ctx, order); err != nil {
+		t.Fatalf("Update(unarchive) error = %v", err)
+	}
+	got, err = repo.GetByOrderNo(ctx, order.OrderNo)
+	if err != nil {
+		t.Fatalf("GetByOrderNo(unarchive) error = %v", err)
+	}
+	if got.ArchivedAt != "" {
+		t.Fatalf("ArchivedAt after unarchive = %q, want empty", got.ArchivedAt)
+	}
+}
+
+func TestLLMOrderRepoUpdatePersistsOrderSnapshotFields(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-orders-update-snapshot.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+
+	ctx := context.Background()
+	repo := NewLLMOrderRepo(provider)
+	now := time.Now().UTC().Truncate(time.Second)
+	order := &cardstore.PurchaseOrder{
+		Order: corecardstore.Order{
+			OrderNo:   "HC-UPDATE-SNAPSHOT",
+			ProductID: "ct-old",
+			Email:     "old@example.com",
+			Amount:    10,
+			Status:    corecardstore.StatusPending,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		HubID: "hub-old", TenantID: "tenant-old", CardTypeID: "ct-old", ServiceGroupID: "group-old", AgentID: "agent-old", AgentName: "Agent Old", Credits: 100, Period: "month",
+	}
+	if err := repo.Create(ctx, order); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	order.Email = "new@example.com"
+	order.HubID = "hub-new"
+	order.TenantID = "tenant-new"
+	order.CardTypeID = "ct-new"
+	order.ServiceGroupID = "group-new"
+	order.AgentID = "agent-new"
+	order.AgentName = "Agent New"
+	order.Credits = 200
+	order.Period = "year"
+	order.Amount = 25000
+	order.CreatedAt = now.Add(-time.Hour)
+	order.UpdatedAt = now.Add(time.Hour)
+	if err := repo.Update(ctx, order); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	got, err := repo.GetByOrderNo(ctx, order.OrderNo)
+	if err != nil {
+		t.Fatalf("GetByOrderNo() error = %v", err)
+	}
+	if got.Email != order.Email || got.HubID != order.HubID || got.TenantID != order.TenantID || got.CardTypeID != order.CardTypeID || got.ServiceGroupID != order.ServiceGroupID {
+		t.Fatalf("snapshot identity fields = email:%q hub:%q tenant:%q card:%q group:%q", got.Email, got.HubID, got.TenantID, got.CardTypeID, got.ServiceGroupID)
+	}
+	if got.AgentID != order.AgentID || got.AgentName != order.AgentName || got.Credits != order.Credits || got.Period != order.Period || got.Amount != order.Amount {
+		t.Fatalf("snapshot value fields = agent:%q/%q credits:%v period:%q amount:%v", got.AgentID, got.AgentName, got.Credits, got.Period, got.Amount)
+	}
+	if !got.CreatedAt.Equal(order.CreatedAt) {
+		t.Fatalf("CreatedAt = %v, want %v", got.CreatedAt, order.CreatedAt)
+	}
+}
+
 func TestLLMOrderRepoListTreatsDefaultTenantAliasesAsSameScope(t *testing.T) {
 	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-orders-default-tenant.db"), WAL: false})
 	if err != nil {

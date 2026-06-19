@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -26,9 +27,10 @@ type llmUsageReportsStore struct {
 }
 
 type llmUsageReportDay struct {
-	Totals llmUsageCounters                `json:"totals"`
-	Users  map[string]*llmUsageReportEntry `json:"users,omitempty"`
-	Groups map[string]*llmUsageReportEntry `json:"groups,omitempty"`
+	Totals    llmUsageCounters                `json:"totals"`
+	Users     map[string]*llmUsageReportEntry `json:"users,omitempty"`
+	Groups    map[string]*llmUsageReportEntry `json:"groups,omitempty"`
+	Providers map[string]*llmUsageReportEntry `json:"providers,omitempty"`
 }
 
 type llmUsageReportEntry struct {
@@ -124,6 +126,19 @@ func (d *llmUsageReportDay) ensureGroup(groupID string) *llmUsageReportEntry {
 	return entry
 }
 
+func (d *llmUsageReportDay) ensureProvider(providerID string) *llmUsageReportEntry {
+	if d.Providers == nil {
+		d.Providers = map[string]*llmUsageReportEntry{}
+	}
+	entry := d.Providers[providerID]
+	if entry == nil {
+		entry = &llmUsageReportEntry{}
+		d.Providers[providerID] = entry
+	}
+	ensureHourlyCounters(entry)
+	return entry
+}
+
 func ensureHourlyCounters(entry *llmUsageReportEntry) {
 	if entry == nil {
 		return
@@ -180,7 +195,7 @@ func cloneUsageCountersSlice(items []llmUsageCounters) []llmUsageCounters {
 	return out
 }
 
-func (s *llmUsageReportsStore) addUsage(ts time.Time, email string, userGroupIDs []string, usage corelib.TokenUsageStat, credits float64) {
+func (s *llmUsageReportsStore) addUsage(ts time.Time, email string, userGroupIDs []string, usage corelib.TokenUsageStat, credits float64, providerIDs ...string) {
 	if s == nil {
 		return
 	}
@@ -196,6 +211,15 @@ func (s *llmUsageReportsStore) addUsage(ts time.Time, email string, userGroupIDs
 	}
 	for _, groupID := range normalizeUsageStringSlice(userGroupIDs) {
 		entry := day.ensureGroup(groupID)
+		addUsageCounters(&entry.Totals, usage, credits)
+		addUsageCounters(&entry.Hours[hour], usage, credits)
+	}
+	providerID := ""
+	if len(providerIDs) > 0 {
+		providerID = strings.TrimSpace(providerIDs[0])
+	}
+	if providerID != "" {
+		entry := day.ensureProvider(providerID)
 		addUsageCounters(&entry.Totals, usage, credits)
 		addUsageCounters(&entry.Hours[hour], usage, credits)
 	}
@@ -226,6 +250,16 @@ func mergeLLMUsageReports(dst *llmUsageReportsStore, src *llmUsageReportsStore) 
 				continue
 			}
 			dstEntry := dstDay.ensureGroup(groupID)
+			addUsageCountersFromTotals(&dstEntry.Totals, srcEntry.Totals)
+			for i := 0; i < len(srcEntry.Hours) && i < 24; i++ {
+				addUsageCountersFromTotals(&dstEntry.Hours[i], srcEntry.Hours[i])
+			}
+		}
+		for providerID, srcEntry := range srcDay.Providers {
+			if srcEntry == nil {
+				continue
+			}
+			dstEntry := dstDay.ensureProvider(providerID)
 			addUsageCountersFromTotals(&dstEntry.Totals, srcEntry.Totals)
 			for i := 0; i < len(srcEntry.Hours) && i < 24; i++ {
 				addUsageCountersFromTotals(&dstEntry.Hours[i], srcEntry.Hours[i])
@@ -367,9 +401,35 @@ func listAvailableGroups(ctx context.Context, securitySvc *security.SecurityServ
 	return items
 }
 
+func providerNameMap(ctx context.Context, system store.SystemSettingsRepository) map[string]string {
+	out := map[string]string{}
+	if system == nil {
+		return out
+	}
+	reg, err := im.LoadLLMProviderRegistry(ctx, system)
+	if err != nil || reg == nil {
+		return out
+	}
+	for _, provider := range reg.Providers {
+		id := strings.TrimSpace(provider.ID)
+		if id == "" {
+			continue
+		}
+		name := strings.TrimSpace(provider.Name)
+		if name == "" {
+			name = id
+		}
+		out[id] = name
+	}
+	return out
+}
+
 func normalizeUsageScope(v string) string {
-	if strings.EqualFold(strings.TrimSpace(v), "group") {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "group":
 		return "group"
+	case "provider", "llm_provider", "llm-provider":
+		return "provider"
 	}
 	return "user"
 }
@@ -403,7 +463,7 @@ func parseUsageMonth(v string, now time.Time) string {
 	return v
 }
 
-func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore, securitySvc *security.SecurityService, scope, period, dayKey, monthKey, entity string, now time.Time) llmUsageReportResponse {
+func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore, securitySvc *security.SecurityService, scope, period, dayKey, monthKey, entity string, now time.Time, providerNameMaps ...map[string]string) llmUsageReportResponse {
 	resp := llmUsageReportResponse{
 		Scope:           scope,
 		Period:          period,
@@ -414,6 +474,10 @@ func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore,
 		GeneratedAt:     now,
 	}
 	groupNames := groupNameMap(ctx, securitySvc)
+	providerNames := map[string]string{}
+	if len(providerNameMaps) > 0 && providerNameMaps[0] != nil {
+		providerNames = providerNameMaps[0]
+	}
 	entityOptions := map[string]string{}
 	if rep == nil {
 		return resp
@@ -425,6 +489,10 @@ func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore,
 		name := id
 		if scope == "group" {
 			if display := groupNames[id]; display != "" {
+				name = display
+			}
+		} else if scope == "provider" {
+			if display := providerNames[id]; display != "" {
 				name = display
 			}
 		}
@@ -459,19 +527,38 @@ func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore,
 					resp.Trend = cloneUsageCountersSlice(entry.Hours)
 					addRow(entity, entry.Totals, entry.Hours)
 				}
+			} else if scope == "provider" {
+				if entry := day.Providers[entity]; entry != nil {
+					resp.Summary = entry.Totals
+					resp.Trend = cloneUsageCountersSlice(entry.Hours)
+					addRow(entity, entry.Totals, entry.Hours)
+				}
 			} else if entry := day.Users[strings.ToLower(entity)]; entry != nil {
 				resp.Summary = entry.Totals
 				resp.Trend = cloneUsageCountersSlice(entry.Hours)
 				addRow(strings.ToLower(entity), entry.Totals, entry.Hours)
 			}
 		} else {
-			resp.Summary = day.Totals
+			if scope != "provider" {
+				resp.Summary = day.Totals
+			}
 			resp.Trend = make([]llmUsageCounters, 24)
 			if scope == "group" {
 				for id, entry := range day.Groups {
 					if entry == nil {
 						continue
 					}
+					addRow(id, entry.Totals, entry.Hours)
+					for i := 0; i < len(entry.Hours) && i < 24; i++ {
+						addUsageCountersFromTotals(&resp.Trend[i], entry.Hours[i])
+					}
+				}
+			} else if scope == "provider" {
+				for id, entry := range day.Providers {
+					if entry == nil {
+						continue
+					}
+					addUsageCountersFromTotals(&resp.Summary, entry.Totals)
 					addRow(id, entry.Totals, entry.Hours)
 					for i := 0; i < len(entry.Hours) && i < 24; i++ {
 						addUsageCountersFromTotals(&resp.Trend[i], entry.Hours[i])
@@ -496,13 +583,25 @@ func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore,
 			if day == nil || !strings.HasPrefix(date, monthKey+"-") {
 				continue
 			}
-			if entity == "" {
+			if entity == "" && scope != "provider" {
 				addUsageCountersFromTotals(&resp.Summary, day.Totals)
 			}
 			if scope == "group" {
 				for id, entry := range day.Groups {
 					if entry == nil {
 						continue
+					}
+					curr := monthly[id]
+					addUsageCountersFromTotals(&curr, entry.Totals)
+					monthly[id] = curr
+				}
+			} else if scope == "provider" {
+				for id, entry := range day.Providers {
+					if entry == nil {
+						continue
+					}
+					if entity == "" {
+						addUsageCountersFromTotals(&resp.Summary, entry.Totals)
 					}
 					curr := monthly[id]
 					addUsageCountersFromTotals(&curr, entry.Totals)
@@ -563,7 +662,7 @@ func GetLLMUsageReportHandler(system store.SystemSettingsRepository, securitySvc
 		if scope == "user" {
 			entity = strings.ToLower(entity)
 		}
-		resp := buildLLMUsageReportResponse(r.Context(), rep, securitySvc, scope, period, dayKey, monthKey, entity, now)
+		resp := buildLLMUsageReportResponse(r.Context(), rep, securitySvc, scope, period, dayKey, monthKey, entity, now, providerNameMap(r.Context(), system))
 		writeJSON(w, http.StatusOK, resp)
 	}
 }

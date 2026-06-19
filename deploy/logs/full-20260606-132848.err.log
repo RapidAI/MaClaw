@@ -1,0 +1,14 @@
+Post-deploy smoke check failed:
+ - hubs.maclaw.top: hub card store public api expected 200, got 404 (https://hub.maclaw.top/api/card-store/products?ten
+ant_id=tenant_default)
+ - hubs.maclaw.top: hub card store admin api expected 401, got 404 (https://hub.maclaw.top/api/admin/card-store/config)
+ËùÔÚÎ»ÖÃ D:\workprj\aicoder\deploy\deploy_all_ha.ps1:1051 ×Ö·û: 9
++         throw ("Post-deploy smoke check failed:`n - " + ($failures -j ...
++         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (Post-deploy smo...d-store/config):String) [], RuntimeException
+    + FullyQualifiedErrorId : Post-deploy smoke check failed:
+     - hubs.maclaw.top: hub card store public api expected 200, got 404 (https://hub.maclaw.top/api/card-store/product 
+   s?tenant_id=tenant_default)
+     - hubs.maclaw.top: hub card store admin api expected 401, got 404 (https://hub.maclaw.top/api/admin/card-store/co 
+   nfig)
+ 

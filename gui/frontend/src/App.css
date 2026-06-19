@@ -905,6 +905,11 @@ body {
     50% { opacity: 0.5; }
 }
 
+@keyframes pulse-recording {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.85); }
+}
+
 .sidebar-system-status__provider-cart-icon {
     width: 12px;
     height: 12px;

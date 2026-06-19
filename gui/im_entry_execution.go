@@ -23,6 +23,7 @@ type preparedIMEntryExecutionOptions struct {
 	WorkflowAgentLoop         bool
 	WorkflowDocPhase          bool
 	WorkflowPhaseID           string
+	PhasePrompt               string // Synchronously passed from runWorkflowV2Phase
 	SkipNeedsConfirmGate      bool
 	AskUserContext            string
 	PendingUserReplyContext   string
@@ -81,7 +82,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	}
 
 	promptStart := time.Now()
-	systemPrompt := h.buildIMEntrySystemPrompt(msg, history, loopCtx, opts.WorkflowAgentLoop, opts.AskUserContext, opts.PendingUserReplyContext, opts.CapabilityGapContext)
+	systemPrompt := h.buildIMEntrySystemPrompt(msg, history, loopCtx, opts.WorkflowAgentLoop, opts.PhasePrompt, opts.AskUserContext, opts.PendingUserReplyContext, opts.CapabilityGapContext)
 	promptElapsed := time.Since(promptStart)
 
 	if resp, updatedHistory, handled := h.routeSubAgentExecution(msg, opts.HTTPClient, loopCtx, history, opts.OnProgress, opts.OnToken); handled {
