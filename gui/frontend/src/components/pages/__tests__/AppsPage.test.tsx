@@ -551,6 +551,7 @@ describe('AppsPage', () => {
             app_names: ['队列应用'],
             package_sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
             package_bytes: 1536,
+            dependencies: [{ id: 'queued-app-skill', required: true, installed: true }, { id: 'queued-workflow', kind: 'workflow_skill', required: true, installed: false }],
             event_count: 2,
             last_event_at: '2026-06-17T01:12:00Z',
             message: 'queued locally for enterprise market sync',
@@ -568,6 +569,7 @@ describe('AppsPage', () => {
         expect(screen.getByText(/队列应用/)).not.toBeNull();
         expect(screen.getByText(/sha256:0123456789ab/)).not.toBeNull();
         expect(screen.getByText(/1.5 KB/)).not.toBeNull();
+        expect(screen.getByText(/:2 .*:1/)).not.toBeNull();
         expect(screen.getByText(/事件:2 2026-06-17T01:12:00Z/)).not.toBeNull();
         expect(screen.getByText(/queued locally for enterprise market sync/)).not.toBeNull();
     });

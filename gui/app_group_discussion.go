@@ -1883,8 +1883,9 @@ func (a *App) GroupDiscussionSendHistoryMessage(consultationID string, msg a2a.G
 	if !isWritableHistoryDiscussionSummary(detail.Discussion) {
 		return fmt.Errorf("history discussion is read-only")
 	}
+	var localID string
 	if cfg, cfgErr := a.LoadConfig(); cfgErr == nil {
-		localID := groupDiscussionAgentID(cfg)
+		localID = groupDiscussionAgentID(cfg)
 		msg.ToIDs = normalizeGroupDiscussionHistoryTargetIDs(msg.ToIDs, localID, detail)
 		if len(msg.ToIDs) == 0 && !groupDiscussionHistoryUnresolvedMentionPattern.MatchString(msg.Content) && !groupDiscussionDetailHasDefaultReplyTarget(detail, localID) {
 			msg.ToIDs = groupDiscussionHistoryUnmentionedTargetIDs(detail, localID)
@@ -1892,7 +1893,39 @@ func (a *App) GroupDiscussionSendHistoryMessage(consultationID string, msg a2a.G
 	}
 	msg.FromID = ""
 	msg.SessionID = consultationID
+
+	// Route to local AI dispatcher if it is a participant in this discussion.
+	// History sessions lose the in-memory dispatcher registration on restart,
+	// so we auto-register and dispatch here (mirroring SendVEGroupMessage behavior).
+	if groupDiscussionHistoryHasLocalAIParticipant(detail) {
+		localMsg := msg
+		localMsg.FromID = localID
+		if !a.tryLocalExecutorDispatch(consultationID, localMsg) {
+			// Dispatcher not registered — auto-register and retry.
+			a.registerLocalGroupDispatcher(consultationID)
+			a.tryLocalExecutorDispatch(consultationID, localMsg)
+		}
+	}
+
 	return a.GroupDiscussionSendMessage(consultationID, msg)
+}
+
+// groupDiscussionHistoryHasLocalAIParticipant checks if the discussion includes
+// the local AI (local-maclaw) as a participant.
+func groupDiscussionHistoryHasLocalAIParticipant(detail a2a.HubDiscussionDetail) bool {
+	if detail.Session != nil {
+		for _, participant := range detail.Session.Participants {
+			if isGroupDiscussionHistoryLocalAIID(participant.ID) {
+				return true
+			}
+		}
+	}
+	for _, id := range detail.Discussion.ParticipantIDs {
+		if isGroupDiscussionHistoryLocalAIID(id) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeGroupDiscussionHistoryTargetIDs(toIDs []string, localID string, details ...a2a.HubDiscussionDetail) []string {
@@ -1991,9 +2024,12 @@ func groupDiscussionHistoryUnmentionedTargetIDs(detail a2a.HubDiscussionDetail, 
 	if detail.Session != nil {
 		for _, participant := range detail.Session.Participants {
 			id := strings.TrimSpace(participant.ID)
-			if id == "" || isGroupDiscussionHistoryLocalID(id, localID) || isGroupDiscussionHistoryLocalHumanParticipant(participant) || isGroupDiscussionHistoryLocalAIID(id) {
+			if id == "" || isGroupDiscussionHistoryLocalID(id, localID) || isGroupDiscussionHistoryLocalHumanParticipant(participant) {
 				continue
 			}
+			// NOTE: local AI (local-maclaw) is NOT excluded here. All non-human
+			// participants receive the message for visibility. The local AI
+			// dispatcher handles its own response decision independently.
 			role := strings.ToLower(strings.TrimSpace(participant.RoleCode))
 			switch role {
 			case "", "speak", "speaker", "participant", "review":
@@ -2007,7 +2043,7 @@ func groupDiscussionHistoryUnmentionedTargetIDs(detail a2a.HubDiscussionDetail, 
 		if canonical := canonicalGroupDiscussionHistoryTargetID(id, participantIDs); canonical != "" {
 			id = canonical
 		}
-		if id == "" || isGroupDiscussionHistoryLocalID(id, localID) || isGroupDiscussionHistoryLocalHumanID(id) || isGroupDiscussionHistoryLocalAIID(id) {
+		if id == "" || isGroupDiscussionHistoryLocalID(id, localID) || isGroupDiscussionHistoryLocalHumanID(id) {
 			continue
 		}
 		candidates = append(candidates, id)

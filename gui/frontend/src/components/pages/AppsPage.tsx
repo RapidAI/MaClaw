@@ -321,6 +321,7 @@ type AppPackageSubmissionSummary = {
     riskLevel: string;
     approvedScopes: string[];
     reviewIssues: AppReviewIssue[];
+    dependencies: BackendAppInstallDependency[];
     eventCount: number;
     lastEventAt: string;
     message: string;
@@ -1704,6 +1705,29 @@ function parseStringList(value: unknown): string[] {
     return Array.from(new Set(value.map((item) => String(item || '').trim()).filter(Boolean)));
 }
 
+function parseBackendAppInstallDependencies(value: unknown): BackendAppInstallDependency[] {
+    if (!Array.isArray(value)) return [];
+    return value.reduce<BackendAppInstallDependency[]>((items, item) => {
+        const dep = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+        const id = String(dep.id || dep.ID || '').trim();
+        if (!id) return items;
+        items.push({
+            id,
+            version: String(dep.version || dep.Version || '').trim() || undefined,
+            kind: String(dep.kind || dep.Kind || '').trim() || undefined,
+            required: dep.required === false || dep.Required === false ? false : true,
+            source: String(dep.source || dep.Source || '').trim() || undefined,
+            app_ids: parseStringList(dep.app_ids || dep.appIDs || dep.AppIDs),
+            installed: dep.installed === true || dep.Installed === true,
+            installed_name: String(dep.installed_name || dep.installedName || dep.InstalledName || '').trim() || undefined,
+            installed_dir: String(dep.installed_dir || dep.installedDir || dep.InstalledDir || '').trim() || undefined,
+            action: String(dep.action || dep.Action || '').trim() || undefined,
+            message: String(dep.message || dep.Message || '').trim() || undefined,
+        });
+        return items;
+    }, []);
+}
+
 function normalizeRiskLevel(value: unknown): string {
     const risk = String(value || '').trim();
     return ['low', 'medium', 'high', 'critical'].includes(risk) ? risk : '';
@@ -1789,6 +1813,7 @@ async function listMaclawAppPackageSubmissions(limit = 8): Promise<AppPackageSub
         riskLevel: normalizeRiskLevel(item?.risk_level || item?.riskLevel),
         approvedScopes: parseStringList(item?.approved_scopes || item?.approvedScopes),
         reviewIssues: parseReviewIssues(item?.review_issues || item?.reviewIssues),
+        dependencies: parseBackendAppInstallDependencies(item?.dependencies || item?.Dependencies),
         eventCount: Number(item?.event_count || item?.eventCount || 0) || 0,
         lastEventAt: String(item?.last_event_at || item?.lastEventAt || ''),
         message: String(item?.message || ''),
@@ -4782,6 +4807,8 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
                                 const detailPackageApps = packageAppNamesFromRecord(detailRecord);
                                 const detailEvents = eventSummariesFromRecord(detailRecord);
                                 const detailOpen = queueDetailOpenId === item.submissionID;
+                                const dependencyCount = item.dependencies.length;
+                                const missingDependencyCount = item.dependencies.filter((dep) => dep.required !== false && !dep.installed).length;
                                 return (
                                     <div className="apps-publish-queue__row" key={item.submissionID}>
                                         <div className="apps-publish-queue__body">
@@ -4791,6 +4818,7 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
                                                 {item.submittedAt}
                                                 {item.packageSHA ? ` · sha256:${item.packageSHA.slice(0, 12)}` : ''}
                                                 {item.packageBytes ? ` · ${formatPackageBytes(item.packageBytes)}` : ''}
+                                                {dependencyCount ? ` | ${text.skillDependencies}:${dependencyCount} ${text.missingDependencyCount}:${missingDependencyCount}` : ''}
                                                 {item.eventCount ? ` · ${text.eventHistory}:${item.eventCount}${item.lastEventAt ? ` ${item.lastEventAt}` : ''}` : ''}
                                                 {item.message ? ` · ${item.message}` : ''}
                                             </small>
@@ -5010,6 +5038,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
     };
     const managedApps = useMemo(() => apps.filter(matchesManageFilter), [apps, manageCategory, normalizedManageQuery, lang]);
     const filteredHiddenApps = useMemo(() => hiddenApps.filter(matchesManageFilter), [hiddenApps, manageCategory, normalizedManageQuery, lang]);
+    const editingApp = useMemo(() => apps.find((item) => item.id === editingAppId) || null, [apps, editingAppId]);
     const manageMatchCount = managedApps.length + filteredHiddenApps.length;
     const manageTotalCount = apps.length + hiddenApps.length;
     const manageFilterSummary = filterSummaryText({ query: manageQuery, category: manageCategory, count: manageMatchCount, lang, allLabel: text.all });
@@ -5040,6 +5069,9 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
         setEditingAppId('');
         setEditDraft(emptyEditDraft);
     };
+    useEffect(() => {
+        if (editingAppId && !editingApp) cancelEdit();
+    }, [editingAppId, editingApp]);
     const saveEdit = (app: AppEntry) => {
         const name = editDraft.name.trim();
         if (!name) return;
@@ -5131,14 +5163,60 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                             <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === 0} title={manageFilterActive ? text.clearFilterToSort : text.moveUp} onClick={() => onMoveApp(app.id, -1)}>Up</button>
                             <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === apps.length - 1} title={manageFilterActive ? text.clearFilterToSort : text.moveDown} onClick={() => onMoveApp(app.id, 1)}>Down</button>
                             <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === apps.length - 1} title={manageFilterActive ? text.clearFilterToSort : text.moveBottom} onClick={() => onMoveApp(app.id, "bottom")}>Bottom</button>
-                            <button className="apps-secondary-button" type="button" title={text.edit} onClick={() => editingAppId === app.id ? cancelEdit() : startEdit(app)}>{text.edit}</button>
+                            <button className="apps-secondary-button" type="button" title={text.edit} onClick={() => startEdit(app)}>{text.edit}</button>
                             <button className="apps-secondary-button" type="button" title={text.duplicate} onClick={() => onDuplicateApp(app.id)}>{text.copy}</button>
                             <button className="apps-secondary-button" type="button" title={text.manifest} onClick={() => setManifestAppId((current) => current === app.id ? '' : app.id)}>{text.manifest}</button>
                             <button className="apps-secondary-button" type="button" disabled={pinDisabled} title={pinTitle} onClick={() => onTogglePin(app.id)}>{app.pinned ? text.unpin : text.pin}</button>
                             <button className="apps-secondary-button" type="button" title={removalLabel} onClick={() => onRemoveApp(app.id)}>{removalLabel}</button>
                         </div>
                     </div>
-                    {editingAppId === app.id && (
+                    {manifestAppId === app.id && (
+                        <div className="apps-manage-manifest-wrap">
+                            <div className="apps-preview-title-row">
+                                <div className="apps-definition__title">{text.manifest}</div>
+                                <button className="apps-secondary-button" type="button" onClick={async () => {
+                                    await copyTextToClipboard(JSON.stringify(appToManifest(app), null, 2));
+                                    setCopiedManifestId(app.id);
+                                }}>{copiedManifestId === app.id ? text.copied : text.copy}</button>
+                            </div>
+                            <pre className="apps-manage-manifest">{JSON.stringify(appToManifest(app), null, 2)}</pre>
+                        </div>
+                    )}
+                </div>
+            );})}
+            {filteredHiddenApps.length > 0 && (
+                <section className="apps-hidden-section">
+                    <div className="apps-section__title-row">
+                        <h3 className="apps-section__title">{text.hiddenApps}</h3>
+                        <span className="apps-count">{filteredHiddenApps.length}/{hiddenApps.length}</span>
+                    </div>
+                    {filteredHiddenApps.map((app) => (
+                        <div key={app.id} className="apps-manage-row apps-manage-row--hidden">
+                            <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><Icon name={app.icon} /></span>
+                            <div>
+                                <div className="apps-manage-row__name">{app.name}</div>
+                                <div className="apps-manage-row__desc">{app.category} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</div>
+                            </div>
+                            <div className="apps-manage-actions">
+                                <button className="apps-secondary-button" type="button" title={text.restore} onClick={() => onRestoreApp(app.id)}>{text.restore}</button>
+                            </div>
+                        </div>
+                    ))}
+                </section>
+            )}
+            {editingApp && (
+                <div className="apps-manage-edit-dialog" role="dialog" aria-modal="true" aria-labelledby="apps-manage-edit-title" onKeyDown={(event) => {
+                    if (event.key === 'Escape') cancelEdit();
+                }}>
+                    <button className="apps-manage-edit-dialog__backdrop" type="button" aria-label={text.cancel} onClick={cancelEdit} />
+                    <div className="apps-manage-edit-dialog__panel">
+                        <div className="apps-manage-edit-dialog__header">
+                            <div>
+                                <div className="apps-definition__title" id="apps-manage-edit-title">{text.edit}</div>
+                                <div className="apps-manage-edit-dialog__subtitle">{editingApp.name} · {editingApp.category}</div>
+                            </div>
+                            <button className="apps-icon-button" type="button" title={text.cancel} aria-label={text.cancel} onClick={cancelEdit}>×</button>
+                        </div>
                         <div className="apps-manage-edit">
                             <div className="apps-form-row">
                                 <label>{isZh(lang) ? '\u540d\u79f0' : 'Name'}</label>
@@ -5177,7 +5255,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                                 <label>{isZh(lang) ? '\u63cf\u8ff0' : 'Description'}</label>
                                 <textarea value={editDraft.description} onChange={(event) => setEditDraft((current) => ({ ...current, description: event.target.value }))} />
                             </div>
-                            {app.kind === 'tool_app' && (
+                            {editingApp.kind === 'tool_app' && (
                                 <>
                                     <div className="apps-form-row">
                                         <label>{isZh(lang) ? '\u8f93\u5165\u6a21\u5f0f' : 'Input mode'}</label>
@@ -5223,43 +5301,11 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                             )}
                             <div className="apps-actions">
                                 <button className="apps-secondary-button" type="button" onClick={cancelEdit}>{text.cancel}</button>
-                                <button className="apps-primary-button" type="button" disabled={!editDraft.name.trim()} onClick={() => saveEdit(app)}>{text.save}</button>
+                                <button className="apps-primary-button" type="button" disabled={!editDraft.name.trim()} onClick={() => saveEdit(editingApp)}>{text.save}</button>
                             </div>
                         </div>
-                    )}
-                    {manifestAppId === app.id && (
-                        <div className="apps-manage-manifest-wrap">
-                            <div className="apps-preview-title-row">
-                                <div className="apps-definition__title">{text.manifest}</div>
-                                <button className="apps-secondary-button" type="button" onClick={async () => {
-                                    await copyTextToClipboard(JSON.stringify(appToManifest(app), null, 2));
-                                    setCopiedManifestId(app.id);
-                                }}>{copiedManifestId === app.id ? text.copied : text.copy}</button>
-                            </div>
-                            <pre className="apps-manage-manifest">{JSON.stringify(appToManifest(app), null, 2)}</pre>
-                        </div>
-                    )}
-                </div>
-            );})}
-            {filteredHiddenApps.length > 0 && (
-                <section className="apps-hidden-section">
-                    <div className="apps-section__title-row">
-                        <h3 className="apps-section__title">{text.hiddenApps}</h3>
-                        <span className="apps-count">{filteredHiddenApps.length}/{hiddenApps.length}</span>
                     </div>
-                    {filteredHiddenApps.map((app) => (
-                        <div key={app.id} className="apps-manage-row apps-manage-row--hidden">
-                            <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><Icon name={app.icon} /></span>
-                            <div>
-                                <div className="apps-manage-row__name">{app.name}</div>
-                                <div className="apps-manage-row__desc">{app.category} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</div>
-                            </div>
-                            <div className="apps-manage-actions">
-                                <button className="apps-secondary-button" type="button" title={text.restore} onClick={() => onRestoreApp(app.id)}>{text.restore}</button>
-                            </div>
-                        </div>
-                    ))}
-                </section>
+                </div>
             )}
         </div>
     );

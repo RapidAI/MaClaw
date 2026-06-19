@@ -145,6 +145,110 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 	}
 }
 
+func TestMISDataApprovalSemanticActions(t *testing.T) {
+	type capturedRequest struct {
+		Method string
+		Path   string
+		Query  string
+		Body   map[string]interface{}
+	}
+	captured := []capturedRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&item.Body)
+		}
+		captured = append(captured, item)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{
+		Enabled:  true,
+		Endpoint: server.URL,
+		Token:    "test-token",
+		TenantID: "tenant-1",
+		UserID:   "alice",
+		Role:     "approver",
+	}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	for _, args := range []map[string]interface{}{
+		{
+			"action":                    "mis.approval.start",
+			"dataset_id":                "finance.expenses",
+			"record_id":                 "exp-2",
+			"approval_workflow_id":      "expense_approval",
+			"approval_workflow_version": "2.0.0",
+			"approval_instance_id":      "appr-2",
+			"summary":                   "Expense approval",
+			"request":                   map[string]interface{}{"amount": 1280},
+		},
+		{
+			"action":               "mis.approval.list",
+			"dataset_id":           "finance.expenses",
+			"record_id":            "exp-2",
+			"workflow_instance_id": "appr-2",
+		},
+		{
+			"action":      "mis.approval.get",
+			"approval_id": "approval-2",
+		},
+		{
+			"action": "mis.approval.my_inbox",
+			"status": "pending",
+			"limit":  5,
+		},
+		{
+			"action":               "mis.approval.sync_result",
+			"approval_id":          "approval-2",
+			"result":               "approved",
+			"message":              "done",
+			"workflow_decision_id": "decision-3",
+			"business_status":      "approved",
+			"result_status":        "approved",
+		},
+	} {
+		out := app.executeMISDataTool(args)
+		if !strings.Contains(out, `"ok": true`) {
+			t.Fatalf("%s output = %s", args["action"], out)
+		}
+	}
+
+	if len(captured) != 5 {
+		t.Fatalf("captured %d requests, want 5: %#v", len(captured), captured)
+	}
+	if captured[0].Method != http.MethodPost || captured[0].Path != "/api/v1/data/datasets/finance.expenses/records/exp-2/approvals" {
+		t.Fatalf("unexpected semantic start request: %#v", captured[0])
+	}
+	if got := strings.TrimSpace(asTestString(captured[0].Body["workflow_skill_id"])); got != "expense_approval" {
+		t.Fatalf("semantic start workflow_skill_id = %q; body=%#v", got, captured[0].Body)
+	}
+	if got := strings.TrimSpace(asTestString(captured[0].Body["workflow_version"])); got != "2.0.0" {
+		t.Fatalf("semantic start workflow_version = %q; body=%#v", got, captured[0].Body)
+	}
+	if captured[1].Method != http.MethodGet || captured[1].Path != "/api/v1/data/approvals" || !strings.Contains(captured[1].Query, "record_id=exp-2") || !strings.Contains(captured[1].Query, "workflow_instance_id=appr-2") {
+		t.Fatalf("unexpected semantic list request: %#v", captured[1])
+	}
+	if captured[2].Method != http.MethodGet || captured[2].Path != "/api/v1/data/approvals/approval-2" {
+		t.Fatalf("unexpected semantic get request: %#v", captured[2])
+	}
+	if captured[3].Method != http.MethodGet || captured[3].Path != "/api/v1/data/approvals" || !strings.Contains(captured[3].Query, "assigned_to=alice") || !strings.Contains(captured[3].Query, "status=pending") {
+		t.Fatalf("unexpected semantic inbox request: %#v", captured[3])
+	}
+	if captured[4].Method != http.MethodPost || captured[4].Path != "/api/v1/data/approvals/approval-2/review" {
+		t.Fatalf("unexpected semantic sync request: %#v", captured[4])
+	}
+	if got := strings.TrimSpace(asTestString(captured[4].Body["decision"])); got != "approved" {
+		t.Fatalf("semantic sync decision = %q; body=%#v", got, captured[4].Body)
+	}
+	if got := strings.TrimSpace(asTestString(captured[4].Body["reason"])); got != "done" {
+		t.Fatalf("semantic sync reason = %q; body=%#v", got, captured[4].Body)
+	}
+}
 func asTestString(value interface{}) string {
 	if value == nil {
 		return ""

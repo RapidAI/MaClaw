@@ -1861,7 +1861,9 @@ func TestSendVEGroupMessageWithoutMentionTargetsRemoteVEsAndSkipsLocalAI(t *test
 
 	select {
 	case got := <-gotToIDs:
-		want := []string{"anna-machine", "xiaoyan-machine"}
+		// local-maclaw is now included in broadcast targets (all non-human participants
+		// receive the message for visibility; response decision is made independently).
+		want := []string{"anna-machine", "xiaoyan-machine", "local-maclaw"}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("to_ids = %v, want %v", got, want)
 		}
@@ -1917,8 +1919,10 @@ func TestSendVEGroupMessageWithoutMentionKeepsSingleVEDefaultResponder(t *testin
 
 	select {
 	case got := <-gotToIDs:
-		if len(got) != 1 || got[0] != "anna-machine" {
-			t.Fatalf("to_ids = %v, want [anna-machine]", got)
+		// local-maclaw is now included as a broadcast recipient alongside remote VE.
+		want := []string{"anna-machine", "local-maclaw"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("to_ids = %v, want %v", got, want)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Hub message")
@@ -2069,8 +2073,10 @@ func TestSendVEGroupMessageWithoutMentionSkipsLegacyLocalAIResponder(t *testing.
 
 	select {
 	case got := <-gotToIDs:
-		if len(got) != 1 || got[0] != "anna-machine" {
-			t.Fatalf("to_ids = %v, want [anna-machine]", got)
+		// local-maclaw is now included as broadcast recipient.
+		want := []string{"local-maclaw", "anna-machine"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("to_ids = %v, want %v", got, want)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Hub message")

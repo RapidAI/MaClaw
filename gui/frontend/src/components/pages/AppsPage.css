@@ -563,10 +563,12 @@
 .apps-preview {
     display: grid;
     gap: 12px;
+    width: 100%;
     max-width: 780px;
 }
 
 .apps-preview__mock {
+    width: 100%;
     display: grid;
     gap: 12px;
     padding: 0;
@@ -583,6 +585,12 @@
 
 .apps-runtime-layout {
     align-items: start;
+    grid-auto-flow: row;
+    grid-auto-rows: max-content;
+}
+
+.apps-runtime-layout > * {
+    min-width: 0;
 }
 
 .apps-runtime-layout[data-template='classic_split'] {
@@ -806,11 +814,12 @@
 
 .apps-approval-workspace {
     gap: 8px;
+    container-type: inline-size;
 }
 
 .apps-approval-layout {
     display: grid;
-    grid-template-columns: 150px minmax(0, 1.1fr) minmax(220px, 0.9fr);
+    grid-template-columns: minmax(132px, 0.55fr) minmax(180px, 1fr) minmax(220px, 1.1fr);
     gap: 8px;
     align-items: stretch;
 }
@@ -1023,6 +1032,32 @@
     min-height: 28px;
     padding: 0 8px;
     font-size: 0.72rem;
+}
+
+@container (max-width: 680px) {
+    .apps-approval-layout {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .apps-approval-nav {
+        grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+    }
+
+    .apps-approval-list,
+    .apps-approval-detail {
+        align-self: stretch;
+    }
+}
+
+@container (max-width: 420px) {
+    .apps-approval-row,
+    .apps-approval-facts {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .apps-approval-row em {
+        justify-self: start;
+    }
 }
 .apps-result-panel {
     min-height: 38px;
@@ -2553,6 +2588,7 @@
 .apps-manage-list {
     display: grid;
     gap: 8px;
+    position: relative;
 }
 
 .apps-manage-toolbar {
@@ -2648,10 +2684,56 @@
 .apps-manage-edit {
     display: grid;
     gap: 10px;
-    padding: 10px;
-    border: 1px solid var(--theme-border-subtle);
-    border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--theme-surface-muted) 58%, var(--theme-surface));
+    padding: 0;
+}
+
+.apps-manage-edit-dialog {
+    position: fixed;
+    inset: 0;
+    z-index: 42;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+}
+
+.apps-manage-edit-dialog__backdrop {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    background: color-mix(in srgb, #0f172a 32%, transparent);
+    cursor: default;
+}
+
+.apps-manage-edit-dialog__panel {
+    position: relative;
+    z-index: 1;
+    width: min(760px, calc(100vw - 48px));
+    max-height: min(780px, calc(100vh - 48px));
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 12px;
+    padding: 14px;
+    overflow: auto;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface);
+    box-shadow: 0 12px 28px color-mix(in srgb, #0f172a 20%, transparent);
+}
+
+.apps-manage-edit-dialog__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.apps-manage-edit-dialog__subtitle {
+    margin-top: 3px;
+    color: var(--theme-text-secondary);
+    font-size: 0.78rem;
+    font-weight: 700;
 }
 
 .apps-manage-manifest {

@@ -533,15 +533,17 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 	}
 
 	// Set explicit userText for the agent loop so the LLM knows what to do.
-	// When form data is available, the userText explicitly anchors the LLM's
-	// attention to the structured information in the system prompt. Without this,
-	// the LLM may ignore the FormData section and waste iterations searching
-	// memory/project directories for input that's already provided.
+	//
+	// Mechanism-level fix: when FormData is available, inline the key fields
+	// directly into the user message — not just a reference to the system prompt.
+	// Weak models ignore system prompt sections ("上方系统提示中...") and go
+	// explore project directories instead. User message content has the highest
+	// compliance weight in all LLM architectures.
 	phaseUserText := fmt.Sprintf("请现在生成「%s」阶段的完整文档内容。不要引用或指向之前的对话，直接在本次回复中输出完整文档。", phase.Name)
 	if modifyHint != "" {
 		phaseUserText = fmt.Sprintf("请根据修改意见重新生成「%s」的完整文档。直接输出完整内容。", phase.Name)
 	} else if phase.FormData != nil && len(phase.FormData) > 0 {
-		phaseUserText = fmt.Sprintf("请基于上方系统提示中「用户提供的结构化信息」section 的表单数据，直接生成「%s」阶段的完整文档。所有必要的输入信息（包括文件路径、技术领域等）已在该 section 中列出，无需再搜索或询问。直接在本次回复中输出完整文档。", phase.Name)
+		phaseUserText = buildFormDataInlinedUserText(phase)
 	}
 	h.workflowOriginalRequest.Store(userID, phaseUserText)
 
@@ -563,6 +565,64 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 		WorkflowPhaseID:   phase.ID,
 		PhasePrompt:       phasePrompt,
 	}
+}
+
+// buildFormDataInlinedUserText constructs a user message that directly embeds
+// the FormData key-value pairs. This is the mechanism-level fix for models that
+// ignore system prompt sections: by putting the actual data in the user message
+// (highest compliance weight), the model physically sees it as "the user's request"
+// rather than a background instruction it can skip.
+//
+// The system prompt still has the full FormData section (for structured field
+// labels, variant info, and parsing guidance). The user message provides a
+// redundant but authoritative copy that weak models cannot miss.
+func buildFormDataInlinedUserText(phase *v2.PhaseState) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("我已通过表单提交了「%s」阶段的全部输入信息，具体如下：\n\n", phase.Name))
+
+	// Render fields using InputSchema order (stable, labeled).
+	if phase.InputSchema != nil {
+		allFields := make([]v2.PhaseInputField, 0, len(phase.InputSchema.Fields)+8)
+		allFields = append(allFields, phase.InputSchema.Fields...)
+		// Include active variant fields.
+		if variantID, ok := phase.FormData["_agent_view_variant"]; ok && variantID != nil {
+			vid := fmt.Sprintf("%v", variantID)
+			for _, v := range phase.InputSchema.Variants {
+				if v.ID == vid {
+					allFields = append(allFields, v.Fields...)
+					break
+				}
+			}
+		}
+		for _, f := range allFields {
+			if f.Name == "" || strings.HasPrefix(f.Name, "_") {
+				continue
+			}
+			value, ok := phase.FormData[f.Name]
+			if !ok || value == nil || fmt.Sprintf("%v", value) == "" {
+				continue
+			}
+			label := f.Label
+			if label == "" {
+				label = f.Name
+			}
+			sb.WriteString(fmt.Sprintf("- %s：%v\n", label, value))
+		}
+	} else {
+		// Fallback: no schema, iterate map.
+		for key, value := range phase.FormData {
+			if key == "" || strings.HasPrefix(key, "_") {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("- %s：%v\n", key, value))
+		}
+	}
+
+	sb.WriteString("\n请直接基于以上信息生成本阶段完整文档。")
+	sb.WriteString("所有必要输入已在上面列出，无需使用 project_manage、list_directory 等工具搜索，也无需询问用户。")
+	sb.WriteString("如果信息中包含文件路径，请直接用 read_file 或 bash 读取该文件内容。")
+	sb.WriteString("直接在本次回复中输出完整文档内容。")
+	return sb.String()
 }
 
 // getWorkflowV2 returns the V2 workflow state, or nil if not initialized.

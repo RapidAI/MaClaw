@@ -475,10 +475,13 @@ func (a *App) SendVEGroupMessage(sessionID, content string, mentionedIds []strin
 		return err
 	}
 
-	// No explicit mentions are resolved by Hub so the persisted default reply
-	// target survives tab reloads, history sends, and app restarts.
+	// No explicit mentions — broadcast to all non-human participants.
+	// Local AI is included in unmentionedTargetIDs now, so we dispatch to it
+	// in addition to sending through Hub for remote participants.
 	if !targets.Explicit {
 		msg.ToIDs = a.groupDiscussionUnmentionedTargetIDs(sessionID)
+		// Also dispatch to local AI if it is registered for this session.
+		a.tryLocalExecutorDispatch(sessionID, msg)
 		return a.sendVEA2AMessage(sessionID, msg)
 	}
 
@@ -761,9 +764,12 @@ func singleGroupDiscussionTarget(id string) []string {
 func isVEGroupDefaultResponderCandidate(id, roleCode, localID string) bool {
 	id = strings.TrimSpace(id)
 	localID = strings.TrimSpace(localID)
-	if id == "" || isVEGroupDefaultResponderMatch(id, localID) || isVEGroupLocalHumanID(id) || isVEGroupLocalAIID(id) {
+	if id == "" || isVEGroupDefaultResponderMatch(id, localID) || isVEGroupLocalHumanID(id) {
 		return false
 	}
+	// NOTE: local AI (local-maclaw) is NOT excluded. All non-human participants
+	// are candidates for receiving unmentioned messages. The local dispatcher
+	// decides independently whether to respond based on message relevance.
 	role := strings.ToLower(strings.TrimSpace(roleCode))
 	switch role {
 	case "", "speak", "speaker", "participant", "review":
