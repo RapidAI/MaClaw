@@ -622,15 +622,32 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 		return
 	}
 
+	// Resolve active phase once — used by both phases array and event payload.
+	activePhase := state.ActivePhase()
+	activePhaseID := ""
+	if activePhase != nil {
+		activePhaseID = activePhase.ID
+	}
+	awaitingForm := activePhase != nil && activePhase.InputSchema != nil && activePhase.FormData == nil
+
 	// Build phases array for progress board
 	phases := make([]map[string]interface{}, len(state.Phases))
 	for i, p := range state.Phases {
+		expectsDoc := p.NeedsConfirm
+		// When the active phase is awaiting form input (InputSchema present but
+		// FormData not yet submitted), suppress expects_document so the frontend
+		// does not auto-open the workflow doc preview panel. The form panel
+		// (AgentView) should take visual priority; the doc preview is empty until
+		// the agent loop runs after form submission.
+		if p.ID == activePhaseID && awaitingForm {
+			expectsDoc = false
+		}
 		phases[i] = map[string]interface{}{
 			"id":               p.ID,
 			"name":             p.Name,
 			"status":           string(p.Status),
 			"needs_confirm":    p.NeedsConfirm,
-			"expects_document": p.NeedsConfirm,
+			"expects_document": expectsDoc,
 		}
 	}
 
@@ -650,25 +667,20 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 		}
 	}
 
-	// Current phase ID
-	var activePhase *v2.Phase
-	currentPhaseID := ""
-	if p := state.ActivePhase(); p != nil {
-		activePhase = p
-		currentPhaseID = p.ID
-	}
-
 	// Emit workflow:phase_update (the event name frontend listens to)
-	awaitingForm := activePhase != nil && activePhase.InputSchema != nil && activePhase.FormData == nil
-	emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
+	payload := map[string]interface{}{
 		"id":            state.ID,
 		"status":        string(state.Status),
 		"type":          state.Type,
-		"current_phase": currentPhaseID,
+		"current_phase": activePhaseID,
 		"phases":        phases,
 		"phase_outputs": phaseOutputs,
 		"project_path":  state.ProjectPath,
-	})
+	}
+	if awaitingForm {
+		payload["awaiting_form"] = true
+	}
+	emitWorkflowV2Event(h.app, "workflow:phase_update", payload)
 
 	// Also emit suggest_maximize for desktop panel to auto-expand.
 	// But NOT when the active phase is waiting for form input — there's no

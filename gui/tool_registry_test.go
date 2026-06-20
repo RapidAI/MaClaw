@@ -144,8 +144,13 @@ func TestRegisterBuiltinToolsIncludesMISDataWorkspace(t *testing.T) {
 	if !ok {
 		t.Fatalf("mis_data action schema has unexpected type: %#v", tool.InputSchema["action"])
 	}
-	if !strings.Contains(action["description"], "list_agent_transactions") {
-		t.Fatalf("action schema should mention list_agent_transactions, got %q", action["description"])
+	if !strings.Contains(action["description"], "list_agent_transactions") || !strings.Contains(action["description"], "resolve_object_role") {
+		t.Fatalf("action schema should mention workspace and object-role actions, got %q", action["description"])
+	}
+	for _, prop := range []string{"dataset_id", "object_role", "app_id", "blueprint_id", "require_initialized"} {
+		if _, ok := tool.InputSchema[prop]; !ok {
+			t.Fatalf("mis_data registry schema missing %s", prop)
+		}
 	}
 }
 

@@ -623,6 +623,69 @@ describe('AppsPage', () => {
         expect(screen.getByText(/"status": "submitted"/)).not.toBeNull();
     });
 
+    it('blocks app package review submission when required dependencies are unavailable', async () => {
+        const app = {
+            id: 'local-publish-blocked-dep',
+            name: '依赖阻断应用',
+            description: '用于验证发布依赖门禁',
+            category: '法务',
+            kind: 'tool_app',
+            icon: 'contract',
+            accent: '#7c3f58',
+            pinned: false,
+            source: 'local',
+            recentUsedAt: '2026-06-17T00:00:00.000Z',
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'skill',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'tool_app',
+                launchMode: 'fixed_skill_ui',
+                skill: { id: 'disabled-workflow', appDefinitionFile: 'maclaw.app.json', inputMode: 'file', multipleFiles: false, outputModes: ['pdf'], fields: [] },
+                dependencies: { skills: [{ id: 'disabled-workflow', kind: 'runtime_skill', required: true, source: 'hub' }] },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [app.id],
+            customApps: [app],
+            recentUsedAtById: { [app.id]: app.recentUsedAt },
+        }));
+        const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'should-not-submit' });
+        const listMaclawAppPackageSubmissions = vi.fn().mockResolvedValue([]);
+        (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage, ListMaclawAppPackageSubmissions: listMaclawAppPackageSubmissions } } };
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: app.kind }],
+            dependencies: [{
+                id: 'disabled-workflow',
+                kind: 'runtime_skill',
+                required: true,
+                installed: true,
+                installed_status: 'disabled',
+                health: 'disabled',
+                action: 'blocked',
+                app_ids: [app.id],
+            }],
+            has_missing_required: false,
+            has_blocking_dependency: true,
+        });
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+        await waitFor(() => expect(screen.getByText('暂无本机待同步提交')).not.toBeNull());
+        const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('依赖阻断应用')) as HTMLElement;
+        expect(card).toBeTruthy();
+        fireEvent.click(within(card).getByText('提交审核'));
+
+        await waitFor(() => expect(planMaclawAppInstallMock).toHaveBeenCalledTimes(1));
+        expect(submitMaclawAppPackage).not.toHaveBeenCalled();
+        expect(within(card).getByText('依赖检查失败')).not.toBeNull();
+        expect(within(card).getByText('必需 Skill 依赖缺失或不可用，请先安装或启用依赖')).not.toBeNull();
+        expect(within(card).queryByText('等待企业市场审核')).toBeNull();
+    });
+
     it('uses the enterprise market bridge when submitting app packages', async () => {
         const submitMaclawAppPackage = vi.fn().mockResolvedValue({
             submission_id: 'market-review-123',
@@ -1485,7 +1548,9 @@ describe('AppsPage', () => {
             app_id: 'expense',
             app_kind: 'enterprise_approval_app',
             approval_workflow_skill_id: 'expense-approval-workflow',
-            dataset_id: '',
+            approval_object_role: 'expense_report',
+            object_role: 'expense_report',
+            dataset_id: 'finance.expenses',
             datasrv_domain: 'finance',
         })));
         await waitFor(() => expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalledTimes(2));
@@ -1494,6 +1559,9 @@ describe('AppsPage', () => {
         expect(pendingPayload.status).toBe('pending');
         expect(pendingPayload.workflow_skill_id).toBe('expense-approval-workflow');
         expect(pendingPayload.workflow_decision_id).toBe('run-test-1');
+        expect(pendingPayload.dataset_id).toBe('finance.expenses');
+        expect(pendingPayload.object_role).toBe('expense_report');
+        expect(pendingPayload.approval_object_role).toBe('expense_report');
         expect(pendingPayload.detail_url).toBe('skill-run://run-test-1');
         const completedPayload = recordMaclawAppApprovalInstanceMock.mock.calls[1][0];
         expect(completedPayload.instance_id).toBe('appr-test-1');
@@ -1502,13 +1570,18 @@ describe('AppsPage', () => {
         expect(completedPayload.workflow_decision_id).toBe('run-test-1');
         expect(completedPayload.business_status).toBe('pending_payment');
         expect(completedPayload.result_status).toBe('approved');
+        expect(completedPayload.record_id).toBe('exp-1');
+        expect(completedPayload.dataset_id).toBe('finance.expenses');
+        expect(completedPayload.object_role).toBe('expense_report');
         expect(completedPayload.result_payload.business_record).toEqual({ id: 'exp-1', status: 'pending_payment' });
         expect(completedPayload.outputs).toHaveLength(2);
         expect(completedPayload.artifacts[0].name).toBe('approval.pdf');
         expect(completedPayload.events.map((event: any) => event.action)).toContain('workflow_completed');
         await waitFor(() => expect(syncMaclawAppApprovalInstanceToDataSrvMock).toHaveBeenCalledTimes(2));
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].dataset_id).toBe('finance.expenses');
+        expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].object_role).toBe('expense_report');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].record_id).toBe('appr-test-1');
+        expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[1][0].record_id).toBe('exp-1');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[1][0].instance.status).toBe('approved');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[1][0].instance.result_payload.business_record.id).toBe('exp-1');
 
@@ -1560,8 +1633,12 @@ describe('AppsPage', () => {
         expect(payload.workflow_skill_id).toBe('binding-workflow');
         expect(payload.approval_event).toBe('finance.submitted');
         expect(payload.approval_object_role).toBe('expense');
+        expect(payload.object_role).toBe('expense');
+        expect(payload.dataset_id).toBe('finance.expenses');
         await waitFor(() => expect(syncMaclawAppApprovalInstanceToDataSrvMock).toHaveBeenCalled());
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].dataset_id).toBe('finance.expenses');
+        expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].object_role).toBe('expense');
+        expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].app_id).toBe('bound-approval');
     });
     it('does not record approval instance when workflow skill launch fails', async () => {
         runNLSkillAsyncMock.mockRejectedValueOnce(new Error('workflow unavailable'));
@@ -1613,6 +1690,9 @@ describe('AppsPage', () => {
                 updated_at: '2026-06-19T00:00:00Z',
                 result: 'waiting',
                 workflow_skill_id: 'expense-approval-workflow',
+                dataset_id: 'finance.expenses',
+                object_role: 'expense_report',
+                approval_id: 'approval-remote-7',
                 record_id: 'EXP-20260619-001',
                 detail_url: 'approval://instances/approval-pending-7',
                 business_status: 'pending_manager_approval',
@@ -1631,6 +1711,9 @@ describe('AppsPage', () => {
                 updated_at: '2026-06-20T00:00:00Z',
                 result: 'needs review',
                 workflow_skill_id: 'expense-approval-workflow',
+                dataset_id: 'finance.expenses',
+                object_role: 'expense_report',
+                approval_id: 'approval-remote-8',
                 record_id: 'EXP-20260620-002',
                 detail_url: 'approval://instances/approval-pending-8',
                 business_status: 'pending_finance_review',
@@ -1653,6 +1736,8 @@ describe('AppsPage', () => {
         expect(within(detail).getByText('Office expense')).not.toBeNull();
         expect(within(detail).getAllByText(/finance_review/).length).toBeGreaterThan(0);
         expect(within(detail).getByText('EXP-20260620-002')).not.toBeNull();
+        expect(within(detail).getByText('expense_report')).not.toBeNull();
+        expect(within(detail).getByText('approval-remote-8')).not.toBeNull();
         expect(within(detail).getByText('pending_finance_review')).not.toBeNull();
         expect(within(detail).getByText(/needs receipt check/)).not.toBeNull();
         const workflowLink = within(detail).getByText('查看完整流程') as HTMLAnchorElement;
@@ -1676,6 +1761,9 @@ describe('AppsPage', () => {
             updated_at: '2026-06-19T00:00:00Z',
             result: 'waiting',
             workflow_skill_id: 'expense-approval-workflow',
+            dataset_id: 'finance.expenses',
+            object_role: 'expense_report',
+            approval_id: 'approval-remote-7',
             business_status: 'approval_pending',
             result_status: 'pending',
         }]);
@@ -1696,12 +1784,17 @@ describe('AppsPage', () => {
         expect(payload.lane).toBe('handled');
         expect(payload.workflow_skill_id).toBe('expense-approval-workflow');
         expect(payload.workflow_decision_id).toMatch(/^decision-/);
+        expect(payload.approval_id).toBe('approval-remote-7');
+        expect(payload.dataset_id).toBe('finance.expenses');
+        expect(payload.object_role).toBe('expense_report');
         expect(payload.business_status).toBe('approved');
         expect(payload.result_status).toBe('approved');
         expect(payload.events[0].decision).toBe('approved');
         await waitFor(() => expect(syncMaclawAppApprovalInstanceToDataSrvMock).toHaveBeenCalledTimes(1));
         const syncPayload = syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0];
         expect(syncPayload.dataset_id).toBe('finance.expenses');
+        expect(syncPayload.object_role).toBe('expense_report');
+        expect(syncPayload.approval_id).toBe('approval-remote-7');
         expect(syncPayload.record_id).toBe('approval-pending-7');
         expect(syncPayload.instance.workflow_decision_id).toMatch(/^decision-/);
     });
@@ -2041,6 +2134,47 @@ describe('AppsPage', () => {
         expect(screen.queryByText(/run-test-1/)).toBeNull();
     });
 
+    it('checks bound skill dependencies before running installed tool apps', async () => {
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    x_maclaw_apps: 'v1',
+                    apps: [
+                        { id: 'runtime-dep-tool', skill_id: 'disabled-runtime-tool', name: '运行依赖工具', description: 'Runtime dependency check', category: '工具', icon: 'sheet', input_mode: 'form', output_modes: ['json'] },
+                    ],
+                }),
+            },
+        });
+        fireEvent.click(screen.getByText('安装'));
+        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
+        fireEvent.click(screen.getByText('关闭'));
+        fireEvent.click(screen.getAllByText('运行依赖工具')[0]);
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: 'skill-app-disabled-runtime-tool-runtime-dep-tool', name: '运行依赖工具', kind: 'tool_app' }],
+            dependencies: [{
+                id: 'disabled-runtime-tool',
+                kind: 'runtime_skill',
+                required: true,
+                installed: true,
+                installed_status: 'disabled',
+                health: 'disabled',
+                action: 'blocked',
+                app_ids: ['skill-app-disabled-runtime-tool-runtime-dep-tool'],
+            }],
+            has_missing_required: false,
+            has_blocking_dependency: true,
+        });
+
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(screen.getAllByText('必需 Skill 依赖缺失或不可用，请先安装或启用依赖').length).toBeGreaterThan(0));
+        expect(runNLSkillAsyncMock).not.toHaveBeenCalled();
+    });
     it('passes selected file metadata to skill app runs', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
@@ -2724,7 +2858,7 @@ describe('AppsPage', () => {
         expect(screen.getByText('已复制')).not.toBeNull();
     });
 
-    it('shows market apps as a list and adds one to the panel', () => {
+    it('shows market apps as a list and adds one to the panel', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
@@ -2739,10 +2873,44 @@ describe('AppsPage', () => {
         const row = screen.getByText('合同归档').closest('.apps-market-row') as HTMLElement;
         fireEvent.click(within(row).getByRole('button', { name: '添加: 合同归档' }));
 
-        expect((within(row).getByRole('button', { name: '已安装: 合同归档' }) as HTMLButtonElement).disabled).toBe(true);
+        await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
+        expect(recordMaclawAppInstallMock).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect((within(row).getByRole('button', { name: '已安装: 合同归档' }) as HTMLButtonElement).disabled).toBe(true));
         expect(screen.getByText('可添加 3 · 可升级 0')).not.toBeNull();
         fireEvent.click(screen.getByText('应用管理'));
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('合同归档'))).toBe(true);
+    });
+
+    it('blocks one-click market install when a required dependency is unavailable', async () => {
+        installMaclawAppDependenciesMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: 'market-contract-archive', name: '合同归档', kind: 'tool_app' }],
+            dependencies: [{
+                id: 'contract-archive',
+                kind: 'runtime_skill',
+                required: true,
+                installed: true,
+                installed_status: 'disabled',
+                health: 'disabled',
+                action: 'blocked',
+                app_ids: ['contract-archive'],
+            }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        });
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('从市场添加'));
+        const row = screen.getByText('合同归档').closest('.apps-market-row') as HTMLElement;
+        fireEvent.click(within(row).getByRole('button', { name: '添加: 合同归档' }));
+
+        await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
+        expect(recordMaclawAppInstallMock).not.toHaveBeenCalled();
+        expect(within(row).getByText('必需 Skill 依赖缺失或不可用，请先安装或启用依赖')).not.toBeNull();
+        expect(row.getAttribute('data-state')).toBe('blocked');
+        fireEvent.click(screen.getByText('应用管理'));
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('合同归档'))).toBe(false);
     });
 
     it('installs an app from a pasted market manifest', () => {
@@ -2777,6 +2945,51 @@ describe('AppsPage', () => {
         expect(screen.getAllByText('文档归档').length).toBeGreaterThan(0);
     });
 
+    it('shows DataSrv registration status after installing a DataSrv-backed app manifest', async () => {
+        recordMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.installs.v1',
+            app_count: 1,
+            datasrv_registration: {
+                synced: true,
+                eligible_count: 1,
+                synced_count: 1,
+                failed_count: 0,
+                items: [{ app_id: 'expense-audit', synced: true, role_binding_count: 1 }],
+            },
+        });
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    schema: 'maclaw.app.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    installUnit: 'enterprise_app_pack',
+                    app: {
+                        id: 'expense-audit',
+                        name: '费用审核',
+                        description: 'Review expense requests',
+                        category: 'OA',
+                        kind: 'enterprise_approval_app',
+                        icon: 'receipt',
+                        launchMode: 'agent_dynamic_ui',
+                        binding: {
+                            datasrv: { domain: 'finance', datasetID: 'finance.expense_forms' },
+                            mis: { approvalBindings: [{ event: 'finance.submitted', workflowSkillId: 'expense-workflow', objectRole: 'expense_report' }] },
+                        },
+                    },
+                }),
+            },
+        });
+        fireEvent.click(screen.getByText('安装'));
+
+        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
+        const installResult = document.querySelector('.apps-install-result') as HTMLElement;
+        expect(within(installResult).getByText('费用审核')).not.toBeNull();
+        await waitFor(() => expect(within(installResult).getByText(/DataSrv 绑定已注册: 1/)).not.toBeNull());
+    });
     it('does not exceed the pinned app limit when installing pinned market apps', () => {
         render(<AppsPage lang="zh-Hans" />);
 

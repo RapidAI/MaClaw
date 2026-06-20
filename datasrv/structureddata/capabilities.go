@@ -17,6 +17,10 @@ func (s *Service) Capabilities(ctx context.Context, p Principal) (*DataCapabilit
 	if err != nil {
 		return nil, err
 	}
+	appInstallations, err := s.store.ListAppInstallations(ctx, p.TenantID, QueryAppInstallationsInput{Status: defaultAppInstallationStatus, Limit: 100})
+	if err != nil {
+		return nil, err
+	}
 	datasetCaps := make([]DatasetCapability, 0, len(datasets))
 	domainSet := map[string]struct{}{}
 	for _, dataset := range datasets {
@@ -65,6 +69,10 @@ func (s *Service) Capabilities(ctx context.Context, p Principal) (*DataCapabilit
 	views := cloneBusinessViews(businessViews)
 	dashboards := cloneDashboardDefinitions(dashboardDefinitions)
 	reports := cloneReportDefinitions(reportDefinitions)
+	businessObjects, err := s.businessObjectCatalogsLocked(ctx, p, datasetMapByID(datasets), QueryBusinessObjectsInput{})
+	if err != nil {
+		return nil, err
+	}
 	if p.Policy != nil {
 		domains = filterCapabilityDomains(p, domains)
 		datasetCaps = filterCapabilityDatasets(p, datasetCaps)
@@ -75,28 +83,30 @@ func (s *Service) Capabilities(ctx context.Context, p Principal) (*DataCapabilit
 		reports = filterCapabilityReports(p, reports)
 	}
 	return &DataCapabilities{
-		Service:         "MaClawDataSrv",
-		Engine:          s.engine,
-		TenantID:        p.TenantID,
-		UserID:          p.UserID,
-		Role:            p.Role,
-		APIKeyID:        p.APIKeyID,
-		Policy:          capabilityPolicy(),
-		Access:          capabilityAccessSummary(p, domains, datasetCaps, actions, views, dashboards, reports),
-		Domains:         domains,
-		AgentPlaybooks:  agentBusinessPlaybooks(domains),
-		Relationships:   relationshipsForCapabilities(datasetCaps),
-		Datasets:        datasetCaps,
-		Templates:       templates,
-		BusinessActions: actions,
-		EventContracts:  cloneEventContracts(actions),
-		Connectors:      connectors,
-		BusinessViews:   views,
-		Dashboards:      dashboards,
-		Reports:         reports,
-		QualityChecks:   cloneQualityChecks(qualityChecks),
-		BusinessRules:   cloneBusinessRules(businessRules),
-		ToolActions:     toolActionCapabilities(),
+		Service:          "MaClawDataSrv",
+		Engine:           s.engine,
+		TenantID:         p.TenantID,
+		UserID:           p.UserID,
+		Role:             p.Role,
+		APIKeyID:         p.APIKeyID,
+		Policy:           capabilityPolicy(),
+		Access:           capabilityAccessSummary(p, domains, datasetCaps, businessObjects, actions, views, dashboards, reports),
+		Domains:          domains,
+		AgentPlaybooks:   agentBusinessPlaybooks(domains),
+		Relationships:    relationshipsForCapabilities(datasetCaps),
+		BusinessObjects:  businessObjects,
+		AppInstallations: appInstallations,
+		Datasets:         datasetCaps,
+		Templates:        templates,
+		BusinessActions:  actions,
+		EventContracts:   cloneEventContracts(actions),
+		Connectors:       connectors,
+		BusinessViews:    views,
+		Dashboards:       dashboards,
+		Reports:          reports,
+		QualityChecks:    cloneQualityChecks(qualityChecks),
+		BusinessRules:    cloneBusinessRules(businessRules),
+		ToolActions:      toolActionCapabilities(),
 	}, nil
 }
 
@@ -170,7 +180,7 @@ func filterCapabilityReports(p Principal, items []ReportDefinition) []ReportDefi
 	return out
 }
 
-func capabilityAccessSummary(p Principal, domains []string, datasets []DatasetCapability, actions []BusinessAction, views []BusinessViewDefinition, dashboards []DashboardDefinition, reports []ReportDefinition) AccessCapabilitySummary {
+func capabilityAccessSummary(p Principal, domains []string, datasets []DatasetCapability, businessObjects []BusinessObjectCatalog, actions []BusinessAction, views []BusinessViewDefinition, dashboards []DashboardDefinition, reports []ReportDefinition) AccessCapabilitySummary {
 	authenticatedBy := "root_token_or_headers"
 	scopeMode := "role_based"
 	rawAllowed := principalCanAdmin(p)
@@ -244,6 +254,7 @@ func capabilityAccessSummary(p Principal, domains []string, datasets []DatasetCa
 			"datasets":         len(datasets),
 			"business_actions": len(actions),
 			"business_views":   len(views),
+			"business_objects": len(businessObjects),
 			"dashboards":       len(dashboards),
 			"reports":          len(reports),
 		},
@@ -278,6 +289,7 @@ func capabilityPolicy() map[string]any {
 		"schema_changes":                  "use bootstrap_templates or create_dataset_from_template for common enterprise MIS structures; propose_schema first for observed custom fields; apply_schema_proposal requires explicit user/admin confirmation",
 		"business_intent":                 "for a natural-language business request, call resolve_intent first, follow agent_playbooks and returned next_steps, and prefer tool_call_template payloads over manually composing raw dataset operations",
 		"business_references":             "record_ref/person_ref/org_ref/file_ref fields are reference-shaped strings; record_ref may include config.ref_dataset so agents can link related MIS objects without raw SQL or hard-coded joins",
+		"business_object_roles":           "list_business_objects and resolve_object_role expose stable semantic roles such as expense_report, employee, inventory_item, and inventory_movement so apps and skills can bind to object_role instead of hard-coded dataset ids",
 		"querying":                        "use query_records for details, run_report or aggregate_records for analysis, export_records for CSV handoff, export_records_jsonl for system handoff, list_audit_logs for compliance review, export_audit_logs_csv for compliance handoff, and export job actions for larger handoffs; default record, revision, audit, event, inbox, job, approval, operation-plan, dataset, field, quality-run, schema-proposal, backup, connector, connector-health, connector-sync-run, api-key-policy, domain, template, access-preset, quality-check, business-view, business-action, event-contract, dashboard, and report pagination return stable cursor metadata; timestamp-backed lists return next_before and next_before_id, while static definition lists return next_before_id",
 		"business_views":                  "prefer query_business_view when a stable employee-facing view exists for the task; use returned next_before for additional pages and next_before_id only when present",
 		"dashboards":                      "use run_dashboard for company or domain overview before drilling into reports, inbox, views, or records",
@@ -291,7 +303,7 @@ func capabilityPolicy() map[string]any {
 		"business_unique_keys":            "fields with config.unique=true are checked before writes and batch imports",
 		"backup_restore":                  "create backups before risky bulk changes; backup metadata includes sha256, download_url, and next_before/next_before_id list pagination for external archival; backup download and restore require data_admin, restore requires confirm=true; restore_record can recover one deleted record from revisions",
 		"operation_plans":                 "create_operation_plan records high-risk bulk update/delete intent and preview; review_operation_plan approves or rejects; apply_operation_plan executes approved plans only",
-		"approvals":                       "create_record_approval submits one business record for approval; review_record_approval approves or rejects and requires data_admin",
+		"approvals":                       "create_record_approval submits one business record for approval and can bind app_id, blueprint_id, and object_role for MaClaw App approval instances; list_record_approvals can filter by those fields; review_record_approval approves or rejects and requires data_admin",
 		"maintenance":                     "run_maintenance performs SQLite integrity_check, optimize, and vacuum; data_admin required",
 		"admin_required":                  "data_admin is required for template dataset creation, raw dataset create/update/delete, field upsert, bulk updates/deletes, schema proposal apply, backup download, and backup restore",
 		"default_local_endpoint":          "http://127.0.0.1:18180",
@@ -394,6 +406,8 @@ func toolActionCapabilities() []ToolActionCapability {
 		{Action: "list_domains", Purpose: "discover", Preferred: true, Description: "Read business-domain catalogs that group initialized datasets, missing templates, actions, views, dashboards, and reports."},
 		{Action: "get_domain", Purpose: "discover", Preferred: true, Requires: []string{"domain"}, Description: "Read one business-domain catalog before operating in sales, finance, HR, legal, procurement, inventory, or assets."},
 		{Action: "resolve_intent", Purpose: "discover", Preferred: true, Requires: []string{"query"}, Description: "Resolve a natural-language business request into candidate domain use cases and preferred actions/views/reports."},
+		{Action: "list_business_objects", Purpose: "discover", Preferred: true, Description: "Read semantic business object roles such as expense_report or inventory_item and their mapped datasets."},
+		{Action: "resolve_object_role", Purpose: "discover", Preferred: true, Requires: []string{"object_role"}, Description: "Resolve an app or blueprint object_role to the real dataset, template, and recommended business actions."},
 		{Action: "list_relationships", Purpose: "discover", Preferred: true, Description: "Read dataset relationship hints generated from record_ref/person_ref/org_ref/file_ref fields with next_before_id pagination."},
 		{Action: "get_inbox", Purpose: "operations", Preferred: true, Description: "Read MIS work items that need attention across approvals, operation plans, failed jobs, and quality issues."},
 		{Action: "get_inbox_summary", Purpose: "operations", Preferred: true, Description: "Read MIS inbox counts by type, severity, status, and overdue count."},
@@ -444,8 +458,8 @@ func toolActionCapabilities() []ToolActionCapability {
 		{Action: "export_audit_logs_csv", Purpose: "compliance", Description: "Export filtered audit logs as CSV for review or archival."},
 		{Action: "get_record_timeline", Purpose: "traceability", Requires: []string{"dataset_id", "id"}, Description: "Read a combined record timeline from revisions, approvals, data events, and audit logs with next_before and next_before_id pagination."},
 		{Action: "get_related_records", Purpose: "traceability", Requires: []string{"dataset_id", "id"}, Description: "Read outgoing and incoming related business records discovered from record_ref relationships with before_id pagination."},
-		{Action: "create_record_approval", Purpose: "business_approval", Requires: []string{"dataset_id", "id"}, Description: "Submit one business record for approval without changing schema or raw SQL."},
-		{Action: "list_record_approvals", Purpose: "business_approval", Description: "List business approvals by dataset, record, status, or kind with next_before and next_before_id pagination."},
+		{Action: "create_record_approval", Purpose: "business_approval", Requires: []string{"dataset_id", "id"}, Description: "Submit one business record for approval without changing schema or raw SQL; pass app_id, blueprint_id, and object_role for MaClaw App approval instances."},
+		{Action: "list_record_approvals", Purpose: "business_approval", Description: "List business approvals by app, object role, dataset, record, workflow instance, status, or kind with next_before and next_before_id pagination."},
 		{Action: "get_record_approval", Purpose: "business_approval", Requires: []string{"approval_id"}, Description: "Read one business approval request."},
 		{Action: "review_record_approval", Purpose: "business_approval", Requires: []string{"approval_id", "decision"}, AdminOnly: true, Description: "Approve or reject a pending business approval request."},
 		{Action: "validate_record", Purpose: "quality", Requires: []string{"dataset_id", "data"}, Description: "Dry-run one record against required/type/enum/unique checks."},

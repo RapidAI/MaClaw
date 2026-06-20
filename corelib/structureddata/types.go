@@ -1046,6 +1046,9 @@ type RecordApproval struct {
 	TenantID           string                   `json:"tenant_id,omitempty"`
 	DatasetID          string                   `json:"dataset_id"`
 	RecordID           string                   `json:"record_id"`
+	AppID              string                   `json:"app_id,omitempty"`
+	BlueprintID        string                   `json:"blueprint_id,omitempty"`
+	ObjectRole         string                   `json:"object_role,omitempty"`
 	Status             string                   `json:"status"`
 	Kind               string                   `json:"kind,omitempty"`
 	Priority           string                   `json:"priority,omitempty"`
@@ -1099,6 +1102,9 @@ type RecordApprovalOutput struct {
 }
 
 type CreateRecordApprovalInput struct {
+	AppID              string                   `json:"app_id,omitempty"`
+	BlueprintID        string                   `json:"blueprint_id,omitempty"`
+	ObjectRole         string                   `json:"object_role,omitempty"`
 	Kind               string                   `json:"kind,omitempty"`
 	Priority           string                   `json:"priority,omitempty"`
 	Summary            string                   `json:"summary,omitempty"`
@@ -1120,6 +1126,9 @@ type CreateRecordApprovalInput struct {
 type QueryRecordApprovalsInput struct {
 	DatasetID          string `json:"dataset_id,omitempty"`
 	RecordID           string `json:"record_id,omitempty"`
+	AppID              string `json:"app_id,omitempty"`
+	BlueprintID        string `json:"blueprint_id,omitempty"`
+	ObjectRole         string `json:"object_role,omitempty"`
 	Status             string `json:"status,omitempty"`
 	Kind               string `json:"kind,omitempty"`
 	WorkflowSkillID    string `json:"workflow_skill_id,omitempty"`

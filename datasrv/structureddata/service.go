@@ -63,6 +63,13 @@ type ConnectorStore interface {
 	DeleteExternalConnector(ctx context.Context, tenantID, connectorID string) error
 }
 
+// AppInstallationStore manages installed MaClaw Apps and their semantic data bindings.
+type AppInstallationStore interface {
+	UpsertAppInstallation(ctx context.Context, app AppInstallation) (*AppInstallation, error)
+	ListAppInstallations(ctx context.Context, tenantID string, in QueryAppInstallationsInput) ([]AppInstallation, error)
+	GetAppInstallation(ctx context.Context, tenantID, appID string) (*AppInstallation, error)
+}
+
 // GovernanceStore manages quality checks, operation plans, import/export jobs, and audit logs.
 type GovernanceStore interface {
 	AppendQualityRun(ctx context.Context, run QualityCheckResult) (*QualityCheckResult, error)
@@ -131,6 +138,7 @@ type Store interface {
 	RecordStore
 	EventStore
 	ConnectorStore
+	AppInstallationStore
 	GovernanceStore
 	AdminStore
 }

@@ -2449,6 +2449,16 @@
     word-break: break-word;
 }
 
+.apps-publish-submission--error {
+    border-color: color-mix(in srgb, var(--theme-danger) 28%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-danger-bg) 58%, var(--theme-surface));
+}
+
+.apps-publish-submission--error strong,
+.apps-publish-submission--error span {
+    color: var(--theme-danger);
+}
+
 .apps-publish-queue {
     display: grid;
     gap: 7px;

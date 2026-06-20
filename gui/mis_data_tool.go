@@ -372,7 +372,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		return "MIS data service token is empty. Configure it in Settings > MIS data."
 	}
 	if action == misDataToolActionUnknown {
-		return "missing action. Supported: status, get_capabilities, list_domains, get_domain, list_relationships, resolve_intent, get_inbox, get_inbox_summary, get_stats, export_governance_evidence_pack, export_governance_evidence_summary, run_maintenance, list_business_actions, get_business_action, list_business_rules, evaluate_business_rules, list_event_contracts, get_event_contract, list_event_dead_letters, get_event_dead_letter, retry_event_dead_letter, resolve_event_dead_letter, list_connectors, list_connector_health, get_connector, upsert_connector, delete_connector, test_connector, validate_connector_config, check_connector_readiness, get_connector_health, get_connector_sync_state, list_connector_sync_runs, update_connector_sync_state, plan_connector_sync, sync_connector_batch, suggest_connector_mapping, patch_connector_config, preview_connector_event, ingest_connector_event, execute_business_action, list_business_views, get_business_view, query_business_view, list_dashboards, get_dashboard, run_dashboard, list_reports, get_report, run_report, aggregate_records, list_quality_checks, run_quality_check, list_quality_runs, get_quality_run, list_import_jobs, get_import_job, list_export_jobs, get_export_job, download_export_job, list_operation_plans, create_operation_plan, get_operation_plan, review_operation_plan, apply_operation_plan, cancel_operation_plan, mis.approval.start, mis.approval.list, mis.approval.list_by_record, mis.approval.get, mis.approval.sync_result, mis.approval.my_inbox, mis.approval.my_pending, list_record_approvals, create_record_approval, get_record_approval, review_record_approval, list_audit_logs, export_audit_logs_csv, list_data_events, list_record_revisions, get_record_timeline, get_related_records, list_schema_proposals, get_schema_proposal, list_templates, get_template, bootstrap_templates, create_dataset_from_template, list_datasets, get_dataset, create_dataset, delete_dataset, list_fields, upsert_fields, propose_schema, apply_schema_proposal, validate_record, batch_import_records, bulk_update_records, bulk_delete_records, restore_record, start_batch_import_job, get_import_template_csv, import_records_csv, start_csv_import_job, import_records_jsonl, start_jsonl_import_job, upsert_record, get_record, delete_record, query_records, export_records, export_records_jsonl, start_csv_export_job, start_jsonl_export_job, ingest_event, create_backup, list_backups, get_backup, download_backup, restore_backup"
+		return "missing action. Supported: status, get_capabilities, list_domains, get_domain, list_business_objects, resolve_object_role, list_relationships, resolve_intent, get_inbox, get_inbox_summary, get_stats, export_governance_evidence_pack, export_governance_evidence_summary, run_maintenance, list_business_actions, get_business_action, list_business_rules, evaluate_business_rules, list_event_contracts, get_event_contract, list_event_dead_letters, get_event_dead_letter, retry_event_dead_letter, resolve_event_dead_letter, list_connectors, list_connector_health, get_connector, upsert_connector, delete_connector, test_connector, validate_connector_config, check_connector_readiness, get_connector_health, get_connector_sync_state, list_connector_sync_runs, update_connector_sync_state, plan_connector_sync, sync_connector_batch, suggest_connector_mapping, patch_connector_config, preview_connector_event, ingest_connector_event, execute_business_action, list_business_views, get_business_view, query_business_view, list_dashboards, get_dashboard, run_dashboard, list_reports, get_report, run_report, aggregate_records, list_quality_checks, run_quality_check, list_quality_runs, get_quality_run, list_import_jobs, get_import_job, list_export_jobs, get_export_job, download_export_job, list_operation_plans, create_operation_plan, get_operation_plan, review_operation_plan, apply_operation_plan, cancel_operation_plan, mis.approval.start, mis.approval.list, mis.approval.list_by_record, mis.approval.get, mis.approval.sync_result, mis.approval.my_inbox, mis.approval.my_pending, list_record_approvals, create_record_approval, get_record_approval, review_record_approval, list_audit_logs, export_audit_logs_csv, list_data_events, list_record_revisions, get_record_timeline, get_related_records, list_schema_proposals, get_schema_proposal, list_templates, get_template, bootstrap_templates, create_dataset_from_template, list_datasets, get_dataset, create_dataset, delete_dataset, list_fields, upsert_fields, propose_schema, apply_schema_proposal, validate_record, batch_import_records, bulk_update_records, bulk_delete_records, restore_record, start_batch_import_job, get_import_template_csv, import_records_csv, start_csv_import_job, import_records_jsonl, start_jsonl_import_job, upsert_record, get_record, delete_record, query_records, export_records, export_records_jsonl, start_csv_export_job, start_jsonl_export_job, ingest_event, create_backup, list_backups, get_backup, download_backup, restore_backup"
 	}
 	switch action {
 	case "status":
@@ -388,9 +388,50 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			return "missing domain"
 		}
 		return a.callMISDataAPI(cfg, http.MethodGet, "/api/v1/data/domains/"+pathEscape(domain), nil)
+	case "list_business_objects":
+		values := url.Values{}
+		if appID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "app_id"), stringArg(args, "appId"))); appID != "" {
+			values.Set("app_id", appID)
+		}
+		if blueprintID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "blueprint_id"), stringArg(args, "blueprintId"))); blueprintID != "" {
+			values.Set("blueprint_id", blueprintID)
+		}
+		if domain := strings.TrimSpace(stringArg(args, "domain")); domain != "" {
+			values.Set("domain", domain)
+		}
+		if objectRole := misObjectRoleArg(args); objectRole != "" {
+			values.Set("object_role", objectRole)
+		}
+		if limit := strings.TrimSpace(fmt.Sprint(args["limit"])); limit != "" && limit != "<nil>" {
+			values.Set("limit", limit)
+		}
+		if beforeID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "before_id"), stringArg(args, "before"), stringArg(args, "cursor"))); beforeID != "" {
+			values.Set("before_id", beforeID)
+		}
+		path := "/api/v1/data/business-objects"
+		if encoded := values.Encode(); encoded != "" {
+			path += "?" + encoded
+		}
+		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
+	case "resolve_object_role":
+		objectRole := misObjectRoleArg(args)
+		if objectRole == "" {
+			return "missing object_role"
+		}
+		body := map[string]interface{}{
+			"app_id":       firstNonEmptyMISAgentView(stringArg(args, "app_id"), stringArg(args, "appId")),
+			"blueprint_id": firstNonEmptyMISAgentView(stringArg(args, "blueprint_id"), stringArg(args, "blueprintId")),
+			"object_role":  objectRole,
+		}
+		if misBoolArg(args, "require_initialized") {
+			body["require_initialized"] = true
+		}
+		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/object-roles/resolve", compactPayload(body))
 	case "list_relationships":
 		values := url.Values{}
-		if datasetID := strings.TrimSpace(stringArg(args, "dataset_id")); datasetID != "" {
+		if datasetID, datasetErr := a.resolveOptionalMISDatasetIDArg(cfg, args); datasetErr != nil {
+			return datasetErr.Error()
+		} else if datasetID != "" {
 			values.Set("dataset_id", datasetID)
 		}
 		path := "/api/v1/data/relationships"
@@ -408,7 +449,9 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		return prettyMISDataResponse(data)
 	case misDataToolActionGetInbox, misDataToolActionGetInboxSummary:
 		values := url.Values{}
-		if datasetID := strings.TrimSpace(stringArg(args, "dataset_id")); datasetID != "" {
+		if datasetID, datasetErr := a.resolveOptionalMISDatasetIDArg(cfg, args); datasetErr != nil {
+			return datasetErr.Error()
+		} else if datasetID != "" {
 			values.Set("dataset_id", datasetID)
 		}
 		if itemType := strings.TrimSpace(stringArg(args, "type")); itemType != "" {
@@ -722,7 +765,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		body := map[string]interface{}{"filter": args["filter"], "limit": args["limit"]}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/reports/"+pathEscape(reportID)+"/run", compactPayload(body))
 	case "aggregate_records":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -731,14 +777,20 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 	case "list_quality_checks":
 		return a.callMISDataAPI(cfg, http.MethodGet, "/api/v1/data/quality-checks", nil)
 	case "run_quality_check":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"checks": args["checks"], "limit": args["limit"], "include_warnings": args["include_warnings"]}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/quality/run", compactPayload(body))
 	case "list_quality_runs":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -752,7 +804,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
 	case "get_quality_run":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -823,7 +878,9 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		return a.callMISDataAPI(cfg, http.MethodGet, "/api/v1/data/export-jobs/"+pathEscape(jobID)+"/download", nil)
 	case "list_operation_plans":
 		values := url.Values{}
-		if datasetID := strings.TrimSpace(stringArg(args, "dataset_id")); datasetID != "" {
+		if datasetID, datasetErr := a.resolveOptionalMISDatasetIDArg(cfg, args); datasetErr != nil {
+			return datasetErr.Error()
+		} else if datasetID != "" {
 			values.Set("dataset_id", datasetID)
 		}
 		if operation := strings.TrimSpace(stringArg(args, "operation")); operation != "" {
@@ -867,8 +924,19 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/operation-plans/"+pathEscape(planID)+"/cancel", map[string]interface{}{})
 	case "list_record_approvals", "mis.approval.list", "mis.approval.list_by_record", "mis.approval.my_inbox", "mis.approval.my_pending":
 		values := url.Values{}
-		if datasetID := strings.TrimSpace(stringArg(args, "dataset_id")); datasetID != "" {
+		if datasetID, datasetErr := a.resolveOptionalMISDatasetIDArg(cfg, args); datasetErr != nil {
+			return datasetErr.Error()
+		} else if datasetID != "" {
 			values.Set("dataset_id", datasetID)
+		}
+		if appID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "app_id"), stringArg(args, "appId"))); appID != "" {
+			values.Set("app_id", appID)
+		}
+		if blueprintID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "blueprint_id"), stringArg(args, "blueprintId"))); blueprintID != "" {
+			values.Set("blueprint_id", blueprintID)
+		}
+		if objectRole := misObjectRoleArg(args); objectRole != "" {
+			values.Set("object_role", objectRole)
 		}
 		if recordID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "id"), stringArg(args, "record_id"))); recordID != "" {
 			values.Set("record_id", recordID)
@@ -910,7 +978,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
 	case "create_record_approval", "mis.approval.start":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -919,6 +990,9 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			return "missing id"
 		}
 		body := map[string]interface{}{
+			"app_id":               firstNonEmptyMISAgentView(stringArg(args, "app_id"), stringArg(args, "appId")),
+			"blueprint_id":         firstNonEmptyMISAgentView(stringArg(args, "blueprint_id"), stringArg(args, "blueprintId")),
+			"object_role":          misObjectRoleArg(args),
 			"kind":                 stringArg(args, "kind"),
 			"priority":             stringArg(args, "priority"),
 			"summary":              stringArg(args, "summary"),
@@ -962,7 +1036,9 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/approvals/"+pathEscape(approvalID)+"/review", compactPayload(body))
 	case "list_audit_logs", "export_audit_logs_csv":
 		values := url.Values{}
-		if datasetID := strings.TrimSpace(stringArg(args, "dataset_id")); datasetID != "" {
+		if datasetID, datasetErr := a.resolveOptionalMISDatasetIDArg(cfg, args); datasetErr != nil {
+			return datasetErr.Error()
+		} else if datasetID != "" {
 			values.Set("dataset_id", datasetID)
 		}
 		if actionFilter := strings.TrimSpace(stringArg(args, "audit_action")); actionFilter != "" {
@@ -993,7 +1069,9 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
 	case "list_data_events":
 		values := url.Values{}
-		if datasetID := strings.TrimSpace(stringArg(args, "dataset_id")); datasetID != "" {
+		if datasetID, datasetErr := a.resolveOptionalMISDatasetIDArg(cfg, args); datasetErr != nil {
+			return datasetErr.Error()
+		} else if datasetID != "" {
 			values.Set("dataset_id", datasetID)
 		}
 		if source := strings.TrimSpace(stringArg(args, "source")); source != "" {
@@ -1017,7 +1095,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
 	case "list_record_revisions":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -1038,7 +1119,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
 	case "get_record_timeline":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -1059,7 +1143,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
 	case "get_related_records":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -1080,7 +1167,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
 	case "list_schema_proposals":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -1090,7 +1180,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
 	case "get_schema_proposal":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -1120,7 +1213,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 	case "list_datasets":
 		return a.callMISDataAPI(cfg, http.MethodGet, "/api/v1/data/datasets", nil)
 	case "get_dataset":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -1129,53 +1225,77 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		body := map[string]interface{}{"id": stringArg(args, "id"), "domain": stringArg(args, "domain"), "name": stringArg(args, "name"), "title": stringArg(args, "title"), "description": stringArg(args, "description")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets", compactPayload(body))
 	case "delete_dataset":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		return a.callMISDataAPI(cfg, http.MethodDelete, "/api/v1/data/datasets/"+pathEscape(datasetID), nil)
 	case "list_fields":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		return a.callMISDataAPI(cfg, http.MethodGet, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/fields", nil)
 	case "upsert_fields":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		return a.callMISDataAPI(cfg, http.MethodPut, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/fields", compactPayload(map[string]interface{}{"fields": args["fields"]}))
 	case "propose_schema":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"sample_data": args["data"], "reason": stringArg(args, "reason")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/schema-proposals", compactPayload(body))
 	case "apply_schema_proposal":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"proposal_id": stringArg(args, "proposal_id"), "fields": args["fields"], "confirm": misBoolArg(args, "confirm"), "reason": stringArg(args, "reason")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/schema-proposals/apply", compactPayload(body))
 	case "validate_record":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"data": args["data"]}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/validate", compactPayload(body))
 	case "batch_import_records":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"records": args["records"], "dry_run": misBoolArg(args, "dry_run")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/batch", compactPayload(body))
 	case "bulk_update_records":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -1192,7 +1312,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/bulk-update", compactPayload(body))
 	case "bulk_delete_records":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -1205,7 +1328,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/bulk-delete", compactPayload(body))
 	case "restore_record":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		recordID := strings.TrimSpace(stringArg(args, "id"))
 		if datasetID == "" || recordID == "" {
 			return "missing dataset_id or id"
@@ -1213,48 +1339,69 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		body := map[string]interface{}{"confirm": misBoolArg(args, "confirm"), "revision_id": stringArg(args, "revision_id"), "reason": stringArg(args, "reason")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/"+pathEscape(recordID)+"/restore", compactPayload(body))
 	case "start_batch_import_job":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"records": args["records"], "dry_run": misBoolArg(args, "dry_run")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/batch/jobs", compactPayload(body))
 	case "get_import_template_csv":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		return a.callMISDataAPI(cfg, http.MethodGet, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/import-template.csv", nil)
 	case "import_records_csv":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"csv": stringArg(args, "csv"), "dry_run": misBoolArg(args, "dry_run")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/import.csv", compactPayload(body))
 	case "start_csv_import_job":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"csv": stringArg(args, "csv"), "dry_run": misBoolArg(args, "dry_run")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/import.csv/jobs", compactPayload(body))
 	case "import_records_jsonl":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"jsonl": stringArg(args, "jsonl"), "dry_run": misBoolArg(args, "dry_run")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/import.jsonl", compactPayload(body))
 	case "start_jsonl_import_job":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"jsonl": stringArg(args, "jsonl"), "dry_run": misBoolArg(args, "dry_run")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/import.jsonl/jobs", compactPayload(body))
 	case "upsert_record":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -1265,7 +1412,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records", compactPayload(body))
 	case "get_record":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -1275,7 +1425,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		return a.callMISDataAPI(cfg, http.MethodGet, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/"+pathEscape(recordID), nil)
 	case "delete_record":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -1285,35 +1438,50 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		return a.callMISDataAPI(cfg, http.MethodDelete, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/"+pathEscape(recordID), nil)
 	case "query_records":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"q": stringArg(args, "q"), "tag": stringArg(args, "tag"), "filter": args["filter"], "sort": args["sort"], "limit": args["limit"], "before": stringArg(args, "before")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/query", compactPayload(body))
 	case "export_records":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"q": stringArg(args, "q"), "tag": stringArg(args, "tag"), "filter": args["filter"], "sort": args["sort"], "limit": args["limit"], "before": stringArg(args, "before")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/export.csv", compactPayload(body))
 	case "export_records_jsonl":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"q": stringArg(args, "q"), "tag": stringArg(args, "tag"), "filter": args["filter"], "sort": args["sort"], "limit": args["limit"], "before": stringArg(args, "before")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/export.jsonl", compactPayload(body))
 	case "start_csv_export_job":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
 		body := map[string]interface{}{"q": stringArg(args, "q"), "tag": stringArg(args, "tag"), "filter": args["filter"], "sort": args["sort"], "limit": args["limit"], "before": stringArg(args, "before")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/export.csv/jobs", compactPayload(body))
 	case "start_jsonl_export_job":
-		datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+		datasetID, datasetErr := a.resolveMISDatasetIDArg(cfg, args, true)
+		if datasetErr != nil {
+			return datasetErr.Error()
+		}
 		if datasetID == "" {
 			return "missing dataset_id"
 		}
@@ -1362,6 +1530,57 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 	default:
 		return "unknown MIS data action: " + string(action)
 	}
+}
+
+func (a *App) resolveOptionalMISDatasetIDArg(cfg corelib.MISDataConfig, args map[string]interface{}) (string, error) {
+	return a.resolveMISDatasetIDArg(cfg, args, false)
+}
+
+func (a *App) resolveMISDatasetIDArg(cfg corelib.MISDataConfig, args map[string]interface{}, requireInitialized bool) (string, error) {
+	datasetID := strings.TrimSpace(stringArg(args, "dataset_id"))
+	if datasetID != "" {
+		return datasetID, nil
+	}
+	objectRole := misObjectRoleArg(args)
+	if objectRole == "" {
+		return "", nil
+	}
+	body := map[string]interface{}{
+		"app_id":       firstNonEmptyMISAgentView(stringArg(args, "app_id"), stringArg(args, "appId")),
+		"blueprint_id": firstNonEmptyMISAgentView(stringArg(args, "blueprint_id"), stringArg(args, "blueprintId")),
+		"object_role":  objectRole,
+	}
+	if requireInitialized || misBoolArg(args, "require_initialized") {
+		body["require_initialized"] = true
+	}
+	data, err := a.callMISDataAPIBytes(cfg, http.MethodPost, "/api/v1/data/object-roles/resolve", compactPayload(body))
+	if err != nil {
+		return "", fmt.Errorf("resolve object_role %q failed: %v", objectRole, err)
+	}
+	var result struct {
+		DatasetID      string `json:"dataset_id"`
+		BusinessObject struct {
+			DatasetID string `json:"dataset_id"`
+		} `json:"business_object"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return "", fmt.Errorf("decode object_role %q resolution failed: %v", objectRole, err)
+	}
+	datasetID = strings.TrimSpace(result.DatasetID)
+	if datasetID == "" {
+		datasetID = strings.TrimSpace(result.BusinessObject.DatasetID)
+	}
+	if datasetID == "" {
+		return "", fmt.Errorf("resolve object_role %q returned empty dataset_id", objectRole)
+	}
+	if args != nil {
+		args["dataset_id"] = datasetID
+	}
+	return datasetID, nil
+}
+
+func misObjectRoleArg(args map[string]interface{}) string {
+	return strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "object_role"), stringArg(args, "business_object_role"), stringArg(args, "role")))
 }
 
 func (a *App) callMISDataAPI(cfg corelib.MISDataConfig, method, path string, body map[string]interface{}) string {

@@ -30,18 +30,24 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 		return nil, err
 	}
 	kind := normalizeApprovalKind(in.Kind)
+	appID := strings.TrimSpace(in.AppID)
+	blueprintID := strings.TrimSpace(in.BlueprintID)
+	objectRole := strings.TrimSpace(in.ObjectRole)
 	if existing, err := s.store.ListRecordApprovals(ctx, p.TenantID, QueryRecordApprovalsInput{
-		DatasetID: datasetID,
-		RecordID:  recordID,
-		Status:    recordApprovalStatusPending,
-		Kind:      kind,
-		Limit:     1,
+		DatasetID:   datasetID,
+		RecordID:    recordID,
+		AppID:       appID,
+		BlueprintID: blueprintID,
+		ObjectRole:  objectRole,
+		Status:      recordApprovalStatusPending,
+		Kind:        kind,
+		Limit:       1,
 	}); err != nil {
 		return nil, err
 	} else if len(existing) > 0 {
 		reused := existing[0]
 		reused.Reused = true
-		s.audit(ctx, p, "approval.reuse", datasetID, "record", recordID, "Reused pending approval "+reused.ID, map[string]any{"approval_id": reused.ID, "kind": reused.Kind})
+		s.audit(ctx, p, "approval.reuse", datasetID, "record", recordID, "Reused pending approval "+reused.ID, map[string]any{"approval_id": reused.ID, "kind": reused.Kind, "app_id": reused.AppID, "blueprint_id": reused.BlueprintID, "object_role": reused.ObjectRole})
 		return &reused, nil
 	}
 	now := s.now().UTC()
@@ -50,6 +56,9 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 		TenantID:           p.TenantID,
 		DatasetID:          datasetID,
 		RecordID:           recordID,
+		AppID:              appID,
+		BlueprintID:        blueprintID,
+		ObjectRole:         objectRole,
 		Status:             recordApprovalStatusPending,
 		Kind:               kind,
 		Priority:           priority,
@@ -78,7 +87,7 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 	if err != nil {
 		return nil, err
 	}
-	s.audit(ctx, p, "approval.create", datasetID, "record", recordID, "Created approval "+out.ID, map[string]any{"approval_id": out.ID, "kind": out.Kind, "priority": out.Priority, "assigned_to": out.AssignedTo, "due_at": formatOptionalPlanTime(out.DueAt)})
+	s.audit(ctx, p, "approval.create", datasetID, "record", recordID, "Created approval "+out.ID, map[string]any{"approval_id": out.ID, "kind": out.Kind, "priority": out.Priority, "assigned_to": out.AssignedTo, "due_at": formatOptionalPlanTime(out.DueAt), "app_id": out.AppID, "blueprint_id": out.BlueprintID, "object_role": out.ObjectRole})
 	return out, nil
 }
 
@@ -87,6 +96,9 @@ func (s *Service) ListRecordApprovals(ctx context.Context, p Principal, in Query
 	defer s.mu.RUnlock()
 	in.DatasetID = strings.TrimSpace(in.DatasetID)
 	in.RecordID = strings.TrimSpace(in.RecordID)
+	in.AppID = strings.TrimSpace(in.AppID)
+	in.BlueprintID = strings.TrimSpace(in.BlueprintID)
+	in.ObjectRole = strings.TrimSpace(in.ObjectRole)
 	in.Status = strings.TrimSpace(in.Status)
 	if in.Status != "" && !validRecordApprovalStatus(in.Status) {
 		return nil, fmt.Errorf("%w: invalid approval status", ErrInvalidInput)
@@ -111,6 +123,9 @@ func validRecordApprovalStatus(value string) bool {
 
 func recordApprovalMetadata(approval RecordApproval) map[string]any {
 	return map[string]any{
+		"app_id":               approval.AppID,
+		"blueprint_id":         approval.BlueprintID,
+		"object_role":          approval.ObjectRole,
 		"kind":                 approval.Kind,
 		"priority":             approval.Priority,
 		"assigned_to":          approval.AssignedTo,

@@ -113,6 +113,10 @@ func openAPISpec(version string) map[string]interface{} {
 	add("/api/v1/data/access/api-keys/{keyId}/rotate", "post")
 	add("/api/v1/data/domains", "get")
 	add("/api/v1/data/domains/{domain}", "get")
+	add("/api/v1/data/business-objects", "get")
+	add("/api/v1/data/object-roles/resolve", "post")
+	add("/api/v1/data/app-installations", "get", "post")
+	add("/api/v1/data/app-installations/{appId}", "get", "put")
 	add("/api/v1/data/relationships", "get")
 	add("/api/v1/data/intent/resolve", "post")
 	add("/api/v1/data/inbox", "get")
@@ -304,6 +308,8 @@ func openAPISpec(version string) map[string]interface{} {
 		"/api/v1/data/access/presets",
 		"/api/v1/data/access/api-keys",
 		"/api/v1/data/domains",
+		"/api/v1/data/business-objects",
+		"/api/v1/data/app-installations",
 		"/api/v1/data/relationships",
 		"/api/v1/data/templates",
 		"/api/v1/data/backups",
@@ -342,6 +348,17 @@ func openAPISpec(version string) map[string]interface{} {
 			stringQueryParam("dataset_id", "Filter business rules by dataset id."),
 			stringQueryParam("business_action_id", "Filter business rules by business action id."),
 			stringQueryParam("severity", "Filter business rules by exact severity: critical, high, medium, or info."),
+		},
+		"/api/v1/data/business-objects": {
+			stringQueryParam("app_id", "Filter business objects by MaClaw app id."),
+			stringQueryParam("blueprint_id", "Filter business objects by app blueprint id."),
+			stringQueryParam("domain", "Filter business objects by domain."),
+			stringQueryParam("object_role", "Filter by semantic object role such as expense_report or inventory_item."),
+		},
+		"/api/v1/data/app-installations": {
+			stringQueryParam("app_id", "Filter installed MaClaw Apps by app id."),
+			stringQueryParam("blueprint_id", "Filter installed MaClaw Apps by blueprint id."),
+			stringQueryParam("status", "Filter installed MaClaw Apps by status such as installed, disabled, or error."),
 		},
 		"/api/v1/data/relationships": {
 			stringQueryParam("dataset_id", "Filter relationships by source or target dataset id."),
@@ -406,6 +423,9 @@ func openAPISpec(version string) map[string]interface{} {
 		"/api/v1/data/approvals": {
 			stringQueryParam("dataset_id", "Filter approvals by dataset id."),
 			stringQueryParam("record_id", "Filter approvals by record id."),
+			stringQueryParam("app_id", "Filter approvals by MaClaw app id."),
+			stringQueryParam("blueprint_id", "Filter approvals by MaClaw app blueprint id."),
+			stringQueryParam("object_role", "Filter approvals by semantic business object role."),
 			stringQueryParam("status", "Filter approvals by status: pending, approved, or rejected."),
 			stringQueryParam("kind", "Filter approvals by kind."),
 			stringQueryParam("workflow_skill_id", "Filter approvals by workflow skill id."),
@@ -426,6 +446,9 @@ func openAPISpec(version string) map[string]interface{} {
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/templates/bootstrap", bootstrapTemplatesOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/templates/{templateId}/create", createFromTemplateOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/intent/resolve", resolveBusinessIntentOpenAPIRequestBody())
+	setOpenAPIPostRequestBody(paths, "/api/v1/data/object-roles/resolve", resolveObjectRoleOpenAPIRequestBody())
+	setOpenAPIPostRequestBody(paths, "/api/v1/data/app-installations", upsertAppInstallationOpenAPIRequestBody())
+	setOpenAPIPutRequestBody(paths, "/api/v1/data/app-installations/{appId}", upsertAppInstallationOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/business-actions/{actionId}/execute", executeBusinessActionOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/business-rules/evaluate", evaluateBusinessRulesOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/reports/{reportId}/run", aggregateOpenAPIRequestBody())
@@ -918,6 +941,40 @@ func resolveBusinessIntentOpenAPIRequestBody() map[string]interface{} {
 	})
 }
 
+func upsertAppInstallationOpenAPIRequestBody() map[string]interface{} {
+	roleBindingSchema := map[string]interface{}{
+		"type":     "object",
+		"required": []string{"object_role", "dataset_id"},
+		"properties": map[string]interface{}{
+			"object_role": map[string]interface{}{"type": "string", "description": "Semantic object role used by the app UI and workflow, for example expense_report."},
+			"domain":      map[string]interface{}{"type": "string", "description": "Business domain for the bound dataset."},
+			"dataset_id":  map[string]interface{}{"type": "string", "description": "Concrete tenant dataset id resolved for this object role."},
+			"template_id": map[string]interface{}{"type": "string", "description": "Optional template id used to initialize the dataset."},
+			"required":    map[string]interface{}{"type": "boolean", "description": "Whether the app cannot run without this binding."},
+		},
+	}
+	return objectRequestBody(true, []string{"app_id"}, map[string]interface{}{
+		"id":            map[string]interface{}{"type": "string", "description": "Optional installation id; must match app_id when provided."},
+		"app_id":        map[string]interface{}{"type": "string", "description": "Installed MaClaw App id."},
+		"blueprint_id":  map[string]interface{}{"type": "string", "description": "Optional app blueprint id."},
+		"name":          map[string]interface{}{"type": "string", "description": "Human-readable app name."},
+		"version":       map[string]interface{}{"type": "string", "description": "Installed app version."},
+		"kind":          map[string]interface{}{"type": "string", "description": "App kind such as enterprise_approval_app, enterprise_normal_app, or tool_app."},
+		"status":        map[string]interface{}{"type": "string", "description": "Installation status; defaults to installed."},
+		"source":        map[string]interface{}{"type": "string", "description": "Distribution source, usually hub."},
+		"role_bindings": map[string]interface{}{"type": "array", "items": roleBindingSchema, "description": "Semantic object_role to dataset bindings installed for this app."},
+		"metadata":      map[string]interface{}{"type": "object", "description": "Additional app manifest or install metadata."},
+	})
+}
+func resolveObjectRoleOpenAPIRequestBody() map[string]interface{} {
+	return objectRequestBody(true, []string{"object_role"}, map[string]interface{}{
+		"app_id":              map[string]interface{}{"type": "string", "description": "Optional MaClaw app id used to select an app-specific role binding."},
+		"blueprint_id":        map[string]interface{}{"type": "string", "description": "Optional blueprint id used to select a blueprint-specific role binding."},
+		"object_role":         map[string]interface{}{"type": "string", "description": "Semantic object role such as expense_report, employee, inventory_item, or inventory_movement."},
+		"require_initialized": map[string]interface{}{"type": "boolean", "description": "When true, return 404 until the mapped dataset exists for the current tenant."},
+	})
+}
+
 func executeBusinessActionOpenAPIRequestBody() map[string]interface{} {
 	return map[string]interface{}{
 		"required": true,
@@ -1379,12 +1436,15 @@ func applyOperationPlanOpenAPIRequestBody() map[string]interface{} {
 
 func createRecordApprovalOpenAPIRequestBody() map[string]interface{} {
 	properties := map[string]interface{}{
-		"kind":        map[string]interface{}{"type": "string"},
-		"priority":    map[string]interface{}{"type": "string", "description": "Approval priority: low, medium, high, or critical. Defaults to medium when omitted."},
-		"summary":     map[string]interface{}{"type": "string"},
-		"request":     map[string]interface{}{"type": "object"},
-		"assigned_to": map[string]interface{}{"type": "string"},
-		"due_at":      map[string]interface{}{"type": "string", "format": "date-time"},
+		"app_id":       map[string]interface{}{"type": "string", "description": "MaClaw App id that owns this approval instance."},
+		"blueprint_id": map[string]interface{}{"type": "string", "description": "Optional MaClaw App blueprint id that produced this approval instance."},
+		"object_role":  map[string]interface{}{"type": "string", "description": "Semantic object role for the approved business record, such as expense_report."},
+		"kind":         map[string]interface{}{"type": "string"},
+		"priority":     map[string]interface{}{"type": "string", "description": "Approval priority: low, medium, high, or critical. Defaults to medium when omitted."},
+		"summary":      map[string]interface{}{"type": "string"},
+		"request":      map[string]interface{}{"type": "object"},
+		"assigned_to":  map[string]interface{}{"type": "string"},
+		"due_at":       map[string]interface{}{"type": "string", "format": "date-time"},
 	}
 	for key, value := range recordApprovalWorkflowOpenAPIProperties() {
 		properties[key] = value

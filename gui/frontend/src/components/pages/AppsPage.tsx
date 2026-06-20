@@ -71,6 +71,23 @@ type BackendAppInstallPlan = {
     has_blocking_dependency?: boolean;
 };
 
+type BackendAppDataSrvRegistrationItem = {
+    app_id?: string;
+    synced?: boolean;
+    reason?: string;
+    role_binding_count?: number;
+    status?: string;
+};
+
+type BackendAppDataSrvRegistration = {
+    synced?: boolean;
+    eligible_count?: number;
+    synced_count?: number;
+    failed_count?: number;
+    reason?: string;
+    items?: BackendAppDataSrvRegistrationItem[];
+};
+
 type BackendAppInstallRecord = {
     schema?: string;
     package_sha?: string;
@@ -81,6 +98,7 @@ type BackendAppInstallRecord = {
     dependencies?: BackendAppInstallDependency[];
     has_missing_required?: boolean;
     has_blocking_dependency?: boolean;
+    datasrv_registration?: BackendAppDataSrvRegistration;
 };
 
 type AppWorkspaceLayout = {
@@ -118,6 +136,9 @@ type AppManifestBinding = {
     datasrv?: {
         domain: string;
         datasetID?: string;
+        objectRole?: string;
+        blueprintID?: string;
+        templateID?: string;
         preferredAction?: string;
         preferredView?: string;
         preferredReport?: string;
@@ -258,6 +279,12 @@ type ApprovalInstanceOutputView = {
 type ApprovalInstanceView = {
     id: string;
     appID?: string;
+    appName?: string;
+    blueprintID?: string;
+    datasetID?: string;
+    objectRole?: string;
+    approvalEvent?: string;
+    approvalID?: string;
     title: string;
     lane: 'my_requests' | 'pending_my_approval' | 'handled' | 'attention';
     status: 'draft' | 'pending' | 'approved' | 'rejected' | 'attention';
@@ -282,6 +309,9 @@ type ApprovalInstanceView = {
 type BackendApprovalInstance = {
     app_id?: string;
     app_name?: string;
+    blueprint_id?: string;
+    dataset_id?: string;
+    object_role?: string;
     instance_id?: string;
     title?: string;
     lane?: string;
@@ -351,6 +381,8 @@ type AppReviewIssue = {
 
 type AppInstallResultItem = {
     key: string;
+    appID?: string;
+    dataSrvCandidate?: boolean;
     name: string;
     icon: AppIconName;
     customIconDataUrl?: string;
@@ -595,6 +627,8 @@ const labels = {
         approvalInstanceId: '\u5b9e\u4f8b\u7f16\u53f7',
         workflowSkill: '\u81ea\u52a8\u5ba1\u6279\u6d41\u7a0b',
         dataSrvRecord: '\u4e1a\u52a1\u8bb0\u5f55',
+        approvalObjectRoleLabel: '\u4e1a\u52a1\u5bf9\u8c61',
+        remoteApprovalLabel: '\u8fdc\u7aef\u5ba1\u6279',
         businessStatusLabel: '\u4e1a\u52a1\u72b6\u6001',
         resultStatusLabel: '\u7ed3\u679c\u72b6\u6001',
         viewFullWorkflow: '\u67e5\u770b\u5b8c\u6574\u6d41\u7a0b',
@@ -693,6 +727,9 @@ const labels = {
         installDetails: '\u5b89\u88c5\u660e\u7ec6',
         installRecords: '\u6700\u8fd1\u5b89\u88c5',
         installRecordsHint: '\u672c\u673a\u5e94\u7528\u5305\u5b89\u88c5\u548c Skill \u4f9d\u8d56\u5ba1\u8ba1',
+        datasrvRegistrationReady: 'DataSrv 绑定已注册',
+        datasrvRegistrationSkipped: 'DataSrv 绑定未注册',
+        datasrvRegistrationFailed: 'DataSrv 绑定注册失败',
         installRecordsLoading: '\u6b63\u5728\u8bfb\u53d6\u5b89\u88c5\u8bb0\u5f55',
         installRecordsError: '\u5b89\u88c5\u8bb0\u5f55\u8bfb\u53d6\u5931\u8d25',
         noInstallRecords: '\u6682\u65e0\u5e94\u7528\u5b89\u88c5\u8bb0\u5f55',
@@ -835,6 +872,8 @@ const labels = {
         approvalInstanceId: 'Instance ID',
         workflowSkill: 'Approval workflow',
         dataSrvRecord: 'Business record',
+        approvalObjectRoleLabel: 'Business object',
+        remoteApprovalLabel: 'Remote approval',
         businessStatusLabel: 'Business status',
         resultStatusLabel: 'Result status',
         viewFullWorkflow: 'View full workflow',
@@ -933,6 +972,9 @@ const labels = {
         installDetails: 'Install details',
         installRecords: 'Recent installs',
         installRecordsHint: 'Local app package installs and Skill dependency audit',
+        datasrvRegistrationReady: 'DataSrv bindings registered',
+        datasrvRegistrationSkipped: 'DataSrv bindings not registered',
+        datasrvRegistrationFailed: 'DataSrv binding registration failed',
         installRecordsLoading: 'Reading install records',
         installRecordsError: 'Failed to read install records',
         noInstallRecords: 'No app install records yet',
@@ -964,7 +1006,7 @@ const sourceLabels: Record<AppEntry['source'], { zh: string; en: string }> = {
 };
 
 const initialApps: AppEntry[] = [
-    { id: 'expense', name: '\u62a5\u9500\u7533\u8bf7', description: '\u4ece\u53d1\u7968\u3001\u884c\u7a0b\u548c\u653f\u7b56\u81ea\u52a8\u751f\u6210\u62a5\u9500\u5355\u3002', category: 'OA', kind: 'enterprise_approval_app', icon: 'receipt', accent: '#2f5f98', pinned: true, source: 'datasrv', manifest: makeEnterpriseManifest('enterprise_approval_app', 'finance', 'finance.expense_upsert', 'finance.expense_review', 'finance.expense_by_status', 'finance.overview', 'expense-approval-app', [{ id: 'expense-approval-workflow', version: '1.0.0', kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow', 'expense.policy'] }]) },
+    { id: 'expense', name: '\u62a5\u9500\u7533\u8bf7', description: '\u4ece\u53d1\u7968\u3001\u884c\u7a0b\u548c\u653f\u7b56\u81ea\u52a8\u751f\u6210\u62a5\u9500\u5355\u3002', category: 'OA', kind: 'enterprise_approval_app', icon: 'receipt', accent: '#2f5f98', pinned: true, source: 'datasrv', manifest: makeEnterpriseManifest('enterprise_approval_app', 'finance', 'finance.expense_upsert', 'finance.expense_review', 'finance.expense_by_status', 'finance.overview', 'expense-approval-app', [{ id: 'expense-approval-workflow', version: '1.0.0', kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow', 'expense.policy'] }], { event: 'expense.submitted', objectRole: 'expense_report' }) },
     { id: 'purchase-inbound', name: '\u91c7\u8d2d\u5165\u5e93', description: '\u5bf9\u63a5\u91c7\u8d2d\u5355\u3001\u5165\u5e93\u5355\u548c\u5e93\u5b58\u53d8\u52a8\u3002', category: '\u8fdb\u9500\u5b58', kind: 'enterprise_normal_app', icon: 'warehouse', accent: '#657a42', pinned: true, source: 'datasrv', manifest: makeDataSrvManifest('procurement', 'procurement.purchase_order_upsert', 'procurement.purchase_order_review', 'procurement.purchase_by_status', 'procurement.overview') },
     { id: 'inventory-count', name: '\u5e93\u5b58\u76d8\u70b9', description: '\u6309\u4ed3\u5e93\u6216\u7269\u6599\u751f\u6210\u76d8\u70b9\u8868\u5e76\u56de\u5199\u5dee\u5f02\u3002', category: '\u8fdb\u9500\u5b58', kind: 'enterprise_normal_app', icon: 'inventory', accent: '#6b7280', pinned: true, source: 'datasrv', manifest: makeDataSrvManifest('inventory', 'inventory.stock_update', 'inventory.stock_position', 'inventory.stock_by_warehouse', 'inventory.overview') },
     { id: 'customer-profile', name: '\u5ba2\u6237\u5efa\u6863', description: '\u4ece\u540d\u7247\u3001\u90ae\u4ef6\u6216\u804a\u5929\u8bb0\u5f55\u6574\u7406\u5ba2\u6237\u8d44\u6599\u3002', category: 'CRM', kind: 'enterprise_normal_app', icon: 'customer', accent: '#8a5a44', pinned: true, source: 'datasrv', manifest: makeDataSrvManifest('sales', 'sales.customer_upsert', 'sales.customer_directory', 'sales.customer_activity', 'sales.overview') },
@@ -1246,6 +1288,29 @@ function normalizeAppMIS(raw: unknown): AppManifestBinding['mis'] {
     return approvalBindings.length ? { approvalBindings } : undefined;
 }
 
+function normalizeAppDataSrv(raw: unknown): AppManifestBinding['datasrv'] {
+    const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const datasetID = String(value.datasetID || value.dataset_id || value.dataset || '').trim();
+    const domain = String(value.domain || '').trim() || datasetID.split('.')[0] || '';
+    if (!domain && !datasetID) return undefined;
+    const datasrv: NonNullable<AppManifestBinding['datasrv']> = { domain };
+    if (datasetID) datasrv.datasetID = datasetID;
+    const objectRole = String(value.objectRole || value.object_role || value.businessObjectRole || value.business_object_role || '').trim();
+    if (objectRole) datasrv.objectRole = objectRole;
+    const blueprintID = String(value.blueprintID || value.blueprint_id || '').trim();
+    if (blueprintID) datasrv.blueprintID = blueprintID;
+    const templateID = String(value.templateID || value.template_id || '').trim();
+    if (templateID) datasrv.templateID = templateID;
+    const preferredAction = String(value.preferredAction || value.preferred_action || '').trim();
+    if (preferredAction) datasrv.preferredAction = preferredAction;
+    const preferredView = String(value.preferredView || value.preferred_view || '').trim();
+    if (preferredView) datasrv.preferredView = preferredView;
+    const preferredReport = String(value.preferredReport || value.preferred_report || '').trim();
+    if (preferredReport) datasrv.preferredReport = preferredReport;
+    const preferredDashboard = String(value.preferredDashboard || value.preferred_dashboard || '').trim();
+    if (preferredDashboard) datasrv.preferredDashboard = preferredDashboard;
+    return datasrv;
+}
 function normalizeAppWorkspaceLayout(raw: unknown, kind: AppKind): AppWorkspaceLayout {
     const value = raw && typeof raw === 'object' ? raw as Partial<AppWorkspaceLayout> : undefined;
     return value?.schema === 'maclaw.app.ui.v1' ? { ...value, schema: 'maclaw.app.ui.v1' } : defaultWorkspaceLayoutForKind(kind);
@@ -1930,7 +1995,7 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
         businessStatus,
         resultStatus,
         detailURL: firstSkillRunResultString(objects, ['detail_url', 'detailURL', 'workflow_url', 'workflowURL', 'url']) || undefined,
-        recordID: firstSkillRunResultString(objects, ['record_id', 'recordID', 'business_record_id', 'businessRecordID']) || undefined,
+        recordID: firstSkillRunResultString(objects, ['record_id', 'recordID', 'business_record_id', 'businessRecordID']) || approvalPayloadRecordID(resultPayload) || undefined,
         resultPayload,
         outputs,
         artifacts,
@@ -2141,6 +2206,8 @@ function parseBackendAppInstallDependencies(value: unknown): BackendAppInstallDe
             installed: dep.installed === true || dep.Installed === true,
             installed_name: String(dep.installed_name || dep.installedName || dep.InstalledName || '').trim() || undefined,
             installed_dir: String(dep.installed_dir || dep.installedDir || dep.InstalledDir || '').trim() || undefined,
+            installed_status: String(dep.installed_status || dep.installedStatus || dep.InstalledStatus || '').trim() || undefined,
+            health: String(dep.health || dep.Health || '').trim() || undefined,
             action: String(dep.action || dep.Action || '').trim() || undefined,
             message: String(dep.message || dep.Message || '').trim() || undefined,
         });
@@ -2334,6 +2401,11 @@ function appDependencyPublishSummary(app: AppEntry, lang?: string) {
     const deps = appDependencyEvidence(app);
     if (deps.length === 0) return zh ? '无 Skill 依赖' : 'No Skill dependencies';
     return deps.map((dep) => `${dep.id}${dep.version ? `@${dep.version}` : ''} (${dep.kind}${dep.required ? '' : ', optional'})`).join(', ');
+}
+
+function appNeedsRuntimeDependencyCheck(app: AppEntry) {
+    if (app.source !== 'market' && app.source !== 'skill' && app.source !== 'local') return false;
+    return appDependencyEvidence(app).length > 0;
 }
 function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmission) {
     const evidence = latestAppRunEvidence(app);
@@ -3191,9 +3263,17 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
         decision: String(event.decision || event.action || '').trim() || undefined,
         message: String(event.message || event.note || '').trim() || undefined,
     })).filter((event) => event.at || event.node || event.actor || event.decision || event.message);
+    const approvalID = String(instance.approval_id || instance.record_approval_id || '').trim();
+    const objectRole = String(instance.object_role || instance.approval_object_role || '').trim();
     return {
         id,
         appID: String(instance.app_id || '').trim(),
+        appName: String(instance.app_name || '').trim(),
+        blueprintID: String(instance.blueprint_id || '').trim(),
+        datasetID: String(instance.dataset_id || '').trim(),
+        objectRole,
+        approvalEvent: String(instance.approval_event || '').trim(),
+        approvalID,
         title: appTitle,
         lane: lane === 'pending_my_approval' || lane === 'handled' || lane === 'attention' ? lane : 'my_requests',
         status: status === 'approved' || status === 'rejected' || status === 'attention' || status === 'draft' ? status : 'pending',
@@ -3206,7 +3286,7 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
         workflowDecisionID: String(instance.workflow_decision_id || '').trim(),
         businessStatus: String(instance.business_status || '').trim(),
         resultStatus: String(instance.result_status || '').trim(),
-        recordID: String(instance.record_id || instance.record_approval_id || instance.approval_id || '').trim(),
+        recordID: String(instance.record_id || approvalPayloadRecordID(instance.result_payload) || '').trim(),
         detailURL: String(instance.detail_url || '').trim(),
         resultPayload: compactApprovalRecord(instance.result_payload),
         outputs: normalizeApprovalOutputs(instance.outputs),
@@ -3232,19 +3312,42 @@ function appDataSrvDatasetID(app: AppEntry): string {
     return domain;
 }
 
+function approvalPayloadRecordID(payload?: Record<string, unknown>): string {
+    const record = payload?.business_record;
+    if (record && typeof record === 'object' && !Array.isArray(record)) {
+        const value = (record as Record<string, unknown>).id || (record as Record<string, unknown>).record_id || (record as Record<string, unknown>).recordID;
+        if (value !== undefined && value !== null) return String(value).trim();
+    }
+    const direct = payload?.record_id || payload?.recordID || payload?.business_record_id || payload?.businessRecordID;
+    return direct === undefined || direct === null ? '' : String(direct).trim();
+}
+
 function appApprovalRecordID(instance: BackendApprovalInstance): string {
-    return String(instance.record_id || instance.instance_id || '').trim();
+    return String(instance.record_id || approvalPayloadRecordID(instance.result_payload) || instance.instance_id || '').trim();
 }
 
 function approvalDataSrvSyncPayload(app: AppEntry, instance: BackendApprovalInstance) {
-    const datasetID = appDataSrvDatasetID(app);
+    const datasetID = String(instance.dataset_id || appDataSrvDatasetID(app)).trim();
+    const objectRole = String(instance.object_role || instance.approval_object_role || appApprovalBinding(app)?.objectRole || app.manifest?.datasrv?.objectRole || '').trim();
+    const blueprintID = String(instance.blueprint_id || app.manifest?.datasrv?.blueprintID || '').trim();
     const recordID = appApprovalRecordID(instance);
-    if (!datasetID || !recordID) return null;
+    if ((!datasetID && !objectRole) || !recordID) return null;
     return {
         dataset_id: datasetID,
+        object_role: objectRole,
+        app_id: app.id,
+        blueprint_id: blueprintID,
         record_id: recordID,
         approval_id: String(instance.approval_id || instance.record_approval_id || '').trim(),
-        instance,
+        instance: {
+            ...instance,
+            app_id: instance.app_id || app.id,
+            dataset_id: datasetID,
+            object_role: objectRole,
+            approval_object_role: instance.approval_object_role || objectRole,
+            blueprint_id: blueprintID,
+            record_id: recordID,
+        },
     };
 }
 
@@ -3453,6 +3556,9 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
     const outputModes = normalizeOutputModes(app.manifest?.skill?.outputModes);
     const approvalBinding = appApprovalBinding(app);
     const workflowSkillID = appApprovalWorkflowSkillID(app);
+    const approvalDatasetID = appDataSrvDatasetID(app);
+    const approvalObjectRole = String(approvalBinding?.objectRole || app.manifest?.datasrv?.objectRole || '').trim();
+    const approvalBlueprintID = String(app.manifest?.datasrv?.blueprintID || '').trim();
     const inputMode = app.manifest?.skill?.inputMode || 'file';
     const allowMultipleFiles = !!app.manifest?.skill?.multipleFiles;
     const skillFields = normalizeSkillAppFields(app.manifest?.skill?.fields);
@@ -3484,7 +3590,7 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
     const runApp = async () => {
         approvalRunContextRef.current = null;
         if (app?.id) onUse?.(app.id);
-        if (app && (app.source === 'market' || app.source === 'skill' || app.source === 'local') && (app.manifest?.appSkill || (app.manifest?.dependencies?.skills?.length || 0) > 0 || (app.manifest?.mis?.approvalBindings?.length || 0) > 0)) {
+        if (app && appNeedsRuntimeDependencyCheck(app)) {
             try {
                 const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
                 if (dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, [app.id])) {
@@ -3589,12 +3695,14 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                     app_kind: app.kind,
                     approval_instance_id: fallbackID,
                     approval_event: approvalBinding?.event || '',
-                    approval_object_role: approvalBinding?.objectRole || '',
+                    approval_object_role: approvalObjectRole,
+                    object_role: approvalObjectRole,
                     approval_workflow_skill_id: workflowSkillID,
                     business_entity: businessEntity || app.category,
                     business_action: businessAction || 'create',
                     business_note: businessNote,
-                    dataset_id: app.manifest?.datasrv?.datasetID || '',
+                    dataset_id: approvalDatasetID,
+                    blueprint_id: approvalBlueprintID,
                     datasrv_domain: app.manifest?.datasrv?.domain || '',
                     preferred_action: app.manifest?.datasrv?.preferredAction || '',
                     preferred_view: app.manifest?.datasrv?.preferredView || '',
@@ -3622,7 +3730,10 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                 workflow_skill_id: workflowSkillID,
                 workflow_decision_id: workflowRunID,
                 approval_event: approvalBinding?.event || undefined,
-                approval_object_role: approvalBinding?.objectRole || undefined,
+                approval_object_role: approvalObjectRole || undefined,
+                object_role: approvalObjectRole || undefined,
+                dataset_id: approvalDatasetID || undefined,
+                blueprint_id: approvalBlueprintID || undefined,
                 title: `${businessEntity || app.category} / ${businessAction || 'create'}`,
                 lane: 'my_requests',
                 status: 'pending',
@@ -3696,6 +3807,13 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
             app_name: app.name,
             workflow_skill_id: instance.workflowSkillID || workflowSkillID,
             workflow_decision_id: `decision-${Date.now().toString(36)}`,
+            approval_id: instance.approvalID,
+            record_approval_id: instance.approvalID,
+            approval_event: instance.approvalEvent || approvalBinding?.event || undefined,
+            approval_object_role: instance.objectRole || approvalObjectRole || undefined,
+            object_role: instance.objectRole || approvalObjectRole || undefined,
+            dataset_id: instance.datasetID || approvalDatasetID || undefined,
+            blueprint_id: instance.blueprintID || approvalBlueprintID || undefined,
             title: instance.title,
             lane: nextLane,
             status: decision,
@@ -3715,15 +3833,18 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
             business_action: businessAction || 'approve',
             business_note: businessNote,
             updated_at: now,
-            events: [{
-                at: now,
-                node: nextNode,
-                actor: instance.approver || (zh ? '\u5ba1\u6279\u4eba' : 'Approver'),
-                decision,
-                message: statusText,
-                action: decision,
-                note: businessNote,
-            }],
+            events: [
+                ...(instance.events || []),
+                {
+                    at: now,
+                    node: nextNode,
+                    actor: instance.approver || (zh ? '\u5ba1\u6279\u4eba' : 'Approver'),
+                    decision,
+                    message: statusText,
+                    action: decision,
+                    note: businessNote,
+                },
+            ],
         };
         const fallback = backendApprovalInstanceToView(payload, lang);
         if (fallback) {
@@ -4017,6 +4138,8 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                 <div><dt>{text.approvalResult}</dt><dd>{selected.result}</dd></div>
                                 <div><dt>{text.workflowSkill}</dt><dd>{selected.workflowSkillID || '-'}</dd></div>
                                 <div><dt>{text.dataSrvRecord}</dt><dd>{selected.recordID || '-'}</dd></div>
+                                <div><dt>{text.approvalObjectRoleLabel}</dt><dd>{selected.objectRole || '-'}</dd></div>
+                                <div><dt>{text.remoteApprovalLabel}</dt><dd>{selected.approvalID || '-'}</dd></div>
                                 <div><dt>{text.businessStatusLabel}</dt><dd>{selected.businessStatus || '-'}</dd></div>
                                 <div><dt>{text.resultStatusLabel}</dt><dd>{selected.resultStatus || approvalStatusLabel(selected.status, lang)}</dd></div>
                             </dl>
@@ -4390,7 +4513,7 @@ function manifestToAppEntry(raw: any): AppEntry | null {
             privateMarker: 'x_maclaw_apps',
             entryKind: kind,
             launchMode,
-            datasrv: app.binding?.datasrv,
+            datasrv: normalizeAppDataSrv(app.binding?.datasrv),
             mis: normalizeAppMIS(app.binding?.mis),
             appSkill: app.binding?.appSkill,
             dependencies: normalizeAppDependencies(app.binding?.dependencies),
@@ -4455,6 +4578,47 @@ function installSummaryMessage(installedCount: number, upgradedCount: number, sk
     if (upgradedCount > 0) parts.push(`${text.upgradedCount}: ${upgradedCount}`);
     parts.push(`${text.skippedCount}: ${skippedCount}`);
     return parts.join(' · ');
+}
+
+function dataSrvRegistrationNumber(value: unknown) {
+    const numberValue = Number(value || 0);
+    return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function dataSrvRegistrationSummary(registration: BackendAppDataSrvRegistration | undefined | null, text: typeof labels.zh) {
+    const eligibleCount = dataSrvRegistrationNumber(registration?.eligible_count);
+    if (!registration || eligibleCount <= 0) return '';
+    const syncedCount = dataSrvRegistrationNumber(registration.synced_count);
+    const reason = String(registration.reason || '').trim();
+    if (registration.synced) return `${text.datasrvRegistrationReady}: ${syncedCount || eligibleCount}/${eligibleCount}`;
+    if (syncedCount > 0) return `${text.datasrvRegistrationFailed}: ${syncedCount}/${eligibleCount}${reason ? ` · ${reason}` : ''}`;
+    return `${text.datasrvRegistrationSkipped}: ${reason || `${syncedCount}/${eligibleCount}`}`;
+}
+
+function dataSrvRegistrationSummaryForApp(registration: BackendAppDataSrvRegistration | undefined | null, appID: string, text: typeof labels.zh) {
+    if (!registration) return '';
+    const items = Array.isArray(registration.items) ? registration.items : [];
+    const appIDs = new Set(appInstallIdentityKeys(appID));
+    const item = items.find((entry) => appInstallIdentityKeys(String(entry?.app_id || '')).some((id) => appIDs.has(id)));
+    if (!item) return items.length === 0 ? dataSrvRegistrationSummary(registration, text) : '';
+    const roleBindingCount = dataSrvRegistrationNumber(item.role_binding_count);
+    if (item.synced) return roleBindingCount > 0 ? `${text.datasrvRegistrationReady}: ${roleBindingCount}` : text.datasrvRegistrationReady;
+    const reason = String(item.reason || '').trim();
+    return reason ? `${text.datasrvRegistrationFailed}: ${reason}` : text.datasrvRegistrationFailed;
+}
+
+function appHasDataSrvRegistrationCandidate(app: AppEntry) {
+    const datasrv = app.manifest?.datasrv;
+    const datasetID = String(datasrv?.datasetID || '').trim();
+    if (!isEnterpriseAppKind(app.kind) || !datasetID) return false;
+    if (String(datasrv?.objectRole || '').trim()) return true;
+    return app.kind === 'enterprise_approval_app' && !!(app.manifest?.mis?.approvalBindings || []).some((binding) => String(binding.objectRole || '').trim());
+}
+
+function installDetailWithDataSrvRegistration(detail: string, registration: BackendAppDataSrvRegistration | undefined | null, appID: string | undefined, dataSrvCandidate: boolean | undefined, text: typeof labels.zh) {
+    if (!appID || !dataSrvCandidate) return detail;
+    const summary = dataSrvRegistrationSummaryForApp(registration, appID, text);
+    return summary ? `${detail} · ${summary}` : detail;
 }
 
 function backendDependencyMatchesAppIDs(dep: BackendAppInstallDependency, appIds: string[]) {
@@ -5551,6 +5715,7 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
     const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
     const [submissions, setSubmissions] = useState<Record<string, AppPublishSubmission>>(() => readPublishSubmissions());
     const [submittingAppId, setSubmittingAppId] = useState('');
+    const [submitErrors, setSubmitErrors] = useState<Record<string, string>>({});
     const [queueStatus, setQueueStatus] = useState<'loading' | 'ready' | 'unsupported' | 'error'>('loading');
     const [queueRefreshing, setQueueRefreshing] = useState(false);
     const [queueRefreshedAt, setQueueRefreshedAt] = useState('');
@@ -5595,6 +5760,24 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
     const submitApp = async (app: AppEntry) => {
         const submittedAt = new Date().toISOString();
         setSubmittingAppId(app.id);
+        setSubmitErrors((current) => {
+            const next = { ...current };
+            delete next[app.id];
+            return next;
+        });
+        try {
+            const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
+            if (dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, [app.id])) {
+                throw new Error(text.missingRequiredDependency);
+            }
+        } catch (error) {
+            setSubmitErrors((current) => ({
+                ...current,
+                [app.id]: error instanceof Error ? error.message : String(error || text.dependencyPlanError),
+            }));
+            setSubmittingAppId('');
+            return;
+        }
         let submission: AppPublishSubmission | null = null;
         try {
             submission = await submitAppPackageToEnterpriseMarket(app, appsToPackManifest([app]));
@@ -5623,6 +5806,11 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
         setSubmissions((current) => {
             const next = { ...current, [app.id]: normalizeFreshPublishSubmission(submission) };
             writePublishSubmissions(next);
+            return next;
+        });
+        setSubmitErrors((current) => {
+            const next = { ...current };
+            delete next[app.id];
             return next;
         });
         setCopyState('idle');
@@ -5728,6 +5916,7 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
                         const canResubmit = submission?.status === 'review_failed' || !!submission?.modifiedAt;
                         const canWithdraw = !!submission && ['submitted', 'review_failed', 'approved'].includes(submission.status);
                         const isSubmitting = submittingAppId === app.id;
+                        const submitError = submitErrors[app.id] || '';
                         return (
                             <article className="apps-publish-card" key={app.id} data-ready={ready ? 'true' : 'false'}>
                                 <div className="apps-publish-card__head">
@@ -5750,6 +5939,12 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
                                         {submission.reviewIssues && submission.reviewIssues.length > 0 && (
                                             <span>{text.reviewIssues}: {reviewIssuesSummary(submission.reviewIssues, text)}</span>
                                         )}
+                                    </div>
+                                )}
+                                {submitError && (
+                                    <div className="apps-publish-submission apps-publish-submission--error" role="alert">
+                                        <strong>{text.dependencyPlanError}</strong>
+                                        <span>{submitError}</span>
                                     </div>
                                 )}
                                 <div className="apps-publish-checks">
@@ -6683,14 +6878,17 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
             if (dependencyInstallPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyInstallPlan, [app.id])) {
                 throw new Error(text.missingRequiredDependency);
             }
+            let installFeedbackMessage = text.alreadyInstalled;
             try {
-                await RecordMaclawAppInstall(manifestText, 'market');
+                const installAudit = await RecordMaclawAppInstall(manifestText, 'market') as BackendAppInstallRecord;
+                const dataSrvSummary = appHasDataSrvRegistrationCandidate(app) ? dataSrvRegistrationSummary(installAudit?.datasrv_registration, text) : '';
+                if (dataSrvSummary) installFeedbackMessage = `${installFeedbackMessage} · ${dataSrvSummary}`;
                 await refreshInstallRecords();
             } catch {
                 // Dependency health is the install gate; audit refresh failures should not discard an otherwise valid local install.
             }
             onInstallApp(app);
-            setMarketInstallFeedback({ appId: app.id, state: 'done', message: text.alreadyInstalled });
+            setMarketInstallFeedback({ appId: app.id, state: 'done', message: installFeedbackMessage });
         } catch (error: any) {
             setMarketInstallFeedback({ appId: app.id, state: 'error', message: error?.message || text.installError });
         } finally {
@@ -6731,11 +6929,13 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
             const resultItems = plan.map((item): AppInstallResultItem => {
                 const selected = (item.action === 'install' || item.action === 'upgrade') && selectedKeys.has(item.key);
                 if (selected && item.action === 'install') {
-                    return { key: item.key, name: item.app.name, icon: item.app.icon, customIconDataUrl: item.app.customIconDataUrl, accent: item.app.accent, action: 'installed', detail: text.installedCount };
+                    return { key: item.key, appID: item.app.id, dataSrvCandidate: appHasDataSrvRegistrationCandidate(item.app), name: item.app.name, icon: item.app.icon, customIconDataUrl: item.app.customIconDataUrl, accent: item.app.accent, action: 'installed', detail: text.installedCount };
                 }
                 if (selected && item.action === 'upgrade') {
                     return {
                         key: item.key,
+                        appID: item.app.id,
+                        dataSrvCandidate: appHasDataSrvRegistrationCandidate(item.app),
                         name: item.app.name,
                         icon: item.app.icon,
                         customIconDataUrl: item.app.customIconDataUrl,
@@ -6749,21 +6949,34 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                     : item.action === 'duplicate'
                         ? text.duplicateApp
                         : text.notSelected;
-                return { key: item.key, name: item.app.name, icon: item.app.icon, customIconDataUrl: item.app.customIconDataUrl, accent: item.app.accent, action: 'skipped', detail: reason };
+                return { key: item.key, appID: item.app.id, dataSrvCandidate: appHasDataSrvRegistrationCandidate(item.app), name: item.app.name, icon: item.app.icon, customIconDataUrl: item.app.customIconDataUrl, accent: item.app.accent, action: 'skipped', detail: reason };
             });
             const nextApps = plan.filter((item) => (item.action === 'install' || item.action === 'upgrade') && selectedKeys.has(item.key)).map((item) => item.app);
             const installedActionCount = plan.filter((item) => item.action === 'install' && selectedKeys.has(item.key)).length;
             const upgradedActionCount = plan.filter((item) => item.action === 'upgrade' && selectedKeys.has(item.key)).length;
             const skippedActionCount = plan.length - nextApps.length;
-            if (nextApps.length > 0) {
-                const installAuditPackage = nextApps.length === 1 ? appToManifest(nextApps[0]) : appsToPackManifest(nextApps);
-                void RecordMaclawAppInstall(JSON.stringify(installAuditPackage), 'market').then(() => refreshInstallRecords()).catch(() => undefined);
-            }
             nextApps.forEach(onInstallApp);
             setInstallMessage(installSummaryMessage(installedActionCount, upgradedActionCount, skippedActionCount, text));
             setInstallResultItems(resultItems);
             setInstallState('installed');
             setConfirmHighRiskInstall(false);
+            const installedResultKeys = new Set(resultItems.filter((item) => item.action !== 'skipped').map((item) => item.key));
+            if (nextApps.length > 0) {
+                const installAuditPackage = nextApps.length === 1 ? appToManifest(nextApps[0]) : appsToPackManifest(nextApps);
+                try {
+                    const installAudit = await RecordMaclawAppInstall(JSON.stringify(installAuditPackage), 'market') as BackendAppInstallRecord;
+                    const dataSrvRegistration = installAudit?.datasrv_registration;
+                    await refreshInstallRecords();
+                    if (dataSrvRegistration) {
+                        setInstallResultItems((current) => current.map((item) => !installedResultKeys.has(item.key) ? item : {
+                            ...item,
+                            detail: installDetailWithDataSrvRegistration(item.detail, dataSrvRegistration, item.appID, item.dataSrvCandidate, text),
+                        }));
+                    }
+                } catch {
+                    // Dependency health is the install gate; audit refresh failures should not discard an otherwise valid local install.
+                }
+            }
         } catch (error: any) {
             setInstallMessage(error?.message || text.installError);
             setInstallResultItems([]);

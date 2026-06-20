@@ -81,6 +81,10 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/capabilities",
 		"/api/v1/data/domains",
 		"/api/v1/data/domains/{domain}",
+		"/api/v1/data/business-objects",
+		"/api/v1/data/object-roles/resolve",
+		"/api/v1/data/app-installations",
+		"/api/v1/data/app-installations/{appId}",
 		"/api/v1/data/relationships",
 		"/api/v1/data/intent/resolve",
 		"/api/v1/data/inbox",
@@ -215,6 +219,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/access/presets",
 		"/api/v1/data/access/api-keys",
 		"/api/v1/data/domains",
+		"/api/v1/data/business-objects",
 		"/api/v1/data/relationships",
 		"/api/v1/data/templates",
 		"/api/v1/data/backups",
@@ -270,6 +275,21 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	for _, name := range []string{"query", "domain", "limit"} {
 		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/intent/resolve", name) {
 			t.Fatalf("openapi intent resolve body missing %s: %#v", name, paths["/api/v1/data/intent/resolve"])
+		}
+	}
+	for _, name := range []string{"app_id", "blueprint_id", "object_role", "require_initialized"} {
+		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/object-roles/resolve", name) {
+			t.Fatalf("openapi object role resolve body missing %s: %#v", name, paths["/api/v1/data/object-roles/resolve"])
+		}
+	}
+	for _, name := range []string{"app_id", "blueprint_id", "name", "version", "kind", "status", "source", "role_bindings", "metadata"} {
+		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/app-installations", name) {
+			t.Fatalf("openapi app installation body missing %s: %#v", name, paths["/api/v1/data/app-installations"])
+		}
+	}
+	for _, name := range []string{"app_id", "role_bindings"} {
+		if !openAPIRequestBodyHasProperty(paths, "/api/v1/data/app-installations/{appId}", "put", name) {
+			t.Fatalf("openapi app installation update body missing %s: %#v", name, paths["/api/v1/data/app-installations/{appId}"])
 		}
 	}
 	for _, name := range []string{"record_id", "idempotency_key", "title", "tags", "data", "occurred_at", "dry_run"} {
@@ -503,7 +523,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			t.Fatalf("openapi apply operation plan body missing %s: %#v", name, paths["/api/v1/data/operation-plans/{planId}/apply"])
 		}
 	}
-	for _, name := range []string{"kind", "priority", "summary", "request", "assigned_to", "due_at", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "workflow_decision_id", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
+	for _, name := range []string{"app_id", "blueprint_id", "object_role", "kind", "priority", "summary", "request", "assigned_to", "due_at", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "workflow_decision_id", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
 		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals", name) {
 			t.Fatalf("openapi create approval body missing %s: %#v", name, paths["/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals"])
 		}
@@ -544,7 +564,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/import-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/export-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/operation-plans":                       {"dataset_id", "operation", "status"},
-		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "status", "kind", "workflow_skill_id", "workflow_instance_id", "business_status", "result_status", "assigned_to", "overdue"},
+		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "app_id", "blueprint_id", "object_role", "status", "kind", "workflow_skill_id", "workflow_instance_id", "business_status", "result_status", "assigned_to", "overdue"},
 		"/api/v1/data/datasets/{datasetId}/schema-proposals": {"status"},
 		"/api/v1/data/datasets/{datasetId}/records":          {"q", "tag"},
 	} {
@@ -5131,6 +5151,293 @@ func TestHTTPServerListsBusinessDomainCatalogs(t *testing.T) {
 	}
 }
 
+func TestHTTPServerListsBusinessObjectsAndResolvesObjectRoles(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	server := NewHTTPServer(NewService(store, "sqlite"), "test-token-0123456789012345", "test")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/data/business-objects?app_id=mis.expense", nil)
+	auth(req)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list expense business objects status=%d body=%s", w.Code, w.Body.String())
+	}
+	var expenseObjects ListResponse[BusinessObjectCatalog]
+	if err := json.NewDecoder(w.Body).Decode(&expenseObjects); err != nil {
+		t.Fatalf("decode expense business objects: %v", err)
+	}
+	expense := findBusinessObject(expenseObjects.Items, "expense_report")
+	if expense == nil || expense.Initialized || expense.DatasetID != "finance.expenses" || expense.TemplateID != "finance.expenses" || expense.RoleBinding.AppID != "mis.expense" || !containsString(expense.MissingTemplates, "finance.expenses") {
+		t.Fatalf("unexpected expense business object before bootstrap: %#v", expense)
+	}
+	if !containsBusinessAction(expense.BusinessActions, "finance.expense_submit") || expense.PreferredAction != "finance.expense_submit" {
+		t.Fatalf("expected expense submit business action in object catalog: %#v", expense.BusinessActions)
+	}
+	if findBusinessObject(expenseObjects.Items, "employee") == nil {
+		t.Fatalf("mis.expense should expose employee role dependency too: %#v", expenseObjects.Items)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/business-objects?app_id=mis.inventory", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list inventory business objects status=%d body=%s", w.Code, w.Body.String())
+	}
+	var inventoryObjects ListResponse[BusinessObjectCatalog]
+	if err := json.NewDecoder(w.Body).Decode(&inventoryObjects); err != nil {
+		t.Fatalf("decode inventory business objects: %v", err)
+	}
+	if findBusinessObject(inventoryObjects.Items, "inventory_item") == nil || findBusinessObject(inventoryObjects.Items, "inventory_movement") == nil {
+		t.Fatalf("expected inventory item and movement roles: %#v", inventoryObjects.Items)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/business-objects?limit=1", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("first business object cursor page status=%d body=%s", w.Code, w.Body.String())
+	}
+	var firstObjectPage ListResponse[BusinessObjectCatalog]
+	if err := json.NewDecoder(w.Body).Decode(&firstObjectPage); err != nil {
+		t.Fatalf("decode first business object cursor page: %v", err)
+	}
+	if len(firstObjectPage.Items) != 1 || !firstObjectPage.HasMore || firstObjectPage.NextBeforeID == "" {
+		t.Fatalf("unexpected first business object cursor page: %#v", firstObjectPage)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/object-roles/resolve", bytes.NewBufferString(`{"app_id":"mis.expense","object_role":"expense_report"}`))
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("resolve expense object role status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resolved ResolveObjectRoleResult
+	if err := json.NewDecoder(w.Body).Decode(&resolved); err != nil {
+		t.Fatalf("decode resolved object role: %v", err)
+	}
+	if resolved.ObjectRole != "expense_report" || resolved.DatasetID != "finance.expenses" || resolved.Initialized || !resolved.RoleBinding.Required || !containsString(resolved.RecommendedActions, "finance.expense_submit") {
+		t.Fatalf("unexpected unresolved expense role result: %#v", resolved)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/object-roles/resolve", bytes.NewBufferString(`{"app_id":"mis.expense","object_role":"expense_report","require_initialized":true}`))
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("require initialized before bootstrap status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/templates/bootstrap", bytes.NewBufferString(`{"template_ids":["finance.expenses"]}`))
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("bootstrap expense dataset status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/object-roles/resolve", bytes.NewBufferString(`{"app_id":"mis.expense","object_role":"expense_report","require_initialized":true}`))
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("resolve initialized expense role status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resolved); err != nil {
+		t.Fatalf("decode initialized object role: %v", err)
+	}
+	if !resolved.Initialized || resolved.BusinessObject.Dataset == nil || resolved.BusinessObject.Dataset.ID != "finance.expenses" || len(resolved.BusinessObject.Fields) == 0 {
+		t.Fatalf("expected initialized expense role with real dataset: %#v", resolved)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/object-roles/resolve", bytes.NewBufferString(`{"object_role":"unknown_role"}`))
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unknown object role status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	server := NewHTTPServer(NewService(store, "sqlite"), "test-token-0123456789012345", "test")
+
+	req := jsonRequest(http.MethodPost, "/api/v1/data/datasets", CreateDatasetInput{Domain: "finance", Name: "expense_forms", Title: "Expense Forms"})
+	auth(req)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create custom expense dataset status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	installBody := UpsertAppInstallationInput{
+		AppID:       "mis.expense",
+		BlueprintID: "mis.expense.approval",
+		Name:        "Expense Approval",
+		Version:     "1.2.3",
+		Kind:        "enterprise_approval_app",
+		Source:      "hub",
+		RoleBindings: []RoleBinding{{
+			ObjectRole: "expense_report",
+			Domain:     "finance",
+			DatasetID:  "finance.expense_forms",
+			TemplateID: "finance.expenses",
+			Required:   true,
+		}},
+		Metadata: map[string]any{"workflow_skill_id": "skill.expense.approval"},
+	}
+	req = jsonRequest(http.MethodPost, "/api/v1/data/app-installations", installBody)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create app installation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var installed AppInstallation
+	if err := json.NewDecoder(w.Body).Decode(&installed); err != nil {
+		t.Fatalf("decode app installation: %v", err)
+	}
+	if installed.AppID != "mis.expense" || installed.Status != "installed" || len(installed.RoleBindings) != 1 || installed.RoleBindings[0].DatasetID != "finance.expense_forms" {
+		t.Fatalf("unexpected app installation: %#v", installed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?app_id=mis.expense", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations status=%d body=%s", w.Code, w.Body.String())
+	}
+	var listed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode app installations: %v", err)
+	}
+	if len(listed.Items) != 1 || listed.Items[0].RoleBindings[0].DatasetID != "finance.expense_forms" {
+		t.Fatalf("unexpected listed app installations: %#v", listed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/business-objects?app_id=mis.expense&object_role=expense_report", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list installed business object status=%d body=%s", w.Code, w.Body.String())
+	}
+	var objects ListResponse[BusinessObjectCatalog]
+	if err := json.NewDecoder(w.Body).Decode(&objects); err != nil {
+		t.Fatalf("decode installed business objects: %v", err)
+	}
+	expense := findBusinessObject(objects.Items, "expense_report")
+	if expense == nil || expense.DatasetID != "finance.expense_forms" || !expense.Initialized || expense.RoleBinding.BlueprintID != "mis.expense.approval" {
+		t.Fatalf("expected installed expense role to override static catalog: %#v", objects.Items)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/object-roles/resolve", bytes.NewBufferString(`{"app_id":"mis.expense","object_role":"expense_report","require_initialized":true}`))
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("resolve installed object role status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resolved ResolveObjectRoleResult
+	if err := json.NewDecoder(w.Body).Decode(&resolved); err != nil {
+		t.Fatalf("decode installed object role: %v", err)
+	}
+	if resolved.DatasetID != "finance.expense_forms" || resolved.TemplateID != "finance.expenses" || !resolved.Initialized {
+		t.Fatalf("unexpected installed object role result: %#v", resolved)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/capabilities", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("capabilities after app install status=%d body=%s", w.Code, w.Body.String())
+	}
+	var caps DataCapabilities
+	if err := json.NewDecoder(w.Body).Decode(&caps); err != nil {
+		t.Fatalf("decode app install capabilities: %v", err)
+	}
+	if len(caps.AppInstallations) != 1 || caps.AppInstallations[0].AppID != "mis.expense" {
+		t.Fatalf("expected app installation in capabilities: %#v", caps.AppInstallations)
+	}
+}
+
+func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	server := NewHTTPServer(svc, "test-token-0123456789012345", "test")
+	p := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	ds, err := svc.CreateDataset(context.Background(), p, CreateDatasetInput{Domain: "finance", Name: "expenses", Title: "Expenses"})
+	if err != nil {
+		t.Fatalf("CreateDataset: %v", err)
+	}
+	if _, err := svc.CreateRecord(context.Background(), p, ds.ID, CreateRecordInput{ID: "exp-100", Title: "Expense 100", Data: map[string]any{"amount": 100}}); err != nil {
+		t.Fatalf("CreateRecord: %v", err)
+	}
+
+	createApproval := func(body CreateRecordApprovalInput) RecordApproval {
+		req := jsonRequest(http.MethodPost, "/api/v1/data/datasets/"+ds.ID+"/records/exp-100/approvals", body)
+		auth(req)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create semantic approval status=%d body=%s", w.Code, w.Body.String())
+		}
+		var approval RecordApproval
+		if err := json.NewDecoder(w.Body).Decode(&approval); err != nil {
+			t.Fatalf("decode semantic approval: %v", err)
+		}
+		return approval
+	}
+
+	expenseApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.expense", BlueprintID: "mis.expense.approval", ObjectRole: "expense_report", Kind: "approval", Summary: "Expense approval", WorkflowSkillID: "skill.expense.approval", WorkflowInstanceID: "wf-exp-100"})
+	if expenseApproval.AppID != "mis.expense" || expenseApproval.BlueprintID != "mis.expense.approval" || expenseApproval.ObjectRole != "expense_report" || expenseApproval.WorkflowInstanceID != "wf-exp-100" {
+		t.Fatalf("approval app semantics were not persisted: %#v", expenseApproval)
+	}
+
+	travelApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.travel", BlueprintID: "mis.travel.approval", ObjectRole: "travel_request", Kind: "approval", Summary: "Travel approval", WorkflowSkillID: "skill.travel.approval", WorkflowInstanceID: "wf-travel-100"})
+	if travelApproval.ID == expenseApproval.ID || travelApproval.AppID != "mis.travel" || travelApproval.ObjectRole != "travel_request" {
+		t.Fatalf("different app/object_role should create an isolated approval: expense=%#v travel=%#v", expenseApproval, travelApproval)
+	}
+
+	reusedExpenseApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.expense", BlueprintID: "mis.expense.approval", ObjectRole: "expense_report", Kind: "approval", Summary: "Expense approval retry"})
+	if reusedExpenseApproval.ID != expenseApproval.ID || !reusedExpenseApproval.Reused {
+		t.Fatalf("same app/object_role should reuse pending approval: original=%#v reused=%#v", expenseApproval, reusedExpenseApproval)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?app_id=mis.expense&blueprint_id=mis.expense.approval&object_role=expense_report", nil)
+	auth(req)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list semantic approvals status=%d body=%s", w.Code, w.Body.String())
+	}
+	var listed ListResponse[RecordApproval]
+	if err := json.NewDecoder(w.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode semantic approval list: %v", err)
+	}
+	if len(listed.Items) != 1 || listed.Items[0].ID != expenseApproval.ID || listed.Items[0].AppID != "mis.expense" || listed.Items[0].ObjectRole != "expense_report" {
+		t.Fatalf("unexpected semantic approval list: %#v", listed)
+	}
+}
+
 func TestHTTPServerResolvesBusinessIntent(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -6417,6 +6724,19 @@ func containsDomainCatalog(items []BusinessDomainCatalog, domain string) bool {
 		}
 	}
 	return false
+}
+
+func findBusinessObject(items []BusinessObjectCatalog, objectRole string) *BusinessObjectCatalog {
+	for i := range items {
+		if items[i].ObjectRole == objectRole {
+			return &items[i]
+		}
+	}
+	return nil
+}
+
+func containsBusinessObject(items []BusinessObjectCatalog, objectRole string) bool {
+	return findBusinessObject(items, objectRole) != nil
 }
 
 func containsDomainUseCase(items []BusinessDomainUseCase, id string) bool {

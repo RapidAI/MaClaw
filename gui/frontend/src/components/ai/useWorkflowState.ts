@@ -287,7 +287,10 @@ export function useWorkflowState(activeTabProjectPath?: string) {
             });
 
             // Auto-open split mode for phases that are expected to produce preview documents.
-            if (isActive && !userClosedRef.current) {
+            // When the active phase is awaiting form input (awaiting_form=true from backend),
+            // never auto-open the doc preview — the AgentView form takes priority.
+            const isAwaitingForm = state.awaiting_form === true;
+            if (isActive && !userClosedRef.current && !isAwaitingForm) {
                 setWorkflowSplitMode(prev => {
                     if (!currentPhase) return false;
                     if (workflowPhaseExpectsDocument(currentPhase, incomingPhases, incomingWorkflowType)) return true;
@@ -295,6 +298,11 @@ export function useWorkflowState(activeTabProjectPath?: string) {
                     // phases, but do not auto-open the pane if it was closed or never opened.
                     return prev;
                 });
+            } else if (isActive && isAwaitingForm) {
+                // Actively close the doc preview if it was left open from a previous
+                // workflow — the form panel needs visual priority and there's no
+                // document content to display yet.
+                setWorkflowSplitMode(false);
             }
             if (!isActive) {
                 const isCancelled = typeof state.status === "string" && state.status === "cancelled";

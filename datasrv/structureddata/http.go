@@ -78,6 +78,12 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/data/access/api-keys/{keyId}", s.withAuth(s.handleDisableAPIKeyPolicy))
 	s.mux.HandleFunc("GET /api/v1/data/domains", s.withAuth(s.handleListBusinessDomains))
 	s.mux.HandleFunc("GET /api/v1/data/domains/{domain}", s.withAuth(s.handleGetBusinessDomain))
+	s.mux.HandleFunc("GET /api/v1/data/business-objects", s.withAuth(s.handleListBusinessObjects))
+	s.mux.HandleFunc("POST /api/v1/data/object-roles/resolve", s.withAuth(s.handleResolveObjectRole))
+	s.mux.HandleFunc("GET /api/v1/data/app-installations", s.withAuth(s.handleListAppInstallations))
+	s.mux.HandleFunc("POST /api/v1/data/app-installations", s.withAuth(s.handleCreateAppInstallation))
+	s.mux.HandleFunc("GET /api/v1/data/app-installations/{appId}", s.withAuth(s.handleGetAppInstallation))
+	s.mux.HandleFunc("PUT /api/v1/data/app-installations/{appId}", s.withAuth(s.handleUpdateAppInstallation))
 	s.mux.HandleFunc("GET /api/v1/data/relationships", s.withAuth(s.handleListRelationships))
 	s.mux.HandleFunc("POST /api/v1/data/intent/resolve", s.withAuth(s.handleResolveBusinessIntent))
 	s.mux.HandleFunc("GET /api/v1/data/inbox", s.withAuth(s.handleMISInbox))
@@ -483,6 +489,72 @@ func (s *HTTPServer) handleListBusinessDomains(w http.ResponseWriter, r *http.Re
 
 func (s *HTTPServer) handleGetBusinessDomain(w http.ResponseWriter, r *http.Request, p Principal) {
 	out, err := s.svc.GetBusinessDomain(r.Context(), p, r.PathValue("domain"))
+	writeResult(w, http.StatusOK, out, err)
+}
+
+func (s *HTTPServer) handleListBusinessObjects(w http.ResponseWriter, r *http.Request, p Principal) {
+	limit := parseLimit(r.URL.Query().Get("limit"))
+	in := QueryBusinessObjectsInput{
+		AppID:       strings.TrimSpace(r.URL.Query().Get("app_id")),
+		BlueprintID: strings.TrimSpace(r.URL.Query().Get("blueprint_id")),
+		Domain:      strings.TrimSpace(r.URL.Query().Get("domain")),
+		ObjectRole:  strings.TrimSpace(r.URL.Query().Get("object_role")),
+		Limit:       listProbeLimit(limit, 100, 500),
+		BeforeID:    strings.TrimSpace(r.URL.Query().Get("before_id")),
+	}
+	out, err := s.svc.ListBusinessObjects(r.Context(), p, in)
+	writeResult(w, http.StatusOK, businessObjectListResponse(out, limit), err)
+}
+
+func (s *HTTPServer) handleResolveObjectRole(w http.ResponseWriter, r *http.Request, p Principal) {
+	var in ResolveObjectRoleInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.ResolveObjectRole(r.Context(), p, in)
+	writeResult(w, http.StatusOK, out, err)
+}
+
+func (s *HTTPServer) handleListAppInstallations(w http.ResponseWriter, r *http.Request, p Principal) {
+	limit := parseLimit(r.URL.Query().Get("limit"))
+	in := QueryAppInstallationsInput{
+		AppID:       strings.TrimSpace(r.URL.Query().Get("app_id")),
+		BlueprintID: strings.TrimSpace(r.URL.Query().Get("blueprint_id")),
+		Status:      strings.TrimSpace(r.URL.Query().Get("status")),
+		Limit:       effectiveLimit(limit, 100, 500),
+		Before:      strings.TrimSpace(r.URL.Query().Get("before")),
+		BeforeID:    strings.TrimSpace(r.URL.Query().Get("before_id")),
+	}
+	out, err := s.svc.ListAppInstallations(r.Context(), p, in)
+	writeResult(w, http.StatusOK, appInstallationListResponse(out, limit), err)
+}
+
+func (s *HTTPServer) handleCreateAppInstallation(w http.ResponseWriter, r *http.Request, p Principal) {
+	if !requireAdmin(w, p) {
+		return
+	}
+	var in UpsertAppInstallationInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.UpsertAppInstallation(r.Context(), p, "", in)
+	writeResult(w, http.StatusCreated, out, err)
+}
+
+func (s *HTTPServer) handleGetAppInstallation(w http.ResponseWriter, r *http.Request, p Principal) {
+	out, err := s.svc.GetAppInstallation(r.Context(), p, r.PathValue("appId"))
+	writeResult(w, http.StatusOK, out, err)
+}
+
+func (s *HTTPServer) handleUpdateAppInstallation(w http.ResponseWriter, r *http.Request, p Principal) {
+	if !requireAdmin(w, p) {
+		return
+	}
+	var in UpsertAppInstallationInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.UpsertAppInstallation(r.Context(), p, r.PathValue("appId"), in)
 	writeResult(w, http.StatusOK, out, err)
 }
 
@@ -1491,6 +1563,9 @@ func (s *HTTPServer) handleListRecordApprovals(w http.ResponseWriter, r *http.Re
 	in := QueryRecordApprovalsInput{
 		DatasetID:          strings.TrimSpace(r.URL.Query().Get("dataset_id")),
 		RecordID:           strings.TrimSpace(r.URL.Query().Get("record_id")),
+		AppID:              strings.TrimSpace(r.URL.Query().Get("app_id")),
+		BlueprintID:        strings.TrimSpace(r.URL.Query().Get("blueprint_id")),
+		ObjectRole:         strings.TrimSpace(r.URL.Query().Get("object_role")),
 		Status:             strings.TrimSpace(r.URL.Query().Get("status")),
 		Kind:               strings.TrimSpace(r.URL.Query().Get("kind")),
 		WorkflowSkillID:    strings.TrimSpace(r.URL.Query().Get("workflow_skill_id")),
@@ -1993,6 +2068,29 @@ func businessDomainListResponse(items []BusinessDomainCatalog, limit int) ListRe
 	return out
 }
 
+func businessObjectListResponse(items []BusinessObjectCatalog, limit int) ListResponse[BusinessObjectCatalog] {
+	limit = effectiveLimit(limit, 100, 500)
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	out := ListResponse[BusinessObjectCatalog]{Items: items, Limit: limit, HasMore: hasMore}
+	if out.HasMore && len(items) > 0 {
+		out.NextBeforeID = businessObjectCursorKey(items[len(items)-1])
+	}
+	return out
+}
+
+func appInstallationListResponse(items []AppInstallation, limit int) ListResponse[AppInstallation] {
+	limit = effectiveLimit(limit, 100, 500)
+	out := ListResponse[AppInstallation]{Items: items, Limit: limit, HasMore: len(items) == limit}
+	if out.HasMore && len(items) > 0 {
+		last := items[len(items)-1]
+		out.NextBefore = last.UpdatedAt
+		out.NextBeforeID = last.ID
+	}
+	return out
+}
 func templateListResponse(items []DatasetTemplate, limit int) ListResponse[DatasetTemplate] {
 	limit = effectiveLimit(limit, 100, 500)
 	hasMore := len(items) > limit

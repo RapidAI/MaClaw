@@ -130,6 +130,12 @@ type parsedMaclawAppEntry struct {
 	Kind   string
 }
 
+type maclawAppDataSrvInstallationPayload struct {
+	AppID            string
+	RoleBindingCount int
+	Body             map[string]interface{}
+}
+
 type maclawAppInstallRecord struct {
 	AppID                 string                           `json:"app_id"`
 	AppName               string                           `json:"app_name,omitempty"`
@@ -152,13 +158,21 @@ type maclawAppInstallRegistry struct {
 
 type maclawAppApprovalInstance struct {
 	AppID              string                      `json:"app_id"`
+	AppName            string                      `json:"app_name,omitempty"`
+	BlueprintID        string                      `json:"blueprint_id,omitempty"`
+	DatasetID          string                      `json:"dataset_id,omitempty"`
+	ObjectRole         string                      `json:"object_role,omitempty"`
+	ApprovalObjectRole string                      `json:"approval_object_role,omitempty"`
+	ApprovalEvent      string                      `json:"approval_event,omitempty"`
 	InstanceID         string                      `json:"instance_id"`
 	Title              string                      `json:"title"`
 	Lane               string                      `json:"lane"`
 	Status             string                      `json:"status"`
 	CurrentNode        string                      `json:"current_node"`
 	Owner              string                      `json:"owner"`
+	Applicant          string                      `json:"applicant,omitempty"`
 	Approver           string                      `json:"approver"`
+	CreatedAt          string                      `json:"created_at,omitempty"`
 	UpdatedAt          string                      `json:"updated_at"`
 	Result             string                      `json:"result"`
 	WorkflowSkillID    string                      `json:"workflow_skill_id,omitempty"`
@@ -166,7 +180,12 @@ type maclawAppApprovalInstance struct {
 	ResultStatus       string                      `json:"result_status,omitempty"`
 	WorkflowDecisionID string                      `json:"workflow_decision_id,omitempty"`
 	RecordID           string                      `json:"record_id,omitempty"`
+	ApprovalID         string                      `json:"approval_id,omitempty"`
+	RecordApprovalID   string                      `json:"record_approval_id,omitempty"`
 	DetailURL          string                      `json:"detail_url,omitempty"`
+	BusinessEntity     string                      `json:"business_entity,omitempty"`
+	BusinessAction     string                      `json:"business_action,omitempty"`
+	BusinessNote       string                      `json:"business_note,omitempty"`
 	ResultPayload      map[string]any              `json:"result_payload,omitempty"`
 	Outputs            []maclawAppApprovalOutput   `json:"outputs,omitempty"`
 	Artifacts          []maclawAppApprovalArtifact `json:"artifacts,omitempty"`
@@ -212,10 +231,13 @@ type maclawAppApprovalRegistry struct {
 }
 
 type maclawAppApprovalDataSrvSyncInput struct {
-	DatasetID  string                    `json:"dataset_id"`
-	RecordID   string                    `json:"record_id"`
-	ApprovalID string                    `json:"approval_id,omitempty"`
-	Instance   maclawAppApprovalInstance `json:"instance"`
+	DatasetID   string                    `json:"dataset_id"`
+	ObjectRole  string                    `json:"object_role,omitempty"`
+	AppID       string                    `json:"app_id,omitempty"`
+	BlueprintID string                    `json:"blueprint_id,omitempty"`
+	RecordID    string                    `json:"record_id"`
+	ApprovalID  string                    `json:"approval_id,omitempty"`
+	Instance    maclawAppApprovalInstance `json:"instance"`
 }
 
 // SubmitMaclawAppPackage stores a maclaw.app.pack.v1 submission in the local
@@ -460,13 +482,71 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 	if err := a.writeMaclawAppInstallRegistry(registry); err != nil {
 		return nil, err
 	}
+	dataSrvRegistration := a.registerMaclawAppInstallationsToDataSrv(entries, source, packageSHA, packageSize)
 	return map[string]any{
-		"schema":        registry.Schema,
-		"installed_at":  now,
-		"app_count":     len(entries),
-		"package_sha":   packageSHA,
-		"package_bytes": packageSize,
+		"schema":               registry.Schema,
+		"installed_at":         now,
+		"app_count":            len(entries),
+		"package_sha":          packageSHA,
+		"package_bytes":        packageSize,
+		"datasrv_registration": dataSrvRegistration,
 	}, nil
+}
+
+func (a *App) registerMaclawAppInstallationsToDataSrv(entries []parsedMaclawAppEntry, source, packageSHA string, packageSize int) map[string]any {
+	payloads := maclawAppDataSrvInstallationPayloads(entries, source, packageSHA, packageSize)
+	result := map[string]any{
+		"synced":         false,
+		"eligible_count": len(payloads),
+		"synced_count":   0,
+		"failed_count":   0,
+		"items":          []map[string]any{},
+	}
+	if len(payloads) == 0 {
+		result["reason"] = "no datasrv role bindings"
+		return result
+	}
+	cfg, err := a.GetMISDataConfig()
+	if err != nil {
+		result["reason"] = err.Error()
+		return result
+	}
+	if !cfg.Enabled || strings.TrimSpace(cfg.Token) == "" {
+		result["reason"] = "mis data service unavailable"
+		return result
+	}
+	items := make([]map[string]any, 0, len(payloads))
+	syncedCount := 0
+	failedCount := 0
+	for _, payload := range payloads {
+		item := map[string]any{"app_id": payload.AppID, "role_binding_count": payload.RoleBindingCount}
+		path := "/api/v1/data/app-installations/" + pathEscape(payload.AppID)
+		data, err := a.callMISDataAPIBytes(cfg, http.MethodPut, path, compactPayload(payload.Body))
+		if err != nil {
+			failedCount++
+			item["synced"] = false
+			item["reason"] = err.Error()
+			items = append(items, item)
+			continue
+		}
+		syncedCount++
+		item["synced"] = true
+		var response map[string]any
+		if err := json.Unmarshal(data, &response); err == nil {
+			if status := strings.TrimSpace(stringMapValue(response, "status")); status != "" {
+				item["status"] = status
+			}
+		}
+		items = append(items, item)
+	}
+	result["items"] = items
+	result["synced_count"] = syncedCount
+	result["failed_count"] = failedCount
+	result["synced"] = syncedCount == len(payloads) && failedCount == 0
+	if failedCount > 0 {
+		result["reason"] = "one or more app installations failed to register"
+	}
+	return result
 }
 
 // ListMaclawAppInstalls returns newest-first local install audit records.
@@ -493,38 +573,30 @@ func (a *App) ListMaclawAppInstalls(limit int) ([]maclawAppInstallRecord, error)
 // MaClaw approval app. It is the GUI-facing approval instance cache; DataSrv or
 // workflow sync can later write the same shape.
 func (a *App) RecordMaclawAppApprovalInstance(instance maclawAppApprovalInstance) (maclawAppApprovalInstance, error) {
-	instance.AppID = strings.TrimSpace(instance.AppID)
+	instance = normalizeMaclawAppApprovalInstanceFields(instance)
 	if instance.AppID == "" {
 		return maclawAppApprovalInstance{}, fmt.Errorf("app_id is required")
 	}
-	instance.InstanceID = strings.TrimSpace(instance.InstanceID)
 	if instance.InstanceID == "" {
 		instance.InstanceID = "appr-" + firstMaclawAppID([]string{instance.AppID}) + "-" + shortRandomHex()
 	}
-	instance.Title = strings.TrimSpace(instance.Title)
 	if instance.Title == "" {
 		instance.Title = instance.AppID
 	}
 	instance.Lane = normalizeMaclawAppApprovalLane(instance.Lane)
 	instance.Status = normalizeMaclawAppApprovalStatus(instance.Status)
-	if instance.CurrentNode = strings.TrimSpace(instance.CurrentNode); instance.CurrentNode == "" {
+	if instance.CurrentNode == "" {
 		instance.CurrentNode = "submit"
 	}
-	instance.Owner = strings.TrimSpace(instance.Owner)
-	instance.Approver = strings.TrimSpace(instance.Approver)
-	instance.Result = strings.TrimSpace(instance.Result)
-	instance.WorkflowSkillID = strings.TrimSpace(instance.WorkflowSkillID)
-	instance.BusinessStatus = strings.TrimSpace(instance.BusinessStatus)
-	instance.ResultStatus = strings.TrimSpace(instance.ResultStatus)
-	instance.WorkflowDecisionID = strings.TrimSpace(instance.WorkflowDecisionID)
-	instance.RecordID = strings.TrimSpace(instance.RecordID)
-	instance.DetailURL = strings.TrimSpace(instance.DetailURL)
 	now := time.Now().UTC().Format(time.RFC3339)
-	if strings.TrimSpace(instance.UpdatedAt) == "" {
+	if instance.CreatedAt == "" {
+		instance.CreatedAt = now
+	}
+	if instance.UpdatedAt == "" {
 		instance.UpdatedAt = now
 	}
 	if len(instance.Events) == 0 {
-		instance.Events = []maclawAppApprovalEvent{{At: instance.UpdatedAt, Node: instance.CurrentNode, Actor: instance.Owner, Decision: instance.Status, Message: instance.Result}}
+		instance.Events = []maclawAppApprovalEvent{{At: instance.UpdatedAt, Node: instance.CurrentNode, Actor: firstNonEmptyMaclawAppString(instance.Owner, instance.Applicant), Decision: instance.Status, Message: instance.Result}}
 	}
 	registry, err := a.readMaclawAppApprovalRegistry()
 	if err != nil {
@@ -533,12 +605,12 @@ func (a *App) RecordMaclawAppApprovalInstance(instance maclawAppApprovalInstance
 	if registry.Schema == "" {
 		registry.Schema = "maclaw.app.approvals.v1"
 	}
-	registry.upsert(instance)
+	stored := registry.upsert(instance)
 	registry.UpdatedAt = now
 	if err := a.writeMaclawAppApprovalRegistry(registry); err != nil {
 		return maclawAppApprovalInstance{}, err
 	}
-	return cloneMaclawAppApprovalInstance(instance), nil
+	return cloneMaclawAppApprovalInstance(stored), nil
 }
 
 // SyncMaclawAppApprovalInstanceToDataSrv writes the app approval instance state
@@ -546,21 +618,59 @@ func (a *App) RecordMaclawAppApprovalInstance(instance maclawAppApprovalInstance
 // never handles DataSrv credentials directly.
 func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalDataSrvSyncInput) (map[string]any, error) {
 	input.DatasetID = strings.TrimSpace(input.DatasetID)
+	input.ObjectRole = strings.TrimSpace(input.ObjectRole)
+	input.AppID = strings.TrimSpace(input.AppID)
+	input.BlueprintID = strings.TrimSpace(input.BlueprintID)
 	input.RecordID = strings.TrimSpace(input.RecordID)
 	input.ApprovalID = strings.TrimSpace(input.ApprovalID)
-	instance := cloneMaclawAppApprovalInstance(input.Instance)
-	instance.AppID = strings.TrimSpace(instance.AppID)
-	instance.InstanceID = strings.TrimSpace(instance.InstanceID)
+	instance := normalizeMaclawAppApprovalInstanceFields(cloneMaclawAppApprovalInstance(input.Instance))
 	if instance.AppID == "" || instance.InstanceID == "" {
 		return nil, fmt.Errorf("instance app_id and instance_id are required")
 	}
+	instance.Status = normalizeMaclawAppApprovalStatus(instance.Status)
+	input.AppID = firstNonEmptyMaclawAppString(input.AppID, instance.AppID)
+	input.BlueprintID = firstNonEmptyMaclawAppString(input.BlueprintID, instance.BlueprintID)
+	input.DatasetID = firstNonEmptyMaclawAppString(input.DatasetID, instance.DatasetID)
+	input.ObjectRole = firstNonEmptyMaclawAppString(input.ObjectRole, instance.ObjectRole, instance.ApprovalObjectRole)
+	input.RecordID = firstNonEmptyMaclawAppString(input.RecordID, instance.RecordID)
+	input.ApprovalID = firstNonEmptyMaclawAppString(input.ApprovalID, instance.ApprovalID, instance.RecordApprovalID)
+	if input.DatasetID == "" && input.ObjectRole != "" {
+		cfg, err := a.GetMISDataConfig()
+		if err != nil {
+			return map[string]any{"synced": false, "reason": err.Error(), "object_role": input.ObjectRole}, nil
+		}
+		if !cfg.Enabled || strings.TrimSpace(cfg.Token) == "" {
+			return map[string]any{"synced": false, "reason": "mis data service unavailable", "object_role": input.ObjectRole}, nil
+		}
+		resolvedDatasetID, err := a.resolveMISDatasetIDArg(cfg, map[string]interface{}{
+			"app_id":       input.AppID,
+			"blueprint_id": input.BlueprintID,
+			"object_role":  input.ObjectRole,
+		}, true)
+		if err != nil {
+			return map[string]any{"synced": false, "reason": err.Error(), "object_role": input.ObjectRole}, nil
+		}
+		input.DatasetID = resolvedDatasetID
+	}
 	if input.DatasetID == "" || input.RecordID == "" {
-		return map[string]any{"synced": false, "reason": "missing dataset_id or record_id"}, nil
+		return map[string]any{"synced": false, "reason": "missing dataset_id/object_role or record_id"}, nil
 	}
 	if instance.WorkflowSkillID == "" {
 		return map[string]any{"synced": false, "reason": "missing workflow_skill_id"}, nil
 	}
-	if input.ApprovalID != "" && (instance.Status == "approved" || instance.Status == "rejected" || instance.Status == "attention") {
+	if instance.Status == "attention" {
+		businessRecordSync := a.syncMaclawAppApprovalBusinessRecord(input.DatasetID, input.RecordID, instance)
+		if input.ApprovalID != "" {
+			instance.ApprovalID = input.ApprovalID
+			instance.RecordApprovalID = input.ApprovalID
+			_, _ = a.RecordMaclawAppApprovalInstance(instance)
+		}
+		return map[string]any{"synced": true, "action": "attention_view_only", "dataset_id": input.DatasetID, "approval_id": input.ApprovalID, "reason": "attention is view-only and does not review the DataSrv approval", "business_record_sync": businessRecordSync}, nil
+	}
+	if input.ApprovalID == "" && maclawAppApprovalStatusCanReview(instance.Status) {
+		input.ApprovalID = a.findMaclawAppRecordApprovalID(input, instance)
+	}
+	if input.ApprovalID != "" && maclawAppApprovalStatusCanReview(instance.Status) {
 		out := a.executeMISDataTool(map[string]interface{}{
 			"action":               "review_record_approval",
 			"approval_id":          input.ApprovalID,
@@ -574,17 +684,35 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 			"outputs":              cloneMaclawAppApprovalOutputs(instance.Outputs),
 			"artifacts":            append([]maclawAppApprovalArtifact(nil), instance.Artifacts...),
 		})
+		instance.ApprovalID = input.ApprovalID
+		instance.RecordApprovalID = input.ApprovalID
+		_, _ = a.RecordMaclawAppApprovalInstance(instance)
 		businessRecordSync := a.syncMaclawAppApprovalBusinessRecord(input.DatasetID, input.RecordID, instance)
-		return map[string]any{"synced": true, "action": "review_record_approval", "response": out, "business_record_sync": businessRecordSync}, nil
+		return map[string]any{"synced": true, "action": "review_record_approval", "dataset_id": input.DatasetID, "approval_id": input.ApprovalID, "response": out, "business_record_sync": businessRecordSync}, nil
 	}
 	out := a.executeMISDataTool(map[string]interface{}{
 		"action":               "create_record_approval",
 		"dataset_id":           input.DatasetID,
+		"object_role":          input.ObjectRole,
+		"app_id":               input.AppID,
+		"blueprint_id":         input.BlueprintID,
 		"record_id":            input.RecordID,
 		"kind":                 "approval",
 		"summary":              instance.Title,
 		"assigned_to":          instance.Approver,
-		"request":              map[string]interface{}{"app_id": instance.AppID, "approval_instance_id": instance.InstanceID, "owner": instance.Owner, "result": instance.Result},
+		"request": compactPayload(map[string]interface{}{
+			"app_id":               input.AppID,
+			"blueprint_id":         input.BlueprintID,
+			"dataset_id":           input.DatasetID,
+			"object_role":          input.ObjectRole,
+			"approval_instance_id": instance.InstanceID,
+			"owner":                instance.Owner,
+			"applicant":            instance.Applicant,
+			"business_entity":      instance.BusinessEntity,
+			"business_action":      instance.BusinessAction,
+			"business_note":        instance.BusinessNote,
+			"result":               instance.Result,
+		}),
 		"workflow_skill_id":    instance.WorkflowSkillID,
 		"workflow_instance_id": instance.InstanceID,
 		"workflow_node_id":     instance.CurrentNode,
@@ -595,8 +723,68 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 		"outputs":              cloneMaclawAppApprovalOutputs(instance.Outputs),
 		"artifacts":            append([]maclawAppApprovalArtifact(nil), instance.Artifacts...),
 	})
+	approvalID := maclawAppApprovalIDFromToolResult(out)
+	if approvalID != "" {
+		instance.ApprovalID = approvalID
+		instance.RecordApprovalID = approvalID
+		instance.DatasetID = input.DatasetID
+		instance.ObjectRole = input.ObjectRole
+		instance.ApprovalObjectRole = input.ObjectRole
+		instance.BlueprintID = input.BlueprintID
+		instance.RecordID = input.RecordID
+		_, _ = a.RecordMaclawAppApprovalInstance(instance)
+	}
 	businessRecordSync := a.syncMaclawAppApprovalBusinessRecord(input.DatasetID, input.RecordID, instance)
-	return map[string]any{"synced": true, "action": "create_record_approval", "response": out, "business_record_sync": businessRecordSync}, nil
+	return map[string]any{"synced": true, "action": "create_record_approval", "dataset_id": input.DatasetID, "approval_id": approvalID, "response": out, "business_record_sync": businessRecordSync}, nil
+}
+
+func (a *App) findMaclawAppRecordApprovalID(input maclawAppApprovalDataSrvSyncInput, instance maclawAppApprovalInstance) string {
+	out := a.executeMISDataTool(map[string]interface{}{
+		"action":               "list_record_approvals",
+		"dataset_id":           input.DatasetID,
+		"record_id":            input.RecordID,
+		"app_id":               input.AppID,
+		"blueprint_id":         input.BlueprintID,
+		"object_role":          input.ObjectRole,
+		"workflow_instance_id": instance.InstanceID,
+		"status":               "pending",
+		"limit":                1,
+	})
+	return maclawAppApprovalIDFromToolResult(out)
+}
+
+func maclawAppApprovalIDFromToolResult(out string) string {
+	var body map[string]any
+	if err := json.Unmarshal([]byte(out), &body); err != nil {
+		return ""
+	}
+	if id := firstNonEmptyMaclawAppString(stringMapValue(body, "id"), stringMapValue(body, "approval_id"), stringMapValue(body, "record_approval_id")); id != "" {
+		return id
+	}
+	if approval := anyMap(body["approval"]); approval != nil {
+		if id := firstNonEmptyMaclawAppString(stringMapValue(approval, "id"), stringMapValue(approval, "approval_id"), stringMapValue(approval, "record_approval_id")); id != "" {
+			return id
+		}
+	}
+	for _, item := range anySlice(body["items"]) {
+		approval := anyMap(item)
+		if approval == nil {
+			continue
+		}
+		if id := firstNonEmptyMaclawAppString(stringMapValue(approval, "id"), stringMapValue(approval, "approval_id"), stringMapValue(approval, "record_approval_id")); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func maclawAppApprovalStatusCanReview(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "approved", "rejected":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *App) syncMaclawAppApprovalBusinessRecord(datasetID, recordID string, instance maclawAppApprovalInstance) map[string]any {
@@ -1045,6 +1233,188 @@ func (plan *maclawAppInstallPlan) refreshMaclawAppDependencyFlags() {
 	}
 }
 
+func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source, packageSHA string, packageSize int) []maclawAppDataSrvInstallationPayload {
+	payloads := make([]maclawAppDataSrvInstallationPayload, 0, len(entries))
+	for _, entry := range entries {
+		roleBindings := maclawAppDataSrvRoleBindingsForEntry(entry)
+		if len(roleBindings) == 0 {
+			continue
+		}
+		metadata := map[string]interface{}{
+			"package_sha256": packageSHA,
+			"package_bytes":  packageSize,
+			"schema":         entry.Schema,
+		}
+		if appSkill := maclawAppAppSkillBlockForEntry(entry); appSkill != nil {
+			metadata["app_skill_id"] = maclawAppStringValue(appSkill, "id")
+			metadata["app_skill_version"] = maclawAppStringValue(appSkill, "version")
+		}
+		if workflowSkillIDs := maclawAppWorkflowSkillIDsForEntry(entry); len(workflowSkillIDs) > 0 {
+			metadata["workflow_skill_ids"] = workflowSkillIDs
+		}
+		body := map[string]interface{}{
+			"app_id":        entry.ID,
+			"blueprint_id":  maclawAppBlueprintIDForEntry(entry),
+			"name":          entry.Name,
+			"version":       maclawAppStringValue(entry.App, "version"),
+			"kind":          normalizeMaclawAppKind(entry.Kind),
+			"status":        "installed",
+			"source":        firstNonEmptyMaclawAppString(source, maclawAppStringValue(entry.App, "source")),
+			"role_bindings": roleBindings,
+			"metadata":      compactPayload(metadata),
+		}
+		payloads = append(payloads, maclawAppDataSrvInstallationPayload{AppID: entry.ID, RoleBindingCount: len(roleBindings), Body: compactPayload(body)})
+	}
+	return payloads
+}
+
+func maclawAppDataSrvRoleBindingsForEntry(entry parsedMaclawAppEntry) []map[string]interface{} {
+	datasrv := maclawAppDataSrvBlockForEntry(entry)
+	if datasrv == nil {
+		return nil
+	}
+	datasetID := maclawAppStringValue(datasrv, "datasetID", "dataset_id", "dataset")
+	if datasetID == "" {
+		return nil
+	}
+	domain := firstNonEmptyMaclawAppString(maclawAppStringValue(datasrv, "domain"), maclawAppDomainFromDatasetID(datasetID))
+	templateID := firstNonEmptyMaclawAppString(maclawAppStringValue(datasrv, "templateID", "template_id"), datasetID)
+	roleBindings := []map[string]interface{}{}
+	seen := map[string]struct{}{}
+	add := func(objectRole string, required bool, binding map[string]any) {
+		objectRole = firstNonEmptyMaclawAppString(objectRole, maclawAppStringValue(datasrv, "objectRole", "object_role", "businessObjectRole", "business_object_role"))
+		objectRole = strings.TrimSpace(objectRole)
+		if objectRole == "" {
+			return
+		}
+		key := strings.ToLower(objectRole)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		roleBindings = append(roleBindings, compactPayload(map[string]interface{}{
+			"object_role": objectRole,
+			"domain":      domain,
+			"dataset_id":  datasetID,
+			"template_id": firstNonEmptyMaclawAppString(maclawAppStringValue(binding, "templateID", "template_id"), templateID),
+			"required":    required,
+		}))
+	}
+	switch normalizeMaclawAppKind(entry.Kind) {
+	case "enterprise_approval_app":
+		for _, binding := range maclawAppApprovalBindingMapsForEntry(entry) {
+			add(firstNonEmptyMaclawAppString(maclawAppStringValue(binding, "objectRole", "object_role"), maclawAppStringValue(binding, "businessObjectRole", "business_object_role"), maclawAppStringValue(binding, "role")), true, binding)
+		}
+		if len(roleBindings) == 0 {
+			add("", true, nil)
+		}
+	case "enterprise_normal_app":
+		add("", true, nil)
+	}
+	return roleBindings
+}
+
+func maclawAppBindingHolders(entry parsedMaclawAppEntry) []map[string]any {
+	holders := []map[string]any{}
+	if binding := anyMap(entry.App["binding"]); binding != nil {
+		holders = append(holders, binding)
+	}
+	if entry.App != nil {
+		holders = append(holders, entry.App)
+	}
+	return holders
+}
+
+func maclawAppDataSrvBlockForEntry(entry parsedMaclawAppEntry) map[string]any {
+	for _, holder := range maclawAppBindingHolders(entry) {
+		if datasrv := anyMap(holder["datasrv"]); datasrv != nil {
+			return datasrv
+		}
+	}
+	return nil
+}
+
+func maclawAppAppSkillBlockForEntry(entry parsedMaclawAppEntry) map[string]any {
+	for _, holder := range maclawAppBindingHolders(entry) {
+		if appSkill := anyMap(holder["appSkill"]); appSkill != nil {
+			return appSkill
+		}
+		if appSkill := anyMap(holder["app_skill"]); appSkill != nil {
+			return appSkill
+		}
+	}
+	return nil
+}
+
+func maclawAppApprovalBindingMapsForEntry(entry parsedMaclawAppEntry) []map[string]any {
+	out := []map[string]any{}
+	for _, holder := range maclawAppBindingHolders(entry) {
+		misBlock := anyMap(holder["mis"])
+		if misBlock == nil {
+			continue
+		}
+		bindings := anySlice(misBlock["approvalBindings"])
+		if len(bindings) == 0 {
+			bindings = anySlice(misBlock["approval_bindings"])
+		}
+		for _, item := range bindings {
+			if binding := anyMap(item); binding != nil {
+				out = append(out, binding)
+			}
+		}
+	}
+	return out
+}
+
+func maclawAppWorkflowSkillIDsForEntry(entry parsedMaclawAppEntry) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, binding := range maclawAppApprovalBindingMapsForEntry(entry) {
+		workflowSkillID := firstNonEmptyMaclawAppString(maclawAppStringValue(binding, "workflowSkillId", "workflow_skill_id"), maclawAppStringValue(binding, "workflowId", "workflow_id"))
+		if workflowSkillID == "" {
+			continue
+		}
+		key := strings.ToLower(workflowSkillID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, workflowSkillID)
+	}
+	return out
+}
+
+func maclawAppBlueprintIDForEntry(entry parsedMaclawAppEntry) string {
+	for _, holder := range maclawAppBindingHolders(entry) {
+		if value := maclawAppStringValue(holder, "blueprintID", "blueprint_id"); value != "" {
+			return value
+		}
+	}
+	if datasrv := maclawAppDataSrvBlockForEntry(entry); datasrv != nil {
+		return maclawAppStringValue(datasrv, "blueprintID", "blueprint_id")
+	}
+	return ""
+}
+
+func maclawAppStringValue(values map[string]any, keys ...string) string {
+	if values == nil {
+		return ""
+	}
+	for _, key := range keys {
+		if value := stringMapValue(values, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func maclawAppDomainFromDatasetID(datasetID string) string {
+	datasetID = strings.TrimSpace(datasetID)
+	if idx := strings.Index(datasetID, "."); idx > 0 {
+		return datasetID[:idx]
+	}
+	return ""
+}
 func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstallPlanDependency {
 	deps := []maclawAppInstallPlanDependency{}
 	seen := map[string]int{}
@@ -1370,19 +1740,22 @@ func (a *App) writeMaclawAppInstallRegistry(registry maclawAppInstallRegistry) e
 	return os.Rename(tmp, path)
 }
 
-func (registry *maclawAppApprovalRegistry) upsert(instance maclawAppApprovalInstance) {
+func (registry *maclawAppApprovalRegistry) upsert(instance maclawAppApprovalInstance) maclawAppApprovalInstance {
+	incoming := cloneMaclawAppApprovalInstance(instance)
 	next := make([]maclawAppApprovalInstance, 0, len(registry.Instances)+1)
-	next = append(next, cloneMaclawAppApprovalInstance(instance))
 	for _, existing := range registry.Instances {
 		if existing.AppID == instance.AppID && existing.InstanceID == instance.InstanceID {
+			incoming = mergeMaclawAppApprovalInstance(existing, incoming)
 			continue
 		}
 		next = append(next, existing)
 	}
+	next = append([]maclawAppApprovalInstance{incoming}, next...)
 	if len(next) > 500 {
 		next = next[:500]
 	}
 	registry.Instances = next
+	return cloneMaclawAppApprovalInstance(incoming)
 }
 func (registry *maclawAppInstallRegistry) upsert(record maclawAppInstallRecord) {
 	next := make([]maclawAppInstallRecord, 0, len(registry.Installs)+1)
@@ -1610,6 +1983,80 @@ func cloneMapAny(value map[string]any) map[string]any {
 		return value
 	}
 	return cloned
+}
+
+func normalizeMaclawAppApprovalInstanceFields(instance maclawAppApprovalInstance) maclawAppApprovalInstance {
+	instance.AppID = strings.TrimSpace(instance.AppID)
+	instance.AppName = strings.TrimSpace(instance.AppName)
+	instance.BlueprintID = strings.TrimSpace(instance.BlueprintID)
+	instance.DatasetID = strings.TrimSpace(instance.DatasetID)
+	instance.ObjectRole = strings.TrimSpace(instance.ObjectRole)
+	instance.ApprovalObjectRole = strings.TrimSpace(instance.ApprovalObjectRole)
+	instance.ObjectRole = firstNonEmptyMaclawAppString(instance.ObjectRole, instance.ApprovalObjectRole)
+	instance.ApprovalObjectRole = firstNonEmptyMaclawAppString(instance.ApprovalObjectRole, instance.ObjectRole)
+	instance.ApprovalEvent = strings.TrimSpace(instance.ApprovalEvent)
+	instance.InstanceID = strings.TrimSpace(instance.InstanceID)
+	instance.Title = strings.TrimSpace(instance.Title)
+	instance.Lane = strings.TrimSpace(instance.Lane)
+	instance.Status = strings.TrimSpace(instance.Status)
+	instance.CurrentNode = strings.TrimSpace(instance.CurrentNode)
+	instance.Owner = strings.TrimSpace(instance.Owner)
+	instance.Applicant = strings.TrimSpace(instance.Applicant)
+	instance.Owner = firstNonEmptyMaclawAppString(instance.Owner, instance.Applicant)
+	instance.Applicant = firstNonEmptyMaclawAppString(instance.Applicant, instance.Owner)
+	instance.Approver = strings.TrimSpace(instance.Approver)
+	instance.CreatedAt = strings.TrimSpace(instance.CreatedAt)
+	instance.UpdatedAt = strings.TrimSpace(instance.UpdatedAt)
+	instance.Result = strings.TrimSpace(instance.Result)
+	instance.WorkflowSkillID = strings.TrimSpace(instance.WorkflowSkillID)
+	instance.BusinessStatus = strings.TrimSpace(instance.BusinessStatus)
+	instance.ResultStatus = strings.TrimSpace(instance.ResultStatus)
+	instance.WorkflowDecisionID = strings.TrimSpace(instance.WorkflowDecisionID)
+	instance.RecordID = strings.TrimSpace(instance.RecordID)
+	instance.ApprovalID = strings.TrimSpace(instance.ApprovalID)
+	instance.RecordApprovalID = strings.TrimSpace(instance.RecordApprovalID)
+	instance.ApprovalID = firstNonEmptyMaclawAppString(instance.ApprovalID, instance.RecordApprovalID)
+	instance.RecordApprovalID = firstNonEmptyMaclawAppString(instance.RecordApprovalID, instance.ApprovalID)
+	instance.DetailURL = strings.TrimSpace(instance.DetailURL)
+	instance.BusinessEntity = strings.TrimSpace(instance.BusinessEntity)
+	instance.BusinessAction = strings.TrimSpace(instance.BusinessAction)
+	instance.BusinessNote = strings.TrimSpace(instance.BusinessNote)
+	return instance
+}
+
+func mergeMaclawAppApprovalInstance(existing, incoming maclawAppApprovalInstance) maclawAppApprovalInstance {
+	incoming.AppName = firstNonEmptyMaclawAppString(incoming.AppName, existing.AppName)
+	incoming.BlueprintID = firstNonEmptyMaclawAppString(incoming.BlueprintID, existing.BlueprintID)
+	incoming.DatasetID = firstNonEmptyMaclawAppString(incoming.DatasetID, existing.DatasetID)
+	incoming.ObjectRole = firstNonEmptyMaclawAppString(incoming.ObjectRole, existing.ObjectRole, existing.ApprovalObjectRole)
+	incoming.ApprovalObjectRole = firstNonEmptyMaclawAppString(incoming.ApprovalObjectRole, incoming.ObjectRole, existing.ApprovalObjectRole)
+	incoming.ApprovalEvent = firstNonEmptyMaclawAppString(incoming.ApprovalEvent, existing.ApprovalEvent)
+	incoming.Owner = firstNonEmptyMaclawAppString(incoming.Owner, existing.Owner, existing.Applicant)
+	incoming.Applicant = firstNonEmptyMaclawAppString(incoming.Applicant, incoming.Owner, existing.Applicant)
+	incoming.Approver = firstNonEmptyMaclawAppString(incoming.Approver, existing.Approver)
+	incoming.CreatedAt = firstNonEmptyMaclawAppString(incoming.CreatedAt, existing.CreatedAt)
+	incoming.WorkflowSkillID = firstNonEmptyMaclawAppString(incoming.WorkflowSkillID, existing.WorkflowSkillID)
+	incoming.WorkflowDecisionID = firstNonEmptyMaclawAppString(incoming.WorkflowDecisionID, existing.WorkflowDecisionID)
+	incoming.RecordID = firstNonEmptyMaclawAppString(incoming.RecordID, existing.RecordID)
+	incoming.ApprovalID = firstNonEmptyMaclawAppString(incoming.ApprovalID, existing.ApprovalID, existing.RecordApprovalID)
+	incoming.RecordApprovalID = firstNonEmptyMaclawAppString(incoming.RecordApprovalID, incoming.ApprovalID, existing.RecordApprovalID)
+	incoming.DetailURL = firstNonEmptyMaclawAppString(incoming.DetailURL, existing.DetailURL)
+	incoming.BusinessEntity = firstNonEmptyMaclawAppString(incoming.BusinessEntity, existing.BusinessEntity)
+	incoming.BusinessAction = firstNonEmptyMaclawAppString(incoming.BusinessAction, existing.BusinessAction)
+	incoming.BusinessNote = firstNonEmptyMaclawAppString(incoming.BusinessNote, existing.BusinessNote)
+	if incoming.ResultPayload == nil {
+		incoming.ResultPayload = cloneMapAny(existing.ResultPayload)
+	}
+	if len(incoming.Outputs) == 0 {
+		incoming.Outputs = cloneMaclawAppApprovalOutputs(existing.Outputs)
+	}
+	if len(incoming.Artifacts) == 0 {
+		incoming.Artifacts = append([]maclawAppApprovalArtifact(nil), existing.Artifacts...)
+	}
+	if len(incoming.Events) == 0 {
+		incoming.Events = append([]maclawAppApprovalEvent(nil), existing.Events...)
+	}
+	return normalizeMaclawAppApprovalInstanceFields(incoming)
 }
 
 func normalizeMaclawAppApprovalLane(lane string) string {

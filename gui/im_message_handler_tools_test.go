@@ -2418,12 +2418,15 @@ func TestBuildToolDefinitions_IncludesTemplateTools(t *testing.T) {
 func TestBuildToolDefinitions_IncludesMISData(t *testing.T) {
 	handler := &IMMessageHandler{app: &App{}}
 	tools := handler.buildToolDefinitions()
-	for _, tool := range tools {
-		if extractToolName(tool) == "mis_data" {
-			return
+	props := toolDefinitionProperties(t, tools, "mis_data")
+	for _, prop := range []string{"action", "dataset_id", "object_role", "app_id", "blueprint_id", "require_initialized"} {
+		if _, ok := props[prop]; !ok {
+			t.Fatalf("mis_data schema missing %s", prop)
 		}
 	}
-	t.Fatal("mis_data tool not found in buildToolDefinitions")
+	if got := toolSchemaDescription(t, props, "action"); !strings.Contains(got, "resolve_object_role") || !strings.Contains(got, "list_agent_transactions") {
+		t.Fatalf("mis_data action description = %q", got)
+	}
 }
 
 // ---------------------------------------------------------------------------

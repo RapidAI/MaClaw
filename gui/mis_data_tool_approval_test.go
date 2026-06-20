@@ -48,6 +48,9 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 		"action":               "create_record_approval",
 		"dataset_id":           "finance.expenses",
 		"record_id":            "exp-1",
+		"app_id":               "mis.expense",
+		"blueprint_id":         "mis.expense.approval",
+		"object_role":          "expense_report",
 		"kind":                 "approval",
 		"summary":              "Expense approval",
 		"workflow_skill_id":    "expense-approval-workflow",
@@ -69,6 +72,9 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 	listOut := app.executeMISDataTool(map[string]interface{}{
 		"action":               "list_record_approvals",
 		"dataset_id":           "finance.expenses",
+		"app_id":               "mis.expense",
+		"blueprint_id":         "mis.expense.approval",
+		"object_role":          "expense_report",
 		"workflow_skill_id":    "expense-approval-workflow",
 		"approval_instance_id": "wf-inst-1",
 		"business_status":      "approval_pending",
@@ -103,6 +109,9 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 		t.Fatalf("unexpected create request: %#v", create)
 	}
 	for key, want := range map[string]string{
+		"app_id":               "mis.expense",
+		"blueprint_id":         "mis.expense.approval",
+		"object_role":          "expense_report",
 		"workflow_skill_id":    "expense-approval-workflow",
 		"workflow_version":     "1.2.0",
 		"workflow_instance_id": "wf-inst-1",
@@ -133,6 +142,9 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 		t.Fatalf("unexpected list request: %#v", list)
 	}
 	for _, want := range []string{
+		"app_id=mis.expense",
+		"blueprint_id=mis.expense.approval",
+		"object_role=expense_report",
 		"workflow_skill_id=expense-approval-workflow",
 		"workflow_instance_id=wf-inst-1",
 		"business_status=approval_pending",
@@ -319,6 +331,138 @@ func TestMISDataApprovalDocumentedListAliases(t *testing.T) {
 		t.Fatalf("unexpected my_pending request: %#v", captured[1])
 	}
 }
+
+func TestMISDataBusinessObjectRoleActionsAndDatasetResolution(t *testing.T) {
+	type capturedRequest struct {
+		Method string
+		Path   string
+		Query  string
+		Body   map[string]interface{}
+	}
+	captured := []capturedRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&item.Body)
+		}
+		captured = append(captured, item)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/business-objects":
+			_, _ = w.Write([]byte(`{"items":[{"object_role":"expense_report","dataset_id":"finance.expenses","initialized":true}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/object-roles/resolve":
+			_, _ = w.Write([]byte(`{"object_role":"expense_report","dataset_id":"finance.expenses","initialized":true,"business_object":{"object_role":"expense_report","dataset_id":"finance.expenses","initialized":true}}`))
+		default:
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{
+		Enabled:  true,
+		Endpoint: server.URL,
+		Token:    "test-token",
+		TenantID: "tenant-1",
+		UserID:   "alice",
+		Role:     "approver",
+	}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	listOut := app.executeMISDataTool(map[string]interface{}{
+		"action":      "list_business_objects",
+		"app_id":      "mis.expense",
+		"domain":      "finance",
+		"object_role": "expense_report",
+		"limit":       7,
+		"before_id":   "cursor-1",
+	})
+	if !strings.Contains(listOut, `"object_role": "expense_report"`) {
+		t.Fatalf("list_business_objects output = %s", listOut)
+	}
+
+	resolveOut := app.executeMISDataTool(map[string]interface{}{
+		"action":              "resolve_object_role",
+		"app_id":              "mis.expense",
+		"object_role":         "expense_report",
+		"require_initialized": true,
+	})
+	if !strings.Contains(resolveOut, `"dataset_id": "finance.expenses"`) {
+		t.Fatalf("resolve_object_role output = %s", resolveOut)
+	}
+
+	queryOut := app.executeMISDataTool(map[string]interface{}{
+		"action":      "query_records",
+		"app_id":      "mis.expense",
+		"object_role": "expense_report",
+		"filter":      map[string]interface{}{"status": "submitted"},
+		"limit":       5,
+	})
+	if !strings.Contains(queryOut, `"ok": true`) {
+		t.Fatalf("query_records output = %s", queryOut)
+	}
+
+	approvalOut := app.executeMISDataTool(map[string]interface{}{
+		"action":               "mis.approval.start",
+		"app_id":               "mis.expense",
+		"object_role":          "expense_report",
+		"record_id":            "exp-4",
+		"approval_workflow_id": "expense_approval",
+		"approval_instance_id": "appr-4",
+		"summary":              "Expense approval",
+		"request":              map[string]interface{}{"amount": 512},
+	})
+	if !strings.Contains(approvalOut, `"ok": true`) {
+		t.Fatalf("mis.approval.start output = %s", approvalOut)
+	}
+
+	if len(captured) != 6 {
+		t.Fatalf("captured %d requests, want 6: %#v", len(captured), captured)
+	}
+	if captured[0].Method != http.MethodGet || captured[0].Path != "/api/v1/data/business-objects" {
+		t.Fatalf("unexpected business object list request: %#v", captured[0])
+	}
+	for _, want := range []string{"app_id=mis.expense", "domain=finance", "object_role=expense_report", "limit=7", "before_id=cursor-1"} {
+		if !strings.Contains(captured[0].Query, want) {
+			t.Fatalf("business object query %q missing %q", captured[0].Query, want)
+		}
+	}
+	if captured[1].Method != http.MethodPost || captured[1].Path != "/api/v1/data/object-roles/resolve" {
+		t.Fatalf("unexpected direct resolve request: %#v", captured[1])
+	}
+	if got := strings.TrimSpace(asTestString(captured[1].Body["object_role"])); got != "expense_report" {
+		t.Fatalf("direct resolve object_role = %q; body=%#v", got, captured[1].Body)
+	}
+	if got, ok := captured[1].Body["require_initialized"].(bool); !ok || !got {
+		t.Fatalf("direct resolve should require initialized dataset: %#v", captured[1].Body)
+	}
+	if captured[2].Method != http.MethodPost || captured[2].Path != "/api/v1/data/object-roles/resolve" {
+		t.Fatalf("unexpected query resolver request: %#v", captured[2])
+	}
+	if got, ok := captured[2].Body["require_initialized"].(bool); !ok || !got {
+		t.Fatalf("query_records resolver should require initialized dataset: %#v", captured[2].Body)
+	}
+	if captured[3].Method != http.MethodPost || captured[3].Path != "/api/v1/data/datasets/finance.expenses/records/query" {
+		t.Fatalf("unexpected query_records request: %#v", captured[3])
+	}
+	if captured[4].Method != http.MethodPost || captured[4].Path != "/api/v1/data/object-roles/resolve" {
+		t.Fatalf("unexpected approval resolver request: %#v", captured[4])
+	}
+	if captured[5].Method != http.MethodPost || captured[5].Path != "/api/v1/data/datasets/finance.expenses/records/exp-4/approvals" {
+		t.Fatalf("unexpected approval start request: %#v", captured[5])
+	}
+	if got := strings.TrimSpace(asTestString(captured[5].Body["workflow_skill_id"])); got != "expense_approval" {
+		t.Fatalf("approval workflow_skill_id = %q; body=%#v", got, captured[5].Body)
+	}
+	if got := strings.TrimSpace(asTestString(captured[5].Body["app_id"])); got != "mis.expense" {
+		t.Fatalf("approval app_id = %q; body=%#v", got, captured[5].Body)
+	}
+	if got := strings.TrimSpace(asTestString(captured[5].Body["object_role"])); got != "expense_report" {
+		t.Fatalf("approval object_role = %q; body=%#v", got, captured[5].Body)
+	}
+}
+
 func asTestString(value interface{}) string {
 	if value == nil {
 		return ""

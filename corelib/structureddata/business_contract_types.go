@@ -83,6 +83,108 @@ type QueryBusinessDomainsInput struct {
 	BeforeID string `json:"before_id,omitempty"`
 }
 
+type QueryBusinessObjectsInput struct {
+	AppID       string `json:"app_id,omitempty"`
+	BlueprintID string `json:"blueprint_id,omitempty"`
+	Domain      string `json:"domain,omitempty"`
+	ObjectRole  string `json:"object_role,omitempty"`
+	Limit       int    `json:"limit,omitempty"`
+	BeforeID    string `json:"before_id,omitempty"`
+}
+
+type RoleBinding struct {
+	AppID       string `json:"app_id,omitempty"`
+	BlueprintID string `json:"blueprint_id,omitempty"`
+	ObjectRole  string `json:"object_role"`
+	Domain      string `json:"domain"`
+	DatasetID   string `json:"dataset_id"`
+	TemplateID  string `json:"template_id,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+}
+
+type AppInstallation struct {
+	ID           string         `json:"id"`
+	TenantID     string         `json:"tenant_id,omitempty"`
+	AppID        string         `json:"app_id"`
+	BlueprintID  string         `json:"blueprint_id,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Version      string         `json:"version,omitempty"`
+	Kind         string         `json:"kind,omitempty"`
+	Status       string         `json:"status"`
+	Source       string         `json:"source,omitempty"`
+	RoleBindings []RoleBinding  `json:"role_bindings,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+	InstalledBy  string         `json:"installed_by,omitempty"`
+	InstalledAt  string         `json:"installed_at,omitempty"`
+	UpdatedAt    string         `json:"updated_at,omitempty"`
+}
+
+type UpsertAppInstallationInput struct {
+	ID           string         `json:"id,omitempty"`
+	AppID        string         `json:"app_id"`
+	BlueprintID  string         `json:"blueprint_id,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Version      string         `json:"version,omitempty"`
+	Kind         string         `json:"kind,omitempty"`
+	Status       string         `json:"status,omitempty"`
+	Source       string         `json:"source,omitempty"`
+	RoleBindings []RoleBinding  `json:"role_bindings,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+}
+
+type QueryAppInstallationsInput struct {
+	AppID       string `json:"app_id,omitempty"`
+	BlueprintID string `json:"blueprint_id,omitempty"`
+	Status      string `json:"status,omitempty"`
+	Limit       int    `json:"limit,omitempty"`
+	Before      string `json:"before,omitempty"`
+	BeforeID    string `json:"before_id,omitempty"`
+}
+type BusinessObjectCatalog struct {
+	ObjectRole         string                   `json:"object_role"`
+	Title              string                   `json:"title"`
+	Description        string                   `json:"description,omitempty"`
+	Domain             string                   `json:"domain"`
+	DatasetID          string                   `json:"dataset_id"`
+	TemplateID         string                   `json:"template_id,omitempty"`
+	AppIDs             []string                 `json:"app_ids,omitempty"`
+	BlueprintIDs       []string                 `json:"blueprint_ids,omitempty"`
+	Initialized        bool                     `json:"initialized"`
+	RoleBinding        RoleBinding              `json:"role_binding"`
+	Dataset            *Dataset                 `json:"dataset,omitempty"`
+	Template           *DatasetTemplate         `json:"template,omitempty"`
+	Fields             []FieldDefinition        `json:"fields,omitempty"`
+	InputFields        []DatasetTemplateField   `json:"input_fields,omitempty"`
+	PreferredAction    string                   `json:"preferred_action,omitempty"`
+	PreferredView      string                   `json:"preferred_view,omitempty"`
+	PreferredReport    string                   `json:"preferred_report,omitempty"`
+	PreferredDashboard string                   `json:"preferred_dashboard,omitempty"`
+	BusinessActions    []BusinessAction         `json:"business_actions,omitempty"`
+	BusinessViews      []BusinessViewDefinition `json:"business_views,omitempty"`
+	Reports            []ReportDefinition       `json:"reports,omitempty"`
+	Dashboards         []DashboardDefinition    `json:"dashboards,omitempty"`
+	MissingTemplates   []string                 `json:"missing_templates,omitempty"`
+}
+
+type ResolveObjectRoleInput struct {
+	AppID              string `json:"app_id,omitempty"`
+	BlueprintID        string `json:"blueprint_id,omitempty"`
+	ObjectRole         string `json:"object_role"`
+	RequireInitialized bool   `json:"require_initialized,omitempty"`
+}
+
+type ResolveObjectRoleResult struct {
+	ObjectRole         string                `json:"object_role"`
+	AppID              string                `json:"app_id,omitempty"`
+	BlueprintID        string                `json:"blueprint_id,omitempty"`
+	DatasetID          string                `json:"dataset_id"`
+	TemplateID         string                `json:"template_id,omitempty"`
+	Initialized        bool                  `json:"initialized"`
+	RoleBinding        RoleBinding           `json:"role_binding"`
+	BusinessObject     BusinessObjectCatalog `json:"business_object"`
+	RecommendedActions []string              `json:"recommended_actions,omitempty"`
+}
+
 type BusinessDomainUseCase struct {
 	ID                 string   `json:"id"`
 	Title              string   `json:"title"`

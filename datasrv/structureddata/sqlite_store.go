@@ -16,7 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 24
+const currentSchemaVersion = 26
 
 type SQLiteStore struct {
 	db        *sql.DB
@@ -182,6 +182,16 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 	}
 	if version < 24 {
 		if err := s.applyMigrationV24(ctx); err != nil {
+			return err
+		}
+	}
+	if version < 25 {
+		if err := s.applyMigrationV25(ctx); err != nil {
+			return err
+		}
+	}
+	if version < 26 {
+		if err := s.applyMigrationV26(ctx); err != nil {
 			return err
 		}
 	}
@@ -1446,6 +1456,112 @@ func (s *SQLiteStore) applyMigrationV24(ctx context.Context) error {
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 24, formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (s *SQLiteStore) applyMigrationV25(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS app_installations(
+			id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL,
+			app_id TEXT NOT NULL,
+			blueprint_id TEXT NOT NULL DEFAULT '',
+			name TEXT NOT NULL DEFAULT '',
+			version TEXT NOT NULL DEFAULT '',
+			kind TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'installed',
+			source TEXT NOT NULL DEFAULT '',
+			metadata_json TEXT NOT NULL DEFAULT '{}',
+			installed_by TEXT NOT NULL DEFAULT '',
+			installed_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY(tenant_id, id),
+			UNIQUE(tenant_id, app_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS app_role_bindings(
+			tenant_id TEXT NOT NULL,
+			app_installation_id TEXT NOT NULL,
+			app_id TEXT NOT NULL,
+			blueprint_id TEXT NOT NULL DEFAULT '',
+			object_role TEXT NOT NULL,
+			domain TEXT NOT NULL DEFAULT '',
+			dataset_id TEXT NOT NULL DEFAULT '',
+			template_id TEXT NOT NULL DEFAULT '',
+			required INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY(tenant_id, app_installation_id, object_role),
+			FOREIGN KEY(tenant_id, app_installation_id) REFERENCES app_installations(tenant_id, id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_app_installations_tenant_status ON app_installations(tenant_id, status, updated_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_app_installations_blueprint ON app_installations(tenant_id, blueprint_id, updated_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_app_role_bindings_role ON app_role_bindings(tenant_id, app_id, object_role)`,
+		`CREATE INDEX IF NOT EXISTS idx_app_role_bindings_dataset ON app_role_bindings(tenant_id, dataset_id)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 25, formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (s *SQLiteStore) applyMigrationV26(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, column := range []struct{ name, ddl string }{
+		{"app_id", `ALTER TABLE record_approvals ADD COLUMN app_id TEXT NOT NULL DEFAULT ''`},
+		{"blueprint_id", `ALTER TABLE record_approvals ADD COLUMN blueprint_id TEXT NOT NULL DEFAULT ''`},
+		{"object_role", `ALTER TABLE record_approvals ADD COLUMN object_role TEXT NOT NULL DEFAULT ''`},
+	} {
+		exists, err := sqliteColumnExists(ctx, tx, "record_approvals", column.name)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := tx.ExecContext(ctx, column.ddl); err != nil {
+				return err
+			}
+		}
+	}
+	for _, stmt := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_record_approvals_app_role ON record_approvals(tenant_id, app_id, object_role, status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_record_approvals_blueprint_role ON record_approvals(tenant_id, blueprint_id, object_role, status, created_at)`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 26, formatTime(time.Now().UTC())); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
