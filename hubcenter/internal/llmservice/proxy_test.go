@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -72,13 +73,22 @@ func (r *mockAuthRepo) ListByServiceGroup(_ context.Context, serviceGroupID stri
 	return result, nil
 }
 func (r *mockAuthRepo) Update(_ context.Context, auth *TenantAuthorization) error { return nil }
-func (r *mockAuthRepo) DeductCredits(_ context.Context, id string, credits float64, _ time.Time) error {
+func (r *mockAuthRepo) DeductCredits(_ context.Context, id string, credits float64, _ time.Time) (float64, error) {
 	for _, a := range r.auths {
 		if a.ID == id {
-			a.CreditsUsed += credits
+			available := a.CreditsRemaining()
+			if available <= 0 {
+				return 0, nil
+			}
+			actual := credits
+			if available < actual {
+				actual = available
+			}
+			a.CreditsUsed += actual
+			return actual, nil
 		}
 	}
-	return nil
+	return 0, nil
 }
 
 // --- mock system settings ---
@@ -570,6 +580,94 @@ func TestHandleProxyRequest_GrantRequiredSpreadsChargeAcrossComputeCards(t *test
 	}
 	if got := usage.records[0].AuthID; got != "auth-small,auth-large" {
 		t.Fatalf("usage AuthID = %q, want charged auth IDs", got)
+	}
+}
+
+func TestAuthorizationCheckerDeductCreditsForServiceGroupReportsInsufficientAggregateBalance(t *testing.T) {
+	now := time.Now()
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{{
+		ID: "auth-half", HubID: "hub1", TenantID: "t1", ServiceGroupID: "redeem",
+		CreditsTotal: 0.5, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour),
+		Status: "active", CreatedAt: now,
+	}}}
+	checker := NewAuthorizationChecker(authRepo)
+
+	deductions, err := checker.DeductCreditsForServiceGroup(context.Background(), "hub1", "t1", "redeem", 1)
+	if err == nil {
+		t.Fatal("DeductCreditsForServiceGroup() error = nil, want insufficient credits error")
+	}
+	var insufficient *InsufficientCreditsError
+	if !errors.As(err, &insufficient) {
+		t.Fatalf("DeductCreditsForServiceGroup() error = %T %[1]v, want InsufficientCreditsError", err)
+	}
+	if insufficient.Requested != 1 || insufficient.Deducted != 0.5 || insufficient.Remaining != 0.5 {
+		t.Fatalf("insufficient error = %#v, want requested=1 deducted=0.5 remaining=0.5", insufficient)
+	}
+	if len(deductions) != 1 || deductions[0].AuthID != "auth-half" || deductions[0].Credits != 0.5 {
+		t.Fatalf("deductions = %#v, want partial charge against auth-half", deductions)
+	}
+	if got := authRepo.auths[0].CreditsUsed; got != 0.5 {
+		t.Fatalf("CreditsUsed = %.3f, want 0.5", got)
+	}
+}
+
+func TestHandleProxyRequest_GrantRequiredRecordsOnlyDeductedCreditsWhenBalanceRunsOut(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":5000,"completion_tokens":5000,"total_tokens":10000}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "redeem",
+			Name:         "Redeem",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models:       []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	now := time.Now()
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{{
+		ID: "auth-half", HubID: "hub1", TenantID: "t1", ServiceGroupID: "redeem",
+		CreditsTotal: 0.5, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour),
+		Status: "active", CreatedAt: now,
+	}}}
+	usage := &recordingUsageRecorder{}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(authRepo),
+		HTTPClient:  upstream.Client(),
+		Usage:       usage,
+	}
+
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "hi"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := authRepo.auths[0].CreditsUsed; got != 0.5 {
+		t.Fatalf("CreditsUsed = %.3f, want 0.5", got)
+	}
+	if len(usage.records) != 1 {
+		t.Fatalf("usage records len = %d, want 1", len(usage.records))
+	}
+	if got := usage.records[0].Credits; got != 0.5 {
+		t.Fatalf("usage Credits = %.3f, want actual deducted credits 0.5", got)
+	}
+	if got := usage.records[0].AuthID; got != "auth-half" {
+		t.Fatalf("usage AuthID = %q, want auth-half", got)
 	}
 }
 

@@ -255,6 +255,7 @@ type AppRunHistoryEntry = {
     artifactName?: string;
     artifactPath?: string;
     artifactDownloadState?: string;
+    artifacts?: SkillRunArtifactView[];
     at: string;
 };
 
@@ -480,6 +481,7 @@ type SkillSummary = {
     product_kind?: string;
     productKind?: string;
     is_maclaw_app?: boolean;
+    isMaclawApp?: boolean;
     capabilities?: string[] | string;
 };
 
@@ -491,6 +493,7 @@ type StudioSkillChoice = {
     sourceLabel: string;
     installed: boolean;
     productKind?: string;
+    isMaclawApp?: boolean;
     capabilities?: string[] | string;
 };
 
@@ -2679,6 +2682,44 @@ function latestAppRunEvidence(app: AppEntry): AppRunHistoryEntry | null {
     return loadAppRunHistory(app.id).find((item) => item.status === 'done' && item.definitionHash === expectedHash) || null;
 }
 
+function appRunHistoryArtifacts(evidence?: AppRunHistoryEntry | null): SkillRunArtifactView[] {
+    const seen = new Set<string>();
+    const artifacts: SkillRunArtifactView[] = [];
+    const add = (artifact?: SkillRunArtifactView | null) => {
+        const keys = skillRunArtifactKeys(artifact);
+        if (!artifact || keys.length === 0 || keys.some((key) => seen.has(key))) return;
+        keys.forEach((key) => seen.add(key));
+        artifacts.push(artifact);
+    };
+    for (const artifact of evidence?.artifacts || []) add(artifact);
+    if (evidence?.artifactID || evidence?.artifactURI || evidence?.artifactName || evidence?.artifactPath) {
+        add({
+            id: evidence.artifactID,
+            uri: evidence.artifactURI,
+            name: evidence.artifactName,
+            path: evidence.artifactPath,
+            download_state: evidence.artifactDownloadState,
+        });
+    }
+    return artifacts;
+}
+
+function appRunHistoryArtifactEvidence(artifact: SkillRunArtifactView) {
+    return {
+        id: artifact.id,
+        uri: artifact.uri,
+        name: artifact.name,
+        path: artifact.path,
+        remoteUrl: artifact.remote_url,
+        checksum: artifact.checksum,
+        downloadState: artifact.download_state,
+        mimeType: artifact.mime_type,
+        sizeBytes: artifact.size_bytes,
+        status: artifact.status,
+        presentation: artifact.presentation,
+    };
+}
+
 function appDependencyEvidence(app: AppEntry) {
     return appSkillDependencies(app).map((dep) => ({
         id: dep.id,
@@ -2703,23 +2744,28 @@ function appNeedsRuntimeDependencyCheck(app: AppEntry) {
 }
 function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmission) {
     const evidence = latestAppRunEvidence(app);
-    const localEvidenceAt = evidence?.at || app.recentUsedAt || '';
+    const evidenceArtifacts = appRunHistoryArtifacts(evidence);
+    const primaryArtifact = evidenceArtifacts[0];
+    const artifactName = primaryArtifact?.name || (primaryArtifact?.path ? primaryArtifact.path.split(/[\\/]/).pop() : undefined);
+    const dependencies = appDependencyEvidence(app);
     return {
-        status: submission?.status || (localEvidenceAt ? 'local_tested' : 'draft'),
+        status: submission?.status || (evidence ? 'local_tested' : 'draft'),
         riskLevel: submission?.riskLevel || (isEnterpriseAppKind(app.kind) ? 'medium' : 'low'),
         requiredScopes: appRequiredScopes(app),
         dependencies: {
             installPolicy: 'install_on_app_install',
-            skills: appDependencyEvidence(app),
-            requiredCount: appDependencyEvidence(app).filter((dep) => dep.required).length,
-            optionalCount: appDependencyEvidence(app).filter((dep) => !dep.required).length,
+            skills: dependencies,
+            requiredCount: dependencies.filter((dep) => dep.required).length,
+            optionalCount: dependencies.filter((dep) => !dep.required).length,
         },
         testEvidence: {
             runId: evidence?.runID,
             definitionHash: evidence?.definitionHash,
-            artifactPresent: !!(evidence?.artifactURI || evidence?.artifactName || evidence?.artifactPath),
-            artifactName: evidence?.artifactName || (evidence?.artifactPath ? evidence.artifactPath.split(/[\\/]/).pop() : undefined),
-            verifiedAt: localEvidenceAt || undefined,
+            artifactPresent: evidenceArtifacts.length > 0,
+            artifactCount: evidenceArtifacts.length,
+            artifactName,
+            artifacts: evidenceArtifacts.map(appRunHistoryArtifactEvidence),
+            verifiedAt: evidence?.at || undefined,
         },
         submission: submission ? {
             id: submission.id,
@@ -3915,7 +3961,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 setSkillRunStatus(status || null);
                 const lifecycle = normalizeSkillRunLifecycle(status?.status);
                 if (lifecycle === 'done') {
-                    const artifact = skillRunPrimaryArtifact(status);
+                    const artifacts = skillRunArtifacts(status);
+                    const artifact = artifacts[0] || null;
                     const artifactPath = String(artifact?.path || '').trim();
                     const artifactID = String(artifact?.id || '').trim();
                     const artifactURI = String(artifact?.uri || '').trim();
@@ -3937,6 +3984,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                         artifactName,
                         artifactPath,
                         artifactDownloadState,
+                        artifacts,
                     });
                     if (app?.source === 'skill' && app.manifest?.skill?.id) {
                         void RecordMaclawAppRunEvidenceForSkill(app.manifest.skill.id, app.id, definitionHash || '', runID, artifactPath || artifactName || artifactURI, verifiedAt).catch(() => undefined);
@@ -5715,10 +5763,14 @@ function isApprovalWorkflowSkillLike(value: { capabilities?: string[] | string; 
     return false;
 }
 
-function isAppRuntimeSkillLike(value: { capabilities?: string[] | string; product_kind?: string; productKind?: string; is_maclaw_app?: boolean }) {
-    if (value.is_maclaw_app) return false;
+function isMaclawAppSkillLike(value: { product_kind?: string; productKind?: string; is_maclaw_app?: boolean; isMaclawApp?: boolean }) {
+    return !!(value.is_maclaw_app || value.isMaclawApp) || normalizedProductKind(value) === 'maclaw_app_skill';
+}
+
+function isAppRuntimeSkillLike(value: { capabilities?: string[] | string; product_kind?: string; productKind?: string; is_maclaw_app?: boolean; isMaclawApp?: boolean }) {
+    if (isMaclawAppSkillLike(value)) return false;
     const productKind = normalizedProductKind(value);
-    if (productKind === 'maclaw_app_skill' || productKind === 'workflow_skill' || productKind === 'approval_workflow_skill') return false;
+    if (productKind === 'workflow_skill' || productKind === 'approval_workflow_skill') return false;
     return !isApprovalWorkflowSkillLike(value);
 }
 
@@ -5742,6 +5794,7 @@ function installedSkillChoices(skills: SkillSummary[], lang?: string, mode: Stud
                 sourceLabel: zh ? '\u5df2\u5b89\u88c5' : 'Installed',
                 installed: true,
                 productKind: normalizedProductKind(skill),
+                isMaclawApp: isMaclawAppSkillLike(skill),
                 capabilities: normalizedCapabilities(skill.capabilities),
             };
             return skillChoiceMatchesMode(choice, mode) ? choice : null;
@@ -5764,6 +5817,7 @@ function mixedSkillChoice(result: any, lang?: string): StudioSkillChoice | null 
         sourceLabel: installed ? (zh ? '\u5df2\u5b89\u88c5' : 'Installed') : String(result?.source_label || result?.source || (zh ? '\u80fd\u529b\u5e02\u573a' : 'Market')),
         installed,
         productKind: normalizedProductKind(result || {}),
+        isMaclawApp: isMaclawAppSkillLike(result || {}),
         capabilities: normalizedCapabilities(result?.capabilities),
     };
 }
@@ -5897,7 +5951,26 @@ const StudioSkillPicker = ({
                 </div>
             )}
             <div className="apps-skill-picker__list" role="listbox" aria-label={label}>
-                <div className="apps-skill-picker__group">{zh ? '\u5df2\u5b89\u88c5 Skill' : 'Installed skills'}</div>
+                {(visibleMarket.length > 0 || marketEmpty || currentQueryIsSearching || (marketSearchIsCurrent && searchState === 'error')) && <div className="apps-skill-picker__group apps-skill-picker__group--market">{zh ? 'SkillMarket / Hub' : 'SkillMarket / Hub'}</div>}
+                {currentQueryIsSearching && <div className="apps-skill-picker__empty">{zh ? '\u641c\u7d22\u4e2d...' : 'Searching...'}</div>}
+                {visibleMarket.map((choice) => (
+                    <button
+                        key={`${choice.source}:${choice.id}`}
+                        className={`apps-skill-picker__option ${value === choice.id ? 'is-active' : ''}`}
+                        type="button"
+                        role="option"
+                        aria-selected={value === choice.id}
+                        title={choice.description || choice.id}
+                        onClick={() => onSelect(choice)}
+                    >
+                        <strong>{choice.name}</strong>
+                        <span>{choice.id}</span>
+                        <em>{choice.sourceLabel}</em>
+                    </button>
+                ))}
+                {marketEmpty && <div className="apps-skill-picker__empty">{zh ? '\u5e02\u573a\u6682\u65e0\u5339\u914d Skill' : 'No matching market skills'}</div>}
+                {marketSearchIsCurrent && searchState === 'error' && <div className="apps-skill-picker__empty" role="alert">{searchError}</div>}
+                <div className="apps-skill-picker__group apps-skill-picker__group--installed">{zh ? '\u5df2\u5b89\u88c5 Skill' : 'Installed skills'}</div>
                 {visibleInstalled.length === 0 ? (
                     <div className="apps-skill-picker__empty">{normalizedQuery ? (zh ? '\u672c\u5730\u6ca1\u6709\u5339\u914d\uff0c\u53ef\u7ee7\u7eed\u641c SkillMarket / Hub' : 'No installed match. Search SkillMarket / Hub to continue.') : (zh ? '\u6ca1\u6709\u53ef\u7528\u7684\u5df2\u5b89\u88c5 Skill' : 'No installed skills available')}</div>
                 ) : visibleInstalled.map((choice) => (
@@ -5915,24 +5988,6 @@ const StudioSkillPicker = ({
                         <em>{choice.sourceLabel}</em>
                     </button>
                 ))}
-                {(visibleMarket.length > 0 || marketEmpty || searchState === 'error') && <div className="apps-skill-picker__group">{zh ? 'SkillMarket / Hub' : 'SkillMarket / Hub'}</div>}
-                {visibleMarket.map((choice) => (
-                    <button
-                        key={`${choice.source}:${choice.id}`}
-                        className={`apps-skill-picker__option ${value === choice.id ? 'is-active' : ''}`}
-                        type="button"
-                        role="option"
-                        aria-selected={value === choice.id}
-                        title={choice.description || choice.id}
-                        onClick={() => onSelect(choice)}
-                    >
-                        <strong>{choice.name}</strong>
-                        <span>{choice.id}</span>
-                        <em>{choice.sourceLabel}</em>
-                    </button>
-                ))}
-                {marketEmpty && <div className="apps-skill-picker__empty">{zh ? '\u5e02\u573a\u6682\u65e0\u5339\u914d Skill' : 'No matching market skills'}</div>}
-                {searchState === 'error' && <div className="apps-skill-picker__empty" role="alert">{searchError}</div>}
             </div>
         </div>
     );
@@ -6592,7 +6647,8 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
             ? !!manifest?.skill?.id
             : true;
     const evidence = latestAppRunEvidence(app);
-    const hasTestEvidence = !!evidence || !!app.recentUsedAt;
+    const evidenceArtifactCount = appRunHistoryArtifacts(evidence).length;
+    const hasTestEvidence = !!evidence;
     const dependencies = appDependencyEvidence(app);
     const hasRequiredDependencies = app.kind === 'automation_app' || dependencies.some((dep) => dep.required && dep.id);
     return [
@@ -6624,9 +6680,7 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
             label: zh ? '\u8fd0\u884c\u8bc1\u636e' : 'Run evidence',
             ok: hasTestEvidence,
             detail: hasTestEvidence
-                ? evidence
-                    ? `${evidence.runID} · ${evidence.at}`
-                    : (zh ? '\u5df2\u6709\u6700\u8fd1\u4f7f\u7528\u8bb0\u5f55' : 'Recent use recorded')
+                ? `${evidence?.runID || ''} / ${evidence?.at || ''}${evidenceArtifactCount > 0 ? ` / ${evidenceArtifactCount} artifacts` : ''}`
                 : (zh ? '\u63d0\u4ea4\u5ba1\u6838\u524d\u5efa\u8bae\u5148\u8bd5\u8fd0\u884c\u4e00\u6b21' : 'Run the app once before review'),
         },
     ];
@@ -6688,6 +6742,15 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
             delete next[app.id];
             return next;
         });
+        const failedCheck = buildPublishChecks(app, lang).find((check) => !check.ok);
+        if (failedCheck) {
+            setSubmitErrors((current) => ({
+                ...current,
+                [app.id]: `${failedCheck.label}: ${failedCheck.detail}`,
+            }));
+            setSubmittingAppId('');
+            return;
+        }
         try {
             const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
             if (dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, [app.id])) {

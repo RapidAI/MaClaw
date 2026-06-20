@@ -855,6 +855,7 @@ function App() {
     const [maclawLLMConfigured, setMaclawLLMConfigured] = useState<boolean>(false);
     const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<SidebarCurrentProviderTokenUsage>({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0, localCacheRequests: 0, localCacheHits: 0 });
     const [sidebarHubCredits, setSidebarHubCredits] = useState<SidebarHubCredits | null>(null);
+    const [sidebarProviderSummaries, setSidebarProviderSummaries] = useState<SidebarLLMProviderSummary[]>([]);
     const sidebarTokenUsageSeqRef = useRef(0);
     const maclawLLMFirstPingDone = useRef(false);    const maclawLLMFirstPingResult = useRef<{online: boolean; configured: boolean} | null>(null);
 
@@ -2122,11 +2123,17 @@ function App() {
 
     const normalizeSidebarProviderState = useCallback((data?: SidebarProviderStateWire) => {
         const list = (data?.providers ?? data?.Providers ?? [])
-            .map((provider): SidebarLLMProviderSummary => ({
-                name: provider?.name ?? provider?.Name ?? '',
-                url: provider?.url ?? provider?.URL ?? '',
-                isHubService: !!(provider?.is_hub_service ?? provider?.IsHubService),
-            }))
+            .map((provider): SidebarLLMProviderSummary => {
+                const url = provider?.url ?? provider?.URL ?? '';
+                const key = (provider as any)?.key ?? (provider as any)?.Key ?? '';
+                const isHub = !!(provider?.is_hub_service ?? provider?.IsHubService);
+                return {
+                    name: provider?.name ?? provider?.Name ?? '',
+                    url,
+                    isHubService: isHub,
+                    configured: isHub || (!!url && !!key),
+                };
+            })
             .filter((provider) => !!provider.name);
         const current = data?.current ?? data?.Current ?? '';
         return { providers: list, current };
@@ -2165,10 +2172,12 @@ function App() {
             if (refreshSeq !== sidebarTokenUsageSeqRef.current) return;
             setSidebarCurrentProviderTokenUsage({ provider: currentProviderName, isHubService: currentProviderIsHubService, ...currentProviderUsage });
             setSidebarHubCredits(hubCredits);
+            setSidebarProviderSummaries(providerSummaries);
         } catch {
             if (refreshSeq !== sidebarTokenUsageSeqRef.current) return;
             setSidebarCurrentProviderTokenUsage({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0, localCacheRequests: 0, localCacheHits: 0 });
             setSidebarHubCredits(null);
+            setSidebarProviderSummaries([]);
         }
     }, [normalizeSidebarProviderState, providers, selectedProvider]);
 
@@ -2223,6 +2232,63 @@ function App() {
         setNavTabNow('settings');
         setSettingsTab('llm');
     }, []);
+
+    // ── Provider quick-switch: compute available list + handler ──
+    const availableProvidersForSwitch = useMemo((): SidebarLLMProviderSummary[] => {
+        // Only include providers that are confirmed available:
+        // - Official hub provider: only if LLM is online AND hub credits authorized + not expired/exhausted
+        // - Third-party providers: only if LLM is online AND configured (has url/key/model)
+        if (!maclawLLMOnline) return [];
+        const currentName = sidebarCurrentProviderTokenUsage.provider;
+        const result: SidebarLLMProviderSummary[] = [];
+        // Current provider is always "available" (it's what we just pinged successfully)
+        if (currentName) {
+            result.push({ name: currentName, url: '', isHubService: sidebarCurrentProviderTokenUsage.isHubService });
+        }
+        // Add other configured providers from the backend's GetMaclawLLMProviders() result
+        for (const p of sidebarProviderSummaries) {
+            if (!p.name || p.name === currentName) continue;
+            // Skip unconfigured providers (no URL+key for third-party, or not a hub service)
+            if (!p.configured) continue;
+            // Official hub provider: only include if hub credits are authorized and not expired/exhausted
+            if (p.isHubService) {
+                if (!sidebarHubCredits?.authorized) continue;
+                const hubStatus = String(sidebarHubCredits.status || '').toLowerCase();
+                if (hubStatus === 'expired' || hubStatus === 'exhausted') continue;
+                // period_limited with service stopped = effectively unavailable
+                if (hubStatus === 'period_limited' && sidebarHubCredits.serviceActive === false) continue;
+            }
+            result.push(p);
+        }
+        return result;
+    }, [maclawLLMOnline, sidebarCurrentProviderTokenUsage, sidebarProviderSummaries, sidebarHubCredits]);
+
+    const handleQuickSwitchProvider = useCallback((providerName: string) => {
+        // Optimistic update: immediately show new provider name in sidebar
+        setSidebarCurrentProviderTokenUsage(prev => ({ ...prev, provider: providerName }));
+        callBackend(() => PatchConfigFields({ maclaw_llm_current_provider: providerName })).then((saved) => {
+            setConfig(new main.AppConfig(saved));
+            // Refresh sidebar display with authoritative data from backend
+            void refreshSidebarTokenUsage();
+            // Toast notification
+            const toastMsg = lang === 'en'
+                ? `Switched to "${providerName}". Effective on next AI request.`
+                : lang === 'zh-Hant'
+                    ? `\u5df2\u5207\u63db\u70ba\u300c${providerName}\u300d\uff0c\u4e0b\u6b21 AI \u5c0d\u8a71\u6642\u751f\u6548`
+                    : `\u5df2\u5207\u6362\u4e3a\u300c${providerName}\u300d\uff0c\u4e0b\u6b21 AI \u5bf9\u8bdd\u65f6\u751f\u6548`;
+            showToastMessage?.(toastMsg);
+        }).catch((err) => {
+            console.error('Failed to switch LLM provider:', err);
+            // Revert optimistic update on failure
+            void refreshSidebarTokenUsage();
+            const errMsg = lang === 'en'
+                ? `Failed to switch provider: ${err}`
+                : lang === 'zh-Hant'
+                    ? `\u5207\u63db\u670d\u52d9\u5546\u5931\u6557\uff1a${err}`
+                    : `\u5207\u6362\u670d\u52a1\u5546\u5931\u8d25\uff1a${err}`;
+            showAlert(errMsg);
+        });
+    }, [lang, refreshSidebarTokenUsage, showAlert]);
 
     const openHubCardStorePage = useCallback(async () => {
         try {
@@ -3121,6 +3187,8 @@ ${instruction}`;
                 favoriteEmployeeNames={favoriteEmployeeNames}
                 showAppEntry={showAppEntryEnabled}
                 showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
+                availableProviders={availableProvidersForSwitch}
+                onSwitchProvider={handleQuickSwitchProvider}
             />
             <div className="main-container" data-ai-theme={aiThemeMode}>
                 <Suspense fallback={null}>

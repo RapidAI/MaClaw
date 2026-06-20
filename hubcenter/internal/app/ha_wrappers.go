@@ -124,12 +124,13 @@ func (r *haLLMAuthorizationRepo) Update(ctx context.Context, auth *llmservice.Te
 	return nil
 }
 
-func (r *haLLMAuthorizationRepo) DeductCredits(ctx context.Context, id string, credits float64, now time.Time) error {
-	if err := r.inner.DeductCredits(ctx, id, credits, now); err != nil {
-		return err
+func (r *haLLMAuthorizationRepo) DeductCredits(ctx context.Context, id string, credits float64, now time.Time) (float64, error) {
+	actual, err := r.inner.DeductCredits(ctx, id, credits, now)
+	if err != nil {
+		return actual, err
 	}
 	r.syncAuthorizationByID(ctx, id, nil)
-	return nil
+	return actual, nil
 }
 
 func (r *haLLMAuthorizationRepo) syncAuthorizationByID(ctx context.Context, id string, fallback *llmservice.TenantAuthorization) {

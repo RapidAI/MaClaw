@@ -54,7 +54,6 @@ import { EVENT_PROJECT_TASK_CLOSED } from "../../constants/events";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
-const LOCAL_CODING_PREVIEW_EVENT_SCOPE = "__maclaw_local_coding_preview__";
 export function canShowAssistantCodingPreviewForTab(tab: Pick<AITab, "type"> | null | undefined): boolean { return tab?.type === "local" || tab?.type === "project"; }
 
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
@@ -394,7 +393,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 // Background agent loops emit events that were rejected by the inactive
                 // tab's event filter — this refresh bridges that gap.
                 if (activeTab.type === "project" && activeTab.projectPath) {
-                    RefreshWorkflowV2StateForTab(activeTab.projectPath).catch(() => {});
+                    RefreshWorkflowV2StateForTab(activeTab.projectPath, activeTab.id).catch(() => {});
                 }
             }
         }
@@ -818,7 +817,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         const localSessionKey = 'desktop-user';
         markPanelSendInFlight(localSessionKey, true);
-        const localSend = options === undefined ? sendMessage(text) : sendMessage(text, options);
+        // Only include tabId for tabs that can own a workflow preview (local/project).
+        // VE/group tabs don't run workflows — sending their tab ID would overwrite
+        // the local tab's event_scope_id mapping on the backend.
+        const shouldIncludeTabScope = canShowAssistantCodingPreviewForTab(liveActiveTab);
+        const localOptions = shouldIncludeTabScope
+            ? (options ? { ...options, tabId: liveActiveTab.id } : { tabId: liveActiveTab.id })
+            : (options || {});
+        const localSend = sendMessage(text, localOptions as any);
         return localSend.finally(() => markPanelSendInFlight(localSessionKey, false));
     }, [getTabState, getTabs, markPanelSendInFlight, messages, persistProjectTabMsgIds, projectTabMessages, saveTabState, sendMessage]);
     sendMessageForTabRef.current = sendMessageForTab;
@@ -942,13 +948,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [tabLimitError, clearTabLimitError]);
     const codingPreviewOwnerTab = tabState.tabs.find(tab => tab.id === previewOwnerTabRef.current);
     // The event scope determines which workflow events are accepted by useWorkflowState.
-    // It always tracks the active tab's project path — when user switches tabs, the
-    // preview panel switches to the new tab's workflow state (via save/restore).
-    // Events for background tabs are not received while inactive, but the backend
-    // re-emits full workflow state on the next message from that tab.
-    const codingPreviewEventScope = (canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.projectPath : codingPreviewOwnerTab?.projectPath) || LOCAL_CODING_PREVIEW_EVENT_SCOPE;
+    // Each tab has a unique scope ID (tab.id): "local" for the AI assistant tab,
+    // "proj-{hash}" for project tabs. Events carry this scope ID from the backend,
+    // ensuring perfect per-tab isolation without path comparison.
+    const codingPreviewEventScope = canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.id : (codingPreviewOwnerTab?.id || "local");
+    // Code preview events still use project_path for routing (they don't carry event_scope_id yet).
+    const codePreviewPathScope = (canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.projectPath : codingPreviewOwnerTab?.projectPath) || undefined;
     const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(codingPreviewEventScope);
-    const { state: codePreviewState, closePanel: closeCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codingPreviewEventScope);
+    const { state: codePreviewState, closePanel: closeCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codePreviewPathScope);
     useEffect(() => {
         if (!previewOwnerResetPendingRef.current) return; previewOwnerResetPendingRef.current = false;
         const state = previewStateMapRef.current.get("local");

@@ -234,11 +234,12 @@ func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) erro
 		wfID := a.activeWorkflowID
 		a.mu.RUnlock()
 		runtime.EventsEmit(a.app.ctx, "workflow:doc_update", map[string]string{
-			"user_id":      userID,
-			"phase_id":     phaseID,
-			"content":      content,
-			"project_path": a.GetWorkingDir(),
-			"workflow_id":  wfID,
+			"user_id":        userID,
+			"phase_id":       phaseID,
+			"content":        content,
+			"project_path":   a.GetWorkingDir(),
+			"workflow_id":    wfID,
+			"event_scope_id": a.app.getEventScopeID(userID),
 		})
 	}
 	return nil
@@ -299,8 +300,9 @@ func (a *GUIWorkflowAdapter) EmitSuggestMaximize(userID, workflowType string) {
 	}
 	if a.app.ctx != nil {
 		runtime.EventsEmit(a.app.ctx, "workflow:suggest_maximize", map[string]string{
-			"user_id":       userID,
-			"workflow_type": workflowType,
+			"user_id":        userID,
+			"workflow_type":  workflowType,
+			"event_scope_id": a.app.getEventScopeID(userID),
 		})
 	}
 }
@@ -312,7 +314,8 @@ func (a *GUIWorkflowAdapter) ResetSuggestMaximize(userID string) {
 	a.suggestMaximizeSent.Delete(userID)
 	if a.app.ctx != nil {
 		runtime.EventsEmit(a.app.ctx, "workflow:suggest_maximize_dismiss", map[string]string{
-			"user_id": userID,
+			"user_id":        userID,
+			"event_scope_id": a.app.getEventScopeID(userID),
 		})
 	}
 }
@@ -325,11 +328,12 @@ func (a *GUIWorkflowAdapter) EmitGateResult(userID, phaseID string, result *work
 		wfID := a.activeWorkflowID
 		a.mu.RUnlock()
 		runtime.EventsEmit(a.app.ctx, "workflow:gate_result", map[string]interface{}{
-			"user_id":      userID,
-			"phase_id":     phaseID,
-			"result":       result,
-			"project_path": a.GetWorkingDir(),
-			"workflow_id":  wfID,
+			"user_id":        userID,
+			"phase_id":       phaseID,
+			"result":         result,
+			"project_path":   a.GetWorkingDir(),
+			"workflow_id":    wfID,
+			"event_scope_id": a.app.getEventScopeID(userID),
 		})
 	}
 	return nil

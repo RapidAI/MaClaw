@@ -344,12 +344,15 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 	if prevState := wf.machine.GetActive(msg.UserID); prevState != nil {
 		wf.machine.Cancel(msg.UserID)
 		emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-			"id":           prevState.ID,
-			"status":       string(v2.StatusCancelled),
-			"type":         prevState.Type,
-			"project_path": workflowEventProjectPath(prevState),
+			"id":             prevState.ID,
+			"status":         string(v2.StatusCancelled),
+			"type":           prevState.Type,
+			"project_path":   workflowEventProjectPath(prevState),
+			"event_scope_id": h.app.getEventScopeID(prevState.UserID),
 		})
-		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", nil)
+		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{
+			"event_scope_id": h.app.getEventScopeID(prevState.UserID),
+		})
 		log.Printf("[workflow-v2] cancelled previous workflow before starting new one: user=%s", msg.UserID)
 	}
 
@@ -467,15 +470,18 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 		// Clear frontend workflow dashboard state with targeted reset.
 		if hr.State != nil {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-				"id":           hr.State.ID,
-				"status":       string(v2.StatusCancelled),
-				"type":         hr.State.Type,
-				"project_path": workflowEventProjectPath(hr.State),
+				"id":             hr.State.ID,
+				"status":         string(v2.StatusCancelled),
+				"type":           hr.State.Type,
+				"project_path":   workflowEventProjectPath(hr.State),
+				"event_scope_id": h.app.getEventScopeID(hr.State.UserID),
 			})
 		} else {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
 		}
-		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", nil)
+		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{
+			"event_scope_id": h.app.getEventScopeID(msg.UserID),
+		})
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "❌ 工作流已取消"}}
 
 	case v2.ActionCancelAndExecute:
@@ -490,15 +496,18 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 		// Clear frontend workflow dashboard state with targeted reset.
 		if hr.State != nil {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-				"id":           hr.State.ID,
-				"status":       string(v2.StatusCancelled),
-				"type":         hr.State.Type,
-				"project_path": workflowEventProjectPath(hr.State),
+				"id":             hr.State.ID,
+				"status":         string(v2.StatusCancelled),
+				"type":           hr.State.Type,
+				"project_path":   workflowEventProjectPath(hr.State),
+				"event_scope_id": h.app.getEventScopeID(hr.State.UserID),
 			})
 		} else {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
 		}
-		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", nil)
+		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{
+			"event_scope_id": h.app.getEventScopeID(msg.UserID),
+		})
 		if originalRequest != "" {
 			// Stash the original request so the agent loop processes it
 			// instead of the "取消，直接处理" text.
@@ -663,13 +672,14 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseUpdateEvent(state *v2.WorkflowStat
 	}
 
 	payload := map[string]interface{}{
-		"id":            state.ID,
-		"status":        string(state.Status),
-		"type":          state.Type,
-		"current_phase": activePhaseID,
-		"phases":        phases,
-		"phase_outputs": phaseOutputs,
-		"project_path":  workflowEventProjectPath(state),
+		"id":             state.ID,
+		"status":         string(state.Status),
+		"type":           state.Type,
+		"current_phase":  activePhaseID,
+		"phases":         phases,
+		"phase_outputs":  phaseOutputs,
+		"project_path":   workflowEventProjectPath(state),
+		"event_scope_id": h.app.getEventScopeID(state.UserID),
 	}
 	if awaitingForm {
 		payload["awaiting_form"] = true
@@ -701,11 +711,14 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 	if state.Status == v2.StatusActive {
 		if !awaitingForm {
 			emitWorkflowV2Event(h.app, "workflow:suggest_maximize", map[string]interface{}{
-				"workflow_type": state.Type,
+				"workflow_type":  state.Type,
+				"event_scope_id": h.app.getEventScopeID(state.UserID),
 			})
 		}
 	} else {
-		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", nil)
+		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{
+			"event_scope_id": h.app.getEventScopeID(state.UserID),
+		})
 	}
 }
 
@@ -980,10 +993,11 @@ func (h *IMMessageHandler) emitDocUpdateV2(userID, phaseID, content string) {
 		}
 	}
 	emitWorkflowV2Event(h.app, "workflow:doc_update", map[string]interface{}{
-		"phase_id":     phaseID,
-		"content":      content,
-		"project_path": projectPath,
-		"workflow_id":  workflowID,
+		"phase_id":       phaseID,
+		"content":        content,
+		"project_path":   projectPath,
+		"workflow_id":    workflowID,
+		"event_scope_id": h.app.getEventScopeID(userID),
 	})
 }
 
@@ -1000,15 +1014,18 @@ func (h *IMMessageHandler) cancelWorkflowV2(userID string) {
 	// the matching tab clears its preview panel.
 	if state != nil {
 		emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-			"id":           state.ID,
-			"status":       string(v2.StatusCancelled),
-			"type":         state.Type,
-			"project_path": workflowEventProjectPath(state),
+			"id":             state.ID,
+			"status":         string(v2.StatusCancelled),
+			"type":           state.Type,
+			"project_path":   workflowEventProjectPath(state),
+			"event_scope_id": h.app.getEventScopeID(state.UserID),
 		})
 	} else {
 		emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
 	}
-	emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", nil)
+	emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{
+		"event_scope_id": h.app.getEventScopeID(userID),
+	})
 }
 
 // isWorkflowV2Active returns true if user has an active V2 workflow.
@@ -1147,10 +1164,11 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *
 			h.emitWorkflowV2Progress(userID, updatedState)
 		} else {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-				"id":           state.ID,
-				"status":       "completed",
-				"type":         state.Type,
-				"project_path": workflowEventProjectPath(state),
+				"id":             state.ID,
+				"status":         "completed",
+				"type":           state.Type,
+				"project_path":   workflowEventProjectPath(state),
+				"event_scope_id": h.app.getEventScopeID(userID),
 			})
 		}
 	}
@@ -1301,10 +1319,11 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID str
 			h.emitWorkflowV2Progress(userID, updatedState)
 		} else {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-				"id":           state.ID,
-				"status":       "completed",
-				"type":         state.Type,
-				"project_path": workflowEventProjectPath(state),
+				"id":             state.ID,
+				"status":         "completed",
+				"type":           state.Type,
+				"project_path":   workflowEventProjectPath(state),
+				"event_scope_id": h.app.getEventScopeID(userID),
 			})
 		}
 	}
@@ -1712,10 +1731,11 @@ func (h *IMMessageHandler) setupDirectCodingExecution(userID, originalText, rawP
 		if prevState := wf.machine.GetActive(userID); prevState != nil {
 			wf.machine.Cancel(userID)
 			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-				"id":           prevState.ID,
-				"status":       string(v2.StatusCancelled),
-				"type":         prevState.Type,
-				"project_path": workflowEventProjectPath(prevState),
+				"id":             prevState.ID,
+				"status":         string(v2.StatusCancelled),
+				"type":           prevState.Type,
+				"project_path":   workflowEventProjectPath(prevState),
+				"event_scope_id": h.app.getEventScopeID(prevState.UserID),
 			})
 		}
 	}

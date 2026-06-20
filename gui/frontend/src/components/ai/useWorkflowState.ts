@@ -98,52 +98,44 @@ function resolveWorkflowInstanceKey(state: any): string {
 
 /**
  * Determines whether a workflow event should be accepted by this hook instance.
- * Uses workflow_id as the primary isolation key (precise, per-instance).
- * Falls back to project_path comparison when workflow_id is unavailable.
  *
- * @param eventWorkflowID - The workflow_id carried by the event (may be empty for legacy events)
- * @param eventProjectPath - The project_path carried by the event
- * @param currentWorkflowID - The currently tracked workflow instance ID (workflowIDRef.current)
- * @param currentTabPath - The active tab's project path (activeTabProjectPathRef.current)
- * @param strict - When true, reject events from different workflow IDs (for doc_update/gate_result).
- *   When false, accept events from new workflows (for phase_update which may signal a new workflow start).
- * @returns true if the event should be accepted, false if it belongs to another tab/workflow
+ * Primary isolation mechanism: `event_scope_id` — a tab-level ID assigned when
+ * the backend starts processing a message from a specific tab. Each tab has a
+ * unique scope ID (local tab = "local", project tabs = "proj-{hash}").
+ * Events are accepted only when the event's scope ID matches the hook's scope ID.
+ *
+ * Fallback (backward compatibility): when events don't carry `event_scope_id`,
+ * falls back to workflow_id comparison (matches after first event establishes the ID).
+ *
+ * @param eventProjectPath - Retained for signature stability; currently unused.
+ *   All isolation is handled by event_scope_id (primary) and workflow_id (fallback).
  */
 function shouldAcceptWorkflowEvent(
+    eventScopeID: string,
     eventWorkflowID: string,
     eventProjectPath: string,
+    currentScopeID: string,
     currentWorkflowID: string,
-    currentTabPath: string,
     strict: boolean = true,
 ): boolean {
-    // Primary isolation: workflow_id match.
-    // If both sides have a workflow_id, use it for precise per-instance routing.
+    // Primary isolation: event_scope_id match (tab-level ID routing).
+    // This is the definitive signal — if both sides have a scope ID, use it.
+    if (eventScopeID && currentScopeID) {
+        return eventScopeID === currentScopeID;
+    }
+
+    // Fallback: legacy events without event_scope_id.
+    // Use workflow_id as secondary isolation key.
     if (eventWorkflowID && currentWorkflowID) {
         if (eventWorkflowID === currentWorkflowID) return true;
-        // Different workflow IDs:
-        // - strict mode (doc_update/gate_result): reject — content belongs to another instance
-        // - non-strict mode (phase_update): accept — may be a new workflow starting on this tab
         if (strict) return false;
-        // In non-strict mode, fall through to project_path check to verify
-        // the new workflow belongs to this tab's project scope.
     }
 
-    // Fallback: project_path comparison (legacy behavior for events without workflow_id,
-    // or non-strict mode validating a new workflow's project scope).
-    // Only filter when the tab's path is a real filesystem path (contains / or \).
-    // The LOCAL sentinel ("__maclaw_local_coding_preview__") accepts all events
-    // when there's no workflow_id to compare — this is the backward-compat case.
-    const isRealPath = currentTabPath.length > 0 && (currentTabPath.includes("/") || currentTabPath.includes("\\"));
-    if (eventProjectPath && isRealPath) {
-        // Normalize slashes for comparison: backend uses OS-native separators
-        // (backslash on Windows) while frontend normalizes to forward slashes.
-        const normEvent = eventProjectPath.replace(/\\/g, "/").toLowerCase();
-        const normCurrent = currentTabPath.replace(/\\/g, "/").toLowerCase();
-        if (normEvent !== normCurrent) {
-            return false;
-        }
-    }
-
+    // No event_scope_id and no decisive workflow_id comparison available.
+    // Accept the event — this covers:
+    // - First event for a new workflow (currentWorkflowID is empty)
+    // - Legacy events without workflow_id (backward compat)
+    // In production, all new events carry event_scope_id so the primary check handles them.
     return true;
 }
 
@@ -156,13 +148,15 @@ function shouldAcceptWorkflowEvent(
  *   - workflow:doc_update    — document content updates
  *   - workflow:gate_result   — quality gate results
  *
- * @param activeTabProjectPath - The project path of the currently active tab.
- *   Used for event routing: if an event carries a `project_path` that differs
- *   from the active tab's path, the update is skipped (it belongs to another
+ * @param activeTabScopeID - The event scope ID for the currently active tab.
+ *   Used for event routing: if an event carries an `event_scope_id` that differs
+ *   from the active tab's scope ID, the update is skipped (it belongs to another
  *   tab and will be handled via the tab switch save/restore mechanism).
+ *   For project tabs this is the tab ID (e.g., "proj-abc123").
+ *   For the local tab this is "local".
  *   If empty/undefined, all events are applied (backward compatible fallback).
  */
-export function useWorkflowState(activeTabProjectPath?: string) {
+export function useWorkflowState(activeTabScopeID?: string) {
     const [active, setActive] = useState(false);
     const [splitMode, setSplitMode] = useState(false);
     const [splitRatio, setSplitRatioState] = useState(DEFAULT_SPLIT_RATIO);
@@ -183,8 +177,8 @@ export function useWorkflowState(activeTabProjectPath?: string) {
     const workflowActiveRef = useRef(false);
     const pendingWorkingDirRef = useRef("");
     const transientTextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const activeTabProjectPathRef = useRef(activeTabProjectPath || "");
-    activeTabProjectPathRef.current = activeTabProjectPath || "";
+    const activeTabScopeIDRef = useRef(activeTabScopeID || "");
+    activeTabScopeIDRef.current = activeTabScopeID || "";
 
     const setWorkflowSplitMode = useCallback((next: boolean | ((current: boolean) => boolean)) => {
         setSplitMode(current => {
@@ -223,15 +217,12 @@ export function useWorkflowState(activeTabProjectPath?: string) {
                 return;
             }
 
-            // Workflow instance isolation: use workflow_id as primary routing key
-            // for precise per-instance filtering. Falls back to project_path when
-            // workflow_id is unavailable (legacy V1 events without id field).
-            // Non-strict mode: accept events from new workflow instances (they may
-            // signal a new workflow starting on this tab — the code below detects
-            // the ID change and resets state accordingly).
+            // Workflow instance isolation: event_scope_id is the primary routing key.
+            // Falls back to workflow_id + project_path when event_scope_id is absent (legacy).
             const eventProjectPath = typeof state.project_path === "string" ? state.project_path.trim() : "";
             const eventWorkflowID = resolveWorkflowInstanceKey(state);
-            if (!shouldAcceptWorkflowEvent(eventWorkflowID, eventProjectPath, workflowIDRef.current, activeTabProjectPathRef.current, false)) {
+            const eventScopeID = typeof state.event_scope_id === "string" ? state.event_scope_id.trim() : "";
+            if (!shouldAcceptWorkflowEvent(eventScopeID, eventWorkflowID, eventProjectPath, activeTabScopeIDRef.current, workflowIDRef.current, false)) {
                 return;
             }
             const workflowID = eventWorkflowID;
@@ -337,10 +328,11 @@ export function useWorkflowState(activeTabProjectPath?: string) {
         const unsub = EventsOn("workflow:doc_update", (data: any) => {
             if (!data?.phase_id) return;
 
-            // Workflow instance isolation: use workflow_id as primary routing key.
+            // Workflow instance isolation: event_scope_id is the primary routing key.
             const eventProjectPath = typeof data.project_path === "string" ? data.project_path.trim() : "";
             const eventWorkflowID = typeof data.workflow_id === "string" ? data.workflow_id.trim() : "";
-            if (!shouldAcceptWorkflowEvent(eventWorkflowID, eventProjectPath, workflowIDRef.current, activeTabProjectPathRef.current)) {
+            const eventScopeID = typeof data.event_scope_id === "string" ? data.event_scope_id.trim() : "";
+            if (!shouldAcceptWorkflowEvent(eventScopeID, eventWorkflowID, eventProjectPath, activeTabScopeIDRef.current, workflowIDRef.current)) {
                 return;
             }
 
@@ -375,10 +367,11 @@ export function useWorkflowState(activeTabProjectPath?: string) {
             if (!workflowActiveRef.current) return;
             if (!data?.phase_id || !data?.result) return;
 
-            // Workflow instance isolation: use workflow_id as primary routing key.
+            // Workflow instance isolation: event_scope_id is the primary routing key.
             const eventProjectPath = typeof data.project_path === "string" ? data.project_path.trim() : "";
             const eventWorkflowID = typeof data.workflow_id === "string" ? data.workflow_id.trim() : "";
-            if (!shouldAcceptWorkflowEvent(eventWorkflowID, eventProjectPath, workflowIDRef.current, activeTabProjectPathRef.current)) {
+            const eventScopeID = typeof data.event_scope_id === "string" ? data.event_scope_id.trim() : "";
+            if (!shouldAcceptWorkflowEvent(eventScopeID, eventWorkflowID, eventProjectPath, activeTabScopeIDRef.current, workflowIDRef.current)) {
                 return;
             }
 
@@ -407,6 +400,11 @@ export function useWorkflowState(activeTabProjectPath?: string) {
     useEffect(() => {
         const unsub = EventsOn("workflow:suggest_maximize", (data: any) => {
             if (!data?.workflow_type) return;
+            // Filter by event_scope_id if present.
+            const eventScopeID = typeof data.event_scope_id === "string" ? data.event_scope_id.trim() : "";
+            if (eventScopeID && activeTabScopeIDRef.current && eventScopeID !== activeTabScopeIDRef.current) {
+                return;
+            }
             setSuggestMaximize(true);
             setSuggestMaximizeType(data.workflow_type);
         });
@@ -418,7 +416,12 @@ export function useWorkflowState(activeTabProjectPath?: string) {
 
     // Listen for maximize suggestion dismissal (workflow cancelled/completed/reset)
     useEffect(() => {
-        const unsub = EventsOn("workflow:suggest_maximize_dismiss", () => {
+        const unsub = EventsOn("workflow:suggest_maximize_dismiss", (data: any) => {
+            // Filter by event_scope_id if present.
+            const eventScopeID = typeof data?.event_scope_id === "string" ? data.event_scope_id.trim() : "";
+            if (eventScopeID && activeTabScopeIDRef.current && eventScopeID !== activeTabScopeIDRef.current) {
+                return;
+            }
             setSuggestMaximize(false);
             setSuggestMaximizeType("");
         });

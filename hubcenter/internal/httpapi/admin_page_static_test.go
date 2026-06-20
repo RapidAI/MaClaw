@@ -258,7 +258,7 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 
 	assertContainsAll(t, html, "compute market cache busting", []string{
 		`/admin/assets/css/admin-shell.css?v=archived-order-delete-20260619`,
-		`/admin/assets/js/compute-market-tab.js?v=archived-order-delete-20260619`,
+		`/admin/assets/js/compute-market-tab.js?v=order-usage-auth-20260621`,
 	})
 	assertContainsAll(t, js, "compute market archived delete contract", []string{
 		"computeMarketDeleteArchivedOrder",

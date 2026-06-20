@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -111,8 +112,12 @@ func TestLLMAuthRepoDeductCreditsPersistsFractionalUsage(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if err := repo.DeductCredits(ctx, auth.ID, 0.1, now.Add(time.Minute)); err != nil {
+	actual, err := repo.DeductCredits(ctx, auth.ID, 0.1, now.Add(time.Minute))
+	if err != nil {
 		t.Fatalf("DeductCredits() error = %v", err)
+	}
+	if math.Abs(actual-0.1) > 1e-9 {
+		t.Fatalf("DeductCredits() actual = %.17g, want 0.1", actual)
 	}
 
 	got, err := repo.GetByID(ctx, auth.ID)
@@ -162,8 +167,12 @@ func TestLLMAuthRepoDeductCreditsCapsInsufficientBalance(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if err := repo.DeductCredits(ctx, auth.ID, 0.1, now.Add(time.Minute)); err != nil {
+	actual, err := repo.DeductCredits(ctx, auth.ID, 0.1, now.Add(time.Minute))
+	if err != nil {
 		t.Fatalf("DeductCredits() error = %v", err)
+	}
+	if math.Abs(actual-0.05) > 1e-9 {
+		t.Fatalf("DeductCredits() actual = %.17g, want remaining balance 0.05", actual)
 	}
 
 	got, err := repo.GetByID(ctx, auth.ID)
@@ -216,8 +225,12 @@ func TestLLMAuthRepoDeductCreditsMarksExactBalanceExhausted(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if err := repo.DeductCredits(ctx, auth.ID, 0.1, now.Add(time.Minute)); err != nil {
+	actual, err := repo.DeductCredits(ctx, auth.ID, 0.1, now.Add(time.Minute))
+	if err != nil {
 		t.Fatalf("DeductCredits() error = %v", err)
+	}
+	if math.Abs(actual-0.1) > 1e-9 {
+		t.Fatalf("DeductCredits() actual = %.17g, want 0.1", actual)
 	}
 
 	got, err := repo.GetByID(ctx, auth.ID)

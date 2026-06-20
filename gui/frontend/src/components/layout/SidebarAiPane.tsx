@@ -95,6 +95,10 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     showCodingToolEntry?: boolean;
     digitalEmployeeFeatureStatus?: any;
     showDigitalEmployeeNavigation?: boolean;
+    /** List of confirmed-available providers for the quick-switch dropdown. */
+    availableProviders?: Array<{ name: string; url: string; isHubService: boolean }>;
+    /** Called when user picks a different provider from the dropdown. */
+    onSwitchProvider?: (providerName: string) => void;
 };
 
 export const SidebarAiPane = ({
@@ -158,6 +162,8 @@ export const SidebarAiPane = ({
     showCodingToolEntry = false,
     digitalEmployeeFeatureStatus = null,
     showDigitalEmployeeNavigation,
+    availableProviders = [],
+    onSwitchProvider,
 }: SidebarAiPaneProps) => {
     const [middleTab, setMiddleTab] = useState<MiddleTab>('tasks');
     const veTheme = useMemo(() => (aiThemeMode === 'dark' ? darkTheme : lightTheme), [aiThemeMode]);
@@ -183,7 +189,7 @@ export const SidebarAiPane = ({
                     {middleTab === 'employees' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-employees" style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} onRenameEmployee={onRenameEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-history" style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}
                 </div>
-                <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} backgroundTaskCount={backgroundTaskCount} localLLMCacheEnabled={(config as any)?.llm_prompt_cache?.enabled === true} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openHubCardStorePage={openHubCardStorePage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} />
+                <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} backgroundTaskCount={backgroundTaskCount} localLLMCacheEnabled={(config as any)?.llm_prompt_cache?.enabled === true} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openHubCardStorePage={openHubCardStorePage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} availableProviders={availableProviders} onSwitchProvider={onSwitchProvider} />
             </div>
             <div onMouseDown={handleRecentTasksResizeStart} title={lang === 'en' ? 'Drag to resize middle panel' : lang === 'zh-Hant' ? '拖動調整中間面板寬度' : '拖动调整中间面板宽度'} style={{ width: '6px', flexShrink: 0, cursor: 'col-resize', background: isRecentTasksResizing ? 'color-mix(in srgb, var(--theme-primary) 42%, transparent)' : 'transparent', borderRight: '1px solid var(--theme-border)', transition: 'background 120ms ease', ['--wails-draggable' as any]: 'no-drag' }} />
         </>

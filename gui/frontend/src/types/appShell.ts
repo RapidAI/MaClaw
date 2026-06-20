@@ -121,4 +121,6 @@ export interface SidebarLLMProviderSummary {
     name: string;
     url: string;
     isHubService: boolean;
+    /** True when the provider has enough configuration to be usable (URL + key, or hub service). */
+    configured?: boolean;
 }

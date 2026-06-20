@@ -1502,6 +1502,74 @@ func TestExportSnapshotTenantOwnerScope(t *testing.T) {
 	}
 }
 
+func TestImportSnapshotReplaceAllAbortOnErrorRollsBack(t *testing.T) {
+	ctx := context.Background()
+	sourceStore, err := NewSQLiteStore(filepath.Join(t.TempDir(), "source.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore source: %v", err)
+	}
+	defer sourceStore.Close()
+	migrated, err := sourceStore.SaveText(ctx, TextSaveRequest{
+		Title:       "Migrated note",
+		Text:        "new migrated knowledge note",
+		SaveScope:   SaveScopePersonal,
+		DistillMode: DistillModeRules,
+	})
+	if err != nil {
+		t.Fatalf("seed migrated source: %v", err)
+	}
+	goodPath := filepath.Join(t.TempDir(), "good-snapshot.jsonl")
+	if _, err := sourceStore.ExportSnapshot(ctx, ExportOptions{OutputPath: goodPath}); err != nil {
+		t.Fatalf("ExportSnapshot: %v", err)
+	}
+	goodBytes, err := os.ReadFile(goodPath)
+	if err != nil {
+		t.Fatalf("read good snapshot: %v", err)
+	}
+	brokenPath := filepath.Join(t.TempDir(), "broken-snapshot.jsonl")
+	brokenBytes := append([]byte{}, goodBytes...)
+	brokenBytes = append(brokenBytes, []byte(`{"type":"node","data":{"id":"node_missing_source","source_id":"missing_source","type":"section","text":"broken"}}`+"\n")...)
+	if err := os.WriteFile(brokenPath, brokenBytes, 0o644); err != nil {
+		t.Fatalf("write broken snapshot: %v", err)
+	}
+
+	targetStore, err := NewSQLiteStore(filepath.Join(t.TempDir(), "target.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore target: %v", err)
+	}
+	defer targetStore.Close()
+	existing, err := targetStore.SaveText(ctx, TextSaveRequest{
+		Title:       "Existing note",
+		Text:        "existing local knowledge should remain after rollback",
+		SaveScope:   SaveScopePersonal,
+		DistillMode: DistillModeRules,
+	})
+	if err != nil {
+		t.Fatalf("seed existing source: %v", err)
+	}
+
+	result, err := targetStore.ImportSnapshot(ctx, SnapshotImportOptions{
+		InputPath:        brokenPath,
+		Overwrite:        true,
+		ReplaceAll:       true,
+		AbortOnError:     true,
+		SkipSafetyBackup: true,
+	})
+	if err == nil {
+		t.Fatalf("expected replace-all import to abort, result=%#v", result)
+	}
+	if result.MissingReferences != 1 || result.Failed != 1 {
+		t.Fatalf("expected missing reference failure result, got %#v", result)
+	}
+	sources, err := targetStore.ListSources(ctx, ListSourcesOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources after rollback: %v", err)
+	}
+	if len(sources) != 1 || sources[0].ID != existing.ID {
+		t.Fatalf("replace-all import should roll back existing data, sources=%#v existing=%s migrated=%s", sources, existing.ID, migrated.ID)
+	}
+}
+
 func TestSQLiteStoreSourceQualityReport(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))

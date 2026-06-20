@@ -591,8 +591,8 @@ export function GetWorkflowWorkingDir() {
   return window['go']['main']['App']['GetWorkflowWorkingDir']();
 }
 
-export function RefreshWorkflowV2StateForTab(arg1) {
-  return window['go']['main']['App']['RefreshWorkflowV2StateForTab'](arg1);
+export function RefreshWorkflowV2StateForTab(arg1, ...arg2) {
+  return window['go']['main']['App']['RefreshWorkflowV2StateForTab'](arg1, ...arg2);
 }
 
 export function SelectSkillFile() {

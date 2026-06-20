@@ -322,29 +322,63 @@ func (r *llmAuthRepo) Update(ctx context.Context, auth *llmservice.TenantAuthori
 	return err
 }
 
-func (r *llmAuthRepo) DeductCredits(ctx context.Context, id string, credits float64, now time.Time) error {
-	// Only deduct if there's remaining balance (prevents snowball over-deduction)
-	result, err := r.write.ExecContext(ctx,
-		`UPDATE llm_tenant_authorizations
-		 SET credits_used = credits_used + ?,
-		     status = CASE WHEN credits_used + ? >= credits_total THEN 'exhausted' ELSE status END,
-		     updated_at = ?
-		 WHERE id = ? AND (credits_total - credits_used) >= ?`,
-		credits, credits, now.Format(time.RFC3339), id, credits,
-	)
+func (r *llmAuthRepo) DeductCredits(ctx context.Context, id string, credits float64, now time.Time) (float64, error) {
+	if credits <= 0 {
+		return 0, nil
+	}
+	conn, err := r.write.Conn(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		// Insufficient balance - consume the remaining balance and mark exhausted.
-		_, err = r.write.ExecContext(ctx,
-			`UPDATE llm_tenant_authorizations SET credits_used = credits_total, status = 'exhausted', updated_at = ? WHERE id = ? AND credits_total > credits_used`,
-			now.Format(time.RFC3339), id,
-		)
-		return err
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return 0, err
 	}
-	return nil
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+
+	var remaining float64
+	err = conn.QueryRowContext(ctx, `SELECT credits_total - credits_used FROM llm_tenant_authorizations WHERE id = ? AND credits_total > credits_used`, id).Scan(&remaining)
+	if err == sql.ErrNoRows {
+		if _, commitErr := conn.ExecContext(ctx, `COMMIT`); commitErr != nil {
+			return 0, commitErr
+		}
+		committed = true
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	actual := credits
+	if remaining < actual {
+		actual = remaining
+	}
+	if actual <= 0 {
+		if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+			return 0, err
+		}
+		committed = true
+		return 0, nil
+	}
+	if _, err := conn.ExecContext(ctx,
+		`UPDATE llm_tenant_authorizations
+		    SET credits_used = credits_used + ?,
+		        status = CASE WHEN credits_used + ? >= credits_total THEN 'exhausted' ELSE status END,
+		        updated_at = ?
+		  WHERE id = ?`,
+		actual, actual, now.Format(time.RFC3339), id,
+	); err != nil {
+		return 0, err
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return 0, err
+	}
+	committed = true
+	return actual, nil
 }
 
 // ---------------------------------------------------------------------------

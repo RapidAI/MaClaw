@@ -115,8 +115,9 @@ type userDataMigrationJob struct {
 }
 
 var (
-	userDataMigrationJobs       sync.Map
-	userDataMigrationJobStartMu sync.Mutex
+	userDataMigrationJobs                  sync.Map
+	userDataMigrationCleanupPendingExports sync.Map
+	userDataMigrationJobStartMu            sync.Mutex
 )
 
 func (a *App) UserDataMigrationStatus() (userDataMigrationStatus, error) {
@@ -455,6 +456,7 @@ func (a *App) runUserDataMigrationImport(ctx context.Context, cfg userDataMigrat
 	claimedStatus := strings.ToLower(strings.TrimSpace(fmt.Sprint(exportMap["status"])))
 	if claimedStatus == "deleted" {
 		claimed = false
+		userDataMigrationCleanupPendingExports.Delete(userDataMigrationCleanupPendingKey(cfg, exportID))
 		progress(1, "import cleanup already completed")
 		return map[string]interface{}{"export_id": exportID, "cleanup_retried": true, "status": "deleted"}, nil
 	}
@@ -466,6 +468,7 @@ func (a *App) runUserDataMigrationImport(ctx context.Context, cfg userDataMigrat
 			return nil, fmt.Errorf("Hub cleanup retry failed: %w", err)
 		}
 		claimed = false
+		userDataMigrationCleanupPendingExports.Delete(userDataMigrationCleanupPendingKey(cfg, exportID))
 		progress(1, "import cleanup completed")
 		return map[string]interface{}{"export_id": exportID, "cleanup_retried": true}, nil
 	}
@@ -509,12 +512,14 @@ func (a *App) runUserDataMigrationImport(ctx context.Context, cfg userDataMigrat
 	defer cancel()
 	if err := a.completeUserDataMigrationImportOnHub(cleanupCtx, cfg, exportID); err != nil {
 		progress(1, "local import completed; Hub cleanup can be retried")
+		userDataMigrationCleanupPendingExports.Store(userDataMigrationCleanupPendingKey(cfg, exportID), time.Now().UTC())
 		result["export_id"] = exportID
 		result["cleanup_pending"] = true
 		result["cleanup_error"] = err.Error()
 		return result, nil
 	}
 	claimed = false
+	userDataMigrationCleanupPendingExports.Delete(userDataMigrationCleanupPendingKey(cfg, exportID))
 	progress(1, "import completed")
 	result["export_id"] = exportID
 	return result, nil
@@ -527,6 +532,7 @@ func (a *App) runUserDataMigrationCleanup(ctx context.Context, cfg userDataMigra
 		return nil, err
 	}
 	if cleanupStatus == "deleted" {
+		userDataMigrationCleanupPendingExports.Delete(userDataMigrationCleanupPendingKey(cfg, exportID))
 		progress(1, "import cleanup already completed")
 		return map[string]interface{}{"export_id": exportID, "cleanup_retried": true, "status": "deleted"}, nil
 	}
@@ -536,6 +542,7 @@ func (a *App) runUserDataMigrationCleanup(ctx context.Context, cfg userDataMigra
 	if err := a.completeUserDataMigrationImportOnHub(cleanupCtx, cfg, exportID); err != nil {
 		return nil, fmt.Errorf("Hub cleanup retry failed: %w", err)
 	}
+	userDataMigrationCleanupPendingExports.Delete(userDataMigrationCleanupPendingKey(cfg, exportID))
 	progress(1, "import cleanup completed")
 	return map[string]interface{}{"export_id": exportID, "cleanup_retried": true}, nil
 }
@@ -557,9 +564,25 @@ func (a *App) userDataMigrationCleanupStatus(ctx context.Context, cfg userDataMi
 	switch status {
 	case "imported", "deleting", "deleted":
 		return status, nil
+	case "importing":
+		if _, ok := userDataMigrationCleanupPendingExports.Load(userDataMigrationCleanupPendingKey(cfg, exportID)); ok {
+			return status, nil
+		}
+		return "", fmt.Errorf("migration export is not ready for cleanup retry")
 	default:
 		return "", fmt.Errorf("migration export is not ready for cleanup retry")
 	}
+}
+
+func userDataMigrationCleanupPendingKey(cfg userDataMigrationClientConfig, exportID string) string {
+	parts := []string{
+		strings.TrimRight(strings.TrimSpace(cfg.HubURL), "/"),
+		strings.TrimSpace(cfg.TenantID),
+		strings.TrimSpace(cfg.UserID),
+		strings.TrimSpace(cfg.MachineID),
+		strings.TrimSpace(exportID),
+	}
+	return strings.Join(parts, "\x00")
 }
 
 func (a *App) completeUserDataMigrationImportOnHub(ctx context.Context, cfg userDataMigrationClientConfig, exportID string) error {

@@ -1,4 +1,5 @@
-import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { localizeText } from '../../i18n';
 import { CodingAgentSidebarStatus } from './CodingAgentSidebarStatus';
@@ -25,6 +26,10 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     openHubCardStorePage?: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
+    /** List of providers that are confirmed available (configured + tested online, or official with valid credits). */
+    availableProviders?: SidebarLLMProviderSummary[];
+    /** Called when user selects a different provider from the dropdown. */
+    onSwitchProvider?: (providerName: string) => void;
 };
 
 const STATUS_DOT = String.fromCharCode(0x25cf);
@@ -95,9 +100,62 @@ export const SidebarSystemStatus = ({
     openHubCardStorePage,
     codingAgentProgress = null,
     codingAgentTurnSnapshot = null,
+    availableProviders = [],
+    onSwitchProvider,
 }: SidebarSystemStatusProps) => {
     const providerLabel = sidebarCurrentProviderTokenUsage.provider || textForLang(lang, 'Provider', '\u667a\u8c31\u7f16\u7a0b', '\u667a\u8b5c\u7de8\u7a0b');
     const isOfficialProvider = !!sidebarCurrentProviderTokenUsage.isHubService;
+
+    // ── Provider switch dropdown state ──
+    const [dropdownOpen, setDropdownOpen] = useState(false);
+    const [switching, setSwitching] = useState(false);
+    const dropdownRef = useRef<HTMLDivElement>(null);
+    // Snapshot the list when dropdown opens to prevent mid-interaction mutations.
+    const snapshotRef = useRef<SidebarLLMProviderSummary[]>([]);
+    const switchingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Cleanup switching timer on unmount
+    useEffect(() => () => {
+        if (switchingTimerRef.current) clearTimeout(switchingTimerRef.current);
+    }, []);
+
+    // Exclude current provider from switchable list; only show others.
+    const switchableProviders = dropdownOpen
+        ? snapshotRef.current
+        : availableProviders.filter(p => p.name !== providerLabel);
+
+    // Close dropdown on outside click or Escape key
+    useEffect(() => {
+        if (!dropdownOpen) return;
+        const handleClickOutside = (e: MouseEvent) => {
+            if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+                setDropdownOpen(false);
+            }
+        };
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                setDropdownOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        document.addEventListener('keydown', handleKeyDown);
+        return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+            document.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [dropdownOpen]);
+
+    const handleSelectProvider = useCallback((name: string) => {
+        if (switching) return; // Prevent double-click during pending switch
+        setSwitching(true);
+        setDropdownOpen(false);
+        onSwitchProvider?.(name);
+        // Reset switching state after a short delay (backend will refresh the UI)
+        if (switchingTimerRef.current) clearTimeout(switchingTimerRef.current);
+        switchingTimerRef.current = setTimeout(() => setSwitching(false), 2000);
+    }, [onSwitchProvider, switching]);
+
+    const chevronTitle = textForLang(lang, 'Switch LLM provider', '\u5207\u6362\u670d\u52a1\u5546', '\u5207\u63db\u670d\u52d9\u5546');
     const providerTitle = isOfficialProvider
         ? textForLang(lang, 'View or redeem MaClaw Official service', '\u67e5\u770b\u6216\u5151\u6362 MaClaw \u5b98\u65b9\u670d\u52a1', '\u67e5\u770b\u6216\u514c\u63db MaClaw \u5b98\u65b9\u670d\u52d9')
         : textForLang(lang, 'Configure LLM provider', '\u914d\u7f6e LLM \u670d\u52a1\u5546', '\u914d\u7f6e LLM \u670d\u52d9\u5546');
@@ -232,6 +290,63 @@ export const SidebarSystemStatus = ({
                         <span className="sidebar-system-status__provider" title={providerLabel}>
                             {providerLabel}
                         </span>
+                    )}
+                    {/* Provider switch dropdown — only render when there are alternatives */}
+                    {availableProviders.length > 1 && (
+                    <div className="sidebar-system-status__provider-switch" ref={dropdownRef}>
+                        <button
+                            type="button"
+                            className="sidebar-system-status__provider-chevron"
+                            onClick={() => {
+                                if (!dropdownOpen) {
+                                    // Snapshot the switchable list at open time
+                                    snapshotRef.current = availableProviders.filter(p => p.name !== providerLabel);
+                                }
+                                setDropdownOpen(!dropdownOpen);
+                            }}
+                            title={chevronTitle}
+                            aria-label={chevronTitle}
+                            aria-expanded={dropdownOpen}
+                            aria-haspopup="listbox"
+                        >
+                            <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                                <path d="M1 3l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                        </button>
+                        {dropdownOpen && (
+                            <div className="sidebar-system-status__provider-dropdown" role="listbox" aria-label={textForLang(lang, 'Select provider', '\u9009\u62e9\u670d\u52a1\u5546', '\u9078\u64c7\u670d\u52d9\u5546')}>
+                                {/* Current provider (highlighted) */}
+                                <div className="sidebar-system-status__provider-dropdown-item sidebar-system-status__provider-dropdown-item--current" role="option" aria-selected="true">
+                                    <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true">✓</span>
+                                    <span>{providerLabel}</span>
+                                </div>
+                                {/* Switchable providers */}
+                                {switchableProviders.map(p => (
+                                    <button
+                                        key={p.name}
+                                        type="button"
+                                        className="sidebar-system-status__provider-dropdown-item"
+                                        role="option"
+                                        aria-selected="false"
+                                        onClick={() => handleSelectProvider(p.name)}
+                                    >
+                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" style={{ visibility: 'hidden' }}>✓</span>
+                                        <span>{p.name}</span>
+                                    </button>
+                                ))}
+                                {/* Separator + settings link */}
+                                <div className="sidebar-system-status__provider-dropdown-sep" />
+                                <button
+                                    type="button"
+                                    className="sidebar-system-status__provider-dropdown-item sidebar-system-status__provider-dropdown-item--settings"
+                                    onClick={() => { setDropdownOpen(false); openLLMSettingsPage?.(); }}
+                                >
+                                    <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" style={{ visibility: 'hidden' }}>⚙</span>
+                                    <span>{textForLang(lang, 'LLM Settings...', 'LLM \u8bbe\u7f6e...', 'LLM \u8a2d\u5b9a...')}</span>
+                                </button>
+                            </div>
+                        )}
+                    </div>
                     )}
                     {hubServicePeriodLimited && (
                         <button

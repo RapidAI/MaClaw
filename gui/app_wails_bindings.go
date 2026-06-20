@@ -1450,6 +1450,7 @@ type AIAssistantSendRequest struct {
 	DismissRecoverableSessionID string                      `json:"dismiss_recoverable_session_id,omitempty"`
 	UIAction                    bool                        `json:"ui_action,omitempty"`
 	ProjectPath                 string                      `json:"project_path,omitempty"`
+	EventScopeID                string                      `json:"event_scope_id,omitempty"`
 }
 
 type AIAssistantContextMessage struct {
@@ -1586,6 +1587,14 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		a.cancelProjectTaskLoop(projectPath)
 		return nil, fmt.Errorf("project task is closed: %s", projectPath)
 	}
+
+	// Cache the event_scope_id for this session so workflow events can include it.
+	// Must be stored before any async path (hubClient==nil goroutine) to ensure
+	// events emitted during the goroutine's execution carry the correct scope.
+	if scopeID := strings.TrimSpace(req.EventScopeID); scopeID != "" {
+		a.sessionEventScopeIDs.Store(userID, scopeID)
+	}
+
 	hubClient := a.hubClient()
 	if hubClient == nil {
 		// Hub client not ready yet — move the wait into the async goroutine

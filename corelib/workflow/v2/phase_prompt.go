@@ -1902,15 +1902,17 @@ func phaseInstruction(phaseID string) string {
 
 **方式一：交底书文件（file_mode）**
 - 先用 bash 提取文档文本内容：
-  - .docx 文件：bash(command="python3 -c \"from docx import Document; doc=Document('路径'); print('\\n'.join(p.text for p in doc.paragraphs))\"")
-  - 如果 python-docx 未安装：bash(command="pip install python-docx && python3 -c ...")
+  - .docx 文件：bash(command="pip install python-docx -q && python -c \"from docx import Document; doc=Document(r'路径'); print('\\n'.join(p.text for p in doc.paragraphs))\"")
+  - 如果 python/pip 不可用（报错 "not found"/"无法识别"）：改用 PowerShell COM 提取：bash(command="powershell -Command \"$word = New-Object -ComObject Word.Application; $word.Visible = $false; $doc = $word.Documents.Open([System.IO.Path]::GetFullPath('路径')); $doc.Content.Text; $doc.Close(); $word.Quit()\"")
+  - .doc 文件（旧格式）：必须使用 PowerShell COM 方式（python-docx 不支持 .doc）：bash(command="powershell -Command \"$word = New-Object -ComObject Word.Application; $word.Visible = $false; $doc = $word.Documents.Open([System.IO.Path]::GetFullPath('路径')); $doc.Content.Text; $doc.Close(); $word.Quit()\"")
   - .txt/.md 文件：直接使用 read_file
-  - .pdf 文件：bash(command="python3 -c \"import subprocess; result=subprocess.run(['pdftotext','路径','-'],capture_output=True,text=True); print(result.stdout)\"")，或者 pip install pymupdf 后提取
+  - .pdf 文件：bash(command="pip install pymupdf -q && python -c \"import fitz; doc=fitz.open(r'路径'); print('\\n'.join(page.get_text() for page in doc))\"")
+  - 如果 Python 不可用且是 PDF：告知用户将 PDF 转换为 Word 或文本格式后重新提交
 - 如果以上方法都失败，告知用户改用"手工输入"方式
 
 **方式二：手工输入（manual_mode）**
-- 直接使用表单中的 technical_problem（技术问题）、technical_solution（技术方案）、beneficial_effects（有益效果）生成文档
-- 如果提供了 figures_paths 和 figures_descriptions，整合为附图清单
+- 直接使用上方表单中的"要解决的技术问题"、"技术方案"、"有益效果"等字段内容生成文档
+- 如果提供了"附图文件路径"和"附图说明"，整合为附图清单
 
 生成文档内容：
 1. **技术领域**：明确本发明所属的技术领域（基于表单中的 tech_field）
@@ -2373,7 +2375,7 @@ write_file(path="OUTPUT_DIR/申请文件一致性检查报告.md", content="# �
 如果内容超过约 6000 字符，建议分多次 mode="append" 写入以避免模型输出截断。
 
 步骤 2：用 write_file 保存转换脚本（以下内容直接复制，只需替换 OUTPUT_DIR）：
-write_file(path="OUTPUT_DIR/md2docx_report.py", content="import os\nfrom docx import Document\nfrom docx.shared import Pt\nfrom docx.oxml.ns import qn\n\nd = r'OUTPUT_DIR'\nsrc = os.path.join(d, '申请文件一致性检查报告.md')\ndst = os.path.join(d, '申请文件一致性检查报告.docx')\n\ndoc = Document()\nstyle = doc.styles['Normal']\nstyle.font.name = 'Times New Roman'\nstyle.font.size = Pt(12)\nstyle.element.rPr.rFonts.set(qn('w:eastAsia'), '宋体')\n\ntext = open(src, encoding='utf-8').read()\nfor block in text.split('\\n\\n'):\n    block = block.strip()\n    if not block:\n        continue\n    if block.startswith('#'):\n        level = min(len(block) - len(block.lstrip('#')), 4)\n        doc.add_heading(block.lstrip('#').strip(), level=level)\n    elif block.startswith('- '):\n        for line in block.split('\\n'):\n            line = line.strip()\n            if line.startswith('- '):\n                doc.add_paragraph(line[2:], style='List Bullet')\n    else:\n        doc.add_paragraph(block)\n\ndoc.save(dst)\nprint('saved:', dst)\n", mode="write")
+write_file(path="OUTPUT_DIR/md2docx_report.py", content="import os\nimport re\nfrom docx import Document\nfrom docx.shared import Pt, Cm\nfrom docx.oxml.ns import qn\n\nd = r'OUTPUT_DIR'\nsrc = os.path.join(d, '申请文件一致性检查报告.md')\ndst = os.path.join(d, '申请文件一致性检查报告.docx')\n\ndoc = Document()\nstyle = doc.styles['Normal']\nstyle.font.name = 'Times New Roman'\nstyle.font.size = Pt(12)\nstyle.element.rPr.rFonts.set(qn('w:eastAsia'), '宋体')\n\ndef is_table_line(line):\n    return line.strip().startswith('|') and line.strip().endswith('|')\n\ndef is_separator_line(line):\n    return bool(re.match(r'^\\|[\\s\\-:|]+\\|$', line.strip()))\n\ndef parse_table_block(lines):\n    rows = []\n    for line in lines:\n        if is_separator_line(line):\n            continue\n        cells = [c.strip() for c in line.strip().strip('|').split('|')]\n        rows.append(cells)\n    return rows\n\ndef add_table(doc, rows):\n    if not rows:\n        return\n    ncols = max(len(r) for r in rows)\n    tbl = doc.add_table(rows=len(rows), cols=ncols)\n    tbl.style = 'Table Grid'\n    for i, row in enumerate(rows):\n        for j, cell in enumerate(row):\n            if j < ncols:\n                tbl.rows[i].cells[j].text = cell\n\ntext = open(src, encoding='utf-8').read()\nlines = text.split('\\n')\ni = 0\nwhile i < len(lines):\n    line = lines[i]\n    if is_table_line(line):\n        table_lines = []\n        while i < len(lines) and is_table_line(lines[i]):\n            table_lines.append(lines[i])\n            i += 1\n        rows = parse_table_block(table_lines)\n        add_table(doc, rows)\n        continue\n    if line.strip() == '':\n        i += 1\n        continue\n    if line.strip().startswith('#'):\n        level = min(len(line) - len(line.lstrip('#')), 4)\n        doc.add_heading(line.lstrip('#').strip(), level=level)\n    elif line.strip().startswith('- '):\n        doc.add_paragraph(line.strip()[2:], style='List Bullet')\n    elif re.match(r'^\\d+\\.\\s', line.strip()):\n        doc.add_paragraph(line.strip(), style='List Number')\n    else:\n        doc.add_paragraph(line.strip())\n    i += 1\n\ndoc.save(dst)\nprint('saved:', dst)\n", mode="write")
 
 步骤 3：用 bash 安装依赖并执行转换：
 bash(command="pip install python-docx -q && python OUTPUT_DIR/md2docx_report.py")
@@ -2433,15 +2435,20 @@ The disclosure may be written in Chinese or English — process either language 
 Check the form data above for the input mode:
 
 **Mode 1: Disclosure File (file_mode)**
-- The file path is in the form field "disclosure_path" above. Replace FILE_PATH below with that value.
-- Extract text from the document:
+- The file path is shown above as "Disclosure File Path / 交底书文件路径". Replace FILE_PATH below with that value.
+- Extract text from the document based on file extension:
   - .docx: bash(command="pip install python-docx -q && python -c \"from docx import Document; doc=Document(r'FILE_PATH'); print('\\n'.join(p.text for p in doc.paragraphs))\"")
+  - .doc (legacy Word format): python-docx does NOT support .doc. Use PowerShell COM: bash(command="powershell -Command \"$word = New-Object -ComObject Word.Application; $word.Visible = $false; $doc = $word.Documents.Open([System.IO.Path]::GetFullPath('FILE_PATH')); $doc.Content.Text; $doc.Close(); $word.Quit()\"")
   - .txt/.md: use read_file directly
   - .pdf: bash(command="pip install pymupdf -q && python -c \"import fitz; doc=fitz.open(r'FILE_PATH'); print('\\n'.join(page.get_text() for page in doc))\"")
+- If python/pip is not available (reports "not found" / "无法识别"):
+  - For .docx/.doc: use the PowerShell COM method above (works without Python, requires Microsoft Word)
+  - For .pdf without Python: inform user to convert PDF to Word/text format and resubmit
+- If ALL methods fail: inform user to use "Manual Input" mode instead.
 - If the disclosure is in Chinese, you MUST translate the technical content into English for the patent document while preserving all technical details. Keep the original Chinese in internal analysis notes for reference.
 
 **Mode 2: Manual Input (manual_mode)**
-- Use the form fields: technical_problem, technical_solution, beneficial_effects
+- Use the content from the form fields above: "Problem to be Solved / 要解决的技术问题", "Technical Solution / 技术方案", "Advantages / 有益效果"
 - If input is in Chinese, translate to English for patent drafting
 
 ## Document Structure (output in English)
@@ -2883,7 +2890,7 @@ Step 1: Save report as .md file:
 write_file(path="OUTPUT_DIR/Application_Checklist.md", content="# USPTO Patent Application Filing Checklist\n\n## 1. Application Package...", mode="write")
 
 Step 2: Save conversion script:
-write_file(path="OUTPUT_DIR/md2docx_checklist.py", content="import os\nfrom docx import Document\nfrom docx.shared import Pt\n\nd = r'OUTPUT_DIR'\nsrc = os.path.join(d, 'Application_Checklist.md')\ndst = os.path.join(d, 'Application_Checklist.docx')\n\ndoc = Document()\nstyle = doc.styles['Normal']\nstyle.font.name = 'Times New Roman'\nstyle.font.size = Pt(12)\n\ntext = open(src, encoding='utf-8').read()\nfor block in text.split('\\n\\n'):\n    block = block.strip()\n    if not block:\n        continue\n    if block.startswith('#'):\n        level = min(len(block) - len(block.lstrip('#')), 4)\n        doc.add_heading(block.lstrip('#').strip(), level=level)\n    elif block.startswith('- '):\n        for line in block.split('\\n'):\n            line = line.strip()\n            if line.startswith('- '):\n                doc.add_paragraph(line[2:], style='List Bullet')\n    else:\n        doc.add_paragraph(block)\n\ndoc.save(dst)\nprint('saved:', dst)\n", mode="write")
+write_file(path="OUTPUT_DIR/md2docx_checklist.py", content="import os\nimport re\nfrom docx import Document\nfrom docx.shared import Pt\n\nd = r'OUTPUT_DIR'\nsrc = os.path.join(d, 'Application_Checklist.md')\ndst = os.path.join(d, 'Application_Checklist.docx')\n\ndoc = Document()\nstyle = doc.styles['Normal']\nstyle.font.name = 'Times New Roman'\nstyle.font.size = Pt(12)\n\ndef is_table_line(line):\n    return line.strip().startswith('|') and line.strip().endswith('|')\n\ndef is_separator_line(line):\n    return bool(re.match(r'^\\|[\\s\\-:|]+\\|$', line.strip()))\n\ndef parse_table_block(lines):\n    rows = []\n    for line in lines:\n        if is_separator_line(line):\n            continue\n        cells = [c.strip() for c in line.strip().strip('|').split('|')]\n        rows.append(cells)\n    return rows\n\ndef add_table(doc, rows):\n    if not rows:\n        return\n    ncols = max(len(r) for r in rows)\n    tbl = doc.add_table(rows=len(rows), cols=ncols)\n    tbl.style = 'Table Grid'\n    for i, row in enumerate(rows):\n        for j, cell in enumerate(row):\n            if j < ncols:\n                tbl.rows[i].cells[j].text = cell\n\ntext = open(src, encoding='utf-8').read()\nlines = text.split('\\n')\ni = 0\nwhile i < len(lines):\n    line = lines[i]\n    if is_table_line(line):\n        table_lines = []\n        while i < len(lines) and is_table_line(lines[i]):\n            table_lines.append(lines[i])\n            i += 1\n        rows = parse_table_block(table_lines)\n        add_table(doc, rows)\n        continue\n    if line.strip() == '':\n        i += 1\n        continue\n    if line.strip().startswith('#'):\n        level = min(len(line) - len(line.lstrip('#')), 4)\n        doc.add_heading(line.lstrip('#').strip(), level=level)\n    elif line.strip().startswith('- '):\n        doc.add_paragraph(line.strip()[2:], style='List Bullet')\n    elif re.match(r'^\\d+\\.\\s', line.strip()):\n        doc.add_paragraph(line.strip(), style='List Number')\n    else:\n        doc.add_paragraph(line.strip())\n    i += 1\n\ndoc.save(dst)\nprint('saved:', dst)\n", mode="write")
 
 Step 3: Execute:
 bash(command="pip install python-docx -q && python OUTPUT_DIR/md2docx_checklist.py")

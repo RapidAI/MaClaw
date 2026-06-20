@@ -243,6 +243,11 @@ type App struct {
 	// unnecessary disk reads in SendMessageForTab. Populated in CreateProjectTabSession.
 	tabProjectPaths sync.Map
 
+	// sessionEventScopeIDs caches userID -> event_scope_id (tab ID) mappings.
+	// Populated when SendAIAssistantMessage receives a request with event_scope_id.
+	// Used by workflow event emission to include the scope ID in all events.
+	sessionEventScopeIDs sync.Map
+
 	// Sticky VE session caches: (veID -> sessionID) and (sorted participant key -> sessionID).
 	// Ensures conversations with the same VE/group always reuse the same session unless archived.
 	veSessionCache           sync.Map // string -> string
@@ -2826,7 +2831,7 @@ func (a *App) GetWorkflowWorkingDir() string {
 // preview panel shows the correct workflow state even if events were missed while the tab
 // was inactive (background agent loops emit events that are rejected by the inactive tab's
 // event filter — this refresh bridges that gap).
-func (a *App) RefreshWorkflowV2StateForTab(projectPath string) {
+func (a *App) RefreshWorkflowV2StateForTab(projectPath string, tabID ...string) {
 	if a.workflowV2 == nil {
 		return
 	}
@@ -2837,6 +2842,11 @@ func (a *App) RefreshWorkflowV2StateForTab(projectPath string) {
 	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
 	if userID == "" {
 		return
+	}
+	// Seed the event_scope_id if provided, ensuring refreshed events carry the tab scope
+	// even when no user message has been sent yet (e.g., after app restart).
+	if len(tabID) > 0 && strings.TrimSpace(tabID[0]) != "" {
+		a.sessionEventScopeIDs.Store(userID, strings.TrimSpace(tabID[0]))
 	}
 	hubClient := a.hubClient()
 	if hubClient == nil {
@@ -2870,10 +2880,11 @@ func (a *App) RefreshWorkflowV2StateForTab(projectPath string) {
 	for _, p := range state.Phases {
 		if p.Output != "" {
 			emitWorkflowV2Event(a, "workflow:doc_update", map[string]interface{}{
-				"phase_id":     p.ID,
-				"content":      p.Output,
-				"project_path": projectPath,
-				"workflow_id":  workflowID,
+				"phase_id":       p.ID,
+				"content":        p.Output,
+				"project_path":   projectPath,
+				"workflow_id":    workflowID,
+				"event_scope_id": a.getEventScopeID(userID),
 			})
 		}
 	}
@@ -2892,6 +2903,15 @@ func (a *App) GetUserHomeDir() string {
 // When data_dir is configured, returns <data_dir>/data; otherwise ~/.maclaw/data.
 func (a *App) GetDataDir() string {
 	return filepath.Join(a.getMaclawBaseDir(), "data")
+}
+
+// getEventScopeID returns the event_scope_id (tab ID) for a given userID.
+// Returns empty string if no scope has been registered for this session.
+func (a *App) getEventScopeID(userID string) string {
+	if v, ok := a.sessionEventScopeIDs.Load(userID); ok {
+		return v.(string)
+	}
+	return ""
 }
 
 // sessionSearchDBPath returns the path to the session search FTS5 database.
@@ -6117,6 +6137,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.MaclawLLMTimeoutSec = v
+		case "maclaw_llm_current_provider":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.MaclawLLMCurrentProvider = strings.TrimSpace(v)
 		case "audio_input_device_id":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -6500,6 +6527,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	if workflowTurnedOff {
 		emitWorkflowV2Event(a, "workflow:phase_update", nil)
 		emitWorkflowV2Event(a, "workflow:suggest_maximize_dismiss", nil)
+	}
+
+	// When LLM provider is switched, emit the same event that SaveMaclawLLMProviders
+	// uses so the sidebar token usage display refreshes automatically.
+	if _, ok := patch["maclaw_llm_current_provider"]; ok && a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "llm-token-usage-changed", cfg.MaclawLLMCurrentProvider)
 	}
 
 	corelib.SetLogDetailEnabled(cfg.LogDetailEnabled)

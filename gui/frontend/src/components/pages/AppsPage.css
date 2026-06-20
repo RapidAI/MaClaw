@@ -3256,17 +3256,20 @@
     min-width: 0;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
     gap: 12px;
 }
 
 .apps-capability-skill-card {
     min-width: 0;
     display: grid;
+    align-content: start;
+    grid-template-rows: 30px minmax(0, auto);
     gap: 7px;
 }
 
 .apps-capability-skill-card__head {
-    min-height: 28px;
+    min-height: 30px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -3275,16 +3278,20 @@
 
 .apps-capability-skill-card__head label {
     min-width: 0;
+    display: flex;
+    align-items: center;
     overflow: hidden;
     color: var(--theme-text-secondary);
     font-size: 0.76rem;
     font-weight: 850;
+    line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
 .apps-skill-design-button {
-    min-height: 26px;
+    min-height: 28px;
+    align-self: center;
     padding: 4px 9px;
     border-radius: var(--radius-sm);
     font-size: 0.74rem;
@@ -3342,7 +3349,8 @@
 }
 
 .apps-skill-picker__list {
-    max-height: 96px;
+    min-height: 128px;
+    max-height: 220px;
     min-width: 0;
     overflow: auto;
     display: grid;
@@ -3357,6 +3365,23 @@
     color: var(--theme-text-muted);
     font-size: 0.66rem;
     font-weight: 900;
+}
+
+.apps-skill-picker__group--market {
+    position: sticky;
+    top: -5px;
+    z-index: 1;
+    margin: -5px -5px 0;
+    padding: 6px 7px 4px;
+    border-bottom: 1px solid color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border-subtle));
+    color: var(--theme-primary-strong);
+    background: color-mix(in srgb, var(--theme-primary-soft) 44%, var(--theme-surface-muted));
+}
+
+.apps-skill-picker__group--installed {
+    margin-top: 2px;
+    padding-top: 5px;
+    border-top: 1px solid var(--theme-border-subtle);
 }
 
 .apps-skill-picker__option {

@@ -61,7 +61,7 @@ type TenantAuthorizationRepository interface {
 	ListByServiceGroup(ctx context.Context, serviceGroupID string) ([]*TenantAuthorization, error)
 	ListAll(ctx context.Context) ([]*TenantAuthorization, error)
 	Update(ctx context.Context, auth *TenantAuthorization) error
-	DeductCredits(ctx context.Context, id string, credits float64, now time.Time) error
+	DeductCredits(ctx context.Context, id string, credits float64, now time.Time) (float64, error)
 }
 
 type tenantAuthorizationHubLister interface {
@@ -73,6 +73,24 @@ type tenantAuthorizationHubLister interface {
 type CreditDeduction struct {
 	AuthID  string
 	Credits float64
+}
+
+// InsufficientCreditsError reports a partial or missing card charge for a
+// request that already consumed upstream LLM tokens.
+type InsufficientCreditsError struct {
+	HubID          string
+	TenantID       string
+	ServiceGroupID string
+	Requested      float64
+	Deducted       float64
+	Remaining      float64
+}
+
+func (e *InsufficientCreditsError) Error() string {
+	if e == nil {
+		return "insufficient credits"
+	}
+	return fmt.Sprintf("insufficient credits for hub=%s tenant=%s group=%s: deducted %.3f of %.3f, remaining %.3f", e.HubID, e.TenantID, e.ServiceGroupID, e.Deducted, e.Requested, e.Remaining)
 }
 
 // AuthorizationChecker validates tenant access to LLM services.
@@ -228,7 +246,8 @@ func authorizationStateTime(auth *TenantAuthorization) time.Time {
 
 // DeductCredits subtracts credits from an authorization after a successful LLM request.
 func (c *AuthorizationChecker) DeductCredits(ctx context.Context, authID string, credits float64) error {
-	return c.repo.DeductCredits(ctx, authID, credits, time.Now().UTC())
+	_, err := c.repo.DeductCredits(ctx, authID, credits, time.Now().UTC())
+	return err
 }
 
 // DeductCreditsForServiceGroup subtracts credits from active authorizations for
@@ -264,6 +283,7 @@ func (c *AuthorizationChecker) DeductCreditsForServiceGroup(ctx context.Context,
 	})
 	remaining := credits
 	deductions := make([]CreditDeduction, 0, len(candidates))
+	deducted := 0.0
 	for _, auth := range candidates {
 		available := auth.CreditsRemaining()
 		if available <= 0 {
@@ -276,13 +296,28 @@ func (c *AuthorizationChecker) DeductCreditsForServiceGroup(ctx context.Context,
 		if use <= 0 {
 			break
 		}
-		if err := c.repo.DeductCredits(ctx, auth.ID, use, now); err != nil {
+		actual, err := c.repo.DeductCredits(ctx, auth.ID, use, now)
+		if err != nil {
 			return deductions, err
 		}
-		deductions = append(deductions, CreditDeduction{AuthID: auth.ID, Credits: use})
-		remaining -= use
+		if actual <= 0 {
+			continue
+		}
+		deductions = append(deductions, CreditDeduction{AuthID: auth.ID, Credits: actual})
+		remaining -= actual
+		deducted += actual
 		if remaining <= 0 {
 			break
+		}
+	}
+	if remaining > 1e-9 {
+		return deductions, &InsufficientCreditsError{
+			HubID:          hubID,
+			TenantID:       tenantID,
+			ServiceGroupID: serviceGroupID,
+			Requested:      credits,
+			Deducted:       deducted,
+			Remaining:      remaining,
 		}
 	}
 	return deductions, nil

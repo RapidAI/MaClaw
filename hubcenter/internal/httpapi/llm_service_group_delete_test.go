@@ -91,8 +91,8 @@ func (r *llmDeleteAuthRepo) Update(_ context.Context, auth *llmservice.TenantAut
 	return nil
 }
 
-func (r *llmDeleteAuthRepo) DeductCredits(_ context.Context, _ string, _ float64, _ time.Time) error {
-	return nil
+func (r *llmDeleteAuthRepo) DeductCredits(_ context.Context, _ string, credits float64, _ time.Time) (float64, error) {
+	return credits, nil
 }
 
 type llmDeleteCardTypeRepo struct {

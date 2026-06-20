@@ -461,6 +461,67 @@ func TestUserDataMigrationCleanupRetryRequiresCurrentMachineClaim(t *testing.T) 
 	}
 }
 
+func TestUserDataMigrationCleanupRetryAllowsCurrentMachineImportingClaim(t *testing.T) {
+	clearUserDataMigrationJobsForTest()
+	t.Cleanup(clearUserDataMigrationJobsForTest)
+
+	completeCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/migration/exports/current":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"export": map[string]interface{}{
+					"export_id":             "mig-current",
+					"status":                "importing",
+					"claimed_by_machine_id": "machine-current",
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/migration/imports/mig-current/complete":
+			completeCalls++
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "status": "deleted"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	app := &App{}
+	_, err := app.runUserDataMigrationCleanup(context.Background(), userDataMigrationClientConfig{
+		HubURL:       srv.URL,
+		MachineID:    "machine-current",
+		MachineToken: "token-current",
+	}, "mig-current", func(float64, string) {})
+	if err == nil || !strings.Contains(err.Error(), "not ready for cleanup retry") {
+		t.Fatalf("expected importing cleanup retry to require local pending marker, got %v", err)
+	}
+	if completeCalls != 0 {
+		t.Fatalf("complete calls before pending marker = %d, want 0", completeCalls)
+	}
+
+	cfg := userDataMigrationClientConfig{
+		HubURL:       srv.URL,
+		TenantID:     "tenant-a",
+		UserID:       "user-a",
+		MachineID:    "machine-current",
+		MachineToken: "token-current",
+	}
+	key := userDataMigrationCleanupPendingKey(cfg, "mig-current")
+	userDataMigrationCleanupPendingExports.Store(key, time.Now().UTC())
+	result, err := app.runUserDataMigrationCleanup(context.Background(), cfg, "mig-current", func(float64, string) {})
+	if err != nil {
+		t.Fatalf("cleanup retry for importing claim: %v", err)
+	}
+	if completeCalls != 1 {
+		t.Fatalf("complete calls = %d, want 1", completeCalls)
+	}
+	if result["cleanup_retried"] != true {
+		t.Fatalf("cleanup result missing retry marker: %#v", result)
+	}
+	if _, ok := userDataMigrationCleanupPendingExports.Load(key); ok {
+		t.Fatalf("cleanup pending marker should be cleared after cleanup succeeds")
+	}
+}
+
 func TestUserDataMigrationImportSucceedsWhenHubCleanupFails(t *testing.T) {
 	sourceStore, err := corememory.NewStoreWithMode(t.TempDir(), corememory.StoreModeJSON)
 	if err != nil {
@@ -670,6 +731,10 @@ func userDataMigrationKnowledgeSourceIDs(t *testing.T, app *App) map[string]stru
 func clearUserDataMigrationJobsForTest() {
 	userDataMigrationJobs.Range(func(key, _ interface{}) bool {
 		userDataMigrationJobs.Delete(key)
+		return true
+	})
+	userDataMigrationCleanupPendingExports.Range(func(key, _ interface{}) bool {
+		userDataMigrationCleanupPendingExports.Delete(key)
 		return true
 	})
 }

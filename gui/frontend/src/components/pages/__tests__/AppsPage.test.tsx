@@ -82,7 +82,91 @@ function textHash(value: string): string {
     return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
+function normalizeTestAppVersion(value: unknown) {
+    const version = Number(value);
+    return Number.isFinite(version) && version > 0 ? Math.floor(version) : 1;
+}
+
+function testAppDefinitionFingerprint(app: any): string {
+    const manifest = app.manifest;
+    const runtimeManifest = manifest ? {
+        schema: manifest.schema,
+        installUnit: manifest.installUnit,
+        privateMarker: manifest.privateMarker,
+        entryKind: manifest.entryKind,
+        launchMode: manifest.launchMode,
+        ...(manifest.datasrv ? { datasrv: manifest.datasrv } : {}),
+        ...(manifest.mis ? { mis: manifest.mis } : {}),
+        ...(manifest.skill ? { skill: manifest.skill } : {}),
+    } : undefined;
+    return textHash(stableStringify({
+        name: app.name,
+        description: app.description,
+        category: app.category,
+        kind: app.kind,
+        icon: app.icon,
+        ...(app.customIconDataUrl ? { customIconDataUrl: app.customIconDataUrl } : {}),
+        version: normalizeTestAppVersion(app.version),
+        manifest: runtimeManifest,
+    }));
+}
+
+type SeedRunOptions = {
+    runID?: string;
+    at?: string;
+    outputMode?: string;
+    inputSummary?: string;
+    message?: string;
+    artifacts?: any[];
+};
+
+function seedSuccessfulLocalAppRun(app: any, options: SeedRunOptions = {}) {
+    const artifacts = options.artifacts || [];
+    const primaryArtifact = artifacts[0] || {};
+    const raw = window.localStorage.getItem(runHistoryStorageKey) || '{}';
+    const history = JSON.parse(raw) as Record<string, any[]>;
+    history[app.id] = [{
+        runID: options.runID || `run-ok-${app.id}`,
+        appID: app.id,
+        status: 'done',
+        definitionHash: testAppDefinitionFingerprint(app),
+        outputMode: options.outputMode || 'pdf',
+        inputSummary: options.inputSummary || 'sample.pdf',
+        message: options.message || 'done',
+        artifactID: primaryArtifact.id,
+        artifactURI: primaryArtifact.uri,
+        artifactName: primaryArtifact.name,
+        artifactPath: primaryArtifact.path,
+        artifactDownloadState: primaryArtifact.download_state,
+        artifacts,
+        at: options.at || '2026-06-17T00:05:00.000Z',
+    }, ...(history[app.id] || [])];
+    window.localStorage.setItem(runHistoryStorageKey, JSON.stringify(history));
+}
+
+function latestStoredCustomApp(name: string) {
+    const panel = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}') as { customApps?: any[] };
+    return (panel.customApps || []).find((app) => app.name === name);
+}
+
+async function createAndRunLocalToolApp(name = '合同归档') {
+    fireEvent.click(screen.getByTitle('应用程序工作室'));
+    fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: name } });
+    fireEvent.click(screen.getAllByText('创建应用')[1]);
+    fireEvent.click(screen.getAllByText(name)[0]);
+    const fileInput = document.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
+    const file = new File(['demo'], 'sample.pdf', { type: 'application/pdf' });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    fireEvent.click(screen.getByText('执行'));
+    await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalled());
+    await waitFor(() => {
+        const raw = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
+        const entries = Object.values(raw).flat();
+        expect(entries.some((entry) => entry.runID === 'run-test-1' && entry.status === 'done')).toBe(true);
+    });
+}
 function seedSuccessfulSkillAppRun(skillID = 'invoice-review', name = '发票审核') {
+
     const appID = `skill-app-${skillID}-app-tool-app`;
     const definitionHash = textHash(stableStringify({
         name,
@@ -423,12 +507,15 @@ describe('AppsPage', () => {
         listNLSkillsMock.mockResolvedValue([
             { name: 'invoice-review', description: '审核发票' },
             { name: 'already-app', is_maclaw_app: true },
+            { name: 'already-app-camel', isMaclawApp: true },
         ]);
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
         const toolSkillPicker = screen.getByTestId('studio-tool-skill-picker');
         await waitFor(() => expect(within(toolSkillPicker).getAllByText('invoice-review').length).toBeGreaterThan(0));
+        expect(within(toolSkillPicker).queryByText('already-app')).toBeNull();
+        expect(within(toolSkillPicker).queryByText('already-app-camel')).toBeNull();
         fireEvent.click(within(toolSkillPicker).getByRole('option', { name: /invoice-review/ }) as HTMLButtonElement);
         fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '发票审核' } });
         fireEvent.click(screen.getByText('保存到 Skill'));
@@ -531,6 +618,31 @@ describe('AppsPage', () => {
         expect(within(skillPicker).queryByText('Alpha Skill from Market')).toBeNull();
     });
 
+    it('shows SkillMarket results above the installed skill list', async () => {
+        listNLSkillsMock.mockResolvedValue([{ name: 'alpha-installed-skill', description: 'Installed alpha' }]);
+        searchMixedSkillsMock.mockResolvedValueOnce([{
+            id: 'alpha-market-skill',
+            name: 'Alpha Market Skill',
+            description: 'Market alpha',
+            source: 'skillmarket',
+            source_label: 'SkillMarket',
+            installed: false,
+        }]);
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        const skillPicker = screen.getByTestId('studio-tool-skill-picker');
+        await waitFor(() => expect(within(skillPicker).getAllByText('alpha-installed-skill').length).toBeGreaterThan(0));
+        fireEvent.change(skillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'alpha' } });
+        fireEvent.click(within(skillPicker).getByRole('button', { name: /^Search$/ }));
+
+        const marketHeader = await within(skillPicker).findByText('SkillMarket / Hub');
+        const marketResult = within(skillPicker).getByText('Alpha Market Skill');
+        const installedHeader = within(skillPicker).getByText('Installed skills');
+        expect(marketHeader.compareDocumentPosition(installedHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(marketResult.compareDocumentPosition(installedHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
     it('ignores slower SkillMarket responses after a newer search completes', async () => {
         let resolveAlpha: (value: unknown[]) => void = () => undefined;
         searchMixedSkillsMock.mockImplementation((query: string) => {
@@ -618,10 +730,7 @@ describe('AppsPage', () => {
     it('submits ready local apps into local review state', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
-        fireEvent.click(screen.getAllByText('创建应用')[1]);
-        fireEvent.click(screen.getAllByText('合同归档')[0]);
+        await createAndRunLocalToolApp('合同归档');
         fireEvent.click(screen.getByTitle('应用程序工作室'));
         fireEvent.click(screen.getByText('审核/发布'));
 
@@ -668,6 +777,7 @@ describe('AppsPage', () => {
             customApps: [reviewedApp],
             recentUsedAtById: { [reviewedApp.id]: reviewedApp.recentUsedAt },
         }));
+        seedSuccessfulLocalAppRun(reviewedApp);
         window.localStorage.setItem('maclaw:apps-publish-submissions:v1', JSON.stringify({
             [reviewedApp.id]: {
                 id: 'local-review-returned',
@@ -721,6 +831,7 @@ describe('AppsPage', () => {
             customApps: [app],
             recentUsedAtById: { [app.id]: app.recentUsedAt },
         }));
+        seedSuccessfulLocalAppRun(app);
         const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'should-not-submit' });
         const listMaclawAppPackageSubmissions = vi.fn().mockResolvedValue([]);
         (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage, ListMaclawAppPackageSubmissions: listMaclawAppPackageSubmissions } } };
@@ -758,6 +869,15 @@ describe('AppsPage', () => {
     });
 
     it('uses the enterprise market bridge when submitting app packages', async () => {
+        getNLSkillRunStatusMock.mockResolvedValue({
+            run_id: 'run-test-1',
+            status: 'success',
+            summary: { last_output_snippet: 'done' },
+            artifacts: [
+                { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'contract.docx', path: '/tmp/contract.docx', status: 'ready' },
+                { id: 'artifact-2', uri: 'artifact://skill-run/run-test-1/artifact-2', name: 'report.pdf', path: '/tmp/report.pdf', status: 'ready', mime_type: 'application/pdf', size_bytes: 2048 },
+            ],
+        });
         const submitMaclawAppPackage = vi.fn().mockResolvedValue({
             submission_id: 'market-review-123',
             submitted_at: '2026-06-17T01:00:00.000Z',
@@ -768,10 +888,7 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
-        fireEvent.click(screen.getAllByText('创建应用')[1]);
-        fireEvent.click(screen.getAllByText('合同归档')[0]);
+        await createAndRunLocalToolApp('合同归档');
         fireEvent.click(screen.getByTitle('应用程序工作室'));
         fireEvent.click(screen.getByText('审核/发布'));
         fireEvent.click(screen.getByText('提交审核'));
@@ -780,6 +897,15 @@ describe('AppsPage', () => {
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
         expect(payload.schema).toBe('maclaw.app.pack.v1');
         expect(payload.apps[0].app.name).toBe('合同归档');
+        const evidence = payload.apps[0].app.governance.testEvidence;
+        expect(evidence.runId).toBe('run-test-1');
+        expect(evidence.definitionHash).toMatch(/^[0-9a-f]{8}$/);
+        expect(evidence.artifactPresent).toBe(true);
+        expect(evidence.artifactCount).toBe(2);
+        expect(evidence.artifacts).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'artifact-1', name: 'contract.docx', path: '/tmp/contract.docx' }),
+            expect.objectContaining({ id: 'artifact-2', name: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 2048 }),
+        ]));
         expect(screen.getAllByText('等待企业市场审核').length).toBeGreaterThan(0);
         expect(screen.getAllByText(/market-review-123/).length).toBeGreaterThan(0);
         expect(screen.getByText(/"channel": "hub"/)).not.toBeNull();
@@ -797,10 +923,7 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
-        fireEvent.click(screen.getAllByText('创建应用')[1]);
-        fireEvent.click(screen.getAllByText('合同归档')[0]);
+        await createAndRunLocalToolApp('合同归档');
         fireEvent.click(screen.getByTitle('应用程序工作室'));
         fireEvent.click(screen.getByText('审核/发布'));
         fireEvent.click(screen.getByText('提交审核'));
@@ -828,10 +951,7 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
-        fireEvent.click(screen.getAllByText('创建应用')[1]);
-        fireEvent.click(screen.getAllByText('合同归档')[0]);
+        await createAndRunLocalToolApp('合同归档');
         fireEvent.click(screen.getByTitle('应用程序工作室'));
         fireEvent.click(screen.getByText('审核/发布'));
         fireEvent.click(screen.getByText('提交审核'));
@@ -1053,6 +1173,7 @@ describe('AppsPage', () => {
             customApps: [reviewedApp],
             recentUsedAtById: { [reviewedApp.id]: reviewedApp.recentUsedAt },
         }));
+        seedSuccessfulLocalAppRun(reviewedApp);
         const listMaclawAppPackageSubmissions = vi.fn().mockResolvedValueOnce([{
             submission_id: 'market-review-published',
             submitted_at: '2026-06-17T01:20:00Z',
@@ -1112,6 +1233,8 @@ describe('AppsPage', () => {
         expect(nameInput).not.toBeNull();
         fireEvent.change(nameInput, { target: { value: '队列回写应用修正版' } });
         fireEvent.click(screen.getByText('保存'));
+        await waitFor(() => expect(latestStoredCustomApp('队列回写应用修正版')).toBeTruthy());
+        seedSuccessfulLocalAppRun(latestStoredCustomApp('队列回写应用修正版'));
 
         fireEvent.click(screen.getByText('审核/发布'));
         await waitFor(() => expect(screen.getAllByText('本地已修改，需重新提交').length).toBeGreaterThan(0));

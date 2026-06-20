@@ -236,6 +236,10 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 				log.Printf("[llm-proxy] WARN: credits deduction failed auth=%s group=%s credits=%.2f: %v", auth.ID, matchedGroup.ID, credits, err)
 			}
 		}
+		recordCredits := credits
+		if requiresGrant {
+			recordCredits = totalDeductionCredits(deductions)
+		}
 
 		// Record usage
 		if cfg.Usage != nil {
@@ -244,7 +248,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 				Model:        model,
 				InputTokens:  inputTokens,
 				OutputTokens: outputTokens,
-				Credits:      credits,
+				Credits:      recordCredits,
 				CacheHit:     false,
 				AuthID:       deductionAuthIDs(deductions),
 				Timestamp:    time.Now().UTC(),
@@ -704,4 +708,14 @@ func deductionAuthIDs(deductions []CreditDeduction) string {
 		}
 	}
 	return strings.Join(ids, ",")
+}
+
+func totalDeductionCredits(deductions []CreditDeduction) float64 {
+	total := 0.0
+	for _, deduction := range deductions {
+		if deduction.Credits > 0 {
+			total += deduction.Credits
+		}
+	}
+	return roundProxyCredits(total)
 }

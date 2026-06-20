@@ -163,8 +163,8 @@ func (r *authTestRepo) Update(_ context.Context, _ *llmservice.TenantAuthorizati
 	return nil
 }
 
-func (r *authTestRepo) DeductCredits(_ context.Context, _ string, _ float64, _ time.Time) error {
-	return nil
+func (r *authTestRepo) DeductCredits(_ context.Context, _ string, credits float64, _ time.Time) (float64, error) {
+	return credits, nil
 }
 
 func TestUpdateCardTypeRequiresCompleteValidCard(t *testing.T) {

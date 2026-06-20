@@ -794,6 +794,7 @@ function buildAIAssistantSendPayload(
     if (options?.lang) payload.lang = options.lang;
     if (options?.uiAction !== undefined) payload.ui_action = options.uiAction;
     if (options?.project_path) payload.project_path = normalizeProjectSessionPath(options.project_path);
+    if (options?.tabId) payload.event_scope_id = options.tabId;
     return payload;
 }
 

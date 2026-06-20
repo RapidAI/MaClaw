@@ -167,6 +167,29 @@ describe('MigrationSettingsPanel', () => {
         expect(StartUserDataMigrationCleanup).not.toHaveBeenCalled();
     });
 
+    it('switches an importing package to cleanup retry after local restore succeeds with cleanup pending', async () => {
+        (StartUserDataMigrationImport as any).mockResolvedValueOnce({
+            id: 'job-import-pending-cleanup',
+            kind: 'migration.import',
+            status: 'succeeded',
+            progress: 1,
+            result: { export_id: 'mig-source', cleanup_pending: true },
+        });
+        await renderMigrationPanel([migrationInstance('importing', 'machine-current')]);
+
+        fireEvent.change(importPasswordInput(), { target: { value: 'resume-pass' } });
+        const resumeButton = screen.getByRole('button', { name: 'Resume Move In' }) as HTMLButtonElement;
+        await waitFor(() => expect(resumeButton.disabled).toBe(false));
+        fireEvent.click(resumeButton);
+
+        await waitFor(() => expect(StartUserDataMigrationImport).toHaveBeenCalledWith('mig-source', 'resume-pass'));
+        const cleanupButton = await screen.findByRole('button', { name: 'Retry Cleanup' });
+        expect(importPasswordInput().disabled).toBe(true);
+        fireEvent.click(cleanupButton);
+
+        await waitFor(() => expect(StartUserDataMigrationCleanup).toHaveBeenCalledWith('mig-source'));
+    });
+
     it('retries cleanup for an already restored package claimed by this machine', async () => {
         await renderMigrationPanel([migrationInstance('imported', 'machine-current')]);
 

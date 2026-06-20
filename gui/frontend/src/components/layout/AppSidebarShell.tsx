@@ -79,6 +79,10 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     favoriteEmployeeIds?: string[]; favoriteEmployeeNames?: Record<string, string>;
     showCodingToolEntry?: boolean;
     showAppEntry?: boolean;
+    /** List of confirmed-available providers for the quick-switch dropdown. */
+    availableProviders?: Array<{ name: string; url: string; isHubService: boolean }>;
+    /** Called when user picks a different provider from the dropdown. */
+    onSwitchProvider?: (providerName: string) => void;
 }
 
 export const AppSidebarShell = ({
@@ -156,6 +160,8 @@ export const AppSidebarShell = ({
     favoriteEmployeeIds = [], favoriteEmployeeNames = {},
     showCodingToolEntry = false,
     showAppEntry = false,
+    availableProviders = [],
+    onSwitchProvider,
 }: AppSidebarShellProps) => (
 <>
             <div style={{
@@ -247,6 +253,8 @@ export const AppSidebarShell = ({
                         digitalEmployeeFeatureStatus={digitalEmployeeFeatureStatus}
                         showDigitalEmployeeNavigation={showDigitalEmployeeNavigation}
                         onOpenHistoryDiscussion={onOpenHistoryDiscussion}
+                        availableProviders={availableProviders}
+                        onSwitchProvider={onSwitchProvider}
                     />
                 )}
             </div>

@@ -90,6 +90,40 @@ func (a *App) RunEnvironmentCheckCLI() {
 	// TODO: Port logic from CheckEnvironment
 }
 
+// detectMissingCoreTools performs a lightweight check for core runtime dependencies.
+// Returns the name of the first missing tool, or "" if all present.
+// On macOS, also checks common install locations that may not yet be in PATH
+// (homebrew, private install dir) since PATH is expanded later in CheckEnvironment.
+func (a *App) detectMissingCoreTools() string {
+	pySt := pyenv.Detect()
+	if !pySt.Available {
+		return "Python"
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		// Check common macOS locations not yet in PATH
+		for _, p := range []string{"/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"} {
+			if _, statErr := os.Stat(p); statErr == nil {
+				return "" // Git exists, just not in current PATH — will be fixed later
+			}
+		}
+		return "Git"
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		home, _ := os.UserHomeDir()
+		privateBin := filepath.Join(home, ".maclaw", "data", "tools", "bin", "node")
+		if _, statErr := os.Stat(privateBin); statErr == nil {
+			return "" // Private node exists — PATH will be set up later
+		}
+		for _, p := range []string{"/opt/homebrew/bin/node", "/usr/local/bin/node"} {
+			if _, statErr := os.Stat(p); statErr == nil {
+				return ""
+			}
+		}
+		return "Node.js"
+	}
+	return ""
+}
+
 // CheckEnvironment checks and installs base environment (Node.js, Git)
 // Tools are checked and updated in background after base environment is ready
 func (a *App) CheckEnvironment(force bool) {
@@ -114,11 +148,15 @@ func (a *App) CheckEnvironment(force bool) {
 		} else {
 			config, err := a.LoadConfig()
 			if err == nil && config.PauseEnvCheck {
-				a.log(a.tr("Skipping base environment check."))
-				a.emitEvent("env-check-done")
-				// Always start background tool check/update on every startup
-				go a.installToolsInBackground()
-				return
+				// Even when paused, verify core tools are still accessible (<100ms).
+				coreMissing := a.detectMissingCoreTools()
+				if coreMissing == "" {
+					a.log(a.tr("Skipping base environment check (core tools verified)."))
+					a.emitEvent("env-check-done")
+					go a.installToolsInBackground()
+					return
+				}
+				a.log(a.tr("Core tool missing: %s. Re-running environment setup...", coreMissing))
 			}
 		}
 

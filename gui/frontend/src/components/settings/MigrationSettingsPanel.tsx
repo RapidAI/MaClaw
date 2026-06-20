@@ -294,7 +294,12 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
     const canExport = ready && !busy && exportPassword.length > 0 && exportPassword === exportPasswordConfirm;
     const selectedInstance = importableInstances.find((item) => item.export_id === selectedExportID);
     const selectedExportStatus = String(selectedInstance?.export_status || '').toLowerCase();
-    const cleanupRetry = cleanupRetryStatuses.has(selectedExportStatus) && !!status?.machine_id && selectedInstance?.export_claimed_by_machine_id === status.machine_id;
+    const selectedClaimedByCurrentMachine = !!status?.machine_id && selectedInstance?.export_claimed_by_machine_id === status.machine_id;
+    const localCleanupPending = job?.kind === 'migration.import'
+        && String(job?.status || '').toLowerCase() === 'succeeded'
+        && job?.result?.cleanup_pending === true
+        && String(job?.result?.export_id || '') === selectedExportID;
+    const cleanupRetry = selectedClaimedByCurrentMachine && (cleanupRetryStatuses.has(selectedExportStatus) || localCleanupPending);
     const resumeImport = resumableImportStatuses.has(selectedExportStatus) && !!status?.machine_id && selectedInstance?.export_claimed_by_machine_id === status.machine_id;
     const canImport = ready && !busy && !!selectedExportID && (cleanupRetry || importPassword.length > 0);
     const jobPercent = normalizeProgress(job?.progress);

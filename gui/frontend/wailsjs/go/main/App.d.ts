@@ -295,7 +295,7 @@ export function SetWorkflowWorkingDir(arg1:string):Promise<void>;
 
 export function GetWorkflowWorkingDir():Promise<string>;
 
-export function RefreshWorkflowV2StateForTab(arg1:string):Promise<void>;
+export function RefreshWorkflowV2StateForTab(arg1:string, ...arg2:string[]):Promise<void>;
 
 export function SelectSkillFile():Promise<string>;
 
