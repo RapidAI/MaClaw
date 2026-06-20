@@ -1979,8 +1979,14 @@
     background: color-mix(in srgb, var(--theme-success-bg) 34%, var(--theme-surface));
 }
 
-.apps-market-row[data-state='upgrade'] {
+.apps-market-row[data-state='upgrade'],
+.apps-market-row[data-state='running'] {
     background: color-mix(in srgb, var(--theme-primary-soft) 32%, var(--theme-surface));
+}
+
+.apps-market-row[data-state='blocked'] {
+    border-color: color-mix(in srgb, var(--theme-danger) 28%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-danger-bg) 50%, var(--theme-surface));
 }
 
 .apps-market-row .apps-app-icon {
@@ -2016,6 +2022,18 @@
     color: var(--theme-text-muted);
     font-size: 0.68rem;
     font-weight: 700;
+}
+
+.apps-market-row__main .apps-market-row__feedback {
+    color: var(--theme-primary-strong);
+}
+
+.apps-market-row__main .apps-market-row__feedback[data-state='error'] {
+    color: var(--theme-danger);
+}
+
+.apps-market-row__main .apps-market-row__feedback[data-state='done'] {
+    color: var(--theme-success);
 }
 
 .apps-market-row > .apps-primary-button,

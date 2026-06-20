@@ -6786,19 +6786,20 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                         const feedback = marketInstallFeedback?.appId === app.id ? marketInstallFeedback : null;
                         const buttonText = isInstalling ? text.installing : actionText;
                         return (
-                        <div className="apps-market-row" key={app.id} data-state={feedback?.state === 'error' ? 'blocked' : isInstalling ? 'running' : installed ? 'installed' : upgrade ? 'upgrade' : 'available'}>
-                            <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
-                            <div className="apps-market-row__main">
-                                <strong>{app.name}</strong>
-                                <span>{app.description}</span>
-                                <small>{app.category} · {appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</small>
-                                {feedback && <small className="apps-market-row__feedback" data-state={feedback.state}>{feedback.message}</small>}
+                            <div className="apps-market-row" key={app.id} data-state={feedback?.state === 'error' ? 'blocked' : isInstalling ? 'running' : installed ? 'installed' : upgrade ? 'upgrade' : 'available'}>
+                                <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
+                                <div className="apps-market-row__main">
+                                    <strong>{app.name}</strong>
+                                    <span>{app.description}</span>
+                                    <small>{app.category} · {appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</small>
+                                    {feedback && <small className="apps-market-row__feedback" data-state={feedback.state}>{feedback.message}</small>}
+                                </div>
+                                <button className={installed ? 'apps-secondary-button' : 'apps-primary-button'} type="button" disabled={installed || isInstalling} title={`${buttonText}: ${app.name}`} aria-label={`${buttonText}: ${app.name}`} onClick={() => void installSingleMarketApp(app)}>
+                                    {buttonText}
+                                </button>
                             </div>
-                            <button className={installed ? 'apps-secondary-button' : 'apps-primary-button'} type="button" disabled={installed || isInstalling} title={`${buttonText}: ${app.name}`} aria-label={`${buttonText}: ${app.name}`} onClick={() => void installSingleMarketApp(app)}>
-                                {buttonText}
-                            </button>
-                        </div>
-                    );})}
+                        );
+                    })}
                 </div>
             </section>
             <section className="apps-install-records" aria-label={text.installRecords}>
