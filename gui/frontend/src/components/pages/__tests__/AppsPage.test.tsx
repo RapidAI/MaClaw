@@ -14,6 +14,7 @@ const planMaclawAppInstallMock = vi.hoisted(() => vi.fn());
 const saveMaclawAppDefinitionForSkillMock = vi.hoisted(() => vi.fn());
 const recordMaclawAppRunEvidenceForSkillMock = vi.hoisted(() => vi.fn());
 const uploadNLSkillToMarketMock = vi.hoisted(() => vi.fn());
+const searchMixedSkillsMock = vi.hoisted(() => vi.fn());
 const runNLSkillAsyncMock = vi.hoisted(() => vi.fn());
 const getNLSkillRunStatusMock = vi.hoisted(() => vi.fn());
 const cancelNLSkillRunMock = vi.hoisted(() => vi.fn());
@@ -44,6 +45,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     RevealSkillRunArtifact: (...args: unknown[]) => revealSkillRunArtifactMock(...args),
     RunNLSkillAsync: (...args: unknown[]) => runNLSkillAsyncMock(...args),
     SaveMaclawAppDefinitionForSkill: (...args: unknown[]) => saveMaclawAppDefinitionForSkillMock(...args),
+    SearchMixedSkills: (...args: unknown[]) => searchMixedSkillsMock(...args),
     ShowItemInFolder: (...args: unknown[]) => showItemInFolderMock(...args),
     StageSkillAppInputFile: (...args: unknown[]) => stageSkillAppInputFileMock(...args),
     UploadNLSkillToMarket: (...args: unknown[]) => uploadNLSkillToMarketMock(...args),
@@ -126,6 +128,7 @@ describe('AppsPage', () => {
         saveMaclawAppDefinitionForSkillMock.mockReset().mockResolvedValue({ app_definition_file: 'maclaw.app.json' });
         recordMaclawAppRunEvidenceForSkillMock.mockReset().mockResolvedValue({ app_definition_file: 'maclaw.app.json' });
         uploadNLSkillToMarketMock.mockReset().mockResolvedValue('submission-app-1');
+        searchMixedSkillsMock.mockReset().mockResolvedValue([]);
         runNLSkillAsyncMock.mockReset().mockResolvedValue('run-test-1');
         getNLSkillRunStatusMock.mockReset().mockResolvedValue({ run_id: 'run-test-1', status: 'success', summary: { last_output_snippet: 'done' } });
         cancelNLSkillRunMock.mockReset().mockResolvedValue(undefined);
@@ -375,7 +378,9 @@ describe('AppsPage', () => {
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
-        await waitFor(() => expect(screen.getByDisplayValue('invoice-review')).not.toBeNull());
+        const toolSkillPicker = screen.getByTestId('studio-tool-skill-picker');
+        await waitFor(() => expect(within(toolSkillPicker).getAllByText('invoice-review').length).toBeGreaterThan(0));
+        fireEvent.click(within(toolSkillPicker).getByRole('option', { name: /invoice-review/ }) as HTMLButtonElement);
         fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '发票审核' } });
         fireEvent.click(screen.getByText('保存到 Skill'));
 
@@ -402,7 +407,9 @@ describe('AppsPage', () => {
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
-        await waitFor(() => expect(screen.getByDisplayValue('invoice-review')).not.toBeNull());
+        const toolSkillPicker = screen.getByTestId('studio-tool-skill-picker');
+        await waitFor(() => expect(within(toolSkillPicker).getAllByText('invoice-review').length).toBeGreaterThan(0));
+        fireEvent.click(within(toolSkillPicker).getByRole('option', { name: /invoice-review/ }) as HTMLButtonElement);
         fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '发票审核' } });
 
         fireEvent.click(screen.getByText('上传到 SkillMarket'));
@@ -418,7 +425,9 @@ describe('AppsPage', () => {
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
-        await waitFor(() => expect(screen.getByDisplayValue('invoice-review')).not.toBeNull());
+        const toolSkillPicker = screen.getByTestId('studio-tool-skill-picker');
+        await waitFor(() => expect(within(toolSkillPicker).getAllByText('invoice-review').length).toBeGreaterThan(0));
+        fireEvent.click(within(toolSkillPicker).getByRole('option', { name: /invoice-review/ }) as HTMLButtonElement);
         fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '发票审核' } });
 
         fireEvent.click(screen.getByText('上传到 SkillMarket'));
@@ -428,6 +437,67 @@ describe('AppsPage', () => {
         const payload = JSON.parse(saveMaclawAppDefinitionForSkillMock.mock.calls[0][1]);
         expect(payload.app.name).toBe('发票审核');
         expect(payload.app.binding.skill.appDefinitionFile).toBe('maclaw.app.json');
+    });
+
+    it('hides stale SkillMarket results when the picker query changes', async () => {
+        searchMixedSkillsMock.mockResolvedValueOnce([{
+            id: 'alpha-market-skill',
+            name: 'Alpha Market Skill',
+            description: 'Old result',
+            source: 'skillmarket',
+            source_label: 'SkillMarket',
+            installed: false,
+        }]);
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        const skillPicker = screen.getByTestId('studio-tool-skill-picker');
+        fireEvent.change(skillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'alpha' } });
+        fireEvent.click(within(skillPicker).getByRole('button', { name: /Search SkillMarket/ }));
+        await waitFor(() => expect(within(skillPicker).getByText('Alpha Market Skill')).not.toBeNull());
+
+        fireEvent.change(skillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'beta' } });
+        expect(within(skillPicker).queryByText('Alpha Market Skill')).toBeNull();
+    });
+
+    it('ignores slower SkillMarket responses after a newer search completes', async () => {
+        let resolveAlpha: (value: unknown[]) => void = () => undefined;
+        searchMixedSkillsMock.mockImplementation((query: string) => {
+            if (query === 'alpha') {
+                return new Promise((resolve) => {
+                    resolveAlpha = resolve;
+                });
+            }
+            return Promise.resolve([{
+                id: 'beta-market-skill',
+                name: 'Beta Market Skill',
+                description: 'New result',
+                source: 'skillmarket',
+                source_label: 'SkillMarket',
+                installed: false,
+            }]);
+        });
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        const skillPicker = screen.getByTestId('studio-tool-skill-picker');
+        fireEvent.change(skillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'alpha' } });
+        fireEvent.click(within(skillPicker).getByRole('button', { name: /Search SkillMarket/ }));
+        fireEvent.change(skillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'beta' } });
+        fireEvent.click(within(skillPicker).getByRole('button', { name: /Search SkillMarket/ }));
+
+        await waitFor(() => expect(within(skillPicker).getByText('Beta Market Skill')).not.toBeNull());
+        resolveAlpha([{
+            id: 'alpha-market-skill',
+            name: 'Alpha Market Skill',
+            description: 'Old result',
+            source: 'skillmarket',
+            source_label: 'SkillMarket',
+            installed: false,
+        }]);
+
+        await waitFor(() => expect(within(skillPicker).queryByText('Alpha Market Skill')).toBeNull());
+        expect(within(skillPicker).getByText('Beta Market Skill')).not.toBeNull();
     });
 
     it('exposes app studio sections as accessible tabs', () => {
@@ -993,19 +1063,33 @@ describe('AppsPage', () => {
         expect(screen.getByText(/"launchMode": "automation_console"/)).not.toBeNull();
     });
 
-    it('writes enterprise app skill dependencies from app studio into manifests', () => {
+    it('writes enterprise app skill dependencies from selected installed and market skills', async () => {
+        listNLSkillsMock.mockResolvedValue([{ name: 'expense-super-app', description: 'Expense app runtime' }]);
+        searchMixedSkillsMock.mockResolvedValue([{
+            id: 'expense-approval-flow',
+            name: 'Expense Approval Flow',
+            description: 'Approval workflow from SkillMarket',
+            source: 'skillmarket',
+            source_label: 'SkillMarket',
+            installed: false,
+        }]);
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(document.querySelector('.apps-studio-button') as HTMLElement);
         fireEvent.change(document.querySelector('.apps-create-form input[placeholder]') as HTMLInputElement, { target: { value: 'approval-workbench' } });
         const kindPicker = document.querySelector('.apps-studio-kind') as HTMLElement;
         fireEvent.click(within(kindPicker).getByRole('button', { name: /企业审批型/ }));
-        fireEvent.change(screen.getByTestId('studio-app-skill-id'), { target: { value: 'expense-super-app' } });
-        fireEvent.change(screen.getByTestId('studio-workflow-skill-id'), { target: { value: 'expense-approval-flow' } });
+        const appSkillPicker = screen.getByTestId('studio-app-skill-id');
+        await waitFor(() => expect(within(appSkillPicker).getAllByText('expense-super-app').length).toBeGreaterThan(0));
+        fireEvent.click(within(appSkillPicker).getByRole('option', { name: /expense-super-app/ }) as HTMLButtonElement);
+        const workflowSkillPicker = screen.getByTestId('studio-workflow-skill-id');
+        fireEvent.change(workflowSkillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'expense approval' } });
+        fireEvent.click(within(workflowSkillPicker).getByRole('button', { name: /搜 SkillMarket/ }));
+        await waitFor(() => expect(searchMixedSkillsMock).toHaveBeenCalledWith('expense approval'));
+        fireEvent.click(within(workflowSkillPicker).getByText('Expense Approval Flow').closest('button') as HTMLButtonElement);
         fireEvent.change(screen.getByTestId('studio-workflow-skill-version'), { target: { value: '2.1.0' } });
         fireEvent.change(screen.getByTestId('studio-approval-event'), { target: { value: 'finance.expense.submitted' } });
         fireEvent.change(screen.getByTestId('studio-approval-object-role'), { target: { value: 'expense_report' } });
-        fireEvent.change(screen.getByTestId('studio-dependency-source'), { target: { value: 'market' } });
 
         expect(screen.getByText(/"appSkill"/)).not.toBeNull();
         expect(screen.getByText(/"id": "expense-super-app"/)).not.toBeNull();
@@ -1021,8 +1105,10 @@ describe('AppsPage', () => {
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
 
         expect(manifest.app.binding.appSkill.id).toBe('expense-super-app');
+        expect(manifest.app.binding.appSkill.source).toBe('local');
         expect(manifest.app.binding.dependencies.skills[0].id).toBe('expense-approval-flow');
         expect(manifest.app.binding.dependencies.skills[0].version).toBe('2.1.0');
+        expect(manifest.app.binding.dependencies.skills[0].source).toBe('market');
         expect(manifest.app.binding.dependencies.skills[0].kind).toBe('workflow_skill');
         expect(manifest.app.binding.dependencies.skills[0].source).toBe('market');
         expect(manifest.app.binding.mis.approvalBindings[0]).toMatchObject({ event: 'finance.expense.submitted', workflowSkillId: 'expense-approval-flow', workflowVersion: '2.1.0', objectRole: 'expense_report' });
@@ -2515,11 +2601,9 @@ describe('AppsPage', () => {
         const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF')) as HTMLElement;
         fireEvent.click((pdfWordRow.querySelector('.apps-manage-actions .apps-secondary-button') as HTMLButtonElement));
 
-        await waitFor(() => expect(document.querySelector('datalist#apps-manage-skill-options option[value="pdf-word-v2"]')).not.toBeNull());
         const dialog = screen.getByRole('dialog');
-        const skillInput = within(dialog).getByDisplayValue('pdf-word') as HTMLInputElement;
-        expect(skillInput.getAttribute('list')).toBe('apps-manage-skill-options');
-        fireEvent.change(skillInput, { target: { value: 'pdf-word-v2' } });
+        await waitFor(() => expect(within(dialog).getByRole('option', { name: /pdf-word-v2/ })).not.toBeNull());
+        fireEvent.click(within(dialog).getByRole('option', { name: /pdf-word-v2/ }) as HTMLButtonElement);
         fireEvent.click(within(dialog).getByText('Save'));
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
@@ -2920,8 +3004,62 @@ describe('AppsPage', () => {
         await waitFor(() => expect(screen.getByText('Contract Audit')).not.toBeNull());
         expect(screen.getByText(/Package SHA: abcdef123456/)).not.toBeNull();
         expect(screen.getByText(/Skill dependencies: 2/)).not.toBeNull();
-        expect(screen.getByText(/Missing deps: 1/)).not.toBeNull();
+        expect(screen.getByText(/Blocking deps: 1/)).not.toBeNull();
         expect(listMaclawAppInstallsMock).toHaveBeenCalledWith(6);
+    });
+    it('blocks market install when a required dependency is installed but unavailable', async () => {
+        const blockedPlan = {
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: 'inactive-market-app', name: 'Inactive Market App', kind: 'tool_app' }],
+            dependencies: [{
+                id: 'disabled-workflow',
+                kind: 'runtime_skill',
+                required: true,
+                installed: true,
+                installed_status: 'disabled',
+                health: 'disabled',
+                action: 'blocked',
+                app_ids: ['inactive-market-app'],
+                message: 'required skill dependency is installed but not active (status: disabled)',
+            }],
+            has_missing_required: false,
+            has_blocking_dependency: true,
+        };
+        planMaclawAppInstallMock.mockResolvedValue(blockedPlan);
+        installMaclawAppDependenciesMock.mockResolvedValue(blockedPlan);
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    schema: 'maclaw.app.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    installUnit: 'skill',
+                    app: {
+                        id: 'inactive-market-app',
+                        name: '不可用依赖应用',
+                        description: 'Dependency is disabled',
+                        category: '文档处理',
+                        kind: 'tool_app',
+                        launchMode: 'fixed_skill_ui',
+                        binding: { skill: { id: 'disabled-workflow', appDefinitionFile: 'maclaw.apps.json', inputMode: 'file' } },
+                    },
+                }),
+            },
+        });
+
+        await waitFor(() => expect(screen.getByText('必需 Skill 依赖缺失或不可用，请先安装或启用依赖')).not.toBeNull());
+        expect(screen.getByText(/不可用: disabled-workflow \* \(disabled\)/)).not.toBeNull();
+        expect(document.querySelector('.apps-install-preview__row[data-dependency-state="blocked"]')).not.toBeNull();
+
+        fireEvent.click(screen.getByText('安装'));
+
+        await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
+        expect(screen.getByText(/应用包无效: 必需 Skill 依赖缺失或不可用/)).not.toBeNull();
+        expect(screen.queryByText('已安装: 1 · 已跳过: 0')).toBeNull();
     });
     it('supports select all and select none in market install preview', () => {
         render(<AppsPage lang="zh-Hans" />);
@@ -3432,15 +3570,5 @@ describe('AppsPage', () => {
         expect(screen.getAllByText('文档脱敏 Plus').length).toBeGreaterThan(0);
     });
 });
-
-
-
-
-
-
-
-
-
-
 
 

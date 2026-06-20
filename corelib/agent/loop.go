@@ -128,7 +128,7 @@ type LoopResult struct {
 	Iterations int
 	ToolCalls  int
 	AskUser    *AskUserRequest
-	HardExit   bool // true when loop exited due to consecutive empty responses
+	HardExit   bool // true when loop exited abnormally (consecutive empty responses, same-tool hard stop, etc.)
 }
 
 // RunLoop executes the core agent loop: LLM call → tool execution → repeat.
@@ -196,6 +196,21 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	var recentCalls []toolCallRecord
 	const driftWindow = 4 // check last N calls for repetition
 	consecutiveSame := 0
+
+	// Consecutive same-tool failure detection: catches non-repeating failure
+	// loops where the agent keeps trying different approaches with the same
+	// tool but all fail (e.g. repeatedly editing a bat script then running
+	// bash — each attempt has unique args so the exact-match drift detector
+	// above won't trigger).
+	//
+	// Escalation: inject guidance at maxConsecutiveSameToolFailures (8), then
+	// force-stop the loop at hardStopSameToolFailures (12) if the LLM ignores
+	// the guidance and keeps failing.
+	var lastFailedTool string
+	consecutiveSameToolFailures := 0
+	sameToolFailureGuidanceInjected := false
+	const maxConsecutiveSameToolFailures = 8
+	const hardStopSameToolFailures = 12
 
 	for iteration := 0; iteration < maxIter; iteration++ {
 		if cb.ShouldStop() {
@@ -395,6 +410,35 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			toolSuccess := lastToolOutcome.kind == toolOutcomeOK
 			h.OnToolExecuted(tc.Function.Name, argsJSON, result, toolSuccess)
 
+			// Consecutive same-tool failure tracking.
+			if !toolSuccess {
+				if tc.Function.Name == lastFailedTool || lastFailedTool == "" {
+					lastFailedTool = tc.Function.Name
+					consecutiveSameToolFailures++
+				}
+				// Different tool failing: don't reset — it's likely noise
+				// (e.g. an intermittent write_file permission error between
+				// bash failures). Only the dominant failing tool matters.
+
+				if consecutiveSameToolFailures >= hardStopSameToolFailures {
+					// Hard stop: LLM ignored the guidance and keeps failing.
+					log.Printf("[agent-loop] hard stop: tool=%q failed %d consecutive times, force-exiting loop", lastFailedTool, consecutiveSameToolFailures)
+					return LoopResult{
+						Text:       fmt.Sprintf("工具 %s 连续失败 %d 次，已停止执行。请检查环境或换一种方式完成任务。", lastFailedTool, consecutiveSameToolFailures),
+						Iterations: iteration + 1,
+						ToolCalls:  totalToolCalls,
+						HardExit:   true,
+					}
+				}
+			} else {
+				// Success of the previously-failing tool resets the counter.
+				if tc.Function.Name == lastFailedTool {
+					consecutiveSameToolFailures = 0
+					lastFailedTool = ""
+					sameToolFailureGuidanceInjected = false
+				}
+			}
+
 			// Drift detection: track this call and check for repetition.
 			record := toolCallRecord{name: tc.Function.Name, args: argsJSON, result: result}
 			recentCalls = append(recentCalls, record)
@@ -415,6 +459,21 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				"role":         "tool",
 				"tool_call_id": tc.ID,
 				"content":      result,
+			})
+		}
+
+		// Consecutive same-tool failure guidance: inject AFTER all tool results
+		// are appended (injecting between tool results creates invalid message
+		// ordering that some LLM APIs reject).
+		// Use >= threshold with a one-shot flag to handle cases where the
+		// counter jumps past the exact threshold within a single multi-tool-call
+		// iteration.
+		if consecutiveSameToolFailures >= maxConsecutiveSameToolFailures && !sameToolFailureGuidanceInjected {
+			sameToolFailureGuidanceInjected = true
+			log.Printf("[agent-loop] consecutive same-tool failures: tool=%q count=%d, injecting stop guidance", lastFailedTool, consecutiveSameToolFailures)
+			conversation = append(conversation, map[string]interface{}{
+				"role":    "user",
+				"content": fmt.Sprintf("[系统] 工具 %s 已连续失败 %d 次（每次方法不同但均未成功）。请停止继续尝试该工具，改用其他方式完成任务，或向用户说明当前遇到的具体问题和限制。", lastFailedTool, consecutiveSameToolFailures),
 			})
 		}
 

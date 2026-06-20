@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -81,36 +84,7 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 				completedPhaseID = p.ID
 			}
 		}
-		// Prefer the accumulated WorkflowDocBuffer (captures all iterations' text)
-		// over resp.Text (which only contains the last iteration's finalized text).
-		// However, when the LLM uses write_file to produce the phase document (common
-		// in ToolPolicyFull phases like patent parsing), the buffer only contains short
-		// commentary text. In that case, read the written file(s) as the actual output.
-		var docText string
-		source := "resp.Text"
-		if loopCtx != nil && loopCtx.WorkflowDocBuffer.Len() > 0 {
-			if t := strings.TrimSpace(loopCtx.WorkflowDocBuffer.String()); t != "" {
-				docText = t
-				source = "buffer"
-			}
-		}
-		// If buffer content is short (just LLM commentary) but files were written,
-		// read the written files as the actual phase output. This is the common path
-		// for ToolPolicyFull phases where LLM writes documents to disk.
-		if loopCtx != nil && len(loopCtx.WorkflowWrittenFiles) > 0 {
-			fileContent := readWorkflowWrittenFiles(loopCtx.WorkflowWrittenFiles)
-			if fileContent != "" && len([]rune(fileContent)) > len([]rune(docText)) {
-				docText = fileContent
-				source = "written_files"
-			}
-		}
-		if docText == "" {
-			docText = strings.TrimSpace(resp.Text)
-		}
-		if docText == "" && resp.Error != "" {
-			docText = "⚠️ 阶段执行出错: " + resp.Error
-			source = "error"
-		}
+		docText, source := resolveWorkflowPhaseDocText(loopCtx, resp)
 		if docText != "" {
 			h.recordWorkflowV2Output(ownerID, docText)
 			if completedPhaseID != "" {
@@ -138,29 +112,7 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 		if wf.machine.GetActive(ownerID) == nil {
 			return
 		}
-		docText := ""
-		source := "resp.Text"
-		if loopCtx != nil && loopCtx.WorkflowDocBuffer.Len() > 0 {
-			if t := strings.TrimSpace(loopCtx.WorkflowDocBuffer.String()); t != "" {
-				docText = t
-				source = "buffer"
-			}
-		}
-		// Same written_files fallback as the primary V2 path above.
-		if loopCtx != nil && len(loopCtx.WorkflowWrittenFiles) > 0 {
-			fileContent := readWorkflowWrittenFiles(loopCtx.WorkflowWrittenFiles)
-			if fileContent != "" && len([]rune(fileContent)) > len([]rune(docText)) {
-				docText = fileContent
-				source = "written_files"
-			}
-		}
-		if docText == "" {
-			docText = strings.TrimSpace(resp.Text)
-		}
-		if docText == "" && resp.Error != "" {
-			docText = "Workflow phase failed: " + resp.Error
-			source = "error"
-		}
+		docText, source := resolveWorkflowPhaseDocText(loopCtx, resp)
 		if docText == "" {
 			return
 		}
@@ -288,24 +240,69 @@ func (h *IMMessageHandler) applyWorkflowAutoAdvanceResponse(userID string, advRe
 	return
 }
 
+// resolveWorkflowPhaseDocText determines the best available document text
+// for a completed workflow phase. Priority cascade:
+//  1. WorkflowDocBuffer (accumulated LLM text output across iterations)
+//  2. WorkflowWrittenFiles (files written via write_file during the loop) — wins if longer than buffer
+//  3. resp.Text (last iteration's finalized text)
+//  4. resp.Error (error message as last resort)
+//
+// Returns the document text and a source label for logging.
+func resolveWorkflowPhaseDocText(loopCtx *LoopContext, resp *IMAgentResponse) (string, string) {
+	var docText string
+	source := "resp.Text"
+	if loopCtx != nil && loopCtx.WorkflowDocBuffer.Len() > 0 {
+		if t := strings.TrimSpace(loopCtx.WorkflowDocBuffer.String()); t != "" {
+			docText = t
+			source = "buffer"
+		}
+	}
+	// If buffer content is short (just LLM commentary) but files were written,
+	// read the written files as the actual phase output. This is the common path
+	// for ToolPolicyFull phases where LLM writes documents to disk.
+	if loopCtx != nil && len(loopCtx.WorkflowWrittenFiles) > 0 {
+		fileContent := readWorkflowWrittenFiles(loopCtx.WorkflowWrittenFiles)
+		if fileContent != "" && len([]rune(fileContent)) > len([]rune(docText)) {
+			docText = fileContent
+			source = "written_files"
+		}
+	}
+	if docText == "" && resp != nil {
+		docText = strings.TrimSpace(resp.Text)
+	}
+	if docText == "" && resp != nil && resp.Error != "" {
+		docText = "⚠️ 阶段执行出错: " + resp.Error
+		source = "error"
+	}
+	return docText, source
+}
+
 // readWorkflowWrittenFiles reads files written during the workflow agent loop
 // and concatenates their content. This captures the actual phase document when
 // the LLM uses write_file to produce output instead of streaming text.
 // Files are read in order and separated by newlines. Only text files <= 100KB
 // are read to avoid memory issues with binary or oversized files.
-// Script files (.py, .ps1, .sh, etc.) are skipped — they are tool/utility
-// files produced by the LLM to assist the workflow, not document output.
+// Script files (.py, .ps1, .sh, etc.) and non-document files (.svg, .xml, .json,
+// .html, .css, etc.) are skipped — only document content files (.md, .txt, .markdown,
+// .rst, .adoc, .tex) are read as potential phase output for the preview panel.
 func readWorkflowWrittenFiles(paths []string) string {
 	const maxFileSize = 100 * 1024 // 100KB per file
 	const maxTotalRunes = 50000   // cap total output to avoid oversized phase output
+	const maxTotalRunesWithImages = 200000 // higher cap when images are inlined
 
 	var parts []string
 	totalRunes := 0
+	hasInlinedImages := false
 	for _, p := range paths {
-		if totalRunes >= maxTotalRunes {
+		// Use the conservative cap for the loop break — if images are inlined
+		// later in this iteration, the final truncation uses the higher cap.
+		if totalRunes >= maxTotalRunesWithImages {
 			break
 		}
-		if looksLikeScriptFile(p) {
+		if !hasInlinedImages && totalRunes >= maxTotalRunes {
+			break
+		}
+		if !looksLikeDocumentFile(p) {
 			continue
 		}
 		info, err := os.Stat(p)
@@ -324,6 +321,15 @@ func readWorkflowWrittenFiles(paths []string) string {
 		if looksLikeBinary(data) {
 			continue
 		}
+		// Resolve image references in markdown files so the preview panel
+		// can render them as inline images (frontend has no filesystem access).
+		if strings.HasSuffix(strings.ToLower(p), ".md") || strings.HasSuffix(strings.ToLower(p), ".markdown") {
+			before := len(content)
+			content = inlineImageReferences(content, p)
+			if len(content) > before {
+				hasInlinedImages = true
+			}
+		}
 		parts = append(parts, content)
 		totalRunes += len([]rune(content))
 	}
@@ -331,10 +337,33 @@ func readWorkflowWrittenFiles(paths []string) string {
 		return ""
 	}
 	result := strings.Join(parts, "\n\n---\n\n")
-	// Truncate to maxTotalRunes if needed.
+	// Truncate to cap if needed. Use higher cap when images are inlined
+	// because base64 image data expands content significantly but renders
+	// as fixed-size UI elements (not scrollable prose).
+	// Truncate at a safe boundary — never cut inside a data: URL (which would
+	// produce a broken image). Find the last complete line before the cap.
+	cap := maxTotalRunes
+	if hasInlinedImages {
+		cap = maxTotalRunesWithImages
+	}
 	runes := []rune(result)
-	if len(runes) > maxTotalRunes {
-		result = string(runes[:maxTotalRunes])
+	if len(runes) > cap {
+		// Find the last newline before the cap to avoid cutting mid-image.
+		// We work in rune space to find the boundary, then convert back.
+		truncRunes := runes[:cap]
+		// Search backwards from the end for a newline rune.
+		lastNLRuneIdx := -1
+		for j := len(truncRunes) - 1; j >= cap/2; j-- {
+			if truncRunes[j] == '\n' {
+				lastNLRuneIdx = j
+				break
+			}
+		}
+		if lastNLRuneIdx > 0 {
+			result = string(truncRunes[:lastNLRuneIdx])
+		} else {
+			result = string(truncRunes)
+		}
 	}
 	return result
 }
@@ -358,19 +387,93 @@ func looksLikeBinary(data []byte) bool {
 	return float64(nonText)/float64(checkLen) > 0.10
 }
 
-// looksLikeScriptFile returns true if the file path has a script/executable extension.
-// These files are utility scripts produced by the LLM to assist the workflow
-// (e.g. md2docx.py), not document output that should be shown in the panel.
-func looksLikeScriptFile(path string) bool {
+// looksLikeDocumentFile returns true if path has a document extension that
+// should be read as potential phase output for the workflow preview panel.
+// This is a whitelist approach — only known document formats are read.
+// SVG, XML, HTML, JSON, CSV, and other structured-data or resource files are
+// excluded because they are not human-readable document prose.
+func looksLikeDocumentFile(path string) bool {
 	lower := strings.ToLower(path)
-	scriptExts := []string{
-		".py", ".ps1", ".sh", ".bat", ".cmd", ".js", ".ts",
-		".rb", ".pl", ".lua", ".vbs", ".wsf", ".r",
+	docExts := []string{
+		".md", ".markdown", ".txt", ".text",
+		".rst", ".adoc", ".asciidoc", ".tex", ".org",
 	}
-	for _, ext := range scriptExts {
+	for _, ext := range docExts {
 		if strings.HasSuffix(lower, ext) {
 			return true
 		}
 	}
 	return false
+}
+
+// imageRefRe matches Markdown image references to local image files (case-insensitive extensions).
+var imageRefRe = regexp.MustCompile(`(?i)(!\[[^\]]*\])\(([^)]+\.(?:svg|png|jpg|jpeg|gif|webp|bmp))\)`)
+
+// inlineImageReferences resolves Markdown image references (![alt](path.ext))
+// in document content by reading the referenced image files and converting them
+// to inline data URLs. This allows the frontend preview panel to render images
+// without requiring filesystem access from the browser context.
+// Only local path references are resolved; URLs (http/https/data:) are unchanged.
+// Individual images larger than 100KB are skipped to prevent output bloat.
+func inlineImageReferences(content string, basePath string) string {
+	if basePath == "" || !strings.Contains(content, "![") {
+		return content
+	}
+	const maxImageSize = 100 * 1024 // skip images larger than 100KB
+	const maxInlineCount = 20       // cap inlined images to avoid excessive I/O
+	baseDir := filepath.Dir(basePath)
+	inlinedCount := 0
+	return imageRefRe.ReplaceAllStringFunc(content, func(match string) string {
+		if inlinedCount >= maxInlineCount {
+			return match
+		}
+		parts := imageRefRe.FindStringSubmatch(match)
+		if len(parts) < 3 {
+			return match
+		}
+		altPart := parts[1] // ![alt text]
+		imgPath := parts[2]
+		// Skip URLs
+		if strings.HasPrefix(imgPath, "http://") || strings.HasPrefix(imgPath, "https://") || strings.HasPrefix(imgPath, "data:") {
+			return match
+		}
+		// Resolve relative to the .md file's directory
+		fullPath := imgPath
+		if !filepath.IsAbs(imgPath) {
+			fullPath = filepath.Join(baseDir, imgPath)
+		}
+		info, err := os.Stat(fullPath)
+		if err != nil || info.Size() > maxImageSize {
+			return match // skip if file missing or too large
+		}
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			return match
+		}
+		mimeType := imageMimeType(imgPath)
+		encoded := base64.StdEncoding.EncodeToString(data)
+		inlinedCount++
+		return altPart + "(data:" + mimeType + ";base64," + encoded + ")"
+	})
+}
+
+// imageMimeType returns the MIME type for a given image file extension.
+func imageMimeType(path string) string {
+	lower := strings.ToLower(path)
+	switch {
+	case strings.HasSuffix(lower, ".svg"):
+		return "image/svg+xml"
+	case strings.HasSuffix(lower, ".png"):
+		return "image/png"
+	case strings.HasSuffix(lower, ".jpg"), strings.HasSuffix(lower, ".jpeg"):
+		return "image/jpeg"
+	case strings.HasSuffix(lower, ".gif"):
+		return "image/gif"
+	case strings.HasSuffix(lower, ".webp"):
+		return "image/webp"
+	case strings.HasSuffix(lower, ".bmp"):
+		return "image/bmp"
+	default:
+		return "application/octet-stream"
+	}
 }

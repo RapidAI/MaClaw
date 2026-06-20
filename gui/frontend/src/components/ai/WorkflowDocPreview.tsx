@@ -1174,6 +1174,32 @@ function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
             continue;
         }
 
+        // Block-level image: standalone ![alt](src) on its own line
+        const imgMatch = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+        if (imgMatch) {
+            flushList();
+            const alt = imgMatch[1] || "";
+            const src = imgMatch[2] || "";
+            const isSvg = src.includes("image/svg+xml") || src.toLowerCase().endsWith(".svg");
+            nodes.push(
+                <div key={`img-${i}`} style={{ margin: "12px 0", textAlign: "center" }}>
+                    <img src={src} alt={alt} loading="lazy" style={{
+                        maxWidth: "100%",
+                        maxHeight: "600px",
+                        borderRadius: "6px",
+                        border: `1px solid ${theme.border}`,
+                        // SVGs may have transparent background with dark strokes —
+                        // ensure visibility in dark mode by adding a white backdrop.
+                        background: isSvg ? "#ffffff" : undefined,
+                        padding: isSvg ? "8px" : undefined,
+                    }} />
+                    {alt && <div style={{ fontSize: "12px", color: theme.textMuted, marginTop: "4px" }}>{alt}</div>}
+                </div>
+            );
+            i++;
+            continue;
+        }
+
         // Paragraph
         flushList();
         nodes.push(
@@ -1191,8 +1217,9 @@ function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
 /** Render inline markdown: bold, italic, code, links */
 function renderInline(text: string, theme: DocPreviewTheme): React.ReactNode {
     const parts: React.ReactNode[] = [];
-    // Regex: **bold**, *italic*, `code`, [text](url)
-    const re = /(\*\*(.+?)\*\*)|(\*(.+?)\*)|(`([^`]+?)`)|(\[([^\]]+)\]\(([^)]+)\))/g;
+    // Regex: ![alt](src) images, **bold**, *italic*, `code`, [text](url)
+    // Image pattern must come BEFORE link pattern because ![...] starts with [
+    const re = /(!\[([^\]]*)\]\(([^)]+)\))|(\*\*(.+?)\*\*)|(\*(.+?)\*)|(`([^`]+?)`)|(\[([^\]]+)\]\(([^)]+)\))/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let key = 0;
@@ -1200,11 +1227,26 @@ function renderInline(text: string, theme: DocPreviewTheme): React.ReactNode {
         if (match.index > lastIndex) {
             parts.push(text.slice(lastIndex, match.index));
         }
-        if (match[1]) { // bold
-            parts.push(<strong key={key++} style={{ fontWeight: 600 }}>{match[2]}</strong>);
-        } else if (match[3]) { // italic
-            parts.push(<em key={key++} style={{ fontStyle: "italic", color: theme.text, fontWeight: 500 }}>{match[4]}</em>);
-        } else if (match[5]) { // inline code
+        if (match[1]) { // image ![alt](src)
+            const alt = match[2] || "";
+            const src = match[3] || "";
+            const isSvg = src.includes("image/svg+xml") || src.toLowerCase().endsWith(".svg");
+            parts.push(<img key={key++} src={src} alt={alt} loading="lazy" style={{
+                maxWidth: "100%",
+                maxHeight: "320px",
+                borderRadius: "6px",
+                border: `1px solid ${theme.border}`,
+                display: "inline-block",
+                verticalAlign: "middle",
+                margin: "4px 0",
+                background: isSvg ? "#ffffff" : undefined,
+                padding: isSvg ? "4px" : undefined,
+            }} />);
+        } else if (match[4]) { // bold
+            parts.push(<strong key={key++} style={{ fontWeight: 600 }}>{match[5]}</strong>);
+        } else if (match[6]) { // italic
+            parts.push(<em key={key++} style={{ fontStyle: "italic", color: theme.text, fontWeight: 500 }}>{match[7]}</em>);
+        } else if (match[8]) { // inline code
             parts.push(<code key={key++} style={{
                 background: theme.codeBg,
                 color: theme.codeText,
@@ -1212,9 +1254,9 @@ function renderInline(text: string, theme: DocPreviewTheme): React.ReactNode {
                 borderRadius: "3px",
                 fontSize: "0.9em",
                 fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
-            }}>{match[6]}</code>);
-        } else if (match[7]) { // link
-            parts.push(<a key={key++} href={match[9]} style={{ color: theme.linkColor, textDecoration: "underline" }} target="_blank" rel="noopener noreferrer">{match[8]}</a>);
+            }}>{match[9]}</code>);
+        } else if (match[10]) { // link
+            parts.push(<a key={key++} href={match[12]} style={{ color: theme.linkColor, textDecoration: "underline" }} target="_blank" rel="noopener noreferrer">{match[11]}</a>);
         }
         lastIndex = match.index + match[0].length;
     }

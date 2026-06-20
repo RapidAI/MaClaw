@@ -608,8 +608,11 @@ func (m *StateMachine) classifyIntent(state *WorkflowState, text string) string 
 		phase := state.ActivePhase()
 		phaseContext := ""
 		if phase != nil {
+			// Strip base64 data URLs before truncation — they are binary noise
+			// that wastes classifier context tokens.
+			cleanOutput := stripBase64DataURLs(phase.Output)
 			phaseContext = fmt.Sprintf("工作流类型: %s, 当前阶段: %s, 阶段产出摘要: %s",
-				state.Type, phase.Name, truncateForContext(phase.Output, 200))
+				state.Type, phase.Name, truncateForContext(cleanOutput, 200))
 		}
 		result := m.confirmClassifier(phaseContext, text)
 		if result != "" {

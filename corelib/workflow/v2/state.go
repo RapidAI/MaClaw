@@ -5,6 +5,8 @@ package v2
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -95,6 +97,8 @@ func (s *WorkflowState) IsExecutionPhase() bool {
 
 // PreviousOutputs returns completed phase outputs keyed by phase ID.
 // Each output is truncated to maxRunes for prompt injection.
+// Base64 data URLs (inlined images) are stripped before truncation because
+// they are binary noise that wastes LLM context tokens.
 func (s *WorkflowState) PreviousOutputs(maxRunes int) map[string]string {
 	result := make(map[string]string)
 	for i := 0; i < s.CurrentPhase && i < len(s.Phases); i++ {
@@ -102,7 +106,7 @@ func (s *WorkflowState) PreviousOutputs(maxRunes int) map[string]string {
 		if p.Output == "" {
 			continue
 		}
-		output := p.Output
+		output := stripBase64DataURLs(p.Output)
 		if maxRunes > 0 {
 			runes := []rune(output)
 			if len(runes) > maxRunes {
@@ -112,6 +116,20 @@ func (s *WorkflowState) PreviousOutputs(maxRunes int) map[string]string {
 		result[p.ID] = output
 	}
 	return result
+}
+
+// base64DataURLRe matches Markdown image references with data: URLs.
+// Used to strip inlined binary data that is useless in LLM prompt context.
+var base64DataURLRe = regexp.MustCompile(`!\[[^\]]*\]\(data:[^)]+\)`)
+
+// stripBase64DataURLs removes Markdown image references containing base64 data URLs
+// from text, replacing them with a short placeholder. This prevents binary image data
+// from polluting LLM prompt context (PreviousOutputs, confirm classifier, etc.).
+func stripBase64DataURLs(s string) string {
+	if !strings.Contains(s, "data:") {
+		return s
+	}
+	return base64DataURLRe.ReplaceAllString(s, "[图片]")
 }
 
 // GenerateID creates a workflow ID from userID and timestamp.

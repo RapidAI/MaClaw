@@ -99,7 +99,7 @@ function safeBrowserOpenURL(url: string) {
 function formatCredits(value?: number): string {
     const num = Number(value || 0);
     if (!Number.isFinite(num)) return "0";
-    return num.toFixed(3).replace(/\.000$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+    return num.toFixed(2).replace(/\.00$/, "").replace(/(\.\d*[1-9])0$/, "$1");
 }
 
 function formatUnlimitedCredits(lang?: string): string {

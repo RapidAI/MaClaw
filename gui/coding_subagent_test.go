@@ -405,8 +405,9 @@ func TestCodingSubAgentMaxIterationsUsesRuntimeBudget(t *testing.T) {
 func TestCodingSubAgentMaxIterationsFallsBackToDefaultBudget(t *testing.T) {
 	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{}}
 
-	if got := cb.GetMaxIterations(); got <= 50 {
-		t.Fatalf("max iterations = %d, want expanded default budget", got)
+	got := cb.GetMaxIterations()
+	if got != codingSubAgentPerTaskMaxIterations {
+		t.Fatalf("max iterations = %d, want per-task cap %d", got, codingSubAgentPerTaskMaxIterations)
 	}
 }
 

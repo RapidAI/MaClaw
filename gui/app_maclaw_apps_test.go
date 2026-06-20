@@ -532,6 +532,92 @@ func TestPlanMaclawAppInstallSingleAppChecksDependencies(t *testing.T) {
 	}
 }
 
+func TestPlanMaclawAppInstallBlocksInstalledInactiveRequiredDependency(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	requiredDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "disabled-workflow")
+	optionalDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "optional-exporter")
+	for _, dir := range []string{requiredDir, optionalDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll skill dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "skill.md"), []byte("# Skill\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile skill.md: %v", err)
+		}
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{Name: "disabled-workflow", SkillDir: requiredDir, Status: "disabled"},
+		{Name: "optional-exporter", SkillDir: optionalDir, Status: "needs_setup"},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	pkg := `{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "inactive-deps-app",
+			"name": "Inactive Deps App",
+			"kind": "enterprise_approval_app",
+			"dependencies": {
+				"skills": [
+					{ "id": "disabled-workflow", "kind": "workflow_skill", "required": true, "source": "hub" },
+					{ "id": "optional-exporter", "kind": "runtime_skill", "required": false, "source": "hub" }
+				]
+			}
+		}
+	}`
+
+	plan, err := app.PlanMaclawAppInstall(pkg)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	if plan.HasMissingRequired || !plan.HasBlockingDependency {
+		t.Fatalf("inactive required dependency should block without counting as missing: %#v", plan)
+	}
+	required := maclawAppPlanDepForTest(plan, "disabled-workflow")
+	if required == nil || !required.Installed || required.Action != "blocked" || required.Health != "disabled" || required.InstalledStatus != "disabled" || !strings.Contains(required.Message, "not active") {
+		t.Fatalf("disabled required dependency should block: %#v", required)
+	}
+	optional := maclawAppPlanDepForTest(plan, "optional-exporter")
+	if optional == nil || !optional.Installed || optional.Action != "optional_unhealthy" || optional.Health != "needs_setup" || optional.Required {
+		t.Fatalf("inactive optional dependency should degrade without blocking: %#v", optional)
+	}
+
+	installedPlan, err := app.InstallMaclawAppDependencies(pkg)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	if installedPlan.HasMissingRequired || !installedPlan.HasBlockingDependency {
+		t.Fatalf("install should preserve inactive required dependency block: %#v", installedPlan)
+	}
+	if dep := maclawAppPlanDepForTest(installedPlan, "disabled-workflow"); dep == nil || dep.Action != "blocked" || dep.Health != "disabled" {
+		t.Fatalf("disabled required dependency should remain blocked after install attempt: %#v", dep)
+	}
+
+	if _, err := app.RecordMaclawAppInstall(pkg, "market"); err != nil {
+		t.Fatalf("RecordMaclawAppInstall() error = %v", err)
+	}
+	records, err := app.ListMaclawAppInstalls(10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppInstalls() error = %v", err)
+	}
+	if len(records) != 1 || records[0].HasMissingRequired || !records[0].HasBlockingDependency {
+		t.Fatalf("install record should persist blocking dependency health: %#v", records)
+	}
+	if dep := maclawAppPlanDepForTest(maclawAppInstallPlan{Dependencies: records[0].Dependencies}, "disabled-workflow"); dep == nil || dep.Health != "disabled" || dep.Action != "blocked" {
+		t.Fatalf("install record should persist dependency health snapshot: %#v", records[0].Dependencies)
+	}
+}
 func TestPlanMaclawAppInstallPackDedupesDependenciesAndNormalizesLegacyKind(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	plan, err := app.PlanMaclawAppInstall(`{
@@ -863,6 +949,10 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 		}
 		captured = append(captured, item)
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/datasets/finance.expenses/records/exp-1" {
+			_, _ = w.Write([]byte(`{"id":"exp-1","data":{"amount":1200,"status":"approval_pending"}}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"id":"approval-remote-1","ok":true}`))
 	}))
 	defer server.Close()
@@ -901,6 +991,7 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	base.WorkflowDecisionID = "decision-1"
 	base.BusinessStatus = "approved"
 	base.ResultStatus = "approved"
+	base.ResultPayload = map[string]any{"business_record": map[string]any{"id": "exp-1", "status": "approved", "payment_status": "pending_payment"}}
 	reviewed, err := app.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{DatasetID: "finance.expenses", RecordID: "exp-1", ApprovalID: "approval-remote-1", Instance: base})
 	if err != nil {
 		t.Fatalf("SyncMaclawAppApprovalInstanceToDataSrv review error = %v", err)
@@ -908,8 +999,11 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	if reviewed["synced"] != true || reviewed["action"] != "review_record_approval" {
 		t.Fatalf("unexpected review sync result: %#v", reviewed)
 	}
-	if len(captured) != 2 {
-		t.Fatalf("captured %d requests, want 2: %#v", len(captured), captured)
+	if sync, ok := reviewed["business_record_sync"].(map[string]any); !ok || sync["synced"] != true || sync["action"] != "update_business_record" {
+		t.Fatalf("review sync should update business record: %#v", reviewed)
+	}
+	if len(captured) != 4 {
+		t.Fatalf("captured %d requests, want 4: %#v", len(captured), captured)
 	}
 	if captured[0].Method != http.MethodPost || captured[0].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1/approvals" {
 		t.Fatalf("unexpected create request: %#v", captured[0])
@@ -934,6 +1028,16 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	}
 	if captured[1].Body["result_payload"] == nil || captured[1].Body["outputs"] == nil || captured[1].Body["artifacts"] == nil {
 		t.Fatalf("review body missing result package: %#v", captured[1].Body)
+	}
+	if captured[2].Method != http.MethodGet || captured[2].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1" {
+		t.Fatalf("unexpected business record get request: %#v", captured[2])
+	}
+	if captured[3].Method != http.MethodPatch || captured[3].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1" {
+		t.Fatalf("unexpected business record patch request: %#v", captured[3])
+	}
+	patchedData, ok := captured[3].Body["data"].(map[string]interface{})
+	if !ok || patchedData["amount"] != float64(1200) || patchedData["status"] != "approved" || patchedData["payment_status"] != "pending_payment" {
+		t.Fatalf("business record patch should merge existing data with approval result: %#v", captured[3].Body)
 	}
 }
 

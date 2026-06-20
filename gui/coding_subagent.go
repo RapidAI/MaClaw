@@ -371,7 +371,14 @@ func (c *codingSubAgentCallbacks) GetMaxIterations() int {
 			return config.EffectiveMaxIterations(c.subagent.loopCtx.MaxIterations())
 		}
 	}
-	return config.EffectiveMaxIterations(0)
+	// Per-task hard cap: SubAgent executes a single focused task, not an
+	// open-ended conversation. 80 iterations is generous for any single task
+	// (typical tasks complete in 10-30 iterations). Without this cap the
+	// fallback is MaxAgentIterationsCap=300, which allows the SubAgent to
+	// run for 20+ minutes if it gets stuck in a non-repeating failure loop
+	// (e.g. repeatedly editing a script with different content then running
+	// it — each iteration has unique args so drift detection won't trigger).
+	return codingSubAgentPerTaskMaxIterations
 }
 
 func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
@@ -3178,6 +3185,18 @@ const (
 	codingSubAgentAcceptanceCriteriaMax        = 20
 	codingSubAgentPrevOutputsMax               = 20
 	codingSubAgentPromptBulletMaxRunes         = 160
+
+	// codingSubAgentPerTaskMaxIterations is the hard iteration cap for a
+	// single SubAgent task. This prevents the SubAgent from blocking the
+	// main UI thread indefinitely when it gets stuck in a non-repeating
+	// failure loop (e.g. repeatedly trying different workarounds for a
+	// platform-specific issue where each attempt has unique args/results,
+	// so the built-in drift detector in RunLoop never triggers).
+	//
+	// 80 iterations is generous for focused single-task execution (typical
+	// tasks complete in 10-30 iterations). Beyond 80, the task is almost
+	// certainly stuck and should be reported as failed.
+	codingSubAgentPerTaskMaxIterations = 80
 )
 
 var codingSubAgentToolOrder = []string{

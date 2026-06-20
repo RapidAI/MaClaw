@@ -946,7 +946,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [activeTab.id, restoreWorkflowState, restoreCodePreviewState, resetWorkflowState, resetCodePreviewState]);
     const showAgentView = !!agentView && (agentViewOwnerTabRef.current === activeTab.id || (agentView.id?.startsWith("workflow:form:") ?? false));
     const codingPreviewAllowed = canShowAssistantCodingPreviewForTab(activeTab);
-    const showWorkflowPreview = codingPreviewAllowed && workflowState.splitMode;
+    // Suppress workflow doc preview when a workflow form is showing — the form
+    // is the current phase's data collection step; the doc panel has no content
+    // yet (document is produced only after form submission + agent loop).
+    const workflowFormActive = showAgentView && (agentView?.id?.startsWith("workflow:form:") ?? false);
+    const showWorkflowPreview = codingPreviewAllowed && workflowState.splitMode && !workflowFormActive;
     const showCodePreview = codingPreviewAllowed && !showAgentView && codePreviewState.active;
     const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;

@@ -229,8 +229,12 @@ describe('HubServiceRedeemPanel', () => {
         render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
 
         expect((await screen.findAllByText('newbie')).length).toBeGreaterThan(0);
-        expect(screen.getByText('Total credits').parentElement?.textContent).toContain('479.211');
-        expect(screen.getByText('Remaining credits').parentElement?.textContent).toContain('479.211');
+        const totalText = screen.getByText('Total credits').parentElement?.textContent || '';
+        const remainingText = screen.getByText('Remaining credits').parentElement?.textContent || '';
+        expect(totalText).toContain('479.21');
+        expect(remainingText).toContain('479.21');
+        expect(totalText).not.toContain('479.211');
+        expect(remainingText).not.toContain('479.211');
     });
 
     it('localizes known redeem errors in Chinese', async () => {
@@ -513,8 +517,12 @@ describe('HubServiceRedeemPanel', () => {
 
         expect((await screen.findAllByText('充值服务组')).length).toBeGreaterThan(0);
         expect(screen.getByText('总额度').parentElement?.textContent).toContain('55301');
-        expect(screen.getByText('已用额度').parentElement?.textContent).toContain('5672.116');
-        expect(screen.getByText('剩余额度').parentElement?.textContent).toContain('49148.916');
+        const usedText = screen.getByText('已用额度').parentElement?.textContent || '';
+        const remainingText = screen.getByText('剩余额度').parentElement?.textContent || '';
+        expect(usedText).toContain('5672.12');
+        expect(remainingText).toContain('49148.92');
+        expect(usedText).not.toContain('5672.116');
+        expect(remainingText).not.toContain('49148.916');
     });
 
     it('falls back to the longest grant expiry when status has no effective expiry', async () => {

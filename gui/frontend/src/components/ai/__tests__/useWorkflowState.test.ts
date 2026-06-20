@@ -742,4 +742,280 @@ describe('workflow state document collection', () => {
         unmount();
         vi.useRealTimers();
     });
+
+    it('rejects doc_update events from a different workflow instance (cross-tab isolation)', () => {
+        const { result } = renderHook(() => useWorkflowState("D:/project-A"));
+
+        // Establish workflow "wf-A" on this tab
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'wf-A',
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+                project_path: 'D:\\project-A',
+            });
+        });
+
+        expect(result.current.state.active).toBe(true);
+        expect(result.current.state.workflowID).toBe('wf-A');
+
+        // doc_update from a DIFFERENT workflow instance should be rejected
+        act(() => {
+            eventHandlers.get('workflow:doc_update')?.({
+                phase_id: 'requirements',
+                content: '# Cross-tab content from wf-B',
+                project_path: 'D:\\project-B',
+                workflow_id: 'wf-B',
+            });
+        });
+
+        expect(result.current.state.phaseDocuments.has('requirements')).toBe(false);
+
+        // doc_update from the SAME workflow instance should be accepted
+        act(() => {
+            eventHandlers.get('workflow:doc_update')?.({
+                phase_id: 'requirements',
+                content: '# Correct content from wf-A',
+                project_path: 'D:\\project-A',
+                workflow_id: 'wf-A',
+            });
+        });
+
+        expect(result.current.state.phaseDocuments.get('requirements')).toBe('# Correct content from wf-A');
+    });
+
+    it('rejects phase_update from a different project path when workflow IDs differ', () => {
+        const { result } = renderHook(() => useWorkflowState("D:/project-A"));
+
+        // Establish workflow on project-A
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'wf-A',
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+                project_path: 'D:\\project-A',
+            });
+        });
+
+        // phase_update from different workflow + different path → rejected
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'wf-B',
+                status: 'active',
+                type: 'patent_application',
+                current_phase: 'pa_disclosure_parsing',
+                project_path: 'D:\\project-B',
+            });
+        });
+
+        // Should still show wf-A's state, not wf-B's
+        expect(result.current.state.workflowType).toBe('coding');
+        expect(result.current.state.currentPhaseID).toBe('requirements');
+    });
+
+    it('clears panel state when receiving a targeted cancellation event', () => {
+        const { result } = renderHook(() => useWorkflowState("D:/project-A"));
+
+        // Start workflow and add a document
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'wf-A',
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+                project_path: 'D:\\project-A',
+            });
+            eventHandlers.get('workflow:doc_update')?.({
+                phase_id: 'requirements',
+                content: '# Requirements doc',
+                workflow_id: 'wf-A',
+            });
+        });
+
+        expect(result.current.state.phaseDocuments.size).toBe(1);
+        expect(result.current.state.splitMode).toBe(true);
+
+        // Targeted cancellation from the same workflow
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'wf-A',
+                status: 'cancelled',
+                type: 'coding',
+                project_path: 'D:\\project-A',
+            });
+        });
+
+        // Panel should be fully cleared
+        expect(result.current.state.active).toBe(false);
+        expect(result.current.state.splitMode).toBe(false);
+        expect(result.current.state.phaseDocuments.size).toBe(0);
+        expect(result.current.state.workflowID).toBe('');
+    });
+
+    it('normalizes backslash/forward-slash differences in path comparison', () => {
+        // Frontend stores paths with forward slashes, backend emits with backslashes
+        const { result } = renderHook(() => useWorkflowState("D:/workprj/game"));
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'wf-game',
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+                project_path: 'D:\\workprj\\game',  // backslashes from backend
+            });
+        });
+
+        // Should be accepted despite slash differences
+        expect(result.current.state.active).toBe(true);
+        expect(result.current.state.workflowID).toBe('wf-game');
+    });
+
+    it('local tab (sentinel path) accepts first workflow then rejects others by ID', () => {
+        // The LOCAL sentinel "__maclaw_local_coding_preview__" is not a real path
+        const { result } = renderHook(() => useWorkflowState("__maclaw_local_coding_preview__"));
+
+        // First workflow event is accepted (no currentWorkflowID yet)
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'wf-local',
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+                project_path: 'D:\\some\\path',
+            });
+        });
+
+        expect(result.current.state.workflowID).toBe('wf-local');
+
+        // doc_update from a different workflow should be rejected (by workflow_id)
+        act(() => {
+            eventHandlers.get('workflow:doc_update')?.({
+                phase_id: 'requirements',
+                content: '# Wrong tab content',
+                project_path: 'D:\\other\\path',
+                workflow_id: 'wf-other',
+            });
+        });
+
+        expect(result.current.state.phaseDocuments.has('requirements')).toBe(false);
+
+        // doc_update from the same workflow is accepted
+        act(() => {
+            eventHandlers.get('workflow:doc_update')?.({
+                phase_id: 'requirements',
+                content: '# Correct local content',
+                workflow_id: 'wf-local',
+            });
+        });
+
+        expect(result.current.state.phaseDocuments.get('requirements')).toBe('# Correct local content');
+    });
+
+    it('rejects gate_result from a different workflow instance', () => {
+        const { result } = renderHook(() => useWorkflowState("D:/project-A"));
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'wf-A',
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+                project_path: 'D:\\project-A',
+            });
+        });
+
+        // gate_result from different workflow → rejected
+        act(() => {
+            eventHandlers.get('workflow:gate_result')?.({
+                phase_id: 'requirements',
+                result: { phase_id: 'requirements', passed: true, items: [] },
+                project_path: 'D:\\project-B',
+                workflow_id: 'wf-B',
+            });
+        });
+
+        expect(result.current.state.gateResults.size).toBe(0);
+
+        // gate_result from same workflow → accepted
+        act(() => {
+            eventHandlers.get('workflow:gate_result')?.({
+                phase_id: 'requirements',
+                result: { phase_id: 'requirements', passed: true, items: [] },
+                project_path: 'D:\\project-A',
+                workflow_id: 'wf-A',
+            });
+        });
+
+        expect(result.current.state.gateResults.size).toBe(1);
+    });
+
+    it('does not clear panel when cancellation targets a different workflow', () => {
+        const { result } = renderHook(() => useWorkflowState("D:/project-A"));
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'wf-A',
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+                project_path: 'D:\\project-A',
+            });
+            eventHandlers.get('workflow:doc_update')?.({
+                phase_id: 'requirements',
+                content: '# My doc',
+                workflow_id: 'wf-A',
+            });
+        });
+
+        expect(result.current.state.splitMode).toBe(true);
+        expect(result.current.state.phaseDocuments.size).toBe(1);
+
+        // Cancellation for a DIFFERENT workflow (wf-B on another tab) arrives
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'wf-B',
+                status: 'cancelled',
+                type: 'patent_application',
+                project_path: 'D:\\project-B',
+            });
+        });
+
+        // Tab A's state should be completely unaffected
+        expect(result.current.state.active).toBe(true);
+        expect(result.current.state.splitMode).toBe(true);
+        expect(result.current.state.phaseDocuments.size).toBe(1);
+        expect(result.current.state.workflowID).toBe('wf-A');
+    });
+
+    it('isolates workflows on the same project path by workflow_id', () => {
+        const { result } = renderHook(() => useWorkflowState("D:/shared-project"));
+
+        // Workflow A starts on this path
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'wf-A',
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+                project_path: 'D:\\shared-project',
+            });
+        });
+
+        expect(result.current.state.workflowID).toBe('wf-A');
+
+        // doc_update from wf-B on SAME path but different ID → rejected
+        act(() => {
+            eventHandlers.get('workflow:doc_update')?.({
+                phase_id: 'requirements',
+                content: '# Wrong workflow same path',
+                project_path: 'D:\\shared-project',
+                workflow_id: 'wf-B',
+            });
+        });
+
+        expect(result.current.state.phaseDocuments.has('requirements')).toBe(false);
+    });
 });

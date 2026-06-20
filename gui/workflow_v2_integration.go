@@ -341,9 +341,14 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 
 	// Cancel any existing workflow and reset the frontend dashboard before starting a new one.
 	// Without this, the old workflow's phase progress (completed checkmarks) bleeds into the new panel.
-	if wf.machine.GetActive(msg.UserID) != nil {
+	if prevState := wf.machine.GetActive(msg.UserID); prevState != nil {
 		wf.machine.Cancel(msg.UserID)
-		emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
+		emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
+			"id":           prevState.ID,
+			"status":       string(v2.StatusCancelled),
+			"type":         prevState.Type,
+			"project_path": prevState.ProjectPath,
+		})
 		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", nil)
 		log.Printf("[workflow-v2] cancelled previous workflow before starting new one: user=%s", msg.UserID)
 	}
@@ -454,8 +459,17 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "✅ 所有阶段已完成！工作流结束。"}}
 
 	case v2.ActionCancelled:
-		// Clear frontend workflow dashboard state.
-		emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
+		// Clear frontend workflow dashboard state with targeted reset.
+		if hr.State != nil {
+			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
+				"id":           hr.State.ID,
+				"status":       string(v2.StatusCancelled),
+				"type":         hr.State.Type,
+				"project_path": hr.State.ProjectPath,
+			})
+		} else {
+			emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
+		}
 		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", nil)
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "❌ 工作流已取消"}}
 
@@ -468,8 +482,17 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 			originalRequest = hr.State.Summary
 		}
 		log.Printf("[workflow-v2] ActionCancelAndExecute: user=%s original_len=%d", msg.UserID, len([]rune(originalRequest)))
-		// Clear frontend workflow dashboard state.
-		emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
+		// Clear frontend workflow dashboard state with targeted reset.
+		if hr.State != nil {
+			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
+				"id":           hr.State.ID,
+				"status":       string(v2.StatusCancelled),
+				"type":         hr.State.Type,
+				"project_path": hr.State.ProjectPath,
+			})
+		} else {
+			emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
+		}
 		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", nil)
 		if originalRequest != "" {
 			// Stash the original request so the agent loop processes it
@@ -611,11 +634,19 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 		}
 	}
 
-	// Build phase_outputs map
+	// Build phase_outputs map — truncate long outputs to limit event payload size.
+	// Full content is delivered via separate workflow:doc_update events; phase_outputs
+	// in phase_update serves only as a fallback for missed doc_updates.
+	const maxPhaseOutputInProgress = 8000 // ~8KB per phase in the progress event
 	phaseOutputs := make(map[string]interface{})
 	for _, p := range state.Phases {
 		if p.Output != "" {
-			phaseOutputs[p.ID] = p.Output
+			out := p.Output
+			if len([]rune(out)) > maxPhaseOutputInProgress {
+				runes := []rune(out)
+				out = string(runes[:maxPhaseOutputInProgress]) + "\n\n[... 内容截断，完整内容请查看文档面板 ...]"
+			}
+			phaseOutputs[p.ID] = out
 		}
 	}
 
@@ -637,7 +668,6 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 		"phases":        phases,
 		"phase_outputs": phaseOutputs,
 		"project_path":  state.ProjectPath,
-		"awaiting_form": awaitingForm,
 	})
 
 	// Also emit suggest_maximize for desktop panel to auto-expand.
@@ -880,17 +910,30 @@ func (h *IMMessageHandler) recordWorkflowV2Output(userID, output string) {
 		log.Printf("[workflow-v2] RecordOutput failed: user=%s err=%v", userID, err)
 		return
 	}
-	state := wf.machine.GetActive(userID)
+	// Load state after RecordOutput. Use store.Load directly instead of GetActive
+	// because RecordOutput may have completed the workflow (Status=Completed),
+	// and GetActive filters out non-active workflows. We still need to emit
+	// progress and doc_update events for the completed state.
+	state, _ := wf.store.Load(userID)
 	if state == nil {
 		return
 	}
-	// Emit phase_update so the progress board reflects the new state (waiting_confirm)
+	// Emit phase_update so the progress board reflects the new state.
 	h.emitWorkflowV2Progress(userID, state)
-	// Emit doc_update for the preview panel
-	if state.IsWaitingConfirm() {
-		phase := state.ActivePhase()
-		if phase != nil {
-			h.emitDocUpdateV2(userID, phase.ID, phase.Output)
+	// Emit doc_update with full content for the preview panel.
+	// The phase that just produced output depends on NeedsConfirm:
+	//   - NeedsConfirm=true: RecordOutput sets WaitingConfirm, ActivePhase() still has output
+	//   - NeedsConfirm=false: RecordOutput auto-advances CurrentPhase, completed phase is at CurrentPhase-1
+	// Always emit so users can navigate to view any completed phase's full content
+	// (without this, NeedsConfirm=false phases only have truncated 8K from phase_update).
+	if phase := state.ActivePhase(); phase != nil && phase.Output != "" {
+		// NeedsConfirm=true path: current phase has output and is WaitingConfirm
+		h.emitDocUpdateV2(userID, phase.ID, phase.Output)
+	} else if state.CurrentPhase > 0 && state.CurrentPhase <= len(state.Phases) {
+		// NeedsConfirm=false path (or workflow completed): look at the just-completed phase
+		prevPhase := &state.Phases[state.CurrentPhase-1]
+		if prevPhase.Output != "" {
+			h.emitDocUpdateV2(userID, prevPhase.ID, prevPhase.Output)
 		}
 	}
 }
@@ -902,15 +945,21 @@ func (h *IMMessageHandler) emitDocUpdateV2(userID, phaseID, content string) {
 	}
 	wf := h.getWorkflowV2()
 	projectPath := ""
+	workflowID := ""
 	if wf != nil {
-		if state := wf.machine.GetActive(userID); state != nil {
+		// Use store.Load instead of GetActive — GetActive filters out completed
+		// workflows, but we still need project_path and workflow_id for event
+		// routing when emitting doc_update for the final phase of a completed workflow.
+		if state, _ := wf.store.Load(userID); state != nil {
 			projectPath = state.ProjectPath
+			workflowID = state.ID
 		}
 	}
 	emitWorkflowV2Event(h.app, "workflow:doc_update", map[string]interface{}{
 		"phase_id":     phaseID,
 		"content":      content,
 		"project_path": projectPath,
+		"workflow_id":  workflowID,
 	})
 }
 
@@ -920,9 +969,21 @@ func (h *IMMessageHandler) cancelWorkflowV2(userID string) {
 	if wf == nil {
 		return
 	}
+	// Read state before Cancel() so we can emit a targeted reset event.
+	state := wf.machine.GetActive(userID)
 	wf.machine.Cancel(userID)
-	// Emit null phase_update to reset frontend preview panel
-	emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
+	// Emit targeted reset: include workflow_id and project_path so only
+	// the matching tab clears its preview panel.
+	if state != nil {
+		emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
+			"id":           state.ID,
+			"status":       string(v2.StatusCancelled),
+			"type":         state.Type,
+			"project_path": state.ProjectPath,
+		})
+	} else {
+		emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
+	}
 	emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", nil)
 }
 
@@ -1062,7 +1123,10 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *
 			h.emitWorkflowV2Progress(userID, updatedState)
 		} else {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-				"status": "completed",
+				"id":           state.ID,
+				"status":       "completed",
+				"type":         state.Type,
+				"project_path": state.ProjectPath,
 			})
 		}
 	}
@@ -1213,7 +1277,10 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID str
 			h.emitWorkflowV2Progress(userID, updatedState)
 		} else {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-				"status": "completed",
+				"id":           state.ID,
+				"status":       "completed",
+				"type":         state.Type,
+				"project_path": state.ProjectPath,
 			})
 		}
 	}
@@ -1601,9 +1668,16 @@ func (h *IMMessageHandler) setupDirectCodingExecution(userID, originalText, rawP
 		projectPath = "."
 	}
 	// Cancel any existing workflow
-	if wf := h.getWorkflowV2(); wf != nil && wf.machine.GetActive(userID) != nil {
-		wf.machine.Cancel(userID)
-		emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
+	if wf := h.getWorkflowV2(); wf != nil {
+		if prevState := wf.machine.GetActive(userID); prevState != nil {
+			wf.machine.Cancel(userID)
+			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
+				"id":           prevState.ID,
+				"status":       string(v2.StatusCancelled),
+				"type":         prevState.Type,
+				"project_path": prevState.ProjectPath,
+			})
+		}
 	}
 	h.pendingV2SubAgentExecution.Store(userID, true)
 	h.pendingDirectCodingProjectPath.Store(userID, projectPath)

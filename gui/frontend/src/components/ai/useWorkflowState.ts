@@ -97,6 +97,57 @@ function resolveWorkflowInstanceKey(state: any): string {
 }
 
 /**
+ * Determines whether a workflow event should be accepted by this hook instance.
+ * Uses workflow_id as the primary isolation key (precise, per-instance).
+ * Falls back to project_path comparison when workflow_id is unavailable.
+ *
+ * @param eventWorkflowID - The workflow_id carried by the event (may be empty for legacy events)
+ * @param eventProjectPath - The project_path carried by the event
+ * @param currentWorkflowID - The currently tracked workflow instance ID (workflowIDRef.current)
+ * @param currentTabPath - The active tab's project path (activeTabProjectPathRef.current)
+ * @param strict - When true, reject events from different workflow IDs (for doc_update/gate_result).
+ *   When false, accept events from new workflows (for phase_update which may signal a new workflow start).
+ * @returns true if the event should be accepted, false if it belongs to another tab/workflow
+ */
+function shouldAcceptWorkflowEvent(
+    eventWorkflowID: string,
+    eventProjectPath: string,
+    currentWorkflowID: string,
+    currentTabPath: string,
+    strict: boolean = true,
+): boolean {
+    // Primary isolation: workflow_id match.
+    // If both sides have a workflow_id, use it for precise per-instance routing.
+    if (eventWorkflowID && currentWorkflowID) {
+        if (eventWorkflowID === currentWorkflowID) return true;
+        // Different workflow IDs:
+        // - strict mode (doc_update/gate_result): reject — content belongs to another instance
+        // - non-strict mode (phase_update): accept — may be a new workflow starting on this tab
+        if (strict) return false;
+        // In non-strict mode, fall through to project_path check to verify
+        // the new workflow belongs to this tab's project scope.
+    }
+
+    // Fallback: project_path comparison (legacy behavior for events without workflow_id,
+    // or non-strict mode validating a new workflow's project scope).
+    // Only filter when the tab's path is a real filesystem path (contains / or \).
+    // The LOCAL sentinel ("__maclaw_local_coding_preview__") accepts all events
+    // when there's no workflow_id to compare — this is the backward-compat case.
+    const isRealPath = currentTabPath.length > 0 && (currentTabPath.includes("/") || currentTabPath.includes("\\"));
+    if (eventProjectPath && isRealPath) {
+        // Normalize slashes for comparison: backend uses OS-native separators
+        // (backslash on Windows) while frontend normalizes to forward slashes.
+        const normEvent = eventProjectPath.replace(/\\/g, "/").toLowerCase();
+        const normCurrent = currentTabPath.replace(/\\/g, "/").toLowerCase();
+        if (normEvent !== normCurrent) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
  * useWorkflowState manages the workflow UI state for the split-pane
  * document preview in AIAssistantPanel.
  *
@@ -172,21 +223,18 @@ export function useWorkflowState(activeTabProjectPath?: string) {
                 return;
             }
 
-            // Project_path event routing: if the event carries a project_path
-            // that differs from the currently active tab's project path, skip
-            // the update — it belongs to another tab and will be handled via
-            // the tab switch save/restore mechanism.
-            // Exception: when the tab's path is not a real filesystem path (e.g.
-            // the LOCAL sentinel "__maclaw_local_coding_preview__"), accept all
-            // workflow events — this is the common case for the desktop local tab
-            // where the user starts workflows without a pre-existing project.
+            // Workflow instance isolation: use workflow_id as primary routing key
+            // for precise per-instance filtering. Falls back to project_path when
+            // workflow_id is unavailable (legacy V1 events without id field).
+            // Non-strict mode: accept events from new workflow instances (they may
+            // signal a new workflow starting on this tab — the code below detects
+            // the ID change and resets state accordingly).
             const eventProjectPath = typeof state.project_path === "string" ? state.project_path.trim() : "";
-            const currentTabPath = activeTabProjectPathRef.current;
-            const isRealPath = currentTabPath.length > 0 && (currentTabPath.includes("/") || currentTabPath.includes("\\"));
-            if (eventProjectPath && isRealPath && eventProjectPath !== currentTabPath) {
+            const eventWorkflowID = resolveWorkflowInstanceKey(state);
+            if (!shouldAcceptWorkflowEvent(eventWorkflowID, eventProjectPath, workflowIDRef.current, activeTabProjectPathRef.current, false)) {
                 return;
             }
-            const workflowID = resolveWorkflowInstanceKey(state);
+            const workflowID = eventWorkflowID;
             const incomingWorkflowType = typeof state.type === "string" ? state.type : "";
             const wasActive = workflowActiveRef.current;
             let appliedPendingWorkingDir = false;
@@ -239,11 +287,7 @@ export function useWorkflowState(activeTabProjectPath?: string) {
             });
 
             // Auto-open split mode for phases that are expected to produce preview documents.
-            // But NOT when the phase is awaiting form input — the AgentView form
-            // needs to be visible and opening workflow doc preview (which has no
-            // content yet) would obscure it.
-            const awaitingForm = !!(state.awaiting_form);
-            if (isActive && !userClosedRef.current && !awaitingForm) {
+            if (isActive && !userClosedRef.current) {
                 setWorkflowSplitMode(prev => {
                     if (!currentPhase) return false;
                     if (workflowPhaseExpectsDocument(currentPhase, incomingPhases, incomingWorkflowType)) return true;
@@ -253,16 +297,25 @@ export function useWorkflowState(activeTabProjectPath?: string) {
                 });
             }
             if (!isActive) {
-                // Do NOT setWorkflowSplitMode(false) here — keep documents
-                // visible after workflow completion so the user can review
-                // final outputs. splitMode is only cleared on explicit user
-                // action (close button), new workflow start (new workflow ID
-                // detected), or full workflow reset (null state above).
+                const isCancelled = typeof state.status === "string" && state.status === "cancelled";
+                if (isCancelled) {
+                    // Workflow was explicitly cancelled — close panel and clear state
+                    // so stale documents from this workflow don't remain visible.
+                    setWorkflowSplitMode(false);
+                    setPhaseDocuments(new Map());
+                    setGateResults(new Map());
+                    setPhases([]);
+                    setCurrentPhaseID("");
+                    setLatestDocumentPhaseID("");
+                    workflowIDRef.current = "";
+                    workflowTypeRef.current = "";
+                    docUpdatePhaseIDsRef.current = new Set();
+                } else {
+                    // Workflow completed naturally — keep documents visible for review.
+                    // splitMode is only cleared on explicit user action (close button),
+                    // new workflow start (new workflow ID detected), or full reset (null state).
+                }
                 userClosedRef.current = false;
-                // Don't clear phaseDocuments here — preserve documents so
-                // the user can still view them (e.g. task decomposition)
-                // after the workflow phase ends. Documents are only cleared
-                // on full workflow reset (null state above).
             }
         });
         return () => {
@@ -276,16 +329,10 @@ export function useWorkflowState(activeTabProjectPath?: string) {
         const unsub = EventsOn("workflow:doc_update", (data: any) => {
             if (!data?.phase_id) return;
 
-            // Project_path event routing: if the event carries a project_path
-            // that differs from the currently active tab's project path, skip
-            // the update — it belongs to another tab and will be handled via
-            // the tab switch save/restore mechanism.
-            // Exception: when the tab's path is not a real filesystem path (e.g.
-            // the LOCAL sentinel), accept all workflow events — same as phase_update.
+            // Workflow instance isolation: use workflow_id as primary routing key.
             const eventProjectPath = typeof data.project_path === "string" ? data.project_path.trim() : "";
-            const currentTabPath = activeTabProjectPathRef.current;
-            const isRealPath = currentTabPath.length > 0 && (currentTabPath.includes("/") || currentTabPath.includes("\\"));
-            if (eventProjectPath && isRealPath && eventProjectPath !== currentTabPath) {
+            const eventWorkflowID = typeof data.workflow_id === "string" ? data.workflow_id.trim() : "";
+            if (!shouldAcceptWorkflowEvent(eventWorkflowID, eventProjectPath, workflowIDRef.current, activeTabProjectPathRef.current)) {
                 return;
             }
 
@@ -320,10 +367,10 @@ export function useWorkflowState(activeTabProjectPath?: string) {
             if (!workflowActiveRef.current) return;
             if (!data?.phase_id || !data?.result) return;
 
+            // Workflow instance isolation: use workflow_id as primary routing key.
             const eventProjectPath = typeof data.project_path === "string" ? data.project_path.trim() : "";
-            const currentTabPath = activeTabProjectPathRef.current;
-            const isRealPath = currentTabPath.length > 0 && (currentTabPath.includes("/") || currentTabPath.includes("\\"));
-            if (eventProjectPath && isRealPath && eventProjectPath !== currentTabPath) {
+            const eventWorkflowID = typeof data.workflow_id === "string" ? data.workflow_id.trim() : "";
+            if (!shouldAcceptWorkflowEvent(eventWorkflowID, eventProjectPath, workflowIDRef.current, activeTabProjectPathRef.current)) {
                 return;
             }
 

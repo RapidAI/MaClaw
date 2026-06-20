@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,10 +91,11 @@ type maclawAppSubmissionStatusUpdate struct {
 }
 
 type maclawAppInstallPlan struct {
-	Schema             string                           `json:"schema"`
-	Apps               []maclawAppInstallPlanApp        `json:"apps"`
-	Dependencies       []maclawAppInstallPlanDependency `json:"dependencies"`
-	HasMissingRequired bool                             `json:"has_missing_required"`
+	Schema                string                           `json:"schema"`
+	Apps                  []maclawAppInstallPlanApp        `json:"apps"`
+	Dependencies          []maclawAppInstallPlanDependency `json:"dependencies"`
+	HasMissingRequired    bool                             `json:"has_missing_required"`
+	HasBlockingDependency bool                             `json:"has_blocking_dependency,omitempty"`
 }
 
 type maclawAppInstallPlanApp struct {
@@ -104,17 +106,19 @@ type maclawAppInstallPlanApp struct {
 }
 
 type maclawAppInstallPlanDependency struct {
-	ID            string   `json:"id"`
-	Version       string   `json:"version,omitempty"`
-	Kind          string   `json:"kind,omitempty"`
-	Required      bool     `json:"required"`
-	Source        string   `json:"source,omitempty"`
-	AppIDs        []string `json:"app_ids,omitempty"`
-	Installed     bool     `json:"installed"`
-	InstalledName string   `json:"installed_name,omitempty"`
-	InstalledDir  string   `json:"installed_dir,omitempty"`
-	Action        string   `json:"action"`
-	Message       string   `json:"message,omitempty"`
+	ID              string   `json:"id"`
+	Version         string   `json:"version,omitempty"`
+	Kind            string   `json:"kind,omitempty"`
+	Required        bool     `json:"required"`
+	Source          string   `json:"source,omitempty"`
+	AppIDs          []string `json:"app_ids,omitempty"`
+	Installed       bool     `json:"installed"`
+	InstalledName   string   `json:"installed_name,omitempty"`
+	InstalledDir    string   `json:"installed_dir,omitempty"`
+	InstalledStatus string   `json:"installed_status,omitempty"`
+	Health          string   `json:"health,omitempty"`
+	Action          string   `json:"action"`
+	Message         string   `json:"message,omitempty"`
 }
 
 type parsedMaclawAppEntry struct {
@@ -127,16 +131,17 @@ type parsedMaclawAppEntry struct {
 }
 
 type maclawAppInstallRecord struct {
-	AppID              string                           `json:"app_id"`
-	AppName            string                           `json:"app_name,omitempty"`
-	Kind               string                           `json:"kind,omitempty"`
-	Source             string                           `json:"source,omitempty"`
-	InstalledAt        string                           `json:"installed_at"`
-	PackageSHA         string                           `json:"package_sha256,omitempty"`
-	PackageSize        int                              `json:"package_bytes,omitempty"`
-	Dependencies       []maclawAppInstallPlanDependency `json:"dependencies,omitempty"`
-	HasMissingRequired bool                             `json:"has_missing_required"`
-	Message            string                           `json:"message,omitempty"`
+	AppID                 string                           `json:"app_id"`
+	AppName               string                           `json:"app_name,omitempty"`
+	Kind                  string                           `json:"kind,omitempty"`
+	Source                string                           `json:"source,omitempty"`
+	InstalledAt           string                           `json:"installed_at"`
+	PackageSHA            string                           `json:"package_sha256,omitempty"`
+	PackageSize           int                              `json:"package_bytes,omitempty"`
+	Dependencies          []maclawAppInstallPlanDependency `json:"dependencies,omitempty"`
+	HasMissingRequired    bool                             `json:"has_missing_required"`
+	HasBlockingDependency bool                             `json:"has_blocking_dependency,omitempty"`
+	Message               string                           `json:"message,omitempty"`
 }
 
 type maclawAppInstallRegistry struct {
@@ -286,16 +291,13 @@ func (a *App) PlanMaclawAppInstall(packageJSON string) (maclawAppInstallPlan, er
 			if existing == nil {
 				dep.AppIDs = []string{entry.ID}
 				if match, ok := installed[key]; ok {
-					dep.Installed = true
-					dep.InstalledName = match.Name
-					dep.InstalledDir = match.SkillDir
-					dep.Action = "skip"
-					dep.Message = "installed locally"
+					applyMaclawAppInstalledSkillDependency(&dep, match)
 				} else if dep.Required {
+					dep.Health = "missing"
 					dep.Action = "blocked"
 					dep.Message = "required skill dependency is missing"
-					plan.HasMissingRequired = true
 				} else {
+					dep.Health = "missing"
 					dep.Action = "optional_missing"
 					dep.Message = "optional skill dependency is missing"
 				}
@@ -309,9 +311,12 @@ func (a *App) PlanMaclawAppInstall(packageJSON string) (maclawAppInstallPlan, er
 			if dep.Required && !existing.Required {
 				existing.Required = true
 				if !existing.Installed {
+					existing.Health = "missing"
 					existing.Action = "blocked"
 					existing.Message = "required skill dependency is missing"
-					plan.HasMissingRequired = true
+				} else if !maclawAppDependencyIsReady(*existing) {
+					existing.Action = "blocked"
+					existing.Message = maclawAppDependencyInactiveMessage(*existing, true)
 				}
 			}
 		}
@@ -321,6 +326,7 @@ func (a *App) PlanMaclawAppInstall(packageJSON string) (maclawAppInstallPlan, er
 			plan.Dependencies[i] = *dep
 		}
 	}
+	plan.refreshMaclawAppDependencyFlags()
 	return plan, nil
 }
 
@@ -334,13 +340,16 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 	for i := range plan.Dependencies {
 		dep := &plan.Dependencies[i]
 		if dep.Installed {
-			dep.Action = "skip"
-			if dep.Message == "" {
-				dep.Message = "installed locally"
+			if maclawAppDependencyIsReady(*dep) {
+				dep.Action = "skip"
+				if dep.Message == "" {
+					dep.Message = "installed locally"
+				}
 			}
 			continue
 		}
 		if !dep.Required {
+			dep.Health = "missing"
 			dep.Action = "optional_missing"
 			if dep.Message == "" {
 				dep.Message = "optional skill dependency is missing"
@@ -349,15 +358,15 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 		}
 		source, ok := maclawAppInstallSkillSource(dep.Source)
 		if !ok {
+			dep.Health = "missing"
 			dep.Action = "blocked"
 			dep.Message = fmt.Sprintf("required skill dependency source %q cannot be installed automatically", dep.Source)
-			plan.HasMissingRequired = true
 			continue
 		}
 		if err := a.InstallMixedSkill(source, dep.ID, ""); err != nil {
+			dep.Health = "missing"
 			dep.Action = "failed"
 			dep.Message = err.Error()
-			plan.HasMissingRequired = true
 			continue
 		}
 		dep.Installed = true
@@ -365,22 +374,39 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 		dep.Message = "installed dependency skill"
 	}
 	installed := a.installedMaclawAppSkillIndex()
-	plan.HasMissingRequired = false
 	for i := range plan.Dependencies {
 		dep := &plan.Dependencies[i]
+		previousAction := dep.Action
+		previousMessage := dep.Message
 		if match, ok := installed[strings.ToLower(dep.ID)]; ok {
-			dep.Installed = true
-			dep.InstalledName = match.Name
-			dep.InstalledDir = match.SkillDir
-			if dep.Action == "failed" || dep.Action == "blocked" {
-				dep.Action = "skip"
-				dep.Message = "installed locally"
+			applyMaclawAppInstalledSkillDependency(dep, match)
+			if maclawAppDependencyIsReady(*dep) && previousAction == "installed" {
+				dep.Action = "installed"
+				dep.Message = "installed dependency skill"
 			}
+			continue
 		}
-		if dep.Required && !dep.Installed {
-			plan.HasMissingRequired = true
+		dep.Installed = false
+		dep.InstalledName = ""
+		dep.InstalledDir = ""
+		dep.InstalledStatus = ""
+		dep.Health = "missing"
+		if dep.Required {
+			if previousAction == "installed" {
+				dep.Action = "failed"
+				dep.Message = "installed dependency skill was not found after install"
+			} else if dep.Action == "" || dep.Action == "skip" {
+				dep.Action = "blocked"
+				dep.Message = "required skill dependency is missing"
+			} else if previousMessage != "" {
+				dep.Message = previousMessage
+			}
+		} else if dep.Action == "" || dep.Action == "skip" {
+			dep.Action = "optional_missing"
+			dep.Message = "optional skill dependency is missing"
 		}
 	}
+	plan.refreshMaclawAppDependencyFlags()
 	return plan, nil
 }
 
@@ -416,16 +442,17 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 	}
 	for _, entry := range entries {
 		record := maclawAppInstallRecord{
-			AppID:              entry.ID,
-			AppName:            entry.Name,
-			Kind:               normalizeMaclawAppKind(entry.Kind),
-			Source:             strings.TrimSpace(source),
-			InstalledAt:        now,
-			PackageSHA:         packageSHA,
-			PackageSize:        packageSize,
-			Dependencies:       cloneMaclawAppPlanDependenciesForApp(plan.Dependencies, entry.ID),
-			HasMissingRequired: hasMissingMaclawAppRequiredDependencyForApp(plan.Dependencies, entry.ID),
-			Message:            "installed locally",
+			AppID:                 entry.ID,
+			AppName:               entry.Name,
+			Kind:                  normalizeMaclawAppKind(entry.Kind),
+			Source:                strings.TrimSpace(source),
+			InstalledAt:           now,
+			PackageSHA:            packageSHA,
+			PackageSize:           packageSize,
+			Dependencies:          cloneMaclawAppPlanDependenciesForApp(plan.Dependencies, entry.ID),
+			HasMissingRequired:    hasMissingMaclawAppRequiredDependencyForApp(plan.Dependencies, entry.ID),
+			HasBlockingDependency: hasBlockingMaclawAppRequiredDependencyForApp(plan.Dependencies, entry.ID),
+			Message:               "installed locally",
 		}
 		registry.upsert(record)
 	}
@@ -547,7 +574,8 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 			"outputs":              cloneMaclawAppApprovalOutputs(instance.Outputs),
 			"artifacts":            append([]maclawAppApprovalArtifact(nil), instance.Artifacts...),
 		})
-		return map[string]any{"synced": true, "action": "review_record_approval", "response": out}, nil
+		businessRecordSync := a.syncMaclawAppApprovalBusinessRecord(input.DatasetID, input.RecordID, instance)
+		return map[string]any{"synced": true, "action": "review_record_approval", "response": out, "business_record_sync": businessRecordSync}, nil
 	}
 	out := a.executeMISDataTool(map[string]interface{}{
 		"action":               "create_record_approval",
@@ -567,7 +595,86 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 		"outputs":              cloneMaclawAppApprovalOutputs(instance.Outputs),
 		"artifacts":            append([]maclawAppApprovalArtifact(nil), instance.Artifacts...),
 	})
-	return map[string]any{"synced": true, "action": "create_record_approval", "response": out}, nil
+	businessRecordSync := a.syncMaclawAppApprovalBusinessRecord(input.DatasetID, input.RecordID, instance)
+	return map[string]any{"synced": true, "action": "create_record_approval", "response": out, "business_record_sync": businessRecordSync}, nil
+}
+
+func (a *App) syncMaclawAppApprovalBusinessRecord(datasetID, recordID string, instance maclawAppApprovalInstance) map[string]any {
+	patch := maclawAppApprovalBusinessRecordPatch(instance)
+	if len(patch) == 0 {
+		return map[string]any{"synced": false, "reason": "missing business record patch"}
+	}
+	cfg, err := a.GetMISDataConfig()
+	if err != nil {
+		return map[string]any{"synced": false, "reason": err.Error()}
+	}
+	if !cfg.Enabled || strings.TrimSpace(cfg.Token) == "" {
+		return map[string]any{"synced": false, "reason": "mis data service unavailable"}
+	}
+	path := "/api/v1/data/datasets/" + pathEscape(datasetID) + "/records/" + pathEscape(recordID)
+	data, err := a.callMISDataAPIBytes(cfg, http.MethodGet, path, nil)
+	if err != nil {
+		return map[string]any{"synced": false, "reason": err.Error(), "patch": cloneMapAny(patch)}
+	}
+	var record map[string]any
+	if err := json.Unmarshal(data, &record); err != nil {
+		return map[string]any{"synced": false, "reason": err.Error(), "patch": cloneMapAny(patch)}
+	}
+	merged := cloneMapAny(anyMap(record["data"]))
+	if merged == nil {
+		merged = map[string]any{}
+	}
+	for key, value := range patch {
+		merged[key] = value
+	}
+	response, err := a.callMISDataAPIBytes(cfg, http.MethodPatch, path, compactPayload(map[string]interface{}{"data": merged}))
+	if err != nil {
+		return map[string]any{"synced": false, "reason": err.Error(), "patch": cloneMapAny(patch)}
+	}
+	result := map[string]any{}
+	_ = json.Unmarshal(response, &result)
+	return map[string]any{"synced": true, "action": "update_business_record", "record_id": recordID, "patch": cloneMapAny(patch), "response": result}
+}
+
+func maclawAppApprovalBusinessRecordPatch(instance maclawAppApprovalInstance) map[string]any {
+	for _, key := range []string{"business_record_patch", "record_patch", "business_record"} {
+		if patch := maclawAppApprovalPatchMap(instance.ResultPayload[key]); len(patch) > 0 {
+			return patch
+		}
+	}
+	for _, output := range instance.Outputs {
+		outputKind := strings.ToLower(strings.TrimSpace(firstNonEmptyMaclawAppString(output.Kind, output.Type)))
+		if outputKind != "business_record" && outputKind != "record_patch" {
+			continue
+		}
+		if patch := maclawAppApprovalPatchMap(output.Data); len(patch) > 0 {
+			return patch
+		}
+	}
+	return nil
+}
+
+func maclawAppApprovalPatchMap(value any) map[string]any {
+	data := anyMap(value)
+	for _, key := range []string{"data", "fields", "set"} {
+		if nested := anyMap(data[key]); len(nested) > 0 {
+			data = nested
+			break
+		}
+	}
+	patch := map[string]any{}
+	for key, item := range data {
+		field := strings.TrimSpace(key)
+		switch strings.ToLower(field) {
+		case "", "id", "record_id", "recordid", "dataset_id", "datasetid":
+			continue
+		}
+		patch[field] = item
+	}
+	if len(patch) == 0 {
+		return nil
+	}
+	return patch
 }
 
 // ListMaclawAppApprovalInstances returns newest-first approval instances for a
@@ -857,6 +964,85 @@ func (a *App) installedMaclawAppSkillIndex() map[string]NLSkillDefinition {
 		}
 	}
 	return index
+}
+
+func applyMaclawAppInstalledSkillDependency(dep *maclawAppInstallPlanDependency, match NLSkillDefinition) {
+	dep.Installed = true
+	dep.InstalledName = match.Name
+	dep.InstalledDir = match.SkillDir
+	dep.InstalledStatus, dep.Health = maclawAppInstalledSkillStatus(match)
+	if maclawAppDependencyIsReady(*dep) {
+		dep.Action = "skip"
+		dep.Message = "installed locally"
+		return
+	}
+	if dep.Required {
+		dep.Action = "blocked"
+		dep.Message = maclawAppDependencyInactiveMessage(*dep, true)
+		return
+	}
+	dep.Action = "optional_unhealthy"
+	dep.Message = maclawAppDependencyInactiveMessage(*dep, false)
+}
+
+func maclawAppInstalledSkillStatus(match NLSkillDefinition) (string, string) {
+	status := strings.TrimSpace(match.Status)
+	switch normalizeSkillEntryStatus(status) {
+	case skillEntryStatusActive:
+		return string(skillEntryStatusActive), "ready"
+	case skillEntryStatusDisabled:
+		return string(skillEntryStatusDisabled), string(skillEntryStatusDisabled)
+	case skillEntryStatusNeedsSetup:
+		return string(skillEntryStatusNeedsSetup), string(skillEntryStatusNeedsSetup)
+	default:
+		if status == "" {
+			status = "unknown"
+		}
+		return status, "unknown"
+	}
+}
+
+func maclawAppDependencyIsReady(dep maclawAppInstallPlanDependency) bool {
+	return dep.Installed && strings.TrimSpace(dep.Health) == "ready"
+}
+
+func maclawAppDependencyInactiveMessage(dep maclawAppInstallPlanDependency, required bool) string {
+	status := strings.TrimSpace(dep.InstalledStatus)
+	if status == "" {
+		status = "unknown"
+	}
+	if required {
+		return fmt.Sprintf("required skill dependency is installed but not active (status: %s)", status)
+	}
+	return fmt.Sprintf("optional skill dependency is installed but not active (status: %s)", status)
+}
+
+func maclawAppDependencyBlocksInstall(dep maclawAppInstallPlanDependency) bool {
+	if !dep.Required {
+		return false
+	}
+	action := strings.TrimSpace(dep.Action)
+	if action == "blocked" || action == "failed" {
+		return true
+	}
+	if !dep.Installed {
+		return true
+	}
+	health := strings.TrimSpace(dep.Health)
+	return health != "" && health != "ready"
+}
+
+func (plan *maclawAppInstallPlan) refreshMaclawAppDependencyFlags() {
+	plan.HasMissingRequired = false
+	plan.HasBlockingDependency = false
+	for _, dep := range plan.Dependencies {
+		if dep.Required && !dep.Installed {
+			plan.HasMissingRequired = true
+		}
+		if maclawAppDependencyBlocksInstall(dep) {
+			plan.HasBlockingDependency = true
+		}
+	}
 }
 
 func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstallPlanDependency {
@@ -1378,6 +1564,15 @@ func cloneMaclawAppPlanDependenciesForApp(deps []maclawAppInstallPlanDependency,
 func hasMissingMaclawAppRequiredDependencyForApp(deps []maclawAppInstallPlanDependency, appID string) bool {
 	for _, dep := range deps {
 		if dep.Required && !dep.Installed && containsMaclawAppString(dep.AppIDs, appID) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasBlockingMaclawAppRequiredDependencyForApp(deps []maclawAppInstallPlanDependency, appID string) bool {
+	for _, dep := range deps {
+		if containsMaclawAppString(dep.AppIDs, appID) && maclawAppDependencyBlocksInstall(dep) {
 			return true
 		}
 	}

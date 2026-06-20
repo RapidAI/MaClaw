@@ -230,11 +230,15 @@ func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) erro
 		content = fileContent
 	}
 	if a.app.ctx != nil {
+		a.mu.RLock()
+		wfID := a.activeWorkflowID
+		a.mu.RUnlock()
 		runtime.EventsEmit(a.app.ctx, "workflow:doc_update", map[string]string{
 			"user_id":      userID,
 			"phase_id":     phaseID,
 			"content":      content,
 			"project_path": a.GetWorkingDir(),
+			"workflow_id":  wfID,
 		})
 	}
 	return nil
@@ -317,11 +321,15 @@ func (a *GUIWorkflowAdapter) ResetSuggestMaximize(userID string) {
 func (a *GUIWorkflowAdapter) EmitGateResult(userID, phaseID string, result *workflow.QualityGateResult) error {
 	phaseID = canonicalWorkflowPhaseID(phaseID)
 	if a.app.ctx != nil {
+		a.mu.RLock()
+		wfID := a.activeWorkflowID
+		a.mu.RUnlock()
 		runtime.EventsEmit(a.app.ctx, "workflow:gate_result", map[string]interface{}{
 			"user_id":      userID,
 			"phase_id":     phaseID,
 			"result":       result,
 			"project_path": a.GetWorkingDir(),
+			"workflow_id":  wfID,
 		})
 	}
 	return nil
