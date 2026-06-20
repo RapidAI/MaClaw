@@ -435,6 +435,7 @@ export namespace main {
 	    remote_nickname: string;
 	    remote_client_id: string;
 	    default_launch_mode: string;
+	    prefer_beta_channel: boolean;
 	    maclaw_llm_url: string;
 	    maclaw_llm_key: string;
 	    maclaw_llm_model: string;
@@ -604,6 +605,7 @@ export namespace main {
 	        this.remote_nickname = source["remote_nickname"];
 	        this.remote_client_id = source["remote_client_id"];
 	        this.default_launch_mode = source["default_launch_mode"];
+	        this.prefer_beta_channel = source["prefer_beta_channel"];
 	        this.maclaw_llm_url = source["maclaw_llm_url"];
 	        this.maclaw_llm_key = source["maclaw_llm_key"];
 	        this.maclaw_llm_model = source["maclaw_llm_model"];

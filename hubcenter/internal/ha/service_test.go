@@ -417,6 +417,58 @@ func TestAppendUpsertRejectsMissingLocalPayloadID(t *testing.T) {
 	}
 }
 
+func TestAppendLLMCardOrderOmitsDerivedAuthorizationFields(t *testing.T) {
+	opsRepo := &fakeHASyncOpRepo{}
+	versionsRepo := &fakeHAEntityVersionRepo{items: make(map[string]*store.HAEntityVersion)}
+	svc := &Service{nodeID: "hc-1", ops: opsRepo, versions: versionsRepo}
+	now := time.Date(2026, 6, 19, 14, 0, 0, 0, time.UTC)
+	used := 120.0
+	remaining := 880.0
+	order := &cardstore.PurchaseOrder{
+		Order: corecardstore.Order{
+			OrderNo:   "HC-1",
+			Email:     "owner@example.com",
+			Status:    corecardstore.StatusActivated,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		HubID:                  "hub-1",
+		TenantID:               "tenant-a",
+		CardTypeID:             "card-month",
+		ServiceGroupID:         "redeem",
+		Credits:                1000,
+		Period:                 "month",
+		AuthorizationID:        "auth-1",
+		AuthorizationStatus:    "active",
+		AuthorizationStartsAt:  &now,
+		AuthorizationExpiresAt: ptrTime(now.AddDate(0, 1, 0)),
+		CreditsUsed:            &used,
+		CreditsRemaining:       &remaining,
+	}
+
+	svc.AppendLLMCardOrder(context.Background(), order)
+
+	if len(opsRepo.ops) != 1 {
+		t.Fatalf("ops len = %d, want 1", len(opsRepo.ops))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(opsRepo.ops[0].PayloadJSON), &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	for _, key := range []string{"authorization_id", "authorization_status", "authorization_starts_at", "authorization_expires_at", "credits_used", "credits_remaining"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("payload includes derived field %q: %s", key, opsRepo.ops[0].PayloadJSON)
+		}
+	}
+	if order.AuthorizationID == "" || order.CreditsUsed == nil {
+		t.Fatalf("AppendLLMCardOrder mutated source order: %#v", order)
+	}
+}
+
+func ptrTime(t time.Time) *time.Time {
+	return &t
+}
+
 func TestAppendDeleteRejectsUnsupportedLocalEntityOp(t *testing.T) {
 	opsRepo := &fakeHASyncOpRepo{}
 	versionsRepo := &fakeHAEntityVersionRepo{items: make(map[string]*store.HAEntityVersion)}

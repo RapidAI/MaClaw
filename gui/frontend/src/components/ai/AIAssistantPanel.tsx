@@ -73,9 +73,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [queueEditDraftActive, setQueueEditDraftActive] = useState(false);
     const [knowledgeDialogOpen, setKnowledgeDialogOpen] = useState(false);
     const [workflowEnabled, setWorkflowEnabled] = useState(false);
-    const [skillRecording, setSkillRecording] = useState(false);
+    const [skillRecordingTabId, setSkillRecordingTabId] = useState<string | null>(null);
     const [skillRecordingCount, setSkillRecordingCount] = useState(0);
     const [skillRecordingCard, setSkillRecordingCard] = useState<any>(null);
+    const activeTabIdForRecRef = useRef<string>("local");
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
     const closeAllPreviewPanelsRef = useRef<(() => void) | null>(null);
@@ -115,11 +116,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return next;
         });
     }, []);
-    // Skill recording: sync state from backend events
+    // Skill recording: sync state from backend events (per-tab)
     useEffect(() => {
         const off = EventsOn("skill-recording-state-changed", (state: any) => {
             if (state && typeof state.recording === "boolean") {
-                setSkillRecording(state.recording);
+                if (state.recording) {
+                    setSkillRecordingTabId(state.tabId || null);
+                } else {
+                    setSkillRecordingTabId(null);
+                }
             }
             if (state && typeof state.count === "number") {
                 setSkillRecordingCount(state.count);
@@ -127,19 +132,23 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         // Check initial state on mount
         (window as any).go?.main?.App?.IsSkillRecording?.().then((recording: boolean) => {
-            setSkillRecording(recording);
             if (recording) {
+                (window as any).go?.main?.App?.GetSkillRecordingTabID?.().then((tabId: string) => {
+                    setSkillRecordingTabId(tabId || "local");
+                }).catch(() => { setSkillRecordingTabId("local"); });
                 (window as any).go?.main?.App?.GetSkillRecordingCount?.().then((count: number) => {
                     setSkillRecordingCount(count || 0);
-                });
+                }).catch(() => {});
             }
         }).catch(() => { /* ignore */ });
         return () => { if (typeof off === "function") off(); };
     }, []);
     const handleToggleSkillRecording = useCallback(() => {
-        if (skillRecording) {
+        const currentTabId = activeTabIdForRecRef.current;
+        const isRecordingCurrentTab = skillRecordingTabId === currentTabId;
+        if (isRecordingCurrentTab) {
             // Immediately update UI state (don't wait for backend event)
-            setSkillRecording(false);
+            setSkillRecordingTabId(null);
             // Stop recording → show result card
             (window as any).go?.main?.App?.StopSkillRecording?.().then((data: any) => {
                 if (data && !data.error) {
@@ -184,13 +193,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 }
             }).catch(() => {
                 // On failure, revert UI state
-                setSkillRecording(true);
+                setSkillRecordingTabId(currentTabId);
             });
+        } else if (skillRecordingTabId) {
+            // Another tab is recording — cannot start a new one
+            return;
         } else {
-            // Start recording
-            (window as any).go?.main?.App?.StartSkillRecording?.().then((result: string) => {
+            // Start recording for the current active tab
+            const tabId = currentTabId;
+            (window as any).go?.main?.App?.StartSkillRecording?.(tabId).then((result: string) => {
                 if (result === "ok") {
-                    setSkillRecording(true);
+                    setSkillRecordingTabId(tabId);
                     setSkillRecordingCount(0);
                     setSkillRecordingCard(null);
                     skillRecResolvedRef.current = false;
@@ -209,7 +222,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 }
             }).catch(() => { /* ignore */ });
         }
-    }, [skillRecording, lang]);
+    }, [skillRecordingTabId, lang]);
     // Handle inline card resolve for skill recording
     const handleResolveSkillRecordingCard = useCallback((action: string, values: Record<string, string>) => {
         // For empty/info cards (no pending data), just dismiss
@@ -234,6 +247,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, []);
     const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, closeTab, clearTabConversation, saveTabState, getTabState, getLastActiveAt, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
+    activeTabIdForRecRef.current = activeTab?.id || "local";
     const [renameGroupTargetTabId, setRenameGroupTargetTabId] = useState<string | null>(null);
     const [renameGroupValue, setRenameGroupValue] = useState("");
     const [renameGroupError, setRenameGroupError] = useState("");
@@ -397,7 +411,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     }
                 }
             }
-
             saveTabState(prevTabId, {
                 history: historyToSave,
                 scrollTop,
@@ -422,7 +435,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 setProjectTabMessages([]);
                 setLocalDraftInputValue("");
             }
-
         } else if (activeTab.id === "local") {
             setLocalDraftInputValue(draftInputValue);
         }
@@ -859,13 +871,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         clearProjectRoundTrackingForTab(tabId);
         previewStateMapRef.current.delete(tabId);
         if (previewOwnerTabRef.current === tabId) { previewOwnerTabRef.current = "local"; previewOwnerResetPendingRef.current = true; }
+        // If the closed tab is currently recording, auto-stop recording
+        if (skillRecordingTabId === tabId) {
+            setSkillRecordingTabId(null);
+            (window as any).go?.main?.App?.StopSkillRecording?.().catch(() => {});
+        }
         closeTab(tabId);
-    }, [clearProjectRoundTrackingForTab, closeTab]);
+    }, [clearProjectRoundTrackingForTab, closeTab, skillRecordingTabId]);
     const createProjectTabFromSearch = useCallback((projectPath: string, taskTitle: string, options?: { autoSend?: boolean }) => {
         const tabExistedInList = hasProjectTab(projectPath);
         const tab = createProjectTabWithContext(projectPath, taskTitle);
         if (!tab || !options?.autoSend || tabExistedInList) return tab;
-
         const existingState = getTabState(tab.id);
         const hasExistingConversation = existingState?.history?.some((m: any) => m && (m.role === "user" || m.role === "assistant"));
         if (!hasExistingConversation) {
@@ -1061,7 +1077,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const latestShowChatUIRef = useRef(showChatUI);
     latestSubmitLockedRef.current = submitLocked;
     latestShowChatUIRef.current = showChatUI;
-
     const showThinkingState = activeSessionIsStreaming;
     const showProcessingState = isBusy && (!activeSessionIsStreaming || hasActiveDetachedProjectRound);
     const showBusySpinner = isBusy;
@@ -1480,7 +1495,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     return (
         <div data-testid="ai-panel-root" style={containerStyle}>
             {inline && <AssistantDragHandle />}
-            <AssistantTitleBar clearHistory={clearActiveHistory} codingAgentProgress={codingAgentProgress} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecording} skillRecordingCount={skillRecordingCount} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
+            <AssistantTitleBar clearHistory={clearActiveHistory} codingAgentProgress={codingAgentProgress} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
             <div data-testid="ai-panel-content-row" style={{ display: "flex", flexDirection: "row", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
             <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }}>
             <KnowledgeDialog open={knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
@@ -1497,7 +1512,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 }
                 setParticipantInviteTargetTabId(tab.id);
                 activateTab(tab.id);
-            }} onAddLocalMaclawToTab={addLocalMaclawToTab} onRenameGroupTab={openRenameGroupDialog} lang={lang} getLastActiveAt={getLastActiveAt} />
+            }} onAddLocalMaclawToTab={addLocalMaclawToTab} onRenameGroupTab={openRenameGroupDialog} lang={lang} getLastActiveAt={getLastActiveAt} recordingTabId={skillRecordingTabId} />
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
             {showChatUI && <>
                 <AssistantWorkflowMaximizeSuggestion inline={!!inline} lang={lang} maximized={!!maximized} onDismiss={dismissMaximizeSuggestion} onToggleMaximize={onToggleMaximize} suggestMaximize={workflowState.suggestMaximize} theme={t} themeMode={themeMode} />

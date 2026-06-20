@@ -42,6 +42,8 @@ type SkillOperationRecorder struct {
 	entries   []RecordedOp
 	startTime time.Time
 	workDir   string // primary working directory during recording
+	ownerID   string // session/tab owner that started this recording (used for filtering)
+	tabID     string // frontend tabID that owns this recording (for event payloads)
 }
 
 // NewSkillOperationRecorder creates a new recorder instance.
@@ -50,7 +52,10 @@ func NewSkillOperationRecorder() *SkillOperationRecorder {
 }
 
 // Start begins recording operations.
-func (r *SkillOperationRecorder) Start(workDir string) error {
+// ownerID identifies which session/tab owns this recording (e.g. "desktop-user"
+// for the local tab, "desktop-user:{projectPath}" for project tabs).
+// The capture point filters tool calls by ownerID to avoid cross-tab mixing.
+func (r *SkillOperationRecorder) Start(workDir string, ownerID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -63,7 +68,43 @@ func (r *SkillOperationRecorder) Start(workDir string) error {
 	r.startTime = time.Now()
 	r.entries = nil
 	r.workDir = workDir
+	r.ownerID = ownerID
 	return nil
+}
+
+// StartWithTab begins recording with both ownerID (for capture filtering) and
+// tabID (for frontend event payloads). This is the preferred entry point.
+func (r *SkillOperationRecorder) StartWithTab(workDir, ownerID, tabID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.recording {
+		return fmt.Errorf("already recording")
+	}
+
+	r.recording = true
+	r.active.Store(true)
+	r.startTime = time.Now()
+	r.entries = nil
+	r.workDir = workDir
+	r.ownerID = ownerID
+	r.tabID = tabID
+	return nil
+}
+
+// OwnerID returns the session/tab owner that started this recording.
+// Returns empty string if not recording.
+func (r *SkillOperationRecorder) OwnerID() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ownerID
+}
+
+// TabID returns the frontend tab ID that owns this recording (mutex-protected).
+func (r *SkillOperationRecorder) TabID() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.tabID
 }
 
 // IsRecording returns whether the recorder is currently active.

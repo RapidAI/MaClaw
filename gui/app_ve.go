@@ -479,9 +479,16 @@ func (a *App) SendVEGroupMessage(sessionID, content string, mentionedIds []strin
 	// Local AI is included in unmentionedTargetIDs now, so we dispatch to it
 	// in addition to sending through Hub for remote participants.
 	if !targets.Explicit {
-		msg.ToIDs = a.groupDiscussionUnmentionedTargetIDs(sessionID)
-		// Also dispatch to local AI if it is registered for this session.
-		a.tryLocalExecutorDispatch(sessionID, msg)
+		allTargets := a.groupDiscussionUnmentionedTargetIDs(sessionID)
+		// Dispatch to local AI directly (bypassing Hub) if registered.
+		// The Hub echo of this message will have FromID=machine-1 and be
+		// skipped by the dispatcher's "skip own messages" check, so no double dispatch.
+		if a.localGroupDispatcherRegistered(sessionID) {
+			a.tryLocalExecutorDispatch(sessionID, msg)
+		}
+		// Send to Hub with only remote participant IDs — local AI is handled
+		// above via direct dispatch, not via Hub routing.
+		msg.ToIDs = filterOutLocalAIFromTargets(allTargets)
 		return a.sendVEA2AMessage(sessionID, msg)
 	}
 
@@ -782,6 +789,25 @@ func isVEGroupDefaultResponderCandidate(id, roleCode, localID string) bool {
 func isVEGroupLocalAIID(id string) bool {
 	id = strings.TrimSpace(id)
 	return veGroupParticipantIdentityMatches(id, "local-maclaw")
+}
+
+// filterOutLocalAIFromTargets removes local AI IDs from the target list.
+// Used when sending to Hub — local AI is dispatched directly, not via Hub routing.
+func filterOutLocalAIFromTargets(targets []string) []string {
+	if len(targets) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(targets))
+	for _, id := range targets {
+		if isVEGroupLocalAIID(id) {
+			continue
+		}
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func isVEGroupLocalHumanID(id string) bool {

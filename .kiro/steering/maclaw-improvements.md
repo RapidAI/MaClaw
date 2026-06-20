@@ -6277,3 +6277,138 @@ RemoteCodingSubAgent 启动后注册到 GUI 的任务监控系统：
 - 静态 user_fact（如用户偏好）→ 在 V2 工作流中仍然可见
 - 所有 BuildPhasePrompt / FormData / SubmitWorkflowInput / WorkflowV2 测试通过
 - GUI / corelib 编译通过（go vet 仅 pre-existing llm_stream.go unreachable code 警告）
+
+
+### 110. Skill 录制从全局改为 Per-Tab——会话级录制隔离
+
+**来源**：用户反馈——录制（skill 录制）应该是面向/基于会话 tab 的，否则切换 tab 会混录。工作流开关是全局系统级的，但录制绑定到具体的对话会话。
+
+**根因**：`App.skillRecorder` 是全局单例，`im_agent_loop_tool_exec.go` 的录制捕获点无条件录制所有经过的工具调用，不区分来源 tab。当用户在 Tab A 录制时切到 Tab B 发消息，Tab B 的工具调用也会被录入 Tab A 的录制结果中。
+
+**修复**：
+
+#### 1. 后端：录制归属到 ownerID（`gui/skill_operation_recorder.go`）
+
+- `SkillOperationRecorder` 新增 `ownerID string` 字段
+- `Start(workDir, ownerID)` 签名变更，绑定录制到特定 session
+- 新增 `OwnerID()` 方法读取归属
+
+#### 2. 后端：捕获点 ownerID 过滤（`gui/im_agent_loop_tool_exec.go`）
+
+录制捕获点从无条件录制改为**仅录制 ownerID 匹配的工具调用**：
+- 读取 `recorder.OwnerID()` 和当前 agent loop 的 `currentRuntimeOrLegacyPolicyOwnerID()`
+- 两者匹配时才录（兼容空 ownerID = 录制所有）
+
+#### 3. 后端：Wails binding 接受 tabID（`gui/app_skill_recorder_bindings.go`）
+
+- `StartSkillRecording(tabID string)` → 解析 tabID 为 ownerID → 传给 recorder
+- 新增 `resolveSkillRecordingOwnerID(tabID)` / `resolveProjectPathForTab(tabID)` 辅助函数
+- `App.skillRecordingTabID` 字段存储前端 tabID
+- 所有 `skill-recording-state-changed` 事件新增 `tabId` 字段
+- 新增 `GetSkillRecordingTabID()` binding 供前端初始化查询
+
+#### 4. 前端：录制状态 per-tab 化（`AIAssistantPanel.tsx`）
+
+- `skillRecording: boolean` → `skillRecordingTabId: string | null`
+- 事件处理根据 `state.tabId` 更新
+- `handleToggleSkillRecording` 使用 `activeTabIdForRecRef.current` 获取当前 tab（通过 ref 解决 hook 顺序问题）
+- 另一个 tab 在录制时，当前 tab 的按钮 disabled + opacity 降低
+
+#### 5. 前端：Tab 标题红点指示（`AITabItem.tsx` + `AITabBar.tsx`）
+
+- `AITabItemProps` 新增 `recording?: boolean` prop
+- Tab 标题区域显示红色录制圆点（🔴 脉冲动画）
+- `AITabBar` 接收 `recordingTabId` prop，传递给每个 `AITabItem`
+
+#### 6. 前端：顶部按钮状态跟随 tab 切换（`AssistantTitleBar.tsx`）
+
+- 新增 `skillRecordingAnyTab` prop
+- 当其他 tab 在录制时：按钮 disabled + cursor: not-allowed + opacity: 0.4
+- 当前 tab 在录制时：按钮红色激活态（行为不变）
+- 当前 tab 不在录制且无其他录制时：按钮正常态（行为不变）
+
+**交互流程**：
+```
+用户点顶部"录制" → 当前 Tab A 开始录制 → Tab A 标题出现 🔴
+用户切到 Tab B → 顶部按钮变为 disabled（Tab B 没在录制且 Tab A 正在录制）
+用户切回 Tab A → 顶部按钮变为红色激活态
+用户点顶部"录制"停止 → Tab A 停止 → 🔴 消失 → 弹出 skill 保存面板
+```
+
+**设计决策**：同一时间只允许一个 tab 录制（单实例 recorder，简化心智模型）。
+
+**验收标准**：
+- Tab A 录制时 Tab B 的工具调用不被录入
+- 切 tab 时顶部按钮状态正确跟随
+- 录制中的 tab 标题有红点指示
+- 另一个 tab 录制时顶部按钮 disabled
+- Go `go vet` 通过（仅 pre-existing llm_stream.go unreachable 警告）
+
+
+### 111. 在线更新测试版机制修复——版本比较 + Beta 通道持久化 + SHA256 校验 + CI 自动化
+
+**来源**：对在线更新测试版（beta channel）机制的系统性 review。
+
+#### P0: `compareVersions` 不识别 pre-release 后缀——beta 版本比较"侥幸正确"
+
+**根因**：`compareVersions` 只做纯数字逐段比较（`fmt.Sscanf` 提取数字）。对 `1.3.0-beta.1` 的 `"0-beta"` 段，`Sscanf` 提取到 `0`，后缀被丢弃。同版本号的 `1.3.0-beta` vs `1.3.0`（stable）被判为相等——beta 不会被识别为可用更新。
+
+**修复**：
+- `gui/app.go` + `Ins-maclaw/updater.go`：`compareVersions` 重写为 semver-aware 版本比较
+  - 新增 `splitVersionPreRelease()`：将 `1.3.0-beta.1` 拆分为 `("1.3.0", "beta.1")`
+  - 新增 `preReleaseWeight()`：alpha(10) < beta(20) < rc(30) < stable(100)
+  - 新增 `preReleaseNumber()`：提取 `beta.2` 中的数字后缀
+  - 比较逻辑：先比数字部分（逐段），数字相等再比 pre-release 权重和编号
+  - 结果：`1.3.0-beta.1 < 1.3.0-beta.2 < 1.3.0-rc.1 < 1.3.0`（stable）
+
+#### P1: Beta 通道无持久化 + 启动自动检测只查 stable
+
+**根因**：`UpdateModal` 中的 `betaChecked` 是组件本地 state，关闭 Modal 后丢失。`AppConfig` 中没有 `PreferBetaChannel` 字段。启动时 `domReady` 只调用 `CheckUpdate`（stable channel）。
+
+**修复**：
+- `corelib/app_config.go`：新增 `PreferBetaChannel bool` 字段
+- `gui/config_manager.go` + `corelib/config/manager.go`：新增 `prefer_beta_channel` case
+- `gui/app.go`：`PatchConfigFields` 新增 `prefer_beta_channel` case
+- `gui/app.go`：`domReady` 启动自动检测读取 `PreferBetaChannel`，为 true 则调用 `CheckUpdateBeta`
+- 前端 `UpdateModal.tsx`：beta checkbox 切换时调用 `PatchConfigFields({ prefer_beta_channel: checked })` 持久化
+- 前端 `UpdateModal.tsx`：接受 `preferBetaChannel` prop 作为 checkbox 初始值
+- 前端 `App.tsx`：传递 `config?.prefer_beta_channel` 到 UpdateModal
+
+#### P2: GUI 内置下载器无 SHA256 校验
+
+**根因**：`Ins-maclaw` 的 `downloadInstallerFromURL` 有 `verifySHA256` 校验。GUI 的 `downloadUpdateFromURL` 没有。manifest 中的 `sha256` 字段未被传递到下载逻辑。
+
+**修复**：
+- `gui/app.go`：`updateManifestAsset` 新增 `SHA256` 字段
+- `gui/app.go`：`latestReleaseInfo` 新增 `SHA256` 字段
+- `gui/app.go`：`fetchManifestLatestRelease` 提取 manifest 中的 SHA256
+- `gui/app.go`：`UpdateResult` 新增 `SHA256` 字段传递到前端
+- `gui/app.go`：新增 `DownloadUpdateWithSHA256(url, fileName, expectedSHA256)` Wails binding
+- `gui/app.go`：新增 `verifySHA256File()` 函数——下载完成后验证，不匹配则删除文件并尝试下一个源
+- 前端 `App.tsx`：`handleDownload` 改为调用 `DownloadUpdateWithSHA256`，传递 `updateResult.sha256`
+- Wails 绑定声明 `App.d.ts` + `App.js`：新增 `DownloadUpdateWithSHA256`
+
+#### P2: CI beta 发布无自动化
+
+**根因**：`RELEASE_CHANNEL: stable` 硬编码在 workflow env 中。发 beta 需手动修改 env var，容易遗漏。
+
+**修复**：
+- `.github/workflows/main.yml`：在 "Generate latest manifest" 前新增 "Detect release channel from tag" 步骤
+- Tag 包含 `-beta`/`-alpha`/`-rc` → 自动 `echo "RELEASE_CHANNEL=beta" >> $GITHUB_ENV` + `echo "MANIFEST_NAME=beta.json" >> $GITHUB_ENV`
+- 稳定 tag → 保持 workflow 级别默认值（stable/latest.json）
+
+#### P2: `DownloadUnavailable` 前端无差异化处理
+
+**根因**：`buildUpdateResult` 设置 `DownloadUnavailable: downloadUrl == ""`，但前端不检查此字段。
+
+**修复**：
+- `UpdateModal.tsx`：检查 `updateResult.download_unavailable`，显示"新版本已发布，安装包正在构建中"
+- `appTranslations.ts`：新增三语 `downloadUnavailable` 翻译
+
+**验收标准**：
+- `1.3.0-beta.1` vs `1.3.0` → beta < stable（之前判为相等）
+- 用户勾选"尝鲜测试版"后重启 → 启动自动检测查询 beta channel
+- 下载完成后 SHA256 校验通过才报告成功，不匹配则尝试下一个源
+- Tag `V1.3.0-beta.1` 推送后 CI 自动发布到 beta channel（beta.json + /beta/ 目录）
+- 安装包正在构建时前端显示友好提示
+- 所有修改文件 diagnostics 通过（仅 pre-existing llm_stream.go unreachable 警告）

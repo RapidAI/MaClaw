@@ -32,6 +32,7 @@ func TestListSkillAppManifestsReadsPrivateExtension(t *testing.T) {
 			"description": "Upload a document and return a redacted copy.",
 			"category": "Document",
 			"icon": "shield",
+			"customIconDataUrl": "data:image/png;base64,iVBORw0KGgo=",
 			"input_mode": "file",
 			"multiple_files": true,
 			"output_modes": ["docx", "pdf"]
@@ -54,7 +55,7 @@ func TestListSkillAppManifestsReadsPrivateExtension(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("items len=%d want 1: %#v", len(items), items)
 	}
-	if items[0].ID != "redact" || items[0].SkillID != "doc-tools" || items[0].Name != "Document Redaction" || items[0].InputMode != "file" {
+	if items[0].ID != "redact" || items[0].SkillID != "doc-tools" || items[0].Name != "Document Redaction" || items[0].InputMode != "file" || items[0].CustomIconDataURL != "data:image/png;base64,iVBORw0KGgo=" {
 		t.Fatalf("unexpected manifest item: %#v", items[0])
 	}
 	if !items[0].MultipleFiles {
@@ -127,6 +128,7 @@ func TestListSkillAppManifestsReadsSingleMaclawAppDefinition(t *testing.T) {
 			"kind": "tool_app",
 			"category": "Finance",
 			"icon": "receipt",
+			"customIconDataUrl": "data:image/png;base64,iVBORw0KGgo=",
 			"binding": {
 				"skill": {
 					"id": "invoice-app",
@@ -158,7 +160,7 @@ func TestListSkillAppManifestsReadsSingleMaclawAppDefinition(t *testing.T) {
 		t.Fatalf("items len=%d want 1: %#v", len(items), items)
 	}
 	got := items[0]
-	if got.ID != "invoice-review" || got.SkillID != "invoice-app" || got.Name != "Invoice Review" || got.Category != "Finance" || got.Icon != "receipt" {
+	if got.ID != "invoice-review" || got.SkillID != "invoice-app" || got.Name != "Invoice Review" || got.Category != "Finance" || got.Icon != "receipt" || got.CustomIconDataURL != "data:image/png;base64,iVBORw0KGgo=" {
 		t.Fatalf("unexpected app definition: %#v", got)
 	}
 	if got.InputMode != "mixed" || !got.MultipleFiles || len(got.OutputModes) != 2 || got.OutputModes[0] != "pdf" || got.OutputModes[1] != "json" {
@@ -272,6 +274,104 @@ func TestSaveMaclawAppDefinitionForSkillWritesSingleAppFile(t *testing.T) {
 	}
 }
 
+func TestSaveMaclawAppDefinitionForSkillUpdatesMaclawAppsManifestEntry(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "doc-tools")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: doc-tools\nmaclaw_app:\n  entry: maclaw.apps.json\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "maclaw.apps.json"), []byte(`{
+		"x_maclaw_apps": "v1",
+		"apps": [
+			{
+				"id": "redact",
+				"skill_id": "doc-tools",
+				"name": "Old Redact",
+				"icon": "shield",
+				"governance": {
+					"testEvidence": {
+						"runId": "run-old-1",
+						"verifiedAt": "2026-06-17T10:00:00Z",
+						"definitionHash": "oldhash",
+						"artifactPresent": true,
+						"artifactName": "old.pdf"
+					}
+				}
+			}
+		]
+	}`), 0o644); err != nil {
+		t.Fatalf("WriteFile maclaw.apps.json: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "doc-tools", SkillDir: skillDir, Status: "active"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	result, err := app.SaveMaclawAppDefinitionForSkill("doc-tools", `{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "redact",
+			"name": "Redact Plus",
+			"description": "Redact files with a custom icon.",
+			"category": "Document",
+			"kind": "tool_app",
+			"icon": "shield",
+			"customIconDataUrl": "data:image/png;base64,iVBORw0KGgo=",
+			"governance": { "status": "draft" },
+			"binding": {
+				"skill": {
+					"id": "doc-tools",
+					"appDefinitionFile": "maclaw.apps.json",
+					"inputMode": "mixed",
+					"multipleFiles": true,
+					"outputModes": ["pdf"]
+				}
+			}
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("SaveMaclawAppDefinitionForSkill() error = %v", err)
+	}
+	if result["app_definition_file"] != "maclaw.apps.json" {
+		t.Fatalf("app_definition_file = %#v, want maclaw.apps.json", result["app_definition_file"])
+	}
+	data, err := os.ReadFile(filepath.Join(skillDir, "maclaw.apps.json"))
+	if err != nil {
+		t.Fatalf("ReadFile maclaw.apps.json: %v", err)
+	}
+	var saved skillAppManifestFile
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("Unmarshal maclaw.apps.json: %v", err)
+	}
+	if len(saved.Apps) != 1 {
+		t.Fatalf("apps len=%d want 1: %s", len(saved.Apps), string(data))
+	}
+	got := saved.Apps[0]
+	if got.ID != "redact" || got.Name != "Redact Plus" || got.CustomIconDataURL != "data:image/png;base64,iVBORw0KGgo=" || got.InputMode != "mixed" || !got.MultipleFiles {
+		t.Fatalf("unexpected saved app entry: %#v\n%s", got, string(data))
+	}
+	if got.Governance["status"] != "draft" {
+		t.Fatalf("incoming governance status was not saved: %#v", got.Governance)
+	}
+	evidence := got.Governance["testEvidence"].(map[string]any)
+	if evidence["runId"] != "run-old-1" || evidence["definitionHash"] != "oldhash" || evidence["artifactName"] != "old.pdf" {
+		t.Fatalf("existing governance test evidence was not preserved: %#v", evidence)
+	}
+}
+
 func TestSaveMaclawAppDefinitionForSkillUpdatesSkillYAMLMetadata(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -379,6 +479,80 @@ func TestRecordMaclawAppRunEvidenceForSkillWritesGovernance(t *testing.T) {
 	}
 }
 
+func TestRecordMaclawAppRunEvidenceForSkillUpdatesMaclawAppsManifest(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "doc-tools")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: doc-tools\nmaclaw_app:\n  entry: maclaw.apps.json\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "maclaw.apps.json"), []byte(`{
+		"x_maclaw_apps": "v1",
+		"apps": [
+			{
+				"id": "redact",
+				"skill_id": "doc-tools",
+				"name": "Document Redaction",
+				"customIconDataUrl": "data:image/png;base64,iVBORw0KGgo="
+			},
+			{
+				"id": "archive",
+				"skill_id": "doc-tools",
+				"name": "Archive"
+			}
+		]
+	}`), 0o644); err != nil {
+		t.Fatalf("WriteFile maclaw.apps.json: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "doc-tools", SkillDir: skillDir, Status: "active"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	result, err := app.RecordMaclawAppRunEvidenceForSkill("doc-tools", "skill-app-doc-tools-redact", "c0ffee", "run-redact-1", filepath.Join(tmpHome, "out", "redacted.pdf"), "2026-06-18T10:00:00Z")
+	if err != nil {
+		t.Fatalf("RecordMaclawAppRunEvidenceForSkill() error = %v", err)
+	}
+	if result["app_definition_file"] != "maclaw.apps.json" || result["test_run_id"] != "run-redact-1" || result["test_definition_hash"] != "c0ffee" || result["test_artifact_name"] != "redacted.pdf" {
+		t.Fatalf("unexpected record result: %#v", result)
+	}
+	data, err := os.ReadFile(filepath.Join(skillDir, "maclaw.apps.json"))
+	if err != nil {
+		t.Fatalf("ReadFile maclaw.apps.json: %v", err)
+	}
+	if strings.Contains(string(data), tmpHome) {
+		t.Fatalf("evidence should not persist local artifact path: %s", string(data))
+	}
+	var manifest skillAppManifestFile
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("Unmarshal maclaw.apps.json: %v", err)
+	}
+	if len(manifest.Apps) != 2 {
+		t.Fatalf("apps len=%d want 2: %#v", len(manifest.Apps), manifest.Apps)
+	}
+	if manifest.Apps[0].CustomIconDataURL != "data:image/png;base64,iVBORw0KGgo=" {
+		t.Fatalf("custom icon was not preserved: %#v", manifest.Apps[0])
+	}
+	evidence := manifest.Apps[0].Governance["testEvidence"].(map[string]any)
+	if evidence["runId"] != "run-redact-1" || evidence["definitionHash"] != "c0ffee" || evidence["artifactName"] != "redacted.pdf" || evidence["artifactPresent"] != true {
+		t.Fatalf("unexpected test evidence: %#v", evidence)
+	}
+	if manifest.Apps[1].Governance != nil {
+		t.Fatalf("non-target app should not receive governance evidence: %#v", manifest.Apps[1].Governance)
+	}
+}
+
 func TestPackageSkillForMarketPreservesMaclawAppDefinition(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -400,6 +574,7 @@ func TestPackageSkillForMarketPreservesMaclawAppDefinition(t *testing.T) {
 			"description": "Review invoices with a guided panel",
 			"category": "finance",
 			"icon": "receipt",
+			"customIconDataUrl": "data:image/png;base64,iVBORw0KGgo=",
 			"kind": "tool_app",
 			"binding": { "skill": { "id": "invoice-app", "inputMode": "file", "outputModes": ["pdf", "docx"] } },
 			"governance": { "testEvidence": { "runId": "run-ok-1", "verifiedAt": "2026-06-17T10:00:00Z", "definitionHash": "feedbeef", "artifactPresent": true, "artifactName": "invoice.pdf" } }
@@ -449,6 +624,13 @@ func TestPackageSkillForMarketPreservesMaclawAppDefinition(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(packageDir, "maclaw.app.json")); err != nil {
 		t.Fatalf("package missing maclaw.app.json: %v", err)
+	}
+	packagedAppData, err := os.ReadFile(filepath.Join(packageDir, "maclaw.app.json"))
+	if err != nil {
+		t.Fatalf("ReadFile packaged maclaw.app.json: %v", err)
+	}
+	if !strings.Contains(string(packagedAppData), `"customIconDataUrl": "data:image/png;base64,iVBORw0KGgo="`) {
+		t.Fatalf("packaged maclaw.app.json lost custom icon: %s", string(packagedAppData))
 	}
 	yamlData, err := os.ReadFile(filepath.Join(packageDir, "skill.yaml"))
 	if err != nil {

@@ -243,16 +243,16 @@ func TestWorkflowDocPhaseExtractsStructuredWriteFileToolCallAsContent(t *testing
 		History:      []agent.ConversationEntry{},
 	})
 
-	if postTurn.MessageContent != "# Tasks\n\n- T1" {
-		t.Fatalf("MessageContent = %q", postTurn.MessageContent)
+	// After fix: tool calls are preserved for execution (write_file will actually
+	// write the file to disk). Document content is captured in post-loop via
+	// WorkflowWrittenFiles reading the written file. Content stays as LLM's original.
+	if postTurn.MessageContent != "" {
+		t.Fatalf("MessageContent should be empty (LLM's original), got %q", postTurn.MessageContent)
 	}
-	if len(postTurn.Choice.Message.ToolCalls) != 0 {
-		t.Fatalf("doc phase tool calls should be consumed as content, got %#v", postTurn.Choice.Message.ToolCalls)
+	if len(postTurn.Choice.Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls should be preserved for execution, got %d", len(postTurn.Choice.Message.ToolCalls))
 	}
-	if postTurn.Choice.FinishReason != "stop" {
-		t.Fatalf("FinishReason = %q, want stop", postTurn.Choice.FinishReason)
-	}
-	if len(postTurn.History) != 1 || postTurn.History[0].ToolCalls != nil {
-		t.Fatalf("history should not persist doc write_file tool calls: %#v", postTurn.History)
+	if postTurn.Choice.FinishReason != "tool_calls" {
+		t.Fatalf("FinishReason = %q, want tool_calls (preserved)", postTurn.Choice.FinishReason)
 	}
 }

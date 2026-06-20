@@ -348,6 +348,22 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 			}
 		}
 
+		// Capture generate_pdf content into WorkflowDocBuffer during workflow agent loops.
+		// When LLM uses generate_pdf to produce the phase document (common in desktop panel
+		// where the steering says "use generate_pdf for IM channels"), the content parameter
+		// contains the full Markdown document. Without this capture, post-loop doc capture
+		// finds only short commentary text in the buffer, and the preview panel has no content.
+		if opts.Context != nil && opts.Context.WorkflowAgentLoop &&
+			execResult.Outcome == toolOutcomeSucceeded &&
+			(strings.TrimSpace(tc.Function.Name) == "generate_pdf" || strings.TrimSpace(tc.Function.Name) == "office") {
+			if pdfContent := extractGeneratePDFContent(tc); pdfContent != "" {
+				if opts.Context.WorkflowDocBuffer.Len() > 0 {
+					opts.Context.WorkflowDocBuffer.WriteString("\n\n")
+				}
+				opts.Context.WorkflowDocBuffer.WriteString(pdfContent)
+			}
+		}
+
 		stageStartedAt = time.Now()
 		payloadObservation := parseToolPayloadResult(rawResult)
 		traceResult := payloadObservation.TraceResult
@@ -363,20 +379,30 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		logSlow("record_usage", stageStartedAt, tc)
 
 		// Skill operation recording: capture successful tool calls for skill generation.
+		// Only record if the current agent loop's ownerID matches the recorder's ownerID
+		// (per-tab isolation — avoids mixing operations from different tabs).
 		if h.app != nil && h.app.skillRecorder != nil && h.app.skillRecorder.IsRecording() {
-			isSuccess := execResult.Outcome == toolOutcomeSucceeded
-			toolName := strings.TrimSpace(tc.Function.Name)
-			if isRecordableToolForSkill(toolName) {
-				var argsMap map[string]interface{}
-				if tc.Function.Arguments != "" {
-					_ = json.Unmarshal([]byte(tc.Function.Arguments), &argsMap)
+			recOwnerID := h.app.skillRecorder.OwnerID()
+			currentOwnerID := h.currentRuntimeOrLegacyPolicyOwnerID()
+			// recOwnerID=="" → backward compat (old Start without ownerID): record all.
+			// currentOwnerID=="" → cannot determine attribution: skip (safe default).
+			shouldRecord := recOwnerID == "" || (currentOwnerID != "" && recOwnerID == currentOwnerID)
+			if shouldRecord {
+				isSuccess := execResult.Outcome == toolOutcomeSucceeded
+				toolName := strings.TrimSpace(tc.Function.Name)
+				if isRecordableToolForSkill(toolName) {
+					var argsMap map[string]interface{}
+					if tc.Function.Arguments != "" {
+						_ = json.Unmarshal([]byte(tc.Function.Arguments), &argsMap)
+					}
+					h.app.skillRecorder.Record(toolName, argsMap, truncateString(traceResult, 200), isSuccess)
+					// Emit count update to frontend
+					h.app.emitEvent("skill-recording-state-changed", map[string]interface{}{
+						"recording": true,
+						"count":     h.app.skillRecorder.EntryCount(),
+						"tabId":     h.app.skillRecorder.TabID(),
+					})
 				}
-				h.app.skillRecorder.Record(toolName, argsMap, truncateString(traceResult, 200), isSuccess)
-				// Emit count update to frontend
-				h.app.emitEvent("skill-recording-state-changed", map[string]interface{}{
-					"recording": true,
-					"count":     h.app.skillRecorder.EntryCount(),
-				})
 			}
 		}
 
@@ -474,4 +500,27 @@ func extractWrittenPathFromResult(result string) string {
 		return strings.TrimSpace(rest)
 	}
 	return ""
+}
+
+// extractGeneratePDFContent extracts the content parameter from a generate_pdf
+// or office(action=generate_pdf) tool call. This allows the workflow doc buffer
+// to capture the full document text when LLM uses PDF generation instead of
+// streaming text output.
+func extractGeneratePDFContent(tc llm.ToolCall) string {
+	if tc.Function.Arguments == "" {
+		return ""
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return ""
+	}
+	// For "office" merged tool, check action is generate_pdf
+	if tc.Function.Name == "office" {
+		action, _ := args["action"].(string)
+		if action != "generate_pdf" {
+			return ""
+		}
+	}
+	content, _ := args["content"].(string)
+	return strings.TrimSpace(content)
 }

@@ -278,7 +278,7 @@ export const SidebarSystemStatus = ({
                             </span>
                         </div>
                         {showHubCreditAction && (
-                            <button type="button" onClick={openHubCreditAction} className="sidebar-system-status__buy" title={hubServicePeriodLimited ? periodLimitNoticeTitle : undefined}>
+                            <button type="button" onClick={openHubCardStorePage ?? openHubCreditAction} className="sidebar-system-status__buy" title={cardStoreTitle}>
                                 {textForLang(lang, 'Buy', '\u8d2d\u4e70', '\u8cfc\u8cb7')}
                             </button>
                         )}

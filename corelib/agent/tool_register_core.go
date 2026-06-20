@@ -146,10 +146,10 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "write_file",
-		Description: "Write a UTF-8 text file. Use mode=overwrite only for the first chunk of a new file; use mode=append for later chunks. For content over 1800 characters, split into multiple write_file calls to avoid truncated tool-call JSON.",
+		Description: "Write a UTF-8 text file. No content length limit; system handles large content automatically. For very large files (>6000 chars), consider splitting into overwrite + append chunks to avoid model output truncation.",
 		Properties: map[string]interface{}{
 			"path":     map[string]string{"type": "string", "description": "File path"},
-			"content":  map[string]interface{}{"type": "string", "description": "File content. Keep each call under 1800 characters; split large files into overwrite + append chunks.", "maxLength": coreInlineToolPayloadMaxLength},
+			"content":  map[string]interface{}{"type": "string", "description": "File content. No length limit; you can write complete scripts or documents in a single call."},
 			"mode":     map[string]string{"type": "string", "description": "Write mode: overwrite or append"},
 			"phase_id": map[string]string{"type": "string", "description": workflowDocSchemaPhaseIDDescription()},
 			"doc_type": map[string]string{"type": "string", "description": workflowDocSchemaDocTypeDescription()},

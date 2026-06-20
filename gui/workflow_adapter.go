@@ -119,6 +119,16 @@ func (a *GUIWorkflowAdapter) GetLang() string {
 }
 
 // EmitPhaseUpdate notifies the frontend of a phase change.
+//
+// DEAD CODE IN PRODUCTION: This method is never called at runtime because
+// WorkflowEngine.HandleInput/AdvancePhase don't invoke callbacks, and
+// app.workflowEngine is always nil. The production emit path is
+// emitWorkflowV2Progress (workflow_v2_integration.go).
+// Retained for test infrastructure (workflow_adapter_test.go exercises
+// project-path normalization, manifest writing, and Project_Storage logic).
+//
+// TODO: Extract the side-effect logic (path management, manifest, storage cleanup)
+// into standalone methods, then remove this dead callback method.
 func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.EngineState) error {
 	if state != nil {
 		stateProjectPath := ""

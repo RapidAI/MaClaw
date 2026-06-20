@@ -248,10 +248,10 @@ describe('SidebarRecentTasks', () => {
         renderRecentTasks({ createRecentTask });
 
         fireEvent.click(screen.getByTitle('Create task'));
-        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'a'.repeat(130) } });
+        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'a'.repeat(2100) } });
         fireEvent.click(screen.getByRole('button', { name: 'OK' }));
 
-        expect(createRecentTask).toHaveBeenCalledWith('a'.repeat(120));
+        expect(createRecentTask).toHaveBeenCalledWith('a'.repeat(2000));
     });
 
     it('ignores duplicate create clicks while the task is being created', async () => {

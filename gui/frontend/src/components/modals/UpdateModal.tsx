@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
-import { CheckUpdateBeta } from '../../../wailsjs/go/main/App';
+import { useEffect, useRef, useState } from 'react';
+import { CheckUpdate, CheckUpdateBeta, PatchConfigFields } from '../../../wailsjs/go/main/App';
 
 // Info panels use var(--theme-info-bg). Latest marker replaces legacy \u2714\uFE0F with CSS.
 
@@ -10,6 +10,7 @@ type UpdateModalProps = {
     downloadProgress: number;
     installerPath: string;
     downloadError: string;
+    preferBetaChannel?: boolean;
     t: (key: string) => string;
     onCancelDownload: () => void;
     onDownload: () => void;
@@ -25,6 +26,7 @@ export const UpdateModal = ({
     downloadProgress,
     installerPath,
     downloadError,
+    preferBetaChannel,
     t,
     onCancelDownload,
     onDownload,
@@ -32,15 +34,18 @@ export const UpdateModal = ({
     onClose,
     onUpdateResultChange,
 }: UpdateModalProps) => {
-    const [betaChecked, setBetaChecked] = useState(false);
+    const [betaChecked, setBetaChecked] = useState(preferBetaChannel ?? false);
     const [betaLoading, setBetaLoading] = useState(false);
     // Cache the stable result so we can restore it when user unchecks beta
     const stableResultRef = useRef(updateResult);
 
-    const handleBetaToggle = (checked: boolean) => {
-        setBetaChecked(checked);
-        if (checked) {
-            // Save current stable result before switching to beta
+    // When modal opens with beta preference already enabled, immediately fetch beta info
+    // so the user sees beta results instead of stale stable results.
+    // Skip if the result already came from the beta channel (startup auto-check).
+    const didInitialBetaFetch = useRef(false);
+    useEffect(() => {
+        if (preferBetaChannel && !didInitialBetaFetch.current && !isDownloading && updateResult?.channel !== "beta") {
+            didInitialBetaFetch.current = true;
             stableResultRef.current = updateResult;
             setBetaLoading(true);
             CheckUpdateBeta(appVersion).then((res: any) => {
@@ -50,9 +55,41 @@ export const UpdateModal = ({
                 onUpdateResultChange?.({ has_update: false, latest_version: t("betaNoUpdate") });
                 setBetaLoading(false);
             });
+        }
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const handleBetaToggle = (checked: boolean) => {
+        setBetaChecked(checked);
+        // Persist the preference so startup auto-check uses the right channel
+        PatchConfigFields({ prefer_beta_channel: checked }).catch(() => {});
+        if (checked) {
+            // Save current stable result before switching to beta (only if it's actually stable)
+            if (!updateResult?.channel || updateResult.channel === "stable") {
+                stableResultRef.current = updateResult;
+            }
+            setBetaLoading(true);
+            CheckUpdateBeta(appVersion).then((res: any) => {
+                onUpdateResultChange?.(res);
+                setBetaLoading(false);
+            }).catch(() => {
+                onUpdateResultChange?.({ has_update: false, latest_version: t("betaNoUpdate") });
+                setBetaLoading(false);
+            });
         } else {
-            // Restore the cached stable result
-            onUpdateResultChange?.(stableResultRef.current);
+            // Restore cached stable result, or fetch fresh stable data if we never had it
+            if (stableResultRef.current?.channel && stableResultRef.current.channel !== "stable") {
+                setBetaLoading(true);
+                CheckUpdate(appVersion).then((res: any) => {
+                    stableResultRef.current = res;
+                    onUpdateResultChange?.(res);
+                    setBetaLoading(false);
+                }).catch(() => {
+                    onUpdateResultChange?.({ has_update: false, latest_version: "?" });
+                    setBetaLoading(false);
+                });
+            } else {
+                onUpdateResultChange?.(stableResultRef.current);
+            }
         }
     };
 
@@ -121,10 +158,16 @@ export const UpdateModal = ({
                                     )}
                                     {!downloadError && (
                                         <>
-                                            <p className="update-modal__message">{t("foundNewVersionMsg")}</p>
-                                            <button className="btn-primary update-modal__full-button" onClick={onDownload}>
-                                                {t("downloadAndUpdate")}
-                                            </button>
+                                            {updateResult.download_unavailable ? (
+                                                <p className="update-modal__message">{t("downloadUnavailable")}</p>
+                                            ) : (
+                                                <>
+                                                    <p className="update-modal__message">{t("foundNewVersionMsg")}</p>
+                                                    <button className="btn-primary update-modal__full-button" onClick={onDownload}>
+                                                        {t("downloadAndUpdate")}
+                                                    </button>
+                                                </>
+                                            )}
                                         </>
                                     )}
                                 </div>

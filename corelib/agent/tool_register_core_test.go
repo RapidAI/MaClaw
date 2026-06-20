@@ -100,15 +100,16 @@ func TestCoreWriteFileToolGuidesChunkedLargeContent(t *testing.T) {
 	if entry == nil {
 		t.Fatal("write_file is not registered")
 	}
-	if !containsAllSubstrings(entry.Description, []string{"1800", "split", "append", "truncated tool-call JSON"}) {
-		t.Fatalf("write_file description should guide chunked large writes: %q", entry.Description)
+	if !containsAllSubstrings(entry.Description, []string{"No content length limit", "split", "append"}) {
+		t.Fatalf("write_file description should state no length limit and guide large writes: %q", entry.Description)
 	}
 	contentProp, _ := entry.Properties["content"].(map[string]interface{})
-	if !containsAllSubstrings(asString(contentProp["description"]), []string{"under 1800", "split large files"}) {
-		t.Fatalf("write_file content description should guide chunking: %#v", entry.Properties["content"])
+	if !containsAllSubstrings(asString(contentProp["description"]), []string{"No length limit"}) {
+		t.Fatalf("write_file content description should state no length limit: %#v", entry.Properties["content"])
 	}
-	if got := contentProp["maxLength"]; got != coreInlineToolPayloadMaxLength {
-		t.Fatalf("write_file content maxLength = %#v, want %d", got, coreInlineToolPayloadMaxLength)
+	// write_file should NOT have maxLength — removed to prevent LLM from avoiding the tool.
+	if got := contentProp["maxLength"]; got != nil {
+		t.Fatalf("write_file content should not have maxLength, got %#v", got)
 	}
 }
 

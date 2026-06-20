@@ -218,6 +218,11 @@ type workflowIMRouteResult struct {
 	PhasePrompt          string // Phase prompt built by runWorkflowV2Phase, passed synchronously to avoid sync.Map race
 }
 
+// routeWorkflowIMMessage is DEAD CODE in production — retained only for
+// compilation. The V2 replacement is routeWithWorkflowV2 (workflow_v2_integration.go).
+// See im_entry_context.go where this function is explicitly not called.
+//
+// TODO: Remove once test infrastructure migrates to V2 StateMachine.
 func (h *IMMessageHandler) routeWorkflowIMMessage(msg IMUserMessage, trimmed string, confirmedResume, hasPendingUserReply bool) workflowIMRouteResult {
 	result := workflowIMRouteResult{WorkflowAgentLoop: confirmedResume}
 	_, result.SkipNeedsConfirmGate = h.workflowPendingConfirmOther.LoadAndDelete(msg.UserID)
@@ -225,14 +230,10 @@ func (h *IMMessageHandler) routeWorkflowIMMessage(msg IMUserMessage, trimmed str
 	if wf == nil || wf.machine == nil || msg.IsBackground || hasPendingUserReply {
 		return result
 	}
-	engine := h.app.workflowEngine
-	// Check StateMachine first; fall back to WorkflowEngine adapter.
+	// V2 StateMachine is the sole source of truth for active workflow state.
 	hasActiveWorkflow := wf.machine.GetActive(msg.UserID) != nil
-	if !hasActiveWorkflow && engine != nil {
-		hasActiveWorkflow = engine.GetActiveWorkflow(msg.UserID) != nil
-	}
 	if hasActiveWorkflow {
-		if resp, handled := h.submitWorkflowInputIfWaiting(engine, msg.UserID, trimmed, msg.Attachments, msg.Platform); handled {
+		if resp, handled := h.submitWorkflowInputIfWaiting(nil, msg.UserID, trimmed, msg.Attachments, msg.Platform); handled {
 			result.Response = resp
 			result.WorkflowAgentLoop = resp == nil
 			if state := wf.machine.GetActive(msg.UserID); state != nil {
@@ -435,14 +436,29 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 	if err != nil {
 		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: i18n.Tf(i18n.MsgWorkflowStartError, lang, err)}}
 	}
-	state := mapV2StateToV1(v2State)
-	// Store in WorkflowEngine adapter so HandleInput/GetActiveWorkflow can find it.
+
+	log.Printf("[workflow-v2] confirmed workflow start: user=%s type=%s project=%s id=%s", userID, v2State.Type, v2State.ProjectPath, v2State.ID)
+
+	// Sync to V1 engine for test backward compat (tests assert via engine.GetActiveWorkflow).
+	// In production engine is nil; this is a no-op.
 	if engine := h.app.workflowEngine; engine != nil {
-		engine.StoreActiveState(userID, state)
+		engine.StoreActiveState(userID, mapV2StateToV1(v2State))
 	}
+
+	// Run the first phase: emits progress, sets stashedPhasePrompt +
+	// workflowAgentLoopMarker, clears memory, stashes originalRequest.
+	// Same as handleWorkflowV2Start.
+	phaseResult := h.runWorkflowV2Phase(userID, v2State, "")
+	if phaseResult.Response != nil {
+		// Form-first phase or workflow completed — return response directly.
+		return pendingExecutionConfirmationResult{Handled: true, Response: phaseResult.Response}
+	}
+	// Agent loop markers are set (stashedPhasePrompt + workflowAgentLoopMarker).
+	// Signal ConfirmedResume + WorkflowAgentLoop so the message processing
+	// pipeline runs the agent loop instead of short-circuiting at preflight.
 	return pendingExecutionConfirmationResult{
-		Handled:  true,
-		Response: h.handlePostStartWorkflow(h.app.workflowEngine, userID, text, state, pending.WorkflowStartReply, platform),
+		ConfirmedResume:   true,
+		WorkflowAgentLoop: true,
 	}
 }
 
@@ -462,23 +478,10 @@ func (h *IMMessageHandler) handlePostStartWorkflow(
 	extraText string,
 	platform string,
 ) *IMAgentResponse {
-	// Clean up stale state from previous workflow sessions.
-	//
-	// When a new workflow starts, the previous workflow's persisted documents
-	// remain on disk ({projectPath}/.maclaw/workflow/*.md). If the LLM's
-	// conversation history still contains the old workflow's context, it may
-	// reproduce old content which then gets captured as the new workflow's
-	// phase output. Clean the persisted docs directory to prevent stale
-	// content from leaking into the new workflow.
-	//
-	// Conversation history is only cleared when it contains substantial
-	// content from a previous workflow session (>= 6 entries indicates
-	// multi-turn workflow dialogue). Short histories (e.g. user just said
-	// Short confirmation histories are preserved so supplementary details
-	// the user provided during the confirmation flow are not lost.
-	//
-	// NOTE: We only clear memory here, NOT clearPerUserSessionState; that
-	// would cancel the workflow we just started (it calls cancelWorkflowForUser).
+	// Clean persisted docs from previous workflow and emit suggest_maximize.
+	// In production engine is nil; these operations are handled by V2 integration
+	// (emitWorkflowV2Progress emits suggest_maximize, workflow_v2_integration
+	// handles doc persistence). The engine path is retained for test compat.
 	if engine != nil {
 		if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
 			adapter.CleanPersistedWorkflowDocs()
@@ -512,29 +515,28 @@ func (h *IMMessageHandler) handlePostStartWorkflow(
 		}
 	}
 
-	// Non-input workflows: send overview, then re-route to handleActiveWorkflow
-	// which calls HandleInput -> PhasePrompt + RunAgentLoop -> agent loop runs.
+	// Send overview text to user.
 	if engine != nil {
 		if cb := engine.GetCallbacks(); cb != nil {
 			_ = cb.SendTextToUser(userID, overview)
 		}
 	}
 
-	// Stash the original task request.
-	//
-	// When a workflow starts via multi-round IUM, `text` is the IUM
-	// completion message, not the original task request. The original request is
-	// preserved in state.Intent: either in Goals[0] (UIC direct path
-	// stores the raw user text) or in Summary (IUM LLM generates a
-	// structured summary of the user's intent).
-	//
-	// The agent loop's userText must carry task semantics so the LLM
-	// knows what to produce. We stash the best available source here;
-	// runAgentLoop consumes it via LoadAndDelete when workflowAgentLoop=true.
+	// Stash the original task request for the agent loop.
 	if originalRequest := extractOriginalRequest(state, text); originalRequest != "" {
 		h.workflowOriginalRequest.Store(userID, originalRequest)
 		log.Printf("[WorkflowInterception] stashed original request for user=%s original_len=%d current_len=%d",
 			userID, len([]rune(originalRequest)), len([]rune(text)))
+	}
+
+	// When engine is nil (production), return the overview text directly.
+	// The V2 routing layer (routeWithWorkflowV2) handles the first phase
+	// execution on the next message. The stashed originalRequest above ensures
+	// the agent loop has the right task context.
+	if engine == nil {
+		log.Printf("[WorkflowInterception] StartWorkflow succeeded (V2 path): user=%s type=%s phase=%s",
+			userID, state.Type, state.CurrentPhase)
+		return &IMAgentResponse{Text: overview}
 	}
 
 	log.Printf("[WorkflowInterception] StartWorkflow succeeded, re-routing to handleActiveWorkflow for user=%s type=%s phase=%s",
@@ -546,8 +548,15 @@ func (h *IMMessageHandler) handlePostStartWorkflow(
 // workflow engine (corelib/workflow). Returns an IMAgentResponse if the message
 // was fully handled, or nil if it should proceed to the normal agent loop.
 //
-// Called from handleIMMessageWithLoop after slash commands and LLM config check,
-// before the main agent loop logic.
+// DEAD CODE IN PRODUCTION: This function requires h.app.workflowEngine != nil,
+// but workflowEngine is never instantiated at runtime (always nil). All production
+// workflow routing goes through routeWithWorkflowV2 (workflow_v2_integration.go).
+// This function and the entire chain it calls (handleActiveWorkflow,
+// handlePostStartWorkflow, handleActiveUnderstanding, handleNeedsUnderstanding)
+// are retained solely for test infrastructure compatibility (50+ test files
+// create a WorkflowEngine and exercise these paths).
+//
+// TODO: Migrate tests to use V2 StateMachine directly, then remove this chain.
 func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform string, attachments ...[]MessageAttachment) *IMAgentResponse {
 	if h == nil || h.app == nil || h.app.workflowEngine == nil {
 		return nil
@@ -755,6 +764,10 @@ func conversationEntryText(content any) string {
 }
 
 // handleActiveWorkflow processes input for a user with an active workflow.
+//
+// DEAD CODE IN PRODUCTION: Only reachable from handleWorkflowInterception which
+// returns nil immediately (workflowEngine is nil). Production path is
+// routeWithWorkflowV2 → handleWorkflowV2Action. Retained for tests.
 func (h *IMMessageHandler) handleActiveWorkflow(engine *v2.WorkflowEngine, userID, text, platform string, attachments []MessageAttachment) *IMAgentResponse {
 	if workflowHasPendingPhaseForm(engine, userID) && isWorkflowFormDirectRunCommand(text) {
 		if err := engine.SkipPhaseForm(userID); err != nil {

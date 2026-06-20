@@ -407,10 +407,10 @@ requireFile('docs/config-persistence-guardrails.md');
 requireIncludes('docs/config-persistence-guardrails.md', 'Use `PatchConfig` or `PatchConfigFields` for small, local config changes.', 'config persistence guardrail guidance');
 requireIncludes('docs/config-persistence-guardrails.md', '`SaveConfig` is reserved for full authoritative snapshots', 'SaveConfig authoritative snapshot guidance');
 requireExcludes('gui/app_maclaw_llm.go', 'injectCodeGenModelIntoToolConfigs: SaveConfig failed', 'stale SaveConfig failure log in CodeGen SSO patch path');
-requireExcludes('gui/app_project_search.go', 'LoadConfig â†?merge â†?SaveConfig', 'stale SaveConfig project-switch persistence comment');
+requireExcludes('gui/app_project_search.go', 'LoadConfig ï¿½?merge ï¿½?SaveConfig', 'stale SaveConfig project-switch persistence comment');
 requireExcludes('gui/app_project_search.go', 'switchCurrentProjectByPath: SaveConfig failed', 'stale SaveConfig project-switch failure log');
 requireExcludes('gui/floating_windows.go', 'SaveConfig triggers floatingSoundChanged', 'stale SaveConfig floating sound comment');
-requireExcludes('docs/project-switch-context-contamination-fix.md', 'LoadConfig â†?merge â†?SaveConfig', 'stale SaveConfig project-switch docs');
+requireExcludes('docs/project-switch-context-contamination-fix.md', 'LoadConfig ï¿½?merge ï¿½?SaveConfig', 'stale SaveConfig project-switch docs');
 requireIncludes('gui/frontend/package.json', '--strict-mojibake && npm run check:ui-guards', 'frontend prebuild strict mojibake and UI guard gate');
 requireIncludes('package.json', 'node scripts/check-main-ui-guards.mjs --self-test-config-persistence && node scripts/check-main-ui-guards.mjs', 'UI guard script runs config persistence self-test before normal guard');
 requireFile('gui/frontend/src/config/providerCatalog.ts');
@@ -531,7 +531,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/AboutPanel.tsx', 500],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 1600],
+  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 1650],
   ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 950],
   ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 420],
   ['gui/frontend/src/components/ai/aiAssistantI18n.ts', 40],

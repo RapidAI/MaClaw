@@ -882,8 +882,8 @@ func TestGroupDiscussionSendHistoryMessageDefaultsToFirstRemoteParticipant(t *te
 	if err := app.GroupDiscussionSendHistoryMessage("disc-default", a2a.GroupDiscussionMessage{Content: "continue"}); err != nil {
 		t.Fatalf("GroupDiscussionSendHistoryMessage: %v", err)
 	}
-	if len(gotToIDs) != 2 || gotToIDs[0] != "local-maclaw" || gotToIDs[1] != "anna-machine" {
-		t.Fatalf("to_ids = %v, want [local-maclaw anna-machine]", gotToIDs)
+	if len(gotToIDs) != 1 || gotToIDs[0] != "anna-machine" {
+		t.Fatalf("to_ids = %v, want [anna-machine]", gotToIDs)
 	}
 }
 
@@ -987,7 +987,7 @@ func TestGroupDiscussionSendHistoryMessageTargetsMultiVEGroup(t *testing.T) {
 	if err := app.GroupDiscussionSendHistoryMessage("disc-multi", a2a.GroupDiscussionMessage{Content: "continue"}); err != nil {
 		t.Fatalf("GroupDiscussionSendHistoryMessage: %v", err)
 	}
-	want := []string{"anna-machine", "xiaoyan-machine", "local-maclaw"}
+	want := []string{"anna-machine", "xiaoyan-machine"}
 	if !reflect.DeepEqual(gotToIDs, want) {
 		t.Fatalf("to_ids = %v, want %v", gotToIDs, want)
 	}

@@ -210,6 +210,16 @@ export function AssistantPreviewPane({
         previousShowWorkflowRef.current = showWorkflowPreview;
         previousShowAgentRef.current = showAgentView;
 
+        // Defense-in-depth: workflow form AgentViews (input collection for the
+        // current phase) must take priority over workflow doc preview. The doc
+        // panel has no content until the form is submitted and the agent loop
+        // produces a document. Check BEFORE workflowOpened to win the race when
+        // both arrive in the same frame.
+        if (agentOpened && agentView?.id?.startsWith("workflow:form:")) {
+            setActiveMode("agent");
+            return;
+        }
+
         if (!showWorkflowPreview && !showAgentView && showCodePreview) {
             setActiveMode("code");
             return;

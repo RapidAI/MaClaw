@@ -42,6 +42,10 @@ export function DownloadUpdate(arg1, arg2) {
   return window['go']['main']['App']['DownloadUpdate'](arg1, arg2);
 }
 
+export function DownloadUpdateWithSHA256(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DownloadUpdateWithSHA256'](arg1, arg2, arg3);
+}
+
 export function ExportPassthroughCommand(arg1) {
   return window['go']['main']['App']['ExportPassthroughCommand'](arg1);
 }

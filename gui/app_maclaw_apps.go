@@ -146,23 +146,26 @@ type maclawAppInstallRegistry struct {
 }
 
 type maclawAppApprovalInstance struct {
-	AppID              string                   `json:"app_id"`
-	InstanceID         string                   `json:"instance_id"`
-	Title              string                   `json:"title"`
-	Lane               string                   `json:"lane"`
-	Status             string                   `json:"status"`
-	CurrentNode        string                   `json:"current_node"`
-	Owner              string                   `json:"owner"`
-	Approver           string                   `json:"approver"`
-	UpdatedAt          string                   `json:"updated_at"`
-	Result             string                   `json:"result"`
-	WorkflowSkillID    string                   `json:"workflow_skill_id,omitempty"`
-	BusinessStatus     string                   `json:"business_status,omitempty"`
-	ResultStatus       string                   `json:"result_status,omitempty"`
-	WorkflowDecisionID string                   `json:"workflow_decision_id,omitempty"`
-	RecordID           string                   `json:"record_id,omitempty"`
-	DetailURL          string                   `json:"detail_url,omitempty"`
-	Events             []maclawAppApprovalEvent `json:"events,omitempty"`
+	AppID              string                      `json:"app_id"`
+	InstanceID         string                      `json:"instance_id"`
+	Title              string                      `json:"title"`
+	Lane               string                      `json:"lane"`
+	Status             string                      `json:"status"`
+	CurrentNode        string                      `json:"current_node"`
+	Owner              string                      `json:"owner"`
+	Approver           string                      `json:"approver"`
+	UpdatedAt          string                      `json:"updated_at"`
+	Result             string                      `json:"result"`
+	WorkflowSkillID    string                      `json:"workflow_skill_id,omitempty"`
+	BusinessStatus     string                      `json:"business_status,omitempty"`
+	ResultStatus       string                      `json:"result_status,omitempty"`
+	WorkflowDecisionID string                      `json:"workflow_decision_id,omitempty"`
+	RecordID           string                      `json:"record_id,omitempty"`
+	DetailURL          string                      `json:"detail_url,omitempty"`
+	ResultPayload      map[string]any              `json:"result_payload,omitempty"`
+	Outputs            []maclawAppApprovalOutput   `json:"outputs,omitempty"`
+	Artifacts          []maclawAppApprovalArtifact `json:"artifacts,omitempty"`
+	Events             []maclawAppApprovalEvent    `json:"events,omitempty"`
 }
 
 type maclawAppApprovalEvent struct {
@@ -171,6 +174,30 @@ type maclawAppApprovalEvent struct {
 	Actor    string `json:"actor,omitempty"`
 	Decision string `json:"decision,omitempty"`
 	Message  string `json:"message,omitempty"`
+}
+type maclawAppApprovalArtifact struct {
+	ID            string `json:"id,omitempty"`
+	URI           string `json:"uri,omitempty"`
+	Name          string `json:"name,omitempty"`
+	Path          string `json:"path,omitempty"`
+	MimeType      string `json:"mime_type,omitempty"`
+	SizeBytes     int64  `json:"size_bytes,omitempty"`
+	RemoteURL     string `json:"remote_url,omitempty"`
+	Checksum      string `json:"checksum,omitempty"`
+	DownloadState string `json:"download_state,omitempty"`
+	Status        string `json:"status,omitempty"`
+	Presentation  string `json:"presentation,omitempty"`
+}
+
+type maclawAppApprovalOutput struct {
+	Type       string                     `json:"type,omitempty"`
+	Kind       string                     `json:"kind,omitempty"`
+	Title      string                     `json:"title,omitempty"`
+	Text       string                     `json:"text,omitempty"`
+	Status     string                     `json:"status,omitempty"`
+	ArtifactID string                     `json:"artifact_id,omitempty"`
+	Artifact   *maclawAppApprovalArtifact `json:"artifact,omitempty"`
+	Data       map[string]any             `json:"data,omitempty"`
 }
 
 type maclawAppApprovalRegistry struct {
@@ -516,6 +543,9 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 			"workflow_decision_id": instance.WorkflowDecisionID,
 			"business_status":      firstNonEmptyMaclawAppString(instance.BusinessStatus, instance.Status),
 			"result_status":        firstNonEmptyMaclawAppString(instance.ResultStatus, instance.Status),
+			"result_payload":       cloneMapAny(instance.ResultPayload),
+			"outputs":              cloneMaclawAppApprovalOutputs(instance.Outputs),
+			"artifacts":            append([]maclawAppApprovalArtifact(nil), instance.Artifacts...),
 		})
 		return map[string]any{"synced": true, "action": "review_record_approval", "response": out}, nil
 	}
@@ -533,6 +563,9 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 		"workflow_decision_id": instance.WorkflowDecisionID,
 		"business_status":      firstNonEmptyMaclawAppString(instance.BusinessStatus, instance.Status),
 		"result_status":        firstNonEmptyMaclawAppString(instance.ResultStatus, instance.Status),
+		"result_payload":       cloneMapAny(instance.ResultPayload),
+		"outputs":              cloneMaclawAppApprovalOutputs(instance.Outputs),
+		"artifacts":            append([]maclawAppApprovalArtifact(nil), instance.Artifacts...),
 	})
 	return map[string]any{"synced": true, "action": "create_record_approval", "response": out}, nil
 }
@@ -877,6 +910,25 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 				Required: true,
 				Source:   "hub",
 			})
+		}
+		if misBlock := anyMap(holder["mis"]); misBlock != nil {
+			bindings := anySlice(misBlock["approvalBindings"])
+			if len(bindings) == 0 {
+				bindings = anySlice(misBlock["approval_bindings"])
+			}
+			for _, item := range bindings {
+				bindingMap := anyMap(item)
+				if bindingMap == nil {
+					continue
+				}
+				add(maclawAppInstallPlanDependency{
+					ID:       firstNonEmptyMISAgentView(stringMapValue(bindingMap, "workflowSkillId"), stringMapValue(bindingMap, "workflow_skill_id"), stringMapValue(bindingMap, "workflowId"), stringMapValue(bindingMap, "workflow_id")),
+					Version:  firstNonEmptyMISAgentView(stringMapValue(bindingMap, "workflowVersion"), stringMapValue(bindingMap, "workflow_version")),
+					Kind:     "workflow_skill",
+					Required: true,
+					Source:   "hub",
+				})
+			}
 		}
 		if depsBlock := anyMap(holder["dependencies"]); depsBlock != nil {
 			for _, item := range anySlice(depsBlock["skills"]) {
@@ -1394,8 +1446,28 @@ func normalizeMaclawAppApprovalStatus(status string) string {
 
 func cloneMaclawAppApprovalInstance(instance maclawAppApprovalInstance) maclawAppApprovalInstance {
 	instance.Events = append([]maclawAppApprovalEvent(nil), instance.Events...)
+	instance.ResultPayload = cloneMapAny(instance.ResultPayload)
+	instance.Outputs = cloneMaclawAppApprovalOutputs(instance.Outputs)
+	instance.Artifacts = append([]maclawAppApprovalArtifact(nil), instance.Artifacts...)
 	return instance
 }
+
+func cloneMaclawAppApprovalOutputs(outputs []maclawAppApprovalOutput) []maclawAppApprovalOutput {
+	if len(outputs) == 0 {
+		return nil
+	}
+	cloned := make([]maclawAppApprovalOutput, len(outputs))
+	for i, output := range outputs {
+		cloned[i] = output
+		cloned[i].Data = cloneMapAny(output.Data)
+		if output.Artifact != nil {
+			artifact := *output.Artifact
+			cloned[i].Artifact = &artifact
+		}
+	}
+	return cloned
+}
+
 func normalizeMaclawAppSubmissionStatus(status string) string {
 	switch strings.TrimSpace(status) {
 	case "submitted", "review_failed", "approved", "published", "deprecated", "revoked":

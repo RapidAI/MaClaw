@@ -17,6 +17,20 @@ func cloneJSONMap(in map[string]any) map[string]any {
 	return out
 }
 
+func cloneJSONValue[T any](in T) T {
+	data, err := json.Marshal(in)
+	if err != nil {
+		var zero T
+		return zero
+	}
+	var out T
+	if err := json.Unmarshal(data, &out); err != nil {
+		var zero T
+		return zero
+	}
+	return out
+}
+
 func mergeJSONPatchMap(base, patch map[string]any) map[string]any {
 	out := cloneJSONMap(base)
 	if out == nil {

@@ -71,6 +71,19 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	loopCtx.WorkflowAgentLoop = opts.WorkflowAgentLoop
 	loopCtx.WorkflowDocPhase = opts.WorkflowDocPhase
 	loopCtx.WorkflowPhaseID = opts.WorkflowPhaseID
+	// When WorkflowAgentLoop is set via the confirmation gate path
+	// (ConfirmedWorkflowAgentLoop), the DocPhase/PhaseID fields may not
+	// be propagated through the routing result. Derive from V2 state.
+	if loopCtx.WorkflowAgentLoop && loopCtx.WorkflowPhaseID == "" {
+		if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+			if state := wf.machine.GetActive(msg.UserID); state != nil {
+				if phase := state.ActivePhase(); phase != nil {
+					loopCtx.WorkflowPhaseID = phase.ID
+					loopCtx.WorkflowDocPhase = phase.NeedsConfirm
+				}
+			}
+		}
+	}
 	executionProfile, semanticIntent := h.classifyIMExecutionProfileAndSemantic(msg, opts.WorkflowAgentLoop, opts.AskUserContext != "" || opts.PendingUserReplyContext != "")
 	loopCtx.Runtime.Execution = executionProfile
 	loopCtx.Runtime.SemanticIntent = semanticIntent

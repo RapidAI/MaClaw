@@ -152,10 +152,10 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"lines":  map[string]string{"type": "integer", "description": "最多读取行数（可选，默认 200）"},
 				"offset": map[string]string{"type": "integer", "description": "从文件末尾倒数的行数开始读取（可选，类似 tail -n）。例如 offset=50 表示读取最后 50 行。与 lines 互斥，优先使用 offset"},
 			}, []string{"path"}),
-		toolDef("write_file", "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。大文件请分块写入：先 overwrite 第一部分，再 append 后续部分）",
+		toolDef("write_file", "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。内容无长度限制，超长内容系统会自动处理。超过约6000字符时建议分块写入：先 overwrite 第一部分，再 append 后续部分）",
 			map[string]interface{}{
 				"path":     map[string]string{"type": "string", "description": "文件路径"},
-				"content":  map[string]interface{}{"type": "string", "description": "文件内容，可为空字符串", "maxLength": maxAgentLoopInlineWriteFileContentRunes},
+				"content":  map[string]interface{}{"type": "string", "description": "文件内容，可为空字符串。无长度限制，可一次写入完整脚本或文档"},
 				"mode":     map[string]string{"type": "string", "description": "写入模式：overwrite（默认）或 append"},
 				"phase_id": map[string]string{"type": "string", "description": workflowDocPhaseIDSchemaDescription()},
 				"doc_type": map[string]string{"type": "string", "description": workflowDocTypeSchemaDescription()},

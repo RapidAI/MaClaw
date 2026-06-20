@@ -1361,6 +1361,18 @@ jobs:
             echo "Release ${{ github.ref_name }}" > release_notes.md
           fi
 
+      - name: Detect release channel from tag
+        id: channel
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" == *-beta* ]] || [[ "$TAG" == *-alpha* ]] || [[ "$TAG" == *-rc* ]]; then
+            echo "RELEASE_CHANNEL=beta" >> $GITHUB_ENV
+            echo "MANIFEST_NAME=beta.json" >> $GITHUB_ENV
+            echo "Detected pre-release tag: channel=beta manifest=beta.json"
+          else
+            echo "Stable release tag: channel=stable manifest=latest.json"
+          fi
+
       - name: Generate latest manifest
         env:
           COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}

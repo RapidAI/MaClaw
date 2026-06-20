@@ -676,7 +676,7 @@ func buildToolCallTruncationRecovery(names []string, tools []map[string]interfac
 		sb.WriteString(strings.Join(names, ", "))
 	}
 	if containsString(names, "write_file") && available["write_file"] {
-		sb.WriteString("\nFor write_file: keep write_file.content <= 1800 characters per call; first call mode=\"overwrite\", later chunks mode=\"append\". Prefer edit_file or edit_lines for existing files.")
+		sb.WriteString("\nFor write_file: no per-call content length limit. For very large content (>6000 chars), split into overwrite + append chunks to avoid model output truncation. Prefer edit_file or edit_lines for existing files.")
 	}
 	if containsString(names, "bash") && available["bash"] {
 		sb.WriteString("\nFor bash: keep command <= 4000 characters. Do not embed generated file bodies in shell heredocs; use write_file chunks or targeted edits.")

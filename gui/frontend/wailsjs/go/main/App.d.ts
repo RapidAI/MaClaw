@@ -22,6 +22,8 @@ export function DeletePassthroughCommand(arg1:string):Promise<void>;
 
 export function DownloadUpdate(arg1:string,arg2:string):Promise<string>;
 
+export function DownloadUpdateWithSHA256(arg1:string,arg2:string,arg3:string):Promise<string>;
+
 export function ExportPassthroughCommand(arg1:string):Promise<string>;
 
 export function GetPassthroughCommand(arg1:string):Promise<any>;

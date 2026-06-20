@@ -2083,10 +2083,25 @@ func (s *Service) AppendLLMCardOrder(ctx context.Context, item *cardstore.Purcha
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
-	if err := s.AppendUpsert(ctx, EntityLLMCardOrder, item.OrderNo, item, updatedAt); err != nil {
+	payload := llmCardOrderSyncPayload(item)
+	if err := s.AppendUpsert(ctx, EntityLLMCardOrder, item.OrderNo, payload, updatedAt); err != nil {
 		log.Printf("[hubcenter][ha] append llm card order: %v", err)
 		s.recordFailure(ctx, "ha_sync", "append_llm_card_order_failed", err.Error(), item.OrderNo, map[string]any{"tenant_id": item.TenantID, "hub_id": item.HubID})
 	}
+}
+
+func llmCardOrderSyncPayload(item *cardstore.PurchaseOrder) *cardstore.PurchaseOrder {
+	if item == nil {
+		return nil
+	}
+	payload := *item
+	payload.AuthorizationID = ""
+	payload.AuthorizationStatus = ""
+	payload.AuthorizationStartsAt = nil
+	payload.AuthorizationExpiresAt = nil
+	payload.CreditsUsed = nil
+	payload.CreditsRemaining = nil
+	return &payload
 }
 
 func (s *Service) DeleteLLMCardOrder(ctx context.Context, orderNo string) {

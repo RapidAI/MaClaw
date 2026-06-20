@@ -9,6 +9,8 @@ if (typeof I18N_EN !== 'undefined') {
   Object.assign(I18N_ZH, {computeMarketDeleteArchivedOrder:'\u5220\u9664',computeMarketDeleteArchivedOrderPrompt:'\u5220\u9664\u8fd9\u7b14\u5df2\u5f52\u6863\u4e14\u672a\u652f\u4ed8\u7684\u8ba2\u5355\uff1f\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\u3002',computeMarketOrderDeleted:'\u8ba2\u5355\u5df2\u5220\u9664\u3002'});
   Object.assign(I18N_EN, {computeMarketStatsIdentity:'Scope',computeMarketStatsHubLabel:'Hub',computeMarketStatsTenantLabel:'Tenant',computeMarketStatsLegacyIdentity:'Historical record without identity',computeMarketStatsLegacyHint:'Hub and tenant were not captured on this usage row.',computeMarketStatsRows:'Rows'});
   Object.assign(I18N_ZH, {computeMarketStatsIdentity:'\u7edf\u8ba1\u5bf9\u8c61',computeMarketStatsHubLabel:'Hub',computeMarketStatsTenantLabel:'\u79df\u6237',computeMarketStatsLegacyIdentity:'\u5386\u53f2\u672a\u8bb0\u5f55\u8eab\u4efd',computeMarketStatsLegacyHint:'\u8be5\u7528\u91cf\u8bb0\u5f55\u672a\u91c7\u96c6 Hub \u548c\u79df\u6237\u4fe1\u606f\u3002',computeMarketStatsRows:'\u884c\u6570'});
+  Object.assign(I18N_EN, {computeMarketOrderCredits:'Credits',computeMarketOrderValidity:'Validity',computeMarketOrderUsed:'Used',computeMarketOrderRemaining:'Remaining',computeMarketOrderPendingActivation:'Starts after activation',computeMarketOrderUnknown:'-'});
+  Object.assign(I18N_ZH, {computeMarketOrderCredits:'\u70b9\u6570',computeMarketOrderValidity:'\u6709\u6548\u671f',computeMarketOrderUsed:'\u5df2\u6d88\u8017',computeMarketOrderRemaining:'\u5269\u4f59',computeMarketOrderPendingActivation:'\u786e\u8ba4\u540e\u5f00\u59cb\u8ba1\u65f6',computeMarketOrderUnknown:'-'});
 }
 
 (function () {
@@ -22,7 +24,8 @@ if (typeof I18N_EN !== 'undefined') {
 
   var CONFIRMABLE_STATUSES = ['pending', 'personal_created', 'personal_opened'];
 
-  function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+  function cmJSArg(s) { return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'); }
 
   function adminToken() {
     return (typeof window.token === 'function' ? window.token() : '') || localStorage.getItem('maclawHubCenterAdminToken') || sessionStorage.getItem('maclawHubCenterAdminToken') || '';
@@ -102,7 +105,7 @@ if (typeof I18N_EN !== 'undefined') {
         + '<p class="cm-card-desc">' + esc(desc || tr('computeMarketCardDescriptionEmpty')) + '</p>'
         + '<div class="cm-card-foot"><span class="data-row-meta">' + meta + '</span>' + group + '</div>'
         + '</div>'
-        + '<div class="cm-card-actions"><button class="btn-ghost" onclick="editComputeCard(\'' + esc(ct.id) + '\')">' + tr('computeMarketEdit') + '</button></div>'
+        + '<div class="cm-card-actions"><button class="btn-ghost" onclick="editComputeCard(\'' + esc(cmJSArg(ct.id)) + '\')">' + tr('computeMarketEdit') + '</button></div>'
         + '</article>';
     }).join('');
   }
@@ -219,7 +222,7 @@ if (typeof I18N_EN !== 'undefined') {
     var current = document.getElementById('cmCardTemplate') && document.getElementById('cmCardTemplate').value || 'circuit_navy';
     grid.innerHTML = CARD_TEMPLATES.map(function(t) {
       var selected = t.id === current;
-      return '<div onclick="selectCardTemplate(\'' + t.id + '\')" class="cm-template-tile' + (selected ? ' is-selected' : '') + '">'
+      return '<div onclick="selectCardTemplate(\'' + esc(cmJSArg(t.id)) + '\')" class="cm-template-tile' + (selected ? ' is-selected' : '') + '">'
         + '<div class="cm-template-preview">'
         + buildCardTemplateSVG(t, 120, 72)
         + '</div>'
@@ -292,12 +295,26 @@ if (typeof I18N_EN !== 'undefined') {
     if (!orders.length) { container.innerHTML = '<div class="hint">' + tr('computeMarketNoOrders') + '</div>'; return; }
     container.innerHTML = orders.map(function (o) {
       var statusClass = o.status === 'activated' ? 'ok' : (CONFIRMABLE_STATUSES.indexOf(o.status) >= 0 ? 'warn' : '');
-      var confirmBtn = (!cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0) ? '<button class="btn-primary compact-btn" onclick="confirmComputeOrder(\'' + esc(o.order_no) + '\')">' + tr('computeMarketConfirmOrder') + '</button>' : '';
-      var archiveBtn = !cmOrdersArchived ? '<button class="btn-ghost compact-btn" onclick="archiveComputeOrder(\'' + esc(o.order_no) + '\')">' + tr('computeMarketArchiveOrder') + '</button>' : '';
-      var deleteBtn = (cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0) ? '<button class="btn-danger-ghost compact-btn" onclick="deleteArchivedComputeOrder(\'' + esc(o.order_no) + '\')">' + tr('computeMarketDeleteArchivedOrder') + '</button>' : '';
+      var orderArg = esc(cmJSArg(o.order_no));
+      var confirmBtn = (!cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0) ? '<button class="btn-primary compact-btn" onclick="confirmComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketConfirmOrder') + '</button>' : '';
+      var archiveBtn = !cmOrdersArchived ? '<button class="btn-ghost compact-btn" onclick="archiveComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketArchiveOrder') + '</button>' : '';
+      var deleteBtn = (cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0) ? '<button class="btn-danger-ghost compact-btn" onclick="deleteArchivedComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketDeleteArchivedOrder') + '</button>' : '';
       var agent = o.agent_name ? ' \u00b7 ' + tr('computeMarketCardAgent') + ': ' + esc(o.agent_name) : '';
       var archivedMeta = cmOrdersArchived && o.archived_at ? ' \u00b7 ' + tr('computeMarketArchivedAt') + ': ' + esc(new Date(o.archived_at).toLocaleString()) : '';
-      return '<div class="data-row"><div class="data-row-main"><strong>' + esc(o.order_no) + '</strong> <span class="badge ' + statusClass + '">' + esc(o.status) + '</span><span class="data-row-meta">' + esc(o.email || '') + ' \u00b7 \u00a5' + (o.amount || 0) + ' \u00b7 ' + esc(o.product_label || o.product_id || '') + agent + archivedMeta + '</span></div><div class="data-row-actions">' + confirmBtn + archiveBtn + deleteBtn + '</div></div>';
+      var totalCredits = formatCMCredits(o.credits);
+      var usedCredits = cmHasNumber(o.credits_used) ? formatCMCredits(o.credits_used) : tr('computeMarketOrderUnknown');
+      var remainingCredits = cmHasNumber(o.credits_remaining) ? formatCMCredits(o.credits_remaining) : tr('computeMarketOrderUnknown');
+      var validity = formatCMPeriod(o.period);
+      var expiresAt = o.authorization_expires_at ? formatCMDate(o.authorization_expires_at) : (o.status === 'activated' ? tr('computeMarketOrderUnknown') : tr('computeMarketOrderPendingActivation'));
+      return '<div class="data-row cm-order-row"><div class="data-row-main cm-order-main">'
+        + '<div class="cm-order-head"><strong>' + esc(o.order_no) + '</strong><span class="badge ' + statusClass + '">' + esc(o.status) + '</span></div>'
+        + '<span class="data-row-meta cm-order-meta">' + esc(o.email || '') + ' \u00b7 \u00a5' + esc(o.amount || 0) + ' \u00b7 ' + esc(o.product_label || o.product_id || '') + agent + archivedMeta + '</span>'
+        + '<div class="cm-order-metrics">'
+        + '<div class="cm-order-metric"><label>' + esc(tr('computeMarketOrderCredits')) + '</label><strong title="' + esc(totalCredits) + '">' + esc(totalCredits) + '</strong></div>'
+        + '<div class="cm-order-metric"><label>' + esc(tr('computeMarketOrderValidity')) + '</label><strong title="' + esc(validity) + '">' + esc(validity) + '</strong><small title="' + esc(expiresAt) + '">' + esc(expiresAt) + '</small></div>'
+        + '<div class="cm-order-metric"><label>' + esc(tr('computeMarketOrderUsed')) + '</label><strong title="' + esc(usedCredits) + '">' + esc(usedCredits) + '</strong></div>'
+        + '<div class="cm-order-metric"><label>' + esc(tr('computeMarketOrderRemaining')) + '</label><strong title="' + esc(remainingCredits) + '">' + esc(remainingCredits) + '</strong></div>'
+        + '</div></div><div class="data-row-actions">' + confirmBtn + archiveBtn + deleteBtn + '</div></div>';
     }).join('');
   }
 
@@ -390,13 +407,33 @@ if (typeof I18N_EN !== 'undefined') {
     return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '0';
   }
 
+  function formatCMPeriod(value) {
+    var period = cmText(value).toLowerCase();
+    if (period === 'month') return tr('computeMarketMonth');
+    if (period === 'quarter') return tr('computeMarketQuarter');
+    if (period === 'year') return tr('computeMarketYear');
+    return period || tr('computeMarketOrderUnknown');
+  }
+
+  function formatCMDate(value) {
+    var raw = cmText(value);
+    if (!raw) return tr('computeMarketOrderUnknown');
+    var d = new Date(raw);
+    if (Number.isNaN(d.getTime())) return raw;
+    return d.toLocaleString();
+  }
+
+  function cmHasNumber(value) {
+    return value !== undefined && value !== null && value !== '' && Number.isFinite(Number(value));
+  }
+
   function cmNumber(value) {
-    var n = Number(value || 0);
+    var n = Number(value == null || value === '' ? 0 : value);
     return Number.isFinite(n) ? n : 0;
   }
 
   function cmText(value) {
-    return String(value || '').trim();
+    return String(value == null ? '' : value).trim();
   }
 
   function cmRows(data) {

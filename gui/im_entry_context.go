@@ -128,6 +128,12 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 		*opts.Trimmed = trimmed
 	}
 	result.WorkflowAgentLoop = workflowRoute.WorkflowAgentLoop
+	// When workflow routing was skipped (user already confirmed at the gate)
+	// but the confirmation handler set the workflow agent loop marker,
+	// propagate it so the agent loop runs in workflow mode.
+	if !result.WorkflowAgentLoop && opts.ConfirmedWorkflowAgentLoop {
+		result.WorkflowAgentLoop = true
+	}
 	result.WorkflowDocPhase = workflowRoute.WorkflowDocPhase
 	result.WorkflowPhaseID = workflowRoute.WorkflowPhaseID
 	result.PhasePrompt = workflowRoute.PhasePrompt

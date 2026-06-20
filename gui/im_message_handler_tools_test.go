@@ -250,8 +250,14 @@ func TestBuildToolDefinitionsCapInlinePayloads(t *testing.T) {
 	}
 
 	writeProps := toolDefinitionProperties(t, defs, "write_file")
-	if got := toolSchemaMaxLength(t, writeProps, "content"); got != float64(maxAgentLoopInlineWriteFileContentRunes) {
-		t.Fatalf("write_file content maxLength = %v, want %d", got, maxAgentLoopInlineWriteFileContentRunes)
+	// write_file should NOT have maxLength — it was removed to prevent LLM from avoiding the tool for long content.
+	writeContentRaw, ok := writeProps["content"]
+	if !ok {
+		t.Fatal("write_file missing content property")
+	}
+	writeContentSchema, _ := writeContentRaw.(map[string]interface{})
+	if _, hasMaxLen := writeContentSchema["maxLength"]; hasMaxLen {
+		t.Fatalf("write_file content should not have maxLength, got %v", writeContentSchema["maxLength"])
 	}
 
 	editProps := toolDefinitionProperties(t, defs, "edit_file")
@@ -284,8 +290,12 @@ func TestBuiltinRegistryCapsInlinePayloads(t *testing.T) {
 	if !ok || write == nil {
 		t.Fatal("write_file registry tool missing")
 	}
-	if got := registeredToolSchemaMaxLength(t, registeredToolSchemaProperties(write.InputSchema), "content"); got != float64(maxAgentLoopInlineWriteFileContentRunes) {
-		t.Fatalf("registry write_file content maxLength = %v, want %d", got, maxAgentLoopInlineWriteFileContentRunes)
+	// write_file should NOT have maxLength in registry either.
+	regWriteProps := registeredToolSchemaProperties(write.InputSchema)
+	if regContentProp, exists := regWriteProps["content"]; exists {
+		if _, hasMaxLen := regContentProp["maxLength"]; hasMaxLen {
+			t.Fatalf("registry write_file content should not have maxLength, got %v", regContentProp["maxLength"])
+		}
 	}
 
 	edit, ok := registry.Get("edit_file")
@@ -858,17 +868,10 @@ func TestPreCheckToolArgsForAgentLoopArgumentParseFailureUsesMetadata(t *testing
 }
 
 func TestPreCheckAgentLoopInlinePayloadLimitGuidesChunking(t *testing.T) {
+	// write_file should now pass through (auto-pass) instead of being rejected.
 	writeResult := preCheckAgentLoopInlinePayloadLimit("write_file", fmt.Sprintf(`{"path":"out.txt","content":%q}`, strings.Repeat("x", maxAgentLoopInlineWriteFileContentRunes+1)), 3)
-	if writeResult == nil {
-		t.Fatal("expected oversized write_file content to be rejected before execution")
-	}
-	if writeResult.Outcome != toolOutcomeFailed || writeResult.FailureKind != toolFailureValidation {
-		t.Fatalf("unexpected write_file metadata: %+v", *writeResult)
-	}
-	for _, want := range []string{"too large", "mode=overwrite", "mode=append"} {
-		if !strings.Contains(writeResult.Text, want) {
-			t.Fatalf("write_file result %q missing %q", writeResult.Text, want)
-		}
+	if writeResult != nil {
+		t.Fatalf("expected oversized write_file content to pass through (auto-pass), got rejection: %+v", *writeResult)
 	}
 
 	editResult := preCheckAgentLoopInlinePayloadLimit("edit_file", fmt.Sprintf(`{"path":"out.txt","old_string":"small","new_string":%q}`, strings.Repeat("x", maxAgentLoopInlineEditContentRunes+1)), 4)

@@ -493,12 +493,17 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			}
 		}
 	}
+	for _, name := range []string{"workflow_node_id", "workflow_decision_id", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
+		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/approvals/{approvalId}/review", name) {
+			t.Fatalf("openapi approval review body missing %s: %#v", name, paths["/api/v1/data/approvals/{approvalId}/review"])
+		}
+	}
 	for _, name := range []string{"confirm", "reason"} {
 		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/operation-plans/{planId}/apply", name) {
 			t.Fatalf("openapi apply operation plan body missing %s: %#v", name, paths["/api/v1/data/operation-plans/{planId}/apply"])
 		}
 	}
-	for _, name := range []string{"kind", "priority", "summary", "request", "assigned_to", "due_at"} {
+	for _, name := range []string{"kind", "priority", "summary", "request", "assigned_to", "due_at", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "workflow_decision_id", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
 		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals", name) {
 			t.Fatalf("openapi create approval body missing %s: %#v", name, paths["/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals"])
 		}
@@ -539,7 +544,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/import-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/export-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/operation-plans":                       {"dataset_id", "operation", "status"},
-		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "status", "kind", "assigned_to", "overdue"},
+		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "status", "kind", "workflow_skill_id", "workflow_instance_id", "business_status", "result_status", "assigned_to", "overdue"},
 		"/api/v1/data/datasets/{datasetId}/schema-proposals": {"status"},
 		"/api/v1/data/datasets/{datasetId}/records":          {"q", "tag"},
 	} {
@@ -2651,7 +2656,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		t.Fatalf("unexpected second timeline cursor page: first=%#v second=%#v", firstTimelinePage, secondTimelinePage)
 	}
 
-	body = bytes.NewBufferString(`{"kind":"sales_order","priority":"high","assigned_to":"manager_1","due_at":"2020-01-01","summary":"Approve confirmed sales order","request":{"amount":1200}}`)
+	body = bytes.NewBufferString(`{"kind":"sales_order","priority":"high","assigned_to":"manager_1","due_at":"2020-01-01","summary":"Approve confirmed sales order","request":{"amount":1200},"workflow_skill_id":"approval.sales_order","workflow_version":"1.0.0","workflow_instance_id":"wf-so-1","workflow_node_id":"submit","workflow_decision_id":"dec-submit","business_status":"pending_manager","result_status":"requires_input","result_payload":{"approval_result":"requires_input","business_record":{"id":"SO-2026-0001","status":"pending_manager"}},"outputs":[{"type":"text","title":"Current state","text":"Waiting for manager"}],"artifacts":[{"id":"draft-pdf","name":"draft.pdf","uri":"artifact://draft","mime_type":"application/pdf","status":"draft"}]}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/datasets/sales.orders/records/SO-2026-0001/approvals", body)
 	auth(req)
 	w = httptest.NewRecorder()
@@ -2665,6 +2670,12 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	}
 	if approval.ID == "" || approval.Status != recordApprovalStatusPending || approval.DatasetID != "sales.orders" || approval.RecordID != "SO-2026-0001" || approval.Priority != "high" || approval.AssignedTo != "manager_1" || approval.DueAt.IsZero() {
 		t.Fatalf("unexpected approval: %#v", approval)
+	}
+	if approval.WorkflowSkillID != "approval.sales_order" || approval.WorkflowInstanceID != "wf-so-1" || approval.BusinessStatus != "pending_manager" || approval.ResultStatus != "requires_input" {
+		t.Fatalf("approval workflow fields were not persisted: %#v", approval)
+	}
+	if approval.ResultPayload["approval_result"] != "requires_input" || len(approval.Outputs) != 1 || approval.Outputs[0].Text != "Waiting for manager" || len(approval.Artifacts) != 1 || approval.Artifacts[0].Name != "draft.pdf" {
+		t.Fatalf("approval result package was not persisted: %#v", approval)
 	}
 	body = bytes.NewBufferString(`{"kind":"sales_order","priority":"urgent","summary":"Invalid priority should fail","request":{"amount":1200}}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/datasets/sales.orders/records/SO-2026-0001/approvals", body)
@@ -2716,15 +2727,22 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&inbox); err != nil {
 		t.Fatalf("decode inbox: %v", err)
 	}
-	foundInboxApproval := false
-	for _, item := range inbox.Items {
+	var inboxApproval *MISInboxItem
+	for i := range inbox.Items {
+		item := &inbox.Items[i]
 		if item.Type == "approval" && item.ID == approval.ID && item.Status == recordApprovalStatusPending {
-			foundInboxApproval = true
+			inboxApproval = item
 			break
 		}
 	}
-	if !foundInboxApproval {
+	if inboxApproval == nil {
 		t.Fatalf("expected approval in inbox: %#v", inbox)
+	}
+	if inboxApproval.Metadata["workflow_node_id"] != "submit" || inboxApproval.Metadata["result_status"] != "requires_input" {
+		t.Fatalf("inbox approval missing workflow metadata: %#v", inboxApproval.Metadata)
+	}
+	if payload, ok := inboxApproval.Metadata["result_payload"].(map[string]any); !ok || payload["approval_result"] != "requires_input" {
+		t.Fatalf("inbox approval missing result payload metadata: %#v", inboxApproval.Metadata)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/inbox/summary?dataset_id=sales.orders&type=approval&limit=10", nil)
@@ -2785,6 +2803,9 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	}
 	if len(approvals.Items) != 1 || approvals.Items[0].ID != approval.ID {
 		t.Fatalf("unexpected approvals: %#v", approvals)
+	}
+	if approvals.Items[0].ResultPayload["approval_result"] != "requires_input" || len(approvals.Items[0].Outputs) != 1 || len(approvals.Items[0].Artifacts) != 1 {
+		t.Fatalf("approval list did not include result package: %#v", approvals.Items[0])
 	}
 	body = bytes.NewBufferString(`{"kind":"sales_discount","priority":"medium","assigned_to":"manager_1","summary":"Approve discount","request":{"discount":5}}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/datasets/sales.orders/records/SO-2026-0001/approvals", body)
@@ -2858,7 +2879,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		t.Fatalf("unexpected second inbox cursor page: first=%#v second=%#v", firstInboxPage, secondInboxPage)
 	}
 
-	body = bytes.NewBufferString(`{"decision":"approve","reason":"sales manager approved"}`)
+	body = bytes.NewBufferString(`{"decision":"approve","reason":"sales manager approved","workflow_node_id":"manager_review","workflow_decision_id":"dec-manager","business_status":"approved","result_status":"completed","result_payload":{"approval_result":"approved","business_status":"approved","business_record":{"id":"SO-2026-0001","status":"approved"},"text":"approved"},"outputs":[{"type":"text","title":"Approval","text":"Approved"},{"type":"artifact","artifact_id":"approval-pdf","artifact":{"id":"approval-pdf","name":"approval.pdf","uri":"artifact://approval/1","status":"ready"}}],"artifacts":[{"id":"approval-pdf","name":"approval.pdf","uri":"artifact://approval/1","status":"ready"}]}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/approvals/"+approval.ID+"/review", body)
 	auth(req)
 	w = httptest.NewRecorder()
@@ -2872,6 +2893,54 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	}
 	if reviewedApproval.Status != recordApprovalStatusApproved || reviewedApproval.ReviewedBy == "" || reviewedApproval.ReviewedAt.IsZero() {
 		t.Fatalf("unexpected reviewed approval: %#v", reviewedApproval)
+	}
+	if reviewedApproval.WorkflowNodeID != "manager_review" || reviewedApproval.WorkflowDecisionID != "dec-manager" || reviewedApproval.BusinessStatus != "approved" || reviewedApproval.ResultStatus != "completed" {
+		t.Fatalf("reviewed approval workflow result was not persisted: %#v", reviewedApproval)
+	}
+	if reviewedApproval.ResultPayload["approval_result"] != "approved" || reviewedApproval.ResultPayload["text"] != "approved" || len(reviewedApproval.Outputs) != 2 || reviewedApproval.Outputs[1].Artifact == nil || reviewedApproval.Outputs[1].Artifact.Name != "approval.pdf" || len(reviewedApproval.Artifacts) != 1 {
+		t.Fatalf("reviewed approval result package was not persisted: %#v", reviewedApproval)
+	}
+	gotReviewedApproval := RecordApproval{}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals/"+reviewedApproval.ID, nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get reviewed approval status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := json.NewDecoder(w.Body).Decode(&gotReviewedApproval); err != nil {
+		t.Fatalf("decode reviewed approval detail: %v", err)
+	}
+	if gotReviewedApproval.ResultPayload["approval_result"] != "approved" || len(gotReviewedApproval.Outputs) != 2 || len(gotReviewedApproval.Artifacts) != 1 {
+		t.Fatalf("reviewed approval detail lost result package: %#v", gotReviewedApproval)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/datasets/sales.orders/records/SO-2026-0001/timeline?limit=10", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("timeline after approval review status=%d body=%s", w.Code, w.Body.String())
+	}
+	var reviewedTimeline RecordTimelineResult
+	if err := json.NewDecoder(w.Body).Decode(&reviewedTimeline); err != nil {
+		t.Fatalf("decode reviewed timeline: %v", err)
+	}
+	var approvalTimelineItem *RecordTimelineItem
+	for i := range reviewedTimeline.Items {
+		item := &reviewedTimeline.Items[i]
+		if item.Type == "approval" && item.ID == reviewedApproval.ID {
+			approvalTimelineItem = item
+			break
+		}
+	}
+	if approvalTimelineItem == nil {
+		t.Fatalf("timeline missing reviewed approval item: %#v", reviewedTimeline.Items)
+	}
+	if approvalTimelineItem.Metadata["workflow_node_id"] != "manager_review" || approvalTimelineItem.Metadata["result_status"] != "completed" {
+		t.Fatalf("timeline approval missing workflow metadata: %#v", approvalTimelineItem.Metadata)
+	}
+	if payload, ok := approvalTimelineItem.Metadata["result_payload"].(map[string]any); !ok || payload["approval_result"] != "approved" {
+		t.Fatalf("timeline approval missing result payload metadata: %#v", approvalTimelineItem.Metadata)
 	}
 	body = bytes.NewBufferString(`{"business_action_id":"sales.order_upsert","record_id":"SO-2026-0001","dry_run":true,"data":{"order_no":"SO-2026-0001","customer":"Acme","amount":150000}}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/business-rules/evaluate", body)

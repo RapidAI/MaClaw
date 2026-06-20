@@ -5,7 +5,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
-	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 type agentLoopAssistantTurn struct {
@@ -71,13 +70,12 @@ func (h *IMMessageHandler) handleAgentLoopPostLLMTurn(opts agentLoopPostLLMTurnO
 	choiceStartedAt := time.Now()
 	choice := opts.Response.Choices[0]
 	choice.Message.ToolCalls = llm.NormalizeToolCallsForConversation(choice.Message.ToolCalls)
-	if opts.Context != nil && opts.Context.WorkflowDocPhase && len(choice.Message.ToolCalls) > 0 {
-		if docText := v2.SanitizePhaseOutputFromToolCalls(opts.Context.WorkflowPhaseID, choice.Message.ToolCalls); docText != "" {
-			choice.Message.Content = docText
-			choice.Message.ToolCalls = nil
-			choice.FinishReason = "stop"
-		}
-	}
+	// In workflow doc phases, when LLM calls write_file to produce the document,
+	// let the tool call execute normally so the file is actually written to disk.
+	// The document content will be captured in post-loop via WorkflowWrittenFiles
+	// (which reads the written file from disk after execution). No need to extract
+	// content here or modify ToolCalls/Content — doing so prevented write_file
+	// execution and caused the code-output-to-chat bug.
 	result := agentLoopPostLLMTurnResult{
 		Choice:       choice,
 		Conversation: opts.Conversation,

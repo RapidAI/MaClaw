@@ -167,6 +167,13 @@ type PurchaseOrder struct {
 	Credits        float64 `json:"credits"`
 	Period         string  `json:"period"`
 	ArchivedAt     string  `json:"archived_at,omitempty"`
+
+	AuthorizationID        string     `json:"authorization_id,omitempty"`
+	AuthorizationStatus    string     `json:"authorization_status,omitempty"`
+	AuthorizationStartsAt  *time.Time `json:"authorization_starts_at,omitempty"`
+	AuthorizationExpiresAt *time.Time `json:"authorization_expires_at,omitempty"`
+	CreditsUsed            *float64   `json:"credits_used,omitempty"`
+	CreditsRemaining       *float64   `json:"credits_remaining,omitempty"`
 }
 
 // PurchaseOrderRepository persists purchase orders.
@@ -573,10 +580,132 @@ func (s *Service) ListOrdersWithAlipayConfig(ctx context.Context, filter OrderFi
 	if err != nil {
 		return nil, 0, err
 	}
+	authHydrator := s.newOrderAuthorizationHydrator(ctx)
 	for _, order := range orders {
 		s.hydrateOrderPaymentDetails(order, alipay)
+		authHydrator.hydrate(order)
 	}
 	return orders, total, nil
+}
+
+type orderAuthorizationHydrator struct {
+	ctx             context.Context
+	service         *Service
+	byID            map[string]*llmservice.TenantAuthorization
+	byHubTenant     map[string][]*llmservice.TenantAuthorization
+	lookupAvailable bool
+}
+
+func (s *Service) newOrderAuthorizationHydrator(ctx context.Context) *orderAuthorizationHydrator {
+	return &orderAuthorizationHydrator{
+		ctx:             ctx,
+		service:         s,
+		byID:            map[string]*llmservice.TenantAuthorization{},
+		byHubTenant:     map[string][]*llmservice.TenantAuthorization{},
+		lookupAvailable: s != nil && s.authRepo != nil,
+	}
+}
+
+func (h *orderAuthorizationHydrator) hydrate(order *PurchaseOrder) {
+	if order == nil {
+		return
+	}
+	clearOrderAuthorizationDetails(order)
+	if h == nil || !h.lookupAvailable {
+		return
+	}
+	auth := h.find(order)
+	if auth == nil {
+		return
+	}
+	used := auth.CreditsUsed
+	remaining := auth.CreditsRemaining()
+	startsAt := auth.StartsAt
+	expiresAt := auth.ExpiresAt
+	order.AuthorizationID = auth.ID
+	order.AuthorizationStatus = auth.Status
+	order.AuthorizationStartsAt = &startsAt
+	order.AuthorizationExpiresAt = &expiresAt
+	order.CreditsUsed = &used
+	order.CreditsRemaining = &remaining
+}
+
+func clearOrderAuthorizationDetails(order *PurchaseOrder) {
+	order.AuthorizationID = ""
+	order.AuthorizationStatus = ""
+	order.AuthorizationStartsAt = nil
+	order.AuthorizationExpiresAt = nil
+	order.CreditsUsed = nil
+	order.CreditsRemaining = nil
+}
+
+func (h *orderAuthorizationHydrator) find(order *PurchaseOrder) *llmservice.TenantAuthorization {
+	if order.Status != corecardstore.StatusActivated {
+		return nil
+	}
+	authID := strings.TrimSpace(order.PaymentID)
+	if authID != "" {
+		if auth, ok := h.byID[authID]; ok {
+			if orderMatchesAuthorization(order, auth) {
+				return auth
+			}
+		} else {
+			auth, err := h.service.authRepo.GetByID(h.ctx, authID)
+			if err != nil {
+				h.byID[authID] = nil
+			} else {
+				h.byID[authID] = auth
+				if orderMatchesAuthorization(order, auth) {
+					return auth
+				}
+			}
+		}
+	}
+	hubTenantKey := strings.TrimSpace(order.HubID) + "\x00" + strings.TrimSpace(order.TenantID)
+	auths, ok := h.byHubTenant[hubTenantKey]
+	if !ok {
+		var err error
+		auths, err = h.service.authRepo.ListByHubTenant(h.ctx, strings.TrimSpace(order.HubID), strings.TrimSpace(order.TenantID))
+		if err != nil {
+			auths = nil
+		}
+		h.byHubTenant[hubTenantKey] = auths
+	}
+	var selected *llmservice.TenantAuthorization
+	orderNo := strings.TrimSpace(order.OrderNo)
+	for _, auth := range auths {
+		if auth == nil || strings.TrimSpace(auth.CardOrderID) != orderNo {
+			continue
+		}
+		if selected == nil || auth.CreatedAt.After(selected.CreatedAt) {
+			selected = auth
+		}
+	}
+	return selected
+}
+
+func orderMatchesAuthorization(order *PurchaseOrder, auth *llmservice.TenantAuthorization) bool {
+	if order == nil || auth == nil {
+		return false
+	}
+	orderHubID := strings.TrimSpace(order.HubID)
+	orderTenantID := strings.TrimSpace(order.TenantID)
+	orderNo := strings.TrimSpace(order.OrderNo)
+	orderServiceGroupID := strings.TrimSpace(order.ServiceGroupID)
+	authServiceGroupID := strings.TrimSpace(auth.ServiceGroupID)
+	if strings.TrimSpace(auth.HubID) != orderHubID {
+		return false
+	}
+	if strings.TrimSpace(auth.TenantID) != orderTenantID {
+		return false
+	}
+	if authOrderNo := strings.TrimSpace(auth.CardOrderID); authOrderNo != "" && authOrderNo != orderNo {
+		return false
+	}
+	if orderServiceGroupID != "" && authServiceGroupID != "" && authServiceGroupID != orderServiceGroupID {
+		return false
+	}
+	return true
 }
 
 func (s *Service) alipayConfigForContext(ctx context.Context) corecardstore.AlipayDirectConfig {

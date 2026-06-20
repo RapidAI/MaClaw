@@ -387,6 +387,11 @@ func SanitizePhaseOutputFromToolCalls(phaseID string, calls []llm.ToolCall) stri
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
 			continue
 		}
+		// Skip script/tool files — only capture document content (e.g. .md, .txt, .docx source).
+		// Script files written by phase prompts (e.g. md2docx.py) must be executed, not captured.
+		if path, _ := args["path"].(string); isScriptFilePath(path) {
+			continue
+		}
 		content, _ := args["content"].(string)
 		content = strings.TrimSpace(content)
 		if len([]rune(content)) > len([]rune(best)) {
@@ -394,6 +399,27 @@ func SanitizePhaseOutputFromToolCalls(phaseID string, calls []llm.ToolCall) stri
 		}
 	}
 	return llm.StripAllExtra(best)
+}
+
+// isScriptFilePath returns true if the file path looks like an executable script
+// rather than a document. Such files should be written to disk and executed,
+// not captured as workflow phase document output.
+func isScriptFilePath(path string) bool {
+	path = strings.ToLower(strings.TrimSpace(path))
+	if path == "" {
+		return false
+	}
+	// Check common script/executable extensions.
+	scriptExtensions := []string{
+		".py", ".ps1", ".sh", ".bat", ".cmd", ".js", ".ts",
+		".rb", ".pl", ".lua", ".vbs", ".wsf", ".r",
+	}
+	for _, ext := range scriptExtensions {
+		if strings.HasSuffix(path, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // Cancel terminates the workflow.

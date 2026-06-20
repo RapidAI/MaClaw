@@ -84,9 +84,8 @@ func BuildPhasePrompt(state *WorkflowState) string {
 	if phase.FormData != nil && len(phase.FormData) > 0 {
 		sb.WriteString("## ⚠️ 用户提供的结构化信息（必须使用，禁止再询问）\n\n")
 		sb.WriteString("以下信息由用户通过表单提交，请**直接基于这些信息**生成本阶段文档。禁止向用户重复索要这些已提供的信息：\n\n")
-		// Use InputSchema field order for stable, meaningful ordering.
+		// Inject active variant label (tells the LLM which input mode to use).
 		if phase.InputSchema != nil {
-			// Inject active variant indicator if present.
 			if variantID, ok := phase.FormData["_agent_view_variant"]; ok && variantID != nil {
 				vid := fmt.Sprintf("%v", variantID)
 				for _, v := range phase.InputSchema.Variants {
@@ -96,42 +95,8 @@ func BuildPhasePrompt(state *WorkflowState) string {
 					}
 				}
 			}
-			// Collect all fields to render: common fields + active variant fields.
-			allFields := make([]PhaseInputField, 0, len(phase.InputSchema.Fields)+8)
-			allFields = append(allFields, phase.InputSchema.Fields...)
-			// Determine active variant from FormData["_agent_view_variant"].
-			if variantID, ok := phase.FormData["_agent_view_variant"]; ok && variantID != nil {
-				vid := fmt.Sprintf("%v", variantID)
-				for _, v := range phase.InputSchema.Variants {
-					if v.ID == vid {
-						allFields = append(allFields, v.Fields...)
-						break
-					}
-				}
-			}
-			for _, f := range allFields {
-				if f.Name == "" || strings.HasPrefix(f.Name, "_") {
-					continue
-				}
-				value, ok := phase.FormData[f.Name]
-				if !ok || value == nil || fmt.Sprintf("%v", value) == "" {
-					continue
-				}
-				label := f.Label
-				if label == "" {
-					label = f.Name
-				}
-				sb.WriteString(fmt.Sprintf("- **%s**：%v\n", label, value))
-			}
-		} else {
-			// Fallback: no schema, iterate map (non-deterministic order)
-			for key, value := range phase.FormData {
-				if key == "" || strings.HasPrefix(key, "_") {
-					continue
-				}
-				sb.WriteString(fmt.Sprintf("- **%s**：%v\n", key, value))
-			}
 		}
+		sb.WriteString(RenderFormDataFields(phase, true))
 		sb.WriteString("\n")
 	}
 
@@ -156,6 +121,83 @@ func BuildPhasePrompt(state *WorkflowState) string {
 	// Phase-specific instructions
 	sb.WriteString(phaseInstruction(phase.ID))
 
+	return sb.String()
+}
+
+// RenderFormDataFields renders the FormData key-value pairs as a bullet list.
+// This is the single implementation used by both:
+// - BuildPhasePrompt (system prompt injection)
+// - GUI's buildFormDataInlinedUserText (user message injection)
+//
+// boldLabels: when true, renders "- **Label**：value" (system prompt style);
+// when false, renders "- Label：value" (user message style).
+func RenderFormDataFields(phase *Phase, boldLabels bool) string {
+	if phase.FormData == nil || len(phase.FormData) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+
+	renderField := func(label string, value interface{}) {
+		s := fmt.Sprintf("%v", value)
+		if s == "" || s == "<nil>" {
+			return
+		}
+		if boldLabels {
+			sb.WriteString(fmt.Sprintf("- **%s**：", label))
+		} else {
+			sb.WriteString(fmt.Sprintf("- %s：", label))
+		}
+		// Multi-line values: indent continuation lines to preserve bullet structure.
+		if strings.Contains(s, "\n") {
+			lines := strings.Split(s, "\n")
+			sb.WriteString(lines[0])
+			sb.WriteString("\n")
+			for _, line := range lines[1:] {
+				if strings.TrimSpace(line) == "" {
+					continue
+				}
+				sb.WriteString("  " + line + "\n")
+			}
+		} else {
+			sb.WriteString(s)
+			sb.WriteString("\n")
+		}
+	}
+
+	if phase.InputSchema != nil {
+		allFields := make([]PhaseInputField, 0, len(phase.InputSchema.Fields)+8)
+		allFields = append(allFields, phase.InputSchema.Fields...)
+		if variantID, ok := phase.FormData["_agent_view_variant"]; ok && variantID != nil {
+			vid := fmt.Sprintf("%v", variantID)
+			for _, v := range phase.InputSchema.Variants {
+				if v.ID == vid {
+					allFields = append(allFields, v.Fields...)
+					break
+				}
+			}
+		}
+		for _, f := range allFields {
+			if f.Name == "" || strings.HasPrefix(f.Name, "_") {
+				continue
+			}
+			value, ok := phase.FormData[f.Name]
+			if !ok || value == nil || fmt.Sprintf("%v", value) == "" {
+				continue
+			}
+			label := f.Label
+			if label == "" {
+				label = f.Name
+			}
+			renderField(label, value)
+		}
+	} else {
+		for key, value := range phase.FormData {
+			if key == "" || strings.HasPrefix(key, "_") {
+				continue
+			}
+			renderField(key, value)
+		}
+	}
 	return sb.String()
 }
 
@@ -2026,7 +2068,7 @@ func phaseInstruction(phaseID string) string {
 
 步骤 1：用 write_file 保存权利要求书纯文本为 .md 文件。
 write_file(path="OUTPUT_DIR/权利要求书.md", content="1. 一种...", mode="write")
-如果内容超过 write_file 单次限制（1800 字符），分多次 mode="append" 写入。
+如果内容超过约 6000 字符，建议分多次 mode="append" 写入以避免模型输出截断。
 格式：每条权利要求占一段，段落之间用空行分隔。
 
 步骤 2：用 write_file 保存转换脚本（以下内容直接复制，只需替换 OUTPUT_DIR）：
@@ -2034,6 +2076,12 @@ write_file(path="OUTPUT_DIR/md2docx.py", content="import os\nimport re\nfrom doc
 
 步骤 3：用 bash 安装依赖并执行转换：
 bash(command="pip install python-docx -q && python OUTPUT_DIR/md2docx.py")
+
+如果 Python 不可用（pip/python 报错 "not found"），改用 PowerShell COM 方案：
+步骤 2（替代）：用 write_file 保存 PowerShell 转换脚本：
+write_file(path="OUTPUT_DIR/md2docx.ps1", content="$src = 'OUTPUT_DIR/权利要求书.md'\n$dst = 'OUTPUT_DIR/权利要求书.docx'\n$word = New-Object -ComObject Word.Application\n$word.Visible = $false\ntry {\n    $doc = $word.Documents.Add()\n    $text = Get-Content $src -Encoding UTF8 -Raw\n    $claims = $text -split '(?m)(?=^\\d+\\.\\s)'\n    foreach ($claim in $claims) {\n        $claim = $claim.Trim()\n        if ($claim) { $doc.Paragraphs.Add().Range.Text = $claim }\n    }\n    $doc.SaveAs2([System.IO.Path]::GetFullPath($dst))\n    Write-Output \"saved: $dst\"\n} finally {\n    $doc.Close()\n    $word.Quit()\n    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null\n}\n", mode="write")
+步骤 3（替代）：执行 PowerShell 脚本：
+bash(command="powershell -ExecutionPolicy Bypass -File OUTPUT_DIR/md2docx.ps1")
 
 要求：
 - 所有 OUTPUT_DIR 替换为项目路径（在本消息顶部的"项目路径"字段中可以看到）
@@ -2118,7 +2166,7 @@ bash(command="pip install python-docx -q && python OUTPUT_DIR/md2docx.py")
 
 步骤 1：用 write_file 保存说明书纯文本为 .md 文件。
 write_file(path="OUTPUT_DIR/说明书.md", content="# 发明名称\n\n## 技术领域\n...", mode="write")
-如果内容超过 write_file 单次限制（1800 字符），分多次 mode="append" 写入。
+如果内容超过约 6000 字符，建议分多次 mode="append" 写入以避免模型输出截断。
 格式：使用标准 Markdown（# 标题、正文段落、空行分隔）。
 
 步骤 2：用 write_file 保存转换脚本（以下内容直接复制，只需替换 OUTPUT_DIR）：
@@ -2126,6 +2174,12 @@ write_file(path="OUTPUT_DIR/md2docx_desc.py", content="import os\nfrom docx impo
 
 步骤 3：用 bash 安装依赖并执行转换：
 bash(command="pip install python-docx -q && python OUTPUT_DIR/md2docx_desc.py")
+
+如果 Python 不可用（pip/python 报错 "not found"），改用 PowerShell COM 方案：
+步骤 2（替代）：用 write_file 保存 PowerShell 转换脚本：
+write_file(path="OUTPUT_DIR/md2docx_desc.ps1", content="$src = 'OUTPUT_DIR/说明书.md'\n$dst = 'OUTPUT_DIR/说明书.docx'\n$word = New-Object -ComObject Word.Application\n$word.Visible = $false\ntry {\n    $doc = $word.Documents.Add()\n    $text = Get-Content $src -Encoding UTF8 -Raw\n    foreach ($block in ($text -split '\\n\\n')) {\n        $block = $block.Trim()\n        if (-not $block) { continue }\n        if ($block.StartsWith('#')) {\n            $level = ($block -replace '[^#]','').Length\n            $title = $block.TrimStart('#').Trim()\n            $doc.Paragraphs.Add().Range.Text = $title\n        } else {\n            $doc.Paragraphs.Add().Range.Text = $block\n        }\n    }\n    $doc.SaveAs2([System.IO.Path]::GetFullPath($dst))\n    Write-Output \"saved: $dst\"\n} finally {\n    $doc.Close()\n    $word.Quit()\n    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null\n}\n", mode="write")
+步骤 3（替代）：执行 PowerShell 脚本：
+bash(command="powershell -ExecutionPolicy Bypass -File OUTPUT_DIR/md2docx_desc.ps1")
 
 要求：
 - 所有 OUTPUT_DIR 替换为项目路径（在本消息顶部的"项目路径"字段中可以看到）
@@ -2160,10 +2214,13 @@ bash(command="pip install python-docx -q && python OUTPUT_DIR/md2docx_desc.py")
 - 数据流图：用 matplotlib 绘制节点和连线
 - 保存为 PNG 格式到项目附图目录
 
-**方式 B：Mermaid → PNG（如系统有 mmdc 命令）**
+**方式 B：SVG 文件（matplotlib 不可用时的备选）**
+用 write_file 将 SVG 源码写入项目目录下的 .svg 文件（如 图1-系统架构.svg）。
+
+**方式 C：Mermaid → PNG（如系统有 mmdc 命令）**
 用 write_file 写 .mmd 文件，bash 调用 mmdc 转 PNG。
 
-**方式 C：drawio-skill（如已安装）**
+**方式 D：drawio-skill（如已安装）**
 调用 manage_skill 运行 drawio-skill 生成图表。
 
 ### 必须生成的附图类型（根据技术方案选择适用的）
@@ -2203,8 +2260,8 @@ bash(command="pip install python-docx -q && python OUTPUT_DIR/md2docx_desc.py")
 
 ## 重要约束
 - 附图中的标记必须与说明书和权利要求中的组件一一对应。
-- 必须实际生成图片文件（用 Python 脚本），不能只输出描述。
-- 如果 Python 绘图失败，改用 Mermaid 或文本描述方式，并明确告知用户需要人工补充正式附图。
+- 所有生成的图形内容（SVG/PNG/Mermaid）必须用 write_file 或 bash 保存到项目目录下的文件中，然后在文档中引用文件路径。不要在回复中内联图形源码。
+- 如果所有绘图方式都失败，明确告知用户需要人工补充正式附图。
 - 只生成一份附图整理文档，输出完毕后立即停止。
 - 【严禁】输出确认提示语或后续内容。
 - 【严禁】自己模拟用户确认。

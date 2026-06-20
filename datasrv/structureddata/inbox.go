@@ -38,6 +38,8 @@ func (s *Service) MISInbox(ctx context.Context, p Principal, in QueryMISInboxInp
 				continue
 			}
 			overdue := approval.Status == recordApprovalStatusPending && !approval.DueAt.IsZero() && approval.DueAt.Before(s.now().UTC())
+			metadata := recordApprovalMetadata(approval)
+			metadata["overdue"] = overdue
 			items = append(items, MISInboxItem{
 				ID:          approval.ID,
 				Type:        "approval",
@@ -49,7 +51,7 @@ func (s *Service) MISInbox(ctx context.Context, p Principal, in QueryMISInboxInp
 				Summary:     approval.Summary,
 				Action:      "review_record_approval",
 				TargetURL:   "/api/v1/data/approvals/" + approval.ID,
-				Metadata:    map[string]any{"kind": approval.Kind, "priority": approval.Priority, "assigned_to": approval.AssignedTo, "due_at": formatOptionalPlanTime(approval.DueAt), "overdue": overdue, "request": approval.Request},
+				Metadata:    metadata,
 				CreatedBy:   approval.CreatedBy,
 				CreatedAt:   approval.CreatedAt,
 				UpdatedAt:   approval.UpdatedAt,

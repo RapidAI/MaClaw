@@ -108,6 +108,72 @@ function formatUnlimitedCredits(lang?: string): string {
     return "Unlimited";
 }
 
+function hasPeriodLimits(grant: HubLLMActiveGrant): boolean {
+    const limits = grant.period_limits;
+    if (!limits) return false;
+    return numeric(limits.five_hour) > 0
+        || numeric(limits.daily) > 0
+        || numeric(limits.weekly) > 0
+        || numeric(limits.monthly) > 0;
+}
+
+function grantDurationDays(grant: HubLLMActiveGrant): number {
+    const startsAt = new Date(grant.starts_at || "").getTime();
+    const expiresAt = new Date(grant.expires_at || "").getTime();
+    if (!Number.isFinite(startsAt) || !Number.isFinite(expiresAt) || expiresAt <= startsAt) return 0;
+    return Math.round((expiresAt - startsAt) / (24 * 60 * 60 * 1000));
+}
+
+function periodCardKind(grant: HubLLMActiveGrant): "annual" | "quarterly" | "monthly" | "weekly" | "period" {
+    const days = grantDurationDays(grant);
+    if (days >= 330) return "annual";
+    if (days >= 80) return "quarterly";
+    if (days >= 27) return "monthly";
+    if (days >= 6) return "weekly";
+    return "period";
+}
+
+function formatPeriodCardKind(
+    grant: HubLLMActiveGrant,
+    t: (en: string, zhHans: string, zhHant?: string) => string,
+): string {
+    switch (periodCardKind(grant)) {
+        case "annual":
+            return t("annual card", "包年卡", "包年卡");
+        case "quarterly":
+            return t("quarterly card", "包季卡", "包季卡");
+        case "monthly":
+            return t("monthly card", "包月卡", "包月卡");
+        case "weekly":
+            return t("weekly card", "包周卡", "包週卡");
+        default:
+            return t("period card", "周期卡", "週期卡");
+    }
+}
+
+function formatGrantSource(
+    grant: HubLLMActiveGrant,
+    t: (en: string, zhHans: string, zhHant?: string) => string,
+): string {
+    const source = String(grant.source || "").trim();
+    const key = source.toLowerCase();
+    if (!source) return "-";
+    if (key === "card") {
+        const cardKind = hasPeriodLimits(grant) ? formatPeriodCardKind(grant, t) : t("point card", "点卡", "點卡");
+        return t(`Recharge card (${cardKind})`, `充值卡（${cardKind}）`, `儲值卡（${cardKind}）`);
+    }
+    if (key === "default_new_user_backfill") {
+        return t("New user gift", "新用户赠送", "新用戶贈送");
+    }
+    if (key === "admin_grant") {
+        return t("Admin grant", "管理员授权", "管理員授權");
+    }
+    if (key === "ve_platform_employee") {
+        return t("Platform employee grant", "平台员工授权", "平台員工授權");
+    }
+    return source;
+}
+
 function creditGrants(status: HubLLMServiceStatus | null): HubLLMActiveGrant[] {
     return (status?.credit_grants?.length ? status.credit_grants : status?.active_grants) || [];
 }
@@ -704,7 +770,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                                 {grantsForDetails.map((grant, index) => (
                                     <tr key={(grant.service_group_id || "") + "-" + index}>
                                         <td><span className="hub-service-redeem__strong">{grant.service_group_id || "-"}</span></td>
-                                        <td>{grant.source || "-"}</td>
+                                        <td>{formatGrantSource(grant, t)}</td>
                                         <td>{formatTime(grant.starts_at, lang)}</td>
                                         <td>{formatTime(grant.expires_at, lang)}</td>
                                         <td>{formatCredits(grant.credits_total)}</td>

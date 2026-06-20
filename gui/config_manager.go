@@ -737,6 +737,10 @@ func (m *ConfigManager) applyGeneralChange(cfg *corelib.AppConfig, key, value st
 		old := fmt.Sprintf("%v", cfg.CheckUpdateOnStartup)
 		cfg.CheckUpdateOnStartup = strings.EqualFold(value, "true")
 		return old, nil
+	case "prefer_beta_channel":
+		old := fmt.Sprintf("%v", cfg.PreferBetaChannel)
+		cfg.PreferBetaChannel = strings.EqualFold(value, "true")
+		return old, nil
 	case "workstation_mode":
 		old := fmt.Sprintf("%v", cfg.WorkstationMode)
 		cfg.WorkstationMode = strings.EqualFold(value, "true")

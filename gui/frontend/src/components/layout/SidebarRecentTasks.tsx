@@ -65,9 +65,13 @@ type SidebarRecentTasksProps = {
 
 const textForLang = localizeText;
 
-const normalizeTaskNameInput = (value?: string | null) => {
-    const normalized = (value || '').trim().replace(/\s+/g, ' ');
-    return Array.from(normalized).slice(0, 120).join('');
+const normalizeTaskCommandInput = (value?: string | null) => {
+    // Preserve newlines (multi-line task commands), only collapse horizontal whitespace per line
+    const lines = (value || '').split('\n').map(line => line.trim().replace(/[ \t]+/g, ' '));
+    // Remove leading/trailing empty lines, collapse 3+ consecutive empty lines to 2
+    const trimmed = lines.join('\n').trim().replace(/\n{3,}/g, '\n\n');
+    // Limit to 2000 characters (UTF-16 code units, consistent with HTML maxLength)
+    return trimmed.slice(0, 2000);
 };
 
 export const SidebarRecentTasks = ({
@@ -115,7 +119,7 @@ export const SidebarRecentTasks = ({
 
     const submitCreateTask = async () => {
         if (creatingTaskRef.current) return;
-        const taskName = normalizeTaskNameInput(newTaskName);
+        const taskName = normalizeTaskCommandInput(newTaskName);
         if (!taskName) return;
         creatingTaskRef.current = true;
         setCreatingTask(true);
@@ -207,35 +211,48 @@ export const SidebarRecentTasks = ({
             >
                 <form
                     className="modal-content"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="recent-task-dialog-title"
                     onMouseDown={e => e.stopPropagation()}
                     onClick={e => e.stopPropagation()}
                     onKeyDown={e => { if (e.key === 'Escape') closeCreateDialog(); }}
                     onSubmit={e => { e.preventDefault(); void submitCreateTask(); }}
-                    style={{ width: '360px', maxWidth: '92vw', textAlign: 'left' }}
+                    style={{ width: '420px', maxWidth: '92vw', textAlign: 'left' }}
                 >
                     <div className="modal-header">
-                        <h3 style={{ fontSize: '0.88rem', margin: 0 }}>{textForLang(lang, 'Create task', '创建任务', '建立任務')}</h3>
+                        <h3 id="recent-task-dialog-title" style={{ fontSize: '0.88rem', margin: 0 }}>{textForLang(lang, 'Create task', '创建任务', '建立任務')}</h3>
                         <button type="button" className="btn-close" onClick={closeCreateDialog} disabled={creatingTask}>X</button>
                     </div>
                     <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                         <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }} htmlFor="recent-task-name-input">
                             {textForLang(lang, 'Task command', '任务命令', '任務命令')}
                         </label>
-                        <input
+                        <textarea
                             id="recent-task-name-input"
                             autoFocus
                             value={newTaskName}
                             onChange={e => setNewTaskName(e.target.value)}
-                            placeholder={textForLang(lang, 'Enter a task command', '请输入新任务的命令', '請輸入新任務的命令')}
+                            onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void submitCreateTask(); } }}
+                            placeholder={textForLang(lang, 'Describe the task you want to perform (Ctrl+Enter to submit)', '描述你想要执行的任务（Ctrl+Enter 提交）', '描述你想要執行的任務（Ctrl+Enter 提交）')}
                             disabled={creatingTask}
-                            style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.82rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '8px 10px', outline: 'none' }}
+                            maxLength={2000}
+                            rows={6}
+                            style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.82rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '8px 10px', outline: 'none', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5, minHeight: '80px', maxHeight: '280px', transition: 'border-color 0.15s, box-shadow 0.15s' }}
+                            onFocus={e => { e.currentTarget.style.borderColor = 'var(--theme-primary)'; e.currentTarget.style.boxShadow = '0 0 0 2px color-mix(in srgb, var(--theme-primary) 20%, transparent)'; }}
+                            onBlur={e => { e.currentTarget.style.borderColor = ''; e.currentTarget.style.boxShadow = ''; }}
                         />
+                        {newTaskName.length > 1600 && (
+                            <span style={{ fontSize: '0.66rem', color: newTaskName.length >= 2000 ? 'var(--theme-danger, #ef4444)' : 'var(--theme-text-muted)', textAlign: 'right' }}>
+                                {newTaskName.length} / 2000
+                            </span>
+                        )}
                     </div>
                     <div className="modal-footer">
                         <button type="button" className="btn-secondary" style={{ fontSize: '0.78rem', padding: '4px 14px' }} onClick={closeCreateDialog} disabled={creatingTask}>
                             {textForLang(lang, 'Cancel', '取消', '取消')}
                         </button>
-                        <button type="submit" className="btn-primary" style={{ fontSize: '0.78rem', padding: '4px 14px' }} disabled={creatingTask || !normalizeTaskNameInput(newTaskName)}>
+                        <button type="submit" className="btn-primary" style={{ fontSize: '0.78rem', padding: '4px 14px' }} disabled={creatingTask || !newTaskName.trim()}>
                             {textForLang(lang, 'OK', '确定', '確定')}
                         </button>
                     </div>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
 import { CancelNLSkillRun, DownloadSkillRunArtifact, GetMISDataConfig, GetNLSkillRunStatus, ListMaclawAppApprovalInstances, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, OpenFileOrShowInFolder, InstallMaclawAppDependencies, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import './AppsPage.css';
@@ -14,6 +14,7 @@ type AppEntry = {
     category: string;
     kind: AppKind;
     icon: AppIconName;
+    customIconDataUrl?: string;
     accent: string;
     pinned?: boolean;
     recentUsedAt?: string;
@@ -85,6 +86,13 @@ type AppWorkspaceLayout = {
     layouts?: Record<string, any>;
 };
 
+type AppApprovalBinding = {
+    event: string;
+    workflowSkillId: string;
+    workflowVersion?: string;
+    objectRole?: string;
+};
+
 type AppManifestBinding = {
     schema: 'maclaw.app.v1';
     installUnit: 'enterprise_app_pack' | 'skill' | 'mcp' | 'builtin';
@@ -99,6 +107,9 @@ type AppManifestBinding = {
         skills?: AppSkillDependency[];
     };
     ui?: AppWorkspaceLayout;
+    mis?: {
+        approvalBindings?: AppApprovalBinding[];
+    };
     datasrv?: {
         domain: string;
         datasetID?: string;
@@ -173,12 +184,14 @@ type SkillRunArtifactView = {
 
 type SkillRunOutputBlockView = {
     id?: string;
+    type?: string;
     kind?: string;
     title?: string;
     text?: string;
     status?: string;
     artifact_id?: string;
     artifact?: SkillRunArtifactView;
+    data?: unknown;
 };
 
 type SkillRunStepView = {
@@ -216,6 +229,27 @@ type AppRunHistoryEntry = {
     at: string;
 };
 
+type ApprovalInstanceEventView = {
+    at: string;
+    node?: string;
+    actor?: string;
+    decision?: string;
+    message?: string;
+};
+
+type ApprovalInstanceArtifactView = SkillRunArtifactView;
+
+type ApprovalInstanceOutputView = {
+    type?: string;
+    kind?: string;
+    title?: string;
+    text?: string;
+    status?: string;
+    artifact_id?: string;
+    artifact?: ApprovalInstanceArtifactView;
+    data?: Record<string, unknown>;
+};
+
 type ApprovalInstanceView = {
     id: string;
     appID?: string;
@@ -231,6 +265,12 @@ type ApprovalInstanceView = {
     workflowDecisionID?: string;
     businessStatus?: string;
     resultStatus?: string;
+    recordID?: string;
+    detailURL?: string;
+    resultPayload?: Record<string, unknown>;
+    outputs?: ApprovalInstanceOutputView[];
+    artifacts?: ApprovalInstanceArtifactView[];
+    events?: ApprovalInstanceEventView[];
     amount?: string;
 };
 
@@ -249,6 +289,8 @@ type BackendApprovalInstance = {
     result?: string;
     workflow_skill_id?: string;
     workflow_decision_id?: string;
+    approval_event?: string;
+    approval_object_role?: string;
     business_status?: string;
     result_status?: string;
     business_entity?: string;
@@ -260,6 +302,28 @@ type BackendApprovalInstance = {
     approval_id?: string;
     record_approval_id?: string;
     detail_url?: string;
+    result_payload?: Record<string, unknown>;
+    outputs?: ApprovalInstanceOutputView[];
+    artifacts?: ApprovalInstanceArtifactView[];
+};
+
+type ApprovalRunContext = {
+    instance: BackendApprovalInstance;
+};
+
+type ApprovalWorkflowCompletion = {
+    status: 'approved' | 'rejected' | 'attention';
+    lane: ApprovalInstanceView['lane'];
+    currentNode: string;
+    resultText: string;
+    businessStatus: string;
+    resultStatus: string;
+    detailURL?: string;
+    recordID?: string;
+    resultPayload?: Record<string, unknown>;
+    outputs?: ApprovalInstanceOutputView[];
+    artifacts?: ApprovalInstanceArtifactView[];
+    eventAction: string;
 };
 
 type AppLayoutState = {
@@ -284,6 +348,7 @@ type AppInstallResultItem = {
     key: string;
     name: string;
     icon: AppIconName;
+    customIconDataUrl?: string;
     accent: string;
     action: 'installed' | 'upgraded' | 'skipped';
     detail: string;
@@ -359,6 +424,8 @@ type SkillAppManifestEntry = {
     description?: string;
     category?: string;
     icon?: string;
+    custom_icon_data_url?: string;
+    customIconDataUrl?: string;
     input_mode?: 'file' | 'form' | 'mixed';
     multiple_files?: boolean;
     output_modes?: string[];
@@ -378,6 +445,7 @@ const runHistoryStorageKey = 'maclaw:apps-run-history:v1';
 const publishSubmissionStorageKey = 'maclaw:apps-publish-submissions:v1';
 const maxPinnedApps = 8;
 const maxSkillAppStagingBytes = 25 * 1024 * 1024;
+const maxAppIconUploadBytes = 5 * 1024 * 1024;
 const allowedOutputModes = ['docx', 'xlsx', 'pdf', 'json', 'txt'];
 const allowedSkillFieldTypes = ['text', 'select', 'boolean'];
 let recentUseSequence = 0;
@@ -508,8 +576,16 @@ const labels = {
         reject: '\u9a73\u56de',
         markAttention: '\u6807\u8bb0\u5173\u6ce8',
         approvalResult: '\u5ba1\u6279\u7ed3\u679c',
+        approvalResultPackage: '\u7ed3\u679c\u5305',
+        approvalOutputData: '\u7ed3\u6784\u5316\u6570\u636e',
         approvalInstanceId: '\u5b9e\u4f8b\u7f16\u53f7',
+        workflowSkill: '\u81ea\u52a8\u5ba1\u6279\u6d41\u7a0b',
+        dataSrvRecord: '\u4e1a\u52a1\u8bb0\u5f55',
+        businessStatusLabel: '\u4e1a\u52a1\u72b6\u6001',
+        resultStatusLabel: '\u7ed3\u679c\u72b6\u6001',
+        viewFullWorkflow: '\u67e5\u770b\u5b8c\u6574\u6d41\u7a0b',
         noRunHistory: '\u6682\u65e0\u8fd0\u884c\u8bb0\u5f55',
+        noApprovalInstances: '\u5f53\u524d\u5206\u7c7b\u6682\u65e0\u5ba1\u6279\u5b9e\u4f8b',
         clearHistory: '\u6e05\u7a7a\u5386\u53f2',
         submitted: '\u5df2\u63d0\u4ea4',
         noOpenAppTitle: '\u9009\u62e9\u5e94\u7528',
@@ -540,10 +616,14 @@ const labels = {
         datasrvError: '\u4e0d\u53ef\u7528',
         addToPanel: '\u52a0\u5230\u9762\u677f',
         added: '\u5df2\u6dfb\u52a0',
+        addingToPanel: '\u52a0\u5165\u4e2d',
+        inPanel: '\u5df2\u52a0\u5165\u9762\u677f',
         discoveredApps: '\u53ef\u751f\u6210\u5e94\u7528',
-        skillApps: 'Skill \u5e94\u7528',
-        skillAppsReady: '\u5df2\u53d1\u73b0',
-        manifestPreview: '\u5e94\u7528 manifest \u6a21\u677f',
+        skillApps: '\u53d1\u73b0\u7684\u5e94\u7528',
+        skillAppsMeta: '\u4ece\u5df2\u5b89\u88c5\u80fd\u529b\u4e2d\u627e\u5230\uff0c\u5df2\u81ea\u52a8\u540c\u6b65\u5230\u5de6\u4fa7\u5e94\u7528\u9762\u677f',
+        skillAppsErrorMeta: '\u68c0\u67e5\u5df2\u5b89\u88c5\u80fd\u529b\u65f6\u9047\u5230\u95ee\u9898',
+        manifestPreview: '\u5f53\u524d\u8349\u7a3f manifest',
+        manifestPreviewHint: '\u7528\u4e8e\u5ba1\u6838\u548c\u590d\u5236\u7684\u5b9e\u65f6 JSON\uff0c\u5df2\u6839\u636e\u4e0a\u65b9\u914d\u7f6e\u540c\u6b65\u66f4\u65b0',
         manifest: 'Manifest',
         exportPack: '\u590d\u5236\u5e94\u7528\u5305',
         copy: '\u590d\u5236',
@@ -734,7 +814,16 @@ const labels = {
         reject: 'Reject',
         markAttention: 'Mark attention',
         approvalResult: 'Approval result',
-        approvalInstanceId: 'Instance ID',        noRunHistory: 'No runs yet',
+        approvalResultPackage: 'Result package',
+        approvalOutputData: 'Structured data',
+        approvalInstanceId: 'Instance ID',
+        workflowSkill: 'Approval workflow',
+        dataSrvRecord: 'Business record',
+        businessStatusLabel: 'Business status',
+        resultStatusLabel: 'Result status',
+        viewFullWorkflow: 'View full workflow',
+        noRunHistory: 'No runs yet',
+        noApprovalInstances: 'No approval instances in this lane',
         clearHistory: 'Clear history',
         submitted: 'Submitted',
         noOpenAppTitle: 'Choose an app',
@@ -765,10 +854,14 @@ const labels = {
         datasrvError: 'Unavailable',
         addToPanel: 'Add to panel',
         added: 'Added',
+        addingToPanel: 'Adding',
+        inPanel: 'In panel',
         discoveredApps: 'Discovered apps',
-        skillApps: 'Skill apps',
-        skillAppsReady: 'Discovered',
-        manifestPreview: 'App manifest template',
+        skillApps: 'Found apps',
+        skillAppsMeta: 'Found from installed capabilities and synced to the app panel',
+        skillAppsErrorMeta: 'Could not check installed capabilities',
+        manifestPreview: 'Current draft manifest',
+        manifestPreviewHint: 'Live JSON for review and copy, synchronized from the configuration above',
         manifest: 'Manifest',
         exportPack: 'Copy app pack',
         copy: 'Copy',
@@ -931,7 +1024,11 @@ const isEnterpriseApprovalAppKind = (kind: AppKind) => kind === 'enterprise_appr
 
 const appAccentLabel = (swatch: { value: string; zh: string; en: string }, lang?: string) => `${swatch[isZh(lang) ? 'zh' : 'en']} ${swatch.value}`;
 
-function makeEnterpriseManifest(kind: 'enterprise_approval_app' | 'enterprise_normal_app', domain: string, preferredAction: string, preferredView: string, preferredReport: string, preferredDashboard: string, appSkillID = '', dependencies: AppSkillDependency[] = []): AppManifestBinding {
+function makeEnterpriseManifest(kind: 'enterprise_approval_app' | 'enterprise_normal_app', domain: string, preferredAction: string, preferredView: string, preferredReport: string, preferredDashboard: string, appSkillID = '', dependencies: AppSkillDependency[] = [], approvalBinding?: Pick<AppApprovalBinding, 'event' | 'objectRole'>): AppManifestBinding {
+    const approvalWorkflow = kind === 'enterprise_approval_app' ? dependencies.find((dep) => dep.kind === 'workflow_skill' && dep.id) : undefined;
+    const approvalEvent = approvalBinding?.event?.trim() || (domain || 'record') + '.submitted';
+    const approvalObjectRole = approvalBinding?.objectRole?.trim() || domain || undefined;
+    const approvalBindings = approvalWorkflow ? [{ event: approvalEvent, workflowSkillId: approvalWorkflow.id, workflowVersion: approvalWorkflow.version, objectRole: approvalObjectRole }] : undefined;
     return {
         schema: 'maclaw.app.v1',
         installUnit: 'enterprise_app_pack',
@@ -939,6 +1036,7 @@ function makeEnterpriseManifest(kind: 'enterprise_approval_app' | 'enterprise_no
         entryKind: kind,
         launchMode: 'agent_dynamic_ui',
         datasrv: { domain, preferredAction, preferredView, preferredReport, preferredDashboard },
+        mis: approvalBindings ? { approvalBindings } : undefined,
         appSkill: appSkillID ? { id: appSkillID, version: '1.0.0' } : undefined,
         dependencies: dependencies.length ? { skills: dependencies } : undefined,
         ui: defaultWorkspaceLayoutForKind(kind),
@@ -1084,10 +1182,10 @@ function runtimeWorkspaceOrder(layout: RuntimeWorkspaceLayout) {
     const outputEarly = layout.outputRegion === 'right' || layout.outputRegion === 'modal';
     return {
         input: 10,
-        approval: outputEarly ? 30 : 20,
+        approval: 20,
         status: outputEarly ? 40 : 30,
         actions: outputEarly ? 50 : 40,
-        output: outputEarly ? 20 : 50,
+        output: outputEarly ? 30 : 50,
         history: 60,
     };
 }
@@ -1111,6 +1209,25 @@ function normalizeAppDependencies(raw: unknown): AppManifestBinding['dependencie
     return skills.length ? { skills } : undefined;
 }
 
+function normalizeAppMIS(raw: unknown): AppManifestBinding['mis'] {
+    const value = raw && typeof raw === 'object' ? raw as { approvalBindings?: unknown; approval_bindings?: unknown } : {};
+    const rawBindings = Array.isArray(value.approvalBindings) ? value.approvalBindings : Array.isArray(value.approval_bindings) ? value.approval_bindings : [];
+    const approvalBindings = rawBindings.reduce<AppApprovalBinding[]>((items, item) => {
+        const binding = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+        const event = String(binding.event || binding.businessEvent || binding.business_event || '').trim();
+        const workflowSkillId = String(binding.workflowSkillId || binding.workflow_skill_id || binding.workflowId || binding.workflow_id || '').trim();
+        if (!event || !workflowSkillId) return items;
+        items.push({
+            event,
+            workflowSkillId,
+            workflowVersion: String(binding.workflowVersion || binding.workflow_version || '').trim() || undefined,
+            objectRole: String(binding.objectRole || binding.object_role || '').trim() || undefined,
+        });
+        return items;
+    }, []);
+    return approvalBindings.length ? { approvalBindings } : undefined;
+}
+
 function normalizeAppWorkspaceLayout(raw: unknown, kind: AppKind): AppWorkspaceLayout {
     const value = raw && typeof raw === 'object' ? raw as Partial<AppWorkspaceLayout> : undefined;
     return value?.schema === 'maclaw.app.ui.v1' ? { ...value, schema: 'maclaw.app.ui.v1' } : defaultWorkspaceLayoutForKind(kind);
@@ -1120,8 +1237,17 @@ function appSkillDependencies(app: AppEntry): AppSkillDependency[] {
     const deps = app.manifest?.dependencies?.skills || [];
     const appSkill = app.manifest?.appSkill?.id ? [{ id: app.manifest.appSkill.id, version: app.manifest.appSkill.version, kind: 'runtime_skill' as const, required: true, source: 'hub' as const }] : [];
     const boundSkill = app.manifest?.skill?.id ? [{ id: app.manifest.skill.id, kind: 'runtime_skill' as const, required: true, source: 'hub' as const }] : [];
-    return Array.from(new Map([...appSkill, ...boundSkill, ...deps].map((dep) => [dep.id, dep])).values());
+    const approvalWorkflowSkills = (app.manifest?.mis?.approvalBindings || []).map((binding) => ({
+        id: binding.workflowSkillId,
+        version: binding.workflowVersion,
+        kind: 'workflow_skill' as const,
+        required: true,
+        source: 'hub' as const,
+        capabilities: ['approval.workflow'],
+    })).filter((dep) => dep.id);
+    return Array.from(new Map([...appSkill, ...boundSkill, ...deps, ...approvalWorkflowSkills].map((dep) => [dep.id, dep])).values());
 }
+
 function makeAutomationManifest(): AppManifestBinding {
     return {
         schema: 'maclaw.app.v1',
@@ -1175,6 +1301,7 @@ function normalizeStoredAppEntry(app: Partial<AppEntry> | undefined, custom = fa
         category: String(app.category || '\u672a\u5206\u7c7b'),
         kind: normalizeAppKind(app.kind),
         icon: normalizeSkillAppIcon(app.icon),
+        customIconDataUrl: normalizeCustomIconDataUrl((app as any).customIconDataUrl),
         accent: String(app.accent || defaultAccentForKind(normalizeAppKind(app.kind))),
         version: normalizeAppVersion(app.version),
         source: migratedSource,
@@ -1198,6 +1325,7 @@ function isEditedInitialApp(app: AppEntry) {
         base.category !== app.category ||
         base.kind !== app.kind ||
         base.icon !== app.icon ||
+        base.customIconDataUrl !== app.customIconDataUrl ||
         base.accent !== app.accent ||
         normalizeAppVersion(base.version) !== normalizeAppVersion(app.version) ||
         base.source !== app.source ||
@@ -1347,9 +1475,17 @@ function domainAccent(domain: string) {
 
 async function discoverSkillAppManifests(): Promise<SkillAppDiscovery> {
     const entries = await Promise.resolve().then(() => ListSkillAppManifests()) as SkillAppManifestEntry[];
+    const candidates = (entries || []).map(skillManifestToApp).filter((app): app is AppEntry => !!app);
+    const uniqueCandidates: AppEntry[] = [];
+    const seenCandidateIds = new Set<string>();
+    candidates.forEach((app) => {
+        if (seenCandidateIds.has(app.id)) return;
+        seenCandidateIds.add(app.id);
+        uniqueCandidates.push(app);
+    });
     return {
         status: 'ready',
-        candidates: (entries || []).map(skillManifestToApp).filter((app): app is AppEntry => !!app),
+        candidates: uniqueCandidates,
     };
 }
 
@@ -1366,6 +1502,7 @@ function skillManifestToApp(entry: SkillAppManifestEntry): AppEntry | null {
         category: String(entry.category || 'Skill'),
         kind: 'tool_app',
         icon: normalizeSkillAppIcon(entry.icon),
+        customIconDataUrl: normalizeCustomIconDataUrl(entry.custom_icon_data_url || entry.customIconDataUrl),
         accent: '#7c3f58',
         version: normalizeAppVersion((entry as any).version),
         source: 'skill',
@@ -1516,6 +1653,271 @@ function skillRunOutputBlocks(status?: SkillRunStatusView | null): SkillRunOutpu
         blocks.push(block);
     }
     return blocks;
+}
+
+function skillRunApprovalObjects(status?: SkillRunStatusView | null): Record<string, any>[] {
+    const raw = status as any;
+    const blocks = skillRunOutputBlocks(status);
+    const values: unknown[] = [
+        raw,
+        raw?.summary,
+        raw?.session_progress,
+        raw?.result,
+        raw?.output,
+        raw?.approval_result,
+        raw?.approval,
+        raw?.summary?.last_output_snippet,
+        raw?.summary?.last_error_snippet,
+        raw?.session_progress?.last_result,
+        raw?.session_progress?.progress_summary,
+        ...(Array.isArray(raw?.outputs) ? raw.outputs : []),
+        ...blocks,
+        ...blocks.map((block) => block.text),
+        ...blocks.map((block) => block.artifact),
+    ];
+    return values.flatMap((value) => parseSkillRunResultObjects(value));
+}
+
+function parseSkillRunResultObjects(value: unknown): Record<string, any>[] {
+    if (!value) return [];
+    if (Array.isArray(value)) return value.flatMap((item) => parseSkillRunResultObjects(item));
+    if (typeof value === 'object') return [value as Record<string, any>];
+    const text = String(value).trim();
+    if (!text || (!text.startsWith('{') && !text.startsWith('['))) return [];
+    try {
+        return parseSkillRunResultObjects(JSON.parse(text));
+    } catch {
+        return [];
+    }
+}
+
+function firstSkillRunResultString(objects: Record<string, any>[], keys: string[]) {
+    for (const object of objects) {
+        for (const key of keys) {
+            const value = object?.[key];
+            if (value === undefined || value === null) continue;
+            if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+                const text = String(value).trim();
+                if (!text) continue;
+                if ((text.startsWith('{') || text.startsWith('[')) && parseSkillRunResultObjects(text).length > 0) continue;
+                return text;
+            }
+        }
+    }
+    return '';
+}
+
+const approvalResultPayloadKeyAliases: Record<string, string> = {
+    approval_result: 'approval_result', approvalResult: 'approval_result', approval_status: 'approval_result', approvalStatus: 'approval_result', approval_decision: 'approval_result', approvalDecision: 'approval_result', decision: 'approval_result',
+    business_status: 'business_status', businessStatus: 'business_status', result_status: 'result_status', resultStatus: 'result_status',
+    business_record: 'business_record', businessRecord: 'business_record', business_record_id: 'record_id', businessRecordID: 'record_id', record_id: 'record_id', recordID: 'record_id',
+    detail_url: 'detail_url', detailURL: 'detail_url', workflow_url: 'detail_url', workflowURL: 'detail_url', url: 'detail_url',
+    result: 'text', text: 'text', content: 'text', message: 'text', result_message: 'text', resultMessage: 'text', approval_message: 'text', approvalMessage: 'text',
+    table: 'table', dashboard: 'dashboard', notification: 'notification', external_receipt: 'external_receipt', externalReceipt: 'external_receipt', requires_input: 'requires_input', requiresInput: 'requires_input', error: 'error', artifact: 'artifact',
+};
+
+function isApprovalRecordValue(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function compactApprovalResultValue(value: unknown): unknown {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value === 'string') return value.trim();
+    if (typeof value === 'number' || typeof value === 'boolean') return value;
+    if (Array.isArray(value)) {
+        const items = value.map((item) => compactApprovalResultValue(item)).filter((item) => item !== undefined && item !== '');
+        return items.length > 0 ? items.slice(0, 80) : undefined;
+    }
+    if (typeof value === 'object') {
+        const out: Record<string, unknown> = {};
+        for (const [key, child] of Object.entries(value as Record<string, unknown>).slice(0, 80)) {
+            const compact = compactApprovalResultValue(child);
+            if (compact !== undefined && compact !== '') out[key] = compact;
+        }
+        return Object.keys(out).length > 0 ? out : undefined;
+    }
+    return undefined;
+}
+
+function compactApprovalRecord(value: unknown): Record<string, unknown> | undefined {
+    const compact = compactApprovalResultValue(value);
+    if (isApprovalRecordValue(compact)) return compact;
+    if (Array.isArray(compact)) return { rows: compact };
+    if (compact !== undefined && compact !== '') return { value: compact };
+    return undefined;
+}
+
+function mergeApprovalPayloadValue(payload: Record<string, unknown>, key: string, value: unknown) {
+    const compact = compactApprovalResultValue(value);
+    if (compact === undefined || compact === '') return;
+    if (payload[key] === undefined) payload[key] = compact;
+}
+
+function approvalWorkflowResultPayloadFromObjects(objects: Record<string, any>[], status?: SkillRunStatusView | null): Record<string, unknown> | undefined {
+    const payload: Record<string, unknown> = {};
+    for (const object of objects) {
+        const directPayload = object?.result_payload || object?.resultPayload;
+        if (isApprovalRecordValue(directPayload)) {
+            for (const [key, value] of Object.entries(directPayload)) mergeApprovalPayloadValue(payload, key, value);
+        }
+        for (const [sourceKey, targetKey] of Object.entries(approvalResultPayloadKeyAliases)) {
+            if (Object.prototype.hasOwnProperty.call(object, sourceKey)) mergeApprovalPayloadValue(payload, targetKey, object[sourceKey]);
+        }
+    }
+    const snippet = skillRunOutputSuffix(status).replace(/^ · /, '');
+    if (payload.text === undefined && snippet && parseSkillRunResultObjects(snippet).length === 0) payload.text = snippet.slice(0, 500);
+    return Object.keys(payload).length > 0 ? payload : undefined;
+}
+
+function normalizeApprovalArtifact(artifact?: ApprovalInstanceArtifactView | null): ApprovalInstanceArtifactView | null {
+    if (!artifact || typeof artifact !== 'object') return null;
+    const raw = artifact as Record<string, unknown>;
+    const size = Number(raw.size_bytes);
+    const out: ApprovalInstanceArtifactView = { id: String(raw.id || '').trim() || undefined, uri: String(raw.uri || '').trim() || undefined, name: String(raw.name || '').trim() || undefined, path: String(raw.path || '').trim() || undefined, mime_type: String(raw.mime_type || '').trim() || undefined, size_bytes: Number.isFinite(size) ? size : undefined, remote_url: String(raw.remote_url || '').trim() || undefined, checksum: String(raw.checksum || '').trim() || undefined, download_state: String(raw.download_state || '').trim() || undefined, status: String(raw.status || '').trim() || undefined, presentation: String(raw.presentation || '').trim() || undefined };
+    return Object.values(out).some((value) => value !== undefined && value !== '') ? out : null;
+}
+
+function approvalArtifactKey(artifact: ApprovalInstanceArtifactView) {
+    return String(artifact.id || artifact.uri || artifact.path || artifact.remote_url || artifact.name || '').trim();
+}
+
+function normalizeApprovalArtifacts(artifacts?: Array<ApprovalInstanceArtifactView | null | undefined> | null): ApprovalInstanceArtifactView[] | undefined {
+    if (!Array.isArray(artifacts)) return undefined;
+    const seen = new Set<string>();
+    const out: ApprovalInstanceArtifactView[] = [];
+    for (const item of artifacts) {
+        const artifact = normalizeApprovalArtifact(item);
+        if (!artifact) continue;
+        const key = approvalArtifactKey(artifact);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(artifact);
+    }
+    return out.length > 0 ? out : undefined;
+}
+
+function approvalWorkflowArtifactsFromStatus(status?: SkillRunStatusView | null): ApprovalInstanceArtifactView[] | undefined {
+    const items = [...(Array.isArray(status?.artifacts) ? status?.artifacts || [] : []), ...(Array.isArray(status?.summary?.artifacts) ? status?.summary?.artifacts || [] : []), ...skillRunOutputBlocks(status).map((block) => block.artifact), skillRunPrimaryArtifact(status)];
+    return normalizeApprovalArtifacts(items);
+}
+
+function approvalOutputDataFromBlock(block: SkillRunOutputBlockView | ApprovalInstanceOutputView): Record<string, unknown> | undefined {
+    const raw = block as Record<string, unknown>;
+    const explicit = compactApprovalRecord(raw.data || raw.result_payload || raw.resultPayload || raw.payload);
+    if (explicit) return explicit;
+    const text = skillRunOutputBlockText(block as SkillRunOutputBlockView);
+    if (!text || (!text.startsWith('{') && !text.startsWith('['))) return undefined;
+    try { return compactApprovalRecord(JSON.parse(text)); } catch { return undefined; }
+}
+
+function normalizeApprovalOutput(block?: SkillRunOutputBlockView | ApprovalInstanceOutputView | null): ApprovalInstanceOutputView | null {
+    if (!block || typeof block !== 'object') return null;
+    const raw = block as Record<string, unknown>;
+    const type = String(raw.type || raw.kind || '').trim();
+    const kind = String(raw.kind || raw.type || '').trim();
+    const title = String(raw.title || '').trim();
+    const text = String(raw.text || '').trim();
+    const status = String(raw.status || '').trim();
+    const artifact = normalizeApprovalArtifact(raw.artifact as ApprovalInstanceArtifactView | undefined) || undefined;
+    const artifactID = String(raw.artifact_id || artifact?.id || artifact?.uri || '').trim();
+    const data = approvalOutputDataFromBlock(block);
+    if (!type && !kind && !title && !text && !status && !artifactID && !artifact && !data) return null;
+    return { type: type || kind || undefined, kind: kind || type || undefined, title: title || undefined, text: text || undefined, status: status || undefined, artifact_id: artifactID || undefined, artifact, data };
+}
+
+function normalizeApprovalOutputs(outputs?: Array<SkillRunOutputBlockView | ApprovalInstanceOutputView | null | undefined> | null): ApprovalInstanceOutputView[] | undefined {
+    if (!Array.isArray(outputs)) return undefined;
+    const seen = new Set<string>();
+    const out: ApprovalInstanceOutputView[] = [];
+    for (const item of outputs) {
+        const output = normalizeApprovalOutput(item);
+        if (!output) continue;
+        const key = String(output.artifact_id || `${output.type || ''}:${output.title || ''}:${output.text || ''}:${JSON.stringify(output.data || '')}`).trim();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(output);
+    }
+    return out.length > 0 ? out : undefined;
+}
+
+function approvalWorkflowOutputsFromStatus(status?: SkillRunStatusView | null): ApprovalInstanceOutputView[] | undefined {
+    return normalizeApprovalOutputs(skillRunOutputBlocks(status));
+}
+
+function formatApprovalResultValue(value: unknown): string {
+    if (value === undefined || value === null || value === '') return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+}
+
+function approvalOutputKind(output: ApprovalInstanceOutputView) {
+    return String(output.type || output.kind || 'text').trim().toLowerCase() || 'text';
+}
+
+function approvalOutputTitle(output: ApprovalInstanceOutputView, text: typeof labels.zh) {
+    return String(output.title || output.type || output.kind || text.outputContent).trim();
+}
+
+function approvalOutputBody(output: ApprovalInstanceOutputView) {
+    return String(output.text || '').trim() || formatApprovalResultValue(output.data);
+}
+
+function approvalArtifactReference(artifact: ApprovalInstanceArtifactView) {
+    return String(artifact.uri || artifact.path || artifact.remote_url || artifact.name || artifact.id || '').trim();
+}
+function normalizeApprovalWorkflowDecision(value: string, lifecycle: 'done' | 'error' | 'cancelled'): ApprovalWorkflowCompletion['status'] {
+    if (lifecycle !== 'done') return 'attention';
+    const text = value.trim().toLowerCase();
+    if (!text) return 'approved';
+    if (text.includes('not approved') || text.includes('reject') || text.includes('denied') || text.includes('deny') || text.includes('refuse') || text.includes('\u9a73\u56de') || text.includes('\u62d2\u7edd')) return 'rejected';
+    if (text.includes('attention') || text.includes('needs_attention') || text.includes('needs review') || text.includes('review_only') || text.includes('warning') || text.includes('\u5173\u6ce8') || text.includes('\u67e5\u770b')) return 'attention';
+    if (text.includes('approve') || text.includes('accepted') || text.includes('pass') || text.includes('success') || text.includes('complete') || text.includes('done') || text.includes('\u901a\u8fc7') || text.includes('\u540c\u610f') || text.includes('\u6279\u51c6')) return 'approved';
+    return 'approved';
+}
+
+function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | null, lifecycle: 'done' | 'error' | 'cancelled', lang?: string): ApprovalWorkflowCompletion {
+    const zh = isZh(lang);
+    const objects = skillRunApprovalObjects(status);
+    const explicitDecision = firstSkillRunResultString(objects, ['approval_result', 'approvalResult', 'approval_status', 'approvalStatus', 'approval_decision', 'approvalDecision', 'decision']);
+    const decision = normalizeApprovalWorkflowDecision(explicitDecision, lifecycle);
+    const outputText = skillRunOutputSuffix(status).replace(/^ · /, '');
+    const fallbackText = lifecycle === 'cancelled'
+        ? (zh ? 'Skill \u5df2\u53d6\u6d88' : 'Skill cancelled')
+        : lifecycle === 'error'
+            ? (skillRunErrorMessage(status) || (zh ? '\u5de5\u4f5c\u6d41\u8fd0\u884c\u5f02\u5e38\uff0c\u9700\u5173\u6ce8' : 'Workflow failed and needs attention'))
+            : decision === 'approved'
+                ? (zh ? '\u5ba1\u6279\u5df2\u901a\u8fc7' : 'Approval approved')
+                : decision === 'rejected'
+                    ? (zh ? '\u5ba1\u6279\u5df2\u9a73\u56de' : 'Approval rejected')
+                    : (zh ? '\u9700\u5173\u6ce8' : 'Needs attention');
+    const resultText = firstSkillRunResultString(objects, ['message', 'result_message', 'resultMessage', 'approval_message', 'approvalMessage', 'content', 'text', 'result']) || outputText || fallbackText;
+    const resultStatus = firstSkillRunResultString(objects, ['result_status', 'resultStatus']) || (lifecycle === 'cancelled' ? 'cancelled' : lifecycle === 'error' ? 'workflow_error' : decision);
+    const businessStatus = firstSkillRunResultString(objects, ['business_status', 'businessStatus']) || resultStatus;
+    const currentNode = firstSkillRunResultString(objects, ['current_node', 'currentNode', 'approval_node', 'approvalNode', 'node']) || (lifecycle === 'cancelled'
+        ? (zh ? '\u5df2\u53d6\u6d88' : 'Cancelled')
+        : lifecycle === 'error'
+            ? (zh ? '\u8fd0\u884c\u5f02\u5e38' : 'Workflow error')
+            : decision === 'attention'
+                ? (zh ? '\u9700\u5173\u6ce8' : 'Needs attention')
+                : (zh ? '\u5df2\u5b8c\u6210' : 'Completed'));
+    const resultPayload = approvalWorkflowResultPayloadFromObjects(objects, status);
+    const outputs = approvalWorkflowOutputsFromStatus(status);
+    const artifacts = approvalWorkflowArtifactsFromStatus(status);
+    return {
+        status: decision,
+        lane: decision === 'attention' ? 'attention' : 'handled',
+        currentNode,
+        resultText,
+        businessStatus,
+        resultStatus,
+        detailURL: firstSkillRunResultString(objects, ['detail_url', 'detailURL', 'workflow_url', 'workflowURL', 'url']) || undefined,
+        recordID: firstSkillRunResultString(objects, ['record_id', 'recordID', 'business_record_id', 'businessRecordID']) || undefined,
+        resultPayload,
+        outputs,
+        artifacts,
+        eventAction: lifecycle === 'cancelled' ? 'workflow_cancelled' : lifecycle === 'error' ? 'workflow_failed' : 'workflow_completed',
+    };
 }
 
 function skillRunProgressMessage(status: SkillRunStatusView | null, fallback: string, runID: string) {
@@ -2076,6 +2478,38 @@ function normalizeSkillAppIcon(icon?: string): AppIconName {
     return appIconNames.includes(normalized) ? normalized : 'contract';
 }
 
+function normalizeCustomIconDataUrl(value: unknown): string | undefined {
+    const icon = String(value || '').trim();
+    return /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/=]+$/i.test(icon) && icon.length < 260_000 ? icon : undefined;
+}
+
+async function fileToAppIconDataUrl(file: File, size = 96): Promise<string> {
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('unsupported image');
+    if (file.size > maxAppIconUploadBytes) throw new Error('image too large');
+    const objectUrl = URL.createObjectURL(file);
+    try {
+        const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error('image load failed'));
+            img.src = objectUrl;
+        });
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('canvas unavailable');
+        context.clearRect(0, 0, size, size);
+        const sourceSize = Math.min(image.naturalWidth || image.width, image.naturalHeight || image.height);
+        const sourceX = ((image.naturalWidth || image.width) - sourceSize) / 2;
+        const sourceY = ((image.naturalHeight || image.height) - sourceSize) / 2;
+        context.drawImage(image, sourceX, sourceY, sourceSize, sourceSize, 0, 0, size, size);
+        return canvas.toDataURL('image/png');
+    } finally {
+        URL.revokeObjectURL(objectUrl);
+    }
+}
+
 const Icon = ({ name }: { name: AppIconName }) => {
     const common = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
     switch (name) {
@@ -2122,6 +2556,13 @@ const Icon = ({ name }: { name: AppIconName }) => {
         default:
             return null;
     }
+};
+
+const AppIcon = ({ icon, customIconDataUrl }: { icon: AppIconName; customIconDataUrl?: string }) => {
+    const customIcon = normalizeCustomIconDataUrl(customIconDataUrl);
+    return customIcon
+        ? <img className="apps-custom-app-icon" src={customIcon} alt="" />
+        : <Icon name={icon} />;
 };
 
 const isZh = (lang?: string) => !lang || lang.startsWith('zh');
@@ -2434,7 +2875,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                 }}
                 onKeyDown={moveTileFocus}
             >
-                <span className="apps-app-icon"><Icon name={app.icon} /></span>
+                <span className="apps-app-icon"><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                 <span className="apps-app-name">{app.name}</span>
             </button>
         );
@@ -2621,7 +3062,7 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse }: {
                             onClick={() => activateTab(app.id)}
                             onKeyDown={(event) => handleTabKeyDown(event, index)}
                         >
-                            <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><Icon name={app.icon} /></span>
+                            <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                             <span className="apps-runtime-tab__label">{app.name}</span>
                         </button>
                         <button
@@ -2664,7 +3105,7 @@ const getRuntimePanelId = (appId: string) => `app-panel-${getRuntimeSafeId(appId
 function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled', businessEntity: string, businessAction: string, businessNote: string, lang?: string): ApprovalInstanceView[] {
     const zh = isZh(lang);
     const title = businessEntity || app.category || app.name;
-    const workflow = app.manifest?.dependencies?.skills?.find((dep) => dep.kind === 'workflow_skill')?.id || app.manifest?.appSkill?.id || app.name;
+    const workflow = appApprovalWorkflowSkillID(app) || app.name;
     const submitted = runState === 'done' || runState === 'running';
     const draftStatus = submitted ? 'pending' : 'draft';
     const draftNode = submitted ? (zh ? '主管审批' : 'Manager approval') : (zh ? '发起节点' : 'Submit node');
@@ -2684,19 +3125,19 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
             workflowSkillID: workflow,
             businessStatus: submitted ? 'approval_pending' : 'draft',
             resultStatus: draftStatus,
-            amount: submitted ? (zh ? '鏈鎻愪氦' : 'Current submission') : undefined,
+            amount: submitted ? (zh ? '本次提交' : 'Current submission') : undefined,
         },
         {
             id: `${app.id}-pending`,
             appID: app.id,
-            title: zh ? `${app.name}寰呭姙` : `${app.name} task`,
+            title: zh ? `${app.name}待办` : `${app.name} task`,
             lane: 'pending_my_approval',
             status: 'pending',
             currentNode: zh ? '\u6211\u5ba1\u6279' : 'My approval',
-            owner: zh ? '鍚屼簨' : 'Coworker',
+            owner: zh ? '同事' : 'Coworker',
             approver: zh ? '\u6211' : 'Me',
-            updatedAt: zh ? '浠婂ぉ' : 'Today',
-            result: zh ? '绛夊緟澶勭悊' : 'Waiting',
+            updatedAt: zh ? '今天' : 'Today',
+            result: zh ? '等待处理' : 'Waiting',
             workflowSkillID: workflow,
             businessStatus: 'approval_pending',
             resultStatus: 'pending',
@@ -2707,11 +3148,11 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
             title: zh ? `${app.name}需关注` : `${app.name} attention`,
             lane: 'attention',
             status: 'attention',
-            currentNode: zh ? '椋庨櫓澶嶆牳' : 'Risk review',
-            owner: zh ? '绯荤粺' : 'System',
+            currentNode: zh ? '风险复核' : 'Risk review',
+            owner: zh ? '系统' : 'System',
             approver: zh ? '\u4ec5\u67e5\u770b' : 'View only',
-            updatedAt: zh ? '鏄ㄥぉ' : 'Yesterday',
-            result: zh ? '瑙勫垯鍛戒腑锛岄渶鏌ョ湅' : 'Rule matched, review needed',
+            updatedAt: zh ? '昨天' : 'Yesterday',
+            result: zh ? '规则命中，需查看' : 'Rule matched, review needed',
             workflowSkillID: workflow,
             businessStatus: 'attention',
             resultStatus: 'attention',
@@ -2725,6 +3166,13 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
     if (!id || !appTitle) return null;
     const lane = String(instance.lane || 'my_requests').trim() as ApprovalInstanceView['lane'];
     const status = String(instance.status || 'pending').trim() as ApprovalInstanceView['status'];
+    const events = (instance.events || []).map((event): ApprovalInstanceEventView => ({
+        at: String(event.at || '').trim(),
+        node: String(event.node || '').trim() || undefined,
+        actor: String(event.actor || '').trim() || undefined,
+        decision: String(event.decision || event.action || '').trim() || undefined,
+        message: String(event.message || event.note || '').trim() || undefined,
+    })).filter((event) => event.at || event.node || event.actor || event.decision || event.message);
     return {
         id,
         appID: String(instance.app_id || '').trim(),
@@ -2740,7 +3188,20 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
         workflowDecisionID: String(instance.workflow_decision_id || '').trim(),
         businessStatus: String(instance.business_status || '').trim(),
         resultStatus: String(instance.result_status || '').trim(),
+        recordID: String(instance.record_id || instance.record_approval_id || instance.approval_id || '').trim(),
+        detailURL: String(instance.detail_url || '').trim(),
+        resultPayload: compactApprovalRecord(instance.result_payload),
+        outputs: normalizeApprovalOutputs(instance.outputs),
+        artifacts: normalizeApprovalArtifacts(instance.artifacts),
+        events,
     };
+}
+function appApprovalBinding(app: AppEntry): AppApprovalBinding | undefined {
+    return app.manifest?.mis?.approvalBindings?.find((binding) => binding.workflowSkillId);
+}
+
+function appApprovalWorkflowSkillID(app: AppEntry): string {
+    return appApprovalBinding(app)?.workflowSkillId || app.manifest?.dependencies?.skills?.find((dependency) => dependency.kind === 'workflow_skill')?.id || app.manifest?.appSkill?.id || app.manifest?.skill?.id || '';
 }
 function appDataSrvDatasetID(app: AppEntry): string {
     const datasrv = app.manifest?.datasrv;
@@ -2796,6 +3257,7 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
     const [runHistory, setRunHistory] = useState<AppRunHistoryEntry[]>([]);
     const [approvalInstances, setApprovalInstances] = useState<ApprovalInstanceView[]>([]);
     const [currentRunContext, setCurrentRunContext] = useState({ inputSummary: '', outputMode: '' });
+    const approvalRunContextRef = useRef<ApprovalRunContext | null>(null);
     useEffect(() => {
         setFileName('');
         setSelectedFile(null);
@@ -2811,6 +3273,7 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
         setRunID('');
         setSkillRunStatus(null);
         setCurrentRunContext({ inputSummary: '', outputMode: '' });
+        approvalRunContextRef.current = null;
         setRunHistory(loadAppRunHistory(app?.id || ''));
         setApprovalInstances([]);
     }, [app?.id, app?.manifest?.skill?.outputModes]);
@@ -2844,6 +3307,62 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
             return next;
         });
     };
+    const finalizeApprovalRunFromStatus = useCallback(async (status: SkillRunStatusView | null, lifecycle: 'done' | 'error' | 'cancelled') => {
+        const context = approvalRunContextRef.current;
+        if (!context || !app?.id || !isEnterpriseApprovalAppKind(app.kind)) return;
+        approvalRunContextRef.current = null;
+        const completion = approvalWorkflowResultFromSkillRunStatus(status, lifecycle, lang);
+        const now = new Date().toISOString();
+        const previous = context.instance;
+        const payload: BackendApprovalInstance = {
+            ...previous,
+            instance_id: previous.instance_id,
+            app_id: previous.app_id || app.id,
+            app_name: previous.app_name || app.name,
+            workflow_decision_id: runID || previous.workflow_decision_id,
+            lane: completion.lane,
+            status: completion.status,
+            current_node: completion.currentNode,
+            result: completion.resultText,
+            business_status: completion.businessStatus,
+            result_status: completion.resultStatus,
+            result_payload: completion.resultPayload || previous.result_payload,
+            outputs: completion.outputs || previous.outputs,
+            artifacts: completion.artifacts || previous.artifacts,
+            updated_at: now,
+            detail_url: completion.detailURL || previous.detail_url || (runID ? `skill-run://${runID}` : undefined),
+            events: [
+                ...(previous.events || []),
+                {
+                    at: now,
+                    node: completion.currentNode,
+                    actor: 'workflow',
+                    decision: completion.status,
+                    action: completion.eventAction,
+                    message: completion.resultText,
+                },
+            ],
+        };
+        if (completion.recordID) payload.record_id = completion.recordID;
+        const fallback = backendApprovalInstanceToView(payload, lang);
+        if (fallback) {
+            setApprovalInstances((current) => [fallback, ...current.filter((item) => item.id !== fallback.id)].slice(0, 50));
+        }
+        try {
+            const saved = await RecordMaclawAppApprovalInstance(payload) as BackendApprovalInstance;
+            const savedInstance = saved || payload;
+            const view = backendApprovalInstanceToView(savedInstance, lang);
+            if (view) {
+                setApprovalInstances((current) => [view, ...current.filter((item) => item.id !== view.id)].slice(0, 50));
+            }
+            const syncPayload = approvalDataSrvSyncPayload(app, savedInstance);
+            if (syncPayload) {
+                void SyncMaclawAppApprovalInstanceToDataSrv(syncPayload).catch(() => undefined);
+            }
+        } catch (error: any) {
+            setValidationMessage(error?.message || String(error || 'approval sync failed'));
+        }
+    }, [app, lang, runID]);
     useEffect(() => {
         if (!runID || runState !== 'running') return;
         let disposed = false;
@@ -2880,15 +3399,18 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                     if (app?.source === 'skill' && app.manifest?.skill?.id) {
                         void RecordMaclawAppRunEvidenceForSkill(app.manifest.skill.id, app.id, definitionHash || '', runID, artifactPath || artifactName || artifactURI, verifiedAt).catch(() => undefined);
                     }
+                    await finalizeApprovalRunFromStatus(status || null, lifecycle);
                 } else if (lifecycle === 'error') {
                     const message = skillRunErrorMessage(status) || text.skillRunFailed;
                     setValidationMessage(message);
                     setRunState('error');
                     recordRunHistory({ runID, status: 'error', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message });
+                    await finalizeApprovalRunFromStatus(status || null, lifecycle);
                 } else if (lifecycle === 'cancelled') {
                     setValidationMessage(text.skillRunCancelled);
                     setRunState('cancelled');
                     recordRunHistory({ runID, status: 'cancelled', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message: text.skillRunCancelled });
+                    await finalizeApprovalRunFromStatus(status || null, lifecycle);
                 }
             } catch (error: any) {
                 if (disposed) return;
@@ -2896,6 +3418,7 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                 setValidationMessage(message);
                 setRunState('error');
                 recordRunHistory({ runID, status: 'error', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message });
+                await finalizeApprovalRunFromStatus({ run_id: runID, status: 'error', error: message }, 'error');
             }
         };
         void poll();
@@ -2904,13 +3427,14 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
             disposed = true;
             window.clearInterval(timer);
         };
-    }, [runID, runState, text.skillRunCancelled, text.skillRunCompleted, text.skillRunFailed, currentRunContext]);
+    }, [runID, runState, text.skillRunCancelled, text.skillRunCompleted, text.skillRunFailed, currentRunContext, finalizeApprovalRunFromStatus]);
     if (!app) return <div className="apps-empty">{text.noApps}</div>;
     const isTool = app.kind === 'tool_app';
     const isApproval = isEnterpriseApprovalAppKind(app.kind);
     const isAutomation = app.kind === 'automation_app';
     const outputModes = normalizeOutputModes(app.manifest?.skill?.outputModes);
-    const workflowSkillID = app.manifest?.dependencies?.skills?.find((dependency) => dependency.kind === 'workflow_skill')?.id || app.manifest?.appSkill?.id || app.manifest?.skill?.id || '';
+    const approvalBinding = appApprovalBinding(app);
+    const workflowSkillID = appApprovalWorkflowSkillID(app);
     const inputMode = app.manifest?.skill?.inputMode || 'file';
     const allowMultipleFiles = !!app.manifest?.skill?.multipleFiles;
     const skillFields = normalizeSkillAppFields(app.manifest?.skill?.fields);
@@ -2937,10 +3461,12 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
         setRunID('');
         setSkillRunStatus(null);
         setCurrentRunContext({ inputSummary: '', outputMode: '' });
+        approvalRunContextRef.current = null;
     };
     const runApp = async () => {
+        approvalRunContextRef.current = null;
         if (app?.id) onUse?.(app.id);
-        if (app && (app.source === 'market' || app.source === 'skill' || app.source === 'local') && (app.manifest?.appSkill || (app.manifest?.dependencies?.skills?.length || 0) > 0)) {
+        if (app && (app.source === 'market' || app.source === 'skill' || app.source === 'local') && (app.manifest?.appSkill || (app.manifest?.dependencies?.skills?.length || 0) > 0 || (app.manifest?.mis?.approvalBindings?.length || 0) > 0)) {
             try {
                 const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
                 if (dependencyPlan?.has_missing_required) {
@@ -3025,24 +3551,68 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                 }
             }
         }
-        setValidationMessage('');
-        setRunState('done');
         if (isApproval) {
             const now = new Date().toISOString();
             const fallbackID = `appr-${Date.now().toString(36)}`;
+            const inputSummary = `${businessEntity || app.category} / ${businessAction || 'create'}`;
+            if (!workflowSkillID) {
+                setValidationMessage(text.missingRequiredDependency);
+                setRunState('error');
+                return;
+            }
+            setRunState('running');
+            setCurrentRunContext({ inputSummary, outputMode: 'approval' });
+            let workflowRunID = '';
+            try {
+                const runID = await RunNLSkillAsync(workflowSkillID, {
+                    _maclaw_app: true,
+                    app_id: app.id,
+                    app_name: app.name,
+                    app_kind: app.kind,
+                    approval_instance_id: fallbackID,
+                    approval_event: approvalBinding?.event || '',
+                    approval_object_role: approvalBinding?.objectRole || '',
+                    approval_workflow_skill_id: workflowSkillID,
+                    business_entity: businessEntity || app.category,
+                    business_action: businessAction || 'create',
+                    business_note: businessNote,
+                    dataset_id: app.manifest?.datasrv?.datasetID || '',
+                    datasrv_domain: app.manifest?.datasrv?.domain || '',
+                    preferred_action: app.manifest?.datasrv?.preferredAction || '',
+                    preferred_view: app.manifest?.datasrv?.preferredView || '',
+                    prompt: `Start MaClaw approval workflow: ${app.name} / ${inputSummary}`,
+                });
+                workflowRunID = String(runID || '').trim();
+                if (!workflowRunID) throw new Error(text.skillRunFailed);
+            } catch (error: any) {
+                const message = error?.message || String(error || text.skillRunFailed);
+                setValidationMessage(message);
+                setRunState('error');
+                recordRunHistory({
+                    runID: `failed-${Date.now().toString(36)}`,
+                    status: 'error',
+                    outputMode: 'approval',
+                    inputSummary,
+                    message,
+                });
+                return;
+            }
             const payload: BackendApprovalInstance = {
                 instance_id: fallbackID,
                 app_id: app.id,
                 app_name: app.name,
                 workflow_skill_id: workflowSkillID,
+                workflow_decision_id: workflowRunID,
+                approval_event: approvalBinding?.event || undefined,
+                approval_object_role: approvalBinding?.objectRole || undefined,
                 title: `${businessEntity || app.category} / ${businessAction || 'create'}`,
                 lane: 'my_requests',
                 status: 'pending',
                 current_node: isZh(lang) ? '主管审批' : 'Manager approval',
                 owner: isZh(lang) ? '当前用户' : 'Current user',
-                applicant: isZh(lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user',
-                approver: isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver',
-                result: isZh(lang) ? '\u7b49\u5f85\u5ba1\u6279' : 'Pending approval',
+                applicant: isZh(lang) ? '当前用户' : 'Current user',
+                approver: isZh(lang) ? '审批人' : 'Approver',
+                result: isZh(lang) ? '等待审批' : 'Pending approval',
                 business_status: 'approval_pending',
                 result_status: 'pending',
                 business_entity: businessEntity || app.category,
@@ -3050,16 +3620,25 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                 business_note: businessNote,
                 created_at: now,
                 updated_at: now,
+                detail_url: `skill-run://${workflowRunID}`,
                 events: [{
                     at: now,
-                    actor: isZh(lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user',
-                    action: isZh(lang) ? '\u53d1\u8d77\u7533\u8bf7' : 'Submitted',
+                    actor: isZh(lang) ? '当前用户' : 'Current user',
+                    action: isZh(lang) ? '发起申请' : 'Submitted',
                     note: businessNote,
+                }, {
+                    at: now,
+                    node: workflowSkillID,
+                    actor: 'workflow',
+                    action: 'workflow_started',
+                    message: workflowRunID,
                 }],
             };
+            approvalRunContextRef.current = { instance: payload };
             try {
                 const saved = await RecordMaclawAppApprovalInstance(payload) as BackendApprovalInstance;
                 const savedInstance = saved || payload;
+                approvalRunContextRef.current = { instance: savedInstance };
                 const view = backendApprovalInstanceToView(savedInstance, lang);
                 if (view) {
                     setApprovalInstances((current) => [view, ...current.filter((item) => item.id !== view.id)].slice(0, 50));
@@ -3074,7 +3653,13 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                     setApprovalInstances((current) => [view, ...current.filter((item) => item.id !== view.id)].slice(0, 50));
                 }
             }
+            setRunID(workflowRunID);
+            setValidationMessage('');
+            setRunState('running');
+            return;
         }
+        setValidationMessage('');
+        setRunState('done');
     };
     const updateApprovalInstanceDecision = async (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => {
         if (!app?.id || !instance?.id) return;
@@ -3103,6 +3688,11 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
             result: statusText,
             business_status: decision,
             result_status: decision,
+            record_id: instance.recordID,
+            detail_url: instance.detailURL,
+            result_payload: instance.resultPayload,
+            outputs: instance.outputs,
+            artifacts: instance.artifacts,
             business_entity: businessEntity || app.category,
             business_action: businessAction || 'approve',
             business_note: businessNote,
@@ -3146,6 +3736,7 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
         setValidationMessage(text.skillRunCancelled);
         setRunState('cancelled');
         recordRunHistory({ runID, status: 'cancelled', outputMode, inputSummary: toolInputSummary, message: text.skillRunCancelled });
+        await finalizeApprovalRunFromStatus({ run_id: runID, status: 'cancelled', summary: { last_error_snippet: text.skillRunCancelled } }, 'cancelled');
     };
     const runtimeLayout = runtimeWorkspaceLayoutForApp(app);
     const runtimeOrder = runtimeWorkspaceOrder(runtimeLayout);
@@ -3292,6 +3883,7 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                                 setRunID('');
                                 setSkillRunStatus(null);
                                 setCurrentRunContext({ inputSummary: '', outputMode: '' });
+        approvalRunContextRef.current = null;
                             }}>{text.reset}</button>
                             {runState === 'running' && runID && <button className="apps-secondary-button" type="button" onClick={cancelRun}>{text.cancelRun}</button>}
                             <button className="apps-primary-button" type="button" disabled={runState === 'running'} onClick={runApp}>{text.run}</button>
@@ -3344,10 +3936,11 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
 
 const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, businessNote, backendInstances, lang, text, style, layoutRegion, onDecision }: { app: AppEntry; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; businessEntity: string; businessAction: string; businessNote: string; backendInstances?: ApprovalInstanceView[]; lang?: string; text: typeof labels.zh; style?: CSSProperties; layoutRegion?: string; onDecision?: (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => void | Promise<void> }) => {
     const [lane, setLane] = useState<'my_requests' | 'pending_my_approval' | 'handled' | 'attention' | 'all'>('my_requests');
+    const [selectedInstanceId, setSelectedInstanceId] = useState('');
     const fallbackInstances = buildApprovalInstances(app, runState, businessEntity, businessAction, businessNote, lang);
     const instances = backendInstances && backendInstances.length > 0 ? backendInstances : fallbackInstances;
     const visibleInstances = lane === 'all' ? instances : lane === 'handled' ? instances.filter((item) => item.status === 'approved' || item.status === 'rejected') : instances.filter((item) => item.lane === lane);
-    const selected = visibleInstances[0] || instances[0];
+    const selected = visibleInstances.find((item) => item.id === selectedInstanceId) || visibleInstances[0];
     const lanes = [
         { key: 'my_requests', label: text.myRequests },
         { key: 'pending_my_approval', label: text.pendingMyApproval },
@@ -3360,45 +3953,108 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
         : key === 'handled'
             ? instances.filter((item) => item.status === 'approved' || item.status === 'rejected').length
             : instances.filter((item) => item.lane === key).length;
+    const selectedOutputs = selected?.outputs || [];
+    const selectedArtifacts = selected?.artifacts || [];
+    const selectedPayloadEntries = selected?.resultPayload ? Object.entries(selected.resultPayload).filter(([, value]) => formatApprovalResultValue(value)) : [];
+    const hasResultPackage = selectedOutputs.length > 0 || selectedArtifacts.length > 0 || selectedPayloadEntries.length > 0;
     return (
         <section className="apps-runtime-section apps-approval-workspace" aria-label={text.approvalWorkspace} data-region={layoutRegion || 'center'} style={style}>
             <div className="apps-runtime-section__title">{text.approvalWorkspace}</div>
             <div className="apps-approval-layout">
                 <nav className="apps-approval-nav" aria-label={text.approvalWorkspace}>
                     {lanes.map((item) => (
-                        <button key={item.key} className={lane === item.key ? 'is-active' : ''} type="button" aria-pressed={lane === item.key} onClick={() => setLane(item.key)}>
+                        <button key={item.key} className={lane === item.key ? 'is-active' : ''} type="button" aria-pressed={lane === item.key} onClick={() => {
+                            setLane(item.key);
+                            setSelectedInstanceId('');
+                        }}>
                             <span>{item.label}</span>
                             <strong>{countForLane(item.key)}</strong>
                         </button>
                     ))}
                 </nav>
                 <div className="apps-approval-list" role="list" aria-label={text.approvalInstanceData}>
-                    {visibleInstances.map((item) => (
-                        <div className="apps-approval-row" data-state={item.status} role="listitem" key={item.id}>
+                    {visibleInstances.length === 0 ? (
+                        <div className="apps-approval-empty" role="status">{text.noApprovalInstances}</div>
+                    ) : visibleInstances.map((item) => (
+                        <button className="apps-approval-row" data-state={item.status} data-selected={selected?.id === item.id ? 'true' : 'false'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
                             <div>
                                 <strong>{item.title}</strong>
                                 <span>{text.currentApprovalNode}: {item.currentNode} · {text.approvalResult}: {approvalStatusLabel(item.status, lang)}</span>
                                 <small>{text.approvalInstanceId}: {item.id} · {item.updatedAt}</small>
                             </div>
                             <em>{approvalStatusLabel(item.status, lang)}</em>
-                        </div>
+                        </button>
                     ))}
                 </div>
                 <aside className="apps-approval-detail" aria-label={text.approvalTimeline}>
-                    <div className="apps-approval-detail__head">
-                        <strong>{selected.title}</strong>
-                        <span>{text.currentApprovalNode}: {selected.currentNode}</span>
-                    </div>
-                    <dl className="apps-approval-facts">
-                        <div><dt>{text.myRequests}</dt><dd>{selected.owner}</dd></div>
-                        <div><dt>{text.pendingMyApproval}</dt><dd>{selected.approver}</dd></div>
-                        <div><dt>{text.approvalResult}</dt><dd>{selected.result}</dd></div>
-                    </dl>
-                    <div className="apps-approval-timeline">
-                        <div><span />{isZh(lang) ? '发起节点' : 'Submit node'}</div>
-                        <div><span />{selected.currentNode}</div>
-                        <div><span />{isZh(lang) ? '缁撴灉鍙嶉' : 'Result feedback'}</div>
-                    </div>
+                    {selected ? (
+                        <>
+                            <div className="apps-approval-detail__head">
+                                <strong>{selected.title}</strong>
+                                <span>{text.currentApprovalNode}: {selected.currentNode}</span>
+                            </div>
+                            <dl className="apps-approval-facts">
+                                <div><dt>{text.myRequests}</dt><dd>{selected.owner}</dd></div>
+                                <div><dt>{text.pendingMyApproval}</dt><dd>{selected.approver}</dd></div>
+                                <div><dt>{text.approvalResult}</dt><dd>{selected.result}</dd></div>
+                                <div><dt>{text.workflowSkill}</dt><dd>{selected.workflowSkillID || '-'}</dd></div>
+                                <div><dt>{text.dataSrvRecord}</dt><dd>{selected.recordID || '-'}</dd></div>
+                                <div><dt>{text.businessStatusLabel}</dt><dd>{selected.businessStatus || '-'}</dd></div>
+                                <div><dt>{text.resultStatusLabel}</dt><dd>{selected.resultStatus || approvalStatusLabel(selected.status, lang)}</dd></div>
+                            </dl>
+                            {selected.detailURL && (
+                                <div className="apps-approval-detail__links">
+                                    <a className="apps-link-button" href={selected.detailURL} target="_blank" rel="noreferrer">{text.viewFullWorkflow}</a>
+                                </div>
+                            )}
+                            {hasResultPackage && (
+                                <section className="apps-approval-results" aria-label={text.approvalResultPackage}>
+                                    <div className="apps-approval-results__head"><strong>{text.approvalResultPackage}</strong><span>{selectedOutputs.length + selectedArtifacts.length + selectedPayloadEntries.length}</span></div>
+                                    {selectedOutputs.map((output, index) => {
+                                        const kind = approvalOutputKind(output);
+                                        const body = approvalOutputBody(output);
+                                        const artifactRef = output.artifact ? approvalArtifactReference(output.artifact) : '';
+                                        return (
+                                            <div className="apps-approval-output" data-kind={kind} key={`${selected.id}-output-${index}-${approvalOutputTitle(output, text)}`}>
+                                                <div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' · ')}</span></div>
+                                                {body && <pre>{body}</pre>}
+                                                {artifactRef && <code>{artifactRef}</code>}
+                                            </div>
+                                        );
+                                    })}
+                                    {selectedArtifacts.map((artifact, index) => (
+                                        <div className="apps-approval-artifact" key={`${selected.id}-artifact-${index}-${approvalArtifactReference(artifact)}`}>
+                                            <div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' · ')}</span></div>
+                                            <code>{approvalArtifactReference(artifact)}</code>
+                                        </div>
+                                    ))}
+                                    {selectedPayloadEntries.length > 0 && (
+                                        <div className="apps-approval-payload">
+                                            <strong>{text.approvalOutputData}</strong>
+                                            {selectedPayloadEntries.map(([key, value]) => (
+                                                <div key={`${selected.id}-payload-${key}`}><span>{key}</span><pre>{formatApprovalResultValue(value)}</pre></div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </section>
+                            )}
+                            <div className="apps-approval-timeline">
+                                {(selected.events && selected.events.length > 0 ? selected.events : [
+                                    { node: isZh(lang) ? '发起节点' : 'Submit node' },
+                                    { node: selected.currentNode },
+                                    { node: isZh(lang) ? '结果反馈' : 'Result feedback' },
+                                ] as ApprovalInstanceEventView[]).map((event, index) => {
+                                    const primary = [event.node, event.decision].filter(Boolean).join(' · ') || event.message || '-';
+                                    const secondary = [event.actor, event.at].filter(Boolean).join(' · ');
+                                    return (
+                                        <div key={`${selected.id}-event-${index}-${primary}`}><span /><p><strong>{primary}</strong>{secondary && <small>{secondary}</small>}{event.message && primary !== event.message && <small>{event.message}</small>}</p></div>
+                                    );
+                                })}
+                            </div>
+                        </>
+                    ) : (
+                        <div className="apps-approval-empty" role="status">{text.noApprovalInstances}</div>
+                    )}
                     <div className="apps-approval-actions" aria-label={text.approvalActions}>
                         <button className="apps-primary-button" type="button" onClick={() => selected && onDecision?.(selected, 'approved')} disabled={!selected}>{text.approve}</button>
                         <button className="apps-secondary-button" type="button" onClick={() => selected && onDecision?.(selected, 'rejected')} disabled={!selected}>{text.reject}</button>
@@ -3531,6 +4187,7 @@ function appDefinitionFingerprint(app: AppEntry): string {
         entryKind: manifest.entryKind,
         launchMode: manifest.launchMode,
         ...(manifest.datasrv ? { datasrv: manifest.datasrv } : {}),
+        ...(manifest.mis ? { mis: manifest.mis } : {}),
         ...(manifest.skill ? { skill: manifest.skill } : {}),
     } : undefined;
     return textHash(stableStringify({
@@ -3539,6 +4196,7 @@ function appDefinitionFingerprint(app: AppEntry): string {
         category: app.category,
         kind: app.kind,
         icon: app.icon,
+        ...(app.customIconDataUrl ? { customIconDataUrl: normalizeCustomIconDataUrl(app.customIconDataUrl) } : {}),
         version: normalizeAppVersion(app.version),
         manifest: runtimeManifest,
     }));
@@ -3558,10 +4216,12 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission) {
             category: app.category,
             kind: app.kind,
             icon: app.icon,
+            customIconDataUrl: app.customIconDataUrl,
             source: app.source,
             launchMode: manifest?.launchMode || defaultLaunchModeForKind(app.kind),
             binding: {
                 datasrv: manifest?.datasrv,
+                mis: manifest?.mis,
                 skill: manifest?.skill,
                 appSkill: manifest?.appSkill,
                 dependencies: manifest?.dependencies,
@@ -3570,10 +4230,21 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission) {
             panel: {
                 pinned: !!app.pinned,
                 accent: app.accent,
+                customIconDataUrl: app.customIconDataUrl,
             },
             governance: appGovernanceForManifest(app, submission),
         },
     };
+}
+
+function skillDefinitionAppId(app: AppEntry): string {
+    const skillID = String(app.manifest?.skill?.id || '').trim();
+    const prefixedID = skillID ? `skill-app-${skillID}-` : '';
+    return prefixedID && app.id.startsWith(prefixedID) ? app.id.slice(prefixedID.length) : app.id;
+}
+
+function appToSkillDefinitionManifest(app: AppEntry) {
+    return appToManifest({ ...app, id: skillDefinitionAppId(app) });
 }
 
 function appsToPackManifest(apps: AppEntry[], submissions: Record<string, AppPublishSubmission> = {}) {
@@ -3682,6 +4353,7 @@ function manifestToAppEntry(raw: any): AppEntry | null {
     const kind = normalizeAppKind(app.kind);
     const launchMode = app.launchMode || defaultLaunchModeForKind(kind);
     const icon = normalizeSkillAppIcon(app.icon);
+    const customIconDataUrl = normalizeCustomIconDataUrl(app.customIconDataUrl || app.panel?.customIconDataUrl);
     return {
         id: id.startsWith('market-') ? id : `market-${id}`,
         name,
@@ -3689,6 +4361,7 @@ function manifestToAppEntry(raw: any): AppEntry | null {
         category: String(app.category || 'Market'),
         kind,
         icon,
+        customIconDataUrl,
         accent: String(app.panel?.accent || defaultAccentForKind(kind)),
         pinned: !!app.panel?.pinned,
         version: normalizeAppVersion(app.version || raw.version),
@@ -3700,6 +4373,7 @@ function manifestToAppEntry(raw: any): AppEntry | null {
             entryKind: kind,
             launchMode,
             datasrv: app.binding?.datasrv,
+            mis: normalizeAppMIS(app.binding?.mis),
             appSkill: app.binding?.appSkill,
             dependencies: normalizeAppDependencies(app.binding?.dependencies),
             ui: normalizeAppWorkspaceLayout(app.binding?.ui, kind),
@@ -3865,7 +4539,7 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
             <div className="apps-detail__body elegant-scrollbar">
                 <div className="apps-preview">
                     <DataSrvDiscoveryPanel discovery={datasrvDiscovery} apps={apps} lang={lang} onAddApp={onAddDiscoveredApp} />
-                    <SkillDiscoveryPanel discovery={skillDiscovery} apps={apps} lang={lang} onAddApp={onAddDiscoveredApp} />
+                    <SkillDiscoveryPanel discovery={skillDiscovery} apps={apps} lang={lang} />
                     <div className="apps-studio-tabs" role="tablist" aria-label={text.appStudio}>
                         {studioTabs.map((item, index) => {
                             const isActive = activeStudioTabIndex === index;
@@ -3942,17 +4616,21 @@ const DataSrvDiscoverySummary = ({ discovery, lang }: { discovery: DataSrvDiscov
     );
 };
 
-const SkillDiscoveryPanel = ({ discovery, apps, lang, onAddApp }: { discovery: SkillAppDiscovery; apps: AppEntry[]; lang?: string; onAddApp: (app: AppEntry) => void }) => {
+const SkillDiscoveryPanel = ({ discovery, apps, lang }: { discovery: SkillAppDiscovery; apps: AppEntry[]; lang?: string }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
+    if (discovery.candidates.length === 0 && discovery.status !== 'error') return null;
     const installedIds = new Set(apps.map((app) => app.id));
+    const zh = isZh(lang);
+    const foundCount = discovery.candidates.length;
     const statusLabel = discovery.status === 'loading' ? text.datasrvLoading :
         discovery.status === 'error' ? text.datasrvError :
-            discovery.status === 'ready' ? text.skillAppsReady : '-';
+            discovery.status === 'ready' ? (zh ? `${foundCount} \u4e2a\u5e94\u7528` : `${foundCount} ${foundCount === 1 ? 'app' : 'apps'}`) : '-';
+    const metaText = discovery.status === 'error' ? text.skillAppsErrorMeta : text.skillAppsMeta;
     return (
         <section className="apps-discovery" data-status={discovery.status === 'ready' ? 'ready' : discovery.status}>
             <div>
                 <div className="apps-discovery__title">{text.skillApps}</div>
-                <div className="apps-discovery__meta">maclaw.app.json / maclaw.apps.json · x_maclaw_apps</div>
+                <div className="apps-discovery__meta">{metaText}</div>
                 {discovery.error && <div className="apps-discovery__error">{discovery.error}</div>}
             </div>
             <div className="apps-discovery__status">{statusLabel}</div>
@@ -3962,14 +4640,14 @@ const SkillDiscoveryPanel = ({ discovery, apps, lang, onAddApp }: { discovery: S
                         const installed = installedIds.has(candidate.id);
                         return (
                             <div className="apps-discovery__candidate" key={candidate.id}>
-                                <span className="apps-app-icon" style={{ '--apps-icon-color': candidate.accent } as CSSProperties}><Icon name={candidate.icon} /></span>
+                                <span className="apps-app-icon" style={{ '--apps-icon-color': candidate.accent } as CSSProperties}><AppIcon icon={candidate.icon} customIconDataUrl={candidate.customIconDataUrl} /></span>
                                 <div>
                                     <strong>{candidate.name}</strong>
-                                    <span>{candidate.manifest?.skill?.id || candidate.category}</span>
+                                    <span>{candidate.category}</span>
                                 </div>
-                                <button className="apps-secondary-button" type="button" disabled={installed} onClick={() => onAddApp(candidate)}>
-                                    {installed ? text.added : text.addToPanel}
-                                </button>
+                                <span className="apps-discovery__candidate-state" data-state={installed ? 'synced' : 'syncing'}>
+                                    {installed ? text.inPanel : text.addingToPanel}
+                                </span>
                             </div>
                         );
                     })}
@@ -3991,7 +4669,7 @@ const DataSrvDiscoveryPanel = ({ discovery, apps, lang, onAddApp }: { discovery:
                     const installed = installedIds.has(candidate.id);
                     return (
                         <div className="apps-discovery__candidate" key={candidate.id}>
-                            <span className="apps-app-icon" style={{ '--apps-icon-color': candidate.accent } as CSSProperties}><Icon name={candidate.icon} /></span>
+                            <span className="apps-app-icon" style={{ '--apps-icon-color': candidate.accent } as CSSProperties}><AppIcon icon={candidate.icon} customIconDataUrl={candidate.customIconDataUrl} /></span>
                             <div>
                                 <strong>{candidate.name}</strong>
                                 <span>{candidate.manifest?.datasrv?.preferredAction || candidate.category}</span>
@@ -4027,6 +4705,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const [skillAppSaveState, setSkillAppSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
     const [skillAppSaveMessage, setSkillAppSaveMessage] = useState('');
     const [skillMarketUploadState, setSkillMarketUploadState] = useState<'idle' | 'uploading' | 'uploaded' | 'error'>('idle');
+    const [manifestPreviewOpen, setManifestPreviewOpen] = useState(true);
     const [layoutTemplate, setLayoutTemplate] = useState<StudioLayoutTemplate>('document_workspace');
     const [layoutDensity, setLayoutDensity] = useState<StudioLayoutDensity>('comfortable');
     const [primaryRegion, setPrimaryRegion] = useState<StudioPrimaryRegion>('left');
@@ -4034,6 +4713,8 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const [appSkillID, setAppSkillID] = useState('');
     const [workflowSkillID, setWorkflowSkillID] = useState('');
     const [workflowSkillVersion, setWorkflowSkillVersion] = useState('1.0.0');
+    const [approvalEvent, setApprovalEvent] = useState('record.submitted');
+    const [approvalObjectRole, setApprovalObjectRole] = useState('record');
     const [dependencySource, setDependencySource] = useState<AppSkillDependency['source']>('hub');
     useEffect(() => {
         let cancelled = false;
@@ -4066,6 +4747,8 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setAppSkillID(isEnterpriseAppKind(nextKind) ? appSkillID.trim() : '');
         setWorkflowSkillID(isEnterpriseApprovalAppKind(nextKind) ? (workflowSkillID.trim() || 'approval-workflow') : '');
         setWorkflowSkillVersion('1.0.0');
+        setApprovalObjectRole(isEnterpriseApprovalAppKind(nextKind) ? (approvalObjectRole.trim() || 'record') : 'record');
+        setApprovalEvent(isEnterpriseApprovalAppKind(nextKind) ? (approvalEvent.trim() || 'record.submitted') : 'record.submitted');
         setDependencySource('hub');
         setCopyState('idle');
         setSkillAppSaveState('idle');
@@ -4105,9 +4788,13 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setPrimaryRegion(nextKind === 'tool_app' ? 'left' : 'center');
         setOutputRegion(/modal|dialog|\u5f39\u7a97/.test(lower) ? 'modal' : nextKind === 'tool_app' ? 'right' : 'bottom');
         const nextAppSkillID = isEnterpriseAppKind(nextKind) ? `${makeLocalAppId(nextName || 'enterprise-app')}-app` : '';
+
+        const nextApprovalObjectRole = isFinancePrompt ? 'finance' : isInventoryPrompt ? 'inventory' : isCrmPrompt ? 'crm' : isOaPrompt ? 'oa' : 'record';
         setAppSkillID(nextAppSkillID);
         setWorkflowSkillID(isEnterpriseApprovalAppKind(nextKind) ? `${makeLocalAppId(nextName || 'approval')}-workflow` : '');
         setWorkflowSkillVersion('1.0.0');
+        setApprovalObjectRole(isEnterpriseApprovalAppKind(nextKind) ? nextApprovalObjectRole : 'record');
+        setApprovalEvent(isEnterpriseApprovalAppKind(nextKind) ? `${nextApprovalObjectRole}.submitted` : 'record.submitted');
         setDependencySource('hub');
         setDescription(prompt);
         setCopyState('idle');
@@ -4117,8 +4804,9 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         const workflowDependency: AppSkillDependency[] = isEnterpriseApprovalAppKind(kind) && workflowSkillID.trim()
             ? [{ id: workflowSkillID.trim(), version: workflowSkillVersion.trim() || undefined, kind: 'workflow_skill', required: true, source: dependencySource || 'hub', capabilities: ['approval.workflow'] }]
             : [];
+        const enterpriseDomain = isEnterpriseApprovalAppKind(kind) ? (approvalObjectRole.trim() || 'custom') : 'custom';
         const manifest = isEnterpriseAppKind(kind)
-            ? makeEnterpriseManifest(kind, 'custom', '', '', '', '', enterpriseAppSkillID, workflowDependency)
+            ? makeEnterpriseManifest(kind, enterpriseDomain, '', '', '', '', enterpriseAppSkillID, workflowDependency, { event: approvalEvent, objectRole: approvalObjectRole })
             : kind === 'automation_app'
                 ? makeAutomationManifest()
                 : makeSkillManifest(boundSkillID, inputMode, outputModes, skillFields, multipleFiles && inputMode !== 'form', appDefinitionFile);
@@ -4142,6 +4830,40 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         kind === 'tool_app' && selectedSkill ? 'maclaw.app.json' : 'maclaw.apps.json',
     );
     const draftManifestText = JSON.stringify(appToManifest(draftApp), null, 2);
+    useEffect(() => {
+        setCopyState((current) => current === 'copied' ? 'idle' : current);
+    }, [draftManifestText]);
+    const studioKindOptions: Array<{ id: AppKind; title: string; short: string; description: string }> = [
+        {
+            id: 'enterprise_approval_app',
+            title: appKinds.enterprise_approval_app[zh ? 'zh' : 'en'],
+            short: zh ? '\u542b\u5ba1\u6279\u6d41\u7a0b\u548c\u72b6\u6001\u6d41\u8f6c' : 'Approval workflow and status tracking',
+            description: zh ? '\u7528\u5bf9\u8bdd\u5b9a\u4e49\u6570\u636e\u5bf9\u8c61\u3001\u89c6\u56fe\u3001\u52a8\u4f5c\u548c\u9875\u9762\uff0c\u7531 Agent \u603b\u7ed3\u6210 App manifest\u3002' : 'Define entities, views, actions, and screens through chat; Agent writes an app manifest.',
+        },
+        {
+            id: 'enterprise_normal_app',
+            title: appKinds.enterprise_normal_app[zh ? 'zh' : 'en'],
+            short: zh ? '\u4f01\u4e1a\u6570\u636e\u548c\u64cd\u4f5c\u5de5\u4f5c\u53f0' : 'Business data and action workspace',
+            description: zh ? '\u5c06\u4f01\u4e1a\u540e\u53f0\u6570\u636e\u3001\u64cd\u4f5c\u548c\u67e5\u8be2\u5c01\u88c5\u6210\u53ef\u89c6\u5316\u5de5\u4f5c\u53f0\uff0c\u4e0d\u4ea7\u751f\u5ba1\u6279\u5b9e\u4f8b\u3002' : 'Wrap enterprise backend data, actions, and query views as a visual workbench without approval instances.',
+        },
+        {
+            id: 'tool_app',
+            title: appKinds.tool_app[zh ? 'zh' : 'en'],
+            short: zh ? 'Skill \u56fa\u5b9a\u4e3a\u4e0a\u4f20\u3001\u53c2\u6570\u548c\u8f93\u51fa\u754c\u9762' : 'Skill UI with upload, parameters, and output',
+            description: zh ? '\u628a\u590d\u6742 Skill \u56fa\u5b9a\u6210\u4e0a\u4f20\u3001\u53c2\u6570\u3001\u8f93\u51fa\u7684\u4f4e\u95e8\u69db\u754c\u9762\u3002' : 'Wrap a complex skill as upload, parameters, and output UI.',
+        },
+        {
+            id: 'automation_app',
+            title: appKinds.automation_app[zh ? 'zh' : 'en'],
+            short: zh ? '\u540c\u6b65\u3001\u91c7\u96c6\u3001\u76d1\u63a7\u7b49\u957f\u8fd0\u884c\u5165\u53e3' : 'Long-running sync, collection, and monitor entry',
+            description: zh ? '\u628a\u540c\u6b65\u3001\u91c7\u96c6\u3001\u76d1\u63a7\u7b49\u957f\u8fd0\u884c\u80fd\u529b\u56fa\u5b9a\u6210\u5e94\u7528\u5165\u53e3\u3002' : 'Expose sync, collection, and monitoring flows as app entries.',
+        },
+    ];
+    const categorySuggestions = kind === 'tool_app'
+        ? (zh ? ['\u6587\u6863\u5904\u7406', '\u6570\u636e\u5206\u6790', '\u6cd5\u52a1', '\u8d22\u52a1'] : ['Document', 'Analytics', 'Legal', 'Finance'])
+        : kind === 'automation_app'
+            ? (zh ? ['\u81ea\u52a8\u5316', '\u6570\u636e\u96c6\u6210', '\u6570\u636e\u91c7\u96c6', '\u8fd0\u7ef4'] : ['Automation', 'Integration', 'Collection', 'Operations'])
+            : ['OA', zh ? '\u8d22\u52a1' : 'Finance', 'CRM', zh ? '\u8fdb\u9500\u5b58' : 'Inventory'];
     const createApp = () => {
         const cleanName = name.trim();
         if (!cleanName) return;
@@ -4228,6 +4950,30 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         <>
             <section className="apps-create-form">
                 <div className="apps-definition__title">{zh ? '\u5feb\u901f\u521b\u5efa\u9762\u677f\u5e94\u7528' : 'Quick create panel app'}</div>
+                <section className="apps-studio-kind" aria-label={zh ? '\u5e94\u7528\u7c7b\u578b' : 'App type'}>
+                    <div className="apps-studio-kind__header">
+                        <div>
+                            <div className="apps-definition__title">{zh ? '\u5148\u9009\u5e94\u7528\u7c7b\u578b' : 'Start with app type'}</div>
+                            <span>{zh ? '\u7c7b\u578b\u4f1a\u51b3\u5b9a Skill\u3001\u8f93\u5165\u8f93\u51fa\u548c\u8fd0\u884c\u5e03\u5c40\u7684\u9ed8\u8ba4\u503c\u3002' : 'Type sets the default Skill, input/output, and runtime layout.'}</span>
+                        </div>
+                    </div>
+                    <div className="apps-studio-kind__list" role="group" aria-label={zh ? '\u5e94\u7528\u7c7b\u578b' : 'App type'}>
+                        {studioKindOptions.map((option) => (
+                            <button
+                                key={option.id}
+                                className={`apps-studio-kind__choice ${kind === option.id ? 'is-active' : ''}`}
+                                type="button"
+                                aria-pressed={kind === option.id}
+                                aria-label={option.title}
+                                title={option.description}
+                                onClick={() => selectKind(option.id, true)}
+                            >
+                                <strong>{option.title}</strong>
+                                <span>{option.short}</span>
+                            </button>
+                        ))}
+                    </div>
+                </section>
                 <div className="apps-prompt-draft">
                     <div className="apps-preview-title-row">
                         <div className="apps-definition__title">{text.promptDraft}</div>
@@ -4240,20 +4986,23 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     <input value={name} onChange={(event) => setName(event.target.value)} placeholder={zh ? '\u4f8b\uff1a\u5408\u540c\u5f52\u6863' : 'Example: Contract filing'} />
                 </div>
                 <div className="apps-form-row">
-                    <label>{zh ? '\u7c7b\u578b' : 'Type'}</label>
-                    <select value={kind} onChange={(event) => {
-                        const nextKind = event.target.value as AppKind;
-                        selectKind(nextKind);
-                    }}>
-                        <option value="enterprise_approval_app">{appKinds.enterprise_approval_app[zh ? 'zh' : 'en']}</option>
-                        <option value="enterprise_normal_app">{appKinds.enterprise_normal_app[zh ? 'zh' : 'en']}</option>
-                        <option value="tool_app">{appKinds.tool_app[zh ? 'zh' : 'en']}</option>
-                        <option value="automation_app">{appKinds.automation_app[zh ? 'zh' : 'en']}</option>
-                    </select>
-                </div>
-                <div className="apps-form-row">
                     <label>{zh ? '\u5206\u7c7b' : 'Category'}</label>
-                    <input value={category} onChange={(event) => setCategory(event.target.value)} />
+                    <div className="apps-category-editor">
+                        <input value={category} onChange={(event) => setCategory(event.target.value)} />
+                        <div className="apps-category-chips" role="group" aria-label={zh ? '\u5e38\u7528\u5206\u7c7b' : 'Common categories'}>
+                            {categorySuggestions.map((item) => (
+                                <button
+                                    key={item}
+                                    className={category === item ? 'is-active' : ''}
+                                    type="button"
+                                    aria-pressed={category === item}
+                                    onClick={() => setCategory(item)}
+                                >
+                                    {item}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
                 </div>
                 <div className="apps-form-row">
                     <label>{zh ? '\u56fe\u6807' : 'Icon'}</label>
@@ -4365,6 +5114,14 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                                         <input data-testid="studio-workflow-skill-version" value={workflowSkillVersion} onChange={(event) => setWorkflowSkillVersion(event.target.value)} placeholder="1.0.0" />
                                     </div>
                                     <div className="apps-form-row">
+                                        <label>Approval event</label>
+                                        <input data-testid="studio-approval-event" value={approvalEvent} onChange={(event) => setApprovalEvent(event.target.value)} placeholder="record.submitted" />
+                                    </div>
+                                    <div className="apps-form-row">
+                                        <label>Object role</label>
+                                        <input data-testid="studio-approval-object-role" value={approvalObjectRole} onChange={(event) => setApprovalObjectRole(event.target.value)} placeholder="record" />
+                                    </div>
+                                    <div className="apps-form-row">
                                         <label>Dependency source</label>
                                         <select data-testid="studio-dependency-source" value={dependencySource || 'hub'} onChange={(event) => setDependencySource(event.target.value as AppSkillDependency['source'])}>
                                             <option value="hub">Hub</option>
@@ -4437,56 +5194,32 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                 {skillAppSaveMessage && (
                     <div className="apps-skill-save-message" data-state={skillAppSaveState} role={skillAppSaveState === 'error' ? 'alert' : 'status'}>{skillAppSaveMessage}</div>
                 )}
-                <div className="apps-create-preview">
-                    <div className="apps-preview-title-row">
-                        <div className="apps-definition__title">{text.manifestPreview}</div>
+                <section className="apps-create-preview" aria-label={text.manifestPreview}>
+                    <div className="apps-create-preview__head">
+                        <button
+                            className="apps-create-preview__toggle"
+                            type="button"
+                            aria-expanded={manifestPreviewOpen}
+                            aria-controls="apps-create-manifest-preview"
+                            onClick={() => setManifestPreviewOpen((current) => !current)}
+                        >
+                            <span aria-hidden="true">{manifestPreviewOpen ? '\u25be' : '\u25b8'}</span>
+                            <span>
+                                <strong>{text.manifestPreview}</strong>
+                                <small>{text.manifestPreviewHint}</small>
+                            </span>
+                        </button>
                         <button className="apps-secondary-button" type="button" onClick={async () => {
                             await copyTextToClipboard(draftManifestText);
                             setCopyState('copied');
                         }}>{copyState === 'copied' ? text.copied : text.copy}</button>
                     </div>
-                    <pre>{draftManifestText}</pre>
-                </div>
-            </section>
-            <div className="apps-studio-grid">
-                <StudioCard title={isZh(lang) ? '\u4f01\u4e1a\u5ba1\u6279\u578b\u5e94\u7528' : 'Approval app'} description={isZh(lang) ? '\u7528\u5bf9\u8bdd\u5b9a\u4e49\u6570\u636e\u5bf9\u8c61\u3001\u89c6\u56fe\u3001\u52a8\u4f5c\u548c\u9875\u9762\uff0c\u7531 Agent \u603b\u7ed3\u6210 App manifest\u3002' : 'Define entities, views, actions, and screens through chat; Agent writes an app manifest.'} selected={kind === 'enterprise_approval_app'} onSelect={() => selectKind('enterprise_approval_app', true)} />
-                <StudioCard title={isZh(lang) ? '\u4f01\u4e1a\u666e\u901a\u5e94\u7528' : 'Business app'} description={isZh(lang) ? '\u5c06\u4f01\u4e1a\u540e\u53f0\u6570\u636e\u3001\u64cd\u4f5c\u548c\u67e5\u8be2\u5c01\u88c5\u6210\u53ef\u89c6\u5316\u5de5\u4f5c\u53f0\uff0c\u4e0d\u4ea7\u751f\u5ba1\u6279\u5b9e\u4f8b\u3002' : 'Wrap enterprise backend data, actions, and query views as a visual workbench without approval instances.'} selected={kind === 'enterprise_normal_app'} onSelect={() => selectKind('enterprise_normal_app', true)} />
-                <StudioCard title={isZh(lang) ? '\u5de5\u5177\u5e94\u7528' : 'Tool app'} description={isZh(lang) ? '\u628a\u590d\u6742 skill \u56fa\u5b9a\u6210\u4e0a\u4f20\u3001\u53c2\u6570\u3001\u8f93\u51fa\u7684\u50bb\u74dc\u5f0f\u754c\u9762\u3002' : 'Wrap a complex skill as upload, parameters, and output UI.'} selected={kind === 'tool_app'} onSelect={() => selectKind('tool_app', true)} />
-                <StudioCard title={isZh(lang) ? '\u81ea\u52a8\u5316\u5e94\u7528' : 'Automation app'} description={isZh(lang) ? '\u628a\u540c\u6b65\u3001\u91c7\u96c6\u3001\u76d1\u63a7\u7b49\u957f\u8fd0\u884c\u80fd\u529b\u56fa\u5b9a\u6210\u5e94\u7528\u5165\u53e3\u3002' : 'Expose sync, collection, and monitoring flows as app entries.'} selected={kind === 'automation_app'} onSelect={() => selectKind('automation_app', true)} />
-            </div>
-            <section className="apps-manifest-preview">
-                <div className="apps-definition__title">{text.manifestPreview}</div>
-                <pre>{JSON.stringify(skillManifestTemplate, null, 2)}</pre>
+                    <pre id="apps-create-manifest-preview" hidden={!manifestPreviewOpen}>{draftManifestText}</pre>
+                </section>
             </section>
         </>
     );
 };
-
-const skillManifestTemplate = {
-    x_maclaw_apps: 'v1',
-    apps: [
-        {
-            id: 'document-redaction',
-            name: 'Document Redaction',
-            description: 'Upload a document and return a redacted copy.',
-            category: 'Document',
-            icon: 'shield',
-            input_mode: 'file',
-            output_modes: ['docx', 'pdf'],
-            fields: [
-                { name: 'scope', label: 'Redaction scope', type: 'select', required: true, default: 'PII', options: ['PII', 'Financial', 'Custom'] },
-            ],
-        },
-    ],
-};
-
-const StudioCard = ({ title, description, selected, onSelect }: { title: string; description: string; selected?: boolean; onSelect?: () => void }) => (
-    <article className={`apps-studio-card ${selected ? 'is-active' : ''}`}>
-        <h4>{title}</h4>
-        <p>{description}</p>
-        {onSelect && <button className="apps-primary-button" type="button" aria-pressed={selected} onClick={onSelect}>{title}</button>}
-    </article>
-);
 
 type PublishCheck = {
     label: string;
@@ -4731,7 +5464,7 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
                         return (
                             <article className="apps-publish-card" key={app.id} data-ready={ready ? 'true' : 'false'}>
                                 <div className="apps-publish-card__head">
-                                    <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><Icon name={app.icon} /></span>
+                                    <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                                     <div>
                                         <strong>{app.name}</strong>
                                         <span>{app.category} · {appKinds[app.kind][zh ? 'zh' : 'en']}</span>
@@ -4992,7 +5725,14 @@ function normalizeEditorField(field: SkillAppField): SkillAppField {
 
 type SkillInputMode = 'file' | 'form' | 'mixed';
 
-type AppEditDraft = Pick<AppEntry, 'name' | 'description' | 'category' | 'icon' | 'accent'> & {
+type AppEditDraft = Pick<AppEntry, 'name' | 'description' | 'category' | 'icon' | 'customIconDataUrl' | 'accent'> & {
+    skillID: string;
+    appSkillID: string;
+    appSkillVersion: string;
+    workflowSkillID: string;
+    workflowSkillVersion: string;
+    approvalEvent: string;
+    approvalObjectRole: string;
     inputMode: SkillInputMode;
     multipleFiles: boolean;
     outputModes: string[];
@@ -5015,8 +5755,16 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
     const text = isZh(lang) ? labels.zh : labels.en;
     const [manifestAppId, setManifestAppId] = useState('');
     const [editingAppId, setEditingAppId] = useState('');
-    const emptyEditDraft: AppEditDraft = { name: '', description: '', category: '', icon: 'contract', accent: defaultAccentForKind('tool_app'), inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [] };
+    const emptyEditDraft = useMemo<AppEditDraft>(() => ({ name: '', description: '', category: '', icon: 'contract', customIconDataUrl: undefined, accent: defaultAccentForKind('tool_app'), skillID: '', appSkillID: '', appSkillVersion: '', workflowSkillID: '', workflowSkillVersion: '', approvalEvent: '', approvalObjectRole: '', inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [] }), []);
     const [editDraft, setEditDraft] = useState<AppEditDraft>(emptyEditDraft);
+    const editDialogRef = useRef<HTMLDivElement | null>(null);
+    const editNameInputRef = useRef<HTMLInputElement | null>(null);
+    const editReturnFocusRef = useRef<HTMLElement | null>(null);
+    const [editIconUploadState, setEditIconUploadState] = useState<'idle' | 'processing' | 'error'>('idle');
+    const [editIconUploadMessage, setEditIconUploadMessage] = useState('');
+    const [editSaveState, setEditSaveState] = useState<'idle' | 'saving' | 'error'>('idle');
+    const [editSaveMessage, setEditSaveMessage] = useState('');
+    const [availableSkills, setAvailableSkills] = useState<SkillSummary[]>([]);
     const [copiedManifestId, setCopiedManifestId] = useState('');
     const [packCopied, setPackCopied] = useState(false);
     const pinnedCount = apps.filter((app) => app.pinned).length;
@@ -5039,23 +5787,68 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
     const managedApps = useMemo(() => apps.filter(matchesManageFilter), [apps, manageCategory, normalizedManageQuery, lang]);
     const filteredHiddenApps = useMemo(() => hiddenApps.filter(matchesManageFilter), [hiddenApps, manageCategory, normalizedManageQuery, lang]);
     const editingApp = useMemo(() => apps.find((item) => item.id === editingAppId) || null, [apps, editingAppId]);
+    const skillOptionNames = useMemo(() => {
+        const names = new Set<string>();
+        availableSkills.forEach((skill) => {
+            const name = String(skill?.name || '').trim();
+            if (name) names.add(name);
+        });
+        [...apps, ...hiddenApps].forEach((app) => {
+            appSkillDependencies(app).forEach((dependency) => {
+                const id = String(dependency.id || '').trim();
+                if (id) names.add(id);
+            });
+            const skillID = String(app.manifest?.skill?.id || '').trim();
+            if (skillID) names.add(skillID);
+        });
+        return Array.from(names).sort((a, b) => a.localeCompare(b));
+    }, [availableSkills, apps, hiddenApps]);
     const manageMatchCount = managedApps.length + filteredHiddenApps.length;
     const manageTotalCount = apps.length + hiddenApps.length;
     const manageFilterSummary = filterSummaryText({ query: manageQuery, category: manageCategory, count: manageMatchCount, lang, allLabel: text.all });
-    const startEdit = (app: AppEntry) => {
+    const startEdit = useCallback((app: AppEntry) => {
+        const workflowBinding = appApprovalBinding(app);
+        const workflowDependency = app.manifest?.dependencies?.skills?.find((dependency) => dependency.kind === 'workflow_skill' && dependency.id);
+        editReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        setEditIconUploadState('idle');
+        setEditIconUploadMessage('');
+        setEditSaveState('idle');
+        setEditSaveMessage('');
         setEditingAppId(app.id);
         setEditDraft({
             name: app.name,
             description: app.description,
             category: app.category,
             icon: app.icon,
+            customIconDataUrl: app.customIconDataUrl,
             accent: app.accent,
+            skillID: app.manifest?.skill?.id || '',
+            appSkillID: app.manifest?.appSkill?.id || '',
+            appSkillVersion: app.manifest?.appSkill?.version || '',
+            workflowSkillID: workflowBinding?.workflowSkillId || workflowDependency?.id || '',
+            workflowSkillVersion: workflowBinding?.workflowVersion || workflowDependency?.version || '',
+            approvalEvent: workflowBinding?.event || (app.manifest?.datasrv?.domain ? `${app.manifest.datasrv.domain}.submitted` : ''),
+            approvalObjectRole: workflowBinding?.objectRole || app.manifest?.datasrv?.domain || '',
             inputMode: app.manifest?.skill?.inputMode || 'file',
             multipleFiles: !!app.manifest?.skill?.multipleFiles,
             outputModes: normalizeOutputModes(app.manifest?.skill?.outputModes),
             fields: normalizeSkillAppFields(app.manifest?.skill?.fields),
         });
-    };
+    }, []);
+    useEffect(() => {
+        let cancelled = false;
+        ListNLSkills()
+            .then((skills: SkillSummary[] = []) => {
+                if (cancelled) return;
+                setAvailableSkills(Array.isArray(skills) ? skills.filter((skill) => String(skill?.name || '').trim()) : []);
+            })
+            .catch(() => {
+                if (!cancelled) setAvailableSkills([]);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
     useEffect(() => {
         if (!pendingEditAppId) return;
         const app = apps.find((item) => item.id === pendingEditAppId);
@@ -5064,40 +5857,151 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
         setManageCategory('all');
         startEdit(app);
         onPendingEditConsumed();
-    }, [pendingEditAppId, apps, onPendingEditConsumed]);
-    const cancelEdit = () => {
+    }, [pendingEditAppId, apps, onPendingEditConsumed, startEdit]);
+    const cancelEdit = useCallback(() => {
         setEditingAppId('');
         setEditDraft(emptyEditDraft);
-    };
+        setEditIconUploadState('idle');
+        setEditIconUploadMessage('');
+        setEditSaveState('idle');
+        setEditSaveMessage('');
+        const returnTarget = editReturnFocusRef.current;
+        editReturnFocusRef.current = null;
+        if (returnTarget?.isConnected && typeof window.requestAnimationFrame === 'function') {
+            window.requestAnimationFrame(() => returnTarget.focus());
+        }
+    }, [emptyEditDraft]);
     useEffect(() => {
         if (editingAppId && !editingApp) cancelEdit();
-    }, [editingAppId, editingApp]);
-    const saveEdit = (app: AppEntry) => {
+    }, [editingAppId, editingApp, cancelEdit]);
+    useEffect(() => {
+        if (!editingApp) return;
+        const frame = window.requestAnimationFrame(() => {
+            editNameInputRef.current?.focus();
+            editNameInputRef.current?.select();
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [editingApp]);
+    const handleEditDialogKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            cancelEdit();
+            return;
+        }
+        if (event.key !== 'Tab') return;
+        const focusable = Array.from(editDialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]):not([tabindex="-1"]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"])') || []);
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+        }
+    }, [cancelEdit]);
+    const setUploadedCustomIcon = useCallback(async (file: File) => {
+        setEditIconUploadState('processing');
+        setEditIconUploadMessage('');
+        try {
+            const customIconDataUrl = await fileToAppIconDataUrl(file);
+            setEditDraft((current) => ({ ...current, customIconDataUrl }));
+            setEditIconUploadState('idle');
+        } catch {
+            setEditIconUploadState('error');
+            setEditIconUploadMessage(isZh(lang)
+                ? '\u8bf7\u4e0a\u4f20 5 MB \u4ee5\u5185\u7684 PNG\u3001JPEG \u6216 WebP \u56fe\u7247\u3002'
+                : 'Upload a PNG, JPEG, or WebP image under 5 MB.');
+        }
+    }, [lang]);
+    const saveEdit = async (app: AppEntry) => {
         const name = editDraft.name.trim();
-        if (!name) return;
-        const manifest = app.kind === 'tool_app'
-            ? {
-                ...(app.manifest || makeSkillManifest(app.id, editDraft.inputMode, editDraft.outputModes)),
+        if (!name || editSaveState === 'saving') return;
+        setEditSaveState('saving');
+        setEditSaveMessage('');
+        let manifest = app.manifest;
+        if (app.kind === 'tool_app') {
+            const baseManifest = app.manifest || makeSkillManifest(app.id, editDraft.inputMode, editDraft.outputModes);
+            const skillID = editDraft.skillID.trim() || baseManifest.skill?.id || app.id;
+            manifest = {
+                ...baseManifest,
+                appSkill: { id: skillID, version: baseManifest.appSkill?.version || '1.0.0' },
                 skill: {
-                    id: app.manifest?.skill?.id || app.id,
-                    appDefinitionFile: 'maclaw.apps.json' as const,
+                    id: skillID,
+                    appDefinitionFile: baseManifest.skill?.appDefinitionFile || 'maclaw.apps.json' as const,
                     inputMode: editDraft.inputMode,
                     multipleFiles: editDraft.multipleFiles && editDraft.inputMode !== 'form',
                     outputModes: normalizeOutputModes(editDraft.outputModes),
                     fields: normalizeSkillAppFields(editDraft.fields),
                 },
-            }
-            : app.manifest;
-        onUpdateApp(app.id, {
+            };
+        } else if (manifest && isEnterpriseAppKind(app.kind)) {
+            const appSkillID = editDraft.appSkillID.trim();
+            const workflowSkillID = editDraft.workflowSkillID.trim();
+            const workflowVersion = editDraft.workflowSkillVersion.trim() || undefined;
+            const existingSkills = manifest.dependencies?.skills || [];
+            const nonWorkflowSkills = existingSkills.filter((dependency) => dependency.kind !== 'workflow_skill');
+            const existingWorkflow = existingSkills.find((dependency) => dependency.kind === 'workflow_skill' && dependency.id);
+            const workflowDependency: AppSkillDependency | undefined = workflowSkillID ? {
+                ...(existingWorkflow || {}),
+                id: workflowSkillID,
+                version: workflowVersion,
+                kind: 'workflow_skill',
+                required: existingWorkflow?.required !== false,
+                source: existingWorkflow?.source || 'hub',
+                capabilities: existingWorkflow?.capabilities?.length ? existingWorkflow.capabilities : ['approval.workflow'],
+            } : undefined;
+            const skills = workflowDependency ? [...nonWorkflowSkills, workflowDependency] : nonWorkflowSkills;
+            manifest = {
+                ...manifest,
+                appSkill: appSkillID ? { id: appSkillID, version: editDraft.appSkillVersion.trim() || manifest.appSkill?.version || '1.0.0' } : undefined,
+                dependencies: skills.length ? { skills } : undefined,
+                mis: app.kind === 'enterprise_approval_app' && workflowSkillID ? {
+                    ...(manifest.mis || {}),
+                    approvalBindings: [{
+                        event: editDraft.approvalEvent.trim() || `${manifest.datasrv?.domain || 'record'}.submitted`,
+                        workflowSkillId: workflowSkillID,
+                        workflowVersion,
+                        objectRole: editDraft.approvalObjectRole.trim() || manifest.datasrv?.domain || undefined,
+                    }],
+                } : manifest.mis,
+            };
+        }
+        const updatedApp: AppEntry = {
+            ...app,
             name,
             category: editDraft.category.trim() || (isZh(lang) ? '\u672a\u5206\u7c7b' : 'Uncategorized'),
             description: editDraft.description.trim(),
             icon: editDraft.icon,
+            customIconDataUrl: normalizeCustomIconDataUrl(editDraft.customIconDataUrl),
             accent: editDraft.accent,
             version: nextAppVersion(app),
             manifest,
-        });
-        cancelEdit();
+        };
+        const patch: Partial<AppEntry> = {
+            name: updatedApp.name,
+            category: updatedApp.category,
+            description: updatedApp.description,
+            icon: updatedApp.icon,
+            customIconDataUrl: updatedApp.customIconDataUrl,
+            accent: updatedApp.accent,
+            version: updatedApp.version,
+            manifest: updatedApp.manifest,
+        };
+        const skillID = String(updatedApp.manifest?.skill?.id || '').trim();
+        const appDefinitionFile = String(updatedApp.manifest?.skill?.appDefinitionFile || '').trim();
+        const shouldWriteSkillDefinition = updatedApp.source === 'skill' && updatedApp.kind === 'tool_app' && !!skillID && (appDefinitionFile === 'maclaw.app.json' || appDefinitionFile === 'maclaw.apps.json');
+        try {
+            if (shouldWriteSkillDefinition) {
+                await SaveMaclawAppDefinitionForSkill(skillID, JSON.stringify(appToSkillDefinitionManifest(updatedApp), null, 2));
+            }
+            onUpdateApp(app.id, patch);
+            cancelEdit();
+        } catch (error) {
+            setEditSaveState('error');
+            setEditSaveMessage(error instanceof Error ? error.message : String(error || 'Save failed'));
+        }
     };
     return (
         <div className="apps-manage-list">
@@ -5153,7 +6057,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                 return (
                 <div key={app.id} className="apps-manage-item">
                     <div className="apps-manage-row">
-                        <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><Icon name={app.icon} /></span>
+                        <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                         <div>
                             <div className="apps-manage-row__name">{app.name}</div>
                             <div className="apps-manage-row__desc">{app.category} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</div>
@@ -5192,7 +6096,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                     </div>
                     {filteredHiddenApps.map((app) => (
                         <div key={app.id} className="apps-manage-row apps-manage-row--hidden">
-                            <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><Icon name={app.icon} /></span>
+                            <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                             <div>
                                 <div className="apps-manage-row__name">{app.name}</div>
                                 <div className="apps-manage-row__desc">{app.category} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</div>
@@ -5205,22 +6109,25 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                 </section>
             )}
             {editingApp && (
-                <div className="apps-manage-edit-dialog" role="dialog" aria-modal="true" aria-labelledby="apps-manage-edit-title" onKeyDown={(event) => {
-                    if (event.key === 'Escape') cancelEdit();
-                }}>
-                    <button className="apps-manage-edit-dialog__backdrop" type="button" aria-label={text.cancel} onClick={cancelEdit} />
+                <div ref={editDialogRef} className="apps-manage-edit-dialog" role="dialog" aria-modal="true" aria-labelledby="apps-manage-edit-title" onKeyDown={handleEditDialogKeyDown}>
+                    <div className="apps-manage-edit-dialog__backdrop" aria-hidden="true" onClick={cancelEdit} />
                     <div className="apps-manage-edit-dialog__panel">
                         <div className="apps-manage-edit-dialog__header">
                             <div>
                                 <div className="apps-definition__title" id="apps-manage-edit-title">{text.edit}</div>
                                 <div className="apps-manage-edit-dialog__subtitle">{editingApp.name} · {editingApp.category}</div>
                             </div>
-                            <button className="apps-icon-button" type="button" title={text.cancel} aria-label={text.cancel} onClick={cancelEdit}>×</button>
+                            <button className="apps-icon-button" type="button" title={text.cancel} aria-label={text.cancel} onClick={cancelEdit}>
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+                            </button>
                         </div>
                         <div className="apps-manage-edit">
+                            <datalist id="apps-manage-skill-options">
+                                {skillOptionNames.map((name) => <option key={name} value={name} />)}
+                            </datalist>
                             <div className="apps-form-row">
                                 <label>{isZh(lang) ? '\u540d\u79f0' : 'Name'}</label>
-                                <input value={editDraft.name} onChange={(event) => setEditDraft((current) => ({ ...current, name: event.target.value }))} />
+                                <input ref={editNameInputRef} value={editDraft.name} onChange={(event) => setEditDraft((current) => ({ ...current, name: event.target.value }))} />
                             </div>
                             <div className="apps-form-row">
                                 <label>{text.category}</label>
@@ -5247,16 +6154,53 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                                     })}
                                 </div>
                             </div>
+                            <div className="apps-form-row apps-form-row--wide">
+                                <label>{isZh(lang) ? '\u81ea\u5b9a\u4e49\u56fe\u6807' : 'Custom icon'}</label>
+                                <div className="apps-custom-icon-field">
+                                    <span className="apps-app-icon apps-custom-icon-preview" style={{ '--apps-icon-color': editDraft.accent } as CSSProperties}>
+                                        <AppIcon icon={editDraft.icon} customIconDataUrl={editDraft.customIconDataUrl} />
+                                    </span>
+                                    <label className={`apps-secondary-button apps-custom-icon-upload ${editIconUploadState === 'processing' ? 'is-disabled' : ''}`}>
+                                        <input
+                                            type="file"
+                                            accept="image/png,image/jpeg,image/webp"
+                                            disabled={editIconUploadState === 'processing'}
+                                            onChange={(event) => {
+                                                const file = event.target.files?.[0];
+                                                event.target.value = '';
+                                                if (!file) return;
+                                                void setUploadedCustomIcon(file);
+                                            }}
+                                        />
+                                        <span>{editIconUploadState === 'processing' ? (isZh(lang) ? '\u5904\u7406\u4e2d...' : 'Processing...') : (isZh(lang) ? '\u4e0a\u4f20\u56fe\u7247' : 'Upload image')}</span>
+                                    </label>
+                                    {editDraft.customIconDataUrl && (
+                                        <button className="apps-secondary-button" type="button" onClick={() => {
+                                            setEditIconUploadState('idle');
+                                            setEditIconUploadMessage('');
+                                            setEditDraft((current) => ({ ...current, customIconDataUrl: undefined }));
+                                        }}>{isZh(lang) ? '\u4f7f\u7528\u5185\u7f6e\u56fe\u6807' : 'Use built-in icon'}</button>
+                                    )}
+                                    <small className={editIconUploadState === 'error' ? 'is-error' : ''} role={editIconUploadState === 'error' ? 'alert' : undefined}>
+                                        {editIconUploadMessage || (isZh(lang) ? '\u81ea\u52a8\u88c1\u526a\u4e3a 96\u00d796 PNG\uff0c\u652f\u6301 5 MB \u4ee5\u5185\u56fe\u7247\uff0c\u5185\u7f6e\u56fe\u6807\u4f5c\u4e3a\u56de\u9000\u3002' : 'Crops to a 96x96 PNG automatically. Supports images under 5 MB; built-in icon stays as fallback.')}
+                                    </small>
+                                </div>
+                            </div>
                             <div className="apps-form-row">
                                 <label>{text.appColor}</label>
                                 <AppAccentPicker value={editDraft.accent} lang={lang} onChange={(accent) => setEditDraft((current) => ({ ...current, accent }))} />
                             </div>
-                            <div className="apps-form-row">
+                            <div className="apps-form-row apps-form-row--wide">
                                 <label>{isZh(lang) ? '\u63cf\u8ff0' : 'Description'}</label>
                                 <textarea value={editDraft.description} onChange={(event) => setEditDraft((current) => ({ ...current, description: event.target.value }))} />
                             </div>
+                            <div className="apps-manage-edit__section-title">{isZh(lang) ? '\u80fd\u529b\u7ed1\u5b9a' : 'Capability binding'}</div>
                             {editingApp.kind === 'tool_app' && (
                                 <>
+                                    <div className="apps-form-row">
+                                        <label>Skill ID</label>
+                                        <input list="apps-manage-skill-options" value={editDraft.skillID} onChange={(event) => setEditDraft((current) => ({ ...current, skillID: event.target.value }))} placeholder={editingApp.id} />
+                                    </div>
                                     <div className="apps-form-row">
                                         <label>{isZh(lang) ? '\u8f93\u5165\u6a21\u5f0f' : 'Input mode'}</label>
                                         <select value={editDraft.inputMode} onChange={(event) => setEditDraft((current) => ({ ...current, inputMode: event.target.value as SkillInputMode, multipleFiles: event.target.value === 'form' ? false : current.multipleFiles }))}>
@@ -5299,9 +6243,42 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                                     )}
                                 </>
                             )}
-                            <div className="apps-actions">
+                            {isEnterpriseAppKind(editingApp.kind) && (
+                                <>
+                                    <div className="apps-form-row">
+                                        <label>appSkill</label>
+                                        <input list="apps-manage-skill-options" value={editDraft.appSkillID} onChange={(event) => setEditDraft((current) => ({ ...current, appSkillID: event.target.value }))} placeholder={`${editingApp.id}-app`} />
+                                    </div>
+                                    <div className="apps-form-row">
+                                        <label>{isZh(lang) ? 'appSkill \u7248\u672c' : 'appSkill version'}</label>
+                                        <input value={editDraft.appSkillVersion} onChange={(event) => setEditDraft((current) => ({ ...current, appSkillVersion: event.target.value }))} placeholder="1.0.0" />
+                                    </div>
+                                    {editingApp.kind === 'enterprise_approval_app' && (
+                                        <>
+                                            <div className="apps-form-row">
+                                                <label>workflow skill</label>
+                                                <input list="apps-manage-skill-options" value={editDraft.workflowSkillID} onChange={(event) => setEditDraft((current) => ({ ...current, workflowSkillID: event.target.value }))} placeholder={`${editingApp.id}-workflow`} />
+                                            </div>
+                                            <div className="apps-form-row">
+                                                <label>{isZh(lang) ? 'workflow \u7248\u672c' : 'workflow version'}</label>
+                                                <input value={editDraft.workflowSkillVersion} onChange={(event) => setEditDraft((current) => ({ ...current, workflowSkillVersion: event.target.value }))} placeholder="1.0.0" />
+                                            </div>
+                                            <div className="apps-form-row">
+                                                <label>{isZh(lang) ? '\u5ba1\u6279\u4e8b\u4ef6' : 'Approval event'}</label>
+                                                <input value={editDraft.approvalEvent} onChange={(event) => setEditDraft((current) => ({ ...current, approvalEvent: event.target.value }))} placeholder={`${editingApp.manifest?.datasrv?.domain || 'record'}.submitted`} />
+                                            </div>
+                                            <div className="apps-form-row">
+                                                <label>{isZh(lang) ? '\u5bf9\u8c61\u89d2\u8272' : 'Object role'}</label>
+                                                <input value={editDraft.approvalObjectRole} onChange={(event) => setEditDraft((current) => ({ ...current, approvalObjectRole: event.target.value }))} placeholder={editingApp.manifest?.datasrv?.domain || 'record'} />
+                                            </div>
+                                        </>
+                                    )}
+                                </>
+                            )}
+                            <div className="apps-actions apps-manage-edit__actions">
+                                {editSaveMessage && <span className="apps-manage-edit__message" data-state={editSaveState} role="alert">{editSaveMessage}</span>}
                                 <button className="apps-secondary-button" type="button" onClick={cancelEdit}>{text.cancel}</button>
-                                <button className="apps-primary-button" type="button" disabled={!editDraft.name.trim()} onClick={() => saveEdit(editingApp)}>{text.save}</button>
+                                <button className="apps-primary-button" type="button" disabled={!editDraft.name.trim() || editSaveState === 'saving'} onClick={() => void saveEdit(editingApp)}>{editSaveState === 'saving' ? (isZh(lang) ? '\u4fdd\u5b58\u4e2d...' : 'Saving...') : text.save}</button>
                             </div>
                         </div>
                     </div>
@@ -5453,13 +6430,14 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
             const resultItems = plan.map((item): AppInstallResultItem => {
                 const selected = (item.action === 'install' || item.action === 'upgrade') && selectedKeys.has(item.key);
                 if (selected && item.action === 'install') {
-                    return { key: item.key, name: item.app.name, icon: item.app.icon, accent: item.app.accent, action: 'installed', detail: text.installedCount };
+                    return { key: item.key, name: item.app.name, icon: item.app.icon, customIconDataUrl: item.app.customIconDataUrl, accent: item.app.accent, action: 'installed', detail: text.installedCount };
                 }
                 if (selected && item.action === 'upgrade') {
                     return {
                         key: item.key,
                         name: item.app.name,
                         icon: item.app.icon,
+                        customIconDataUrl: item.app.customIconDataUrl,
                         accent: item.app.accent,
                         action: 'upgraded',
                         detail: `${text.upgradedItem} v${normalizeAppVersion(item.installed?.version)} -> v${normalizeAppVersion(item.app.version)}`,
@@ -5470,7 +6448,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                     : item.action === 'duplicate'
                         ? text.duplicateApp
                         : text.notSelected;
-                return { key: item.key, name: item.app.name, icon: item.app.icon, accent: item.app.accent, action: 'skipped', detail: reason };
+                return { key: item.key, name: item.app.name, icon: item.app.icon, customIconDataUrl: item.app.customIconDataUrl, accent: item.app.accent, action: 'skipped', detail: reason };
             });
             const nextApps = plan.filter((item) => (item.action === 'install' || item.action === 'upgrade') && selectedKeys.has(item.key)).map((item) => item.app);
             const installedActionCount = plan.filter((item) => item.action === 'install' && selectedKeys.has(item.key)).length;
@@ -5504,7 +6482,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                 <div className="apps-market-list__items">
                     {marketRows.map(({ app, installed, upgrade, actionText }) => (
                         <div className="apps-market-row" key={app.id} data-state={installed ? 'installed' : upgrade ? 'upgrade' : 'available'}>
-                            <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><Icon name={app.icon} /></span>
+                            <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                             <div className="apps-market-row__main">
                                 <strong>{app.name}</strong>
                                 <span>{app.description}</span>
@@ -5621,7 +6599,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                                                 setConfirmHighRiskInstall(false);
                                             }}
                                         />
-                                        <span className="apps-app-icon" style={{ '--apps-icon-color': item.app.accent } as CSSProperties}><Icon name={item.app.icon} /></span>
+                                        <span className="apps-app-icon" style={{ '--apps-icon-color': item.app.accent } as CSSProperties}><AppIcon icon={item.app.icon} customIconDataUrl={item.app.customIconDataUrl} /></span>
                                         <div>
                                             <strong>{item.app.name}</strong>
                                             <span>{item.app.category} · {appKinds[item.app.kind][isZh(lang) ? 'zh' : 'en']}</span>
@@ -5646,7 +6624,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                                 <div className="apps-install-result" role="list" aria-label={text.installDetails}>
                                     {installResultItems.map((item) => (
                                         <div className="apps-install-result__row" data-action={item.action} role="listitem" key={item.key}>
-                                            <span className="apps-app-icon" style={{ '--apps-icon-color': item.accent } as CSSProperties}><Icon name={item.icon} /></span>
+                                            <span className="apps-app-icon" style={{ '--apps-icon-color': item.accent } as CSSProperties}><AppIcon icon={item.icon} customIconDataUrl={item.customIconDataUrl} /></span>
                                             <strong>{item.name}</strong>
                                             <em>{item.action === 'upgraded' ? text.upgradedItem : item.action === 'installed' ? text.installedCount : text.skippedItem}</em>
                                             <small>{item.detail}</small>
@@ -5663,9 +6641,6 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
 };
 
 export default AppsPage;
-
-
-
 
 
 

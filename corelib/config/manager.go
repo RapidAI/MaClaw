@@ -829,6 +829,10 @@ func (m *Manager) applyGeneralChange(cfg *corelib.AppConfig, key, value string) 
 		old := fmt.Sprintf("%v", cfg.CheckUpdateOnStartup)
 		cfg.CheckUpdateOnStartup = strings.EqualFold(value, "true")
 		return old, nil
+	case "prefer_beta_channel":
+		old := fmt.Sprintf("%v", cfg.PreferBetaChannel)
+		cfg.PreferBetaChannel = strings.EqualFold(value, "true")
+		return old, nil
 	case "hide_startup_popup":
 		old := fmt.Sprintf("%v", cfg.HideStartupPopup)
 		cfg.HideStartupPopup = strings.EqualFold(value, "true")

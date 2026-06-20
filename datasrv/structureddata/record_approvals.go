@@ -46,20 +46,30 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 	}
 	now := s.now().UTC()
 	approval := RecordApproval{
-		ID:         newID("approval"),
-		TenantID:   p.TenantID,
-		DatasetID:  datasetID,
-		RecordID:   recordID,
-		Status:     recordApprovalStatusPending,
-		Kind:       kind,
-		Priority:   priority,
-		Summary:    strings.TrimSpace(in.Summary),
-		Request:    cloneJSONMap(in.Request),
-		AssignedTo: strings.TrimSpace(in.AssignedTo),
-		CreatedBy:  p.UserID,
-		CreatedAt:  now,
-		DueAt:      dueAt,
-		UpdatedAt:  now,
+		ID:                 newID("approval"),
+		TenantID:           p.TenantID,
+		DatasetID:          datasetID,
+		RecordID:           recordID,
+		Status:             recordApprovalStatusPending,
+		Kind:               kind,
+		Priority:           priority,
+		Summary:            strings.TrimSpace(in.Summary),
+		Request:            cloneJSONMap(in.Request),
+		WorkflowSkillID:    strings.TrimSpace(in.WorkflowSkillID),
+		WorkflowVersion:    strings.TrimSpace(in.WorkflowVersion),
+		WorkflowInstanceID: strings.TrimSpace(in.WorkflowInstanceID),
+		WorkflowNodeID:     strings.TrimSpace(in.WorkflowNodeID),
+		WorkflowDecisionID: strings.TrimSpace(in.WorkflowDecisionID),
+		BusinessStatus:     strings.TrimSpace(in.BusinessStatus),
+		ResultStatus:       strings.TrimSpace(in.ResultStatus),
+		ResultPayload:      cloneJSONMap(in.ResultPayload),
+		Outputs:            cloneJSONValue(in.Outputs),
+		Artifacts:          cloneJSONValue(in.Artifacts),
+		AssignedTo:         strings.TrimSpace(in.AssignedTo),
+		CreatedBy:          p.UserID,
+		CreatedAt:          now,
+		DueAt:              dueAt,
+		UpdatedAt:          now,
 	}
 	if approval.Summary == "" {
 		approval.Summary = "Approval requested for " + recordID
@@ -82,6 +92,10 @@ func (s *Service) ListRecordApprovals(ctx context.Context, p Principal, in Query
 		return nil, fmt.Errorf("%w: invalid approval status", ErrInvalidInput)
 	}
 	in.Kind = strings.TrimSpace(in.Kind)
+	in.WorkflowSkillID = strings.TrimSpace(in.WorkflowSkillID)
+	in.WorkflowInstanceID = strings.TrimSpace(in.WorkflowInstanceID)
+	in.BusinessStatus = strings.TrimSpace(in.BusinessStatus)
+	in.ResultStatus = strings.TrimSpace(in.ResultStatus)
 	in.AssignedTo = strings.TrimSpace(in.AssignedTo)
 	return s.store.ListRecordApprovals(ctx, p.TenantID, in)
 }
@@ -92,6 +106,30 @@ func validRecordApprovalStatus(value string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func recordApprovalMetadata(approval RecordApproval) map[string]any {
+	return map[string]any{
+		"kind":                 approval.Kind,
+		"priority":             approval.Priority,
+		"assigned_to":          approval.AssignedTo,
+		"due_at":               formatOptionalPlanTime(approval.DueAt),
+		"workflow_skill_id":    approval.WorkflowSkillID,
+		"workflow_version":     approval.WorkflowVersion,
+		"workflow_instance_id": approval.WorkflowInstanceID,
+		"workflow_node_id":     approval.WorkflowNodeID,
+		"workflow_decision_id": approval.WorkflowDecisionID,
+		"business_status":      approval.BusinessStatus,
+		"result_status":        approval.ResultStatus,
+		"request":              cloneJSONMap(approval.Request),
+		"result_payload":       cloneJSONMap(approval.ResultPayload),
+		"outputs":              cloneJSONValue(approval.Outputs),
+		"artifacts":            cloneJSONValue(approval.Artifacts),
+		"decision":             approval.Decision,
+		"reason":               approval.Reason,
+		"created_by":           approval.CreatedBy,
+		"reviewed_by":          approval.ReviewedBy,
 	}
 }
 
@@ -124,7 +162,7 @@ func (s *Service) ReviewRecordApproval(ctx context.Context, p Principal, approva
 	default:
 		return nil, fmt.Errorf("%w: decision must be approve or reject", ErrInvalidInput)
 	}
-	out, err := s.store.UpdateRecordApprovalStatus(ctx, p.TenantID, approvalID, status, decision, strings.TrimSpace(in.Reason), p.UserID, s.now().UTC())
+	out, err := s.store.UpdateRecordApprovalStatus(ctx, p.TenantID, approvalID, status, decision, strings.TrimSpace(in.Reason), p.UserID, in.WorkflowNodeID, in.WorkflowDecisionID, in.BusinessStatus, in.ResultStatus, in.ResultPayload, in.Outputs, in.Artifacts, s.now().UTC())
 	if err != nil {
 		return nil, err
 	}

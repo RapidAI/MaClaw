@@ -3014,7 +3014,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 
 ### 创建新文件：write_file
 - 只有创建全新文件时才用 write_file(mode=overwrite)。
-- 大文件（>1800 字符）分块写入：先 overwrite 第一部分，再 append 后续部分。
+- write_file 无单次内容长度限制，可一次写入完整脚本。超过约 6000 字符的大文件建议分块写入（先 overwrite 第一部分，再 append 后续部分），避免模型输出截断。
 
 ### Shell 执行：bash
 - 用于编译、运行测试、安装依赖、查看进程状态等。
@@ -3060,7 +3060,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 
 ## Tool-call JSON reliability
 - Keep every tool_call arguments JSON complete and valid. Never truncate JSON strings.
-- Do not put a large file into one write_file call. If content is over %d characters, split it into chunks: first call write_file(mode="overwrite"), then call write_file(mode="append") for following chunks.
+- write_file has no per-call content limit. However, if content exceeds about 6000 characters, consider splitting into chunks to avoid model output truncation: first call write_file(mode="overwrite"), then call write_file(mode="append") for following chunks.
 - Prefer edit_file or edit_lines for existing files. Use write_file only for new files or TEST_REPORT.md append entries.
 - If a write_file call was rejected because arguments JSON was invalid or incomplete, retry with smaller chunks instead of repeating the same large call.
 
@@ -3068,7 +3068,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - Do not run Git commands that rewrite or move worktree state: reset, checkout, restore, switch, merge, rebase, stash, or clean -f. Read-only Git commands such as status, diff, and log are allowed.
 - Do not run recursive or forceful delete commands such as rm -r/-rf, Remove-Item -Recurse/-r/-rf, ri -r, rd/rmdir /s, del /s, or erase /s. Use edit_file/edit_lines/write_file for scoped file changes.
 - Do not mutate files through bash redirection or shell helpers: >, >>, tee/Tee-Object, Set-Content/Add-Content/Out-File, touch/mkdir, Copy-Item/Move-Item/Rename-Item, sed -i, perl -pi, node fs.writeFileSync/promises.writeFile, Python open(..., "w")/Path.write_text, or dd of=. Use the file editing tools instead.
-`, codingSubAgentInlineContentLimit))
+`))
 
 	b.WriteString(fmt.Sprintf("\n## 项目路径\n%s\n", projectPath))
 
@@ -3375,8 +3375,8 @@ func applyCodingSubAgentToolHints(fn map[string]interface{}) {
 	props, _ := params["properties"].(map[string]interface{})
 	switch name {
 	case "write_file":
-		setCodingSubAgentToolPropDescription(props, "content", fmt.Sprintf("File content. Keep each call under %d characters; split large files into overwrite + append chunks.", codingSubAgentInlineContentLimit))
-		setCodingSubAgentToolPropMaxLength(props, "content", codingSubAgentInlineContentLimit)
+		setCodingSubAgentToolPropDescription(props, "content", "File content. No length limit; you can write complete scripts or documents in a single call. For very large files (>6000 chars), consider splitting into overwrite + append chunks.")
+		// Do NOT set maxLength for write_file — it causes models to avoid calling the tool for long content.
 		setCodingSubAgentToolPropDescription(props, "mode", "Write mode: overwrite for first chunk, append for later chunks.")
 	case "edit_file":
 		setCodingSubAgentToolPropDescription(props, "old_string", fmt.Sprintf("Exact text to replace. Keep under %d characters; use edit_lines for large edits.", codingSubAgentInlineContentLimit))

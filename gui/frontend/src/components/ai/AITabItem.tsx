@@ -41,9 +41,11 @@ export interface AITabItemProps {
     onClose?: (tabId: string) => void;
     onContextMenu?: (e: React.MouseEvent, tab: AITab) => void;
     lang?: string;
+    /** Whether this tab is currently recording a skill */
+    recording?: boolean;
 }
 
-export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMenu, lang }: AITabItemProps) {
+export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMenu, lang, recording }: AITabItemProps) {
     const handleClick = useCallback(() => {
         onActivate(tab.id);
     }, [onActivate, tab.id]);
@@ -171,6 +173,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
             title={accessibleTitle}
         >
             {tabIconElement}
+            {recording && <span data-testid={`ai-tab-recording-${tab.id}`} aria-label="Recording" style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#dc2626", flexShrink: 0, animation: "pulse-recording 1.5s ease-in-out infinite" }} />}
             <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
                 {displayTitle}
             </span>

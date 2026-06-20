@@ -380,12 +380,11 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 
 	log.Printf("[workflow-v2] started: user=%s type=%s project=%s id=%s", msg.UserID, state.Type, state.ProjectPath, state.ID)
 
-	// Emit workflow started event
-	h.emitWorkflowV2Progress(msg.UserID, state)
-
 	// Run the first phase and return its output directly as the response.
 	// The phase runs as a single agent loop call — loop ends, output returned.
 	// User sees the document and the workflow waits for their next message.
+	// Note: emitWorkflowV2Progress is called inside runWorkflowV2Phase (both
+	// the form path and the agent-loop path), so no need to call it here.
 	return h.runWorkflowV2Phase(msg.UserID, state, "")
 }
 
@@ -576,52 +575,12 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 // The system prompt still has the full FormData section (for structured field
 // labels, variant info, and parsing guidance). The user message provides a
 // redundant but authoritative copy that weak models cannot miss.
-func buildFormDataInlinedUserText(phase *v2.PhaseState) string {
+func buildFormDataInlinedUserText(phase *v2.Phase) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("我已通过表单提交了「%s」阶段的全部输入信息，具体如下：\n\n", phase.Name))
-
-	// Render fields using InputSchema order (stable, labeled).
-	if phase.InputSchema != nil {
-		allFields := make([]v2.PhaseInputField, 0, len(phase.InputSchema.Fields)+8)
-		allFields = append(allFields, phase.InputSchema.Fields...)
-		// Include active variant fields.
-		if variantID, ok := phase.FormData["_agent_view_variant"]; ok && variantID != nil {
-			vid := fmt.Sprintf("%v", variantID)
-			for _, v := range phase.InputSchema.Variants {
-				if v.ID == vid {
-					allFields = append(allFields, v.Fields...)
-					break
-				}
-			}
-		}
-		for _, f := range allFields {
-			if f.Name == "" || strings.HasPrefix(f.Name, "_") {
-				continue
-			}
-			value, ok := phase.FormData[f.Name]
-			if !ok || value == nil || fmt.Sprintf("%v", value) == "" {
-				continue
-			}
-			label := f.Label
-			if label == "" {
-				label = f.Name
-			}
-			sb.WriteString(fmt.Sprintf("- %s：%v\n", label, value))
-		}
-	} else {
-		// Fallback: no schema, iterate map.
-		for key, value := range phase.FormData {
-			if key == "" || strings.HasPrefix(key, "_") {
-				continue
-			}
-			sb.WriteString(fmt.Sprintf("- %s：%v\n", key, value))
-		}
-	}
-
+	sb.WriteString(v2.RenderFormDataFields(phase, false))
 	sb.WriteString("\n请直接基于以上信息生成本阶段完整文档。")
-	sb.WriteString("所有必要输入已在上面列出，无需使用 project_manage、list_directory 等工具搜索，也无需询问用户。")
-	sb.WriteString("如果信息中包含文件路径，请直接用 read_file 或 bash 读取该文件内容。")
-	sb.WriteString("直接在本次回复中输出完整文档内容。")
+	sb.WriteString("如果信息中包含文件路径，请直接用 read_file 或 bash 读取该文件内容后再生成文档。")
 	return sb.String()
 }
 
@@ -644,10 +603,11 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 	phases := make([]map[string]interface{}, len(state.Phases))
 	for i, p := range state.Phases {
 		phases[i] = map[string]interface{}{
-			"id":            p.ID,
-			"name":          p.Name,
-			"status":        string(p.Status),
-			"needs_confirm": p.NeedsConfirm,
+			"id":               p.ID,
+			"name":             p.Name,
+			"status":           string(p.Status),
+			"needs_confirm":    p.NeedsConfirm,
+			"expects_document": p.NeedsConfirm,
 		}
 	}
 
@@ -660,12 +620,15 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 	}
 
 	// Current phase ID
+	var activePhase *v2.Phase
 	currentPhaseID := ""
 	if p := state.ActivePhase(); p != nil {
+		activePhase = p
 		currentPhaseID = p.ID
 	}
 
 	// Emit workflow:phase_update (the event name frontend listens to)
+	awaitingForm := activePhase != nil && activePhase.InputSchema != nil && activePhase.FormData == nil
 	emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
 		"id":            state.ID,
 		"status":        string(state.Status),
@@ -674,13 +637,19 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 		"phases":        phases,
 		"phase_outputs": phaseOutputs,
 		"project_path":  state.ProjectPath,
+		"awaiting_form": awaitingForm,
 	})
 
-	// Also emit suggest_maximize for desktop panel to auto-expand
+	// Also emit suggest_maximize for desktop panel to auto-expand.
+	// But NOT when the active phase is waiting for form input — there's no
+	// document content to preview yet, and opening the workflow doc panel would
+	// obscure the AgentView form that the user needs to fill in.
 	if state.Status == v2.StatusActive {
-		emitWorkflowV2Event(h.app, "workflow:suggest_maximize", map[string]interface{}{
-			"workflow_type": state.Type,
-		})
+		if !awaitingForm {
+			emitWorkflowV2Event(h.app, "workflow:suggest_maximize", map[string]interface{}{
+				"workflow_type": state.Type,
+			})
+		}
 	} else {
 		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", nil)
 	}

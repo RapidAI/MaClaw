@@ -9,23 +9,60 @@ import (
 )
 
 // StartSkillRecording begins recording tool operations for skill generation.
+// tabID identifies which tab initiated the recording. For the local tab use "local",
+// for project tabs use the tab ID (which maps to a project path internally).
 // Returns a status message.
-func (a *App) StartSkillRecording() string {
+func (a *App) StartSkillRecording(tabID string) string {
 	if a.skillRecorder == nil {
 		a.skillRecorder = NewSkillOperationRecorder()
 	}
 
+	// Resolve ownerID from tabID for capture-point filtering.
+	ownerID := a.resolveSkillRecordingOwnerID(tabID)
 	workDir := a.GetCurrentProjectPath()
-	if err := a.skillRecorder.Start(workDir); err != nil {
+	// For project tabs, use the project path as workDir.
+	if projectPath := a.resolveProjectPathForTab(tabID); projectPath != "" {
+		workDir = projectPath
+	}
+
+	if err := a.skillRecorder.StartWithTab(workDir, ownerID, tabID); err != nil {
 		return fmt.Sprintf("录制启动失败: %s", err)
 	}
 
-	log.Printf("[skill-recorder] recording started, workDir=%s", workDir)
+	log.Printf("[skill-recorder] recording started, workDir=%s ownerID=%s tabID=%s", workDir, ownerID, tabID)
 	a.emitEvent("skill-recording-state-changed", map[string]interface{}{
 		"recording": true,
 		"count":     0,
+		"tabId":     tabID,
 	})
 	return "ok"
+}
+
+// resolveSkillRecordingOwnerID maps a frontend tabID to the backend ownerID
+// used for filtering tool calls during recording.
+func (a *App) resolveSkillRecordingOwnerID(tabID string) string {
+	if tabID == "" || tabID == "local" {
+		return desktopUserID
+	}
+	// Project tabs: look up cached projectPath → synthesize ownerID
+	if projectPath := a.resolveProjectPathForTab(tabID); projectPath != "" {
+		return desktopUserID + ":" + projectPath
+	}
+	// Fallback: use desktop-user (local tab behavior)
+	return desktopUserID
+}
+
+// resolveProjectPathForTab returns the project path for a given tabID, or empty string.
+func (a *App) resolveProjectPathForTab(tabID string) string {
+	if tabID == "" || tabID == "local" {
+		return ""
+	}
+	if v, ok := a.tabProjectPaths.Load(tabID); ok {
+		if path, ok := v.(string); ok && path != "" {
+			return path
+		}
+	}
+	return ""
 }
 
 // StopSkillRecording stops recording and returns data for the inline card.
@@ -52,6 +89,7 @@ func (a *App) StopSkillRecording() map[string]interface{} {
 		a.emitEvent("skill-recording-state-changed", map[string]interface{}{
 			"recording":      false,
 			"pendingConfirm": false,
+			"tabId":          a.skillRecorder.TabID(),
 		})
 		return map[string]interface{}{"error": "no operations recorded"}
 	}
@@ -71,6 +109,7 @@ func (a *App) StopSkillRecording() map[string]interface{} {
 		"recording":      false,
 		"pendingConfirm": true,
 		"count":          count,
+		"tabId":          a.skillRecorder.TabID(),
 	})
 
 	result := map[string]interface{}{
@@ -97,6 +136,7 @@ func (a *App) ResolveSkillRecording(action string, name string, description stri
 		a.emitEvent("skill-recording-state-changed", map[string]interface{}{
 			"recording":      false,
 			"pendingConfirm": false,
+			"tabId":          a.skillRecorder.TabID(),
 		})
 		return map[string]interface{}{"status": "cancelled"}
 	}
@@ -139,6 +179,7 @@ func (a *App) ResolveSkillRecording(action string, name string, description stri
 	a.emitEvent("skill-recording-state-changed", map[string]interface{}{
 		"recording":      false,
 		"pendingConfirm": false,
+		"tabId":          a.skillRecorder.TabID(),
 	})
 
 	return map[string]interface{}{
@@ -154,6 +195,14 @@ func (a *App) IsSkillRecording() bool {
 		return false
 	}
 	return a.skillRecorder.IsRecording()
+}
+
+// GetSkillRecordingTabID returns the tab ID that owns the current recording.
+func (a *App) GetSkillRecordingTabID() string {
+	if a.skillRecorder == nil || !a.skillRecorder.IsRecording() {
+		return ""
+	}
+	return a.skillRecorder.TabID()
 }
 
 // GetSkillRecordingCount returns the number of operations recorded so far.

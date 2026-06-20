@@ -293,6 +293,8 @@ func (h *IMMessageHandler) applyWorkflowAutoAdvanceResponse(userID string, advRe
 // the LLM uses write_file to produce output instead of streaming text.
 // Files are read in order and separated by newlines. Only text files <= 100KB
 // are read to avoid memory issues with binary or oversized files.
+// Script files (.py, .ps1, .sh, etc.) are skipped — they are tool/utility
+// files produced by the LLM to assist the workflow, not document output.
 func readWorkflowWrittenFiles(paths []string) string {
 	const maxFileSize = 100 * 1024 // 100KB per file
 	const maxTotalRunes = 50000   // cap total output to avoid oversized phase output
@@ -302,6 +304,9 @@ func readWorkflowWrittenFiles(paths []string) string {
 	for _, p := range paths {
 		if totalRunes >= maxTotalRunes {
 			break
+		}
+		if looksLikeScriptFile(p) {
+			continue
 		}
 		info, err := os.Stat(p)
 		if err != nil || info.IsDir() || info.Size() > maxFileSize || info.Size() == 0 {
@@ -351,4 +356,21 @@ func looksLikeBinary(data []byte) bool {
 		}
 	}
 	return float64(nonText)/float64(checkLen) > 0.10
+}
+
+// looksLikeScriptFile returns true if the file path has a script/executable extension.
+// These files are utility scripts produced by the LLM to assist the workflow
+// (e.g. md2docx.py), not document output that should be shown in the panel.
+func looksLikeScriptFile(path string) bool {
+	lower := strings.ToLower(path)
+	scriptExts := []string{
+		".py", ".ps1", ".sh", ".bat", ".cmd", ".js", ".ts",
+		".rb", ".pl", ".lua", ".vbs", ".wsf", ".r",
+	}
+	for _, ext := range scriptExts {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
 }

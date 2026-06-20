@@ -354,6 +354,69 @@ describe('HubServiceRedeemPanel', () => {
         expect(screen.queryByText('暂无授权额度明细')).toBeNull();
     });
 
+    it('localizes grant source values in Chinese authorization details', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            skip_llm_config: true,
+            service_group_names: ['充值服务组'],
+            default_model: 'auto',
+            available_models: ['auto'],
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [{
+                service_group_id: 'redeem',
+                source: 'card',
+                starts_at: '2026-06-20T00:00:00Z',
+                expires_at: '2027-06-20T00:00:00Z',
+                active: true,
+                status: 'active',
+                credits_total: 10000,
+                credits_used: 10,
+                credits_remaining: 9990,
+            }, {
+                service_group_id: 'redeem',
+                source: 'card',
+                starts_at: '2026-06-20T00:00:00Z',
+                expires_at: '2026-07-20T00:00:00Z',
+                active: true,
+                status: 'active',
+                credits_total: 300,
+                credits_used: 20,
+                credits_remaining: 280,
+                period_limits: { monthly: 300 },
+            }, {
+                service_group_id: 'redeem',
+                source: 'card',
+                starts_at: '2026-06-20T00:00:00Z',
+                expires_at: '2027-06-20T00:00:00Z',
+                active: true,
+                status: 'active',
+                credits_total: 3000,
+                credits_used: 30,
+                credits_remaining: 2970,
+                period_limits: { monthly: 300 },
+            }, {
+                service_group_id: 'redeem',
+                source: 'default_new_user_backfill',
+                starts_at: '2026-06-18T00:00:00Z',
+                expires_at: '2026-07-18T00:00:00Z',
+                active: true,
+                status: 'exhausted',
+                credits_total: 1000,
+                credits_used: 1000,
+                credits_remaining: 0,
+            }],
+        });
+
+        render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+
+        expect(await screen.findByText('授权额度明细')).toBeTruthy();
+        expect(screen.getByText('充值卡（点卡）')).toBeTruthy();
+        expect(screen.getByText('充值卡（包月卡）')).toBeTruthy();
+        expect(screen.getByText('充值卡（包年卡）')).toBeTruthy();
+        expect(screen.getByText('新用户赠送')).toBeTruthy();
+        expect(screen.queryByText('default_new_user_backfill')).toBeNull();
+    });
+
     it('shows currently available credits instead of blocked remaining credits while service is active', async () => {
         GetHubLLMServiceStatusMock.mockResolvedValue({
             active: true,

@@ -119,9 +119,9 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(screen.getByText('90')).toBeTruthy();
     });
 
-    it('routes the sidebar buy action to credits page while service remains active', () => {
+    it('routes the sidebar buy action to card store while service remains active', () => {
         const lowCredits = { ...baseCredits, serviceActive: true, status: 'active', remaining: 10 };
-        const { openServiceRedeemPage, openHubCreditsPage } = renderStatus(
+        const { openServiceRedeemPage, openHubCreditsPage, openHubCardStorePage } = renderStatus(
             lowCredits,
             { showHubCreditAction: true },
         );
@@ -130,22 +130,24 @@ describe('SidebarSystemStatus Hub credits', () => {
 
         fireEvent.click(buy);
 
+        expect(openHubCardStorePage).toHaveBeenCalledTimes(1);
         expect(openServiceRedeemPage).not.toHaveBeenCalled();
-        expect(openHubCreditsPage).toHaveBeenCalledTimes(1);
+        expect(openHubCreditsPage).not.toHaveBeenCalled();
     });
 
-    it('routes the sidebar buy action to service redeem while official service is period-limited', () => {
-        const { openServiceRedeemPage, openHubCreditsPage } = renderStatus(
+    it('routes the sidebar buy action to card store even while official service is period-limited', () => {
+        const { openServiceRedeemPage, openHubCreditsPage, openHubCardStorePage } = renderStatus(
             { ...baseCredits, serviceActive: false, status: 'period_limited', retryAfterSeconds: 3600 },
             { showHubCreditAction: true },
         );
 
         const buy = screen.getByRole('button', { name: '\u8d2d\u4e70' });
-        expect(buy.getAttribute('title')).toContain('\u672c\u5468\u671f\u989d\u5ea6\u5df2\u7528\u5c3d');
+        expect(buy.getAttribute('title')).toContain('MaClaw \u670d\u52a1\u5361\u5546\u5e97');
 
         fireEvent.click(buy);
 
-        expect(openServiceRedeemPage).toHaveBeenCalledTimes(1);
+        expect(openHubCardStorePage).toHaveBeenCalledTimes(1);
+        expect(openServiceRedeemPage).not.toHaveBeenCalled();
         expect(openHubCreditsPage).not.toHaveBeenCalled();
     });
 

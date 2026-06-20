@@ -117,20 +117,38 @@ func (r *orderTestRepo) Archive(_ context.Context, orderNo string, archivedAt ti
 }
 
 type authTestRepo struct {
-	created []*llmservice.TenantAuthorization
+	created              []*llmservice.TenantAuthorization
+	byID                 map[string]*llmservice.TenantAuthorization
+	byHub                map[string][]*llmservice.TenantAuthorization
+	getByIDCalls         int
+	listByHubTenantCalls int
 }
 
 func (r *authTestRepo) Create(_ context.Context, auth *llmservice.TenantAuthorization) error {
 	r.created = append(r.created, auth)
+	if r.byID == nil {
+		r.byID = map[string]*llmservice.TenantAuthorization{}
+	}
+	r.byID[auth.ID] = auth
+	if r.byHub == nil {
+		r.byHub = map[string][]*llmservice.TenantAuthorization{}
+	}
+	key := auth.HubID + "\x00" + auth.TenantID
+	r.byHub[key] = append(r.byHub[key], auth)
 	return nil
 }
 
-func (r *authTestRepo) GetByID(_ context.Context, _ string) (*llmservice.TenantAuthorization, error) {
-	return nil, nil
+func (r *authTestRepo) GetByID(_ context.Context, id string) (*llmservice.TenantAuthorization, error) {
+	r.getByIDCalls++
+	if r.byID == nil {
+		return nil, nil
+	}
+	return r.byID[id], nil
 }
 
-func (r *authTestRepo) ListByHubTenant(_ context.Context, _, _ string) ([]*llmservice.TenantAuthorization, error) {
-	return nil, nil
+func (r *authTestRepo) ListByHubTenant(_ context.Context, hubID, tenantID string) ([]*llmservice.TenantAuthorization, error) {
+	r.listByHubTenantCalls++
+	return r.byHub[hubID+"\x00"+tenantID], nil
 }
 
 func (r *authTestRepo) ListByServiceGroup(_ context.Context, _ string) ([]*llmservice.TenantAuthorization, error) {
@@ -530,6 +548,311 @@ func TestListOrdersDoesNotHydrateActivatedOrderPaymentDetails(t *testing.T) {
 	}
 	if orders[0].PayQRURL != "" {
 		t.Fatalf("PayQRURL = %q, want empty for activated order", orders[0].PayQRURL)
+	}
+}
+
+func TestListOrdersHydratesAuthorizationUsage(t *testing.T) {
+	now := time.Date(2026, 6, 19, 14, 0, 0, 0, time.UTC)
+	authID := "auth-HC-ACTIVE"
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-ACTIVE": {
+			Order: corecardstore.Order{
+				OrderNo:   "HC-ACTIVE",
+				Email:     "owner@example.com",
+				Status:    corecardstore.StatusActivated,
+				PaymentID: authID,
+				Amount:    88,
+			},
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "redeem",
+			Credits:        520000,
+			Period:         "month",
+		},
+	}}
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{
+		authID: {
+			ID:             authID,
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "redeem",
+			CreditsTotal:   520000,
+			CreditsUsed:    1200,
+			StartsAt:       now,
+			ExpiresAt:      now.AddDate(0, 1, 0),
+			Status:         "active",
+			CardOrderID:    "HC-ACTIVE",
+			CreatedAt:      now,
+		},
+	}}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	orders, _, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	if len(orders) != 1 {
+		t.Fatalf("orders len = %d, want 1", len(orders))
+	}
+	got := orders[0]
+	if got.AuthorizationID != authID || got.AuthorizationStatus != "active" {
+		t.Fatalf("authorization summary = id:%q status:%q", got.AuthorizationID, got.AuthorizationStatus)
+	}
+	if got.CreditsUsed == nil || *got.CreditsUsed != 1200 {
+		t.Fatalf("CreditsUsed = %#v, want 1200", got.CreditsUsed)
+	}
+	if got.CreditsRemaining == nil || *got.CreditsRemaining != 518800 {
+		t.Fatalf("CreditsRemaining = %#v, want 518800", got.CreditsRemaining)
+	}
+	if got.AuthorizationExpiresAt == nil || !got.AuthorizationExpiresAt.Equal(now.AddDate(0, 1, 0)) {
+		t.Fatalf("AuthorizationExpiresAt = %#v", got.AuthorizationExpiresAt)
+	}
+}
+
+func TestListOrdersHydratesAuthorizationUsageByOrderIDFallback(t *testing.T) {
+	now := time.Date(2026, 6, 19, 14, 0, 0, 0, time.UTC)
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-LEGACY": {
+			Order: corecardstore.Order{
+				OrderNo: "HC-LEGACY",
+				Email:   "owner@example.com",
+				Status:  corecardstore.StatusActivated,
+				Amount:  88,
+			},
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "redeem",
+			Credits:        1000,
+			Period:         "month",
+		},
+	}}
+	authRepo := &authTestRepo{byHub: map[string][]*llmservice.TenantAuthorization{
+		"hub-1\x00tenant-a": {{
+			ID:             "auth-legacy",
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "redeem",
+			CreditsTotal:   1000,
+			CreditsUsed:    250,
+			StartsAt:       now,
+			ExpiresAt:      now.AddDate(0, 1, 0),
+			Status:         "active",
+			CardOrderID:    "HC-LEGACY",
+			CreatedAt:      now,
+		}},
+	}}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	orders, _, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	got := orders[0]
+	if got.AuthorizationID != "auth-legacy" {
+		t.Fatalf("AuthorizationID = %q, want auth-legacy", got.AuthorizationID)
+	}
+	if got.CreditsUsed == nil || *got.CreditsUsed != 250 {
+		t.Fatalf("CreditsUsed = %#v, want 250", got.CreditsUsed)
+	}
+}
+
+func TestListOrdersCachesAuthorizationFallbackByHubTenant(t *testing.T) {
+	now := time.Date(2026, 6, 19, 14, 0, 0, 0, time.UTC)
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-LEGACY-1": {
+			Order:          corecardstore.Order{OrderNo: "HC-LEGACY-1", Email: "owner@example.com", Status: corecardstore.StatusActivated},
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "redeem",
+			Credits:        1000,
+			Period:         "month",
+		},
+		"HC-LEGACY-2": {
+			Order:          corecardstore.Order{OrderNo: "HC-LEGACY-2", Email: "owner@example.com", Status: corecardstore.StatusActivated},
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "redeem",
+			Credits:        2000,
+			Period:         "month",
+		},
+	}}
+	authRepo := &authTestRepo{byHub: map[string][]*llmservice.TenantAuthorization{
+		"hub-1\x00tenant-a": {
+			{ID: "auth-1", HubID: "hub-1", TenantID: "tenant-a", ServiceGroupID: "redeem", CreditsTotal: 1000, CreditsUsed: 100, StartsAt: now, ExpiresAt: now.AddDate(0, 1, 0), Status: "active", CardOrderID: "HC-LEGACY-1", CreatedAt: now},
+			{ID: "auth-2", HubID: "hub-1", TenantID: "tenant-a", ServiceGroupID: "redeem", CreditsTotal: 2000, CreditsUsed: 200, StartsAt: now, ExpiresAt: now.AddDate(0, 1, 0), Status: "active", CardOrderID: "HC-LEGACY-2", CreatedAt: now},
+		},
+	}}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	orders, _, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	if len(orders) != 2 {
+		t.Fatalf("orders len = %d, want 2", len(orders))
+	}
+	if authRepo.listByHubTenantCalls != 1 {
+		t.Fatalf("ListByHubTenant calls = %d, want 1", authRepo.listByHubTenantCalls)
+	}
+}
+
+func TestListOrdersCachedMissingAuthorizationIDStillFallsBackByOrderID(t *testing.T) {
+	now := time.Date(2026, 6, 19, 14, 0, 0, 0, time.UTC)
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-MISSING-ID-1": {
+			Order:          corecardstore.Order{OrderNo: "HC-MISSING-ID-1", Email: "owner@example.com", Status: corecardstore.StatusActivated, PaymentID: "missing-auth"},
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "redeem",
+			Credits:        1000,
+			Period:         "month",
+		},
+		"HC-MISSING-ID-2": {
+			Order:          corecardstore.Order{OrderNo: "HC-MISSING-ID-2", Email: "owner@example.com", Status: corecardstore.StatusActivated, PaymentID: "missing-auth"},
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "redeem",
+			Credits:        2000,
+			Period:         "month",
+		},
+	}}
+	authRepo := &authTestRepo{byHub: map[string][]*llmservice.TenantAuthorization{
+		"hub-1\x00tenant-a": {
+			{ID: "auth-1", HubID: "hub-1", TenantID: "tenant-a", ServiceGroupID: "redeem", CreditsTotal: 1000, CreditsUsed: 100, StartsAt: now, ExpiresAt: now.AddDate(0, 1, 0), Status: "active", CardOrderID: "HC-MISSING-ID-1", CreatedAt: now},
+			{ID: "auth-2", HubID: "hub-1", TenantID: "tenant-a", ServiceGroupID: "redeem", CreditsTotal: 2000, CreditsUsed: 200, StartsAt: now, ExpiresAt: now.AddDate(0, 1, 0), Status: "active", CardOrderID: "HC-MISSING-ID-2", CreatedAt: now},
+		},
+	}}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	orders, _, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, order := range orders {
+		if order.AuthorizationID == "" {
+			t.Fatalf("order %s was not hydrated after cached missing auth id", order.OrderNo)
+		}
+		seen[order.OrderNo] = true
+	}
+	if len(seen) != 2 {
+		t.Fatalf("hydrated orders = %+v, want both orders", seen)
+	}
+	if authRepo.getByIDCalls != 1 {
+		t.Fatalf("GetByID calls = %d, want 1", authRepo.getByIDCalls)
+	}
+	if authRepo.listByHubTenantCalls != 1 {
+		t.Fatalf("ListByHubTenant calls = %d, want 1", authRepo.listByHubTenantCalls)
+	}
+}
+
+func TestListOrdersMismatchedAuthorizationIDFallsBackByOrderID(t *testing.T) {
+	now := time.Date(2026, 6, 19, 14, 0, 0, 0, time.UTC)
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-MISMATCH": {
+			Order:          corecardstore.Order{OrderNo: "HC-MISMATCH", Email: "owner@example.com", Status: corecardstore.StatusActivated, PaymentID: "auth-other-tenant"},
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "redeem",
+			Credits:        1000,
+			Period:         "month",
+		},
+	}}
+	authRepo := &authTestRepo{
+		byID: map[string]*llmservice.TenantAuthorization{
+			"auth-other-tenant": {ID: "auth-other-tenant", HubID: "hub-1", TenantID: "tenant-b", ServiceGroupID: "redeem", CreditsTotal: 1000, CreditsUsed: 900, StartsAt: now, ExpiresAt: now.AddDate(0, 1, 0), Status: "active", CardOrderID: "HC-OTHER", CreatedAt: now},
+		},
+		byHub: map[string][]*llmservice.TenantAuthorization{
+			"hub-1\x00tenant-a": {
+				{ID: "auth-correct", HubID: "hub-1", TenantID: "tenant-a", ServiceGroupID: "redeem", CreditsTotal: 1000, CreditsUsed: 125, StartsAt: now, ExpiresAt: now.AddDate(0, 1, 0), Status: "active", CardOrderID: "HC-MISMATCH", CreatedAt: now},
+			},
+		},
+	}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	orders, _, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	got := orders[0]
+	if got.AuthorizationID != "auth-correct" {
+		t.Fatalf("AuthorizationID = %q, want auth-correct", got.AuthorizationID)
+	}
+	if got.CreditsUsed == nil || *got.CreditsUsed != 125 {
+		t.Fatalf("CreditsUsed = %#v, want 125", got.CreditsUsed)
+	}
+	if authRepo.getByIDCalls != 1 {
+		t.Fatalf("GetByID calls = %d, want 1", authRepo.getByIDCalls)
+	}
+	if authRepo.listByHubTenantCalls != 1 {
+		t.Fatalf("ListByHubTenant calls = %d, want 1", authRepo.listByHubTenantCalls)
+	}
+}
+
+func TestListOrdersDoesNotFallbackForUnactivatedOrderWithPaymentID(t *testing.T) {
+	now := time.Date(2026, 6, 19, 14, 0, 0, 0, time.UTC)
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-PENDING": {
+			Order:          corecardstore.Order{OrderNo: "HC-PENDING", Email: "owner@example.com", Status: corecardstore.StatusPending, PaymentID: "gateway-payment-id"},
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "redeem",
+			Credits:        1000,
+			Period:         "month",
+		},
+	}}
+	authRepo := &authTestRepo{
+		byID: map[string]*llmservice.TenantAuthorization{
+			"gateway-payment-id": {ID: "gateway-payment-id", HubID: "hub-1", TenantID: "tenant-a", ServiceGroupID: "redeem", CreditsTotal: 1000, CreditsUsed: 300, StartsAt: now, ExpiresAt: now.AddDate(0, 1, 0), Status: "active", CardOrderID: "HC-PENDING", CreatedAt: now},
+		},
+		byHub: map[string][]*llmservice.TenantAuthorization{
+			"hub-1\x00tenant-a": {
+				{ID: "auth-pending", HubID: "hub-1", TenantID: "tenant-a", ServiceGroupID: "redeem", CreditsTotal: 1000, CreditsUsed: 100, StartsAt: now, ExpiresAt: now.AddDate(0, 1, 0), Status: "active", CardOrderID: "HC-PENDING", CreatedAt: now},
+			},
+		},
+	}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	orders, _, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	if orders[0].AuthorizationID != "" || orders[0].CreditsUsed != nil {
+		t.Fatalf("unactivated order was hydrated: %#v", orders[0])
+	}
+	if authRepo.getByIDCalls != 0 {
+		t.Fatalf("GetByID calls = %d, want 0", authRepo.getByIDCalls)
+	}
+	if authRepo.listByHubTenantCalls != 0 {
+		t.Fatalf("ListByHubTenant calls = %d, want 0", authRepo.listByHubTenantCalls)
+	}
+}
+
+func TestListOrdersClearsStaleAuthorizationUsage(t *testing.T) {
+	staleUsed := 10.0
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-STALE": {
+			Order: corecardstore.Order{
+				OrderNo: "HC-STALE",
+				Email:   "owner@example.com",
+				Status:  corecardstore.StatusActivated,
+			},
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "redeem",
+			Credits:        1000,
+			Period:         "month",
+			CreditsUsed:    &staleUsed,
+		},
+	}}
+	svc := NewService(nil, orderRepo, nil)
+
+	orders, _, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	if orders[0].CreditsUsed != nil || orders[0].AuthorizationID != "" {
+		t.Fatalf("stale authorization fields were not cleared: %#v", orders[0])
 	}
 }
 

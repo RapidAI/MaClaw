@@ -1894,12 +1894,18 @@ func (a *App) GroupDiscussionSendHistoryMessage(consultationID string, msg a2a.G
 	msg.FromID = ""
 	msg.SessionID = consultationID
 
-	// Route to local AI dispatcher if it is a participant in this discussion.
+	// Route to local AI dispatcher if it is a participant in this discussion
+	// AND the message is intended for it (no explicit @mention, or @mentions local AI).
 	// History sessions lose the in-memory dispatcher registration on restart,
 	// so we auto-register and dispatch here (mirroring SendVEGroupMessage behavior).
-	if groupDiscussionHistoryHasLocalAIParticipant(detail) {
+	shouldDispatchLocal := groupDiscussionHistoryHasLocalAIParticipant(detail) &&
+		(len(msg.ToIDs) == 0 || groupDiscussionHistoryToIDsContainLocalAI(msg.ToIDs, localID))
+	if shouldDispatchLocal {
+		// NOTE: localMsg.FromID must be empty for local dispatch. The dispatcher's
+		// "skip own messages" check compares msg.FromID against the local machine ID.
+		// If we set FromID=localID, the message would be rejected as "own message".
 		localMsg := msg
-		localMsg.FromID = localID
+		localMsg.FromID = ""
 		if !a.tryLocalExecutorDispatch(consultationID, localMsg) {
 			// Dispatcher not registered — auto-register and retry.
 			a.registerLocalGroupDispatcher(consultationID)
@@ -1907,6 +1913,9 @@ func (a *App) GroupDiscussionSendHistoryMessage(consultationID string, msg a2a.G
 		}
 	}
 
+	// Filter local AI from ToIDs before sending to Hub — local AI is dispatched
+	// directly above, Hub doesn't need to route to it.
+	msg.ToIDs = filterOutLocalAIFromTargets(msg.ToIDs)
 	return a.GroupDiscussionSendMessage(consultationID, msg)
 }
 
@@ -1922,6 +1931,21 @@ func groupDiscussionHistoryHasLocalAIParticipant(detail a2a.HubDiscussionDetail)
 	}
 	for _, id := range detail.Discussion.ParticipantIDs {
 		if isGroupDiscussionHistoryLocalAIID(id) {
+			return true
+		}
+	}
+	return false
+}
+
+// groupDiscussionHistoryToIDsContainLocalAI checks if any of the target IDs
+// refers to local AI. Used to determine if an explicit @mention targets local AI.
+// Handles both the raw "local-maclaw" form and the normalized machine ID form.
+func groupDiscussionHistoryToIDsContainLocalAI(toIDs []string, localID string) bool {
+	for _, id := range toIDs {
+		if isGroupDiscussionHistoryLocalAIID(id) {
+			return true
+		}
+		if localID != "" && veGroupParticipantIdentityMatches(id, localID) {
 			return true
 		}
 	}
@@ -2028,8 +2052,8 @@ func groupDiscussionHistoryUnmentionedTargetIDs(detail a2a.HubDiscussionDetail, 
 				continue
 			}
 			// NOTE: local AI (local-maclaw) is NOT excluded here. All non-human
-			// participants receive the message for visibility. The local AI
-			// dispatcher handles its own response decision independently.
+			// participants are included for broadcast visibility. Local AI dispatch
+			// is handled separately in the caller.
 			role := strings.ToLower(strings.TrimSpace(participant.RoleCode))
 			switch role {
 			case "", "speak", "speaker", "participant", "review":

@@ -238,11 +238,12 @@ func assertCodingWriteFileKeepsChunkingHints(t *testing.T, tools []map[string]in
 	props, _ := params["properties"].(map[string]interface{})
 	contentDesc := codingToolPropDescriptionForTest(props["content"])
 	modeDesc := codingToolPropDescriptionForTest(props["mode"])
-	if !strings.Contains(contentDesc, "1800") || !strings.Contains(contentDesc, "split") {
-		t.Fatalf("write_file content description should keep chunking hint, got %q", contentDesc)
+	if !strings.Contains(contentDesc, "No length limit") {
+		t.Fatalf("write_file content description should state no length limit, got %q", contentDesc)
 	}
-	if got := codingToolPropMaxLengthForTest(props["content"]); got != codingSubAgentInlineContentLimit {
-		t.Fatalf("write_file content maxLength = %d, want %d", got, codingSubAgentInlineContentLimit)
+	// write_file should NOT have maxLength — removed to prevent LLM from avoiding the tool.
+	if got := codingToolPropMaxLengthForTest(props["content"]); got != 0 {
+		t.Fatalf("write_file content should not have maxLength, got %d", got)
 	}
 	if !strings.Contains(modeDesc, "overwrite") || !strings.Contains(modeDesc, "append") {
 		t.Fatalf("write_file mode description should keep overwrite/append hint, got %q", modeDesc)

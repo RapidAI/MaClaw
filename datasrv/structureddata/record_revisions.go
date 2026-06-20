@@ -116,21 +116,12 @@ func (s *Service) GetRecordTimeline(ctx context.Context, p Principal, datasetID,
 	}
 	for _, approval := range approvals {
 		items = append(items, RecordTimelineItem{
-			ID:      approval.ID,
-			Type:    "approval",
-			Action:  approval.Status,
-			UserID:  firstNonEmpty(approval.ReviewedBy, approval.CreatedBy),
-			Summary: approval.Summary,
-			Metadata: map[string]any{
-				"kind":        approval.Kind,
-				"priority":    approval.Priority,
-				"assigned_to": approval.AssignedTo,
-				"due_at":      formatOptionalPlanTime(approval.DueAt),
-				"decision":    approval.Decision,
-				"reason":      approval.Reason,
-				"created_by":  approval.CreatedBy,
-				"reviewed_by": approval.ReviewedBy,
-			},
+			ID:        approval.ID,
+			Type:      "approval",
+			Action:    approval.Status,
+			UserID:    firstNonEmpty(approval.ReviewedBy, approval.CreatedBy),
+			Summary:   approval.Summary,
+			Metadata:  recordApprovalMetadata(approval),
 			CreatedAt: firstNonZeroTime(approval.ReviewedAt, approval.CreatedAt),
 		})
 	}

@@ -658,6 +658,34 @@ func TestPlanMaclawAppInstallTreatsBindingSkillAsDependency(t *testing.T) {
 	}
 }
 
+func TestPlanMaclawAppInstallTreatsApprovalBindingsAsWorkflowDependencies(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "bound-approval",
+			"name": "Bound Approval",
+			"kind": "enterprise_approval_app",
+			"binding": {
+				"mis": {
+					"approvalBindings": [{
+						"event": "finance.submitted",
+						"workflowSkillId": "binding-workflow",
+						"workflowVersion": "3.0.0"
+					}]
+				}
+			}
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "binding-workflow")
+	if dep == nil || dep.Kind != "workflow_skill" || dep.Version != "3.0.0" || !dep.Required || dep.Action != "blocked" {
+		t.Fatalf("approval binding workflow should be a required dependency: %#v", dep)
+	}
+}
 func TestRecordMaclawAppInstallPersistsNewestInstallAudit(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -733,6 +761,9 @@ func TestMaclawAppApprovalInstancesPersistAndFilter(t *testing.T) {
 		WorkflowSkillID: "expense-approval-workflow",
 		BusinessStatus:  "approval_pending",
 		ResultStatus:    "pending",
+		ResultPayload:   map[string]any{"business_record": map[string]any{"id": "exp-1"}},
+		Outputs:         []maclawAppApprovalOutput{{Type: "text", Title: "Summary", Text: "waiting for manager"}},
+		Artifacts:       []maclawAppApprovalArtifact{{ID: "artifact-1", Name: "receipt.pdf", URI: "artifact://approval/receipt"}},
 	})
 	if err != nil {
 		t.Fatalf("RecordMaclawAppApprovalInstance() error = %v", err)
@@ -767,12 +798,27 @@ func TestMaclawAppApprovalInstancesPersistAndFilter(t *testing.T) {
 		WorkflowDecisionID: "decision-test-1",
 		BusinessStatus:     "approved",
 		ResultStatus:       "approved",
+		ResultPayload:      map[string]any{"business_record": map[string]any{"id": "exp-1", "status": "approved"}, "text": "approved with note"},
+		Outputs: []maclawAppApprovalOutput{{
+			Type:  "business_record",
+			Title: "Expense record",
+			Data:  map[string]any{"id": "exp-1", "amount": float64(120)},
+		}, {
+			Type:       "artifact",
+			Title:      "Approval PDF",
+			ArtifactID: "artifact-1",
+			Artifact:   &maclawAppApprovalArtifact{ID: "artifact-1", Name: "approval.pdf", URI: "artifact://approval/1", Status: "ready"},
+		}},
+		Artifacts: []maclawAppApprovalArtifact{{ID: "artifact-1", Name: "approval.pdf", URI: "artifact://approval/1", Status: "ready"}},
 	})
 	if err != nil {
 		t.Fatalf("RecordMaclawAppApprovalInstance decision error = %v", err)
 	}
 	if handled.WorkflowDecisionID != "decision-test-1" || handled.BusinessStatus != "approved" || handled.ResultStatus != "approved" {
 		t.Fatalf("decision result fields should persist: %#v", handled)
+	}
+	if handled.ResultPayload["text"] != "approved with note" || len(handled.Outputs) != 2 || len(handled.Artifacts) != 1 {
+		t.Fatalf("decision result payload should persist: %#v", handled)
 	}
 	pending, err = app.ListMaclawAppApprovalInstances("expense-approval", "pending_my_approval", 10)
 	if err != nil {
@@ -789,11 +835,14 @@ func TestMaclawAppApprovalInstancesPersistAndFilter(t *testing.T) {
 		t.Fatalf("unexpected all approval instances after decision: %#v", again)
 	}
 	again[0].Events[0].Decision = "mutated"
+	again[0].ResultPayload["text"] = "mutated"
+	again[0].Outputs[0].Data["id"] = "mutated"
+	again[0].Outputs[1].Artifact.Name = "mutated.pdf"
 	again, err = app.ListMaclawAppApprovalInstances("expense-approval", "all", 10)
 	if err != nil {
 		t.Fatalf("ListMaclawAppApprovalInstances all after mutation error = %v", err)
 	}
-	if len(again) != 1 || again[0].Events[0].Decision == "mutated" {
+	if len(again) != 1 || again[0].Events[0].Decision == "mutated" || again[0].ResultPayload["text"] == "mutated" || again[0].Outputs[0].Data["id"] == "mutated" || again[0].Outputs[1].Artifact.Name == "mutated.pdf" {
 		t.Fatalf("approval instances should be cloned: %#v", again)
 	}
 	if _, err := app.ListMaclawAppApprovalInstances(" ", "all", 10); err == nil {
@@ -835,6 +884,9 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 		WorkflowSkillID: "expense-approval-workflow",
 		BusinessStatus:  "approval_pending",
 		ResultStatus:    "pending",
+		ResultPayload:   map[string]any{"business_record": map[string]any{"id": "exp-1"}},
+		Outputs:         []maclawAppApprovalOutput{{Type: "text", Title: "Summary", Text: "waiting for manager"}},
+		Artifacts:       []maclawAppApprovalArtifact{{ID: "artifact-1", Name: "receipt.pdf", URI: "artifact://approval/receipt"}},
 	}
 	created, err := app.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{DatasetID: "finance.expenses", RecordID: "exp-1", Instance: base})
 	if err != nil {
@@ -865,11 +917,23 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	if captured[0].Body["workflow_instance_id"] != "appr-1" || captured[0].Body["business_status"] != "approval_pending" || captured[0].Body["result_status"] != "pending" {
 		t.Fatalf("create body missing approval link fields: %#v", captured[0].Body)
 	}
+	if payload, ok := captured[0].Body["result_payload"].(map[string]interface{}); !ok || payload["business_record"] == nil {
+		t.Fatalf("create body missing result payload: %#v", captured[0].Body)
+	}
+	if outputs, ok := captured[0].Body["outputs"].([]interface{}); !ok || len(outputs) != 1 {
+		t.Fatalf("create body missing outputs: %#v", captured[0].Body)
+	}
+	if artifacts, ok := captured[0].Body["artifacts"].([]interface{}); !ok || len(artifacts) != 1 {
+		t.Fatalf("create body missing artifacts: %#v", captured[0].Body)
+	}
 	if captured[1].Method != http.MethodPost || captured[1].Path != "/api/v1/data/approvals/approval-remote-1/review" {
 		t.Fatalf("unexpected review request: %#v", captured[1])
 	}
 	if captured[1].Body["decision"] != "approved" || captured[1].Body["workflow_decision_id"] != "decision-1" || captured[1].Body["business_status"] != "approved" || captured[1].Body["result_status"] != "approved" {
 		t.Fatalf("review body missing decision fields: %#v", captured[1].Body)
+	}
+	if captured[1].Body["result_payload"] == nil || captured[1].Body["outputs"] == nil || captured[1].Body["artifacts"] == nil {
+		t.Fatalf("review body missing result package: %#v", captured[1].Body)
 	}
 }
 

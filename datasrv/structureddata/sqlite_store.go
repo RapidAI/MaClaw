@@ -16,7 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 23
+const currentSchemaVersion = 24
 
 type SQLiteStore struct {
 	db        *sql.DB
@@ -177,6 +177,11 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 	}
 	if version < 23 {
 		if err := s.applyMigrationV23(ctx); err != nil {
+			return err
+		}
+	}
+	if version < 24 {
+		if err := s.applyMigrationV24(ctx); err != nil {
 			return err
 		}
 	}
@@ -1330,6 +1335,117 @@ func (s *SQLiteStore) applyMigrationV23(ctx context.Context) error {
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 23, formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (s *SQLiteStore) applyMigrationV24(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	hasRecordApprovals, err := sqliteTableExists(ctx, tx, "record_approvals")
+	if err != nil {
+		return err
+	}
+	if !hasRecordApprovals {
+		stmts := []string{
+			`CREATE TABLE IF NOT EXISTS record_approvals(
+				id TEXT PRIMARY KEY,
+				tenant_id TEXT NOT NULL,
+				dataset_id TEXT NOT NULL,
+				record_id TEXT NOT NULL,
+				status TEXT NOT NULL,
+				kind TEXT NOT NULL DEFAULT '',
+				summary TEXT NOT NULL DEFAULT '',
+				request_json TEXT NOT NULL DEFAULT '{}',
+				workflow_skill_id TEXT NOT NULL DEFAULT '',
+				workflow_version TEXT NOT NULL DEFAULT '',
+				workflow_instance_id TEXT NOT NULL DEFAULT '',
+				workflow_node_id TEXT NOT NULL DEFAULT '',
+				workflow_decision_id TEXT NOT NULL DEFAULT '',
+				business_status TEXT NOT NULL DEFAULT '',
+				result_status TEXT NOT NULL DEFAULT '',
+				decision TEXT NOT NULL DEFAULT '',
+				reason TEXT NOT NULL DEFAULT '',
+				created_by TEXT NOT NULL DEFAULT '',
+				reviewed_by TEXT NOT NULL DEFAULT '',
+				created_at TEXT NOT NULL,
+				reviewed_at TEXT NOT NULL DEFAULT '',
+				updated_at TEXT NOT NULL,
+				assigned_to TEXT NOT NULL DEFAULT '',
+				due_at TEXT NOT NULL DEFAULT '',
+				priority TEXT NOT NULL DEFAULT '',
+				result_payload_json TEXT NOT NULL DEFAULT '{}',
+				outputs_json TEXT NOT NULL DEFAULT '[]',
+				artifacts_json TEXT NOT NULL DEFAULT '[]'
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_record_approvals_record_time ON record_approvals(tenant_id, dataset_id, record_id, created_at, id)`,
+			`CREATE INDEX IF NOT EXISTS idx_record_approvals_status ON record_approvals(tenant_id, status, created_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_record_approvals_kind ON record_approvals(tenant_id, kind, created_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_record_approvals_assignee ON record_approvals(tenant_id, assigned_to, status, due_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_record_approvals_due ON record_approvals(tenant_id, status, due_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_record_approvals_workflow_instance ON record_approvals(tenant_id, workflow_instance_id, status, created_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_record_approvals_workflow_skill ON record_approvals(tenant_id, workflow_skill_id, status, created_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_record_approvals_business_status ON record_approvals(tenant_id, business_status, result_status, created_at)`,
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 24, formatTime(time.Now().UTC())); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		committed = true
+		return nil
+	}
+	for _, column := range []struct{ name, ddl string }{
+		{"workflow_skill_id", `ALTER TABLE record_approvals ADD COLUMN workflow_skill_id TEXT NOT NULL DEFAULT ''`},
+		{"workflow_version", `ALTER TABLE record_approvals ADD COLUMN workflow_version TEXT NOT NULL DEFAULT ''`},
+		{"workflow_instance_id", `ALTER TABLE record_approvals ADD COLUMN workflow_instance_id TEXT NOT NULL DEFAULT ''`},
+		{"workflow_node_id", `ALTER TABLE record_approvals ADD COLUMN workflow_node_id TEXT NOT NULL DEFAULT ''`},
+		{"workflow_decision_id", `ALTER TABLE record_approvals ADD COLUMN workflow_decision_id TEXT NOT NULL DEFAULT ''`},
+		{"business_status", `ALTER TABLE record_approvals ADD COLUMN business_status TEXT NOT NULL DEFAULT ''`},
+		{"result_status", `ALTER TABLE record_approvals ADD COLUMN result_status TEXT NOT NULL DEFAULT ''`},
+		{"result_payload_json", `ALTER TABLE record_approvals ADD COLUMN result_payload_json TEXT NOT NULL DEFAULT '{}'`},
+		{"outputs_json", `ALTER TABLE record_approvals ADD COLUMN outputs_json TEXT NOT NULL DEFAULT '[]'`},
+		{"artifacts_json", `ALTER TABLE record_approvals ADD COLUMN artifacts_json TEXT NOT NULL DEFAULT '[]'`},
+	} {
+		exists, err := sqliteColumnExists(ctx, tx, "record_approvals", column.name)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := tx.ExecContext(ctx, column.ddl); err != nil {
+				return err
+			}
+		}
+	}
+	for _, stmt := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_record_approvals_workflow_instance ON record_approvals(tenant_id, workflow_instance_id, status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_record_approvals_workflow_skill ON record_approvals(tenant_id, workflow_skill_id, status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_record_approvals_business_status ON record_approvals(tenant_id, business_status, result_status, created_at)`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 24, formatTime(time.Now().UTC())); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

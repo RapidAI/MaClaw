@@ -33,6 +33,7 @@
       hideInactiveAuthorizations: 'Hide expired/invalid',
       creditsRemaining: 'Remaining',
       creditsTotal: 'Total',
+      creditsUsed: 'Used',
       expiresAt: 'Expires',
       serviceGroup: 'Service Group',
       officialComputeGrant: 'MaClaw Compute',
@@ -60,6 +61,7 @@
       hideInactiveAuthorizations: '\u9690\u85cf\u8fc7\u671f/\u5931\u6548',
       creditsRemaining: '\u5269\u4f59',
       creditsTotal: '\u603b\u989d',
+      creditsUsed: '\u5df2\u6d88\u8017',
       expiresAt: '\u5230\u671f',
       serviceGroup: '\u670d\u52a1\u7ec4',
       officialComputeGrant: 'MaClaw \u7b97\u529b',
@@ -346,10 +348,12 @@
       var badgeClass = active ? 'ok' : 'warn';
       var serviceGroupID = String(item.service_group_id || '').trim();
       var total = formatComputeNumber(item.credits_total);
+      var used = formatComputeNumber(item.credits_used);
       var remaining = formatComputeNumber(typeof item.credits_remaining === 'number' ? item.credits_remaining : Math.max(0, Number(item.credits_total || 0) - Number(item.credits_used || 0)));
       return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;align-items:center;padding:9px 10px;border:1px solid #e7eaf0;border-radius:10px;background:#fff">'
         + '<div style="min-width:0"><div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(authorizationTitle(item)) + '</div><div class="item-meta mono" style="font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(serviceGroupID || '-') + '</div></div>'
         + '<div style="min-width:0"><div class="item-meta" style="font-size:10px">' + esc(t('creditsRemaining')) + ' / ' + esc(t('creditsTotal')) + '</div><div class="mono" style="font-size:12px;font-weight:700;color:var(--text,var(--ink))">' + esc(remaining) + ' / ' + esc(total) + '</div></div>'
+        + '<div style="min-width:0"><div class="item-meta" style="font-size:10px">' + esc(t('creditsUsed')) + '</div><div class="mono" style="font-size:12px;font-weight:700;color:var(--text,var(--ink))">' + esc(used) + '</div></div>'
         + '<div style="min-width:0"><div class="item-meta" style="font-size:10px">' + esc(t('expiresAt')) + '</div><div class="item-meta" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(formatComputeDate(item.expires_at)) + '</div></div>'
         + '<span class="badge ' + badgeClass + '" style="justify-self:end">' + esc(authorizationStatusText(item)) + '</span>'
         + '</div>';

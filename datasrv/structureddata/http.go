@@ -1489,15 +1489,19 @@ func (s *HTTPServer) handleListRecordApprovals(w http.ResponseWriter, r *http.Re
 		return
 	}
 	in := QueryRecordApprovalsInput{
-		DatasetID:  strings.TrimSpace(r.URL.Query().Get("dataset_id")),
-		RecordID:   strings.TrimSpace(r.URL.Query().Get("record_id")),
-		Status:     strings.TrimSpace(r.URL.Query().Get("status")),
-		Kind:       strings.TrimSpace(r.URL.Query().Get("kind")),
-		AssignedTo: strings.TrimSpace(r.URL.Query().Get("assigned_to")),
-		Overdue:    overdue,
-		Before:     strings.TrimSpace(r.URL.Query().Get("before")),
-		BeforeID:   strings.TrimSpace(r.URL.Query().Get("before_id")),
-		Limit:      limit,
+		DatasetID:          strings.TrimSpace(r.URL.Query().Get("dataset_id")),
+		RecordID:           strings.TrimSpace(r.URL.Query().Get("record_id")),
+		Status:             strings.TrimSpace(r.URL.Query().Get("status")),
+		Kind:               strings.TrimSpace(r.URL.Query().Get("kind")),
+		WorkflowSkillID:    strings.TrimSpace(r.URL.Query().Get("workflow_skill_id")),
+		WorkflowInstanceID: strings.TrimSpace(r.URL.Query().Get("workflow_instance_id")),
+		BusinessStatus:     strings.TrimSpace(r.URL.Query().Get("business_status")),
+		ResultStatus:       strings.TrimSpace(r.URL.Query().Get("result_status")),
+		AssignedTo:         strings.TrimSpace(r.URL.Query().Get("assigned_to")),
+		Overdue:            overdue,
+		Before:             strings.TrimSpace(r.URL.Query().Get("before")),
+		BeforeID:           strings.TrimSpace(r.URL.Query().Get("before_id")),
+		Limit:              limit,
 	}
 	out, err := s.svc.ListRecordApprovals(r.Context(), p, in)
 	if limit <= 0 || limit > 500 {

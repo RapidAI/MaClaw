@@ -176,9 +176,14 @@ export function useWorkflowState(activeTabProjectPath?: string) {
             // that differs from the currently active tab's project path, skip
             // the update — it belongs to another tab and will be handled via
             // the tab switch save/restore mechanism.
+            // Exception: when the tab's path is not a real filesystem path (e.g.
+            // the LOCAL sentinel "__maclaw_local_coding_preview__"), accept all
+            // workflow events — this is the common case for the desktop local tab
+            // where the user starts workflows without a pre-existing project.
             const eventProjectPath = typeof state.project_path === "string" ? state.project_path.trim() : "";
             const currentTabPath = activeTabProjectPathRef.current;
-            if (eventProjectPath && currentTabPath && eventProjectPath !== currentTabPath) {
+            const isRealPath = currentTabPath.length > 0 && (currentTabPath.includes("/") || currentTabPath.includes("\\"));
+            if (eventProjectPath && isRealPath && eventProjectPath !== currentTabPath) {
                 return;
             }
             const workflowID = resolveWorkflowInstanceKey(state);
@@ -234,7 +239,11 @@ export function useWorkflowState(activeTabProjectPath?: string) {
             });
 
             // Auto-open split mode for phases that are expected to produce preview documents.
-            if (isActive && !userClosedRef.current) {
+            // But NOT when the phase is awaiting form input — the AgentView form
+            // needs to be visible and opening workflow doc preview (which has no
+            // content yet) would obscure it.
+            const awaitingForm = !!(state.awaiting_form);
+            if (isActive && !userClosedRef.current && !awaitingForm) {
                 setWorkflowSplitMode(prev => {
                     if (!currentPhase) return false;
                     if (workflowPhaseExpectsDocument(currentPhase, incomingPhases, incomingWorkflowType)) return true;
@@ -271,9 +280,12 @@ export function useWorkflowState(activeTabProjectPath?: string) {
             // that differs from the currently active tab's project path, skip
             // the update — it belongs to another tab and will be handled via
             // the tab switch save/restore mechanism.
+            // Exception: when the tab's path is not a real filesystem path (e.g.
+            // the LOCAL sentinel), accept all workflow events — same as phase_update.
             const eventProjectPath = typeof data.project_path === "string" ? data.project_path.trim() : "";
             const currentTabPath = activeTabProjectPathRef.current;
-            if (eventProjectPath && currentTabPath && eventProjectPath !== currentTabPath) {
+            const isRealPath = currentTabPath.length > 0 && (currentTabPath.includes("/") || currentTabPath.includes("\\"));
+            if (eventProjectPath && isRealPath && eventProjectPath !== currentTabPath) {
                 return;
             }
 
@@ -310,7 +322,8 @@ export function useWorkflowState(activeTabProjectPath?: string) {
 
             const eventProjectPath = typeof data.project_path === "string" ? data.project_path.trim() : "";
             const currentTabPath = activeTabProjectPathRef.current;
-            if (eventProjectPath && currentTabPath && eventProjectPath !== currentTabPath) {
+            const isRealPath = currentTabPath.length > 0 && (currentTabPath.includes("/") || currentTabPath.includes("\\"));
+            if (eventProjectPath && isRealPath && eventProjectPath !== currentTabPath) {
                 return;
             }
 

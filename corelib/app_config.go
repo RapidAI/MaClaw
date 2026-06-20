@@ -32,6 +32,7 @@ type AppConfig struct {
 	ScreenDimTimeoutMin  int             `json:"screen_dim_timeout_min"`
 	WorkstationMode      bool            `json:"workstation_mode"`
 	CheckUpdateOnStartup bool            `json:"check_update_on_startup"`
+	PreferBetaChannel    bool            `json:"prefer_beta_channel,omitempty"`
 	// Environment check settings
 	PauseEnvCheck    bool   `json:"pause_env_check"`
 	EnvCheckDone     bool   `json:"env_check_done"`

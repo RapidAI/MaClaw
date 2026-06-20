@@ -247,6 +247,19 @@ describe('AppsPage', () => {
         expect(updatedTile.title).not.toContain('最近使用: 尚未使用');
     });
 
+    it('places approval workspaces before right-side output so the center column starts at the top', () => {
+        const { container } = render(<AppsPage lang="zh-Hans" />);
+
+        const expenseTile = screen.getAllByText('报销申请')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        fireEvent.click(expenseTile);
+        const approval = container.querySelector<HTMLElement>('.apps-approval-workspace');
+        const output = container.querySelector<HTMLElement>('.apps-runtime-output');
+
+        expect(approval).not.toBeNull();
+        expect(output).not.toBeNull();
+        expect(Number(approval?.style.order)).toBeLessThan(Number(output?.style.order));
+    });
+
     it('reflects DataSrv dependency state in app tile tooltips', async () => {
         getMISDataConfigMock.mockResolvedValue({ enabled: false, endpoint: 'http://127.0.0.1:18180' });
         render(<AppsPage lang="zh-Hans" />);
@@ -258,14 +271,100 @@ describe('AppsPage', () => {
         });
     });
 
-    it('shows the maclaw.apps.json manifest template in app studio create tab', () => {
+    it('shows one live draft manifest preview in app studio create tab', () => {
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
 
-        expect(screen.getAllByText('应用 manifest 模板').length).toBeGreaterThan(1);
+        expect(screen.getAllByText('当前草稿 manifest').length).toBe(1);
         expect(screen.getAllByText(/x_maclaw_apps/).length).toBeGreaterThan(0);
-        expect(screen.getByText(/document-redaction/)).not.toBeNull();
+        expect(screen.queryByText(/document-redaction/)).toBeNull();
+    });
+
+    it('hides the Skill apps discovery card when no Skill apps are found', async () => {
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+
+        await waitFor(() => expect(listSkillAppManifestsMock).toHaveBeenCalled());
+        await waitFor(() => {
+            expect(screen.queryByText('Found apps')).toBeNull();
+            expect(screen.queryByText('Found from installed capabilities and synced to the app panel')).toBeNull();
+        });
+    });
+
+    it('does not flash the Skill apps discovery card while scanning with no candidates yet', async () => {
+        let finishDiscovery: (entries: unknown[]) => void = () => undefined;
+        listSkillAppManifestsMock.mockReturnValue(new Promise((resolve) => {
+            finishDiscovery = resolve;
+        }));
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+
+        await waitFor(() => expect(listSkillAppManifestsMock).toHaveBeenCalled());
+        expect(screen.queryByText('Found apps')).toBeNull();
+        expect(screen.queryByText('Found from installed capabilities and synced to the app panel')).toBeNull();
+        finishDiscovery([]);
+        await waitFor(() => expect(screen.queryByText('Found apps')).toBeNull());
+    });
+
+    it('shows a clear Skill app discovery error without claiming apps were synced', async () => {
+        listSkillAppManifestsMock.mockRejectedValue(new Error('scan failed'));
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+
+        await waitFor(() => expect(screen.getByText('Could not check installed capabilities')).not.toBeNull());
+        expect(screen.getByText('scan failed')).not.toBeNull();
+        expect(screen.queryByText('Found from installed capabilities and synced to the app panel')).toBeNull();
+    });
+
+    it('shows friendly Skill app discovery text when candidates exist', async () => {
+        listSkillAppManifestsMock.mockResolvedValue([
+            {
+                id: 'invoice-review',
+                skill_id: 'invoice-app',
+                name: 'Invoice Review',
+                description: 'Review invoice files',
+                category: 'Finance',
+                icon: 'invoice',
+                input_mode: 'file',
+                output_modes: ['pdf'],
+                app_definition_file: 'maclaw.app.json',
+            },
+        ]);
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+
+        await waitFor(() => expect(screen.getByText('Found from installed capabilities and synced to the app panel')).not.toBeNull());
+        expect(screen.getAllByText('Invoice Review').length).toBeGreaterThan(0);
+        const skillCandidate = screen.getAllByText('Invoice Review')
+            .map((item) => item.closest('.apps-discovery__candidate'))
+            .find((item): item is HTMLElement => item instanceof HTMLElement);
+        if (!skillCandidate) throw new Error('skill discovery candidate was not rendered');
+        expect(within(skillCandidate).getByText('Finance')).not.toBeNull();
+        expect(screen.queryByText('invoice-app')).toBeNull();
+        expect(screen.getByText('1 app')).not.toBeNull();
+        await waitFor(() => expect(screen.getByText('In panel')).not.toBeNull());
+        expect(screen.queryByText('Add to panel')).toBeNull();
+        expect(screen.queryByText('maclaw.app.json / maclaw.apps.json · x_maclaw_apps')).toBeNull();
+        expect(screen.queryByTitle(/maclaw\.app\.json/)).toBeNull();
+    });
+
+    it('deduplicates repeated Skill app discovery entries', async () => {
+        listSkillAppManifestsMock.mockResolvedValue([
+            { id: 'invoice-review', skill_id: 'invoice-app', name: 'Invoice Review', description: 'Review invoice files', category: 'Finance', icon: 'invoice', input_mode: 'file', output_modes: ['pdf'] },
+            { id: 'invoice-review', skill_id: 'invoice-app', name: 'Invoice Review Duplicate', description: 'Duplicate entry', category: 'Finance', icon: 'invoice', input_mode: 'file', output_modes: ['pdf'] },
+        ]);
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+
+        await waitFor(() => expect(screen.getByText('1 app')).not.toBeNull());
+        expect(screen.getAllByText('Invoice Review').length).toBe(2);
+        expect(screen.queryByText('Invoice Review Duplicate')).toBeNull();
     });
 
     it('saves a tool app definition into an existing skill', async () => {
@@ -870,27 +969,26 @@ describe('AppsPage', () => {
         expect(screen.getAllByText(/合同归档应用/).length).toBeGreaterThan(0);
     });
 
-    it('uses studio type cards as create-form presets', () => {
+    it('uses studio type choices as create-form presets', () => {
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
-        const cards = document.querySelectorAll('.apps-studio-card');
-        const appCardButton = within(cards[0] as HTMLElement).getByRole('button', { name: '企业审批型应用' }) as HTMLButtonElement;
-        const toolCardButton = within(cards[2] as HTMLElement).getByRole('button', { name: '工具应用' }) as HTMLButtonElement;
-        const automationCardButton = within(cards[3] as HTMLElement).getByRole('button', { name: '自动化应用' }) as HTMLButtonElement;
+        const kindPicker = document.querySelector('.apps-studio-kind') as HTMLElement;
+        const appCardButton = within(kindPicker).getByRole('button', { name: /企业审批型/ }) as HTMLButtonElement;
+        const toolCardButton = within(kindPicker).getByRole('button', { name: /工具应用/ }) as HTMLButtonElement;
+        const automationCardButton = within(kindPicker).getByRole('button', { name: /自动化/ }) as HTMLButtonElement;
 
         expect(toolCardButton.getAttribute('aria-pressed')).toBe('true');
 
         fireEvent.click(appCardButton);
         expect(appCardButton.getAttribute('aria-pressed')).toBe('true');
-        expect((document.querySelector('.apps-create-form .apps-form-row select') as HTMLSelectElement).value).toBe('enterprise_approval_app');
         expect(screen.getByDisplayValue('OA')).not.toBeNull();
         expect(screen.getByText(/"kind": "enterprise_approval_app"/)).not.toBeNull();
         expect(screen.getByText(/"launchMode": "agent_dynamic_ui"/)).not.toBeNull();
 
         fireEvent.click(automationCardButton);
         expect(automationCardButton.getAttribute('aria-pressed')).toBe('true');
-        expect(screen.getAllByDisplayValue('自动化').length).toBeGreaterThan(1);
+        expect(screen.getAllByDisplayValue('自动化').length).toBeGreaterThan(0);
         expect(screen.getByText(/"kind": "automation_app"/)).not.toBeNull();
         expect(screen.getByText(/"launchMode": "automation_console"/)).not.toBeNull();
     });
@@ -900,10 +998,13 @@ describe('AppsPage', () => {
 
         fireEvent.click(document.querySelector('.apps-studio-button') as HTMLElement);
         fireEvent.change(document.querySelector('.apps-create-form input[placeholder]') as HTMLInputElement, { target: { value: 'approval-workbench' } });
-        fireEvent.change(document.querySelector('.apps-create-form .apps-form-row select') as HTMLSelectElement, { target: { value: 'enterprise_approval_app' } });
+        const kindPicker = document.querySelector('.apps-studio-kind') as HTMLElement;
+        fireEvent.click(within(kindPicker).getByRole('button', { name: /企业审批型/ }));
         fireEvent.change(screen.getByTestId('studio-app-skill-id'), { target: { value: 'expense-super-app' } });
         fireEvent.change(screen.getByTestId('studio-workflow-skill-id'), { target: { value: 'expense-approval-flow' } });
         fireEvent.change(screen.getByTestId('studio-workflow-skill-version'), { target: { value: '2.1.0' } });
+        fireEvent.change(screen.getByTestId('studio-approval-event'), { target: { value: 'finance.expense.submitted' } });
+        fireEvent.change(screen.getByTestId('studio-approval-object-role'), { target: { value: 'expense_report' } });
         fireEvent.change(screen.getByTestId('studio-dependency-source'), { target: { value: 'market' } });
 
         expect(screen.getByText(/"appSkill"/)).not.toBeNull();
@@ -911,6 +1012,7 @@ describe('AppsPage', () => {
         expect(screen.getByText(/"kind": "workflow_skill"/)).not.toBeNull();
         expect(screen.getByText(/"id": "expense-approval-flow"/)).not.toBeNull();
         expect(screen.getByText(/"source": "market"/)).not.toBeNull();
+        expect(screen.getByText(/"approvalBindings"/)).not.toBeNull();
 
         fireEvent.click(document.querySelector('.apps-create-form .apps-actions .apps-primary-button') as HTMLElement);
         fireEvent.click(document.getElementById('apps-studio-tab-manage') as HTMLElement);
@@ -923,6 +1025,7 @@ describe('AppsPage', () => {
         expect(manifest.app.binding.dependencies.skills[0].version).toBe('2.1.0');
         expect(manifest.app.binding.dependencies.skills[0].kind).toBe('workflow_skill');
         expect(manifest.app.binding.dependencies.skills[0].source).toBe('market');
+        expect(manifest.app.binding.mis.approvalBindings[0]).toMatchObject({ event: 'finance.expense.submitted', workflowSkillId: 'expense-approval-flow', workflowVersion: '2.1.0', objectRole: 'expense_report' });
     });
     it('includes tool app input and output modes in draft manifests', () => {
         render(<AppsPage lang="zh-Hans" />);
@@ -1040,6 +1143,39 @@ describe('AppsPage', () => {
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
         expect(String((navigator.clipboard.writeText as any).mock.calls[0][0])).toContain('合同归档');
         expect(screen.getByText('已复制')).not.toBeNull();
+    });
+
+    it('resets the draft manifest copy state after the draft changes', async () => {
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.change(screen.getByPlaceholderText('Example: Contract filing'), { target: { value: 'Contract filing' } });
+        const preview = document.querySelector('.apps-create-preview') as HTMLElement;
+        fireEvent.click(within(preview).getByText('Copy'));
+
+        await waitFor(() => expect(within(preview).getByText('Copied')).not.toBeNull());
+        fireEvent.change(screen.getByPlaceholderText('Example: Contract filing'), { target: { value: 'Contract archive' } });
+
+        await waitFor(() => expect(within(preview).getByText('Copy')).not.toBeNull());
+    });
+
+    it('keeps the draft manifest preview target mounted when collapsed', () => {
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        const preview = document.querySelector('.apps-create-preview') as HTMLElement;
+        const toggle = within(preview).getByRole('button', { name: /Current draft manifest/ });
+        const manifest = document.getElementById('apps-create-manifest-preview') as HTMLPreElement;
+
+        expect(toggle.getAttribute('aria-expanded')).toBe('true');
+        expect(toggle.getAttribute('aria-controls')).toBe('apps-create-manifest-preview');
+        expect(manifest.hidden).toBe(false);
+
+        fireEvent.click(toggle);
+
+        expect(toggle.getAttribute('aria-expanded')).toBe('false');
+        expect(document.getElementById('apps-create-manifest-preview')).toBe(manifest);
+        expect(manifest.hidden).toBe(true);
     });
 
     it('creates a local app entry from app studio', () => {
@@ -1234,21 +1370,212 @@ describe('AppsPage', () => {
         expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(screen.getByRole('tab', { name: '报销申请' }).id);
     });
 
-    it('records an approval instance when running an approval app', async () => {
+    it('records and completes an approval instance when running an approval app', async () => {
+        getNLSkillRunStatusMock.mockResolvedValue({
+            run_id: 'run-test-1',
+            status: 'success',
+            summary: {
+                last_output_snippet: JSON.stringify({
+                    approval_result: 'approved',
+                    business_status: 'pending_payment',
+                    result_status: 'approved',
+                    business_record: { id: 'exp-1', status: 'pending_payment' },
+                    text: 'approved with note',
+                }),
+            },
+            outputs: [
+                { id: 'record-1', kind: 'business_record', title: 'Expense record', text: JSON.stringify({ id: 'exp-1', status: 'pending_payment' }), status: 'ready' },
+                { id: 'artifact-1', kind: 'artifact', title: 'Approval PDF', artifact_id: 'artifact-1', artifact: { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'approval.pdf', status: 'ready' } },
+            ],
+            artifacts: [{ id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'approval.pdf', status: 'ready' }],
+        });
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getAllByText('报销申请')[0]);
         fireEvent.click(screen.getByText('执行'));
 
-        await waitFor(() => expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalledTimes(1));
-        const payload = recordMaclawAppApprovalInstanceMock.mock.calls[0][0];
-        expect(payload.app_id).toBe('expense');
-        expect(payload.status).toBe('pending');
-        expect(payload.workflow_skill_id).toBe('expense-approval-workflow');
-        await waitFor(() => expect(screen.getByText(/appr-test-1/)).not.toBeNull());
-        await waitFor(() => expect(syncMaclawAppApprovalInstanceToDataSrvMock).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('expense-approval-workflow', expect.objectContaining({
+            _maclaw_app: true,
+            app_id: 'expense',
+            app_kind: 'enterprise_approval_app',
+            approval_workflow_skill_id: 'expense-approval-workflow',
+            dataset_id: '',
+            datasrv_domain: 'finance',
+        })));
+        await waitFor(() => expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalledTimes(2));
+        const pendingPayload = recordMaclawAppApprovalInstanceMock.mock.calls[0][0];
+        expect(pendingPayload.app_id).toBe('expense');
+        expect(pendingPayload.status).toBe('pending');
+        expect(pendingPayload.workflow_skill_id).toBe('expense-approval-workflow');
+        expect(pendingPayload.workflow_decision_id).toBe('run-test-1');
+        expect(pendingPayload.detail_url).toBe('skill-run://run-test-1');
+        const completedPayload = recordMaclawAppApprovalInstanceMock.mock.calls[1][0];
+        expect(completedPayload.instance_id).toBe('appr-test-1');
+        expect(completedPayload.status).toBe('approved');
+        expect(completedPayload.lane).toBe('handled');
+        expect(completedPayload.workflow_decision_id).toBe('run-test-1');
+        expect(completedPayload.business_status).toBe('pending_payment');
+        expect(completedPayload.result_status).toBe('approved');
+        expect(completedPayload.result_payload.business_record).toEqual({ id: 'exp-1', status: 'pending_payment' });
+        expect(completedPayload.outputs).toHaveLength(2);
+        expect(completedPayload.artifacts[0].name).toBe('approval.pdf');
+        expect(completedPayload.events.map((event: any) => event.action)).toContain('workflow_completed');
+        await waitFor(() => expect(syncMaclawAppApprovalInstanceToDataSrvMock).toHaveBeenCalledTimes(2));
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].dataset_id).toBe('finance.expenses');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].record_id).toBe('appr-test-1');
+        expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[1][0].instance.status).toBe('approved');
+        expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[1][0].instance.result_payload.business_record.id).toBe('exp-1');
+
+        fireEvent.click(screen.getByRole('button', { name: /已处理/ }));
+        await waitFor(() => expect(screen.getByText('结果包')).not.toBeNull());
+        expect(screen.getAllByText('Expense record').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('approval.pdf').length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/pending_payment/).length).toBeGreaterThan(0);
+    });
+    it('uses approvalBindings as the runtime workflow source for approval apps', async () => {
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            customApps: [{
+                id: 'bound-approval',
+                name: 'Bound Approval',
+                description: 'Approval app with explicit MIS binding',
+                category: 'Finance',
+                kind: 'enterprise_approval_app',
+                icon: 'receipt',
+                accent: '#2f5f98',
+                version: 1,
+                source: 'local',
+                manifest: {
+                    schema: 'maclaw.app.v1',
+                    installUnit: 'enterprise_app_pack',
+                    privateMarker: 'x_maclaw_apps',
+                    entryKind: 'enterprise_approval_app',
+                    launchMode: 'agent_dynamic_ui',
+                    datasrv: { domain: 'finance', datasetID: 'finance.expenses' },
+                    mis: { approvalBindings: [{ event: 'finance.submitted', workflowSkillId: 'binding-workflow', workflowVersion: '3.0.0', objectRole: 'expense' }] },
+                    ui: { schema: 'maclaw.app.ui.v1' },
+                },
+            }],
+        }));
+
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getAllByText('Bound Approval')[0]);
+        fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('binding-workflow', expect.objectContaining({
+            approval_event: 'finance.submitted',
+            approval_object_role: 'expense',
+            business_entity: 'Finance',
+            dataset_id: 'finance.expenses',
+            datasrv_domain: 'finance',
+        })));
+        await waitFor(() => expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalled());
+        const payload = recordMaclawAppApprovalInstanceMock.mock.calls[0][0];
+        expect(payload.workflow_skill_id).toBe('binding-workflow');
+        expect(payload.approval_event).toBe('finance.submitted');
+        expect(payload.approval_object_role).toBe('expense');
+        await waitFor(() => expect(syncMaclawAppApprovalInstanceToDataSrvMock).toHaveBeenCalled());
+        expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].dataset_id).toBe('finance.expenses');
+    });
+    it('does not record approval instance when workflow skill launch fails', async () => {
+        runNLSkillAsyncMock.mockRejectedValueOnce(new Error('workflow unavailable'));
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getAllByText('报销申请')[0]);
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('expense-approval-workflow', expect.any(Object)));
+        await waitFor(() => expect(screen.getByText('workflow unavailable')).not.toBeNull());
+        expect(recordMaclawAppApprovalInstanceMock).not.toHaveBeenCalled();
+        expect(syncMaclawAppApprovalInstanceToDataSrvMock).not.toHaveBeenCalled();
+    });
+    it('marks approval workflow failures as attention results', async () => {
+        getNLSkillRunStatusMock.mockResolvedValueOnce({
+            run_id: 'run-test-1',
+            status: 'failed',
+            error: 'policy engine failed',
+            summary: { last_error_snippet: 'policy engine failed' },
+        });
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getAllByText('报销申请')[0]);
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalledTimes(2));
+        const failedPayload = recordMaclawAppApprovalInstanceMock.mock.calls[1][0];
+        expect(failedPayload.instance_id).toBe('appr-test-1');
+        expect(failedPayload.status).toBe('attention');
+        expect(failedPayload.lane).toBe('attention');
+        expect(failedPayload.result).toBe('policy engine failed');
+        expect(failedPayload.business_status).toBe('workflow_error');
+        expect(failedPayload.result_status).toBe('workflow_error');
+        expect(failedPayload.events.map((event: any) => event.action)).toContain('workflow_failed');
+        await waitFor(() => expect(syncMaclawAppApprovalInstanceToDataSrvMock).toHaveBeenCalledTimes(2));
+        expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[1][0].instance.status).toBe('attention');
+    });
+    it('keeps approval instance detail scoped to the selected lane and row', async () => {
+        listMaclawAppApprovalInstancesMock.mockResolvedValue([
+            {
+                app_id: 'expense',
+                instance_id: 'approval-pending-7',
+                title: 'Travel expense',
+                lane: 'pending_my_approval',
+                status: 'pending',
+                current_node: 'manager_approval',
+                owner: 'alice',
+                approver: 'manager',
+                updated_at: '2026-06-19T00:00:00Z',
+                result: 'waiting',
+                workflow_skill_id: 'expense-approval-workflow',
+                record_id: 'EXP-20260619-001',
+                detail_url: 'approval://instances/approval-pending-7',
+                business_status: 'pending_manager_approval',
+                result_status: 'pending',
+                events: [{ at: '2026-06-19T00:00:00Z', node: 'submit', actor: 'alice', decision: 'submitted', message: 'submitted expense' }],
+            },
+            {
+                app_id: 'expense',
+                instance_id: 'approval-pending-8',
+                title: 'Office expense',
+                lane: 'pending_my_approval',
+                status: 'pending',
+                current_node: 'finance_review',
+                owner: 'bob',
+                approver: 'finance',
+                updated_at: '2026-06-20T00:00:00Z',
+                result: 'needs review',
+                workflow_skill_id: 'expense-approval-workflow',
+                record_id: 'EXP-20260620-002',
+                detail_url: 'approval://instances/approval-pending-8',
+                business_status: 'pending_finance_review',
+                result_status: 'pending',
+                events: [{ at: '2026-06-20T00:00:00Z', node: 'finance_review', actor: 'finance', decision: 'reviewing', message: 'needs receipt check' }],
+            },
+        ]);
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getAllByText('报销申请')[0]);
+        await waitFor(() => expect(screen.getAllByText('当前分类暂无审批实例').length).toBeGreaterThan(0));
+        const nav = document.querySelector('.apps-approval-nav') as HTMLElement;
+        const detail = document.querySelector('.apps-approval-detail') as HTMLElement;
+        const actions = screen.getByLabelText('审批操作');
+        expect((within(actions).getByText('通过') as HTMLButtonElement).disabled).toBe(true);
+
+        fireEvent.click(within(nav).getByText('待我审批'));
+        await waitFor(() => expect(within(detail).getByText('Travel expense')).not.toBeNull());
+        fireEvent.click(screen.getByText('Office expense').closest('.apps-approval-row') as HTMLElement);
+        expect(within(detail).getByText('Office expense')).not.toBeNull();
+        expect(within(detail).getAllByText(/finance_review/).length).toBeGreaterThan(0);
+        expect(within(detail).getByText('EXP-20260620-002')).not.toBeNull();
+        expect(within(detail).getByText('pending_finance_review')).not.toBeNull();
+        expect(within(detail).getByText(/needs receipt check/)).not.toBeNull();
+        const workflowLink = within(detail).getByText('查看完整流程') as HTMLAnchorElement;
+        expect(workflowLink.getAttribute('href')).toBe('approval://instances/approval-pending-8');
+        expect((within(actions).getByText('通过') as HTMLButtonElement).disabled).toBe(false);
+
+        fireEvent.click(within(nav).getByText('我的申请'));
+        expect(within(detail).getByText('当前分类暂无审批实例')).not.toBeNull();
+        expect((within(actions).getByText('通过') as HTMLButtonElement).disabled).toBe(true);
     });
     it('records approval decisions with workflow result fields', async () => {
         listMaclawAppApprovalInstancesMock.mockResolvedValue([{
@@ -1270,11 +1597,13 @@ describe('AppsPage', () => {
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getAllByText('报销申请')[0]);
-        await waitFor(() => expect(screen.getByText('Travel expense')).not.toBeNull());
+        await waitFor(() => expect(screen.getAllByText('当前分类暂无审批实例').length).toBeGreaterThan(0));
+        fireEvent.click(within(document.querySelector('.apps-approval-nav') as HTMLElement).getByText('待我审批'));
+        await waitFor(() => expect(screen.getAllByText('Travel expense').length).toBeGreaterThan(0));
         const actions = screen.getByLabelText('审批操作');
         fireEvent.click(within(actions).getByText('通过'));
 
-        await waitFor(() => expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalled());
         const payload = recordMaclawAppApprovalInstanceMock.mock.calls[0][0];
         expect(payload.instance_id).toBe('approval-pending-7');
         expect(payload.status).toBe('approved');
@@ -1289,6 +1618,58 @@ describe('AppsPage', () => {
         expect(syncPayload.dataset_id).toBe('finance.expenses');
         expect(syncPayload.record_id).toBe('approval-pending-7');
         expect(syncPayload.instance.workflow_decision_id).toMatch(/^decision-/);
+    });
+    it('keeps approval result package when a pending item is manually approved', async () => {
+        listMaclawAppApprovalInstancesMock.mockResolvedValue([{
+            app_id: 'expense',
+            instance_id: 'approval-pending-package',
+            title: 'Expense with outputs',
+            lane: 'pending_my_approval',
+            status: 'pending',
+            current_node: 'finance_review',
+            owner: 'alice',
+            approver: 'finance',
+            updated_at: '2026-06-20T00:00:00Z',
+            result: 'waiting',
+            workflow_skill_id: 'expense-approval-workflow',
+            business_status: 'approval_pending',
+            result_status: 'pending',
+            result_payload: { business_record: { id: 'exp-99', status: 'pending_finance_review' }, content: '请复核发票' },
+            outputs: [
+                { id: 'out-1', kind: 'text', title: '审批说明', text: '需要财务确认', status: 'ready' },
+                { id: 'out-2', kind: 'requires_input', title: '补充材料', text: '缺少付款截图', status: 'waiting' },
+            ],
+            artifacts: [{ id: 'artifact-99', uri: 'artifact://approval-pending-package/report', name: 'finance-report.pdf', status: 'ready' }],
+        }]);
+        recordMaclawAppApprovalInstanceMock.mockImplementation(async (payload) => payload);
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getAllByText('报销申请')[0]);
+        await waitFor(() => expect(screen.getAllByText('当前分类暂无审批实例').length).toBeGreaterThan(0));
+        fireEvent.click(within(document.querySelector('.apps-approval-nav') as HTMLElement).getByText('待我审批'));
+        await waitFor(() => expect(screen.getAllByText('Expense with outputs').length).toBeGreaterThan(0));
+        const detail = document.querySelector('.apps-approval-detail') as HTMLElement;
+        expect(within(detail).getByText('结果包')).not.toBeNull();
+        expect(within(detail).getByText('审批说明')).not.toBeNull();
+        expect(within(detail).getByText('补充材料')).not.toBeNull();
+        expect(within(detail).getByText('finance-report.pdf')).not.toBeNull();
+        expect(within(detail).getByText(/pending_finance_review/)).not.toBeNull();
+
+        fireEvent.click(within(screen.getByLabelText('审批操作')).getByText('通过'));
+
+        await waitFor(() => expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalledTimes(1));
+        const payload = recordMaclawAppApprovalInstanceMock.mock.calls[0][0];
+        expect(payload.instance_id).toBe('approval-pending-package');
+        expect(payload.status).toBe('approved');
+        expect(payload.result_payload.business_record.id).toBe('exp-99');
+        expect(payload.outputs).toHaveLength(2);
+        expect(payload.outputs[1].kind).toBe('requires_input');
+        expect(payload.artifacts[0].name).toBe('finance-report.pdf');
+        await waitFor(() => expect(syncMaclawAppApprovalInstanceToDataSrvMock).toHaveBeenCalledTimes(1));
+        const syncPayload = syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0];
+        expect(syncPayload.instance.result_payload.business_record.status).toBe('pending_finance_review');
+        expect(syncPayload.instance.outputs[1].kind).toBe('requires_input');
+        expect(syncPayload.instance.artifacts[0].id).toBe('artifact-99');
     });
     it('shows approval instance workspace for approval apps', () => {
         render(<AppsPage lang="zh-Hans" />);
@@ -1496,6 +1877,7 @@ describe('AppsPage', () => {
     });
 
     it('starts the bound skill when running a tool app', async () => {
+        const customIconDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
@@ -1508,6 +1890,7 @@ describe('AppsPage', () => {
                         {
                             id: 'run-tool',
                             skill_id: 'run-tools',
+                            custom_icon_data_url: customIconDataUrl,
                             name: '运行工具',
                             description: 'Run fields',
                             category: '工具',
@@ -1539,6 +1922,28 @@ describe('AppsPage', () => {
         expect(screen.getAllByText(/run-test-1/).length).toBeGreaterThan(0);
         expect(screen.getByText('运行历史')).not.toBeNull();
         expect(screen.getAllByText(/done/).length).toBeGreaterThan(0);
+        const installedAppsState = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
+        const installedApp = installedAppsState.customApps.find((item: any) => item.id === 'skill-app-run-tools-run-tool');
+        expect(installedApp.customIconDataUrl).toBe(customIconDataUrl);
+        const runtimeManifest = {
+            schema: installedApp.manifest.schema,
+            installUnit: installedApp.manifest.installUnit,
+            privateMarker: installedApp.manifest.privateMarker,
+            entryKind: installedApp.manifest.entryKind,
+            launchMode: installedApp.manifest.launchMode,
+            skill: installedApp.manifest.skill,
+        };
+        const expectedDefinitionHash = textHash(stableStringify({
+            name: installedApp.name,
+            description: installedApp.description,
+            category: installedApp.category,
+            kind: installedApp.kind,
+            icon: installedApp.icon,
+            customIconDataUrl: installedApp.customIconDataUrl,
+            version: installedApp.version,
+            manifest: runtimeManifest,
+        }));
+        await waitFor(() => expect(recordMaclawAppRunEvidenceForSkillMock).toHaveBeenCalledWith('run-tools', 'skill-app-run-tools-run-tool', expectedDefinitionHash, 'run-test-1', '', expect.any(String)));
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
@@ -1826,7 +2231,7 @@ describe('AppsPage', () => {
         expect(screen.getByPlaceholderText('输入处理要求或表单参数。')).not.toBeNull();
     });
 
-    it('runs an enterprise app with dynamic DataSrv capability binding', () => {
+    it('runs an enterprise app with dynamic DataSrv capability binding', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getAllByText('报销申请')[0]);
@@ -1835,7 +2240,7 @@ describe('AppsPage', () => {
         fireEvent.change(container.querySelector('.apps-preview__mock textarea') as HTMLTextAreaElement, { target: { value: '生成本月报销汇总' } });
         fireEvent.click(screen.getByText('执行'));
 
-        expect(screen.getByText(/已提交/)).not.toBeNull();
+        await waitFor(() => expect(screen.getByText(/已提交/)).not.toBeNull());
         expect(screen.getByText(/费用报销 · report · finance.expense_upsert/)).not.toBeNull();
     });
 
@@ -1947,6 +2352,39 @@ describe('AppsPage', () => {
         expect(screen.getByText(/finance.expense_upsert/)).not.toBeNull();
     });
 
+    it('opens app editing in a dialog instead of expanding the management list', async () => {
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(document.querySelector('.apps-studio-button') as HTMLButtonElement);
+        fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
+
+        const manageRows = document.querySelectorAll('.apps-manage-row');
+        const editButton = (manageRows[0] as HTMLElement).querySelector('.apps-manage-actions .apps-secondary-button') as HTMLButtonElement;
+        editButton.focus();
+        fireEvent.click(editButton);
+
+        const dialog = screen.getByRole('dialog');
+        expect(dialog.querySelector('.apps-manage-edit')).not.toBeNull();
+        expect(document.querySelector('.apps-manage-item > .apps-manage-edit')).toBeNull();
+        await waitFor(() => expect(document.activeElement).toBe(dialog.querySelector('.apps-form-row input')));
+
+        const tabbableControls = dialog.querySelectorAll<HTMLElement>('button:not([disabled]):not([tabindex="-1"]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"])');
+        const firstTabbableControl = tabbableControls[0];
+        const lastTabbableControl = tabbableControls[tabbableControls.length - 1];
+        expect(firstTabbableControl.classList.contains('apps-manage-edit-dialog__backdrop')).toBe(false);
+        lastTabbableControl.focus();
+        fireEvent.keyDown(dialog, { key: 'Tab' });
+        expect(document.activeElement).toBe(firstTabbableControl);
+        firstTabbableControl.focus();
+        fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+        expect(document.activeElement).toBe(lastTabbableControl);
+
+        fireEvent.keyDown(dialog, { key: 'Escape' });
+
+        expect(screen.queryByRole('dialog')).toBeNull();
+        await waitFor(() => expect(document.activeElement).toBe(editButton));
+    });
+
     it('edits built-in app metadata from app studio management and persists it', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
@@ -2041,7 +2479,7 @@ describe('AppsPage', () => {
         expect(JSON.parse(window.localStorage.getItem('maclaw:apps-publish-submissions:v1') || '{}')[manifest.app.id]).toBeUndefined();
     });
 
-    it('edits tool app runtime modes from app studio management', () => {
+    it('edits tool app runtime modes from app studio management', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
@@ -2053,6 +2491,7 @@ describe('AppsPage', () => {
         fireEvent.change(within(editPane).getByDisplayValue('文件上传'), { target: { value: 'mixed' } });
         fireEvent.click(within(editPane).getByText('Excel / XLSX'));
         fireEvent.click(within(editPane).getByText('保存'));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
         fireEvent.click(within(editedRow).getByTitle('Manifest'));
@@ -2066,7 +2505,99 @@ describe('AppsPage', () => {
         expect(Array.from(outputSelect.options).map((option) => option.value)).toContain('xlsx');
     });
 
-    it('edits tool app structured fields from app studio management', () => {
+    it('edits a tool app skill binding from app studio management', async () => {
+        listNLSkillsMock.mockResolvedValue([{ name: 'pdf-word-v2', description: 'Updated converter' }]);
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(document.querySelector('.apps-studio-button') as HTMLButtonElement);
+        fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
+
+        const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF')) as HTMLElement;
+        fireEvent.click((pdfWordRow.querySelector('.apps-manage-actions .apps-secondary-button') as HTMLButtonElement));
+
+        await waitFor(() => expect(document.querySelector('datalist#apps-manage-skill-options option[value="pdf-word-v2"]')).not.toBeNull());
+        const dialog = screen.getByRole('dialog');
+        const skillInput = within(dialog).getByDisplayValue('pdf-word') as HTMLInputElement;
+        expect(skillInput.getAttribute('list')).toBe('apps-manage-skill-options');
+        fireEvent.change(skillInput, { target: { value: 'pdf-word-v2' } });
+        fireEvent.click(within(dialog).getByText('Save'));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+        const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF')) as HTMLElement;
+        fireEvent.click(within(editedRow).getByTitle('Manifest'));
+        const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
+        expect(manifest.app.binding.skill.id).toBe('pdf-word-v2');
+        expect(manifest.app.binding.appSkill.id).toBe('pdf-word-v2');
+    });
+
+    it('shows an error when a custom app icon upload is unsupported', async () => {
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(document.querySelector('.apps-studio-button') as HTMLButtonElement);
+        fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
+
+        const firstRow = document.querySelector('.apps-manage-row') as HTMLElement;
+        fireEvent.click((firstRow.querySelector('.apps-manage-actions .apps-secondary-button') as HTMLButtonElement));
+
+        const dialog = screen.getByRole('dialog');
+        const fileInput = dialog.querySelector('.apps-custom-icon-upload input[type="file"]') as HTMLInputElement;
+        fireEvent.change(fileInput, { target: { files: [new File(['not an icon'], 'icon.txt', { type: 'text/plain' })] } });
+
+        await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toContain('PNG, JPEG, or WebP'));
+    });
+
+    it('writes custom app icons back into single-file skill app definitions', async () => {
+        const customIconDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            customApps: [{
+                id: 'skill-app-invoice-app-invoice-review',
+                name: 'Portable Icon App',
+                description: 'A skill app with a portable icon',
+                category: 'Finance',
+                kind: 'tool_app',
+                icon: 'receipt',
+                customIconDataUrl,
+                accent: '#2f5f98',
+                source: 'skill',
+                version: 1,
+                manifest: {
+                    schema: 'maclaw.app.v1',
+                    installUnit: 'skill',
+                    privateMarker: 'x_maclaw_apps',
+                    entryKind: 'tool_app',
+                    launchMode: 'fixed_skill_ui',
+                    appSkill: { id: 'invoice-app', version: '1.0.0' },
+                    skill: {
+                        id: 'invoice-app',
+                        appDefinitionFile: 'maclaw.app.json',
+                        inputMode: 'file',
+                        multipleFiles: false,
+                        outputModes: ['pdf'],
+                        fields: [],
+                    },
+                },
+            }],
+        }));
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(document.querySelector('.apps-studio-button') as HTMLButtonElement);
+        fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
+
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Portable Icon App')) as HTMLElement;
+        fireEvent.click(row.querySelector('.apps-manage-actions .apps-secondary-button') as HTMLButtonElement);
+        fireEvent.click(within(screen.getByRole('dialog')).getByText('Save'));
+
+        await waitFor(() => expect(saveMaclawAppDefinitionForSkillMock).toHaveBeenCalledTimes(1));
+        const [skillID, manifestText] = saveMaclawAppDefinitionForSkillMock.mock.calls[0];
+        expect(skillID).toBe('invoice-app');
+        const manifest = JSON.parse(String(manifestText));
+        expect(manifest.app.id).toBe('invoice-review');
+        expect(manifest.app.customIconDataUrl).toBe(customIconDataUrl);
+        expect(manifest.app.panel.customIconDataUrl).toBe(customIconDataUrl);
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    });
+
+    it('edits tool app structured fields from app studio management', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
@@ -2084,6 +2615,7 @@ describe('AppsPage', () => {
         fireEvent.change(within(fieldEditor).getByPlaceholderText('A, B, C'), { target: { value: '普通 严格' } });
         fireEvent.click(within(fieldEditor).getByText('必填'));
         fireEvent.click(within(editPane).getByText('保存'));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
         fireEvent.click(within(editedRow).getByTitle('Manifest'));
@@ -2418,6 +2950,42 @@ describe('AppsPage', () => {
         expect(screen.getByText('2/2')).not.toBeNull();
         expect(screen.getByText('可安装 2 · 可升级 0 · 将跳过 0')).not.toBeNull();
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('preserves custom uploaded-style app icons from installed manifests', () => {
+        const customIconDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(document.querySelector('.apps-studio-button') as HTMLButtonElement);
+        fireEvent.click(document.querySelectorAll('[role="tab"]')[2] as HTMLButtonElement);
+        fireEvent.change(document.querySelector('.apps-market-install textarea') as HTMLTextAreaElement, {
+            target: {
+                value: JSON.stringify({
+                    schema: 'maclaw.app.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    installUnit: 'skill',
+                    app: {
+                        id: 'custom-icon-tool',
+                        name: 'Custom Icon Tool',
+                        description: 'Uses a custom app icon',
+                        category: 'Tools',
+                        kind: 'tool_app',
+                        icon: 'bot',
+                        customIconDataUrl,
+                        launchMode: 'fixed_skill_ui',
+                        panel: { accent: '#2f5f98', customIconDataUrl },
+                        binding: { skill: { id: 'custom-icon-tool', appDefinitionFile: 'maclaw.apps.json', inputMode: 'file' } },
+                    },
+                }),
+            },
+        });
+        fireEvent.click(screen.getByText('Install'));
+
+        expect(document.querySelector(`img.apps-custom-app-icon[src="${customIconDataUrl}"]`)).not.toBeNull();
+        fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Custom Icon Tool')) as HTMLElement;
+        fireEvent.click(within(row).getByTitle('Manifest'));
+        expect(document.querySelector('.apps-manage-manifest')?.textContent).toContain(customIconDataUrl);
     });
 
     it('uses installed skill app output modes in the runtime UI', () => {
@@ -2858,13 +3426,12 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByTitle('应用程序工作室'));
 
         await waitFor(() => expect(screen.getByText('文档脱敏 Plus')).not.toBeNull());
-        expect(screen.getByText('已添加')).not.toBeNull();
+        await waitFor(() => expect(screen.getByText('\u5df2\u52a0\u5165\u9762\u677f')).not.toBeNull());
+        expect(screen.queryByText('\u52a0\u5230\u9762\u677f')).toBeNull();
         fireEvent.click(screen.getByText('关闭'));
         expect(screen.getAllByText('文档脱敏 Plus').length).toBeGreaterThan(0);
     });
 });
-
-
 
 
 

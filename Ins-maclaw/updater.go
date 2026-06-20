@@ -428,9 +428,58 @@ func cleanVersion(version string) string {
 	return strings.Split(version, " ")[0]
 }
 
+// splitVersionPreRelease splits a version string into its numeric part and
+// pre-release suffix. e.g. "1.3.0-beta.1" → ("1.3.0", "beta.1"),
+// "1.3.0" → ("1.3.0", "").
+func splitVersionPreRelease(version string) (string, string) {
+	idx := strings.IndexByte(version, '-')
+	if idx <= 0 {
+		return version, ""
+	}
+	return version[:idx], version[idx+1:]
+}
+
+// preReleaseWeight returns an ordering weight for pre-release labels.
+func preReleaseWeight(preRelease string) int {
+	if preRelease == "" {
+		return 100
+	}
+	lower := strings.ToLower(preRelease)
+	if strings.HasPrefix(lower, "alpha") {
+		return 10
+	}
+	if strings.HasPrefix(lower, "beta") {
+		return 20
+	}
+	if strings.HasPrefix(lower, "rc") {
+		return 30
+	}
+	return 15
+}
+
+// preReleaseNumber extracts the numeric suffix from a pre-release label.
+func preReleaseNumber(preRelease string) int {
+	num := 0
+	for i := len(preRelease) - 1; i >= 0; i-- {
+		if preRelease[i] >= '0' && preRelease[i] <= '9' {
+			continue
+		}
+		if i < len(preRelease)-1 {
+			fmt.Sscanf(preRelease[i+1:], "%d", &num)
+		}
+		break
+	}
+	return num
+}
+
 func compareVersions(v1, v2 string) int {
-	parts1 := strings.Split(cleanVersion(v1), ".")
-	parts2 := strings.Split(cleanVersion(v2), ".")
+	clean1 := cleanVersion(v1)
+	clean2 := cleanVersion(v2)
+	numeric1, pre1 := splitVersionPreRelease(clean1)
+	numeric2, pre2 := splitVersionPreRelease(clean2)
+
+	parts1 := strings.Split(numeric1, ".")
+	parts2 := strings.Split(numeric2, ".")
 	maxLen := len(parts1)
 	if len(parts2) > maxLen {
 		maxLen = len(parts2)
@@ -450,6 +499,24 @@ func compareVersions(v1, v2 string) int {
 		if val1 < val2 {
 			return -1
 		}
+	}
+
+	// Numeric parts equal — compare pre-release suffixes.
+	w1 := preReleaseWeight(pre1)
+	w2 := preReleaseWeight(pre2)
+	if w1 != w2 {
+		if w1 > w2 {
+			return 1
+		}
+		return -1
+	}
+	n1 := preReleaseNumber(pre1)
+	n2 := preReleaseNumber(pre2)
+	if n1 > n2 {
+		return 1
+	}
+	if n1 < n2 {
+		return -1
 	}
 	return 0
 }

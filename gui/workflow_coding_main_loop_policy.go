@@ -58,27 +58,37 @@ func (h *IMMessageHandler) activeWorkflowPhaseFromEngine(policyUserID string) (*
 	if policyUserID == "" || h == nil || h.app == nil {
 		return nil, nil
 	}
-	// workflowEngine is never instantiated in production — this path only
-	// executes in tests that explicitly set h.app.workflowEngine.
-	engine := h.app.workflowEngine
-	if engine == nil {
+	// V2 StateMachine is the sole source of truth. Convert V2 state to
+	// the EngineState type expected by callers.
+	wf := h.getWorkflowV2()
+	if wf == nil || wf.machine == nil {
 		return nil, nil
 	}
-	state := engine.GetActiveWorkflow(policyUserID)
-	if state == nil || engine.GetRegistry() == nil {
+	v2State := wf.machine.GetActive(policyUserID)
+	if v2State == nil {
+		return nil, nil
+	}
+	state := mapV2StateToV1(v2State)
+	if state == nil {
+		return nil, nil
+	}
+	if wf.registry == nil {
 		return state, nil
 	}
-	tmpl := engine.GetRegistry().Match(state.Type)
+	tmpl := wf.registry.Get(v2State.Type)
 	if tmpl == nil {
 		return state, nil
 	}
 	for i := range tmpl.Phases {
 		if tmpl.Phases[i].ID == state.CurrentPhase {
-			return state, &tmpl.Phases[i]
+			ps := v2.PhaseSpec{
+				ID:           tmpl.Phases[i].ID,
+				Name:         tmpl.Phases[i].Name,
+				NeedsConfirm: tmpl.Phases[i].NeedsConfirm,
+				ToolPolicy:   v2.ToolFilterPolicy(tmpl.Phases[i].ToolPolicy),
+			}
+			return state, &ps
 		}
-	}
-	if state.PhaseIndex >= 0 && state.PhaseIndex < len(tmpl.Phases) {
-		return state, &tmpl.Phases[state.PhaseIndex]
 	}
 	return state, nil
 }

@@ -551,15 +551,16 @@ func (a *App) createRecentTaskRecord(taskName, taskContent string, extraTags []s
 		return ProjectSearchResult{}
 	}
 
+	displayTitle := recentTaskDisplayTitle(taskName)
 	now := time.Now()
-	taskDir := filepath.Join(a.GetDataDir(), "tasks", fmt.Sprintf("%s-%d", recentTaskSlug(taskName), now.UnixNano()))
+	taskDir := filepath.Join(a.GetDataDir(), "tasks", fmt.Sprintf("%s-%d", recentTaskSlug(displayTitle), now.UnixNano()))
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		log.Printf("[project_search] CreateRecentTask mkdir failed: %v", err)
 		return ProjectSearchResult{}
 	}
 	taskFile := filepath.Join(taskDir, "task.md")
 	if strings.TrimSpace(taskContent) == "" {
-		taskContent = fmt.Sprintf("# %s\n\nCreated from recent tasks.\nTask ID: %d", taskName, now.UnixNano())
+		taskContent = fmt.Sprintf("# %s\n\n%s\n\nCreated from recent tasks.\nTask ID: %d", displayTitle, taskName, now.UnixNano())
 	}
 	if err := os.WriteFile(taskFile, []byte(taskContent), 0o644); err != nil {
 		log.Printf("[project_search] CreateRecentTask write task file failed: %v", err)
@@ -568,7 +569,7 @@ func (a *App) createRecentTaskRecord(taskName, taskContent string, extraTags []s
 	tags := append([]string{"manual_task", "recent_task", taskDir}, extraTags...)
 
 	_, err := a.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
-		Title:            taskName,
+		Title:            displayTitle,
 		Content:          taskContent,
 		Tags:             tags,
 		IdentityTagCount: 3,
@@ -603,12 +604,12 @@ func (a *App) createRecentTaskRecord(taskName, taskContent string, extraTags []s
 
 	pi := a.memoryStore.ProjectIndex()
 	if pi == nil {
-		return ProjectSearchResult{ID: taskDir, Name: taskName, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
+		return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
 	}
 	if rec := pi.Get(taskDir); rec != nil {
 		return projectRecordToSearchResult(pi, *rec)
 	}
-	return ProjectSearchResult{ID: taskDir, Name: taskName, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
+	return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
 }
 
 func (a *App) copyProjectConversation(sourceProjectPath, targetProjectPath string) {
@@ -725,15 +726,40 @@ func (a *App) ForkConversationToProject(projectPath string) {
 }
 
 func normalizeRecentTaskName(name string) string {
-	normalized := strings.Join(strings.Fields(name), " ")
+	// Preserve newlines: collapse horizontal whitespace per line, trim each line
+	lines := strings.Split(name, "\n")
+	for i, line := range lines {
+		lines[i] = strings.Join(strings.Fields(line), " ")
+	}
+	normalized := strings.TrimSpace(strings.Join(lines, "\n"))
+	// Collapse 3+ consecutive newlines to 2
+	for strings.Contains(normalized, "\n\n\n") {
+		normalized = strings.ReplaceAll(normalized, "\n\n\n", "\n\n")
+	}
 	if isGenericSedimentRequest(normalized) {
 		return ""
 	}
 	runes := []rune(normalized)
-	if len(runes) > 120 {
-		normalized = string(runes[:120])
+	if len(runes) > 2000 {
+		normalized = string(runes[:2000])
 	}
 	return normalized
+}
+
+// recentTaskDisplayTitle extracts a short display title from a multi-line task command.
+// Uses the first non-empty line, truncated to 80 rune for sidebar display.
+func recentTaskDisplayTitle(fullCommand string) string {
+	for _, line := range strings.Split(fullCommand, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			runes := []rune(trimmed)
+			if len(runes) > 80 {
+				return string(runes[:80]) + "…"
+			}
+			return trimmed
+		}
+	}
+	return fullCommand
 }
 
 func recentTaskSlug(name string) string {

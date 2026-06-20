@@ -772,13 +772,14 @@ func PhaseMetadata(tmpl *TemplateSpec) []PhaseMeta {
 		}
 		seen[id] = true
 		metas = append(metas, PhaseMeta{
-			ID:            id,
-			Name:          phase.Name,
-			Index:         len(metas),
-			NeedsConfirm:  phase.NeedsConfirm,
-			CanSkip:       phase.CanSkip,
-			ToolPolicy:    phase.ToolPolicy,
-			MutationScope: phase.MutationScope,
+			ID:              id,
+			Name:            phase.Name,
+			Index:           len(metas),
+			ExpectsDocument: phase.NeedsConfirm,
+			NeedsConfirm:    phase.NeedsConfirm,
+			CanSkip:         phase.CanSkip,
+			ToolPolicy:      phase.ToolPolicy,
+			MutationScope:   phase.MutationScope,
 		})
 	}
 	if len(metas) == 0 {

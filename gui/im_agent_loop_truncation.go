@@ -14,6 +14,9 @@ const maxTruncationRetries = 3
 const maxEssentialTruncationHints = 1
 
 const (
+	// maxAgentLoopInlineWriteFileContentRunes is a soft threshold for logging only.
+	// write_file calls exceeding this are auto-passed to the backend handler (actual limit is writeFileMaxSize=1MB).
+	// The schema no longer declares maxLength for write_file to avoid LLM refusing to call the tool for long content.
 	maxAgentLoopInlineWriteFileContentRunes = 1800
 	maxAgentLoopInlineEditContentRunes      = 1800
 	maxAgentLoopInlineBashCommandRunes      = 4000
@@ -284,7 +287,7 @@ func buildTruncationRetryHint(truncatedList string, tools []map[string]interface
 }
 
 func agentLoopInlinePayloadLimitInstruction() string {
-	return fmt.Sprintf("Respect inline payload limits: write_file.content <= %d runes per call, edit_file/edit_lines text fields <= %d runes per call, and bash.command <= %d runes per call.", maxAgentLoopInlineWriteFileContentRunes, maxAgentLoopInlineEditContentRunes, maxAgentLoopInlineBashCommandRunes)
+	return fmt.Sprintf("Respect inline payload limits: edit_file/edit_lines text fields <= %d runes per call, and bash.command <= %d runes per call. write_file has no per-call limit.", maxAgentLoopInlineEditContentRunes, maxAgentLoopInlineBashCommandRunes)
 }
 
 func buildTruncationBlockAlternativeInstructions(blocked []string, availableTools []map[string]interface{}) string {

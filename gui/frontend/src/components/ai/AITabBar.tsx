@@ -19,6 +19,8 @@ export interface AITabBarProps {
     lang?: string;
     /** Returns the lastActiveAt timestamp for a tab (used for overflow sorting). */
     getLastActiveAt?: (tabId: string) => number;
+    /** Tab ID that is currently recording a skill (if any) */
+    recordingTabId?: string | null;
 }
 
 /** Minimum width per tab in pixels. Used to calculate how many tabs fit. */
@@ -32,7 +34,7 @@ const OVERFLOW_BUTTON_WIDTH = 50;
  * Shows as many tabs as fit in the available width; overflow tabs are
  * accessible via a more-tabs dropdown.
  */
-export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInviteToTab, onAddLocalMaclawToTab, onRenameGroupTab, lang, getLastActiveAt }: AITabBarProps) {
+export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInviteToTab, onAddLocalMaclawToTab, onRenameGroupTab, lang, getLastActiveAt, recordingTabId }: AITabBarProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [visibleCount, setVisibleCount] = useState(tabs.length);
     const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -140,6 +142,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                     onClose={tab.closable ? onClose : undefined}
                     onContextMenu={handleTabContextMenu}
                     lang={lang}
+                    recording={recordingTabId === tab.id}
                 />
             ))}
             {hasOverflow && (

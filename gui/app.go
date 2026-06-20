@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -1986,7 +1987,14 @@ func (a *App) domReady(ctx context.Context) {
 		// requests and ensure the UI is fully interactive before showing the
 		// in-app update affordance.
 		time.Sleep(60 * time.Second)
-		result, err := a.CheckUpdate(remoteAppVersion())
+		cfg, _ := a.LoadConfig()
+		var result UpdateResult
+		var err error
+		if cfg.PreferBetaChannel {
+			result, err = a.CheckUpdateBeta(remoteAppVersion())
+		} else {
+			result, err = a.CheckUpdate(remoteAppVersion())
+		}
 		if err != nil {
 			a.log(fmt.Sprintf("[update-check] background check failed: %v", err))
 			return
@@ -5632,6 +5640,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.OnboardingDone = v
+		case "prefer_beta_channel":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PreferBetaChannel = v
 		case "default_launch_mode":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -6650,6 +6665,8 @@ type UpdateResult struct {
 	TagName             string `json:"tag_name"`
 	DownloadUrl         string `json:"download_url"`
 	DownloadUnavailable bool   `json:"download_unavailable"` // true when new version exists but installer package is not yet available
+	SHA256              string `json:"sha256,omitempty"`      // expected sha256 hash of the installer (from manifest)
+	Channel             string `json:"channel,omitempty"`     // "stable" or "beta" — which channel this result came from
 }
 
 const (
@@ -6671,10 +6688,11 @@ type updateManifest struct {
 }
 
 type updateManifestAsset struct {
-	Name string   `json:"name"`
-	Size int64    `json:"size"`
-	URL  string   `json:"url"`
-	URLs []string `json:"urls"`
+	Name   string   `json:"name"`
+	Size   int64    `json:"size"`
+	URL    string   `json:"url"`
+	URLs   []string `json:"urls"`
+	SHA256 string   `json:"sha256,omitempty"`
 }
 
 func updateHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
@@ -6805,10 +6823,10 @@ func (a *App) buildUpdateResult(currentVersion string, release latestReleaseInfo
 	a.log(a.tr("CheckUpdate[%s]: Latest=%s, Current=%s, Display=%s", channel, latestVersionForComparison, cleanCurrent, displayVersion))
 	if compareVersions(latestVersionForComparison, cleanCurrent) > 0 {
 		a.log(a.tr("CheckUpdate[%s]: Update available! %s > %s", channel, latestVersionForComparison, cleanCurrent))
-		return UpdateResult{HasUpdate: true, LatestVersion: displayVersion, ReleaseUrl: release.ReleaseURL, TagName: tagName, DownloadUrl: downloadUrl, DownloadUnavailable: downloadUrl == ""}, nil
+		return UpdateResult{HasUpdate: true, LatestVersion: displayVersion, ReleaseUrl: release.ReleaseURL, TagName: tagName, DownloadUrl: downloadUrl, DownloadUnavailable: downloadUrl == "", SHA256: release.SHA256, Channel: channel}, nil
 	}
 	a.log(a.tr("CheckUpdate[%s]: Already on latest version", channel))
-	return UpdateResult{HasUpdate: false, LatestVersion: displayVersion, ReleaseUrl: release.ReleaseURL, TagName: tagName, DownloadUrl: downloadUrl}, nil
+	return UpdateResult{HasUpdate: false, LatestVersion: displayVersion, ReleaseUrl: release.ReleaseURL, TagName: tagName, DownloadUrl: downloadUrl, SHA256: release.SHA256, Channel: channel}, nil
 }
 
 // CheckUpdateBeta checks for beta/pre-release versions from the beta channel manifests.
@@ -6846,6 +6864,7 @@ type latestReleaseInfo struct {
 	DownloadURL       string
 	GitHubDownloadURL string
 	COSDownloadURL    string
+	SHA256            string
 }
 
 func (a *App) fetchLatestReleaseFast() (latestReleaseInfo, string, error) {
@@ -6911,7 +6930,11 @@ func (a *App) fetchManifestLatestRelease(source, manifestURL string, timeout tim
 	if len(mirrorURLs) > 0 {
 		cosURL = mirrorURLs[len(mirrorURLs)-1]
 	}
-	return latestReleaseInfo{TagName: tagName, Name: tagName, ReleaseURL: "https://github.com/RapidAI/MaClaw/releases/latest", DownloadURL: combineDownloadURLList(append([]string{githubURL}, mirrorURLs...)...), GitHubDownloadURL: githubURL, COSDownloadURL: cosURL}, nil
+	sha256 := ""
+	if asset, ok := manifest.Assets[targetFileName]; ok {
+		sha256 = strings.TrimSpace(asset.SHA256)
+	}
+	return latestReleaseInfo{TagName: tagName, Name: tagName, ReleaseURL: "https://github.com/RapidAI/MaClaw/releases/latest", DownloadURL: combineDownloadURLList(append([]string{githubURL}, mirrorURLs...)...), GitHubDownloadURL: githubURL, COSDownloadURL: cosURL, SHA256: sha256}, nil
 }
 
 func (a *App) fetchR2LatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
@@ -6942,6 +6965,10 @@ type DownloadProgress struct {
 }
 
 func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
+	return a.DownloadUpdateWithSHA256(url, fileName, "")
+}
+
+func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA256 string) (string, error) {
 	urls := splitDownloadURLs(url)
 	if len(urls) == 0 {
 		return "", fmt.Errorf("download url is empty")
@@ -6972,6 +6999,18 @@ func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
 		a.log(fmt.Sprintf("DownloadUpdate: Trying source %d/%d: %s", index+1, len(urls), candidateURL))
 		path, err := a.downloadUpdateFromURL(ctx, candidateURL, fileName, destPath)
 		if err == nil {
+			// SHA256 verification (if expected hash is provided from manifest)
+			if expectedSHA256 != "" {
+				a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Status: downloadProgressStatusVerifying})
+				if verifyErr := verifySHA256File(path, expectedSHA256); verifyErr != nil {
+					a.log(fmt.Sprintf("DownloadUpdate: SHA256 verification failed for %s: %v", candidateURL, verifyErr))
+					_ = os.Remove(path)
+					lastErr = verifyErr
+					continue
+				}
+				a.log("DownloadUpdate: SHA256 verification passed")
+			}
+			a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Status: downloadProgressStatusCompleted})
 			return path, nil
 		}
 		lastErr = err
@@ -7002,6 +7041,32 @@ func splitDownloadURLs(value string) []string {
 		urls = append(urls, url)
 	}
 	return urls
+}
+
+// verifySHA256File verifies the SHA256 hash of a file against an expected hex digest.
+// Returns nil if expected is empty (no verification requested) or if the hash matches.
+func verifySHA256File(path, expected string) error {
+	expected = strings.TrimSpace(strings.ToLower(expected))
+	if expected == "" {
+		return nil
+	}
+	if len(expected) != 64 {
+		return fmt.Errorf("invalid sha256 digest length %d: %q", len(expected), expected)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	actual := fmt.Sprintf("%x", h.Sum(nil))
+	if actual != expected {
+		return fmt.Errorf("file integrity verification failed (expected %s..., got %s...)", expected[:8], actual[:8])
+	}
+	return nil
 }
 
 func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName string, destPath string) (string, error) {
@@ -7085,7 +7150,7 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 			return "", err
 		}
 	}
-	a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Downloaded: downloaded, Total: size, Status: downloadProgressStatusCompleted})
+	a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Downloaded: downloaded, Total: size, Status: downloadProgressStatusDownloading})
 	return destPath, nil
 }
 func (a *App) CancelDownload(downloadID string) {
@@ -7263,10 +7328,73 @@ func (a *App) ReadThanks() (string, error) {
 	return a.fetchRemoteMarkdown("rapidaicoder/msg", "thanks.md")
 }
 
-// compareVersions returns 1 if v1 > v2, -1 if v1 < v2, 0 if equal
+// splitVersionPreRelease splits a version string into its numeric part and
+// pre-release suffix. e.g. "1.3.0-beta.1" → ("1.3.0", "beta.1"),
+// "1.3.0" → ("1.3.0", "").
+func splitVersionPreRelease(version string) (string, string) {
+	// Find the first hyphen that separates the numeric part from pre-release.
+	// Must come after at least one digit (to avoid splitting negative numbers, though
+	// versions don't have those).
+	idx := strings.IndexByte(version, '-')
+	if idx <= 0 {
+		return version, ""
+	}
+	return version[:idx], version[idx+1:]
+}
+
+// preReleaseWeight returns an ordering weight for pre-release labels.
+// Lower weight = earlier in release order. No pre-release (stable) = highest.
+func preReleaseWeight(preRelease string) int {
+	if preRelease == "" {
+		return 100 // stable is always "newer" than any pre-release of same version
+	}
+	lower := strings.ToLower(preRelease)
+	if strings.HasPrefix(lower, "alpha") {
+		return 10
+	}
+	if strings.HasPrefix(lower, "beta") {
+		return 20
+	}
+	if strings.HasPrefix(lower, "rc") {
+		return 30
+	}
+	return 15 // unknown pre-release type between alpha and beta
+}
+
+// preReleaseNumber extracts the numeric suffix from a pre-release label.
+// e.g. "beta.2" → 2, "rc1" → 1, "beta" → 0
+func preReleaseNumber(preRelease string) int {
+	// Try common separators: "beta.2", "beta-2", "rc1"
+	num := 0
+	for i := len(preRelease) - 1; i >= 0; i-- {
+		if preRelease[i] >= '0' && preRelease[i] <= '9' {
+			continue
+		}
+		if i < len(preRelease)-1 {
+			fmt.Sscanf(preRelease[i+1:], "%d", &num)
+		}
+		break
+	}
+	return num
+}
+
+// compareVersions returns 1 if v1 > v2, -1 if v1 < v2, 0 if equal.
+// Supports semver pre-release suffixes: 1.3.0-beta.1 < 1.3.0-beta.2 < 1.3.0-rc.1 < 1.3.0 (stable).
 func compareVersions(v1, v2 string) int {
-	parts1 := strings.Split(v1, ".")
-	parts2 := strings.Split(v2, ".")
+	// Normalize: strip "v"/"V" prefix, lowercase, take first word
+	clean := func(s string) string {
+		s = strings.TrimPrefix(strings.TrimSpace(strings.ToLower(s)), "v")
+		return strings.Split(s, " ")[0]
+	}
+	v1 = clean(v1)
+	v2 = clean(v2)
+
+	numeric1, pre1 := splitVersionPreRelease(v1)
+	numeric2, pre2 := splitVersionPreRelease(v2)
+
+	// Compare numeric parts first
+	parts1 := strings.Split(numeric1, ".")
+	parts2 := strings.Split(numeric2, ".")
 	maxLen := len(parts1)
 	if len(parts2) > maxLen {
 		maxLen = len(parts2)
@@ -7286,6 +7414,26 @@ func compareVersions(v1, v2 string) int {
 		if val1 < val2 {
 			return -1
 		}
+	}
+
+	// Numeric parts are equal — compare pre-release suffixes.
+	// Stable (no pre-release) > any pre-release of the same version.
+	w1 := preReleaseWeight(pre1)
+	w2 := preReleaseWeight(pre2)
+	if w1 != w2 {
+		if w1 > w2 {
+			return 1
+		}
+		return -1
+	}
+	// Same pre-release type — compare numeric suffix (beta.1 vs beta.2)
+	n1 := preReleaseNumber(pre1)
+	n2 := preReleaseNumber(pre2)
+	if n1 > n2 {
+		return 1
+	}
+	if n1 < n2 {
+		return -1
 	}
 	return 0
 }

@@ -305,7 +305,7 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
     if (numMatch) {
         return (
             <div key={key} style={{ display: "flex", minHeight: "1.4em", ...blockWrapStyle }}>
-                <span style={{ color: t.bulletColor, flexShrink: 0, minWidth: "1.8em" }}>{numMatch[1]}.</span>
+                <span style={{ color: t.bulletColor, flexShrink: 0, width: "2.2em", textAlign: "right", paddingRight: "0.5em" }}>{numMatch[1]}.</span>
                 <span style={{ flex: 1, ...blockWrapStyle }}>{renderInlineMarkdown(numMatch[2], t)}</span>
             </div>
         );

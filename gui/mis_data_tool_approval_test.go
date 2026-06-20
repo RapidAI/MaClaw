@@ -58,6 +58,9 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 		"business_status":      "approval_pending",
 		"result_status":        "pending",
 		"request":              map[string]interface{}{"amount": 88},
+		"result_payload":       map[string]interface{}{"business_record": map[string]interface{}{"id": "exp-1"}},
+		"outputs":              []interface{}{map[string]interface{}{"type": "business_record", "title": "Expense record"}},
+		"artifacts":            []interface{}{map[string]interface{}{"id": "artifact-1", "name": "approval.pdf"}},
 	})
 	if !strings.Contains(createOut, `"ok": true`) {
 		t.Fatalf("create_record_approval output = %s", createOut)
@@ -84,6 +87,9 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 		"workflow_decision_id": "decision-2",
 		"business_status":      "approved",
 		"result_status":        "approved",
+		"result_payload":       map[string]interface{}{"business_record": map[string]interface{}{"id": "exp-1", "status": "approved"}},
+		"outputs":              []interface{}{map[string]interface{}{"type": "text", "title": "Decision", "text": "approved"}},
+		"artifacts":            []interface{}{map[string]interface{}{"id": "artifact-1", "name": "approval.pdf"}},
 	})
 	if !strings.Contains(reviewOut, `"ok": true`) {
 		t.Fatalf("review_record_approval output = %s", reviewOut)
@@ -111,6 +117,15 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 	}
 	if request, ok := create.Body["request"].(map[string]interface{}); !ok || request["amount"] == nil {
 		t.Fatalf("create body should keep request payload: %#v", create.Body)
+	}
+	if payload, ok := create.Body["result_payload"].(map[string]interface{}); !ok || payload["business_record"] == nil {
+		t.Fatalf("create body should keep result payload: %#v", create.Body)
+	}
+	if outputs, ok := create.Body["outputs"].([]interface{}); !ok || len(outputs) != 1 {
+		t.Fatalf("create body should keep outputs: %#v", create.Body)
+	}
+	if artifacts, ok := create.Body["artifacts"].([]interface{}); !ok || len(artifacts) != 1 {
+		t.Fatalf("create body should keep artifacts: %#v", create.Body)
 	}
 
 	list := captured[1]
@@ -142,6 +157,9 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 		if got := strings.TrimSpace(asTestString(review.Body[key])); got != want {
 			t.Fatalf("review body[%s] = %q, want %q; body=%#v", key, got, want, review.Body)
 		}
+	}
+	if review.Body["result_payload"] == nil || review.Body["outputs"] == nil || review.Body["artifacts"] == nil {
+		t.Fatalf("review body should keep result package: %#v", review.Body)
 	}
 }
 
@@ -247,6 +265,58 @@ func TestMISDataApprovalSemanticActions(t *testing.T) {
 	}
 	if got := strings.TrimSpace(asTestString(captured[4].Body["reason"])); got != "done" {
 		t.Fatalf("semantic sync reason = %q; body=%#v", got, captured[4].Body)
+	}
+}
+func TestMISDataApprovalDocumentedListAliases(t *testing.T) {
+	type capturedRequest struct {
+		Method string
+		Path   string
+		Query  string
+	}
+	captured := []capturedRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = append(captured, capturedRequest{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{
+		Enabled:  true,
+		Endpoint: server.URL,
+		Token:    "test-token",
+		TenantID: "tenant-1",
+		UserID:   "alice",
+		Role:     "approver",
+	}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	listByRecordOut := app.executeMISDataTool(map[string]interface{}{
+		"action":     "mis.approval.list_by_record",
+		"dataset_id": "finance.expenses",
+		"record_id":  "exp-3",
+	})
+	if !strings.Contains(listByRecordOut, `"ok": true`) {
+		t.Fatalf("mis.approval.list_by_record output = %s", listByRecordOut)
+	}
+	myPendingOut := app.executeMISDataTool(map[string]interface{}{
+		"action": "mis.approval.my_pending",
+		"limit":  3,
+	})
+	if !strings.Contains(myPendingOut, `"ok": true`) {
+		t.Fatalf("mis.approval.my_pending output = %s", myPendingOut)
+	}
+
+	if len(captured) != 2 {
+		t.Fatalf("captured %d requests, want 2: %#v", len(captured), captured)
+	}
+	if captured[0].Method != http.MethodGet || captured[0].Path != "/api/v1/data/approvals" || !strings.Contains(captured[0].Query, "dataset_id=finance.expenses") || !strings.Contains(captured[0].Query, "record_id=exp-3") {
+		t.Fatalf("unexpected list_by_record request: %#v", captured[0])
+	}
+	if captured[1].Method != http.MethodGet || captured[1].Path != "/api/v1/data/approvals" || !strings.Contains(captured[1].Query, "assigned_to=alice") || !strings.Contains(captured[1].Query, "status=pending") || !strings.Contains(captured[1].Query, "limit=3") {
+		t.Fatalf("unexpected my_pending request: %#v", captured[1])
 	}
 }
 func asTestString(value interface{}) string {

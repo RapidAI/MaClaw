@@ -124,9 +124,9 @@ const PromptEvidenceBoundFactualRules = `
 // PromptEncodingRules is the file encoding and large file guidance section.
 const PromptEncodingRules = `
 ## 文件编码与大文件写入
-- write_file 工具始终以 UTF-8 编码写入文件。
+- write_file 工具始终以 UTF-8 编码写入文件，无单次长度限制。
 - bash 工具在 Windows 上已自动设置 UTF-8 输出编码。
-- 写入大文件（>1800 字符）时，使用 write_file 的 mode=append 分块写入。
+- 超过约 6000 字符的大文件建议使用 write_file 的 mode=append 分块写入，避免模型输出被截断。
 - 生成 Python 脚本写文件时，始终在 open() 中指定 encoding='utf-8'。
 `
 

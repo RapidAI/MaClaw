@@ -408,6 +408,10 @@ func openAPISpec(version string) map[string]interface{} {
 			stringQueryParam("record_id", "Filter approvals by record id."),
 			stringQueryParam("status", "Filter approvals by status: pending, approved, or rejected."),
 			stringQueryParam("kind", "Filter approvals by kind."),
+			stringQueryParam("workflow_skill_id", "Filter approvals by workflow skill id."),
+			stringQueryParam("workflow_instance_id", "Filter approvals by workflow instance id."),
+			stringQueryParam("business_status", "Filter approvals by business-facing workflow status."),
+			stringQueryParam("result_status", "Filter approvals by machine-readable result status."),
 			stringQueryParam("assigned_to", "Filter approvals by assignee."),
 			boolQueryParam("overdue", "Only return overdue approvals when true."),
 		},
@@ -505,7 +509,7 @@ func openAPISpec(version string) map[string]interface{} {
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/operation-plans/{planId}/review", reviewDecisionOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/operation-plans/{planId}/apply", applyOperationPlanOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals", createRecordApprovalOpenAPIRequestBody())
-	setOpenAPIPostRequestBody(paths, "/api/v1/data/approvals/{approvalId}/review", reviewDecisionOpenAPIRequestBody())
+	setOpenAPIPostRequestBody(paths, "/api/v1/data/approvals/{approvalId}/review", reviewRecordApprovalOpenAPIRequestBody())
 	setOpenAPIPostResponses(paths, "/api/v1/data/datasets/{datasetId}/records/query", listResponseOpenAPIResponses())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/datasets/{datasetId}/records/query", queryRecordsOpenAPIRequestBody(500, "Maximum number of records to return."))
 	setOpenAPIPostResponses(paths, "/api/v1/data/views/{viewId}/query", businessViewQueryOpenAPIResponses())
@@ -1345,10 +1349,25 @@ func createOperationPlanOpenAPIRequestBody() map[string]interface{} {
 }
 
 func reviewDecisionOpenAPIRequestBody() map[string]interface{} {
-	return objectRequestBody(true, []string{"decision"}, map[string]interface{}{
+	return objectRequestBody(true, []string{"decision"}, reviewDecisionOpenAPIProperties())
+}
+
+func reviewDecisionOpenAPIProperties() map[string]interface{} {
+	return map[string]interface{}{
 		"decision": map[string]interface{}{"type": "string", "description": "Review decision such as approved or rejected."},
 		"reason":   map[string]interface{}{"type": "string", "description": "Review reason for audit trail."},
-	})
+	}
+}
+
+func reviewRecordApprovalOpenAPIRequestBody() map[string]interface{} {
+	properties := reviewDecisionOpenAPIProperties()
+	for key, value := range recordApprovalWorkflowOpenAPIProperties() {
+		properties[key] = value
+	}
+	for key, value := range recordApprovalResultPackageOpenAPIProperties() {
+		properties[key] = value
+	}
+	return objectRequestBody(true, []string{"decision"}, properties)
 }
 
 func applyOperationPlanOpenAPIRequestBody() map[string]interface{} {
@@ -1359,14 +1378,76 @@ func applyOperationPlanOpenAPIRequestBody() map[string]interface{} {
 }
 
 func createRecordApprovalOpenAPIRequestBody() map[string]interface{} {
-	return objectRequestBody(false, nil, map[string]interface{}{
+	properties := map[string]interface{}{
 		"kind":        map[string]interface{}{"type": "string"},
 		"priority":    map[string]interface{}{"type": "string", "description": "Approval priority: low, medium, high, or critical. Defaults to medium when omitted."},
 		"summary":     map[string]interface{}{"type": "string"},
 		"request":     map[string]interface{}{"type": "object"},
 		"assigned_to": map[string]interface{}{"type": "string"},
 		"due_at":      map[string]interface{}{"type": "string", "format": "date-time"},
-	})
+	}
+	for key, value := range recordApprovalWorkflowOpenAPIProperties() {
+		properties[key] = value
+	}
+	for key, value := range recordApprovalResultPackageOpenAPIProperties() {
+		properties[key] = value
+	}
+	return objectRequestBody(false, nil, properties)
+}
+
+func recordApprovalWorkflowOpenAPIProperties() map[string]interface{} {
+	return map[string]interface{}{
+		"workflow_skill_id":    map[string]interface{}{"type": "string", "description": "Workflow skill that owns the approval run."},
+		"workflow_version":     map[string]interface{}{"type": "string", "description": "Workflow skill version."},
+		"workflow_instance_id": map[string]interface{}{"type": "string", "description": "External workflow instance id."},
+		"workflow_node_id":     map[string]interface{}{"type": "string", "description": "Current or completed workflow node id."},
+		"workflow_decision_id": map[string]interface{}{"type": "string", "description": "Decision event id from the workflow skill."},
+		"business_status":      map[string]interface{}{"type": "string", "description": "Business-facing state produced by the workflow."},
+		"result_status":        map[string]interface{}{"type": "string", "description": "Machine-readable output state produced by the workflow."},
+	}
+}
+
+func recordApprovalResultPackageOpenAPIProperties() map[string]interface{} {
+	return map[string]interface{}{
+		"result_payload": map[string]interface{}{"type": "object", "description": "Structured approval result payload, such as approval_result, business_status, business_record, text, table, dashboard, notification, external_receipt, requires_input, or error."},
+		"outputs":        map[string]interface{}{"type": "array", "items": recordApprovalOutputOpenAPISchema(), "description": "Displayable approval outputs generated by the workflow skill."},
+		"artifacts":      map[string]interface{}{"type": "array", "items": recordApprovalArtifactOpenAPISchema(), "description": "Files or downloadable artifacts generated by the workflow skill."},
+	}
+}
+
+func recordApprovalOutputOpenAPISchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"type":        map[string]interface{}{"type": "string"},
+			"kind":        map[string]interface{}{"type": "string"},
+			"title":       map[string]interface{}{"type": "string"},
+			"text":        map[string]interface{}{"type": "string"},
+			"status":      map[string]interface{}{"type": "string"},
+			"artifact_id": map[string]interface{}{"type": "string"},
+			"artifact":    recordApprovalArtifactOpenAPISchema(),
+			"data":        map[string]interface{}{"type": "object"},
+		},
+	}
+}
+
+func recordApprovalArtifactOpenAPISchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"id":             map[string]interface{}{"type": "string"},
+			"uri":            map[string]interface{}{"type": "string"},
+			"name":           map[string]interface{}{"type": "string"},
+			"path":           map[string]interface{}{"type": "string"},
+			"mime_type":      map[string]interface{}{"type": "string"},
+			"size_bytes":     map[string]interface{}{"type": "integer", "format": "int64"},
+			"remote_url":     map[string]interface{}{"type": "string"},
+			"checksum":       map[string]interface{}{"type": "string"},
+			"download_state": map[string]interface{}{"type": "string"},
+			"status":         map[string]interface{}{"type": "string"},
+			"presentation":   map[string]interface{}{"type": "string"},
+		},
+	}
 }
 
 func objectRequestBody(required bool, requiredFields []string, properties map[string]interface{}) map[string]interface{} {
