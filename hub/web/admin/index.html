@@ -585,6 +585,17 @@
           </div>
           <div class="actions" style="margin-top:10px"><button class="btn-primary" onclick="saveTenantMailSenderName()" id="tenantMailSenderSaveBtn"></button></div>
         </div>
+        <div class="item hidden" id="tenantMigrationSettingsCard" style="margin-top:10px">
+          <div class="head" style="margin-bottom:10px">
+            <div><div class="item-title" id="tenantMigrationSettingsTitle"></div><div class="item-meta" id="tenantMigrationSettingsDesc"></div></div>
+            <button class="btn-ghost" onclick="loadTenantMigrationSettings()" id="tenantMigrationSettingsReloadBtn"></button>
+          </div>
+          <div class="grid2">
+            <div><label for="tenantMigrationMaxMB" id="tenantMigrationMaxMBLabel"></label><input id="tenantMigrationMaxMB" type="number" min="100" max="1024" step="1" placeholder="100"></div>
+            <div class="item-meta" id="tenantMigrationSettingsHint" style="align-self:end"></div>
+          </div>
+          <div class="actions" style="margin-top:10px"><button class="btn-primary" onclick="saveTenantMigrationSettings()" id="tenantMigrationSettingsSaveBtn"></button></div>
+        </div>
         <!-- Admin profile -->
         <div class="item" style="margin-top:10px">
           <div class="item-title" id="profileCardTitle"></div>

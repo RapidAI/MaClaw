@@ -290,6 +290,43 @@ func RunMigrations(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_llm_prompt_cache_accessed_at ON llm_prompt_cache(accessed_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_prompt_cache_provider_model ON llm_prompt_cache(provider_id, model);`,
 
+		`CREATE TABLE IF NOT EXISTS user_data_migration_exports (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			user_id TEXT NOT NULL,
+			source_machine_id TEXT NOT NULL,
+			source_machine_name TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL,
+			compressed_size INTEGER NOT NULL DEFAULT 0,
+			encrypted_size INTEGER NOT NULL DEFAULT 0,
+			encrypted_sha256 TEXT NOT NULL DEFAULT '',
+			plain_sha256 TEXT NOT NULL DEFAULT '',
+			chunk_size INTEGER NOT NULL DEFAULT 0,
+			chunk_count INTEGER NOT NULL DEFAULT 0,
+			manifest_json TEXT NOT NULL DEFAULT '{}',
+			claimed_by_machine_id TEXT NOT NULL DEFAULT '',
+			claimed_at TEXT,
+			claim_expires_at TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			imported_at TEXT,
+			deleted_at TEXT
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_data_migration_exports_owner ON user_data_migration_exports(tenant_id, user_id, status, updated_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_data_migration_exports_source ON user_data_migration_exports(tenant_id, user_id, source_machine_id);`,
+
+		`CREATE TABLE IF NOT EXISTS user_data_migration_chunks (
+			export_id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			user_id TEXT NOT NULL,
+			chunk_index INTEGER NOT NULL,
+			size INTEGER NOT NULL DEFAULT 0,
+			sha256 TEXT NOT NULL DEFAULT '',
+			uploaded_at TEXT NOT NULL,
+			PRIMARY KEY (export_id, chunk_index)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_data_migration_chunks_owner ON user_data_migration_chunks(tenant_id, user_id, export_id);`,
+
 		`CREATE TABLE IF NOT EXISTS understanding_sessions (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL,

@@ -185,7 +185,7 @@ function assertTenantAdminUIHooks() {
   if (!admin.includes("normalized === 'system'") || !admin.includes("String(profile.scope || '').toLowerCase() === 'tenant'") || !admin.includes('openDefaultImSub')) {
     fail('admin.js must avoid global-only system loads for tenant admins.');
   }
-  ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName'].forEach(function(marker) {
+  ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName', 'id="tenantMigrationSettingsCard"', 'tenantMigrationMaxMB'].forEach(function(marker) {
     if (!html.includes(marker)) {
       fail('index.html is missing tenant-safe mail settings marker: ' + marker);
     }
@@ -195,8 +195,13 @@ function assertTenantAdminUIHooks() {
       fail('system-tab.js is missing tenant sender-name marker: ' + marker);
     }
   });
+  ['loadTenantMigrationSettings', 'saveTenantMigrationSettings', 'TENANT_MIGRATION_MIN_MB', 'TENANT_MIGRATION_MAX_MB', '/api/admin/migration/settings'].forEach(function(marker) {
+    if (!system.includes(marker)) {
+      fail('system-tab.js is missing tenant migration settings marker: ' + marker);
+    }
+  });
   const bootstrap = read('admin-bootstrap.js');
-  ['Promise.allSettled', 'loadTenants', 'loadCenterStatus', 'loadMailConfig', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs'].forEach(function(marker) {
+  ['Promise.allSettled', 'loadTenants', 'loadCenterStatus', 'loadMailConfig', 'loadTenantMigrationSettings', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs'].forEach(function(marker) {
     if (!bootstrap.includes(marker)) {
       fail('admin-bootstrap.js is missing scoped refresh marker: ' + marker);
     }
@@ -423,12 +428,17 @@ function assertScopedRefreshHooks() {
 function assertAdminApiRoutesRegistered() {
   const routerPath = path.join(root, '..', '..', 'internal', 'httpapi', 'router.go');
   const router = fs.readFileSync(routerPath, 'utf8');
+  const migrationHandlerPath = path.join(root, '..', '..', 'internal', 'httpapi', 'migration_handlers.go');
+  const migrationHandler = fs.existsSync(migrationHandlerPath) ? fs.readFileSync(migrationHandlerPath, 'utf8') : '';
   const routes = [];
   const routePattern = /mux\.HandleFunc\("(GET|POST|PUT|PATCH|DELETE) (\/api\/admin\/[^" ]+)/g;
   let routeMatch;
-  while ((routeMatch = routePattern.exec(router))) {
-    routes.push(routeMatch[2]);
-  }
+  [router, migrationHandler].forEach(function(content) {
+    routePattern.lastIndex = 0;
+    while ((routeMatch = routePattern.exec(content))) {
+      routes.push(routeMatch[2]);
+    }
+  });
   const routeSet = new Set(routes);
   const allowedDynamicPrefixes = [
     '/api/admin/capability-market/groups/',

@@ -33,7 +33,17 @@ func (s *SQLiteStore) ExportSnapshot(ctx context.Context, opts ExportOptions) (E
 	if outputPath == "" {
 		return ExportResult{}, fmt.Errorf("output path is required")
 	}
+	tenantID := strings.TrimSpace(opts.TenantID)
+	ownerID := strings.TrimSpace(opts.OwnerID)
 	sourceIDs := uniqueTrimmed(opts.SourceIDs)
+	scopeActive := len(sourceIDs) > 0 || tenantID != "" || ownerID != ""
+	if len(sourceIDs) == 0 && (tenantID != "" || ownerID != "") {
+		var err error
+		sourceIDs, err = s.snapshotSourceIDs(ctx, tenantID, ownerID)
+		if err != nil {
+			return ExportResult{}, err
+		}
+	}
 	sourceSet := stringSet(sourceIDs)
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return ExportResult{}, err
@@ -50,7 +60,7 @@ func (s *SQLiteStore) ExportSnapshot(ctx context.Context, opts ExportOptions) (E
 		OutputPath:      outputPath,
 		Format:          "jsonl",
 		RedactSensitive: opts.RedactSensitive,
-		Scoped:          len(sourceIDs) > 0,
+		Scoped:          scopeActive,
 		SourceIDs:       sourceIDs,
 		GeneratedAt:     startedAt,
 	}
@@ -69,28 +79,28 @@ func (s *SQLiteStore) ExportSnapshot(ctx context.Context, opts ExportOptions) (E
 			return result, err
 		}
 	}
-	if err := s.exportSources(ctx, writer, opts.RedactSensitive, sourceSet, &result); err != nil {
+	if err := s.exportSources(ctx, writer, opts.RedactSensitive, sourceSet, scopeActive, &result); err != nil {
 		return result, err
 	}
-	if err := s.exportSourceLabels(ctx, writer, opts.RedactSensitive, sourceSet, &result); err != nil {
+	if err := s.exportSourceLabels(ctx, writer, opts.RedactSensitive, sourceSet, scopeActive, &result); err != nil {
 		return result, err
 	}
-	if err := s.exportSourceVersions(ctx, writer, opts.RedactSensitive, sourceSet, &result); err != nil {
+	if err := s.exportSourceVersions(ctx, writer, opts.RedactSensitive, sourceSet, scopeActive, &result); err != nil {
 		return result, err
 	}
-	if err := s.exportSourceLinks(ctx, writer, opts.RedactSensitive, sourceSet, &result); err != nil {
+	if err := s.exportSourceLinks(ctx, writer, opts.RedactSensitive, sourceSet, scopeActive, &result); err != nil {
 		return result, err
 	}
-	if err := s.exportSourceLinkEvents(ctx, writer, opts.RedactSensitive, sourceSet, &result); err != nil {
+	if err := s.exportSourceLinkEvents(ctx, writer, opts.RedactSensitive, sourceSet, scopeActive, &result); err != nil {
 		return result, err
 	}
-	if err := s.exportNodes(ctx, writer, opts.RedactSensitive, sourceSet, &result); err != nil {
+	if err := s.exportNodes(ctx, writer, opts.RedactSensitive, sourceSet, scopeActive, &result); err != nil {
 		return result, err
 	}
-	if err := s.exportCards(ctx, writer, opts.RedactSensitive, sourceSet, &result); err != nil {
+	if err := s.exportCards(ctx, writer, opts.RedactSensitive, sourceSet, scopeActive, &result); err != nil {
 		return result, err
 	}
-	if err := s.exportFacts(ctx, writer, opts.RedactSensitive, sourceSet, &result); err != nil {
+	if err := s.exportFacts(ctx, writer, opts.RedactSensitive, sourceSet, scopeActive, &result); err != nil {
 		return result, err
 	}
 	if err := writeExportRecord(writer, "summary", result); err != nil {
@@ -664,7 +674,7 @@ func (s *SQLiteStore) exportURLDomainPolicies(ctx context.Context, writer *bufio
 	return nil
 }
 
-func (s *SQLiteStore) exportSources(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, result *ExportResult) error {
+func (s *SQLiteStore) exportSources(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, scoped bool, result *ExportResult) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, uri, canonical_uri, title, author, site_name, published_at, fetched_at,
 		content_hash, owner_id, tenant_id, project_path, topic_hint, source_trust, batch_id, relative_path,
 		status, error_message, created_at, updated_at
@@ -678,7 +688,7 @@ func (s *SQLiteStore) exportSources(ctx context.Context, writer *bufio.Writer, r
 		if err != nil {
 			return err
 		}
-		if !exportSourceSelected(sourceSet, source.ID) {
+		if !exportSourceSelected(sourceSet, source.ID, scoped) {
 			continue
 		}
 		if redact {
@@ -694,7 +704,7 @@ func (s *SQLiteStore) exportSources(ctx context.Context, writer *bufio.Writer, r
 	return rows.Err()
 }
 
-func (s *SQLiteStore) exportSourceVersions(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, result *ExportResult) error {
+func (s *SQLiteStore) exportSourceVersions(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, scoped bool, result *ExportResult) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, COALESCE(kind, ''), COALESCE(uri, ''), COALESCE(canonical_uri, ''), COALESCE(title, ''),
 		COALESCE(content_hash, ''), COALESCE(status, ''), COALESCE(reason, ''), COALESCE(fetched_at, ''),
 		node_count, card_count, fact_count, created_at
@@ -708,7 +718,7 @@ func (s *SQLiteStore) exportSourceVersions(ctx context.Context, writer *bufio.Wr
 		if err != nil {
 			return err
 		}
-		if !exportSourceSelected(sourceSet, version.SourceID) {
+		if !exportSourceSelected(sourceSet, version.SourceID, scoped) {
 			continue
 		}
 		if redact {
@@ -723,7 +733,7 @@ func (s *SQLiteStore) exportSourceVersions(ctx context.Context, writer *bufio.Wr
 	return rows.Err()
 }
 
-func (s *SQLiteStore) exportSourceLabels(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, result *ExportResult) error {
+func (s *SQLiteStore) exportSourceLabels(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, scoped bool, result *ExportResult) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT source_id, label, created_at FROM knowledge_source_labels ORDER BY source_id, label`)
 	if err != nil {
 		return err
@@ -735,7 +745,7 @@ func (s *SQLiteStore) exportSourceLabels(ctx context.Context, writer *bufio.Writ
 		if err := rows.Scan(&label.SourceID, &label.Label, &createdAt); err != nil {
 			return err
 		}
-		if !exportSourceSelected(sourceSet, label.SourceID) {
+		if !exportSourceSelected(sourceSet, label.SourceID, scoped) {
 			continue
 		}
 		label.CreatedAt = parseTime(createdAt)
@@ -750,7 +760,7 @@ func (s *SQLiteStore) exportSourceLabels(ctx context.Context, writer *bufio.Writ
 	return rows.Err()
 }
 
-func (s *SQLiteStore) exportSourceLinks(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, result *ExportResult) error {
+func (s *SQLiteStore) exportSourceLinks(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, scoped bool, result *ExportResult) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT source_id, related_source_id, relation, score, COALESCE(terms_json, '[]'), COALESCE(evidence_json, '[]'), created_at, updated_at
 		FROM knowledge_source_links ORDER BY source_id, score DESC, related_source_id, relation`)
 	if err != nil {
@@ -764,7 +774,7 @@ func (s *SQLiteStore) exportSourceLinks(ctx context.Context, writer *bufio.Write
 		if err := rows.Scan(&link.SourceID, &link.RelatedSourceID, &link.Relation, &link.Score, &termsJSON, &evidenceJSON, &createdAt, &updatedAt); err != nil {
 			return err
 		}
-		if !exportSourceSelected(sourceSet, link.SourceID) || !exportSourceSelected(sourceSet, link.RelatedSourceID) {
+		if !exportSourceSelected(sourceSet, link.SourceID, scoped) || !exportSourceSelected(sourceSet, link.RelatedSourceID, scoped) {
 			continue
 		}
 		_ = json.Unmarshal([]byte(termsJSON), &link.Terms)
@@ -785,7 +795,7 @@ func (s *SQLiteStore) exportSourceLinks(ctx context.Context, writer *bufio.Write
 	return rows.Err()
 }
 
-func (s *SQLiteStore) exportSourceLinkEvents(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, result *ExportResult) error {
+func (s *SQLiteStore) exportSourceLinkEvents(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, scoped bool, result *ExportResult) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, related_source_id, relation, action, score, COALESCE(terms_json, '[]'), COALESCE(evidence_json, '[]'), COALESCE(note, ''), created_at
 		FROM knowledge_source_link_events ORDER BY created_at ASC, id`)
 	if err != nil {
@@ -797,7 +807,7 @@ func (s *SQLiteStore) exportSourceLinkEvents(ctx context.Context, writer *bufio.
 		if err != nil {
 			return err
 		}
-		if !exportSourceSelected(sourceSet, event.SourceID) || !exportSourceSelected(sourceSet, event.RelatedSourceID) {
+		if !exportSourceSelected(sourceSet, event.SourceID, scoped) || !exportSourceSelected(sourceSet, event.RelatedSourceID, scoped) {
 			continue
 		}
 		if redact {
@@ -813,7 +823,7 @@ func (s *SQLiteStore) exportSourceLinkEvents(ctx context.Context, writer *bufio.
 	return rows.Err()
 }
 
-func (s *SQLiteStore) exportNodes(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, result *ExportResult) error {
+func (s *SQLiteStore) exportNodes(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, scoped bool, result *ExportResult) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, COALESCE(parent_id, ''), type, COALESCE(title, ''), COALESCE(text, ''), level, page,
 		COALESCE(sheet_name, ''), COALESCE(row_range, ''), COALESCE(col_range, ''), COALESCE(xpath, ''),
 		offset, COALESCE(metadata_json, '{}'), token_count
@@ -827,7 +837,7 @@ func (s *SQLiteStore) exportNodes(ctx context.Context, writer *bufio.Writer, red
 		if err != nil {
 			return err
 		}
-		if !exportSourceSelected(sourceSet, node.SourceID) {
+		if !exportSourceSelected(sourceSet, node.SourceID, scoped) {
 			continue
 		}
 		if redact {
@@ -843,7 +853,7 @@ func (s *SQLiteStore) exportNodes(ctx context.Context, writer *bufio.Writer, red
 	return rows.Err()
 }
 
-func (s *SQLiteStore) exportCards(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, result *ExportResult) error {
+func (s *SQLiteStore) exportCards(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, scoped bool, result *ExportResult) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, COALESCE(node_id, ''), COALESCE(title, ''), claim, COALESCE(summary, ''),
 		COALESCE(entities_json, '[]'), COALESCE(topics_json, '[]'), COALESCE(tags_json, '[]'),
 		COALESCE(project_path, ''), COALESCE(owner_id, ''), COALESCE(tenant_id, ''), COALESCE(valid_at, ''), COALESCE(invalid_at, ''),
@@ -858,7 +868,7 @@ func (s *SQLiteStore) exportCards(ctx context.Context, writer *bufio.Writer, red
 		if err != nil {
 			return err
 		}
-		if !exportSourceSelected(sourceSet, card.SourceID) {
+		if !exportSourceSelected(sourceSet, card.SourceID, scoped) {
 			continue
 		}
 		if redact {
@@ -877,7 +887,7 @@ func (s *SQLiteStore) exportCards(ctx context.Context, writer *bufio.Writer, red
 	return rows.Err()
 }
 
-func (s *SQLiteStore) exportFacts(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, result *ExportResult) error {
+func (s *SQLiteStore) exportFacts(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, scoped bool, result *ExportResult) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, card_id, source_id, subject, predicate, object, negated,
 		COALESCE(valid_at, ''), COALESCE(invalid_at, ''), confidence
 		FROM knowledge_facts ORDER BY source_id, subject, predicate, id`)
@@ -890,7 +900,7 @@ func (s *SQLiteStore) exportFacts(ctx context.Context, writer *bufio.Writer, red
 		if err != nil {
 			return err
 		}
-		if !exportSourceSelected(sourceSet, fact.SourceID) {
+		if !exportSourceSelected(sourceSet, fact.SourceID, scoped) {
 			continue
 		}
 		if redact {
@@ -930,8 +940,35 @@ func stringSet(values []string) map[string]struct{} {
 	return set
 }
 
-func exportSourceSelected(sourceSet map[string]struct{}, sourceID string) bool {
-	if len(sourceSet) == 0 {
+func (s *SQLiteStore) snapshotSourceIDs(ctx context.Context, tenantID, ownerID string) ([]string, error) {
+	where := []string{"1=1"}
+	args := make([]interface{}, 0, 2)
+	if tenantID != "" {
+		where = append(where, "tenant_id = ?")
+		args = append(args, tenantID)
+	}
+	if ownerID != "" {
+		where = append(where, "owner_id = ?")
+		args = append(args, ownerID)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM knowledge_sources WHERE `+strings.Join(where, " AND ")+` ORDER BY updated_at DESC, id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func exportSourceSelected(sourceSet map[string]struct{}, sourceID string, scoped bool) bool {
+	if !scoped {
 		return true
 	}
 	_, ok := sourceSet[sourceID]

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
-import { CancelNLSkillRun, DownloadSkillRunArtifact, GetMISDataConfig, GetNLSkillRunStatus, ListMaclawAppApprovalInstances, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, OpenFileOrShowInFolder, InstallMaclawAppDependencies, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { CancelNLSkillRun, DownloadSkillRunArtifact, GetMISDataConfig, GetNLSkillRunStatus, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, OpenFileOrShowInFolder, InstallMaclawAppDependencies, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import './AppsPage.css';
 
 type AppKind = 'enterprise_approval_app' | 'enterprise_normal_app' | 'tool_app' | 'automation_app';
 type StudioTab = 'create' | 'manage' | 'market' | 'publish';
 type AppMoveTarget = -1 | 1 | 'top' | 'bottom';
+type AppOperation = 'approval_status' | 'run_history';
+type ApprovalLaneFilter = 'my_requests' | 'pending_my_approval' | 'handled' | 'attention' | 'all';
 
 type AppEntry = {
     id: string;
@@ -504,6 +506,11 @@ const labels = {
         resetFilter: '\u91cd\u7f6e\u7b5b\u9009',
         create: '\u521b\u5efa',
         category: '\u5206\u7c7b',
+        operations: '\u64cd\u4f5c',
+        approvalStatus: '\u5ba1\u6279\u72b6\u6001',
+        approvalStatusHint: '\u7edf\u4e00\u67e5\u770b\u6240\u6709\u5ba1\u6279\u5b9e\u4f8b',
+        runHistoryOps: '\u8fd0\u884c\u8bb0\u5f55',
+        runHistoryOpsHint: '\u67e5\u770b\u5e94\u7528\u6267\u884c\u5386\u53f2',
         all: '\u5168\u90e8\u5e94\u7528',
         otherApps: '\u5176\u4ed6\u5e94\u7528',
         pinned: '\u5e38\u7528\u5e94\u7528',
@@ -608,7 +615,27 @@ const labels = {
         fileTooLarge: '\u6587\u4ef6\u8d85\u8fc7 25MB\uff0c\u6682\u4e0d\u652f\u6301\u6b64\u65b9\u5f0f\u4e0a\u4f20',
         cancelRun: '\u53d6\u6d88\u6267\u884c',
         runHistory: '\u8fd0\u884c\u5386\u53f2',
+        runHistoryManager: '\u8fd0\u884c\u8bb0\u5f55',
+        runHistoryManagerHint: '\u805a\u5408\u5c55\u793a\u672c\u673a\u4fdd\u5b58\u7684\u5e94\u7528\u6267\u884c\u5386\u53f2\u3002',
+        runHistoryAllApps: '\u5168\u90e8\u5e94\u7528',
+        noGlobalRunHistory: '\u6682\u65e0\u5e94\u7528\u8fd0\u884c\u8bb0\u5f55',
         approvalWorkspace: '\u5ba1\u6279\u5b9e\u4f8b',
+        approvalManagerTitle: '\u5ba1\u6279\u5b9e\u4f8b\u7ba1\u7406',
+        approvalManagerHint: '\u6240\u6709\u5ba1\u6279\u578b\u5e94\u7528\u7684\u7533\u8bf7\u3001\u5f85\u529e\u548c\u7ed3\u679c\u5728\u8fd9\u91cc\u7edf\u4e00\u7ba1\u7406\u3002',
+        approvalSearch: '\u641c\u7d22\u5ba1\u6279\u5b9e\u4f8b',
+        approvalAppFilter: '\u5e94\u7528',
+        approvalStatusFilter: '\u72b6\u6001',
+        approvalAllApps: '\u5168\u90e8\u5e94\u7528',
+        approvalAllStatuses: '\u5168\u90e8\u72b6\u6001',
+        approvalRefresh: '\u5237\u65b0',
+        approvalLoading: '\u6b63\u5728\u8bfb\u53d6\u5ba1\u6279\u5b9e\u4f8b',
+        approvalLoadError: '\u5ba1\u6279\u5b9e\u4f8b\u8bfb\u53d6\u5931\u8d25',
+        approvalSummaryTitle: '\u5ba1\u6279\u72b6\u6001',
+        approvalSummaryHint: '\u8be5\u5e94\u7528\u7684\u5ba1\u6279\u5b9e\u4f8b\u5df2\u6536\u7eb3\u5230\u7edf\u4e00\u7ba1\u7406\u9875\u3002',
+        approvalRecentCount: '\u6700\u8fd1\u5b9e\u4f8b',
+        approvalPendingCount: '\u5f85\u5904\u7406',
+        viewAllApprovals: '\u67e5\u770b\u5168\u90e8\u5ba1\u6279\u72b6\u6001',
+        viewAppApprovals: '\u67e5\u770b\u672c\u5e94\u7528\u5ba1\u6279',
         myRequests: '\u6211\u7684\u7533\u8bf7',
         pendingMyApproval: '\u5f85\u6211\u5ba1\u6279',
         handledApprovals: '\u5df2\u5904\u7406',
@@ -701,6 +728,8 @@ const labels = {
         confirmHighRiskInstall: '\u786e\u8ba4\u5b89\u88c5',
         highRiskInstallWarning: '\u9009\u4e2d\u7684\u5347\u7ea7\u5305\u5305\u542b\u9ad8\u98ce\u9669\u65b0\u6743\u9650\uff0c\u9700\u518d\u6b21\u786e\u8ba4\u3002',
         dependencyPlanLoading: '\u6b63\u5728\u68c0\u67e5 Skill \u4f9d\u8d56',
+        installDependenciesAndRun: '\u5b89\u88c5\u4f9d\u8d56\u5e76\u6267\u884c',
+        installingDependencies: '\u6b63\u5728\u5b89\u88c5\u4f9d\u8d56',
         missingRequiredDependency: '\u5fc5\u9700 Skill \u4f9d\u8d56\u7f3a\u5931\u6216\u4e0d\u53ef\u7528\uff0c\u8bf7\u5148\u5b89\u88c5\u6216\u542f\u7528\u4f9d\u8d56',
         dependencyPlanError: '\u4f9d\u8d56\u68c0\u67e5\u5931\u8d25',
         skillDependencies: '\u4f9d\u8d56 Skill',
@@ -749,6 +778,11 @@ const labels = {
         resetFilter: 'Reset filters',
         create: 'Create',
         category: 'Category',
+        operations: 'Actions',
+        approvalStatus: 'Approval status',
+        approvalStatusHint: 'Review every approval instance in one place',
+        runHistoryOps: 'Run history',
+        runHistoryOpsHint: 'Review app execution history',
         all: 'All apps',
         otherApps: 'Other apps',
         pinned: 'Pinned apps',
@@ -853,7 +887,27 @@ const labels = {
         fileTooLarge: 'File is larger than 25MB and cannot be uploaded this way yet',
         cancelRun: 'Cancel run',
         runHistory: 'Run history',
+        runHistoryManager: 'Run history',
+        runHistoryManagerHint: 'Aggregated execution history saved on this device.',
+        runHistoryAllApps: 'All apps',
+        noGlobalRunHistory: 'No app run history yet',
         approvalWorkspace: 'Approval instances',
+        approvalManagerTitle: 'Approval instance management',
+        approvalManagerHint: 'Requests, pending work, and outcomes from every approval app are managed here.',
+        approvalSearch: 'Search approvals',
+        approvalAppFilter: 'App',
+        approvalStatusFilter: 'Status',
+        approvalAllApps: 'All apps',
+        approvalAllStatuses: 'All statuses',
+        approvalRefresh: 'Refresh',
+        approvalLoading: 'Loading approval instances',
+        approvalLoadError: 'Failed to load approval instances',
+        approvalSummaryTitle: 'Approval status',
+        approvalSummaryHint: 'This app stores approval instances in the unified management page.',
+        approvalRecentCount: 'Recent instances',
+        approvalPendingCount: 'Pending',
+        viewAllApprovals: 'View all approval status',
+        viewAppApprovals: 'View this app approvals',
         myRequests: 'My requests',
         pendingMyApproval: 'Pending my approval',
         handledApprovals: 'Handled',
@@ -946,6 +1000,8 @@ const labels = {
         confirmHighRiskInstall: 'Confirm install',
         highRiskInstallWarning: 'Selected upgrades include high-risk new permissions; confirm once more.',
         dependencyPlanLoading: 'Checking Skill dependencies',
+        installDependenciesAndRun: 'Install dependencies and run',
+        installingDependencies: 'Installing dependencies',
         missingRequiredDependency: 'Required Skill dependencies are missing or unavailable. Install or enable them first.',
         dependencyPlanError: 'Dependency check failed',
         skillDependencies: 'Skill dependencies',
@@ -1228,14 +1284,29 @@ function applyStudioWorkspaceLayout(manifest: AppManifestBinding, kind: AppKind,
     };
 }
 
+function defaultRuntimeWorkspaceLayout(kind: AppKind): RuntimeWorkspaceLayout {
+    return {
+        template: kind === 'tool_app' ? 'document_workspace' : 'classic_split',
+        density: 'comfortable',
+        primaryRegion: 'left',
+        outputRegion: kind === 'tool_app' ? 'right' : 'bottom',
+    };
+}
+
+function normalizeRuntimeWorkspaceLayout(raw: any, kind: AppKind): RuntimeWorkspaceLayout {
+    const fallback = defaultRuntimeWorkspaceLayout(kind);
+    return {
+        template: ['classic_split', 'left_nav', 'document_workspace'].includes(String(raw?.template)) ? raw.template as StudioLayoutTemplate : fallback.template,
+        density: raw?.density === 'compact' ? 'compact' : fallback.density,
+        primaryRegion: ['left', 'center', 'right'].includes(String(raw?.primaryRegion)) ? raw.primaryRegion as StudioPrimaryRegion : fallback.primaryRegion,
+        outputRegion: ['right', 'bottom', 'modal'].includes(String(raw?.outputRegion)) ? raw.outputRegion as StudioOutputRegion : fallback.outputRegion,
+    };
+}
+
 function runtimeWorkspaceLayoutForApp(app: AppEntry): RuntimeWorkspaceLayout {
     const entry = app.manifest?.ui?.entry || workspaceEntryForKind(app.kind);
     const layout = app.manifest?.ui?.layouts?.[entry] || {};
-    const template = ['classic_split', 'left_nav', 'document_workspace'].includes(String(layout.template)) ? layout.template as StudioLayoutTemplate : app.kind === 'tool_app' ? 'document_workspace' : 'classic_split';
-    const density = layout.density === 'compact' ? 'compact' : 'comfortable';
-    const primaryRegion = ['left', 'center', 'right'].includes(String(layout.primaryRegion)) ? layout.primaryRegion as StudioPrimaryRegion : 'left';
-    const outputRegion = ['right', 'bottom', 'modal'].includes(String(layout.outputRegion)) ? layout.outputRegion as StudioOutputRegion : 'right';
-    return { template, density, primaryRegion, outputRegion };
+    return normalizeRuntimeWorkspaceLayout(layout, app.kind);
 }
 
 function runtimeWorkspaceOrder(layout: RuntimeWorkspaceLayout) {
@@ -1249,6 +1320,202 @@ function runtimeWorkspaceOrder(layout: RuntimeWorkspaceLayout) {
         history: 60,
     };
 }
+const studioLayoutTemplateOptions: Array<{ value: StudioLayoutTemplate; zh: string; en: string }> = [
+    { value: 'document_workspace', zh: '\u6587\u6863\u5de5\u4f5c\u53f0', en: 'Document workspace' },
+    { value: 'classic_split', zh: '\u7ecf\u5178\u5206\u680f', en: 'Classic split' },
+    { value: 'left_nav', zh: '\u5de6\u4fa7\u5bfc\u822a', en: 'Left navigation' },
+];
+const studioLayoutDensityOptions: Array<{ value: StudioLayoutDensity; zh: string; en: string }> = [
+    { value: 'comfortable', zh: '\u6807\u51c6', en: 'Comfortable' },
+    { value: 'compact', zh: '\u7d27\u51d1', en: 'Compact' },
+];
+const studioPrimaryRegionOptions: Array<{ value: StudioPrimaryRegion; zh: string; en: string }> = [
+    { value: 'left', zh: '\u5de6\u4fa7', en: 'Left' },
+    { value: 'center', zh: '\u4e2d\u95f4', en: 'Center' },
+    { value: 'right', zh: '\u53f3\u4fa7', en: 'Right' },
+];
+const studioOutputRegionOptions: Array<{ value: StudioOutputRegion; zh: string; en: string }> = [
+    { value: 'right', zh: '\u53f3\u4fa7', en: 'Right' },
+    { value: 'bottom', zh: '\u5e95\u90e8', en: 'Bottom' },
+    { value: 'modal', zh: '\u5f39\u7a97', en: 'Modal' },
+];
+const studioLayoutSlotIds = ['left', 'center', 'right'] as const;
+
+type StudioLayoutDesignerProps = {
+    kind: AppKind;
+    value: RuntimeWorkspaceLayout;
+    onChange: (layout: RuntimeWorkspaceLayout) => void;
+    lang?: string;
+    testIdPrefix?: string;
+};
+
+function studioLayoutOptionLabel<T extends string>(options: Array<{ value: T; zh: string; en: string }>, value: T, lang?: string) {
+    const option = options.find((item) => item.value === value) || options[0];
+    return option[isZh(lang) ? 'zh' : 'en'];
+}
+
+function studioLayoutRegionLabel(kind: AppKind, id: string, lang?: string) {
+    const zh = isZh(lang);
+    const labelsById: Record<string, { zh: string; en: string }> = {
+        request_form: { zh: '\u53d1\u8d77\u8868\u5355', en: 'Request form' },
+        approval_inbox: { zh: '\u5ba1\u6279\u5b9e\u4f8b', en: 'Approval instances' },
+        approval_detail: { zh: '\u8282\u70b9\u72b6\u6001', en: 'Node status' },
+        result_panel: { zh: '\u7ed3\u679c\u53cd\u9988', en: 'Result feedback' },
+        operation_form: { zh: '\u64cd\u4f5c\u8868\u5355', en: 'Operation form' },
+        record_list: { zh: '\u6570\u636e\u5217\u8868', en: 'Record list' },
+        record_detail: { zh: '\u6570\u636e\u660e\u7ec6', en: 'Record detail' },
+        output_panel: { zh: '\u8f93\u51fa\u9762\u677f', en: 'Output panel' },
+        file_queue: { zh: '\u6587\u4ef6\u961f\u5217', en: 'File queue' },
+        settings_panel: { zh: '\u53c2\u6570\u533a', en: 'Parameters' },
+        preview_panel: { zh: '\u9884\u89c8\u533a', en: 'Preview' },
+    };
+    return labelsById[id]?.[zh ? 'zh' : 'en'] || (kind === 'tool_app' ? (zh ? '\u5de5\u5177\u9762\u677f' : 'Tool panel') : id);
+}
+
+function studioLayoutRoleLabel(role: string, lang?: string) {
+    const zh = isZh(lang);
+    const labelsByRole: Record<string, { zh: string; en: string }> = {
+        input: { zh: '\u8f93\u5165', en: 'Input' },
+        parameters: { zh: '\u53c2\u6570', en: 'Parameters' },
+        preview: { zh: '\u9884\u89c8', en: 'Preview' },
+        output: { zh: '\u8f93\u51fa', en: 'Output' },
+        instance_list: { zh: '\u5b9e\u4f8b', en: 'Instances' },
+        detail: { zh: '\u660e\u7ec6', en: 'Detail' },
+        record_list: { zh: '\u5217\u8868', en: 'List' },
+    };
+    return labelsByRole[role]?.[zh ? 'zh' : 'en'] || role;
+}
+
+const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'studio' }: StudioLayoutDesignerProps) => {
+    const zh = isZh(lang);
+    const updateLayout = (patch: Partial<RuntimeWorkspaceLayout>) => onChange({ ...value, ...patch });
+    const regions = studioRegionsForLayout(kind, value.template, value.primaryRegion, value.outputRegion);
+    const regionsForPlacement = (placement: StudioPrimaryRegion | 'bottom') => regions.filter((region) => region.placement === placement || (placement === 'right' && region.placement === 'modal'));
+    const renderRegionPill = (region: { id: string; role: string; placement: string }) => (
+        <span className="apps-layout-designer__region" data-role={region.role} key={region.id}>
+            <strong>{studioLayoutRegionLabel(kind, region.id, lang)}</strong>
+            <small>{studioLayoutRoleLabel(region.role, lang)}</small>
+        </span>
+    );
+    const renderSlot = (slot: typeof studioLayoutSlotIds[number]) => {
+        const slotRegions = regionsForPlacement(slot);
+        const isPrimary = value.primaryRegion === slot;
+        const hasOutput = value.outputRegion === slot || (slot === 'right' && value.outputRegion === 'modal');
+        return (
+            <button
+                className="apps-layout-designer__slot"
+                data-slot={slot}
+                data-primary={isPrimary ? 'true' : undefined}
+                data-output={hasOutput ? value.outputRegion : undefined}
+                data-testid={`${testIdPrefix}-layout-slot-${slot}`}
+                type="button"
+                aria-pressed={isPrimary}
+                onClick={() => updateLayout({ primaryRegion: slot })}
+            >
+                <span className="apps-layout-designer__slot-title">
+                    {studioLayoutOptionLabel(studioPrimaryRegionOptions, slot, lang)}
+                    {isPrimary && <em>{zh ? '\u4e3b\u64cd\u4f5c' : 'Primary'}</em>}
+                </span>
+                <span className="apps-layout-designer__slot-body">
+                    {slotRegions.length ? slotRegions.map(renderRegionPill) : <span className="apps-layout-designer__empty-slot">{zh ? '\u53ef\u653e\u7f6e\u533a\u57df' : 'Available region'}</span>}
+                </span>
+            </button>
+        );
+    };
+    return (
+        <section className="apps-layout-designer" aria-label={zh ? '\u754c\u9762\u5e03\u5c40' : 'UI layout'}>
+            <div className="apps-preview-title-row">
+                <div>
+                    <div className="apps-definition__title">{zh ? '\u754c\u9762\u5e03\u5c40' : 'UI layout'}</div>
+                    <small className="apps-layout-designer__hint">{zh ? '\u70b9\u51fb\u9884\u89c8\u533a\u57df\u8c03\u6574\u4e3b\u64cd\u4f5c\u4f4d\u7f6e\uff0c\u8f93\u51fa\u4f4d\u7f6e\u4f1a\u5199\u5165 manifest\u3002' : 'Click the preview regions to place the primary work area; output placement is saved to the manifest.'}</small>
+                </div>
+                <span className="apps-count">{zh ? '\u4fdd\u5b58\u5230 manifest' : 'Saved in manifest'}</span>
+            </div>
+            <div className="apps-layout-designer__body">
+                <div className="apps-layout-designer__preview" data-template={value.template} data-density={value.density}>
+                    <div className="apps-layout-designer__template-row" role="group" aria-label={zh ? '\u5e03\u5c40\u6a21\u677f' : 'Layout template'}>
+                        {studioLayoutTemplateOptions.map((option) => (
+                            <button
+                                key={option.value}
+                                className="apps-layout-designer__template"
+                                data-active={value.template === option.value ? 'true' : undefined}
+                                data-testid={`${testIdPrefix}-layout-template-${option.value}`}
+                                type="button"
+                                aria-pressed={value.template === option.value}
+                                onClick={() => updateLayout({ template: option.value })}
+                            >
+                                {option[zh ? 'zh' : 'en']}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="apps-layout-designer__canvas" data-testid={`${testIdPrefix}-layout-canvas`} data-template={value.template} data-density={value.density}>
+                        {studioLayoutSlotIds.map(renderSlot)}
+                        <button
+                            className="apps-layout-designer__slot apps-layout-designer__slot--bottom"
+                            data-slot="bottom"
+                            data-output={value.outputRegion === 'bottom' ? 'bottom' : undefined}
+                            data-testid={`${testIdPrefix}-layout-slot-bottom`}
+                            type="button"
+                            aria-pressed={value.outputRegion === 'bottom'}
+                            onClick={() => updateLayout({ outputRegion: 'bottom' })}
+                        >
+                            <span className="apps-layout-designer__slot-title">
+                                {zh ? '\u5e95\u90e8' : 'Bottom'}
+                                {value.outputRegion === 'bottom' && <em>{zh ? '\u8f93\u51fa' : 'Output'}</em>}
+                            </span>
+                            <span className="apps-layout-designer__slot-body">
+                                {regionsForPlacement('bottom').length ? regionsForPlacement('bottom').map(renderRegionPill) : <span className="apps-layout-designer__empty-slot">{zh ? '\u7ed3\u679c\u533a\u6216\u65e5\u5fd7\u533a' : 'Results or log lane'}</span>}
+                            </span>
+                        </button>
+                    </div>
+                </div>
+                <div className="apps-layout-designer__controls">
+                    <div className="apps-layout-designer__grid">
+                        <div className="apps-form-row">
+                            <label>{zh ? '\u5e03\u5c40\u6a21\u677f' : 'Layout template'}</label>
+                            <select data-testid={`${testIdPrefix}-layout-template`} value={value.template} onChange={(event) => updateLayout({ template: event.target.value as StudioLayoutTemplate })}>
+                                {studioLayoutTemplateOptions.map((option) => <option key={option.value} value={option.value}>{option[zh ? 'zh' : 'en']}</option>)}
+                            </select>
+                        </div>
+                        <div className="apps-form-row">
+                            <label>{zh ? '\u5bc6\u5ea6' : 'Density'}</label>
+                            <select data-testid={`${testIdPrefix}-layout-density`} value={value.density} onChange={(event) => updateLayout({ density: event.target.value as StudioLayoutDensity })}>
+                                {studioLayoutDensityOptions.map((option) => <option key={option.value} value={option.value}>{option[zh ? 'zh' : 'en']}</option>)}
+                            </select>
+                        </div>
+                        <div className="apps-form-row">
+                            <label>{zh ? '\u4e3b\u64cd\u4f5c\u533a' : 'Primary region'}</label>
+                            <select data-testid={`${testIdPrefix}-primary-region`} value={value.primaryRegion} onChange={(event) => updateLayout({ primaryRegion: event.target.value as StudioPrimaryRegion })}>
+                                {studioPrimaryRegionOptions.map((option) => <option key={option.value} value={option.value}>{option[zh ? 'zh' : 'en']}</option>)}
+                            </select>
+                        </div>
+                        <div className="apps-form-row">
+                            <label>{zh ? '\u8f93\u51fa\u533a' : 'Output region'}</label>
+                            <select data-testid={`${testIdPrefix}-output-region`} value={value.outputRegion} onChange={(event) => updateLayout({ outputRegion: event.target.value as StudioOutputRegion })}>
+                                {studioOutputRegionOptions.map((option) => <option key={option.value} value={option.value}>{option[zh ? 'zh' : 'en']}</option>)}
+                            </select>
+                        </div>
+                    </div>
+                    <div className="apps-layout-designer__output-row" role="group" aria-label={zh ? '\u8f93\u51fa\u4f4d\u7f6e' : 'Output placement'}>
+                        {studioOutputRegionOptions.map((option) => (
+                            <button
+                                key={option.value}
+                                className="apps-layout-designer__output"
+                                data-active={value.outputRegion === option.value ? 'true' : undefined}
+                                data-testid={`${testIdPrefix}-layout-output-${option.value}`}
+                                type="button"
+                                aria-pressed={value.outputRegion === option.value}
+                                onClick={() => updateLayout({ outputRegion: option.value })}
+                            >
+                                {option[zh ? 'zh' : 'en']}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        </section>
+    );
+};
 function normalizeAppDependencies(raw: unknown): AppManifestBinding['dependencies'] {
     const value = raw && typeof raw === 'object' ? raw as { skills?: unknown } : {};
     if (!Array.isArray(value.skills)) return undefined;
@@ -2667,6 +2934,8 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
     const [studioOpen, setStudioOpen] = useState(false);
     const [studioTab, setStudioTab] = useState<StudioTab>('create');
     const [studioEditAppId, setStudioEditAppId] = useState('');
+    const [activeOperation, setActiveOperation] = useState<AppOperation | null>(null);
+    const [approvalInitialAppFilter, setApprovalInitialAppFilter] = useState('all');
     const [tileMenu, setTileMenu] = useState<{ appId: string; x: number; y: number } | null>(null);
     const [datasrvDiscovery, setDataSrvDiscovery] = useState<DataSrvDiscovery>(emptyDiscovery);
     const [skillDiscovery, setSkillDiscovery] = useState<SkillAppDiscovery>(emptySkillDiscovery);
@@ -2774,6 +3043,14 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
         setOpenTabs((current) => current.includes(app.id) ? current : [...current, app.id]);
         setActiveTabId(app.id);
         setStudioOpen(false);
+        setActiveOperation(null);
+    };
+
+    const openOperation = (operation: AppOperation, options?: { appId?: string }) => {
+        setTileMenu(null);
+        setStudioOpen(false);
+        setActiveOperation(operation);
+        if (operation === 'approval_status') setApprovalInitialAppFilter(options?.appId || 'all');
     };
 
     const markAppUsed = (appId: string) => {
@@ -2991,7 +3268,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                             </button>
                         )}
                     </div>
-                    <button className="apps-studio-button" type="button" title={text.appStudio} aria-label={text.appStudio} onClick={() => setStudioOpen(true)}>
+                    <button className="apps-studio-button" type="button" title={text.appStudio} aria-label={text.appStudio} onClick={() => { setActiveOperation(null); setStudioOpen(true); }}>
                         <span className="apps-studio-button__icon" aria-hidden="true">
                             <Icon name="dashboard" />
                             <svg className="apps-studio-button__plus" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 2v8M2 6h8" /></svg>
@@ -3016,6 +3293,17 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                         >{text.reset}</button>
                     </div>
                     {panelFilterSummary && <div className="apps-filter-summary" aria-live="polite">{panelFilterSummary}</div>}
+                    <div className="apps-ops" aria-label={text.operations}>
+                        <div className="apps-ops__title">{text.operations}</div>
+                        <button className={`apps-ops__item ${activeOperation === 'approval_status' ? 'is-active' : ''}`} type="button" aria-pressed={activeOperation === 'approval_status'} onClick={() => openOperation('approval_status')}>
+                            <Icon name="shield" />
+                            <span><strong>{text.approvalStatus}</strong><small>{text.approvalStatusHint}</small></span>
+                        </button>
+                        <button className={`apps-ops__item ${activeOperation === 'run_history' ? 'is-active' : ''}`} type="button" aria-pressed={activeOperation === 'run_history'} onClick={() => openOperation('run_history')}>
+                            <Icon name="sync" />
+                            <span><strong>{text.runHistoryOps}</strong><small>{text.runHistoryOpsHint}</small></span>
+                        </button>
+                    </div>
                 </div>
                 <div className="apps-list elegant-scrollbar">
                     {pinnedApps.length > 0 && (
@@ -3084,6 +3372,14 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                         onInstallMarketApp={installMarketApp}
                         onEditApp={editAppFromStudio}
                     />
+                ) : activeOperation === 'approval_status' ? (
+                    <ApprovalManager
+                        apps={apps}
+                        lang={lang}
+                        initialAppFilter={approvalInitialAppFilter}
+                    />
+                ) : activeOperation === 'run_history' ? (
+                    <RunHistoryManager apps={apps} lang={lang} />
                 ) : (
                     <AppRuntime
                         tabs={openTabApps}
@@ -3094,6 +3390,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                         }}
                         onClose={closeAppTab}
                         onUse={markAppUsed}
+                        onOpenApprovalManager={(appId) => openOperation('approval_status', { appId })}
                     />
                 )}
             </main>
@@ -3101,13 +3398,14 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
     );
 };
 
-const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse }: {
+const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenApprovalManager }: {
     tabs: AppEntry[];
     activeApp?: AppEntry;
     lang?: string;
     onActivate: (appId: string) => void;
     onClose: (appId: string) => void;
     onUse: (appId: string) => void;
+    onOpenApprovalManager: (appId?: string) => void;
 }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     if (tabs.length === 0) {
@@ -3173,7 +3471,7 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse }: {
                 id={activeApp ? getRuntimePanelId(activeApp.id) : undefined}
                 aria-labelledby={activeApp ? getRuntimeTabId(activeApp.id) : undefined}
             >
-                <AppPreview app={activeApp} lang={lang} onUse={onUse} />
+                <AppPreview app={activeApp} lang={lang} onUse={onUse} onOpenApprovalManager={onOpenApprovalManager} />
             </div>
         </>
     );
@@ -3360,7 +3658,77 @@ function approvalStatusLabel(status: ApprovalInstanceView['status'], lang?: stri
     return zh ? '鑽夌' : 'Draft';
 }
 
-const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse?: (appId: string) => void }) => {
+function businessAppSkillID(app: AppEntry): string {
+    return String(app.manifest?.appSkill?.id || '').trim();
+}
+
+function businessObjectRoleForApp(app: AppEntry, businessEntity: string): string {
+    return String(app.manifest?.datasrv?.objectRole || app.manifest?.datasrv?.domain || businessEntity || app.category || '').trim();
+}
+
+function businessActionRoleForApp(app: AppEntry, businessAction: string): string {
+    const datasrv = app.manifest?.datasrv;
+    if (businessAction === 'query') return String(datasrv?.preferredView || datasrv?.preferredReport || businessAction).trim();
+    if (businessAction === 'report') return String(datasrv?.preferredReport || datasrv?.preferredDashboard || datasrv?.preferredView || businessAction).trim();
+    return String(datasrv?.preferredAction || businessAction || 'execute').trim();
+}
+
+function businessActionLabel(action: string, lang?: string) {
+    const zh = isZh(lang);
+    if (action === 'query') return zh ? '\u67e5\u8be2\u6570\u636e' : 'Query data';
+    if (action === 'report') return zh ? '\u751f\u6210\u62a5\u8868' : 'Generate report';
+    return zh ? '\u65b0\u5efa\u8bb0\u5f55' : 'Create record';
+}
+
+const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, businessNote, lang, style, layoutRegion }: { app: AppEntry; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; businessEntity: string; businessAction: string; businessNote: string; lang?: string; style?: CSSProperties; layoutRegion?: string }) => {
+    const zh = isZh(lang);
+    const datasrv = app.manifest?.datasrv || { domain: 'DataSrv' };
+    const objectRole = businessObjectRoleForApp(app, businessEntity);
+    const actionRole = businessActionRoleForApp(app, businessAction);
+    const viewRole = String(datasrv.preferredView || datasrv.preferredReport || datasrv.preferredDashboard || '-').trim();
+    const rows = [
+        { id: `${datasrv.domain || app.id}-draft`, name: businessEntity || app.category, status: runState === 'idle' ? (zh ? '\u5f85\u5904\u7406' : 'Ready') : (zh ? '\u5904\u7406\u4e2d' : 'Processing'), owner: zh ? '\u5f53\u524d\u7528\u6237' : 'Current user' },
+        { id: `${datasrv.domain || app.id}-last`, name: app.name, status: runState === 'done' ? (zh ? '\u5df2\u66f4\u65b0' : 'Updated') : (zh ? '\u53ef\u67e5\u8be2' : 'Queryable'), owner: datasrv.domain || 'DataSrv' },
+    ];
+    return (
+        <section className="apps-runtime-section apps-business-workspace" aria-label={zh ? '\u4e1a\u52a1\u5de5\u4f5c\u53f0' : 'Business workspace'} data-region={layoutRegion || 'center'} style={style}>
+            <div className="apps-preview-title-row">
+                <div className="apps-runtime-section__title">{zh ? '\u4e1a\u52a1\u5de5\u4f5c\u53f0' : 'Business workspace'}</div>
+                <span className="apps-count">{datasrv.domain || 'DataSrv'}</span>
+            </div>
+            <div className="apps-business-toolbar" aria-label={zh ? '\u4e1a\u52a1\u64cd\u4f5c' : 'Business actions'}>
+                <button type="button" data-active={businessAction === 'create' ? 'true' : undefined}>{zh ? '\u65b0\u5efa' : 'New'}</button>
+                <button type="button" data-active={businessAction === 'query' ? 'true' : undefined}>{zh ? '\u67e5\u8be2' : 'Query'}</button>
+                <button type="button" data-active={businessAction === 'report' ? 'true' : undefined}>{zh ? '\u62a5\u8868' : 'Report'}</button>
+                <button type="button">{zh ? '\u5bfc\u51fa' : 'Export'}</button>
+            </div>
+            <div className="apps-business-layout">
+                <nav className="apps-business-nav" aria-label={zh ? '\u89c6\u56fe' : 'Views'}>
+                    {[datasrv.preferredView, datasrv.preferredReport, datasrv.preferredDashboard].filter(Boolean).map((item) => <button key={item} type="button">{item}</button>)}
+                    {!datasrv.preferredView && !datasrv.preferredReport && !datasrv.preferredDashboard && <button type="button">{zh ? '\u9ed8\u8ba4\u89c6\u56fe' : 'Default view'}</button>}
+                </nav>
+                <div className="apps-business-table" role="table" aria-label={zh ? '\u4e1a\u52a1\u6570\u636e' : 'Business records'}>
+                    <div role="row" className="apps-business-table__head"><span>{zh ? '\u8bb0\u5f55' : 'Record'}</span><span>{zh ? '\u72b6\u6001' : 'Status'}</span><span>{zh ? '\u8d1f\u8d23\u4eba' : 'Owner'}</span></div>
+                    {rows.map((row) => (
+                        <div role="row" className="apps-business-table__row" data-state={runState} key={row.id}>
+                            <span>{row.name}</span><span>{row.status}</span><span>{row.owner}</span>
+                        </div>
+                    ))}
+                </div>
+                <aside className="apps-business-detail">
+                    <dl>
+                        <div><dt>{zh ? '\u4e1a\u52a1\u5bf9\u8c61' : 'Object'}</dt><dd>{objectRole || '-'}</dd></div>
+                        <div><dt>{zh ? '\u64cd\u4f5c\u89d2\u8272' : 'Action role'}</dt><dd>{actionRole || businessActionLabel(businessAction, lang)}</dd></div>
+                        <div><dt>{zh ? '\u89c6\u56fe' : 'View'}</dt><dd>{viewRole || '-'}</dd></div>
+                        <div><dt>{zh ? '\u8fd0\u884c\u72b6\u6001' : 'Run state'}</dt><dd>{runState === 'done' ? (zh ? '\u5df2\u5b8c\u6210' : 'Done') : runState === 'running' ? (zh ? '\u6267\u884c\u4e2d' : 'Running') : (zh ? '\u5f85\u6267\u884c' : 'Ready')}</dd></div>
+                    </dl>
+                    <div className="apps-business-note"><strong>{zh ? '\u64cd\u4f5c\u610f\u56fe' : 'Intent'}</strong><span>{businessNote.trim() || (zh ? '\u7b49\u5f85\u8f93\u5165\u4e1a\u52a1\u610f\u56fe' : 'Waiting for business intent')}</span></div>
+                </aside>
+            </div>
+        </section>
+    );
+};
+const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntry; lang?: string; onUse?: (appId: string) => void; onOpenApprovalManager?: (appId?: string) => void }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const [fileName, setFileName] = useState('');
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -3378,6 +3746,7 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
     const [runHistory, setRunHistory] = useState<AppRunHistoryEntry[]>([]);
     const [approvalInstances, setApprovalInstances] = useState<ApprovalInstanceView[]>([]);
     const [currentRunContext, setCurrentRunContext] = useState({ inputSummary: '', outputMode: '' });
+    const [dependencyRepairState, setDependencyRepairState] = useState<'idle' | 'installing'>('idle');
     const approvalRunContextRef = useRef<ApprovalRunContext | null>(null);
     useEffect(() => {
         setFileName('');
@@ -3394,6 +3763,7 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
         setRunID('');
         setSkillRunStatus(null);
         setCurrentRunContext({ inputSummary: '', outputMode: '' });
+        setDependencyRepairState('idle');
         approvalRunContextRef.current = null;
         setRunHistory(loadAppRunHistory(app?.id || ''));
         setApprovalInstances([]);
@@ -3552,6 +3922,7 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
     if (!app) return <div className="apps-empty">{text.noApps}</div>;
     const isTool = app.kind === 'tool_app';
     const isApproval = isEnterpriseApprovalAppKind(app.kind);
+    const isBusiness = app.kind === 'enterprise_normal_app';
     const isAutomation = app.kind === 'automation_app';
     const outputModes = normalizeOutputModes(app.manifest?.skill?.outputModes);
     const approvalBinding = appApprovalBinding(app);
@@ -3559,6 +3930,9 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
     const approvalDatasetID = appDataSrvDatasetID(app);
     const approvalObjectRole = String(approvalBinding?.objectRole || app.manifest?.datasrv?.objectRole || '').trim();
     const approvalBlueprintID = String(app.manifest?.datasrv?.blueprintID || '').trim();
+    const businessSkillID = isBusiness ? businessAppSkillID(app) : '';
+    const businessObjectRole = isBusiness ? businessObjectRoleForApp(app, businessEntity) : '';
+    const businessActionRole = isBusiness ? businessActionRoleForApp(app, businessAction) : '';
     const inputMode = app.manifest?.skill?.inputMode || 'file';
     const allowMultipleFiles = !!app.manifest?.skill?.multipleFiles;
     const skillFields = normalizeSkillAppFields(app.manifest?.skill?.fields);
@@ -3578,16 +3952,18 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
         ? `${text.generatedOutput}: ${toolInputSummary} -> ${outputMode.toUpperCase()}${runID ? ` · ${text.skillRunCompleted}: ${runID}` : ''}${skillRunOutputSuffix(skillRunStatus)}`
         : isAutomation
             ? (isZh(lang) ? '\u81ea\u52a8\u5316\u63a7\u5236\u53f0\u5df2\u542f\u52a8\uff0cAgent \u5c06\u6309\u5e94\u7528\u5b9a\u4e49\u6267\u884c\u548c\u56de\u62a5\u3002' : 'Automation console started. Agent will run and report by app definition.')
-            : `${text.submitted}: ${businessEntity || app.category} · ${businessAction} · ${app.manifest?.datasrv?.preferredAction || app.manifest?.datasrv?.domain || 'DataSrv'}`;
+            : `${text.submitted}: ${businessEntity || app.category} · ${businessAction} · ${isBusiness ? businessActionRole : (app.manifest?.datasrv?.preferredAction || app.manifest?.datasrv?.domain || 'DataSrv')}`;
     const markDirty = () => {
         setRunState('idle');
         setValidationMessage('');
         setRunID('');
         setSkillRunStatus(null);
         setCurrentRunContext({ inputSummary: '', outputMode: '' });
+        setDependencyRepairState('idle');
         approvalRunContextRef.current = null;
     };
     const runApp = async () => {
+        setDependencyRepairState('idle');
         approvalRunContextRef.current = null;
         if (app?.id) onUse?.(app.id);
         if (app && appNeedsRuntimeDependencyCheck(app)) {
@@ -3787,8 +4163,73 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
             setRunState('running');
             return;
         }
+        if (isBusiness) {
+            const inputSummary = `${businessEntity || app.category} / ${businessActionRole || businessAction || 'execute'}`;
+            const businessPayload = {
+                _maclaw_app: true,
+                app_id: app.id,
+                app_name: app.name,
+                app_kind: app.kind,
+                app_skill_id: businessSkillID,
+                business_entity: businessEntity || app.category,
+                business_action: businessAction || 'create',
+                business_note: businessNote,
+                object_role: businessObjectRole,
+                action_role: businessActionRole,
+                datasrv_domain: app.manifest?.datasrv?.domain || '',
+                preferred_action: app.manifest?.datasrv?.preferredAction || '',
+                preferred_view: app.manifest?.datasrv?.preferredView || '',
+                preferred_report: app.manifest?.datasrv?.preferredReport || '',
+                preferred_dashboard: app.manifest?.datasrv?.preferredDashboard || '',
+                prompt: `Run MaClaw business app: ${app.name} / ${inputSummary}`,
+            };
+            if (businessSkillID) {
+                setRunState('running');
+                setCurrentRunContext({ inputSummary, outputMode: 'business' });
+                try {
+                    const runID = await RunNLSkillAsync(businessSkillID, businessPayload);
+                    const nextRunID = String(runID || '').trim();
+                    if (!nextRunID) throw new Error(text.skillRunFailed);
+                    setRunID(nextRunID);
+                    setValidationMessage('');
+                    setRunState('running');
+                    return;
+                } catch (error: any) {
+                    const message = error?.message || String(error || text.skillRunFailed);
+                    setValidationMessage(message);
+                    setRunState('error');
+                    recordRunHistory({ runID: `failed-${Date.now().toString(36)}`, status: 'error', outputMode: 'business', inputSummary, message });
+                    return;
+                }
+            }
+            setCurrentRunContext({ inputSummary, outputMode: 'business' });
+            setValidationMessage('');
+            setRunState('done');
+            recordRunHistory({ runID: `business-${Date.now().toString(36)}`, status: 'done', outputMode: 'business', inputSummary, message: text.runCompleted });
+            return;
+        }
         setValidationMessage('');
         setRunState('done');
+    };
+    const installRuntimeDependenciesAndRun = async () => {
+        if (!app || dependencyRepairState === 'installing') return;
+        setDependencyRepairState('installing');
+        setValidationMessage(text.installingDependencies);
+        try {
+            const dependencyInstallPlan = await InstallMaclawAppDependencies(JSON.stringify(appToManifest(app)));
+            if (dependencyInstallPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyInstallPlan, [app.id])) {
+                setValidationMessage(text.missingRequiredDependency);
+                setRunState('error');
+                setDependencyRepairState('idle');
+                return;
+            }
+            setDependencyRepairState('idle');
+            await runApp();
+        } catch (error: any) {
+            setValidationMessage(error?.message || text.dependencyPlanError);
+            setRunState('error');
+            setDependencyRepairState('idle');
+        }
     };
     const updateApprovalInstanceDecision = async (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => {
         if (!app?.id || !instance?.id) return;
@@ -3877,6 +4318,8 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
         recordRunHistory({ runID, status: 'cancelled', outputMode, inputSummary: toolInputSummary, message: text.skillRunCancelled });
         await finalizeApprovalRunFromStatus({ run_id: runID, status: 'cancelled', summary: { last_error_snippet: text.skillRunCancelled } }, 'cancelled');
     };
+    const canInstallRuntimeDependencies = !!app && appNeedsRuntimeDependencyCheck(app) && runState === 'error' && (validationMessage === text.missingRequiredDependency || dependencyRepairState === 'installing');
+    const runDisabled = runState === 'running' || dependencyRepairState === 'installing';
     const runtimeLayout = runtimeWorkspaceLayoutForApp(app);
     const runtimeOrder = runtimeWorkspaceOrder(runtimeLayout);
     const inputRegion = runtimeLayout.primaryRegion;
@@ -3998,11 +4441,17 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                                 </>
                             )}
                         </section>
-                        {isApproval && <ApprovalWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} backendInstances={approvalInstances} lang={lang} text={text} style={{ order: runtimeOrder.approval }} layoutRegion={centerRegion} onDecision={updateApprovalInstanceDecision} />}
+                        {isApproval && <ApprovalSummary app={app} instances={approvalInstances} text={text} style={{ order: runtimeOrder.approval }} layoutRegion={centerRegion} onOpenAll={() => onOpenApprovalManager?.()} onOpenApp={() => onOpenApprovalManager?.(app.id)} />}
+                        {isBusiness && <BusinessWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} lang={lang} style={{ order: runtimeOrder.approval }} layoutRegion={centerRegion} />}
                         <section className="apps-runtime-section apps-runtime-status" data-region={outputRegion === 'bottom' ? centerRegion : outputRegion} style={{ order: runtimeOrder.status }}>
                             <div className="apps-runtime-section__title">{text.runtimeStatus}</div>
                             <div className="apps-result-panel" data-state={runState}>
                                 <span>{runState === 'done' ? text.runCompleted : runState === 'running' ? skillRunProgressMessage(skillRunStatus, text.skillRunRunning, runID) : runState === 'error' ? validationMessage : runState === 'cancelled' ? text.skillRunCancelled : text.readyOutput}</span>
+                                {canInstallRuntimeDependencies && (
+                                    <button className="apps-secondary-button apps-result-panel__action" type="button" disabled={dependencyRepairState === 'installing'} onClick={() => void installRuntimeDependenciesAndRun()}>
+                                        {dependencyRepairState === 'installing' ? text.installingDependencies : text.installDependenciesAndRun}
+                                    </button>
+                                )}
                             </div>
                             {isTool && <SkillRunEvidence status={skillRunStatus} runState={runState} text={text} />}
                         </section>
@@ -4022,13 +4471,14 @@ const AppPreview = ({ app, lang, onUse }: { app?: AppEntry; lang?: string; onUse
                                 setRunID('');
                                 setSkillRunStatus(null);
                                 setCurrentRunContext({ inputSummary: '', outputMode: '' });
-        approvalRunContextRef.current = null;
+                                setDependencyRepairState('idle');
+                                approvalRunContextRef.current = null;
                             }}>{text.reset}</button>
                             {runState === 'running' && runID && <button className="apps-secondary-button" type="button" onClick={cancelRun}>{text.cancelRun}</button>}
-                            <button className="apps-primary-button" type="button" disabled={runState === 'running'} onClick={runApp}>{text.run}</button>
+                            <button className="apps-primary-button" type="button" disabled={runDisabled} onClick={runApp}>{text.run}</button>
                         </div>
                         <AppRunOutput status={skillRunStatus} runState={runState} resultText={resultText} isTool={isTool} text={text} style={{ order: runtimeOrder.output }} layoutRegion={outputRegion} />
-                        {isTool && (
+                        {(isTool || isBusiness) && (
                             <section className="apps-run-history" data-region={outputRegion === 'bottom' ? 'bottom' : outputRegion} style={{ order: runtimeOrder.history }}>
                                 <div className="apps-preview-title-row">
                                     <div className="apps-definition__title">{text.runHistory}</div>
@@ -5102,6 +5552,12 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const [layoutDensity, setLayoutDensity] = useState<StudioLayoutDensity>('comfortable');
     const [primaryRegion, setPrimaryRegion] = useState<StudioPrimaryRegion>('left');
     const [outputRegion, setOutputRegion] = useState<StudioOutputRegion>('right');
+    const [businessDomain, setBusinessDomain] = useState('business');
+    const [businessObjectRole, setBusinessObjectRole] = useState('record');
+    const [businessPreferredAction, setBusinessPreferredAction] = useState('');
+    const [businessPreferredView, setBusinessPreferredView] = useState('');
+    const [businessPreferredReport, setBusinessPreferredReport] = useState('');
+    const [businessPreferredDashboard, setBusinessPreferredDashboard] = useState('');
     const [appSkillID, setAppSkillID] = useState('');
     const [appSkillSource, setAppSkillSource] = useState<AppSkillDependency['source']>('local');
     const [workflowSkillID, setWorkflowSkillID] = useState('');
@@ -5164,6 +5620,12 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setLayoutDensity('comfortable');
         setPrimaryRegion('left');
         setOutputRegion(nextKind === 'tool_app' ? 'right' : 'bottom');
+        setBusinessDomain(nextKind === 'enterprise_normal_app' ? 'business' : 'business');
+        setBusinessObjectRole(nextKind === 'enterprise_normal_app' ? 'record' : 'record');
+        setBusinessPreferredAction('');
+        setBusinessPreferredView('');
+        setBusinessPreferredReport('');
+        setBusinessPreferredDashboard('');
     };
     const generateDraftFromPrompt = () => {
         const prompt = draftPrompt.trim();
@@ -5197,12 +5659,24 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         const nextWorkflowSkillID = isEnterpriseApprovalAppKind(nextKind) ? defaultInstalledSkillID() : '';
 
         const nextApprovalObjectRole = isFinancePrompt ? 'finance' : isInventoryPrompt ? 'inventory' : isCrmPrompt ? 'crm' : isOaPrompt ? 'oa' : 'record';
+        const nextBusinessDomain = isFinancePrompt ? 'finance' : isInventoryPrompt ? 'inventory' : isCrmPrompt ? 'sales' : isOaPrompt ? 'oa' : 'business';
+        const nextBusinessObjectRole = isFinancePrompt ? 'expense_report' : isInventoryPrompt ? 'stock_item' : isCrmPrompt ? 'customer' : isOaPrompt ? 'request' : 'record';
+        const nextPreferredAction = isFinancePrompt ? 'finance.expense_upsert' : isInventoryPrompt ? 'inventory.stock_update' : isCrmPrompt ? 'sales.customer_upsert' : isOaPrompt ? 'oa.request_upsert' : ${nextBusinessDomain}._upsert;
+        const nextPreferredView = isFinancePrompt ? 'finance.expense_by_status' : isInventoryPrompt ? 'inventory.stock_position' : isCrmPrompt ? 'sales.customer_directory' : isOaPrompt ? 'oa.request_directory' : ${nextBusinessDomain}._directory;
+        const nextPreferredReport = isFinancePrompt ? 'finance.expense_report' : isInventoryPrompt ? 'inventory.stock_by_warehouse' : isCrmPrompt ? 'sales.customer_activity' : isOaPrompt ? 'oa.request_status' : '';
+        const nextPreferredDashboard = isFinancePrompt ? 'finance.overview' : isInventoryPrompt ? 'inventory.overview' : isCrmPrompt ? 'sales.overview' : isOaPrompt ? 'oa.overview' : '';
         setAppSkillID(nextAppSkillID);
         setAppSkillSource('local');
         setWorkflowSkillID(nextWorkflowSkillID);
         setWorkflowSkillVersion('1.0.0');
         setApprovalObjectRole(isEnterpriseApprovalAppKind(nextKind) ? nextApprovalObjectRole : 'record');
         setApprovalEvent(isEnterpriseApprovalAppKind(nextKind) ? `${nextApprovalObjectRole}.submitted` : 'record.submitted');
+        setBusinessDomain(isEnterpriseAppKind(nextKind) ? nextBusinessDomain : 'business');
+        setBusinessObjectRole(isEnterpriseAppKind(nextKind) ? nextBusinessObjectRole : 'record');
+        setBusinessPreferredAction(nextKind === 'enterprise_normal_app' ? nextPreferredAction : '');
+        setBusinessPreferredView(nextKind === 'enterprise_normal_app' ? nextPreferredView : '');
+        setBusinessPreferredReport(nextKind === 'enterprise_normal_app' ? nextPreferredReport : '');
+        setBusinessPreferredDashboard(nextKind === 'enterprise_normal_app' ? nextPreferredDashboard : '');
         setDependencySource('hub');
         setDescription(prompt);
         setCopyState('idle');
@@ -5212,12 +5686,34 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         const workflowDependency: AppSkillDependency[] = isEnterpriseApprovalAppKind(kind) && workflowSkillID.trim()
             ? [{ id: workflowSkillID.trim(), version: workflowSkillVersion.trim() || undefined, kind: 'workflow_skill', required: true, source: dependencySource || 'hub', capabilities: ['approval.workflow'] }]
             : [];
-        const enterpriseDomain = isEnterpriseApprovalAppKind(kind) ? (approvalObjectRole.trim() || 'custom') : 'custom';
-        const manifest = isEnterpriseAppKind(kind)
-            ? makeEnterpriseManifest(kind, enterpriseDomain, '', '', '', '', enterpriseAppSkillID, workflowDependency, { event: approvalEvent, objectRole: approvalObjectRole }, appSkillSource)
+        const businessDomainValue = businessDomain.trim() || 'business';
+        const enterpriseDomain = isEnterpriseApprovalAppKind(kind) ? (approvalObjectRole.trim() || businessDomainValue) : businessDomainValue;
+        let manifest = isEnterpriseAppKind(kind)
+            ? makeEnterpriseManifest(
+                kind,
+                enterpriseDomain,
+                kind === 'enterprise_normal_app' ? businessPreferredAction.trim() : '',
+                kind === 'enterprise_normal_app' ? businessPreferredView.trim() : '',
+                kind === 'enterprise_normal_app' ? businessPreferredReport.trim() : '',
+                kind === 'enterprise_normal_app' ? businessPreferredDashboard.trim() : '',
+                enterpriseAppSkillID,
+                workflowDependency,
+                { event: approvalEvent, objectRole: approvalObjectRole },
+                appSkillSource,
+            )
             : kind === 'automation_app'
                 ? makeAutomationManifest()
                 : makeSkillManifest(boundSkillID, inputMode, outputModes, skillFields, multipleFiles && inputMode !== 'form', appDefinitionFile);
+        if (kind === 'enterprise_normal_app' && manifest.datasrv) {
+            const objectRole = businessObjectRole.trim();
+            manifest = {
+                ...manifest,
+                datasrv: {
+                    ...manifest.datasrv,
+                    ...(objectRole ? { objectRole } : {}),
+                },
+            };
+        }
         return {
             id,
             name: cleanName,
@@ -5238,6 +5734,13 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         kind === 'tool_app' && selectedSkill ? 'maclaw.app.json' : 'maclaw.apps.json',
     );
     const draftManifestText = JSON.stringify(appToManifest(draftApp), null, 2);
+    const studioLayoutValue: RuntimeWorkspaceLayout = { template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion };
+    const updateStudioLayout = (layout: RuntimeWorkspaceLayout) => {
+        setLayoutTemplate(layout.template);
+        setLayoutDensity(layout.density);
+        setPrimaryRegion(layout.primaryRegion);
+        setOutputRegion(layout.outputRegion);
+    };
     useEffect(() => {
         setCopyState((current) => current === 'copied' ? 'idle' : current);
     }, [draftManifestText]);
@@ -5294,7 +5797,6 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             ...app,
             id: skillPanelAppID(skillID, appID),
             source: 'skill',
-            manifest: makeSkillManifest(skillID, inputMode, outputModes, skillFields, multipleFiles && inputMode !== 'form', 'maclaw.app.json'),
         }, { keepStudioCreate: true });
         return skillID;
     };
@@ -5332,7 +5834,6 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             ...buildDraftApp(appID, cleanName, skillID, 'maclaw.app.json'),
             id: skillPanelAppID(skillID, appID),
             source: 'skill',
-            manifest: makeSkillManifest(skillID, inputMode, outputModes, skillFields, multipleFiles && inputMode !== 'form', 'maclaw.app.json'),
         };
         if (!latestAppRunEvidence(panelApp)) {
             setSkillMarketUploadState('error');
@@ -5515,6 +6016,34 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                             <span className="apps-count">appSkill / workflow_skill</span>
                         </div>
                         <div className="apps-layout-designer__grid">
+                            {kind === 'enterprise_normal_app' && (
+                                <>
+                                    <div className="apps-form-row">
+                                        <label>{zh ? '\u4e1a\u52a1\u57df' : 'DataSrv domain'}</label>
+                                        <input data-testid="studio-business-domain" value={businessDomain} onChange={(event) => setBusinessDomain(event.target.value)} placeholder="sales" />
+                                    </div>
+                                    <div className="apps-form-row">
+                                        <label>{zh ? '\u5bf9\u8c61\u89d2\u8272' : 'Object role'}</label>
+                                        <input data-testid="studio-business-object-role" value={businessObjectRole} onChange={(event) => setBusinessObjectRole(event.target.value)} placeholder="customer" />
+                                    </div>
+                                    <div className="apps-form-row">
+                                        <label>{zh ? '\u9ed8\u8ba4\u52a8\u4f5c' : 'Default action'}</label>
+                                        <input data-testid="studio-business-preferred-action" value={businessPreferredAction} onChange={(event) => setBusinessPreferredAction(event.target.value)} placeholder="sales.customer_upsert" />
+                                    </div>
+                                    <div className="apps-form-row">
+                                        <label>{zh ? '\u9ed8\u8ba4\u89c6\u56fe' : 'Default view'}</label>
+                                        <input data-testid="studio-business-preferred-view" value={businessPreferredView} onChange={(event) => setBusinessPreferredView(event.target.value)} placeholder="sales.customer_directory" />
+                                    </div>
+                                    <div className="apps-form-row">
+                                        <label>{zh ? '\u62a5\u8868' : 'Report'}</label>
+                                        <input data-testid="studio-business-preferred-report" value={businessPreferredReport} onChange={(event) => setBusinessPreferredReport(event.target.value)} placeholder="sales.customer_activity" />
+                                    </div>
+                                    <div className="apps-form-row">
+                                        <label>{zh ? '\u770b\u677f' : 'Dashboard'}</label>
+                                        <input data-testid="studio-business-preferred-dashboard" value={businessPreferredDashboard} onChange={(event) => setBusinessPreferredDashboard(event.target.value)} placeholder="sales.overview" />
+                                    </div>
+                                </>
+                            )}
                             <div className="apps-form-row">
                                 <label>{zh ? '\u5e94\u7528 Skill' : 'App Skill'}</label>
                                 <StudioSkillPicker
@@ -5566,45 +6095,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                         </div>
                     </section>
                 )}
-                <section className="apps-layout-designer" aria-label={zh ? '\u754c\u9762\u5e03\u5c40' : 'UI layout'}>
-                    <div className="apps-preview-title-row">
-                        <div className="apps-definition__title">{zh ? '\u754c\u9762\u5e03\u5c40' : 'UI layout'}</div>
-                        <span className="apps-count">{zh ? '\u4fdd\u5b58\u5230 manifest' : 'Saved in manifest'}</span>
-                    </div>
-                    <div className="apps-layout-designer__grid">
-                        <div className="apps-form-row">
-                            <label>{zh ? '\u5e03\u5c40\u6a21\u677f' : 'Layout template'}</label>
-                            <select data-testid="studio-layout-template" value={layoutTemplate} onChange={(event) => setLayoutTemplate(event.target.value as StudioLayoutTemplate)}>
-                                <option value="document_workspace">{zh ? '\u6587\u6863\u5de5\u4f5c\u53f0' : 'Document workspace'}</option>
-                                <option value="classic_split">{zh ? '\u7ecf\u5178\u5206\u680f' : 'Classic split'}</option>
-                                <option value="left_nav">{zh ? '\u5de6\u4fa7\u5bfc\u822a' : 'Left navigation'}</option>
-                            </select>
-                        </div>
-                        <div className="apps-form-row">
-                            <label>{zh ? '\u5bc6\u5ea6' : 'Density'}</label>
-                            <select data-testid="studio-layout-density" value={layoutDensity} onChange={(event) => setLayoutDensity(event.target.value as StudioLayoutDensity)}>
-                                <option value="comfortable">{zh ? '\u6807\u51c6' : 'Comfortable'}</option>
-                                <option value="compact">{zh ? '\u7d27\u51d1' : 'Compact'}</option>
-                            </select>
-                        </div>
-                        <div className="apps-form-row">
-                            <label>{zh ? '\u4e3b\u64cd\u4f5c\u533a' : 'Primary region'}</label>
-                            <select data-testid="studio-primary-region" value={primaryRegion} onChange={(event) => setPrimaryRegion(event.target.value as StudioPrimaryRegion)}>
-                                <option value="left">{zh ? '\u5de6\u4fa7' : 'Left'}</option>
-                                <option value="center">{zh ? '\u4e2d\u95f4' : 'Center'}</option>
-                                <option value="right">{zh ? '\u53f3\u4fa7' : 'Right'}</option>
-                            </select>
-                        </div>
-                        <div className="apps-form-row">
-                            <label>{zh ? '\u8f93\u51fa\u533a' : 'Output region'}</label>
-                            <select data-testid="studio-output-region" value={outputRegion} onChange={(event) => setOutputRegion(event.target.value as StudioOutputRegion)}>
-                                <option value="right">{zh ? '\u53f3\u4fa7' : 'Right'}</option>
-                                <option value="bottom">{zh ? '\u5e95\u90e8' : 'Bottom'}</option>
-                                <option value="modal">{zh ? '\u5f39\u7a97' : 'Modal'}</option>
-                            </select>
-                        </div>
-                    </div>
-                </section>
+                <StudioLayoutDesigner kind={kind} value={studioLayoutValue} onChange={updateStudioLayout} lang={lang} />
                 <div className="apps-form-row">
                     <label>{zh ? '\u63cf\u8ff0' : 'Description'}</label>
                     <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={zh ? '\u7528\u4e8e tooltip \u548c\u53f3\u4fa7\u8fd0\u884c\u533a\u8bf4\u660e' : 'Used in tooltip and right runtime area'} />
@@ -6188,6 +6679,12 @@ function normalizeEditorField(field: SkillAppField): SkillAppField {
 type SkillInputMode = 'file' | 'form' | 'mixed';
 
 type AppEditDraft = Pick<AppEntry, 'name' | 'description' | 'category' | 'icon' | 'customIconDataUrl' | 'accent'> & {
+    businessDomain: string;
+    businessObjectRole: string;
+    businessPreferredAction: string;
+    businessPreferredView: string;
+    businessPreferredReport: string;
+    businessPreferredDashboard: string;
     skillID: string;
     skillSource: AppSkillDependency['source'];
     appSkillID: string;
@@ -6202,6 +6699,7 @@ type AppEditDraft = Pick<AppEntry, 'name' | 'description' | 'category' | 'icon' 
     multipleFiles: boolean;
     outputModes: string[];
     fields: SkillAppField[];
+    layout: RuntimeWorkspaceLayout;
 };
 
 const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed }: {
@@ -6220,7 +6718,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
     const text = isZh(lang) ? labels.zh : labels.en;
     const [manifestAppId, setManifestAppId] = useState('');
     const [editingAppId, setEditingAppId] = useState('');
-    const emptyEditDraft = useMemo<AppEditDraft>(() => ({ name: '', description: '', category: '', icon: 'contract', customIconDataUrl: undefined, accent: defaultAccentForKind('tool_app'), skillID: '', skillSource: 'local', appSkillID: '', appSkillSource: 'local', appSkillVersion: '', workflowSkillID: '', workflowSkillSource: 'hub', workflowSkillVersion: '', approvalEvent: '', approvalObjectRole: '', inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [] }), []);
+    const emptyEditDraft = useMemo<AppEditDraft>(() => ({ name: '', description: '', category: '', icon: 'contract', customIconDataUrl: undefined, accent: defaultAccentForKind('tool_app'), businessDomain: 'business', businessObjectRole: 'record', businessPreferredAction: '', businessPreferredView: '', businessPreferredReport: '', businessPreferredDashboard: '', skillID: '', skillSource: 'local', appSkillID: '', appSkillSource: 'local', appSkillVersion: '', workflowSkillID: '', workflowSkillSource: 'hub', workflowSkillVersion: '', approvalEvent: '', approvalObjectRole: '', inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [], layout: defaultRuntimeWorkspaceLayout('tool_app') }), []);
     const [editDraft, setEditDraft] = useState<AppEditDraft>(emptyEditDraft);
     const editDialogRef = useRef<HTMLDivElement | null>(null);
     const editNameInputRef = useRef<HTMLInputElement | null>(null);
@@ -6271,6 +6769,12 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
             icon: app.icon,
             customIconDataUrl: app.customIconDataUrl,
             accent: app.accent,
+            businessDomain: app.manifest?.datasrv?.domain || 'business',
+            businessObjectRole: app.manifest?.datasrv?.objectRole || app.manifest?.datasrv?.domain || 'record',
+            businessPreferredAction: app.manifest?.datasrv?.preferredAction || '',
+            businessPreferredView: app.manifest?.datasrv?.preferredView || '',
+            businessPreferredReport: app.manifest?.datasrv?.preferredReport || '',
+            businessPreferredDashboard: app.manifest?.datasrv?.preferredDashboard || '',
             skillID: app.manifest?.skill?.id || '',
             skillSource: app.manifest?.appSkill?.source || 'local',
             appSkillID: app.manifest?.appSkill?.id || '',
@@ -6285,6 +6789,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
             multipleFiles: !!app.manifest?.skill?.multipleFiles,
             outputModes: normalizeOutputModes(app.manifest?.skill?.outputModes),
             fields: normalizeSkillAppFields(app.manifest?.skill?.fields),
+            layout: runtimeWorkspaceLayoutForApp(app),
         });
     }, []);
     useEffect(() => {
@@ -6405,20 +6910,38 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                 capabilities: existingWorkflow?.capabilities?.length ? existingWorkflow.capabilities : ['approval.workflow'],
             } : undefined;
             const skills = workflowDependency ? [...nonWorkflowSkills, workflowDependency] : nonWorkflowSkills;
+            const dataSrvDomain = editDraft.businessDomain.trim() || manifest.datasrv?.domain || 'business';
+            const nextDataSrv: NonNullable<AppManifestBinding['datasrv']> = { ...(manifest.datasrv || { domain: dataSrvDomain }), domain: dataSrvDomain };
+            if (app.kind === 'enterprise_normal_app') {
+                const objectRole = editDraft.businessObjectRole.trim();
+                const preferredAction = editDraft.businessPreferredAction.trim();
+                const preferredView = editDraft.businessPreferredView.trim();
+                const preferredReport = editDraft.businessPreferredReport.trim();
+                const preferredDashboard = editDraft.businessPreferredDashboard.trim();
+                if (objectRole) nextDataSrv.objectRole = objectRole; else delete nextDataSrv.objectRole;
+                if (preferredAction) nextDataSrv.preferredAction = preferredAction; else delete nextDataSrv.preferredAction;
+                if (preferredView) nextDataSrv.preferredView = preferredView; else delete nextDataSrv.preferredView;
+                if (preferredReport) nextDataSrv.preferredReport = preferredReport; else delete nextDataSrv.preferredReport;
+                if (preferredDashboard) nextDataSrv.preferredDashboard = preferredDashboard; else delete nextDataSrv.preferredDashboard;
+            }
             manifest = {
                 ...manifest,
+                datasrv: nextDataSrv,
                 appSkill: appSkillID ? { id: appSkillID, version: editDraft.appSkillVersion.trim() || manifest.appSkill?.version || '1.0.0', source: editDraft.appSkillSource } : undefined,
                 dependencies: skills.length ? { skills } : undefined,
                 mis: app.kind === 'enterprise_approval_app' && workflowSkillID ? {
                     ...(manifest.mis || {}),
                     approvalBindings: [{
-                        event: editDraft.approvalEvent.trim() || `${manifest.datasrv?.domain || 'record'}.submitted`,
+                        event: editDraft.approvalEvent.trim() || `${nextDataSrv.domain || 'record'}.submitted`,
                         workflowSkillId: workflowSkillID,
                         workflowVersion,
-                        objectRole: editDraft.approvalObjectRole.trim() || manifest.datasrv?.domain || undefined,
+                        objectRole: editDraft.approvalObjectRole.trim() || nextDataSrv.objectRole || nextDataSrv.domain || undefined,
                     }],
                 } : manifest.mis,
             };
+        }
+        if (manifest) {
+            manifest = applyStudioWorkspaceLayout(manifest, app.kind, editDraft.layout);
         }
         const updatedApp: AppEntry = {
             ...app,
@@ -6704,6 +7227,34 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                             )}
                             {isEnterpriseAppKind(editingApp.kind) && (
                                 <>
+                                    {editingApp.kind === 'enterprise_normal_app' && (
+                                        <>
+                                            <div className="apps-form-row">
+                                                <label>{isZh(lang) ? '\u4e1a\u52a1\u57df' : 'DataSrv domain'}</label>
+                                                <input data-testid="edit-business-domain" value={editDraft.businessDomain} onChange={(event) => setEditDraft((current) => ({ ...current, businessDomain: event.target.value }))} placeholder="sales" />
+                                            </div>
+                                            <div className="apps-form-row">
+                                                <label>{isZh(lang) ? '\u5bf9\u8c61\u89d2\u8272' : 'Object role'}</label>
+                                                <input data-testid="edit-business-object-role" value={editDraft.businessObjectRole} onChange={(event) => setEditDraft((current) => ({ ...current, businessObjectRole: event.target.value }))} placeholder="customer" />
+                                            </div>
+                                            <div className="apps-form-row">
+                                                <label>{isZh(lang) ? '\u9ed8\u8ba4\u52a8\u4f5c' : 'Default action'}</label>
+                                                <input data-testid="edit-business-preferred-action" value={editDraft.businessPreferredAction} onChange={(event) => setEditDraft((current) => ({ ...current, businessPreferredAction: event.target.value }))} placeholder="sales.customer_upsert" />
+                                            </div>
+                                            <div className="apps-form-row">
+                                                <label>{isZh(lang) ? '\u9ed8\u8ba4\u89c6\u56fe' : 'Default view'}</label>
+                                                <input data-testid="edit-business-preferred-view" value={editDraft.businessPreferredView} onChange={(event) => setEditDraft((current) => ({ ...current, businessPreferredView: event.target.value }))} placeholder="sales.customer_directory" />
+                                            </div>
+                                            <div className="apps-form-row">
+                                                <label>{isZh(lang) ? '\u62a5\u8868' : 'Report'}</label>
+                                                <input data-testid="edit-business-preferred-report" value={editDraft.businessPreferredReport} onChange={(event) => setEditDraft((current) => ({ ...current, businessPreferredReport: event.target.value }))} placeholder="sales.customer_activity" />
+                                            </div>
+                                            <div className="apps-form-row">
+                                                <label>{isZh(lang) ? '\u770b\u677f' : 'Dashboard'}</label>
+                                                <input data-testid="edit-business-preferred-dashboard" value={editDraft.businessPreferredDashboard} onChange={(event) => setEditDraft((current) => ({ ...current, businessPreferredDashboard: event.target.value }))} placeholder="sales.overview" />
+                                            </div>
+                                        </>
+                                    )}
                                     <div className="apps-form-row">
                                         <label>{isZh(lang) ? '\u5e94\u7528 Skill' : 'appSkill'}</label>
                                         <StudioSkillPicker
@@ -6754,6 +7305,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                                     )}
                                 </>
                             )}
+                            <StudioLayoutDesigner kind={editingApp.kind} value={editDraft.layout} onChange={(layout) => setEditDraft((current) => ({ ...current, layout }))} lang={lang} testIdPrefix="edit" />
                             <div className="apps-actions apps-manage-edit__actions">
                                 {editSaveMessage && <span className="apps-manage-edit__message" data-state={editSaveState} role="alert">{editSaveMessage}</span>}
                                 <button className="apps-secondary-button" type="button" onClick={cancelEdit}>{text.cancel}</button>

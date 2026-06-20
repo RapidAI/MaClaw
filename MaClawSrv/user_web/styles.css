@@ -314,6 +314,19 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
 .memory-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .memory-tags span { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12px; font-weight: 700; }
 .memory-load-more { justify-self: center; min-width: 160px; }
+.migration-manager { grid-column: 1 / -1; display: grid; gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: var(--shadow-soft); }
+.migration-manager h3, .migration-manager h4 { margin: 0; line-height: 1.25; }
+.migration-kv { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.migration-kv div { display: grid; gap: 4px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
+.migration-kv span { color: var(--muted); font-size: 12px; font-weight: 700; }
+.migration-kv strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.migration-warning { padding: 10px 12px; border: 1px solid rgba(154, 52, 18, .28); border-radius: 8px; background: var(--warning-soft); color: var(--warning); font-weight: 700; }
+.migration-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
+.migration-grid section { display: grid; gap: 10px; align-content: start; min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
+.migration-grid label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.migration-grid button { justify-self: start; }
+.migration-progress { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
+.migration-progress progress { width: 100%; height: 14px; accent-color: var(--accent); }
 .knowledge-access-layout { display: grid; grid-template-columns: minmax(320px, 520px) minmax(380px, 1fr); gap: 14px; align-items: start; }
 .knowledge-scope-list { display: grid; grid-template-columns: 1fr; justify-content: start; gap: 12px; min-height: 36px; align-items: stretch; }
 .knowledge-scope-chip { display: grid; grid-template-rows: auto 1fr auto; gap: 10px; min-width: 0; width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
@@ -425,6 +438,8 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
   .settings-head { display: grid; }
   .settings-actions { justify-content: flex-start; }
   .skill-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .migration-kv { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .migration-grid { grid-template-columns: 1fr; }
   .im-channel-toolbar { display: grid; }
   .im-channel-actions { justify-content: flex-start; min-width: 0; }
   .im-config-grid { grid-template-columns: 1fr; }
@@ -444,6 +459,7 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
   .skill-grid { grid-template-columns: 1fr; }
   .skill-pager { justify-content: stretch; }
   .skill-pager button { flex: 1 1 0; }
+  .migration-kv { grid-template-columns: 1fr; }
   .knowledge-import-fields { grid-template-columns: 1fr; }
   .knowledge-scope-head { grid-template-columns: 1fr; }
   .knowledge-scope-actions { justify-content: flex-start; flex-wrap: wrap; }

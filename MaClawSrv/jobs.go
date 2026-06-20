@@ -29,16 +29,18 @@ const (
 )
 
 type asyncJobView struct {
-	ID          string          `json:"id"`
-	Kind        string          `json:"kind"`
-	Status      asyncJobStatus  `json:"status"`
-	TenantID    string          `json:"tenant_id"`
-	UserID      string          `json:"user_id"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	Error       string          `json:"error,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	StartedAt   *time.Time      `json:"started_at,omitempty"`
-	CompletedAt *time.Time      `json:"completed_at,omitempty"`
+	ID           string          `json:"id"`
+	Kind         string          `json:"kind"`
+	Status       asyncJobStatus  `json:"status"`
+	TenantID     string          `json:"tenant_id"`
+	UserID       string          `json:"user_id"`
+	Progress     float64         `json:"progress,omitempty"`
+	ProgressText string          `json:"progress_text,omitempty"`
+	Result       json.RawMessage `json:"result,omitempty"`
+	Error        string          `json:"error,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
+	StartedAt    *time.Time      `json:"started_at,omitempty"`
+	CompletedAt  *time.Time      `json:"completed_at,omitempty"`
 }
 
 type asyncJobRecord struct {
@@ -86,6 +88,25 @@ func (m *asyncJobManager) createUserJob(kind string, p agentservice.Principal, r
 	m.mu.Unlock()
 	go m.execute(ctx, job.ID, run)
 	return m.snapshot(job)
+}
+
+func (m *asyncJobManager) updateProgress(jobID string, progress float64, text string) {
+	if m == nil || strings.TrimSpace(jobID) == "" {
+		return
+	}
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 1 {
+		progress = 1
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if job := m.jobs[jobID]; job != nil {
+		job.Progress = progress
+		job.ProgressText = strings.TrimSpace(text)
+		m.persistLocked()
+	}
 }
 
 func (m *asyncJobManager) execute(ctx context.Context, jobID string, run func(context.Context) (any, error)) {

@@ -691,15 +691,15 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 		return map[string]any{"synced": true, "action": "review_record_approval", "dataset_id": input.DatasetID, "approval_id": input.ApprovalID, "response": out, "business_record_sync": businessRecordSync}, nil
 	}
 	out := a.executeMISDataTool(map[string]interface{}{
-		"action":               "create_record_approval",
-		"dataset_id":           input.DatasetID,
-		"object_role":          input.ObjectRole,
-		"app_id":               input.AppID,
-		"blueprint_id":         input.BlueprintID,
-		"record_id":            input.RecordID,
-		"kind":                 "approval",
-		"summary":              instance.Title,
-		"assigned_to":          instance.Approver,
+		"action":       "create_record_approval",
+		"dataset_id":   input.DatasetID,
+		"object_role":  input.ObjectRole,
+		"app_id":       input.AppID,
+		"blueprint_id": input.BlueprintID,
+		"record_id":    input.RecordID,
+		"kind":         "approval",
+		"summary":      instance.Title,
+		"assigned_to":  instance.Approver,
 		"request": compactPayload(map[string]interface{}{
 			"app_id":               input.AppID,
 			"blueprint_id":         input.BlueprintID,
@@ -873,6 +873,17 @@ func (a *App) ListMaclawAppApprovalInstances(appID string, lane string, limit in
 	if appID == "" {
 		return nil, fmt.Errorf("app_id is required")
 	}
+	return a.listMaclawAppApprovalInstances(appID, lane, limit)
+}
+
+// ListMaclawAppApprovalInstancesAll returns newest-first approval instances
+// across all MaClaw approval apps. lane can be my_requests,
+// pending_my_approval, handled, attention, or all/empty.
+func (a *App) ListMaclawAppApprovalInstancesAll(lane string, limit int) ([]maclawAppApprovalInstance, error) {
+	return a.listMaclawAppApprovalInstances("", lane, limit)
+}
+
+func (a *App) listMaclawAppApprovalInstances(appID string, lane string, limit int) ([]maclawAppApprovalInstance, error) {
 	registry, err := a.readMaclawAppApprovalRegistry()
 	if err != nil {
 		return nil, err
@@ -883,7 +894,7 @@ func (a *App) ListMaclawAppApprovalInstances(appID string, lane string, limit in
 	lane = normalizeMaclawAppApprovalLaneFilter(lane)
 	out := make([]maclawAppApprovalInstance, 0, limit)
 	for _, instance := range registry.Instances {
-		if instance.AppID != appID {
+		if appID != "" && instance.AppID != appID {
 			continue
 		}
 		if lane != "all" && lane != "" && instance.Lane != lane {

@@ -2934,6 +2934,20 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	if gotReviewedApproval.ResultPayload["approval_result"] != "approved" || len(gotReviewedApproval.Outputs) != 2 || len(gotReviewedApproval.Artifacts) != 1 {
 		t.Fatalf("reviewed approval detail lost result package: %#v", gotReviewedApproval)
 	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/datasets/sales.orders/records/SO-2026-0001", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get approved business record status=%d body=%s", w.Code, w.Body.String())
+	}
+	var approvedBusinessRecord Record
+	if err := json.NewDecoder(w.Body).Decode(&approvedBusinessRecord); err != nil {
+		t.Fatalf("decode approved business record: %v", err)
+	}
+	if approvedBusinessRecord.Data["status"] != "approved" || approvedBusinessRecord.Data["business_status"] != "approved" || approvedBusinessRecord.Data["result_status"] != "completed" || approvedBusinessRecord.Data["approval_id"] != approval.ID || approvedBusinessRecord.Data["approval_workflow_instance_id"] != "wf-so-1" {
+		t.Fatalf("approval review did not update business record status: %#v", approvedBusinessRecord.Data)
+	}
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/datasets/sales.orders/records/SO-2026-0001/timeline?limit=10", nil)
 	auth(req)
 	w = httptest.NewRecorder()
@@ -2946,15 +2960,22 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		t.Fatalf("decode reviewed timeline: %v", err)
 	}
 	var approvalTimelineItem *RecordTimelineItem
+	foundApprovalRecordRevision := false
+	foundApprovalAudit := false
 	for i := range reviewedTimeline.Items {
 		item := &reviewedTimeline.Items[i]
 		if item.Type == "approval" && item.ID == reviewedApproval.ID {
 			approvalTimelineItem = item
-			break
+		}
+		if item.Type == "revision" && item.Action == "approval.review" && item.Data["status"] == "approved" && item.Data["approval_id"] == approval.ID {
+			foundApprovalRecordRevision = true
+		}
+		if item.Type == "audit" && item.Action == "approval.approve" && item.Metadata["business_record_updated"] == true {
+			foundApprovalAudit = true
 		}
 	}
-	if approvalTimelineItem == nil {
-		t.Fatalf("timeline missing reviewed approval item: %#v", reviewedTimeline.Items)
+	if approvalTimelineItem == nil || !foundApprovalRecordRevision || !foundApprovalAudit {
+		t.Fatalf("timeline missing reviewed approval/record/audit items: %#v", reviewedTimeline.Items)
 	}
 	if approvalTimelineItem.Metadata["workflow_node_id"] != "manager_review" || approvalTimelineItem.Metadata["result_status"] != "completed" {
 		t.Fatalf("timeline approval missing workflow metadata: %#v", approvalTimelineItem.Metadata)

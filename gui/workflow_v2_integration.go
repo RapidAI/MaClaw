@@ -347,7 +347,7 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 			"id":           prevState.ID,
 			"status":       string(v2.StatusCancelled),
 			"type":         prevState.Type,
-			"project_path": prevState.ProjectPath,
+			"project_path": workflowEventProjectPath(prevState),
 		})
 		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", nil)
 		log.Printf("[workflow-v2] cancelled previous workflow before starting new one: user=%s", msg.UserID)
@@ -355,7 +355,12 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 
 	projectPath := routeResult.ProjectPath
 	if projectPath == "" {
-		if h.app != nil {
+		// Prefer the project path from the tab-scoped userID over the global
+		// GetCurrentProjectPath(). This ensures the workflow's events carry a path
+		// that matches the frontend tab for event routing.
+		if tabPath := projectPathFromSessionOwnerID(msg.UserID); tabPath != "" {
+			projectPath = tabPath
+		} else if h.app != nil {
 			projectPath = strings.TrimSpace(h.app.GetCurrentProjectPath())
 		}
 	}
@@ -465,7 +470,7 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 				"id":           hr.State.ID,
 				"status":       string(v2.StatusCancelled),
 				"type":         hr.State.Type,
-				"project_path": hr.State.ProjectPath,
+				"project_path": workflowEventProjectPath(hr.State),
 			})
 		} else {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
@@ -488,7 +493,7 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 				"id":           hr.State.ID,
 				"status":       string(v2.StatusCancelled),
 				"type":         hr.State.Type,
-				"project_path": hr.State.ProjectPath,
+				"project_path": workflowEventProjectPath(hr.State),
 			})
 		} else {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
@@ -675,7 +680,7 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 		"current_phase": activePhaseID,
 		"phases":        phases,
 		"phase_outputs": phaseOutputs,
-		"project_path":  state.ProjectPath,
+		"project_path":  workflowEventProjectPath(state),
 	}
 	if awaitingForm {
 		payload["awaiting_form"] = true
@@ -963,7 +968,7 @@ func (h *IMMessageHandler) emitDocUpdateV2(userID, phaseID, content string) {
 		// workflows, but we still need project_path and workflow_id for event
 		// routing when emitting doc_update for the final phase of a completed workflow.
 		if state, _ := wf.store.Load(userID); state != nil {
-			projectPath = state.ProjectPath
+			projectPath = workflowEventProjectPath(state)
 			workflowID = state.ID
 		}
 	}
@@ -991,7 +996,7 @@ func (h *IMMessageHandler) cancelWorkflowV2(userID string) {
 			"id":           state.ID,
 			"status":       string(v2.StatusCancelled),
 			"type":         state.Type,
-			"project_path": state.ProjectPath,
+			"project_path": workflowEventProjectPath(state),
 		})
 	} else {
 		emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
@@ -1138,7 +1143,7 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *
 				"id":           state.ID,
 				"status":       "completed",
 				"type":         state.Type,
-				"project_path": state.ProjectPath,
+				"project_path": workflowEventProjectPath(state),
 			})
 		}
 	}
@@ -1292,7 +1297,7 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID str
 				"id":           state.ID,
 				"status":       "completed",
 				"type":         state.Type,
-				"project_path": state.ProjectPath,
+				"project_path": workflowEventProjectPath(state),
 			})
 		}
 	}
@@ -1351,6 +1356,20 @@ func emitWorkflowV2Event(a *App, eventName string, data interface{}) {
 		return
 	}
 	runtime.EventsEmit(a.ctx, eventName, data)
+}
+
+// workflowEventProjectPath resolves the project_path for frontend event routing.
+// state.ProjectPath may have been truncated by TruncateToValidPathChars (strips
+// non-ASCII for SubAgent), making it differ from the frontend tab's projectPath.
+// This recovers the original tab path from state.UserID ("desktop-user:<path>").
+func workflowEventProjectPath(state *v2.WorkflowState) string {
+	if state == nil {
+		return ""
+	}
+	if tabPath := projectPathFromSessionOwnerID(state.UserID); tabPath != "" {
+		return tabPath
+	}
+	return state.ProjectPath
 }
 
 // runDirectCodingSubAgent executes a single coding task directly via SubAgent
@@ -1667,7 +1686,9 @@ func parseWorkflowChoiceCommand(text string) (choice, choiceID string, ok bool) 
 func (h *IMMessageHandler) setupDirectCodingExecution(userID, originalText, rawProjectPath string) workflowIMRouteResult {
 	projectPath := rawProjectPath
 	if projectPath == "" {
-		if h.app != nil {
+		if tabPath := projectPathFromSessionOwnerID(userID); tabPath != "" {
+			projectPath = tabPath
+		} else if h.app != nil {
 			projectPath = strings.TrimSpace(h.app.GetCurrentProjectPath())
 		}
 	}
@@ -1687,7 +1708,7 @@ func (h *IMMessageHandler) setupDirectCodingExecution(userID, originalText, rawP
 				"id":           prevState.ID,
 				"status":       string(v2.StatusCancelled),
 				"type":         prevState.Type,
-				"project_path": prevState.ProjectPath,
+				"project_path": workflowEventProjectPath(prevState),
 			})
 		}
 	}

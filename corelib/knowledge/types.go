@@ -1149,6 +1149,8 @@ type ExportOptions struct {
 	OutputPath      string   `json:"output_path,omitempty"`
 	RedactSensitive bool     `json:"redact_sensitive"`
 	SourceIDs       []string `json:"source_ids,omitempty"`
+	TenantID        string   `json:"tenant_id,omitempty"`
+	OwnerID         string   `json:"owner_id,omitempty"`
 }
 
 type ExportResult struct {

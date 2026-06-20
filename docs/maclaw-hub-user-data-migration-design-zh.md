@@ -75,6 +75,18 @@ Hub 上同一账号只能保留一份迁出数据。新的迁出会覆盖旧的�
 - 任一用户在同一租户下最终只有一份可见的 `ready` 迁移包。
 - 新迁出覆盖旧迁出时，不要求本次口令与旧迁出包口令一致。旧迁出包会被替换，新迁移包使用本次输入的新口令加密。
 
+## 迁移大小上限
+
+迁移包大小按压缩后的数据包计算，默认不超过 `100M`。Hub 需要在创建迁出记录和完成上传校验时都执行该限制，避免客户端绕过前置检查。
+
+租户管理员可以在 Hub 的系统设置中调整本租户迁移包上限：
+
+- 默认值：`100M`。
+- 最小值：`100M`。
+- 最大值：`1G`。
+- 设置项建议保存为 `migration_max_compressed_bytes`。
+- GUI 在迁出前应展示当前租户上限；压缩后超过上限时停止上传，并提示用户清理知识库或调高租户上限。
+
 ## 数据包格式
 
 本地先构建明文迁移目录，再压缩、加密、分片上传。
@@ -143,7 +155,7 @@ config/
 
 迁入校验：
 
-1. 分片下载，每片校验 `sha256`。
+1. 分片下载并在本地合并。
 2. 本地合并后校验 `encrypted_sha256`。
 3. 使用用户口令解密。
 4. 校验 `plain_sha256`。
@@ -184,7 +196,7 @@ scanning -> packing -> compressing -> encrypting -> uploading -> verifying -> re
 5. 用户选择源机器实例。
 6. 用户输入迁移加密口令。
 7. 目标机器向 Hub claim 迁移包。
-8. 分片下载，支持断点续传。
+8. 分片下载；失败时释放 claim，Hub 数据保留，用户可重新迁入。
 9. 本地校验加密包 hash。
 10. 解密、解压、校验明文包 hash。
 11. 将数据导入当前机器 maclaw 的本地配置、记忆库、知识库数据库与知识库文件目录。
@@ -293,8 +305,8 @@ POST /api/v1/migration/imports/{export_id}/abort
 - 写入当前机器当前用户的本地记忆库。
 - 保留内容、分类、标签、时间、来源元数据。
 - 将 owner 归属映射为当前 Hub 用户。
-- ID 冲突时生成新 ID，并记录 `imported_from_id`。
-- 受保护记忆遵循现有保护规则。
+- 按原记忆 ID upsert，重复迁入或重试保持幂等。
+- 受保护记忆会随快照恢复到当前用户 owner。
 
 知识库导入：
 
@@ -302,8 +314,8 @@ POST /api/v1/migration/imports/{export_id}/abort
 - 恢复 sources、nodes、cards、facts、labels、source links、import batches。
 - 恢复图片与附件资产到当前机器知识库资产目录。
 - 将 tenant/user 归属映射为当前登录 Hub 的 `tenant_id + user_id`。
-- ID 冲突时生成新 ID，并维护 source/card/fact/asset 引用映射。
-- 导入前创建本地安全备份，失败时回滚。
+- 使用现有知识库 `ImportSnapshot` 的 overwrite 与冲突处理能力恢复快照。
+- 导入失败时不调用 Hub `complete`，并释放 claim，用户可修复后重新迁入。
 
 配置恢复：
 
@@ -319,11 +331,11 @@ POST /api/v1/migration/imports/{export_id}/abort
 - 已上传且 hash 匹配的 chunk 不重复上传。
 - hash 不匹配的 chunk 重新上传。
 
-下载断点：
+下载失败恢复：
 
-- 客户端保留本地临时下载目录。
-- 已下载且 hash 匹配的 chunk 不重复下载。
-- hash 不匹配的 chunk 删除后重新下载。
+- 客户端按分片下载并在本地校验整体 `encrypted_sha256`。
+- 下载、解密、校验或本地导入失败时释放 claim，Hub 数据保留。
+- 用户可修复网络或口令后重新选择同一迁移包迁入。
 
 失败恢复：
 

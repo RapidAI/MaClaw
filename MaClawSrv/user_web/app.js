@@ -30,6 +30,70 @@ Object.assign(I18N.zh, {
   groupProxy: "\u4ee3\u7406",
   groupProxyHint: "\u9ed8\u8ba4\u4ee3\u7406\u5730\u5740\u3001\u51ed\u636e\u3001\u8df3\u8fc7\u5217\u8868\u548c\u4ee3\u7406\u8303\u56f4\u3002"
 });
+Object.assign(I18N.en, {
+  groupMigration: "Move Out & In",
+  groupMigrationHint: "Move this user's memory and local knowledge base through the current Hub tenant.",
+  migrationTitle: "Move Out & In",
+  migrationHint: "The Hub only stores one encrypted relay package for this tenant user.",
+  migrationNotReady: "Hub login and machine registration are required.",
+  migrationCurrentHub: "Hub",
+  migrationCurrentTenant: "Tenant",
+  migrationCurrentMachine: "Current machine",
+  migrationLimit: "Package limit",
+  migrationNoExport: "No export package on Hub.",
+  migrationHasExport: "Existing export package",
+  migrationOverwriteWarning: "Only one export is kept. Creating a new export overwrites the previous one, even if the password is different.",
+  migrationExportPassword: "Export password",
+  migrationExportPasswordConfirm: "Confirm password",
+  migrationStartExport: "Move out",
+  migrationRefresh: "Refresh",
+  migrationImportSource: "Import source",
+  migrationSelectSource: "Select a machine",
+  migrationImportPassword: "Import password",
+  migrationStartImport: "Move in",
+  migrationPasswordMismatch: "Passwords do not match.",
+  migrationPasswordRequired: "Password is required.",
+  migrationExportStarted: "Export started.",
+  migrationImportStarted: "Import started.",
+  migrationCompleted: "Migration completed.",
+  migrationFailed: "Migration failed.",
+  migrationLoading: "Loading migration state...",
+  migrationProgress: "Progress",
+  migrationReadyOnly: "Only ready exports can be imported.",
+  migrationMachineName: "Machine"
+});
+Object.assign(I18N.zh, {
+  groupMigration: "\u8fc1\u51fa\u4e0e\u8fc1\u5165",
+  groupMigrationHint: "\u901a\u8fc7\u5f53\u524d\u767b\u5f55\u7684 Hub \u79df\u6237\u642c\u8fc1\u6b64\u7528\u6237\u7684\u8bb0\u5fc6\u548c\u672c\u5730\u77e5\u8bc6\u5e93\u3002",
+  migrationTitle: "\u8fc1\u51fa\u4e0e\u8fc1\u5165",
+  migrationHint: "Hub \u53ea\u4fdd\u7559\u6b64\u79df\u6237\u7528\u6237\u7684\u4e00\u4efd\u52a0\u5bc6\u4e2d\u8f6c\u5305\u3002",
+  migrationNotReady: "\u9700\u8981\u5b8c\u6210 Hub \u767b\u5f55\u548c\u672c\u673a\u6ce8\u518c\u3002",
+  migrationCurrentHub: "Hub",
+  migrationCurrentTenant: "\u79df\u6237",
+  migrationCurrentMachine: "\u5f53\u524d\u673a\u5668",
+  migrationLimit: "\u8fc1\u79fb\u5305\u4e0a\u9650",
+  migrationNoExport: "Hub \u4e0a\u6682\u65e0\u8fc1\u51fa\u5305\u3002",
+  migrationHasExport: "\u5df2\u6709\u8fc1\u51fa\u5305",
+  migrationOverwriteWarning: "\u53ea\u4fdd\u7559\u4e00\u4efd\u8fc1\u51fa\u6570\u636e\u3002\u65b0\u8fc1\u51fa\u4f1a\u8986\u76d6\u65e7\u6570\u636e\uff0c\u5373\u4f7f\u5bc6\u7801\u4e0d\u540c\u4e5f\u4e00\u6837\u3002",
+  migrationExportPassword: "\u8fc1\u51fa\u5bc6\u7801",
+  migrationExportPasswordConfirm: "\u786e\u8ba4\u5bc6\u7801",
+  migrationStartExport: "\u6267\u884c\u8fc1\u51fa",
+  migrationRefresh: "\u5237\u65b0",
+  migrationImportSource: "\u8fc1\u5165\u6765\u6e90",
+  migrationSelectSource: "\u9009\u62e9\u673a\u5668",
+  migrationImportPassword: "\u8fc1\u5165\u5bc6\u7801",
+  migrationStartImport: "\u6267\u884c\u8fc1\u5165",
+  migrationPasswordMismatch: "\u4e24\u6b21\u5bc6\u7801\u4e0d\u4e00\u81f4\u3002",
+  migrationPasswordRequired: "\u9700\u8981\u8f93\u5165\u5bc6\u7801\u3002",
+  migrationExportStarted: "\u8fc1\u51fa\u5df2\u5f00\u59cb\u3002",
+  migrationImportStarted: "\u8fc1\u5165\u5df2\u5f00\u59cb\u3002",
+  migrationCompleted: "\u8fc1\u79fb\u5b8c\u6210\u3002",
+  migrationFailed: "\u8fc1\u79fb\u5931\u8d25\u3002",
+  migrationLoading: "\u6b63\u5728\u52a0\u8f7d\u8fc1\u79fb\u72b6\u6001...",
+  migrationProgress: "\u8fdb\u5ea6",
+  migrationReadyOnly: "\u53ea\u80fd\u8fc1\u5165\u5df2\u5c31\u7eea\u7684\u8fc1\u51fa\u5305\u3002",
+  migrationMachineName: "\u673a\u5668"
+});
 Object.assign(I18N.zh, {
   userWorkspace: "用户工作台", assistantNav: "AI 助手", settingsNav: "系统设置", skipToMain: "跳到主要内容", appSections: "用户应用区域", userViews: "用户视图", notSignedIn: "未登录", logout: "退出", ready: "就绪", busy: "忙碌",
   loginRequired: "需要登录", loginHint: "请从 VE Platform 的 MaClawSrv 用户入口打开本页。", cannotStart: "无法启动用户应用", missingToken: "缺少短期访问令牌。", rawSecretRejected: "URL 中不接受原始密钥。请从 VE Platform 重新打开本页。", sessionExpired: "会话已过期，请从 VE Platform 重新打开本页。", loadFailed: "加载失败", retry: "重试",
@@ -385,7 +449,7 @@ function configIssueMessage(issue = {}) { const msg = String(issue.message || ""
 const TOKEN_REFRESH_GRACE_MS = 2 * 60 * 1000;
 const TOKEN_REFRESH_ACTIVITY_WINDOW_MS = 10 * 60 * 1000;
 const TOKEN_REFRESH_RECHECK_MS = 60 * 1000;
-const state = { token: "", tokenExpiresAt: 0, tokenRefreshTimer: 0, tokenRefreshPromise: null, lastActivityAt: 0, me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", skillPage: 1, mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", memoryItems: [], memoryNextOffset: 0, memoryHasMore: false, memoryLoading: false, memorySaving: false, memoryReloadPending: false, memorySearchTimer: 0, knowledgeBatchPage: 1, knowledgeBatchTotal: 0, imAuditItems: [], imAuditContacts: [], imAuditStats: null, imAuditCleanupBefore: "", imAuditContactsPlatform: null, imAuditHasMore: false, imAuditNextBefore: "", imAuditLoading: false, imAuditLoaded: false, imAuditPlatform: "", imAuditQuery: "", imAuditContact: "", imAuditOpen: false, imSubTab: "qq", imRuntimes: {}, weixinRuntime: null, weixinQRCodeURL: "", weixinQRToken: "", weixinQRStatus: "", weixinQRMessage: "", weixinQRPollTimer: 0, imStartingKey: "", settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
+const state = { token: "", tokenExpiresAt: 0, tokenRefreshTimer: 0, tokenRefreshPromise: null, lastActivityAt: 0, me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", skillPage: 1, mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", memoryItems: [], memoryNextOffset: 0, memoryHasMore: false, memoryLoading: false, memorySaving: false, memoryReloadPending: false, memorySearchTimer: 0, migrationStatus: null, migrationInstances: [], migrationLoading: false, migrationJob: null, migrationJobTimer: 0, knowledgeBatchPage: 1, knowledgeBatchTotal: 0, imAuditItems: [], imAuditContacts: [], imAuditStats: null, imAuditCleanupBefore: "", imAuditContactsPlatform: null, imAuditHasMore: false, imAuditNextBefore: "", imAuditLoading: false, imAuditLoaded: false, imAuditPlatform: "", imAuditQuery: "", imAuditContact: "", imAuditOpen: false, imSubTab: "qq", imRuntimes: {}, weixinRuntime: null, weixinQRCodeURL: "", weixinQRToken: "", weixinQRStatus: "", weixinQRMessage: "", weixinQRPollTimer: 0, imStartingKey: "", settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
 const saved = sessionStorage.getItem("maclaw.user.token") || "";
 const savedExpiry = sessionStorage.getItem("maclaw.user.token_expires_at") || "";
 const launchToken = params.get("launch_token") || "";
@@ -401,7 +465,7 @@ function normalizeSettingsTab(tab) {
   if (tab === "ui") return "interface";
   if (tab === "runtime" || tab === "pet" || tab === "startup" || tab === "local_runtime") return "";
   if (tab === "advanced") return "";
-  return ["llm", "tools", "skills", "memory", "security", "im", "interface", "proxy"].includes(tab) ? tab : "";
+  return ["llm", "tools", "skills", "memory", "migration", "security", "im", "interface", "proxy"].includes(tab) ? tab : "";
 }
 state.settingsTab = normalizeSettingsTab(params.get("settings_tab"));
 if (rawURLSecret || hasLaunchToken) {
@@ -2969,6 +3033,117 @@ function missingIMRequiredFields(enabledKey) {
 function imRequiredFieldsReady(enabledKey) {
   return missingIMRequiredFields(enabledKey).length === 0;
 }
+function migrationBytes(n) {
+  const v = Number(n || 0);
+  if (!Number.isFinite(v) || v <= 0) return "-";
+  if (v >= 1024 * 1024 * 1024) return `${(v / (1024 * 1024 * 1024)).toFixed(1)}G`;
+  if (v >= 1024 * 1024) return `${(v / (1024 * 1024)).toFixed(1)}M`;
+  if (v >= 1024) return `${(v / 1024).toFixed(1)}K`;
+  return `${v}B`;
+}
+function migrationExportFromStatus() {
+  return state.migrationStatus?.current_export || state.migrationStatus?.export || null;
+}
+function migrationReadyExportInstances() {
+  return items(state.migrationInstances).filter((item) => item.has_export && String(item.export_status || "").toLowerCase() === "ready");
+}
+function renderMigrationManager() {
+  const status = state.migrationStatus;
+  const configured = status?.configured;
+  const exp = migrationExportFromStatus();
+  const readyInstances = migrationReadyExportInstances();
+  const pct = Math.round(Number(state.migrationJob?.progress || 0) * 100);
+  const jobText = state.migrationJob?.progress_text || state.migrationJob?.error || "";
+  const machine = [status?.machine_name, status?.machine_id].filter(Boolean).join(" / ") || "-";
+  const sourceOptions = readyInstances.map((item) => {
+    const label = `${item.machine_name || item.instance_name || item.machine_id || item.instance_id} / ${migrationBytes(item.export_size)}`;
+    return `<option value="${esc(item.export_id || "")}">${esc(label)}</option>`;
+  }).join("");
+  const exportSummary = exp && exp.status ? `${t("migrationHasExport")}: ${exp.source_machine_name || exp.source_machine_id || "-"} / ${migrationBytes(exp.compressed_size || exp.export_size)} / ${exp.status}` : t("migrationNoExport");
+  const disabled = state.migrationLoading || state.migrationJob && ["pending", "running"].includes(String(state.migrationJob.status || ""));
+  const disabledAttr = disabled || !configured ? "disabled" : "";
+  const progress = state.migrationJob ? `<div class="migration-progress"><div class="split"><strong>${esc(t("migrationProgress"))}</strong><span>${esc(String(pct))}%</span></div><progress max="100" value="${esc(String(pct))}"></progress><span class="${state.migrationJob.status === "failed" ? "error" : "helper"}">${esc(jobText || state.migrationJob.status || "")}</span></div>` : "";
+  const notReady = state.migrationLoading && !status ? `<p class="helper">${esc(t("migrationLoading"))}</p>` : configured ? "" : `<p class="error">${esc(status?.configuration_reason || t("migrationNotReady"))}</p>`;
+  return `<section class="migration-manager" data-migration-manager><div class="split"><div><h3>${esc(t("migrationTitle"))}</h3><p class="helper">${esc(t("migrationHint"))}</p></div><button type="button" class="secondary" id="migrationRefreshBtn">${esc(t("migrationRefresh"))}</button></div>${notReady}<div class="migration-kv"><div><span>${esc(t("migrationCurrentHub"))}</span><strong>${esc(status?.hub_url || "-")}</strong></div><div><span>${esc(t("migrationCurrentTenant"))}</span><strong>${esc(status?.tenant_id || "-")}</strong></div><div><span>${esc(t("migrationCurrentMachine"))}</span><strong>${esc(machine)}</strong></div><div><span>${esc(t("migrationLimit"))}</span><strong>${esc(migrationBytes(status?.max_compressed_bytes))}</strong></div></div><div class="migration-warning">${esc(t("migrationOverwriteWarning"))}</div><div class="migration-grid"><section><h4>${esc(t("migrationStartExport"))}</h4><p class="helper">${esc(exportSummary)}</p><label>${esc(t("migrationExportPassword"))}<input id="migrationExportPassword" type="password" autocomplete="new-password" ${disabledAttr}></label><label>${esc(t("migrationExportPasswordConfirm"))}<input id="migrationExportPasswordConfirm" type="password" autocomplete="new-password" ${disabledAttr}></label><button type="button" class="primary" id="migrationExportBtn" ${disabledAttr}>${esc(t("migrationStartExport"))}</button></section><section><h4>${esc(t("migrationStartImport"))}</h4><label>${esc(t("migrationImportSource"))}<select id="migrationImportExportID" ${disabledAttr}><option value="">${esc(t("migrationSelectSource"))}</option>${sourceOptions}</select></label><label>${esc(t("migrationImportPassword"))}<input id="migrationImportPassword" type="password" autocomplete="current-password" ${disabledAttr}></label><button type="button" class="primary" id="migrationImportBtn" ${disabledAttr}>${esc(t("migrationStartImport"))}</button><p class="helper">${esc(t("migrationReadyOnly"))}</p></section></div>${progress}</section>`;
+}
+async function loadMigrationState() {
+  if (state.migrationLoading) return;
+  state.migrationLoading = true;
+  try {
+    const [status, list] = await Promise.all([
+      api("/api/v1/migration/status"),
+      api("/api/v1/migration/instances").catch(() => ({ instances: [] }))
+    ]);
+    state.migrationStatus = status;
+    state.migrationInstances = items(list.instances || list.items || list);
+  } catch (e) {
+    state.migrationStatus = { configured: false, configuration_reason: e.message };
+    state.migrationInstances = [];
+    if (!handleAPIError(e)) toast(e.message);
+  } finally {
+    state.migrationLoading = false;
+    if (state.view === "settings" && state.settingsTab === "migration" && $("cfgTabs")) renderConfigFields();
+  }
+}
+function bindMigrationManager() {
+  const root = document.querySelector("[data-migration-manager]");
+  if (!root) return;
+  const refresh = $("migrationRefreshBtn");
+  if (refresh) refresh.onclick = () => loadMigrationState();
+  const exportBtn = $("migrationExportBtn");
+  if (exportBtn) exportBtn.onclick = startMigrationExport;
+  const importBtn = $("migrationImportBtn");
+  if (importBtn) importBtn.onclick = startMigrationImport;
+  if (!state.migrationStatus && !state.migrationLoading) loadMigrationState();
+}
+async function startMigrationExport() {
+  const password = String($("migrationExportPassword")?.value || "");
+  const confirmPassword = String($("migrationExportPasswordConfirm")?.value || "");
+  if (!password) return toast(t("migrationPasswordRequired"));
+  if (password !== confirmPassword) return toast(t("migrationPasswordMismatch"));
+  try {
+    const out = await api("/api/v1/migration/export", { method: "POST", body: JSON.stringify({ password, password_confirm: confirmPassword, confirm_overwrite: true }) });
+    toast(t("migrationExportStarted"));
+    watchMigrationJob(out.job_id);
+  } catch (e) {
+    if (!handleAPIError(e)) toast(e.message);
+  } finally {
+    if ($("migrationExportPassword")) $("migrationExportPassword").value = "";
+    if ($("migrationExportPasswordConfirm")) $("migrationExportPasswordConfirm").value = "";
+  }
+}
+async function startMigrationImport() {
+  const exportID = String($("migrationImportExportID")?.value || "").trim();
+  const password = String($("migrationImportPassword")?.value || "");
+  if (!exportID) return toast(t("migrationSelectSource"));
+  if (!password) return toast(t("migrationPasswordRequired"));
+  try {
+    const out = await api("/api/v1/migration/import", { method: "POST", body: JSON.stringify({ export_id: exportID, password }) });
+    toast(t("migrationImportStarted"));
+    watchMigrationJob(out.job_id);
+  } catch (e) {
+    if (!handleAPIError(e)) toast(e.message);
+  } finally {
+    if ($("migrationImportPassword")) $("migrationImportPassword").value = "";
+  }
+}
+async function watchMigrationJob(jobID) {
+  if (!jobID) return;
+  if (state.migrationJobTimer) clearTimeout(state.migrationJobTimer);
+  try {
+    const job = await api(`/api/v1/jobs/${encodeURIComponent(jobID)}`);
+    state.migrationJob = job;
+    if (state.view === "settings" && state.settingsTab === "migration" && $("cfgTabs")) renderConfigFields();
+    if (["pending", "running"].includes(String(job.status || ""))) {
+      state.migrationJobTimer = setTimeout(() => watchMigrationJob(jobID), 1200);
+      return;
+    }
+    toast(job.status === "succeeded" ? t("migrationCompleted") : t("migrationFailed"));
+    await loadMigrationState();
+  } catch (e) {
+    if (!handleAPIError(e)) toast(e.message);
+  }
+}
 function configGroups(defs) {
   const visibleDefs = defs.filter((x) => !HIDDEN_CONFIG_KEYS.has(x.key));
   const byKey = Object.fromEntries(visibleDefs.map((x) => [x.key, x]));
@@ -2978,6 +3153,7 @@ function configGroups(defs) {
     { id: "tools", title: t("groupTools"), hint: t("groupToolsHint"), keys: ["web_search_providers", "web_search_current_provider"] },
     { id: "skills", title: t("groupSkills"), hint: t("groupSkillsHint"), keys: [] },
     { id: "memory", title: t("groupMemory"), hint: t("groupMemoryHint"), keys: ["memory_auto_compress", "memory_max_backups", "knowledge_skill_token_budget"] },
+    { id: "migration", title: t("groupMigration"), hint: t("groupMigrationHint"), keys: [] },
     { id: "security", title: t("groupSecurity"), hint: t("groupSecurityHint"), keys: ["security_policy_mode", "sandbox_mode", "network_level", "yolo_mode_allowed"] },
     { id: "im", title: t("groupIM"), hint: t("groupIMHint"), keys: CHANNEL_CONFIG_KEYS },
   ];
@@ -2990,7 +3166,7 @@ function configGroups(defs) {
     { id: "interface", title: t("groupInterface"), hint: t("groupInterfaceHint"), keys: interfaceKeys },
     { id: "proxy", title: t("groupProxy"), hint: t("groupProxyHint"), keys: proxyKeys }
   );
-  return groups.map((g) => ({ ...g, keys: g.keys.filter((key) => !HIDDEN_CONFIG_KEYS.has(key) && (byKey[key] || Object.prototype.hasOwnProperty.call(state.config || {}, key))) })).filter((g) => g.keys.length || ["tools", "skills", "memory", "im"].includes(g.id));
+  return groups.map((g) => ({ ...g, keys: g.keys.filter((key) => !HIDDEN_CONFIG_KEYS.has(key) && (byKey[key] || Object.prototype.hasOwnProperty.call(state.config || {}, key))) })).filter((g) => g.keys.length || ["tools", "skills", "memory", "migration", "im"].includes(g.id));
 }
 function setActiveConfigTab(tab) {
   tab = normalizeSettingsTab(tab);
@@ -2998,6 +3174,7 @@ function setActiveConfigTab(tab) {
   document.querySelectorAll("[data-cfg-tab]").forEach((b) => { const on = b.dataset.cfgTab === tab; b.classList.toggle("active", on); b.setAttribute("aria-selected", on ? "true" : "false"); });
   document.querySelectorAll("[data-cfg-panel]").forEach((p) => { const off = p.dataset.cfgPanel !== tab; p.hidden = off; p.setAttribute("aria-hidden", off ? "true" : "false"); });
   if (tab === "memory" && $("memoryList")) loadMemoryEntries(false);
+  if (tab === "migration" && $("migrationRefreshBtn")) loadMigrationState();
   if (tab === "im" && $("imAuditList") && !state.imAuditLoaded) loadIMAuditMessages();
 }
 function bindChoiceCustomControls() {
@@ -3436,7 +3613,7 @@ function renderConfigFields() {
   if (!groups.some((g) => g.id === state.settingsTab)) state.settingsTab = groups[0]?.id || "";
   $("cfgTabs").innerHTML = groups.map((group) => `<button id="cfg_tab_${esc(group.id)}" type="button" role="tab" class="cfg-tab ${group.id === state.settingsTab ? "active" : ""}" data-cfg-tab="${esc(group.id)}" aria-controls="cfg_panel_${esc(group.id)}" aria-selected="${group.id === state.settingsTab ? "true" : "false"}">${esc(group.title)}</button>`).join("");
   $("cfgForm").innerHTML = groups.map((group) => {
-    const special = group.id === "tools" ? renderMCPManager() + renderWebSearchManager() : group.id === "skills" ? renderSkillManager() : group.id === "memory" ? renderMemoryManager() : group.id === "im" ? renderIMConfigEditor(defs) : "";
+    const special = group.id === "tools" ? renderMCPManager() + renderWebSearchManager() : group.id === "skills" ? renderSkillManager() : group.id === "memory" ? renderMemoryManager() : group.id === "migration" ? renderMigrationManager() : group.id === "im" ? renderIMConfigEditor(defs) : "";
     const fields = group.id === "im" ? "" : group.keys.map((key) => configFieldMarkup(key, defs)).join("");
     return `<fieldset id="cfg_panel_${esc(group.id)}" class="cfg-group" data-cfg-panel="${esc(group.id)}" role="tabpanel" aria-labelledby="cfg_tab_${esc(group.id)}" aria-hidden="${group.id === state.settingsTab ? "false" : "true"}" ${group.id === state.settingsTab ? "" : "hidden"}><legend>${esc(group.title)}</legend><p class="helper">${esc(group.hint)}</p>${special}${fields}</fieldset>`;
   }).join("");
@@ -3444,6 +3621,7 @@ function renderConfigFields() {
   bindMCPManager();
   bindWebSearchManager();
   bindMemoryManager();
+  bindMigrationManager();
   bindIMAuditPanel();
   bindWeixinQRTools();
   bindChoiceCustomControls();

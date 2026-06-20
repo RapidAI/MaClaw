@@ -18,16 +18,17 @@ func TestDataSrvStructuredDataKeepsExportedContractsInCorelib(t *testing.T) {
 		t.Fatal(err)
 	}
 	allowedImplementationTypes := map[string]bool{
-		"HTTPServer":      true,
-		"Service":         true,
-		"SQLiteStore":     true,
-		"Store":           true,
-		"DatasetStore":    true,
-		"RecordStore":     true,
-		"EventStore":      true,
-		"ConnectorStore":  true,
-		"GovernanceStore": true,
-		"AdminStore":      true,
+		"HTTPServer":           true,
+		"Service":              true,
+		"SQLiteStore":          true,
+		"Store":                true,
+		"DatasetStore":         true,
+		"RecordStore":          true,
+		"EventStore":           true,
+		"ConnectorStore":       true,
+		"GovernanceStore":      true,
+		"AdminStore":           true,
+		"AppInstallationStore": true,
 	}
 	typeDecl := regexp.MustCompile(`(?m)^type ([A-Z][A-Za-z0-9_]*)`)
 	for _, file := range files {

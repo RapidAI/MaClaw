@@ -1040,6 +1040,47 @@ func TestMaclawAppApprovalInstancesPersistAndFilter(t *testing.T) {
 		t.Fatal("expected app_id required error")
 	}
 }
+
+func TestListMaclawAppApprovalInstancesAll(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	empty, err := app.ListMaclawAppApprovalInstancesAll("all", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll empty error = %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected empty global approval list, got %#v", empty)
+	}
+	first, err := app.RecordMaclawAppApprovalInstance(maclawAppApprovalInstance{AppID: "expense", Title: "Expense", Lane: "pending_my_approval", Status: "pending"})
+	if err != nil {
+		t.Fatalf("record first approval: %v", err)
+	}
+	second, err := app.RecordMaclawAppApprovalInstance(maclawAppApprovalInstance{AppID: "contract", Title: "Contract", Lane: "attention", Status: "attention"})
+	if err != nil {
+		t.Fatalf("record second approval: %v", err)
+	}
+	all, err := app.ListMaclawAppApprovalInstancesAll("all", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll all error = %v", err)
+	}
+	if len(all) != 2 || all[0].InstanceID != second.InstanceID || all[1].InstanceID != first.InstanceID {
+		t.Fatalf("unexpected global approval order: %#v", all)
+	}
+	pending, err := app.ListMaclawAppApprovalInstancesAll("pending_my_approval", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll pending error = %v", err)
+	}
+	if len(pending) != 1 || pending[0].AppID != "expense" {
+		t.Fatalf("unexpected pending global approvals: %#v", pending)
+	}
+	limited, err := app.ListMaclawAppApprovalInstancesAll("all", 1)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll limited error = %v", err)
+	}
+	if len(limited) != 1 || limited[0].AppID != "contract" {
+		t.Fatalf("unexpected limited global approvals: %#v", limited)
+	}
+}
+
 func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	type capturedRequest struct {
 		Method string
@@ -1075,18 +1116,18 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 		ApprovalEvent:      "finance.submitted",
 		InstanceID:         "appr-1",
 		Title:              "Expense approval",
-		Lane:            "pending_my_approval",
-		Status:          "pending",
-		CurrentNode:     "manager_review",
-		Owner:           "alice",
-		Approver:        "manager",
-		Result:          "waiting",
-		WorkflowSkillID: "expense-approval-workflow",
-		BusinessStatus:  "approval_pending",
-		ResultStatus:    "pending",
-		ResultPayload:   map[string]any{"business_record": map[string]any{"id": "exp-1"}},
-		Outputs:         []maclawAppApprovalOutput{{Type: "text", Title: "Summary", Text: "waiting for manager"}},
-		Artifacts:       []maclawAppApprovalArtifact{{ID: "artifact-1", Name: "receipt.pdf", URI: "artifact://approval/receipt"}},
+		Lane:               "pending_my_approval",
+		Status:             "pending",
+		CurrentNode:        "manager_review",
+		Owner:              "alice",
+		Approver:           "manager",
+		Result:             "waiting",
+		WorkflowSkillID:    "expense-approval-workflow",
+		BusinessStatus:     "approval_pending",
+		ResultStatus:       "pending",
+		ResultPayload:      map[string]any{"business_record": map[string]any{"id": "exp-1"}},
+		Outputs:            []maclawAppApprovalOutput{{Type: "text", Title: "Summary", Text: "waiting for manager"}},
+		Artifacts:          []maclawAppApprovalArtifact{{ID: "artifact-1", Name: "receipt.pdf", URI: "artifact://approval/receipt"}},
 	}
 	created, err := app.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{DatasetID: "finance.expenses", RecordID: "exp-1", Instance: base})
 	if err != nil {

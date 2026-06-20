@@ -138,6 +138,9 @@ func NewRouter(
 	groupDiscussionSender := platformAwareMachineSender{fallback: deviceSvc, system: system, tenants: tenantRepo, groupSvc: groupDiscussionSvc}
 	groupDiscussionHandler := NewGroupDiscussionHandler(groupDiscussionSvc, groupDiscussionSender)
 	runtimeDataDir := resolveHubRuntimeDataDir(hubCfg, configPath)
+	if hubDB != nil && identity != nil {
+		NewMigrationAPI(hubDB, runtimeDataDir, identity, identity.MachinesRepo(), system).RegisterRoutes(mux, requireTenantAdmin)
+	}
 	fileRelay := ve.NewFileRelay(filepath.Join(runtimeDataDir, "ve-files"))
 	fileRelay.SetParticipantValidator(groupDiscussionSvc)
 	fileRelay.Start(context.Background())

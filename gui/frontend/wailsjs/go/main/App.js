@@ -2224,6 +2224,10 @@ export function ListMaclawAppApprovalInstances(arg1, arg2, arg3) {
   return window['go']['main']['App']['ListMaclawAppApprovalInstances'](arg1, arg2, arg3);
 }
 
+export function ListMaclawAppApprovalInstancesAll(arg1, arg2) {
+  return window['go']['main']['App']['ListMaclawAppApprovalInstancesAll'](arg1, arg2);
+}
+
 export function RecordMaclawAppApprovalInstance(arg1) {
   return window['go']['main']['App']['RecordMaclawAppApprovalInstance'](arg1);
 }
@@ -2231,4 +2235,3 @@ export function RecordMaclawAppApprovalInstance(arg1) {
 export function SyncMaclawAppApprovalInstanceToDataSrv(arg1) {
   return window['go']['main']['App']['SyncMaclawAppApprovalInstanceToDataSrv'](arg1);
 }
-

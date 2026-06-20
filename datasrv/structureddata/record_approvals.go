@@ -181,8 +181,69 @@ func (s *Service) ReviewRecordApproval(ctx context.Context, p Principal, approva
 	if err != nil {
 		return nil, err
 	}
-	s.audit(ctx, p, "approval."+decision, out.DatasetID, "record", out.RecordID, "Reviewed approval "+approvalID, map[string]any{"approval_id": approvalID, "decision": decision, "reason": strings.TrimSpace(in.Reason)})
+	businessRecordUpdated, err := s.syncBusinessRecordFromApprovalReview(ctx, p, *out)
+	if err != nil {
+		return nil, err
+	}
+	s.audit(ctx, p, "approval."+decision, out.DatasetID, "record", out.RecordID, "Reviewed approval "+approvalID, map[string]any{"approval_id": approvalID, "decision": decision, "reason": strings.TrimSpace(in.Reason), "business_status": out.BusinessStatus, "result_status": out.ResultStatus, "business_record_updated": businessRecordUpdated})
 	return out, nil
+}
+
+func (s *Service) syncBusinessRecordFromApprovalReview(ctx context.Context, p Principal, approval RecordApproval) (bool, error) {
+	record, err := s.store.GetRecord(ctx, p.TenantID, approval.DatasetID, approval.RecordID)
+	if err != nil {
+		return false, err
+	}
+	nextData := cloneJSONMap(record.Data)
+	if nextData == nil {
+		nextData = map[string]any{}
+	}
+	changed := false
+	setString := func(key, value string) {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			return
+		}
+		if existing, ok := nextData[key].(string); ok && strings.TrimSpace(existing) == value {
+			return
+		}
+		nextData[key] = value
+		changed = true
+	}
+	setString("status", approvalBusinessRecordStatus(approval))
+	setString("business_status", approval.BusinessStatus)
+	setString("result_status", approval.ResultStatus)
+	setString("approval_status", approval.Status)
+	setString("approval_decision", approval.Decision)
+	setString("approval_id", approval.ID)
+	setString("approval_workflow_instance_id", approval.WorkflowInstanceID)
+	if !changed {
+		return false, nil
+	}
+	out, err := s.store.UpdateRecord(ctx, p.TenantID, approval.DatasetID, approval.RecordID, UpdateRecordInput{Data: nextData}, p.UserID, s.now().UTC())
+	if err != nil {
+		return false, err
+	}
+	if err := s.appendRecordRevision(ctx, p, "approval.review", *out); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func approvalBusinessRecordStatus(approval RecordApproval) string {
+	if businessRecord, ok := approval.ResultPayload["business_record"].(map[string]any); ok {
+		if status, ok := businessRecord["status"].(string); ok && strings.TrimSpace(status) != "" {
+			return strings.TrimSpace(status)
+		}
+	}
+	if status, ok := approval.ResultPayload["business_status"].(string); ok && strings.TrimSpace(status) != "" {
+		return strings.TrimSpace(status)
+	}
+	if strings.TrimSpace(approval.BusinessStatus) != "" {
+		return strings.TrimSpace(approval.BusinessStatus)
+	}
+	return strings.TrimSpace(approval.Status)
 }
 
 func normalizeApprovalKind(value string) string {

@@ -184,6 +184,37 @@ const TENANT_MAIL_SENDER_I18N = {
 };
 const tmsx = (key, vars = {}) => ((TENANT_MAIL_SENDER_I18N[currentLang] || TENANT_MAIL_SENDER_I18N.en)[key] || TENANT_MAIL_SENDER_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
 const TENANT_MAIL_SENDER_MAX_RUNES = 80;
+const TENANT_MIGRATION_SETTINGS_I18N = {
+  en: {
+    title: 'Migration Package Limit',
+    desc: 'Limit the compressed user migration package stored temporarily on this tenant hub.',
+    reload: 'Reload',
+    label: 'Max compressed size (MB)',
+    hint: 'Allowed range: 100 MB to 1024 MB. New maclaw exports that exceed this tenant limit are rejected.',
+    save: 'Save Limit',
+    saving: 'Saving...',
+    saved: 'Migration package limit saved.',
+    loadFailed: 'Load migration package limit failed: {error}',
+    saveFailed: 'Save migration package limit failed: {error}',
+    invalid: 'Please enter a value from 100 to 1024 MB.'
+  },
+  zh: {
+    title: '\u8fc1\u79fb\u5305\u5927\u5c0f\u4e0a\u9650',
+    desc: '\u9650\u5236\u6b64\u79df\u6237 Hub \u4e0a\u4e34\u65f6\u4fdd\u5b58\u7684\u7528\u6237\u8fc1\u79fb\u538b\u7f29\u5305\u5927\u5c0f\u3002',
+    reload: '\u5237\u65b0',
+    label: '\u538b\u7f29\u540e\u6700\u5927\u5927\u5c0f\uff08MB\uff09',
+    hint: '\u53ef\u8bbe\u7f6e\u8303\u56f4\uff1a100 MB \u5230 1024 MB\u3002\u65b0\u7684 maclaw \u8fc1\u51fa\u5305\u8d85\u8fc7\u6b64\u79df\u6237\u4e0a\u9650\u65f6\u4f1a\u88ab\u62d2\u7edd\u3002',
+    save: '\u4fdd\u5b58\u4e0a\u9650',
+    saving: '\u4fdd\u5b58\u4e2d...',
+    saved: '\u8fc1\u79fb\u5305\u5927\u5c0f\u4e0a\u9650\u5df2\u4fdd\u5b58\u3002',
+    loadFailed: '\u52a0\u8f7d\u8fc1\u79fb\u5305\u4e0a\u9650\u5931\u8d25\uff1a{error}',
+    saveFailed: '\u4fdd\u5b58\u8fc1\u79fb\u5305\u4e0a\u9650\u5931\u8d25\uff1a{error}',
+    invalid: '\u8bf7\u8f93\u5165 100 \u5230 1024 MB \u4e4b\u95f4\u7684\u6574\u6570\u3002'
+  }
+};
+const tmgx = (key, vars = {}) => ((TENANT_MIGRATION_SETTINGS_I18N[currentLang] || TENANT_MIGRATION_SETTINGS_I18N.en)[key] || TENANT_MIGRATION_SETTINGS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const TENANT_MIGRATION_MIN_MB = 100;
+const TENANT_MIGRATION_MAX_MB = 1024;
 function normalizeTenantMailSenderName(value) {
   return Array.from(String(value || '').trim()).slice(0, TENANT_MAIL_SENDER_MAX_RUNES).join('');
 }
@@ -194,6 +225,24 @@ function applyTenantMailSenderI18n() {
   _s('tenantMailFromNameLabel', 'textContent', tmsx('label'));
   _s('tenantMailSenderHint', 'textContent', tmsx('hint'));
   _s('tenantMailSenderSaveBtn', 'textContent', tmsx('save'));
+}
+function applyTenantMigrationSettingsI18n() {
+  _s('tenantMigrationSettingsTitle', 'textContent', tmgx('title'));
+  _s('tenantMigrationSettingsDesc', 'textContent', tmgx('desc'));
+  _s('tenantMigrationSettingsReloadBtn', 'textContent', tmgx('reload'));
+  _s('tenantMigrationMaxMBLabel', 'textContent', tmgx('label'));
+  _s('tenantMigrationSettingsHint', 'textContent', tmgx('hint'));
+  _s('tenantMigrationSettingsSaveBtn', 'textContent', tmgx('save'));
+}
+function tenantMigrationBytesToMB(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return TENANT_MIGRATION_MIN_MB;
+  return Math.round(n / (1024 * 1024));
+}
+function normalizeTenantMigrationMB(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n);
 }
 function normalizeSystemRoutingDomains(value) {
   return String(value || '')
@@ -336,11 +385,13 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
     applyTLSI18n();
     applySystemRoutingI18n();
     applyTenantMailSenderI18n();
+    applyTenantMigrationSettingsI18n();
   });
 }
 applyTLSI18n();
 applySystemRoutingI18n();
 applyTenantMailSenderI18n();
+applyTenantMigrationSettingsI18n();
 function findMailPreset(provider) { return MAIL_PRESETS[provider] || MAIL_PRESETS.custom; }
 function detectMailProvider(cfg) { const host = String(cfg?.smtp_host || '').trim().toLowerCase(); const port = Number(cfg?.smtp_port || 0); const encryption = String(cfg?.smtp_encryption || '').trim().toLowerCase(); for (const [provider, preset] of Object.entries(MAIL_PRESETS)) { if (provider === 'custom') continue; if (host === preset.smtp_host && (!port || port === preset.smtp_port) && (!encryption || encryption === preset.smtp_encryption)) return provider; } return String(cfg?.provider || '').trim() || 'custom'; }
 function renderMailConfig(cfg = {}) { const provider = detectMailProvider(cfg); document.getElementById('mailProvider').value = MAIL_PRESETS[provider] ? provider : 'custom'; document.getElementById('mailHost').value = cfg.smtp_host || ''; document.getElementById('mailPort').value = cfg.smtp_port ? String(cfg.smtp_port) : ''; document.getElementById('mailEncryption').value = cfg.smtp_encryption || 'auto'; document.getElementById('mailUsername').value = cfg.smtp_username || ''; document.getElementById('mailPassword').value = cfg.smtp_password || ''; document.getElementById('mailFromName').value = cfg.from_name || 'MaClaw Hub'; document.getElementById('mailFromEmail').value = cfg.from_email || cfg.smtp_username || ''; }
@@ -350,6 +401,8 @@ async function loadMailConfig() { try { const data = await api('/api/admin/mail/
 async function saveMailConfig() { try { const payload = collectMailConfig(); const data = await api('/api/admin/mail/config', { method: 'POST', body: JSON.stringify(payload) }); renderMailConfig(data || payload); const msg = tr('mailConfigSaved'); setOutput(msg); showToast(msg, 'success'); return data || payload; } catch (err) { const msg = tr('mailConfigSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } }
 async function loadTenantMailSenderName() { applyTenantMailSenderI18n(); try { const data = await api('/api/admin/mail/sender-name'); const input = document.getElementById('tenantMailFromName'); if (input) input.value = (data && data.from_name) || ''; return data || {}; } catch (err) { const msg = tmsx('loadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
 async function saveTenantMailSenderName() { try { const input = document.getElementById('tenantMailFromName'); const fromName = normalizeTenantMailSenderName(input ? input.value : ''); if (input) input.value = fromName; const data = await api('/api/admin/mail/sender-name', { method: 'POST', body: JSON.stringify({ from_name: fromName }) }); if (input) input.value = (data && data.from_name) || fromName; const msg = tmsx('saved'); setOutput(msg); showToast(msg, 'success'); return data || { from_name: fromName }; } catch (err) { const msg = tmsx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } }
+async function loadTenantMigrationSettings() { applyTenantMigrationSettingsI18n(); try { const data = await api('/api/admin/migration/settings'); const input = document.getElementById('tenantMigrationMaxMB'); if (input) { input.min = String(tenantMigrationBytesToMB(data && data.min_bytes) || TENANT_MIGRATION_MIN_MB); input.max = String(tenantMigrationBytesToMB(data && data.max_bytes) || TENANT_MIGRATION_MAX_MB); input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); } return data || {}; } catch (err) { const msg = tmgx('loadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
+async function saveTenantMigrationSettings() { const input = document.getElementById('tenantMigrationMaxMB'); const valueMB = normalizeTenantMigrationMB(input ? input.value : 0); if (valueMB < TENANT_MIGRATION_MIN_MB || valueMB > TENANT_MIGRATION_MAX_MB) { const msg = tmgx('invalid'); setOutput(msg); showToast(msg, 'error'); return; } const btn = document.getElementById('tenantMigrationSettingsSaveBtn'); const previousLabel = btn ? btn.textContent : ''; if (btn) { btn.disabled = true; btn.textContent = tmgx('saving'); } try { const data = await api('/api/admin/migration/settings', { method: 'PUT', body: JSON.stringify({ max_compressed_bytes: valueMB * 1024 * 1024 }) }); if (input) input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); const msg = tmgx('saved'); setOutput(msg); showToast(msg, 'success'); return data || {}; } catch (err) { const msg = tmgx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } finally { if (btn) { btn.disabled = false; btn.textContent = previousLabel || tmgx('save'); } } }
 // Machines runtime moved to machines-tab.js
 async function sendTestMail() { try { const email = document.getElementById('testMailEmail').value.trim(); if (!email) { const msg = tr('testRecipientRequired'); setOutput(msg); showToast(msg, 'error'); return; } await saveMailConfig(); const data = await api('/api/admin/mail/test', { method: 'POST', body: JSON.stringify({ email }) }); const msg = data.message || tr('mailSent'); setOutput(msg); showToast(msg, 'success'); } catch (err) { const msg = tr('mailFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
 async function changeAdminPassword() { const currentPassword = document.getElementById('currentPasswordInput').value; const newPassword = document.getElementById('newPasswordInput').value; const confirmPassword = document.getElementById('confirmPasswordInput').value; if (!currentPassword || !newPassword) { const msg = tr('requestFailed'); setOutput(msg); showToast(msg, 'error'); return; } if (newPassword !== confirmPassword) { const msg = ptr('mismatch'); setOutput(msg); showToast(msg, 'error'); return; } try { const data = await api('/api/admin/password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }); if (data.access_token) localStorage.setItem(adminTokenKey, data.access_token); if (data.admin) setAdminProfile(data.admin); document.getElementById('currentPasswordInput').value = ''; document.getElementById('newPasswordInput').value = ''; document.getElementById('confirmPasswordInput').value = ''; refreshAdminHeader(); const msg = ptr('changed'); setOutput(msg); showToast(msg, 'success'); } catch (err) { setOutput(err.message); showToast(err.message, 'error'); } }

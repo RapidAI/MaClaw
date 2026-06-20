@@ -1196,8 +1196,8 @@ describe('AppsPage', () => {
         fireEvent.change(document.querySelector('.apps-create-form input[placeholder]') as HTMLInputElement, { target: { value: 'layout-workbench' } });
         fireEvent.change(screen.getByTestId('studio-layout-template'), { target: { value: 'left_nav' } });
         fireEvent.change(screen.getByTestId('studio-layout-density'), { target: { value: 'compact' } });
-        fireEvent.change(screen.getByTestId('studio-primary-region'), { target: { value: 'center' } });
-        fireEvent.change(screen.getByTestId('studio-output-region'), { target: { value: 'bottom' } });
+        fireEvent.click(screen.getByTestId('studio-layout-slot-center'));
+        fireEvent.click(screen.getByTestId('studio-layout-output-bottom'));
 
         expect(screen.getByText(/"template": "left_nav"/)).not.toBeNull();
         expect(screen.getByText(/"density": "compact"/)).not.toBeNull();
@@ -2175,6 +2175,60 @@ describe('AppsPage', () => {
         await waitFor(() => expect(screen.getAllByText('必需 Skill 依赖缺失或不可用，请先安装或启用依赖').length).toBeGreaterThan(0));
         expect(runNLSkillAsyncMock).not.toHaveBeenCalled();
     });
+
+    it('installs missing runtime dependencies and continues the installed app run', async () => {
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    x_maclaw_apps: 'v1',
+                    apps: [
+                        { id: 'runtime-dep-tool', skill_id: 'disabled-runtime-tool', name: '运行依赖工具', description: 'Runtime dependency check', category: '工具', icon: 'sheet', input_mode: 'form', output_modes: ['json'] },
+                    ],
+                }),
+            },
+        });
+        fireEvent.click(screen.getByText('安装'));
+        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
+        fireEvent.click(screen.getByText('关闭'));
+        fireEvent.click(screen.getAllByText('运行依赖工具')[0]);
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: 'skill-app-disabled-runtime-tool-runtime-dep-tool', name: '运行依赖工具', kind: 'tool_app' }],
+            dependencies: [{
+                id: 'disabled-runtime-tool',
+                kind: 'runtime_skill',
+                required: true,
+                installed: false,
+                health: 'missing',
+                action: 'blocked',
+                app_ids: ['skill-app-disabled-runtime-tool-runtime-dep-tool'],
+            }],
+            has_missing_required: true,
+            has_blocking_dependency: true,
+        });
+        installMaclawAppDependenciesMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: 'skill-app-disabled-runtime-tool-runtime-dep-tool', name: '运行依赖工具', kind: 'tool_app' }],
+            dependencies: [{ id: 'disabled-runtime-tool', kind: 'runtime_skill', required: true, installed: true, action: 'installed', app_ids: ['skill-app-disabled-runtime-tool-runtime-dep-tool'] }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        });
+
+        fireEvent.click(screen.getByText('执行'));
+        await waitFor(() => expect(screen.getByText('安装依赖并执行')).not.toBeNull());
+        fireEvent.click(screen.getByText('安装依赖并执行'));
+
+        await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalled());
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('disabled-runtime-tool', expect.objectContaining({
+            app_id: 'skill-app-disabled-runtime-tool-runtime-dep-tool',
+            app_kind: 'tool_app',
+        })));
+    });
+
     it('passes selected file metadata to skill app runs', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
@@ -2464,6 +2518,69 @@ describe('AppsPage', () => {
         expect(screen.getByText(/费用报销 · report · finance.expense_upsert/)).not.toBeNull();
     });
 
+    it('renders enterprise normal apps as business workspaces without approval instances', async () => {
+        const { container } = render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getAllByText('采购入库')[0]);
+
+        expect(container.querySelector('.apps-business-workspace')).not.toBeNull();
+        expect(container.querySelector('.apps-approval-workspace')).toBeNull();
+        expect(screen.getByText('业务工作台')).not.toBeNull();
+        expect(screen.getAllByText('procurement.purchase_order_upsert').length).toBeGreaterThan(0);
+
+        fireEvent.change(screen.getByDisplayValue('新建记录'), { target: { value: 'query' } });
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(screen.getByText(/已提交/)).not.toBeNull());
+        expect(screen.getAllByText(/procurement.purchase_order_review/).length).toBeGreaterThan(0);
+        expect(container.querySelector('.apps-run-history')).not.toBeNull();
+    });
+
+    it('runs enterprise normal appSkills with MIS business payloads', async () => {
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    schema: 'maclaw.app.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    installUnit: 'enterprise_app_pack',
+                    app: {
+                        id: 'customer-op',
+                        name: '客户操作台',
+                        description: 'Run customer operations through a business skill',
+                        category: 'CRM',
+                        kind: 'enterprise_normal_app',
+                        icon: 'customer',
+                        launchMode: 'agent_dynamic_ui',
+                        binding: {
+                            appSkill: { id: 'customer-business-skill', version: '1.0.0', source: 'hub' },
+                            datasrv: { domain: 'sales', objectRole: 'customer', preferredAction: 'sales.customer_upsert', preferredView: 'sales.customer_directory' },
+                        },
+                    },
+                }),
+            },
+        });
+        fireEvent.click(screen.getByText('安装'));
+        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
+        fireEvent.click(screen.getByText('关闭'));
+        fireEvent.click(screen.getAllByText('客户操作台')[0]);
+        fireEvent.change(screen.getByPlaceholderText('输入业务意图，Agent 生成动态界面并通过 DataSrv 执行。'), { target: { value: '补全客户联系人' } });
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('customer-business-skill', expect.objectContaining({
+            app_id: 'market-customer-op',
+            app_kind: 'enterprise_normal_app',
+            business_entity: 'CRM',
+            business_action: 'create',
+            business_note: '补全客户联系人',
+            object_role: 'customer',
+            action_role: 'sales.customer_upsert',
+            datasrv_domain: 'sales',
+        })));
+    });
     it('persists app order changes from app studio management', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
@@ -2725,6 +2842,38 @@ describe('AppsPage', () => {
         expect(Array.from(outputSelect.options).map((option) => option.value)).toContain('xlsx');
     });
 
+    it('edits app studio layout visually and persists it', async () => {
+        const { container } = render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('应用管理'));
+
+        const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
+        fireEvent.click(within(pdfWordRow).getByTitle('编辑'));
+        const dialog = screen.getByRole('dialog');
+        fireEvent.click(within(dialog).getByTestId('edit-layout-template-left_nav'));
+        fireEvent.click(within(dialog).getByTestId('edit-layout-slot-center'));
+        fireEvent.click(within(dialog).getByTestId('edit-layout-output-bottom'));
+        fireEvent.click(within(dialog).getByText('保存'));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+        const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
+        fireEvent.click(within(editedRow).getByTitle('Manifest'));
+        const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
+        const layout = manifest.app.binding.ui.layouts.tool_workspace;
+        expect(layout.template).toBe('left_nav');
+        expect(layout.primaryRegion).toBe('center');
+        expect(layout.outputRegion).toBe('bottom');
+        expect(layout.studio.savedInManifest).toBe(true);
+
+        fireEvent.click(screen.getByText('关闭'));
+        fireEvent.click(screen.getAllByText('PDF 转 Word')[0]);
+        await waitFor(() => expect(container.querySelector('.apps-runtime-layout')).not.toBeNull());
+        const runtimeLayout = container.querySelector('.apps-runtime-layout') as HTMLElement;
+        expect(runtimeLayout.dataset.template).toBe('left_nav');
+        expect(runtimeLayout.dataset.primaryRegion).toBe('center');
+        expect(runtimeLayout.dataset.outputRegion).toBe('bottom');
+    });
     it('edits a tool app skill binding from app studio management', async () => {
         listNLSkillsMock.mockResolvedValue([{ name: 'pdf-word-v2', description: 'Updated converter' }]);
         render(<AppsPage lang="en" />);

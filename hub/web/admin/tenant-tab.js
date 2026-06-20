@@ -779,6 +779,8 @@
     });
     var tenantSenderCard = byID('tenantMailSenderCard');
     if (tenantSenderCard) tenantSenderCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
+    var tenantMigrationCard = byID('tenantMigrationSettingsCard');
+    if (tenantMigrationCard) tenantMigrationCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
     if (typeof global.applyImScopeUI === 'function') global.applyImScopeUI();
     applySystemScopeCopy(!!(hasProfile && tenantAdmin));
     applyOverviewScopeUI(!!(hasProfile && tenantAdmin), hasProfile);

@@ -1452,6 +1452,56 @@ func TestSQLiteStoreScanSensitiveContent(t *testing.T) {
 	}
 }
 
+func TestExportSnapshotTenantOwnerScope(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	own, err := store.SaveText(ctx, TextSaveRequest{Title: "Own note", Text: "tenant scoped migration note", TenantID: "tenant-a", OwnerID: "user-a", DistillMode: DistillModeRules})
+	if err != nil {
+		t.Fatalf("SaveText own: %v", err)
+	}
+	other, err := store.SaveText(ctx, TextSaveRequest{Title: "Other note", Text: "other user's private note", TenantID: "tenant-a", OwnerID: "user-b", DistillMode: DistillModeRules})
+	if err != nil {
+		t.Fatalf("SaveText other: %v", err)
+	}
+
+	emptyScopedPath := filepath.Join(t.TempDir(), "empty-scoped.jsonl")
+	emptyScoped, err := store.ExportSnapshot(ctx, ExportOptions{OutputPath: emptyScopedPath, TenantID: "tenant-a", OwnerID: "missing-user"})
+	if err != nil {
+		t.Fatalf("ExportSnapshot empty scoped: %v", err)
+	}
+	if !emptyScoped.Scoped || emptyScoped.Sources != 0 || len(emptyScoped.SourceIDs) != 0 {
+		t.Fatalf("empty scoped export should remain scoped and empty: %#v", emptyScoped)
+	}
+	emptyBytes, err := os.ReadFile(emptyScopedPath)
+	if err != nil {
+		t.Fatalf("read empty scoped export: %v", err)
+	}
+	if strings.Contains(string(emptyBytes), own.ID) || strings.Contains(string(emptyBytes), other.ID) {
+		t.Fatalf("empty scoped export leaked sources: %s", string(emptyBytes))
+	}
+
+	scopedPath := filepath.Join(t.TempDir(), "tenant-owner-scoped.jsonl")
+	scoped, err := store.ExportSnapshot(ctx, ExportOptions{OutputPath: scopedPath, TenantID: "tenant-a", OwnerID: "user-a"})
+	if err != nil {
+		t.Fatalf("ExportSnapshot tenant owner scoped: %v", err)
+	}
+	if !scoped.Scoped || scoped.Sources != 1 || len(scoped.SourceIDs) != 1 || scoped.SourceIDs[0] != own.ID {
+		t.Fatalf("unexpected tenant owner scoped export: %#v", scoped)
+	}
+	data, err := os.ReadFile(scopedPath)
+	if err != nil {
+		t.Fatalf("read scoped export: %v", err)
+	}
+	if strings.Contains(string(data), other.ID) || strings.Contains(string(data), "other user's private note") {
+		t.Fatalf("tenant owner scoped export leaked another user: %s", string(data))
+	}
+}
+
 func TestSQLiteStoreSourceQualityReport(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))

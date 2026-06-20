@@ -1029,6 +1029,7 @@ export function PlanMaclawAppInstall(arg1:string):Promise<any>;
 export function RecordMaclawAppInstall(arg1:string,arg2:string):Promise<any>;
 export function ListMaclawAppInstalls(arg1:number):Promise<Array<any>>;
 export function ListMaclawAppApprovalInstances(arg1:string,arg2:string,arg3:number):Promise<Array<any>>;
+export function ListMaclawAppApprovalInstancesAll(arg1:string,arg2:number):Promise<Array<any>>;
 export function RecordMaclawAppApprovalInstance(arg1:any):Promise<any>;
 export function SyncMaclawAppApprovalInstanceToDataSrv(arg1:any):Promise<any>;
 export function SubmitMaclawAppPackage(arg1:string):Promise<any>;
@@ -1119,4 +1120,3 @@ export function KnowledgeDeepCrawlCancel():Promise<any>;
 export function KnowledgeGetImageAssetPaths(arg1:string):Promise<{[key:string]:string}>;
 
 export function KnowledgeOpenImageFile(arg1:string):Promise<void>;
-
