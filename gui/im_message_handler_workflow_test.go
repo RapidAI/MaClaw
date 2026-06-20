@@ -165,18 +165,9 @@ func newPopulatedWorkflowRegistry() *v2.WorkflowRegistry {
 //  3. Replace h.app.workflowEngine.GetActiveWorkflow(uid) with machine.GetActive(uid).
 //  4. Replace h.app.workflowEngine.CancelWorkflow(uid) with machine.Cancel(uid).
 func registerV2TemplatesIntoV1Registry(v1Reg *v2.WorkflowRegistry, v2Reg *v2.TemplateRegistry) {
-	// All known V2 template type strings.
-	knownTypes := []string{
-		"coding", "maintenance", "presentation_design",
-		"product_design", "innovation", "business_plan",
-		"testing", "literature_review", "research_report",
-		"competitive_analysis", "project_proposal", "event_planning",
-		"bid_response", "contract_review", "due_diligence",
-		"compliance_audit", "patent_analysis", "experiment_design",
-		"grant_proposal", "paper_writing", "paper_reproduction",
-		"patent_application",
-	}
-	for _, typ := range knownTypes {
+	// Dynamically obtain all registered types from the single source of truth.
+	allTypes := v2Reg.AllTypes()
+	for _, typ := range allTypes {
 		v2Tmpl := v2Reg.Get(typ)
 		if v2Tmpl == nil {
 			continue

@@ -232,6 +232,31 @@ func TestRoute_PatentApplication_NotConfusedWithPatentAnalysis(t *testing.T) {
 	}
 }
 
+func TestRoute_USPatentApplication(t *testing.T) {
+	r := setupTestRouter()
+
+	// BM25 text routing for US patent: only strong signals ("USPTO", "美国专利")
+	// route reliably. Ambiguous inputs (like "帮我申请美国专利" where "专利" also
+	// matches the CN patent template) may need IUM LLM classification for
+	// disambiguation — that's by design (BM25 is the fallback, not primary).
+	cases := []struct {
+		input    string
+		wantType string
+	}{
+		{"draft USPTO patent claims and specification", "us_patent_application"},
+	}
+	for _, tc := range cases {
+		result := r.Route("user1", tc.input, nil)
+		if result.Target != RouteToWorkflow {
+			t.Errorf("Route(%q): target = %q, want workflow", tc.input, result.Target)
+			continue
+		}
+		if result.WorkflowType != tc.wantType {
+			t.Errorf("Route(%q): type = %q, want %q", tc.input, result.WorkflowType, tc.wantType)
+		}
+	}
+}
+
 func TestRoute_StrongActionWithArbitraryTarget(t *testing.T) {
 	r := setupTestRouter()
 

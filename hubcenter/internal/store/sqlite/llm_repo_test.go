@@ -76,6 +76,165 @@ func TestLLMAuthRepoUpdateRefreshesValidityFields(t *testing.T) {
 	}
 }
 
+func TestLLMAuthRepoDeductCreditsPersistsFractionalUsage(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-auth-fractional.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+
+	ctx := context.Background()
+	repo := NewLLMAuthRepo(provider)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	auth := &llmservice.TenantAuthorization{
+		ID:             "auth_fractional",
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		AdminEmail:     "admin@example.com",
+		ServiceGroupID: "maclaw-official",
+		CreditsTotal:   10,
+		CreditsUsed:    1,
+		StartsAt:       now.Add(-time.Hour),
+		ExpiresAt:      now.Add(time.Hour),
+		Status:         "active",
+		Source:         "card",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := repo.Create(ctx, auth); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if err := repo.DeductCredits(ctx, auth.ID, 0.1, now.Add(time.Minute)); err != nil {
+		t.Fatalf("DeductCredits() error = %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, auth.ID)
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if got.CreditsUsed != 1.1 {
+		t.Fatalf("CreditsUsed = %.17g, want 1.1", got.CreditsUsed)
+	}
+	if got.CreditsRemaining() != 8.9 {
+		t.Fatalf("CreditsRemaining = %.17g, want 8.9", got.CreditsRemaining())
+	}
+}
+
+func TestLLMAuthRepoDeductCreditsCapsInsufficientBalance(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-auth-insufficient.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+
+	ctx := context.Background()
+	repo := NewLLMAuthRepo(provider)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	auth := &llmservice.TenantAuthorization{
+		ID:             "auth_insufficient",
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		AdminEmail:     "admin@example.com",
+		ServiceGroupID: "maclaw-official",
+		CreditsTotal:   10,
+		CreditsUsed:    9.95,
+		StartsAt:       now.Add(-time.Hour),
+		ExpiresAt:      now.Add(time.Hour),
+		Status:         "active",
+		Source:         "card",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := repo.Create(ctx, auth); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if err := repo.DeductCredits(ctx, auth.ID, 0.1, now.Add(time.Minute)); err != nil {
+		t.Fatalf("DeductCredits() error = %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, auth.ID)
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if got.CreditsUsed != 10 {
+		t.Fatalf("CreditsUsed = %.17g, want capped total 10", got.CreditsUsed)
+	}
+	if got.CreditsRemaining() != 0 {
+		t.Fatalf("CreditsRemaining = %.17g, want 0", got.CreditsRemaining())
+	}
+	if got.Status != "exhausted" {
+		t.Fatalf("Status = %q, want exhausted", got.Status)
+	}
+}
+
+func TestLLMAuthRepoDeductCreditsMarksExactBalanceExhausted(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-auth-exact-exhaust.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+
+	ctx := context.Background()
+	repo := NewLLMAuthRepo(provider)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	auth := &llmservice.TenantAuthorization{
+		ID:             "auth_exact_exhaust",
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		AdminEmail:     "admin@example.com",
+		ServiceGroupID: "maclaw-official",
+		CreditsTotal:   10,
+		CreditsUsed:    9.9,
+		StartsAt:       now.Add(-time.Hour),
+		ExpiresAt:      now.Add(time.Hour),
+		Status:         "active",
+		Source:         "card",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := repo.Create(ctx, auth); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if err := repo.DeductCredits(ctx, auth.ID, 0.1, now.Add(time.Minute)); err != nil {
+		t.Fatalf("DeductCredits() error = %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, auth.ID)
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if got.CreditsUsed != 10 {
+		t.Fatalf("CreditsUsed = %.17g, want 10", got.CreditsUsed)
+	}
+	if got.CreditsRemaining() != 0 {
+		t.Fatalf("CreditsRemaining = %.17g, want 0", got.CreditsRemaining())
+	}
+	if got.Status != "exhausted" {
+		t.Fatalf("Status = %q, want exhausted", got.Status)
+	}
+}
+
 func TestLLMAuthRepoListByHub(t *testing.T) {
 	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-auth-by-hub.db"), WAL: false})
 	if err != nil {

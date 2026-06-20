@@ -39,6 +39,26 @@ func TestValidateCardCodeRejectsInvalidFormat(t *testing.T) {
 	}
 }
 
+func TestEstimateCreditsWithFloorAppliesMinimumForTinySuccessfulRequests(t *testing.T) {
+	tests := []struct {
+		name       string
+		tokens     int64
+		multiplier float64
+		want       float64
+	}{
+		{name: "missing usage", tokens: 0, multiplier: 1, want: MinimumRequestCredits},
+		{name: "tiny usage", tokens: 100, multiplier: 1, want: MinimumRequestCredits},
+		{name: "normal usage", tokens: 2000, multiplier: 1, want: 0.2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := EstimateCreditsWithFloor(tt.tokens, tt.multiplier, DefaultTokensPerCredit); got != tt.want {
+				t.Fatalf("EstimateCreditsWithFloor() = %.3f, want %.3f", got, tt.want)
+			}
+		})
+	}
+}
+
 type testSystemSettings struct {
 	data map[string]string
 }

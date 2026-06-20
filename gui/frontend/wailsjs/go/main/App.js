@@ -591,6 +591,10 @@ export function GetWorkflowWorkingDir() {
   return window['go']['main']['App']['GetWorkflowWorkingDir']();
 }
 
+export function RefreshWorkflowV2StateForTab(arg1) {
+  return window['go']['main']['App']['RefreshWorkflowV2StateForTab'](arg1);
+}
+
 export function SelectSkillFile() {
   return window['go']['main']['App']['SelectSkillFile']();
 }
@@ -977,6 +981,31 @@ export function PingSkillHub(arg1) {
 
 export function ValidateSkillHub(arg1) {
   return window['go']['main']['App']['ValidateSkillHub'](arg1);
+}
+
+// User data migration bindings
+export function UserDataMigrationStatus() {
+  return window['go']['main']['App']['UserDataMigrationStatus']();
+}
+
+export function UserDataMigrationInstances() {
+  return window['go']['main']['App']['UserDataMigrationInstances']();
+}
+
+export function StartUserDataMigrationExport(arg1, arg2, arg3) {
+  return window['go']['main']['App']['StartUserDataMigrationExport'](arg1, arg2, arg3);
+}
+
+export function StartUserDataMigrationImport(arg1, arg2) {
+  return window['go']['main']['App']['StartUserDataMigrationImport'](arg1, arg2);
+}
+
+export function StartUserDataMigrationCleanup(arg1) {
+  return window['go']['main']['App']['StartUserDataMigrationCleanup'](arg1);
+}
+
+export function GetUserDataMigrationJob(arg1) {
+  return window['go']['main']['App']['GetUserDataMigrationJob'](arg1);
 }
 
 // SkillHub market bindings

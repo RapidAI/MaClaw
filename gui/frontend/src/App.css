@@ -9585,6 +9585,207 @@ body {
     opacity: 0.6;
 }
 
+.migration-settings-panel {
+    display: grid;
+    gap: 14px;
+}
+
+.migration-settings-card {
+    gap: 12px;
+}
+
+.migration-settings-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.migration-settings-head > div {
+    min-width: min(100%, 360px);
+    display: grid;
+    gap: 6px;
+}
+
+.migration-settings-head .btn-secondary,
+.migration-actions .btn-primary {
+    min-width: 116px;
+}
+
+.migration-status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 10px;
+}
+
+.migration-kv {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface-muted);
+}
+
+.migration-kv span,
+.migration-inline-meta,
+.migration-progress-text,
+.migration-instance-table small {
+    color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+.migration-kv strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--theme-text-primary);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    white-space: nowrap;
+}
+
+.migration-alert {
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    font-size: 0.75rem;
+    line-height: 1.5;
+}
+
+.migration-alert--warning {
+    background: color-mix(in srgb, var(--theme-warning) 10%, var(--theme-surface));
+    color: var(--theme-text-primary);
+}
+
+.migration-alert--danger {
+    background: color-mix(in srgb, var(--theme-danger) 10%, var(--theme-surface));
+    border-color: color-mix(in srgb, var(--theme-danger) 35%, var(--theme-border-subtle));
+    color: var(--theme-danger);
+}
+
+.migration-form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+.migration-form-grid--import {
+    grid-template-columns: minmax(260px, 1.3fr) minmax(200px, 0.7fr);
+}
+
+.migration-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.migration-inline-meta {
+    min-width: min(100%, 280px);
+}
+
+.migration-progress-inline {
+    width: 100%;
+    display: grid;
+    gap: 8px;
+    padding-top: 2px;
+}
+
+.migration-instance-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+}
+
+.migration-instance-table {
+    width: 100%;
+    min-width: 640px;
+    border-collapse: collapse;
+    color: var(--theme-text-secondary);
+    font-size: 0.74rem;
+}
+
+.migration-instance-table th,
+.migration-instance-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--theme-border-subtle);
+    text-align: left;
+    vertical-align: top;
+}
+
+.migration-instance-table th {
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.migration-instance-table tr:last-child td {
+    border-bottom: 0;
+}
+
+.migration-instance-table td:first-child {
+    display: grid;
+    gap: 3px;
+}
+
+.migration-progress-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.migration-progress-head span {
+    color: var(--theme-text-secondary);
+    font-size: 0.74rem;
+    font-weight: 800;
+}
+
+.migration-progress-track {
+    height: 8px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--theme-surface-muted);
+}
+
+.migration-progress-fill {
+    height: 100%;
+    border-radius: inherit;
+    background: var(--theme-primary);
+    transition: width 180ms ease-out;
+}
+
+.migration-progress-fill[data-tone="succeeded"] {
+    background: var(--theme-success);
+}
+
+.migration-progress-fill[data-tone="failed"] {
+    background: var(--theme-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .migration-progress-fill {
+        transition: none;
+    }
+}
+
+@media (max-width: 720px) {
+    .migration-form-grid--import {
+        grid-template-columns: 1fr;
+    }
+
+    .migration-settings-head .btn-secondary,
+    .migration-actions .btn-primary {
+        width: 100%;
+    }
+}
+
 .data-directory-section {
     gap: 10px;
 }

@@ -273,7 +273,10 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 	var reports []string
 	attempts := 0
 	maxAttempts := r.maxRunAllTaskAttempts()
-	concurrency := r.configuredConcurrency()
+	configuredConc := r.configuredConcurrency()
+	concurrency := configuredConc
+	log.Printf("[subagent-runner] RunAllTasks starting: configured_concurrency=%d tasks=%d max_attempts=%d",
+		configuredConc, r.orchestrator.TaskCount(), maxAttempts)
 
 	for !r.orchestrator.AllDone() {
 		attempts++
@@ -315,6 +318,13 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 				reports = append(reports, "LLM provider is temporarily unavailable; SubAgent execution paused to avoid retry storms. Retry after the provider recovers.")
 				break
 			}
+			// If concurrency was reduced from a higher configured value
+			// (due to a prior batch failure) and this sequential task
+			// passed, restore configured concurrency for the next iteration.
+			if configuredConc > 1 && !batchHasFailedTask(handles) {
+				concurrency = configuredConc
+				log.Printf("[subagent-runner] sequential task succeeded, restoring concurrency=%d", concurrency)
+			}
 			continue
 		}
 
@@ -326,6 +336,16 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 			}
 			reports = append(reports, "SubAgent execution stopped: no runnable tasks are ready")
 			break
+		}
+		if len(handles) > 1 {
+			taskNames := make([]string, len(handles))
+			for i, h := range handles {
+				taskNames[i] = fmt.Sprintf("T%d", taskDisplayNumber(h.Task))
+			}
+			log.Printf("[subagent-runner] launching parallel batch: concurrency=%d tasks=[%s]", len(handles), strings.Join(taskNames, ","))
+			if onProgress != nil {
+				onProgress(fmt.Sprintf("🚀 并行执行 %d 个任务: %s", len(handles), strings.Join(taskNames, ", ")))
+			}
 		}
 		prevOutputs := r.collectPreviousOutputs()
 		batchReports := make([]string, len(handles))
@@ -347,14 +367,22 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 			reports = append(reports, "LLM provider is temporarily unavailable; SubAgent execution paused to avoid retry storms. Retry after the provider recovers.")
 			break
 		}
-		// Error fallback: if any task in this batch failed, reduce concurrency
-		// to 1 for remaining tasks to avoid cascading failures.
+		// Error fallback: if any task in this batch permanently failed,
+		// reduce concurrency to 1 for the NEXT batch only. If the next
+		// batch succeeds without permanent failures, restore configured
+		// concurrency. This avoids cascading failures while allowing
+		// recovery after transient issues.
 		if batchHasFailedTask(handles) {
 			concurrency = 1
-			log.Printf("[subagent-runner] batch had failed task(s), falling back to sequential execution (concurrency=1)")
+			log.Printf("[subagent-runner] batch had failed task(s), reducing next batch to sequential (concurrency=1)")
 			if onProgress != nil {
-				onProgress("⚠️ 检测到任务失败，后续任务将改为顺序执行")
+				onProgress("⚠️ 检测到任务失败，下一批次将顺序执行")
 			}
+		} else if concurrency < configuredConc {
+			// Previous batch had a failure that reduced concurrency;
+			// this batch succeeded — restore configured concurrency.
+			concurrency = configuredConc
+			log.Printf("[subagent-runner] batch succeeded, restoring concurrency=%d", concurrency)
 		}
 	}
 

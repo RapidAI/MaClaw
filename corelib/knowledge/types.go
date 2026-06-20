@@ -1176,6 +1176,8 @@ type SnapshotImportOptions struct {
 	InputPath          string `json:"input_path"`
 	DryRun             bool   `json:"dry_run,omitempty"`
 	Overwrite          bool   `json:"overwrite,omitempty"`
+	ReplaceAll         bool   `json:"replace_all,omitempty"`
+	AbortOnError       bool   `json:"abort_on_error,omitempty"`
 	SkipSafetyBackup   bool   `json:"skip_safety_backup,omitempty"`
 	SafetyBackupPath   string `json:"safety_backup_path,omitempty"`
 	SafetyBackupRedact bool   `json:"safety_backup_redact,omitempty"`

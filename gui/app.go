@@ -2821,6 +2821,64 @@ func (a *App) GetWorkflowWorkingDir() string {
 	return ""
 }
 
+// RefreshWorkflowV2StateForTab re-emits the full workflow state (phase_update + doc_update)
+// for the given tab's project path. Called by the frontend on tab switch to ensure the
+// preview panel shows the correct workflow state even if events were missed while the tab
+// was inactive (background agent loops emit events that are rejected by the inactive tab's
+// event filter — this refresh bridges that gap).
+func (a *App) RefreshWorkflowV2StateForTab(projectPath string) {
+	if a.workflowV2 == nil {
+		return
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return
+	}
+	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
+	if userID == "" {
+		return
+	}
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return
+	}
+	wf := handler.getWorkflowV2()
+	if wf == nil {
+		return
+	}
+	// Try active workflow first, then load from store (may be completed).
+	state := wf.machine.GetActive(userID)
+	if state == nil {
+		state, _ = wf.store.Load(userID)
+	}
+	if state == nil {
+		return
+	}
+	// Re-emit full progress (phases + phase_outputs + current_phase).
+	// Emit phase_update directly instead of through emitWorkflowV2Progress to avoid
+	// the suggest_maximize side effect — tab switch is not a new document event.
+	handler.emitWorkflowV2ProgressPayloadOnly(userID, state)
+	// Re-emit doc_update for all phases that have output, so the preview panel
+	// gets the full document content (phase_outputs in progress are truncated).
+	// Emit directly instead of through emitDocUpdateV2 to avoid repeated store.Load.
+	projectPath = workflowEventProjectPath(state)
+	workflowID := state.ID
+	for _, p := range state.Phases {
+		if p.Output != "" {
+			emitWorkflowV2Event(a, "workflow:doc_update", map[string]interface{}{
+				"phase_id":     p.ID,
+				"content":      p.Output,
+				"project_path": projectPath,
+				"workflow_id":  workflowID,
+			})
+		}
+	}
+}
+
 func (a *App) GetUserHomeDir() string {
 	if a.testHomeDir != "" {
 		return a.testHomeDir

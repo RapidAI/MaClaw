@@ -127,12 +127,26 @@ export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]> = {
     { id: "dy_outcomes_budget", name: "预期成果与经费预算", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "dy_final_assembly", name: "申请书整合与润色", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
   ],
+  "nsfc_distinguished_youth_review": [
+    { id: "dy_review_completeness", name: "完整性检测", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "dy_review_achievements", name: "学术成果评估", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "dy_review_plan", name: "研究计划评估", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "dy_review_quality", name: "撰写质量评估", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "dy_review_report", name: "综合评估报告", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+  ],
   "nsfc_excellent_youth": [
     { id: "ey_eligibility", name: "申请人资质与条件评估", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "ey_research_accumulation", name: "研究积累与发展潜力", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "ey_research_proposal", name: "研究方案与关键科学问题", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "ey_outcomes_budget", name: "预期成果与经费预算", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "ey_final_assembly", name: "申请书整合与润色", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+  ],
+  "nsfc_excellent_youth_review": [
+    { id: "ey_review_completeness", name: "完整性检测", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "ey_review_achievements", name: "学术成果评估", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "ey_review_plan", name: "研究计划评估", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "ey_review_quality", name: "撰写质量评估", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "ey_review_report", name: "综合评估报告", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
   ],
   "nsfc_general": [
     { id: "gp_rationale", name: "立项依据与研究内容", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
@@ -141,6 +155,13 @@ export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]> = {
     { id: "gp_budget", name: "经费预算与年度计划", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "gp_final_assembly", name: "申请书整合与润色", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
   ],
+  "nsfc_general_review": [
+    { id: "gen_review_completeness", name: "完整性检测", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "gen_review_achievements", name: "学术成果评估", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "gen_review_plan", name: "研究计划评估", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "gen_review_quality", name: "撰写质量评估", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "gen_review_report", name: "综合评估报告", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+  ],
   "nsfc_key": [
     { id: "kp_strategic_rationale", name: "战略需求与科学问题凝练", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "kp_team_foundation", name: "研究团队与工作基础", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
@@ -148,12 +169,26 @@ export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]> = {
     { id: "kp_budget_management", name: "经费预算与管理计划", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "kp_final_assembly", name: "申请书整合与润色", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
   ],
+  "nsfc_key_review": [
+    { id: "key_review_completeness", name: "完整性检测", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "key_review_achievements", name: "学术成果评估", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "key_review_plan", name: "研究计划评估", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "key_review_quality", name: "撰写质量评估", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "key_review_report", name: "综合评估报告", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+  ],
   "nsfc_youth": [
     { id: "yf_rationale", name: "立项依据与研究内容", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "yf_foundation", name: "研究基础与可行性", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "yf_methodology", name: "研究方案与技术路线", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "yf_budget", name: "经费预算", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "yf_final_assembly", name: "申请书整合与润色", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+  ],
+  "nsfc_youth_review": [
+    { id: "yf_review_completeness", name: "完整性检测", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "yf_review_achievements", name: "学术成果评估", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "yf_review_plan", name: "研究计划评估", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "yf_review_quality", name: "撰写质量评估", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "yf_review_report", name: "综合评估报告", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
   ],
   "paper_reproduction": [
     { id: "paper_analysis", name: "论文深度解读", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
@@ -217,5 +252,13 @@ export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]> = {
     { id: "test_environment", name: "环境准备", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "test_execution", name: "执行测试", index: 3, expectsDocument: false, canSkip: false, needsConfirm: false, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
     { id: "defect_report", name: "缺陷报告", index: 4, expectsDocument: false, canSkip: false, needsConfirm: false, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
+  ],
+  "us_patent_application": [
+    { id: "us_disclosure_analysis", name: "Disclosure Analysis / 交底书解析", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
+    { id: "us_prior_art_search", name: "Prior Art Search / 查新检索", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
+    { id: "us_claims_drafting", name: "Claims Drafting / 权利要求撰写", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
+    { id: "us_drawings", name: "Drawings / 附图生成与整理", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
+    { id: "us_specification_writing", name: "Specification Writing / 说明书撰写", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
+    { id: "us_application_assembly", name: "Application Assembly / 申请文件组装", index: 5, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
   ],
 };

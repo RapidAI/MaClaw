@@ -285,6 +285,7 @@ func TestAdminPageComputeMarketUsageStatsLayoutContract(t *testing.T) {
 		"renderComputeStatsTable",
 		"cmNumber(value)",
 		"cmRows(data)",
+		"Math.abs(n) < 0.1 ? 2 : 1",
 		"new URLSearchParams({ period: period })",
 		"cm-stats-table-shell",
 		"cm-stats-identity legacy",

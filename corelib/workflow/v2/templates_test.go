@@ -121,3 +121,47 @@ func TestTemplateRegistryAmbiguousTopScoreDoesNotSelectByTieBreak(t *testing.T) 
 		t.Fatalf("ambiguous tied templates should not select by tie-break: %#v", got)
 	}
 }
+
+
+// TestAllTypes_ReturnsAllRegisteredTemplates verifies that AllTypes() dynamically
+// reflects all templates registered via RegisterBuiltinTemplates. This test will
+// FAIL if a new template is added to RegisterBuiltinTemplates but something goes
+// wrong with AllTypes(). It also serves as a compile-time signal that adding a
+// template to RegisterBuiltinTemplates is sufficient — no other hardcoded list
+// needs to be maintained.
+func TestAllTypes_ReturnsAllRegisteredTemplates(t *testing.T) {
+	registry := NewTemplateRegistry()
+	RegisterBuiltinTemplates(registry)
+
+	types := registry.AllTypes()
+	if len(types) == 0 {
+		t.Fatal("AllTypes() returned empty slice after RegisterBuiltinTemplates")
+	}
+
+	// Verify every type returned by AllTypes() is retrievable via Get()
+	for _, typ := range types {
+		if registry.Get(typ) == nil {
+			t.Errorf("AllTypes() returned %q but Get(%q) is nil", typ, typ)
+		}
+	}
+
+	// Verify count matches the internal map
+	registry.mu.RLock()
+	mapLen := len(registry.templates)
+	registry.mu.RUnlock()
+	if len(types) != mapLen {
+		t.Errorf("AllTypes() returned %d types, but registry has %d templates", len(types), mapLen)
+	}
+
+	// Sanity check: known templates must be present
+	mustHave := []string{"coding", "patent_application", "us_patent_application"}
+	typeSet := make(map[string]bool, len(types))
+	for _, typ := range types {
+		typeSet[typ] = true
+	}
+	for _, required := range mustHave {
+		if !typeSet[required] {
+			t.Errorf("AllTypes() missing expected template: %q", required)
+		}
+	}
+}

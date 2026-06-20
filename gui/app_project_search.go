@@ -1738,6 +1738,28 @@ func workflowTypeLabel(wfType string) string {
 		return "合规审计"
 	case v2.WorkflowPatentAnalysis:
 		return "专利分析"
+	case v2.WorkflowPatentApplication:
+		return "中国专利申请"
+	case v2.WorkflowUSPatentApplication:
+		return "美国专利申请"
+	case v2.WorkflowPaperReproduction:
+		return "论文复现"
+	case v2.WorkflowMaintenance:
+		return "运维"
+	case v2.WorkflowChangjiangScholar:
+		return "长江学者申报"
+	case v2.WorkflowChangjiangScholarReview:
+		return "长江学者评审"
+	case v2.WorkflowNSFCDistinguishedYouth:
+		return "杰青"
+	case v2.WorkflowNSFCExcellentYouth:
+		return "优青"
+	case v2.WorkflowNSFCYouth:
+		return "青基"
+	case v2.WorkflowNSFCGeneral:
+		return "面上"
+	case v2.WorkflowNSFCKey:
+		return "重点"
 	default:
 		return wfType
 	}

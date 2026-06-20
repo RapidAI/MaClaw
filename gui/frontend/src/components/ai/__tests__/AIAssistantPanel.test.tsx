@@ -2549,24 +2549,8 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         const status = getByTestId('coding-agent-progress');
-        const titleStatus = getByTestId('coding-agent-title-status');
         expect(status.textContent).toContain('T2');
         expect(status.textContent).toContain('Fix stale edit guard');
-        expect(titleStatus.textContent).toContain('T2');
-        expect(titleStatus.getAttribute('aria-label')).toContain('Fix stale edit guard');
-        expect(titleStatus.textContent).toContain('T2');
-        expect(titleStatus.style.color).toBe('rgb(47, 95, 152)');
-        expect(titleStatus.getAttribute('role')).toBe('status');
-        expect(titleStatus.getAttribute('aria-live')).toBe('polite');
-        expect(titleStatus.getAttribute('data-agent')).toBe('coding');
-        expect(titleStatus.getAttribute('data-active')).toBe('true');
-        expect(titleStatus.getAttribute('data-phase')).toBe('running');
-        expect(titleStatus.getAttribute('data-terminal')).toBe('false');
-        expect(titleStatus.getAttribute('data-task-id')).toBe('T2');
-        expect(titleStatus.getAttribute('data-variant')).toBe('title-bar');
-        expect(titleStatus.className).toContain('coding-agent-status--title-bar');
-        expect(titleStatus.className).toContain('coding-agent-status--running');
-        expect(titleStatus.getAttribute('aria-label')).toContain('Fix stale edit guard');
         expect(status.getAttribute('data-agent')).toBe('coding');
         expect(status.getAttribute('data-active')).toBe('true');
         expect(status.getAttribute('data-phase')).toBe('running');

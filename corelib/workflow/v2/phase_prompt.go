@@ -253,7 +253,7 @@ func formDataContainsFilePath(formData map[string]interface{}) bool {
 // shared documentParsingGuidance should be skipped to avoid redundancy.
 func phaseInstructionHasOwnParsingGuidance(phaseID string) bool {
 	switch phaseID {
-	case "pa_disclosure_parsing":
+	case "pa_disclosure_parsing", "us_disclosure_analysis":
 		return true
 	}
 	return false
@@ -1940,6 +1940,7 @@ func phaseInstruction(phaseID string) string {
 ## 重要约束（违反将导致错误）
 - 技术方案必须从用户提供的材料中提炼，不要臆造技术内容。
 - 区别特征必须明确——这直接影响权利要求的撰写质量。
+- 生成文档后，必须保存到磁盘：write_file(path="OUTPUT_DIR/交底书解析与技术提炼文档.md", content="...", mode="write")。如果内容超过约 6000 字符，建议分多次 mode="append" 写入。
 - 只生成一份解析文档，输出完毕后立即停止。
 - 【严禁】输出确认提示语或后续内容。
 - 【严禁】自己模拟用户确认。
@@ -1997,6 +1998,7 @@ func phaseInstruction(phaseID string) string {
 ## 重要约束
 - 必须实际使用 web_search 进行检索，不得凭记忆编造对比文件。
 - 如果检索不到强相关结果，如实报告"未检索到高度相关的对比文件"。
+- 生成文档后，必须保存到磁盘：write_file(path="OUTPUT_DIR/查新检索与新颖性分析.md", content="...", mode="write")。如果内容超过约 6000 字符，建议分多次 mode="append" 写入。
 - 只生成一份查新报告，输出完毕后立即停止。
 - 【严禁】输出确认提示语或后续内容。
 - 【严禁】自己模拟用户确认。
@@ -2062,6 +2064,8 @@ func phaseInstruction(phaseID string) string {
 
 文档内容输出完毕后，必须立即将权利要求书保存为 .docx 文件。
 
+**【强制】必须严格按照下方三步模板执行。禁止自行编写 PowerShell/VBScript/其他转换脚本。禁止尝试用 bash 直接传递中文内容。如果下方步骤 3 执行失败，改用下方的"PowerShell COM 方案"，不要自行发明其他方法。**
+
 **严禁将文档内容嵌入 bash command 参数中**——权利要求文本超过 4000 字符会触发 inline payload limit。
 
 正确做法（三步）：
@@ -2072,12 +2076,15 @@ write_file(path="OUTPUT_DIR/权利要求书.md", content="1. 一种...", mode="w
 格式：每条权利要求占一段，段落之间用空行分隔。
 
 步骤 2：用 write_file 保存转换脚本（以下内容直接复制，只需替换 OUTPUT_DIR）：
-write_file(path="OUTPUT_DIR/md2docx.py", content="import os\nimport re\nfrom docx import Document\nfrom docx.shared import Pt, Cm\nfrom docx.enum.text import WD_ALIGN_PARAGRAPH\n\nd = r'OUTPUT_DIR'\nsrc = os.path.join(d, '权利要求书.md')\ndst = os.path.join(d, '权利要求书.docx')\n\ndoc = Document()\ndoc.styles['Normal'].font.size = Pt(12)\nh = doc.add_heading('权利要求书', level=1)\nh.alignment = WD_ALIGN_PARAGRAPH.CENTER\n\ntext = open(src, encoding='utf-8').read()\nclaims = re.split(r'\\n(?=\\d+\\.\\s)', text.strip())\nfor claim in claims:\n    claim = claim.strip()\n    if not claim:\n        continue\n    p = doc.add_paragraph(claim)\n    p.paragraph_format.first_line_indent = Cm(0.74)\n\ndoc.save(dst)\nprint('saved:', dst)\n", mode="write")
+write_file(path="OUTPUT_DIR/md2docx.py", content="import os\nimport re\nfrom docx import Document\nfrom docx.shared import Pt, Cm\nfrom docx.enum.text import WD_ALIGN_PARAGRAPH\nfrom docx.oxml.ns import qn\n\nd = r'OUTPUT_DIR'\nsrc = os.path.join(d, '权利要求书.md')\ndst = os.path.join(d, '权利要求书.docx')\n\ndoc = Document()\nstyle = doc.styles['Normal']\nstyle.font.name = 'Times New Roman'\nstyle.font.size = Pt(12)\nstyle.element.rPr.rFonts.set(qn('w:eastAsia'), '宋体')\nh = doc.add_heading('权利要求书', level=1)\nh.alignment = WD_ALIGN_PARAGRAPH.CENTER\n\ntext = open(src, encoding='utf-8').read()\nclaims = re.split(r'\\n(?=\\d+\\.\\s)', text.strip())\nfor claim in claims:\n    claim = claim.strip()\n    if not claim:\n        continue\n    p = doc.add_paragraph(claim)\n    p.paragraph_format.first_line_indent = Cm(0.74)\n\ndoc.save(dst)\nprint('saved:', dst)\n", mode="write")
 
 步骤 3：用 bash 安装依赖并执行转换：
 bash(command="pip install python-docx -q && python OUTPUT_DIR/md2docx.py")
 
-如果 Python 不可用（pip/python 报错 "not found"），改用 PowerShell COM 方案：
+如果 Python 不可用（pip/python 报错 "not found"）：
+- **macOS**：运行 brew install python3 或从 python.org 下载安装，然后重试步骤 3
+- **Linux**：运行 sudo apt install python3 python3-pip（或对应包管理器），然后重试步骤 3
+- **Windows**（需已安装 Microsoft Word）：改用 PowerShell COM 方案：
 步骤 2（替代）：用 write_file 保存 PowerShell 转换脚本：
 write_file(path="OUTPUT_DIR/md2docx.ps1", content="$src = 'OUTPUT_DIR/权利要求书.md'\n$dst = 'OUTPUT_DIR/权利要求书.docx'\n$word = New-Object -ComObject Word.Application\n$word.Visible = $false\ntry {\n    $doc = $word.Documents.Add()\n    $text = Get-Content $src -Encoding UTF8 -Raw\n    $claims = $text -split '(?m)(?=^\\d+\\.\\s)'\n    foreach ($claim in $claims) {\n        $claim = $claim.Trim()\n        if ($claim) { $doc.Paragraphs.Add().Range.Text = $claim }\n    }\n    $doc.SaveAs2([System.IO.Path]::GetFullPath($dst))\n    Write-Output \"saved: $dst\"\n} finally {\n    $doc.Close()\n    $word.Quit()\n    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null\n}\n", mode="write")
 步骤 3（替代）：执行 PowerShell 脚本：
@@ -2131,7 +2138,10 @@ bash(command="powershell -ExecutionPolicy Bypass -File OUTPUT_DIR/md2docx.ps1")
 
 ## 附图说明
 
-[逐图描述：图1是...的结构示意图；图2是...的流程图]
+图1是本发明实施例提供的XXX系统的整体架构示意图。
+图2是本发明实施例提供的XXX方法的步骤流程图。
+
+[逐图描述每张附图的内容。注意：此处只写文字描述，不嵌入图片——附图说明是说明书正文的一部分，提交专利局时不含图片内联。图片在上一阶段（附图整理）中已生成并经用户确认。]
 
 ## 具体实施方式
 
@@ -2160,6 +2170,8 @@ bash(command="powershell -ExecutionPolicy Bypass -File OUTPUT_DIR/md2docx.ps1")
 
 说明书内容输出完毕后，必须立即保存为 .docx 文件。
 
+**【强制】必须严格按照下方三步模板执行。禁止自行编写 PowerShell/VBScript/其他转换脚本。禁止尝试用 bash 直接传递中文内容。如果下方步骤 3 执行失败，改用下方的"PowerShell COM 方案"，不要自行发明其他方法。**
+
 **严禁将文档内容嵌入 bash command 参数中**——说明书文本超过 4000 字符会触发 inline payload limit。
 
 正确做法（三步）：
@@ -2170,12 +2182,15 @@ write_file(path="OUTPUT_DIR/说明书.md", content="# 发明名称\n\n## 技术�
 格式：使用标准 Markdown（# 标题、正文段落、空行分隔）。
 
 步骤 2：用 write_file 保存转换脚本（以下内容直接复制，只需替换 OUTPUT_DIR）：
-write_file(path="OUTPUT_DIR/md2docx_desc.py", content="import os\nfrom docx import Document\nfrom docx.shared import Pt\n\nd = r'OUTPUT_DIR'\nsrc = os.path.join(d, '说明书.md')\ndst = os.path.join(d, '说明书.docx')\n\ndoc = Document()\ndoc.styles['Normal'].font.size = Pt(12)\n\ntext = open(src, encoding='utf-8').read()\nfor block in text.split('\\n\\n'):\n    block = block.strip()\n    if not block:\n        continue\n    if block.startswith('#'):\n        level = min(len(block) - len(block.lstrip('#')), 4)\n        doc.add_heading(block.lstrip('#').strip(), level=level)\n    else:\n        doc.add_paragraph(block)\n\ndoc.save(dst)\nprint('saved:', dst)\n", mode="write")
+write_file(path="OUTPUT_DIR/md2docx_desc.py", content="import os\nfrom docx import Document\nfrom docx.shared import Pt\nfrom docx.oxml.ns import qn\n\nd = r'OUTPUT_DIR'\nsrc = os.path.join(d, '说明书.md')\ndst = os.path.join(d, '说明书.docx')\n\ndoc = Document()\nstyle = doc.styles['Normal']\nstyle.font.name = 'Times New Roman'\nstyle.font.size = Pt(12)\nstyle.element.rPr.rFonts.set(qn('w:eastAsia'), '宋体')\n\ntext = open(src, encoding='utf-8').read()\nfor block in text.split('\\n\\n'):\n    block = block.strip()\n    if not block:\n        continue\n    if block.startswith('#'):\n        level = min(len(block) - len(block.lstrip('#')), 4)\n        doc.add_heading(block.lstrip('#').strip(), level=level)\n    else:\n        doc.add_paragraph(block)\n\ndoc.save(dst)\nprint('saved:', dst)\n", mode="write")
 
 步骤 3：用 bash 安装依赖并执行转换：
 bash(command="pip install python-docx -q && python OUTPUT_DIR/md2docx_desc.py")
 
-如果 Python 不可用（pip/python 报错 "not found"），改用 PowerShell COM 方案：
+如果 Python 不可用（pip/python 报错 "not found"）：
+- **macOS**：运行 brew install python3 或从 python.org 下载安装，然后重试步骤 3
+- **Linux**：运行 sudo apt install python3 python3-pip（或对应包管理器），然后重试步骤 3
+- **Windows**（需已安装 Microsoft Word）：改用 PowerShell COM 方案：
 步骤 2（替代）：用 write_file 保存 PowerShell 转换脚本：
 write_file(path="OUTPUT_DIR/md2docx_desc.ps1", content="$src = 'OUTPUT_DIR/说明书.md'\n$dst = 'OUTPUT_DIR/说明书.docx'\n$word = New-Object -ComObject Word.Application\n$word.Visible = $false\ntry {\n    $doc = $word.Documents.Add()\n    $text = Get-Content $src -Encoding UTF8 -Raw\n    foreach ($block in ($text -split '\\n\\n')) {\n        $block = $block.Trim()\n        if (-not $block) { continue }\n        if ($block.StartsWith('#')) {\n            $level = ($block -replace '[^#]','').Length\n            $title = $block.TrimStart('#').Trim()\n            $doc.Paragraphs.Add().Range.Text = $title\n        } else {\n            $doc.Paragraphs.Add().Range.Text = $block\n        }\n    }\n    $doc.SaveAs2([System.IO.Path]::GetFullPath($dst))\n    Write-Output \"saved: $dst\"\n} finally {\n    $doc.Close()\n    $word.Quit()\n    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null\n}\n", mode="write")
 步骤 3（替代）：执行 PowerShell 脚本：
@@ -2193,8 +2208,8 @@ bash(command="powershell -ExecutionPolicy Bypass -File OUTPUT_DIR/md2docx_desc.p
 ## 第零步：读取技术方案和权利要求（必须先执行）
 
 用 list_directory 查看项目目录，然后用 read_file 读取：
-1. 交底书解析文档——获取技术方案描述和组件关系
-2. 权利要求书——获取需要在附图中体现的技术特征
+1. 交底书解析与技术提炼文档.md——获取技术方案描述和组件关系
+2. 权利要求书.md——获取需要在附图中体现的技术特征
 
 同时确认用户是否已提供附图文件（检查 .png/.jpg/.svg/.drawio 等）。
 
@@ -2254,13 +2269,28 @@ bash(command="powershell -ExecutionPolicy Bypass -File OUTPUT_DIR/md2docx_desc.p
 | 1 | 控制器 | 图1 |
 | 2 | 传感器 | 图1 |
 
-### 三、附图说明段落（可直接用于说明书）
-图1是本发明实施例提供的XXX系统的整体架构示意图。
-图2是本发明实施例提供的XXX方法的步骤流程图。
+### 三、附图说明（图文对照）
+
+每张附图的说明紧跟该图的 base64 内联显示。格式如下：
+
+**图1** 是本发明实施例提供的XXX系统的整体架构示意图。
+
+![图1](data:image/png;base64,{图1的base64编码})
+
+**图2** 是本发明实施例提供的XXX方法的步骤流程图。
+
+![图2](data:image/png;base64,{图2的base64编码})
+
+> 实现方式：生成每张 PNG 后，用 bash 执行 base64 编码命令获取图片的 base64 字符串：
+> - Windows PowerShell: [Convert]::ToBase64String([IO.File]::ReadAllBytes("图片路径"))
+> - Linux/Mac: base64 -w0 图片路径
+> 然后将 base64 字符串嵌入到上面的格式中（替换花括号部分）。
+> 这样用户在右侧预览面板中可以直接看到每张图与其说明的对应关系。
 
 ## 重要约束
 - 附图中的标记必须与说明书和权利要求中的组件一一对应。
-- 所有生成的图形内容（SVG/PNG/Mermaid）必须用 write_file 或 bash 保存到项目目录下的文件中，然后在文档中引用文件路径。不要在回复中内联图形源码。
+- 所有生成的图形内容（SVG/PNG/Mermaid）必须用 write_file 或 bash 保存到项目目录下的文件中。不要在回复中直接贴 SVG/Mermaid 源码。
+- 在"三、附图说明"section 中，必须将已保存的 PNG 文件转为 base64 data URL 嵌入（用于面板预览），同时保留磁盘文件（用于最终提交）。
 - 如果所有绘图方式都失败，明确告知用户需要人工补充正式附图。
 - 只生成一份附图整理文档，输出完毕后立即停止。
 - 【严禁】输出确认提示语或后续内容。
@@ -2328,21 +2358,53 @@ bash(command="powershell -ExecutionPolicy Bypass -File OUTPUT_DIR/md2docx_desc.p
 - 从前序阶段的产出物摘要中获取内容
 - 分别生成 权利要求书.docx、说明书.docx、说明书摘要.docx 保存到输出目录
 
-检查已有文件：
+### 生成"申请文件一致性检查报告.docx"（必须执行）
+
+检查报告（第一步生成的内容）必须保存为 Word 文件。
+
+**【强制】必须严格按照下方三步模板执行。禁止自行编写 PowerShell/VBScript/其他转换脚本。禁止尝试用 bash 直接传递中文内容。如果下方步骤 3 执行失败，改用下方的"PowerShell COM 方案"，不要自行发明其他方法。**
+
+**严禁将文档内容嵌入 bash command 参数中**——检查报告文本超过 4000 字符会触发 inline payload limit。
+
+正确做法（三步）：
+
+步骤 1：用 write_file 保存检查报告纯文本为 .md 文件。
+write_file(path="OUTPUT_DIR/申请文件一致性检查报告.md", content="# 专利申请文件一致性检查报告\n\n## 一、完整申请文件清单\n...", mode="write")
+如果内容超过约 6000 字符，建议分多次 mode="append" 写入以避免模型输出截断。
+
+步骤 2：用 write_file 保存转换脚本（以下内容直接复制，只需替换 OUTPUT_DIR）：
+write_file(path="OUTPUT_DIR/md2docx_report.py", content="import os\nfrom docx import Document\nfrom docx.shared import Pt\nfrom docx.oxml.ns import qn\n\nd = r'OUTPUT_DIR'\nsrc = os.path.join(d, '申请文件一致性检查报告.md')\ndst = os.path.join(d, '申请文件一致性检查报告.docx')\n\ndoc = Document()\nstyle = doc.styles['Normal']\nstyle.font.name = 'Times New Roman'\nstyle.font.size = Pt(12)\nstyle.element.rPr.rFonts.set(qn('w:eastAsia'), '宋体')\n\ntext = open(src, encoding='utf-8').read()\nfor block in text.split('\\n\\n'):\n    block = block.strip()\n    if not block:\n        continue\n    if block.startswith('#'):\n        level = min(len(block) - len(block.lstrip('#')), 4)\n        doc.add_heading(block.lstrip('#').strip(), level=level)\n    elif block.startswith('- '):\n        for line in block.split('\\n'):\n            line = line.strip()\n            if line.startswith('- '):\n                doc.add_paragraph(line[2:], style='List Bullet')\n    else:\n        doc.add_paragraph(block)\n\ndoc.save(dst)\nprint('saved:', dst)\n", mode="write")
+
+步骤 3：用 bash 安装依赖并执行转换：
+bash(command="pip install python-docx -q && python OUTPUT_DIR/md2docx_report.py")
+
+如果 Python 不可用（pip/python 报错 "not found"）：
+- **macOS**：运行 brew install python3 或从 python.org 下载安装，然后重试步骤 3
+- **Linux**：运行 sudo apt install python3 python3-pip（或对应包管理器），然后重试步骤 3
+- **Windows**（需已安装 Microsoft Word）：改用 PowerShell COM 方案：
+步骤 2（替代）：用 write_file 保存 PowerShell 转换脚本：
+write_file(path="OUTPUT_DIR/md2docx_report.ps1", content="[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n$src = 'OUTPUT_DIR/申请文件一致性检查报告.md'\n$dst = 'OUTPUT_DIR/申请文件一致性检查报告.docx'\n$word = New-Object -ComObject Word.Application\n$word.Visible = $false\ntry {\n    $doc = $word.Documents.Add()\n    $text = Get-Content $src -Encoding UTF8 -Raw\n    foreach ($block in ($text -split '\\n\\n')) {\n        $block = $block.Trim()\n        if (-not $block) { continue }\n        if ($block.StartsWith('#')) {\n            $title = $block.TrimStart('#').Trim()\n            $doc.Paragraphs.Add().Range.Text = $title\n        } else {\n            $doc.Paragraphs.Add().Range.Text = $block\n        }\n    }\n    $doc.SaveAs2([System.IO.Path]::GetFullPath($dst))\n    Write-Output \"saved: $dst\"\n} finally {\n    $doc.Close()\n    $word.Quit()\n    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null\n}\n", mode="write")
+步骤 3（替代）：执行 PowerShell 脚本：
+bash(command="powershell -ExecutionPolicy Bypass -File OUTPUT_DIR/md2docx_report.ps1")
+
+### 生成"说明书摘要.docx"
+
+摘要内容较短（300字以内），可使用短脚本内联生成：
+
+bash(command="pip install python-docx -q && python -c \"from docx import Document; from docx.shared import Pt; from docx.oxml.ns import qn; import os; doc=Document(); s=doc.styles['Normal']; s.font.name='Times New Roman'; s.font.size=Pt(12); s.element.rPr.rFonts.set(qn('w:eastAsia'),'宋体'); doc.add_heading('说明书摘要',level=1); doc.add_paragraph('此处为实际摘要内容，300字以内'); d=r'OUTPUT_DIR'; os.makedirs(d,exist_ok=True); doc.save(os.path.join(d,'摘要.docx')); print('saved')\"")
+
+### 检查已有文件
 
 bash(command="pip install python-docx -q && python -c \"import os; d=r'OUTPUT_DIR'; print('权利要求书:', '存在' if os.path.exists(os.path.join(d,'权利要求书.docx')) else '不存在'); print('说明书:', '存在' if os.path.exists(os.path.join(d,'说明书.docx')) else '不存在')\"")
-
-然后生成说明书摘要（摘要内容较短，可直接内联）：
-
-bash(command="python -c \"from docx import Document; from docx.shared import Pt; import os; doc=Document(); doc.styles['Normal'].font.size=Pt(12); doc.add_heading('说明书摘要',level=1); doc.add_paragraph('实际摘要内容300字以内'); d=r'OUTPUT_DIR'; os.makedirs(d,exist_ok=True); doc.save(os.path.join(d,'说明书摘要.docx')); print('已保存')\"")
 
 注意：如果需要生成较长的文件（如补写权利要求书或说明书），**严禁将 Python 脚本内联到 bash command 参数中**。正确做法：先用 write_file 保存 Python 脚本为 .py 文件，再用 bash 执行该文件。
 
 最终输出目录应包含：
 - 权利要求书.docx
 - 说明书.docx
-- 说明书摘要.docx
-- 申请文件组装与检查报告.md（本阶段的检查报告）
+- 摘要.docx
+- 申请文件一致性检查报告.docx（本阶段的检查报告）
+- 附图/（PNG 文件目录）
 
 ## 免责声明
 文档末尾必须包含：本文件由 AI 辅助生成，建议提交前由专业专利代理人审核。专利权的最终授予以国家知识产权局审查决定为准。
@@ -2355,6 +2417,503 @@ bash(command="python -c \"from docx import Document; from docx.shared import Pt;
 - OUTPUT_DIR 替换为项目路径（在本消息顶部的"项目路径"字段中可以看到）。
 - 完成检查报告 + 保存摘要 docx 后立即停止。
 - 【严禁】自己模拟用户确认。
+`
+
+	// ---------------------------------------------------------------------------
+	// US Patent Application (USPTO)
+	// ---------------------------------------------------------------------------
+	case "us_disclosure_analysis":
+		return `## Phase Instructions
+
+Analyze the invention disclosure and extract key technical content for US patent drafting.
+The disclosure may be written in Chinese or English — process either language correctly.
+
+## Step 0: Read Input Materials
+
+Check the form data above for the input mode:
+
+**Mode 1: Disclosure File (file_mode)**
+- The file path is in the form field "disclosure_path" above. Replace FILE_PATH below with that value.
+- Extract text from the document:
+  - .docx: bash(command="pip install python-docx -q && python -c \"from docx import Document; doc=Document(r'FILE_PATH'); print('\\n'.join(p.text for p in doc.paragraphs))\"")
+  - .txt/.md: use read_file directly
+  - .pdf: bash(command="pip install pymupdf -q && python -c \"import fitz; doc=fitz.open(r'FILE_PATH'); print('\\n'.join(page.get_text() for page in doc))\"")
+- If the disclosure is in Chinese, you MUST translate the technical content into English for the patent document while preserving all technical details. Keep the original Chinese in internal analysis notes for reference.
+
+**Mode 2: Manual Input (manual_mode)**
+- Use the form fields: technical_problem, technical_solution, beneficial_effects
+- If input is in Chinese, translate to English for patent drafting
+
+## Document Structure (output in English)
+
+### 1. Field of the Invention
+One paragraph identifying the technical field.
+
+### 2. Background of the Invention
+- Description of prior art
+- Problems and limitations of prior art (be specific — this forms the basis for distinguishing claims)
+
+### 3. Summary of the Invention
+- Technical problem to be solved
+- Core inventive concept (basis for independent claims)
+- Preferred embodiments (basis for dependent claims)
+- Key technical features list (structure/steps/parameters/materials)
+- Logical relationships between features
+
+### 4. Brief Description of the Drawings
+- List of figures (if provided via figures_paths)
+- Description of each figure
+- Suggested additional figures if needed
+
+### 5. Advantages Over Prior Art
+- Each advantage mapped to specific technical features
+- Quantify where possible (improves by X%, reduces by Y%)
+
+### 6. Patent Type Considerations
+- Utility patent vs. provisional application strategy
+- If provisional: note what can be less formal; deadline for non-provisional conversion (12 months)
+
+## Important Constraints
+- Extract technical content faithfully from user materials — do not invent technical details.
+- ALL patent document content must be in English (per USPTO requirements).
+- If disclosure is in Chinese, translate accurately; preserve original Chinese terms in parentheses for key technical terms on first occurrence.
+- After generating the document, save it: write_file(path="OUTPUT_DIR/Disclosure_Analysis.md", content="...", mode="write"). If content exceeds ~6000 chars, use mode="append" for subsequent parts.
+- Output one document only, then stop immediately.
+- Do NOT output confirmation prompts or simulate user confirmation.
+`
+	case "us_prior_art_search":
+		return `## Phase Instructions
+
+Based on the disclosure analysis, conduct prior art search to assess novelty and non-obviousness under 35 U.S.C. §102 and §103.
+
+## Step 0: Read Previous Phase Output
+
+Use list_directory to check the project directory, then read_file to load:
+- Disclosure_Analysis.md — core technical features and inventive concepts
+
+## Search Strategy
+
+1. **Identify search terms**: Extract 3-5 keyword combinations from the technical solution (technical field + features + effects), in English
+2. **Multi-source search** using web_search:
+   - Google Patents (search "site:patents.google.com" + technical keywords)
+   - USPTO Full-Text (search "site:patft.uspto.gov" or "site:appft.uspto.gov" + keywords)
+   - Google Scholar (academic papers with related solutions)
+   - Espacenet (search "site:worldwide.espacenet.com" + keywords)
+3. **Select closest references**: Choose 3-5 most relevant prior art documents
+4. **Retrieve details**: Use web_fetch for abstracts and claims of highly relevant results
+
+## Document Structure
+
+### I. Search Scope and Keywords
+- Keyword combinations used
+- Databases and sources searched
+- CPC/IPC classification codes consulted (if identifiable)
+
+### II. Prior Art References
+| Ref# | Document ID | Source | Publication Date | Relevance | Key Teaching |
+|------|-------------|--------|-----------------|-----------|-------------|
+| D1   | US...       | USPTO  | ...             | High/Med  | ...         |
+
+### III. Novelty Analysis (35 U.S.C. §102)
+For each highly relevant reference:
+- Claim elements of the present invention vs. reference disclosure
+- Distinguishing features (elements present in invention but absent from reference)
+- Conclusion: Does the reference anticipate any claim element?
+
+### IV. Non-Obviousness Analysis (35 U.S.C. §103)
+- Closest prior art (select one as primary reference)
+- Differences between invention and closest prior art
+- Whether a person of ordinary skill (PHOSITA) would find it obvious to combine references
+- Unexpected/superior technical effects
+- Conclusion: Is the invention non-obvious?
+
+### V. Claims Strategy Recommendations
+Based on search results:
+- Recommended scope for independent claims (minimum feature set for novelty + non-obviousness)
+- Features to avoid in independent claims (already disclosed in prior art)
+- Distinguishing features to emphasize
+- Potential §101 issues (abstract idea, natural phenomenon) if applicable
+
+## Important Constraints
+- Must actually perform web_search — do not fabricate prior art references from memory.
+- If no highly relevant results found, honestly report "No highly relevant prior art identified."
+- All analysis in English.
+- After generating the document, save it: write_file(path="OUTPUT_DIR/Prior_Art_Search.md", content="...", mode="write"). If content exceeds ~6000 chars, use mode="append" for subsequent parts.
+- Output one document only, then stop immediately.
+- Do NOT simulate user confirmation.
+`
+	case "us_claims_drafting":
+		return `## Phase Instructions
+
+Based on the disclosure analysis and prior art search, draft patent claims conforming to USPTO requirements (35 U.S.C. §112, MPEP Chapter 2100).
+
+## Step 0: Read Previous Phase Outputs
+
+Use list_directory then read_file to load:
+- Disclosure_Analysis.md — full technical solution
+- Prior_Art_Search.md — novelty/non-obviousness conclusions and claims strategy
+
+## Claims Drafting Rules (USPTO Format)
+
+### Claim Structure
+- Claims must be in ONE sentence (single period at the end)
+- Independent claims: preamble + transitional phrase + body
+- Transitional phrases: "comprising" (open-ended, preferred), "consisting of" (closed), "consisting essentially of" (semi-open)
+- Dependent claims: "The [device/method] of claim N, wherein/further comprising..."
+- Number claims sequentially starting from 1
+
+### Required Claims
+1. **Apparatus/System independent claim** (if applicable) — structural elements and connections
+2. **Method independent claim** (if applicable) — steps in logical order
+3. **CRM claim** (Computer Readable Medium, if software-related) — optional but recommended
+4. **Dependent claims**: 5-15 per independent claim, narrowing progressively
+
+### Claim Drafting Best Practices
+- Use "a" for first introduction, "the" or "said" for subsequent references
+- Avoid relative terms ("approximately", "substantially") unless necessary and defined
+- Each claim element should have antecedent basis
+- Method claims use gerund form ("receiving...", "determining...", "generating...")
+- Avoid negative limitations where possible
+- Keep independent claims broad; narrow in dependent claims
+
+## Document Structure
+
+### Part 1: Claims (Formal — ready for filing)
+
+1. A [device/system/method] for [purpose], comprising:
+   a first component configured to [...];
+   a second component coupled to the first component and configured to [...]; and
+   a controller configured to [...].
+
+2. The [device] of claim 1, wherein the first component further comprises [...].
+
+3. The [device] of claim 1, wherein [...].
+
+[Continue with all claims]
+
+### Part 2: Drafting Notes (for applicant reference, not filed)
+
+- **Claim tree**: Visual hierarchy showing dependency relationships
+- **Claim-to-specification mapping**: Which specification section supports each claim
+- **Prosecution strategy notes**: Potential narrowing amendments if rejections received
+- **Claim count assessment**: Total claims (note: >20 claims incur excess claim fees)
+
+## Save as Word File (MUST execute)
+
+**【MANDATORY】Follow the three-step template below exactly. Do NOT write your own PowerShell/VBScript/other conversion scripts. Do NOT attempt to pass Chinese/English content directly through bash inline.**
+
+Step 1: Save claims as .md file (**Part 1 ONLY** — do NOT include Part 2 Drafting Notes):
+write_file(path="OUTPUT_DIR/Claims.md", content="1. A system for...", mode="write")
+If content exceeds ~6000 characters, use mode="append" for subsequent parts.
+
+Then save drafting notes separately (for applicant reference, not converted to docx):
+write_file(path="OUTPUT_DIR/Claims_Notes.md", content="## Claim Tree\n...", mode="write")
+
+Step 2: Save conversion script:
+write_file(path="OUTPUT_DIR/md2docx_claims.py", content="import os\nimport re\nfrom docx import Document\nfrom docx.shared import Pt, Cm\nfrom docx.enum.text import WD_ALIGN_PARAGRAPH\n\nd = r'OUTPUT_DIR'\nsrc = os.path.join(d, 'Claims.md')\ndst = os.path.join(d, 'Claims.docx')\n\ndoc = Document()\nstyle = doc.styles['Normal']\nstyle.font.name = 'Times New Roman'\nstyle.font.size = Pt(12)\nh = doc.add_heading('Claims', level=1)\nh.alignment = WD_ALIGN_PARAGRAPH.CENTER\n\ntext = open(src, encoding='utf-8').read()\nclaims = re.split(r'\\n(?=\\d+\\.\\s)', text.strip())\nfor claim in claims:\n    claim = claim.strip()\n    if not claim:\n        continue\n    p = doc.add_paragraph(claim)\n    p.paragraph_format.first_line_indent = Cm(1.27)\n    p.paragraph_format.line_spacing = 2.0\n\ndoc.save(dst)\nprint('saved:', dst)\n", mode="write")
+
+Step 3: Execute conversion:
+bash(command="pip install python-docx -q && python OUTPUT_DIR/md2docx_claims.py")
+
+If Python is not available (pip/python reports "not found"):
+- **macOS**: run brew install python3 or download from python.org, then retry Step 3
+- **Linux**: run sudo apt install python3 python3-pip (or equivalent), then retry Step 3
+- **Windows** (requires Microsoft Word installed): use PowerShell COM fallback — write_file the PS1 script below, then execute with bash(command="powershell -ExecutionPolicy Bypass -File OUTPUT_DIR/md2docx_claims.ps1")
+
+Requirements:
+- Replace all OUTPUT_DIR with the actual project path
+- Claims document must use Times New Roman 12pt, double-spaced, 1.27cm indent (USPTO format)
+- Inform user of file path when complete
+`
+	case "us_drawings":
+		return `## Phase Instructions
+
+Based on the technical solution and claims, generate patent drawings conforming to 37 CFR §1.84 (USPTO drawing requirements).
+
+## Step 0: Read Previous Phase Outputs
+
+Use list_directory then read_file to load:
+- Disclosure_Analysis.md — technical solution and component relationships
+- Claims.md — features that must be illustrated in drawings
+
+Check if user has already provided drawing files (.png/.jpg/.svg).
+
+## Drawing Generation Strategy
+
+### If user provided drawings:
+- Verify files exist (list_directory), record filenames
+- Proceed to "Figure Numbering" section
+
+### If no drawings provided (generate automatically):
+
+**Method A: Python + matplotlib (recommended, no external deps)**
+Generate black-and-white technical diagrams:
+- Architecture/block diagrams: matplotlib patches + arrows
+- Flowcharts: matplotlib step boxes and arrows
+- Save as PNG, 300 DPI minimum
+
+**Method B: SVG (if matplotlib unavailable)**
+Write SVG source to .svg files in project directory.
+
+**Method C: drawio-skill (if installed)**
+Call manage_skill to run drawio-skill.
+
+### Required Drawing Types (select applicable)
+1. **System block diagram** (almost always needed) — major components and connections
+2. **Method flowchart** (if method claims exist) — steps and decision logic
+3. **Detailed component diagram** (if complex subsystems)
+4. **Data flow diagram** (if data processing involved)
+
+### USPTO Drawing Requirements (37 CFR §1.84)
+- **Black ink on white background ONLY** — no color, no grayscale shading, no gradients
+- Cross-hatching permitted for cross-sections
+- Reference numerals (10, 20, 30...) — use numbers with consistent increments, NOT sequential 1,2,3
+- Lines must be clean, uniform thickness, and sufficiently dense for reproduction
+- Each figure on separate sheet, labeled "FIG. 1", "FIG. 2" etc.
+- Minimum margin: 2.5cm top, 2.5cm left, 1.5cm right, 1.0cm bottom
+- Acceptable size: Letter (21.6 x 27.9 cm) or A4
+
+## Figure Numbering and Description Document
+
+After generating all drawings, output document:
+
+### I. Figures List
+| Figure | Filename | Description |
+|--------|----------|-------------|
+| FIG. 1 | Fig1-Architecture.png | Block diagram of the system according to an embodiment |
+| FIG. 2 | Fig2-Method.png | Flowchart of the method according to an embodiment |
+
+### II. Reference Numerals
+| Numeral | Component | Appears in |
+|---------|-----------|-----------|
+| 10 | Controller | FIG. 1 |
+| 20 | Sensor module | FIG. 1, FIG. 2 |
+| 30 | Processing unit | FIG. 1 |
+
+### III. Brief Description of Drawings (for Specification use)
+
+FIG. 1 is a block diagram of a system according to an embodiment of the present disclosure.
+
+![FIG. 1](data:image/png;base64,{base64 of Fig1})
+
+FIG. 2 is a flowchart illustrating a method according to an embodiment of the present disclosure.
+
+![FIG. 2](data:image/png;base64,{base64 of Fig2})
+
+> To embed images: After generating each PNG, use bash to get base64:
+> - Windows PowerShell: [Convert]::ToBase64String([IO.File]::ReadAllBytes("path"))
+> - Linux/Mac: base64 -w0 path
+> Replace the {base64 of FigN} placeholder with the actual base64 string.
+
+## Important Constraints
+- Reference numerals must be consistent with specification and claims.
+- USPTO requires reference numerals NOT be enclosed in parentheses or brackets in drawings (different from EPO/CNIPA).
+- Save all graphics to files in the project directory. Do NOT inline SVG/Mermaid source in the response.
+- After generating the document (sections I + II + III above), save it: write_file(path="OUTPUT_DIR/Drawings.md", content="...", mode="write"). If content exceeds ~6000 chars, use mode="append" for subsequent parts.
+- If all drawing methods fail, inform user that formal drawings need to be prepared manually.
+- Output one document only, then stop immediately.
+- Do NOT simulate user confirmation.
+`
+	case "us_specification_writing":
+		return `## Phase Instructions
+
+Based on the disclosure analysis, claims, and confirmed drawings, write the complete patent specification conforming to 35 U.S.C. §112 and MPEP guidelines.
+
+## Step 0: Read Previous Phase Outputs (MUST execute first)
+
+The "prior phase outputs" summary above is truncated. Before writing, use read_file to load:
+- Disclosure_Analysis.md — full technical details
+- Claims.md — the complete claims (specification must support every claim element)
+- Prior_Art_Search.md — prior art conclusions (useful for Background section)
+- Drawings.md — reference numerals and figure descriptions
+
+## Specification Format (USPTO Standard)
+
+# [TITLE OF THE INVENTION]
+(in ALL CAPS per USPTO convention)
+
+## CROSS-REFERENCE TO RELATED APPLICATIONS
+[State "None" if no related applications, or list provisional/continuation/CIP relationships]
+
+## FIELD OF THE INVENTION
+[One paragraph identifying the technical field]
+
+## BACKGROUND OF THE INVENTION
+[Prior art description + limitations. Use neutral language — do not disparage prior art (MPEP §2001.06)]
+
+## SUMMARY OF THE INVENTION
+[Brief description of the invention addressing the identified problems. Should correspond to independent claims but in descriptive language.]
+
+## BRIEF DESCRIPTION OF THE DRAWINGS
+FIG. 1 is a block diagram of [...] according to an embodiment of the present disclosure.
+FIG. 2 is a flowchart of [...] according to an embodiment of the present disclosure.
+[One sentence per figure. Do NOT embed images here — this is filing text.]
+
+## DETAILED DESCRIPTION OF THE PREFERRED EMBODIMENTS
+
+[At least 2-3 embodiments:
+- First embodiment: corresponds to independent claim — describe EVERY element with reference numerals
+- Second/third embodiments: correspond to dependent claims — variations and preferences
+- Use reference numerals consistently (e.g., "the controller 10", "the sensor module 20")
+- Include specific parameters, dimensions, materials, operating conditions
+- Use phrases like "In one embodiment...", "In another embodiment...", "Optionally..."
+- Enable a person of ordinary skill to make and use the invention without undue experimentation]
+
+## Writing Standards
+- Specification must satisfy §112(a): written description + enablement + best mode
+- Every claim element must be described in the specification
+- Reference numerals consistent throughout (from the Drawings phase)
+- Same technical term used consistently (define terms on first use if needed)
+- Use "approximately", "about" only where technically appropriate and define the range
+- Detailed description must be detailed enough for PHOSITA to reproduce
+
+## Important Constraints
+- Output must be filing-ready specification format — user can directly copy to filing system.
+- Specification content must support ALL claims — no claim element without specification basis.
+- Embodiments must be specific — not just restatement of claims.
+- Document MUST be saved as Word file (see below).
+- Do NOT output confirmation prompts.
+- Do NOT simulate user confirmation.
+
+## Save as Word File (MUST execute)
+
+**【MANDATORY】Follow the three-step template below exactly. Do NOT write your own conversion scripts.**
+
+Step 1: Save specification as .md file:
+write_file(path="OUTPUT_DIR/Specification.md", content="# TITLE OF THE INVENTION\n\n## CROSS-REFERENCE...", mode="write")
+If content exceeds ~6000 characters, use mode="append" for subsequent parts.
+
+Step 2: Save conversion script:
+write_file(path="OUTPUT_DIR/md2docx_spec.py", content="import os\nfrom docx import Document\nfrom docx.shared import Pt, Cm\n\nd = r'OUTPUT_DIR'\nsrc = os.path.join(d, 'Specification.md')\ndst = os.path.join(d, 'Specification.docx')\n\ndoc = Document()\nstyle = doc.styles['Normal']\nstyle.font.name = 'Times New Roman'\nstyle.font.size = Pt(12)\n\ntext = open(src, encoding='utf-8').read()\nfor block in text.split('\\n\\n'):\n    block = block.strip()\n    if not block:\n        continue\n    if block.startswith('#'):\n        level = min(len(block) - len(block.lstrip('#')), 4)\n        doc.add_heading(block.lstrip('#').strip(), level=level)\n    else:\n        p = doc.add_paragraph(block)\n        p.paragraph_format.line_spacing = 2.0\n        p.paragraph_format.first_line_indent = Cm(1.27)\n\ndoc.save(dst)\nprint('saved:', dst)\n", mode="write")
+
+Step 3: Execute conversion:
+bash(command="pip install python-docx -q && python OUTPUT_DIR/md2docx_spec.py")
+
+If Python is not available (pip/python reports "not found"):
+- **macOS**: run brew install python3 or download from python.org, then retry Step 3
+- **Linux**: run sudo apt install python3 python3-pip (or equivalent), then retry Step 3
+- **Windows** (requires Microsoft Word installed): use PowerShell COM fallback — write_file the PS1 script below, then execute with bash(command="powershell -ExecutionPolicy Bypass -File OUTPUT_DIR/md2docx_spec.ps1")
+
+Requirements:
+- Times New Roman 12pt, double-spaced, 1.27cm first-line indent (USPTO format requirements)
+- Replace all OUTPUT_DIR with actual project path
+- Inform user of file path when complete
+`
+	case "us_application_assembly":
+		return `## Phase Instructions
+
+Assemble all phase outputs into a complete USPTO patent application package and perform final consistency check.
+
+## Step 0: Read Previous Phase Outputs (MUST execute first)
+
+Use list_directory to check the project directory, then read_file to load all generated files (especially Claims.md/docx and Specification.md/docx).
+
+## Step 1: Generate Filing Checklist and Consistency Report
+
+### 1. Complete Application Package Checklist
+For **Non-Provisional Utility Application**:
+   - [ ] Specification (Description + Claims + Abstract + Drawings)
+   - [ ] Claims (separately paginated)
+   - [ ] Abstract (≤150 words)
+   - [ ] Drawings (formal drawings conforming to 37 CFR §1.84)
+   - [ ] Application Data Sheet (ADS) — information summary
+   - [ ] Inventor Declaration (37 CFR §1.63)
+   - [ ] Filing fee information
+
+For **Provisional Application**:
+   - [ ] Specification (can be less formal)
+   - [ ] Drawings (can be informal)
+   - [ ] Cover sheet (37 CFR §1.51(c)(1))
+   - NOTE: Claims and formal drawings not required but recommended
+
+### 2. Abstract (≤150 words)
+- Concise summary of the disclosure
+- Must mention the technical field, problem, and solution
+- Should correspond to the most representative independent claim
+- No legal phraseology ("said", "comprising", "wherein")
+
+### 3. Application Data Sheet Information
+- Title of Invention
+- Applicant(s) information
+- Inventor(s) information (all must be named)
+- Correspondence address
+- Application type (non-provisional/provisional)
+- Priority claim (if applicable)
+
+### 4. Consistency Check
+- [ ] Title matches across all documents
+- [ ] Every claim element has basis in specification (§112 support)
+- [ ] Reference numerals consistent between specification and drawings
+- [ ] Technical terminology consistent throughout
+- [ ] Dependent claim references are correct (no circular references)
+- [ ] No new matter introduced in claims not supported by specification
+- [ ] Abstract ≤150 words and does not contain legal phrases
+- [ ] Drawings show all elements referenced in claims
+
+### 5. Formal Requirements Check
+- [ ] Specification: Times New Roman 12pt, double-spaced, margins (top/bottom 2.5cm, left/right 2.5cm)
+- [ ] Claims: separately paginated from specification
+- [ ] Claims numbered sequentially
+- [ ] Total claims count (note: >20 claims = excess claims fee; >3 independent = excess independent claims fee)
+- [ ] Specification page count
+- [ ] Number of drawing sheets
+
+### 6. Patentability Risk Assessment
+- §101 (Subject Matter Eligibility): Any abstract idea / Alice issues?
+- §102 (Novelty): Risk points from prior art search
+- §103 (Obviousness): Combination attack risks
+- §112 (Written Description / Enablement): Any gaps?
+- Suggested response strategies for potential rejections
+
+### 7. Filing Recommendations
+- Filing method: USPTO Patent Center (https://patentcenter.uspto.gov)
+- Fee schedule reference: https://www.uspto.gov/learning-and-resources/fees-and-payment
+- Key deadlines:
+  - Provisional → Non-provisional: 12 months
+  - Response to Office Action: typically 3 months (extendable to 6)
+  - PCT international filing: 12 months from priority date
+
+## Step 2: Save as Word File (MUST execute)
+
+**【MANDATORY】Follow the template below. Do NOT write your own conversion scripts.**
+
+### Generate "Application_Checklist.docx"
+
+Step 1: Save report as .md file:
+write_file(path="OUTPUT_DIR/Application_Checklist.md", content="# USPTO Patent Application Filing Checklist\n\n## 1. Application Package...", mode="write")
+
+Step 2: Save conversion script:
+write_file(path="OUTPUT_DIR/md2docx_checklist.py", content="import os\nfrom docx import Document\nfrom docx.shared import Pt\n\nd = r'OUTPUT_DIR'\nsrc = os.path.join(d, 'Application_Checklist.md')\ndst = os.path.join(d, 'Application_Checklist.docx')\n\ndoc = Document()\nstyle = doc.styles['Normal']\nstyle.font.name = 'Times New Roman'\nstyle.font.size = Pt(12)\n\ntext = open(src, encoding='utf-8').read()\nfor block in text.split('\\n\\n'):\n    block = block.strip()\n    if not block:\n        continue\n    if block.startswith('#'):\n        level = min(len(block) - len(block.lstrip('#')), 4)\n        doc.add_heading(block.lstrip('#').strip(), level=level)\n    elif block.startswith('- '):\n        for line in block.split('\\n'):\n            line = line.strip()\n            if line.startswith('- '):\n                doc.add_paragraph(line[2:], style='List Bullet')\n    else:\n        doc.add_paragraph(block)\n\ndoc.save(dst)\nprint('saved:', dst)\n", mode="write")
+
+Step 3: Execute:
+bash(command="pip install python-docx -q && python OUTPUT_DIR/md2docx_checklist.py")
+
+### Generate "Abstract.docx"
+
+bash(command="pip install python-docx -q && python -c \"from docx import Document; from docx.shared import Pt; import os; doc=Document(); s=doc.styles['Normal']; s.font.name='Times New Roman'; s.font.size=Pt(12); doc.add_heading('Abstract',level=1); doc.add_paragraph('ACTUAL ABSTRACT CONTENT HERE - 150 words max'); d=r'OUTPUT_DIR'; os.makedirs(d,exist_ok=True); doc.save(os.path.join(d,'Abstract.docx')); print('saved')\"")
+
+### Check Existing Files
+
+bash(command="python -c \"import os; d=r'OUTPUT_DIR'; files=['Claims.docx','Specification.docx']; [print(f'{f}: exists' if os.path.exists(os.path.join(d,f)) else f'{f}: MISSING') for f in files]\"")
+
+### Final Output Directory Should Contain:
+- Claims.docx
+- Specification.docx
+- Abstract.docx
+- Application_Checklist.docx (this phase's report)
+- Drawings/ (PNG files directory)
+
+## Disclaimer
+Document must end with: This document was generated with AI assistance. It is recommended to have a registered patent attorney/agent review all documents before filing. Patent grant is ultimately determined by the USPTO examination process.
+
+## Important Constraints
+- Consistency check must be thorough — do not skip items.
+- Abstract MUST be ≤150 words (USPTO requirement, strict).
+- Must use tool calls to generate .docx files.
+- Long scripts (>200 chars): save as .py file then execute via bash.
+- Replace OUTPUT_DIR with actual project path.
+- After completing checklist + saving Abstract.docx, stop immediately.
+- Do NOT simulate user confirmation.
 `
 	default:
 		// Generic instruction for doc-only phases without specific prompts.

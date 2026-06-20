@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
-import { CancelNLSkillRun, DownloadSkillRunArtifact, GetMISDataConfig, GetNLSkillRunStatus, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, OpenFileOrShowInFolder, InstallMaclawAppDependencies, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { CancelNLSkillRun, DownloadSkillRunArtifact, GetMISDataConfig, GetNLSkillRunStatus, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import './AppsPage.css';
 
 type AppKind = 'enterprise_approval_app' | 'enterprise_normal_app' | 'tool_app' | 'automation_app';
@@ -476,7 +477,10 @@ type SkillSummary = {
     name?: string;
     description?: string;
     source?: string;
+    product_kind?: string;
+    productKind?: string;
     is_maclaw_app?: boolean;
+    capabilities?: string[] | string;
 };
 
 type StudioSkillChoice = {
@@ -486,6 +490,8 @@ type StudioSkillChoice = {
     source: AppSkillDependency['source'] | 'installed';
     sourceLabel: string;
     installed: boolean;
+    productKind?: string;
+    capabilities?: string[] | string;
 };
 
 const storageKey = 'maclaw:apps-panel:v1';
@@ -1972,17 +1978,31 @@ function skillRunOutputSuffix(status?: SkillRunStatusView | null) {
     return ` · ${snippet.slice(0, 120)}`;
 }
 
-function skillRunPrimaryArtifact(status?: SkillRunStatusView | null): SkillRunArtifactView | null {
-    const hasArtifactRef = (item?: SkillRunArtifactView) => !!String(item?.path || item?.uri || item?.id || item?.remote_url || '').trim();
-    const fromTop = Array.isArray(status?.artifacts) ? status?.artifacts?.find(hasArtifactRef) : undefined;
-    if (fromTop) return fromTop;
-    const fromSummary = Array.isArray(status?.summary?.artifacts) ? status?.summary?.artifacts?.find(hasArtifactRef) : undefined;
-    if (fromSummary) return fromSummary;
-    const fromOutput = skillRunOutputBlocks(status).map((block) => block.artifact).find(hasArtifactRef);
-    if (fromOutput) return fromOutput;
+function skillRunArtifactKeys(artifact?: SkillRunArtifactView | null) {
+    return [artifact?.id, artifact?.uri, artifact?.path, artifact?.remote_url, artifact?.name]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean);
+}
+
+function skillRunArtifacts(status?: SkillRunStatusView | null): SkillRunArtifactView[] {
+    const seen = new Set<string>();
+    const artifacts: SkillRunArtifactView[] = [];
+    const add = (artifact?: SkillRunArtifactView | null) => {
+        const keys = skillRunArtifactKeys(artifact);
+        if (!artifact || keys.length === 0 || keys.some((key) => seen.has(key))) return;
+        keys.forEach((key) => seen.add(key));
+        artifacts.push(artifact);
+    };
+    for (const artifact of status?.artifacts || []) add(artifact);
+    for (const artifact of status?.summary?.artifacts || []) add(artifact);
+    for (const block of skillRunOutputBlocks(status)) add(block.artifact);
     const artifactPath = String(status?.summary?.artifact_path || '').trim();
-    if (!artifactPath) return null;
-    return { path: artifactPath, status: status?.summary?.artifact_status };
+    if (artifactPath) add({ path: artifactPath, status: status?.summary?.artifact_status });
+    return artifacts;
+}
+
+function skillRunPrimaryArtifact(status?: SkillRunStatusView | null): SkillRunArtifactView | null {
+    return skillRunArtifacts(status)[0] || null;
 }
 
 function skillRunPrimaryArtifactPath(status?: SkillRunStatusView | null) {
@@ -3776,6 +3796,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const [approvalInstances, setApprovalInstances] = useState<ApprovalInstanceView[]>([]);
     const [currentRunContext, setCurrentRunContext] = useState({ inputSummary: '', outputMode: '' });
     const [dependencyRepairState, setDependencyRepairState] = useState<'idle' | 'installing'>('idle');
+    const [runtimeDependencyPlan, setRuntimeDependencyPlan] = useState<BackendAppInstallPlan | null>(null);
     const approvalRunContextRef = useRef<ApprovalRunContext | null>(null);
     useEffect(() => {
         setFileName('');
@@ -3793,6 +3814,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         setSkillRunStatus(null);
         setCurrentRunContext({ inputSummary: '', outputMode: '' });
         setDependencyRepairState('idle');
+        setRuntimeDependencyPlan(null);
         approvalRunContextRef.current = null;
         setRunHistory(loadAppRunHistory(app?.id || ''));
         setApprovalInstances([]);
@@ -3989,21 +4011,26 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         setSkillRunStatus(null);
         setCurrentRunContext({ inputSummary: '', outputMode: '' });
         setDependencyRepairState('idle');
+        setRuntimeDependencyPlan(null);
         approvalRunContextRef.current = null;
     };
     const runApp = async () => {
         setDependencyRepairState('idle');
+        setRuntimeDependencyPlan(null);
         approvalRunContextRef.current = null;
         if (app?.id) onUse?.(app.id);
         if (app && appNeedsRuntimeDependencyCheck(app)) {
             try {
                 const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
+                setRuntimeDependencyPlan(dependencyPlan || null);
                 if (dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, [app.id])) {
                     setValidationMessage(text.missingRequiredDependency);
                     setRunState('error');
                     return;
                 }
+                setRuntimeDependencyPlan(null);
             } catch (error: any) {
+                setRuntimeDependencyPlan(null);
                 setValidationMessage(error?.message || text.dependencyPlanError);
                 setRunState('error');
                 return;
@@ -4246,15 +4273,18 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         setValidationMessage(text.installingDependencies);
         try {
             const dependencyInstallPlan = await InstallMaclawAppDependencies(JSON.stringify(appToManifest(app)));
+            setRuntimeDependencyPlan(dependencyInstallPlan || null);
             if (dependencyInstallPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyInstallPlan, [app.id])) {
                 setValidationMessage(text.missingRequiredDependency);
                 setRunState('error');
                 setDependencyRepairState('idle');
                 return;
             }
+            setRuntimeDependencyPlan(null);
             setDependencyRepairState('idle');
             await runApp();
         } catch (error: any) {
+            setRuntimeDependencyPlan(null);
             setValidationMessage(error?.message || text.dependencyPlanError);
             setRunState('error');
             setDependencyRepairState('idle');
@@ -4347,6 +4377,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         recordRunHistory({ runID, status: 'cancelled', outputMode, inputSummary: toolInputSummary, message: text.skillRunCancelled });
         await finalizeApprovalRunFromStatus({ run_id: runID, status: 'cancelled', summary: { last_error_snippet: text.skillRunCancelled } }, 'cancelled');
     };
+    const runtimeDependencyDetails = runtimeDependencyPlan ? backendDependenciesForApp(runtimeDependencyPlan, app.id) : [];
+    const visibleRuntimeDependencyDetails = runtimeDependencyDetails.length > 0 ? runtimeDependencyDetails : runtimeDependencyPlan?.dependencies || [];
+    const showRuntimeDependencyDetails = visibleRuntimeDependencyDetails.length > 0 && (runState === 'error' || dependencyRepairState === 'installing');
     const canInstallRuntimeDependencies = !!app && appNeedsRuntimeDependencyCheck(app) && runState === 'error' && (validationMessage === text.missingRequiredDependency || dependencyRepairState === 'installing');
     const runDisabled = runState === 'running' || dependencyRepairState === 'installing';
     const runtimeLayout = runtimeWorkspaceLayoutForApp(app);
@@ -4474,8 +4507,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                         {isBusiness && <BusinessWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} lang={lang} style={{ order: runtimeOrder.approval }} layoutRegion={centerRegion} />}
                         <section className="apps-runtime-section apps-runtime-status" data-region={outputRegion === 'bottom' ? centerRegion : outputRegion} style={{ order: runtimeOrder.status }}>
                             <div className="apps-runtime-section__title">{text.runtimeStatus}</div>
-                            <div className="apps-result-panel" data-state={runState}>
+                            <div className={`apps-result-panel${showRuntimeDependencyDetails ? ' apps-result-panel--stacked' : ''}`} data-state={runState}>
                                 <span>{runState === 'done' ? text.runCompleted : runState === 'running' ? skillRunProgressMessage(skillRunStatus, text.skillRunRunning, runID) : runState === 'error' ? validationMessage : runState === 'cancelled' ? text.skillRunCancelled : text.readyOutput}</span>
+                                {showRuntimeDependencyDetails && <InstallRecordDependencies dependencies={visibleRuntimeDependencyDetails} text={text} />}
                                 {canInstallRuntimeDependencies && (
                                     <button className="apps-secondary-button apps-result-panel__action" type="button" disabled={dependencyRepairState === 'installing'} onClick={() => void installRuntimeDependenciesAndRun()}>
                                         {dependencyRepairState === 'installing' ? text.installingDependencies : text.installDependenciesAndRun}
@@ -4501,6 +4535,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                 setSkillRunStatus(null);
                                 setCurrentRunContext({ inputSummary: '', outputMode: '' });
                                 setDependencyRepairState('idle');
+                                setRuntimeDependencyPlan(null);
                                 approvalRunContextRef.current = null;
                             }}>{text.reset}</button>
                             {runState === 'running' && runID && <button className="apps-secondary-button" type="button" onClick={cancelRun}>{text.cancelRun}</button>}
@@ -4947,21 +4982,11 @@ const SkillRunEvidence = ({ status, runState, text }: { status: SkillRunStatusVi
 };
 
 const AppRunOutput = ({ status, runState, resultText, isTool, text, style, layoutRegion }: { status: SkillRunStatusView | null; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; resultText: string; isTool: boolean; text: typeof labels.zh; style?: CSSProperties; layoutRegion?: string }) => {
-    const artifact = skillRunPrimaryArtifact(status);
-    const artifactPath = String(artifact?.path || '').trim();
-    const artifactID = String(artifact?.id || '').trim();
-    const artifactURI = String(artifact?.uri || '').trim();
+    const artifacts = skillRunArtifacts(status);
     const runID = String(status?.run_id || '').trim();
-    const artifactStatus = String(artifact?.status || status?.summary?.artifact_status || '').trim();
-    const artifactLabel = artifactStatusLabel(status, text);
-    const artifactName = String(artifact?.name || artifactPath.split(/[\\/]/).pop() || '').trim();
-    const artifactDownloadState = String(artifact?.download_state || '').trim().toLowerCase();
-    const artifactRemoteOnly = artifactDownloadState === 'remote' && !artifactPath;
-    const artifactMeta = [artifactName, artifact?.mime_type, artifact?.size_bytes ? `${artifact.size_bytes} bytes` : '', artifactRemoteOnly ? 'remote' : ''].filter(Boolean).join(' · ');
-    const artifactRef = artifactID || artifactURI;
-    const hasArtifact = !!(artifactRef || artifactPath);
+    const hasArtifacts = artifacts.length > 0;
     const outputBlocks = skillRunOutputBlocks(status).filter((block) => skillRunOutputBlockText(block));
-    const showTextOutput = runState === 'done' && (!isTool || (!hasArtifact && outputBlocks.length === 0));
+    const showTextOutput = runState === 'done' && (!isTool || (!hasArtifacts && outputBlocks.length === 0));
     return (
         <section className="apps-runtime-section apps-runtime-output" data-region={layoutRegion || 'right'} style={style}>
             <div className="apps-runtime-section__title">{text.runtimeOutput}</div>
@@ -4989,16 +5014,39 @@ const AppRunOutput = ({ status, runState, resultText, isTool, text, style, layou
                     })}
                 </div>
             )}
-            {hasArtifact ? (
-                <div className="apps-run-artifact">
-                    <span>{text.runArtifacts}</span>
-                    <strong>{artifactLabel || artifactStatus || text.artifactReady}</strong>
-                    {artifactMeta && <span>{artifactMeta}</span>}
-                    <code>{artifactURI || artifactName || artifactPath}</code>
-                    <div className="apps-run-artifact__actions">
-                        <button className="apps-link-button" type="button" disabled={!artifactRef && !artifactPath} onClick={() => void openSkillRunArtifactFromUI(runID, artifactRef, artifactPath, artifactRemoteOnly)}>{artifactRemoteOnly ? text.downloadArtifact : text.openArtifact}</button>
-                        <button className="apps-link-button" type="button" disabled={!artifactRef && !artifactPath} onClick={() => void revealSkillRunArtifactFromUI(runID, artifactRef, artifactPath)}>{text.revealArtifact}</button>
-                    </div>
+            {hasArtifacts ? (
+                <div className="apps-run-artifacts">
+                    {artifacts.map((artifact, index) => {
+                        const artifactPath = String(artifact.path || '').trim();
+                        const artifactID = String(artifact.id || '').trim();
+                        const artifactURI = String(artifact.uri || '').trim();
+                        const artifactStatus = String(artifact.status || (index === 0 ? status?.summary?.artifact_status : '') || '').trim();
+                        const artifactName = String(artifact.name || artifactPath.split(/[\\/]/).pop() || '').trim();
+                        const artifactDownloadState = String(artifact.download_state || '').trim().toLowerCase();
+                        const artifactRemoteOnly = artifactDownloadState === 'remote' && !artifactPath;
+                        const artifactMeta = [artifactName, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : '', artifactRemoteOnly ? 'remote' : ''].filter(Boolean).join(' · ');
+                        const artifactRef = artifactID || artifactURI;
+                        const artifactDisplayRef = artifactURI || artifactName || artifactPath || String(artifact.remote_url || artifactID || '').trim();
+                        const normalizedArtifactStatus = artifactStatus.toLowerCase();
+                        const artifactStatusText = ['ready', 'success', 'succeeded', 'done', 'completed', 'complete'].includes(normalizedArtifactStatus)
+                            ? text.artifactReady
+                            : ['pending', 'waiting', 'running'].includes(normalizedArtifactStatus)
+                                ? text.artifactPending
+                                : artifactStatus;
+                        const artifactLabel = artifactStatusText || (artifactRef || artifactPath ? text.artifactReady : artifactStatusLabel(status, text) || text.artifactPending);
+                        return (
+                            <div className="apps-run-artifact" key={`${artifactRef || artifactPath || artifactDisplayRef || 'artifact'}-${index}`}>
+                                <span>{text.runArtifacts}</span>
+                                <strong>{artifactLabel}</strong>
+                                {artifactMeta && <span>{artifactMeta}</span>}
+                                {artifactDisplayRef && <code>{artifactDisplayRef}</code>}
+                                <div className="apps-run-artifact__actions">
+                                    <button className="apps-link-button" type="button" disabled={!artifactRef && !artifactPath} onClick={() => void openSkillRunArtifactFromUI(runID, artifactRef, artifactPath, artifactRemoteOnly)}>{artifactRemoteOnly ? text.downloadArtifact : text.openArtifact}</button>
+                                    <button className="apps-link-button" type="button" disabled={!artifactRef && !artifactPath} onClick={() => void revealSkillRunArtifactFromUI(runID, artifactRef, artifactPath)}>{text.revealArtifact}</button>
+                                </div>
+                            </div>
+                        );
+                    })}
                 </div>
             ) : outputBlocks.length === 0 && showTextOutput ? (
                 <div className="apps-output-text">
@@ -5006,7 +5054,7 @@ const AppRunOutput = ({ status, runState, resultText, isTool, text, style, layou
                     <pre>{resultText}</pre>
                 </div>
             ) : outputBlocks.length === 0 ? (
-                <div className="apps-output-empty">{artifactStatus || artifactLabel || text.noOutputYet}</div>
+                <div className="apps-output-empty">{artifactStatusLabel(status, text) || text.noOutputYet}</div>
             ) : null}
         </section>
     );
@@ -5371,6 +5419,45 @@ function installRecordMissingDependencyCount(record: BackendAppInstallRecord) {
     return (record.dependencies || []).filter(isBlockingBackendDependency).length;
 }
 
+function installRecordDependencyState(dep: BackendAppInstallDependency) {
+    if (isBlockingBackendDependency(dep)) return 'blocked';
+    if (dep.installed) return 'ready';
+    return 'missing';
+}
+
+function installRecordDependencyStatus(dep: BackendAppInstallDependency, text: typeof labels.zh) {
+    const summary = backendDependencySummary(dep, text);
+    const separator = summary.indexOf(':');
+    return separator > 0 ? summary.slice(0, separator) : dep.installed ? text.installedDependency : text.missingDependency;
+}
+
+const InstallRecordDependencies = ({ dependencies, text }: { dependencies?: BackendAppInstallDependency[]; text: typeof labels.zh }) => {
+    const items = (dependencies || []).filter((dep) => dep.id);
+    if (items.length === 0) return null;
+    return (
+        <div className="apps-install-record__deps" role="list" aria-label={text.skillDependencies}>
+            {items.map((dep, index) => {
+                const state = installRecordDependencyState(dep);
+                const health = String(dep.health || '').trim();
+                const installedStatus = String(dep.installed_status || '').trim();
+                const meta = [
+                    dep.kind || 'skill',
+                    dep.source,
+                    dep.version ? `v${dep.version}` : '',
+                    state !== 'ready' ? installedStatus || health : '',
+                ].filter(Boolean).join(' · ');
+                return (
+                    <div className="apps-install-record__dep" data-state={state} role="listitem" key={`${dep.id}-${dep.version || ''}-${index}`} title={backendDependencySummary(dep, text)}>
+                        <strong>{dep.id}</strong>
+                        {meta && <span>{meta}</span>}
+                        <em>{installRecordDependencyStatus(dep, text)}</em>
+                    </div>
+                );
+            })}
+        </div>
+    );
+};
+
 function formatInstallRecordTime(value?: string) {
     if (!value) return '-';
     const date = new Date(value);
@@ -5606,20 +5693,58 @@ function studioSkillSourceFromMixed(source?: string): AppSkillDependency['source
     return 'local';
 }
 
-function installedSkillChoices(skills: SkillSummary[], lang?: string): StudioSkillChoice[] {
+type StudioSkillPickerMode = 'general' | 'app' | 'approvalWorkflow';
+
+function normalizedCapabilities(value?: string[] | string) {
+    if (Array.isArray(value)) return value.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean);
+    return String(value || '')
+        .split(',')
+        .map((item) => item.trim().toLowerCase())
+        .filter(Boolean);
+}
+
+function normalizedProductKind(value: { product_kind?: string; productKind?: string }) {
+    return String(value.product_kind || value.productKind || '').trim().toLowerCase();
+}
+
+function isApprovalWorkflowSkillLike(value: { capabilities?: string[] | string; product_kind?: string; productKind?: string; description?: string; name?: string; id?: string }) {
+    const capabilities = normalizedCapabilities(value.capabilities);
+    if (capabilities.includes('approval.workflow')) return true;
+    const productKind = normalizedProductKind(value);
+    if (productKind === 'workflow_skill' || productKind === 'approval_workflow_skill') return true;
+    return false;
+}
+
+function isAppRuntimeSkillLike(value: { capabilities?: string[] | string; product_kind?: string; productKind?: string; is_maclaw_app?: boolean }) {
+    if (value.is_maclaw_app) return false;
+    const productKind = normalizedProductKind(value);
+    if (productKind === 'maclaw_app_skill' || productKind === 'workflow_skill' || productKind === 'approval_workflow_skill') return false;
+    return !isApprovalWorkflowSkillLike(value);
+}
+
+function skillChoiceMatchesMode(choice: StudioSkillChoice, mode: StudioSkillPickerMode) {
+    if (mode === 'approvalWorkflow') return isApprovalWorkflowSkillLike(choice);
+    if (mode === 'app') return isAppRuntimeSkillLike(choice);
+    return true;
+}
+
+function installedSkillChoices(skills: SkillSummary[], lang?: string, mode: StudioSkillPickerMode = 'general'): StudioSkillChoice[] {
     const zh = isZh(lang);
     return skills
         .map((skill): StudioSkillChoice | null => {
             const name = String(skill.name || '').trim();
             if (!name) return null;
-            return {
+            const choice = {
                 id: name,
                 name,
                 description: String(skill.description || '').trim(),
                 source: 'installed' as const,
                 sourceLabel: zh ? '\u5df2\u5b89\u88c5' : 'Installed',
                 installed: true,
+                productKind: normalizedProductKind(skill),
+                capabilities: normalizedCapabilities(skill.capabilities),
             };
+            return skillChoiceMatchesMode(choice, mode) ? choice : null;
         })
         .filter((item): item is StudioSkillChoice => !!item);
 }
@@ -5638,11 +5763,34 @@ function mixedSkillChoice(result: any, lang?: string): StudioSkillChoice | null 
         source,
         sourceLabel: installed ? (zh ? '\u5df2\u5b89\u88c5' : 'Installed') : String(result?.source_label || result?.source || (zh ? '\u80fd\u529b\u5e02\u573a' : 'Market')),
         installed,
+        productKind: normalizedProductKind(result || {}),
+        capabilities: normalizedCapabilities(result?.capabilities),
     };
 }
 
 function uniqueSkillChoices(choices: StudioSkillChoice[]): StudioSkillChoice[] {
     return Array.from(new Map(choices.map((choice) => [`${choice.source}:${choice.id}`, choice])).values());
+}
+
+async function openApprovalWorkflowDesigner() {
+    try {
+        const cfg = await LoadConfig() as {
+            remote_hub_url?: string;
+            remote_machine_id?: string;
+            remote_machine_token?: string;
+        } | null;
+        const hubUrl = String(cfg?.remote_hub_url || '').trim().replace(/\/+$/, '');
+        if (!hubUrl) return;
+        const auth = new URLSearchParams();
+        const machineID = String(cfg?.remote_machine_id || '').trim();
+        const machineToken = String(cfg?.remote_machine_token || '').trim();
+        if (machineID) auth.set('machine_id', machineID);
+        if (machineToken) auth.set('token', machineToken);
+        const fragment = auth.toString();
+        BrowserOpenURL(`${hubUrl}/approval_workflow${fragment ? `#${fragment}` : ''}`);
+    } catch {
+        // Keep the app studio responsive when the local config is unavailable.
+    }
 }
 
 const StudioSkillPicker = ({
@@ -5652,6 +5800,7 @@ const StudioSkillPicker = ({
     lang,
     placeholder,
     testId,
+    mode = 'general',
     onSelect,
 }: {
     label: string;
@@ -5660,6 +5809,7 @@ const StudioSkillPicker = ({
     lang?: string;
     placeholder?: string;
     testId?: string;
+    mode?: StudioSkillPickerMode;
     onSelect: (choice: StudioSkillChoice) => void;
 }) => {
     const zh = isZh(lang);
@@ -5670,7 +5820,7 @@ const StudioSkillPicker = ({
     const [lastMarketQuery, setLastMarketQuery] = useState('');
     const [activeSearchQuery, setActiveSearchQuery] = useState('');
     const searchRequestRef = useRef(0);
-    const installedChoices = useMemo(() => installedSkillChoices(installedSkills, lang), [installedSkills, lang]);
+    const installedChoices = useMemo(() => installedSkillChoices(installedSkills, lang, mode), [installedSkills, lang, mode]);
     const selectedChoice = useMemo(() => {
         const allChoices = [...installedChoices, ...marketChoices];
         return allChoices.find((choice) => choice.id === value) || null;
@@ -5699,7 +5849,7 @@ const StudioSkillPicker = ({
             if (requestID !== searchRequestRef.current) return;
             const nextChoices = (Array.isArray(results) ? results : [])
                 .map((item) => mixedSkillChoice(item, lang))
-                .filter((item): item is StudioSkillChoice => !!item);
+                .filter((item): item is StudioSkillChoice => !!item && skillChoiceMatchesMode(item, mode));
             setMarketChoices(uniqueSkillChoices(nextChoices));
             setLastMarketQuery(cleanQuery);
             setActiveSearchQuery('');
@@ -5718,7 +5868,7 @@ const StudioSkillPicker = ({
     const visibleMarket = marketSearchIsCurrent
         ? marketChoices.filter((choice) => !installedChoices.some((installed) => installed.id === choice.id))
         : [];
-    const marketEmpty = marketSearchIsCurrent && searchState === 'idle' && marketChoices.length === 0;
+    const marketEmpty = marketSearchIsCurrent && searchState === 'idle' && visibleMarket.length === 0;
     return (
         <div className="apps-skill-picker" data-testid={testId}>
             <div className="apps-skill-picker__search">
@@ -5731,11 +5881,13 @@ const StudioSkillPicker = ({
                             void searchMarket();
                         }
                     }}
-                    placeholder={placeholder || (zh ? '\u641c\u5df2\u5b89\u88c5 Skill\uff0c\u6216\u8f93\u5173\u952e\u8bcd\u641c SkillMarket / Hub' : 'Search installed skills, or search SkillMarket / Hub')}
+                    placeholder={placeholder || (mode === 'approvalWorkflow'
+                        ? (zh ? '\u641c\u5ba1\u6279\u5de5\u4f5c\u6d41 / Hub' : 'Search approval workflows / Hub')
+                        : (zh ? '\u641c\u5df2\u5b89\u88c5 / SkillMarket' : 'Search installed / SkillMarket'))}
                     aria-label={label}
                 />
                 <button className="apps-secondary-button" type="button" disabled={!query.trim() || currentQueryIsSearching} onClick={() => void searchMarket()}>
-                    {currentQueryIsSearching ? (zh ? '\u641c\u7d22\u4e2d...' : 'Searching...') : (zh ? '\u641c SkillMarket / Hub' : 'Search SkillMarket / Hub')}
+                    {zh ? '\u641c\u7d22' : 'Search'}
                 </button>
             </div>
             {selectedSummary && (
@@ -5825,17 +5977,22 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const [approvalEvent, setApprovalEvent] = useState('record.submitted');
     const [approvalObjectRole, setApprovalObjectRole] = useState('record');
     const [dependencySource, setDependencySource] = useState<AppSkillDependency['source']>('hub');
+    const appReadySkills = useMemo(() => availableSkills.filter(isAppRuntimeSkillLike), [availableSkills]);
+    const approvalWorkflowSkills = useMemo(() => availableSkills.filter(isApprovalWorkflowSkillLike), [availableSkills]);
+    const defaultInstalledSkillID = () => String(appReadySkills[0]?.name || '').trim();
+    const defaultApprovalWorkflowSkillID = () => String(approvalWorkflowSkills[0]?.name || '').trim();
     useEffect(() => {
         let cancelled = false;
         ListNLSkills()
             .then((skills: SkillSummary[] = []) => {
                 if (cancelled) return;
-                const appReadySkills = skills.filter((skill) => skill?.name && !skill.is_maclaw_app);
-                const firstSkillID = String(appReadySkills[0]?.name || '');
-                setAvailableSkills(appReadySkills);
+                const skillList = Array.isArray(skills) ? skills.filter((skill) => skill?.name) : [];
+                const firstSkillID = String(skillList.find(isAppRuntimeSkillLike)?.name || '');
+                const firstWorkflowSkillID = String(skillList.find(isApprovalWorkflowSkillLike)?.name || '');
+                setAvailableSkills(skillList);
                 setSelectedSkill((current) => current || firstSkillID);
                 setAppSkillID((current) => current || (isEnterpriseAppKind(kind) ? firstSkillID : ''));
-                setWorkflowSkillID((current) => current || (isEnterpriseApprovalAppKind(kind) ? firstSkillID : ''));
+                setWorkflowSkillID((current) => current || (isEnterpriseApprovalAppKind(kind) ? firstWorkflowSkillID : ''));
             })
             .catch((error) => {
                 if (cancelled) return;
@@ -5847,13 +6004,14 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         };
     }, [zh]);
     useEffect(() => {
-        const firstSkillID = String(availableSkills[0]?.name || '').trim();
-        if (!firstSkillID) return;
-        setSelectedSkill((current) => current || firstSkillID);
-        if (isEnterpriseAppKind(kind)) setAppSkillID((current) => current || firstSkillID);
-        if (isEnterpriseApprovalAppKind(kind)) setWorkflowSkillID((current) => current || firstSkillID);
-    }, [availableSkills, kind]);
-    const defaultInstalledSkillID = () => String(availableSkills[0]?.name || '').trim();
+        const firstSkillID = defaultInstalledSkillID();
+        const firstWorkflowSkillID = defaultApprovalWorkflowSkillID();
+        if (firstSkillID) {
+            setSelectedSkill((current) => current || firstSkillID);
+            if (isEnterpriseAppKind(kind)) setAppSkillID((current) => current || firstSkillID);
+        }
+        if (firstWorkflowSkillID && isEnterpriseApprovalAppKind(kind)) setWorkflowSkillID((current) => current || firstWorkflowSkillID);
+    }, [appReadySkills, approvalWorkflowSkills, kind]);
     const selectKind = (nextKind: AppKind, applyPreset = false) => {
         setKind(nextKind);
         setAccent(defaultAccentForKind(nextKind));
@@ -5866,7 +6024,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setSkillFields([]);
         setAppSkillID(isEnterpriseAppKind(nextKind) ? (appSkillID.trim() || defaultInstalledSkillID()) : '');
         setAppSkillSource('local');
-        setWorkflowSkillID(isEnterpriseApprovalAppKind(nextKind) ? (workflowSkillID.trim() || defaultInstalledSkillID()) : '');
+        setWorkflowSkillID(isEnterpriseApprovalAppKind(nextKind) ? (workflowSkillID.trim() || defaultApprovalWorkflowSkillID()) : '');
         setWorkflowSkillVersion('1.0.0');
         setApprovalObjectRole(isEnterpriseApprovalAppKind(nextKind) ? (approvalObjectRole.trim() || 'record') : 'record');
         setApprovalEvent(isEnterpriseApprovalAppKind(nextKind) ? (approvalEvent.trim() || 'record.submitted') : 'record.submitted');
@@ -5916,7 +6074,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setPrimaryRegion(nextKind === 'tool_app' ? 'left' : 'center');
         setOutputRegion(/modal|dialog|\u5f39\u7a97/.test(lower) ? 'modal' : nextKind === 'tool_app' ? 'right' : 'bottom');
         const nextAppSkillID = isEnterpriseAppKind(nextKind) ? defaultInstalledSkillID() : '';
-        const nextWorkflowSkillID = isEnterpriseApprovalAppKind(nextKind) ? defaultInstalledSkillID() : '';
+        const nextWorkflowSkillID = isEnterpriseApprovalAppKind(nextKind) ? defaultApprovalWorkflowSkillID() : '';
 
         const nextApprovalObjectRole = isFinancePrompt ? 'finance' : isInventoryPrompt ? 'inventory' : isCrmPrompt ? 'crm' : isOaPrompt ? 'oa' : 'record';
         const nextBusinessDomain = isFinancePrompt ? 'finance' : isInventoryPrompt ? 'inventory' : isCrmPrompt ? 'sales' : isOaPrompt ? 'oa' : 'business';
@@ -6211,8 +6369,9 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                             <StudioSkillPicker
                                 label={zh ? '\u73b0\u6709 Skill' : 'Existing Skill'}
                                 value={selectedSkill}
-                                installedSkills={availableSkills}
+                                installedSkills={appReadySkills}
                                 lang={lang}
+                                mode="app"
                                 testId="studio-tool-skill-picker"
                                 onSelect={(choice) => {
                                     setSelectedSkill(choice.id);
@@ -6275,7 +6434,48 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                             <div className="apps-definition__title">{zh ? '\u80fd\u529b\u4e0e\u4f9d\u8d56' : 'Capabilities and dependencies'}</div>
                             <span className="apps-count">appSkill / workflow_skill</span>
                         </div>
-                        <div className="apps-layout-designer__grid">
+                        <div className="apps-capability-skill-grid">
+                            <div className="apps-capability-skill-card">
+                                <div className="apps-capability-skill-card__head">
+                                    <label>{zh ? '\u5e94\u7528 Skill' : 'App Skill'}</label>
+                                </div>
+                                <StudioSkillPicker
+                                    label={zh ? '\u5e94\u7528 Skill' : 'App Skill'}
+                                    value={appSkillID}
+                                    installedSkills={appReadySkills}
+                                    lang={lang}
+                                    mode="app"
+                                    testId="studio-app-skill-id"
+                                    onSelect={(choice) => {
+                                        setAppSkillID(choice.id);
+                                        setAppSkillSource(choice.source === 'installed' ? 'local' : choice.source);
+                                    }}
+                                />
+                            </div>
+                            {isEnterpriseApprovalAppKind(kind) && (
+                                <div className="apps-capability-skill-card">
+                                    <div className="apps-capability-skill-card__head">
+                                        <label>{zh ? '\u5ba1\u6279 workflow Skill' : 'Approval workflow skill'}</label>
+                                        <button className="apps-secondary-button apps-skill-design-button" type="button" title={zh ? '\u6253\u5f00\u5ba1\u6279\u5de5\u4f5c\u6d41\u8bbe\u8ba1\u5668' : 'Open approval workflow designer'} onClick={() => void openApprovalWorkflowDesigner()}>
+                                            {zh ? '\u8bbe\u8ba1' : 'Design'}
+                                        </button>
+                                    </div>
+                                    <StudioSkillPicker
+                                        label={zh ? '\u5ba1\u6279 workflow Skill' : 'Approval workflow skill'}
+                                        value={workflowSkillID}
+                                        installedSkills={approvalWorkflowSkills}
+                                        lang={lang}
+                                        mode="approvalWorkflow"
+                                        testId="studio-workflow-skill-id"
+                                        onSelect={(choice) => {
+                                            setWorkflowSkillID(choice.id);
+                                            setDependencySource(choice.source === 'installed' ? 'local' : choice.source);
+                                        }}
+                                    />
+                                </div>
+                            )}
+                        </div>
+                        <div className="apps-layout-designer__grid apps-capability-field-grid">
                             {kind === 'enterprise_normal_app' && (
                                 <>
                                     <div className="apps-form-row">
@@ -6304,36 +6504,8 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                                     </div>
                                 </>
                             )}
-                            <div className="apps-form-row">
-                                <label>{zh ? '\u5e94\u7528 Skill' : 'App Skill'}</label>
-                                <StudioSkillPicker
-                                    label={zh ? '\u5e94\u7528 Skill' : 'App Skill'}
-                                    value={appSkillID}
-                                    installedSkills={availableSkills}
-                                    lang={lang}
-                                    testId="studio-app-skill-id"
-                                    onSelect={(choice) => {
-                                        setAppSkillID(choice.id);
-                                        setAppSkillSource(choice.source === 'installed' ? 'local' : choice.source);
-                                    }}
-                                />
-                            </div>
                             {isEnterpriseApprovalAppKind(kind) && (
                                 <>
-                                    <div className="apps-form-row">
-                                        <label>{zh ? '\u5ba1\u6279 workflow Skill' : 'Approval workflow skill'}</label>
-                                        <StudioSkillPicker
-                                            label={zh ? '\u5ba1\u6279 workflow Skill' : 'Approval workflow skill'}
-                                            value={workflowSkillID}
-                                            installedSkills={availableSkills}
-                                            lang={lang}
-                                            testId="studio-workflow-skill-id"
-                                            onSelect={(choice) => {
-                                                setWorkflowSkillID(choice.id);
-                                                setDependencySource(choice.source === 'installed' ? 'local' : choice.source);
-                                            }}
-                                        />
-                                    </div>
                                     <div className="apps-form-row">
                                         <label>{zh ? '\u7248\u672c' : 'Version'}</label>
                                         <input data-testid="studio-workflow-skill-version" value={workflowSkillVersion} onChange={(event) => setWorkflowSkillVersion(event.target.value)} placeholder="1.0.0" />
@@ -6988,6 +7160,8 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
     const [editSaveState, setEditSaveState] = useState<'idle' | 'saving' | 'error'>('idle');
     const [editSaveMessage, setEditSaveMessage] = useState('');
     const [availableSkills, setAvailableSkills] = useState<SkillSummary[]>([]);
+    const appReadySkills = useMemo(() => availableSkills.filter(isAppRuntimeSkillLike), [availableSkills]);
+    const approvalWorkflowSkills = useMemo(() => availableSkills.filter(isApprovalWorkflowSkillLike), [availableSkills]);
     const [copiedManifestId, setCopiedManifestId] = useState('');
     const [packCopied, setPackCopied] = useState(false);
     const pinnedCount = apps.filter((app) => app.pinned).length;
@@ -7515,33 +7689,38 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                                             </div>
                                         </>
                                     )}
-                                    <div className="apps-form-row">
-                                        <label>{isZh(lang) ? '\u5e94\u7528 Skill' : 'appSkill'}</label>
-                                        <StudioSkillPicker
-                                            label={isZh(lang) ? '\u5e94\u7528 Skill' : 'appSkill'}
-                                            value={editDraft.appSkillID}
-                                            installedSkills={availableSkills}
-                                            lang={lang}
-                                            onSelect={(choice) => setEditDraft((current) => ({
-                                                ...current,
-                                                appSkillID: choice.id,
-                                                appSkillSource: choice.source === 'installed' ? 'local' : choice.source,
-                                            }))}
-                                        />
-                                    </div>
-                                    <div className="apps-form-row">
-                                        <label>{isZh(lang) ? '\u5e94\u7528 Skill \u7248\u672c' : 'appSkill version'}</label>
-                                        <input value={editDraft.appSkillVersion} onChange={(event) => setEditDraft((current) => ({ ...current, appSkillVersion: event.target.value }))} placeholder="1.0.0" />
-                                    </div>
-                                    {editingApp.kind === 'enterprise_approval_app' && (
-                                        <>
-                                            <div className="apps-form-row">
-                                                <label>{isZh(lang) ? '\u5ba1\u6279 workflow Skill' : 'workflow skill'}</label>
+                                    <div className="apps-capability-skill-grid">
+                                        <div className="apps-capability-skill-card">
+                                            <div className="apps-capability-skill-card__head">
+                                                <label>{isZh(lang) ? '\u5e94\u7528 Skill' : 'appSkill'}</label>
+                                            </div>
+                                            <StudioSkillPicker
+                                                label={isZh(lang) ? '\u5e94\u7528 Skill' : 'appSkill'}
+                                                value={editDraft.appSkillID}
+                                                installedSkills={appReadySkills}
+                                                lang={lang}
+                                                mode="app"
+                                                onSelect={(choice) => setEditDraft((current) => ({
+                                                    ...current,
+                                                    appSkillID: choice.id,
+                                                    appSkillSource: choice.source === 'installed' ? 'local' : choice.source,
+                                                }))}
+                                            />
+                                        </div>
+                                        {editingApp.kind === 'enterprise_approval_app' && (
+                                            <div className="apps-capability-skill-card">
+                                                <div className="apps-capability-skill-card__head">
+                                                    <label>{isZh(lang) ? '\u5ba1\u6279 workflow Skill' : 'workflow skill'}</label>
+                                                    <button className="apps-secondary-button apps-skill-design-button" type="button" title={isZh(lang) ? '\u6253\u5f00\u5ba1\u6279\u5de5\u4f5c\u6d41\u8bbe\u8ba1\u5668' : 'Open approval workflow designer'} onClick={() => void openApprovalWorkflowDesigner()}>
+                                                        {isZh(lang) ? '\u8bbe\u8ba1' : 'Design'}
+                                                    </button>
+                                                </div>
                                                 <StudioSkillPicker
                                                     label={isZh(lang) ? '\u5ba1\u6279 workflow Skill' : 'workflow skill'}
                                                     value={editDraft.workflowSkillID}
-                                                    installedSkills={availableSkills}
+                                                    installedSkills={approvalWorkflowSkills}
                                                     lang={lang}
+                                                    mode="approvalWorkflow"
                                                     onSelect={(choice) => setEditDraft((current) => ({
                                                         ...current,
                                                         workflowSkillID: choice.id,
@@ -7549,6 +7728,14 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                                                     }))}
                                                 />
                                             </div>
+                                        )}
+                                    </div>
+                                    <div className="apps-form-row">
+                                        <label>{isZh(lang) ? '\u5e94\u7528 Skill \u7248\u672c' : 'appSkill version'}</label>
+                                        <input value={editDraft.appSkillVersion} onChange={(event) => setEditDraft((current) => ({ ...current, appSkillVersion: event.target.value }))} placeholder="1.0.0" />
+                                    </div>
+                                    {editingApp.kind === 'enterprise_approval_app' && (
+                                        <>
                                             <div className="apps-form-row">
                                                 <label>{isZh(lang) ? '\u5ba1\u6279 workflow \u7248\u672c' : 'workflow version'}</label>
                                                 <input value={editDraft.workflowSkillVersion} onChange={(event) => setEditDraft((current) => ({ ...current, workflowSkillVersion: event.target.value }))} placeholder="1.0.0" />
@@ -7588,7 +7775,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
     const [selectedInstallKeys, setSelectedInstallKeys] = useState<string[] | null>(null);
     const [confirmHighRiskInstall, setConfirmHighRiskInstall] = useState(false);
     const [marketInstallAppId, setMarketInstallAppId] = useState('');
-    const [marketInstallFeedback, setMarketInstallFeedback] = useState<{ appId: string; state: 'running' | 'done' | 'error'; message: string } | null>(null);
+    const [marketInstallFeedback, setMarketInstallFeedback] = useState<{ appId: string; state: 'running' | 'done' | 'error'; message: string; dependencies?: BackendAppInstallDependency[] } | null>(null);
     const [backendInstallPlan, setBackendInstallPlan] = useState<BackendAppInstallPlan | null>(null);
     const [backendInstallPlanState, setBackendInstallPlanState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
     const [backendInstallPlanError, setBackendInstallPlanError] = useState('');
@@ -7687,8 +7874,15 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
         setMarketInstallFeedback({ appId: app.id, state: 'running', message: text.dependencyPlanLoading });
         try {
             const dependencyInstallPlan = await InstallMaclawAppDependencies(manifestText);
+            const dependencyDetails = backendDependenciesForApp(dependencyInstallPlan, app.id);
             if (dependencyInstallPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyInstallPlan, [app.id])) {
-                throw new Error(text.missingRequiredDependency);
+                setMarketInstallFeedback({
+                    appId: app.id,
+                    state: 'error',
+                    message: text.missingRequiredDependency,
+                    dependencies: dependencyDetails.length > 0 ? dependencyDetails : dependencyInstallPlan?.dependencies || [],
+                });
+                return;
             }
             let installFeedbackMessage = text.alreadyInstalled;
             try {
@@ -7818,6 +8012,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                                     <span>{app.description}</span>
                                     <small>{app.category} · {appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</small>
                                     {feedback && <small className="apps-market-row__feedback" data-state={feedback.state}>{feedback.message}</small>}
+                                    {feedback?.dependencies?.length ? <InstallRecordDependencies dependencies={feedback.dependencies} text={text} /> : null}
                                 </div>
                                 <button className={installed ? 'apps-secondary-button' : 'apps-primary-button'} type="button" disabled={installed || isInstalling} title={`${buttonText}: ${app.name}`} aria-label={`${buttonText}: ${app.name}`} onClick={() => void installSingleMarketApp(app)}>
                                     {buttonText}
@@ -7842,7 +8037,8 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                     <div className="apps-install-records__list">
                         {installRecords.map((record, index) => {
                             const appNames = (record.apps || []).map((app) => app.name || app.id).filter(Boolean).join(', ') || '-';
-                            const dependencyCount = (record.dependencies || []).length;
+                            const dependencies = record.dependencies || [];
+                            const dependencyCount = dependencies.length;
                             const missingCount = installRecordMissingDependencyCount(record);
                             const sha = String(record.package_sha || '').slice(0, 12) || '-';
                             return (
@@ -7851,6 +8047,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                                         <strong>{appNames}</strong>
                                         <span>{text.installedAt}: {formatInstallRecordTime(record.installed_at)} · {text.marketSource}: {record.source || '-'}</span>
                                         <small>{text.packageSha}: {sha} · {text.skillDependencies}: {dependencyCount} · {text.missingDependencyCount}: {missingCount}</small>
+                                        <InstallRecordDependencies dependencies={dependencies} text={text} />
                                     </div>
                                     <em>{record.has_blocking_dependency || record.has_missing_required || missingCount > 0 ? text.unavailableDependency : text.installedDependency}</em>
                                 </div>

@@ -1404,9 +1404,12 @@ func extractTTaskDependencyIndexes(text string) ([]int, bool) {
 			j++
 		}
 		found = true
-		if label > 0 {
-			deps = append(deps, label-1)
-		}
+		// Store the raw label value. The caller chain applies
+		// normalizeExplicitTaskDependencyIndexes afterward to convert
+		// 1-based labels (T1=first task) to 0-based indices when all
+		// deps look 1-based. If any dep==0 is present, labels are
+		// treated as already 0-based and left as-is.
+		deps = append(deps, label)
 		i = j - 1
 	}
 	return deps, found

@@ -3695,6 +3695,196 @@ func TestLLMV1ChatCompletionsHandlerMissEnqueuesUsageAndCredits(t *testing.T) {
 		t.Fatalf("expected credits used to increase to 5, got %#v", serviceReg.Grants[0])
 	}
 }
+
+func TestLLMV1HandlersChargeMaClawOfficialCredits(t *testing.T) {
+	const officialCardServiceGroupID = "redeem"
+	tests := []struct {
+		name            string
+		path            string
+		body            map[string]any
+		upstreamContent string
+		wantBodyParts   []string
+	}{
+		{
+			name: "chat completions",
+			path: "/api/llm/v1/chat/completions",
+			body: map[string]any{
+				"model":    "auto",
+				"messages": []any{map[string]any{"role": "user", "content": "official path"}},
+			},
+			upstreamContent: "official",
+			wantBodyParts:   []string{"official"},
+		},
+		{
+			name: "chat completions stream",
+			path: "/api/llm/v1/chat/completions",
+			body: map[string]any{
+				"model":    "auto",
+				"stream":   true,
+				"messages": []any{map[string]any{"role": "user", "content": "official stream path"}},
+			},
+			upstreamContent: "official stream",
+			wantBodyParts:   []string{"official stream", "data: [DONE]"},
+		},
+		{
+			name:            "responses",
+			path:            "/api/llm/v1/responses",
+			body:            map[string]any{"model": "auto", "input": "official responses path"},
+			upstreamContent: "official responses",
+			wantBodyParts:   []string{"official responses"},
+		},
+		{
+			name:            "responses stream",
+			path:            "/api/llm/v1/responses",
+			body:            map[string]any{"model": "auto", "input": "official responses stream path", "stream": true},
+			upstreamContent: "official responses stream",
+			wantBodyParts:   []string{"official responses stream", "response.completed"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			previous := GetMaClawModule()
+			defer SetMaClawModule(previous)
+
+			identity, _, _ := newHTTPAPITestServices(t)
+			email := "official-charge-" + strings.ReplaceAll(tt.name, " ", "-") + "@example.com"
+			viewerToken, _ := issueViewerToken(t, identity, email)
+			ctx := context.Background()
+			system := newTestLLMServiceSystemSettings()
+			now := time.Now().UTC()
+			if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+				TokensPerCredit: 10000,
+				ModelServiceGroups: []llmservice.ModelServiceGroup{{
+					ID:           officialCardServiceGroupID,
+					Name:         "MaClaw Compute",
+					AccessPolicy: llmservice.AccessPolicyGrantRequired,
+					Models: []llmservice.ModelServiceModel{{
+						Name:        "auto",
+						ProviderIDs: []string{llmservice.MaClawOfficialProviderID},
+					}},
+				}},
+				Grants: []llmservice.Grant{{
+					ID:             "grant-official-" + strings.ReplaceAll(tt.name, " ", "-"),
+					Email:          email,
+					ServiceGroupID: officialCardServiceGroupID,
+					Source:         "card",
+					StartsAt:       now.Add(-time.Hour),
+					ExpiresAt:      now.Add(24 * time.Hour),
+					CreatedAt:      now,
+					CreditsTotal:   10,
+					CreditsUsed:    1,
+				}},
+			}); err != nil {
+				t.Fatalf("save service registry: %v", err)
+			}
+			if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{}); err != nil {
+				t.Fatalf("save provider registry: %v", err)
+			}
+
+			var seenTenant string
+			var seenAuth string
+			var hubCenterHits atomic.Int32
+			hubCenter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hubCenterHits.Add(1)
+				if r.URL.Path != "/api/llm/v1/chat/completions" {
+					http.NotFound(w, r)
+					return
+				}
+				seenTenant = r.Header.Get("X-Tenant-ID")
+				seenAuth = r.Header.Get("Authorization")
+				writeJSON(w, http.StatusOK, map[string]any{
+					"id":    "hubcenter-official",
+					"model": "auto",
+					"choices": []any{map[string]any{
+						"index":         0,
+						"message":       map[string]any{"role": "assistant", "content": tt.upstreamContent},
+						"finish_reason": "stop",
+					}},
+					"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+				})
+			}))
+			defer hubCenter.Close()
+			SetMaClawModule(&llmservice.MaClawModule{
+				Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+					HubCenterURL: hubCenter.URL,
+					HubID:        "hub-1",
+					MachineToken: "machine-token",
+				}),
+			})
+
+			globalLLMUsageAccumulator.mu.Lock()
+			savedPending := globalLLMUsageAccumulator.pending
+			globalLLMUsageAccumulator.pending = map[store.SystemSettingsRepository]*pendingSystemUsage{}
+			globalLLMUsageAccumulator.mu.Unlock()
+			defer func() {
+				globalLLMUsageAccumulator.mu.Lock()
+				globalLLMUsageAccumulator.pending = savedPending
+				globalLLMUsageAccumulator.mu.Unlock()
+			}()
+
+			bodyBytes, err := json.Marshal(tt.body)
+			if err != nil {
+				t.Fatalf("marshal body: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewReader(bodyBytes))
+			req.Header.Set("Authorization", "Bearer "+viewerToken)
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			switch tt.path {
+			case "/api/llm/v1/chat/completions":
+				LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+			case "/api/llm/v1/responses":
+				LLMV1ResponsesHandler(identity, system, nil).ServeHTTP(rr, req)
+			default:
+				t.Fatalf("unsupported path %q", tt.path)
+			}
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+			}
+			if stream, _ := tt.body["stream"].(bool); stream && !strings.Contains(rr.Header().Get("Content-Type"), "text/event-stream") {
+				t.Fatalf("content-type = %q, want text/event-stream", rr.Header().Get("Content-Type"))
+			}
+			for _, part := range tt.wantBodyParts {
+				if !strings.Contains(rr.Body.String(), part) {
+					t.Fatalf("response body missing %q: %s", part, rr.Body.String())
+				}
+			}
+			if rr.Header().Get("X-MaClaw-Upstream-Provider") != llmservice.MaClawOfficialProviderID {
+				t.Fatalf("unexpected upstream provider header: %q", rr.Header().Get("X-MaClaw-Upstream-Provider"))
+			}
+			if hubCenterHits.Load() != 1 {
+				t.Fatalf("expected HubCenter to be called once, hits = %d", hubCenterHits.Load())
+			}
+			if seenTenant != store.DefaultTenantID {
+				t.Fatalf("X-Tenant-ID = %q, want %q", seenTenant, store.DefaultTenantID)
+			}
+			if seenAuth != "Bearer machine-token" {
+				t.Fatalf("Authorization = %q", seenAuth)
+			}
+
+			serviceReg, err := llmservice.LoadRegistry(ctx, system)
+			if err != nil {
+				t.Fatalf("load service registry: %v", err)
+			}
+			if len(serviceReg.Grants) != 1 || serviceReg.Grants[0].CreditsUsed != 1.1 {
+				t.Fatalf("expected official credits to be charged immediately, got %#v", serviceReg.Grants)
+			}
+
+			globalLLMUsageAccumulator.flush(ctx)
+			providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
+			if err != nil {
+				t.Fatalf("load provider registry: %v", err)
+			}
+			stat := providerReg.TokenUsage[llmservice.MaClawOfficialProviderID]
+			if stat == nil || stat.TotalTokens != 2 || stat.Requests != 1 {
+				t.Fatalf("unexpected official provider usage: %#v", stat)
+			}
+		})
+	}
+}
+
 func TestLLMV1ChatCompletionsHandlerReturnsTooManyRequestsWhenProviderQueueFull(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken, _ := issueViewerToken(t, identity, "queue-full@example.com")

@@ -5292,7 +5292,8 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
 	defer store.Close()
-	server := NewHTTPServer(NewService(store, "sqlite"), "test-token-0123456789012345", "test")
+	svc := NewService(store, "sqlite")
+	server := NewHTTPServer(svc, "test-token-0123456789012345", "test")
 
 	req := jsonRequest(http.MethodPost, "/api/v1/data/datasets", CreateDatasetInput{Domain: "finance", Name: "expense_forms", Title: "Expense Forms"})
 	auth(req)
@@ -5316,7 +5317,17 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 			TemplateID: "finance.expenses",
 			Required:   true,
 		}},
-		Metadata: map[string]any{"workflow_skill_id": "skill.expense.approval"},
+		Metadata: map[string]any{
+			"app_skill_id":                    "mis-expense-claim",
+			"workflow_skill_ids":              []any{"skill.expense.approval"},
+			"dependency_count":                2,
+			"has_missing_required_dependency": false,
+			"has_blocking_dependency":         true,
+			"dependencies": []any{
+				map[string]any{"id": "mis-expense-claim", "kind": "runtime_skill", "required": true, "source": "hub", "health": "ready"},
+				map[string]any{"id": "skill.expense.approval", "kind": "workflow_skill", "required": true, "source": "hub", "health": "missing", "action": "blocked"},
+			},
+		},
 	}
 	req = jsonRequest(http.MethodPost, "/api/v1/data/app-installations", installBody)
 	auth(req)
@@ -5331,6 +5342,9 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if installed.AppID != "mis.expense" || installed.Status != "installed" || len(installed.RoleBindings) != 1 || installed.RoleBindings[0].DatasetID != "finance.expense_forms" {
 		t.Fatalf("unexpected app installation: %#v", installed)
+	}
+	if installed.Metadata["dependency_count"] != float64(2) || installed.Metadata["has_missing_required_dependency"] != false || installed.Metadata["has_blocking_dependency"] != true {
+		t.Fatalf("app installation should persist dependency health metadata: %#v", installed.Metadata)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?app_id=mis.expense", nil)
@@ -5392,6 +5406,22 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if len(caps.AppInstallations) != 1 || caps.AppInstallations[0].AppID != "mis.expense" {
 		t.Fatalf("expected app installation in capabilities: %#v", caps.AppInstallations)
+	}
+
+	audit, err := svc.QueryAuditLogs(context.Background(), Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}, QueryAuditLogsInput{Action: "app.installation_upsert", TargetType: "app_installation", TargetID: "mis.expense", Limit: 1})
+	if err != nil {
+		t.Fatalf("QueryAuditLogs app install: %v", err)
+	}
+	if len(audit) != 1 {
+		t.Fatalf("expected app installation audit log: %#v", audit)
+	}
+	metadata := audit[0].Metadata
+	if metadata["kind"] != "enterprise_approval_app" || metadata["source"] != "hub" || metadata["dependency_count"] != float64(2) || metadata["has_missing_required_dependency"] != false || metadata["has_blocking_dependency"] != true {
+		t.Fatalf("app installation audit should summarize dependency health: %#v", metadata)
+	}
+	dependencyIDs, ok := metadata["dependency_ids"].([]any)
+	if !ok || len(dependencyIDs) != 2 || dependencyIDs[0] != "mis-expense-claim" || dependencyIDs[1] != "skill.expense.approval" {
+		t.Fatalf("app installation audit should include dependency ids: %#v", metadata)
 	}
 }
 

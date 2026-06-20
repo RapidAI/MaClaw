@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -222,14 +223,17 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		if multiplier <= 0 {
 			multiplier = 1
 		}
-		credits := float64(inputTokens+outputTokens) * multiplier / 10000 // default: 10000 tokens per credit
+		credits := estimateProxyCreditsWithFloor(inputTokens+outputTokens, multiplier)
 
 		// Deduct credits
+		var deductions []CreditDeduction
 		if requiresGrant && auth != nil {
-			if err := cfg.AuthChecker.DeductCredits(ctx, auth.ID, credits); err != nil {
+			var err error
+			deductions, err = cfg.AuthChecker.DeductCreditsForServiceGroup(ctx, req.HubID, req.TenantID, matchedGroup.ID, credits)
+			if err != nil {
 				// Log but don't fail: tokens already consumed upstream.
 				// Reconciliation can fix this from usage records.
-				log.Printf("[llm-proxy] WARN: credits deduction failed auth=%s credits=%.2f: %v", auth.ID, credits, err)
+				log.Printf("[llm-proxy] WARN: credits deduction failed auth=%s group=%s credits=%.2f: %v", auth.ID, matchedGroup.ID, credits, err)
 			}
 		}
 
@@ -242,6 +246,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 				OutputTokens: outputTokens,
 				Credits:      credits,
 				CacheHit:     false,
+				AuthID:       deductionAuthIDs(deductions),
 				Timestamp:    time.Now().UTC(),
 			})
 		}
@@ -658,4 +663,45 @@ func proxyCreditMultiplierForRoute(model *llmpool.DispatchModel, route llmpool.D
 		return 1
 	}
 	return proxyCreditMultiplier(model, route.ProviderID)
+}
+
+const (
+	defaultProxyTokensPerCredit = 10000
+	minimumProxyRequestCredits  = 0.1
+)
+
+func estimateProxyCreditsWithFloor(tokens int64, multiplier float64) float64 {
+	credits := estimateProxyCredits(tokens, multiplier)
+	if credits < minimumProxyRequestCredits {
+		return minimumProxyRequestCredits
+	}
+	return credits
+}
+
+func estimateProxyCredits(tokens int64, multiplier float64) float64 {
+	if tokens <= 0 {
+		return 0
+	}
+	if multiplier <= 0 {
+		multiplier = 1
+	}
+	return roundProxyCredits((float64(tokens) * multiplier) / defaultProxyTokensPerCredit)
+}
+
+func roundProxyCredits(v float64) float64 {
+	return math.Round(v*1000) / 1000
+}
+
+func deductionAuthIDs(deductions []CreditDeduction) string {
+	if len(deductions) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(deductions))
+	for _, deduction := range deductions {
+		id := strings.TrimSpace(deduction.AuthID)
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return strings.Join(ids, ",")
 }

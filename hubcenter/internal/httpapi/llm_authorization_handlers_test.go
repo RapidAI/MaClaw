@@ -92,6 +92,7 @@ func TestAdminListLLMAuthorizationsMarksExternalComputeAccess(t *testing.T) {
 		TenantID:       "tenant1",
 		ServiceGroupID: "group1",
 		CreditsTotal:   100,
+		CreditsUsed:    1.1,
 		Status:         "active",
 		Source:         "admin_grant",
 	}}}
@@ -106,8 +107,9 @@ func TestAdminListLLMAuthorizationsMarksExternalComputeAccess(t *testing.T) {
 	}
 	var payload struct {
 		Authorizations []struct {
-			ID                      string `json:"id"`
-			IsExternalComputeAccess bool   `json:"is_external_compute_access"`
+			ID                      string  `json:"id"`
+			CreditsUsed             float64 `json:"credits_used"`
+			IsExternalComputeAccess bool    `json:"is_external_compute_access"`
 		} `json:"authorizations"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
@@ -121,6 +123,9 @@ func TestAdminListLLMAuthorizationsMarksExternalComputeAccess(t *testing.T) {
 	}
 	if payload.Authorizations[1].IsExternalComputeAccess {
 		t.Fatalf("credit grant marked as external compute: %+v", payload.Authorizations[1])
+	}
+	if payload.Authorizations[1].CreditsUsed != 1.1 {
+		t.Fatalf("credits_used = %.17g, want 1.1", payload.Authorizations[1].CreditsUsed)
 	}
 }
 

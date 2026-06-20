@@ -359,10 +359,18 @@ export const phaseLabels: Record<string, string> = {
     experiment_report: "实验报告",
     // Patent application workflow
     pa_disclosure_parsing: "交底书解析与技术提炼",
+    pa_prior_art_search: "查新检索与新颖性分析",
     pa_claims_drafting: "权利要求书撰写",
     pa_description_writing: "说明书撰写",
     pa_figures_organization: "附图整理与说明",
     pa_document_assembly: "申请文件组装与检查",
+    // US Patent application workflow
+    us_disclosure_analysis: "Disclosure Analysis",
+    us_prior_art_search: "Prior Art Search",
+    us_claims_drafting: "Claims Drafting",
+    us_drawings: "Drawings",
+    us_specification_writing: "Specification Writing",
+    us_application_assembly: "Application Assembly",
     // Legacy aliases (canonical ids -> generated names, kept consistent with the above)
     design: "技术设计",
     tasks: "任务拆分",
@@ -417,7 +425,8 @@ export const workflowPhaseOrders: Record<string, string[]> = {
     compliance_audit: ["audit_scope", "compliance_assessment", "risk_rating", "remediation_plan", "audit_report"],
     patent_analysis: ["tech_disclosure", "prior_art_search", "infringement_assessment", "strategy_recommendation", "patent_report"],
     paper_reproduction: ["paper_analysis", "reproduction_plan", "env_and_data", "baseline_reproduction", "iterative_improvement", "experiment_report"],
-    patent_application: ["pa_disclosure_parsing", "pa_claims_drafting", "pa_figures_organization", "pa_description_writing", "pa_document_assembly"],
+    patent_application: ["pa_disclosure_parsing", "pa_prior_art_search", "pa_claims_drafting", "pa_figures_organization", "pa_description_writing", "pa_document_assembly"],
+    us_patent_application: ["us_disclosure_analysis", "us_prior_art_search", "us_claims_drafting", "us_drawings", "us_specification_writing", "us_application_assembly"],
 };
 
 // fallbackNonDocumentPhaseIDs is re-exported from workflowPhase.ts (the single

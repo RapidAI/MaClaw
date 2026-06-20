@@ -577,7 +577,7 @@ func TestListOrdersHydratesAuthorizationUsage(t *testing.T) {
 			TenantID:       "tenant-a",
 			ServiceGroupID: "redeem",
 			CreditsTotal:   520000,
-			CreditsUsed:    1200,
+			CreditsUsed:    1.1,
 			StartsAt:       now,
 			ExpiresAt:      now.AddDate(0, 1, 0),
 			Status:         "active",
@@ -598,11 +598,11 @@ func TestListOrdersHydratesAuthorizationUsage(t *testing.T) {
 	if got.AuthorizationID != authID || got.AuthorizationStatus != "active" {
 		t.Fatalf("authorization summary = id:%q status:%q", got.AuthorizationID, got.AuthorizationStatus)
 	}
-	if got.CreditsUsed == nil || *got.CreditsUsed != 1200 {
-		t.Fatalf("CreditsUsed = %#v, want 1200", got.CreditsUsed)
+	if got.CreditsUsed == nil || *got.CreditsUsed != 1.1 {
+		t.Fatalf("CreditsUsed = %#v, want 1.1", got.CreditsUsed)
 	}
-	if got.CreditsRemaining == nil || *got.CreditsRemaining != 518800 {
-		t.Fatalf("CreditsRemaining = %#v, want 518800", got.CreditsRemaining)
+	if got.CreditsRemaining == nil || *got.CreditsRemaining != 519998.9 {
+		t.Fatalf("CreditsRemaining = %#v, want 519998.9", got.CreditsRemaining)
 	}
 	if got.AuthorizationExpiresAt == nil || !got.AuthorizationExpiresAt.Equal(now.AddDate(0, 1, 0)) {
 		t.Fatalf("AuthorizationExpiresAt = %#v", got.AuthorizationExpiresAt)

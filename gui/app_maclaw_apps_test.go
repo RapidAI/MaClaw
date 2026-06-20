@@ -744,6 +744,32 @@ func TestPlanMaclawAppInstallTreatsBindingSkillAsDependency(t *testing.T) {
 	}
 }
 
+func TestPlanMaclawAppInstallHonorsBindingSkillSourcesAndSnakeCaseAppSkill(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "source-aware-app",
+			"name": "Source Aware App",
+			"kind": "enterprise_normal_app",
+			"binding": {
+				"skill": { "id": "doc-archive", "version": "1.0.0", "source": "market" },
+				"app_skill": { "id": "source-aware-super-skill", "version": "2.0.0", "source": "local" }
+			}
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	if dep := maclawAppPlanDepForTest(plan, "doc-archive"); dep == nil || dep.Source != "market" || dep.Version != "1.0.0" || dep.Kind != "runtime_skill" || !dep.Required {
+		t.Fatalf("binding.skill source/version should be preserved: %#v", dep)
+	}
+	if dep := maclawAppPlanDepForTest(plan, "source-aware-super-skill"); dep == nil || dep.Source != "local" || dep.Version != "2.0.0" || dep.Kind != "runtime_skill" || !dep.Required {
+		t.Fatalf("binding.app_skill should be a source-aware runtime dependency: %#v", dep)
+	}
+}
+
 func TestPlanMaclawAppInstallTreatsApprovalBindingsAsWorkflowDependencies(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	plan, err := app.PlanMaclawAppInstall(`{
@@ -917,6 +943,25 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	workflowIDs, ok := metadata["workflow_skill_ids"].([]interface{})
 	if !ok || len(workflowIDs) != 1 || workflowIDs[0] != "expense-workflow" {
 		t.Fatalf("registration metadata missing workflow skill ids: %#v", metadata)
+	}
+	dependencies, ok := metadata["dependencies"].([]interface{})
+	if !ok || len(dependencies) != 2 || metadata["dependency_count"] != float64(2) || metadata["has_missing_required_dependency"] != true || metadata["has_blocking_dependency"] != true {
+		t.Fatalf("registration metadata missing dependency snapshot: %#v", metadata)
+	}
+	dependencyByID := map[string]map[string]interface{}{}
+	for _, item := range dependencies {
+		dep, ok := item.(map[string]interface{})
+		if !ok {
+			t.Fatalf("dependency metadata item should be an object: %#v", item)
+		}
+		id, _ := dep["id"].(string)
+		dependencyByID[id] = dep
+	}
+	if dep := dependencyByID["expense-super-skill"]; dep == nil || dep["kind"] != "runtime_skill" || dep["source"] != "hub" || dep["required"] != true || dep["action"] != "blocked" {
+		t.Fatalf("registration metadata missing appSkill dependency state: %#v", dependencyByID)
+	}
+	if dep := dependencyByID["expense-workflow"]; dep == nil || dep["kind"] != "workflow_skill" || dep["version"] != "2.0.0" || dep["source"] != "hub" || dep["required"] != true || dep["action"] != "blocked" {
+		t.Fatalf("registration metadata missing workflow dependency state: %#v", dependencyByID)
 	}
 }
 func TestMaclawAppApprovalInstancesPersistAndFilter(t *testing.T) {

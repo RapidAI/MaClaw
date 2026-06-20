@@ -16,6 +16,8 @@ const saveMaclawAppDefinitionForSkillMock = vi.hoisted(() => vi.fn());
 const recordMaclawAppRunEvidenceForSkillMock = vi.hoisted(() => vi.fn());
 const uploadNLSkillToMarketMock = vi.hoisted(() => vi.fn());
 const searchMixedSkillsMock = vi.hoisted(() => vi.fn());
+const loadConfigMock = vi.hoisted(() => vi.fn());
+const browserOpenURLMock = vi.hoisted(() => vi.fn());
 const runNLSkillAsyncMock = vi.hoisted(() => vi.fn());
 const getNLSkillRunStatusMock = vi.hoisted(() => vi.fn());
 const cancelNLSkillRunMock = vi.hoisted(() => vi.fn());
@@ -32,6 +34,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetNLSkillRunStatus: (...args: unknown[]) => getNLSkillRunStatusMock(...args),
     ListNLSkills: (...args: unknown[]) => listNLSkillsMock(...args),
     ListSkillAppManifests: (...args: unknown[]) => listSkillAppManifestsMock(...args),
+    LoadConfig: (...args: unknown[]) => loadConfigMock(...args),
     ListMaclawAppInstalls: (...args: unknown[]) => listMaclawAppInstallsMock(...args),
     ListMaclawAppApprovalInstances: (...args: unknown[]) => listMaclawAppApprovalInstancesMock(...args),
     ListMaclawAppApprovalInstancesAll: (...args: unknown[]) => listMaclawAppApprovalInstancesAllMock(...args),
@@ -51,6 +54,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ShowItemInFolder: (...args: unknown[]) => showItemInFolderMock(...args),
     StageSkillAppInputFile: (...args: unknown[]) => stageSkillAppInputFileMock(...args),
     UploadNLSkillToMarket: (...args: unknown[]) => uploadNLSkillToMarketMock(...args),
+}));
+
+vi.mock('../../../../wailsjs/runtime', () => ({
+    BrowserOpenURL: (...args: unknown[]) => browserOpenURLMock(...args),
 }));
 
 import { AppsPage } from '../AppsPage';
@@ -132,6 +139,8 @@ describe('AppsPage', () => {
         recordMaclawAppRunEvidenceForSkillMock.mockReset().mockResolvedValue({ app_definition_file: 'maclaw.app.json' });
         uploadNLSkillToMarketMock.mockReset().mockResolvedValue('submission-app-1');
         searchMixedSkillsMock.mockReset().mockResolvedValue([]);
+        loadConfigMock.mockReset().mockResolvedValue({ remote_hub_url: 'https://hub.example.com', remote_machine_id: 'machine-1', remote_machine_token: 'token-1' });
+        browserOpenURLMock.mockReset();
         runNLSkillAsyncMock.mockReset().mockResolvedValue('run-test-1');
         getNLSkillRunStatusMock.mockReset().mockResolvedValue({ run_id: 'run-test-1', status: 'success', summary: { last_output_snippet: 'done' } });
         cancelNLSkillRunMock.mockReset().mockResolvedValue(undefined);
@@ -299,8 +308,10 @@ describe('AppsPage', () => {
         const output = container.querySelector<HTMLElement>('.apps-runtime-output');
 
         expect(output).not.toBeNull();
+        expect(container.querySelector('.apps-approval-summary')).toBeNull();
         expect(Number(approval?.style.order)).toBeLessThan(Number(output?.style.order));
     });
+
     it('reflects DataSrv dependency state in app tile tooltips', async () => {
         getMISDataConfigMock.mockResolvedValue({ enabled: false, endpoint: 'http://127.0.0.1:18180' });
         render(<AppsPage lang="zh-Hans" />);
@@ -491,11 +502,33 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByTitle('App Studio'));
         const skillPicker = screen.getByTestId('studio-tool-skill-picker');
         fireEvent.change(skillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'alpha' } });
-        fireEvent.click(within(skillPicker).getByRole('button', { name: /Search SkillMarket/ }));
+        fireEvent.click(within(skillPicker).getByRole('button', { name: /^Search$/ }));
         await waitFor(() => expect(within(skillPicker).getByText('Alpha Market Skill')).not.toBeNull());
 
         fireEvent.change(skillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'beta' } });
         expect(within(skillPicker).queryByText('Alpha Market Skill')).toBeNull();
+    });
+
+    it('shows an empty market state when search results only duplicate installed skills', async () => {
+        listNLSkillsMock.mockResolvedValue([{ name: 'alpha-skill', description: 'Installed alpha' }]);
+        searchMixedSkillsMock.mockResolvedValueOnce([{
+            id: 'alpha-skill',
+            name: 'Alpha Skill from Market',
+            description: 'Duplicate market result',
+            source: 'skillmarket',
+            source_label: 'SkillMarket',
+            installed: false,
+        }]);
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        const skillPicker = screen.getByTestId('studio-tool-skill-picker');
+        await waitFor(() => expect(within(skillPicker).getAllByText('alpha-skill').length).toBeGreaterThan(0));
+        fireEvent.change(skillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'alpha' } });
+        fireEvent.click(within(skillPicker).getByRole('button', { name: /^Search$/ }));
+
+        await waitFor(() => expect(within(skillPicker).getByText('No matching market skills')).not.toBeNull());
+        expect(within(skillPicker).queryByText('Alpha Skill from Market')).toBeNull();
     });
 
     it('ignores slower SkillMarket responses after a newer search completes', async () => {
@@ -520,9 +553,9 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByTitle('App Studio'));
         const skillPicker = screen.getByTestId('studio-tool-skill-picker');
         fireEvent.change(skillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'alpha' } });
-        fireEvent.click(within(skillPicker).getByRole('button', { name: /Search SkillMarket/ }));
+        fireEvent.click(within(skillPicker).getByRole('button', { name: /^Search$/ }));
         fireEvent.change(skillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'beta' } });
-        fireEvent.click(within(skillPicker).getByRole('button', { name: /Search SkillMarket/ }));
+        fireEvent.click(within(skillPicker).getByRole('button', { name: /^Search$/ }));
 
         await waitFor(() => expect(within(skillPicker).getByText('Beta Market Skill')).not.toBeNull());
         resolveAlpha([{
@@ -1164,8 +1197,25 @@ describe('AppsPage', () => {
         expect(screen.getByText(/"launchMode": "automation_console"/)).not.toBeNull();
     });
 
+    it('opens the current Hub approval workflow designer from App Studio', async () => {
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        const kindPicker = document.querySelector('.apps-studio-kind') as HTMLElement;
+        fireEvent.click(within(kindPicker).getByRole('button', { name: /Approval app/ }));
+        const designButton = screen.getByRole('button', { name: 'Design' });
+
+        expect(designButton.getAttribute('title')).toBe('Open approval workflow designer');
+        fireEvent.click(designButton);
+
+        await waitFor(() => expect(browserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/approval_workflow#machine_id=machine-1&token=token-1'));
+    });
+
     it('writes enterprise app skill dependencies from selected installed and market skills', async () => {
-        listNLSkillsMock.mockResolvedValue([{ name: 'expense-super-app', description: 'Expense app runtime' }]);
+        listNLSkillsMock.mockResolvedValue([
+            { name: 'expense-super-app', description: 'Expense app runtime' },
+            { name: 'installed-approval-flow', description: 'Installed approval workflow', productKind: 'workflow_skill' },
+        ]);
         searchMixedSkillsMock.mockResolvedValue([{
             id: 'expense-approval-flow',
             name: 'Expense Approval Flow',
@@ -1173,6 +1223,7 @@ describe('AppsPage', () => {
             source: 'skillmarket',
             source_label: 'SkillMarket',
             installed: false,
+            productKind: 'approval_workflow_skill',
         }]);
         render(<AppsPage lang="zh-Hans" />);
 
@@ -1182,10 +1233,11 @@ describe('AppsPage', () => {
         fireEvent.click(within(kindPicker).getByRole('button', { name: /企业审批型/ }));
         const appSkillPicker = screen.getByTestId('studio-app-skill-id');
         await waitFor(() => expect(within(appSkillPicker).getAllByText('expense-super-app').length).toBeGreaterThan(0));
+        expect(within(appSkillPicker).queryByText('installed-approval-flow')).toBeNull();
         fireEvent.click(within(appSkillPicker).getByRole('option', { name: /expense-super-app/ }) as HTMLButtonElement);
         const workflowSkillPicker = screen.getByTestId('studio-workflow-skill-id');
         fireEvent.change(workflowSkillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'expense approval' } });
-        fireEvent.click(within(workflowSkillPicker).getByRole('button', { name: /搜 SkillMarket/ }));
+        fireEvent.click(within(workflowSkillPicker).getByRole('button', { name: /搜索/ }));
         await waitFor(() => expect(searchMixedSkillsMock).toHaveBeenCalledWith('expense approval'));
         fireEvent.click(within(workflowSkillPicker).getByText('Expense Approval Flow').closest('button') as HTMLButtonElement);
         fireEvent.change(screen.getByTestId('studio-workflow-skill-version'), { target: { value: '2.1.0' } });
@@ -1888,21 +1940,42 @@ describe('AppsPage', () => {
         expect(syncPayload.instance.artifacts[0].id).toBe('artifact-99');
     });
     it('shows the approval instance workspace for approval apps', async () => {
+        listMaclawAppApprovalInstancesMock.mockResolvedValue([{
+            app_id: 'expense',
+            app_name: '报销申请',
+            instance_id: 'approval-workspace-1',
+            title: 'Travel expense summary',
+            lane: 'pending_my_approval',
+            status: 'pending',
+            current_node: 'manager_approval',
+            updated_at: '2026-06-20T00:00:00Z',
+            dataset_id: 'finance.expenses',
+            object_role: 'expense_report',
+            approval_id: 'approval-remote-workspace-1',
+            record_id: 'EXP-WORKSPACE-1',
+        }]);
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('\u62a5\u9500\u7533\u8bf7')[0]);
+        fireEvent.click(screen.getAllByText('报销申请')[0]);
+        await waitFor(() => expect(listMaclawAppApprovalInstancesMock).toHaveBeenCalledWith('expense', 'all', 50));
         await waitFor(() => expect(document.querySelector('.apps-approval-workspace')).not.toBeNull());
-        fireEvent.click(screen.getByRole('button', { name: '\u6267\u884c' }));
+        fireEvent.click(screen.getByRole('button', { name: '执行' }));
 
         await waitFor(() => expect(document.querySelector('.apps-approval-workspace')).not.toBeNull());
         const workspace = document.querySelector('.apps-approval-workspace') as HTMLElement;
-        expect(within(workspace).getByText('\u5ba1\u6279\u5b9e\u4f8b')).not.toBeNull();
-        expect(within(workspace).getByRole('button', { name: /\u6211\u7684\u7533\u8bf7/ })).not.toBeNull();
-        expect(within(workspace).getByRole('button', { name: /\u5f85\u6211\u5ba1\u6279/ })).not.toBeNull();
-        expect(within(workspace).getByRole('button', { name: /\u5df2\u5904\u7406/ })).not.toBeNull();
+        expect(within(workspace).getByText('审批实例')).not.toBeNull();
+        expect(within(workspace).getByRole('button', { name: /我的申请/ })).not.toBeNull();
+        const pendingLane = within(workspace).getByRole('button', { name: /待我审批/ });
+        expect(pendingLane).not.toBeNull();
+        expect(within(workspace).getByRole('button', { name: /已处理/ })).not.toBeNull();
+        expect(within(workspace).getByRole('button', { name: /^需关注/ })).not.toBeNull();
+        expect(within(workspace).getByRole('button', { name: /全部/ })).not.toBeNull();
+        fireEvent.click(pendingLane);
+        expect(within(workspace).getAllByText('Travel expense summary').length).toBeGreaterThan(0);
         expect(document.querySelector('.apps-approval-summary')).toBeNull();
         expect(document.querySelector('.apps-approval-manager')).toBeNull();
     });
+
     it('shows an empty runtime area until an app icon is clicked', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
@@ -2198,7 +2271,9 @@ describe('AppsPage', () => {
             apps: [{ id: 'skill-app-disabled-runtime-tool-runtime-dep-tool', name: '运行依赖工具', kind: 'tool_app' }],
             dependencies: [{
                 id: 'disabled-runtime-tool',
+                version: '1.0.0',
                 kind: 'runtime_skill',
+                source: 'hub',
                 required: true,
                 installed: true,
                 installed_status: 'disabled',
@@ -2213,6 +2288,13 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('执行'));
 
         await waitFor(() => expect(screen.getAllByText('必需 Skill 依赖缺失或不可用，请先安装或启用依赖').length).toBeGreaterThan(0));
+        const runtimeStatus = document.querySelector('.apps-runtime-status') as HTMLElement;
+        const dependencyList = runtimeStatus.querySelector('.apps-install-record__deps') as HTMLElement;
+        expect(dependencyList).not.toBeNull();
+        const dependency = within(dependencyList).getByText('disabled-runtime-tool').closest('.apps-install-record__dep') as HTMLElement;
+        expect(dependency.dataset.state).toBe('blocked');
+        expect(within(dependency).getByText('不可用')).not.toBeNull();
+        expect(dependency.textContent).toContain('runtime_skill · hub · v1.0.0 · disabled');
         expect(runNLSkillAsyncMock).not.toHaveBeenCalled();
     });
 
@@ -2267,6 +2349,65 @@ describe('AppsPage', () => {
             app_id: 'skill-app-disabled-runtime-tool-runtime-dep-tool',
             app_kind: 'tool_app',
         })));
+    });
+    it('installs missing workflow dependencies before starting approval app instances', async () => {
+        const app = {
+            id: 'local-approval-dep-app',
+            name: '依赖审批应用',
+            description: 'Approval app dependency repair',
+            category: 'OA',
+            kind: 'enterprise_approval_app',
+            icon: 'receipt',
+            accent: '#2f5f98',
+            source: 'local',
+            pinned: false,
+            recentUsedAt: '2026-06-17T00:00:00.000Z',
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_approval_app',
+                launchMode: 'approval_workspace',
+                datasrv: { domain: 'finance', datasetID: 'finance.expenses', objectRole: 'expense_report', preferredAction: 'finance.expense_upsert' },
+                mis: { approvalBindings: [{ event: 'expense.submitted', workflowSkillId: 'missing-expense-workflow', workflowVersion: '1.0.0', objectRole: 'expense_report' }] },
+                dependencies: { skills: [{ id: 'missing-expense-workflow', version: '1.0.0', kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }] },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [app.id],
+            customApps: [app],
+            recentUsedAtById: { [app.id]: app.recentUsedAt },
+        }));
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: 'enterprise_approval_app' }],
+            dependencies: [{ id: 'missing-expense-workflow', kind: 'workflow_skill', required: true, installed: false, health: 'missing', action: 'blocked', app_ids: [app.id] }],
+            has_missing_required: true,
+            has_blocking_dependency: true,
+        });
+        installMaclawAppDependenciesMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: 'enterprise_approval_app' }],
+            dependencies: [{ id: 'missing-expense-workflow', kind: 'workflow_skill', required: true, installed: true, action: 'installed', app_ids: [app.id] }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        });
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getAllByText('依赖审批应用')[0]);
+        fireEvent.click(screen.getByText('执行'));
+        await waitFor(() => expect(screen.getByText('安装依赖并执行')).not.toBeNull());
+        fireEvent.click(screen.getByText('安装依赖并执行'));
+
+        await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('missing-expense-workflow', expect.objectContaining({
+            app_id: app.id,
+            app_kind: 'enterprise_approval_app',
+            approval_event: 'expense.submitted',
+            approval_object_role: 'expense_report',
+            approval_workflow_skill_id: 'missing-expense-workflow',
+        })));
+        expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalled();
     });
 
     it('passes selected file metadata to skill app runs', async () => {
@@ -2372,7 +2513,10 @@ describe('AppsPage', () => {
                 { index: 1, name: '生成文档', action: 'write', status: 'success', output: 'created', duration_ms: 34 },
             ],
             summary: { last_output_snippet: 'done', artifact_path: '/tmp/out.docx', artifact_status: 'ready' },
-            artifacts: [{ id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' }],
+            artifacts: [
+                { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' },
+                { id: 'artifact-2', uri: 'artifact://skill-run/run-test-1/artifact-2', name: 'report.pdf', path: '/tmp/report.pdf', status: 'ready', mime_type: 'application/pdf', size_bytes: 2048 },
+            ],
             outputs: [
                 { id: 'artifact-1', kind: 'artifact', title: '文件产物卡', artifact_id: 'artifact-1', artifact: { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' } },
                 { id: 'file-1', kind: 'file', title: '文件输出卡', artifact_id: 'artifact-1', artifact: { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' } },
@@ -2403,12 +2547,14 @@ describe('AppsPage', () => {
         expect(screen.getByText('2/2')).not.toBeNull();
         expect(screen.getByText('读取文件')).not.toBeNull();
         expect(screen.getAllByText('生成文档').length).toBeGreaterThan(0);
-        expect(screen.getByText('产物已生成')).not.toBeNull();
+        expect(screen.getAllByText('产物已生成').length).toBeGreaterThanOrEqual(2);
         expect(screen.queryByText('文件产物卡')).toBeNull();
         expect(screen.queryByText('文件输出卡')).toBeNull();
         expect(screen.getByText('摘要')).not.toBeNull();
         expect(screen.getByText('生成完成摘要')).not.toBeNull();
         expect(screen.getAllByText('artifact://skill-run/run-test-1/artifact-1').length).toBeGreaterThan(0);
+        expect(screen.getByText('artifact://skill-run/run-test-1/artifact-2')).not.toBeNull();
+        expect(screen.getByText('report.pdf · application/pdf · 2048 bytes')).not.toBeNull();
         fireEvent.click(screen.getAllByText('打开')[0]);
         fireEvent.click(screen.getAllByText('定位')[0]);
         expect(openSkillRunArtifactMock).toHaveBeenCalledWith('run-test-1', 'artifact-1');
@@ -3176,7 +3322,9 @@ describe('AppsPage', () => {
             apps: [{ id: 'market-contract-archive', name: '合同归档', kind: 'tool_app' }],
             dependencies: [{
                 id: 'contract-archive',
+                version: '1.2.0',
                 kind: 'runtime_skill',
+                source: 'hub',
                 required: true,
                 installed: true,
                 installed_status: 'disabled',
@@ -3197,6 +3345,12 @@ describe('AppsPage', () => {
         await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
         expect(recordMaclawAppInstallMock).not.toHaveBeenCalled();
         expect(within(row).getByText('必需 Skill 依赖缺失或不可用，请先安装或启用依赖')).not.toBeNull();
+        const dependencyList = row.querySelector('.apps-install-record__deps') as HTMLElement;
+        expect(dependencyList).not.toBeNull();
+        const dependency = within(dependencyList).getByText('contract-archive').closest('.apps-install-record__dep') as HTMLElement;
+        expect(dependency.dataset.state).toBe('blocked');
+        expect(within(dependency).getByText('不可用')).not.toBeNull();
+        expect(dependency.textContent).toContain('runtime_skill · hub · v1.2.0 · disabled');
         expect(row.getAttribute('data-state')).toBe('blocked');
         fireEvent.click(screen.getByText('应用管理'));
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('合同归档'))).toBe(false);
@@ -3491,8 +3645,8 @@ describe('AppsPage', () => {
                 app_count: 1,
                 apps: [{ id: 'contract-audit', name: 'Contract Audit', kind: 'tool_app' }],
                 dependencies: [
-                    { id: 'contract-skill', version: '1.0.0', required: true, installed: true },
-                    { id: 'policy-skill', version: '2.0.0', required: true, installed: false },
+                    { id: 'contract-skill', version: '1.0.0', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'skip' },
+                    { id: 'policy-skill', version: '2.0.0', kind: 'workflow_skill', source: 'hub', required: true, installed: false, health: 'missing', action: 'blocked' },
                 ],
                 has_missing_required: true,
             },
@@ -3507,6 +3661,19 @@ describe('AppsPage', () => {
         expect(screen.getByText(/Package SHA: abcdef123456/)).not.toBeNull();
         expect(screen.getByText(/Skill dependencies: 2/)).not.toBeNull();
         expect(screen.getByText(/Blocking deps: 1/)).not.toBeNull();
+        const dependencyList = document.querySelector('.apps-install-record__deps') as HTMLElement;
+        expect(dependencyList).not.toBeNull();
+        expect(dependencyList.getAttribute('aria-label')).toBe('Skill dependencies');
+        const readyDependency = Array.from(dependencyList.querySelectorAll('.apps-install-record__dep'))
+            .find((item) => item.textContent?.includes('contract-skill')) as HTMLElement;
+        const blockedDependency = Array.from(dependencyList.querySelectorAll('.apps-install-record__dep'))
+            .find((item) => item.textContent?.includes('policy-skill')) as HTMLElement;
+        expect(readyDependency?.dataset.state).toBe('ready');
+        expect(blockedDependency?.dataset.state).toBe('blocked');
+        expect(within(readyDependency).getByText('Installed')).not.toBeNull();
+        expect(within(blockedDependency).getByText('Missing')).not.toBeNull();
+        expect(readyDependency.textContent).toContain('runtime_skill · hub · v1.0.0');
+        expect(blockedDependency.textContent).toContain('workflow_skill · hub · v2.0.0');
         expect(listMaclawAppInstallsMock).toHaveBeenCalledWith(6);
     });
     it('blocks market install when a required dependency is installed but unavailable', async () => {

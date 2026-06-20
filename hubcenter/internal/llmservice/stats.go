@@ -61,8 +61,8 @@ type UsageFilter struct {
 
 // UsageRecorderImpl implements llmpool.UsageRecorder for HubCenter.
 type UsageRecorderImpl struct {
-	repo   UsageRepository
-	hubID  string // can be set per-request via context, or default
+	repo  UsageRepository
+	hubID string // can be set per-request via context, or default
 }
 
 // NewUsageRecorder creates a usage recorder backed by the given repository.
@@ -86,6 +86,7 @@ func (u *UsageRecorderImpl) RecordUsage(ctx context.Context, record *llmpool.Usa
 		OutputTokens: record.OutputTokens,
 		Credits:      record.Credits,
 		CacheHit:     record.CacheHit,
+		AuthID:       record.AuthID,
 		CreatedAt:    record.Timestamp,
 	})
 }
@@ -116,7 +117,6 @@ func usageContextValues(ctx context.Context) (string, string) {
 	}
 	return v.HubID, v.TenantID
 }
-
 
 // StatsService wraps a UsageRepository for the admin API layer.
 type StatsService struct {

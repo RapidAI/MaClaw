@@ -405,6 +405,202 @@ func TestHandleProxyRequest_GrantRequiredMatchesTenantIDAlias(t *testing.T) {
 	}
 }
 
+func TestHandleProxyRequest_GrantRequiredAppliesMinimumCreditCharge(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":60,"completion_tokens":40,"total_tokens":100}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models:       []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{{
+		ID: "auth-small", HubID: "hub1", TenantID: "t1", ServiceGroupID: "g1",
+		CreditsTotal: 1000, StartsAt: time.Now().Add(-time.Hour), ExpiresAt: time.Now().Add(time.Hour),
+		Status: "active",
+	}}}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(authRepo),
+		HTTPClient:  upstream.Client(),
+		Usage:       &recordingUsageRecorder{},
+	}
+
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "hi"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := authRepo.auths[0].CreditsUsed; got != minimumProxyRequestCredits {
+		t.Fatalf("CreditsUsed = %.3f, want %.3f minimum charge", got, minimumProxyRequestCredits)
+	}
+}
+
+func TestHandleProxyRequest_GrantRequiredAppliesMinimumCreditChargeWhenUsageMissing(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models:       []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{{
+		ID: "auth-missing-usage", HubID: "hub1", TenantID: "t1", ServiceGroupID: "g1",
+		CreditsTotal: 1000, StartsAt: time.Now().Add(-time.Hour), ExpiresAt: time.Now().Add(time.Hour),
+		Status: "active",
+	}}}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(authRepo),
+		HTTPClient:  upstream.Client(),
+		Usage:       &recordingUsageRecorder{},
+	}
+
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "hi"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := authRepo.auths[0].CreditsUsed; got != minimumProxyRequestCredits {
+		t.Fatalf("CreditsUsed = %.3f, want %.3f minimum charge", got, minimumProxyRequestCredits)
+	}
+	if !bytes.Contains(resp.Body, []byte(`"usage"`)) || !bytes.Contains(resp.Body, []byte(`"estimated":true`)) {
+		t.Fatalf("response body should include estimated usage: %s", resp.Body)
+	}
+}
+
+func TestHandleProxyRequest_GrantRequiredSpreadsChargeAcrossComputeCards(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10000,"completion_tokens":5000,"total_tokens":15000}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "redeem",
+			Name:         "Redeem",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models:       []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	now := time.Now()
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{
+		{
+			ID: "auth-small", HubID: "hub1", TenantID: "t1", ServiceGroupID: "redeem",
+			CreditsTotal: 1, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour),
+			Status: "active", CardOrderID: "HC-SMALL", CreatedAt: now.Add(-2 * time.Hour),
+		},
+		{
+			ID: "auth-large", HubID: "hub1", TenantID: "t1", ServiceGroupID: "redeem",
+			CreditsTotal: 1000, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(2 * time.Hour),
+			Status: "active", CardOrderID: "HC-LARGE", CreatedAt: now.Add(-time.Hour),
+		},
+	}}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(authRepo),
+		HTTPClient:  upstream.Client(),
+		Usage:       &recordingUsageRecorder{},
+	}
+
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "hi"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := authRepo.auths[0].CreditsUsed; got != 1 {
+		t.Fatalf("small card CreditsUsed = %.3f, want 1", got)
+	}
+	if got := authRepo.auths[1].CreditsUsed; got != 0.5 {
+		t.Fatalf("large card CreditsUsed = %.3f, want 0.5", got)
+	}
+	usage := cfg.Usage.(*recordingUsageRecorder)
+	if len(usage.records) != 1 {
+		t.Fatalf("usage records len = %d, want 1", len(usage.records))
+	}
+	if got := usage.records[0].AuthID; got != "auth-small,auth-large" {
+		t.Fatalf("usage AuthID = %q, want charged auth IDs", got)
+	}
+}
+
+func TestBuildTenantAuthorizationStatusPreservesFractionalCredits(t *testing.T) {
+	now := time.Now().UTC()
+	checker := NewAuthorizationChecker(&mockAuthRepo{auths: []*TenantAuthorization{{
+		ID:             "auth-fractional",
+		HubID:          "hub1",
+		TenantID:       "t1",
+		ServiceGroupID: "maclaw-official",
+		CreditsTotal:   10,
+		CreditsUsed:    1.1,
+		StartsAt:       now.Add(-time.Hour),
+		ExpiresAt:      now.Add(time.Hour),
+		Status:         "active",
+		Source:         "card",
+	}}})
+
+	status, err := BuildTenantAuthorizationStatus(context.Background(), checker, "hub1", "t1")
+	if err != nil {
+		t.Fatalf("BuildTenantAuthorizationStatus() error = %v", err)
+	}
+	if len(status.Authorizations) != 1 {
+		t.Fatalf("authorizations len = %d, want 1: %#v", len(status.Authorizations), status)
+	}
+	got := status.Authorizations[0]
+	if got.CreditsUsed != 1.1 || got.CreditsRemaining != 8.9 {
+		t.Fatalf("authorization credits = used %.17g remaining %.17g, want 1.1/8.9", got.CreditsUsed, got.CreditsRemaining)
+	}
+}
+
 func TestHandleProxyRequest_FreeAccessPolicySkipsAuthorization(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

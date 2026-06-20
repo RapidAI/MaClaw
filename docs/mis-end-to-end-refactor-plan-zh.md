@@ -756,10 +756,15 @@ AG UI 输入输出
 应用入口至少包含：
 
 ```text
-企业应用 enterprise_app
-  面向 CRM、进销存、财务、ERP、报销、审批、库存等企业 MIS 场景
-  本质是超级 Skill + AG UI + MIS tool + DataSrv
-  可以关联审批工作流
+企业审批型应用 enterprise_approval_app
+  面向报销、合同、付款、采购等需要审批流的企业 MIS 场景
+  本质是超级 Skill + 动态 AG UI + MIS tool + DataSrv + 审批 workflow-skill
+  必须创建和展示审批实例，并反馈审批结果/文档/内容
+
+企业普通应用 enterprise_normal_app
+  面向 CRM、进销存、财务、ERP、库存等一次性企业业务操作
+  本质是超级 Skill + 动态 AG UI + MIS tool + DataSrv
+  不创建审批实例
 
 工具应用 tool_app
   面向文件处理、文档生成、PDF、图片、数据清洗、爬取、分析等工具场景
@@ -773,10 +778,11 @@ AG UI 输入输出
   可选择调用 MIS tool，但不是默认 MIS 应用
 ```
 
-所以审批只和企业应用有关，而且也只是企业应用的可选能力：
+所以审批实例只属于企业审批型应用：
 
 ```text
-企业应用可以有关联审批工作流
+企业审批型应用必须有关联审批 workflow-skill
+企业普通应用不出现审批实例管理
 工具应用不应该出现审批配置
 普通 Skill 不应该因为 App 体系而被迫理解 MIS
 ```
@@ -785,17 +791,22 @@ manifest 边界：
 
 ```json
 {
-  "kind": "enterprise_app",
+  "kind": "enterprise_approval_app",
   "binding": {
-    "skill": {"id": "mis-expense-claim"},
+    "appSkill": {"id": "mis-expense-claim", "source": "hub"},
     "mis": {
       "appId": "mis.expense",
       "requiredRoles": ["expense_report"],
       "requiredScopes": ["action:expense.submit"],
       "approvalBindings": [
-        {"event": "expense.submitted", "workflowId": "expense_approval"}
+        {"event": "expense.submitted", "workflowSkillId": "expense_approval", "objectRole": "expense_report"}
       ]
     }
+  },
+  "dependencies": {
+    "skills": [
+      {"id": "expense_approval", "kind": "workflow_skill", "required": true, "source": "hub"}
+    ]
   }
 }
 ```
@@ -922,21 +933,22 @@ Skill Generator 输入：
 分类区别：
 
 ```text
-enterprise_app = Skill + AG UI + binding.mis + 可选审批工作流
+enterprise_approval_app = Skill + AG UI + binding.mis + 审批 workflow-skill + 审批实例管理
+enterprise_normal_app = Skill + AG UI + binding.mis + 一次性企业业务操作
 tool_app = Skill + AG UI + 文件/表单/artifact 输入输出
 automation_app = Skill + 触发器/计划/运行记录
 ```
 
 所有 App 都不直接干活，后端工作由 skill 执行。
 
-企业 App 不直接访问 DataSrv，而是通过 Skill 调 MIS tool。
+企业审批型应用和企业普通应用都不直接访问 DataSrv，而是通过 Skill 调 MIS tool。
 
 App 绑定：
 
 ```json
 {
   "binding": {
-    "skill": {"id": "mis-expense-claim", "ui": "ag_ui"},
+    "appSkill": {"id": "mis-expense-claim", "source": "hub"},
     "mis": {
       "appId": "mis.expense",
       "requiredRoles": ["employee", "expense_report", "approval", "payment"],
@@ -963,7 +975,7 @@ App 绑定：
 - `dashboard`
 - `timeline`
 
-这主要服务 `enterprise_app`。
+这主要服务 `enterprise_approval_app` 和 `enterprise_normal_app`。
 
 `tool_app` 可以继续使用更轻的 Skill 表单/文件输入输出，不需要完整企业应用布局。
 
@@ -1047,6 +1059,7 @@ App Studio 不再以 manifest JSON 编辑为核心。
 {
   "app_id": "mis.expense",
   "blueprint_id": "mis.expense",
+  "kind": "enterprise_approval_app",
   "role_bindings": {
     "employee": "company.users",
     "department": "company.departments",
@@ -1054,6 +1067,17 @@ App Studio 不再以 manifest JSON 编辑为核心。
     "expense_item": "expense.items",
     "approval": "workflow.approvals",
     "payment": "finance.payments"
+  },
+  "metadata": {
+    "app_skill_id": "mis-expense-claim",
+    "workflow_skill_ids": ["approval-expense"],
+    "dependencies": [
+      {"id": "mis-expense-claim", "kind": "runtime_skill", "required": true, "source": "hub", "health": "ready"},
+      {"id": "approval-expense", "kind": "workflow_skill", "required": true, "source": "hub", "health": "ready"}
+    ],
+    "dependency_count": 2,
+    "has_missing_required_dependency": false,
+    "has_blocking_dependency": false
   }
 }
 ```
@@ -1176,7 +1200,8 @@ agent 和 skill 都能用 mis.data.query(object_role=expense_report)
 
 ### Phase 4：MaClaw App 超级 Skill
 
-- `enterprise_app` 改为绑定 `skill + mis`。
+- `enterprise_approval_app` 绑定 `appSkill + mis + workflow_skill + approvalBindings`。
+- `enterprise_normal_app` 绑定 `appSkill + mis`，不创建审批实例。
 - App 入口启动 skill。
 - 启动前做 `mis.app.check_access`。
 - App 不保存 DataSrv token。
@@ -2356,9 +2381,9 @@ MIS 应用：mis.expense
 
 ```json
 {
-  "kind": "enterprise_app",
+  "kind": "enterprise_approval_app",
   "binding": {
-    "skill": {"id": "mis-expense-claim"},
+    "appSkill": {"id": "mis-expense-claim", "source": "hub"},
     "mis": {
       "appId": "mis.expense",
       "approvalBindings": [
@@ -2378,16 +2403,21 @@ MIS 应用：mis.expense
         }
       ]
     }
+  },
+  "dependencies": {
+    "skills": [
+      {"id": "approval-expense", "kind": "workflow_skill", "required": true, "source": "hub"}
+    ]
   }
 }
 ```
 
-### 4. 用户运行企业 App
+### 4. 用户运行企业审批型应用
 
 用户从应用入口打开：
 
 ```text
-企业应用 -> 报销申请
+企业审批型应用 -> 报销申请
 ```
 
 AG UI 展示业务表单：

@@ -404,7 +404,9 @@ if (typeof I18N_EN !== 'undefined') {
 
   function formatCMCredits(value) {
     var n = cmNumber(value);
-    return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '0';
+    if (!Number.isFinite(n)) return '0';
+    var precision = n !== 0 && Math.abs(n) < 0.1 ? 2 : 1;
+    return n.toLocaleString(undefined, { maximumFractionDigits: precision });
   }
 
   function formatCMPeriod(value) {

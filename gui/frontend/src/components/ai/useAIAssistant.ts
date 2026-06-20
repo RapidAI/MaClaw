@@ -4434,7 +4434,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const assistantMessageId = nextId();
             const sessionKey = submitRoundSessionKey;
             clearTransientProgress(sessionKey);
-            setRoundState({ generation, phase: 'requesting', assistantMessageId, requestId, sessionKey, userText: '' });
+            const nextRound = { generation, phase: 'requesting' as const, assistantMessageId, requestId, sessionKey, userText: '' };
+            rememberInFlightRound(nextRound);
+            setRoundState(nextRound);
             setMessages(prev => appendAssistantPlaceholder(prev, assistantMessageId, requestId, sessionKey));
             emitPetStateForAssistant('thinking', 'agent-view:submit', 15000);
 
@@ -4461,7 +4463,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 stopResponseTimeout(round.requestId);
                 flushStreamTokenBuffer(round.requestId);
                 setMessages(prev => resolveSendResult(prev, round.assistantMessageId, round.requestId, response, preferences));
-                resetActiveRound(round.generation);
+                forgetInFlightRound(round.requestId);
+                if (activeRoundRef.current.requestId === round.requestId) {
+                    resetActiveRound(round.generation);
+                }
                 emitPetStateForAssistant('idle', 'agent-view:done');
             }
             return;
@@ -4469,8 +4474,12 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             if (workflowSubmitRound) {
                 const round = workflowSubmitRound;
                 stopResponseTimeout(round.requestId);
+                resetStreamTokenBuffer(round.requestId);
                 setMessages(prev => resolveSendResult(prev, round.assistantMessageId, round.requestId, null, preferences, err?.message || String(err)));
-                resetActiveRound(round.generation);
+                forgetInFlightRound(round.requestId);
+                if (activeRoundRef.current.requestId === round.requestId) {
+                    resetActiveRound(round.generation);
+                }
                 emitPetStateForAssistant('idle', 'agent-view:error');
             }
             if (isWorkflowFormSubmit) return;
@@ -4484,7 +4493,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 displayText: localizeText(uiLang, "Submit structured data", "\u63d0\u4ea4\u7ed3\u6784\u5316\u6570\u636e", "\u63d0\u4ea4\u7d50\u69cb\u5316\u8cc7\u6599"),
             });
         }
-    }, [activeSessionKeyForEvents, clearTransientProgress, emitPetStateForAssistant, flushStreamTokenBuffer, injectSupplementary, preferences, resetActiveRound, resetStreamTokenBuffer, sendMessage, setRoundState, startResponseTimeout, stopResponseTimeout, uiLang, updateVisibleAgentViewForSession, waitForForegroundIdle]);
+    }, [activeSessionKeyForEvents, clearTransientProgress, emitPetStateForAssistant, flushStreamTokenBuffer, forgetInFlightRound, injectSupplementary, preferences, rememberInFlightRound, resetActiveRound, resetStreamTokenBuffer, sendMessage, setRoundState, startResponseTimeout, stopResponseTimeout, uiLang, updateVisibleAgentViewForSession, waitForForegroundIdle]);
 
     const dismissAgentView = useCallback(async (viewId: string | undefined, data?: Record<string, unknown>, options?: { force?: boolean }) => {
         // force: unconditionally clear frontend UI (even for workflow forms that

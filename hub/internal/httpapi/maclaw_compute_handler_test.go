@@ -214,7 +214,13 @@ func TestMaClawComputeStatusUsesHeartbeatAuthorizationPayload(t *testing.T) {
 						"hub_id": "hub_acme",
 						"tenant_id": "tenant_acme",
 						"allow_external_providers": true,
-						"authorizations": [{"id": "external_heartbeat", "active": true}]
+						"authorizations": [{
+							"id": "external_heartbeat",
+							"active": true,
+							"credits_total": 10,
+							"credits_used": 1.1,
+							"credits_remaining": 8.9
+						}]
 					}
 				}
 			}
@@ -231,7 +237,9 @@ func TestMaClawComputeStatusUsesHeartbeatAuthorizationPayload(t *testing.T) {
 	var payload struct {
 		AllowExternalProviders bool `json:"allow_external_providers"`
 		Authorizations         []struct {
-			ID string `json:"id"`
+			ID               string  `json:"id"`
+			CreditsUsed      float64 `json:"credits_used"`
+			CreditsRemaining float64 `json:"credits_remaining"`
 		} `json:"authorizations"`
 	}
 	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
@@ -239,6 +247,9 @@ func TestMaClawComputeStatusUsesHeartbeatAuthorizationPayload(t *testing.T) {
 	}
 	if !payload.AllowExternalProviders || len(payload.Authorizations) != 1 || payload.Authorizations[0].ID != "external_heartbeat" {
 		t.Fatalf("compute status from heartbeat payload = %#v body=%s", payload, resp.Body.String())
+	}
+	if payload.Authorizations[0].CreditsUsed != 1.1 || payload.Authorizations[0].CreditsRemaining != 8.9 {
+		t.Fatalf("authorization credits = used %.17g remaining %.17g, want 1.1/8.9 body=%s", payload.Authorizations[0].CreditsUsed, payload.Authorizations[0].CreditsRemaining, resp.Body.String())
 	}
 }
 

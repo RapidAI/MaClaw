@@ -154,7 +154,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             }
 
             if (failed) {
-                setLoadError(t("Some LLM settings failed to load. Click retry.", "部分 LLM 配置加载失败，可点击重试。"));
+                setLoadError(t("Some LLM settings failed to load. Click retry.", "部分大模型配置加载失败，可点击重试。"));
             }
         } finally {
             if (loadSeq === loadSeqRef.current) {
@@ -509,7 +509,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 <p>
                     {t(
                         "Select LLM provider (OpenAI / Anthropic supported)",
-                        "选择 LLM 服务商（支持 OpenAI / Anthropic 协议）"
+                        "选择大模型服务商（支持 OpenAI / Anthropic 协议）"
                     )}
                 </p>
                 <button className="llm-config-primary-action" onClick={openDialog} style={{
@@ -559,7 +559,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                     <label style={{ ...labelStyle, marginBottom: 0 }}>
                         {t("Agent Max Iterations", "Agent 最大推理轮数")}
                         <span style={{ fontSize: "0.68rem", color: colors.textMuted, fontWeight: 400, marginLeft: 6 }}>
-                            {t("0=unlimited, default 12", "0=不限制，默认 12")}
+                            {t("0=unlimited, default 300", "0=不限制，默认 300")}
                         </span>
                     </label>
                 </div>
@@ -627,7 +627,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                         {/* Header */}
                         <div className="llm-config-dialog__header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
                             <span className="llm-config-dialog__title" style={{ fontSize: "0.92rem", fontWeight: 700, color: colors.text }}>
-                                {t("MaClaw LLM Configuration", "MaClaw LLM 配置")}
+                                {t("MaClaw LLM Configuration", "MaClaw 大模型配置")}
                             </span>
                             <button className="llm-config-dialog__close" onClick={closeDialog} aria-label={t("Close", "关闭")} style={{
                                 border: "none", background: "transparent", cursor: "pointer",

@@ -620,14 +620,13 @@ func (h *IMMessageHandler) getWorkflowV2() *workflowV2State {
 	return h.app.workflowV2
 }
 
-// emitWorkflowV2Progress sends workflow phase update events to the frontend.
-// Uses the same event name and data format so the frontend preview panel works.
-func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.WorkflowState) {
+// emitWorkflowV2PhaseUpdateEvent builds and emits the workflow:phase_update event payload.
+// Extracted so it can be reused by both emitWorkflowV2Progress (which also emits
+// suggest_maximize) and emitWorkflowV2ProgressPayloadOnly (which does not).
+func (h *IMMessageHandler) emitWorkflowV2PhaseUpdateEvent(state *v2.WorkflowState) {
 	if h.app == nil || state == nil {
 		return
 	}
-
-	// Resolve active phase once — used by both phases array and event payload.
 	activePhase := state.ActivePhase()
 	activePhaseID := ""
 	if activePhase != nil {
@@ -635,15 +634,9 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 	}
 	awaitingForm := activePhase != nil && activePhase.InputSchema != nil && activePhase.FormData == nil
 
-	// Build phases array for progress board
 	phases := make([]map[string]interface{}, len(state.Phases))
 	for i, p := range state.Phases {
 		expectsDoc := p.NeedsConfirm
-		// When the active phase is awaiting form input (InputSchema present but
-		// FormData not yet submitted), suppress expects_document so the frontend
-		// does not auto-open the workflow doc preview panel. The form panel
-		// (AgentView) should take visual priority; the doc preview is empty until
-		// the agent loop runs after form submission.
 		if p.ID == activePhaseID && awaitingForm {
 			expectsDoc = false
 		}
@@ -656,10 +649,7 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 		}
 	}
 
-	// Build phase_outputs map — truncate long outputs to limit event payload size.
-	// Full content is delivered via separate workflow:doc_update events; phase_outputs
-	// in phase_update serves only as a fallback for missed doc_updates.
-	const maxPhaseOutputInProgress = 8000 // ~8KB per phase in the progress event
+	const maxPhaseOutputInProgress = 8000
 	phaseOutputs := make(map[string]interface{})
 	for _, p := range state.Phases {
 		if p.Output != "" {
@@ -672,7 +662,6 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 		}
 	}
 
-	// Emit workflow:phase_update (the event name frontend listens to)
 	payload := map[string]interface{}{
 		"id":            state.ID,
 		"status":        string(state.Status),
@@ -686,11 +675,29 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 		payload["awaiting_form"] = true
 	}
 	emitWorkflowV2Event(h.app, "workflow:phase_update", payload)
+}
+
+// emitWorkflowV2ProgressPayloadOnly emits only the workflow:phase_update event
+// without suggest_maximize side effects. Used for tab-switch refresh where the
+// panel state is already restored and doesn't need maximize suggestions.
+func (h *IMMessageHandler) emitWorkflowV2ProgressPayloadOnly(userID string, state *v2.WorkflowState) {
+	h.emitWorkflowV2PhaseUpdateEvent(state)
+}
+
+// emitWorkflowV2Progress sends workflow phase update events to the frontend.
+// Uses the same event name and data format so the frontend preview panel works.
+func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.WorkflowState) {
+	if h.app == nil || state == nil {
+		return
+	}
+	h.emitWorkflowV2PhaseUpdateEvent(state)
 
 	// Also emit suggest_maximize for desktop panel to auto-expand.
 	// But NOT when the active phase is waiting for form input — there's no
 	// document content to preview yet, and opening the workflow doc panel would
 	// obscure the AgentView form that the user needs to fill in.
+	activePhase := state.ActivePhase()
+	awaitingForm := activePhase != nil && activePhase.InputSchema != nil && activePhase.FormData == nil
 	if state.Status == v2.StatusActive {
 		if !awaitingForm {
 			emitWorkflowV2Event(h.app, "workflow:suggest_maximize", map[string]interface{}{

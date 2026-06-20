@@ -482,7 +482,7 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 	if err := a.writeMaclawAppInstallRegistry(registry); err != nil {
 		return nil, err
 	}
-	dataSrvRegistration := a.registerMaclawAppInstallationsToDataSrv(entries, source, packageSHA, packageSize)
+	dataSrvRegistration := a.registerMaclawAppInstallationsToDataSrv(entries, source, packageSHA, packageSize, plan.Dependencies)
 	return map[string]any{
 		"schema":               registry.Schema,
 		"installed_at":         now,
@@ -493,8 +493,8 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 	}, nil
 }
 
-func (a *App) registerMaclawAppInstallationsToDataSrv(entries []parsedMaclawAppEntry, source, packageSHA string, packageSize int) map[string]any {
-	payloads := maclawAppDataSrvInstallationPayloads(entries, source, packageSHA, packageSize)
+func (a *App) registerMaclawAppInstallationsToDataSrv(entries []parsedMaclawAppEntry, source, packageSHA string, packageSize int, dependencies []maclawAppInstallPlanDependency) map[string]any {
+	payloads := maclawAppDataSrvInstallationPayloads(entries, source, packageSHA, packageSize, dependencies)
 	result := map[string]any{
 		"synced":         false,
 		"eligible_count": len(payloads),
@@ -1244,7 +1244,7 @@ func (plan *maclawAppInstallPlan) refreshMaclawAppDependencyFlags() {
 	}
 }
 
-func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source, packageSHA string, packageSize int) []maclawAppDataSrvInstallationPayload {
+func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source, packageSHA string, packageSize int, dependencies []maclawAppInstallPlanDependency) []maclawAppDataSrvInstallationPayload {
 	payloads := make([]maclawAppDataSrvInstallationPayload, 0, len(entries))
 	for _, entry := range entries {
 		roleBindings := maclawAppDataSrvRoleBindingsForEntry(entry)
@@ -1262,6 +1262,13 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 		}
 		if workflowSkillIDs := maclawAppWorkflowSkillIDsForEntry(entry); len(workflowSkillIDs) > 0 {
 			metadata["workflow_skill_ids"] = workflowSkillIDs
+		}
+		appDependencies := cloneMaclawAppPlanDependenciesForApp(dependencies, entry.ID)
+		if len(appDependencies) > 0 {
+			metadata["dependencies"] = appDependencies
+			metadata["dependency_count"] = len(appDependencies)
+			metadata["has_missing_required_dependency"] = hasMissingMaclawAppRequiredDependencyForApp(dependencies, entry.ID)
+			metadata["has_blocking_dependency"] = hasBlockingMaclawAppRequiredDependencyForApp(dependencies, entry.ID)
 		}
 		body := map[string]interface{}{
 			"app_id":        entry.ID,
@@ -1466,16 +1473,19 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 				Version:  stringMapValue(skill, "version"),
 				Kind:     "runtime_skill",
 				Required: true,
-				Source:   "hub",
+				Source:   stringMapValue(skill, "source"),
 			})
 		}
-		if appSkill := anyMap(holder["appSkill"]); appSkill != nil {
+		for _, appSkill := range []map[string]any{anyMap(holder["appSkill"]), anyMap(holder["app_skill"])} {
+			if appSkill == nil {
+				continue
+			}
 			add(maclawAppInstallPlanDependency{
 				ID:       stringMapValue(appSkill, "id"),
 				Version:  stringMapValue(appSkill, "version"),
 				Kind:     "runtime_skill",
 				Required: true,
-				Source:   "hub",
+				Source:   stringMapValue(appSkill, "source"),
 			})
 		}
 		if misBlock := anyMap(holder["mis"]); misBlock != nil {

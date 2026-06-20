@@ -3,6 +3,7 @@ package llmservice
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -65,6 +66,13 @@ type TenantAuthorizationRepository interface {
 
 type tenantAuthorizationHubLister interface {
 	ListByHub(ctx context.Context, hubID string) ([]*TenantAuthorization, error)
+}
+
+// CreditDeduction records how a single request charge was applied to a card or
+// grant authorization.
+type CreditDeduction struct {
+	AuthID  string
+	Credits float64
 }
 
 // AuthorizationChecker validates tenant access to LLM services.
@@ -221,6 +229,63 @@ func authorizationStateTime(auth *TenantAuthorization) time.Time {
 // DeductCredits subtracts credits from an authorization after a successful LLM request.
 func (c *AuthorizationChecker) DeductCredits(ctx context.Context, authID string, credits float64) error {
 	return c.repo.DeductCredits(ctx, authID, credits, time.Now().UTC())
+}
+
+// DeductCreditsForServiceGroup subtracts credits from active authorizations for
+// the requested hub, tenant, and service group, spreading the charge across
+// multiple cards when a single authorization cannot cover the whole request.
+func (c *AuthorizationChecker) DeductCreditsForServiceGroup(ctx context.Context, hubID, tenantID, serviceGroupID string, credits float64) ([]CreditDeduction, error) {
+	if c == nil || c.repo == nil || credits <= 0 {
+		return nil, nil
+	}
+	auths, err := c.ListByHubTenantAliases(ctx, hubID, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("list authorizations: %w", err)
+	}
+	now := time.Now().UTC()
+	candidates := make([]*TenantAuthorization, 0, len(auths))
+	for _, auth := range auths {
+		if auth == nil || !auth.IsActive(now) {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(auth.ServiceGroupID), strings.TrimSpace(serviceGroupID)) {
+			continue
+		}
+		candidates = append(candidates, auth)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].ExpiresAt.Equal(candidates[j].ExpiresAt) {
+			if candidates[i].CreatedAt.Equal(candidates[j].CreatedAt) {
+				return candidates[i].ID < candidates[j].ID
+			}
+			return candidates[i].CreatedAt.Before(candidates[j].CreatedAt)
+		}
+		return candidates[i].ExpiresAt.Before(candidates[j].ExpiresAt)
+	})
+	remaining := credits
+	deductions := make([]CreditDeduction, 0, len(candidates))
+	for _, auth := range candidates {
+		available := auth.CreditsRemaining()
+		if available <= 0 {
+			continue
+		}
+		use := available
+		if remaining < use {
+			use = remaining
+		}
+		if use <= 0 {
+			break
+		}
+		if err := c.repo.DeductCredits(ctx, auth.ID, use, now); err != nil {
+			return deductions, err
+		}
+		deductions = append(deductions, CreditDeduction{AuthID: auth.ID, Credits: use})
+		remaining -= use
+		if remaining <= 0 {
+			break
+		}
+	}
+	return deductions, nil
 }
 
 // ListAll returns all tenant authorizations (admin use).

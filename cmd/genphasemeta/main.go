@@ -37,21 +37,9 @@ import (
 // generated TypeScript artifact.
 const generatedFilePath = "gui/frontend/src/components/ai/workflowPhaseMeta.generated.ts"
 
-// knownV2Types lists all V2 template type strings. Must be kept in sync with
-// RegisterBuiltinTemplates in corelib/workflow/v2/templates.go.
-var knownV2Types = []string{
-	"coding", "maintenance", "presentation_design",
-	"product_design", "innovation", "business_plan",
-	"testing", "literature_review", "research_report",
-	"competitive_analysis", "project_proposal", "event_planning",
-	"bid_response", "contract_review", "due_diligence",
-	"compliance_audit", "patent_analysis", "experiment_design",
-	"grant_proposal", "paper_writing", "paper_reproduction",
-	"changjiang_scholar", "changjiang_scholar_review",
-	"nsfc_distinguished_youth", "nsfc_excellent_youth",
-	"nsfc_youth", "nsfc_general", "nsfc_key",
-	"patent_application",
-}
+// genphasemeta generates the TypeScript phase metadata artifact from the
+// authoritative Go template registry. No hardcoded type list needed — all
+// registered templates are automatically included.
 
 func main() {
 	outPath := flag.String("out", generatedFilePath, "output path for the generated TypeScript artifact")
@@ -61,8 +49,11 @@ func main() {
 	v2Reg := v2.NewTemplateRegistry()
 	v2.RegisterBuiltinTemplates(v2Reg)
 
+	// Dynamically obtain all registered types — no hardcoded list to maintain.
+	allTypes := v2Reg.AllTypes()
+
 	v1Reg := v2.NewWorkflowRegistry()
-	for _, typ := range knownV2Types {
+	for _, typ := range allTypes {
 		v2Tmpl := v2Reg.Get(typ)
 		if v2Tmpl == nil {
 			continue

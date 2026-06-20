@@ -82,6 +82,7 @@ const UISettingsPanel = lazy(() => import('./components/settings/UISettingsPanel
 const ProgrammingToolsSettingsPanel = lazy(() => import('./components/settings/ProgrammingToolsSettingsPanel').then((module) => ({ default: module.ProgrammingToolsSettingsPanel })));
 const GeneralAdvancedSettingsPanel = lazy(() => import('./components/settings/GeneralAdvancedSettingsPanel').then((module) => ({ default: module.GeneralAdvancedSettingsPanel })));
 const SystemSettingsPanel = lazy(() => import('./components/settings/SystemSettingsPanel').then((module) => ({ default: module.SystemSettingsPanel })));
+const MigrationSettingsPanel = lazy(() => import('./components/settings/MigrationSettingsPanel').then((module) => ({ default: module.MigrationSettingsPanel })));
 const ProxySettingsPanel = lazy(() => import('./components/settings/ProxySettingsPanel').then((module) => ({ default: module.ProxySettingsPanel })));
 const LLMCacheSettingsPanel = lazy(() => import('./components/settings/LLMCacheSettingsPanel').then((module) => ({ default: module.LLMCacheSettingsPanel })));
 const VirtualEmployeeSettingsPanel = lazy(() => import('./components/settings/VirtualEmployeeSettingsPanel').then((module) => ({ default: module.VirtualEmployeeSettingsPanel })));
@@ -3390,6 +3391,9 @@ ${instruction}`;
 
                             <div className="settings-content settings-panel" hidden={settingsTab !== 'security'}>
                                 <SecurityPolicyPanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
+                            </div>
+                            <div className="settings-content" hidden={settingsTab !== 'migration'}>
+                                <MigrationSettingsPanel lang={lang} showToastMessage={showToastMessage} />
                             </div>
                             {veNavigationAvailable && (
                                 <div className="settings-content settings-panel" hidden={settingsTab !== 'virtualEmployee'}>

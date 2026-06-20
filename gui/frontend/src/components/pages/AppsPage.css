@@ -781,8 +781,8 @@
 .apps-form-row select,
 .apps-form-row textarea {
     min-width: 0;
-    min-height: 32px;
-    padding: 7px 9px;
+    min-height: 30px;
+    padding: 5px 8px;
     border: 1px solid var(--theme-border);
     border-radius: var(--radius-md);
     color: var(--theme-text-primary);
@@ -815,7 +815,7 @@
 }
 
 .apps-checkbox-field {
-    min-height: 32px;
+    min-height: 30px;
     display: inline-flex;
     align-items: center;
     gap: 7px;
@@ -1696,6 +1696,11 @@
     align-self: stretch;
 }
 
+.apps-result-panel .apps-install-record__deps {
+    align-self: stretch;
+    margin-top: 0;
+}
+
 .apps-result-panel[data-state='done'] {
     color: var(--theme-success);
     border-color: color-mix(in srgb, var(--theme-success) 28%, var(--theme-border));
@@ -1807,6 +1812,11 @@
     font-weight: 700;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.apps-run-artifacts {
+    display: grid;
+    gap: 8px;
 }
 
 .apps-run-artifact {
@@ -2443,6 +2453,10 @@
     color: var(--theme-success);
 }
 
+.apps-market-row__main .apps-install-record__deps {
+    margin-top: 6px;
+}
+
 .apps-market-row > .apps-primary-button,
 .apps-market-row > .apps-secondary-button {
     min-width: 72px;
@@ -2629,7 +2643,7 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px;
-    align-items: center;
+    align-items: start;
     padding: 8px;
     border: 1px solid var(--theme-border-subtle);
     border-radius: var(--radius-sm);
@@ -2685,6 +2699,74 @@
     border-color: color-mix(in srgb, var(--theme-warning) 38%, var(--theme-border));
     color: var(--theme-warning);
     background: var(--theme-warning-bg);
+}
+.apps-install-record__deps {
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 5px;
+}
+
+.apps-install-record__dep {
+    max-width: 100%;
+    min-height: 24px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 6px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface);
+}
+
+.apps-install-record__dep strong,
+.apps-install-record__dep span,
+.apps-install-record__dep em {
+    display: block;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-install-record__dep strong {
+    max-width: 150px;
+    color: var(--theme-text-primary);
+    font-size: 0.68rem;
+    font-weight: 850;
+}
+
+.apps-install-record__dep span {
+    max-width: 190px;
+    color: var(--theme-text-secondary);
+    font-size: 0.64rem;
+    font-weight: 750;
+}
+
+.apps-install-record__dep em {
+    padding: 0;
+    border: 0;
+    color: var(--theme-text-secondary);
+    background: transparent;
+    font-size: 0.64rem;
+    font-style: normal;
+    font-weight: 850;
+}
+
+.apps-install-record__dep[data-state='ready'] em {
+    color: var(--theme-success);
+}
+
+.apps-install-record__dep[data-state='blocked'] {
+    border-color: color-mix(in srgb, var(--theme-warning) 30%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-warning-bg) 42%, var(--theme-surface));
+}
+
+.apps-install-record__dep[data-state='blocked'] em,
+.apps-install-record__dep[data-state='missing'] em {
+    color: var(--theme-warning);
 }
 .apps-install-result {
     align-self: stretch;
@@ -3170,21 +3252,62 @@
     outline: none;
 }
 
-.apps-skill-picker {
+.apps-capability-skill-grid {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.apps-capability-skill-card {
     min-width: 0;
     display: grid;
     gap: 7px;
 }
 
+.apps-capability-skill-card__head {
+    min-height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.apps-capability-skill-card__head label {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--theme-text-secondary);
+    font-size: 0.76rem;
+    font-weight: 850;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-skill-design-button {
+    min-height: 26px;
+    padding: 4px 9px;
+    border-radius: var(--radius-sm);
+    font-size: 0.74rem;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.apps-skill-picker {
+    min-width: 0;
+    display: grid;
+    gap: 6px;
+}
+
 .apps-skill-picker__search {
     min-width: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) 52px;
     gap: 6px;
 }
 
 .apps-skill-picker__search .apps-secondary-button {
-    min-height: 32px;
+    min-height: 30px;
+    padding: 5px 8px;
     white-space: nowrap;
 }
 
@@ -3192,7 +3315,7 @@
     min-width: 0;
     display: grid;
     gap: 2px;
-    padding: 7px 8px;
+    padding: 5px 7px;
     border: 1px solid color-mix(in srgb, var(--theme-primary) 26%, var(--theme-border));
     border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--theme-primary-soft) 42%, var(--theme-surface));
@@ -3219,12 +3342,12 @@
 }
 
 .apps-skill-picker__list {
-    max-height: 174px;
+    max-height: 96px;
     min-width: 0;
     overflow: auto;
     display: grid;
-    gap: 5px;
-    padding: 7px;
+    gap: 4px;
+    padding: 5px;
     border: 1px solid var(--theme-border-subtle);
     border-radius: var(--radius-md);
     background: var(--theme-surface-muted);
@@ -3237,12 +3360,13 @@
 }
 
 .apps-skill-picker__option {
+    min-height: 36px;
     min-width: 0;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: 3px 8px;
-    padding: 7px;
+    padding: 5px 7px;
     border: 1px solid var(--theme-border-subtle);
     border-radius: var(--radius-sm);
     color: var(--theme-text-primary);
@@ -3292,10 +3416,10 @@
 
 .apps-skill-picker__empty,
 .apps-skill-source-readonly {
-    min-height: 32px;
+    min-height: 30px;
     display: flex;
     align-items: center;
-    padding: 7px 9px;
+    padding: 5px 8px;
     border: 1px solid var(--theme-border-subtle);
     border-radius: var(--radius-md);
     color: var(--theme-text-secondary);
@@ -4109,6 +4233,10 @@
     }
 
     .apps-form-row {
+        grid-template-columns: 1fr;
+    }
+
+    .apps-capability-skill-grid {
         grid-template-columns: 1fr;
     }
 

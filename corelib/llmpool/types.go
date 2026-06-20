@@ -98,5 +98,6 @@ type UsageRecord struct {
 	OutputTokens int64     `json:"output_tokens"`
 	Credits      float64   `json:"credits"`
 	CacheHit     bool      `json:"cache_hit"`
+	AuthID       string    `json:"auth_id,omitempty"`
 	Timestamp    time.Time `json:"timestamp"`
 }

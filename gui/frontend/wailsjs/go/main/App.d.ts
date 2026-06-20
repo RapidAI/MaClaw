@@ -295,6 +295,8 @@ export function SetWorkflowWorkingDir(arg1:string):Promise<void>;
 
 export function GetWorkflowWorkingDir():Promise<string>;
 
+export function RefreshWorkflowV2StateForTab(arg1:string):Promise<void>;
+
 export function SelectSkillFile():Promise<string>;
 
 export function SendRemoteSessionImage(arg1:string,arg2:string,arg3:string):Promise<void>;
@@ -490,6 +492,19 @@ export function PingMaclawLLM():Promise<any>;
 export function PingSkillHub(arg1:string):Promise<any>;
 
 export function ValidateSkillHub(arg1:string):Promise<any>;
+
+// User data migration bindings
+export function UserDataMigrationStatus():Promise<any>;
+
+export function UserDataMigrationInstances():Promise<any>;
+
+export function StartUserDataMigrationExport(arg1:string,arg2:string,arg3:boolean):Promise<any>;
+
+export function StartUserDataMigrationImport(arg1:string,arg2:string):Promise<any>;
+
+export function StartUserDataMigrationCleanup(arg1:string):Promise<any>;
+
+export function GetUserDataMigrationJob(arg1:string):Promise<any>;
 
 // SkillHub market bindings
 export function SearchSkillHub(arg1:string):Promise<Array<any>>;

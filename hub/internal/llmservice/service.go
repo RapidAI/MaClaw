@@ -1059,9 +1059,9 @@ func EstimateCredits(tokens int64, multiplier float64, tokensPerCredit int) floa
 	return roundCredits((float64(tokens) * normalizeCreditMultiplier(multiplier)) / float64(tokensPerCredit))
 }
 
-// MinimumRequestCredits is the minimum credit charge for a successful LLM request
-// that returned a valid response but reported zero usage tokens. This prevents
-// free-riding when upstream providers omit the usage field in their response.
+// MinimumRequestCredits is the minimum credit charge for a successful LLM request.
+// This prevents successful tiny requests or upstream responses that omit usage
+// from appearing as zero-cost in credit-card usage displays.
 const MinimumRequestCredits = 0.1
 
 // EstimateCreditsWithFloor is like EstimateCredits but applies a minimum charge
@@ -1069,7 +1069,7 @@ const MinimumRequestCredits = 0.1
 // succeeded (statusCode < 400 and response body is non-empty).
 func EstimateCreditsWithFloor(tokens int64, multiplier float64, tokensPerCredit int) float64 {
 	credits := EstimateCredits(tokens, multiplier, tokensPerCredit)
-	if credits <= 0 {
+	if credits < MinimumRequestCredits {
 		return MinimumRequestCredits
 	}
 	return credits

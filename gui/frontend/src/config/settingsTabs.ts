@@ -1,6 +1,6 @@
 import { localizeText } from '../i18n';
 
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'security' | 'im' | 'system';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'security' | 'migration' | 'system';
 
 export interface SettingsTabOption {
     id: SettingsTabId;
@@ -49,8 +49,8 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
         },
         {
             id: 'llm' as const,
-            label: textForLang(lang, 'LLM Config', 'LLM 配置', 'LLM 配置'),
-            desc: textForLang(lang, 'Configure LLM for MaClaw agent', '配置 MaClaw 代理使用的 LLM', '配置 MaClaw 代理使用的 LLM'),
+            label: textForLang(lang, 'LLM Config', '大模型配置', '大模型配置'),
+            desc: textForLang(lang, 'Configure LLM for MaClaw agent', '配置 MaClaw 代理使用的大模型', '配置 MaClaw 代理使用的大模型'),
         },
         {
             id: 'llmCache' as const,
@@ -92,6 +92,11 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
             id: 'security' as const,
             label: textForLang(lang, 'Security', '安全策略', '安全策略'),
             desc: textForLang(lang, 'Security policy mode and audit log', '安全策略模式与审计日志', '安全策略模式與稽核日誌'),
+        },
+        {
+            id: 'migration' as const,
+            label: textForLang(lang, 'Move Out & In', '\u8fc1\u51fa\u4e0e\u8fc1\u5165', '\u9077\u51fa\u8207\u9077\u5165'),
+            desc: textForLang(lang, 'Move memory and local knowledge through the current Hub tenant', '\u901a\u8fc7\u5f53\u524d Hub \u79df\u6237\u8fc1\u79fb\u8bb0\u5fc6\u4e0e\u672c\u5730\u77e5\u8bc6\u5e93', '\u900f\u904e\u76ee\u524d Hub \u79df\u6236\u9077\u79fb\u8a18\u61b6\u8207\u672c\u5730\u77e5\u8b58\u5eab'),
         },
         {
             id: 'system' as const,

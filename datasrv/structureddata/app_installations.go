@@ -57,7 +57,7 @@ func (s *Service) UpsertAppInstallation(ctx context.Context, p Principal, appID 
 	}
 	out, err := s.store.UpsertAppInstallation(ctx, app)
 	if err == nil {
-		s.audit(ctx, p, "app.installation_upsert", "", "app_installation", requestedAppID, "Upserted app installation "+requestedAppID, map[string]any{"app_id": requestedAppID, "blueprint_id": blueprintID, "role_binding_count": len(roleBindings), "status": app.Status})
+		s.audit(ctx, p, "app.installation_upsert", "", "app_installation", requestedAppID, "Upserted app installation "+requestedAppID, appInstallationAuditMetadata(app))
 	}
 	return out, err
 }
@@ -77,6 +77,59 @@ func (s *Service) GetAppInstallation(ctx context.Context, p Principal, appID str
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.store.GetAppInstallation(ctx, p.TenantID, strings.TrimSpace(appID))
+}
+func appInstallationAuditMetadata(app AppInstallation) map[string]any {
+	metadata := map[string]any{
+		"app_id":             app.AppID,
+		"blueprint_id":       app.BlueprintID,
+		"role_binding_count": len(app.RoleBindings),
+		"status":             app.Status,
+	}
+	if app.Kind != "" {
+		metadata["kind"] = app.Kind
+	}
+	if app.Source != "" {
+		metadata["source"] = app.Source
+	}
+	for _, key := range []string{"app_skill_id", "workflow_skill_ids", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency"} {
+		if value, ok := app.Metadata[key]; ok {
+			metadata[key] = value
+		}
+	}
+	if dependencyIDs := appInstallationDependencyIDs(app.Metadata["dependencies"]); len(dependencyIDs) > 0 {
+		metadata["dependency_ids"] = dependencyIDs
+	}
+	return metadata
+}
+
+func appInstallationDependencyIDs(value any) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	add := func(dep map[string]any) {
+		id, _ := dep["id"].(string)
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	switch items := value.(type) {
+	case []any:
+		for _, item := range items {
+			if dep, ok := item.(map[string]any); ok {
+				add(dep)
+			}
+		}
+	case []map[string]any:
+		for _, dep := range items {
+			add(dep)
+		}
+	}
+	return out
 }
 
 func normalizeAppInstallationToken(value, name string) (string, error) {

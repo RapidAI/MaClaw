@@ -32,6 +32,8 @@ const (
 	migrationClaimLease                = 2 * time.Hour
 )
 
+var errMigrationExportNotReady = errors.New("migration export is not ready")
+
 type migrationMachineLister interface {
 	ListByUserID(ctx context.Context, userID string) ([]*store.Machine, error)
 	GetByID(ctx context.Context, id string) (*store.Machine, error)
@@ -170,6 +172,7 @@ func (api *migrationAPI) handleInstances(w http.ResponseWriter, r *http.Request)
 			item["export_status"] = current.Status
 			item["export_updated_at"] = current.UpdatedAt
 			item["export_size"] = current.CompressedSize
+			item["export_claimed_by_machine_id"] = current.ClaimedByMachineID
 		} else {
 			item["has_export"] = false
 		}
@@ -413,33 +416,65 @@ func (api *migrationAPI) handleClaimImport(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusOK, map[string]any{"export": exportDTO(row)})
 		return
 	}
-	now := time.Now().UTC()
-	if row.Status == "importing" && row.ClaimedByMachineID == p.MachineID {
-		lease := now.Add(migrationClaimLease)
-		_, err := api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET claim_expires_at = ?, updated_at = ? WHERE id = ?`,
-			lease.Format(time.RFC3339), now.Format(time.RFC3339), row.ID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "CLAIM_FAILED", err.Error())
-			return
-		}
-		row.ClaimExpiresAt = sql.NullString{String: lease.Format(time.RFC3339), Valid: true}
-		writeJSON(w, http.StatusOK, map[string]any{"export": exportDTO(row), "lease_expires_at": lease.Format(time.RFC3339)})
+	leaseText, err := api.claimImportForMachine(r.Context(), p, row, time.Now().UTC())
+	if errors.Is(err, errMigrationExportNotReady) {
+		writeError(w, http.StatusConflict, "INVALID_STATUS", errMigrationExportNotReady.Error())
 		return
 	}
-	if row.Status != "ready" && !(row.Status == "importing" && row.ClaimExpiresAt.Valid && parseMigrationTime(row.ClaimExpiresAt.String).Before(now)) {
-		writeError(w, http.StatusConflict, "INVALID_STATUS", "export is not ready")
-		return
-	}
-	lease := now.Add(migrationClaimLease)
-	_, err := api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'importing', claimed_by_machine_id = ?, claimed_at = ?, claim_expires_at = ?, updated_at = ? WHERE id = ?`,
-		p.MachineID, now.Format(time.RFC3339), lease.Format(time.RFC3339), now.Format(time.RFC3339), row.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "CLAIM_FAILED", err.Error())
 		return
 	}
+	resp := map[string]any{"export": exportDTO(row)}
+	if leaseText != "" {
+		resp["lease_expires_at"] = leaseText
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (api *migrationAPI) claimImportForMachine(ctx context.Context, p *migrationPrincipal, row *migrationExportRow, now time.Time) (string, error) {
+	nowText := now.Format(time.RFC3339)
+	if row.Status == "importing" && row.ClaimedByMachineID == p.MachineID {
+		lease := now.Add(migrationClaimLease)
+		leaseText := lease.Format(time.RFC3339)
+		result, err := api.db.ExecContext(ctx, `UPDATE user_data_migration_exports
+			SET claim_expires_at = ?, updated_at = ?
+			WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'importing' AND claimed_by_machine_id = ?`,
+			leaseText, nowText, row.ID, p.TenantID, p.UserID, p.MachineID)
+		if err != nil {
+			return "", err
+		}
+		if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+			return "", errMigrationExportNotReady
+		}
+		row.ClaimExpiresAt = sql.NullString{String: leaseText, Valid: true}
+		row.UpdatedAt = nowText
+		return leaseText, nil
+	}
+	if row.Status != "ready" && !(row.Status == "importing" && row.ClaimExpiresAt.Valid && parseMigrationTime(row.ClaimExpiresAt.String).Before(now)) {
+		return "", errMigrationExportNotReady
+	}
+	lease := now.Add(migrationClaimLease)
+	leaseText := lease.Format(time.RFC3339)
+	result, err := api.db.ExecContext(ctx, `UPDATE user_data_migration_exports
+		SET status = 'importing', claimed_by_machine_id = ?, claimed_at = ?, claim_expires_at = ?, updated_at = ?
+		WHERE id = ? AND tenant_id = ? AND user_id = ? AND (
+			status = 'ready'
+			OR (status = 'importing' AND claim_expires_at IS NOT NULL AND claim_expires_at < ?)
+		)`,
+		p.MachineID, nowText, leaseText, nowText, row.ID, p.TenantID, p.UserID, nowText)
+	if err != nil {
+		return "", err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return "", errMigrationExportNotReady
+	}
 	row.Status = "importing"
 	row.ClaimedByMachineID = p.MachineID
-	writeJSON(w, http.StatusOK, map[string]any{"export": exportDTO(row), "lease_expires_at": lease.Format(time.RFC3339)})
+	row.ClaimedAt = sql.NullString{String: nowText, Valid: true}
+	row.ClaimExpiresAt = sql.NullString{String: leaseText, Valid: true}
+	row.UpdatedAt = nowText
+	return leaseText, nil
 }
 
 func (api *migrationAPI) handleGetChunk(w http.ResponseWriter, r *http.Request) {
@@ -491,12 +526,12 @@ func (api *migrationAPI) handleCompleteImport(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, "DELETE_FAILED", deleteErr.Error())
 		return
 	}
-	if _, err := api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?`, now, now, row.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "COMPLETE_FAILED", err.Error())
-		return
-	}
 	if _, err := api.db.ExecContext(r.Context(), `DELETE FROM user_data_migration_chunks WHERE export_id = ?`, row.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
+		return
+	}
+	if _, err := api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?`, now, now, row.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "COMPLETE_FAILED", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "deleted"})
@@ -580,7 +615,7 @@ func (api *migrationAPI) getExport(ctx context.Context, tenantID, userID, export
 
 func (api *migrationAPI) currentExport(ctx context.Context, tenantID, userID string) *migrationExportRow {
 	row := api.db.QueryRowContext(ctx, `SELECT id, tenant_id, user_id, source_machine_id, source_machine_name, status, compressed_size, encrypted_size, encrypted_sha256, plain_sha256, chunk_size, chunk_count, manifest_json, claimed_by_machine_id, claimed_at, claim_expires_at, created_at, updated_at, imported_at, deleted_at
-		FROM user_data_migration_exports WHERE tenant_id = ? AND user_id = ? AND status IN ('uploading','ready','importing','failed','deleting') ORDER BY updated_at DESC LIMIT 1`, tenantID, userID)
+		FROM user_data_migration_exports WHERE tenant_id = ? AND user_id = ? AND status IN ('uploading','ready','importing','imported','failed','deleting') ORDER BY updated_at DESC LIMIT 1`, tenantID, userID)
 	out, _ := scanMigrationExport(row)
 	return out
 }
@@ -623,20 +658,21 @@ func exportDTO(e *migrationExportRow) map[string]any {
 		return nil
 	}
 	return map[string]any{
-		"export_id":           e.ID,
-		"source_instance_id":  e.SourceMachineID,
-		"source_machine_id":   e.SourceMachineID,
-		"source_machine_name": e.SourceMachineName,
-		"status":              e.Status,
-		"compressed_size":     e.CompressedSize,
-		"encrypted_size":      e.EncryptedSize,
-		"encrypted_sha256":    e.EncryptedSHA256,
-		"plain_sha256":        e.PlainSHA256,
-		"chunk_size":          e.ChunkSize,
-		"chunk_count":         e.ChunkCount,
-		"manifest":            json.RawMessage(firstMigrationString(e.ManifestJSON, "{}")),
-		"created_at":          e.CreatedAt,
-		"updated_at":          e.UpdatedAt,
+		"export_id":             e.ID,
+		"source_instance_id":    e.SourceMachineID,
+		"source_machine_id":     e.SourceMachineID,
+		"source_machine_name":   e.SourceMachineName,
+		"claimed_by_machine_id": e.ClaimedByMachineID,
+		"status":                e.Status,
+		"compressed_size":       e.CompressedSize,
+		"encrypted_size":        e.EncryptedSize,
+		"encrypted_sha256":      e.EncryptedSHA256,
+		"plain_sha256":          e.PlainSHA256,
+		"chunk_size":            e.ChunkSize,
+		"chunk_count":           e.ChunkCount,
+		"manifest":              json.RawMessage(firstMigrationString(e.ManifestJSON, "{}")),
+		"created_at":            e.CreatedAt,
+		"updated_at":            e.UpdatedAt,
 	}
 }
 

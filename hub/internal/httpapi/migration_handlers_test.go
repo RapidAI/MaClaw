@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -111,6 +112,159 @@ func TestMigrationAPILifecycleAndCleanupIdempotency(t *testing.T) {
 	}
 	if _, err := os.Stat(api.exportDir("tenant-a", user.ID, created.ExportID)); !os.IsNotExist(err) {
 		t.Fatalf("expected export dir removed, stat err=%v", err)
+	}
+}
+
+func TestMigrationImportedExportRemainsVisibleForCleanupRetry(t *testing.T) {
+	ctx := context.Background()
+	st, db, cleanup := newMigrationAPITestStore(t)
+	defer cleanup()
+
+	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	user := &store.User{ID: "user-cleanup-retry", TenantID: "tenant-a", Email: "cleanup@example.com", Status: "active", EnrollmentStatus: "approved", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	seedMigrationAPIMachine(t, st, "tenant-a", user.ID, "machine-source", "source-token", "Old Mac")
+	seedMigrationAPIMachine(t, st, "tenant-a", user.ID, "machine-target", "target-token", "New Mac")
+
+	api := NewMigrationAPI(db, t.TempDir(), identity, identity.MachinesRepo(), st.System)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux, nil)
+
+	hash := hex.EncodeToString(bytes.Repeat([]byte{0x7a}, 32))
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.ExecContext(ctx, `INSERT INTO user_data_migration_exports
+		(id, tenant_id, user_id, source_machine_id, source_machine_name, status, compressed_size, encrypted_size, encrypted_sha256, plain_sha256, chunk_size, chunk_count, manifest_json, claimed_by_machine_id, claimed_at, imported_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'imported', ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)`,
+		"mig-cleanup-retry", "tenant-a", user.ID, "machine-source", "Old Mac", int64(1024), int64(1024), hash, hash, migrationMinUploadChunkSize, 1, "machine-target", now, now, now, now); err != nil {
+		t.Fatalf("insert imported export: %v", err)
+	}
+
+	current := migrationAPIRequest(t, mux, http.MethodGet, "/api/v1/migration/exports/current", "machine-target", "target-token", nil)
+	if current.Code != http.StatusOK || !bytes.Contains(current.Body.Bytes(), []byte(`"status":"imported"`)) || !bytes.Contains(current.Body.Bytes(), []byte(`"claimed_by_machine_id":"machine-target"`)) {
+		t.Fatalf("current imported status=%d body=%s", current.Code, current.Body.String())
+	}
+
+	instances := migrationAPIRequest(t, mux, http.MethodGet, "/api/v1/migration/instances", "machine-target", "target-token", nil)
+	if instances.Code != http.StatusOK || !bytes.Contains(instances.Body.Bytes(), []byte(`"export_status":"imported"`)) || !bytes.Contains(instances.Body.Bytes(), []byte(`"export_claimed_by_machine_id":"machine-target"`)) {
+		t.Fatalf("instances imported status=%d body=%s", instances.Code, instances.Body.String())
+	}
+
+	complete := migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/imports/mig-cleanup-retry/complete", "machine-target", "target-token", map[string]any{})
+	if complete.Code != http.StatusOK || !bytes.Contains(complete.Body.Bytes(), []byte(`"status":"deleted"`)) {
+		t.Fatalf("complete cleanup retry status=%d body=%s", complete.Code, complete.Body.String())
+	}
+}
+
+func TestMigrationStaleClaimCannotOverwriteWinner(t *testing.T) {
+	ctx := context.Background()
+	st, db, cleanup := newMigrationAPITestStore(t)
+	defer cleanup()
+
+	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	user := &store.User{ID: "user-stale-claim", TenantID: "tenant-a", Email: "claim@example.com", Status: "active", EnrollmentStatus: "approved", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	seedMigrationAPIMachine(t, st, "tenant-a", user.ID, "machine-source", "source-token", "Old Mac")
+	seedMigrationAPIMachine(t, st, "tenant-a", user.ID, "machine-target-a", "target-token-a", "New Mac A")
+	seedMigrationAPIMachine(t, st, "tenant-a", user.ID, "machine-target-b", "target-token-b", "New Mac B")
+
+	api := NewMigrationAPI(db, t.TempDir(), identity, identity.MachinesRepo(), st.System)
+	hash := hex.EncodeToString(bytes.Repeat([]byte{0x4c}, 32))
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.ExecContext(ctx, `INSERT INTO user_data_migration_exports
+		(id, tenant_id, user_id, source_machine_id, source_machine_name, status, compressed_size, encrypted_size, encrypted_sha256, plain_sha256, chunk_size, chunk_count, manifest_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, '{}', ?, ?)`,
+		"mig-stale-claim", "tenant-a", user.ID, "machine-source", "Old Mac", int64(1024), int64(1024), hash, hash, migrationMinUploadChunkSize, 1, now, now); err != nil {
+		t.Fatalf("insert ready export: %v", err)
+	}
+
+	row, err := api.getExport(ctx, "tenant-a", user.ID, "mig-stale-claim")
+	if err != nil {
+		t.Fatalf("load ready export: %v", err)
+	}
+	firstSnapshot := *row
+	secondSnapshot := *row
+	first := &migrationPrincipal{TenantID: "tenant-a", UserID: user.ID, MachineID: "machine-target-a"}
+	second := &migrationPrincipal{TenantID: "tenant-a", UserID: user.ID, MachineID: "machine-target-b"}
+
+	if _, err := api.claimImportForMachine(ctx, first, &firstSnapshot, time.Now().UTC()); err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	if _, err := api.claimImportForMachine(ctx, second, &secondSnapshot, time.Now().UTC()); !errors.Is(err, errMigrationExportNotReady) {
+		t.Fatalf("second stale claim err = %v, want not ready", err)
+	}
+	var status, claimedBy string
+	if err := db.QueryRowContext(ctx, `SELECT status, claimed_by_machine_id FROM user_data_migration_exports WHERE id = ?`, "mig-stale-claim").Scan(&status, &claimedBy); err != nil {
+		t.Fatalf("read claimed export: %v", err)
+	}
+	if status != "importing" || claimedBy != "machine-target-a" {
+		t.Fatalf("unexpected claimed export status=%q claimed_by=%q", status, claimedBy)
+	}
+}
+
+func TestMigrationCleanupFailureKeepsExportVisibleForRetry(t *testing.T) {
+	ctx := context.Background()
+	st, db, cleanup := newMigrationAPITestStore(t)
+	defer cleanup()
+
+	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	user := &store.User{ID: "user-cleanup-failure", TenantID: "tenant-a", Email: "cleanup-failure@example.com", Status: "active", EnrollmentStatus: "approved", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	seedMigrationAPIMachine(t, st, "tenant-a", user.ID, "machine-source", "source-token", "Old Mac")
+	seedMigrationAPIMachine(t, st, "tenant-a", user.ID, "machine-target", "target-token", "New Mac")
+
+	api := NewMigrationAPI(db, t.TempDir(), identity, identity.MachinesRepo(), st.System)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux, nil)
+
+	hash := hex.EncodeToString(bytes.Repeat([]byte{0x6b}, 32))
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.ExecContext(ctx, `INSERT INTO user_data_migration_exports
+		(id, tenant_id, user_id, source_machine_id, source_machine_name, status, compressed_size, encrypted_size, encrypted_sha256, plain_sha256, chunk_size, chunk_count, manifest_json, claimed_by_machine_id, claimed_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'importing', ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)`,
+		"mig-cleanup-failure", "tenant-a", user.ID, "machine-source", "Old Mac", int64(1024), int64(1024), hash, hash, migrationMinUploadChunkSize, 1, "machine-target", now, now, now); err != nil {
+		t.Fatalf("insert importing export: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO user_data_migration_chunks (export_id, tenant_id, user_id, chunk_index, size, sha256, uploaded_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, "mig-cleanup-failure", "tenant-a", user.ID, 0, int64(1024), hash, now); err != nil {
+		t.Fatalf("insert chunk row: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TRIGGER fail_migration_chunk_delete
+		BEFORE DELETE ON user_data_migration_chunks
+		BEGIN
+			SELECT RAISE(ABORT, 'chunk delete blocked');
+		END`); err != nil {
+		t.Fatalf("create delete trigger: %v", err)
+	}
+
+	complete := migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/imports/mig-cleanup-failure/complete", "machine-target", "target-token", map[string]any{})
+	if complete.Code != http.StatusInternalServerError || !bytes.Contains(complete.Body.Bytes(), []byte("chunk delete blocked")) {
+		t.Fatalf("complete cleanup failure status=%d body=%s", complete.Code, complete.Body.String())
+	}
+
+	var status string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM user_data_migration_exports WHERE id = ?`, "mig-cleanup-failure").Scan(&status); err != nil {
+		t.Fatalf("read export status: %v", err)
+	}
+	if status != "deleting" {
+		t.Fatalf("status after cleanup failure = %q, want deleting", status)
+	}
+	current := migrationAPIRequest(t, mux, http.MethodGet, "/api/v1/migration/exports/current", "machine-target", "target-token", nil)
+	if current.Code != http.StatusOK || !bytes.Contains(current.Body.Bytes(), []byte(`"status":"deleting"`)) || !bytes.Contains(current.Body.Bytes(), []byte(`"claimed_by_machine_id":"machine-target"`)) {
+		t.Fatalf("current deleting status=%d body=%s", current.Code, current.Body.String())
+	}
+
+	if _, err := db.ExecContext(ctx, `DROP TRIGGER fail_migration_chunk_delete`); err != nil {
+		t.Fatalf("drop delete trigger: %v", err)
+	}
+	retry := migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/imports/mig-cleanup-failure/complete", "machine-target", "target-token", map[string]any{})
+	if retry.Code != http.StatusOK || !bytes.Contains(retry.Body.Bytes(), []byte(`"status":"deleted"`)) {
+		t.Fatalf("retry cleanup status=%d body=%s", retry.Code, retry.Body.String())
 	}
 }
 
@@ -271,6 +425,61 @@ func TestMigrationCompleteUploadRechecksTenantLimit(t *testing.T) {
 	resp := migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/exports/mig-over-limit/complete-upload", "machine-source", "source-token", map[string]any{"encrypted_sha256": hash})
 	if resp.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("complete upload over limit status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMigrationAdminSettingsClampAndTenantScope(t *testing.T) {
+	st, db, cleanup := newMigrationAPITestStore(t)
+	defer cleanup()
+	api := NewMigrationAPI(db, t.TempDir(), nil, nil, st.System)
+
+	request := func(method, tenantID string, body any) map[string]any {
+		t.Helper()
+		var reader *bytes.Reader
+		if body == nil {
+			reader = bytes.NewReader(nil)
+		} else {
+			data, err := json.Marshal(body)
+			if err != nil {
+				t.Fatalf("marshal body: %v", err)
+			}
+			reader = bytes.NewReader(data)
+		}
+		req := httptest.NewRequest(method, "/api/admin/migration/settings", reader)
+		req = req.WithContext(WithRequestTenant(req.Context(), tenantID))
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		api.handleAdminSettings(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s settings status=%d body=%s", method, rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		return out
+	}
+
+	defaults := request(http.MethodGet, "tenant-a", nil)
+	if got := int64(defaults["max_compressed_bytes"].(float64)); got != migrationDefaultMaxCompressedBytes {
+		t.Fatalf("default max bytes = %d, want %d", got, migrationDefaultMaxCompressedBytes)
+	}
+
+	below := request(http.MethodPut, "tenant-a", map[string]any{"max_compressed_bytes": int64(1)})
+	if got := int64(below["max_compressed_bytes"].(float64)); got != migrationMinCompressedBytes {
+		t.Fatalf("below-min max bytes = %d, want %d", got, migrationMinCompressedBytes)
+	}
+
+	tenantB := request(http.MethodGet, "tenant-b", nil)
+	if got := int64(tenantB["max_compressed_bytes"].(float64)); got != migrationDefaultMaxCompressedBytes {
+		t.Fatalf("tenant-b max bytes = %d, want default %d", got, migrationDefaultMaxCompressedBytes)
+	}
+
+	above := request(http.MethodPut, "tenant-a", map[string]any{"max_compressed_bytes": migrationMaxCompressedBytes + 1})
+	if got := int64(above["max_compressed_bytes"].(float64)); got != migrationMaxCompressedBytes {
+		t.Fatalf("above-max max bytes = %d, want %d", got, migrationMaxCompressedBytes)
 	}
 }
 

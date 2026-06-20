@@ -130,6 +130,23 @@ func (r *TemplateRegistry) Get(workflowType string) *WorkflowTemplate {
 	return r.templates[workflowType]
 }
 
+// AllTypes returns all registered workflow type strings.
+// This is the single source of truth for "what templates exist" — consumers
+// should call this instead of maintaining their own hardcoded lists.
+func (r *TemplateRegistry) AllTypes() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	types := make([]string, 0, len(r.templates))
+	for t := range r.templates {
+		types = append(types, t)
+	}
+	sort.Strings(types)
+	return types
+}
+
 // MatchByText returns the best advisory match using the template's structured
 // definition. It intentionally ignores Keywords so routing does not become a
 // keyword shortcut. Templates with SemanticOnly=true are excluded from the
@@ -1224,9 +1241,9 @@ func NSFCKeyReviewTemplate() *WorkflowTemplate {
 func PatentApplicationTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
 		Type:        "patent_application",
-		Name:        "专利申请",
-		Description: "交底书解析 → 查新检索 → 权利要求撰写 → 附图整理 → 说明书撰写 → 申请文件组装",
-		Keywords:    []string{"专利申请", "专利撰写", "发明专利", "实用新型", "专利交底书", "权利要求书", "patent application"},
+		Name:        "中国专利申请",
+		Description: "面向中国国家知识产权局（CNIPA）的专利撰写全流程：交底书解析 → 查新检索 → 权利要求撰写 → 附图整理 → 说明书撰写 → 申请文件组装",
+		Keywords:    []string{"专利申请", "专利撰写", "发明专利", "实用新型", "专利交底书", "权利要求书", "中国专利", "CNIPA", "patent application"},
 		Phases: []PhaseTemplate{
 			{ID: "pa_disclosure_parsing", Name: "交底书解析与技术提炼", NeedsConfirm: true, ToolPolicy: ToolPolicyFull,
 				InputSchema: &PhaseInputSchema{
@@ -1274,6 +1291,60 @@ func PatentApplicationTemplate() *WorkflowTemplate {
 	}
 }
 
+// USPatentApplicationTemplate defines the US patent (USPTO) drafting workflow.
+func USPatentApplicationTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:        "us_patent_application",
+		Name:        "US Patent (USPTO)",
+		Description: "USPTO utility/provisional patent application workflow: Disclosure Analysis → Prior Art Search → Claims Drafting → Drawings → Specification Writing → Application Assembly",
+		Keywords:    []string{"美国专利", "USPTO", "US patent", "utility patent", "provisional patent", "non-provisional", "patent claims", "specification", "美国专利申请"},
+		Phases: []PhaseTemplate{
+			{ID: "us_disclosure_analysis", Name: "Disclosure Analysis / 交底书解析", NeedsConfirm: true, ToolPolicy: ToolPolicyFull,
+				InputSchema: &PhaseInputSchema{
+					Title:       "US Patent Application Information",
+					Description: "Provide invention disclosure (file or manual input). The disclosure can be in Chinese or English.",
+					Fields: []PhaseInputField{
+						{Name: "patent_type", Label: "Patent Type / 专利类型", Type: "select", Required: true, Options: []PhaseInputOption{
+							{Label: "Utility Patent (实用专利)", Value: "utility"},
+							{Label: "Provisional Application (临时申请)", Value: "provisional"},
+						}, Default: "utility"},
+						{Name: "applicant", Label: "Applicant / 申请人", Type: "text", Required: true, Placeholder: "e.g. Acme Corp. / XX科技有限公司"},
+						{Name: "inventors", Label: "Inventor(s) / 发明人", Type: "text", Required: true, Placeholder: "e.g. John Smith, Jane Doe（comma separated）"},
+						{Name: "tech_field", Label: "Technical Field / 技术领域", Type: "text", Required: true, Placeholder: "e.g. Machine Learning, Battery Technology"},
+						{Name: "output_dir", Label: "Output Directory / 文档输出目录", Type: "directory", Placeholder: "Select output directory (leave empty for same directory as disclosure)"},
+					},
+					Variants: []PhaseInputVariant{
+						{
+							ID:    "file_mode",
+							Label: "Disclosure File / 交底书文件",
+							Fields: []PhaseInputField{
+								{Name: "disclosure_path", Label: "Disclosure File Path / 交底书文件路径", Type: "file", Required: true, Placeholder: "Select disclosure file (Word/PDF, Chinese or English)"},
+							},
+						},
+						{
+							ID:    "manual_mode",
+							Label: "Manual Input / 手工输入",
+							Fields: []PhaseInputField{
+								{Name: "technical_problem", Label: "Problem to be Solved / 要解决的技术问题", Type: "textarea", Required: true, Placeholder: "Describe the technical problem and limitations of prior art"},
+								{Name: "technical_solution", Label: "Technical Solution / 技术方案", Type: "textarea", Required: true, Placeholder: "Describe the invention in detail (structure, steps, parameters)"},
+								{Name: "beneficial_effects", Label: "Advantages / 有益效果", Type: "textarea", Placeholder: "Describe advantages over prior art, quantify where possible"},
+								{Name: "figures_paths", Label: "Drawing file paths (one per line) / 附图路径", Type: "textarea", Placeholder: "e.g.\nD:\\Patent\\Fig1-Architecture.png\nD:\\Patent\\Fig2-Flowchart.png"},
+								{Name: "figures_descriptions", Label: "Drawing descriptions / 附图说明", Type: "textarea", Placeholder: "e.g.\nFig.1: System architecture showing module connections\nFig.2: Data processing flowchart"},
+								{Name: "prior_art", Label: "Known Prior Art (optional) / 已知现有技术", Type: "textarea", Placeholder: "List known patent numbers or publications, one per line"},
+							},
+						},
+					},
+				},
+			},
+			{ID: "us_prior_art_search", Name: "Prior Art Search / 查新检索", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+			{ID: "us_claims_drafting", Name: "Claims Drafting / 权利要求撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+			{ID: "us_drawings", Name: "Drawings / 附图生成与整理", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+			{ID: "us_specification_writing", Name: "Specification Writing / 说明书撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+			{ID: "us_application_assembly", Name: "Application Assembly / 申请文件组装", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+		},
+	}
+}
+
 // RegisterBuiltinTemplates registers all built-in templates.
 func RegisterBuiltinTemplates(r *TemplateRegistry) {
 	if r == nil {
@@ -1313,4 +1384,5 @@ func RegisterBuiltinTemplates(r *TemplateRegistry) {
 	r.Register(NSFCGeneralReviewTemplate())
 	r.Register(NSFCKeyReviewTemplate())
 	r.Register(PatentApplicationTemplate())
+	r.Register(USPatentApplicationTemplate())
 }

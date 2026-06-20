@@ -157,6 +157,12 @@ func (s *SQLiteStore) ImportSnapshot(ctx context.Context, opts SnapshotImportOpt
 			return result, err
 		}
 		defer tx.Rollback()
+		if opts.ReplaceAll {
+			if err := s.clearSnapshotImportTargetTx(ctx, tx); err != nil {
+				result.CompletedAt = time.Now().UTC()
+				return result, err
+			}
+		}
 	}
 	state := snapshotImportState{
 		sources: map[string]struct{}{},
@@ -192,6 +198,12 @@ func (s *SQLiteStore) ImportSnapshot(ctx context.Context, opts SnapshotImportOpt
 		result.CompletedAt = time.Now().UTC()
 		return result, err
 	}
+	if opts.AbortOnError {
+		if err := snapshotImportResultError(result); err != nil {
+			result.CompletedAt = time.Now().UTC()
+			return result, err
+		}
+	}
 	if tx != nil {
 		if err := tx.Commit(); err != nil {
 			result.CompletedAt = time.Now().UTC()
@@ -200,6 +212,55 @@ func (s *SQLiteStore) ImportSnapshot(ctx context.Context, opts SnapshotImportOpt
 	}
 	result.CompletedAt = time.Now().UTC()
 	return result, nil
+}
+
+func (s *SQLiteStore) clearSnapshotImportTargetTx(ctx context.Context, tx *sql.Tx) error {
+	statements := []string{
+		`DELETE FROM document_nodes_fts`,
+		`DELETE FROM knowledge_cards_fts`,
+		`DELETE FROM knowledge_facts_fts`,
+		`DELETE FROM knowledge_card_suppressions`,
+		`DELETE FROM knowledge_facts`,
+		`DELETE FROM knowledge_cards`,
+		`DELETE FROM document_nodes`,
+		`DELETE FROM knowledge_source_link_events`,
+		`DELETE FROM knowledge_source_links`,
+		`DELETE FROM knowledge_source_labels`,
+		`DELETE FROM knowledge_source_versions`,
+		`DELETE FROM knowledge_import_items`,
+		`DELETE FROM knowledge_import_batches`,
+		`DELETE FROM knowledge_sources`,
+		`DELETE FROM knowledge_url_domain_policies`,
+	}
+	for _, stmt := range statements {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func snapshotImportResultError(result SnapshotImportResult) error {
+	if result.Failed == 0 && result.UnknownRecords == 0 && result.MissingReferences == 0 && result.Conflicts == 0 {
+		return nil
+	}
+	parts := []string{}
+	if result.Failed > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed records", result.Failed))
+	}
+	if result.UnknownRecords > 0 {
+		parts = append(parts, fmt.Sprintf("%d unknown records", result.UnknownRecords))
+	}
+	if result.MissingReferences > 0 {
+		parts = append(parts, fmt.Sprintf("%d missing references", result.MissingReferences))
+	}
+	if result.Conflicts > 0 {
+		parts = append(parts, fmt.Sprintf("%d conflicts", result.Conflicts))
+	}
+	if len(result.Failures) > 0 {
+		parts = append(parts, "first error: "+result.Failures[0].Error)
+	}
+	return fmt.Errorf("knowledge snapshot import failed: %s", strings.Join(parts, ", "))
 }
 
 func snapshotSafetyBackupPath(inputPath, requestedPath string, now time.Time) (string, error) {

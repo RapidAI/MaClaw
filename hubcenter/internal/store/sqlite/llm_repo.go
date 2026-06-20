@@ -325,18 +325,22 @@ func (r *llmAuthRepo) Update(ctx context.Context, auth *llmservice.TenantAuthori
 func (r *llmAuthRepo) DeductCredits(ctx context.Context, id string, credits float64, now time.Time) error {
 	// Only deduct if there's remaining balance (prevents snowball over-deduction)
 	result, err := r.write.ExecContext(ctx,
-		`UPDATE llm_tenant_authorizations SET credits_used = credits_used + ?, updated_at = ? WHERE id = ? AND (credits_total - credits_used) >= ?`,
-		credits, now.Format(time.RFC3339), id, credits,
+		`UPDATE llm_tenant_authorizations
+		 SET credits_used = credits_used + ?,
+		     status = CASE WHEN credits_used + ? >= credits_total THEN 'exhausted' ELSE status END,
+		     updated_at = ?
+		 WHERE id = ? AND (credits_total - credits_used) >= ?`,
+		credits, credits, now.Format(time.RFC3339), id, credits,
 	)
 	if err != nil {
 		return err
 	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		// Insufficient balance - deduct anyway but mark as exhausted
+		// Insufficient balance - consume the remaining balance and mark exhausted.
 		_, err = r.write.ExecContext(ctx,
-			`UPDATE llm_tenant_authorizations SET credits_used = credits_used + ?, status = 'exhausted', updated_at = ? WHERE id = ?`,
-			credits, now.Format(time.RFC3339), id,
+			`UPDATE llm_tenant_authorizations SET credits_used = credits_total, status = 'exhausted', updated_at = ? WHERE id = ? AND credits_total > credits_used`,
+			now.Format(time.RFC3339), id,
 		)
 		return err
 	}

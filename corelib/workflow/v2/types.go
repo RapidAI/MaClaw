@@ -57,6 +57,7 @@ const (
 	WorkflowNSFCKey                 WorkflowType = "nsfc_key"
 	WorkflowPaperReproduction       WorkflowType = "paper_reproduction"
 	WorkflowPatentApplication       WorkflowType = "patent_application"
+	WorkflowUSPatentApplication     WorkflowType = "us_patent_application"
 )
 
 // Phase IDs for the coding workflow.

@@ -49,7 +49,7 @@ func buildPopulatedV1Registry() *v2.WorkflowRegistry {
 	v2.RegisterBuiltinTemplates(v2Reg)
 
 	v1Reg := v2.NewWorkflowRegistry()
-	for _, typ := range knownV2Types {
+	for _, typ := range v2Reg.AllTypes() {
 		v2Tmpl := v2Reg.Get(typ)
 		if v2Tmpl == nil {
 			continue
