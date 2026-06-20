@@ -294,7 +294,9 @@ func (s *HTTPServer) runMigrationImport(ctx context.Context, p agentservice.Prin
 	}
 	if claimedStatus == "imported" || claimedStatus == "deleting" {
 		progress(0.92, "retrying Hub cleanup")
-		if err := s.completeMigrationImportOnHub(ctx, cfg, exportID); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.completeMigrationImportOnHub(cleanupCtx, cfg, exportID); err != nil {
 			return nil, fmt.Errorf("Hub cleanup retry failed: %w", err)
 		}
 		claimed = false
@@ -311,7 +313,7 @@ func (s *HTTPServer) runMigrationImport(ctx context.Context, p agentservice.Prin
 	}
 	encryptedPath := filepath.Join(workDir, "migration.mlawenc")
 	progress(0.12, "downloading encrypted chunks")
-	if err := s.downloadMigrationChunks(ctx, cfg, exportID, encryptedPath, encryptedSize, chunkCount, progress); err != nil {
+	if err := s.downloadMigrationChunks(ctx, cfg, exportID, encryptedPath, encryptedSize, chunkSize, chunkCount, progress); err != nil {
 		return nil, err
 	}
 	gotHash, _, err := fileSHA256(encryptedPath)
@@ -538,7 +540,7 @@ func (s *HTTPServer) migrationChunkUploaded(ctx context.Context, cfg migrationCl
 	return status["uploaded"] == true && strings.EqualFold(fmt.Sprint(status["sha256"]), sha)
 }
 
-func (s *HTTPServer) downloadMigrationChunks(ctx context.Context, cfg migrationClientConfig, exportID, path string, size int64, chunkCount int, progress func(float64, string)) error {
+func (s *HTTPServer) downloadMigrationChunks(ctx context.Context, cfg migrationClientConfig, exportID, path string, size, chunkSize int64, chunkCount int, progress func(float64, string)) error {
 	out, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -548,6 +550,13 @@ func (s *HTTPServer) downloadMigrationChunks(ctx context.Context, cfg migrationC
 		data, err := s.migrationHubBytes(ctx, cfg, http.MethodGet, fmt.Sprintf("/api/v1/migration/imports/%s/chunks/%d", exportID, i), nil)
 		if err != nil {
 			return err
+		}
+		expectedSize := chunkSize
+		if remaining := size - int64(i)*chunkSize; remaining < expectedSize {
+			expectedSize = remaining
+		}
+		if expectedSize <= 0 || int64(len(data)) != expectedSize {
+			return fmt.Errorf("downloaded migration chunk %d size mismatch", i)
 		}
 		if _, err := out.Write(data); err != nil {
 			return err
@@ -885,10 +894,14 @@ func zipDir(root, zipPath string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = out.Close()
+		}
+	}()
 	zw := zip.NewWriter(out)
-	defer zw.Close()
-	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -920,7 +933,15 @@ func zipDir(root, zipPath string) error {
 			return copyErr
 		}
 		return closeErr
-	})
+	}); err != nil {
+		_ = zw.Close()
+		return err
+	}
+	if err := zw.Close(); err != nil {
+		return err
+	}
+	closed = true
+	return out.Close()
 }
 
 func unzipToDir(zipPath, dest string) error {

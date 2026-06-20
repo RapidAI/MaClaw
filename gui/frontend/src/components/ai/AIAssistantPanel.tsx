@@ -382,28 +382,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
 
             if (currentTabCanOwnPreview && ownerTabId !== currentTabId) {
                 const savedState = previewStateMapRef.current.get(currentTabId);
-                // Only transfer preview ownership to the new tab if:
-                // 1. The new tab has its own saved workflow/code state (it has a workflow to display), OR
-                // 2. The current owner's workflow is inactive (nothing to keep listening to).
-                // This ensures that when Tab A has a running workflow and user switches to
-                // Tab B (which has no workflow), the event scope stays bound to Tab A's
-                // project path so backend events continue flowing to the hook.
-                const currentOwnerWorkflowActive = getWorkflowSnapshot().active;
-                const shouldTransferOwnership = !!savedState || !currentOwnerWorkflowActive;
-                if (shouldTransferOwnership) {
-                    if (savedState) {
-                        restoreWorkflowState(savedState.workflow);
-                        restoreCodePreviewState(savedState.code);
-                    } else {
-                        resetWorkflowState();
-                        resetCodePreviewState();
-                    }
-                    previewOwnerTabRef.current = currentTabId;
+                if (savedState) {
+                    restoreWorkflowState(savedState.workflow);
+                    restoreCodePreviewState(savedState.code);
+                } else {
+                    resetWorkflowState();
+                    resetCodePreviewState();
                 }
-                // When NOT transferring ownership (Tab A still has active workflow),
-                // the workflow panel continues showing Tab A's live state.
-                // Tab B's messages will start a new workflow that gets accepted via
-                // workflow_id mismatch in non-strict mode (phase_update handler).
+                previewOwnerTabRef.current = currentTabId;
             }
         }
 
@@ -949,25 +935,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => clearTimeout(timer);
     }, [tabLimitError, clearTabLimitError]);
     const codingPreviewOwnerTab = tabState.tabs.find(tab => tab.id === previewOwnerTabRef.current);
-    // The event scope determines which backend workflow events are accepted by
-    // useWorkflowState (via shouldAcceptWorkflowEvent project_path comparison).
-    // 
-    // It MUST track the preview OWNER tab's project path — the tab whose workflow
-    // is currently being displayed/tracked. When user switches from Tab A (running
-    // workflow with path "d:\snakepro") to Tab B (path "d:\workprj\aicoder"), the
-    // preview owner remains Tab A (because Tab A has the active workflow). Backend
-    // events for Tab A's workflow carry project_path="d:\snakepro". If we used
-    // activeTab.projectPath here, those events would be rejected and the workflow
-    // panel would show stale data.
-    //
-    // The preview owner transfers to the new tab during tab switch ONLY when the
-    // new tab has its own saved state or the current owner has no active workflow.
-    // This ensures events always flow to the correct hook instance.
-    const codingPreviewEventScope = (codingPreviewOwnerTab?.projectPath || (canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.projectPath : undefined)) || LOCAL_CODING_PREVIEW_EVENT_SCOPE;
-    // activeTabFallbackPath: when the preview owner tab differs from the active tab,
-    // this allows new workflows started from the active tab to be accepted by the hook.
-    const activeTabFallbackPath = (canShowAssistantCodingPreviewForTab(activeTab) && activeTab.projectPath && activeTab.projectPath !== codingPreviewEventScope) ? activeTab.projectPath : undefined;
-    const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState, ownershipTransferPathRef: workflowOwnershipTransferRef } = useWorkflowState(codingPreviewEventScope, activeTabFallbackPath);
+    // The event scope determines which workflow events are accepted by useWorkflowState.
+    // It always tracks the active tab's project path — when user switches tabs, the
+    // preview panel switches to the new tab's workflow state (via save/restore).
+    // Events for background tabs are not received while inactive, but the backend
+    // re-emits full workflow state on the next message from that tab.
+    const codingPreviewEventScope = (canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.projectPath : codingPreviewOwnerTab?.projectPath) || LOCAL_CODING_PREVIEW_EVENT_SCOPE;
+    const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(codingPreviewEventScope);
     const { state: codePreviewState, closePanel: closeCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codingPreviewEventScope);
     useEffect(() => {
         if (!previewOwnerResetPendingRef.current) return; previewOwnerResetPendingRef.current = false;
@@ -975,23 +949,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (state) { restoreWorkflowState(state.workflow); restoreCodePreviewState(state.code); }
         else { resetWorkflowState(); resetCodePreviewState(); }
     }, [activeTab.id, restoreWorkflowState, restoreCodePreviewState, resetWorkflowState, resetCodePreviewState]);
-    // Transfer preview ownership when useWorkflowState accepts a new workflow from the
-    // active tab via fallback path (different tab started a new workflow).
-    // Triggered when workflowID changes (new workflow accepted).
-    const workflowIDForTransfer = workflowState.workflowID;
-    useEffect(() => {
-        const transferPath = workflowOwnershipTransferRef.current;
-        if (!transferPath) return;
-        workflowOwnershipTransferRef.current = "";
-        // Find the tab whose projectPath matches the transfer path and transfer ownership.
-        // Note: the old owner's workflow state was already reset by the hook when it
-        // accepted the new workflow. The old workflow's data is preserved on the backend
-        // and will be re-emitted when the user returns to that tab and sends a message.
-        const targetTab = tabState.tabs.find(t => t.projectPath && t.projectPath.replace(/\\/g, "/").toLowerCase() === transferPath.replace(/\\/g, "/").toLowerCase());
-        if (targetTab && targetTab.id !== previewOwnerTabRef.current) {
-            previewOwnerTabRef.current = targetTab.id;
-        }
-    }, [workflowIDForTransfer]); // eslint-disable-line react-hooks/exhaustive-deps
     const showAgentView = !!agentView && (agentViewOwnerTabRef.current === activeTab.id || (agentView.id?.startsWith("workflow:form:") ?? false));
     const codingPreviewAllowed = canShowAssistantCodingPreviewForTab(activeTab);
     // Suppress workflow doc preview when a workflow form is showing — the form

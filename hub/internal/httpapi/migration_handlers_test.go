@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -110,6 +111,166 @@ func TestMigrationAPILifecycleAndCleanupIdempotency(t *testing.T) {
 	}
 	if _, err := os.Stat(api.exportDir("tenant-a", user.ID, created.ExportID)); !os.IsNotExist(err) {
 		t.Fatalf("expected export dir removed, stat err=%v", err)
+	}
+}
+
+func TestMigrationCreateExportAllowsStreamingEncryptionOverhead(t *testing.T) {
+	ctx := context.Background()
+	st, db, cleanup := newMigrationAPITestStore(t)
+	defer cleanup()
+
+	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	user := &store.User{ID: "user-size", TenantID: "tenant-a", Email: "size@example.com", Status: "active", EnrollmentStatus: "approved", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	seedMigrationAPIMachine(t, st, "tenant-a", user.ID, "machine-source", "source-token", "Source")
+	setting, _ := json.Marshal(map[string]int64{"value": migrationMaxCompressedBytes})
+	if err := scopedSystemSettingsForTenant("tenant-a", st.System).Set(ctx, migrationSettingMaxCompressedBytes, string(setting)); err != nil {
+		t.Fatalf("set migration limit: %v", err)
+	}
+	api := NewMigrationAPI(db, t.TempDir(), identity, identity.MachinesRepo(), st.System)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux, nil)
+
+	chunkSize := int64(4 * 1024 * 1024)
+	hash := hex.EncodeToString(bytes.Repeat([]byte{0xab}, 32))
+	resp := migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/exports", "machine-source", "source-token", map[string]any{
+		"compressed_size":  int64(2048),
+		"encrypted_size":   int64(1024),
+		"encrypted_sha256": hash,
+		"plain_sha256":     hash,
+		"chunk_size":       migrationMinUploadChunkSize,
+		"chunk_count":      1,
+		"manifest":         map[string]any{"version": "invalid-size"},
+	})
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("encrypted-smaller create status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	encryptedSize := migrationMaxCompressedBytes + 6000
+	chunkCount := int(encryptedSize / chunkSize)
+	if encryptedSize%chunkSize != 0 {
+		chunkCount++
+	}
+	resp = migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/exports", "machine-source", "source-token", map[string]any{
+		"compressed_size":  migrationMaxCompressedBytes,
+		"encrypted_size":   encryptedSize,
+		"encrypted_sha256": hash,
+		"plain_sha256":     hash,
+		"chunk_size":       chunkSize,
+		"chunk_count":      chunkCount,
+		"manifest":         map[string]any{"version": "large-boundary"},
+	})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("boundary create status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	tooLargeEncrypted := migrationMaxCompressedBytes + migrationMaxEncryptedOverhead(chunkCount) + 1
+	tooLargeChunkCount := int(tooLargeEncrypted / chunkSize)
+	if tooLargeEncrypted%chunkSize != 0 {
+		tooLargeChunkCount++
+	}
+	resp = migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/exports", "machine-source", "source-token", map[string]any{
+		"compressed_size":  migrationMaxCompressedBytes,
+		"encrypted_size":   tooLargeEncrypted,
+		"encrypted_sha256": hash,
+		"plain_sha256":     hash,
+		"chunk_size":       chunkSize,
+		"chunk_count":      tooLargeChunkCount,
+		"manifest":         map[string]any{"version": "large-overhead"},
+	})
+	if resp.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized encrypted create status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestMigrationCreateExportReplacesExpiredImportingExport(t *testing.T) {
+	ctx := context.Background()
+	st, db, cleanup := newMigrationAPITestStore(t)
+	defer cleanup()
+
+	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	user := &store.User{ID: "user-expired", TenantID: "tenant-a", Email: "expired@example.com", Status: "active", EnrollmentStatus: "approved", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	seedMigrationAPIMachine(t, st, "tenant-a", user.ID, "machine-source", "source-token", "Source")
+	api := NewMigrationAPI(db, t.TempDir(), identity, identity.MachinesRepo(), st.System)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux, nil)
+
+	hash := hex.EncodeToString(bytes.Repeat([]byte{0xcd}, 32))
+	first := migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/exports", "machine-source", "source-token", map[string]any{
+		"compressed_size":  int64(1024),
+		"encrypted_size":   int64(1024),
+		"encrypted_sha256": hash,
+		"plain_sha256":     hash,
+		"chunk_size":       migrationMinUploadChunkSize,
+		"chunk_count":      1,
+		"manifest":         map[string]any{"version": "first"},
+	})
+	if first.Code != http.StatusOK {
+		t.Fatalf("first create status=%d body=%s", first.Code, first.Body.String())
+	}
+	var created struct {
+		ExportID string `json:"export_id"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &created); err != nil || created.ExportID == "" {
+		t.Fatalf("decode first response err=%v body=%s", err, first.Body.String())
+	}
+	past := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	if _, err := db.ExecContext(ctx, `UPDATE user_data_migration_exports SET status = 'importing', claimed_by_machine_id = 'machine-target', claim_expires_at = ? WHERE id = ?`, past, created.ExportID); err != nil {
+		t.Fatalf("expire importing export: %v", err)
+	}
+
+	second := migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/exports", "machine-source", "source-token", map[string]any{
+		"compressed_size":  int64(2048),
+		"encrypted_size":   int64(2048),
+		"encrypted_sha256": hash,
+		"plain_sha256":     hash,
+		"chunk_size":       migrationMinUploadChunkSize,
+		"chunk_count":      1,
+		"manifest":         map[string]any{"version": "second"},
+	})
+	if second.Code != http.StatusOK {
+		t.Fatalf("second create status=%d body=%s", second.Code, second.Body.String())
+	}
+	var status string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM user_data_migration_exports WHERE id = ?`, created.ExportID).Scan(&status); err != nil {
+		t.Fatalf("load old status: %v", err)
+	}
+	if status != "replaced" {
+		t.Fatalf("expired importing export status = %q, want replaced", status)
+	}
+}
+
+func TestMigrationCompleteUploadRechecksTenantLimit(t *testing.T) {
+	ctx := context.Background()
+	st, db, cleanup := newMigrationAPITestStore(t)
+	defer cleanup()
+
+	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	user := &store.User{ID: "user-complete-limit", TenantID: "tenant-a", Email: "complete-limit@example.com", Status: "active", EnrollmentStatus: "approved", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	seedMigrationAPIMachine(t, st, "tenant-a", user.ID, "machine-source", "source-token", "Source")
+	api := NewMigrationAPI(db, t.TempDir(), identity, identity.MachinesRepo(), st.System)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux, nil)
+
+	hash := hex.EncodeToString(bytes.Repeat([]byte{0xef}, 32))
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.ExecContext(ctx, `INSERT INTO user_data_migration_exports
+		(id, tenant_id, user_id, source_machine_id, source_machine_name, status, compressed_size, encrypted_size, encrypted_sha256, plain_sha256, chunk_size, chunk_count, manifest_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'uploading', ?, ?, ?, ?, ?, ?, '{}', ?, ?)`,
+		"mig-over-limit", "tenant-a", user.ID, "machine-source", "Source", migrationMinCompressedBytes+1, migrationMinCompressedBytes+1, hash, hash, migrationMaxUploadChunkSize, 13, now, now); err != nil {
+		t.Fatalf("insert export: %v", err)
+	}
+	resp := migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/exports/mig-over-limit/complete-upload", "machine-source", "source-token", map[string]any{"encrypted_sha256": hash})
+	if resp.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("complete upload over limit status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }
 

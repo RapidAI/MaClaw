@@ -161,14 +161,8 @@ function shouldAcceptWorkflowEvent(
  *   from the active tab's path, the update is skipped (it belongs to another
  *   tab and will be handled via the tab switch save/restore mechanism).
  *   If empty/undefined, all events are applied (backward compatible fallback).
- * @param activeTabFallbackPath - Optional fallback path for accepting new workflows
- *   from the currently active tab when it differs from the primary scope.
- *   When the preview owner tab (primary scope) differs from the active tab,
- *   new workflow events (phase_update with new workflow_id) are also accepted
- *   if their project_path matches this fallback. This allows starting a new
- *   workflow from a different tab to auto-transfer the preview panel.
  */
-export function useWorkflowState(activeTabProjectPath?: string, activeTabFallbackPath?: string) {
+export function useWorkflowState(activeTabProjectPath?: string) {
     const [active, setActive] = useState(false);
     const [splitMode, setSplitMode] = useState(false);
     const [splitRatio, setSplitRatioState] = useState(DEFAULT_SPLIT_RATIO);
@@ -191,11 +185,6 @@ export function useWorkflowState(activeTabProjectPath?: string, activeTabFallbac
     const transientTextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const activeTabProjectPathRef = useRef(activeTabProjectPath || "");
     activeTabProjectPathRef.current = activeTabProjectPath || "";
-    const activeTabFallbackPathRef = useRef(activeTabFallbackPath || "");
-    activeTabFallbackPathRef.current = activeTabFallbackPath || "";
-    // Set to the fallback path when the hook accepts a new workflow via fallback.
-    // Parent component reads and clears this to transfer previewOwnerTabRef.
-    const ownershipTransferPathRef = useRef("");
 
     const setWorkflowSplitMode = useCallback((next: boolean | ((current: boolean) => boolean)) => {
         setSplitMode(current => {
@@ -243,17 +232,7 @@ export function useWorkflowState(activeTabProjectPath?: string, activeTabFallbac
             const eventProjectPath = typeof state.project_path === "string" ? state.project_path.trim() : "";
             const eventWorkflowID = resolveWorkflowInstanceKey(state);
             if (!shouldAcceptWorkflowEvent(eventWorkflowID, eventProjectPath, workflowIDRef.current, activeTabProjectPathRef.current, false)) {
-                // Fallback: if the event doesn't match the primary scope (owner tab),
-                // check if it matches the active tab's path. This handles the case where
-                // a new workflow starts from a different tab than the current preview owner.
-                // Only accept via fallback for NEW workflow IDs (different from current).
-                const fallback = activeTabFallbackPathRef.current;
-                if (!fallback || fallback === activeTabProjectPathRef.current) return;
-                if (!eventWorkflowID || eventWorkflowID === workflowIDRef.current) return;
-                if (!shouldAcceptWorkflowEvent(eventWorkflowID, eventProjectPath, "", fallback, false)) return;
-                // New workflow from active tab accepted via fallback — signal the parent
-                // to transfer preview ownership to the active tab.
-                ownershipTransferPathRef.current = fallback;
+                return;
             }
             const workflowID = eventWorkflowID;
             const incomingWorkflowType = typeof state.type === "string" ? state.type : "";
@@ -619,8 +598,5 @@ export function useWorkflowState(activeTabProjectPath?: string, activeTabFallbac
         getSnapshot,
         restoreState,
         resetState,
-        /** Ref set when a new workflow is accepted from the fallback (active tab) path.
-         *  Parent should read, transfer previewOwnerTabRef, and clear. */
-        ownershipTransferPathRef,
     };
 }

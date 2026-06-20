@@ -109,3 +109,60 @@ func FormatCitationLabel(r SearchResult) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// BestContentText returns the most complete text representation of a SearchResult
+// for injection into LLM system prompts (auto-recall, SubAgent context, etc.).
+//
+// Priority design:
+//   - For "node" results (raw document chunks): FTS Snippet is the best representation
+//     because nodes contain full text that may be very long; the snippet highlights
+//     the relevant window around the search term.
+//   - For "card" and "fact" results: Claim contains the card's complete distilled knowledge.
+//     FTS Snippet is just a ~32-token match window extracted by SQLite's snippet() function,
+//     which often truncates critical details (credentials, full lists, multi-line content).
+//     Summary is a shorter abstract. Snippet is the last resort.
+//
+// This is the single source of truth for snippet extraction priority.
+// All consumers (GUI auto-recall, TUI auto-recall, agentservice, SubAgent, RemoteSubAgent)
+// should use this function instead of implementing their own priority logic.
+func BestContentText(r SearchResult) string {
+	if r.ResultType == "node" {
+		if r.Snippet != "" {
+			return r.Snippet
+		}
+		if r.Summary != "" {
+			return r.Summary
+		}
+		if r.Claim != "" {
+			return r.Claim
+		}
+		return ""
+	}
+	// For fact results, prefer claim (full card context) over raw triple.
+	if r.ResultType == "fact" {
+		if r.Claim != "" {
+			return r.Claim
+		}
+		if r.Summary != "" {
+			return r.Summary
+		}
+		if r.Subject != "" && r.Predicate != "" {
+			return r.Subject + " " + r.Predicate + " " + r.Object
+		}
+		return ""
+	}
+	// For card results (default): Claim > Summary > Snippet > Triple.
+	if r.Claim != "" {
+		return r.Claim
+	}
+	if r.Summary != "" {
+		return r.Summary
+	}
+	if r.Snippet != "" {
+		return r.Snippet
+	}
+	if r.Subject != "" && r.Predicate != "" {
+		return r.Subject + " " + r.Predicate + " " + r.Object
+	}
+	return ""
+}

@@ -1,5 +1,8 @@
 # MaClaw 应用面板与应用程序工作室设计
 
+> Related supplement: app panel operations area and global approval instance management redesign: [app-panel-approval-ops-redesign-zh.md](app-panel-approval-ops-redesign-zh.md).
+
+
 ## 目标
 
 MaClaw 需要在 GUI 中间面板新增一个 `应用` 面板，用图标化方式承载可复用的软件入口。这个面板不是传统工具列表，也不是简单 Skill 快捷方式，而是把 MaClaw 已有的结构化数据服务、AgentView、Skill、Workflow、MCP 与企业能力市场组合成一套动态软件系统。

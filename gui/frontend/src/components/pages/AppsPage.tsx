@@ -630,8 +630,6 @@ const labels = {
         approvalRefresh: '\u5237\u65b0',
         approvalLoading: '\u6b63\u5728\u8bfb\u53d6\u5ba1\u6279\u5b9e\u4f8b',
         approvalLoadError: '\u5ba1\u6279\u5b9e\u4f8b\u8bfb\u53d6\u5931\u8d25',
-        approvalSummaryTitle: '\u5ba1\u6279\u72b6\u6001',
-        approvalSummaryHint: '\u8be5\u5e94\u7528\u7684\u5ba1\u6279\u5b9e\u4f8b\u5df2\u6536\u7eb3\u5230\u7edf\u4e00\u7ba1\u7406\u9875\u3002',
         approvalRecentCount: '\u6700\u8fd1\u5b9e\u4f8b',
         approvalPendingCount: '\u5f85\u5904\u7406',
         viewAllApprovals: '\u67e5\u770b\u5168\u90e8\u5ba1\u6279\u72b6\u6001',
@@ -902,8 +900,6 @@ const labels = {
         approvalRefresh: 'Refresh',
         approvalLoading: 'Loading approval instances',
         approvalLoadError: 'Failed to load approval instances',
-        approvalSummaryTitle: 'Approval status',
-        approvalSummaryHint: 'This app stores approval instances in the unified management page.',
         approvalRecentCount: 'Recent instances',
         approvalPendingCount: 'Pending',
         viewAllApprovals: 'View all approval status',
@@ -2325,6 +2321,17 @@ function loadAppRunHistory(appID: string): AppRunHistoryEntry[] {
     }
 }
 
+function loadAllAppRunHistory(): AppRunHistoryEntry[] {
+    if (typeof window === 'undefined') return [];
+    try {
+        const parsed = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, AppRunHistoryEntry[]>;
+        return Object.entries(parsed).flatMap(([appID, items]) => Array.isArray(items) ? items.map((item) => ({ ...item, appID: item.appID || appID })) : [])
+            .sort((left, right) => String(right.at || '').localeCompare(String(left.at || '')));
+    } catch {
+        return [];
+    }
+}
+
 function saveAppRunHistory(appID: string, history: AppRunHistoryEntry[]) {
     if (typeof window === 'undefined' || !appID) return;
     try {
@@ -3686,6 +3693,20 @@ const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, busi
     const objectRole = businessObjectRoleForApp(app, businessEntity);
     const actionRole = businessActionRoleForApp(app, businessAction);
     const viewRole = String(datasrv.preferredView || datasrv.preferredReport || datasrv.preferredDashboard || '-').trim();
+    const appSkillID = businessAppSkillID(app);
+    const datasetID = appDataSrvDatasetID(app);
+    const bindingItems = [
+        { label: zh ? '\u4e1a\u52a1\u57df' : 'DataSrv', value: datasrv.domain || '-' },
+        { label: zh ? '\u4e1a\u52a1\u5bf9\u8c61' : 'Object', value: objectRole || '-' },
+        { label: zh ? '\u6570\u636e\u96c6' : 'Dataset', value: datasetID || '-' },
+        { label: 'appSkill', value: appSkillID || '-' },
+    ];
+    const operationItems = [
+        { label: zh ? '\u52a8\u4f5c' : 'Action', value: datasrv.preferredAction || '-' },
+        { label: zh ? '\u89c6\u56fe' : 'View', value: datasrv.preferredView || '-' },
+        { label: zh ? '\u62a5\u8868' : 'Report', value: datasrv.preferredReport || '-' },
+        { label: zh ? '\u770b\u677f' : 'Dashboard', value: datasrv.preferredDashboard || '-' },
+    ];
     const rows = [
         { id: `${datasrv.domain || app.id}-draft`, name: businessEntity || app.category, status: runState === 'idle' ? (zh ? '\u5f85\u5904\u7406' : 'Ready') : (zh ? '\u5904\u7406\u4e2d' : 'Processing'), owner: zh ? '\u5f53\u524d\u7528\u6237' : 'Current user' },
         { id: `${datasrv.domain || app.id}-last`, name: app.name, status: runState === 'done' ? (zh ? '\u5df2\u66f4\u65b0' : 'Updated') : (zh ? '\u53ef\u67e5\u8be2' : 'Queryable'), owner: datasrv.domain || 'DataSrv' },
@@ -3701,6 +3722,14 @@ const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, busi
                 <button type="button" data-active={businessAction === 'query' ? 'true' : undefined}>{zh ? '\u67e5\u8be2' : 'Query'}</button>
                 <button type="button" data-active={businessAction === 'report' ? 'true' : undefined}>{zh ? '\u62a5\u8868' : 'Report'}</button>
                 <button type="button">{zh ? '\u5bfc\u51fa' : 'Export'}</button>
+            </div>
+            <div className="apps-business-binding" aria-label={zh ? '\u4e1a\u52a1\u7ed1\u5b9a' : 'Business binding'}>
+                <dl>
+                    {bindingItems.map((item) => <div key={item.label}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}
+                </dl>
+                <dl>
+                    {operationItems.map((item) => <div key={item.label}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}
+                </dl>
             </div>
             <div className="apps-business-layout">
                 <nav className="apps-business-nav" aria-label={zh ? '\u89c6\u56fe' : 'Views'}>
@@ -4441,7 +4470,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                 </>
                             )}
                         </section>
-                        {isApproval && <ApprovalSummary app={app} instances={approvalInstances} text={text} style={{ order: runtimeOrder.approval }} layoutRegion={centerRegion} onOpenAll={() => onOpenApprovalManager?.()} onOpenApp={() => onOpenApprovalManager?.(app.id)} />}
+                        {isApproval && <ApprovalWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} backendInstances={approvalInstances} lang={lang} text={text} style={{ order: runtimeOrder.approval }} layoutRegion={centerRegion} onDecision={updateApprovalInstanceDecision} />}
                         {isBusiness && <BusinessWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} lang={lang} style={{ order: runtimeOrder.approval }} layoutRegion={centerRegion} />}
                         <section className="apps-runtime-section apps-runtime-status" data-region={outputRegion === 'bottom' ? centerRegion : outputRegion} style={{ order: runtimeOrder.status }}>
                             <div className="apps-runtime-section__title">{text.runtimeStatus}</div>
@@ -4518,6 +4547,237 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                         )}
                     </div>
                 </div>
+            </div>
+        </>
+    );
+};
+
+const approvalLanes = (text: typeof labels.zh) => [
+    { key: 'my_requests', label: text.myRequests },
+    { key: 'pending_my_approval', label: text.pendingMyApproval },
+    { key: 'handled', label: text.handledApprovals },
+    { key: 'attention', label: text.attentionApprovals },
+    { key: 'all', label: text.allApprovalInstances },
+] as const;
+
+function approvalSearchText(item: ApprovalInstanceView, appName: string) {
+    return [appName, item.appName, item.title, item.id, item.currentNode, item.owner, item.approver, item.result, item.workflowSkillID, item.workflowDecisionID, item.datasetID, item.objectRole, item.approvalID, item.businessStatus, item.resultStatus, item.recordID]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+}
+
+const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; lang?: string; initialAppFilter: string }) => {
+    const text = isZh(lang) ? labels.zh : labels.en;
+    const [lane, setLane] = useState<ApprovalLaneFilter>('all');
+    const [query, setQuery] = useState('');
+    const [appFilter, setAppFilter] = useState(initialAppFilter || 'all');
+    const [statusFilter, setStatusFilter] = useState('all');
+    const [instances, setInstances] = useState<ApprovalInstanceView[]>([]);
+    const [selectedInstanceId, setSelectedInstanceId] = useState('');
+    const [loadingState, setLoadingState] = useState<'idle' | 'loading' | 'error'>('idle');
+    const appNameById = useMemo(() => new Map(apps.map((app) => [app.id, app.name])), [apps]);
+    const approvalApps = useMemo(() => apps.filter((app) => isEnterpriseApprovalAppKind(app.kind)), [apps]);
+
+    useEffect(() => {
+        setAppFilter(initialAppFilter || 'all');
+        setSelectedInstanceId('');
+    }, [initialAppFilter]);
+
+    const loadInstances = useCallback(async () => {
+        setLoadingState('loading');
+        try {
+            const records = await ListMaclawAppApprovalInstancesAll(lane, 200) as BackendApprovalInstance[];
+            setInstances((records || []).map((item) => backendApprovalInstanceToView(item, lang)).filter(Boolean) as ApprovalInstanceView[]);
+            setLoadingState('idle');
+        } catch {
+            setInstances([]);
+            setLoadingState('error');
+        }
+    }, [lane, lang]);
+
+    useEffect(() => {
+        void loadInstances();
+    }, [loadInstances]);
+
+    const filteredInstances = useMemo(() => {
+        const normalizedQuery = query.trim().toLowerCase();
+        return instances.filter((item) => {
+            const appMatches = appFilter === 'all' || item.appID === appFilter;
+            const statusMatches = statusFilter === 'all' || item.status === statusFilter;
+            const queryMatches = !normalizedQuery || approvalSearchText(item, appNameById.get(item.appID || '') || '').includes(normalizedQuery);
+            return appMatches && statusMatches && queryMatches;
+        });
+    }, [instances, appFilter, statusFilter, query, appNameById]);
+    const selected = filteredInstances.find((item) => item.id === selectedInstanceId) || filteredInstances[0];
+    const lanes = approvalLanes(text);
+    const countForLane = (key: ApprovalLaneFilter) => key === 'all'
+        ? instances.length
+        : key === 'handled'
+            ? instances.filter((item) => item.status === 'approved' || item.status === 'rejected').length
+            : instances.filter((item) => item.lane === key).length;
+
+    const updateApprovalInstanceDecision = async (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => {
+        if (!instance?.id) return;
+        const now = new Date().toISOString();
+        const zh = isZh(lang);
+        const app = apps.find((item) => item.id === instance.appID);
+        const statusText = decision === 'approved' ? (zh ? '已通过' : 'Approved') : decision === 'rejected' ? (zh ? '已驳回' : 'Rejected') : (zh ? '需关注' : 'Needs attention');
+        const nextLane: ApprovalInstanceView['lane'] = decision === 'attention' ? 'attention' : 'handled';
+        const nextNode = decision === 'attention' ? instance.currentNode : (zh ? '已完成' : 'Completed');
+        const payload: BackendApprovalInstance = {
+            instance_id: instance.id,
+            app_id: instance.appID,
+            app_name: instance.appName || app?.name,
+            workflow_skill_id: instance.workflowSkillID,
+            workflow_decision_id: `decision-${Date.now().toString(36)}`,
+            approval_id: instance.approvalID,
+            record_approval_id: instance.approvalID,
+            approval_event: instance.approvalEvent,
+            approval_object_role: instance.objectRole,
+            object_role: instance.objectRole,
+            dataset_id: instance.datasetID,
+            blueprint_id: instance.blueprintID,
+            title: instance.title,
+            lane: nextLane,
+            status: decision,
+            current_node: nextNode,
+            owner: instance.owner,
+            applicant: instance.owner,
+            approver: instance.approver,
+            result: statusText,
+            business_status: decision,
+            result_status: decision,
+            record_id: instance.recordID,
+            detail_url: instance.detailURL,
+            result_payload: instance.resultPayload,
+            outputs: instance.outputs,
+            artifacts: instance.artifacts,
+            updated_at: now,
+            events: [...(instance.events || []), { at: now, node: nextNode, actor: instance.approver || (zh ? '审批人' : 'Approver'), decision, message: statusText, action: decision }],
+        };
+        const fallback = backendApprovalInstanceToView(payload, lang);
+        if (fallback) setInstances((current) => [fallback, ...current.filter((item) => item.id !== fallback.id)]);
+        try {
+            const saved = await RecordMaclawAppApprovalInstance(payload) as BackendApprovalInstance;
+            const savedInstance = saved || payload;
+            const view = backendApprovalInstanceToView(savedInstance, lang);
+            if (view) setInstances((current) => [view, ...current.filter((item) => item.id !== view.id)]);
+            if (app) {
+                const syncPayload = approvalDataSrvSyncPayload(app, savedInstance);
+                if (syncPayload) void SyncMaclawAppApprovalInstanceToDataSrv(syncPayload).catch(() => undefined);
+            }
+        } catch {
+            if (fallback) setInstances((current) => [fallback, ...current.filter((item) => item.id !== fallback.id)]);
+        }
+    };
+
+    return (
+        <>
+            <div className="apps-detail__header">
+                <div>
+                    <h2 className="apps-detail__title">{text.approvalManagerTitle}</h2>
+                    <p className="apps-detail__subtitle">{text.approvalManagerHint}</p>
+                </div>
+                <button className="apps-secondary-button" type="button" onClick={() => void loadInstances()}>{text.approvalRefresh}</button>
+            </div>
+            <div className="apps-detail__body elegant-scrollbar">
+                <div className="apps-approval-manager">
+                    <div className="apps-approval-manager__filters">
+                        <input className="apps-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={text.approvalSearch} />
+                        <label><span>{text.approvalAppFilter}</span><select value={appFilter} onChange={(event) => { setAppFilter(event.target.value); setSelectedInstanceId(''); }}><option value="all">{text.approvalAllApps}</option>{approvalApps.map((app) => <option key={app.id} value={app.id}>{app.name}</option>)}</select></label>
+                        <label><span>{text.approvalStatusFilter}</span><select value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setSelectedInstanceId(''); }}><option value="all">{text.approvalAllStatuses}</option>{(['pending', 'approved', 'rejected', 'attention', 'draft'] as ApprovalInstanceView['status'][]).map((status) => <option key={status} value={status}>{approvalStatusLabel(status, lang)}</option>)}</select></label>
+                    </div>
+                    <nav className="apps-approval-manager__lanes" aria-label={text.approvalWorkspace}>
+                        {lanes.map((item) => <button key={item.key} className={lane === item.key ? 'is-active' : ''} type="button" aria-pressed={lane === item.key} onClick={() => { setLane(item.key); setSelectedInstanceId(''); }}><span>{item.label}</span><strong>{countForLane(item.key)}</strong></button>)}
+                    </nav>
+                    {loadingState === 'loading' && <div className="apps-approval-empty" role="status">{text.approvalLoading}</div>}
+                    {loadingState === 'error' && <div className="apps-approval-empty" role="alert">{text.approvalLoadError}</div>}
+                    {loadingState !== 'loading' && loadingState !== 'error' && (
+                        <div className="apps-approval-manager__body">
+                            <div className="apps-approval-list" role="list" aria-label={text.approvalInstanceData}>
+                                {filteredInstances.length === 0 ? <div className="apps-approval-empty" role="status">{text.noApprovalInstances}</div> : filteredInstances.map((item) => (
+                                    <button className="apps-approval-row" data-state={item.status} data-selected={selected?.id === item.id ? 'true' : 'false'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
+                                        <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} / {text.currentApprovalNode}: {item.currentNode}</span><small>{text.approvalInstanceId}: {item.id} / {item.updatedAt}</small></div>
+                                        <em>{approvalStatusLabel(item.status, lang)}</em>
+                                    </button>
+                                ))}
+                            </div>
+                            <ApprovalDetail instance={selected} lang={lang} text={text} onDecision={updateApprovalInstanceDecision} />
+                        </div>
+                    )}
+                </div>
+            </div>
+        </>
+    );
+};
+
+const ApprovalDetail = ({ instance, lang, text, onDecision }: { instance?: ApprovalInstanceView; lang?: string; text: typeof labels.zh; onDecision: (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => void | Promise<void> }) => {
+    const selectedOutputs = instance?.outputs || [];
+    const selectedArtifacts = instance?.artifacts || [];
+    const selectedPayloadEntries = instance?.resultPayload ? Object.entries(instance.resultPayload).filter(([, value]) => formatApprovalResultValue(value)) : [];
+    const hasResultPackage = selectedOutputs.length > 0 || selectedArtifacts.length > 0 || selectedPayloadEntries.length > 0;
+    const canDecide = !!instance && (instance.status === 'pending' || instance.status === 'draft' || instance.lane === 'pending_my_approval');
+    return (
+        <aside className="apps-approval-detail" aria-label={text.approvalTimeline}>
+            {instance ? (
+                <>
+                    <div className="apps-approval-detail__head"><strong>{instance.title}</strong><span>{text.currentApprovalNode}: {instance.currentNode}</span></div>
+                    <dl className="apps-approval-facts">
+                        <div><dt>{text.myRequests}</dt><dd>{instance.owner}</dd></div><div><dt>{text.pendingMyApproval}</dt><dd>{instance.approver}</dd></div><div><dt>{text.approvalResult}</dt><dd>{instance.result}</dd></div>
+                        <div><dt>{text.workflowSkill}</dt><dd>{instance.workflowSkillID || '-'}</dd></div><div><dt>{text.dataSrvRecord}</dt><dd>{instance.recordID || '-'}</dd></div><div><dt>{text.approvalObjectRoleLabel}</dt><dd>{instance.objectRole || '-'}</dd></div>
+                        <div><dt>{text.remoteApprovalLabel}</dt><dd>{instance.approvalID || '-'}</dd></div><div><dt>{text.businessStatusLabel}</dt><dd>{instance.businessStatus || '-'}</dd></div><div><dt>{text.resultStatusLabel}</dt><dd>{instance.resultStatus || approvalStatusLabel(instance.status, lang)}</dd></div>
+                    </dl>
+                    {instance.detailURL && <div className="apps-approval-detail__links"><a className="apps-link-button" href={instance.detailURL} target="_blank" rel="noreferrer">{text.viewFullWorkflow}</a></div>}
+                    {hasResultPackage && (
+                        <section className="apps-approval-results" aria-label={text.approvalResultPackage}>
+                            <div className="apps-approval-results__head"><strong>{text.approvalResultPackage}</strong><span>{selectedOutputs.length + selectedArtifacts.length + selectedPayloadEntries.length}</span></div>
+                            {selectedOutputs.map((output, index) => {
+                                const kind = approvalOutputKind(output);
+                                const body = approvalOutputBody(output);
+                                const artifactRef = output.artifact ? approvalArtifactReference(output.artifact) : '';
+                                return <div className="apps-approval-output" data-kind={kind} key={`${instance.id}-output-${index}-${approvalOutputTitle(output, text)}`}><div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' / ')}</span></div>{body && <pre>{body}</pre>}{artifactRef && <code>{artifactRef}</code>}</div>;
+                            })}
+                            {selectedArtifacts.map((artifact, index) => <div className="apps-approval-artifact" key={`${instance.id}-artifact-${index}-${approvalArtifactReference(artifact)}`}><div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' / ')}</span></div><code>{approvalArtifactReference(artifact)}</code></div>)}
+                            {selectedPayloadEntries.length > 0 && <div className="apps-approval-payload"><strong>{text.approvalOutputData}</strong>{selectedPayloadEntries.map(([key, value]) => <div key={`${instance.id}-payload-${key}`}><span>{key}</span><pre>{formatApprovalResultValue(value)}</pre></div>)}</div>}
+                        </section>
+                    )}
+                    <div className="apps-approval-timeline">
+                        {(instance.events && instance.events.length > 0 ? instance.events : [{ node: isZh(lang) ? '发起节点' : 'Submit node' }, { node: instance.currentNode }, { node: isZh(lang) ? '结果反馈' : 'Result feedback' }] as ApprovalInstanceEventView[]).map((event, index) => {
+                            const primary = [event.node, event.decision].filter(Boolean).join(' / ') || event.message || '-';
+                            const secondary = [event.actor, event.at].filter(Boolean).join(' / ');
+                            return <div key={`${instance.id}-event-${index}-${primary}`}><span /><p><strong>{primary}</strong>{secondary && <small>{secondary}</small>}{event.message && primary !== event.message && <small>{event.message}</small>}</p></div>;
+                        })}
+                    </div>
+                </>
+            ) : <div className="apps-approval-empty" role="status">{text.noApprovalInstances}</div>}
+            <div className="apps-approval-actions" aria-label={text.approvalActions}>
+                <button className="apps-primary-button" type="button" onClick={() => instance && onDecision(instance, 'approved')} disabled={!canDecide}>{text.approve}</button>
+                <button className="apps-secondary-button" type="button" onClick={() => instance && onDecision(instance, 'rejected')} disabled={!canDecide}>{text.reject}</button>
+                <button className="apps-secondary-button" type="button" onClick={() => instance && onDecision(instance, 'attention')} disabled={!instance}>{text.markAttention}</button>
+            </div>
+        </aside>
+    );
+};
+
+const RunHistoryManager = ({ apps, lang }: { apps: AppEntry[]; lang?: string }) => {
+    const text = isZh(lang) ? labels.zh : labels.en;
+    const [appFilter, setAppFilter] = useState('all');
+    const [items, setItems] = useState<AppRunHistoryEntry[]>(() => loadAllAppRunHistory());
+    const appNameById = useMemo(() => new Map(apps.map((app) => [app.id, app.name])), [apps]);
+    const filteredItems = appFilter === 'all' ? items : items.filter((item) => item.appID === appFilter);
+    return (
+        <>
+            <div className="apps-detail__header"><div><h2 className="apps-detail__title">{text.runHistoryManager}</h2><p className="apps-detail__subtitle">{text.runHistoryManagerHint}</p></div><button className="apps-secondary-button" type="button" onClick={() => setItems(loadAllAppRunHistory())}>{text.approvalRefresh}</button></div>
+            <div className="apps-detail__body elegant-scrollbar">
+                <section className="apps-run-history-manager">
+                    <div className="apps-approval-manager__filters"><label><span>{text.approvalAppFilter}</span><select value={appFilter} onChange={(event) => setAppFilter(event.target.value)}><option value="all">{text.runHistoryAllApps}</option>{apps.map((app) => <option key={app.id} value={app.id}>{app.name}</option>)}</select></label></div>
+                    {filteredItems.length === 0 ? <div className="apps-run-history__empty">{text.noGlobalRunHistory}</div> : (
+                        <div className="apps-run-history__list">
+                            {filteredItems.map((item) => <div className="apps-run-history__item" data-state={item.status} key={`${item.appID}-${item.runID}-${item.at}`}><div><strong>{appNameById.get(item.appID) || item.appID}</strong><span>{formatRunHistoryTime(item.at)} / {item.outputMode.toUpperCase()} / {item.runID}</span>{item.inputSummary && <code>{item.inputSummary}</code>}</div><div className="apps-run-history__side"><em>{item.message || item.status}</em>{(item.artifactURI || item.artifactPath) && <div className="apps-run-history__actions"><button className="apps-link-button" type="button" onClick={() => void openSkillRunArtifactFromUI(item.runID, item.artifactID || item.artifactURI || '', item.artifactPath || '', item.artifactDownloadState === 'remote')}>{item.artifactDownloadState === 'remote' ? text.downloadArtifact : text.openArtifact}</button><button className="apps-link-button" type="button" onClick={() => void revealSkillRunArtifactFromUI(item.runID, item.artifactID || item.artifactURI || '', item.artifactPath || '')}>{text.revealArtifact}</button></div>}</div></div>)}
+                        </div>
+                    )}
+                </section>
             </div>
         </>
     );
@@ -5661,8 +5921,8 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         const nextApprovalObjectRole = isFinancePrompt ? 'finance' : isInventoryPrompt ? 'inventory' : isCrmPrompt ? 'crm' : isOaPrompt ? 'oa' : 'record';
         const nextBusinessDomain = isFinancePrompt ? 'finance' : isInventoryPrompt ? 'inventory' : isCrmPrompt ? 'sales' : isOaPrompt ? 'oa' : 'business';
         const nextBusinessObjectRole = isFinancePrompt ? 'expense_report' : isInventoryPrompt ? 'stock_item' : isCrmPrompt ? 'customer' : isOaPrompt ? 'request' : 'record';
-        const nextPreferredAction = isFinancePrompt ? 'finance.expense_upsert' : isInventoryPrompt ? 'inventory.stock_update' : isCrmPrompt ? 'sales.customer_upsert' : isOaPrompt ? 'oa.request_upsert' : ${nextBusinessDomain}._upsert;
-        const nextPreferredView = isFinancePrompt ? 'finance.expense_by_status' : isInventoryPrompt ? 'inventory.stock_position' : isCrmPrompt ? 'sales.customer_directory' : isOaPrompt ? 'oa.request_directory' : ${nextBusinessDomain}._directory;
+        const nextPreferredAction = isFinancePrompt ? 'finance.expense_upsert' : isInventoryPrompt ? 'inventory.stock_update' : isCrmPrompt ? 'sales.customer_upsert' : isOaPrompt ? 'oa.request_upsert' : nextBusinessDomain + '.' + nextBusinessObjectRole + '_upsert';
+        const nextPreferredView = isFinancePrompt ? 'finance.expense_by_status' : isInventoryPrompt ? 'inventory.stock_position' : isCrmPrompt ? 'sales.customer_directory' : isOaPrompt ? 'oa.request_directory' : nextBusinessDomain + '.' + nextBusinessObjectRole + '_directory';
         const nextPreferredReport = isFinancePrompt ? 'finance.expense_report' : isInventoryPrompt ? 'inventory.stock_by_warehouse' : isCrmPrompt ? 'sales.customer_activity' : isOaPrompt ? 'oa.request_status' : '';
         const nextPreferredDashboard = isFinancePrompt ? 'finance.overview' : isInventoryPrompt ? 'inventory.overview' : isCrmPrompt ? 'sales.overview' : isOaPrompt ? 'oa.overview' : '';
         setAppSkillID(nextAppSkillID);
@@ -6096,7 +6356,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     </section>
                 )}
                 <StudioLayoutDesigner kind={kind} value={studioLayoutValue} onChange={updateStudioLayout} lang={lang} />
-                <div className="apps-form-row">
+                <div className="apps-form-row apps-form-row--description">
                     <label>{zh ? '\u63cf\u8ff0' : 'Description'}</label>
                     <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={zh ? '\u7528\u4e8e tooltip \u548c\u53f3\u4fa7\u8fd0\u884c\u533a\u8bf4\u660e' : 'Used in tooltip and right runtime area'} />
                 </div>
@@ -7162,7 +7422,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                                 <label>{text.appColor}</label>
                                 <AppAccentPicker value={editDraft.accent} lang={lang} onChange={(accent) => setEditDraft((current) => ({ ...current, accent }))} />
                             </div>
-                            <div className="apps-form-row apps-form-row--wide">
+                            <div className="apps-form-row apps-form-row--wide apps-form-row--description">
                                 <label>{isZh(lang) ? '\u63cf\u8ff0' : 'Description'}</label>
                                 <textarea value={editDraft.description} onChange={(event) => setEditDraft((current) => ({ ...current, description: event.target.value }))} />
                             </div>

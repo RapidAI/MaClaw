@@ -6,6 +6,7 @@ const listNLSkillsMock = vi.hoisted(() => vi.fn());
 const listSkillAppManifestsMock = vi.hoisted(() => vi.fn());
 const listMaclawAppInstallsMock = vi.hoisted(() => vi.fn());
 const listMaclawAppApprovalInstancesMock = vi.hoisted(() => vi.fn());
+const listMaclawAppApprovalInstancesAllMock = vi.hoisted(() => vi.fn());
 const recordMaclawAppApprovalInstanceMock = vi.hoisted(() => vi.fn());
 const syncMaclawAppApprovalInstanceToDataSrvMock = vi.hoisted(() => vi.fn());
 const installMaclawAppDependenciesMock = vi.hoisted(() => vi.fn());
@@ -33,6 +34,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ListSkillAppManifests: (...args: unknown[]) => listSkillAppManifestsMock(...args),
     ListMaclawAppInstalls: (...args: unknown[]) => listMaclawAppInstallsMock(...args),
     ListMaclawAppApprovalInstances: (...args: unknown[]) => listMaclawAppApprovalInstancesMock(...args),
+    ListMaclawAppApprovalInstancesAll: (...args: unknown[]) => listMaclawAppApprovalInstancesAllMock(...args),
     RecordMaclawAppApprovalInstance: (...args: unknown[]) => recordMaclawAppApprovalInstanceMock(...args),
     SyncMaclawAppApprovalInstanceToDataSrv: (...args: unknown[]) => syncMaclawAppApprovalInstanceToDataSrvMock(...args),
     DownloadSkillRunArtifact: (...args: unknown[]) => downloadSkillRunArtifactMock(...args),
@@ -120,6 +122,7 @@ describe('AppsPage', () => {
         listSkillAppManifestsMock.mockReset().mockResolvedValue([]);
         listMaclawAppInstallsMock.mockReset().mockResolvedValue([]);
         listMaclawAppApprovalInstancesMock.mockReset().mockResolvedValue([]);
+        listMaclawAppApprovalInstancesAllMock.mockReset().mockResolvedValue([]);
         recordMaclawAppApprovalInstanceMock.mockReset().mockImplementation(async (payload) => ({ ...payload, instance_id: 'appr-test-1', updated_at: '2026-06-19T00:00:00Z' }));
         syncMaclawAppApprovalInstanceToDataSrvMock.mockReset().mockResolvedValue({ synced: true });
         installMaclawAppDependenciesMock.mockReset().mockResolvedValue({ schema: 'maclaw.app.install_plan.v1', apps: [], dependencies: [], has_missing_required: false });
@@ -169,6 +172,42 @@ describe('AppsPage', () => {
         expect(container.querySelectorAll('.apps-app-tile').length).toBeGreaterThan(6);
     });
 
+    it('renders the app panel operation section without changing app category counts', () => {
+        render(<AppsPage lang="zh-Hans" />);
+
+        expect(screen.getByText('\u64cd\u4f5c')).not.toBeNull();
+        expect(screen.getByText('\u5ba1\u6279\u72b6\u6001')).not.toBeNull();
+        expect(screen.getByText('\u8fd0\u884c\u8bb0\u5f55')).not.toBeNull();
+        expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('\u5168\u90e8\u5e94\u7528 (10)')).not.toBeNull();
+    });
+    it('opens global approval management from the operation section', async () => {
+        listMaclawAppApprovalInstancesAllMock.mockResolvedValue([{
+            app_id: 'expense',
+            app_name: 'Expense approval',
+            instance_id: 'approval-global-1',
+            title: 'Travel expense',
+            lane: 'pending_my_approval',
+            status: 'pending',
+            current_node: 'manager_approval',
+            owner: 'alice',
+            approver: 'manager',
+            updated_at: '2026-06-20T00:00:00Z',
+            result: 'waiting',
+            workflow_skill_id: 'expense-approval-workflow',
+            dataset_id: 'finance.expenses',
+            object_role: 'expense_report',
+            approval_id: 'approval-remote-global-1',
+            record_id: 'EXP-1',
+        }]);
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByText('\u5ba1\u6279\u72b6\u6001'));
+
+        await waitFor(() => expect(listMaclawAppApprovalInstancesAllMock).toHaveBeenCalledWith('all', 200));
+        expect(screen.getByText('\u5ba1\u6279\u5b9e\u4f8b\u7ba1\u7406')).not.toBeNull();
+        expect(screen.getAllByText('Travel expense').length).toBeGreaterThan(0);
+        expect(screen.getByText('EXP-1')).not.toBeNull();
+    });
     it('does not repeat pinned apps in the main icon grid', () => {
         render(<AppsPage lang="zh-Hans" />);
 
@@ -250,19 +289,18 @@ describe('AppsPage', () => {
         expect(updatedTile.title).not.toContain('最近使用: 尚未使用');
     });
 
-    it('places approval workspaces before right-side output so the center column starts at the top', () => {
+    it('places approval workspaces before right-side output so the center column starts at the top', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        const expenseTile = screen.getAllByText('报销申请')[0].closest('.apps-app-tile') as HTMLButtonElement;
-        fireEvent.click(expenseTile);
+        fireEvent.click(screen.getByRole('button', { name: /\u62a5\u9500\u7533\u8bf7, \u4f01\u4e1a\u5ba1\u6279\u578b/ }));
+        fireEvent.click(screen.getByRole('button', { name: '\u6267\u884c' }));
+        await waitFor(() => expect(container.querySelector<HTMLElement>('.apps-approval-workspace')).not.toBeNull());
         const approval = container.querySelector<HTMLElement>('.apps-approval-workspace');
         const output = container.querySelector<HTMLElement>('.apps-runtime-output');
 
-        expect(approval).not.toBeNull();
         expect(output).not.toBeNull();
         expect(Number(approval?.style.order)).toBeLessThan(Number(output?.style.order));
     });
-
     it('reflects DataSrv dependency state in app tile tooltips', async () => {
         getMISDataConfigMock.mockResolvedValue({ enabled: false, endpoint: 'http://127.0.0.1:18180' });
         render(<AppsPage lang="zh-Hans" />);
@@ -1585,11 +1623,15 @@ describe('AppsPage', () => {
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[1][0].instance.status).toBe('approved');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[1][0].instance.result_payload.business_record.id).toBe('exp-1');
 
-        fireEvent.click(screen.getByRole('button', { name: /已处理/ }));
-        await waitFor(() => expect(screen.getByText('结果包')).not.toBeNull());
+        listMaclawAppApprovalInstancesAllMock.mockResolvedValue([completedPayload]);
+        fireEvent.click(within(document.querySelector('.apps-ops') as HTMLElement).getByText('\u5ba1\u6279\u72b6\u6001'));
+        await waitFor(() => expect(listMaclawAppApprovalInstancesAllMock).toHaveBeenCalledWith('all', 200));
+        expect(screen.getByText('\u5ba1\u6279\u5b9e\u4f8b\u7ba1\u7406')).not.toBeNull();
+        await waitFor(() => expect(screen.getByText('\u7ed3\u679c\u5305')).not.toBeNull());
         expect(screen.getAllByText('Expense record').length).toBeGreaterThan(0);
         expect(screen.getAllByText('approval.pdf').length).toBeGreaterThan(0);
         expect(screen.getAllByText(/pending_payment/).length).toBeGreaterThan(0);
+
     });
     it('uses approvalBindings as the runtime workflow source for approval apps', async () => {
         window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
@@ -1677,7 +1719,7 @@ describe('AppsPage', () => {
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[1][0].instance.status).toBe('attention');
     });
     it('keeps approval instance detail scoped to the selected lane and row', async () => {
-        listMaclawAppApprovalInstancesMock.mockResolvedValue([
+        const pendingInstances = [
             {
                 app_id: 'expense',
                 instance_id: 'approval-pending-7',
@@ -1720,17 +1762,16 @@ describe('AppsPage', () => {
                 result_status: 'pending',
                 events: [{ at: '2026-06-20T00:00:00Z', node: 'finance_review', actor: 'finance', decision: 'reviewing', message: 'needs receipt check' }],
             },
-        ]);
+        ];
+        listMaclawAppApprovalInstancesAllMock.mockImplementation(async (lane) => lane === 'my_requests' ? [] : pendingInstances);
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
-        await waitFor(() => expect(screen.getAllByText('当前分类暂无审批实例').length).toBeGreaterThan(0));
-        const nav = document.querySelector('.apps-approval-nav') as HTMLElement;
+        fireEvent.click(screen.getByText('\u5ba1\u6279\u72b6\u6001'));
+        await waitFor(() => expect(listMaclawAppApprovalInstancesAllMock).toHaveBeenCalledWith('all', 200));
+        const nav = document.querySelector('.apps-approval-manager__lanes') as HTMLElement;
         const detail = document.querySelector('.apps-approval-detail') as HTMLElement;
-        const actions = screen.getByLabelText('审批操作');
-        expect((within(actions).getByText('通过') as HTMLButtonElement).disabled).toBe(true);
+        const actions = screen.getByLabelText('\u5ba1\u6279\u64cd\u4f5c');
 
-        fireEvent.click(within(nav).getByText('待我审批'));
         await waitFor(() => expect(within(detail).getByText('Travel expense')).not.toBeNull());
         fireEvent.click(screen.getByText('Office expense').closest('.apps-approval-row') as HTMLElement);
         expect(within(detail).getByText('Office expense')).not.toBeNull();
@@ -1740,16 +1781,16 @@ describe('AppsPage', () => {
         expect(within(detail).getByText('approval-remote-8')).not.toBeNull();
         expect(within(detail).getByText('pending_finance_review')).not.toBeNull();
         expect(within(detail).getByText(/needs receipt check/)).not.toBeNull();
-        const workflowLink = within(detail).getByText('查看完整流程') as HTMLAnchorElement;
+        const workflowLink = within(detail).getByText('\u67e5\u770b\u5b8c\u6574\u6d41\u7a0b') as HTMLAnchorElement;
         expect(workflowLink.getAttribute('href')).toBe('approval://instances/approval-pending-8');
-        expect((within(actions).getByText('通过') as HTMLButtonElement).disabled).toBe(false);
+        expect((within(actions).getByText('\u901a\u8fc7') as HTMLButtonElement).disabled).toBe(false);
 
-        fireEvent.click(within(nav).getByText('我的申请'));
-        expect(within(detail).getByText('当前分类暂无审批实例')).not.toBeNull();
-        expect((within(actions).getByText('通过') as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.click(within(nav).getByText('\u6211\u7684\u7533\u8bf7'));
+        await waitFor(() => expect(within(document.querySelector('.apps-approval-detail') as HTMLElement).getByText('\u5f53\u524d\u5206\u7c7b\u6682\u65e0\u5ba1\u6279\u5b9e\u4f8b')).not.toBeNull());
+        expect((within(screen.getByLabelText('\u5ba1\u6279\u64cd\u4f5c')).getByText('\u901a\u8fc7') as HTMLButtonElement).disabled).toBe(true);
     });
     it('records approval decisions with workflow result fields', async () => {
-        listMaclawAppApprovalInstancesMock.mockResolvedValue([{
+        listMaclawAppApprovalInstancesAllMock.mockResolvedValue([{
             app_id: 'expense',
             instance_id: 'approval-pending-7',
             title: 'Travel expense',
@@ -1770,12 +1811,10 @@ describe('AppsPage', () => {
         recordMaclawAppApprovalInstanceMock.mockImplementation(async (payload) => payload);
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
-        await waitFor(() => expect(screen.getAllByText('当前分类暂无审批实例').length).toBeGreaterThan(0));
-        fireEvent.click(within(document.querySelector('.apps-approval-nav') as HTMLElement).getByText('待我审批'));
+        fireEvent.click(screen.getByText('\u5ba1\u6279\u72b6\u6001'));
         await waitFor(() => expect(screen.getAllByText('Travel expense').length).toBeGreaterThan(0));
-        const actions = screen.getByLabelText('审批操作');
-        fireEvent.click(within(actions).getByText('通过'));
+        const actions = screen.getByLabelText('\u5ba1\u6279\u64cd\u4f5c');
+        fireEvent.click(within(actions).getByText('\u901a\u8fc7'));
 
         await waitFor(() => expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalled());
         const payload = recordMaclawAppApprovalInstanceMock.mock.calls[0][0];
@@ -1799,7 +1838,7 @@ describe('AppsPage', () => {
         expect(syncPayload.instance.workflow_decision_id).toMatch(/^decision-/);
     });
     it('keeps approval result package when a pending item is manually approved', async () => {
-        listMaclawAppApprovalInstancesMock.mockResolvedValue([{
+        listMaclawAppApprovalInstancesAllMock.mockResolvedValue([{
             app_id: 'expense',
             instance_id: 'approval-pending-package',
             title: 'Expense with outputs',
@@ -1813,28 +1852,26 @@ describe('AppsPage', () => {
             workflow_skill_id: 'expense-approval-workflow',
             business_status: 'approval_pending',
             result_status: 'pending',
-            result_payload: { business_record: { id: 'exp-99', status: 'pending_finance_review' }, content: '请复核发票' },
+            result_payload: { business_record: { id: 'exp-99', status: 'pending_finance_review' }, content: 'review finance receipt' },
             outputs: [
-                { id: 'out-1', kind: 'text', title: '审批说明', text: '需要财务确认', status: 'ready' },
-                { id: 'out-2', kind: 'requires_input', title: '补充材料', text: '缺少付款截图', status: 'waiting' },
+                { id: 'out-1', kind: 'text', title: 'Approval note', text: 'needs finance confirmation', status: 'ready' },
+                { id: 'out-2', kind: 'requires_input', title: 'Missing materials', text: 'missing payment screenshot', status: 'waiting' },
             ],
             artifacts: [{ id: 'artifact-99', uri: 'artifact://approval-pending-package/report', name: 'finance-report.pdf', status: 'ready' }],
         }]);
         recordMaclawAppApprovalInstanceMock.mockImplementation(async (payload) => payload);
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
-        await waitFor(() => expect(screen.getAllByText('当前分类暂无审批实例').length).toBeGreaterThan(0));
-        fireEvent.click(within(document.querySelector('.apps-approval-nav') as HTMLElement).getByText('待我审批'));
+        fireEvent.click(screen.getByText('\u5ba1\u6279\u72b6\u6001'));
         await waitFor(() => expect(screen.getAllByText('Expense with outputs').length).toBeGreaterThan(0));
         const detail = document.querySelector('.apps-approval-detail') as HTMLElement;
-        expect(within(detail).getByText('结果包')).not.toBeNull();
-        expect(within(detail).getByText('审批说明')).not.toBeNull();
-        expect(within(detail).getByText('补充材料')).not.toBeNull();
+        expect(within(detail).getByText('\u7ed3\u679c\u5305')).not.toBeNull();
+        expect(within(detail).getByText('Approval note')).not.toBeNull();
+        expect(within(detail).getByText('Missing materials')).not.toBeNull();
         expect(within(detail).getByText('finance-report.pdf')).not.toBeNull();
         expect(within(detail).getByText(/pending_finance_review/)).not.toBeNull();
 
-        fireEvent.click(within(screen.getByLabelText('审批操作')).getByText('通过'));
+        fireEvent.click(within(screen.getByLabelText('\u5ba1\u6279\u64cd\u4f5c')).getByText('\u901a\u8fc7'));
 
         await waitFor(() => expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalledTimes(1));
         const payload = recordMaclawAppApprovalInstanceMock.mock.calls[0][0];
@@ -1850,18 +1887,21 @@ describe('AppsPage', () => {
         expect(syncPayload.instance.outputs[1].kind).toBe('requires_input');
         expect(syncPayload.instance.artifacts[0].id).toBe('artifact-99');
     });
-    it('shows approval instance workspace for approval apps', () => {
+    it('shows the approval instance workspace for approval apps', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
+        fireEvent.click(screen.getAllByText('\u62a5\u9500\u7533\u8bf7')[0]);
+        await waitFor(() => expect(document.querySelector('.apps-approval-workspace')).not.toBeNull());
+        fireEvent.click(screen.getByRole('button', { name: '\u6267\u884c' }));
 
-        expect(screen.getByText('审批实例')).not.toBeNull();
-        expect(screen.getAllByText('我的申请').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('待我审批').length).toBeGreaterThan(0);
-        expect(screen.getAllByText(/当前节点/).length).toBeGreaterThan(0);
-        expect(screen.getByLabelText('审批操作')).not.toBeNull();
-        expect(screen.getByText('通过')).not.toBeNull();
-        expect(screen.getByText('驳回')).not.toBeNull();
+        await waitFor(() => expect(document.querySelector('.apps-approval-workspace')).not.toBeNull());
+        const workspace = document.querySelector('.apps-approval-workspace') as HTMLElement;
+        expect(within(workspace).getByText('\u5ba1\u6279\u5b9e\u4f8b')).not.toBeNull();
+        expect(within(workspace).getByRole('button', { name: /\u6211\u7684\u7533\u8bf7/ })).not.toBeNull();
+        expect(within(workspace).getByRole('button', { name: /\u5f85\u6211\u5ba1\u6279/ })).not.toBeNull();
+        expect(within(workspace).getByRole('button', { name: /\u5df2\u5904\u7406/ })).not.toBeNull();
+        expect(document.querySelector('.apps-approval-summary')).toBeNull();
+        expect(document.querySelector('.apps-approval-manager')).toBeNull();
     });
     it('shows an empty runtime area until an app icon is clicked', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
@@ -2526,6 +2566,8 @@ describe('AppsPage', () => {
         expect(container.querySelector('.apps-business-workspace')).not.toBeNull();
         expect(container.querySelector('.apps-approval-workspace')).toBeNull();
         expect(screen.getByText('业务工作台')).not.toBeNull();
+        expect(screen.getAllByText('procurement').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('procurement.purchase_orders').length).toBeGreaterThan(0);
         expect(screen.getAllByText('procurement.purchase_order_upsert').length).toBeGreaterThan(0);
 
         fireEvent.change(screen.getByDisplayValue('新建记录'), { target: { value: 'query' } });
@@ -2581,6 +2623,104 @@ describe('AppsPage', () => {
             datasrv_domain: 'sales',
         })));
     });
+
+    it('saves enterprise normal business bindings from App Studio into the manifest', () => {
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByRole('button', { name: 'Business app' }));
+        fireEvent.change(screen.getByPlaceholderText('Example: Contract filing'), { target: { value: 'Customer Console' } });
+        fireEvent.change(screen.getByTestId('studio-business-domain'), { target: { value: 'sales' } });
+        fireEvent.change(screen.getByTestId('studio-business-object-role'), { target: { value: 'customer' } });
+        fireEvent.change(screen.getByTestId('studio-business-preferred-action'), { target: { value: 'sales.customer_upsert' } });
+        fireEvent.change(screen.getByTestId('studio-business-preferred-view'), { target: { value: 'sales.customer_directory' } });
+        fireEvent.change(screen.getByTestId('studio-business-preferred-report'), { target: { value: 'sales.customer_activity' } });
+        fireEvent.change(screen.getByTestId('studio-business-preferred-dashboard'), { target: { value: 'sales.overview' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Create app' }));
+
+        const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
+        const created = stored.customApps.find((app: any) => app.name === 'Customer Console');
+        expect(created.kind).toBe('enterprise_normal_app');
+        expect(created.manifest.datasrv).toMatchObject({
+            domain: 'sales',
+            objectRole: 'customer',
+            preferredAction: 'sales.customer_upsert',
+            preferredView: 'sales.customer_directory',
+            preferredReport: 'sales.customer_activity',
+            preferredDashboard: 'sales.overview',
+        });
+        expect(created.manifest.ui.layouts.business_workspace.studio.savedInManifest).toBe(true);
+    });
+
+    it('edits enterprise normal business bindings and uses them in appSkill payloads', async () => {
+        const app = {
+            id: 'ops-console',
+            name: 'Ops Console',
+            description: 'Operate service records through a business skill',
+            category: 'Operations',
+            kind: 'enterprise_normal_app',
+            icon: 'sheet',
+            accent: '#4b6572',
+            pinned: false,
+            source: 'local',
+            version: 1,
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_normal_app',
+                launchMode: 'agent_dynamic_ui',
+                appSkill: { id: 'ops-business-skill', version: '1.0.0', source: 'local' },
+                datasrv: { domain: 'ops', objectRole: 'ticket', preferredAction: 'ops.ticket_upsert', preferredView: 'ops.ticket_list' },
+                ui: { schema: 'maclaw.app.ui.v1' },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        const { unmount } = render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Manage apps'));
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Ops Console')) as HTMLElement;
+        fireEvent.click(within(row).getByRole('button', { name: 'Edit' }));
+        fireEvent.change(screen.getByTestId('edit-business-domain'), { target: { value: 'service' } });
+        fireEvent.change(screen.getByTestId('edit-business-object-role'), { target: { value: 'case' } });
+        fireEvent.change(screen.getByTestId('edit-business-preferred-action'), { target: { value: 'service.case_upsert' } });
+        fireEvent.change(screen.getByTestId('edit-business-preferred-view'), { target: { value: 'service.case_queue' } });
+        fireEvent.change(screen.getByTestId('edit-business-preferred-report'), { target: { value: 'service.case_report' } });
+        fireEvent.change(screen.getByTestId('edit-business-preferred-dashboard'), { target: { value: 'service.overview' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        await waitFor(() => {
+            const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
+            const updated = stored.customApps.find((item: any) => item.id === 'ops-console');
+            expect(updated.manifest.datasrv).toMatchObject({
+                domain: 'service',
+                objectRole: 'case',
+                preferredAction: 'service.case_upsert',
+                preferredView: 'service.case_queue',
+                preferredReport: 'service.case_report',
+                preferredDashboard: 'service.overview',
+            });
+        });
+
+        unmount();
+        render(<AppsPage lang="en" />);
+        fireEvent.click(screen.getAllByText('Ops Console')[0]);
+        fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('ops-business-skill', expect.objectContaining({
+            app_id: 'ops-console',
+            app_kind: 'enterprise_normal_app',
+            object_role: 'case',
+            action_role: 'service.case_upsert',
+            datasrv_domain: 'service',
+            preferred_action: 'service.case_upsert',
+            preferred_view: 'service.case_queue',
+            preferred_report: 'service.case_report',
+            preferred_dashboard: 'service.overview',
+        })));
+    });
+
     it('persists app order changes from app studio management', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
@@ -3932,5 +4072,3 @@ describe('AppsPage', () => {
         expect(screen.getAllByText('文档脱敏 Plus').length).toBeGreaterThan(0);
     });
 });
-
-

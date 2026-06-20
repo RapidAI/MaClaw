@@ -121,44 +121,9 @@ func knowledgeCitationLabel(r knowledge.SearchResult) string {
 }
 
 // knowledgeSnippet extracts the best display text from a search result.
+// Delegates to the shared knowledge.BestContentText for consistent priority across all platforms.
 func knowledgeSnippet(r knowledge.SearchResult) string {
-	if r.ResultType == "fact" {
-		if r.Claim != "" {
-			return r.Claim
-		}
-		if r.Summary != "" {
-			return r.Summary
-		}
-		if r.Subject != "" && r.Predicate != "" {
-			return r.Subject + " " + r.Predicate + " " + r.Object
-		}
-	}
-	if r.ResultType == "node" {
-		// For raw document nodes, prefer snippet (FTS highlight) over full text.
-		if r.Snippet != "" {
-			return r.Snippet
-		}
-		if r.Summary != "" {
-			return r.Summary
-		}
-		if r.Claim != "" {
-			return r.Claim
-		}
-		return ""
-	}
-	if r.Snippet != "" {
-		return r.Snippet
-	}
-	if r.Summary != "" {
-		return r.Summary
-	}
-	if r.Claim != "" {
-		return r.Claim
-	}
-	if r.Subject != "" && r.Predicate != "" {
-		return r.Subject + " " + r.Predicate + " " + r.Object
-	}
-	return ""
+	return knowledge.BestContentText(r)
 }
 
 // --- Knowledge tool execution ---

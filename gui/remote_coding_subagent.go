@@ -809,16 +809,7 @@ func (c *remoteCodingCallbacks) executeRemoteKnowledgeSearch(argsJSON string) st
 }
 
 func remoteKnowledgeSnippet(r knowledge.SearchResult) string {
-	text := r.Snippet
-	if text == "" {
-		text = r.Summary
-	}
-	if text == "" {
-		text = r.Claim
-	}
-	if text == "" && r.Subject != "" {
-		text = r.Subject + " " + r.Predicate + " " + r.Object
-	}
+	text := knowledge.BestContentText(r)
 	if text == "" {
 		return "(no content)"
 	}

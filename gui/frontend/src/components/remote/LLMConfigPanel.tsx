@@ -352,8 +352,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             setTimeout(() => setDlgOpen(false), 800);
         } catch (e) {
             setDlgTestResult({ ok: false, msg: String(e) });
+            setDlgSaving(false);
         }
-        setDlgSaving(false);
     }, [dlgProviders, hubSelectionAlreadySynced, t, onStatusChange, onProviderChanged]);
 
     const dlgQuickFill = useCallback((epName: string) => {
@@ -412,6 +412,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 onProviderChanged?.();
                 setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
                 setTimeout(() => setDlgOpen(false), 800);
+                return;
             } catch (e) {
                 setDlgTestResult({ ok: false, msg: String(e) });
             }
@@ -433,7 +434,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 onProviderChanged?.();
                 setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
                 setTimeout(() => setDlgOpen(false), 800);
-                setDlgSaving(false);
                 return;
             }
 
@@ -471,8 +471,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             });
             onStatusChange?.(true, true);
             onProviderChanged?.();
-            // Don't auto-close: let user review the vision probe result and
-            // manually override supports_vision if needed before closing.
+            // Auto-close on success: test passed and config saved, no need for extra click.
+            // Keep dlgSaving=true during close animation to prevent double-click.
+            setTimeout(() => setDlgOpen(false), 800);
+            return;
         } catch (e) {
             setDlgTestResult({ ok: false, msg: String(e) });
         }

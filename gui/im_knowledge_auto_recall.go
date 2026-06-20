@@ -270,33 +270,7 @@ func (h *IMMessageHandler) hasKnowledgeSources() bool {
 }
 
 // knowledgeAutoRecallSnippet extracts the best display text from a search result.
-// For fact results, prefers the full card claim over the raw triple for richer context.
+// Delegates to the shared knowledge.BestContentText for consistent priority across all platforms.
 func knowledgeAutoRecallSnippet(r knowledge.SearchResult) string {
-	// For fact results, the card's claim provides more complete context than
-	// the raw subject/predicate/object triple (e.g., "马勇是工程博士，家有两只猫"
-	// vs "马勇 是 工程博士").
-	if r.ResultType == "fact" {
-		if r.Claim != "" {
-			return r.Claim
-		}
-		if r.Summary != "" {
-			return r.Summary
-		}
-		if r.Subject != "" && r.Predicate != "" {
-			return r.Subject + " " + r.Predicate + " " + r.Object
-		}
-	}
-	if r.Snippet != "" {
-		return r.Snippet
-	}
-	if r.Summary != "" {
-		return r.Summary
-	}
-	if r.Claim != "" {
-		return r.Claim
-	}
-	if r.Subject != "" && r.Predicate != "" {
-		return r.Subject + " " + r.Predicate + " " + r.Object
-	}
-	return ""
+	return knowledge.BestContentText(r)
 }

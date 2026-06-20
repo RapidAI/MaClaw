@@ -342,20 +342,13 @@ func inferLanguageFromTaskFiles(files []string) string {
 }
 
 // knowledgeSearchSnippet extracts the best display text from a general search result.
+// Delegates to the shared knowledge.BestContentText with truncation for SubAgent context budget.
 func knowledgeSearchSnippet(r knowledge.SearchResult) string {
-	if r.Snippet != "" {
-		return truncateRunesForSubAgent(r.Snippet, 300)
+	text := knowledge.BestContentText(r)
+	if text == "" {
+		return "(no content)"
 	}
-	if r.Summary != "" {
-		return truncateRunesForSubAgent(r.Summary, 300)
-	}
-	if r.Claim != "" {
-		return truncateRunesForSubAgent(r.Claim, 300)
-	}
-	if r.Subject != "" && r.Predicate != "" {
-		return truncateRunesForSubAgent(r.Subject+" "+r.Predicate+" "+r.Object, 300)
-	}
-	return "(no content)"
+	return truncateRunesForSubAgent(text, 300)
 }
 
 // parseCodingSubAgentToolArgs is a simple JSON parse helper for tool arguments.
