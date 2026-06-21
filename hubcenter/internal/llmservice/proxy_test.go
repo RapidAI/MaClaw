@@ -699,6 +699,37 @@ func TestBuildTenantAuthorizationStatusPreservesFractionalCredits(t *testing.T) 
 	}
 }
 
+func TestBuildTenantAuthorizationStatusRoundsCreditDisplay(t *testing.T) {
+	now := time.Now().UTC()
+	checker := NewAuthorizationChecker(&mockAuthRepo{auths: []*TenantAuthorization{{
+		ID:             "auth-card-display",
+		HubID:          "hub1",
+		TenantID:       "t1",
+		ServiceGroupID: "redeem",
+		CreditsTotal:   520000,
+		CreditsUsed:    12102.734400000001,
+		StartsAt:       now.Add(-time.Hour),
+		ExpiresAt:      now.Add(time.Hour),
+		Status:         "active",
+		Source:         "card",
+	}}})
+
+	status, err := BuildTenantAuthorizationStatus(context.Background(), checker, "hub1", "t1")
+	if err != nil {
+		t.Fatalf("BuildTenantAuthorizationStatus() error = %v", err)
+	}
+	if len(status.Authorizations) != 1 {
+		t.Fatalf("authorizations len = %d, want 1: %#v", len(status.Authorizations), status)
+	}
+	got := status.Authorizations[0]
+	if got.CreditsUsed != 12102.7344 {
+		t.Fatalf("credits_used = %.17g, want 12102.7344", got.CreditsUsed)
+	}
+	if got.CreditsRemaining != 507897.2656 {
+		t.Fatalf("credits_remaining = %.17g, want 507897.2656", got.CreditsRemaining)
+	}
+}
+
 func TestHandleProxyRequest_FreeAccessPolicySkipsAuthorization(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

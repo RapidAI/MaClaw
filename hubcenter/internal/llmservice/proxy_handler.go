@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -142,9 +143,9 @@ func BuildTenantAuthorizationStatus(ctx context.Context, checker *AuthorizationC
 			HubID:                  a.HubID,
 			TenantID:               a.TenantID,
 			ServiceGroupID:         a.ServiceGroupID,
-			CreditsTotal:           a.CreditsTotal,
-			CreditsUsed:            a.CreditsUsed,
-			CreditsRemaining:       a.CreditsRemaining(),
+			CreditsTotal:           roundTenantAuthorizationStatusCredits(a.CreditsTotal),
+			CreditsUsed:            roundTenantAuthorizationStatusCredits(a.CreditsUsed),
+			CreditsRemaining:       roundTenantAuthorizationStatusCredits(a.CreditsRemaining()),
 			StartsAt:               a.StartsAt.Format(time.RFC3339),
 			ExpiresAt:              a.ExpiresAt.Format(time.RFC3339),
 			Status:                 a.Status,
@@ -155,6 +156,10 @@ func BuildTenantAuthorizationStatus(ctx context.Context, checker *AuthorizationC
 		})
 	}
 	return result, nil
+}
+
+func roundTenantAuthorizationStatusCredits(v float64) float64 {
+	return math.Round(v*10000) / 10000
 }
 
 // isExternalComputePermissionRecord returns true for records that represent
