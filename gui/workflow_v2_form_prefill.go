@@ -259,8 +259,12 @@ func (h *IMMessageHandler) getRecentConversationTextsForPrefill(userID string, m
 
 // --- Phase 4: Post-submission memory sedimentation ---
 
-// sedimentableFields are field names whose values represent stable user facts
-// (not task-specific) and should be persisted to memory for future prefill reuse.
+// sedimentableFields is a legacy hardcoded whitelist kept for backward compatibility
+// with templates that have not yet been annotated with Reusable=true on their fields.
+// For annotated templates (SchemaHasReusableFields=true), the field's Reusable flag
+// is the single source of truth — this map is not consulted.
+//
+// Deprecated: annotate template fields with Reusable:true instead of adding names here.
 var sedimentableFields = map[string]bool{
 	"name": true, "gender": true, "birth_date": true,
 	"institution": true, "title": true, "nationality": true,
@@ -268,15 +272,14 @@ var sedimentableFields = map[string]bool{
 	"h_index": true, "total_citations": true, "total_papers": true,
 	"phd_year": true, "degree": true,
 	"organization": true,
-	// Factual textarea fields — stable biographical content worth caching
-	"education":          true, // 教育背景
-	"research_direction": true, // 研究方向
+	"education":          true,
+	"research_direction": true,
 }
 
 // sedimentFormDataToMemory persists confirmed form field values to long-term memory
 // so future workflows can auto-prefill from memory recall (Phase 2).
-// Only sedimentable fields (stable user facts) are saved — task-specific creative
-// content is never persisted.
+// Only fields declared Reusable by the template (or in the legacy whitelist for
+// unannotated templates) are saved — task-specific creative content is never persisted.
 //
 // Called asynchronously after successful form submission.
 func (h *IMMessageHandler) sedimentFormDataToMemory(userID, phaseID string, data map[string]interface{}, state *v2.WorkflowState) {
@@ -284,7 +287,7 @@ func (h *IMMessageHandler) sedimentFormDataToMemory(userID, phaseID string, data
 		return
 	}
 
-	// Find the phase's InputSchema to get field labels
+	// Find the phase's InputSchema to get field labels and Reusable flags
 	var schema *v2.PhaseInputSchema
 	if state != nil {
 		if phase := state.ActivePhase(); phase != nil && phase.InputSchema != nil {
@@ -292,10 +295,28 @@ func (h *IMMessageHandler) sedimentFormDataToMemory(userID, phaseID string, data
 		}
 	}
 
+	schemaHasReusable := v2.SchemaHasReusableFields(schema)
+
+	// Build a field lookup for label and Reusable check
+	fieldMap := make(map[string]v2.PhaseInputField)
+	if schema != nil {
+		for _, f := range schema.Fields {
+			fieldMap[f.Name] = f
+		}
+	}
+
 	var sedimentLines []string
 	for fieldName, value := range data {
-		if !sedimentableFields[fieldName] {
-			continue
+		// Determine if this field should be sedimented
+		if f, ok := fieldMap[fieldName]; ok {
+			if !v2.ShouldSediment(f, schemaHasReusable) {
+				continue
+			}
+		} else {
+			// Field not in schema (e.g. hidden routing field) — use legacy whitelist
+			if !sedimentableFields[fieldName] {
+				continue
+			}
 		}
 		strValue := ""
 		switch v := value.(type) {

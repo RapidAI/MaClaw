@@ -38,64 +38,46 @@ func TestSwarmDocGenerator_GenerateAndEncode_NoFont(t *testing.T) {
 
 func TestSpecForDocType(t *testing.T) {
 	tests := []struct {
-		name         string
-		docType      DocType
-		projectName  string
-		wantTitle    string
-		wantSubtitle string
-		wantPrefix   string
-		wantFooter   string
-		wantBrand    string
+		name        string
+		docType     DocType
+		projectName string
+		wantTitle   string
+		wantPrefix  string
 	}{
 		{
-			name:         "requirements",
-			docType:      DocTypeRequirements,
-			projectName:  "项目A",
-			wantTitle:    "📋 需求文档",
-			wantSubtitle: "Requirements Specification",
-			wantPrefix:   "requirements",
-			wantFooter:   "请确认需求范围与验收标准",
-			wantBrand:    "MaClaw Swarm",
+			name:        "requirements",
+			docType:     DocTypeRequirements,
+			projectName: "项目A",
+			wantTitle:   "项目A",
+			wantPrefix:  "requirements",
 		},
 		{
-			name:         "design",
-			docType:      DocTypeDesign,
-			projectName:  "项目B",
-			wantTitle:    "🏗️ 设计文档",
-			wantSubtitle: "Design Document",
-			wantPrefix:   "design",
-			wantFooter:   "请确认设计方案与实现边界",
-			wantBrand:    "MaClaw Swarm",
+			name:        "design",
+			docType:     DocTypeDesign,
+			projectName: "项目B",
+			wantTitle:   "项目B",
+			wantPrefix:  "design",
 		},
 		{
-			name:         "task plan",
-			docType:      DocTypeTaskPlan,
-			projectName:  "项目C",
-			wantTitle:    "📝 任务计划",
-			wantSubtitle: "Task Plan",
-			wantPrefix:   "task-plan",
-			wantFooter:   "请确认任务拆分与执行顺序",
-			wantBrand:    "MaClaw Swarm",
+			name:        "task plan",
+			docType:     DocTypeTaskPlan,
+			projectName: "项目C",
+			wantTitle:   "项目C",
+			wantPrefix:  "task-plan",
 		},
 		{
-			name:         "default uses project name",
-			docType:      DocType(""),
-			projectName:  "通用标题",
-			wantTitle:    "通用标题",
-			wantSubtitle: "",
-			wantPrefix:   "",
-			wantFooter:   "",
-			wantBrand:    "",
+			name:        "default uses project name",
+			docType:     DocType(""),
+			projectName: "通用标题",
+			wantTitle:   "通用标题",
+			wantPrefix:  "document",
 		},
 		{
-			name:         "default falls back to document",
-			docType:      DocType("unknown"),
-			projectName:  "   ",
-			wantTitle:    "文档",
-			wantSubtitle: "",
-			wantPrefix:   "",
-			wantFooter:   "",
-			wantBrand:    "",
+			name:        "default falls back to document",
+			docType:     DocType("unknown"),
+			projectName: "   ",
+			wantTitle:   "文档",
+			wantPrefix:  "document",
 		},
 	}
 
@@ -114,19 +96,67 @@ func TestSpecForDocType(t *testing.T) {
 			if spec.Title != tt.wantTitle {
 				t.Fatalf("Title = %q, want %q", spec.Title, tt.wantTitle)
 			}
-			if spec.Subtitle != tt.wantSubtitle {
-				t.Fatalf("Subtitle = %q, want %q", spec.Subtitle, tt.wantSubtitle)
+			if spec.Subtitle != "" {
+				t.Fatalf("Subtitle should be empty, got %q", spec.Subtitle)
 			}
 			if spec.FileNamePrefix != tt.wantPrefix {
 				t.Fatalf("FileNamePrefix = %q, want %q", spec.FileNamePrefix, tt.wantPrefix)
 			}
-			if spec.FooterHint != tt.wantFooter {
-				t.Fatalf("FooterHint = %q, want %q", spec.FooterHint, tt.wantFooter)
+			if spec.FooterHint != "" {
+				t.Fatalf("FooterHint should be empty, got %q", spec.FooterHint)
 			}
-			if spec.Brand != tt.wantBrand {
-				t.Fatalf("Brand = %q, want %q", spec.Brand, tt.wantBrand)
+			if spec.Brand != "" {
+				t.Fatalf("Brand should be empty, got %q", spec.Brand)
 			}
 		})
+	}
+}
+
+func TestSpecForDocType_FilePathFallsBackToTypeName(t *testing.T) {
+	// When projectName is a file path, title should fall back to the doc type name
+	spec := specForDocType(DocTypeDesign, "/tmp/my-project", "content", GeneratePDFOptions{})
+	if spec.Title == "/tmp/my-project" {
+		t.Fatal("file path should not be used as PDF title")
+	}
+	if spec.Title != "设计文档" {
+		t.Fatalf("expected fallback to type name, got %q", spec.Title)
+	}
+
+	// Windows path
+	spec = specForDocType(DocTypeRequirements, `D:\workprj\aicoder`, "content", GeneratePDFOptions{})
+	if spec.Title == `D:\workprj\aicoder` {
+		t.Fatal("Windows path should not be used as PDF title")
+	}
+	if spec.Title != "需求文档" {
+		t.Fatalf("expected fallback to type name, got %q", spec.Title)
+	}
+
+	// Normal project name should still be used as title
+	spec = specForDocType(DocTypeDesign, "天擎终端管理软件 竞品分析报告", "content", GeneratePDFOptions{})
+	if spec.Title != "天擎终端管理软件 竞品分析报告" {
+		t.Fatalf("normal project name should be used as title, got %q", spec.Title)
+	}
+}
+
+func TestLooksLikeFilePath(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"/tmp/proj", true},
+		{"/home/user/project", true},
+		{`D:\workprj\aicoder`, true},
+		{`C:\Users\admin`, true},
+		{"天擎终端管理软件", false},
+		{"My Project", false},
+		{"test-project", false},
+		{"", false},
+		{"/ just starts with slash", false}, // single / at start but no second /
+	}
+	for _, tt := range tests {
+		if got := looksLikeFilePath(tt.input); got != tt.want {
+			t.Errorf("looksLikeFilePath(%q) = %v, want %v", tt.input, got, tt.want)
+		}
 	}
 }
 
@@ -264,6 +294,56 @@ func TestSwarmDocGenerator_GenerateSpecDoc_LongContent_Integration(t *testing.T)
 	}
 	if len(pageSizes) > 30 {
 		t.Fatalf("expected denser pagination, got %d pages", len(pageSizes))
+	}
+}
+
+func TestSwarmDocGenerator_RichMarkdown_Integration(t *testing.T) {
+	gen := NewSwarmDocGenerator()
+	if !gen.HasFont() {
+		t.Skip("跳过：系统未找到中文字体")
+	}
+
+	// Content exercises all new rendering features: blockquote, code block, inline code
+	content := `# 竞品分析报告
+
+## 一句话定位建议
+
+>"比火绒更全面、比深信服更实惠、比北信源更开放、比360更专注企业服务"
+
+## 技术架构
+
+使用 ` + "`" + `microservice` + "`" + ` 架构，通过 ` + "`" + `gRPC` + "`" + ` 通信。
+
+### 示例代码
+
+` + "```" + `go
+func main() {
+    if err := server.Start(); err != nil {
+        log.Fatal(err)
+    }
+}
+` + "```" + `
+
+## 竞品对比
+
+| 维度 | 产品A | 产品B |
+|------|-------|-------|
+| 功能 | 全面 | 精简 |
+| 价格 | 中端 | 低价 |
+
+> 注：以上数据来源于公开资料整理
+> 仅供内部参考使用
+`
+
+	data, err := gen.GenerateSpecDoc(DocType(""), "竞品分析报告", content)
+	if err != nil {
+		t.Fatalf("PDF generation with rich markdown failed: %v", err)
+	}
+	if len(data) < 200 {
+		t.Fatalf("PDF too small: %d bytes", len(data))
+	}
+	if string(data[:5]) != "%PDF-" {
+		t.Fatal("output should be a valid PDF")
 	}
 }
 

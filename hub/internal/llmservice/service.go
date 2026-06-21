@@ -805,6 +805,13 @@ func buildAuthorizedModels(reg *Registry, serviceGroupIDs []string) ([]Authorize
 	return models, defaultModel
 }
 
+// BuildAuthorizedModelsForServiceGroups returns the API-facing model summaries
+// for service groups using the same merge and provider metadata rules as
+// ResolveStatusFromRegistry.
+func BuildAuthorizedModelsForServiceGroups(reg *Registry, serviceGroupIDs []string) ([]AuthorizedModel, string) {
+	return buildAuthorizedModels(reg, serviceGroupIDs)
+}
+
 func normalizedProviderKey(providerID string) string {
 	return strings.ToLower(strings.TrimSpace(providerID))
 }

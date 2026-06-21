@@ -183,21 +183,21 @@ func TestSubmitMaclawAppPackageRecordsGovernanceReviewIssues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
 	}
-	if result["review_issue_count"] != 2 {
-		t.Fatalf("expected two local governance issues, got %#v", result)
+	if result["review_issue_count"] != 3 {
+		t.Fatalf("expected three local governance issues, got %#v", result)
 	}
 	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
 	if err != nil {
 		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
 	}
-	if len(detail.ReviewIssues) != 2 {
-		t.Fatalf("expected review issues in durable queue: %#v", detail.ReviewIssues)
+	if len(detail.ReviewIssues) != 3 {
+		t.Fatalf("expected three review issues in durable queue: %#v", detail.ReviewIssues)
 	}
 	paths := map[string]string{}
 	for _, issue := range detail.ReviewIssues {
 		paths[issue.Path] = issue.Severity
 	}
-	if paths["apps[0].app.governance"] != "warning" || paths["apps[0].app.governance.testEvidence"] != "error" {
+	if paths["apps[0].app.governance"] != "warning" || paths["apps[0].app.governance.testEvidence"] != "error" || paths["apps[0].app.governance.resultContract"] != "error" {
 		t.Fatalf("unexpected governance review issues: %#v", detail.ReviewIssues)
 	}
 }
@@ -216,6 +216,7 @@ func TestSubmitMaclawAppPackageAcceptsCompleteGovernanceEvidence(t *testing.T) {
 				"kind": "tool_app",
 				"governance": {
 					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"tool_workspace", "template":"document_workspace", "regionCount":4},
+					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"artifact", "types":["content", "document", "artifact"]},
 					"testEvidence": {"runId":"run-1", "artifactPresent":true, "artifactCount":1, "verifiedAt":"2026-06-17T01:00:00Z"}
 				}
 			}
@@ -804,11 +805,17 @@ func TestInstallMaclawAppDependenciesSkipsInstalledAndBlocksUnsupportedSource(t 
 	t.Setenv("HOME", tmpHome)
 
 	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "installed-app-skill")
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll skillDir: %v", err)
+	workflowDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "dependency-install-workflow")
+	for _, dir := range []string{skillDir, workflowDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll skill dir: %v", err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# Installed app skill\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowDir, "skill.md"), []byte("# Dependency install workflow\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow skill.md: %v", err)
 	}
 
 	app := &App{testHomeDir: tmpHome}
@@ -816,7 +823,7 @@ func TestInstallMaclawAppDependenciesSkipsInstalledAndBlocksUnsupportedSource(t 
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "installed-app-skill", SkillDir: skillDir, Status: "active"}}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "installed-app-skill", SkillDir: skillDir, Status: "active"}, {Name: "dependency-install-workflow", SkillDir: workflowDir, Status: "active"}}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -829,7 +836,7 @@ func TestInstallMaclawAppDependenciesSkipsInstalledAndBlocksUnsupportedSource(t 
 			"name": "Dependency Install App",
 			"kind": "enterprise_approval_app",
 			"binding": { "appSkill": { "id": "installed-app-skill" } },
-			"dependencies": { "skills": [{ "id": "manual-only-skill", "required": true, "source": "local" }] }
+			"dependencies": { "skills": [{ "id": "dependency-install-workflow", "kind": "workflow_skill", "required": true, "source": "local" }, { "id": "manual-only-skill", "required": true, "source": "local" }] }
 		}
 	}`)
 	if err != nil {
@@ -875,6 +882,7 @@ func TestPlanMaclawAppInstallNormalizesWorkspaceLayout(t *testing.T) {
 			"id": "layout-approval",
 			"name": "Layout Approval",
 			"kind": "enterprise_approval_app",
+			"dependencies": { "skills": [{ "id": "layout-approval-workflow", "kind": "workflow_skill", "required": true, "source": "hub" }] },
 			"ui": {
 				"entry": "approval_workspace",
 				"layouts": {
@@ -933,6 +941,72 @@ func TestPlanMaclawAppInstallRejectsInvalidWorkspaceLayout(t *testing.T) {
 	}
 }
 
+func TestPlanMaclawAppInstallEnforcesAppKindContracts(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	cases := []struct {
+		name    string
+		pkg     string
+		wantErr string
+	}{
+		{
+			name: "approval app requires workflow binding",
+			pkg: `{
+				"schema": "maclaw.app.v1",
+				"privateMarker": "x_maclaw_apps",
+				"app": {
+					"id": "approval-without-workflow",
+					"name": "Approval Without Workflow",
+					"kind": "enterprise_approval_app",
+					"binding": {"datasrv": {"domain": "finance", "datasetID": "finance.expenses", "objectRole": "expense_report"}}
+				}
+			}`,
+			wantErr: "workflow_skill dependency is required for enterprise_approval_app",
+		},
+		{
+			name: "normal app cannot declare approval bindings",
+			pkg: `{
+				"schema": "maclaw.app.v1",
+				"privateMarker": "x_maclaw_apps",
+				"app": {
+					"id": "normal-with-approval",
+					"name": "Normal With Approval",
+					"kind": "enterprise_normal_app",
+					"binding": {
+						"datasrv": {"domain": "crm", "datasetID": "crm.customers", "objectRole": "customer"},
+						"mis": {"approvalBindings": [{"event": "crm.customer.changed", "workflowSkillId": "customer-approval"}]}
+					}
+				}
+			}`,
+			wantErr: "approvalBindings is only valid for enterprise_approval_app",
+		},
+		{
+			name: "tool app cannot declare datasrv",
+			pkg: `{
+				"schema": "maclaw.app.v1",
+				"privateMarker": "x_maclaw_apps",
+				"installUnit": "skill",
+				"app": {
+					"id": "tool-with-datasrv",
+					"name": "Tool With DataSrv",
+					"kind": "tool_app",
+					"binding": {
+						"skill": {"id": "pdf-tool"},
+						"datasrv": {"domain": "finance", "datasetID": "finance.expenses"}
+					}
+				}
+			}`,
+			wantErr: "binding.datasrv is not valid for tool_app",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := app.PlanMaclawAppInstall(tc.pkg)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected %q error, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
 func TestPlanMaclawAppInstallTreatsBindingSkillAsDependency(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	plan, err := app.PlanMaclawAppInstall(`{
@@ -1105,6 +1179,12 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 				"status": "local_tested",
 				"riskLevel": "medium",
 				"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "template":"classic_split", "density":"comfortable", "regionCount":4},
+				"resultContract": {
+					"schema": "maclaw.app.result.v1",
+					"primary": "approval_result",
+					"types": ["approval_result", "business_status", "business_record", "document", "notification"],
+					"delivery": {"artifacts": true, "businessRecord": true, "notifications": true}
+				},
 				"testEvidence": {"runId":"run-expense-1", "artifactPresent":true, "verifiedAt":"2026-06-17T01:00:00Z"}
 			},
 			"binding": {
@@ -1171,6 +1251,10 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	governance, ok := metadata["governance"].(map[string]interface{})
 	if !ok || metadata["governance_status"] != "local_tested" || metadata["governance_risk_level"] != "medium" || governance["status"] != "local_tested" {
 		t.Fatalf("registration metadata missing governance snapshot: %#v", metadata)
+	}
+	resultContract, ok := governance["result_contract"].(map[string]interface{})
+	if !ok || resultContract["primary"] != "approval_result" {
+		t.Fatalf("registration metadata missing result contract: %#v", governance)
 	}
 	dependencies, ok := metadata["dependencies"].([]interface{})
 	if !ok || len(dependencies) != 2 || metadata["dependency_count"] != float64(2) || metadata["has_missing_required_dependency"] != true || metadata["has_blocking_dependency"] != true {
@@ -1354,6 +1438,99 @@ func TestListMaclawAppApprovalInstancesAll(t *testing.T) {
 	}
 }
 
+func TestListMaclawAppApprovalInstancesAllLoadsDataSrvLane(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	var capturedPath string
+	var capturedQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedQuery = r.URL.RawQuery
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/data/approvals" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		if r.Header.Get("X-MaClaw-User-ID") != "manager" {
+			t.Fatalf("expected user header, got %q", r.Header.Get("X-MaClaw-User-ID"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"approval-remote-1","dataset_id":"finance.expenses","record_id":"exp-1","app_id":"expense","blueprint_id":"expense.v1","object_role":"expense_report","status":"pending","summary":"Expense #1","request":{"approval_instance_id":"wf-1","owner":"alice","applicant":"alice","business_entity":"expense","business_action":"submit","business_note":"taxi"},"workflow_skill_id":"expense-workflow","workflow_instance_id":"wf-1","workflow_node_id":"manager_approval","business_status":"approval_pending","result_status":"pending","result_payload":{"text":"waiting for manager"},"outputs":[{"type":"content","title":"Summary","text":"waiting"}],"artifacts":[{"id":"receipt-1","name":"receipt.pdf","uri":"artifact://receipt"}],"assigned_to":"manager","created_by":"alice","created_at":"2026-06-21T01:00:00Z","updated_at":"2026-06-21T02:00:00Z"}]}`))
+	}))
+	defer server.Close()
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "manager", Role: "approver"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	items, err := app.ListMaclawAppApprovalInstancesAll("pending_my_approval", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll() error = %v", err)
+	}
+	if capturedPath != "/api/v1/data/approvals" || !strings.Contains(capturedQuery, "lane=pending_my_approval") || !strings.Contains(capturedQuery, "limit=10") {
+		t.Fatalf("unexpected DataSrv query: %s?%s", capturedPath, capturedQuery)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one remote approval, got %#v", items)
+	}
+	got := items[0]
+	if got.AppID != "expense" || got.ApprovalID != "approval-remote-1" || got.RecordApprovalID != "approval-remote-1" || got.InstanceID != "wf-1" || got.Lane != "pending_my_approval" {
+		t.Fatalf("unexpected remote approval identity: %#v", got)
+	}
+	if got.DatasetID != "finance.expenses" || got.ObjectRole != "expense_report" || got.BusinessEntity != "expense" || got.BusinessAction != "submit" || got.BusinessNote != "taxi" {
+		t.Fatalf("remote approval should preserve business context: %#v", got)
+	}
+	if got.ResultPayload["text"] != "waiting for manager" || len(got.Outputs) != 1 || len(got.Artifacts) != 1 || got.Artifacts[0].Name != "receipt.pdf" {
+		t.Fatalf("remote approval should preserve result fields: %#v", got)
+	}
+}
+
+func TestListMaclawAppApprovalInstancesMergesDataSrvWithLocal(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	local, err := app.RecordMaclawAppApprovalInstance(maclawAppApprovalInstance{
+		AppID:            "expense",
+		AppName:          "Expense Approval",
+		InstanceID:       "wf-merge-1",
+		Title:            "Local title",
+		Lane:             "pending_my_approval",
+		Status:           "pending",
+		Owner:            "alice",
+		Approver:         "manager",
+		WorkflowSkillID:  "expense-workflow",
+		RecordApprovalID: "approval-merge-1",
+		ApprovalID:       "approval-merge-1",
+		ResultPayload:    map[string]any{"local": "kept only when remote empty"},
+		Events:           []maclawAppApprovalEvent{{At: "2026-06-21T00:30:00Z", Actor: "alice", Message: "created locally"}},
+	})
+	if err != nil {
+		t.Fatalf("RecordMaclawAppApprovalInstance() error = %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/data/approvals" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		if r.URL.Query().Get("app_id") != "expense" || r.URL.Query().Get("lane") != "handled" {
+			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"approval-merge-1","dataset_id":"finance.expenses","record_id":"exp-merge-1","app_id":"expense","status":"approved","summary":"Remote approved title","request":{"approval_instance_id":"wf-merge-1","business_note":"remote note"},"workflow_skill_id":"expense-workflow","workflow_instance_id":"wf-merge-1","workflow_node_id":"completed","business_status":"approved","result_status":"approved","result_payload":{"text":"approved remotely"},"decision":"approved","reason":"approved remotely","assigned_to":"manager","created_by":"alice","reviewed_by":"manager","created_at":"2026-06-21T01:00:00Z","updated_at":"2026-06-21T03:00:00Z"}]}`))
+	}))
+	defer server.Close()
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "manager", Role: "approver"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	items, err := app.ListMaclawAppApprovalInstances("expense", "handled", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstances() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected merged approval, got %#v", items)
+	}
+	got := items[0]
+	if got.InstanceID != local.InstanceID || got.ApprovalID != "approval-merge-1" || got.Status != "approved" || got.Lane != "handled" || got.Result != "approved remotely" {
+		t.Fatalf("remote approval should win status fields while deduping local: %#v", got)
+	}
+	if got.AppName != "Expense Approval" || len(got.Events) != 1 || got.BusinessNote != "remote note" || got.ResultPayload["text"] != "approved remotely" {
+		t.Fatalf("merged approval should keep local display context and remote result context: %#v", got)
+	}
+}
 func TestSyncMaclawAppApprovalInstanceToDataSrvCreatesMissingBusinessRecord(t *testing.T) {
 	type capturedRequest struct {
 		Method string
@@ -1609,6 +1786,9 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	if !ok || preCreatePatchedData["amount"] != float64(1200) || preCreatePatchedData["status"] != "approval_pending" {
 		t.Fatalf("pre-create business record patch should keep pending approval data: %#v", captured[1].Body)
 	}
+	if preCreatePatchedData["app_id"] != "expense" || preCreatePatchedData["blueprint_id"] != "expense.blueprint.v1" || preCreatePatchedData["object_role"] != "expense_report" || preCreatePatchedData["approval_lane"] != "pending_my_approval" || preCreatePatchedData["approval_current_node"] != "manager_review" {
+		t.Fatalf("pre-create business record patch should include app approval semantics: %#v", captured[1].Body)
+	}
 	if captured[2].Method != http.MethodPost || captured[2].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1/approvals" {
 		t.Fatalf("unexpected create request: %#v", captured[2])
 	}
@@ -1659,6 +1839,9 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	patchedData, ok := captured[5].Body["data"].(map[string]interface{})
 	if !ok || patchedData["amount"] != float64(1200) || patchedData["status"] != "approved" || patchedData["payment_status"] != "pending_payment" {
 		t.Fatalf("business record patch should merge existing data with approval result: %#v", captured[5].Body)
+	}
+	if patchedData["app_id"] != "expense" || patchedData["blueprint_id"] != "expense.blueprint.v1" || patchedData["object_role"] != "expense_report" || patchedData["approval_lane"] != "handled" || patchedData["approval_status"] != "approved" || patchedData["approval_current_node"] != "manager_review" {
+		t.Fatalf("business record patch should preserve app approval semantics after workflow result patch: %#v", captured[5].Body)
 	}
 }
 

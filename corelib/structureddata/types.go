@@ -1136,6 +1136,10 @@ type QueryRecordApprovalsInput struct {
 	BusinessStatus     string `json:"business_status,omitempty"`
 	ResultStatus       string `json:"result_status,omitempty"`
 	AssignedTo         string `json:"assigned_to,omitempty"`
+	CreatedBy          string `json:"created_by,omitempty"`
+	ReviewedBy         string `json:"reviewed_by,omitempty"`
+	Lane               string `json:"lane,omitempty"`
+	UserID             string `json:"user_id,omitempty"`
 	Overdue            bool   `json:"overdue,omitempty"`
 	Limit              int    `json:"limit,omitempty"`
 	Before             string `json:"before,omitempty"`

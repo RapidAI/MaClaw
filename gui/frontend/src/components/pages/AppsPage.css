@@ -4203,6 +4203,99 @@
     grid-column: 1 / -1;
 }
 
+.apps-result-contract {
+    display: grid;
+    gap: 9px;
+    padding: 11px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--theme-surface-muted) 64%, var(--theme-surface));
+}
+
+.apps-manage-edit .apps-result-contract {
+    grid-column: 1 / -1;
+}
+
+.apps-result-contract__summary {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(82px, auto) minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    padding: 7px 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface);
+}
+
+.apps-result-contract__summary span,
+.apps-result-contract__decisions span {
+    color: var(--theme-text-secondary);
+    font-size: 0.68rem;
+    font-weight: 850;
+}
+
+.apps-result-contract__summary strong {
+    min-width: 0;
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
+    font-weight: 900;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-result-contract__chips,
+.apps-result-contract__delivery {
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.apps-result-contract__chips span,
+.apps-result-contract__delivery span {
+    min-height: 24px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 7px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    font-size: 0.66rem;
+    font-weight: 850;
+    white-space: nowrap;
+}
+
+.apps-result-contract__delivery span[data-enabled='true'] {
+    border-color: color-mix(in srgb, var(--theme-success) 28%, var(--theme-border));
+    color: var(--theme-success);
+    background: color-mix(in srgb, var(--theme-success-bg) 42%, var(--theme-surface));
+}
+
+.apps-result-contract__delivery span[data-enabled='false'] {
+    opacity: 0.68;
+}
+
+.apps-result-contract__decisions {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(82px, auto) minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+}
+
+.apps-result-contract__decisions small {
+    min-width: 0;
+    color: var(--theme-text-secondary);
+    font-size: 0.68rem;
+    font-weight: 750;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 @media (max-width: 980px) {
     .apps-page {
         grid-template-columns: 1fr;

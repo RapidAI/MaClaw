@@ -1188,6 +1188,28 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                                 {activeVariant?.description && <div style={{ color: theme.textMuted, fontSize: 12, lineHeight: 1.4 }}>{activeVariant.description}</div>}
                             </div>
                         )}
+                        {view.accepts_resume && (
+                            <ResumeUploadSection
+                                theme={theme}
+                                phaseID={view.fields.find(f => f.name === "_workflow_phase")?.value as string || ""}
+                                onPrefilled={(prefilled) => {
+                                    setFormData(prev => {
+                                        const next = { ...prev };
+                                        for (const [name, pv] of Object.entries(prefilled)) {
+                                            if (pv && pv.value != null && pv.value !== "") {
+                                                // Only fill empty fields — don't overwrite user's manual edits
+                                                const current = next[name];
+                                                const isEmpty = current === "" || current === null || current === undefined;
+                                                if (isEmpty) {
+                                                    next[name] = pv.value;
+                                                }
+                                            }
+                                        }
+                                        return next;
+                                    });
+                                }}
+                            />
+                        )}
                         {renderedFields.map((field) => renderField(field, formData[field.name], setFieldValue, theme, s))}
                         {validationErrors.length > 0 && (
                             <div style={{ color: theme.errorText, background: theme.errorBg, border: `1px solid ${theme.errorBorder}`, borderRadius: 8, padding: "10px 12px", fontSize: 12, lineHeight: 1.5 }}>
@@ -1468,5 +1490,117 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                 )}
             </div>
         </section>
+    );
+}
+
+
+// --- Resume Upload Section ---
+// Rendered at the top of workflow forms that declare accepts_resume=true.
+// Provides a file picker to upload a CV/resume, calls backend to parse it,
+// and fills the form fields with extracted values.
+
+interface ResumeUploadSectionProps {
+    theme: Theme;
+    phaseID: string;
+    onPrefilled: (prefilled: Record<string, { value: unknown; source: string; confidence: number }>) => void;
+}
+
+function ResumeUploadSection({ theme, phaseID, onPrefilled }: ResumeUploadSectionProps) {
+    const [status, setStatus] = useState<"idle" | "parsing" | "done" | "error">("idle");
+    const [errorMsg, setErrorMsg] = useState("");
+    const [filledCount, setFilledCount] = useState(0);
+
+    const handleUpload = async () => {
+        try {
+            const wailsApp = await getWailsAppModule();
+            const selectFile = wailsApp.SelectAIAssistantFile;
+            const parseResume = wailsApp.ParseResumeForWorkflowForm;
+            if (!selectFile || !parseResume) {
+                setStatus("error");
+                setErrorMsg("简历解析功能不可用（需要更新应用）");
+                return;
+            }
+
+            const file = await selectFile();
+            if (!file) return;
+
+            setStatus("parsing");
+            setErrorMsg("");
+
+            const rawResult = await parseResume(file, phaseID);
+            const parsed = JSON.parse(rawResult);
+
+            if (parsed.error) {
+                setStatus("error");
+                setErrorMsg(parsed.error);
+                return;
+            }
+
+            // Unified response: { data: { field_name: PrefilledValue }, error: null }
+            const prefilled = (parsed.data || parsed) as Record<string, { value: unknown; source: string; confidence: number }>;
+            const count = Object.keys(prefilled).length;
+            if (count === 0) {
+                setStatus("error");
+                setErrorMsg("未能从简历中提取到有效信息");
+                return;
+            }
+            setFilledCount(count);
+            setStatus("done");
+            onPrefilled(prefilled);
+        } catch (err: any) {
+            setStatus("error");
+            setErrorMsg(err?.message || "简历解析失败");
+        }
+    };
+
+    const containerStyle: React.CSSProperties = {
+        border: `1px dashed ${status === "done" ? "#4ade80" : theme.fieldBorder}`,
+        borderRadius: 10,
+        padding: "12px 16px",
+        background: status === "done" ? "rgba(74, 222, 128, 0.05)" : "transparent",
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        transition: "all 0.2s ease",
+    };
+
+    return (
+        <div style={containerStyle}>
+            <span style={{ fontSize: 20 }}>📄</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+                {status === "idle" && (
+                    <div style={{ color: theme.textMuted, fontSize: 12, lineHeight: 1.5 }}>
+                        上传简历/CV自动填充表单（支持 PDF、Word、Markdown）
+                    </div>
+                )}
+                {status === "parsing" && (
+                    <div style={{ color: theme.text, fontSize: 12 }}>⏳ 正在解析简历并提取信息...</div>
+                )}
+                {status === "done" && (
+                    <div style={{ color: "#16a34a", fontSize: 12 }}>✅ 已从简历中提取 {filledCount} 个字段，请核对后提交</div>
+                )}
+                {status === "error" && (
+                    <div style={{ color: theme.errorText, fontSize: 12 }}>{errorMsg}</div>
+                )}
+            </div>
+            {(status === "idle" || status === "error") && (
+                <button
+                    type="button"
+                    onClick={handleUpload}
+                    style={{
+                        border: `1px solid ${theme.btnBorder}`,
+                        background: "transparent",
+                        color: theme.btnColor,
+                        borderRadius: 8,
+                        padding: "6px 14px",
+                        fontSize: 12,
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                    }}
+                >
+                    选择文件
+                </button>
+            )}
+        </div>
     );
 }

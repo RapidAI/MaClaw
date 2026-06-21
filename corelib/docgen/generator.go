@@ -267,8 +267,20 @@ func stripDuplicateLeadingHeading(spec Spec) string {
 		return spec.Content
 	}
 	heading := normalizeHeadingText(strings.TrimPrefix(line, "# "))
-	target := normalizeHeadingText(firstNonEmpty(spec.ProjectName, spec.Title))
-	if heading == "" || target == "" || heading != target {
+	if heading == "" {
+		return spec.Content
+	}
+	// Check against both ProjectName and Title to catch duplication
+	// regardless of which one was used as the PDF display title
+	targets := []string{spec.ProjectName, spec.Title}
+	matched := false
+	for _, t := range targets {
+		if normalizeHeadingText(t) == heading {
+			matched = true
+			break
+		}
+	}
+	if !matched {
 		return spec.Content
 	}
 	trimmedLines := append([]string{}, lines[:idx]...)
@@ -299,9 +311,6 @@ func firstNonEmpty(values ...string) string {
 }
 
 func addFooter(pdf *gopdf.GoPdf, layout pdfPageLayout, spec Spec) {
-	pdf.SetLineWidth(0.3)
-	pdf.SetStrokeColor(220, 220, 220)
-	pdf.Line(layout.marginX, layout.footerY, layout.marginX+layout.contentW, layout.footerY)
 	footerParts := make([]string, 0, 2)
 	if strings.TrimSpace(spec.Brand) != "" {
 		footerParts = append(footerParts, strings.TrimSpace(spec.Brand))
@@ -312,6 +321,9 @@ func addFooter(pdf *gopdf.GoPdf, layout pdfPageLayout, spec Spec) {
 	if len(footerParts) == 0 {
 		return
 	}
+	pdf.SetLineWidth(0.3)
+	pdf.SetStrokeColor(220, 220, 220)
+	pdf.Line(layout.marginX, layout.footerY, layout.marginX+layout.contentW, layout.footerY)
 	pdf.SetY(layout.footerY + 4)
 	_ = pdf.SetFont("regular", "", 8)
 	pdf.SetTextColor(120, 120, 120)
@@ -527,11 +539,54 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 }
 
 func splitOversizedMarkdownBlock(block string) []string {
+	// If this is a fenced code block, split by lines but preserve fence markers
+	// so each chunk is a valid self-contained code fence
+	trimmed := strings.TrimSpace(block)
+	if strings.HasPrefix(trimmed, "```") {
+		return splitOversizedCodeBlock(block)
+	}
 	parts := splitLongMarkdownBlock(block, 240)
 	if len(parts) == 0 {
 		return nil
 	}
 	return parts
+}
+
+// splitOversizedCodeBlock splits a large fenced code block into multiple
+// self-contained fenced blocks, each renderable independently.
+func splitOversizedCodeBlock(block string) []string {
+	lines := strings.Split(block, "\n")
+	if len(lines) < 2 {
+		return []string{block}
+	}
+	// Extract opening fence line (e.g. "```python") and closing fence
+	openFence := lines[0]
+	closeFence := "```"
+	// Find the actual code lines (between open and close fence)
+	codeStart := 1
+	codeEnd := len(lines)
+	for i := len(lines) - 1; i >= 1; i-- {
+		if strings.TrimSpace(lines[i]) == "```" {
+			codeEnd = i
+			break
+		}
+	}
+	codeLines := lines[codeStart:codeEnd]
+	if len(codeLines) == 0 {
+		return []string{block}
+	}
+	// Split code lines into chunks of ~30 lines each (roughly half a page)
+	const linesPerChunk = 30
+	var chunks []string
+	for i := 0; i < len(codeLines); i += linesPerChunk {
+		end := i + linesPerChunk
+		if end > len(codeLines) {
+			end = len(codeLines)
+		}
+		chunk := openFence + "\n" + strings.Join(codeLines[i:end], "\n") + "\n" + closeFence
+		chunks = append(chunks, chunk)
+	}
+	return chunks
 }
 
 func splitMarkdownBlockForFilling(block string) []string {
@@ -540,6 +595,10 @@ func splitMarkdownBlockForFilling(block string) []string {
 		return nil
 	}
 	if isMarkdownTableBlock(block) {
+		return []string{block}
+	}
+	// Fenced code blocks must not be split — keep as single unit
+	if strings.HasPrefix(strings.TrimSpace(block), "```") {
 		return []string{block}
 	}
 	if strings.Contains(block, "\n") {
@@ -629,14 +688,50 @@ func splitTextByComma(text string) []string {
 }
 
 func splitMarkdownBlocks(md string) []string {
-	parts := strings.Split(md, "\n\n")
-	blocks := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			blocks = append(blocks, part)
+	// Split on double newlines but respect fenced code blocks —
+	// blank lines inside ``` fences should not cause a split.
+	lines := strings.Split(md, "\n")
+	var blocks []string
+	var current strings.Builder
+	inFence := false
+
+	flush := func() {
+		text := strings.TrimSpace(current.String())
+		if text != "" {
+			blocks = append(blocks, text)
 		}
+		current.Reset()
 	}
+
+	for i := 0; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+
+		// Track fence state
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+		}
+
+		// Inside a fence, never split — accumulate everything
+		if inFence {
+			if current.Len() > 0 {
+				current.WriteByte('\n')
+			}
+			current.WriteString(lines[i])
+			continue
+		}
+
+		// Outside fence: blank line = block boundary
+		if trimmed == "" {
+			flush()
+			continue
+		}
+
+		if current.Len() > 0 {
+			current.WriteByte('\n')
+		}
+		current.WriteString(lines[i])
+	}
+	flush()
 	return blocks
 }
 

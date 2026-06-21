@@ -2676,7 +2676,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		t.Fatalf("unexpected second timeline cursor page: first=%#v second=%#v", firstTimelinePage, secondTimelinePage)
 	}
 
-	body = bytes.NewBufferString(`{"kind":"sales_order","priority":"high","assigned_to":"manager_1","due_at":"2020-01-01","summary":"Approve confirmed sales order","request":{"amount":1200},"workflow_skill_id":"approval.sales_order","workflow_version":"1.0.0","workflow_instance_id":"wf-so-1","workflow_node_id":"submit","workflow_decision_id":"dec-submit","business_status":"pending_manager","result_status":"requires_input","result_payload":{"approval_result":"requires_input","business_record":{"id":"SO-2026-0001","status":"pending_manager"}},"outputs":[{"type":"text","title":"Current state","text":"Waiting for manager"}],"artifacts":[{"id":"draft-pdf","name":"draft.pdf","uri":"artifact://draft","mime_type":"application/pdf","status":"draft"}]}`)
+	body = bytes.NewBufferString(`{"app_id":"mis.sales_order","blueprint_id":"mis.sales_order.approval","object_role":"sales_order","kind":"sales_order","priority":"high","assigned_to":"manager_1","due_at":"2020-01-01","summary":"Approve confirmed sales order","request":{"amount":1200},"workflow_skill_id":"approval.sales_order","workflow_version":"1.0.0","workflow_instance_id":"wf-so-1","workflow_node_id":"submit","workflow_decision_id":"dec-submit","business_status":"pending_manager","result_status":"requires_input","result_payload":{"approval_result":"requires_input","business_record":{"id":"SO-2026-0001","status":"pending_manager"}},"outputs":[{"type":"text","title":"Current state","text":"Waiting for manager"}],"artifacts":[{"id":"draft-pdf","name":"draft.pdf","uri":"artifact://draft","mime_type":"application/pdf","status":"draft"}]}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/datasets/sales.orders/records/SO-2026-0001/approvals", body)
 	auth(req)
 	w = httptest.NewRecorder()
@@ -2710,6 +2710,9 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	}
 	if pendingApprovalBusinessRecord.Data["status"] != "pending_manager" || pendingApprovalBusinessRecord.Data["business_status"] != "pending_manager" || pendingApprovalBusinessRecord.Data["result_status"] != "requires_input" || pendingApprovalBusinessRecord.Data["approval_id"] != approval.ID || pendingApprovalBusinessRecord.Data["approval_workflow_instance_id"] != "wf-so-1" || pendingApprovalBusinessRecord.Data["approval_current_assignee"] != "manager_1" {
 		t.Fatalf("approval create did not update business record status: %#v", pendingApprovalBusinessRecord.Data)
+	}
+	if pendingApprovalBusinessRecord.Data["app_id"] != "mis.sales_order" || pendingApprovalBusinessRecord.Data["blueprint_id"] != "mis.sales_order.approval" || pendingApprovalBusinessRecord.Data["object_role"] != "sales_order" || pendingApprovalBusinessRecord.Data["approval_lane"] != "pending_my_approval" || pendingApprovalBusinessRecord.Data["approval_current_node"] != "submit" {
+		t.Fatalf("approval create did not update business record app approval semantics: %#v", pendingApprovalBusinessRecord.Data)
 	}
 	body = bytes.NewBufferString(`{"kind":"sales_order","priority":"urgent","summary":"Invalid priority should fail","request":{"amount":1200}}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/datasets/sales.orders/records/SO-2026-0001/approvals", body)
@@ -2961,6 +2964,9 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	}
 	if approvedBusinessRecord.Data["status"] != "approved" || approvedBusinessRecord.Data["business_status"] != "approved" || approvedBusinessRecord.Data["result_status"] != "completed" || approvedBusinessRecord.Data["approval_id"] != approval.ID || approvedBusinessRecord.Data["approval_workflow_instance_id"] != "wf-so-1" {
 		t.Fatalf("approval review did not update business record status: %#v", approvedBusinessRecord.Data)
+	}
+	if approvedBusinessRecord.Data["app_id"] != "mis.sales_order" || approvedBusinessRecord.Data["blueprint_id"] != "mis.sales_order.approval" || approvedBusinessRecord.Data["object_role"] != "sales_order" || approvedBusinessRecord.Data["approval_lane"] != "handled" || approvedBusinessRecord.Data["approval_current_node"] != "manager_review" {
+		t.Fatalf("approval review did not update business record app approval semantics: %#v", approvedBusinessRecord.Data)
 	}
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/datasets/sales.orders/records/SO-2026-0001/timeline?limit=10", nil)
 	auth(req)
@@ -5349,6 +5355,11 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 			},
 			"governance_status":     "local_tested",
 			"governance_risk_level": "medium",
+			"result_contract": map[string]any{
+				"schema":  "maclaw.app.result.v1",
+				"primary": "approval_result",
+				"types":   []any{"approval_result", "business_status", "business_record", "document"},
+			},
 			"governance": map[string]any{
 				"status":     "local_tested",
 				"risk_level": "medium",
@@ -5382,6 +5393,10 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if installed.Metadata["workspace_layout_entry"] != "approval_workspace" || installed.Metadata["workspace_layout_template"] != "classic_split" || installed.Metadata["governance_status"] != "local_tested" {
 		t.Fatalf("app installation should persist app layout and governance metadata: %#v", installed.Metadata)
+	}
+	resultContract, ok := installed.Metadata["result_contract"].(map[string]any)
+	if !ok || resultContract["primary"] != "approval_result" {
+		t.Fatalf("app installation should persist result contract metadata: %#v", installed.Metadata)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?app_id=mis.expense", nil)
@@ -5459,6 +5474,13 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if metadata["workspace_layout_entry"] != "approval_workspace" || metadata["workspace_layout_template"] != "classic_split" || metadata["workspace_layout_density"] != "comfortable" || metadata["governance_status"] != "local_tested" || metadata["governance_risk_level"] != "medium" {
 		t.Fatalf("app installation audit should summarize layout and governance: %#v", metadata)
 	}
+	if metadata["result_contract_primary"] != "approval_result" {
+		t.Fatalf("app installation audit should summarize result contract primary: %#v", metadata)
+	}
+	resultTypes, ok := metadata["result_contract_types"].([]any)
+	if !ok || len(resultTypes) != 4 || resultTypes[0] != "approval_result" {
+		t.Fatalf("app installation audit should summarize result contract types: %#v", metadata)
+	}
 	dependencyIDs, ok := metadata["dependency_ids"].([]any)
 	if !ok || len(dependencyIDs) != 2 || dependencyIDs[0] != "mis-expense-claim" || dependencyIDs[1] != "skill.expense.approval" {
 		t.Fatalf("app installation audit should include dependency ids: %#v", metadata)
@@ -5498,12 +5520,12 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 		return approval
 	}
 
-	expenseApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.expense", BlueprintID: "mis.expense.approval", ObjectRole: "expense_report", Kind: "approval", Summary: "Expense approval", WorkflowSkillID: "skill.expense.approval", WorkflowInstanceID: "wf-exp-100"})
+	expenseApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.expense", BlueprintID: "mis.expense.approval", ObjectRole: "expense_report", Kind: "approval", Summary: "Expense approval", WorkflowSkillID: "skill.expense.approval", WorkflowInstanceID: "wf-exp-100", AssignedTo: "user_1"})
 	if expenseApproval.AppID != "mis.expense" || expenseApproval.BlueprintID != "mis.expense.approval" || expenseApproval.ObjectRole != "expense_report" || expenseApproval.WorkflowInstanceID != "wf-exp-100" {
 		t.Fatalf("approval app semantics were not persisted: %#v", expenseApproval)
 	}
 
-	travelApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.travel", BlueprintID: "mis.travel.approval", ObjectRole: "travel_request", Kind: "approval", Summary: "Travel approval", WorkflowSkillID: "skill.travel.approval", WorkflowInstanceID: "wf-travel-100"})
+	travelApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.travel", BlueprintID: "mis.travel.approval", ObjectRole: "travel_request", Kind: "approval", Summary: "Travel approval", WorkflowSkillID: "skill.travel.approval", WorkflowInstanceID: "wf-travel-100", BusinessStatus: "attention", ResultStatus: "attention"})
 	if travelApproval.ID == expenseApproval.ID || travelApproval.AppID != "mis.travel" || travelApproval.ObjectRole != "travel_request" {
 		t.Fatalf("different app/object_role should create an isolated approval: expense=%#v travel=%#v", expenseApproval, travelApproval)
 	}
@@ -5526,6 +5548,82 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	}
 	if len(listed.Items) != 1 || listed.Items[0].ID != expenseApproval.ID || listed.Items[0].AppID != "mis.expense" || listed.Items[0].ObjectRole != "expense_report" {
 		t.Fatalf("unexpected semantic approval list: %#v", listed)
+	}
+
+	laneReq := httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=pending_my_approval&app_id=mis.expense", nil)
+	auth(laneReq)
+	laneW := httptest.NewRecorder()
+	server.Handler().ServeHTTP(laneW, laneReq)
+	if laneW.Code != http.StatusOK {
+		t.Fatalf("pending lane status=%d body=%s", laneW.Code, laneW.Body.String())
+	}
+	var pendingLane ListResponse[RecordApproval]
+	if err := json.NewDecoder(laneW.Body).Decode(&pendingLane); err != nil {
+		t.Fatalf("decode pending lane: %v", err)
+	}
+	if len(pendingLane.Items) != 1 || pendingLane.Items[0].ID != expenseApproval.ID || pendingLane.Items[0].AssignedTo != "user_1" {
+		t.Fatalf("pending_my_approval lane should use authenticated assignee: %#v", pendingLane)
+	}
+
+	laneReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=my_requests&app_id=mis.travel", nil)
+	auth(laneReq)
+	laneW = httptest.NewRecorder()
+	server.Handler().ServeHTTP(laneW, laneReq)
+	if laneW.Code != http.StatusOK {
+		t.Fatalf("my requests lane status=%d body=%s", laneW.Code, laneW.Body.String())
+	}
+	var myRequestsLane ListResponse[RecordApproval]
+	if err := json.NewDecoder(laneW.Body).Decode(&myRequestsLane); err != nil {
+		t.Fatalf("decode my requests lane: %v", err)
+	}
+	if len(myRequestsLane.Items) != 1 || myRequestsLane.Items[0].ID != travelApproval.ID || myRequestsLane.Items[0].CreatedBy != "user_1" {
+		t.Fatalf("my_requests lane should use authenticated requester: %#v", myRequestsLane)
+	}
+
+	laneReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=attention", nil)
+	auth(laneReq)
+	laneW = httptest.NewRecorder()
+	server.Handler().ServeHTTP(laneW, laneReq)
+	if laneW.Code != http.StatusOK {
+		t.Fatalf("attention lane status=%d body=%s", laneW.Code, laneW.Body.String())
+	}
+	var attentionLane ListResponse[RecordApproval]
+	if err := json.NewDecoder(laneW.Body).Decode(&attentionLane); err != nil {
+		t.Fatalf("decode attention lane: %v", err)
+	}
+	if len(attentionLane.Items) != 1 || attentionLane.Items[0].ID != travelApproval.ID || attentionLane.Items[0].ResultStatus != "attention" {
+		t.Fatalf("attention lane should return attention result approvals: %#v", attentionLane)
+	}
+
+	reviewReq := jsonRequest(http.MethodPost, "/api/v1/data/approvals/"+expenseApproval.ID+"/review", ReviewRecordApprovalInput{Decision: "approve", BusinessStatus: "approved", ResultStatus: "completed"})
+	auth(reviewReq)
+	reviewW := httptest.NewRecorder()
+	server.Handler().ServeHTTP(reviewW, reviewReq)
+	if reviewW.Code != http.StatusOK {
+		t.Fatalf("review semantic approval status=%d body=%s", reviewW.Code, reviewW.Body.String())
+	}
+
+	laneReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=handled&app_id=mis.expense", nil)
+	auth(laneReq)
+	laneW = httptest.NewRecorder()
+	server.Handler().ServeHTTP(laneW, laneReq)
+	if laneW.Code != http.StatusOK {
+		t.Fatalf("handled lane status=%d body=%s", laneW.Code, laneW.Body.String())
+	}
+	var handledLane ListResponse[RecordApproval]
+	if err := json.NewDecoder(laneW.Body).Decode(&handledLane); err != nil {
+		t.Fatalf("decode handled lane: %v", err)
+	}
+	if len(handledLane.Items) != 1 || handledLane.Items[0].ID != expenseApproval.ID || handledLane.Items[0].ReviewedBy != "user_1" || handledLane.Items[0].Status != "approved" {
+		t.Fatalf("handled lane should use authenticated reviewer: %#v", handledLane)
+	}
+
+	invalidLaneReq := httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=unknown", nil)
+	auth(invalidLaneReq)
+	invalidLaneW := httptest.NewRecorder()
+	server.Handler().ServeHTTP(invalidLaneW, invalidLaneReq)
+	if invalidLaneW.Code != http.StatusBadRequest {
+		t.Fatalf("invalid lane should be rejected, status=%d body=%s", invalidLaneW.Code, invalidLaneW.Body.String())
 	}
 }
 

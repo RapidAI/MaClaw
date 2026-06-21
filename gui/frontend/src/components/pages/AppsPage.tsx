@@ -111,6 +111,20 @@ type AppWorkspaceLayout = {
     layouts?: Record<string, any>;
 };
 
+type AppResultContract = {
+    schema: 'maclaw.app.result.v1';
+    primary: string;
+    types: string[];
+    outputModes?: string[];
+    approvalDecisions?: string[];
+    delivery: {
+        inlineContent: boolean;
+        artifacts: boolean;
+        businessRecord: boolean;
+        notifications: boolean;
+    };
+};
+
 type AppApprovalBinding = {
     event: string;
     workflowSkillId: string;
@@ -133,6 +147,7 @@ type AppManifestBinding = {
         skills?: AppSkillDependency[];
     };
     ui?: AppWorkspaceLayout;
+    resultContract?: AppResultContract;
     mis?: {
         approvalBindings?: AppApprovalBinding[];
     };
@@ -735,6 +750,7 @@ const labels = {
         confirmHighRiskInstall: '\u786e\u8ba4\u5b89\u88c5',
         highRiskInstallWarning: '\u9009\u4e2d\u7684\u5347\u7ea7\u5305\u5305\u542b\u9ad8\u98ce\u9669\u65b0\u6743\u9650\uff0c\u9700\u518d\u6b21\u786e\u8ba4\u3002',
         dependencyPlanLoading: '\u6b63\u5728\u68c0\u67e5 Skill \u4f9d\u8d56',
+        dependencyReady: '\u4f9d\u8d56 Skill \u5df2\u5c31\u7eea',
         installDependenciesAndRun: '\u5b89\u88c5\u4f9d\u8d56\u5e76\u6267\u884c',
         installingDependencies: '\u6b63\u5728\u5b89\u88c5\u4f9d\u8d56',
         missingRequiredDependency: '\u5fc5\u9700 Skill \u4f9d\u8d56\u7f3a\u5931\u6216\u4e0d\u53ef\u7528\uff0c\u8bf7\u5148\u5b89\u88c5\u6216\u542f\u7528\u4f9d\u8d56',
@@ -763,9 +779,9 @@ const labels = {
         installDetails: '\u5b89\u88c5\u660e\u7ec6',
         installRecords: '\u6700\u8fd1\u5b89\u88c5',
         installRecordsHint: '\u672c\u673a\u5e94\u7528\u5305\u5b89\u88c5\u548c Skill \u4f9d\u8d56\u5ba1\u8ba1',
-        datasrvRegistrationReady: 'DataSrv 绑定已注册',
-        datasrvRegistrationSkipped: 'DataSrv 绑定未注册',
-        datasrvRegistrationFailed: 'DataSrv 绑定注册失败',
+        datasrvRegistrationReady: '\u0044\u0061\u0074\u0061\u0053\u0072\u0076 \u7ed1\u5b9a\u5df2\u6ce8\u518c',
+        datasrvRegistrationSkipped: '\u0044\u0061\u0074\u0061\u0053\u0072\u0076 \u7ed1\u5b9a\u672a\u6ce8\u518c',
+        datasrvRegistrationFailed: '\u0044\u0061\u0074\u0061\u0053\u0072\u0076 \u7ed1\u5b9a\u6ce8\u518c\u5931\u8d25',
         installRecordsLoading: '\u6b63\u5728\u8bfb\u53d6\u5b89\u88c5\u8bb0\u5f55',
         installRecordsError: '\u5b89\u88c5\u8bb0\u5f55\u8bfb\u53d6\u5931\u8d25',
         noInstallRecords: '\u6682\u65e0\u5e94\u7528\u5b89\u88c5\u8bb0\u5f55',
@@ -1005,6 +1021,7 @@ const labels = {
         confirmHighRiskInstall: 'Confirm install',
         highRiskInstallWarning: 'Selected upgrades include high-risk new permissions; confirm once more.',
         dependencyPlanLoading: 'Checking Skill dependencies',
+        dependencyReady: 'Skill dependencies ready',
         installDependenciesAndRun: 'Install dependencies and run',
         installingDependencies: 'Installing dependencies',
         missingRequiredDependency: 'Required Skill dependencies are missing or unavailable. Install or enable them first.',
@@ -1806,7 +1823,7 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
     const domain = String(primaryBinding.domain || metadata.domain || '').trim() || appID.split('.')[0] || 'business';
     const kind = normalizeAppKind(item.kind || metadata.kind || 'enterprise_normal_app');
     const workflowIDs = Array.isArray(metadata.workflow_skill_ids) ? metadata.workflow_skill_ids.map((id: unknown) => String(id || '').trim()).filter(Boolean) : [];
-    const dependencies = normalizeAppDependencies({ skills: metadata.dependencies }).skills || [];
+    const dependencies = normalizeAppDependencies({ skills: metadata.dependencies })?.skills || [];
     const workflowDependencies: AppSkillDependency[] = workflowIDs.map((id) => ({ id, kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }));
     const appSkillID = String(metadata.app_skill_id || '').trim();
     const appSkillVersion = String(metadata.app_skill_version || '').trim();
@@ -2817,7 +2834,7 @@ function appDependencyEvidence(app: AppEntry) {
 function appDependencyPublishSummary(app: AppEntry, lang?: string) {
     const zh = isZh(lang);
     const deps = appDependencyEvidence(app);
-    if (deps.length === 0) return zh ? '无 Skill 依赖' : 'No Skill dependencies';
+    if (deps.length === 0) return zh ? '\u65e0 Skill \u4f9d\u8d56' : 'No Skill dependencies';
     return deps.map((dep) => `${dep.id}${dep.version ? `@${dep.version}` : ''} (${dep.kind}${dep.required ? '' : ', optional'})`).join(', ');
 }
 
@@ -2843,12 +2860,97 @@ function appWorkspaceLayoutEvidence(app: AppEntry) {
 function appWorkspaceLayoutPublishSummary(app: AppEntry, lang?: string) {
     const zh = isZh(lang);
     const layout = appWorkspaceLayoutEvidence(app);
-    if (!layout.schema || !layout.entry || layout.regionCount <= 0) return zh ? '缺少 workspace layout' : 'Missing workspace layout';
+    if (!layout.schema || !layout.entry || layout.regionCount <= 0) return zh ? '\u7f3a\u5c11 workspace layout' : 'Missing workspace layout';
     return `${layout.entry} / ${layout.template} / ${layout.density} / ${layout.regionCount} regions`;
+}
+function buildAppResultContract(kind: AppKind, outputModes: string[] = []): AppResultContract {
+    const normalizedOutputModes = normalizeOutputModes(outputModes);
+    const types = new Set<string>();
+    const add = (...items: string[]) => items.forEach((item) => item && types.add(item));
+    if (kind === 'enterprise_approval_app') {
+        add('approval_result', 'business_status', 'business_record', 'content', 'document', 'notification', 'requires_input');
+    } else if (kind === 'enterprise_normal_app') {
+        add('business_status', 'business_record', 'content', 'document', 'notification', 'action', 'requires_input');
+    } else {
+        add('content');
+    }
+    normalizedOutputModes.forEach((mode) => {
+        if (mode === 'json' || mode === 'txt') add('content');
+        if (mode === 'docx' || mode === 'pdf' || mode === 'xlsx') add('document', 'artifact');
+    });
+    const primary = kind === 'enterprise_approval_app'
+        ? 'approval_result'
+        : kind === 'enterprise_normal_app'
+            ? 'business_status'
+            : normalizedOutputModes.includes('json') || normalizedOutputModes.includes('txt')
+                ? 'content'
+                : 'artifact';
+    return {
+        schema: 'maclaw.app.result.v1',
+        primary,
+        types: Array.from(types),
+        outputModes: normalizedOutputModes,
+        approvalDecisions: kind === 'enterprise_approval_app' ? ['approved', 'rejected', 'attention', 'cancelled', 'timeout'] : undefined,
+        delivery: {
+            inlineContent: types.has('content'),
+            artifacts: types.has('artifact') || types.has('document'),
+            businessRecord: types.has('business_record'),
+            notifications: types.has('notification'),
+        },
+    };
+}
+
+function normalizeAppResultContract(value: unknown, kind: AppKind, outputModes: string[] = []): AppResultContract {
+    const fallback = buildAppResultContract(kind, outputModes);
+    if (!value || typeof value !== 'object') return fallback;
+    const raw = value as Partial<AppResultContract>;
+    const types = Array.isArray(raw.types) ? raw.types.map((item) => String(item || '').trim()).filter(Boolean) : fallback.types;
+    const rawOutputModes = Array.isArray(raw.outputModes) ? raw.outputModes : Array.isArray((raw as any).output_modes) ? (raw as any).output_modes : fallback.outputModes;
+    const outputModesValue = normalizeOutputModes(rawOutputModes as string[]);
+    const approvalDecisions = Array.isArray(raw.approvalDecisions)
+        ? raw.approvalDecisions.map((item) => String(item || '').trim()).filter(Boolean)
+        : Array.isArray((raw as any).approval_decisions)
+            ? (raw as any).approval_decisions.map((item: unknown) => String(item || '').trim()).filter(Boolean)
+            : fallback.approvalDecisions;
+    const deliveryRaw = raw.delivery && typeof raw.delivery === 'object' ? raw.delivery as Partial<AppResultContract['delivery']> : {};
+    return {
+        schema: 'maclaw.app.result.v1',
+        primary: String(raw.primary || fallback.primary).trim() || fallback.primary,
+        types: types.length ? types : fallback.types,
+        outputModes: outputModesValue,
+        approvalDecisions: approvalDecisions?.length ? approvalDecisions : undefined,
+        delivery: {
+            inlineContent: typeof deliveryRaw.inlineContent === 'boolean' ? deliveryRaw.inlineContent : fallback.delivery.inlineContent,
+            artifacts: typeof deliveryRaw.artifacts === 'boolean' ? deliveryRaw.artifacts : fallback.delivery.artifacts,
+            businessRecord: typeof deliveryRaw.businessRecord === 'boolean' ? deliveryRaw.businessRecord : typeof (deliveryRaw as any).business_record === 'boolean' ? (deliveryRaw as any).business_record : fallback.delivery.businessRecord,
+            notifications: typeof deliveryRaw.notifications === 'boolean' ? deliveryRaw.notifications : fallback.delivery.notifications,
+        },
+    };
+}
+
+function applyAppResultContract(manifest: AppManifestBinding, kind: AppKind): AppManifestBinding {
+    const outputModes = normalizeOutputModes(manifest.skill?.outputModes);
+    return {
+        ...manifest,
+        resultContract: buildAppResultContract(kind, outputModes),
+    };
+}
+
+function appResultContractForManifest(app: AppEntry): AppResultContract {
+    return normalizeAppResultContract(app.manifest?.resultContract, app.kind, app.manifest?.skill?.outputModes || []);
+}
+function appResultContractPublishSummary(app: AppEntry, lang?: string) {
+    const zh = isZh(lang);
+    const contract = appResultContractForManifest(app);
+    const types = contract.types.slice(0, 4).join(', ');
+    return `${zh ? '\u7ed3\u679c' : 'Result'}: ${contract.primary}${types ? ` / ${types}` : ''}`;
 }
 function appNeedsRuntimeDependencyCheck(app: AppEntry) {
     if (app.source !== 'market' && app.source !== 'skill' && app.source !== 'local') return false;
     return appDependencyEvidence(app).length > 0;
+}
+function appNeedsAutomaticRuntimeDependencyCheck(app: AppEntry) {
+    return (app.source === 'market' || app.source === 'skill') && appDependencyEvidence(app).length > 0;
 }
 function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmission) {
     const evidence = latestAppRunEvidence(app);
@@ -2867,6 +2969,7 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
             optionalCount: dependencies.filter((dep) => !dep.required).length,
         },
         workspaceLayout: appWorkspaceLayoutEvidence(app),
+        resultContract: appResultContractForManifest(app),
         testEvidence: {
             runId: evidence?.runID,
             definitionHash: evidence?.definitionHash,
@@ -3678,8 +3781,8 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
     const workflow = appApprovalWorkflowSkillID(app) || app.name;
     const submitted = runState === 'done' || runState === 'running';
     const draftStatus = submitted ? 'pending' : 'draft';
-    const draftNode = submitted ? (zh ? '主管审批' : 'Manager approval') : (zh ? '发起节点' : 'Submit node');
-    const draftResult = submitted ? (zh ? '审批中' : 'Pending') : (zh ? '待提交' : 'Draft');
+    const draftNode = submitted ? (zh ? '\u4e3b\u7ba1\u5ba1\u6279' : 'Manager approval') : (zh ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node');
+    const draftResult = submitted ? (zh ? '\u5ba1\u6279\u4e2d' : 'Pending') : (zh ? '\u5f85\u63d0\u4ea4' : 'Draft');
     return [
         {
             id: `${app.id}-current`,
@@ -3689,25 +3792,25 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
             status: draftStatus,
             currentNode: draftNode,
             owner: zh ? '\u6211' : 'Me',
-            approver: submitted ? (zh ? '直属主管 / VE' : 'Manager / VE') : workflow,
+            approver: submitted ? (zh ? '\u76f4\u5c5e\u4e3b\u7ba1 / VE' : 'Manager / VE') : workflow,
             updatedAt: submitted ? new Date().toLocaleString() : '-',
             result: businessNote.trim() || draftResult,
             workflowSkillID: workflow,
             businessStatus: submitted ? 'approval_pending' : 'draft',
             resultStatus: draftStatus,
-            amount: submitted ? (zh ? '本次提交' : 'Current submission') : undefined,
+            amount: submitted ? (zh ? '\u672c\u6b21\u63d0\u4ea4' : 'Current submission') : undefined,
         },
         {
             id: `${app.id}-pending`,
             appID: app.id,
-            title: zh ? `${app.name}待办` : `${app.name} task`,
+            title: zh ? `${app.name}\u5f85\u529e` : `${app.name} task`,
             lane: 'pending_my_approval',
             status: 'pending',
             currentNode: zh ? '\u6211\u5ba1\u6279' : 'My approval',
-            owner: zh ? '同事' : 'Coworker',
+            owner: zh ? '\u540c\u4e8b' : 'Coworker',
             approver: zh ? '\u6211' : 'Me',
-            updatedAt: zh ? '今天' : 'Today',
-            result: zh ? '等待处理' : 'Waiting',
+            updatedAt: zh ? '\u4eca\u5929' : 'Today',
+            result: zh ? '\u7b49\u5f85\u5904\u7406' : 'Waiting',
             workflowSkillID: workflow,
             businessStatus: 'approval_pending',
             resultStatus: 'pending',
@@ -3715,14 +3818,14 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
         {
             id: `${app.id}-attention`,
             appID: app.id,
-            title: zh ? `${app.name}需关注` : `${app.name} attention`,
+            title: zh ? `${app.name}\u9700\u5173\u6ce8` : `${app.name} attention`,
             lane: 'attention',
             status: 'attention',
-            currentNode: zh ? '风险复核' : 'Risk review',
-            owner: zh ? '系统' : 'System',
+            currentNode: zh ? '\u98ce\u9669\u590d\u6838' : 'Risk review',
+            owner: zh ? '\u7cfb\u7edf' : 'System',
             approver: zh ? '\u4ec5\u67e5\u770b' : 'View only',
-            updatedAt: zh ? '昨天' : 'Yesterday',
-            result: zh ? '规则命中，需查看' : 'Rule matched, review needed',
+            updatedAt: zh ? '\u6628\u5929' : 'Yesterday',
+            result: zh ? '\u89c4\u5219\u547d\u4e2d\uff0c\u9700\u67e5\u770b' : 'Rule matched, review needed',
             workflowSkillID: workflow,
             businessStatus: 'attention',
             resultStatus: 'attention',
@@ -3757,7 +3860,7 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
         title: appTitle,
         lane: lane === 'pending_my_approval' || lane === 'handled' || lane === 'attention' ? lane : 'my_requests',
         status: status === 'approved' || status === 'rejected' || status === 'attention' || status === 'draft' ? status : 'pending',
-        currentNode: String(instance.current_node || (isZh(lang) ? '当前节点' : 'Current node')).trim(),
+        currentNode: String(instance.current_node || (isZh(lang) ? '\u5f53\u524d\u8282\u70b9' : 'Current node')).trim(),
         owner: String(instance.owner || '-').trim(),
         approver: String(instance.approver || '-').trim(),
         updatedAt: String(instance.updated_at || '-').trim(),
@@ -3833,11 +3936,11 @@ function approvalDataSrvSyncPayload(app: AppEntry, instance: BackendApprovalInst
 
 function approvalStatusLabel(status: ApprovalInstanceView['status'], lang?: string) {
     const zh = isZh(lang);
-    if (status === 'approved') return zh ? '已通过' : 'Approved';
+    if (status === 'approved') return zh ? '\u5df2\u901a\u8fc7' : 'Approved';
     if (status === 'rejected') return zh ? '\u5df2\u9a73\u56de' : 'Rejected';
-    if (status === 'attention') return zh ? '需关注' : 'Needs attention';
+    if (status === 'attention') return zh ? '\u9700\u5173\u6ce8' : 'Needs attention';
     if (status === 'pending') return zh ? '\u5ba1\u6279\u4e2d' : 'Pending';
-    return zh ? '鑽夌' : 'Draft';
+    return zh ? '\u8349\u7a3f' : 'Draft';
 }
 
 function businessAppSkillID(app: AppEntry): string {
@@ -3952,6 +4055,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const [currentRunContext, setCurrentRunContext] = useState({ inputSummary: '', outputMode: '' });
     const [dependencyRepairState, setDependencyRepairState] = useState<'idle' | 'installing'>('idle');
     const [runtimeDependencyPlan, setRuntimeDependencyPlan] = useState<BackendAppInstallPlan | null>(null);
+    const [runtimeDependencyCheckState, setRuntimeDependencyCheckState] = useState<'idle' | 'checking' | 'ready' | 'blocked' | 'error'>('idle');
     const approvalRunContextRef = useRef<ApprovalRunContext | null>(null);
     useEffect(() => {
         setFileName('');
@@ -3970,10 +4074,37 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         setCurrentRunContext({ inputSummary: '', outputMode: '' });
         setDependencyRepairState('idle');
         setRuntimeDependencyPlan(null);
+        setRuntimeDependencyCheckState('idle');
         approvalRunContextRef.current = null;
         setRunHistory(loadAppRunHistory(app?.id || ''));
         setApprovalInstances([]);
     }, [app?.id, app?.manifest?.skill?.outputModes]);
+    useEffect(() => {
+        if (!app || !appNeedsAutomaticRuntimeDependencyCheck(app)) {
+            setRuntimeDependencyPlan(null);
+            setRuntimeDependencyCheckState('idle');
+            return;
+        }
+        let disposed = false;
+        setRuntimeDependencyCheckState('checking');
+        const checkDependencies = async () => {
+            try {
+                const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
+                if (disposed) return;
+                setRuntimeDependencyPlan(dependencyPlan || null);
+                const blocked = !!dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, [app.id]);
+                setRuntimeDependencyCheckState(blocked ? 'blocked' : 'ready');
+            } catch {
+                if (disposed) return;
+                setRuntimeDependencyPlan(null);
+                setRuntimeDependencyCheckState('error');
+            }
+        };
+        void checkDependencies();
+        return () => {
+            disposed = true;
+        };
+    }, [app?.id, app?.kind, app?.source, app?.version]);
     useEffect(() => {
         if (!app?.id || !isEnterpriseApprovalAppKind(app.kind)) {
             setApprovalInstances([]);
@@ -4169,25 +4300,35 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         setCurrentRunContext({ inputSummary: '', outputMode: '' });
         setDependencyRepairState('idle');
         setRuntimeDependencyPlan(null);
+        setRuntimeDependencyCheckState('idle');
         approvalRunContextRef.current = null;
     };
-    const runApp = async () => {
+    const runApp = async (options?: { skipDependencyCheck?: boolean }) => {
         setDependencyRepairState('idle');
-        setRuntimeDependencyPlan(null);
         approvalRunContextRef.current = null;
         if (app?.id) onUse?.(app.id);
-        if (app && appNeedsRuntimeDependencyCheck(app)) {
+        if (!options?.skipDependencyCheck && app && appNeedsRuntimeDependencyCheck(app)) {
+            const existingPlanBlocked = !!runtimeDependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(runtimeDependencyPlan, [app.id]);
+            if (existingPlanBlocked) {
+                setRuntimeDependencyCheckState('blocked');
+                setValidationMessage(text.missingRequiredDependency);
+                setRunState('error');
+                return;
+            }
             try {
+                setRuntimeDependencyCheckState('checking');
                 const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
                 setRuntimeDependencyPlan(dependencyPlan || null);
                 if (dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, [app.id])) {
+                    setRuntimeDependencyCheckState('blocked');
                     setValidationMessage(text.missingRequiredDependency);
                     setRunState('error');
                     return;
                 }
-                setRuntimeDependencyPlan(null);
+                setRuntimeDependencyCheckState('ready');
             } catch (error: any) {
                 setRuntimeDependencyPlan(null);
+                setRuntimeDependencyCheckState('error');
                 setValidationMessage(error?.message || text.dependencyPlanError);
                 setRunState('error');
                 return;
@@ -4326,11 +4467,11 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 title: `${businessEntity || app.category} / ${businessAction || 'create'}`,
                 lane: 'my_requests',
                 status: 'pending',
-                current_node: isZh(lang) ? '主管审批' : 'Manager approval',
-                owner: isZh(lang) ? '当前用户' : 'Current user',
-                applicant: isZh(lang) ? '当前用户' : 'Current user',
-                approver: isZh(lang) ? '审批人' : 'Approver',
-                result: isZh(lang) ? '等待审批' : 'Pending approval',
+                current_node: isZh(lang) ? '\u4e3b\u7ba1\u5ba1\u6279' : 'Manager approval',
+                owner: isZh(lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user',
+                applicant: isZh(lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user',
+                approver: isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver',
+                result: isZh(lang) ? '\u7b49\u5f85\u5ba1\u6279' : 'Pending approval',
                 business_status: 'approval_pending',
                 result_status: 'pending',
                 business_entity: businessEntity || app.category,
@@ -4341,8 +4482,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 detail_url: `skill-run://${workflowRunID}`,
                 events: [{
                     at: now,
-                    actor: isZh(lang) ? '当前用户' : 'Current user',
-                    action: isZh(lang) ? '发起申请' : 'Submitted',
+                    actor: isZh(lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user',
+                    action: isZh(lang) ? '\u53d1\u8d77\u7533\u8bf7' : 'Submitted',
                     note: businessNote,
                 }, {
                     at: now,
@@ -4439,7 +4580,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             }
             setRuntimeDependencyPlan(null);
             setDependencyRepairState('idle');
-            await runApp();
+            await runApp({ skipDependencyCheck: true });
         } catch (error: any) {
             setRuntimeDependencyPlan(null);
             setValidationMessage(error?.message || text.dependencyPlanError);
@@ -4452,10 +4593,10 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         const now = new Date().toISOString();
         const zh = isZh(lang);
         const statusText = decision === 'approved'
-            ? (zh ? '已通过' : 'Approved')
+            ? (zh ? '\u5df2\u901a\u8fc7' : 'Approved')
             : decision === 'rejected'
                 ? (zh ? '\u5df2\u9a73\u56de' : 'Rejected')
-                : (zh ? '需关注' : 'Needs attention');
+                : (zh ? '\u9700\u5173\u6ce8' : 'Needs attention');
         const nextLane: ApprovalInstanceView['lane'] = decision === 'attention' ? 'attention' : 'handled';
         const nextNode = decision === 'attention' ? instance.currentNode : (zh ? '\u5df2\u5b8c\u6210' : 'Completed');
         const payload: BackendApprovalInstance = {
@@ -4536,9 +4677,36 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     };
     const runtimeDependencyDetails = runtimeDependencyPlan ? backendDependenciesForApp(runtimeDependencyPlan, app.id) : [];
     const visibleRuntimeDependencyDetails = runtimeDependencyDetails.length > 0 ? runtimeDependencyDetails : runtimeDependencyPlan?.dependencies || [];
-    const showRuntimeDependencyDetails = visibleRuntimeDependencyDetails.length > 0 && (runState === 'error' || dependencyRepairState === 'installing');
-    const canInstallRuntimeDependencies = !!app && appNeedsRuntimeDependencyCheck(app) && runState === 'error' && (validationMessage === text.missingRequiredDependency || dependencyRepairState === 'installing');
+    const runtimeDependencyBlocked = !!app && (!!runtimeDependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(runtimeDependencyPlan, [app.id]));
+    const runtimeDependencyChecking = runtimeDependencyCheckState === 'checking' || dependencyRepairState === 'installing';
+    const runtimeDependencyReady = runtimeDependencyCheckState === 'ready' && visibleRuntimeDependencyDetails.length > 0 && !runtimeDependencyBlocked;
+    const showRuntimeDependencyDetails = visibleRuntimeDependencyDetails.length > 0 && (runState === 'error' || dependencyRepairState === 'installing' || runtimeDependencyBlocked || runtimeDependencyReady);
+    const canInstallRuntimeDependencies = !!app && appNeedsRuntimeDependencyCheck(app) && (runtimeDependencyBlocked || dependencyRepairState === 'installing' || validationMessage === text.missingRequiredDependency);
     const runDisabled = runState === 'running' || dependencyRepairState === 'installing';
+    const runtimeStatusMessage = runState === 'done'
+        ? text.runCompleted
+        : runState === 'running'
+            ? skillRunProgressMessage(skillRunStatus, text.skillRunRunning, runID)
+            : runState === 'error'
+                ? validationMessage
+                : runState === 'cancelled'
+                    ? text.skillRunCancelled
+                    : runtimeDependencyChecking
+                        ? text.dependencyPlanLoading
+                        : runtimeDependencyBlocked
+                            ? text.missingRequiredDependency
+                            : runtimeDependencyReady
+                                ? text.dependencyReady
+                                : text.readyOutput;
+    const runtimeStatusState = runState !== 'idle'
+        ? runState
+        : runtimeDependencyChecking
+            ? 'running'
+            : runtimeDependencyBlocked
+                ? 'error'
+                : runtimeDependencyReady
+                    ? 'done'
+                    : 'idle';
     const runtimeLayout = runtimeWorkspaceLayoutForApp(app);
     const runtimeOrder = runtimeWorkspaceOrder(runtimeLayout);
     const inputRegion = runtimeLayout.primaryRegion;
@@ -4664,8 +4832,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                         {isBusiness && <BusinessWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} lang={lang} style={{ order: runtimeOrder.approval }} layoutRegion={centerRegion} />}
                         <section className="apps-runtime-section apps-runtime-status" data-region={outputRegion === 'bottom' ? centerRegion : outputRegion} style={{ order: runtimeOrder.status }}>
                             <div className="apps-runtime-section__title">{text.runtimeStatus}</div>
-                            <div className={`apps-result-panel${showRuntimeDependencyDetails ? ' apps-result-panel--stacked' : ''}`} data-state={runState}>
-                                <span>{runState === 'done' ? text.runCompleted : runState === 'running' ? skillRunProgressMessage(skillRunStatus, text.skillRunRunning, runID) : runState === 'error' ? validationMessage : runState === 'cancelled' ? text.skillRunCancelled : text.readyOutput}</span>
+                            <div className={`apps-result-panel${showRuntimeDependencyDetails ? ' apps-result-panel--stacked' : ''}`} data-state={runtimeStatusState}>
+                                <span>{runtimeStatusMessage}</span>
                                 {showRuntimeDependencyDetails && <InstallRecordDependencies dependencies={visibleRuntimeDependencyDetails} text={text} />}
                                 {canInstallRuntimeDependencies && (
                                     <button className="apps-secondary-button apps-result-panel__action" type="button" disabled={dependencyRepairState === 'installing'} onClick={() => void installRuntimeDependenciesAndRun()}>
@@ -4814,9 +4982,9 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
         const now = new Date().toISOString();
         const zh = isZh(lang);
         const app = apps.find((item) => item.id === instance.appID);
-        const statusText = decision === 'approved' ? (zh ? '已通过' : 'Approved') : decision === 'rejected' ? (zh ? '已驳回' : 'Rejected') : (zh ? '需关注' : 'Needs attention');
+        const statusText = decision === 'approved' ? (zh ? '\u5df2\u901a\u8fc7' : 'Approved') : decision === 'rejected' ? (zh ? '\u5df2\u9a73\u56de' : 'Rejected') : (zh ? '\u9700\u5173\u6ce8' : 'Needs attention');
         const nextLane: ApprovalInstanceView['lane'] = decision === 'attention' ? 'attention' : 'handled';
-        const nextNode = decision === 'attention' ? instance.currentNode : (zh ? '已完成' : 'Completed');
+        const nextNode = decision === 'attention' ? instance.currentNode : (zh ? '\u5df2\u5b8c\u6210' : 'Completed');
         const payload: BackendApprovalInstance = {
             instance_id: instance.id,
             app_id: instance.appID,
@@ -4846,7 +5014,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
             outputs: instance.outputs,
             artifacts: instance.artifacts,
             updated_at: now,
-            events: [...(instance.events || []), { at: now, node: nextNode, actor: instance.approver || (zh ? '审批人' : 'Approver'), decision, message: statusText, action: decision }],
+            events: [...(instance.events || []), { at: now, node: nextNode, actor: instance.approver || (zh ? '\u5ba1\u6279\u4eba' : 'Approver'), decision, message: statusText, action: decision }],
         };
         const fallback = backendApprovalInstanceToView(payload, lang);
         if (fallback) setInstances((current) => [fallback, ...current.filter((item) => item.id !== fallback.id)]);
@@ -4935,7 +5103,7 @@ const ApprovalDetail = ({ instance, lang, text, onDecision }: { instance?: Appro
                         </section>
                     )}
                     <div className="apps-approval-timeline">
-                        {(instance.events && instance.events.length > 0 ? instance.events : [{ node: isZh(lang) ? '发起节点' : 'Submit node' }, { node: instance.currentNode }, { node: isZh(lang) ? '结果反馈' : 'Result feedback' }] as ApprovalInstanceEventView[]).map((event, index) => {
+                        {(instance.events && instance.events.length > 0 ? instance.events : [{ node: isZh(lang) ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node' }, { node: instance.currentNode }, { node: isZh(lang) ? '\u7ed3\u679c\u53cd\u9988' : 'Result feedback' }] as ApprovalInstanceEventView[]).map((event, index) => {
                             const primary = [event.node, event.decision].filter(Boolean).join(' / ') || event.message || '-';
                             const secondary = [event.actor, event.at].filter(Boolean).join(' / ');
                             return <div key={`${instance.id}-event-${index}-${primary}`}><span /><p><strong>{primary}</strong>{secondary && <small>{secondary}</small>}{event.message && primary !== event.message && <small>{event.message}</small>}</p></div>;
@@ -5083,9 +5251,9 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                             )}
                             <div className="apps-approval-timeline">
                                 {(selected.events && selected.events.length > 0 ? selected.events : [
-                                    { node: isZh(lang) ? '发起节点' : 'Submit node' },
+                                    { node: isZh(lang) ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node' },
                                     { node: selected.currentNode },
-                                    { node: isZh(lang) ? '结果反馈' : 'Result feedback' },
+                                    { node: isZh(lang) ? '\u7ed3\u679c\u53cd\u9988' : 'Result feedback' },
                                 ] as ApprovalInstanceEventView[]).map((event, index) => {
                                     const primary = [event.node, event.decision].filter(Boolean).join(' · ') || event.message || '-';
                                     const secondary = [event.actor, event.at].filter(Boolean).join(' · ');
@@ -5282,6 +5450,7 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission) {
                 appSkill: manifest?.appSkill,
                 dependencies: manifest?.dependencies,
                 ui: manifest?.ui,
+                resultContract: manifest?.resultContract,
             },
             panel: {
                 pinned: !!app.pinned,
@@ -5433,6 +5602,7 @@ function manifestToAppEntry(raw: any): AppEntry | null {
             appSkill: app.binding?.appSkill,
             dependencies: normalizeAppDependencies(app.binding?.dependencies),
             ui: normalizeAppWorkspaceLayout(app.binding?.ui, kind),
+            resultContract: normalizeAppResultContract(app.binding?.resultContract || app.governance?.resultContract, kind, app.binding?.skill?.outputModes || []),
             skill: app.binding?.skill ? {
                 ...app.binding.skill,
                 inputMode: app.binding.skill.inputMode === 'form' || app.binding.skill.inputMode === 'mixed' ? app.binding.skill.inputMode : 'file',
@@ -6102,6 +6272,41 @@ const StudioSkillPicker = ({
     );
 };
 
+const ResultContractPreview = ({ contract, lang, testId }: { contract: AppResultContract; lang?: string; testId?: string }) => {
+    const zh = isZh(lang);
+    const deliveryItems = [
+        { id: 'inlineContent', label: zh ? '\u5185\u5bb9' : 'Content', enabled: contract.delivery.inlineContent },
+        { id: 'artifacts', label: zh ? '\u6587\u4ef6' : 'Files', enabled: contract.delivery.artifacts },
+        { id: 'businessRecord', label: zh ? '\u4e1a\u52a1\u8bb0\u5f55' : 'Business record', enabled: contract.delivery.businessRecord },
+        { id: 'notifications', label: zh ? '\u901a\u77e5' : 'Notifications', enabled: contract.delivery.notifications },
+    ];
+    return (
+        <section className="apps-result-contract" aria-label={zh ? '\u7ed3\u679c\u5951\u7ea6' : 'Result contract'} data-testid={testId}>
+            <div className="apps-preview-title-row">
+                <div className="apps-definition__title">{zh ? '\u7ed3\u679c\u5951\u7ea6' : 'Result contract'}</div>
+                <span className="apps-count">maclaw.app.result.v1</span>
+            </div>
+            <div className="apps-result-contract__summary">
+                <span>{zh ? '\u4e3b\u7ed3\u679c' : 'Primary'}</span>
+                <strong>{contract.primary}</strong>
+            </div>
+            <div className="apps-result-contract__chips" aria-label={zh ? '\u7ed3\u679c\u7c7b\u578b' : 'Result types'}>
+                {contract.types.map((type) => <span key={type}>{type}</span>)}
+            </div>
+            <div className="apps-result-contract__delivery" aria-label={zh ? '\u4ea4\u4ed8\u65b9\u5f0f' : 'Delivery'}>
+                {deliveryItems.map((item) => (
+                    <span key={item.id} data-enabled={item.enabled ? 'true' : 'false'}>{item.label}</span>
+                ))}
+            </div>
+            {contract.approvalDecisions?.length ? (
+                <div className="apps-result-contract__decisions">
+                    <span>{zh ? '\u5ba1\u6279\u7ed3\u679c' : 'Approval decisions'}</span>
+                    <small>{contract.approvalDecisions.join(' / ')}</small>
+                </div>
+            ) : null}
+        </section>
+    );
+};
 const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app: AppEntry, options?: { keepStudioCreate?: boolean }) => void }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const zh = isZh(lang);
@@ -6306,7 +6511,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             accent,
             version: 1,
             source: 'local',
-            manifest: applyStudioWorkspaceLayout(manifest, kind, { template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion }),
+            manifest: applyAppResultContract(applyStudioWorkspaceLayout(manifest, kind, { template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion }), kind),
         };
     };
     const draftApp = buildDraftApp(
@@ -6692,6 +6897,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     </section>
                 )}
                 <StudioLayoutDesigner kind={kind} value={studioLayoutValue} onChange={updateStudioLayout} lang={lang} />
+                <ResultContractPreview contract={appResultContractForManifest(draftApp)} lang={lang} testId="studio-result-contract" />
                 <div className="apps-form-row apps-form-row--description">
                     <label>{zh ? '\u63cf\u8ff0' : 'Description'}</label>
                     <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={zh ? '\u7528\u4e8e tooltip \u548c\u53f3\u4fa7\u8fd0\u884c\u533a\u8bf4\u660e' : 'Used in tooltip and right runtime area'} />
@@ -6791,6 +6997,11 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
             label: zh ? 'Workspace layout' : 'Workspace layout',
             ok: hasWorkspaceLayout,
             detail: appWorkspaceLayoutPublishSummary(app, lang),
+        },
+        {
+            label: zh ? '\u7ed3\u679c\u5951\u7ea6' : 'Result contract',
+            ok: appResultContractForManifest(app).types.length > 0,
+            detail: appResultContractPublishSummary(app, lang),
         },
         {
             label: zh ? '\u8fd0\u884c\u8bc1\u636e' : 'Run evidence',
@@ -7554,7 +7765,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
             };
         }
         if (manifest) {
-            manifest = applyStudioWorkspaceLayout(manifest, app.kind, editDraft.layout);
+            manifest = applyAppResultContract(applyStudioWorkspaceLayout(manifest, app.kind, editDraft.layout), app.kind);
         }
         const updatedApp: AppEntry = {
             ...app,
@@ -7932,6 +8143,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                                 </>
                             )}
                             <StudioLayoutDesigner kind={editingApp.kind} value={editDraft.layout} onChange={(layout) => setEditDraft((current) => ({ ...current, layout }))} lang={lang} testIdPrefix="edit" />
+                            <ResultContractPreview contract={buildAppResultContract(editingApp.kind, editDraft.outputModes)} lang={lang} testId="edit-result-contract" />
                             <div className="apps-actions apps-manage-edit__actions">
                                 {editSaveMessage && <span className="apps-manage-edit__message" data-state={editSaveState} role="alert">{editSaveMessage}</span>}
                                 <button className="apps-secondary-button" type="button" onClick={cancelEdit}>{text.cancel}</button>

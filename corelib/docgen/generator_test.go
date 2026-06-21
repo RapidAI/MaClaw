@@ -813,3 +813,133 @@ func TestSplitParagraphForFilling_ListItemKeepsMarker(t *testing.T) {
 		t.Fatalf("expected list item to stay unchanged, got %q", parts[0])
 	}
 }
+
+func TestSplitMarkdownBlocks_FenceAware(t *testing.T) {
+	md := "Before.\n\n```\nline1\n\nline2\n```\n\nAfter."
+	blocks := splitMarkdownBlocks(md)
+	// Should produce 3 blocks: "Before.", the entire code fence, "After."
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 blocks (before/code/after), got %d: %#v", len(blocks), blocks)
+	}
+	if !strings.HasPrefix(blocks[1], "```") {
+		t.Fatalf("second block should start with fence, got %q", blocks[1])
+	}
+	if !strings.Contains(blocks[1], "line1") || !strings.Contains(blocks[1], "line2") {
+		t.Fatalf("code block should contain both lines, got %q", blocks[1])
+	}
+	if !strings.HasSuffix(strings.TrimSpace(blocks[1]), "```") {
+		t.Fatalf("code block should end with closing fence, got %q", blocks[1])
+	}
+}
+
+func TestMarkdownToHTML_Blockquote(t *testing.T) {
+	md := "> 这是引用文本\n> 第二行引用"
+	html := markdownToHTML(md)
+	if !strings.Contains(html, "border-left") {
+		t.Error("blockquote should have left border style")
+	}
+	if strings.Contains(html, "&gt;") {
+		t.Error("blockquote '>' marker should not appear in output")
+	}
+	if !strings.Contains(html, "这是引用文本") {
+		t.Error("blockquote content missing")
+	}
+	if !strings.Contains(html, "第二行引用") {
+		t.Error("second blockquote line missing")
+	}
+}
+
+func TestMarkdownToHTML_BlockquoteNoSpace(t *testing.T) {
+	md := ">无空格引用"
+	html := markdownToHTML(md)
+	if !strings.Contains(html, "border-left") {
+		t.Error("blockquote without space should still render")
+	}
+	if !strings.Contains(html, "无空格引用") {
+		t.Error("content missing from no-space blockquote")
+	}
+}
+
+func TestMarkdownToHTML_FencedCodeBlock(t *testing.T) {
+	md := "```\nfunc main() {\n    fmt.Println(\"hello\")\n}\n```"
+	html := markdownToHTML(md)
+	if !strings.Contains(html, "monospace") {
+		t.Error("code block should use monospace font")
+	}
+	if !strings.Contains(html, "background-color") {
+		t.Error("code block should have background color")
+	}
+	if !strings.Contains(html, "fmt.Println") {
+		t.Error("code content missing")
+	}
+	if !strings.Contains(html, "&nbsp;&nbsp;&nbsp;&nbsp;") {
+		t.Error("code indentation should be preserved with &nbsp;")
+	}
+	if strings.Contains(html, "```") {
+		t.Error("raw fence markers should not appear in output")
+	}
+}
+
+func TestMarkdownToHTML_FencedCodeBlockWithLanguage(t *testing.T) {
+	md := "```python\nprint('hello')\n```"
+	html := markdownToHTML(md)
+	if !strings.Contains(html, "monospace") {
+		t.Error("code block with language hint should render as monospace")
+	}
+	if !strings.Contains(html, "print") {
+		t.Error("code content missing")
+	}
+	if strings.Contains(html, "python") {
+		t.Error("language hint should not appear in rendered output")
+	}
+}
+
+func TestMarkdownToHTML_InlineCode(t *testing.T) {
+	md := "使用 `npm install` 安装依赖"
+	html := markdownToHTML(md)
+	if !strings.Contains(html, "monospace") {
+		t.Error("inline code should use monospace")
+	}
+	if !strings.Contains(html, "npm install") {
+		t.Error("inline code content missing")
+	}
+	if strings.Contains(html, "`") {
+		t.Error("backtick markers should not appear in output")
+	}
+}
+
+func TestMarkdownToHTML_InlineCodeProtectsBoldInside(t *testing.T) {
+	md := "参数 `**kwargs` 是 Python 的"
+	html := markdownToHTML(md)
+	if strings.Contains(html, "<b>kwargs</b>") {
+		t.Error("bold markers inside inline code should NOT be interpreted as bold")
+	}
+	if !strings.Contains(html, "**kwargs") {
+		t.Error("inline code content should preserve literal **kwargs")
+	}
+}
+
+func TestMarkdownToHTML_InlineCodeProtectsMathInside(t *testing.T) {
+	md := "公式 `$x + y$` 是代码中的字符串"
+	html := markdownToHTML(md)
+	if strings.Contains(html, "α") || strings.Contains(html, "<sub>") || strings.Contains(html, "<sup>") {
+		t.Error("math inside inline code should NOT be interpreted as math")
+	}
+	if !strings.Contains(html, "$x + y$") {
+		t.Errorf("inline code should preserve literal $x + y$, got: %s", html)
+	}
+}
+
+func TestMarkdownToHTML_CodeBlockPreservesHTMLChars(t *testing.T) {
+	md := "```\nif x < 10 && y > 0 {\n    return &ok\n}\n```"
+	html := markdownToHTML(md)
+	if !strings.Contains(html, "&lt;") {
+		t.Error("< in code should be escaped to &lt;")
+	}
+	if !strings.Contains(html, "&gt;") {
+		t.Error("> in code should be escaped to &gt;")
+	}
+	if !strings.Contains(html, "&amp;ok") {
+		t.Error("& in code should be escaped to &amp;")
+	}
+}

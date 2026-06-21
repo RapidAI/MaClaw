@@ -152,35 +152,57 @@ func specForDocType(docType DocType, projectName, content string, opts GenerateP
 	spec := docgen.Spec{
 		ProjectName: strings.TrimSpace(projectName),
 		Content:     content,
-		Brand:       "MaClaw Swarm",
 		PaperSize:   opts.PaperSize,
+	}
+
+	title := strings.TrimSpace(projectName)
+	// If projectName looks like a file path, don't use it as the display title
+	if looksLikeFilePath(title) {
+		title = ""
 	}
 
 	switch docType {
 	case DocTypeRequirements:
-		spec.Title = "📋 需求文档"
-		spec.Subtitle = "Requirements Specification"
-		spec.FileNamePrefix = "requirements"
-		spec.FooterHint = "请确认需求范围与验收标准"
-	case DocTypeDesign:
-		spec.Title = "🏗️ 设计文档"
-		spec.Subtitle = "Design Document"
-		spec.FileNamePrefix = "design"
-		spec.FooterHint = "请确认设计方案与实现边界"
-	case DocTypeTaskPlan:
-		spec.Title = "📝 任务计划"
-		spec.Subtitle = "Task Plan"
-		spec.FileNamePrefix = "task-plan"
-		spec.FooterHint = "请确认任务拆分与执行顺序"
-	default:
-		spec.Title = strings.TrimSpace(projectName)
-		if spec.Title == "" {
-			spec.Title = "文档"
+		if title == "" {
+			title = "需求文档"
 		}
-		spec.Brand = ""
+		spec.FileNamePrefix = "requirements"
+	case DocTypeDesign:
+		if title == "" {
+			title = "设计文档"
+		}
+		spec.FileNamePrefix = "design"
+	case DocTypeTaskPlan:
+		if title == "" {
+			title = "任务计划"
+		}
+		spec.FileNamePrefix = "task-plan"
+	default:
+		if title == "" {
+			title = "文档"
+		}
+		spec.FileNamePrefix = "document"
 	}
 
+	spec.Title = title
 	return spec
+}
+
+// looksLikeFilePath returns true if text looks like a filesystem path
+// rather than a human-readable document title.
+func looksLikeFilePath(text string) bool {
+	if text == "" {
+		return false
+	}
+	// Unix absolute paths: must have at least two path segments (/a/b)
+	if strings.HasPrefix(text, "/") && strings.Count(text, "/") >= 2 {
+		return true
+	}
+	// Windows drive paths: C:\... or D:\...
+	if len(text) >= 3 && text[1] == ':' && (text[2] == '\\' || text[2] == '/') {
+		return true
+	}
+	return false
 }
 
 func docTypeFromString(docType string) DocType {

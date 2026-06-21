@@ -725,6 +725,10 @@ describe('AppsPage', () => {
         expect(screen.getByText('Workspace layout')).not.toBeNull();
         expect(screen.getByText(/"workspaceLayout"/)).not.toBeNull();
         expect(screen.getByText(/"entry": "tool_workspace"/)).not.toBeNull();
+        expect(screen.getByText('结果契约')).not.toBeNull();
+        expect(screen.getByText(/"resultContract"/)).not.toBeNull();
+        expect(screen.getByText(/"schema": "maclaw.app.result.v1"/)).not.toBeNull();
+        expect(screen.getByText(/"primary": "artifact"/)).not.toBeNull();
         expect(screen.getByText(/"installPolicy": "install_on_app_install"/)).not.toBeNull();
         expect(screen.getByText(/"requiredCount": 1/)).not.toBeNull();
         expect(screen.getByText(/"status": "draft"/)).not.toBeNull();
@@ -905,6 +909,11 @@ describe('AppsPage', () => {
         expect(layout.entry).toBe('tool_workspace');
         expect(layout.template).toBe('document_workspace');
         expect(layout.regionCount).toBeGreaterThan(0);
+        const resultContract = payload.apps[0].app.governance.resultContract;
+        expect(resultContract.schema).toBe('maclaw.app.result.v1');
+        expect(resultContract.primary).toBe('artifact');
+        expect(resultContract.types).toEqual(expect.arrayContaining(['content', 'document', 'artifact']));
+        expect(resultContract.delivery.artifacts).toBe(true);
         const evidence = payload.apps[0].app.governance.testEvidence;
         expect(evidence.runId).toBe('run-test-1');
         expect(evidence.definitionHash).toMatch(/^[0-9a-f]{8}$/);
@@ -1500,6 +1509,21 @@ describe('AppsPage', () => {
         expect(screen.getByDisplayValue('财务')).not.toBeNull();
         expect(screen.getByText(/enterprise_approval_app/)).not.toBeNull();
         expect(screen.getByText(/agent_dynamic_ui/)).not.toBeNull();
+    });
+
+    it('shows and saves the visual result contract in App Studio drafts', () => {
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        expect(within(screen.getByTestId('studio-result-contract')).getByText('Result contract')).not.toBeNull();
+        expect(within(screen.getByTestId('studio-result-contract')).getAllByText('artifact').length).toBeGreaterThan(0);
+        expect(screen.getByText(/"resultContract"/)).not.toBeNull();
+        expect(screen.getByText(/"schema": "maclaw.app.result.v1"/)).not.toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: 'Business app' }));
+        expect(within(screen.getByTestId('studio-result-contract')).getAllByText('business_status').length).toBeGreaterThan(0);
+        fireEvent.click(screen.getByRole('button', { name: 'Approval app' }));
+        expect(within(screen.getByTestId('studio-result-contract')).getAllByText('approval_result').length).toBeGreaterThan(0);
+        expect(within(screen.getByTestId('studio-result-contract')).getByText(/approved \/ rejected/)).not.toBeNull();
     });
 
     it('copies the draft manifest preview to clipboard', async () => {
@@ -2989,6 +3013,11 @@ describe('AppsPage', () => {
             preferredReport: 'sales.customer_activity',
             preferredDashboard: 'sales.overview',
         });
+        expect(created.manifest.resultContract).toMatchObject({
+            schema: 'maclaw.app.result.v1',
+            primary: 'business_status',
+        });
+        expect(created.manifest.resultContract.types).toEqual(expect.arrayContaining(['business_status', 'business_record', 'document']));
         expect(created.manifest.ui.layouts.business_workspace.studio.savedInManifest).toBe(true);
     });
 
@@ -3041,6 +3070,8 @@ describe('AppsPage', () => {
                 preferredReport: 'service.case_report',
                 preferredDashboard: 'service.overview',
             });
+            expect(updated.manifest.resultContract.primary).toBe('business_status');
+            expect(updated.manifest.resultContract.delivery.businessRecord).toBe(true);
         });
 
         unmount();

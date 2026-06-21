@@ -13,6 +13,7 @@ var markdownHorizontalRuleStarRe = regexp.MustCompile(`^\*{3,}$`)
 var markdownOrderedListRe = regexp.MustCompile(`^\d+\.\s`)
 var markdownImageRe = regexp.MustCompile(`^!\[(.*?)\]\((.*?)\)$`)
 var inlineMathSegmentRe = regexp.MustCompile(`\$(.+?)\$`)
+var inlineCodeRe = regexp.MustCompile("`([^`]+)`")
 var inlineBoldRe = regexp.MustCompile(`\*\*(.+?)\*\*`)
 var inlineItalicRe = regexp.MustCompile(`\*(.+?)\*`)
 var sanitizeFileNameRe = regexp.MustCompile(`[<>:"/\\|?*\s]+`)
@@ -355,6 +356,75 @@ func markdownToHTML(md string) string {
 			i = nextIdx
 			continue
 		}
+		if strings.HasPrefix(trimmed, "```") {
+			if listType != "" {
+				closeList()
+			}
+			// Fenced code block — collect lines until closing ```
+			var codeLines []string
+			i++ // skip the opening ``` line
+			for i < len(lines) {
+				if strings.TrimSpace(lines[i]) == "```" {
+					break
+				}
+				codeLines = append(codeLines, lines[i])
+				i++
+			}
+			// i now points to the closing ``` (or past end); outer loop will i++
+			// Render each line with HTML escaping; convert spaces to &nbsp;
+			// to preserve indentation since HTML collapses whitespace
+			var codeHTML strings.Builder
+			for ci, cl := range codeLines {
+				if ci > 0 {
+					codeHTML.WriteString("<br/>")
+				}
+				escaped := escapeHTML(cl)
+				escaped = strings.ReplaceAll(escaped, " ", "&nbsp;")
+				escaped = strings.ReplaceAll(escaped, "\t", "&nbsp;&nbsp;&nbsp;&nbsp;")
+				codeHTML.WriteString(escaped)
+			}
+			sb.WriteString(fmt.Sprintf(`<p style="font-size:8.5pt; font-family:monospace; background-color:#f3f4f6; color:#1f2937; padding:8px; border-radius:4px">%s</p>`, codeHTML.String()))
+			continue
+		}
+		if strings.HasPrefix(trimmed, ">") {
+			if listType != "" {
+				closeList()
+			}
+			// Collect consecutive blockquote lines
+			var bqLines []string
+			for i < len(lines) {
+				bqTrimmed := strings.TrimSpace(lines[i])
+				if strings.HasPrefix(bqTrimmed, "> ") {
+					bqLines = append(bqLines, strings.TrimPrefix(bqTrimmed, "> "))
+					i++
+				} else if bqTrimmed == ">" {
+					bqLines = append(bqLines, "")
+					i++
+				} else if strings.HasPrefix(bqTrimmed, ">") {
+					bqLines = append(bqLines, strings.TrimPrefix(bqTrimmed, ">"))
+					i++
+				} else {
+					break
+				}
+			}
+			i-- // compensate for the outer loop's i++
+			// Render each non-empty line separately, preserving line breaks
+			var bqHTML strings.Builder
+			for idx, line := range bqLines {
+				if line == "" {
+					if idx > 0 && idx < len(bqLines)-1 {
+						bqHTML.WriteString("<br/>")
+					}
+					continue
+				}
+				if bqHTML.Len() > 0 {
+					bqHTML.WriteString("<br/>")
+				}
+				bqHTML.WriteString(renderInlineHTML(line))
+			}
+			sb.WriteString(fmt.Sprintf(`<p style="border-left:3px solid #d1d5db; padding-left:10px; color:#4b5563; margin-left:6px">%s</p>`, bqHTML.String()))
+			continue
+		}
 		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
 			ensureList("ul")
 			text := strings.TrimPrefix(strings.TrimPrefix(trimmed, "- "), "* ")
@@ -567,10 +637,37 @@ func markdownDisplayMathToHTML(lines []string, idx int) (string, int, bool) {
 }
 
 func renderInlineHTML(text string) string {
+	// Step 1: Extract inline code spans before any other processing.
+	// This prevents math ($...$) and bold/italic from parsing inside code.
+	var codePlaceholders []string
+	text = inlineCodeRe.ReplaceAllStringFunc(text, func(match string) string {
+		inner := match[1 : len(match)-1]
+		idx := len(codePlaceholders)
+		// Pre-render the code span with its content HTML-escaped
+		rendered := fmt.Sprintf(`<span style="font-family:monospace; background-color:#f3f4f6; padding:1px 3px; font-size:9pt">%s</span>`, escapeHTML(inner))
+		codePlaceholders = append(codePlaceholders, rendered)
+		return fmt.Sprintf("\x1aCODE_%d\x1a", idx) // Use SUB character as sentinel
+	})
+
+	// Step 2: Process math segments on the remaining text (no code spans)
 	text = renderMathSegments(text)
+
+	// Step 3: HTML-escape the text (protects against injection)
 	text = escapeHTML(text)
+
+	// Step 4: Restore math-generated HTML tags (<sub>, <sup>, <span>)
 	text = restoreMathHTML(text)
-	return inlineMD(text)
+
+	// Step 5: Process bold and italic
+	text = inlineBoldRe.ReplaceAllString(text, "<b>$1</b>")
+	text = inlineItalicRe.ReplaceAllString(text, "<i>$1</i>")
+
+	// Step 6: Restore code span placeholders
+	for idx, rendered := range codePlaceholders {
+		text = strings.Replace(text, fmt.Sprintf("\x1aCODE_%d\x1a", idx), rendered, 1)
+	}
+
+	return text
 }
 
 func renderMathSegments(text string) string {
@@ -849,6 +946,11 @@ func restoreMathHTML(text string) string {
 }
 
 func inlineMD(text string) string {
+	// Inline code must be processed first to protect its content from bold/italic
+	text = inlineCodeRe.ReplaceAllStringFunc(text, func(match string) string {
+		inner := match[1 : len(match)-1] // strip backticks
+		return fmt.Sprintf(`<span style="font-family:monospace; background-color:#f3f4f6; padding:1px 3px; font-size:9pt">%s</span>`, inner)
+	})
 	text = inlineBoldRe.ReplaceAllString(text, "<b>$1</b>")
 	text = inlineItalicRe.ReplaceAllString(text, "<i>$1</i>")
 	return text

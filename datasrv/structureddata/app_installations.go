@@ -91,15 +91,50 @@ func appInstallationAuditMetadata(app AppInstallation) map[string]any {
 	if app.Source != "" {
 		metadata["source"] = app.Source
 	}
-	for _, key := range []string{"app_skill_id", "workflow_skill_ids", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "governance_status", "governance_risk_level"} {
+	for _, key := range []string{"app_skill_id", "workflow_skill_ids", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "result_contract_primary", "result_contract_types", "governance_status", "governance_risk_level"} {
 		if value, ok := app.Metadata[key]; ok {
 			metadata[key] = value
+		}
+	}
+	if resultContract := appInstallationResultContract(app.Metadata["result_contract"]); resultContract != nil {
+		if primary, _ := resultContract["primary"].(string); strings.TrimSpace(primary) != "" {
+			metadata["result_contract_primary"] = strings.TrimSpace(primary)
+		}
+		if types := appInstallationStringList(resultContract["types"]); len(types) > 0 {
+			metadata["result_contract_types"] = types
 		}
 	}
 	if dependencyIDs := appInstallationDependencyIDs(app.Metadata["dependencies"]); len(dependencyIDs) > 0 {
 		metadata["dependency_ids"] = dependencyIDs
 	}
 	return metadata
+}
+
+func appInstallationResultContract(value any) map[string]any {
+	contract, _ := value.(map[string]any)
+	return contract
+}
+
+func appInstallationStringList(value any) []string {
+	out := []string{}
+	add := func(text string) {
+		text = strings.TrimSpace(text)
+		if text != "" {
+			out = append(out, text)
+		}
+	}
+	switch items := value.(type) {
+	case []string:
+		for _, item := range items {
+			add(item)
+		}
+	case []any:
+		for _, item := range items {
+			text, _ := item.(string)
+			add(text)
+		}
+	}
+	return out
 }
 
 func appInstallationDependencyIDs(value any) []string {

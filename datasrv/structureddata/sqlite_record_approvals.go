@@ -79,6 +79,31 @@ func (s *SQLiteStore) ListRecordApprovals(ctx context.Context, tenantID string, 
 		clauses = append(clauses, "assigned_to = ?")
 		args = append(args, assignedTo)
 	}
+	if createdBy := strings.TrimSpace(in.CreatedBy); createdBy != "" {
+		clauses = append(clauses, "created_by = ?")
+		args = append(args, createdBy)
+	}
+	if reviewedBy := strings.TrimSpace(in.ReviewedBy); reviewedBy != "" {
+		clauses = append(clauses, "reviewed_by = ?")
+		args = append(args, reviewedBy)
+	}
+	if lane := strings.ToLower(strings.TrimSpace(in.Lane)); lane != "" && lane != "all" {
+		userID := strings.TrimSpace(in.UserID)
+		switch lane {
+		case "my_requests":
+			clauses = append(clauses, "created_by = ?")
+			args = append(args, userID)
+		case "pending_my_approval":
+			clauses = append(clauses, "status = ? AND assigned_to = ?")
+			args = append(args, recordApprovalStatusPending, userID)
+		case "handled":
+			clauses = append(clauses, "status IN (?, ?) AND reviewed_by = ?")
+			args = append(args, recordApprovalStatusApproved, recordApprovalStatusRejected, userID)
+		case "attention":
+			clauses = append(clauses, "(business_status = ? OR result_status = ? OR kind = ?)")
+			args = append(args, "attention", "attention", "attention")
+		}
+	}
 	if in.Overdue {
 		clauses = append(clauses, "status = ? AND due_at != '' AND due_at < ?")
 		args = append(args, recordApprovalStatusPending, formatTime(time.Now().UTC()))

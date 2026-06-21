@@ -141,6 +141,8 @@ export type AgentView =
         variants?: AgentViewVariant[];
         formErrors?: string[];
         submitLabel?: string;
+        /** When true, the form supports auto-fill from an uploaded resume/CV document. */
+        accepts_resume?: boolean;
     }
     | {
         type: "wizard";

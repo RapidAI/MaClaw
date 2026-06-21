@@ -113,12 +113,28 @@ func (s *Service) ListRecordApprovals(ctx context.Context, p Principal, in Query
 	in.BusinessStatus = strings.TrimSpace(in.BusinessStatus)
 	in.ResultStatus = strings.TrimSpace(in.ResultStatus)
 	in.AssignedTo = strings.TrimSpace(in.AssignedTo)
+	in.CreatedBy = strings.TrimSpace(in.CreatedBy)
+	in.ReviewedBy = strings.TrimSpace(in.ReviewedBy)
+	in.Lane = strings.TrimSpace(in.Lane)
+	if in.Lane != "" && !validRecordApprovalLane(in.Lane) {
+		return nil, fmt.Errorf("%w: invalid approval lane", ErrInvalidInput)
+	}
+	in.UserID = p.UserID
 	return s.store.ListRecordApprovals(ctx, p.TenantID, in)
 }
 
 func validRecordApprovalStatus(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case recordApprovalStatusPending, recordApprovalStatusApproved, recordApprovalStatusRejected:
+		return true
+	default:
+		return false
+	}
+}
+
+func validRecordApprovalLane(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "my_requests", "pending_my_approval", "handled", "attention", "all":
 		return true
 	default:
 		return false
@@ -226,12 +242,17 @@ func (s *Service) syncBusinessRecordFromApproval(ctx context.Context, p Principa
 	setString("status", approvalBusinessRecordStatus(approval))
 	setString("business_status", approval.BusinessStatus)
 	setString("result_status", approval.ResultStatus)
+	setString("app_id", approval.AppID)
+	setString("blueprint_id", approval.BlueprintID)
+	setString("object_role", approval.ObjectRole)
 	setString("approval_status", approval.Status)
+	setString("approval_lane", approvalBusinessRecordLane(approval))
 	setString("approval_decision", approval.Decision)
 	setString("approval_id", approval.ID)
 	setString("approval_workflow_instance_id", approval.WorkflowInstanceID)
 	setString("approval_workflow_skill_id", approval.WorkflowSkillID)
 	setString("approval_workflow_node_id", approval.WorkflowNodeID)
+	setString("approval_current_node", approval.WorkflowNodeID)
 	setString("approval_current_assignee", approval.AssignedTo)
 	if !changed {
 		return false, nil
@@ -246,6 +267,16 @@ func (s *Service) syncBusinessRecordFromApproval(ctx context.Context, p Principa
 	return true, nil
 }
 
+func approvalBusinessRecordLane(approval RecordApproval) string {
+	switch strings.TrimSpace(approval.Status) {
+	case recordApprovalStatusApproved, recordApprovalStatusRejected:
+		return "handled"
+	case recordApprovalStatusPending:
+		return "pending_my_approval"
+	default:
+		return ""
+	}
+}
 func approvalBusinessRecordStatus(approval RecordApproval) string {
 	if businessRecord, ok := approval.ResultPayload["business_record"].(map[string]any); ok {
 		if status, ok := businessRecord["status"].(string); ok && strings.TrimSpace(status) != "" {

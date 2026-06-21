@@ -792,6 +792,10 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 			"phase_id": phase.ID,
 		},
 	}
+	// Declare resume upload capability — frontend renders file upload entry at form top
+	if schema.AcceptsResume {
+		view["accepts_resume"] = true
+	}
 	// Pass through variants (mutually exclusive field groups) if defined.
 	if len(schema.Variants) > 0 {
 		variants := make([]map[string]interface{}, 0, len(schema.Variants))

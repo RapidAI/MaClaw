@@ -62,15 +62,21 @@ func PrefillFromRecall(ctx context.Context, schema *PhaseInputSchema, existing m
 	}
 
 	// Collect fields that need recall
+	schemaHasReusable := SchemaHasReusableFields(schema)
 	var needRecall []PhaseInputField
 	for _, field := range schema.Fields {
 		if _, ok := existing[field.Name]; ok {
 			continue
 		}
-		if !ShouldPrefill(field.Name) {
+		if !ShouldRecallPrefill(field, schemaHasReusable) {
 			continue
 		}
-		if field.Type == "textarea" && field.Required && !isFactualTextareaField(field.Name) {
+		// Gate: skip required textarea fields that are likely creative/task-specific
+		// content (e.g. "core_question", "hypothesis"). However, if the field explicitly
+		// declares Reusable=true, it has already passed ShouldRecallPrefill — the
+		// template author has explicitly said "this textarea is factual and recallable",
+		// so we trust that declaration over the legacy isFactualTextareaField whitelist.
+		if field.Type == "textarea" && field.Required && !field.Reusable && !isFactualTextareaField(field.Name) {
 			continue
 		}
 		needRecall = append(needRecall, field)

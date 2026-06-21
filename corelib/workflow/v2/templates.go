@@ -33,6 +33,17 @@ type PhaseInputSchema struct {
 	Description string              `json:"description,omitempty"`
 	Fields      []PhaseInputField   `json:"fields"`
 	Variants    []PhaseInputVariant `json:"variants,omitempty"`
+
+	// AcceptsResume declares that this form can be auto-populated from a resume/CV
+	// document. When true, the frontend renders a "上传简历" file upload entry at the
+	// top of the form. If the user uploads a document, the backend parses it via LLM
+	// and maps extracted fields to the form schema — the user then reviews and submits.
+	// If the user does not upload, the system falls back to memory/knowledge recall.
+	//
+	// Typical use: academic application forms (长江学者, 国自然, 优青, etc.) where
+	// most fields (name, institution, H-index, publications, education) can be
+	// extracted from a standard academic CV.
+	AcceptsResume bool `json:"accepts_resume,omitempty"`
 }
 
 // PhaseInputVariant defines a mutually exclusive field group.
@@ -55,6 +66,17 @@ type PhaseInputField struct {
 	Placeholder string             `json:"placeholder,omitempty"`
 	Options     []PhaseInputOption `json:"options,omitempty"`
 	Default     interface{}        `json:"default,omitempty"`
+
+	// Reusable declares that this field represents stable personal/institutional
+	// information that is consistent across different workflow instances (e.g. name,
+	// institution, discipline, H-index). When true:
+	//   - After form submission, the value is sedimented to long-term memory as user_fact.
+	//   - On future form renders, the prefill system actively recalls this field from memory.
+	// When false (default), the field is considered task-specific (e.g. project_title,
+	// hypothesis) and is neither sedimented nor recalled.
+	// This is the single source of truth for prefill/sediment eligibility — no hardcoded
+	// whitelist outside the template definition.
+	Reusable bool `json:"reusable,omitempty"`
 }
 
 // PhaseInputOption defines a selectable option for select/multiselect fields.
@@ -818,12 +840,11 @@ func PaperReproductionTemplate() *WorkflowTemplate {
 }
 
 // ChangjiangScholarTemplate defines the Changjiang Scholar (长江学者) application workflow.
-// This is a comprehensive academic talent program application that requires:
-// - Personal qualifications and eligibility assessment
-// - Systematic summary of academic achievements and representative works
-// - Research plan for the appointment period (聘期)
-// - Talent cultivation and team building plans
-// - Final integration of recommendation letters and complete application document
+//
+// Deprecated: This function is superseded by BuildAcademicApplicationTemplate(ChangjiangScholarProfile()).
+// It is retained only for backward compatibility with persisted workflow states that use the old
+// phase IDs (cj_personal_profile, cj_academic_achievements, etc.). New workflows use the factory-
+// generated template. Do NOT call this function for new registrations.
 func ChangjiangScholarTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
 		Type:        "changjiang_scholar",
@@ -833,27 +854,28 @@ func ChangjiangScholarTemplate() *WorkflowTemplate {
 		Phases: []PhaseTemplate{
 			{ID: "cj_personal_profile", Name: "个人资质与申报条件梳理", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
 				InputSchema: &PhaseInputSchema{
-					Title:       "长江学者申请人基本信息",
-					Description: "请填写申请人的基本信息，系统将基于这些信息评估申报条件并生成资质梳理文档。",
+					Title:         "长江学者申请人基本信息",
+					Description:   "请填写申请人的基本信息，系统将基于这些信息评估申报条件并生成资质梳理文档。\n💡 支持上传简历/CV自动填充：上传后系统自动提取信息，您只需微调后提交。",
+					AcceptsResume: true,
 					Fields: []PhaseInputField{
-						{Name: "name", Label: "姓名", Type: "text", Required: true},
-						{Name: "gender", Label: "性别", Type: "select", Required: true, Options: []PhaseInputOption{
+						{Name: "name", Label: "姓名", Type: "text", Required: true, Reusable: true},
+						{Name: "gender", Label: "性别", Type: "select", Required: true, Reusable: true, Options: []PhaseInputOption{
 							{Label: "男", Value: "男"}, {Label: "女", Value: "女"},
 						}},
-						{Name: "birth_date", Label: "出生日期", Type: "text", Required: true, Placeholder: "如：1980年5月"},
+						{Name: "birth_date", Label: "出生日期", Type: "text", Required: true, Reusable: true, Placeholder: "如：1980年5月"},
 						{Name: "category", Label: "申报类别", Type: "select", Required: true, Options: []PhaseInputOption{
 							{Label: "特聘教授", Value: "特聘教授"},
 							{Label: "讲座教授", Value: "讲座教授"},
 							{Label: "青年学者", Value: "青年学者"},
 						}},
-						{Name: "discipline", Label: "学科领域", Type: "text", Required: true, Placeholder: "如：计算机科学与技术"},
-						{Name: "institution", Label: "现工作单位", Type: "text", Required: true, Placeholder: "如：XX大学 XX学院"},
-						{Name: "title", Label: "现任职称", Type: "text", Required: true, Placeholder: "如：教授/研究员"},
-						{Name: "education", Label: "教育背景", Type: "textarea", Required: true, Placeholder: "按时间顺序列出：\n本科：XX大学，专业，年份\n硕士：XX大学，专业，年份\n博士：XX大学，专业，年份"},
-						{Name: "research_direction", Label: "主要研究方向", Type: "textarea", Required: true, Placeholder: "2-3个核心研究方向"},
-						{Name: "h_index", Label: "H指数", Type: "text", Placeholder: "如：35"},
-						{Name: "total_papers", Label: "SCI/SSCI论文总数", Type: "text", Placeholder: "如：120"},
-						{Name: "key_achievements", Label: "主要学术亮点（3-5项）", Type: "textarea", Placeholder: "列出最突出的成果，如高影响力论文、国家项目、重要奖项"},
+						{Name: "discipline", Label: "学科领域", Type: "text", Required: true, Reusable: true, Placeholder: "如：计算机科学与技术"},
+						{Name: "institution", Label: "现工作单位", Type: "text", Required: true, Reusable: true, Placeholder: "如：XX大学 XX学院"},
+						{Name: "title", Label: "现任职称", Type: "text", Required: true, Reusable: true, Placeholder: "如：教授/研究员"},
+						{Name: "education", Label: "教育背景", Type: "textarea", Required: true, Reusable: true, Placeholder: "按时间顺序列出：\n本科：XX大学，专业，年份\n硕士：XX大学，专业，年份\n博士：XX大学，专业，年份"},
+						{Name: "research_direction", Label: "主要研究方向", Type: "textarea", Required: true, Reusable: true, Placeholder: "2-3个核心研究方向"},
+						{Name: "h_index", Label: "H指数", Type: "text", Reusable: true, Placeholder: "如：35"},
+						{Name: "total_papers", Label: "SCI/SSCI论文总数", Type: "text", Reusable: true, Placeholder: "如：120"},
+						{Name: "key_achievements", Label: "主要学术亮点（3-5项）", Type: "textarea", Reusable: true, Placeholder: "列出最突出的成果，如高影响力论文、国家项目、重要奖项"},
 					},
 				},
 			},
@@ -906,27 +928,28 @@ func NSFCDistinguishedYouthTemplate() *WorkflowTemplate {
 		Phases: []PhaseTemplate{
 			{ID: "dy_eligibility", Name: "申请人资质与条件评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
 				InputSchema: &PhaseInputSchema{
-					Title:       "杰青申请人基本信息",
-					Description: "请填写申请人的基本信息，系统将评估是否满足杰青申报条件并分析学科竞争态势。",
+					Title:         "杰青申请人基本信息",
+					Description:   "请填写申请人的基本信息，系统将评估是否满足杰青申报条件并分析学科竞争态势。\n💡 支持上传简历/CV自动填充。",
+					AcceptsResume: true,
 					Fields: []PhaseInputField{
-						{Name: "name", Label: "姓名", Type: "text", Required: true},
-						{Name: "gender", Label: "性别", Type: "select", Required: true, Options: []PhaseInputOption{
+						{Name: "name", Label: "姓名", Type: "text", Required: true, Reusable: true},
+						{Name: "gender", Label: "性别", Type: "select", Required: true, Reusable: true, Options: []PhaseInputOption{
 							{Label: "男", Value: "男"}, {Label: "女", Value: "女"},
 						}},
-						{Name: "birth_date", Label: "出生日期", Type: "text", Required: true, Placeholder: "如：1982年3月（杰青要求男性<45岁，女性<48岁）"},
-						{Name: "nationality", Label: "国籍", Type: "text", Required: true, Default: "中国"},
-						{Name: "institution", Label: "现工作单位", Type: "text", Required: true, Placeholder: "如：XX大学 XX学院"},
-						{Name: "title", Label: "职称", Type: "text", Required: true, Placeholder: "如：教授/研究员"},
-						{Name: "degree", Label: "最高学位", Type: "select", Required: true, Options: []PhaseInputOption{
+						{Name: "birth_date", Label: "出生日期", Type: "text", Required: true, Reusable: true, Placeholder: "如：1982年3月（杰青要求男性<45岁，女性<48岁）"},
+						{Name: "nationality", Label: "国籍", Type: "text", Required: true, Reusable: true, Default: "中国"},
+						{Name: "institution", Label: "现工作单位", Type: "text", Required: true, Reusable: true, Placeholder: "如：XX大学 XX学院"},
+						{Name: "title", Label: "职称", Type: "text", Required: true, Reusable: true, Placeholder: "如：教授/研究员"},
+						{Name: "degree", Label: "最高学位", Type: "select", Required: true, Reusable: true, Options: []PhaseInputOption{
 							{Label: "博士", Value: "博士"}, {Label: "硕士", Value: "硕士"},
 						}},
-						{Name: "discipline_code", Label: "申报学科代码", Type: "text", Placeholder: "如：F06 人工智能"},
-						{Name: "research_field", Label: "研究领域", Type: "text", Required: true, Placeholder: "如：自然语言处理、大规模语言模型"},
-						{Name: "prior_nsfc", Label: "已获NSFC资助情况", Type: "textarea", Placeholder: "如：\n面上项目 2020-2023\n优青 2021-2024"},
-						{Name: "h_index", Label: "H指数", Type: "text", Placeholder: "如：42"},
-						{Name: "total_citations", Label: "总引用数", Type: "text", Placeholder: "如：8500"},
-						{Name: "representative_papers", Label: "代表性论文数（Nature/Science子刊等顶刊）", Type: "text", Placeholder: "如：5篇Nature子刊"},
-						{Name: "awards", Label: "主要获奖", Type: "textarea", Placeholder: "如：\n国家自然科学二等奖 2022\n省部级一等奖 2020"},
+						{Name: "discipline_code", Label: "申报学科代码", Type: "text", Reusable: true, Placeholder: "如：F06 人工智能"},
+						{Name: "research_field", Label: "研究领域", Type: "text", Required: true, Reusable: true, Placeholder: "如：自然语言处理、大规模语言模型"},
+						{Name: "prior_nsfc", Label: "已获NSFC资助情况", Type: "textarea", Reusable: true, Placeholder: "如：\n面上项目 2020-2023\n优青 2021-2024"},
+						{Name: "h_index", Label: "H指数", Type: "text", Reusable: true, Placeholder: "如：42"},
+						{Name: "total_citations", Label: "总引用数", Type: "text", Reusable: true, Placeholder: "如：8500"},
+						{Name: "representative_papers", Label: "代表性论文数（Nature/Science子刊等顶刊）", Type: "text", Reusable: true, Placeholder: "如：5篇Nature子刊"},
+						{Name: "awards", Label: "主要获奖", Type: "textarea", Reusable: true, Placeholder: "如：\n国家自然科学二等奖 2022\n省部级一等奖 2020"},
 					},
 				},
 			},
@@ -1371,18 +1394,23 @@ func RegisterBuiltinTemplates(r *TemplateRegistry) {
 	r.Register(GrantProposalTemplate())
 	r.Register(PaperWritingTemplate())
 	r.Register(PaperReproductionTemplate())
-	r.Register(ChangjiangScholarTemplate())
+	// Academic application templates — generated from parametric FundingProfiles.
+	// Adding a new funding type only requires defining a FundingProfile in academic_profiles.go.
+	r.Register(BuildAcademicApplicationTemplate(ChangjiangScholarProfile()))
+	r.Register(BuildAcademicApplicationTemplate(NSFCDistinguishedYouthProfile()))
+	r.Register(BuildAcademicApplicationTemplate(NSFCExcellentYouthProfile()))
+	r.Register(BuildAcademicApplicationTemplate(NSFCYouthProfile()))
+	r.Register(BuildAcademicApplicationTemplate(NSFCGeneralProfile()))
+	r.Register(BuildAcademicApplicationTemplate(NSFCKeyProfile()))
+
+	// Academic review templates (kept as-is — different structure, not parametrizable with application factory)
 	r.Register(ChangjiangScholarReviewTemplate())
-	r.Register(NSFCDistinguishedYouthTemplate())
-	r.Register(NSFCExcellentYouthTemplate())
-	r.Register(NSFCYouthTemplate())
-	r.Register(NSFCGeneralTemplate())
-	r.Register(NSFCKeyTemplate())
 	r.Register(NSFCDistinguishedYouthReviewTemplate())
 	r.Register(NSFCExcellentYouthReviewTemplate())
 	r.Register(NSFCYouthReviewTemplate())
 	r.Register(NSFCGeneralReviewTemplate())
 	r.Register(NSFCKeyReviewTemplate())
+
 	r.Register(PatentApplicationTemplate())
 	r.Register(USPatentApplicationTemplate())
 }

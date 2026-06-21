@@ -605,8 +605,8 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		map[string]interface{}{
 			"action":    map[string]string{"type": "string", "description": "操作类型: generate_pdf/read_excel/write_excel/read_pptx"},
 			"content":   map[string]string{"type": "string", "description": "Markdown 格式的文档内容（generate_pdf 时必填）"},
-			"title":     map[string]string{"type": "string", "description": "文档标题（generate_pdf 时可选，可本地化；不要把标题当作文件名）"},
-			"doc_type":  map[string]string{"type": "string", "description": "文档类型: requirements/design/task_plan（generate_pdf 时可选）。生成文件名使用稳定 ASCII 前缀，展示标题可本地化。"},
+			"title":     map[string]string{"type": "string", "description": "文档标题，显示在 PDF 封面（generate_pdf 时可选）"},
+			"doc_type":  map[string]string{"type": "string", "description": "文档类型（generate_pdf 时可选）: requirements/design/task_plan。影响文件名前缀，不传则使用通用前缀。"},
 			"phase_id":  map[string]string{"type": "string", "description": workflowDocGeneratePDFPhaseIDSchemaDescription()},
 			"file_path": map[string]string{"type": "string", "description": "文件路径（read_excel/write_excel/read_pptx 时必填）"},
 			"sheet":     map[string]string{"type": "string", "description": "工作表名称（read_excel 时可选，默认第一个工作表）"},
@@ -635,13 +635,13 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolMISData(args) })
 
-	// --- PDF generation tool (coding workflow only) - backward-compatible alias ---
-	reg("generate_pdf", "生成 PDF 文档并发送给用户。仅用于编程流程的需求文档、技术设计文档、任务拆分文档。严禁用于资料收集、翻译、内容整理等非编程流程任务的 Markdown 转 PDF。参数 doc_type 可选: requirements（需求文档）、design（设计文档）、task_plan（任务计划）。生成文件名使用稳定 ASCII，展示标题可本地化。",
+	// --- PDF generation tool - backward-compatible alias ---
+	reg("generate_pdf", "生成 PDF 文档并发送给用户。将 Markdown 内容渲染为专业排版的 PDF 文件。参数 title 用作 PDF 封面标题，doc_type 可选用于文件名前缀分类。",
 		ToolCategoryBuiltin, []string{"pdf", "document", "generate"},
 		map[string]interface{}{
 			"content":  map[string]string{"type": "string", "description": "Markdown 格式的文档内容"},
-			"title":    map[string]string{"type": "string", "description": "项目名称或文档标题（可本地化；不要把标题当作文件名）"},
-			"doc_type": map[string]string{"type": "string", "description": "文档类型: requirements（需求文档）、design（设计文档）、task_plan（任务计划）。不传则为通用文档。文件名使用稳定 ASCII 前缀。"},
+			"title":    map[string]string{"type": "string", "description": "文档标题，显示在 PDF 封面（如「竞品分析报告」「需求文档」等）"},
+			"doc_type": map[string]string{"type": "string", "description": "文档类型（可选）: requirements/design/task_plan。影响文件名前缀，不传则使用通用前缀。"},
 			"phase_id": map[string]string{"type": "string", "description": workflowDocGeneratePDFPhaseIDSchemaDescription()},
 		}, []string{"content"},
 		func(args map[string]interface{}) string {

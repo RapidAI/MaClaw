@@ -433,6 +433,9 @@ func openAPISpec(version string) map[string]interface{} {
 			stringQueryParam("business_status", "Filter approvals by business-facing workflow status."),
 			stringQueryParam("result_status", "Filter approvals by machine-readable result status."),
 			stringQueryParam("assigned_to", "Filter approvals by assignee."),
+			stringQueryParam("created_by", "Filter approvals by requester user id."),
+			stringQueryParam("reviewed_by", "Filter approvals by reviewer user id."),
+			stringQueryParam("lane", "Approval center lane: my_requests, pending_my_approval, handled, attention, or all. Lane is evaluated for the authenticated user."),
 			boolQueryParam("overdue", "Only return overdue approvals when true."),
 		},
 		"/api/v1/data/datasets/{datasetId}/schema-proposals": {

@@ -6412,3 +6412,95 @@ RemoteCodingSubAgent 启动后注册到 GUI 的任务监控系统：
 - Tag `V1.3.0-beta.1` 推送后 CI 自动发布到 beta channel（beta.json + /beta/ 目录）
 - 安装包正在构建时前端显示友好提示
 - 所有修改文件 diagnostics 通过（仅 pre-existing llm_stream.go unreachable 警告）
+
+
+### 112. 学术申请工作流统一参数化 + 表单智能预填充机制
+
+**来源**：用户反馈——长江学者申请表单未从知识库自动预填信息；长江/杰青/优青/青基/面上/重点 6 个模板代码高度重复。
+
+#### 根因分析
+
+1. **预填充未生效**：memory 中有用户信息但 `RecallDynamic` 的 BM25 query（字段 Label）与存储格式（自然语言）匹配度低；`sedimentableFields` 白名单不覆盖学术字段
+2. **6 个模板重复**：90% 代码相同（流程骨架、NeedsConfirm/DocOnly 属性、表单通用字段），差异仅在评审标准、特有字段、prompt 侧重点
+
+#### 修复（机制性重构）
+
+##### A. 参数化学术申请模板工厂
+
+- `corelib/workflow/v2/academic_application.go`：
+  - `FundingProfile` 结构体：完整描述一种基金的所有差异（Category/AgeLimit/FormTitle/ExtraFields/OmitCommon/Emphasis/ReviewCriteria）
+  - `FundingCategory`（`talent` vs `project`）：决定 Phase 2-4 的 prompt 结构
+  - `BuildAcademicApplicationTemplate(profile)` 工厂函数：从 Profile 生成完整 5-phase WorkflowTemplate
+  - `AcademicPhaseInstruction(phaseID, profile)` 参数化 prompt 生成器
+  - `commonAcademicFields(ageHint)` 共享字段定义（Reusable=true）
+
+- `corelib/workflow/v2/academic_profiles.go`：
+  - 6 种基金的 Profile 数据定义（纯数据，各 ~40 行）
+  - `academicProfiles` 静态注册表
+  - `academicPhaseIDIndex` 预计算 O(1) phase ID 查找索引
+  - `IsAcademicApplicationPhase(phaseID)` 精确匹配（known suffixes 集合，不误匹配 review 模板）
+  - `GetAcademicProfile(workflowType)` 查询接口
+
+##### B. 字段级 Reusable 声明
+
+- `PhaseInputField.Reusable bool`：模板声明哪些字段是稳定个人信息
+- `ShouldRecallPrefill(field, schemaHasAnyReusable)` / `ShouldSediment(field, schemaHasAnyReusable)`：Reusable 是预填和沉淀的单一控制源
+- `SchemaHasReusableFields(schema)`：区分新模板（用 Reusable）和旧模板（legacy 白名单 fallback）
+- 向后兼容：无 Reusable 字段的旧模板仍用 `sedimentableFields` 白名单
+
+##### C. 简历上传自动填充
+
+- `PhaseInputSchema.AcceptsResume bool`：模板声明是否支持简历上传
+- `corelib/workflow/v2/prefill_resume.go`：LLM 结构化提取（schema-guided）
+  - `ParseResumeForSchema(ctx, req, llm)` → 结构化 JSON 提取
+  - `ResumeParseResultToPrefilled(result, schema)` → 标准 prefill map（过滤未知字段）
+  - `extractJSONWithFieldsKey(raw)` → 字符串感知的 brace depth JSON 提取
+  - prompt 自动跳过 `noPrefillFieldNames` 中的字段
+- `gui/workflow_v2_resume_parse.go`：Wails binding `ParseResumeForWorkflowForm`
+  - 文件提取：PDF（pymupdf）/ DOCX（python-docx）via `sys.argv[1]` 安全传参
+  - 30s 超时保护
+  - `sanitizeExtractedText` 清理 null bytes/控制字符
+  - 提取后自动沉淀到记忆（下次无需上传）
+  - `classifyResumeParseError` 友好错误提示
+- 前端 `AgentTaskPanel.tsx`：`ResumeUploadSection` 组件
+  - 只填充空字段，不覆盖用户手动编辑
+  - `accepts_resume` 类型声明（`agentViewTypes.ts`）
+
+##### D. 预填充优先级链
+
+```
+Priority 1: 简历文档（用户上传，LLM 提取）
+Priority 2: 记忆 + 知识库 recall（Reusable=true 字段）
+Priority 3: 对话上下文（规则提取）
+Priority 4: 空白（用户手动填写）
+```
+
+沉淀循环：用户提交表单 → Reusable 字段沉淀到 memory → 下次同类/不同模板自动 recall
+
+##### E. phaseInstruction 委托
+
+- `phase_prompt.go` 顶部新增 `IsAcademicApplicationPhase` 检查
+- 新 phase ID 走工厂参数化 prompt
+- 旧 phase ID（persisted workflows）fall through 到 switch 旧 case（向后兼容）
+
+##### F. 文件名映射补全
+
+- `gui/workflow_phase_file_name.go`：新增 30 条新 phase ID → 文件名映射
+
+**新增基金类型的完整步骤**：
+1. `academic_profiles.go` 新增 `XxxProfile()` 函数（~30 行数据声明）
+2. `academic_profiles.go` 的 `academicProfiles` map 加一行
+3. `academic_application.go` 的 `inferPhasePrefix` switch 加一行
+4. `templates.go` 的 `RegisterBuiltinTemplates` 加一行
+5. `gui/workflow_phase_file_name.go` 加 5 行映射
+
+不需要：写模板函数、加 phase prompt case、改预填充逻辑、改前端组件。
+
+**验收标准**：
+- 6 个学术模板均从 `BuildAcademicApplicationTemplate(Profile())` 生成
+- 长江学者表单：Reusable 字段从记忆预填（第二次起）
+- 简历上传：PDF/DOCX 自动提取填充表单字段
+- 跨模板复用：长江学者填的信息，杰青/优青自动 recall
+- Talent 类型（长江/杰青/优青）生成不同于 Project 类型（青基/面上/重点）的 prompt
+- 29 个新增测试全部 PASS + 全量 v2 包 30s 测试零回归
+- `go build` + `go vet` 零错误

@@ -6,7 +6,7 @@ import "strings"
 // Only values with a verifiable source are populated — no LLM inference/hallucination.
 type PrefilledValue struct {
 	Value        interface{} `json:"value"`                   // the pre-filled value
-	Source       string      `json:"source"`                  // "context" | "memory" | "web"
+	Source       string      `json:"source"`                  // "context" | "memory" | "knowledge" | "resume" | "web"
 	SourceDetail string      `json:"source_detail,omitempty"` // memory entry summary / URL / quote from message
 	Confidence   float64     `json:"confidence"`              // 0-1, for UI display hints
 	NeedsConfirm bool        `json:"needs_confirm"`           // true = user must explicitly confirm (web source)
@@ -34,8 +34,56 @@ var noPrefillFieldNames = map[string]bool{
 }
 
 // ShouldPrefill returns whether a field is eligible for auto-prefill.
+// A field is eligible if it is not in the noPrefillFieldNames blacklist.
+// For recall-based prefill (Phase 2), use ShouldRecallPrefill which additionally
+// checks the Reusable flag.
 func ShouldPrefill(fieldName string) bool {
 	return !noPrefillFieldNames[fieldName]
+}
+
+// ShouldRecallPrefill returns whether a field should be actively recalled from
+// memory/knowledge for prefill. This is a stricter check than ShouldPrefill:
+// the field must not be blacklisted AND must be declared Reusable by the template.
+//
+// Design: templates are the single source of truth for what constitutes "stable
+// personal information worth recalling". This replaces the old hardcoded
+// sedimentableFields whitelist in the GUI layer.
+//
+// For backward compatibility: if no field in the schema has Reusable=true
+// (legacy templates not yet annotated), all non-blacklisted fields remain
+// eligible for recall (old behavior). This ensures existing templates don't
+// regress while new templates get precise control.
+func ShouldRecallPrefill(field PhaseInputField, schemaHasAnyReusable bool) bool {
+	if noPrefillFieldNames[field.Name] {
+		return false
+	}
+	// If the schema has at least one Reusable field, use Reusable as the gate.
+	// Otherwise (legacy schema), allow all non-blacklisted fields (old behavior).
+	if schemaHasAnyReusable {
+		return field.Reusable
+	}
+	return true
+}
+
+// SchemaHasReusableFields checks if any field in the schema declares Reusable=true.
+// Used to distinguish annotated templates from legacy unannotated ones.
+func SchemaHasReusableFields(schema *PhaseInputSchema) bool {
+	if schema == nil {
+		return false
+	}
+	for _, f := range schema.Fields {
+		if f.Reusable {
+			return true
+		}
+	}
+	return false
+}
+
+// ShouldSediment returns whether a field's value should be sedimented to long-term
+// memory after form submission. Same logic as ShouldRecallPrefill — the Reusable
+// flag is the single source of truth for both directions (recall ← → sediment).
+func ShouldSediment(field PhaseInputField, schemaHasAnyReusable bool) bool {
+	return ShouldRecallPrefill(field, schemaHasAnyReusable)
 }
 
 // PrefillFromContext extracts form field values from the user's message text

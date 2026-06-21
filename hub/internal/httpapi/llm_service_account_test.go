@@ -183,6 +183,67 @@ func TestGetLLMServiceAccountHandlerDoesNotActivateQueuedHubCenterCard(t *testin
 	}
 }
 
+func TestGetLLMServiceAccountHandlerHubCenterPeriodLimitedKeepsRemainingButNotAvailable(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken := issueViewerTokenForTenant(t, identity, "tenant_acme", "limited@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	tenantSystem := scopedSystemSettingsForTenant("tenant_acme", system)
+	now := time.Now().UTC()
+
+	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "maclaw_official_group", Name: "MaClaw Official"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	accessCtrl := llmservice.NewTenantLLMAccessControl(nil)
+	accessCtrl.UpdateFromHeartbeat("tenant_acme", &llmservice.TenantAuthorizationStatus{
+		HubID:    "hub-1",
+		TenantID: "tenant_acme",
+		Authorizations: []llmservice.AuthorizationSummary{{
+			ID:               "auth-period-limited",
+			ServiceGroupID:   "maclaw_official_group",
+			CreditsTotal:     1000,
+			CreditsUsed:      100,
+			CreditsRemaining: 900,
+			StartsAt:         now.Add(-time.Hour).Format(time.RFC3339),
+			ExpiresAt:        now.Add(24 * time.Hour).Format(time.RFC3339),
+			Status:           "period_limited",
+			Active:           false,
+			Source:           "hubcenter_compute",
+			CardOrderID:      "HC-LIMITED",
+		}},
+	})
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+	SetMaClawModule(&llmservice.MaClawModule{AccessCtrl: accessCtrl})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm/service/account", nil)
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+	GetLLMServiceAccountHandler(identity, system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp llmServiceAccountResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status == nil || len(resp.Status.CreditGrants) != 1 {
+		t.Fatalf("credit grants = %+v", resp.Status)
+	}
+	grant := resp.Status.CreditGrants[0]
+	if grant.Status != "period_limited" || grant.Active || !grant.Effective {
+		t.Fatalf("period-limited grant status = %+v", grant)
+	}
+	if grant.CreditsRemaining != 900 || grant.CreditsAvailable != 0 {
+		t.Fatalf("period-limited grant credits = remaining %.1f available %.1f", grant.CreditsRemaining, grant.CreditsAvailable)
+	}
+	if resp.Status.Active || resp.Status.CreditsRemaining != 900 || resp.Status.CreditsAvailable != 0 {
+		t.Fatalf("period-limited status should keep remaining but not current availability: %+v", resp.Status)
+	}
+}
+
 func containsStringFold(items []string, want string) bool {
 	for _, item := range items {
 		if strings.EqualFold(strings.TrimSpace(item), want) {

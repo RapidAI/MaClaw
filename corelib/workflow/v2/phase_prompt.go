@@ -288,6 +288,16 @@ func textContainsFilePath(text string) bool {
 }
 
 func phaseInstruction(phaseID string) string {
+	// Academic application phases are generated parametrically from FundingProfiles.
+	// Check if this phaseID belongs to an academic template before the hardcoded switch.
+	// If the factory generates a non-empty instruction, use it. Otherwise fall through
+	// to the hardcoded switch (backward compat with old phase IDs from persisted workflows).
+	if profile, isAcademic := IsAcademicApplicationPhase(phaseID); isAcademic {
+		if instruction := AcademicPhaseInstruction(phaseID, profile); instruction != "" {
+			return instruction
+		}
+	}
+
 	switch phaseID {
 	case "requirements":
 		return `## 阶段指令
