@@ -1614,7 +1614,8 @@
   function formatSecNumber(value) {
     var n = Number(value || 0);
     if (!isFinite(n)) n = 0;
-    return String(Math.round(n * 100) / 100);
+    n = Math.round(n * 10000) / 10000;
+    return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
   }
 
   function compactDateTime(value) {

@@ -156,8 +156,8 @@
   function formatCreditsValue(value) {
     var n = Number(value || 0);
     if (!Number.isFinite(n)) n = 0;
-    if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-    return String(Math.round(n * 100) / 100);
+    n = Math.round(n * 10000) / 10000;
+    return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
   }
 
   function serviceCreditGrants(status) {

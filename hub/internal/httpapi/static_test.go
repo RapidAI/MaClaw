@@ -357,6 +357,32 @@ func TestMaClawComputeCreditDisplayPreservesFractionalCredits(t *testing.T) {
 	}
 }
 
+func TestAdminModelServiceCreditDisplaysPreserveFractionalCredits(t *testing.T) {
+	for _, file := range []string{"governance-tab.js", "security-tab.js"} {
+		body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", file))
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		content := string(body)
+		for _, want := range []string{
+			`Math.round(n * 10000) / 10000`,
+			`maximumFractionDigits: 4`,
+		} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s must preserve fractional credit display, missing %s", file, want)
+			}
+		}
+		for _, forbidden := range []string{
+			`Math.round(n * 100) / 100`,
+			`maximumFractionDigits: 2`,
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("%s must not round model service credits to low precision: %s", file, forbidden)
+			}
+		}
+	}
+}
+
 func TestAdminMarketplaceWorkflowReviewContracts(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "marketplace-tab.js"))
 	if err != nil {
