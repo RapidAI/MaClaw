@@ -609,6 +609,61 @@ func TestListOrdersHydratesAuthorizationUsage(t *testing.T) {
 	}
 }
 
+func TestListOrdersRoundsAuthorizationCreditDisplay(t *testing.T) {
+	now := time.Date(2026, 6, 21, 16, 0, 0, 0, time.UTC)
+	authID := "auth-HC-FLOAT"
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-FLOAT": {
+			Order: corecardstore.Order{
+				OrderNo:   "HC-FLOAT",
+				Email:     "owner@example.com",
+				Status:    corecardstore.StatusActivated,
+				PaymentID: authID,
+				Amount:    88,
+			},
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "redeem",
+			Credits:        520000,
+			Period:         "month",
+		},
+	}}
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{
+		authID: {
+			ID:             authID,
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "redeem",
+			CreditsTotal:   520000,
+			CreditsUsed:    12102.734400000001,
+			StartsAt:       now,
+			ExpiresAt:      now.AddDate(0, 1, 0),
+			Status:         "active",
+			CardOrderID:    "HC-FLOAT",
+			CreatedAt:      now,
+		},
+	}}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	orders, _, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	got := orders[0]
+	if got.CreditsUsed == nil {
+		t.Fatal("CreditsUsed = nil, want 12102.7344")
+	}
+	if *got.CreditsUsed != 12102.7344 {
+		t.Fatalf("CreditsUsed = %.17g, want 12102.7344", *got.CreditsUsed)
+	}
+	if got.CreditsRemaining == nil {
+		t.Fatal("CreditsRemaining = nil, want 507897.2656")
+	}
+	if *got.CreditsRemaining != 507897.2656 {
+		t.Fatalf("CreditsRemaining = %.17g, want 507897.2656", *got.CreditsRemaining)
+	}
+}
+
 func TestListOrdersHydratesAuthorizationUsageByOrderIDFallback(t *testing.T) {
 	now := time.Date(2026, 6, 19, 14, 0, 0, 0, time.UTC)
 	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{

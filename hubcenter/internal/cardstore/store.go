@@ -5,6 +5,7 @@ package cardstore
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
 	"strings"
 	"time"
@@ -618,8 +619,8 @@ func (h *orderAuthorizationHydrator) hydrate(order *PurchaseOrder) {
 	if auth == nil {
 		return
 	}
-	used := auth.CreditsUsed
-	remaining := auth.CreditsRemaining()
+	used := roundOrderCreditDisplay(auth.CreditsUsed)
+	remaining := roundOrderCreditDisplay(auth.CreditsRemaining())
 	startsAt := auth.StartsAt
 	expiresAt := auth.ExpiresAt
 	order.AuthorizationID = auth.ID
@@ -637,6 +638,10 @@ func clearOrderAuthorizationDetails(order *PurchaseOrder) {
 	order.AuthorizationExpiresAt = nil
 	order.CreditsUsed = nil
 	order.CreditsRemaining = nil
+}
+
+func roundOrderCreditDisplay(v float64) float64 {
+	return math.Round(v*10000) / 10000
 }
 
 func (h *orderAuthorizationHydrator) find(order *PurchaseOrder) *llmservice.TenantAuthorization {
