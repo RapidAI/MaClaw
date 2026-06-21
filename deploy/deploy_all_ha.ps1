@@ -630,6 +630,10 @@ function Write-RemoteScript {
         '    echo "[ERROR] sqlite3 is required for --clean-hubcenter-db" >&2',
         '    exit 1',
         '  fi',
+        '  if [ -z "$HUBCENTER_DB_PATH" ]; then',
+        '    echo "[ERROR] HUBCENTER_DB_PATH is empty" >&2',
+        '    exit 1',
+        '  fi',
         '  case "$HUBCENTER_DB_PATH" in',
         '    /*) db_path="$HUBCENTER_DB_PATH" ;;',
         '    *) db_path="$REMOTE_HUBCENTER_DIR/$HUBCENTER_DB_PATH" ;;',
@@ -1172,6 +1176,7 @@ $targets = @(
         RemoteTmpDir = Get-TargetSetting 'REMOTE_TMP_DIR' 'hc-1' '/tmp/aicoder_deploy'
         RemoteHubDir = Get-TargetSetting 'REMOTE_HUB_DIR' 'hc-1' '/data/soft/hub'
         RemoteHubCenterDir = Get-TargetSetting 'REMOTE_HUBCENTER_DIR' 'hc-1' '/data/soft/hubcenter'
+        HubCenterDBPath = './data/codeclaw-hubcenter.db'
         DeployHubCenter = $true
         HubCenterConfig = 'hubcenter-hc-1.yaml'
         DeployHub = $true
@@ -1185,6 +1190,7 @@ $targets = @(
         RemoteTmpDir = Get-TargetSetting 'REMOTE_TMP_DIR' 'hc-2' '/tmp/aicoder_deploy'
         RemoteHubDir = Get-TargetSetting 'REMOTE_HUB_DIR' 'hc-2' '/data/soft/hub'
         RemoteHubCenterDir = Get-TargetSetting 'REMOTE_HUBCENTER_DIR' 'hc-2' '/data/soft/hubcenter'
+        HubCenterDBPath = './data/codeclaw-hubcenter.db'
         DeployHubCenter = $true
         HubCenterConfig = 'hubcenter-hc-2.yaml'
         DeployHub = $true
@@ -1201,6 +1207,7 @@ $targets = @(
         RemoteTmpDir = Get-TargetSetting 'REMOTE_TMP_DIR' 'hc-3' '/tmp/aicoder_deploy'
         RemoteHubDir = Get-TargetSetting 'REMOTE_HUB_DIR' 'hc-3' '/data/soft/hub'
         RemoteHubCenterDir = Get-TargetSetting 'REMOTE_HUBCENTER_DIR' 'hc-3' '/data/soft/hubcenter'
+        HubCenterDBPath = './data/codeclaw-hubcenter.db'
         DeployHubCenter = $true
         HubCenterConfig = 'hubcenter-hc-3.yaml'
         DeployHub = $true
@@ -1375,7 +1382,7 @@ try {
             ("export DEPLOY_HUBCENTER={0}" -f (Quote-ShellEnvValue $deployHubCenterFlag)),
             ("export DEPLOY_HUB={0}" -f (Quote-ShellEnvValue $deployHubFlag)),
             ("export CLEAN_HUBCENTER_DB={0}" -f (Quote-ShellEnvValue $cleanHubCenterDBFlag)),
-            ("export HUBCENTER_DB_PATH={0}" -f (Quote-ShellEnvValue $target.DatabaseDSN)),
+            ("export HUBCENTER_DB_PATH={0}" -f (Quote-ShellEnvValue $target.HubCenterDBPath)),
             ("export ENSURE_HUB_MODELS={0}" -f (Quote-ShellEnvValue $ensureHubModels)),
             ("export HUB_MODEL_BASE_URL={0}" -f (Quote-ShellEnvValue $hubModelBaseUrl)),
             ("export HUB_MODEL_FILES={0}" -f (Quote-ShellEnvValue $hubModelFiles)),

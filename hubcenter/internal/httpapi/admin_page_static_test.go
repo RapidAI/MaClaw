@@ -211,6 +211,26 @@ func TestRenderedMypapersMaclawHAConfigsUseDirectFastSync(t *testing.T) {
 	}
 }
 
+func TestDeployAllHAUsesExplicitHubCenterDBPath(t *testing.T) {
+	deployScriptPath := filepath.Join("..", "..", "..", "deploy", "deploy_all_ha.ps1")
+	contentBytes, err := os.ReadFile(deployScriptPath)
+	if err != nil {
+		t.Fatalf("read deploy_all_ha.ps1: %v", err)
+	}
+	content := string(contentBytes)
+	if strings.Contains(content, "$target.DatabaseDSN") {
+		t.Fatal("deploy_all_ha.ps1 must not export HUBCENTER_DB_PATH from missing target.DatabaseDSN")
+	}
+	if count := strings.Count(content, "HubCenterDBPath = './data/codeclaw-hubcenter.db'"); count != 3 {
+		t.Fatalf("deploy_all_ha.ps1 HubCenterDBPath target count = %d, want 3", count)
+	}
+	assertContainsAll(t, content, "deploy_all_ha.ps1", []string{
+		"'  if [ -z \"$HUBCENTER_DB_PATH\" ]; then',",
+		"'    echo \"[ERROR] HUBCENTER_DB_PATH is empty\" >&2',",
+		`("export HUBCENTER_DB_PATH={0}" -f (Quote-ShellEnvValue $target.HubCenterDBPath))`,
+	})
+}
+
 func TestAdminPageReferencesExistingSplitAssets(t *testing.T) {
 	adminRoot := filepath.Join("..", "..", "web", "admin")
 	html := readAdminPageHTML(t)
