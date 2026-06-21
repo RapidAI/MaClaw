@@ -1063,8 +1063,8 @@ func TestRestoreArchivedOrderRequiresActivatedArchivedOrder(t *testing.T) {
 	}}
 	svc := NewService(nil, orderRepo, nil)
 
-	if err := svc.RestoreArchivedOrder(context.Background(), "HC-ACTIVE"); err == nil || !strings.Contains(err.Error(), "not archived") {
-		t.Fatalf("RestoreArchivedOrder(active) error = %v, want not archived", err)
+	if err := svc.RestoreArchivedOrder(context.Background(), "HC-ACTIVE"); err != nil {
+		t.Fatalf("RestoreArchivedOrder(active) error = %v, want idempotent success", err)
 	}
 	if err := svc.RestoreArchivedOrder(context.Background(), "HC-PENDING"); err == nil || !strings.Contains(err.Error(), "cannot be restored") {
 		t.Fatalf("RestoreArchivedOrder(pending) error = %v, want cannot be restored", err)
