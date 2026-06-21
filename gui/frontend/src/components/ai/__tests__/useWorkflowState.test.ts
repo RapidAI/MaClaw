@@ -873,7 +873,7 @@ describe('workflow state document collection', () => {
         expect(result.current.state.workflowID).toBe('wf-game');
     });
 
-    it('local tab (sentinel path) accepts first workflow then rejects others by ID', () => {
+    it('local tab (sentinel path) accepts unscoped first workflow then rejects others by ID', () => {
         // The LOCAL sentinel "__maclaw_local_coding_preview__" is not a real path
         const { result } = renderHook(() => useWorkflowState("__maclaw_local_coding_preview__"));
 
@@ -884,7 +884,6 @@ describe('workflow state document collection', () => {
                 status: 'active',
                 type: 'coding',
                 current_phase: 'requirements',
-                project_path: 'D:\\some\\path',
             });
         });
 

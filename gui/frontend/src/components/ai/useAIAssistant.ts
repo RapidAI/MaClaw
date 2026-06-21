@@ -4211,9 +4211,11 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 const gap = currentSeq - seq;
                 if (gap > 100) {
                     // Large gap — backend restarted with a new epoch. Reset cache.
+                    logAIAssistantDiagnostic({ event: 'agentview_seq_epoch_reset', seq, currentSeq, gap, sessionKey: normalizedSessionKey });
                     agentViewLifecycleSeqBySessionRef.current.set(normalizedSessionKey, seq);
                     return true;
                 }
+                logAIAssistantDiagnostic({ event: 'agentview_seq_rejected_stale', seq, currentSeq, gap, sessionKey: normalizedSessionKey });
                 return false;
             }
             agentViewLifecycleSeqBySessionRef.current.set(normalizedSessionKey, seq);

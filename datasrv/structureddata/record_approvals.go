@@ -87,7 +87,11 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 	if err != nil {
 		return nil, err
 	}
-	s.audit(ctx, p, "approval.create", datasetID, "record", recordID, "Created approval "+out.ID, map[string]any{"approval_id": out.ID, "kind": out.Kind, "priority": out.Priority, "assigned_to": out.AssignedTo, "due_at": formatOptionalPlanTime(out.DueAt), "app_id": out.AppID, "blueprint_id": out.BlueprintID, "object_role": out.ObjectRole})
+	businessRecordUpdated, err := s.syncBusinessRecordFromApprovalCreate(ctx, p, *out)
+	if err != nil {
+		return nil, err
+	}
+	s.audit(ctx, p, "approval.create", datasetID, "record", recordID, "Created approval "+out.ID, map[string]any{"approval_id": out.ID, "kind": out.Kind, "priority": out.Priority, "assigned_to": out.AssignedTo, "due_at": formatOptionalPlanTime(out.DueAt), "app_id": out.AppID, "blueprint_id": out.BlueprintID, "object_role": out.ObjectRole, "business_record_updated": businessRecordUpdated})
 	return out, nil
 }
 
@@ -190,6 +194,14 @@ func (s *Service) ReviewRecordApproval(ctx context.Context, p Principal, approva
 }
 
 func (s *Service) syncBusinessRecordFromApprovalReview(ctx context.Context, p Principal, approval RecordApproval) (bool, error) {
+	return s.syncBusinessRecordFromApproval(ctx, p, approval, "approval.review")
+}
+
+func (s *Service) syncBusinessRecordFromApprovalCreate(ctx context.Context, p Principal, approval RecordApproval) (bool, error) {
+	return s.syncBusinessRecordFromApproval(ctx, p, approval, "approval.create")
+}
+
+func (s *Service) syncBusinessRecordFromApproval(ctx context.Context, p Principal, approval RecordApproval, revisionAction string) (bool, error) {
 	record, err := s.store.GetRecord(ctx, p.TenantID, approval.DatasetID, approval.RecordID)
 	if err != nil {
 		return false, err
@@ -218,6 +230,9 @@ func (s *Service) syncBusinessRecordFromApprovalReview(ctx context.Context, p Pr
 	setString("approval_decision", approval.Decision)
 	setString("approval_id", approval.ID)
 	setString("approval_workflow_instance_id", approval.WorkflowInstanceID)
+	setString("approval_workflow_skill_id", approval.WorkflowSkillID)
+	setString("approval_workflow_node_id", approval.WorkflowNodeID)
+	setString("approval_current_assignee", approval.AssignedTo)
 	if !changed {
 		return false, nil
 	}
@@ -225,7 +240,7 @@ func (s *Service) syncBusinessRecordFromApprovalReview(ctx context.Context, p Pr
 	if err != nil {
 		return false, err
 	}
-	if err := s.appendRecordRevision(ctx, p, "approval.review", *out); err != nil {
+	if err := s.appendRecordRevision(ctx, p, revisionAction, *out); err != nil {
 		return false, err
 	}
 	return true, nil

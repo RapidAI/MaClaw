@@ -2697,6 +2697,20 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	if approval.ResultPayload["approval_result"] != "requires_input" || len(approval.Outputs) != 1 || approval.Outputs[0].Text != "Waiting for manager" || len(approval.Artifacts) != 1 || approval.Artifacts[0].Name != "draft.pdf" {
 		t.Fatalf("approval result package was not persisted: %#v", approval)
 	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/datasets/sales.orders/records/SO-2026-0001", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get pending approval business record status=%d body=%s", w.Code, w.Body.String())
+	}
+	var pendingApprovalBusinessRecord Record
+	if err := json.NewDecoder(w.Body).Decode(&pendingApprovalBusinessRecord); err != nil {
+		t.Fatalf("decode pending approval business record: %v", err)
+	}
+	if pendingApprovalBusinessRecord.Data["status"] != "pending_manager" || pendingApprovalBusinessRecord.Data["business_status"] != "pending_manager" || pendingApprovalBusinessRecord.Data["result_status"] != "requires_input" || pendingApprovalBusinessRecord.Data["approval_id"] != approval.ID || pendingApprovalBusinessRecord.Data["approval_workflow_instance_id"] != "wf-so-1" || pendingApprovalBusinessRecord.Data["approval_current_assignee"] != "manager_1" {
+		t.Fatalf("approval create did not update business record status: %#v", pendingApprovalBusinessRecord.Data)
+	}
 	body = bytes.NewBufferString(`{"kind":"sales_order","priority":"urgent","summary":"Invalid priority should fail","request":{"amount":1200}}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/datasets/sales.orders/records/SO-2026-0001/approvals", body)
 	auth(req)

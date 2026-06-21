@@ -95,7 +95,6 @@ function fetchDigitalEmployeeFeatureStatus() {
         .catch(() => unavailableDigitalEmployeeFeatureStatus);
 }
 
-
 type SensitivePermissionRequest = {
     request_id: string;
     session_id?: string;

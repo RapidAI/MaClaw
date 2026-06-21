@@ -932,12 +932,12 @@ function renderField(
                             borderRadius: 4,
                             fontWeight: 500,
                             marginLeft: 2,
-                            background: field.prefill_source === "web" ? "rgba(234,179,8,0.12)" : "rgba(59,130,246,0.10)",
-                            color: field.prefill_source === "web" ? theme.errorText : theme.headingColor,
-                            border: `1px solid ${field.prefill_source === "web" ? theme.errorBorder : theme.divider}`,
+                            background: field.prefill_needs_confirm ? "rgba(234,179,8,0.12)" : field.prefill_source === "web" ? "rgba(234,179,8,0.12)" : "rgba(59,130,246,0.10)",
+                            color: field.prefill_needs_confirm ? theme.errorText : field.prefill_source === "web" ? theme.errorText : theme.headingColor,
+                            border: `1px solid ${field.prefill_needs_confirm ? theme.errorBorder : field.prefill_source === "web" ? theme.errorBorder : theme.divider}`,
                         }}
                     >
-                        {field.prefill_source === "web" ? s.prefillWeb : field.prefill_source === "memory" ? s.prefillMemory : field.prefill_source === "knowledge" ? s.prefillKnowledge : s.prefillContext}
+                        {field.prefill_needs_confirm ? s.prefillNeedsConfirm : field.prefill_source === "web" ? s.prefillWeb : field.prefill_source === "memory" ? s.prefillMemory : field.prefill_source === "knowledge" ? s.prefillKnowledge : s.prefillContext}
                     </span>
                 )}
             </label>

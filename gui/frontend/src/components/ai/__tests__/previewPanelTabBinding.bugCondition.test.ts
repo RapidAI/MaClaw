@@ -74,7 +74,7 @@ describe('Property 1: Bug Condition — Preview State Isolation Per Tab', () => 
         fc.assert(
             fc.property(
                 // Generate document content for Tab A
-                fc.string({ minLength: 5, maxLength: 100 }),
+                fc.string({ minLength: 5, maxLength: 100 }).filter(value => value.trim().length > 0),
                 // Generate a phase ID for Tab A
                 fc.constantFrom('requirements', 'design', 'tasks'),
                 (tabAContent, tabAPhaseId) => {

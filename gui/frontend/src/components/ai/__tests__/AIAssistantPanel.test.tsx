@@ -7,11 +7,12 @@ import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } f
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock, createProjectTabSessionMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock, createProjectTabSessionMock, cancelSessionForSessionMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
     showItemInFolderMock: vi.fn().mockResolvedValue(undefined),
     loadProjectContextMock: vi.fn().mockResolvedValue({ project_name: '', recent_progress: '', key_artifacts: [] }),
     createProjectTabSessionMock: vi.fn().mockResolvedValue(undefined),
+    cancelSessionForSessionMock: vi.fn().mockResolvedValue(''),
     listVirtualEmployeesMock: vi.fn().mockResolvedValue([
         { id: 've-a', machine_id: 've-a', name: 'Agent A', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
         { id: 've-b', machine_id: 've-b', name: 'Contract Bot', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
@@ -54,6 +55,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SearchProjects: vi.fn().mockResolvedValue([]),
     ResumeProject: vi.fn(),
     CreateProjectTabSession: createProjectTabSessionMock,
+    CancelAIAssistantSessionForSession: cancelSessionForSessionMock,
     RenameTask: vi.fn(),
     PinTask: vi.fn(),
     HideTask: vi.fn(),
@@ -64,6 +66,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ListVirtualEmployees: listVirtualEmployeesMock,
     InitiateVEConversation: initiateVEConversationMock,
     AddVEToGroup: addVEToGroupMock,
+    RefreshWorkflowV2StateForTab: vi.fn().mockResolvedValue({}),
     GetTTSEnabled: vi.fn().mockResolvedValue(false),
     SetTTSEnabled: vi.fn().mockResolvedValue(undefined),
     SpeakText: vi.fn().mockResolvedValue(undefined),
@@ -748,7 +751,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(sendMessage).not.toHaveBeenCalled();
 
         fireEvent.keyDown(input, { key: 'Enter' });
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('quick send'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('quick send', expect.objectContaining({ tabId: 'local' })));
     });
 
     it('does not send when an IME Enter keydown is reported with keyCode 229', () => {
@@ -846,7 +849,7 @@ describe('AIAssistantPanel property tests', () => {
         props.state = { ...props.state, sending: false, streaming: false };
         rerender(<AIAssistantPanel {...props} />);
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued while busy'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued while busy', expect.objectContaining({ tabId: 'local' })));
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
     });
 
@@ -860,7 +863,7 @@ describe('AIAssistantPanel property tests', () => {
             actions: { sendMessage },
         });
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued before idle'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued before idle', expect.objectContaining({ tabId: 'local' })));
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
     });
 
@@ -880,7 +883,7 @@ describe('AIAssistantPanel property tests', () => {
         props.state = { ...props.state, ready: true };
         rerender(<AIAssistantPanel {...props} />);
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued until ready'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued until ready', expect.objectContaining({ tabId: 'local' })));
     });
 
     it('auto-drains all restored queue entries one by one after restart', async () => {
@@ -894,8 +897,8 @@ describe('AIAssistantPanel property tests', () => {
             actions: { sendMessage },
         });
 
-        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(1, 'restored first'));
-        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'restored second'));
+        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(1, 'restored first', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'restored second', expect.objectContaining({ tabId: 'local' })));
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
     });
 
@@ -917,12 +920,12 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
-        expect(sendMessage).toHaveBeenCalledWith('slow restored first');
+        expect(sendMessage).toHaveBeenCalledWith('slow restored first', expect.objectContaining({ tabId: 'local' }));
         expect(sendMessage).not.toHaveBeenCalledWith('slow restored second');
 
         resolveFirst(true);
 
-        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'slow restored second'));
+        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'slow restored second', expect.objectContaining({ tabId: 'local' })));
     });
 
     it('sanitizes restored queue attachments before auto-draining', async () => {
@@ -1447,7 +1450,7 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'local question during project' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local question during project'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local question during project', expect.objectContaining({ tabId: 'local' })));
         expect(queryByTestId('buffer-queue-panel')).toBeNull();
         rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, sending: true, streaming: true }} />);
         fireEvent.change(getByTestId('ai-input'), { target: { value: 'second local waits for local agent' } });
@@ -1495,7 +1498,7 @@ describe('AIAssistantPanel property tests', () => {
         const localInput = getByTestId('ai-input') as HTMLTextAreaElement;
         fireEvent.change(localInput, { target: { value: 'local takes over stale project' } });
         fireEvent.keyDown(localInput, { key: 'Enter' });
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local takes over stale project'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local takes over stale project', expect.objectContaining({ tabId: 'local' })));
 
         rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, messages: [localBefore], sending: false, streaming: false }} />);
         const projectTabButton = queryByTestId(`ai-tab-${projectTabId}`);
@@ -1865,7 +1868,7 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'fresh prompt after empty edit' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('fresh prompt after empty edit'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('fresh prompt after empty edit', expect.objectContaining({ tabId: 'local' })));
     });
 
     it('hides background launch control even if a background handler exists', () => {
@@ -2270,7 +2273,7 @@ describe('AIAssistantPanel property tests', () => {
             }),
         ];
 
-        const { getByTitle } = renderPanel({
+        const { getByRole, getByTitle } = renderPanel({
             state: { messages, sending: false, streaming: false, ready: true },
             actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
         });
@@ -2642,7 +2645,7 @@ describe('AIAssistantPanel property tests', () => {
             }),
         ];
 
-        const { getByTitle } = renderPanel({
+        const { getByRole, getByTitle } = renderPanel({
             state: { messages, sending: false, streaming: false, ready: true },
         });
 
@@ -2746,7 +2749,7 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => {
             expect(recordSubmittedPrompt).toHaveBeenCalledTimes(1);
             expect(recordSubmittedPrompt).toHaveBeenCalledWith('same prompt');
-            expect(sendMessage).toHaveBeenCalledWith('same prompt');
+            expect(sendMessage).toHaveBeenCalledWith('same prompt', expect.objectContaining({ tabId: 'local' }));
         });
     });
 
@@ -2883,7 +2886,7 @@ describe('AIAssistantPanel property tests', () => {
         const clearHistory = vi.fn().mockResolvedValue(undefined);
         const onHandled = vi.fn();
 
-        const { getByTitle } = renderPanel({
+        const { getByRole, getByTitle } = renderPanel({
             pendingProjectTabOpen: {
                 projectPath: 'D:/tasks/project-clear-isolated',
                 taskTitle: 'Project clear isolated',
@@ -2895,6 +2898,7 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        fireEvent.click(getByRole('tab', { name: 'Project clear isolated' }));
         fireEvent.click(getByTitle('New conversation'));
 
         expect(clearHistory).not.toHaveBeenCalled();
@@ -2963,7 +2967,7 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'local tab should not inherit project busy' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local tab should not inherit project busy'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local tab should not inherit project busy', expect.objectContaining({ tabId: 'local' })));
         expect(queryByTestId('buffer-queue-panel')).toBeNull();
     });
 

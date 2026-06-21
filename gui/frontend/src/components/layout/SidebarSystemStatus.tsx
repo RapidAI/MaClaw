@@ -110,8 +110,11 @@ export const SidebarSystemStatus = ({
     const [dropdownOpen, setDropdownOpen] = useState(false);
     const [switching, setSwitching] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
+    const chevronBtnRef = useRef<HTMLButtonElement>(null);
     // Snapshot the list when dropdown opens to prevent mid-interaction mutations.
     const snapshotRef = useRef<SidebarLLMProviderSummary[]>([]);
+    // Fixed position for the dropdown (calculated from chevron button position).
+    const [dropdownPos, setDropdownPos] = useState<{ bottom: number; right: number } | null>(null);
     const switchingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Cleanup switching timer on unmount
@@ -124,24 +127,38 @@ export const SidebarSystemStatus = ({
         ? snapshotRef.current
         : availableProviders.filter(p => p.name !== providerLabel);
 
-    // Close dropdown on outside click or Escape key
+    // Close dropdown on outside click or Escape key; reposition on window resize.
     useEffect(() => {
         if (!dropdownOpen) return;
         const handleClickOutside = (e: MouseEvent) => {
-            if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-                setDropdownOpen(false);
-            }
+            const target = e.target as Node;
+            // Ignore clicks on the dropdown itself or the chevron button
+            if (dropdownRef.current?.contains(target)) return;
+            if (chevronBtnRef.current?.contains(target)) return;
+            setDropdownOpen(false);
         };
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
                 setDropdownOpen(false);
             }
         };
+        const handleResize = () => {
+            // Recalculate position from chevron button
+            if (chevronBtnRef.current) {
+                const rect = chevronBtnRef.current.getBoundingClientRect();
+                setDropdownPos({
+                    bottom: window.innerHeight - rect.top + 6,
+                    right: window.innerWidth - rect.right,
+                });
+            }
+        };
         document.addEventListener('mousedown', handleClickOutside);
         document.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('resize', handleResize);
         return () => {
             document.removeEventListener('mousedown', handleClickOutside);
             document.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('resize', handleResize);
         };
     }, [dropdownOpen]);
 
@@ -269,7 +286,7 @@ export const SidebarSystemStatus = ({
                             className={`sidebar-system-status__provider-cart${(lowCreditWarning || isPeriodLimitedStopped) ? ' sidebar-system-status__provider-cart--alert' : ''}`}
                             onClick={openHubCardStorePage}
                             title={lowCreditTitle}
-                            aria-label={lowCreditTitle}
+                            aria-label={cardStoreTitle}
                         >
                             <svg className="sidebar-system-status__provider-cart-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                                 <path d="M3 5h2.7l2.1 10.2a2 2 0 0 0 2 1.6h7.5a2 2 0 0 0 1.9-1.4l1.3-5.2H7.1" />
@@ -293,14 +310,23 @@ export const SidebarSystemStatus = ({
                     )}
                     {/* Provider switch dropdown — only render when there are alternatives */}
                     {availableProviders.length > 1 && (
-                    <div className="sidebar-system-status__provider-switch" ref={dropdownRef}>
+                    <div className="sidebar-system-status__provider-switch">
                         <button
+                            ref={chevronBtnRef}
                             type="button"
                             className="sidebar-system-status__provider-chevron"
                             onClick={() => {
                                 if (!dropdownOpen) {
                                     // Snapshot the switchable list at open time
                                     snapshotRef.current = availableProviders.filter(p => p.name !== providerLabel);
+                                    // Calculate fixed position from chevron button
+                                    if (chevronBtnRef.current) {
+                                        const rect = chevronBtnRef.current.getBoundingClientRect();
+                                        setDropdownPos({
+                                            bottom: window.innerHeight - rect.top + 6,
+                                            right: window.innerWidth - rect.right,
+                                        });
+                                    }
                                 }
                                 setDropdownOpen(!dropdownOpen);
                             }}
@@ -313,8 +339,14 @@ export const SidebarSystemStatus = ({
                                 <path d="M1 3l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
                             </svg>
                         </button>
-                        {dropdownOpen && (
-                            <div className="sidebar-system-status__provider-dropdown" role="listbox" aria-label={textForLang(lang, 'Select provider', '\u9009\u62e9\u670d\u52a1\u5546', '\u9078\u64c7\u670d\u52d9\u5546')}>
+                        {dropdownOpen && dropdownPos && (
+                            <div
+                                ref={dropdownRef}
+                                className="sidebar-system-status__provider-dropdown"
+                                role="listbox"
+                                aria-label={textForLang(lang, 'Select provider', '\u9009\u62e9\u670d\u52a1\u5546', '\u9078\u64c7\u670d\u52d9\u5546')}
+                                style={{ position: 'fixed', bottom: dropdownPos.bottom, right: dropdownPos.right }}
+                            >
                                 {/* Current provider (highlighted) */}
                                 <div className="sidebar-system-status__provider-dropdown-item sidebar-system-status__provider-dropdown-item--current" role="option" aria-selected="true">
                                     <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true">✓</span>

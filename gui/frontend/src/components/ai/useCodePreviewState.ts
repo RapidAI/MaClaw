@@ -207,10 +207,9 @@ export function applyResetSession(): CodePreviewUIState {
  *   - workflow:doc_update  — preserve code preview for tabbed switching
  *
  * @param activeTabProjectPath - The project_path of the currently active tab.
- *   Used to route code:file_update events: if the event carries a project_path
- *   that doesn't match the active tab, the update is skipped (it belongs to
- *   another tab and will be handled via per-tab save/restore). Events without
- *   project_path are applied to the current state (backward compatible).
+ *   Used to route code events: if an event carries a project_path that doesn't
+ *   match the active tab's project path, the update is skipped. Local tab state
+ *   only accepts events without project_path for backward compatibility.
  */
 export function useCodePreviewState(activeTabProjectPath?: string) {
     const [state, setState] = useState<CodePreviewUIState>(initialState);
@@ -220,12 +219,8 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
         const unsub = EventsOn("code:file_update", (data: any) => {
             if (!data?.file_path || data?.content === undefined || data?.content === null) return;
 
-            // Route by project_path: if the event carries a project_path that
-            // doesn't match the active tab, skip the update. The per-tab
-            // save/restore (task 3.6) handles cross-tab state.
-            // If project_path is absent, apply to current state (backward compatible).
             const eventProjectPath: string | undefined = data.project_path;
-            if (eventProjectPath && activeTabProjectPath && eventProjectPath !== activeTabProjectPath) {
+            if (eventProjectPath && eventProjectPath !== activeTabProjectPath) {
                 return;
             }
 
@@ -254,7 +249,7 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
     useEffect(() => {
         const unsub = EventsOn("code:session_start", (data: any) => {
             const eventProjectPath: string | undefined = data?.project_path;
-            if (eventProjectPath && activeTabProjectPath && eventProjectPath !== activeTabProjectPath) {
+            if (eventProjectPath && eventProjectPath !== activeTabProjectPath) {
                 return;
             }
             setState(prev => applySessionStart(prev, data?.session_id || ""));
@@ -269,7 +264,7 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
     useEffect(() => {
         const unsub = EventsOn("code:session_end", (data: any) => {
             const eventProjectPath: string | undefined = data?.project_path;
-            if (eventProjectPath && activeTabProjectPath && eventProjectPath !== activeTabProjectPath) {
+            if (eventProjectPath && eventProjectPath !== activeTabProjectPath) {
                 return;
             }
             setState(prev => applySessionEnd(prev, data?.session_id || ""));

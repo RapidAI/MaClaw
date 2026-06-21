@@ -87,6 +87,7 @@ func (a *App) nextAgentViewSeq() int64 {
 func (a *App) initAgentViewSeqEpoch() {
 	epoch := time.Now().Unix()
 	a.agentViewEmissionSeq.Store(epoch)
+	log.Printf("[agent-view] seq epoch initialized: %d", epoch)
 }
 
 func (a *App) clearAgentView(viewID string) bool {

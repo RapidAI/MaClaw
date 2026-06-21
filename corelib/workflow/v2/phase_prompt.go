@@ -2224,15 +2224,21 @@ bash(command="powershell -ExecutionPolicy Bypass -File OUTPUT_DIR/md2docx_desc.p
 ### 情况二：用户未提供附图（更常见）
 必须使用工具自动生成附图。按以下优先级选择生成方式：
 
-**方式 A：Python + matplotlib/PIL（推荐，无外部依赖）**
+**方式 A：SVG 文件（首选，系统自动转 PNG）**
+用 write_file 将 SVG 源码写入项目目录下的 .svg 文件（如 图1-系统架构.svg）。
+⚠️ **系统会自动将 SVG 转换为同名 PNG 文件**（write_file 写入 .svg 时自动触发转换），无需手动执行任何转换命令。
+SVG 规范要求：
+- **必须使用纯黑白**：stroke="#000" fill="none" 或 fill="#fff"，禁止彩色/渐变
+- **文字用数字标记**：<text> 中只写阿拉伯数字（1、2、3...），不写中文
+- **使用基础 SVG 元素**：rect、line、circle、polygon、polyline、path、marker、text
+- **禁止使用**：linearGradient、radialGradient、filter、foreignObject、CSS class
+
+**方式 B：Python + matplotlib/PIL（如系统有 Python）**
 使用 bash 执行 Python 脚本生成结构图/流程图：
 - 系统架构/模块关系图：用 matplotlib 的 patches + arrows 绘制方框图
 - 流程图：用 matplotlib 绘制步骤框和箭头
 - 数据流图：用 matplotlib 绘制节点和连线
 - 保存为 PNG 格式到项目附图目录
-
-**方式 B：SVG 文件（matplotlib 不可用时的备选）**
-用 write_file 将 SVG 源码写入项目目录下的 .svg 文件（如 图1-系统架构.svg）。
 
 **方式 C：Mermaid → PNG（如系统有 mmdc 命令）**
 用 write_file 写 .mmd 文件，bash 调用 mmdc 转 PNG。

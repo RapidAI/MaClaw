@@ -722,6 +722,74 @@ func TestMaclawAppInstallSkillSourceNormalizesHubAndMarket(t *testing.T) {
 		t.Fatalf("local source should not auto-install, got %q,%v", got, ok)
 	}
 }
+
+func TestPlanMaclawAppInstallNormalizesWorkspaceLayout(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "layout-approval",
+			"name": "Layout Approval",
+			"kind": "enterprise_approval_app",
+			"ui": {
+				"entry": "approval_workspace",
+				"layouts": {
+					"approval_workspace": {
+						"template": "left_nav",
+						"density": "compact",
+						"regions": [
+							{"id":"request_form","role":"input","placement":"left"},
+							{"id":"approval_detail","role":"detail","placement":"center"}
+						]
+					}
+				}
+			}
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	if len(plan.Apps) != 1 || plan.Apps[0].ID != "layout-approval" {
+		t.Fatalf("unexpected plan apps: %#v", plan.Apps)
+	}
+
+	entries, err := parseMaclawAppInstallEntries(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {"id":"layout-tool","name":"Layout Tool","kind":"tool_app"}
+	}`)
+	if err != nil {
+		t.Fatalf("parse tool app error = %v", err)
+	}
+	ui := anyMap(entries[0].App["ui"])
+	if ui == nil || ui["schema"] != "maclaw.app.ui.v1" || ui["entry"] != "tool_workspace" {
+		t.Fatalf("default tool workspace layout missing: %#v", entries[0].App["ui"])
+	}
+	layouts := anyMap(ui["layouts"])
+	layout := anyMap(layouts["tool_workspace"])
+	if layout == nil || layout["type"] != "tool_workspace" {
+		t.Fatalf("default tool layout missing: %#v", ui)
+	}
+}
+
+func TestPlanMaclawAppInstallRejectsInvalidWorkspaceLayout(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	_, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "bad-layout",
+			"name": "Bad Layout",
+			"kind": "enterprise_normal_app",
+			"ui": {"entry":"business_workspace","layouts":"not-an-object"}
+		}
+	}`)
+	if err == nil || !strings.Contains(err.Error(), "ui.layouts") {
+		t.Fatalf("expected ui.layouts validation error, got %v", err)
+	}
+}
+
 func TestPlanMaclawAppInstallTreatsBindingSkillAsDependency(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	plan, err := app.PlanMaclawAppInstall(`{
@@ -1126,6 +1194,173 @@ func TestListMaclawAppApprovalInstancesAll(t *testing.T) {
 	}
 }
 
+func TestSyncMaclawAppApprovalInstanceToDataSrvCreatesMissingBusinessRecord(t *testing.T) {
+	type capturedRequest struct {
+		Method string
+		Path   string
+		Body   map[string]interface{}
+	}
+	captured := []capturedRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&item.Body)
+		}
+		captured = append(captured, item)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/datasets/finance.expenses/records/exp-new":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"record not found"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/datasets/finance.expenses/records":
+			_, _ = w.Write([]byte(`{"id":"exp-new","data":{"amount":1200,"status":"approval_pending"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/datasets/finance.expenses/records/exp-new/approvals":
+			_, _ = w.Write([]byte(`{"id":"approval-new-1","status":"pending"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"unexpected request"}`))
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "alice", Role: "approver"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+	base := maclawAppApprovalInstance{
+		AppID:           "expense",
+		AppName:         "Expense",
+		BlueprintID:     "expense.blueprint.v1",
+		DatasetID:       "finance.expenses",
+		ObjectRole:      "expense_report",
+		InstanceID:      "appr-new-1",
+		Title:           "Expense approval",
+		Lane:            "my_requests",
+		Status:          "pending",
+		CurrentNode:     "manager_review",
+		Owner:           "alice",
+		Approver:        "manager",
+		Result:          "waiting",
+		WorkflowSkillID: "expense-approval-workflow",
+		BusinessStatus:  "approval_pending",
+		ResultStatus:    "pending",
+		ResultPayload: map[string]any{"business_record": map[string]any{
+			"id":     "exp-new",
+			"amount": float64(1200),
+			"status": "approval_pending",
+		}},
+	}
+
+	created, err := app.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{DatasetID: "finance.expenses", ObjectRole: "expense_report", RecordID: "exp-new", Instance: base})
+	if err != nil {
+		t.Fatalf("SyncMaclawAppApprovalInstanceToDataSrv create missing record error = %v", err)
+	}
+	if created["synced"] != true || created["action"] != "create_record_approval" || created["approval_id"] != "approval-new-1" {
+		t.Fatalf("unexpected sync result: %#v", created)
+	}
+	if sync, ok := created["business_record_sync"].(map[string]any); !ok || sync["synced"] != true || sync["action"] != "create_business_record" {
+		t.Fatalf("sync should create missing business record before approval: %#v", created)
+	}
+	if len(captured) != 3 {
+		t.Fatalf("captured %d requests, want 3: %#v", len(captured), captured)
+	}
+	if captured[0].Method != http.MethodGet || captured[0].Path != "/api/v1/data/datasets/finance.expenses/records/exp-new" {
+		t.Fatalf("unexpected preflight get request: %#v", captured[0])
+	}
+	if captured[1].Method != http.MethodPost || captured[1].Path != "/api/v1/data/datasets/finance.expenses/records" {
+		t.Fatalf("unexpected business record create request: %#v", captured[1])
+	}
+	if captured[1].Body["id"] != "exp-new" || captured[1].Body["source_id"] != "appr-new-1" || captured[1].Body["title"] != "Expense approval" {
+		t.Fatalf("business record create body missing identity fields: %#v", captured[1].Body)
+	}
+	data, ok := captured[1].Body["data"].(map[string]interface{})
+	if !ok || data["amount"] != float64(1200) || data["status"] != "approval_pending" {
+		t.Fatalf("business record create body missing approval data: %#v", captured[1].Body)
+	}
+	if captured[2].Method != http.MethodPost || captured[2].Path != "/api/v1/data/datasets/finance.expenses/records/exp-new/approvals" {
+		t.Fatalf("unexpected approval create request: %#v", captured[2])
+	}
+	if captured[2].Body["workflow_instance_id"] != "appr-new-1" || captured[2].Body["business_status"] != "approval_pending" {
+		t.Fatalf("approval create body missing workflow link: %#v", captured[2].Body)
+	}
+}
+func TestSyncMaclawAppApprovalInstanceToDataSrvCreatesMinimalBusinessRecord(t *testing.T) {
+	type capturedRequest struct {
+		Method string
+		Path   string
+		Body   map[string]interface{}
+	}
+	captured := []capturedRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&item.Body)
+		}
+		captured = append(captured, item)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/datasets/finance.expenses/records/appr-min-1":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"record not found"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/datasets/finance.expenses/records":
+			_, _ = w.Write([]byte(`{"id":"appr-min-1","data":{"approval_instance_id":"appr-min-1"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/datasets/finance.expenses/records/appr-min-1/approvals":
+			_, _ = w.Write([]byte(`{"id":"approval-min-1","status":"pending"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"unexpected request"}`))
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "alice", Role: "approver"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+	base := maclawAppApprovalInstance{
+		AppID:              "expense",
+		AppName:            "Expense",
+		BlueprintID:        "expense.blueprint.v1",
+		ObjectRole:         "expense_report",
+		ApprovalObjectRole: "expense_report",
+		ApprovalEvent:      "expense.submitted",
+		InstanceID:         "appr-min-1",
+		Title:              "Expense approval",
+		Lane:               "my_requests",
+		Status:             "pending",
+		CurrentNode:        "manager_review",
+		Owner:              "alice",
+		Applicant:          "alice",
+		Approver:           "manager",
+		WorkflowSkillID:    "expense-approval-workflow",
+		BusinessStatus:     "approval_pending",
+		ResultStatus:       "pending",
+		BusinessEntity:     "expense_report",
+		BusinessAction:     "submit",
+		BusinessNote:       "submitted from app UI",
+	}
+
+	created, err := app.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{DatasetID: "finance.expenses", ObjectRole: "expense_report", RecordID: "appr-min-1", Instance: base})
+	if err != nil {
+		t.Fatalf("SyncMaclawAppApprovalInstanceToDataSrv minimal record error = %v", err)
+	}
+	if sync, ok := created["business_record_sync"].(map[string]any); !ok || sync["synced"] != true || sync["action"] != "create_business_record" {
+		t.Fatalf("sync should create minimal business record before approval: %#v", created)
+	}
+	if len(captured) != 3 {
+		t.Fatalf("captured %d requests, want 3: %#v", len(captured), captured)
+	}
+	data, ok := captured[1].Body["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("minimal business record create body missing data: %#v", captured[1].Body)
+	}
+	if data["approval_instance_id"] != "appr-min-1" || data["workflow_skill_id"] != "expense-approval-workflow" || data["business_status"] != "approval_pending" || data["business_action"] != "submit" {
+		t.Fatalf("minimal business record data missing app approval context: %#v", data)
+	}
+	if captured[2].Method != http.MethodPost || captured[2].Path != "/api/v1/data/datasets/finance.expenses/records/appr-min-1/approvals" {
+		t.Fatalf("unexpected approval create request: %#v", captured[2])
+	}
+}
 func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	type capturedRequest struct {
 		Method string
@@ -1181,6 +1416,9 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	if created["synced"] != true || created["action"] != "create_record_approval" {
 		t.Fatalf("unexpected create sync result: %#v", created)
 	}
+	if sync, ok := created["business_record_sync"].(map[string]any); !ok || sync["synced"] != true || sync["action"] != "update_business_record" {
+		t.Fatalf("create sync should update business record before approval: %#v", created)
+	}
 	base.Status = "approved"
 	base.Lane = "handled"
 	base.Result = "approved"
@@ -1198,24 +1436,34 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	if sync, ok := reviewed["business_record_sync"].(map[string]any); !ok || sync["synced"] != true || sync["action"] != "update_business_record" {
 		t.Fatalf("review sync should update business record: %#v", reviewed)
 	}
-	if len(captured) != 4 {
-		t.Fatalf("captured %d requests, want 4: %#v", len(captured), captured)
+	if len(captured) != 6 {
+		t.Fatalf("captured %d requests, want 6: %#v", len(captured), captured)
 	}
-	if captured[0].Method != http.MethodPost || captured[0].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1/approvals" {
-		t.Fatalf("unexpected create request: %#v", captured[0])
+	if captured[0].Method != http.MethodGet || captured[0].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1" {
+		t.Fatalf("unexpected pre-create business record get request: %#v", captured[0])
 	}
-	if captured[0].Body["workflow_instance_id"] != "appr-1" || captured[0].Body["business_status"] != "approval_pending" || captured[0].Body["result_status"] != "pending" {
-		t.Fatalf("create body missing approval link fields: %#v", captured[0].Body)
+	if captured[1].Method != http.MethodPatch || captured[1].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1" {
+		t.Fatalf("unexpected pre-create business record patch request: %#v", captured[1])
 	}
-	if captured[0].Body["app_id"] != "expense" || captured[0].Body["blueprint_id"] != "expense.blueprint.v1" || captured[0].Body["object_role"] != "expense_report" {
-		t.Fatalf("create body missing app approval semantics: %#v", captured[0].Body)
+	preCreatePatchedData, ok := captured[1].Body["data"].(map[string]interface{})
+	if !ok || preCreatePatchedData["amount"] != float64(1200) || preCreatePatchedData["status"] != "approval_pending" {
+		t.Fatalf("pre-create business record patch should keep pending approval data: %#v", captured[1].Body)
 	}
-	request, ok := captured[0].Body["request"].(map[string]interface{})
+	if captured[2].Method != http.MethodPost || captured[2].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1/approvals" {
+		t.Fatalf("unexpected create request: %#v", captured[2])
+	}
+	if captured[2].Body["workflow_instance_id"] != "appr-1" || captured[2].Body["business_status"] != "approval_pending" || captured[2].Body["result_status"] != "pending" {
+		t.Fatalf("create body missing approval link fields: %#v", captured[2].Body)
+	}
+	if captured[2].Body["app_id"] != "expense" || captured[2].Body["blueprint_id"] != "expense.blueprint.v1" || captured[2].Body["object_role"] != "expense_report" {
+		t.Fatalf("create body missing app approval semantics: %#v", captured[2].Body)
+	}
+	request, ok := captured[2].Body["request"].(map[string]interface{})
 	if !ok || request["approval_instance_id"] != "appr-1" || request["object_role"] != "expense_report" || request["blueprint_id"] != "expense.blueprint.v1" {
-		t.Fatalf("create body request should keep app approval context: %#v", captured[0].Body)
+		t.Fatalf("create body request should keep app approval context: %#v", captured[2].Body)
 	}
-	if payload, ok := captured[0].Body["result_payload"].(map[string]interface{}); !ok || payload["business_record"] == nil {
-		t.Fatalf("create body missing result payload: %#v", captured[0].Body)
+	if payload, ok := captured[2].Body["result_payload"].(map[string]interface{}); !ok || payload["business_record"] == nil {
+		t.Fatalf("create body missing result payload: %#v", captured[2].Body)
 	}
 	if created["approval_id"] != "approval-remote-1" {
 		t.Fatalf("create sync should expose remote approval id: %#v", created)
@@ -1227,30 +1475,30 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	if len(stored) != 1 || stored[0].ApprovalID != "approval-remote-1" || stored[0].RecordApprovalID != "approval-remote-1" || stored[0].ObjectRole != "expense_report" {
 		t.Fatalf("create sync should persist remote approval context: %#v", stored)
 	}
-	if outputs, ok := captured[0].Body["outputs"].([]interface{}); !ok || len(outputs) != 1 {
-		t.Fatalf("create body missing outputs: %#v", captured[0].Body)
+	if outputs, ok := captured[2].Body["outputs"].([]interface{}); !ok || len(outputs) != 1 {
+		t.Fatalf("create body missing outputs: %#v", captured[2].Body)
 	}
-	if artifacts, ok := captured[0].Body["artifacts"].([]interface{}); !ok || len(artifacts) != 1 {
-		t.Fatalf("create body missing artifacts: %#v", captured[0].Body)
+	if artifacts, ok := captured[2].Body["artifacts"].([]interface{}); !ok || len(artifacts) != 1 {
+		t.Fatalf("create body missing artifacts: %#v", captured[2].Body)
 	}
-	if captured[1].Method != http.MethodPost || captured[1].Path != "/api/v1/data/approvals/approval-remote-1/review" {
-		t.Fatalf("unexpected review request: %#v", captured[1])
+	if captured[3].Method != http.MethodPost || captured[3].Path != "/api/v1/data/approvals/approval-remote-1/review" {
+		t.Fatalf("unexpected review request: %#v", captured[3])
 	}
-	if captured[1].Body["decision"] != "approved" || captured[1].Body["workflow_decision_id"] != "decision-1" || captured[1].Body["business_status"] != "approved" || captured[1].Body["result_status"] != "approved" {
-		t.Fatalf("review body missing decision fields: %#v", captured[1].Body)
+	if captured[3].Body["decision"] != "approved" || captured[3].Body["workflow_decision_id"] != "decision-1" || captured[3].Body["business_status"] != "approved" || captured[3].Body["result_status"] != "approved" {
+		t.Fatalf("review body missing decision fields: %#v", captured[3].Body)
 	}
-	if captured[1].Body["result_payload"] == nil || captured[1].Body["outputs"] == nil || captured[1].Body["artifacts"] == nil {
-		t.Fatalf("review body missing result package: %#v", captured[1].Body)
+	if captured[3].Body["result_payload"] == nil || captured[3].Body["outputs"] == nil || captured[3].Body["artifacts"] == nil {
+		t.Fatalf("review body missing result package: %#v", captured[3].Body)
 	}
-	if captured[2].Method != http.MethodGet || captured[2].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1" {
-		t.Fatalf("unexpected business record get request: %#v", captured[2])
+	if captured[4].Method != http.MethodGet || captured[4].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1" {
+		t.Fatalf("unexpected business record get request: %#v", captured[4])
 	}
-	if captured[3].Method != http.MethodPatch || captured[3].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1" {
-		t.Fatalf("unexpected business record patch request: %#v", captured[3])
+	if captured[5].Method != http.MethodPatch || captured[5].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1" {
+		t.Fatalf("unexpected business record patch request: %#v", captured[5])
 	}
-	patchedData, ok := captured[3].Body["data"].(map[string]interface{})
+	patchedData, ok := captured[5].Body["data"].(map[string]interface{})
 	if !ok || patchedData["amount"] != float64(1200) || patchedData["status"] != "approved" || patchedData["payment_status"] != "pending_payment" {
-		t.Fatalf("business record patch should merge existing data with approval result: %#v", captured[3].Body)
+		t.Fatalf("business record patch should merge existing data with approval result: %#v", captured[5].Body)
 	}
 }
 
@@ -1373,8 +1621,8 @@ func TestSyncMaclawAppApprovalInstanceToDataSrvResolvesObjectRole(t *testing.T) 
 	if created["synced"] != true || created["action"] != "create_record_approval" || created["dataset_id"] != "finance.expenses" {
 		t.Fatalf("unexpected object-role sync result: %#v", created)
 	}
-	if len(captured) != 2 {
-		t.Fatalf("captured %d requests, want 2: %#v", len(captured), captured)
+	if len(captured) != 4 {
+		t.Fatalf("captured %d requests, want 4: %#v", len(captured), captured)
 	}
 	if captured[0].Method != http.MethodPost || captured[0].Path != "/api/v1/data/object-roles/resolve" {
 		t.Fatalf("unexpected resolver request: %#v", captured[0])
@@ -1388,8 +1636,18 @@ func TestSyncMaclawAppApprovalInstanceToDataSrvResolvesObjectRole(t *testing.T) 
 	if got, ok := captured[0].Body["require_initialized"].(bool); !ok || !got {
 		t.Fatalf("resolver should require initialized dataset: %#v", captured[0].Body)
 	}
-	if captured[1].Method != http.MethodPost || captured[1].Path != "/api/v1/data/datasets/finance.expenses/records/exp-2/approvals" {
-		t.Fatalf("unexpected approval create request: %#v", captured[1])
+	if captured[1].Method != http.MethodGet || captured[1].Path != "/api/v1/data/datasets/finance.expenses/records/exp-2" {
+		t.Fatalf("unexpected pre-create business record get request: %#v", captured[1])
+	}
+	if captured[2].Method != http.MethodPatch || captured[2].Path != "/api/v1/data/datasets/finance.expenses/records/exp-2" {
+		t.Fatalf("unexpected pre-create business record patch request: %#v", captured[2])
+	}
+	patchedData, ok := captured[2].Body["data"].(map[string]interface{})
+	if !ok || patchedData["workflow_instance_id"] != "appr-2" || patchedData["business_status"] != "approval_pending" {
+		t.Fatalf("pre-create business record patch should include approval context: %#v", captured[2].Body)
+	}
+	if captured[3].Method != http.MethodPost || captured[3].Path != "/api/v1/data/datasets/finance.expenses/records/exp-2/approvals" {
+		t.Fatalf("unexpected approval create request: %#v", captured[3])
 	}
 }
 

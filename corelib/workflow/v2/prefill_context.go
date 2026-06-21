@@ -2,6 +2,7 @@ package v2
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -25,6 +26,8 @@ func extractFieldFromContext(field PhaseInputField, context string) *PrefilledVa
 		return extractInstitution(field, context)
 	case isTitleField(field.Name):
 		return extractAcademicTitle(field, context)
+	case isDisciplineField(field.Name):
+		return extractDiscipline(field, context)
 	case isEmailField(field.Name):
 		return extractEmail(field, context)
 	case isPhoneField(field.Name):
@@ -46,6 +49,10 @@ func isPersonNameField(name string) bool {
 
 func isInstitutionField(name string) bool {
 	return name == "institution" || name == "organization"
+}
+
+func isDisciplineField(name string) bool {
+	return name == "discipline" || name == "research_field" || name == "subject_area"
 }
 
 func isTitleField(name string) bool {
@@ -322,6 +329,130 @@ func extractAcademicTitle(field PhaseInputField, context string) *PrefilledValue
 		}
 	}
 	return nil
+}
+
+// extractDiscipline looks for academic discipline/research field keywords in free text.
+// Matches patterns like "研究方向为X"、"学科：X"、"研究领域：X"
+// as well as known discipline names appearing in the text.
+//
+// Strategy:
+// 1. Label-anchor extraction with colon separators (highest precision)
+// 2. Direct matching of known discipline names (longest match first)
+// 3. Generic label-anchor fallback
+var disciplineAnchors = []string{
+	"学科领域：", "学科领域:", "研究领域：", "研究领域:",
+	"学科：", "学科:", "专业：", "专业:",
+	"研究方向：", "研究方向:", "一级学科：", "一级学科:",
+	"研究方向为", "研究方向是", "学科领域为", "学科领域是",
+}
+
+// knownDisciplines contains common Chinese academic discipline names for direct matching.
+// MUST be sorted by rune length descending — longest match wins to avoid
+// "计算机科学" matching when "计算机科学与技术" is present.
+var knownDisciplines []string
+
+func init() {
+	raw := []string{
+		"计算机科学与技术", "信息与通信工程", "电子科学与技术", "控制科学与工程",
+		"材料科学与工程", "化学工程与技术", "环境科学与工程", "航空宇航科学与技术",
+		"公共卫生与预防医学", "管理科学与工程", "自然语言处理",
+		"人工智能", "软件工程", "机械工程", "土木工程", "电气工程", "生物医学工程",
+		"计算机视觉", "机器学习", "深度学习", "数据挖掘", "网络安全",
+		"新闻传播学", "中国语言文学", "外国语言文学",
+		"工商管理", "公共管理",
+		"基础医学", "临床医学", "地球科学",
+		"物联网", "大数据", "云计算", "量子计算",
+		"教育学", "心理学", "社会学", "经济学",
+		"物理学", "生物学", "天文学",
+		"数学", "化学", "法学", "药学",
+	}
+	// Sort by rune length descending to guarantee longest-match-first semantics.
+	// This is a correctness invariant — DO NOT remove this sort.
+	sort.Slice(raw, func(i, j int) bool {
+		return len([]rune(raw[i])) > len([]rune(raw[j]))
+	})
+	knownDisciplines = raw
+}
+
+// maxDisciplineValueRunes limits extracted discipline values. Real discipline names
+// are at most ~10 CJK characters. Anything longer is likely a sentence fragment.
+const maxDisciplineValueRunes = 15
+
+func extractDiscipline(field PhaseInputField, context string) *PrefilledValue {
+	// First try label-anchor patterns (most reliable — requires colon/copula separator)
+	for _, anchor := range disciplineAnchors {
+		idx := strings.LastIndex(context, anchor)
+		if idx < 0 {
+			continue
+		}
+		afterAnchor := context[idx+len(anchor):]
+		value := extractValueAfterAnchor(afterAnchor)
+		if value == "" {
+			continue
+		}
+		// Validate: discipline names are short (2-15 CJK chars)
+		if runeLen := len([]rune(value)); runeLen < 2 || runeLen > maxDisciplineValueRunes {
+			continue
+		}
+		return &PrefilledValue{
+			Value:        value,
+			Source:       "context",
+			SourceDetail: "提取自: " + anchor + value,
+			Confidence:   0.80,
+		}
+	}
+
+	// Second: match known discipline names directly in text.
+	// List is sorted longest-first, so first hit is the most specific match.
+	// For short names (≤3 runes like "数学"), require them to NOT be part of a
+	// longer compound word (e.g. "数学模型" should not match "数学" as the discipline).
+	for _, disc := range knownDisciplines {
+		idx := strings.Index(context, disc)
+		if idx < 0 {
+			continue
+		}
+		// For short discipline names, check that they are not a prefix of a longer word
+		if len([]rune(disc)) <= 3 {
+			afterEnd := context[idx+len(disc):]
+			if afterEnd != "" {
+				nextRune, _ := nextCJKRune(afterEnd)
+				// If followed by another CJK character that forms a compound word, skip
+				if nextRune != 0 && !isDisciplineSuffix(nextRune) {
+					continue
+				}
+			}
+		}
+		return &PrefilledValue{
+			Value:        disc,
+			Source:       "context",
+			SourceDetail: "匹配到学科名称: " + disc,
+			Confidence:   0.75,
+		}
+	}
+
+	// Fallback to generic label-anchor extraction
+	return extractByLabelAnchor(field, context)
+}
+
+// nextCJKRune returns the first rune from s if it's a CJK character, or 0 otherwise.
+func nextCJKRune(s string) (rune, int) {
+	for _, r := range s {
+		if r >= 0x4e00 && r <= 0x9fff {
+			return r, len(string(r))
+		}
+		return 0, 0
+	}
+	return 0, 0
+}
+
+// isDisciplineSuffix returns true if the rune is a common suffix that still
+// indicates a discipline context (e.g. "学" in "数学学科", "系" in "化学系").
+func isDisciplineSuffix(r rune) bool {
+	switch r {
+	case '学', '系', '院', '科', '类', '门':
+		return true
+	}
+	return false
 }
 
 // extractByLabelAnchor is the generic fallback: looks for "Label：Value" or

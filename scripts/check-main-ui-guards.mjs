@@ -420,6 +420,7 @@ requireFile('gui/frontend/src/config/toolCatalog.ts');
 requireFile('gui/frontend/src/config/apiStoreProviders.ts');
 requireFile('gui/frontend/src/config/settingsTabs.ts');
 requireFile('gui/frontend/src/types/appShell.ts');
+requireFile('gui/frontend/src/appLazyComponents.ts');
 requireFile('gui/frontend/src/components/settings/SettingsTabsRail.tsx');
 requireFile('gui/frontend/src/components/settings/GeneralSettingsPanel.tsx');
 requireFile('gui/frontend/src/components/settings/UISettingsPanel.tsx');

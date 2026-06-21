@@ -956,9 +956,7 @@ body {
 }
 
 .sidebar-system-status__provider-dropdown {
-    position: absolute;
-    bottom: calc(100% + 6px);
-    right: 0;
+    /* position: fixed applied via inline style with computed coordinates */
     min-width: 160px;
     max-width: 240px;
     padding: 4px 0;
@@ -966,7 +964,7 @@ body {
     border-radius: 6px;
     background: var(--theme-surface);
     box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.12), 0 0 1px rgba(0, 0, 0, 0.08);
-    z-index: 9999;
+    z-index: 99999;
     animation: provider-dropdown-appear 120ms ease-out;
 }
 

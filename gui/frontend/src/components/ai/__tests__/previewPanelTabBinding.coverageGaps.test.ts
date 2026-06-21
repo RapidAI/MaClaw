@@ -324,39 +324,39 @@ describe('Path B: Stale sessionID takeover when session inactive', () => {
 // when activeTabProjectPath="pathA".
 // ══════════════════════════════════════════════════════════════════════════════
 
-describe('Path C: project_path routing skip in useWorkflowState', () => {
+describe('Path C: event_scope_id routing skip in useWorkflowState', () => {
     beforeEach(() => {
         eventHandlers.clear();
     });
 
-    it('workflow:doc_update with mismatched project_path is skipped', () => {
-        const { result } = renderHook(() => useWorkflowState('pathA'));
+    it('workflow:doc_update with mismatched event_scope_id is skipped', () => {
+        const { result } = renderHook(() => useWorkflowState('scopeA'));
 
-        // Start workflow on pathA
+        // Start workflow on scopeA
         act(() => {
             emitPhaseUpdate({
                 id: 'wf-1',
                 status: 'active',
                 type: 'coding',
                 current_phase: 'requirements',
-                project_path: 'pathA',
+                event_scope_id: 'scopeA',
             });
         });
 
-        // doc_update for pathB should be skipped
+        // doc_update for scopeB should be skipped
         act(() => {
             emitDocUpdate({
                 phase_id: 'requirements',
                 content: '# PathB requirements',
-                project_path: 'pathB',
+                event_scope_id: 'scopeB',
             });
         });
 
         expect(result.current.state.phaseDocuments.has('requirements')).toBe(false);
     });
 
-    it('workflow:doc_update with matching project_path is applied', () => {
-        const { result } = renderHook(() => useWorkflowState('pathA'));
+    it('workflow:doc_update with matching event_scope_id is applied', () => {
+        const { result } = renderHook(() => useWorkflowState('scopeA'));
 
         act(() => {
             emitPhaseUpdate({
@@ -364,7 +364,7 @@ describe('Path C: project_path routing skip in useWorkflowState', () => {
                 status: 'active',
                 type: 'coding',
                 current_phase: 'requirements',
-                project_path: 'pathA',
+                event_scope_id: 'scopeA',
             });
         });
 
@@ -372,7 +372,7 @@ describe('Path C: project_path routing skip in useWorkflowState', () => {
             emitDocUpdate({
                 phase_id: 'requirements',
                 content: '# PathA requirements',
-                project_path: 'pathA',
+                event_scope_id: 'scopeA',
             });
         });
 
@@ -401,8 +401,8 @@ describe('Path C: project_path routing skip in useWorkflowState', () => {
         expect(result.current.state.phaseDocuments.get('requirements')).toBe('# No project path requirements');
     });
 
-    it('workflow:phase_update with mismatched project_path is skipped', () => {
-        const { result } = renderHook(() => useWorkflowState('pathA'));
+    it('workflow:phase_update with mismatched event_scope_id is skipped', () => {
+        const { result } = renderHook(() => useWorkflowState('scopeA'));
 
         act(() => {
             emitPhaseUpdate({
@@ -410,7 +410,7 @@ describe('Path C: project_path routing skip in useWorkflowState', () => {
                 status: 'active',
                 type: 'product_design',
                 current_phase: 'problem_discovery',
-                project_path: 'pathB',
+                event_scope_id: 'scopeB',
             });
         });
 
@@ -420,7 +420,7 @@ describe('Path C: project_path routing skip in useWorkflowState', () => {
         expect(result.current.state.active).toBe(false);
     });
 
-    it('no activeTabProjectPath means all events are applied (backward compatible)', () => {
+    it('no activeTabScopeID means all workflow events are applied (backward compatible)', () => {
         const { result } = renderHook(() => useWorkflowState());
 
         act(() => {
@@ -508,7 +508,7 @@ describe('Path D: project_path routing skip in useCodePreviewState', () => {
         expect(result.current.state.active).toBe(true);
     });
 
-    it('no activeTabProjectPath means all events are applied', () => {
+    it('no activeTabProjectPath skips project-scoped events for local preview isolation', () => {
         const { result } = renderHook(() => useCodePreviewState());
 
         act(() => {
@@ -523,7 +523,8 @@ describe('Path D: project_path routing skip in useCodePreviewState', () => {
             });
         });
 
-        expect(result.current.state.files.has('/src/test.ts')).toBe(true);
+        expect(result.current.state.files.has('/src/test.ts')).toBe(false);
+        expect(result.current.state.active).toBe(false);
     });
 });
 

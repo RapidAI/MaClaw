@@ -48,7 +48,7 @@ import { compactCodingAgentProgressMessages } from "./compactCodingAgentProgress
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { buildProjectTabRecentMessages, chatHistoriesEquivalent, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, projectPathFromSessionKey, projectSessionKey } from "./aiAssistantPanelSessionUtils";
-import { GroupDiscussionRenameConsultation, LoadConfig, PatchConfigFields, RefreshWorkflowV2StateForTab } from "../../../wailsjs/go/main/App";
+import { CancelAIAssistantSessionForSession, GroupDiscussionRenameConsultation, LoadConfig, PatchConfigFields, RefreshWorkflowV2StateForTab } from "../../../wailsjs/go/main/App";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_PROJECT_TASK_CLOSED } from "../../constants/events";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
@@ -79,7 +79,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
     const closeAllPreviewPanelsRef = useRef<(() => void) | null>(null);
-    const closeTabWithCleanupRef = useRef<((tabId: string) => void) | null>(null);
     const pendingSkillRecDataRef = useRef<any>(null);
     const skillRecResolvedRef = useRef(false);
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
@@ -293,24 +292,57 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         closeAllPreviewPanelsRef.current?.();
         // Clear any pending skill recording card
         setSkillRecordingCard(null);
-        if (activeTab.type !== "local") {
-            // Close the non-local tab with full cleanup (round tracking, preview state,
-            // skill recording, backend agent cancellation). closeTab inside it
-            // automatically switches activeTabId back to "local", allowing the
-            // welcome/guide view to reappear.
-            if (closeTabWithCleanupRef.current) {
-                closeTabWithCleanupRef.current(activeTab.id);
-            } else {
-                // Fallback before ref is assigned (shouldn't happen in practice)
-                closeTab(activeTab.id);
+        if (activeTab.type === "project") {
+            // Clear frontend state first so the welcome view appears immediately.
+            clearTabConversation(activeTab.id);
+            setProjectTabMessages([]);
+            // Clear preparing state if tab was in context-restore phase.
+            preparingProjectTabIdsRef.current.delete(activeTab.id);
+            setPreparingProjectTabIds(prev => {
+                if (!prev.has(activeTab.id)) return prev;
+                const next = new Set(prev);
+                next.delete(activeTab.id);
+                return next;
+            });
+            // Clear any in-flight round tracking for this tab so displayMessages'
+            // roundMessages path doesn't pull stale messages from shared state,
+            // and hasActiveDetachedProjectRound doesn't keep isBusy=true.
+            const roundKey = activeTab.projectPath ? projectSessionKey(activeTab.projectPath) : '';
+            let roundsChanged = false;
+            if (roundKey && projectTabRoundsRef.current.has(roundKey)) {
+                projectTabRoundsRef.current.delete(roundKey);
+                roundsChanged = true;
             }
+            for (const [key, detached] of detachedProjectRoundsRef.current) {
+                if (detached.tabId === activeTab.id) {
+                    detachedProjectRoundsRef.current.delete(key);
+                    roundsChanged = true;
+                }
+            }
+            if (roundsChanged) {
+                setProjectTabRouteVersion(version => version + 1);
+                setDetachedProjectRoundVersion(version => version + 1);
+            }
+            setQueueInteractionStarted(false);
+            setQueueEditDraftActive(false);
+            setEditingEntryId(null);
+            // Fire-and-forget cancel the backend agent. The live-sync effect guard
+            // and displayMessages guard prevent cancel responses from resurrecting.
+            if (activeTab.projectPath) {
+                CancelAIAssistantSessionForSession(`desktop-user:${activeTab.projectPath}`).catch(() => {});
+            }
+            return;
         }
-        // Reset queue interaction state so the welcome view can reappear.
+        if (activeTab.type === "ve" || activeTab.type === "group") {
+            clearTabConversation(activeTab.id);
+            return;
+        }
+        // Local tab: full reset to show welcome/guide page.
         setQueueInteractionStarted(false);
         setQueueEditDraftActive(false);
         setEditingEntryId(null);
         await clearHistory();
-    }, [activeTab.id, activeTab.type, clearHistory, closeTab]);
+    }, [activeTab.id, activeTab.type, activeTab.projectPath, clearHistory, clearTabConversation]);
     const isLocalTabActive = activeTab.id === "local";
     const isProjectTabActive = activeTab.type === "project";
     const showChatUI = isLocalTabActive || isProjectTabActive;
@@ -538,8 +570,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const liveMessages = messages.filter((message: ChatMessage) => messageBelongsToSession(message, sessionKey));
             if (liveMessages.length === 0) continue;
             const existingState = getTabState(tab.id);
-            const nextHistory = mergeChatMessages(existingState?.history, liveMessages);
-            if (chatHistoriesEquivalent(existingState?.history as ChatMessage[] | undefined, nextHistory)) continue;
+            // Skip syncing into a cleared/empty tab — prevents cancel responses or
+            // residual streaming tokens from resurrecting after "New Task" clears
+            // the conversation. New rounds populate tab state via the wasSending
+            // effect and displayMessages' liveProjectMessages merge instead.
+            const existingHistory = existingState?.history as unknown[] | undefined;
+            if (!existingHistory || existingHistory.length === 0) continue;
+            const nextHistory = mergeChatMessages(existingHistory, liveMessages);
+            if (chatHistoriesEquivalent(existingHistory as ChatMessage[] | undefined, nextHistory)) continue;
             saveTabState(tab.id, {
                 ...existingState,
                 history: nextHistory,
@@ -569,7 +607,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return messages.filter(messageIsLocalSession);
         }
         const liveProjectMessages = messages.filter((message: ChatMessage) => messageBelongsToSession(message, activeSessionKey));
-        const mergedProjectMessages = liveProjectMessages.length > 0
+        // When projectTabMessages is empty (tab was cleared), don't merge residual
+        // messages from shared state — they are stale cancel responses or streaming
+        // leftovers. New rounds will populate projectTabMessages via wasSending effect.
+        const mergedProjectMessages = liveProjectMessages.length > 0 && projectTabMessages.length > 0
             ? mergeChatMessages(projectTabMessages, liveProjectMessages)
             : projectTabMessages;
         const activeProjectRound = findProjectRoundForTab(activeTab.id, activeTab.projectPath);
@@ -894,8 +935,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         closeTab(tabId);
     }, [clearProjectRoundTrackingForTab, closeTab, skillRecordingTabId]);
-    // Keep ref updated so clearActiveHistory (defined earlier) can close tabs with full cleanup
-    closeTabWithCleanupRef.current = closeTabWithProjectCleanup;
     const createProjectTabFromSearch = useCallback((projectPath: string, taskTitle: string, options?: { autoSend?: boolean }) => {
         const tabExistedInList = hasProjectTab(projectPath);
         const tab = createProjectTabWithContext(projectPath, taskTitle);
@@ -960,7 +999,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const codingPreviewEventScope = canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.id : (codingPreviewOwnerTab?.id || "local");
     // Code preview events still use project_path for routing (they don't carry event_scope_id yet).
     const codePreviewPathScope = (canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.projectPath : codingPreviewOwnerTab?.projectPath) || undefined;
-    const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(codingPreviewEventScope);
+    const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(codingPreviewEventScope, codePreviewPathScope);
     const { state: codePreviewState, closePanel: closeCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codePreviewPathScope);
     useEffect(() => {
         if (!previewOwnerResetPendingRef.current) return; previewOwnerResetPendingRef.current = false;
@@ -1204,12 +1243,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
     }, [displayMessages]);
-    // Show welcome only for an idle, empty local conversation; active work/queues need the full composer.
-    // Use isLocalTabActive instead of tabState.tabs.length === 1 so that the welcome/guide
-    // interface still appears after "New Session" even when project tabs exist.
+    // Show welcome for an idle, empty conversation on local tab or a cleared project tab.
     // NOTE: welcome view is shown in both inline (embedded panel) and overlay (standalone window)
     // modes — the embedded panel is now the primary usage mode.
-    const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && isLocalTabActive;
+    const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || isProjectTabActive);
     const hasConversation = otherMessages.length + displayProgressMessages.length > 0;
     const { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ hasConversation, messages: displayMessages, ready, scrollToTopSeq });
     const handleInputResizeEnd = useCallback(() => {

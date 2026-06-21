@@ -690,6 +690,7 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 		businessRecordSync := a.syncMaclawAppApprovalBusinessRecord(input.DatasetID, input.RecordID, instance)
 		return map[string]any{"synced": true, "action": "review_record_approval", "dataset_id": input.DatasetID, "approval_id": input.ApprovalID, "response": out, "business_record_sync": businessRecordSync}, nil
 	}
+	businessRecordSync := a.syncMaclawAppApprovalBusinessRecordForApproval(input.DatasetID, input.RecordID, instance, true)
 	out := a.executeMISDataTool(map[string]interface{}{
 		"action":       "create_record_approval",
 		"dataset_id":   input.DatasetID,
@@ -734,7 +735,6 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 		instance.RecordID = input.RecordID
 		_, _ = a.RecordMaclawAppApprovalInstance(instance)
 	}
-	businessRecordSync := a.syncMaclawAppApprovalBusinessRecord(input.DatasetID, input.RecordID, instance)
 	return map[string]any{"synced": true, "action": "create_record_approval", "dataset_id": input.DatasetID, "approval_id": approvalID, "response": out, "business_record_sync": businessRecordSync}, nil
 }
 
@@ -788,7 +788,14 @@ func maclawAppApprovalStatusCanReview(status string) bool {
 }
 
 func (a *App) syncMaclawAppApprovalBusinessRecord(datasetID, recordID string, instance maclawAppApprovalInstance) map[string]any {
+	return a.syncMaclawAppApprovalBusinessRecordForApproval(datasetID, recordID, instance, false)
+}
+
+func (a *App) syncMaclawAppApprovalBusinessRecordForApproval(datasetID, recordID string, instance maclawAppApprovalInstance, createIfMissing bool) map[string]any {
 	patch := maclawAppApprovalBusinessRecordPatch(instance)
+	if len(patch) == 0 && createIfMissing {
+		patch = maclawAppApprovalFallbackBusinessRecordPatch(instance)
+	}
 	if len(patch) == 0 {
 		return map[string]any{"synced": false, "reason": "missing business record patch"}
 	}
@@ -802,6 +809,21 @@ func (a *App) syncMaclawAppApprovalBusinessRecord(datasetID, recordID string, in
 	path := "/api/v1/data/datasets/" + pathEscape(datasetID) + "/records/" + pathEscape(recordID)
 	data, err := a.callMISDataAPIBytes(cfg, http.MethodGet, path, nil)
 	if err != nil {
+		if createIfMissing && strings.Contains(err.Error(), "HTTP 404") {
+			createBody := compactPayload(map[string]interface{}{
+				"id":        recordID,
+				"title":     instance.Title,
+				"source_id": instance.InstanceID,
+				"data":      cloneMapAny(patch),
+			})
+			response, createErr := a.callMISDataAPIBytes(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records", createBody)
+			if createErr != nil {
+				return map[string]any{"synced": false, "reason": createErr.Error(), "patch": cloneMapAny(patch), "action": "create_business_record"}
+			}
+			result := map[string]any{}
+			_ = json.Unmarshal(response, &result)
+			return map[string]any{"synced": true, "action": "create_business_record", "record_id": recordID, "patch": cloneMapAny(patch), "response": result}
+		}
 		return map[string]any{"synced": false, "reason": err.Error(), "patch": cloneMapAny(patch)}
 	}
 	var record map[string]any
@@ -840,6 +862,33 @@ func maclawAppApprovalBusinessRecordPatch(instance maclawAppApprovalInstance) ma
 		}
 	}
 	return nil
+}
+func maclawAppApprovalFallbackBusinessRecordPatch(instance maclawAppApprovalInstance) map[string]any {
+	patch := compactPayload(map[string]interface{}{
+		"app_id":               instance.AppID,
+		"app_name":             instance.AppName,
+		"blueprint_id":         instance.BlueprintID,
+		"object_role":          firstNonEmptyMaclawAppString(instance.ObjectRole, instance.ApprovalObjectRole),
+		"approval_event":       instance.ApprovalEvent,
+		"approval_instance_id": instance.InstanceID,
+		"workflow_skill_id":    instance.WorkflowSkillID,
+		"workflow_instance_id": instance.InstanceID,
+		"workflow_node_id":     instance.CurrentNode,
+		"workflow_decision_id": instance.WorkflowDecisionID,
+		"business_entity":      instance.BusinessEntity,
+		"business_action":      instance.BusinessAction,
+		"business_note":        instance.BusinessNote,
+		"status":               firstNonEmptyMaclawAppString(instance.BusinessStatus, instance.Status),
+		"business_status":      firstNonEmptyMaclawAppString(instance.BusinessStatus, instance.Status),
+		"result_status":        firstNonEmptyMaclawAppString(instance.ResultStatus, instance.Status),
+		"owner":                instance.Owner,
+		"applicant":            instance.Applicant,
+		"approver":             instance.Approver,
+	})
+	if len(patch) == 0 {
+		return nil
+	}
+	return patch
 }
 
 func maclawAppApprovalPatchMap(value any) map[string]any {
@@ -1140,6 +1189,9 @@ func parseMaclawAppEntryFromMap(entry map[string]any, path string, seenIDs map[s
 		}
 		seenIDs[appID] = struct{}{}
 	}
+	if err := normalizeMaclawAppWorkspaceLayout(app, normalizeMaclawAppKind(stringMapValue(app, "kind")), path+".app"); err != nil {
+		return parsedMaclawAppEntry{}, err
+	}
 	return parsedMaclawAppEntry{
 		Schema: stringMapValue(entry, "schema"),
 		Entry:  entry,
@@ -1432,6 +1484,232 @@ func maclawAppDomainFromDatasetID(datasetID string) string {
 		return datasetID[:idx]
 	}
 	return ""
+}
+func normalizeMaclawAppWorkspaceLayout(app map[string]any, kind, path string) error {
+	if app == nil {
+		return nil
+	}
+	entry := maclawAppWorkspaceEntryForKind(kind)
+	defaultUI := defaultMaclawAppWorkspaceLayout(kind)
+	rawUI, exists := app["ui"]
+	if !exists || rawUI == nil {
+		app["ui"] = defaultUI
+		return nil
+	}
+	ui := anyMap(rawUI)
+	if ui == nil {
+		return fmt.Errorf("%s.ui must be an object", path)
+	}
+	if schemaRaw, ok := ui["schema"]; ok && schemaRaw != nil {
+		if schema, ok := schemaRaw.(string); !ok || strings.TrimSpace(schema) == "" {
+			return fmt.Errorf("%s.ui.schema must be a non-empty string", path)
+		} else {
+			ui["schema"] = strings.TrimSpace(schema)
+		}
+	} else {
+		ui["schema"] = "maclaw.app.ui.v1"
+	}
+	if _, exists := ui["generated"]; !exists {
+		if generated, ok := defaultUI["generated"]; ok {
+			ui["generated"] = generated
+		}
+	}
+	if rawEntry, ok := ui["entry"]; ok && rawEntry != nil {
+		value, ok := rawEntry.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s.ui.entry must be a non-empty string", path)
+		}
+		entry = strings.TrimSpace(value)
+	}
+	ui["entry"] = entry
+	layoutsRaw, exists := ui["layouts"]
+	if !exists || layoutsRaw == nil {
+		ui["layouts"] = defaultUI["layouts"]
+		app["ui"] = ui
+		return nil
+	}
+	layouts := anyMap(layoutsRaw)
+	if layouts == nil {
+		return fmt.Errorf("%s.ui.layouts must be an object", path)
+	}
+	if len(layouts) == 0 {
+		return fmt.Errorf("%s.ui.layouts must not be empty", path)
+	}
+	layout := anyMap(layouts[entry])
+	if layout == nil {
+		return fmt.Errorf("%s.ui.layouts.%s must be an object", path, entry)
+	}
+	defaults := anyMap(anyMap(defaultUI["layouts"])[entry])
+	for key, value := range defaults {
+		if _, exists := layout[key]; !exists {
+			layout[key] = value
+		}
+	}
+	if err := normalizeMaclawAppWorkspaceLayoutDetails(layout, path+".ui.layouts."+entry); err != nil {
+		return err
+	}
+	layouts[entry] = layout
+	ui["layouts"] = layouts
+	app["ui"] = ui
+	return nil
+}
+
+func normalizeMaclawAppWorkspaceLayoutDetails(layout map[string]any, path string) error {
+	if value, ok := layout["template"]; ok && value != nil {
+		template, ok := value.(string)
+		if !ok || !validMaclawAppWorkspaceTemplate(template) {
+			return fmt.Errorf("%s.template must be classic_split, left_nav, document_workspace, or dashboard", path)
+		}
+		layout["template"] = strings.TrimSpace(template)
+	}
+	if value, ok := layout["density"]; ok && value != nil {
+		density, ok := value.(string)
+		if !ok || !validMaclawAppWorkspaceDensity(density) {
+			return fmt.Errorf("%s.density must be compact, comfortable, or spacious", path)
+		}
+		layout["density"] = strings.TrimSpace(density)
+	}
+	for _, key := range []string{"primaryRegion", "outputRegion"} {
+		if value, ok := layout[key]; ok && value != nil {
+			placement, ok := value.(string)
+			if !ok || !validMaclawAppWorkspacePlacement(placement) {
+				return fmt.Errorf("%s.%s must be left, center, right, bottom, or modal", path, key)
+			}
+			layout[key] = strings.TrimSpace(placement)
+		}
+	}
+	if value, ok := layout["regions"]; ok && value != nil {
+		regions, ok := value.([]any)
+		if !ok {
+			return fmt.Errorf("%s.regions must be an array", path)
+		}
+		seen := map[string]struct{}{}
+		for i, raw := range regions {
+			region := anyMap(raw)
+			if region == nil {
+				return fmt.Errorf("%s.regions[%d] must be an object", path, i)
+			}
+			id, ok := region["id"].(string)
+			id = strings.TrimSpace(id)
+			if !ok || id == "" {
+				return fmt.Errorf("%s.regions[%d].id is required", path, i)
+			}
+			key := strings.ToLower(id)
+			if _, exists := seen[key]; exists {
+				return fmt.Errorf("%s.regions[%d].id duplicates %q", path, i, id)
+			}
+			seen[key] = struct{}{}
+			region["id"] = id
+			if role, ok := region["role"].(string); ok {
+				region["role"] = strings.TrimSpace(role)
+			}
+			placement, ok := region["placement"].(string)
+			placement = strings.TrimSpace(placement)
+			if !ok || !validMaclawAppWorkspacePlacement(placement) {
+				return fmt.Errorf("%s.regions[%d].placement must be left, center, right, bottom, or modal", path, i)
+			}
+			region["placement"] = placement
+			regions[i] = region
+		}
+		layout["regions"] = regions
+	}
+	return nil
+}
+
+func defaultMaclawAppWorkspaceLayout(kind string) map[string]any {
+	entry := maclawAppWorkspaceEntryForKind(kind)
+	layout := map[string]any{}
+	switch entry {
+	case "approval_workspace":
+		layout = map[string]any{
+			"type":       "split_view",
+			"template":   "classic_split",
+			"density":    "comfortable",
+			"toolbar":    []any{"create_request", "refresh", "export", "filter"},
+			"navigation": []any{"my_requests", "pending_my_approval", "handled", "attention", "all"},
+			"list":       map[string]any{"columns": []any{"title", "applicant", "current_node", "status", "updated_at"}},
+			"detail":     map[string]any{"sections": []any{"summary", "form_data", "attachments", "timeline", "approval_actions", "result"}},
+			"regions": []any{
+				map[string]any{"id": "request_form", "role": "input", "placement": "left"},
+				map[string]any{"id": "approval_inbox", "role": "instance_list", "placement": "center"},
+				map[string]any{"id": "approval_detail", "role": "detail", "placement": "center"},
+				map[string]any{"id": "result_panel", "role": "output", "placement": "bottom"},
+			},
+		}
+	case "business_workspace":
+		layout = map[string]any{
+			"type":       "split_view",
+			"template":   "classic_split",
+			"density":    "comfortable",
+			"toolbar":    []any{"new_record", "query", "refresh", "export"},
+			"navigation": []any{"records", "recent", "needs_attention"},
+			"list":       map[string]any{"columns": []any{"title", "status", "owner", "updated_at"}},
+			"detail":     map[string]any{"sections": []any{"form_panel", "business_record", "operation_history", "output_panel"}},
+			"regions": []any{
+				map[string]any{"id": "operation_form", "role": "input", "placement": "left"},
+				map[string]any{"id": "record_list", "role": "record_list", "placement": "center"},
+				map[string]any{"id": "record_detail", "role": "detail", "placement": "center"},
+				map[string]any{"id": "output_panel", "role": "output", "placement": "bottom"},
+			},
+		}
+	default:
+		layout = map[string]any{
+			"type":     "tool_workspace",
+			"template": "document_workspace",
+			"density":  "comfortable",
+			"toolbar":  []any{"add_file", "run", "cancel", "open_output"},
+			"regions": []any{
+				map[string]any{"id": "file_queue", "role": "input", "placement": "left"},
+				map[string]any{"id": "settings_panel", "role": "parameters", "placement": "right"},
+				map[string]any{"id": "preview_panel", "role": "preview", "placement": "center"},
+				map[string]any{"id": "output_panel", "role": "output", "placement": "right"},
+			},
+		}
+	}
+	return map[string]any{
+		"schema":    "maclaw.app.ui.v1",
+		"generated": true,
+		"entry":     entry,
+		"layouts":   map[string]any{entry: layout},
+	}
+}
+
+func maclawAppWorkspaceEntryForKind(kind string) string {
+	switch normalizeMaclawAppKind(kind) {
+	case "enterprise_approval_app":
+		return "approval_workspace"
+	case "enterprise_normal_app":
+		return "business_workspace"
+	default:
+		return "tool_workspace"
+	}
+}
+
+func validMaclawAppWorkspaceTemplate(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "classic_split", "left_nav", "document_workspace", "dashboard":
+		return true
+	default:
+		return false
+	}
+}
+
+func validMaclawAppWorkspaceDensity(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "compact", "comfortable", "spacious":
+		return true
+	default:
+		return false
+	}
+}
+
+func validMaclawAppWorkspacePlacement(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "left", "center", "right", "bottom", "modal":
+		return true
+	default:
+		return false
+	}
 }
 func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstallPlanDependency {
 	deps := []maclawAppInstallPlanDependency{}

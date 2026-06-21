@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/imgconv"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -423,7 +424,24 @@ func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
 	if content == "" {
 		return fmt.Sprintf("已清空 %s（%d 字节）", absPath, size)
 	}
-	return fmt.Sprintf("已写入 %s（%d 字节）", absPath, size)
+
+	// Auto-convert SVG to PNG when an SVG file is written (overwrite mode only;
+	// append to SVG mid-content would produce invalid SVG).
+	result := fmt.Sprintf("已写入 %s（%d 字节）", absPath, size)
+	if strings.HasSuffix(strings.ToLower(absPath), ".svg") && resolvedMode != coretool.WriteModeAppend {
+		pngPath := strings.TrimSuffix(absPath, filepath.Ext(absPath)) + ".png"
+		if convErr := imgconv.ConvertSVGToPNG(absPath, pngPath, 2000); convErr != nil {
+			result += fmt.Sprintf("\n⚠️ SVG→PNG 自动转换失败: %s", convErr.Error())
+		} else {
+			pngInfo, _ := os.Stat(pngPath)
+			pngSize := int64(0)
+			if pngInfo != nil {
+				pngSize = pngInfo.Size()
+			}
+			result += fmt.Sprintf("\n✅ 已自动转换为 PNG: %s（%d 字节）", pngPath, pngSize)
+		}
+	}
+	return result
 }
 
 func (h *IMMessageHandler) toolEditFile(args map[string]interface{}) string {

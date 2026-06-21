@@ -96,6 +96,16 @@ function resolveWorkflowInstanceKey(state: any): string {
     return createdAt && type ? `${type}:${createdAt}` : "";
 }
 
+function normalizeWorkflowProjectPath(path: string): string {
+    return path.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function inferLegacyProjectPath(activeTabScopeID?: string): string {
+    const scope = typeof activeTabScopeID === "string" ? activeTabScopeID.trim() : "";
+    if (!scope || scope === "local" || scope.startsWith("proj-") || scope.startsWith("__")) return "";
+    return scope;
+}
+
 /**
  * Determines whether a workflow event should be accepted by this hook instance.
  *
@@ -105,10 +115,10 @@ function resolveWorkflowInstanceKey(state: any): string {
  * Events are accepted only when the event's scope ID matches the hook's scope ID.
  *
  * Fallback (backward compatibility): when events don't carry `event_scope_id`,
- * falls back to workflow_id comparison (matches after first event establishes the ID).
+ * falls back to project_path first, then workflow_id comparison.
  *
- * @param eventProjectPath - Retained for signature stability; currently unused.
- *   All isolation is handled by event_scope_id (primary) and workflow_id (fallback).
+ * @param eventProjectPath - Legacy project path routing key used when an event
+ *   does not carry event_scope_id.
  */
 function shouldAcceptWorkflowEvent(
     eventScopeID: string,
@@ -116,12 +126,23 @@ function shouldAcceptWorkflowEvent(
     eventProjectPath: string,
     currentScopeID: string,
     currentWorkflowID: string,
+    currentProjectPath: string,
     strict: boolean = true,
 ): boolean {
     // Primary isolation: event_scope_id match (tab-level ID routing).
     // This is the definitive signal — if both sides have a scope ID, use it.
     if (eventScopeID && currentScopeID) {
         return eventScopeID === currentScopeID;
+    }
+
+    const normalizedEventProjectPath = eventProjectPath ? normalizeWorkflowProjectPath(eventProjectPath) : "";
+    const normalizedCurrentProjectPath = currentProjectPath ? normalizeWorkflowProjectPath(currentProjectPath) : "";
+    if (normalizedEventProjectPath) {
+        if (normalizedCurrentProjectPath) {
+            if (normalizedEventProjectPath !== normalizedCurrentProjectPath) return false;
+        } else if (currentScopeID) {
+            return false;
+        }
     }
 
     // Fallback: legacy events without event_scope_id.
@@ -155,8 +176,11 @@ function shouldAcceptWorkflowEvent(
  *   For project tabs this is the tab ID (e.g., "proj-abc123").
  *   For the local tab this is "local".
  *   If empty/undefined, all events are applied (backward compatible fallback).
+ * @param activeTabProjectPath - Optional project path for legacy events that do
+ *   not carry event_scope_id. If omitted, a non-local/non-project-looking first
+ *   argument is treated as the old project-path parameter.
  */
-export function useWorkflowState(activeTabScopeID?: string) {
+export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath?: string) {
     const [active, setActive] = useState(false);
     const [splitMode, setSplitMode] = useState(false);
     const [splitRatio, setSplitRatioState] = useState(DEFAULT_SPLIT_RATIO);
@@ -178,7 +202,9 @@ export function useWorkflowState(activeTabScopeID?: string) {
     const pendingWorkingDirRef = useRef("");
     const transientTextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const activeTabScopeIDRef = useRef(activeTabScopeID || "");
+    const activeTabProjectPathRef = useRef(activeTabProjectPath || inferLegacyProjectPath(activeTabScopeID));
     activeTabScopeIDRef.current = activeTabScopeID || "";
+    activeTabProjectPathRef.current = activeTabProjectPath || inferLegacyProjectPath(activeTabScopeID);
 
     const setWorkflowSplitMode = useCallback((next: boolean | ((current: boolean) => boolean)) => {
         setSplitMode(current => {
@@ -222,7 +248,7 @@ export function useWorkflowState(activeTabScopeID?: string) {
             const eventProjectPath = typeof state.project_path === "string" ? state.project_path.trim() : "";
             const eventWorkflowID = resolveWorkflowInstanceKey(state);
             const eventScopeID = typeof state.event_scope_id === "string" ? state.event_scope_id.trim() : "";
-            if (!shouldAcceptWorkflowEvent(eventScopeID, eventWorkflowID, eventProjectPath, activeTabScopeIDRef.current, workflowIDRef.current, false)) {
+            if (!shouldAcceptWorkflowEvent(eventScopeID, eventWorkflowID, eventProjectPath, activeTabScopeIDRef.current, workflowIDRef.current, activeTabProjectPathRef.current, false)) {
                 return;
             }
             const workflowID = eventWorkflowID;
@@ -332,7 +358,7 @@ export function useWorkflowState(activeTabScopeID?: string) {
             const eventProjectPath = typeof data.project_path === "string" ? data.project_path.trim() : "";
             const eventWorkflowID = typeof data.workflow_id === "string" ? data.workflow_id.trim() : "";
             const eventScopeID = typeof data.event_scope_id === "string" ? data.event_scope_id.trim() : "";
-            if (!shouldAcceptWorkflowEvent(eventScopeID, eventWorkflowID, eventProjectPath, activeTabScopeIDRef.current, workflowIDRef.current)) {
+            if (!shouldAcceptWorkflowEvent(eventScopeID, eventWorkflowID, eventProjectPath, activeTabScopeIDRef.current, workflowIDRef.current, activeTabProjectPathRef.current)) {
                 return;
             }
 
@@ -371,7 +397,7 @@ export function useWorkflowState(activeTabScopeID?: string) {
             const eventProjectPath = typeof data.project_path === "string" ? data.project_path.trim() : "";
             const eventWorkflowID = typeof data.workflow_id === "string" ? data.workflow_id.trim() : "";
             const eventScopeID = typeof data.event_scope_id === "string" ? data.event_scope_id.trim() : "";
-            if (!shouldAcceptWorkflowEvent(eventScopeID, eventWorkflowID, eventProjectPath, activeTabScopeIDRef.current, workflowIDRef.current)) {
+            if (!shouldAcceptWorkflowEvent(eventScopeID, eventWorkflowID, eventProjectPath, activeTabScopeIDRef.current, workflowIDRef.current, activeTabProjectPathRef.current)) {
                 return;
             }
 

@@ -63,30 +63,71 @@ func (p *workflowFormRecallProvider) RecallForField(ctx context.Context, query s
 		}
 	}
 
-	// 2. Search knowledge base (FTS + vector + entity graph + fact triples)
+	// 2. Search knowledge base — fact-first strategy.
+	// Facts (structured triples like "张三 职称 教授") are the highest-precision
+	// source for form prefill. Cards (paragraph summaries) are lower precision
+	// but broader coverage. Query facts first, then supplement with cards.
 	if p.knowledgeStore != nil {
-		kResults, err := p.knowledgeStore.Search(ctx, knowledge.SearchOptions{
-			Query:   query,
-			OwnerID: p.userID,
-			Limit:   maxResults,
+		// 2a. Facts first (structured triples — ideal for field extraction)
+		factResults, err := p.knowledgeStore.Search(ctx, knowledge.SearchOptions{
+			Query:       query,
+			OwnerID:     p.userID,
+			ResultTypes: []string{"fact"},
+			Limit:       maxResults,
 		})
 		if err == nil {
-			for _, r := range kResults {
+			for _, r := range factResults {
 				snippet := r.Snippet
 				if snippet == "" {
-					snippet = r.Summary
+					snippet = strings.TrimSpace(r.Subject + " " + r.Predicate + " " + r.Object)
 				}
 				if snippet == "" {
 					continue
 				}
 				results = append(results, v2.RecallResult{
 					Content:    snippet,
-					Category:   "knowledge_" + r.ResultType,
+					Category:   "knowledge_fact",
 					Source:     "knowledge",
 					SourceID:   r.Source.ID,
-					Score:      r.Score,
+					Score:      r.Score + 0.1, // slight boost over cards at same score
 					SourceDesc: knowledgeSourceDesc(r),
 				})
+			}
+		}
+
+		// 2b. Cards/nodes (paragraph summaries — broader coverage for textarea fields)
+		remaining := maxResults - len(results)
+		if remaining > 0 {
+			cardResults, err := p.knowledgeStore.Search(ctx, knowledge.SearchOptions{
+				Query:   query,
+				OwnerID: p.userID,
+				Limit:   remaining + 2, // fetch a few extra to account for empty snippets
+			})
+			if err == nil {
+				for _, r := range cardResults {
+					if len(results) >= maxResults*2 {
+						break
+					}
+					snippet := r.Snippet
+					if snippet == "" {
+						snippet = r.Summary
+					}
+					if snippet == "" {
+						continue
+					}
+					// Skip if we already have this source+content from the fact query
+					if r.ResultType == "fact" {
+						continue // already included above
+					}
+					results = append(results, v2.RecallResult{
+						Content:    snippet,
+						Category:   "knowledge_" + r.ResultType,
+						Source:     "knowledge",
+						SourceID:   r.Source.ID,
+						Score:      r.Score,
+						SourceDesc: knowledgeSourceDesc(r),
+					})
+				}
 			}
 		}
 	}
@@ -223,10 +264,13 @@ func (h *IMMessageHandler) getRecentConversationTextsForPrefill(userID string, m
 var sedimentableFields = map[string]bool{
 	"name": true, "gender": true, "birth_date": true,
 	"institution": true, "title": true, "nationality": true,
-	"discipline_code": true, "research_field": true,
+	"discipline": true, "discipline_code": true, "research_field": true,
 	"h_index": true, "total_citations": true, "total_papers": true,
 	"phd_year": true, "degree": true,
 	"organization": true,
+	// Factual textarea fields — stable biographical content worth caching
+	"education":          true, // 教育背景
+	"research_direction": true, // 研究方向
 }
 
 // sedimentFormDataToMemory persists confirmed form field values to long-term memory

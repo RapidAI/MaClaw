@@ -64,6 +64,7 @@ export function agentViewStrings(lang: string) {
         prefillMemory: t("from memory", "\u8bb0\u5fc6"),
         prefillKnowledge: t("knowledge base", "\u77e5\u8bc6\u5e93"),
         prefillWeb: t("\u26a0\ufe0f web", "\u26a0\ufe0f \u7f51\u7edc"),
+        prefillNeedsConfirm: t("\u26a0\ufe0f verify", "\u26a0\ufe0f \u8bf7\u786e\u8ba4"),
     };
 }
 

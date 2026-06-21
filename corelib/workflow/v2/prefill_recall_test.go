@@ -198,23 +198,49 @@ func TestPrefillFromRecall_RespectsContextCancellation(t *testing.T) {
 
 func TestBuildRecallQuery(t *testing.T) {
 	tests := []struct {
-		field PhaseInputField
-		want  string
+		field    PhaseInputField
+		contains []string // all substrings must be present in the result
 	}{
-		// Label differs from Name → include both for cross-template matching
-		{PhaseInputField{Name: "institution", Label: "依托单位"}, "institution 依托单位"},
-		{PhaseInputField{Name: "h_index", Label: "H指数"}, "h_index H指数"},
-		// Label equals Name → just use it once
-		{PhaseInputField{Name: "姓名", Label: "姓名"}, "姓名"},
-		// Name only (no label)
-		{PhaseInputField{Name: "test_field"}, "test_field"},
+		// Name + Label + Placeholder → all parts included
+		{
+			PhaseInputField{Name: "institution", Label: "现工作单位", Placeholder: "如：XX大学 XX学院"},
+			[]string{"institution", "现工作单位", "XX大学"},
+		},
+		// Placeholder cleaned: "如：" prefix stripped
+		{
+			PhaseInputField{Name: "h_index", Label: "H指数", Placeholder: "如：35"},
+			[]string{"h_index", "H指数", "35"},
+		},
+		// Name == Label → not duplicated
+		{
+			PhaseInputField{Name: "姓名", Label: "姓名"},
+			[]string{"姓名"},
+		},
+		// Name only (no label, no placeholder)
+		{
+			PhaseInputField{Name: "test_field"},
+			[]string{"test_field"},
+		},
+		// Multi-line placeholder → only first line used
+		{
+			PhaseInputField{Name: "education", Label: "教育背景", Placeholder: "按时间顺序列出：\n本科：XX大学"},
+			[]string{"education", "教育背景", "本科"},
+		},
 		// Empty → empty
-		{PhaseInputField{}, ""},
+		{PhaseInputField{}, nil},
 	}
 	for _, tt := range tests {
 		got := buildRecallQuery(tt.field)
-		if got != tt.want {
-			t.Errorf("buildRecallQuery(%+v) = %q, want %q", tt.field, got, tt.want)
+		if len(tt.contains) == 0 {
+			if got != "" {
+				t.Errorf("buildRecallQuery(%+v) = %q, want empty", tt.field, got)
+			}
+			continue
+		}
+		for _, sub := range tt.contains {
+			if !strings.Contains(got, sub) {
+				t.Errorf("buildRecallQuery(%+v) = %q, want to contain %q", tt.field, got, sub)
+			}
 		}
 	}
 }
