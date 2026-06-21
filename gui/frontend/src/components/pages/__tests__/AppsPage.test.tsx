@@ -1406,6 +1406,37 @@ describe('AppsPage', () => {
         expect(manifest.app.binding.dependencies.skills[0].source).toBe('market');
         expect(manifest.app.binding.mis.approvalBindings[0]).toMatchObject({ event: 'finance.expense.submitted', workflowSkillId: 'expense-approval-flow', workflowVersion: '2.1.0', objectRole: 'expense_report' });
     });
+
+    it('saves visual approval workflow node mappings into created manifests', async () => {
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.change(document.querySelector('.apps-create-form input[placeholder]') as HTMLInputElement, { target: { value: 'approval-nodes' } });
+        const kindPicker = document.querySelector('.apps-studio-kind') as HTMLElement;
+        fireEvent.click(within(kindPicker).getByRole('button', { name: /Approval app/ }));
+        fireEvent.change(screen.getByTestId('studio-workflow-submitNode'), { target: { value: 'expense.intake' } });
+        fireEvent.change(screen.getByTestId('studio-workflow-approvalNode'), { target: { value: 'finance.director_review' } });
+        fireEvent.change(screen.getByTestId('studio-workflow-resultNode'), { target: { value: 'expense.result_pack' } });
+        fireEvent.change(screen.getByTestId('studio-workflow-status-approved'), { target: { value: 'finance_approved' } });
+
+        expect(screen.getByText(/"workflow"/)).not.toBeNull();
+        expect(screen.getByText(/"approvalNode": "finance.director_review"/)).not.toBeNull();
+        expect(screen.getByText(/"approved": "finance_approved"/)).not.toBeNull();
+
+        fireEvent.click(document.querySelector('.apps-create-form .apps-actions .apps-primary-button') as HTMLElement);
+        fireEvent.click(document.getElementById('apps-studio-tab-manage') as HTMLElement);
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('approval-nodes')) as HTMLElement;
+        fireEvent.click(within(row).getByTitle('Manifest'));
+        const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
+        expect(manifest.app.binding.workflow).toMatchObject({
+            schema: 'maclaw.app.workflow.v1',
+            submitNode: 'expense.intake',
+            approvalNode: 'finance.director_review',
+            resultNode: 'expense.result_pack',
+            statusMapping: expect.objectContaining({ approved: 'finance_approved' }),
+        });
+    });
+
     it('includes tool app input and output modes in draft manifests', () => {
         render(<AppsPage lang="zh-Hans" />);
 
@@ -1889,6 +1920,48 @@ describe('AppsPage', () => {
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].object_role).toBe('expense');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].app_id).toBe('bound-approval');
     });
+
+    it('passes workflow node mapping into approval skill runs and approval instances', async () => {
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            customApps: [{
+                id: 'mapped-approval-runtime',
+                name: 'Mapped Approval Runtime',
+                description: 'Approval app with custom workflow nodes',
+                category: 'Finance',
+                kind: 'enterprise_approval_app',
+                icon: 'receipt',
+                accent: '#2f5f98',
+                version: 1,
+                source: 'local',
+                manifest: {
+                    schema: 'maclaw.app.v1',
+                    installUnit: 'enterprise_app_pack',
+                    privateMarker: 'x_maclaw_apps',
+                    entryKind: 'enterprise_approval_app',
+                    launchMode: 'agent_dynamic_ui',
+                    datasrv: { domain: 'finance', datasetID: 'finance.expenses', objectRole: 'expense_report' },
+                    mis: { approvalBindings: [{ event: 'expense.submitted', workflowSkillId: 'mapped-flow', workflowVersion: '1.0.0', objectRole: 'expense_report' }] },
+                    workflow: { schema: 'maclaw.app.workflow.v1', submitNode: 'expense.intake', approvalNode: 'finance.director_review', resultNode: 'expense.result_pack', attentionNode: 'expense.attention', statusMapping: { pending: 'finance_pending', approved: 'finance_approved', rejected: 'finance_rejected', attention: 'finance_attention', requiresInput: 'finance_more_input' } },
+                    ui: { schema: 'maclaw.app.ui.v1' },
+                },
+            }],
+        }));
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getAllByText('Mapped Approval Runtime')[0]);
+        fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('mapped-flow', expect.objectContaining({
+            current_node: 'finance.director_review',
+            workflow_mapping: expect.objectContaining({ approvalNode: 'finance.director_review', resultNode: 'expense.result_pack' }),
+            workflow_status_mapping: expect.objectContaining({ approved: 'finance_approved' }),
+        })));
+        await waitFor(() => expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalled());
+        const pendingPayload = recordMaclawAppApprovalInstanceMock.mock.calls[0][0];
+        expect(pendingPayload.current_node).toBe('finance.director_review');
+        expect(pendingPayload.events.map((event: any) => event.node)).toEqual(expect.arrayContaining(['expense.intake', 'finance.director_review']));
+    });
+
     it('does not record approval instance when workflow skill launch fails', async () => {
         runNLSkillAsyncMock.mockRejectedValueOnce(new Error('workflow unavailable'));
         render(<AppsPage lang="zh-Hans" />);
@@ -3385,6 +3458,51 @@ describe('AppsPage', () => {
         expect(runtimeLayout.dataset.primaryRegion).toBe('center');
         expect(runtimeLayout.dataset.outputRegion).toBe('bottom');
     });
+
+    it('edits approval workflow node mappings visually and persists them', async () => {
+        const app = {
+            id: 'editable-approval-nodes',
+            name: 'Editable Approval Nodes',
+            description: 'Approval workflow mapping editor',
+            category: 'Finance',
+            kind: 'enterprise_approval_app',
+            icon: 'receipt',
+            accent: '#2f5f98',
+            source: 'local',
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_approval_app',
+                launchMode: 'agent_dynamic_ui',
+                datasrv: { domain: 'finance', objectRole: 'expense_report' },
+                mis: { approvalBindings: [{ event: 'expense.submitted', workflowSkillId: 'expense-flow', workflowVersion: '1.0.0', objectRole: 'expense_report' }] },
+                workflow: { schema: 'maclaw.app.workflow.v1', submitNode: 'expense.submit', approvalNode: 'expense.manager_review', resultNode: 'expense.result', attentionNode: 'expense.attention', statusMapping: { pending: 'approval_pending', approved: 'approved', rejected: 'rejected', attention: 'attention', requiresInput: 'requires_input' } },
+                ui: { schema: 'maclaw.app.ui.v1' },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(document.querySelector('.apps-studio-button') as HTMLButtonElement);
+        fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Editable Approval Nodes')) as HTMLElement;
+        fireEvent.click((row.querySelector('.apps-manage-actions .apps-secondary-button') as HTMLButtonElement));
+        const dialog = screen.getByRole('dialog');
+        fireEvent.change(within(dialog).getByTestId('edit-workflow-approvalNode'), { target: { value: 'finance.director_review' } });
+        fireEvent.change(within(dialog).getByTestId('edit-workflow-status-rejected'), { target: { value: 'finance_rejected' } });
+        fireEvent.click(within(dialog).getByText('Save'));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+        const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Editable Approval Nodes')) as HTMLElement;
+        fireEvent.click(within(editedRow).getByTitle('Manifest'));
+        const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
+        expect(manifest.app.binding.workflow.approvalNode).toBe('finance.director_review');
+        expect(manifest.app.binding.workflow.statusMapping.rejected).toBe('finance_rejected');
+        const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
+        expect(stored.customApps[0].manifest.workflow.approvalNode).toBe('finance.director_review');
+    });
+
     it('edits a tool app skill binding from app studio management', async () => {
         listNLSkillsMock.mockResolvedValue([{ name: 'pdf-word-v2', description: 'Updated converter' }]);
         render(<AppsPage lang="en" />);

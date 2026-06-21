@@ -132,6 +132,21 @@ type AppApprovalBinding = {
     objectRole?: string;
 };
 
+type AppWorkflowMapping = {
+    schema: 'maclaw.app.workflow.v1';
+    submitNode: string;
+    approvalNode: string;
+    resultNode: string;
+    attentionNode?: string;
+    statusMapping: {
+        pending: string;
+        approved: string;
+        rejected: string;
+        attention: string;
+        requiresInput?: string;
+    };
+};
+
 type AppManifestBinding = {
     schema: 'maclaw.app.v1';
     installUnit: 'enterprise_app_pack' | 'skill' | 'mcp' | 'builtin';
@@ -148,6 +163,7 @@ type AppManifestBinding = {
     };
     ui?: AppWorkspaceLayout;
     resultContract?: AppResultContract;
+    workflow?: AppWorkflowMapping;
     mis?: {
         approvalBindings?: AppApprovalBinding[];
     };
@@ -1177,6 +1193,7 @@ function makeEnterpriseManifest(kind: 'enterprise_approval_app' | 'enterprise_no
         mis: approvalBindings ? { approvalBindings } : undefined,
         appSkill: appSkillID ? { id: appSkillID, version: '1.0.0', source: appSkillSource } : undefined,
         dependencies: dependencies.length ? { skills: dependencies } : undefined,
+        workflow: defaultAppWorkflowMapping(kind, domain, approvalObjectRole),
         ui: defaultWorkspaceLayoutForKind(kind),
     };
 }
@@ -2945,6 +2962,58 @@ function appResultContractPublishSummary(app: AppEntry, lang?: string) {
     const types = contract.types.slice(0, 4).join(', ');
     return `${zh ? '\u7ed3\u679c' : 'Result'}: ${contract.primary}${types ? ` / ${types}` : ''}`;
 }
+function defaultAppWorkflowMapping(kind: AppKind, domain = 'business', objectRole = 'record'): AppWorkflowMapping | undefined {
+    if (kind !== 'enterprise_approval_app') return undefined;
+    const role = String(objectRole || domain || 'record').trim() || 'record';
+    return {
+        schema: 'maclaw.app.workflow.v1',
+        submitNode: `${role}.submit`,
+        approvalNode: `${role}.manager_approval`,
+        resultNode: `${role}.result_feedback`,
+        attentionNode: `${role}.attention_review`,
+        statusMapping: {
+            pending: 'approval_pending',
+            approved: 'approved',
+            rejected: 'rejected',
+            attention: 'attention',
+            requiresInput: 'requires_input',
+        },
+    };
+}
+function normalizeAppWorkflowMapping(value: unknown, kind: AppKind, domain = 'business', objectRole = 'record'): AppWorkflowMapping | undefined {
+    const fallback = defaultAppWorkflowMapping(kind, domain, objectRole);
+    if (!fallback) return undefined;
+    if (!value || typeof value !== 'object') return fallback;
+    const raw = value as Partial<AppWorkflowMapping> & { submit_node?: unknown; approval_node?: unknown; result_node?: unknown; attention_node?: unknown; status_mapping?: unknown };
+    const statusRaw = raw.statusMapping && typeof raw.statusMapping === 'object'
+        ? raw.statusMapping as Partial<AppWorkflowMapping['statusMapping']>
+        : raw.status_mapping && typeof raw.status_mapping === 'object'
+            ? raw.status_mapping as Partial<AppWorkflowMapping['statusMapping']>
+            : {};
+    const clean = (item: unknown, fallbackValue: string) => String(item || '').trim() || fallbackValue;
+    return {
+        schema: 'maclaw.app.workflow.v1',
+        submitNode: clean(raw.submitNode ?? raw.submit_node, fallback.submitNode),
+        approvalNode: clean(raw.approvalNode ?? raw.approval_node, fallback.approvalNode),
+        resultNode: clean(raw.resultNode ?? raw.result_node, fallback.resultNode),
+        attentionNode: clean(raw.attentionNode ?? raw.attention_node, fallback.attentionNode || fallback.approvalNode),
+        statusMapping: {
+            pending: clean(statusRaw.pending, fallback.statusMapping.pending),
+            approved: clean(statusRaw.approved, fallback.statusMapping.approved),
+            rejected: clean(statusRaw.rejected, fallback.statusMapping.rejected),
+            attention: clean(statusRaw.attention, fallback.statusMapping.attention),
+            requiresInput: clean(statusRaw.requiresInput ?? (statusRaw as any).requires_input, fallback.statusMapping.requiresInput || 'requires_input'),
+        },
+    };
+}
+function applyAppWorkflowMapping(manifest: AppManifestBinding, kind: AppKind, value?: AppWorkflowMapping): AppManifestBinding {
+    const workflow = normalizeAppWorkflowMapping(value || manifest.workflow, kind, manifest.datasrv?.domain || 'business', manifest.datasrv?.objectRole || manifest.datasrv?.domain || 'record');
+    if (!workflow) {
+        const { workflow: _workflow, ...rest } = manifest;
+        return rest;
+    }
+    return { ...manifest, workflow };
+}
 function appNeedsRuntimeDependencyCheck(app: AppEntry) {
     if (app.source !== 'market' && app.source !== 'skill' && app.source !== 'local') return false;
     return appDependencyEvidence(app).length > 0;
@@ -3779,9 +3848,10 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
     const zh = isZh(lang);
     const title = businessEntity || app.category || app.name;
     const workflow = appApprovalWorkflowSkillID(app) || app.name;
+    const workflowMapping = app.manifest?.workflow;
     const submitted = runState === 'done' || runState === 'running';
     const draftStatus = submitted ? 'pending' : 'draft';
-    const draftNode = submitted ? (zh ? '\u4e3b\u7ba1\u5ba1\u6279' : 'Manager approval') : (zh ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node');
+    const draftNode = submitted ? (workflowMapping?.approvalNode || (zh ? '\u4e3b\u7ba1\u5ba1\u6279' : 'Manager approval')) : (workflowMapping?.submitNode || (zh ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node'));
     const draftResult = submitted ? (zh ? '\u5ba1\u6279\u4e2d' : 'Pending') : (zh ? '\u5f85\u63d0\u4ea4' : 'Draft');
     return [
         {
@@ -3806,7 +3876,7 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
             title: zh ? `${app.name}\u5f85\u529e` : `${app.name} task`,
             lane: 'pending_my_approval',
             status: 'pending',
-            currentNode: zh ? '\u6211\u5ba1\u6279' : 'My approval',
+            currentNode: workflowMapping?.approvalNode || (zh ? '\u6211\u5ba1\u6279' : 'My approval'),
             owner: zh ? '\u540c\u4e8b' : 'Coworker',
             approver: zh ? '\u6211' : 'Me',
             updatedAt: zh ? '\u4eca\u5929' : 'Today',
@@ -3821,7 +3891,7 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
             title: zh ? `${app.name}\u9700\u5173\u6ce8` : `${app.name} attention`,
             lane: 'attention',
             status: 'attention',
-            currentNode: zh ? '\u98ce\u9669\u590d\u6838' : 'Risk review',
+            currentNode: workflowMapping?.attentionNode || (zh ? '\u98ce\u9669\u590d\u6838' : 'Risk review'),
             owner: zh ? '\u7cfb\u7edf' : 'System',
             approver: zh ? '\u4ec5\u67e5\u770b' : 'View only',
             updatedAt: zh ? '\u6628\u5929' : 'Yesterday',
@@ -4269,6 +4339,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const approvalDatasetID = appDataSrvDatasetID(app);
     const approvalObjectRole = String(approvalBinding?.objectRole || app.manifest?.datasrv?.objectRole || '').trim();
     const approvalBlueprintID = String(app.manifest?.datasrv?.blueprintID || '').trim();
+    const workflowMapping = app.manifest?.workflow;
     const businessSkillID = isBusiness ? businessAppSkillID(app) : '';
     const businessObjectRole = isBusiness ? businessObjectRoleForApp(app, businessEntity) : '';
     const businessActionRole = isBusiness ? businessActionRoleForApp(app, businessAction) : '';
@@ -4428,6 +4499,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     approval_object_role: approvalObjectRole,
                     object_role: approvalObjectRole,
                     approval_workflow_skill_id: workflowSkillID,
+                    current_node: workflowMapping?.approvalNode || '',
+                    workflow_mapping: workflowMapping,
+                    workflow_status_mapping: workflowMapping?.statusMapping,
                     business_entity: businessEntity || app.category,
                     business_action: businessAction || 'create',
                     business_note: businessNote,
@@ -4467,7 +4541,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 title: `${businessEntity || app.category} / ${businessAction || 'create'}`,
                 lane: 'my_requests',
                 status: 'pending',
-                current_node: isZh(lang) ? '\u4e3b\u7ba1\u5ba1\u6279' : 'Manager approval',
+                current_node: workflowMapping?.approvalNode || (isZh(lang) ? '\u4e3b\u7ba1\u5ba1\u6279' : 'Manager approval'),
                 owner: isZh(lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user',
                 applicant: isZh(lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user',
                 approver: isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver',
@@ -4483,11 +4557,12 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 events: [{
                     at: now,
                     actor: isZh(lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user',
+                    node: workflowMapping?.submitNode,
                     action: isZh(lang) ? '\u53d1\u8d77\u7533\u8bf7' : 'Submitted',
                     note: businessNote,
                 }, {
                     at: now,
-                    node: workflowSkillID,
+                    node: workflowMapping?.approvalNode || workflowSkillID,
                     actor: 'workflow',
                     action: 'workflow_started',
                     message: workflowRunID,
@@ -4864,7 +4939,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                 approvalRunContextRef.current = null;
                             }}>{text.reset}</button>
                             {runState === 'running' && runID && <button className="apps-secondary-button" type="button" onClick={cancelRun}>{text.cancelRun}</button>}
-                            <button className="apps-primary-button" type="button" disabled={runDisabled} onClick={runApp}>{text.run}</button>
+                            <button className="apps-primary-button" type="button" disabled={runDisabled} onClick={() => runApp()}>{text.run}</button>
                         </div>
                         <AppRunOutput status={skillRunStatus} runState={runState} resultText={resultText} isTool={isTool} text={text} style={{ order: runtimeOrder.output }} layoutRegion={outputRegion} />
                         {(isTool || isBusiness) && (
@@ -5451,6 +5526,7 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission) {
                 dependencies: manifest?.dependencies,
                 ui: manifest?.ui,
                 resultContract: manifest?.resultContract,
+                workflow: manifest?.workflow,
             },
             panel: {
                 pinned: !!app.pinned,
@@ -5603,6 +5679,7 @@ function manifestToAppEntry(raw: any): AppEntry | null {
             dependencies: normalizeAppDependencies(app.binding?.dependencies),
             ui: normalizeAppWorkspaceLayout(app.binding?.ui, kind),
             resultContract: normalizeAppResultContract(app.binding?.resultContract || app.governance?.resultContract, kind, app.binding?.skill?.outputModes || []),
+            workflow: normalizeAppWorkflowMapping(app.binding?.workflow || app.governance?.workflow, kind, app.binding?.datasrv?.domain || 'business', app.binding?.datasrv?.objectRole || app.binding?.datasrv?.domain || 'record'),
             skill: app.binding?.skill ? {
                 ...app.binding.skill,
                 inputMode: app.binding.skill.inputMode === 'form' || app.binding.skill.inputMode === 'mixed' ? app.binding.skill.inputMode : 'file',
@@ -6307,6 +6384,54 @@ const ResultContractPreview = ({ contract, lang, testId }: { contract: AppResult
         </section>
     );
 };
+const WorkflowMappingDesigner = ({ value, onChange, lang, testIdPrefix = 'studio' }: { value: AppWorkflowMapping; onChange: (value: AppWorkflowMapping) => void; lang?: string; testIdPrefix?: string }) => {
+    const zh = isZh(lang);
+    const update = (patch: Partial<AppWorkflowMapping>) => onChange(normalizeAppWorkflowMapping({ ...value, ...patch }, 'enterprise_approval_app') || value);
+    const updateStatus = (key: keyof AppWorkflowMapping['statusMapping'], nextValue: string) => update({ statusMapping: { ...value.statusMapping, [key]: nextValue } });
+    const nodeItems = [
+        { id: 'submitNode', label: zh ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node', value: value.submitNode },
+        { id: 'approvalNode', label: zh ? '\u5ba1\u6279\u8282\u70b9' : 'Approval node', value: value.approvalNode },
+        { id: 'resultNode', label: zh ? '\u7ed3\u679c\u8282\u70b9' : 'Result node', value: value.resultNode },
+        { id: 'attentionNode', label: zh ? '\u9700\u5173\u6ce8\u8282\u70b9' : 'Attention node', value: value.attentionNode || '' },
+    ] as const;
+    const statusItems = [
+        { id: 'pending', label: zh ? '\u5ba1\u6279\u4e2d' : 'Pending', value: value.statusMapping.pending },
+        { id: 'approved', label: zh ? '\u901a\u8fc7' : 'Approved', value: value.statusMapping.approved },
+        { id: 'rejected', label: zh ? '\u9a73\u56de' : 'Rejected', value: value.statusMapping.rejected },
+        { id: 'attention', label: zh ? '\u9700\u5173\u6ce8' : 'Attention', value: value.statusMapping.attention },
+        { id: 'requiresInput', label: zh ? '\u9700\u8865\u5145' : 'Needs input', value: value.statusMapping.requiresInput || '' },
+    ] as const;
+    return (
+        <section className="apps-workflow-mapping" aria-label={zh ? '\u5de5\u4f5c\u6d41\u8282\u70b9\u6620\u5c04' : 'Workflow node mapping'} data-testid={`${testIdPrefix}-workflow-mapping`}>
+            <div className="apps-preview-title-row">
+                <div className="apps-definition__title">{zh ? '\u5de5\u4f5c\u6d41\u8282\u70b9\u6620\u5c04' : 'Workflow node mapping'}</div>
+                <span className="apps-count">maclaw.app.workflow.v1</span>
+            </div>
+            <div className="apps-workflow-mapping__flow" aria-label={zh ? '\u8282\u70b9\u6d41\u8f6c' : 'Node flow'}>
+                <span>{value.submitNode}</span>
+                <span>{value.approvalNode}</span>
+                <span>{value.resultNode}</span>
+            </div>
+            <div className="apps-workflow-mapping__grid">
+                {nodeItems.map((item) => (
+                    <div className="apps-form-row" key={item.id}>
+                        <label>{item.label}</label>
+                        <input data-testid={`${testIdPrefix}-workflow-${item.id}`} value={item.value} onChange={(event) => update({ [item.id]: event.target.value } as Partial<AppWorkflowMapping>)} />
+                    </div>
+                ))}
+            </div>
+            <div className="apps-workflow-mapping__grid apps-workflow-mapping__grid--status">
+                {statusItems.map((item) => (
+                    <div className="apps-form-row" key={item.id}>
+                        <label>{item.label}</label>
+                        <input data-testid={`${testIdPrefix}-workflow-status-${item.id}`} value={item.value} onChange={(event) => updateStatus(item.id, event.target.value)} />
+                    </div>
+                ))}
+            </div>
+        </section>
+    );
+};
+
 const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app: AppEntry, options?: { keepStudioCreate?: boolean }) => void }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const zh = isZh(lang);
@@ -6345,6 +6470,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const [workflowSkillVersion, setWorkflowSkillVersion] = useState('1.0.0');
     const [approvalEvent, setApprovalEvent] = useState('record.submitted');
     const [approvalObjectRole, setApprovalObjectRole] = useState('record');
+    const [workflowMapping, setWorkflowMapping] = useState<AppWorkflowMapping>(defaultAppWorkflowMapping('enterprise_approval_app', 'business', 'record') as AppWorkflowMapping);
     const [dependencySource, setDependencySource] = useState<AppSkillDependency['source']>('hub');
     const appReadySkills = useMemo(() => availableSkills.filter(isAppRuntimeSkillLike), [availableSkills]);
     const approvalWorkflowSkills = useMemo(() => availableSkills.filter(isApprovalWorkflowSkillLike), [availableSkills]);
@@ -6397,6 +6523,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setWorkflowSkillVersion('1.0.0');
         setApprovalObjectRole(isEnterpriseApprovalAppKind(nextKind) ? (approvalObjectRole.trim() || 'record') : 'record');
         setApprovalEvent(isEnterpriseApprovalAppKind(nextKind) ? (approvalEvent.trim() || 'record.submitted') : 'record.submitted');
+        setWorkflowMapping(defaultAppWorkflowMapping(nextKind, businessDomain.trim() || 'business', approvalObjectRole.trim() || businessObjectRole.trim() || 'record') || (defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping));
         setDependencySource('hub');
         setCopyState('idle');
         setSkillAppSaveState('idle');
@@ -6458,6 +6585,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setWorkflowSkillVersion('1.0.0');
         setApprovalObjectRole(isEnterpriseApprovalAppKind(nextKind) ? nextApprovalObjectRole : 'record');
         setApprovalEvent(isEnterpriseApprovalAppKind(nextKind) ? `${nextApprovalObjectRole}.submitted` : 'record.submitted');
+        setWorkflowMapping(defaultAppWorkflowMapping(nextKind, nextBusinessDomain, nextBusinessObjectRole) || (defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping));
         setBusinessDomain(isEnterpriseAppKind(nextKind) ? nextBusinessDomain : 'business');
         setBusinessObjectRole(isEnterpriseAppKind(nextKind) ? nextBusinessObjectRole : 'record');
         setBusinessPreferredAction(nextKind === 'enterprise_normal_app' ? nextPreferredAction : '');
@@ -6511,7 +6639,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             accent,
             version: 1,
             source: 'local',
-            manifest: applyAppResultContract(applyStudioWorkspaceLayout(manifest, kind, { template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion }), kind),
+            manifest: applyAppResultContract(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, kind, { template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion }), kind, workflowMapping), kind),
         };
     };
     const draftApp = buildDraftApp(
@@ -6896,6 +7024,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                         </div>
                     </section>
                 )}
+                {isEnterpriseApprovalAppKind(kind) && <WorkflowMappingDesigner value={workflowMapping} onChange={setWorkflowMapping} lang={lang} />}
                 <StudioLayoutDesigner kind={kind} value={studioLayoutValue} onChange={updateStudioLayout} lang={lang} />
                 <ResultContractPreview contract={appResultContractForManifest(draftApp)} lang={lang} testId="studio-result-contract" />
                 <div className="apps-form-row apps-form-row--description">
@@ -7517,6 +7646,7 @@ type AppEditDraft = Pick<AppEntry, 'name' | 'description' | 'category' | 'icon' 
     workflowSkillVersion: string;
     approvalEvent: string;
     approvalObjectRole: string;
+    workflowMapping: AppWorkflowMapping;
     inputMode: SkillInputMode;
     multipleFiles: boolean;
     outputModes: string[];
@@ -7540,7 +7670,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
     const text = isZh(lang) ? labels.zh : labels.en;
     const [manifestAppId, setManifestAppId] = useState('');
     const [editingAppId, setEditingAppId] = useState('');
-    const emptyEditDraft = useMemo<AppEditDraft>(() => ({ name: '', description: '', category: '', icon: 'contract', customIconDataUrl: undefined, accent: defaultAccentForKind('tool_app'), businessDomain: 'business', businessObjectRole: 'record', businessPreferredAction: '', businessPreferredView: '', businessPreferredReport: '', businessPreferredDashboard: '', skillID: '', skillSource: 'local', appSkillID: '', appSkillSource: 'local', appSkillVersion: '', workflowSkillID: '', workflowSkillSource: 'hub', workflowSkillVersion: '', approvalEvent: '', approvalObjectRole: '', inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [], layout: defaultRuntimeWorkspaceLayout('tool_app') }), []);
+    const emptyEditDraft = useMemo<AppEditDraft>(() => ({ name: '', description: '', category: '', icon: 'contract', customIconDataUrl: undefined, accent: defaultAccentForKind('tool_app'), businessDomain: 'business', businessObjectRole: 'record', businessPreferredAction: '', businessPreferredView: '', businessPreferredReport: '', businessPreferredDashboard: '', skillID: '', skillSource: 'local', appSkillID: '', appSkillSource: 'local', appSkillVersion: '', workflowSkillID: '', workflowSkillSource: 'hub', workflowSkillVersion: '', approvalEvent: '', approvalObjectRole: '', workflowMapping: defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping, inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [], layout: defaultRuntimeWorkspaceLayout('tool_app') }), []);
     const [editDraft, setEditDraft] = useState<AppEditDraft>(emptyEditDraft);
     const editDialogRef = useRef<HTMLDivElement | null>(null);
     const editNameInputRef = useRef<HTMLInputElement | null>(null);
@@ -7609,6 +7739,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
             workflowSkillVersion: workflowBinding?.workflowVersion || workflowDependency?.version || '',
             approvalEvent: workflowBinding?.event || (app.manifest?.datasrv?.domain ? `${app.manifest.datasrv.domain}.submitted` : ''),
             approvalObjectRole: workflowBinding?.objectRole || app.manifest?.datasrv?.domain || '',
+            workflowMapping: normalizeAppWorkflowMapping(app.manifest?.workflow, app.kind, app.manifest?.datasrv?.domain || 'business', workflowBinding?.objectRole || app.manifest?.datasrv?.objectRole || app.manifest?.datasrv?.domain || 'record') || (defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping),
             inputMode: app.manifest?.skill?.inputMode || 'file',
             multipleFiles: !!app.manifest?.skill?.multipleFiles,
             outputModes: normalizeOutputModes(app.manifest?.skill?.outputModes),
@@ -7765,7 +7896,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
             };
         }
         if (manifest) {
-            manifest = applyAppResultContract(applyStudioWorkspaceLayout(manifest, app.kind, editDraft.layout), app.kind);
+            manifest = applyAppResultContract(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, app.kind, editDraft.layout), app.kind, editDraft.workflowMapping), app.kind);
         }
         const updatedApp: AppEntry = {
             ...app,
@@ -8142,6 +8273,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                                     )}
                                 </>
                             )}
+                            {editingApp.kind === 'enterprise_approval_app' && <WorkflowMappingDesigner value={editDraft.workflowMapping} onChange={(workflowMapping) => setEditDraft((current) => ({ ...current, workflowMapping }))} lang={lang} testIdPrefix="edit" />}
                             <StudioLayoutDesigner kind={editingApp.kind} value={editDraft.layout} onChange={(layout) => setEditDraft((current) => ({ ...current, layout }))} lang={lang} testIdPrefix="edit" />
                             <ResultContractPreview contract={buildAppResultContract(editingApp.kind, editDraft.outputModes)} lang={lang} testId="edit-result-contract" />
                             <div className="apps-actions apps-manage-edit__actions">

@@ -286,6 +286,16 @@ function residentVirtualEmployeeAliases(ve: VirtualEmployeeEntry): string[] {
 }
 
 function App() {
+    console.log('[startup-trace] App component render begin');
+    const logStartupTrace = (stage: string, extra?: Record<string, unknown>) => {
+        const logFn = (window as any).go?.main?.App?.LogFrontendDiagnostic;
+        const payload = { tag: 'startup-trace', stage, ts: Date.now(), ...extra };
+        console.log('[startup-trace]', stage, extra || '');
+        if (typeof logFn === 'function') {
+            try { void Promise.resolve(logFn(payload)).catch(() => {}); } catch {}
+        }
+    };
+    logStartupTrace('app-render-begin');
     const { showAlert } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
     const [navTab, setNavTab] = useState<string>("ai");
@@ -1256,6 +1266,7 @@ function App() {
             }
         };
         const doneHandler = () => {
+            logStartupTrace('env-check-done-received');
             void callBackend(() => ResizeWindow(1156, 739));
             setIsLoading(false);
             setIsManualCheck(false);
@@ -1361,6 +1372,7 @@ function App() {
 
         // Config Logic
         callBackend(() => LoadConfig()).then((cfg) => {
+            logStartupTrace('config-loaded-ok', { hasConfig: !!cfg, keys: cfg ? Object.keys(cfg).length : 0 });
             // Apply default launch mode setting on startup
             if (cfg.default_launch_mode === 'remote') {
                 cfg.remote_enabled = true;
@@ -1419,6 +1431,7 @@ function App() {
                 }
             }
         }).catch(err => {
+            logStartupTrace('config-load-failed', { error: String(err) });
             console.error("Failed to load config on startup:", err);
             setStatus(localizeText("Error loading config: ", "加载配置失败：", "載入設定失敗：") + err);
             // Fallback: retry once after a short delay. If the config file was
@@ -2982,6 +2995,7 @@ ${instruction}`;
     };
 
     if (isLoading) {
+        logStartupTrace('render-gate-isLoading', { envLogsCount: envLogs.length, isManualCheck });
         return (
             <div data-ai-theme={aiThemeMode} data-native-rounded={nativeRounded ? "true" : undefined} className="app-loading-shell">
                 <div className="app-loading-drag-zone" />
@@ -3031,7 +3045,10 @@ ${instruction}`;
         );
     }
 
-    if (!config) return <div className="main-content app-config-loading">{t("loadingConfig")}</div>;
+    if (!config) {
+        logStartupTrace('render-gate-no-config');
+        return <div className="main-content app-config-loading">{t("loadingConfig")}</div>;
+    }
 
     const toolCfg = isToolTab(navTab)
         ? (config as any)[navTab]

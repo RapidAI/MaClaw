@@ -460,6 +460,7 @@ func (a *App) CheckEnvironment(force bool) {
 					coreMissing := a.detectMissingCoreTools()
 					if coreMissing == "" {
 						a.log(a.tr("Skipping base environment check (core tools verified)."))
+						log.Printf("[startup-trace] emitting env-check-done (skip path)")
 						a.emitEvent("env-check-done")
 						go a.installToolsInBackground()
 						return
@@ -551,6 +552,7 @@ func (a *App) CheckEnvironment(force bool) {
 			a.log(a.tr("Some components failed — environment check will retry on next startup."))
 		}
 
+		log.Printf("[startup-trace] emitting env-check-done (full-check path)")
 		a.emitEvent("env-check-done")
 
 		// Always start background tool check/update after base environment is ready

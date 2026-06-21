@@ -4203,6 +4203,82 @@
     grid-column: 1 / -1;
 }
 
+
+.apps-workflow-mapping {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--theme-surface-muted) 72%, var(--theme-surface));
+}
+
+.apps-manage-edit .apps-workflow-mapping {
+    margin-top: 10px;
+}
+
+.apps-workflow-mapping__flow {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    align-items: center;
+}
+
+.apps-workflow-mapping__flow span {
+    position: relative;
+    min-width: 0;
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border));
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--theme-primary-soft) 32%, var(--theme-surface));
+    color: var(--theme-text-primary);
+    font-size: 0.72rem;
+    font-weight: 800;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+    text-align: center;
+}
+
+.apps-workflow-mapping__flow span:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    right: -7px;
+    top: 50%;
+    width: 6px;
+    height: 1px;
+    background: var(--theme-border);
+}
+
+.apps-workflow-mapping__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+}
+
+.apps-workflow-mapping__grid--status {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.apps-workflow-mapping .apps-form-row {
+    grid-template-columns: minmax(82px, max-content) minmax(104px, 1fr);
+    gap: 8px;
+}
+
+.apps-workflow-mapping .apps-form-row label {
+    min-width: 0;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.apps-workflow-mapping .apps-form-row input {
+    width: 100%;
+    min-width: 104px;
+}
+
 .apps-result-contract {
     display: grid;
     gap: 9px;
@@ -4305,6 +4381,11 @@
         grid-template-columns: 1fr;
     }
 
+    .apps-workflow-mapping__grid,
+    .apps-workflow-mapping__grid--status {
+        grid-template-columns: 1fr;
+    }
+
     .apps-panel {
         min-height: 360px;
     }
@@ -4330,6 +4411,14 @@
 
     .apps-approval-facts {
         grid-template-columns: 1fr;
+    }
+
+    .apps-workflow-mapping__flow {
+        grid-template-columns: 1fr;
+    }
+
+    .apps-workflow-mapping__flow span:not(:last-child)::after {
+        display: none;
     }
     .apps-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -1514,7 +1514,7 @@ function ResumeUploadSection({ theme, phaseID, onPrefilled }: ResumeUploadSectio
         try {
             const wailsApp = await getWailsAppModule();
             const selectFile = wailsApp.SelectAIAssistantFile;
-            const parseResume = wailsApp.ParseResumeForWorkflowForm;
+            const parseResume = (wailsApp as any).ParseResumeForWorkflowForm;
             if (!selectFile || !parseResume) {
                 setStatus("error");
                 setErrorMsg("简历解析功能不可用（需要更新应用）");

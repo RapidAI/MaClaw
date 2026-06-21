@@ -67,6 +67,7 @@ let appRoot: ReturnType<typeof createRoot> | null = createRoot(container, {
 let renderScheduled = false
 
 try {
+    console.log('[startup-trace] main.tsx: scheduling React render')
     appRoot.render(
         <React.StrictMode>
             <ToastProvider>
@@ -77,6 +78,7 @@ try {
         </React.StrictMode>
     )
     renderScheduled = true
+    console.log('[startup-trace] main.tsx: render scheduled OK')
 } catch (error) {
     console.error('Failed to schedule initial render', error)
     renderStartupError(error)
