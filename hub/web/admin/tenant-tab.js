@@ -133,6 +133,19 @@
     if (expiresAt && !isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now()) return false;
     return Number(item.credits_remaining || 0) > 0;
   }
+  function normalizeComputeCredits(value) {
+    var n = Number(value || 0);
+    if (!Number.isFinite(n)) return 0;
+    return Math.round(n * 10000) / 10000;
+  }
+  function formatComputeCredits(value) {
+    return normalizeComputeCredits(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
+  }
+  function sumComputeCredits(items, key) {
+    return normalizeComputeCredits((items || []).reduce(function(sum, item) {
+      return sum + Number(item && item[key] || 0);
+    }, 0));
+  }
   function tenantLabel(item) { return String(item && (item.name || item.slug || item.id) || ''); }
   function tenantOptionLabel(item) {
     if (!item) return '';
@@ -303,8 +316,8 @@
     if (compute) {
       var cActive = compute.active;
       var cBadge = cActive ? 'ok' : 'warn';
-      var cRemaining = Math.round(Number(compute.remaining_credits) || 0);
-      var cTotal = Math.round(Number(compute.total_credits) || 0);
+      var cRemaining = formatComputeCredits(compute.remaining_credits);
+      var cTotal = formatComputeCredits(compute.total_credits);
       var cExpiry = compute.expires_at ? fmtTime(compute.expires_at) : '-';
       var cLabel = lang() === 'zh' ? '\u7b97\u529b\u6a21\u5757' : 'Compute Module';
       var cStatus = cActive
@@ -516,9 +529,9 @@
         var activeComputeCards = computeCards.filter(computeCardIsActive);
         var summary = {
           active: !!computeData.allow_external_providers,
-          total_credits: activeComputeCards.reduce(function(s, a) { return s + (a.credits_total || 0); }, 0),
-          used_credits: activeComputeCards.reduce(function(s, a) { return s + (a.credits_used || 0); }, 0),
-          remaining_credits: activeComputeCards.reduce(function(s, a) { return s + (a.credits_remaining || 0); }, 0),
+          total_credits: sumComputeCredits(activeComputeCards, 'credits_total'),
+          used_credits: sumComputeCredits(activeComputeCards, 'credits_used'),
+          remaining_credits: sumComputeCredits(activeComputeCards, 'credits_remaining'),
           authorization_count: activeComputeCards.length,
           expires_at: activeComputeCards.reduce(function(l, a) { return a.expires_at > l ? a.expires_at : l; }, ''),
           allow_external: !!computeData.allow_external_providers

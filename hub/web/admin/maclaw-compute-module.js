@@ -295,9 +295,8 @@
   function formatComputeNumber(value) {
     var n = Number(value || 0);
     if (!Number.isFinite(n)) return '0';
-    if (Math.abs(n) >= 1000) return Math.round(n).toLocaleString();
-    if (Math.abs(n % 1) > 0.0001) return n.toFixed(2);
-    return String(Math.round(n));
+    n = Math.round(n * 10000) / 10000;
+    return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
   }
 
   function formatComputeDate(value) {

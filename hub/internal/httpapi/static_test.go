@@ -306,6 +306,8 @@ func TestTenantComputeSummariesDoNotTreatCreditCardsAsModuleAuthorization(t *tes
 		content := string(body)
 		for _, want := range []string{
 			`computeCardIsActive`,
+			`formatComputeCredits`,
+			`sumComputeCredits`,
 			`var computeAuthorizations = Array.isArray`,
 			`activeComputeCards`,
 			`active: !!compute`,
@@ -321,10 +323,36 @@ func TestTenantComputeSummariesDoNotTreatCreditCardsAsModuleAuthorization(t *tes
 			`authorization_count: computeRaw.authorizations.length`,
 			`computeData && computeData.authorizations && computeData.authorizations.length > 0`,
 			`computeRaw && computeRaw.authorizations && computeRaw.authorizations.length > 0`,
+			`Math.round(Number(compute.remaining_credits) || 0)`,
+			`Math.round(Number(compute.total_credits) || 0)`,
 		} {
 			if strings.Contains(content, forbidden) {
 				t.Fatalf("%s must not contain stale compute summary pattern %s", file, forbidden)
 			}
+		}
+	}
+}
+
+func TestMaClawComputeCreditDisplayPreservesFractionalCredits(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "maclaw-compute-module.js"))
+	if err != nil {
+		t.Fatalf("read maclaw-compute-module.js: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		`n = Math.round(n * 10000) / 10000`,
+		`maximumFractionDigits: 4`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("MaClaw compute module must preserve fractional credit display, missing %s", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`Math.round(n).toLocaleString()`,
+		`return String(Math.round(n))`,
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("MaClaw compute module must not round compute credits to whole numbers: %s", forbidden)
 		}
 	}
 }

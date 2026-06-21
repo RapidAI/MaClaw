@@ -93,6 +93,19 @@
     if (n === undefined || n === null) return '0';
     return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   }
+  function normalizeComputeCredits(value) {
+    var n = Number(value || 0);
+    if (!Number.isFinite(n)) return 0;
+    return Math.round(n * 10000) / 10000;
+  }
+  function formatComputeCredits(value) {
+    return normalizeComputeCredits(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
+  }
+  function sumComputeCredits(items, key) {
+    return normalizeComputeCredits((items || []).reduce(function(sum, item) {
+      return sum + Number(item && item[key] || 0);
+    }, 0));
+  }
 
   function computeCardIsActive(item) {
     if (!item) return false;
@@ -232,7 +245,7 @@
         computeStatus.innerHTML = '<span style="color:#27ae60;font-weight:500">\u25cf ' + esc(ott('statusActive')) + '</span>';
         var cDetails = [];
         if (compute.total_credits !== undefined) {
-          cDetails.push(ott('computeCredits', { remaining: formatNumber(compute.remaining_credits), total: formatNumber(compute.total_credits) }));
+          cDetails.push(ott('computeCredits', { remaining: formatComputeCredits(compute.remaining_credits), total: formatComputeCredits(compute.total_credits) }));
         }
         if (compute.authorization_count) cDetails.push(ott('computeCards', { count: compute.authorization_count }));
         if (compute.expires_at) cDetails.push(ott('computeExpires', { date: formatDate(compute.expires_at) }));
@@ -315,9 +328,9 @@
       var activeComputeCards = computeCards.filter(computeCardIsActive);
       computeData = {
         active: !!computeRaw.allow_external_providers,
-        total_credits: activeComputeCards.reduce(function(s, a) { return s + (a.credits_total || 0); }, 0),
-        used_credits: activeComputeCards.reduce(function(s, a) { return s + (a.credits_used || 0); }, 0),
-        remaining_credits: activeComputeCards.reduce(function(s, a) { return s + (a.credits_remaining || 0); }, 0),
+        total_credits: sumComputeCredits(activeComputeCards, 'credits_total'),
+        used_credits: sumComputeCredits(activeComputeCards, 'credits_used'),
+        remaining_credits: sumComputeCredits(activeComputeCards, 'credits_remaining'),
         authorization_count: activeComputeCards.length,
         expires_at: activeComputeCards.reduce(function(l, a) { return a.expires_at > l ? a.expires_at : l; }, ''),
         allow_external: !!computeRaw.allow_external_providers,
