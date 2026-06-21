@@ -21,6 +21,7 @@ if (typeof I18N_EN !== 'undefined') {
   let cmEditingCardID = '';
   let cmInitInFlight = null;
   let cmOrdersArchived = false;
+  let cmRestoringOrders = {};
 
   var CONFIRMABLE_STATUSES = ['pending', 'personal_created', 'personal_opened'];
 
@@ -299,7 +300,7 @@ if (typeof I18N_EN !== 'undefined') {
       var confirmBtn = (!cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0) ? '<button class="btn-primary compact-btn" onclick="confirmComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketConfirmOrder') + '</button>' : '';
       var archiveBtn = !cmOrdersArchived ? '<button class="btn-ghost compact-btn" onclick="archiveComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketArchiveOrder') + '</button>' : '';
       var deleteBtn = (cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0) ? '<button class="btn-danger-ghost compact-btn" onclick="deleteArchivedComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketDeleteArchivedOrder') + '</button>' : '';
-      var restoreBtn = (cmOrdersArchived && o.status === 'activated') ? '<button class="btn-secondary compact-btn" onclick="restoreArchivedComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketRestoreOrder') + '</button>' : '';
+      var restoreBtn = (cmOrdersArchived && o.status === 'activated') ? '<button class="btn-secondary compact-btn" onclick="restoreArchivedComputeOrder(\'' + orderArg + '\', this)">' + tr('computeMarketRestoreOrder') + '</button>' : '';
       var agent = o.agent_name ? ' \u00b7 ' + tr('computeMarketCardAgent') + ': ' + esc(o.agent_name) : '';
       var archivedMeta = cmOrdersArchived && o.archived_at ? ' \u00b7 ' + tr('computeMarketArchivedAt') + ': ' + esc(new Date(o.archived_at).toLocaleString()) : '';
       var totalCredits = formatCMCredits(o.credits);
@@ -349,12 +350,21 @@ if (typeof I18N_EN !== 'undefined') {
     } catch (e) { if (window.showToast) showToast(e.message, 'error'); }
   }
 
-  async function restoreArchivedComputeOrder(orderNo) {
+  async function restoreArchivedComputeOrder(orderNo, button) {
+    var key = String(orderNo || '');
+    if (!key || cmRestoringOrders[key]) return;
+    cmRestoringOrders[key] = true;
+    if (button) button.disabled = true;
     try {
       await api('/api/admin/cardstore/orders/' + encodeURIComponent(orderNo) + '/restore', { method: 'POST' });
-      loadComputeOrders();
+      await loadComputeOrders();
       if (window.showToast) showToast(tr('computeMarketOrderRestored'), 'success');
-    } catch (e) { if (window.showToast) showToast(e.message || 'Restore failed', 'error'); }
+    } catch (e) {
+      if (button) button.disabled = false;
+      if (window.showToast) showToast(e.message || 'Restore failed', 'error');
+    } finally {
+      delete cmRestoringOrders[key];
+    }
   }
 
   async function deleteArchivedComputeOrder(orderNo) {

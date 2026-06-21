@@ -336,15 +336,17 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 
 	assertContainsAll(t, html, "compute market cache busting", []string{
 		`/admin/assets/css/admin-shell.css?v=archived-order-delete-20260619`,
-		`/admin/assets/js/compute-market-tab.js?v=restore-archived-order-20260622`,
+		`/admin/assets/js/compute-market-tab.js?v=restore-archived-order-20260622-2`,
 	})
 	assertContainsAll(t, js, "compute market archived delete contract", []string{
 		"computeMarketDeleteArchivedOrder",
 		"deleteArchivedComputeOrder",
 		"cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0",
 		"computeMarketRestoreOrder",
+		"cmRestoringOrders",
 		"restoreArchivedComputeOrder",
 		"cmOrdersArchived && o.status === 'activated'",
+		"this)",
 		"/restore",
 		"/api/admin/cardstore/orders/",
 		"method: 'DELETE'",
@@ -357,6 +359,12 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 	if strings.Contains(restoreFn, "confirm(") {
 		t.Fatal("compute market restore must not ask for confirmation")
 	}
+	assertContainsAll(t, restoreFn, "compute market restore busy guard", []string{
+		"cmRestoringOrders[key]",
+		"button.disabled = true",
+		"button.disabled = false",
+		"delete cmRestoringOrders[key]",
+	})
 	assertContainsAll(t, css, "compute market delete button style", []string{
 		".btn-danger-ghost{background:rgba(214,93,87,.06)",
 		".btn-danger-ghost:hover{background:rgba(214,93,87,.1)",
