@@ -336,7 +336,7 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 
 	assertContainsAll(t, html, "compute market cache busting", []string{
 		`/admin/assets/css/admin-shell.css?v=archived-order-delete-20260619`,
-		`/admin/assets/js/compute-market-tab.js?v=restore-archived-order-20260622-2`,
+		`/admin/assets/js/compute-market-tab.js?v=restore-archived-order-20260622-3`,
 	})
 	assertContainsAll(t, js, "compute market archived delete contract", []string{
 		"computeMarketDeleteArchivedOrder",
@@ -345,7 +345,7 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 		"computeMarketRestoreOrder",
 		"cmRestoringOrders",
 		"restoreArchivedComputeOrder",
-		"cmOrdersArchived && o.status === 'activated'",
+		"cmOrdersArchived && String(o.status || '').toLowerCase() === 'activated'",
 		"this)",
 		"/restore",
 		"/api/admin/cardstore/orders/",

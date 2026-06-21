@@ -1060,6 +1060,12 @@ func TestRestoreArchivedOrderRequiresActivatedArchivedOrder(t *testing.T) {
 			Order: corecardstore.Order{OrderNo: "HC-ACTIVE", Email: "owner@example.com", Status: corecardstore.StatusActivated, CreatedAt: now, UpdatedAt: now},
 			HubID: "hub-1", TenantID: "tenant-a",
 		},
+		"HC-UPPER": {
+			Order:      corecardstore.Order{OrderNo: "HC-UPPER", Email: "owner@example.com", Status: "ACTIVATED", CreatedAt: now, UpdatedAt: now},
+			HubID:      "hub-1",
+			TenantID:   "tenant-a",
+			ArchivedAt: now.Format(time.RFC3339),
+		},
 	}}
 	svc := NewService(nil, orderRepo, nil)
 
@@ -1074,6 +1080,12 @@ func TestRestoreArchivedOrderRequiresActivatedArchivedOrder(t *testing.T) {
 	}
 	if got := orderRepo.byNo["HC-ACTIVATED"].ArchivedAt; got != "" {
 		t.Fatalf("ArchivedAt = %q, want empty after restore", got)
+	}
+	if err := svc.RestoreArchivedOrder(context.Background(), "HC-UPPER"); err != nil {
+		t.Fatalf("RestoreArchivedOrder(uppercase activated): %v", err)
+	}
+	if got := orderRepo.byNo["HC-UPPER"].ArchivedAt; got != "" {
+		t.Fatalf("uppercase ArchivedAt = %q, want empty after restore", got)
 	}
 }
 

@@ -300,7 +300,7 @@ if (typeof I18N_EN !== 'undefined') {
       var confirmBtn = (!cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0) ? '<button class="btn-primary compact-btn" onclick="confirmComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketConfirmOrder') + '</button>' : '';
       var archiveBtn = !cmOrdersArchived ? '<button class="btn-ghost compact-btn" onclick="archiveComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketArchiveOrder') + '</button>' : '';
       var deleteBtn = (cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0) ? '<button class="btn-danger-ghost compact-btn" onclick="deleteArchivedComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketDeleteArchivedOrder') + '</button>' : '';
-      var restoreBtn = (cmOrdersArchived && o.status === 'activated') ? '<button class="btn-secondary compact-btn" onclick="restoreArchivedComputeOrder(\'' + orderArg + '\', this)">' + tr('computeMarketRestoreOrder') + '</button>' : '';
+      var restoreBtn = (cmOrdersArchived && String(o.status || '').toLowerCase() === 'activated') ? '<button class="btn-secondary compact-btn" onclick="restoreArchivedComputeOrder(\'' + orderArg + '\', this)">' + tr('computeMarketRestoreOrder') + '</button>' : '';
       var agent = o.agent_name ? ' \u00b7 ' + tr('computeMarketCardAgent') + ': ' + esc(o.agent_name) : '';
       var archivedMeta = cmOrdersArchived && o.archived_at ? ' \u00b7 ' + tr('computeMarketArchivedAt') + ': ' + esc(new Date(o.archived_at).toLocaleString()) : '';
       var totalCredits = formatCMCredits(o.credits);

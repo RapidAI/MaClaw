@@ -100,6 +100,29 @@ func TestAdminRestoreArchivedOrderHandlerRestoresActivatedOrder(t *testing.T) {
 	}
 }
 
+func TestAdminRestoreArchivedOrderHandlerIsIdempotent(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-ACTIVATED": {
+			Order: corecardstore.Order{OrderNo: "HC-ACTIVATED", Email: "owner@example.com", Status: corecardstore.StatusActivated, CreatedAt: now, UpdatedAt: now},
+			HubID: "hub-1", TenantID: "tenant-a",
+		},
+	}}
+	svc := NewService(nil, orderRepo, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/cardstore/orders/HC-ACTIVATED/restore", nil)
+	req.SetPathValue("orderNo", "HC-ACTIVATED")
+	rr := httptest.NewRecorder()
+
+	AdminRestoreArchivedOrderHandler(svc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"status":"restored"`) {
+		t.Fatalf("body = %s, want restored status", rr.Body.String())
+	}
+}
+
 func TestAlipayConfigForRequestFillsDefaultCallbackURLs(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/cardstore/purchase", nil)
 	req.Host = "hubcenter.example.com"

@@ -898,7 +898,7 @@ func (s *Service) RestoreArchivedOrder(ctx context.Context, orderNo string) erro
 	if order == nil {
 		return fmt.Errorf("order %s not found", orderNo)
 	}
-	if order.Status != corecardstore.StatusActivated {
+	if !strings.EqualFold(order.Status, corecardstore.StatusActivated) {
 		return fmt.Errorf("order %s has status %s and cannot be restored", orderNo, order.Status)
 	}
 	if strings.TrimSpace(order.ArchivedAt) == "" {
