@@ -1735,6 +1735,98 @@ func TestListMaclawAppApprovalInstancesMergesDataSrvWithLocal(t *testing.T) {
 		t.Fatalf("merged approval should keep local display context and remote result context: %#v", got)
 	}
 }
+func TestExecuteMaclawAppBusinessOperationRunsPreferredAction(t *testing.T) {
+	type capturedRequest struct {
+		Method string
+		Path   string
+		Body   map[string]interface{}
+	}
+	captured := []capturedRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&item.Body)
+		}
+		captured = append(captured, item)
+		if r.Header.Get("X-MaClaw-User-ID") != "operator" {
+			t.Fatalf("expected user header, got %q", r.Header.Get("X-MaClaw-User-ID"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"committed","result_status":"success","record_id":"cust-1","record":{"id":"cust-1"}}`))
+	}))
+	defer server.Close()
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "operator", Role: "ops"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	result, err := app.ExecuteMaclawAppBusinessOperation(maclawAppBusinessOperationInput{
+		AppID:           "customer-profile",
+		AppName:         "Customer Profile",
+		DatasetID:       "sales.customers",
+		ObjectRole:      "customer",
+		BlueprintID:     "sales.customer.v1",
+		BusinessEntity:  "sales",
+		BusinessAction:  "upsert",
+		BusinessNote:    "new customer from card",
+		PreferredAction: "sales.customer_upsert",
+		Data:            map[string]any{"customer_name": "Acme"},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteMaclawAppBusinessOperation() error = %v", err)
+	}
+	if result["synced"] != true || result["mode"] != "business_action" || result["target"] != "sales.customer_upsert" || result["result_status"] != "success" {
+		t.Fatalf("unexpected business operation result: %#v", result)
+	}
+	if len(captured) != 1 || captured[0].Method != http.MethodPost || captured[0].Path != "/api/v1/data/business-actions/sales.customer_upsert/execute" {
+		t.Fatalf("unexpected request: %#v", captured)
+	}
+	data, ok := captured[0].Body["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("request body missing data: %#v", captured[0].Body)
+	}
+	if captured[0].Body["dry_run"] != false || data["app_id"] != "customer-profile" || data["object_role"] != "customer" || data["preferred_action"] != "sales.customer_upsert" || data["customer_name"] != "Acme" {
+		t.Fatalf("request body missing app business semantics: %#v", captured[0].Body)
+	}
+}
+
+func TestExecuteMaclawAppBusinessOperationQueriesPreferredView(t *testing.T) {
+	type capturedRequest struct {
+		Method string
+		Path   string
+		Body   map[string]interface{}
+	}
+	captured := []capturedRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&item.Body)
+		}
+		captured = append(captured, item)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","records":[{"id":"cust-1"}]}`))
+	}))
+	defer server.Close()
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "operator", Role: "ops"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	result, err := app.ExecuteMaclawAppBusinessOperation(maclawAppBusinessOperationInput{AppID: "customer-profile", PreferredView: "sales.customer_directory", BusinessNote: "Acme", Limit: 25})
+	if err != nil {
+		t.Fatalf("ExecuteMaclawAppBusinessOperation view error = %v", err)
+	}
+	if result["mode"] != "business_view" || result["target"] != "sales.customer_directory" || result["result_status"] != "ok" {
+		t.Fatalf("unexpected view operation result: %#v", result)
+	}
+	if len(captured) != 1 || captured[0].Method != http.MethodPost || captured[0].Path != "/api/v1/data/views/sales.customer_directory/query" {
+		t.Fatalf("unexpected view request: %#v", captured)
+	}
+	if captured[0].Body["q"] != "Acme" || captured[0].Body["limit"] != float64(25) {
+		t.Fatalf("view query body missing q/limit: %#v", captured[0].Body)
+	}
+}
+
 func TestSyncMaclawAppApprovalInstanceToDataSrvCreatesMissingBusinessRecord(t *testing.T) {
 	type capturedRequest struct {
 		Method string

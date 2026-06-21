@@ -624,6 +624,9 @@
         var ret = new URL(raw, location.origin);
         if (ret.searchParams.get('ctx_hub_id') && ret.searchParams.get('ctx_tenant_id')) {
           var ctx = hubTenantContext();
+          var sameHub = String(ret.searchParams.get('ctx_hub_id') || '') === String(ctx.hubID || '');
+          var sameTenant = normalizeContextTenantID(ret.searchParams.get('ctx_tenant_id')) === normalizeContextTenantID(ctx.tenantID);
+          if (!sameHub || !sameTenant) return false;
           if (ctx.hubName && !ret.searchParams.get('ctx_hub_name')) return true;
           if (ctx.tenantName && !ret.searchParams.get('ctx_tenant_name')) return true;
           return false;

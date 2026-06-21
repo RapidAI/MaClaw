@@ -272,7 +272,19 @@ func TestMaClawComputeModuleShowsModuleAuthorizationBadge(t *testing.T) {
 	content := string(body)
 	for _, want := range []string{
 		`hasComputeModuleAuthorization()`,
+		`isTenantAdminComputeContext()`,
+		`computeCreditsRemaining(item)`,
+		`hasAvailableOfficialComputeCredits()`,
+		`shouldShowGlobalComputeAlert()`,
+		`updateGlobalComputeAlert()`,
+		`document.getElementById('maclawComputeTopAlert')`,
+		`noAvailableCompute: 'No available compute'`,
+		`noAvailableComputeAction: 'Click to purchase'`,
+		`noAvailableCompute: '\u65e0\u53ef\u7528\u7b97\u529b'`,
+		`noAvailableComputeAction: '\u70b9\u51fb\u8d2d\u4e70'`,
 		`return !!_computeAuthStatus.allow_external_providers;`,
+		`if (!isTenantAdminComputeContext()) return false;`,
+		`return computeCreditsRemaining(item) > 0;`,
 		`refreshComputeAuthorizationIfStale(3000);`,
 		`_computeAuthCheckedAt = Date.now();`,
 		`observeLLMProviderListForBanner()`,
@@ -294,6 +306,27 @@ func TestMaClawComputeModuleShowsModuleAuthorizationBadge(t *testing.T) {
 	}
 	if strings.Contains(content, `hasActiveComputeAuthorization()`) {
 		t.Fatalf("MaClaw compute module must not keep active-credit helper for module authorization")
+	}
+
+	admin, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "index.html"))
+	if err != nil {
+		t.Fatalf("read admin index: %v", err)
+	}
+	if !strings.Contains(string(admin), `id="maclawComputeTopAlert"`) {
+		t.Fatalf("admin topbar must include MaClaw compute warning placeholder")
+	}
+
+	css, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "professional.css"))
+	if err != nil {
+		t.Fatalf("read admin professional css: %v", err)
+	}
+	for _, want := range []string{
+		`.compute-top-alert{display:inline-flex`,
+		`.compute-top-alert button{height:26px`,
+	} {
+		if !strings.Contains(string(css), want) {
+			t.Fatalf("admin css missing compute top alert contract %s", want)
+		}
 	}
 }
 

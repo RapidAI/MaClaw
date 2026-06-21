@@ -58,7 +58,7 @@
     var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
     var tenantAdmin = isTenantAdminProfile(profile);
     var tasks = tenantAdmin
-      ? ['loadOverviewTenantInfo', 'loadTenants', 'loadBlockedEmails', 'loadBoundUsers', 'loadInvites', 'loadMachines', 'loadPwaEnrollments', 'loadMarketplace', 'loadTenantMailSenderName', 'loadTenantMigrationSettings', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs']
+      ? ['loadOverviewTenantInfo', 'loadTenants', 'loadBlockedEmails', 'loadBoundUsers', 'loadInvites', 'loadMachines', 'loadPwaEnrollments', 'loadMarketplace', 'loadTenantMailSenderName', 'loadTenantMigrationSettings', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs']
       : ['loadOverviewTenantInfo', 'loadCenterStatus', 'loadMailConfig', 'loadTenants'];
     var results = await Promise.allSettled(tasks.map(callIfAvailable));
     reportRefreshFailures(results);

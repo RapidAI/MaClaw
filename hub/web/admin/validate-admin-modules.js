@@ -201,7 +201,7 @@ function assertTenantAdminUIHooks() {
     }
   });
   const bootstrap = read('admin-bootstrap.js');
-  ['Promise.allSettled', 'loadTenants', 'loadCenterStatus', 'loadMailConfig', 'loadTenantMigrationSettings', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs'].forEach(function(marker) {
+  ['Promise.allSettled', 'loadTenants', 'loadCenterStatus', 'loadMailConfig', 'loadTenantMigrationSettings', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs'].forEach(function(marker) {
     if (!bootstrap.includes(marker)) {
       fail('admin-bootstrap.js is missing scoped refresh marker: ' + marker);
     }
@@ -288,7 +288,8 @@ function assertEmptyTextNodesAreOwned() {
   const html = fs.readFileSync(indexPath, 'utf8');
   const scripts = expectedScripts.map(function(name) { return read(name); }).join('\n');
   const allowedDynamic = {
-    setupGateList: true
+    setupGateList: true,
+    maclawComputeTopAlert: true
   };
   const emptyNode = /<([a-z0-9]+)\b([^>]*\bid="([^"]+)"[^>]*)>\s*<\/\1>/gi;
   let match;
@@ -531,6 +532,12 @@ function assertMaClawComputeProviderGate() {
     'window.triggerLLMProvidersImport',
     'window.importLLMProvidersJSON',
     'refreshMaClawOfficialBanner',
+    'maclawComputeTopAlert',
+    'hasAvailableOfficialComputeCredits',
+    'shouldShowGlobalComputeAlert',
+    'updateGlobalComputeAlert',
+    'noAvailableCompute',
+    'noAvailableComputeAction',
     'AdminTabRegistry.onLanguageChange',
     'window.gatedAddProvider'
   ].forEach(function(marker) {

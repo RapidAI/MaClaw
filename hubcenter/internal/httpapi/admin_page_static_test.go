@@ -336,7 +336,7 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 
 	assertContainsAll(t, html, "compute market cache busting", []string{
 		`/admin/assets/css/admin-shell.css?v=compact-compute-orders-20260622`,
-		`/admin/assets/js/compute-market-tab.js?v=compact-compute-orders-20260622`,
+		`/admin/assets/js/compute-market-tab.js?v=compact-compute-orders-20260622-2`,
 	})
 	assertContainsAll(t, js, "compute market archived delete contract", []string{
 		"computeMarketDeleteArchivedOrder",
@@ -377,7 +377,10 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 	assertContainsAll(t, js, "compute market order paging contract", []string{
 		"const CM_ORDERS_PAGE_SIZE = 20",
 		"limit=' + CM_ORDERS_PAGE_SIZE + '&offset=' + offset",
+		"limit=1&statuses=' + CONFIRMABLE_STATUS_QUERY",
+		"renderComputeOrders(data.orders || [], data.total || 0, pendingData.total)",
 		"renderComputeOrdersPager(total)",
+		"Math.ceil(total / CM_ORDERS_PAGE_SIZE) - 1",
 		"window.changeComputeOrdersPage = changeComputeOrdersPage",
 	})
 	assertContainsAll(t, css, "compute market compact order grid", []string{

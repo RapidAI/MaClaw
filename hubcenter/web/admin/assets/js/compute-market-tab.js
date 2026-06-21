@@ -26,6 +26,7 @@ if (typeof I18N_EN !== 'undefined') {
   let cmRestoringOrders = {};
 
   var CONFIRMABLE_STATUSES = ['pending', 'personal_created', 'personal_opened'];
+  var CONFIRMABLE_STATUS_QUERY = CONFIRMABLE_STATUSES.map(encodeURIComponent).join(',');
 
   function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
   function cmJSArg(s) { return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'); }
@@ -63,7 +64,12 @@ if (typeof I18N_EN !== 'undefined') {
       if (btn) { btn.className = t === tab ? 'btn-secondary' : 'btn-ghost'; btn.setAttribute('aria-pressed', t === tab ? 'true' : 'false'); }
     });
     if (tab === 'orders') {
-      if (preloadedOrders) { renderComputeOrders(preloadedOrders.slice(0, CM_ORDERS_PAGE_SIZE), preloadedOrders.length); }
+      if (preloadedOrders) {
+        var preloadedPending = preloadedOrders.filter(function (o) {
+          return CONFIRMABLE_STATUSES.indexOf(String(o.status || '').toLowerCase()) >= 0;
+        }).length;
+        renderComputeOrders(preloadedOrders.slice(0, CM_ORDERS_PAGE_SIZE), preloadedOrders.length, preloadedPending);
+      }
       else { loadComputeOrders(); }
     }
     if (tab === 'payment' && window.loadCMPaymentConfig) loadCMPaymentConfig();
@@ -273,8 +279,15 @@ if (typeof I18N_EN !== 'undefined') {
     try {
       updateComputeOrdersArchiveUI();
       const offset = cmOrdersPage * CM_ORDERS_PAGE_SIZE;
-      const data = await api('/api/admin/cardstore/orders?limit=' + CM_ORDERS_PAGE_SIZE + '&offset=' + offset + (cmOrdersArchived ? '&archived=1' : ''));
-      renderComputeOrders(data.orders || [], data.total || 0);
+      const ordersPath = '/api/admin/cardstore/orders?limit=' + CM_ORDERS_PAGE_SIZE + '&offset=' + offset + (cmOrdersArchived ? '&archived=1' : '');
+      const pendingPath = '/api/admin/cardstore/orders?limit=1&statuses=' + CONFIRMABLE_STATUS_QUERY;
+      const results = await Promise.all([
+        api(ordersPath),
+        cmOrdersArchived ? Promise.resolve(null) : api(pendingPath).catch(function () { return null; })
+      ]);
+      const data = results[0] || {};
+      const pendingData = results[1] || {};
+      renderComputeOrders(data.orders || [], data.total || 0, pendingData.total);
     } catch (e) { renderComputeOrders([]); }
   }
 
@@ -285,20 +298,20 @@ if (typeof I18N_EN !== 'undefined') {
     if (desc) desc.textContent = cmOrdersArchived ? tr('computeMarketArchivedOrdersDesc') : tr('computeMarketOrdersDesc');
   }
 
-  function renderComputeOrders(orders, total) {
+  function renderComputeOrders(orders, total, pendingTotal) {
     const container = document.getElementById('cmOrdersList');
     if (!container) return;
     total = Math.max(Number(total || 0), orders.length);
     updateComputeOrdersArchiveUI();
     // Update pending badge only when rendering the active list (not archived)
     if (!cmOrdersArchived) {
-      var pendingCount = (orders || []).filter(function (o) {
-        return CONFIRMABLE_STATUSES.indexOf(o.status) >= 0;
+      var pendingCount = Number.isFinite(Number(pendingTotal)) ? Number(pendingTotal) : (orders || []).filter(function (o) {
+        return CONFIRMABLE_STATUSES.indexOf(String(o.status || '').toLowerCase()) >= 0;
       }).length;
       updatePendingBadge(pendingCount);
     }
     if (!orders.length && cmOrdersPage > 0) {
-      cmOrdersPage = Math.max(0, cmOrdersPage - 1);
+      cmOrdersPage = Math.max(0, Math.ceil(total / CM_ORDERS_PAGE_SIZE) - 1);
       loadComputeOrders();
       return;
     }
@@ -609,17 +622,17 @@ if (typeof I18N_EN !== 'undefined') {
     try {
       const pd = await api('/api/admin/llm/providers').catch(function () { return { providers: [] }; });
       const gd = await api('/api/admin/llm/service-groups').catch(function () { return { service_groups: [] }; });
-      const odSummary = await api('/api/admin/cardstore/orders?limit=50').catch(function () { return { orders: [] }; });
+      const odSummary = await api('/api/admin/cardstore/orders?limit=1&statuses=' + CONFIRMABLE_STATUS_QUERY).catch(function () { return { total: 0 }; });
       var el1 = document.getElementById('cmProviderCount'); if (el1) el1.textContent = String((pd.providers || []).length);
       var el2 = document.getElementById('cmGroupCount'); if (el2) el2.textContent = String((gd.service_groups || []).length);
-      var el3 = document.getElementById('cmPendingOrderCount'); if (el3) el3.textContent = String((odSummary.orders || []).filter(function (o) { return CONFIRMABLE_STATUSES.indexOf(o.status) >= 0; }).length);
+      var el3 = document.getElementById('cmPendingOrderCount'); if (el3) el3.textContent = String(odSummary.total || 0);
     } catch (e) { /* best-effort */ }
     // Pre-check for pending orders and auto-switch to Orders tab if any exist
     try {
       const od = await api('/api/admin/cardstore/orders?limit=50');
       var allOrders = od.orders || [];
       var pendingCount = allOrders.filter(function (o) {
-        return CONFIRMABLE_STATUSES.indexOf(o.status) >= 0;
+        return CONFIRMABLE_STATUSES.indexOf(String(o.status || '').toLowerCase()) >= 0;
       }).length;
       updatePendingBadge(pendingCount);
       if (pendingCount > 0) {

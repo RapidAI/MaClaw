@@ -140,6 +140,27 @@ type maclawAppDataSrvInstallationPayload struct {
 	Body             map[string]interface{}
 }
 
+type MaclawAppBusinessOperationInput struct {
+	AppID              string         `json:"app_id"`
+	AppName            string         `json:"app_name,omitempty"`
+	DatasetID          string         `json:"dataset_id,omitempty"`
+	ObjectRole         string         `json:"object_role,omitempty"`
+	BlueprintID        string         `json:"blueprint_id,omitempty"`
+	BusinessEntity     string         `json:"business_entity,omitempty"`
+	BusinessAction     string         `json:"business_action,omitempty"`
+	BusinessNote       string         `json:"business_note,omitempty"`
+	PreferredAction    string         `json:"preferred_action,omitempty"`
+	PreferredView      string         `json:"preferred_view,omitempty"`
+	PreferredReport    string         `json:"preferred_report,omitempty"`
+	PreferredDashboard string         `json:"preferred_dashboard,omitempty"`
+	Data               map[string]any `json:"data,omitempty"`
+	Filter             map[string]any `json:"filter,omitempty"`
+	Limit              int            `json:"limit,omitempty"`
+	DryRun             bool           `json:"dry_run,omitempty"`
+}
+
+type maclawAppBusinessOperationInput = MaclawAppBusinessOperationInput
+
 type maclawAppInstallRecord struct {
 	AppID                 string                           `json:"app_id"`
 	AppName               string                           `json:"app_name,omitempty"`
@@ -581,6 +602,91 @@ func (a *App) ListMaclawAppInstalls(limit int) ([]maclawAppInstallRecord, error)
 		out = append(out, record)
 	}
 	return out, nil
+}
+
+// ExecuteMaclawAppBusinessOperation runs the DataSrv/MIS binding for an
+// enterprise_normal_app that has no dedicated appSkill runtime. It keeps
+// credentials in the Go backend while the GUI remains a visual operation shell.
+func (a *App) ExecuteMaclawAppBusinessOperation(input MaclawAppBusinessOperationInput) (map[string]any, error) {
+	cfg, err := a.GetMISDataConfig()
+	if err != nil {
+		return nil, fmt.Errorf("load MIS data config failed: %w", err)
+	}
+	if !cfg.Enabled {
+		return nil, fmt.Errorf("MIS data service is disabled. Enable it in Settings > MIS data")
+	}
+	if strings.TrimSpace(cfg.Token) == "" {
+		return nil, fmt.Errorf("MIS data service token is empty. Configure it in Settings > MIS data")
+	}
+	limit := input.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	base := map[string]any{
+		"_maclaw_app":         true,
+		"app_id":              strings.TrimSpace(input.AppID),
+		"app_name":            strings.TrimSpace(input.AppName),
+		"dataset_id":          strings.TrimSpace(input.DatasetID),
+		"object_role":         strings.TrimSpace(input.ObjectRole),
+		"blueprint_id":        strings.TrimSpace(input.BlueprintID),
+		"business_entity":     strings.TrimSpace(input.BusinessEntity),
+		"business_action":     strings.TrimSpace(input.BusinessAction),
+		"business_note":       strings.TrimSpace(input.BusinessNote),
+		"preferred_action":    strings.TrimSpace(input.PreferredAction),
+		"preferred_view":      strings.TrimSpace(input.PreferredView),
+		"preferred_report":    strings.TrimSpace(input.PreferredReport),
+		"preferred_dashboard": strings.TrimSpace(input.PreferredDashboard),
+	}
+	for key, value := range input.Data {
+		base[key] = value
+	}
+	actionID := strings.TrimSpace(input.PreferredAction)
+	var raw []byte
+	mode := ""
+	target := ""
+	switch {
+	case actionID != "":
+		mode = "business_action"
+		target = actionID
+		body := map[string]interface{}{"data": mapAnyToInterfaceMap(base), "dry_run": input.DryRun}
+		raw, err = a.callMISDataAPIBytes(cfg, http.MethodPost, "/api/v1/data/business-actions/"+pathEscape(actionID)+"/execute", compactPayload(body))
+	case strings.TrimSpace(input.PreferredView) != "":
+		mode = "business_view"
+		target = strings.TrimSpace(input.PreferredView)
+		body := map[string]interface{}{"q": strings.TrimSpace(input.BusinessNote), "filter": mapAnyToInterfaceMap(input.Filter), "limit": limit}
+		raw, err = a.callMISDataAPIBytes(cfg, http.MethodPost, "/api/v1/data/views/"+pathEscape(target)+"/query", compactPayload(body))
+	case strings.TrimSpace(input.PreferredReport) != "":
+		mode = "business_report"
+		target = strings.TrimSpace(input.PreferredReport)
+		body := map[string]interface{}{"filter": mapAnyToInterfaceMap(input.Filter), "limit": limit}
+		raw, err = a.callMISDataAPIBytes(cfg, http.MethodPost, "/api/v1/data/reports/"+pathEscape(target)+"/run", compactPayload(body))
+	case strings.TrimSpace(input.PreferredDashboard) != "":
+		mode = "business_dashboard"
+		target = strings.TrimSpace(input.PreferredDashboard)
+		raw, err = a.callMISDataAPIBytes(cfg, http.MethodPost, "/api/v1/data/dashboards/"+pathEscape(target)+"/run", nil)
+	default:
+		return nil, fmt.Errorf("enterprise normal app has no DataSrv operation binding")
+	}
+	if err != nil {
+		return nil, err
+	}
+	response := map[string]any{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &response); err != nil {
+			response["raw"] = strings.TrimSpace(string(raw))
+		}
+	}
+	return map[string]any{
+		"synced":          true,
+		"mode":            mode,
+		"target":          target,
+		"app_id":          strings.TrimSpace(input.AppID),
+		"dataset_id":      strings.TrimSpace(input.DatasetID),
+		"object_role":     strings.TrimSpace(input.ObjectRole),
+		"business_action": strings.TrimSpace(input.BusinessAction),
+		"result_status":   firstNonEmptyMaclawAppString(stringMapValue(response, "result_status"), stringMapValue(response, "status"), "done"),
+		"response":        response,
+	}, nil
 }
 
 // RecordMaclawAppApprovalInstance persists one approval instance snapshot for a
@@ -3046,6 +3152,17 @@ func maclawAppPackageFingerprint(pkg map[string]any) (string, int, error) {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), len(data), nil
+}
+
+func mapAnyToInterfaceMap(value map[string]any) map[string]interface{} {
+	if value == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(value))
+	for key, item := range value {
+		out[key] = item
+	}
+	return out
 }
 
 func cloneMapAny(value map[string]any) map[string]any {

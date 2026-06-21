@@ -13,12 +13,9 @@ import (
 // executes correctly and produces the expected output.
 // This is the ultimate correctness test for the auto-spill mechanism.
 func TestAutoSpillEndToEndExecutesCorrectly(t *testing.T) {
-	pythonBin := "python"
-	if _, err := exec.LookPath(pythonBin); err != nil {
-		pythonBin = "python3"
-		if _, err := exec.LookPath(pythonBin); err != nil {
-			t.Skip("python not found, skipping end-to-end test")
-		}
+	pythonBin, ok := usablePythonBin()
+	if !ok {
+		t.Skip("usable python not found, skipping end-to-end test")
 	}
 
 	dir := t.TempDir()
@@ -87,12 +84,9 @@ func TestAutoSpillEndToEndExecutesCorrectly(t *testing.T) {
 // TestAutoSpillEndToEndChinesePatent verifies auto-spill with Chinese content
 // (the actual patent workflow scenario).
 func TestAutoSpillEndToEndChinesePatent(t *testing.T) {
-	pythonBin := "python"
-	if _, err := exec.LookPath(pythonBin); err != nil {
-		pythonBin = "python3"
-		if _, err := exec.LookPath(pythonBin); err != nil {
-			t.Skip("python not found, skipping end-to-end test")
-		}
+	pythonBin, ok := usablePythonBin()
+	if !ok {
+		t.Skip("usable python not found, skipping end-to-end test")
 	}
 
 	dir := t.TempDir()
@@ -143,4 +137,16 @@ func TestAutoSpillEndToEndChinesePatent(t *testing.T) {
 		t.Fatalf("literal \\n separator lost: %q", content)
 	}
 	t.Logf("Patent output correct: %q", content)
+}
+
+func usablePythonBin() (string, bool) {
+	for _, candidate := range []string{"python", "python3"} {
+		if _, err := exec.LookPath(candidate); err != nil {
+			continue
+		}
+		if err := exec.Command(candidate, "-c", "print('ok')").Run(); err == nil {
+			return candidate, true
+		}
+	}
+	return "", false
 }

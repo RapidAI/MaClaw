@@ -636,24 +636,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		// Avoid raw bash heartbeat rows in chat; tool_started/tool_finished events
 		// already keep the AI assistant panel updated while the command runs.
 		commandResult := executeCodingBash(bashArgs, nil)
-		// Treat exit code 1 with meaningful stdout as success — many tools return exit 1
-		// for informational "not found" results (grep, Get-ChildItem, test runners).
-		// But stderr-only output with exit 1 is still a real error (compilation failure, etc.)
-		succeeded := commandResult.Kind == codingCommandResultOK
-		if !succeeded && commandResult.Kind == codingCommandResultExitError && commandResult.ExitCode == 1 {
-			text := commandResult.Text
-			// Strip "command exited with code N" suffix — not meaningful output
-			if idx := strings.Index(text, "\ncommand exited with code"); idx >= 0 {
-				text = text[:idx]
-			} else if strings.HasPrefix(text, "command exited with code") {
-				text = ""
-			}
-			// Has real stdout content (not just stderr or empty) → informational, not error
-			if !strings.HasPrefix(text, "[stderr]") && len(strings.TrimSpace(text)) > 10 {
-				succeeded = true
-			}
-		}
-		c.trackCommandResult(bashArgs, commandResult.Text, succeeded)
+		c.trackCommandResult(bashArgs, commandResult.Text, commandResult.succeeded())
 		return commandResult.toolResult()
 	case "list_directory":
 		listArgs := c.withProjectRelativePath(args, true)
@@ -3217,10 +3200,10 @@ var codingSubAgentToolNames = makeCodingSubAgentToolNameSet(codingSubAgentToolOr
 // in the SubAgent (injected based on task context, not always present).
 // These bypass the static tool name check in executeToolWithOutcome.
 var codingSubAgentDynamicToolNames = map[string]bool{
-	"manage_skill":             true,
-	"call_mcp_tool":            true,
-	"coding_knowledge_search":  true,
-	"knowledge_search":         true,
+	"manage_skill":            true,
+	"call_mcp_tool":           true,
+	"coding_knowledge_search": true,
+	"knowledge_search":        true,
 }
 
 func makeCodingSubAgentToolNameSet(names []string) map[string]bool {

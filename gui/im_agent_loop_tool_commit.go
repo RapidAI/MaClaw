@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -324,8 +325,16 @@ func (h *IMMessageHandler) observeToolCommitDrift(
 	h.sessionDriftTool.Store(userID, driftResult.DriftedTool)
 
 	resp := &IMAgentResponse{
-		Text: fmt.Sprintf("Agent repeatedly called %s without success and stopped trying. Please check the task requirements or provide new guidance.", driftResult.DriftedTool),
+		Text: buildRepeatedToolFailureStopMessage(driftResult.DriftedTool),
 	}
 	h.saveConversationHistoryTimed(userID, history, resp)
 	return conversation, resp
+}
+
+func buildRepeatedToolFailureStopMessage(toolName string) string {
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		toolName = "a tool"
+	}
+	return fmt.Sprintf("Agent repeatedly called %s without a successful result and stopped to avoid a loop. Check the recent tool output/logs, adjust the task requirements, or provide new guidance.", toolName)
 }

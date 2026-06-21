@@ -29,6 +29,8 @@
       activeAuthorizations: 'Active Compute',
       noActiveAuthorizations: 'No active compute authorization.',
       noComputeCredits: 'Compute module authorized. No active compute credits yet.',
+      noAvailableCompute: 'No available compute',
+      noAvailableComputeAction: 'Click to purchase',
       showInactiveAuthorizations: 'Show expired/invalid',
       hideInactiveAuthorizations: 'Hide expired/invalid',
       creditsRemaining: 'Remaining',
@@ -57,6 +59,8 @@
       activeAuthorizations: '\u5df2\u6fc0\u6d3b\u7b97\u529b',
       noActiveAuthorizations: '\u6682\u65e0\u6709\u6548\u7b97\u529b\u6388\u6743\u3002',
       noComputeCredits: '\u7b97\u529b\u6a21\u5757\u5df2\u6388\u6743\uff0c\u6682\u65e0\u53ef\u7528\u7b97\u529b\u989d\u5ea6\u3002',
+      noAvailableCompute: '\u65e0\u53ef\u7528\u7b97\u529b',
+      noAvailableComputeAction: '\u70b9\u51fb\u8d2d\u4e70',
       showInactiveAuthorizations: '\u663e\u793a\u8fc7\u671f/\u5931\u6548',
       hideInactiveAuthorizations: '\u9690\u85cf\u8fc7\u671f/\u5931\u6548',
       creditsRemaining: '\u5269\u4f59',
@@ -216,7 +220,7 @@
     // refreshMaClawOfficialBanner internally calls updateComputeUI.
     refreshMaClawOfficialBanner();
     // Also update gating in case the banner DOM doesn't exist yet (e.g. tab not visible).
-    updateExternalProviderEntryVisibility();
+    updateComputeUI();
     return _computeAuthStatus;
   };
 
@@ -256,6 +260,7 @@
 
   function updateComputeUI() {
     updateExternalProviderEntryVisibility();
+    updateGlobalComputeAlert();
 
     // Update auth status badge if exists
     var badge = document.getElementById('maclawComputeAuthBadge');
@@ -293,6 +298,50 @@
     return !!(_computeAuthStatus && _computeAuthStatus.allow_external_providers);
   }
 
+  function isTenantAdminComputeContext() {
+    var profile = currentAdminProfile();
+    return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant');
+  }
+
+  function computeCreditsRemaining(item) {
+    if (item && typeof item.credits_remaining === 'number') return Number(item.credits_remaining);
+    return Math.max(0, Number(item && item.credits_total || 0) - Number(item && item.credits_used || 0));
+  }
+
+  function hasAvailableOfficialComputeCredits() {
+    return computeAuthorizations().some(function(item) {
+      if (String(item && item.service_group_id || '').trim() === '__external_compute_permission__') return false;
+      if (!item) return false;
+      if (typeof item.active === 'boolean' && !item.active) return false;
+      var status = String(item.status || '').toLowerCase();
+      if (status === 'expired' || status === 'exhausted' || status === 'inactive' || status === 'invalid') return false;
+      var expiresAt = item.expires_at ? new Date(item.expires_at) : null;
+      if (expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now()) return false;
+      var remaining = computeCreditsRemaining(item);
+      return Number.isFinite(remaining) && remaining > 0;
+    });
+  }
+
+  function shouldShowGlobalComputeAlert() {
+    if (!_computeAuthStatus) return false;
+    if (!isTenantAdminComputeContext()) return false;
+    if (_computeAuthStatus.authorization_error) return false;
+    return !hasComputeModuleAuthorization() && !hasAvailableOfficialComputeCredits();
+  }
+
+  function updateGlobalComputeAlert() {
+    var alert = document.getElementById('maclawComputeTopAlert');
+    if (!alert) return;
+    if (!shouldShowGlobalComputeAlert()) {
+      alert.classList.add('hidden');
+      alert.innerHTML = '';
+      return;
+    }
+    alert.classList.remove('hidden');
+    alert.innerHTML = '<span>' + esc(t('noAvailableCompute')) + '</span>'
+      + '<button type="button" onclick="openComputeStore()">' + esc(t('noAvailableComputeAction')) + '</button>';
+  }
+
   function isAuthorizationActive(item) {
     if (!item) return false;
     if (typeof item.active === 'boolean') return item.active;
@@ -300,7 +349,7 @@
     if (status === 'expired' || status === 'exhausted' || status === 'inactive' || status === 'invalid') return false;
     var expiresAt = item.expires_at ? new Date(item.expires_at) : null;
     if (expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now()) return false;
-    return Number(item.credits_remaining || 0) > 0;
+    return computeCreditsRemaining(item) > 0;
   }
 
   function formatComputeNumber(value) {
@@ -359,7 +408,7 @@
       var serviceGroupID = String(item.service_group_id || '').trim();
       var total = formatComputeNumber(item.credits_total);
       var used = formatComputeNumber(item.credits_used);
-      var remaining = formatComputeNumber(typeof item.credits_remaining === 'number' ? item.credits_remaining : Math.max(0, Number(item.credits_total || 0) - Number(item.credits_used || 0)));
+      var remaining = formatComputeNumber(computeCreditsRemaining(item));
       return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;align-items:center;padding:9px 10px;border:1px solid #e7eaf0;border-radius:10px;background:#fff">'
         + '<div style="min-width:0"><div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(authorizationTitle(item)) + '</div><div class="item-meta mono" style="font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(serviceGroupID || '-') + '</div></div>'
         + '<div style="min-width:0"><div class="item-meta" style="font-size:10px">' + esc(t('creditsRemaining')) + ' / ' + esc(t('creditsTotal')) + '</div><div class="mono" style="font-size:12px;font-weight:700;color:var(--text,var(--ink))">' + esc(remaining) + ' / ' + esc(total) + '</div></div>'
@@ -520,7 +569,7 @@
   if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange === 'function') {
     window.AdminTabRegistry.onLanguageChange(function() {
       refreshMaClawOfficialBanner();
-      updateExternalProviderEntryVisibility();
+      updateComputeUI();
     });
   }
 

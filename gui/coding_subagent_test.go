@@ -650,7 +650,8 @@ func TestExecuteCodingBashReturnsStructuredOutcome(t *testing.T) {
 	if failed.Kind != codingCommandResultExitError || failed.ExitCode == 0 {
 		t.Fatalf("failed result = %#v", failed)
 	}
-	if !strings.Contains(failed.Text, "no stdout/stderr") || !strings.Contains(failed.Text, "without output filters") {
+	if !strings.Contains(failed.Text, "no stdout/stderr") ||
+		(!strings.Contains(failed.Text, "without output filters") && !strings.Contains(failed.Text, "without pipe filters")) {
 		t.Fatalf("empty failure should include diagnostic hint, got %q", failed.Text)
 	}
 	timedOut := executeCodingBash(map[string]interface{}{
@@ -662,6 +663,80 @@ func TestExecuteCodingBashReturnsStructuredOutcome(t *testing.T) {
 	}
 	if timedOut.toolResult().Outcome != codingToolOutcomeTimeout {
 		t.Fatalf("timeout tool outcome = %q", timedOut.toolResult().Outcome)
+	}
+}
+
+func TestCodingCommandExecutionResultSucceededMatchesToolOutcome(t *testing.T) {
+	cases := []codingCommandExecutionResult{
+		{Text: "ok", Kind: codingCommandResultOK, ExitCode: 0},
+		{Text: "matched output\ncommand exited with code 1", Kind: codingCommandResultExitError, ExitCode: 1},
+		{Text: "[stderr] compiler failed\ncommand exited with code 1", Kind: codingCommandResultExitError, ExitCode: 1},
+		{Text: "command timed out after 1 seconds", Kind: codingCommandResultTimeout, ExitCode: -1},
+	}
+	for _, tc := range cases {
+		want := tc.toolResult().Outcome == codingToolOutcomeSuccess
+		if got := tc.succeeded(); got != want {
+			t.Fatalf("succeeded() = %v, want %v for %#v", got, want, tc)
+		}
+	}
+}
+
+func TestExecuteCodingBashWindowsNativeStderrWithZeroExitSucceeds(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell native stderr behavior is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `cmd /c "echo native stderr 1>&2 & exit /b 0" 2>&1`,
+	}, nil)
+
+	if result.Kind != codingCommandResultOK || result.ExitCode != 0 {
+		t.Fatalf("native stderr with zero exit should succeed, got %#v", result)
+	}
+	if !strings.Contains(result.Text, "native stderr") {
+		t.Fatalf("expected stderr text to be preserved, got %q", result.Text)
+	}
+}
+
+func TestExecuteCodingBashWindowsPipedNativeNonZeroFails(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell native pipeline behavior is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `cmd /c "echo native failed 1>&2 & exit /b 7" 2>&1 | Select-Object -First 5`,
+	}, nil)
+
+	if result.Kind != codingCommandResultExitError || result.ExitCode != 7 {
+		t.Fatalf("piped native non-zero should fail with native exit code, got %#v", result)
+	}
+}
+
+func TestExecuteCodingBashWindowsCmdletErrorFails(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell cmdlet error behavior is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `Get-Item -LiteralPath "__codex_missing_file_for_test__"`,
+	}, nil)
+
+	if result.Kind != codingCommandResultExitError || result.ExitCode == 0 {
+		t.Fatalf("cmdlet error should fail, got %#v", result)
+	}
+}
+
+func TestExecuteCodingBashWindowsPipedCmdletErrorFails(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell cmdlet pipeline behavior is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `Get-Item -LiteralPath "__codex_missing_file_for_test__" 2>&1 | Select-Object -First 5`,
+	}, nil)
+
+	if result.Kind != codingCommandResultExitError || result.ExitCode == 0 {
+		t.Fatalf("piped cmdlet error should fail, got %#v", result)
 	}
 }
 

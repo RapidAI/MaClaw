@@ -31,6 +31,14 @@ type codingCommandExecutionResult struct {
 }
 
 func (r codingCommandExecutionResult) toolResult() codingToolExecutionResult {
+	return codingToolExecutionResult{Text: r.Text, Outcome: r.toolOutcome()}
+}
+
+func (r codingCommandExecutionResult) succeeded() bool {
+	return r.toolOutcome() == codingToolOutcomeSuccess
+}
+
+func (r codingCommandExecutionResult) toolOutcome() codingToolOutcome {
 	outcome := codingToolOutcomeSuccess
 	switch r.Kind {
 	case codingCommandResultOK:
@@ -54,7 +62,7 @@ func (r codingCommandExecutionResult) toolResult() codingToolExecutionResult {
 	default:
 		outcome = codingToolOutcomeFailed
 	}
-	return codingToolExecutionResult{Text: r.Text, Outcome: outcome}
+	return outcome
 }
 
 func executeCodingBash(args map[string]interface{}, onProgress coretool.ProgressCallback) codingCommandExecutionResult {
@@ -76,29 +84,11 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 		// PowerShell 5.1 doesn't support && (only 7+ does).
 		psCommand := strings.ReplaceAll(command, " && ", " ; ")
 		shellName = "powershell"
-		// Wrap the command to ensure error information is visible when the command fails.
-		//
-		// Problem: LLMs frequently generate commands like:
-		//   dotnet test ... 2>&1 | Select-String "pattern"
-		// When the command fails and its output doesn't match the filter pattern,
-		// both stdout and stderr are empty — Go sees "no stdout/stderr".
-		//
-		// Two-layer error capture:
-		// 1. try/catch catches terminating errors (cmdlet failures with -ErrorAction Stop,
-		//    or explicit throw). Emits the exception directly to stderr via [Console]::Error
-		//    which bypasses PowerShell's formatting/pipeline (Write-Error goes through
-		//    PowerShell's error stream which can itself be swallowed by 2>&1 redirection).
-		// 2. After the command, if $LASTEXITCODE != 0 (external exe like dotnet/node/python
-		//    failed), check if Go's stderr is still empty by examining $Error — dump the
-		//    most recent error record to stderr so the LLM can see what went wrong.
-		//
-		// NOTE: $ErrorActionPreference stays 'Continue' (not 'Stop') because 'Stop' would
-		// terminate on any error record flowing through 2>&1 pipelines, breaking common
-		// patterns like `dotnet build 2>&1 | Select-String "error"`.
-		wrappedPS := fmt.Sprintf(
-			"$Error.Clear(); $ErrorActionPreference='Continue'; try { %s } catch { [Console]::Error.WriteLine(\"PowerShell exception: \" + $_.Exception.Message); exit 1 }; if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { if ($Error.Count -gt 0) { [Console]::Error.WriteLine(\"Last error: \" + $Error[0].ToString()) } else { [Console]::Error.WriteLine(\"Process exited with code $LASTEXITCODE - output was likely consumed by a pipeline filter. Run the command without pipe operators to see the actual error.\") }; exit $LASTEXITCODE }",
-			psCommand,
-		)
+		// Wrap the command so Go observes the real command result. Native
+		// tools often write progress to stderr even when they exit 0, while
+		// PowerShell cmdlet errors can be hidden by 2>&1 pipelines. The wrapper
+		// keeps stderr visible but classifies success primarily by $LASTEXITCODE.
+		wrappedPS := wrapCodingPowerShellCommand(psCommand)
 		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command",
 			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + wrappedPS}
 	} else {
@@ -165,6 +155,36 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 	}
 	output = appendCodingCommandExitStatus(output, exitCode)
 	return codingCommandExecutionResult{Text: output, Kind: codingCommandResultExitError, ExitCode: exitCode}
+}
+
+func wrapCodingPowerShellCommand(psCommand string) string {
+	return fmt.Sprintf(`$Error.Clear()
+$ErrorActionPreference='Continue'
+$global:LASTEXITCODE = 0
+try {
+	%s
+	$psSucceeded = $?
+	$nativeExit = $LASTEXITCODE
+} catch {
+	[Console]::Error.WriteLine("PowerShell exception: " + $_.Exception.Message)
+	exit 1
+}
+if ($null -ne $nativeExit -and $nativeExit -ne 0) {
+	if ($Error.Count -gt 0) {
+		[Console]::Error.WriteLine("Last error: " + $Error[0].ToString())
+	} else {
+		[Console]::Error.WriteLine("Process exited with code $nativeExit - output was likely consumed by a pipeline filter. Run the command without pipe operators to see the actual error.")
+	}
+	exit $nativeExit
+}
+if (-not $psSucceeded -and $Error.Count -gt 0) {
+	$nonNativeErrors = @($Error | Where-Object { $_.FullyQualifiedErrorId -ne 'NativeCommandError' })
+	if ($nonNativeErrors.Count -gt 0) {
+		[Console]::Error.WriteLine("PowerShell error: " + $nonNativeErrors[0].ToString())
+		exit 1
+	}
+}
+exit 0`, psCommand)
 }
 
 func resolveCodingCommandTimeout(args map[string]interface{}, command string) int {
