@@ -17,6 +17,19 @@ func (s *Service) MISInbox(ctx context.Context, p Principal, in QueryMISInboxInp
 		limit = 100
 	}
 	datasetID := strings.TrimSpace(in.DatasetID)
+	appID := strings.TrimSpace(in.AppID)
+	blueprintID := strings.TrimSpace(in.BlueprintID)
+	objectRole := strings.TrimSpace(in.ObjectRole)
+	workflowSkillID := strings.TrimSpace(in.WorkflowSkillID)
+	workflowInstanceID := strings.TrimSpace(in.WorkflowInstanceID)
+	workflowNodeID := strings.TrimSpace(in.WorkflowNodeID)
+	businessStatus := strings.TrimSpace(in.BusinessStatus)
+	resultStatus := strings.TrimSpace(in.ResultStatus)
+	lane := strings.TrimSpace(in.Lane)
+	userID := strings.TrimSpace(in.UserID)
+	if userID == "" {
+		userID = strings.TrimSpace(p.UserID)
+	}
 	typeFilter := strings.TrimSpace(in.Type)
 	statusFilter := strings.TrimSpace(in.Status)
 	if err := validateMISInboxTypeFilter(typeFilter); err != nil {
@@ -29,7 +42,7 @@ func (s *Service) MISInbox(ctx context.Context, p Principal, in QueryMISInboxInp
 	beforeID := strings.TrimSpace(in.BeforeID)
 	items := []MISInboxItem{}
 	if typeMatches(typeFilter, "approval") {
-		approvals, err := s.store.ListRecordApprovals(ctx, p.TenantID, QueryRecordApprovalsInput{DatasetID: datasetID, Status: defaultInboxStatus(statusFilter, recordApprovalStatusPending, in.IncludeOK), Limit: limit, Before: before, BeforeID: beforeID})
+		approvals, err := s.store.ListRecordApprovals(ctx, p.TenantID, QueryRecordApprovalsInput{DatasetID: datasetID, AppID: appID, BlueprintID: blueprintID, ObjectRole: objectRole, WorkflowSkillID: workflowSkillID, WorkflowInstanceID: workflowInstanceID, WorkflowNodeID: workflowNodeID, BusinessStatus: businessStatus, ResultStatus: resultStatus, Lane: lane, UserID: userID, Status: defaultInboxStatus(statusFilter, recordApprovalStatusPending, in.IncludeOK), Limit: limit, Before: before, BeforeID: beforeID})
 		if err != nil {
 			return nil, err
 		}

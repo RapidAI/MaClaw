@@ -53,7 +53,11 @@ type RecallProvider interface {
 //
 // Returns the enriched map (same map if existing is non-nil, new map otherwise).
 func PrefillFromRecall(ctx context.Context, schema *PhaseInputSchema, existing map[string]*PrefilledValue, provider RecallProvider) map[string]*PrefilledValue {
-	if schema == nil || len(schema.Fields) == 0 || provider == nil {
+	if schema == nil || provider == nil {
+		return existing
+	}
+	allFields := collectAllSchemaFields(schema)
+	if len(allFields) == 0 {
 		return existing
 	}
 
@@ -64,7 +68,7 @@ func PrefillFromRecall(ctx context.Context, schema *PhaseInputSchema, existing m
 	// Collect fields that need recall
 	schemaHasReusable := SchemaHasReusableFields(schema)
 	var needRecall []PhaseInputField
-	for _, field := range schema.Fields {
+	for _, field := range allFields {
 		if _, ok := existing[field.Name]; ok {
 			continue
 		}

@@ -554,7 +554,8 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/access/api-keys":                       {"q", "status", "enabled"},
 		"/api/v1/data/business-rules":                        {"domain", "dataset_id", "business_action_id", "severity"},
 		"/api/v1/data/relationships":                         {"dataset_id"},
-		"/api/v1/data/inbox":                                 {"dataset_id", "type", "status", "include_ok"},
+		"/api/v1/data/inbox":                                 {"dataset_id", "app_id", "blueprint_id", "object_role", "workflow_skill_id", "workflow_instance_id", "workflow_node_id", "business_status", "result_status", "lane", "user_id", "type", "status", "include_ok"},
+		"/api/v1/data/inbox/summary":                         {"dataset_id", "app_id", "blueprint_id", "object_role", "workflow_skill_id", "workflow_instance_id", "workflow_node_id", "business_status", "result_status", "lane", "user_id", "type", "status", "include_ok"},
 		"/api/v1/data/event-contracts":                       {"domain"},
 		"/api/v1/data/connectors":                            {"domain", "kind", "enabled"},
 		"/api/v1/data/connectors/health":                     {"domain", "kind", "enabled"},
@@ -565,7 +566,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/export-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/operation-plans":                       {"dataset_id", "operation", "status"},
 		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node"},
-		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "app_id", "blueprint_id", "object_role", "status", "kind", "workflow_skill_id", "workflow_instance_id", "business_status", "result_status", "assigned_to", "overdue"},
+		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "app_id", "blueprint_id", "object_role", "status", "kind", "workflow_skill_id", "workflow_instance_id", "workflow_node_id", "business_status", "result_status", "assigned_to", "overdue"},
 		"/api/v1/data/datasets/{datasetId}/schema-proposals": {"status"},
 		"/api/v1/data/datasets/{datasetId}/records":          {"q", "tag"},
 	} {
@@ -2783,6 +2784,36 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		t.Fatalf("inbox approval missing result payload metadata: %#v", inboxApproval.Metadata)
 	}
 
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/inbox?type=approval&app_id=mis.sales_order&object_role=sales_order&workflow_skill_id=approval.sales_order&workflow_instance_id=wf-so-1&workflow_node_id=submit&business_status=pending_manager&result_status=requires_input&lane=pending_my_approval&user_id=manager_1&limit=10", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("semantic inbox status=%d body=%s", w.Code, w.Body.String())
+	}
+	var semanticInbox MISInboxResult
+	if err := json.NewDecoder(w.Body).Decode(&semanticInbox); err != nil {
+		t.Fatalf("decode semantic inbox: %v", err)
+	}
+	if len(semanticInbox.Items) != 1 || semanticInbox.Items[0].ID != approval.ID || semanticInbox.Items[0].Metadata["object_role"] != "sales_order" {
+		t.Fatalf("semantic inbox should filter approval links by app/object/workflow/lane: %#v", semanticInbox)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/inbox?type=approval&app_id=mis.sales_order&object_role=invoice&workflow_node_id=submit&limit=10", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("semantic inbox miss status=%d body=%s", w.Code, w.Body.String())
+	}
+	var emptySemanticInbox MISInboxResult
+	if err := json.NewDecoder(w.Body).Decode(&emptySemanticInbox); err != nil {
+		t.Fatalf("decode empty semantic inbox: %v", err)
+	}
+	if len(emptySemanticInbox.Items) != 0 {
+		t.Fatalf("semantic inbox should exclude other object roles: %#v", emptySemanticInbox)
+	}
+
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/inbox/summary?dataset_id=sales.orders&type=approval&limit=10", nil)
 	auth(req)
 	w = httptest.NewRecorder()
@@ -2796,6 +2827,21 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	}
 	if inboxSummary.Total == 0 || inboxSummary.ByType["approval"] == 0 || inboxSummary.High == 0 || inboxSummary.Overdue == 0 {
 		t.Fatalf("unexpected inbox summary: %#v", inboxSummary)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/inbox/summary?type=approval&app_id=mis.sales_order&object_role=sales_order&workflow_node_id=submit&lane=pending_my_approval&user_id=manager_1&limit=10", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("semantic inbox summary status=%d body=%s", w.Code, w.Body.String())
+	}
+	var semanticInboxSummary MISInboxSummary
+	if err := json.NewDecoder(w.Body).Decode(&semanticInboxSummary); err != nil {
+		t.Fatalf("decode semantic inbox summary: %v", err)
+	}
+	if semanticInboxSummary.Total != 1 || semanticInboxSummary.ByType["approval"] != 1 {
+		t.Fatalf("semantic inbox summary should use approval link filters: %#v", semanticInboxSummary)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/inbox?type=approvla", nil)
@@ -5578,12 +5624,12 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 		return approval
 	}
 
-	expenseApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.expense", BlueprintID: "mis.expense.approval", ObjectRole: "expense_report", Kind: "approval", Summary: "Expense approval", WorkflowSkillID: "skill.expense.approval", WorkflowInstanceID: "wf-exp-100", AssignedTo: "user_1"})
-	if expenseApproval.AppID != "mis.expense" || expenseApproval.BlueprintID != "mis.expense.approval" || expenseApproval.ObjectRole != "expense_report" || expenseApproval.WorkflowInstanceID != "wf-exp-100" {
+	expenseApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.expense", BlueprintID: "mis.expense.approval", ObjectRole: "expense_report", Kind: "approval", Summary: "Expense approval", WorkflowSkillID: "skill.expense.approval", WorkflowInstanceID: "wf-exp-100", WorkflowNodeID: "manager_review", AssignedTo: "user_1"})
+	if expenseApproval.AppID != "mis.expense" || expenseApproval.BlueprintID != "mis.expense.approval" || expenseApproval.ObjectRole != "expense_report" || expenseApproval.WorkflowInstanceID != "wf-exp-100" || expenseApproval.WorkflowNodeID != "manager_review" {
 		t.Fatalf("approval app semantics were not persisted: %#v", expenseApproval)
 	}
 
-	travelApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.travel", BlueprintID: "mis.travel.approval", ObjectRole: "travel_request", Kind: "approval", Summary: "Travel approval", WorkflowSkillID: "skill.travel.approval", WorkflowInstanceID: "wf-travel-100", BusinessStatus: "attention", ResultStatus: "attention"})
+	travelApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.travel", BlueprintID: "mis.travel.approval", ObjectRole: "travel_request", Kind: "approval", Summary: "Travel approval", WorkflowSkillID: "skill.travel.approval", WorkflowInstanceID: "wf-travel-100", WorkflowNodeID: "attention_review", BusinessStatus: "attention", ResultStatus: "attention"})
 	if travelApproval.ID == expenseApproval.ID || travelApproval.AppID != "mis.travel" || travelApproval.ObjectRole != "travel_request" {
 		t.Fatalf("different app/object_role should create an isolated approval: expense=%#v travel=%#v", expenseApproval, travelApproval)
 	}
@@ -5606,6 +5652,34 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	}
 	if len(listed.Items) != 1 || listed.Items[0].ID != expenseApproval.ID || listed.Items[0].AppID != "mis.expense" || listed.Items[0].ObjectRole != "expense_report" {
 		t.Fatalf("unexpected semantic approval list: %#v", listed)
+	}
+
+	nodeReq := httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?app_id=mis.expense&workflow_node_id=manager_review", nil)
+	auth(nodeReq)
+	nodeW := httptest.NewRecorder()
+	server.Handler().ServeHTTP(nodeW, nodeReq)
+	if nodeW.Code != http.StatusOK {
+		t.Fatalf("workflow node filter status=%d body=%s", nodeW.Code, nodeW.Body.String())
+	}
+	var nodeFiltered ListResponse[RecordApproval]
+	if err := json.NewDecoder(nodeW.Body).Decode(&nodeFiltered); err != nil {
+		t.Fatalf("decode workflow node filter: %v", err)
+	}
+	if len(nodeFiltered.Items) != 1 || nodeFiltered.Items[0].ID != expenseApproval.ID || nodeFiltered.Items[0].WorkflowNodeID != "manager_review" {
+		t.Fatalf("workflow_node_id filter should return current-node approvals: %#v", nodeFiltered)
+	}
+	nodeReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?app_id=mis.expense&workflow_node_id=finance_review", nil)
+	auth(nodeReq)
+	nodeW = httptest.NewRecorder()
+	server.Handler().ServeHTTP(nodeW, nodeReq)
+	if nodeW.Code != http.StatusOK {
+		t.Fatalf("workflow node negative filter status=%d body=%s", nodeW.Code, nodeW.Body.String())
+	}
+	if err := json.NewDecoder(nodeW.Body).Decode(&nodeFiltered); err != nil {
+		t.Fatalf("decode workflow node negative filter: %v", err)
+	}
+	if len(nodeFiltered.Items) != 0 {
+		t.Fatalf("workflow_node_id filter should exclude other nodes: %#v", nodeFiltered)
 	}
 
 	laneReq := httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=pending_my_approval&app_id=mis.expense", nil)

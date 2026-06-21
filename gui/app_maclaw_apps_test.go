@@ -748,18 +748,15 @@ func TestPlanMaclawAppInstallBlocksInstalledInactiveRequiredDependency(t *testin
 		t.Fatalf("disabled required dependency should remain blocked after install attempt: %#v", dep)
 	}
 
-	if _, err := app.RecordMaclawAppInstall(pkg, "market"); err != nil {
-		t.Fatalf("RecordMaclawAppInstall() error = %v", err)
+	if _, err := app.RecordMaclawAppInstall(pkg, "market"); err == nil || !strings.Contains(err.Error(), "required Skill dependencies") {
+		t.Fatalf("RecordMaclawAppInstall should reject blocking dependencies, got %v", err)
 	}
 	records, err := app.ListMaclawAppInstalls(10)
 	if err != nil {
 		t.Fatalf("ListMaclawAppInstalls() error = %v", err)
 	}
-	if len(records) != 1 || records[0].HasMissingRequired || !records[0].HasBlockingDependency {
-		t.Fatalf("install record should persist blocking dependency health: %#v", records)
-	}
-	if dep := maclawAppPlanDepForTest(maclawAppInstallPlan{Dependencies: records[0].Dependencies}, "disabled-workflow"); dep == nil || dep.Health != "disabled" || dep.Action != "blocked" {
-		t.Fatalf("install record should persist dependency health snapshot: %#v", records[0].Dependencies)
+	if len(records) != 0 {
+		t.Fatalf("blocked install should not write install audit records: %#v", records)
 	}
 }
 func TestPlanMaclawAppInstallPackDedupesDependenciesAndNormalizesLegacyKind(t *testing.T) {
@@ -1213,8 +1210,11 @@ func TestRecordMaclawAppInstallPersistsNewestInstallAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordMaclawAppInstall() error = %v", err)
 	}
-	if result["app_count"] != 1 || result["package_sha"] == "" {
+	if result["app_count"] != 1 || result["package_sha"] == "" || result["has_missing_required"] != false || result["has_blocking_dependency"] != false {
 		t.Fatalf("unexpected record result: %#v", result)
+	}
+	if deps, ok := result["dependencies"].([]maclawAppInstallPlanDependency); !ok || len(deps) != 1 || !deps[0].Installed {
+		t.Fatalf("install result should expose dependency state: %#v", result["dependencies"])
 	}
 	records, err := app.ListMaclawAppInstalls(10)
 	if err != nil {
@@ -1256,7 +1256,29 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	}))
 	defer server.Close()
 
-	app := &App{testHomeDir: t.TempDir()}
+	tmpHome := t.TempDir()
+	appSkillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "expense-super-skill")
+	workflowSkillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "expense-workflow")
+	for _, dir := range []string{appSkillDir, workflowSkillDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll skill dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "skill.md"), []byte("# Skill\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile skill.md: %v", err)
+		}
+	}
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{Name: "expense-super-skill", SkillDir: appSkillDir, Status: "active"},
+		{Name: "expense-workflow", SkillDir: workflowSkillDir, Status: "active"},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
 	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "alice", Role: "data_admin"}); err != nil {
 		t.Fatalf("SaveMISDataConfig() error = %v", err)
 	}
@@ -1368,8 +1390,16 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	if !ok || resultContract["primary"] != "approval_result" {
 		t.Fatalf("registration metadata missing result contract: %#v", governance)
 	}
+	topLevelResultContract, ok := metadata["result_contract"].(map[string]interface{})
+	if !ok || topLevelResultContract["schema"] != "maclaw.app.result.v1" || topLevelResultContract["primary"] != "approval_result" || metadata["result_contract_schema"] != "maclaw.app.result.v1" || metadata["result_contract_primary"] != "approval_result" {
+		t.Fatalf("registration metadata missing top-level result contract summary: %#v", metadata)
+	}
+	resultTypes, ok := metadata["result_contract_types"].([]interface{})
+	if !ok || len(resultTypes) != 5 || resultTypes[0] != "approval_result" {
+		t.Fatalf("registration metadata missing top-level result contract types: %#v", metadata)
+	}
 	dependencies, ok := metadata["dependencies"].([]interface{})
-	if !ok || len(dependencies) != 2 || metadata["dependency_count"] != float64(2) || metadata["has_missing_required_dependency"] != true || metadata["has_blocking_dependency"] != true {
+	if !ok || len(dependencies) != 2 || metadata["dependency_count"] != float64(2) || metadata["has_missing_required_dependency"] != false || metadata["has_blocking_dependency"] != false {
 		t.Fatalf("registration metadata missing dependency snapshot: %#v", metadata)
 	}
 	dependencyByID := map[string]map[string]interface{}{}
@@ -1381,10 +1411,10 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 		id, _ := dep["id"].(string)
 		dependencyByID[id] = dep
 	}
-	if dep := dependencyByID["expense-super-skill"]; dep == nil || dep["kind"] != "runtime_skill" || dep["source"] != "hub" || dep["required"] != true || dep["action"] != "blocked" {
+	if dep := dependencyByID["expense-super-skill"]; dep == nil || dep["kind"] != "runtime_skill" || dep["source"] != "hub" || dep["required"] != true || dep["action"] != "skip" || dep["health"] != "ready" {
 		t.Fatalf("registration metadata missing appSkill dependency state: %#v", dependencyByID)
 	}
-	if dep := dependencyByID["expense-workflow"]; dep == nil || dep["kind"] != "workflow_skill" || dep["version"] != "2.0.0" || dep["source"] != "hub" || dep["required"] != true || dep["action"] != "blocked" {
+	if dep := dependencyByID["expense-workflow"]; dep == nil || dep["kind"] != "workflow_skill" || dep["version"] != "2.0.0" || dep["source"] != "hub" || dep["required"] != true || dep["action"] != "skip" || dep["health"] != "ready" {
 		t.Fatalf("registration metadata missing workflow dependency state: %#v", dependencyByID)
 	}
 }

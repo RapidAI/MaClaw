@@ -100,12 +100,15 @@ func appInstallationAuditMetadata(app AppInstallation) map[string]any {
 	if app.Source != "" {
 		metadata["source"] = app.Source
 	}
-	for _, key := range []string{"app_skill_id", "workflow_skill_ids", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "result_contract_primary", "result_contract_types", "governance_status", "governance_risk_level"} {
+	for _, key := range []string{"app_skill_id", "workflow_skill_ids", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "governance_status", "governance_risk_level"} {
 		if value, ok := app.Metadata[key]; ok {
 			metadata[key] = value
 		}
 	}
 	if resultContract := appInstallationResultContract(app.Metadata["result_contract"]); resultContract != nil {
+		if schema, _ := resultContract["schema"].(string); strings.TrimSpace(schema) != "" {
+			metadata["result_contract_schema"] = strings.TrimSpace(schema)
+		}
 		if primary, _ := resultContract["primary"].(string); strings.TrimSpace(primary) != "" {
 			metadata["result_contract_primary"] = strings.TrimSpace(primary)
 		}
@@ -123,6 +126,9 @@ func normalizeAppInstallationMetadata(metadata map[string]any, kind string) (map
 	out := cloneJSONMap(metadata)
 	if out == nil {
 		out = map[string]any{}
+	}
+	if err := normalizeAppInstallationResultContractMetadata(out); err != nil {
+		return nil, err
 	}
 	workflow := appInstallationMap(out["workflow_mapping"])
 	if workflow == nil {
@@ -166,6 +172,40 @@ func normalizeAppInstallationMetadata(metadata map[string]any, kind string) (map
 	out["workflow_mapping"] = workflow
 	out["workflow_mapping_schema"] = "maclaw.app.workflow.v1"
 	return out, nil
+}
+
+func normalizeAppInstallationResultContractMetadata(out map[string]any) error {
+	contract := appInstallationMap(out["result_contract"])
+	if contract == nil {
+		if governance := appInstallationMap(out["governance"]); governance != nil {
+			contract = appInstallationMap(governance["result_contract"])
+			if contract == nil {
+				contract = appInstallationMap(governance["resultContract"])
+			}
+		}
+	}
+	if contract == nil {
+		return nil
+	}
+	if schema := firstNonEmptyAppInstallationString(appInstallationString(contract, "schema"), "maclaw.app.result.v1"); schema != "maclaw.app.result.v1" {
+		return fmt.Errorf("%w: metadata.result_contract.schema must be maclaw.app.result.v1", ErrInvalidInput)
+	}
+	contract["schema"] = "maclaw.app.result.v1"
+	if primary := firstNonEmptyAppInstallationString(appInstallationString(contract, "primary"), appInstallationString(out, "result_contract_primary")); primary != "" {
+		contract["primary"] = primary
+		out["result_contract_primary"] = primary
+	}
+	if types := appInstallationStringList(contract["types"]); len(types) > 0 {
+		contract["types"] = types
+		out["result_contract_types"] = types
+	}
+	if delivery := firstNonEmptyAppInstallationString(appInstallationString(contract, "delivery"), appInstallationString(out, "result_contract_delivery")); delivery != "" {
+		contract["delivery"] = delivery
+		out["result_contract_delivery"] = delivery
+	}
+	out["result_contract"] = contract
+	out["result_contract_schema"] = "maclaw.app.result.v1"
+	return nil
 }
 
 func appInstallationMap(value any) map[string]any {

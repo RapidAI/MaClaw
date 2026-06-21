@@ -74,7 +74,7 @@ func TestBuildResumeParseSystemPrompt_SkipsNoPrefillFields(t *testing.T) {
 			{Name: "institution", Label: "单位", Type: "text"},
 		},
 	}
-	prompt := buildResumeParseSystemPrompt(schema)
+	prompt := buildResumeParseSystemPrompt(collectAllSchemaFields(schema))
 
 	if !contains(prompt, "name") {
 		t.Error("prompt should include 'name' field")
@@ -242,4 +242,171 @@ func TestAcademicPhaseIDIndex_NoPrefixCollisions(t *testing.T) {
 // helper
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
+}
+
+// --- Tests for Variant-based schema (academic templates) ---
+
+func TestCollectAllSchemaFields_TopLevelOnly(t *testing.T) {
+	schema := &PhaseInputSchema{
+		Fields: []PhaseInputField{
+			{Name: "name", Label: "姓名", Type: "text"},
+			{Name: "institution", Label: "单位", Type: "text"},
+		},
+	}
+	fields := collectAllSchemaFields(schema)
+	if len(fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(fields))
+	}
+}
+
+func TestCollectAllSchemaFields_VariantOnly(t *testing.T) {
+	// Simulates academic template structure: top-level Fields is empty,
+	// actual fields are inside Variants.
+	schema := &PhaseInputSchema{
+		Fields: []PhaseInputField{}, // empty!
+		Variants: []PhaseInputVariant{
+			{ID: "resume_mode", Fields: []PhaseInputField{
+				{Name: "resume_file", Label: "简历文件", Type: "file"},
+			}},
+			{ID: "manual_mode", Fields: []PhaseInputField{
+				{Name: "name", Label: "姓名", Type: "text"},
+				{Name: "institution", Label: "依托单位", Type: "text"},
+				{Name: "gender", Label: "性别", Type: "select", Options: []PhaseInputOption{
+					{Label: "男", Value: "男"}, {Label: "女", Value: "女"},
+				}},
+			}},
+		},
+	}
+	fields := collectAllSchemaFields(schema)
+	// Should include: resume_file + name + institution + gender = 4
+	if len(fields) != 4 {
+		t.Fatalf("expected 4 fields from variants, got %d", len(fields))
+	}
+	// Verify names
+	names := make(map[string]bool)
+	for _, f := range fields {
+		names[f.Name] = true
+	}
+	for _, expected := range []string{"resume_file", "name", "institution", "gender"} {
+		if !names[expected] {
+			t.Errorf("expected field %q in result", expected)
+		}
+	}
+}
+
+func TestCollectAllSchemaFields_DeduplicatesByName(t *testing.T) {
+	schema := &PhaseInputSchema{
+		Fields: []PhaseInputField{
+			{Name: "name", Label: "姓名 (top-level)", Type: "text"},
+		},
+		Variants: []PhaseInputVariant{
+			{ID: "v1", Fields: []PhaseInputField{
+				{Name: "name", Label: "姓名 (variant)", Type: "text"}, // duplicate
+				{Name: "age", Label: "年龄", Type: "text"},
+			}},
+		},
+	}
+	fields := collectAllSchemaFields(schema)
+	if len(fields) != 2 { // name (first occurrence) + age
+		t.Fatalf("expected 2 deduped fields, got %d", len(fields))
+	}
+	// First occurrence wins — top-level label
+	if fields[0].Label != "姓名 (top-level)" {
+		t.Errorf("expected top-level label to win, got %q", fields[0].Label)
+	}
+}
+
+func TestCollectAllSchemaFields_NilAndEmpty(t *testing.T) {
+	if got := collectAllSchemaFields(nil); got != nil {
+		t.Errorf("nil schema should return nil, got %v", got)
+	}
+	empty := &PhaseInputSchema{}
+	if got := collectAllSchemaFields(empty); got != nil {
+		t.Errorf("empty schema should return nil, got %v", got)
+	}
+}
+
+func TestBuildResumeParseSystemPrompt_VariantSchema_SkipsFileFields(t *testing.T) {
+	// Simulates the exact academic template structure that caused the original bug
+	schema := &PhaseInputSchema{
+		Fields: []PhaseInputField{}, // empty top-level
+		Variants: []PhaseInputVariant{
+			{ID: "resume_mode", Fields: []PhaseInputField{
+				{Name: "resume_file", Label: "简历文件", Type: "file"},
+			}},
+			{ID: "manual_mode", Fields: []PhaseInputField{
+				{Name: "name", Label: "姓名", Type: "text"},
+				{Name: "h_index", Label: "H指数", Type: "text"},
+			}},
+		},
+	}
+	allFields := collectAllSchemaFields(schema)
+	prompt := buildResumeParseSystemPrompt(allFields)
+
+	if !contains(prompt, "name") {
+		t.Error("prompt should include 'name' field from manual_mode variant")
+	}
+	if !contains(prompt, "h_index") {
+		t.Error("prompt should include 'h_index' field from manual_mode variant")
+	}
+	if contains(prompt, "resume_file") {
+		t.Error("prompt should NOT include 'resume_file' (file type field)")
+	}
+}
+
+func TestSchemaHasReusableFields_DetectsInVariants(t *testing.T) {
+	// Reusable fields are inside variants, not at top level
+	schema := &PhaseInputSchema{
+		Fields: []PhaseInputField{}, // empty top-level
+		Variants: []PhaseInputVariant{
+			{ID: "manual_mode", Fields: []PhaseInputField{
+				{Name: "name", Label: "姓名", Type: "text", Reusable: true},
+				{Name: "project_title", Label: "项目名称", Type: "text", Reusable: false},
+			}},
+		},
+	}
+	if !SchemaHasReusableFields(schema) {
+		t.Error("should detect Reusable=true in variant fields")
+	}
+}
+
+func TestResumeParseResultToPrefilled_AcceptsVariantFields(t *testing.T) {
+	// Schema has fields only in variants — prefill should still work
+	schema := &PhaseInputSchema{
+		Fields: []PhaseInputField{}, // empty
+		Variants: []PhaseInputVariant{
+			{ID: "manual_mode", Fields: []PhaseInputField{
+				{Name: "name", Label: "姓名", Type: "text"},
+				{Name: "institution", Label: "单位", Type: "text"},
+			}},
+		},
+	}
+	result := &ResumeParseResult{
+		Fields:       map[string]interface{}{"name": "张三", "institution": "北大"},
+		Confidence:   map[string]float64{},
+		SourceQuotes: map[string]string{},
+	}
+	prefilled := ResumeParseResultToPrefilled(result, schema)
+	if prefilled == nil {
+		t.Fatal("expected non-nil prefilled map")
+	}
+	if _, ok := prefilled["name"]; !ok {
+		t.Error("expected 'name' in prefilled (from variant)")
+	}
+	if _, ok := prefilled["institution"]; !ok {
+		t.Error("expected 'institution' in prefilled (from variant)")
+	}
+}
+
+func TestPhaseInputSchema_AllFields_Method(t *testing.T) {
+	schema := &PhaseInputSchema{
+		Fields: []PhaseInputField{{Name: "a"}},
+		Variants: []PhaseInputVariant{
+			{ID: "v1", Fields: []PhaseInputField{{Name: "b"}, {Name: "c"}}},
+		},
+	}
+	all := schema.AllFields()
+	if len(all) != 3 {
+		t.Fatalf("expected 3 fields from AllFields(), got %d", len(all))
+	}
 }

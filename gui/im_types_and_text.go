@@ -51,6 +51,7 @@ type IMAgentResponse struct {
 	Error                               string                        `json:"error,omitempty"`
 	ResponseSource                      string                        `json:"response_source,omitempty"`
 	Deferred                            bool                          `json:"deferred,omitempty"`
+	KeepPanel                           bool                          `json:"keep_panel,omitempty"` // when true, frontend should NOT dismiss the AG view panel after successful submit
 	ConfirmedResume                     bool                          `json:"confirmed_resume,omitempty"`
 	HardExit                            bool                          `json:"-"` // set when agent loop exits due to consecutive empty responses; suppresses doc capture
 	JobID                               string                        `json:"job_id,omitempty"`

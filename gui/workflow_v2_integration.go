@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -841,6 +840,103 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 	log.Printf("[workflow-v2] emitted AG UI form: phase=%s fields=%d variants=%d", phase.ID, len(schema.Fields), len(schema.Variants))
 }
 
+// emitWorkflowV2FormWithPrefill re-emits the AG UI form in manual_mode with
+// pre-filled values from resume parsing. The form is switched to manual_mode
+// so all fields are visible, and extracted values are set as default values.
+// The user reviews, fills any gaps (e.g. missing required fields), then submits.
+func (h *IMMessageHandler) emitWorkflowV2FormWithPrefill(userID, phaseID string, schema *v2.PhaseInputSchema, prefilled map[string]*v2.PrefilledValue) {
+	if h == nil || h.app == nil || schema == nil {
+		return
+	}
+
+	wf := h.getWorkflowV2()
+	if wf == nil {
+		return
+	}
+	state := wf.machine.GetActive(userID)
+	workflowID := ""
+	if state != nil {
+		workflowID = state.ID
+	}
+
+	// Find the manual_mode variant
+	var manualVariant *v2.PhaseInputVariant
+	for i := range schema.Variants {
+		if schema.Variants[i].ID == "manual_mode" {
+			manualVariant = &schema.Variants[i]
+			break
+		}
+	}
+	if manualVariant == nil {
+		log.Printf("[workflow-v2] emitWorkflowV2FormWithPrefill: no manual_mode variant found")
+		return
+	}
+
+	// Build the form fields from manual_mode variant with prefilled values injected
+	fields := make([]map[string]interface{}, 0, len(manualVariant.Fields)+3)
+	for _, f := range manualVariant.Fields {
+		field := map[string]interface{}{
+			"name":  f.Name,
+			"label": f.Label,
+			"type":  f.Type,
+		}
+		if f.Required {
+			field["required"] = true
+		}
+		if f.Description != "" {
+			field["description"] = f.Description
+		}
+		if f.Placeholder != "" {
+			field["placeholder"] = f.Placeholder
+		}
+		if len(f.Options) > 0 {
+			opts := make([]map[string]string, len(f.Options))
+			for i, o := range f.Options {
+				opts[i] = map[string]string{"label": o.Label, "value": o.Value}
+			}
+			field["options"] = opts
+		}
+		// Inject prefilled value from resume extraction
+		if pv, ok := prefilled[f.Name]; ok && pv != nil && pv.Value != nil {
+			field["value"] = pv.Value
+			field["prefill_source"] = pv.Source
+			if pv.SourceDetail != "" {
+				field["prefill_detail"] = pv.SourceDetail
+			}
+		} else if f.Default != nil {
+			field["value"] = f.Default
+		}
+		fields = append(fields, field)
+	}
+
+	// Hidden routing fields — force manual_mode
+	fields = append(fields, map[string]interface{}{"name": "_workflow_phase", "type": "hidden", "value": phaseID})
+	fields = append(fields, map[string]interface{}{"name": "_workflow_user_id", "type": "hidden", "value": userID})
+	fields = append(fields, map[string]interface{}{"name": "_workflow_id", "type": "hidden", "value": workflowID})
+	fields = append(fields, map[string]interface{}{"name": "_agent_view_variant", "type": "hidden", "value": "manual_mode"})
+
+	viewID := "workflow:form:" + phaseID
+	description := fmt.Sprintf("✅ 已从简历中提取 %d 个字段（绿色标记）。请核对信息，补充未提取到的字段后提交。", len(prefilled))
+
+	view := map[string]interface{}{
+		"type":        "form",
+		"id":          viewID,
+		"title":       schema.Title,
+		"description": description,
+		"fields":      fields,
+		"submitLabel": "确认提交",
+		"meta": map[string]interface{}{
+			"source":       "workflow_v2.resume_prefill",
+			"phase_id":     phaseID,
+			"resume_mode":  true,
+			"prefill_count": len(prefilled),
+		},
+	}
+	// No variants — we force manual_mode as a flat form for user review
+	h.app.emitAgentView(view)
+	log.Printf("[workflow-v2] re-emitted form with %d prefilled fields for user review: phase=%s", len(prefilled), phaseID)
+}
+
 // handleWorkflowV2FormSubmit processes the user's AG UI form submission for a
 // workflow v2 phase. It stores the form data in the state machine, dismisses
 // the form panel, and auto-triggers phase execution via an async message
@@ -867,58 +963,77 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 
 	// --- Resume mode handling ---
 	// If user selected "resume_mode" variant and provided a file path,
-	// parse the resume and replace cleanData with extracted fields.
+	// parse the resume and RE-EMIT the form in manual_mode with pre-filled values.
+	// The user reviews extracted fields, fills any gaps, then submits again.
 	if activeVariant, _ := cleanData["_agent_view_variant"].(string); activeVariant == "resume_mode" {
 		resumePath, _ := cleanData["resume_file"].(string)
 		if resumePath == "" {
 			return &IMAgentResponse{Text: "请选择简历文件", Error: "resume_file is empty"}
 		}
 
-		// Find the manual_mode variant's field schema for extraction targets
+		// Get the phase schema for field extraction
 		state := wf.machine.GetActive(userID)
-		var manualSchema *v2.PhaseInputSchema
+		var phaseSchema *v2.PhaseInputSchema
 		if state != nil {
-			if phase := state.ActivePhase(); phase != nil && phase.InputSchema != nil {
-				// Build a synthetic schema from the manual_mode variant's fields
-				for _, v := range phase.InputSchema.Variants {
-					if v.ID == "manual_mode" {
-						manualSchema = &v2.PhaseInputSchema{
-							Title:  phase.InputSchema.Title,
-							Fields: v.Fields,
-						}
-						break
-					}
-				}
+			if phase := state.ActivePhase(); phase != nil {
+				phaseSchema = phase.InputSchema
 			}
 		}
-		if manualSchema == nil {
-			return &IMAgentResponse{Text: "工作流配置错误：找不到手动填写字段定义", Error: "manual_mode variant not found"}
+		if phaseSchema == nil || len(phaseSchema.Variants) == 0 {
+			return &IMAgentResponse{Text: "工作流配置错误：找不到表单字段定义", Error: "no input schema with variants"}
+		}
+
+		// Extract text from resume file
+		resumeText, err := extractTextFromFile(resumePath)
+		if err != nil {
+			return &IMAgentResponse{Text: fmt.Sprintf("读取简历文件失败: %v", err), Error: err.Error()}
+		}
+		resumeText = sanitizeExtractedText(resumeText)
+		if strings.TrimSpace(resumeText) == "" {
+			return &IMAgentResponse{Text: "简历文件内容为空", Error: "empty resume text"}
 		}
 
 		// Parse resume using LLM
-		parsed := h.app.ParseResumeForWorkflowForm(resumePath, phaseID)
-		var parseResp struct {
-			Error string                       `json:"error,omitempty"`
-			Data  map[string]*v2.PrefilledValue `json:"data,omitempty"`
-		}
-		if err := json.Unmarshal([]byte(parsed), &parseResp); err != nil || parseResp.Error != "" {
-			errMsg := "简历解析失败"
-			if parseResp.Error != "" {
-				errMsg = parseResp.Error
-			}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		caller := &appResumeLLMCaller{app: h.app}
+		result, err := v2.ParseResumeForSchema(ctx, v2.ResumeParseRequest{
+			ResumeText: resumeText,
+			Schema:     phaseSchema,
+		}, caller)
+		if err != nil {
+			errMsg := "简历解析失败: " + err.Error()
+			log.Printf("[workflow-v2] resume parse failed: user=%s phase=%s err=%v", userID, phaseID, err)
 			return &IMAgentResponse{Text: errMsg, Error: errMsg}
 		}
 
-		// Replace cleanData with extracted values (switch to manual_mode's field space)
-		cleanData = make(map[string]interface{}, len(parseResp.Data))
-		cleanData["_agent_view_variant"] = "manual_mode" // normalize to manual_mode for BuildPhasePrompt
-		for name, pv := range parseResp.Data {
-			if pv != nil && pv.Value != nil {
-				cleanData[name] = pv.Value
-			}
+		prefilled := v2.ResumeParseResultToPrefilled(result, phaseSchema)
+		if len(prefilled) == 0 {
+			return &IMAgentResponse{Text: "未能从简历中提取到有效信息，请切换到手动填写模式", Error: "no fields extracted"}
 		}
-		log.Printf("[workflow-v2] resume_mode: parsed %d fields from %s for phase=%s",
-			len(cleanData)-1, resumePath, phaseID)
+
+		log.Printf("[workflow-v2] resume_mode: extracted %d fields, re-emitting form in manual_mode for user review",
+			len(prefilled))
+
+		// Sediment to memory asynchronously for future recall
+		go func() {
+			formData := make(map[string]interface{}, len(prefilled))
+			for name, pv := range prefilled {
+				formData[name] = pv.Value
+			}
+			activeState := wf.machine.GetActive(userID)
+			h.sedimentFormDataToMemory(userID, phaseID, formData, activeState)
+		}()
+
+		// Re-emit the form in manual_mode with pre-filled values from resume.
+		// The user reviews extracted fields, fills any missing required fields, then submits again.
+		h.emitWorkflowV2FormWithPrefill(userID, phaseID, phaseSchema, prefilled)
+
+		return &IMAgentResponse{
+			Text:      fmt.Sprintf("✅ 已从简历中提取 %d 个字段，请在右侧面板核对信息并补充未提取到的字段后提交。", len(prefilled)),
+			KeepPanel: true, // prevent frontend from auto-dismissing the AG view panel
+		}
 	}
 
 	if err := wf.machine.SubmitForm(userID, cleanData); err != nil {

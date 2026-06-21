@@ -4372,6 +4372,22 @@
     white-space: nowrap;
 }
 
+.apps-approval-detail .apps-result-contract {
+    padding: 9px;
+    gap: 7px;
+}
+
+.apps-approval-detail .apps-result-contract__summary,
+.apps-approval-detail .apps-result-contract__decisions {
+    grid-template-columns: minmax(74px, auto) minmax(0, 1fr);
+}
+
+.apps-approval-detail .apps-result-contract__chips span,
+.apps-approval-detail .apps-result-contract__delivery span {
+    min-height: 22px;
+    font-size: 0.64rem;
+}
+
 @media (max-width: 980px) {
     .apps-page {
         grid-template-columns: 1fr;

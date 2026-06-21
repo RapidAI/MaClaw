@@ -8,6 +8,8 @@ github.com/VantageDataChat/GoPPT v0.0.0-20260222023045-cf8c7d78702c h1:G0VZsxZgN
 github.com/VantageDataChat/GoPPT v0.0.0-20260222023045-cf8c7d78702c/go.mod h1:clmfETR4bGOcP22SXTZ9wqwIalTGqnea4rmTiVmkppk=
 github.com/Vantagics/LegacyOfficeReader v0.0.0-20260227214529-f028c77dd3e8 h1:zdyqOp75QjKV8kNQ2ybbV/CtWNYuWKDoYcbOwvQtuE4=
 github.com/Vantagics/LegacyOfficeReader v0.0.0-20260227214529-f028c77dd3e8/go.mod h1:ME9pqIGf+547L4aE4YTZzwmhsij+5K9dR+k84OO6WSs=
+github.com/Vantagics/LegacyOfficeReader v0.0.0-20260621074012-a324c1dbb18b h1:YACDPb68/yQ/txav7ZPLCu/sW1sIcdGtMoJM74D4rOM=
+github.com/Vantagics/LegacyOfficeReader v0.0.0-20260621074012-a324c1dbb18b/go.mod h1:ME9pqIGf+547L4aE4YTZzwmhsij+5K9dR+k84OO6WSs=
 github.com/anthropics/anthropic-sdk-go v1.50.1 h1:XTd1RkdeHCPusPpzcBY5RIWj/WW6ZktjftxrHvQBJfU=
 github.com/anthropics/anthropic-sdk-go v1.50.1/go.mod h1:3EfIfmFqxH6rbiLcIP4tPFyXL/IHakx2wDG4OU+TIEI=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=

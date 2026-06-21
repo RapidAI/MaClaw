@@ -77,6 +77,7 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 		"object_role":          "expense_report",
 		"workflow_skill_id":    "expense-approval-workflow",
 		"approval_instance_id": "wf-inst-1",
+		"workflow_node_id":     "manager_review",
 		"business_status":      "approval_pending",
 		"result_status":        "pending",
 	})
@@ -101,8 +102,26 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 		t.Fatalf("review_record_approval output = %s", reviewOut)
 	}
 
-	if len(captured) != 3 {
-		t.Fatalf("captured %d requests, want 3: %#v", len(captured), captured)
+	inboxOut := app.executeMISDataTool(map[string]interface{}{
+		"action":               "get_inbox",
+		"type":                 "approval",
+		"app_id":               "mis.expense",
+		"blueprint_id":         "mis.expense.approval",
+		"object_role":          "expense_report",
+		"workflow_skill_id":    "expense-approval-workflow",
+		"approval_instance_id": "wf-inst-1",
+		"workflow_node_id":     "manager_review",
+		"business_status":      "approval_pending",
+		"result_status":        "pending",
+		"lane":                 "pending_my_approval",
+		"actor":                "manager_1",
+	})
+	if !strings.Contains(inboxOut, `"ok": true`) {
+		t.Fatalf("get_inbox output = %s", inboxOut)
+	}
+
+	if len(captured) != 4 {
+		t.Fatalf("captured %d requests, want 4: %#v", len(captured), captured)
 	}
 	create := captured[0]
 	if create.Method != http.MethodPost || create.Path != "/api/v1/data/datasets/finance.expenses/records/exp-1/approvals" {
@@ -147,6 +166,7 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 		"object_role=expense_report",
 		"workflow_skill_id=expense-approval-workflow",
 		"workflow_instance_id=wf-inst-1",
+		"workflow_node_id=manager_review",
 		"business_status=approval_pending",
 		"result_status=pending",
 	} {
@@ -172,6 +192,28 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 	}
 	if review.Body["result_payload"] == nil || review.Body["outputs"] == nil || review.Body["artifacts"] == nil {
 		t.Fatalf("review body should keep result package: %#v", review.Body)
+	}
+
+	inbox := captured[3]
+	if inbox.Method != http.MethodGet || inbox.Path != "/api/v1/data/inbox" {
+		t.Fatalf("unexpected inbox request: %#v", inbox)
+	}
+	for _, want := range []string{
+		"type=approval",
+		"app_id=mis.expense",
+		"blueprint_id=mis.expense.approval",
+		"object_role=expense_report",
+		"workflow_skill_id=expense-approval-workflow",
+		"workflow_instance_id=wf-inst-1",
+		"workflow_node_id=manager_review",
+		"business_status=approval_pending",
+		"result_status=pending",
+		"lane=pending_my_approval",
+		"user_id=manager_1",
+	} {
+		if !strings.Contains(inbox.Query, want) {
+			t.Fatalf("inbox query %q missing %q", inbox.Query, want)
+		}
 	}
 }
 
@@ -222,6 +264,7 @@ func TestMISDataApprovalSemanticActions(t *testing.T) {
 			"dataset_id":           "finance.expenses",
 			"record_id":            "exp-2",
 			"workflow_instance_id": "appr-2",
+			"workflow_node_id":     "manager_review",
 		},
 		{
 			"action":      "mis.approval.get",
@@ -260,7 +303,7 @@ func TestMISDataApprovalSemanticActions(t *testing.T) {
 	if got := strings.TrimSpace(asTestString(captured[0].Body["workflow_version"])); got != "2.0.0" {
 		t.Fatalf("semantic start workflow_version = %q; body=%#v", got, captured[0].Body)
 	}
-	if captured[1].Method != http.MethodGet || captured[1].Path != "/api/v1/data/approvals" || !strings.Contains(captured[1].Query, "record_id=exp-2") || !strings.Contains(captured[1].Query, "workflow_instance_id=appr-2") {
+	if captured[1].Method != http.MethodGet || captured[1].Path != "/api/v1/data/approvals" || !strings.Contains(captured[1].Query, "record_id=exp-2") || !strings.Contains(captured[1].Query, "workflow_instance_id=appr-2") || !strings.Contains(captured[1].Query, "workflow_node_id=manager_review") {
 		t.Fatalf("unexpected semantic list request: %#v", captured[1])
 	}
 	if captured[2].Method != http.MethodGet || captured[2].Path != "/api/v1/data/approvals/approval-2" {
@@ -279,6 +322,52 @@ func TestMISDataApprovalSemanticActions(t *testing.T) {
 		t.Fatalf("semantic sync reason = %q; body=%#v", got, captured[4].Body)
 	}
 }
+func TestMISDataApprovalGetUsesBusinessSemanticQuery(t *testing.T) {
+	type capturedRequest struct {
+		Method string
+		Path   string
+		Query  string
+	}
+	captured := []capturedRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = append(captured, capturedRequest{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"approval-3","record_id":"exp-3","workflow_instance_id":"appr-3"}],"limit":1}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{
+		Enabled:  true,
+		Endpoint: server.URL,
+		Token:    "test-token",
+		TenantID: "tenant-1",
+		UserID:   "alice",
+		Role:     "approver",
+	}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	out := app.executeMISDataTool(map[string]interface{}{
+		"action":               "mis.approval.get",
+		"app_id":               "mis.expense",
+		"object_role":          "expense_report",
+		"record_id":            "exp-3",
+		"approval_workflow_id": "expense_approval",
+		"approval_instance_id": "appr-3",
+	})
+	if !strings.Contains(out, "approval-3") {
+		t.Fatalf("mis.approval.get semantic output = %s", out)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("captured %d requests, want 1: %#v", len(captured), captured)
+	}
+	got := captured[0]
+	if got.Method != http.MethodGet || got.Path != "/api/v1/data/approvals" || !strings.Contains(got.Query, "app_id=mis.expense") || !strings.Contains(got.Query, "object_role=expense_report") || !strings.Contains(got.Query, "record_id=exp-3") || !strings.Contains(got.Query, "workflow_skill_id=expense_approval") || !strings.Contains(got.Query, "workflow_instance_id=appr-3") || !strings.Contains(got.Query, "limit=1") {
+		t.Fatalf("unexpected semantic get request: %#v", got)
+	}
+}
+
 func TestMISDataApprovalDocumentedListAliases(t *testing.T) {
 	type capturedRequest struct {
 		Method string
@@ -320,15 +409,27 @@ func TestMISDataApprovalDocumentedListAliases(t *testing.T) {
 	if !strings.Contains(myPendingOut, `"ok": true`) {
 		t.Fatalf("mis.approval.my_pending output = %s", myPendingOut)
 	}
+	for _, action := range []string{"mis.approval.my_requests", "mis.approval.pending_my_approval", "mis.approval.handled", "mis.approval.attention"} {
+		out := app.executeMISDataTool(map[string]interface{}{"action": action})
+		if !strings.Contains(out, `"ok": true`) {
+			t.Fatalf("%s output = %s", action, out)
+		}
+	}
 
-	if len(captured) != 2 {
-		t.Fatalf("captured %d requests, want 2: %#v", len(captured), captured)
+	if len(captured) != 6 {
+		t.Fatalf("captured %d requests, want 6: %#v", len(captured), captured)
 	}
 	if captured[0].Method != http.MethodGet || captured[0].Path != "/api/v1/data/approvals" || !strings.Contains(captured[0].Query, "dataset_id=finance.expenses") || !strings.Contains(captured[0].Query, "record_id=exp-3") {
 		t.Fatalf("unexpected list_by_record request: %#v", captured[0])
 	}
 	if captured[1].Method != http.MethodGet || captured[1].Path != "/api/v1/data/approvals" || !strings.Contains(captured[1].Query, "assigned_to=alice") || !strings.Contains(captured[1].Query, "status=pending") || !strings.Contains(captured[1].Query, "limit=3") {
 		t.Fatalf("unexpected my_pending request: %#v", captured[1])
+	}
+	for i, wantLane := range []string{"lane=my_requests", "lane=pending_my_approval", "lane=handled", "lane=attention"} {
+		got := captured[i+2]
+		if got.Method != http.MethodGet || got.Path != "/api/v1/data/approvals" || !strings.Contains(got.Query, wantLane) {
+			t.Fatalf("unexpected lane alias request %d: got=%#v want %s", i, got, wantLane)
+		}
 	}
 }
 

@@ -4382,7 +4382,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             const existingPlanBlocked = !!runtimeDependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(runtimeDependencyPlan, [app.id]);
             if (existingPlanBlocked) {
                 setRuntimeDependencyCheckState('blocked');
-                setValidationMessage(text.missingRequiredDependency);
+                setValidationMessage(backendDependencyUnavailableMessage(app, runtimeDependencyPlan, text, lang));
                 setRunState('error');
                 return;
             }
@@ -4392,7 +4392,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 setRuntimeDependencyPlan(dependencyPlan || null);
                 if (dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, [app.id])) {
                     setRuntimeDependencyCheckState('blocked');
-                    setValidationMessage(text.missingRequiredDependency);
+                    setValidationMessage(backendDependencyUnavailableMessage(app, dependencyPlan, text, lang));
                     setRunState('error');
                     return;
                 }
@@ -4648,7 +4648,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             const dependencyInstallPlan = await InstallMaclawAppDependencies(JSON.stringify(appToManifest(app)));
             setRuntimeDependencyPlan(dependencyInstallPlan || null);
             if (dependencyInstallPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyInstallPlan, [app.id])) {
-                setValidationMessage(text.missingRequiredDependency);
+                setValidationMessage(backendDependencyUnavailableMessage(app, dependencyInstallPlan, text, lang));
                 setRunState('error');
                 setDependencyRepairState('idle');
                 return;
@@ -4755,6 +4755,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const runtimeDependencyBlocked = !!app && (!!runtimeDependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(runtimeDependencyPlan, [app.id]));
     const runtimeDependencyChecking = runtimeDependencyCheckState === 'checking' || dependencyRepairState === 'installing';
     const runtimeDependencyReady = runtimeDependencyCheckState === 'ready' && visibleRuntimeDependencyDetails.length > 0 && !runtimeDependencyBlocked;
+    const runtimeDependencyMessage = backendDependencyUnavailableMessage(app, runtimeDependencyPlan, text, lang);
     const showRuntimeDependencyDetails = visibleRuntimeDependencyDetails.length > 0 && (runState === 'error' || dependencyRepairState === 'installing' || runtimeDependencyBlocked || runtimeDependencyReady);
     const canInstallRuntimeDependencies = !!app && appNeedsRuntimeDependencyCheck(app) && (runtimeDependencyBlocked || dependencyRepairState === 'installing' || validationMessage === text.missingRequiredDependency);
     const runDisabled = runState === 'running' || dependencyRepairState === 'installing';
@@ -4769,7 +4770,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     : runtimeDependencyChecking
                         ? text.dependencyPlanLoading
                         : runtimeDependencyBlocked
-                            ? text.missingRequiredDependency
+                            ? runtimeDependencyMessage
                             : runtimeDependencyReady
                                 ? text.dependencyReady
                                 : text.readyOutput;
@@ -5045,6 +5046,8 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
         });
     }, [instances, appFilter, statusFilter, query, appNameById]);
     const selected = filteredInstances.find((item) => item.id === selectedInstanceId) || filteredInstances[0];
+    const selectedApp = selected?.appID ? apps.find((item) => item.id === selected.appID) : undefined;
+    const selectedResultContract = selectedApp ? appResultContractForManifest(selectedApp) : undefined;
     const lanes = approvalLanes(text);
     const countForLane = (key: ApprovalLaneFilter) => key === 'all'
         ? instances.length
@@ -5138,7 +5141,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
                                     </button>
                                 ))}
                             </div>
-                            <ApprovalDetail instance={selected} lang={lang} text={text} onDecision={updateApprovalInstanceDecision} />
+                            <ApprovalDetail instance={selected} resultContract={selectedResultContract} lang={lang} text={text} onDecision={updateApprovalInstanceDecision} />
                         </div>
                     )}
                 </div>
@@ -5147,7 +5150,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
     );
 };
 
-const ApprovalDetail = ({ instance, lang, text, onDecision }: { instance?: ApprovalInstanceView; lang?: string; text: typeof labels.zh; onDecision: (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => void | Promise<void> }) => {
+const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision }: { instance?: ApprovalInstanceView; resultContract?: AppResultContract; lang?: string; text: typeof labels.zh; onDecision: (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => void | Promise<void> }) => {
     const selectedOutputs = instance?.outputs || [];
     const selectedArtifacts = instance?.artifacts || [];
     const selectedPayloadEntries = instance?.resultPayload ? Object.entries(instance.resultPayload).filter(([, value]) => formatApprovalResultValue(value)) : [];
@@ -5164,6 +5167,7 @@ const ApprovalDetail = ({ instance, lang, text, onDecision }: { instance?: Appro
                         <div><dt>{text.remoteApprovalLabel}</dt><dd>{instance.approvalID || '-'}</dd></div><div><dt>{text.businessStatusLabel}</dt><dd>{instance.businessStatus || '-'}</dd></div><div><dt>{text.resultStatusLabel}</dt><dd>{instance.resultStatus || approvalStatusLabel(instance.status, lang)}</dd></div>
                     </dl>
                     {instance.detailURL && <div className="apps-approval-detail__links"><a className="apps-link-button" href={instance.detailURL} target="_blank" rel="noreferrer">{text.viewFullWorkflow}</a></div>}
+                    {resultContract && <ResultContractPreview contract={resultContract} lang={lang} />}
                     {hasResultPackage && (
                         <section className="apps-approval-results" aria-label={text.approvalResultPackage}>
                             <div className="apps-approval-results__head"><strong>{text.approvalResultPackage}</strong><span>{selectedOutputs.length + selectedArtifacts.length + selectedPayloadEntries.length}</span></div>
@@ -5225,6 +5229,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
     const instances = backendInstances && backendInstances.length > 0 ? backendInstances : fallbackInstances;
     const visibleInstances = lane === 'all' ? instances : lane === 'handled' ? instances.filter((item) => item.status === 'approved' || item.status === 'rejected') : instances.filter((item) => item.lane === lane);
     const selected = visibleInstances.find((item) => item.id === selectedInstanceId) || visibleInstances[0];
+    const resultContract = appResultContractForManifest(app);
     const lanes = [
         { key: 'my_requests', label: text.myRequests },
         { key: 'pending_my_approval', label: text.pendingMyApproval },
@@ -5293,6 +5298,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                     <a className="apps-link-button" href={selected.detailURL} target="_blank" rel="noreferrer">{text.viewFullWorkflow}</a>
                                 </div>
                             )}
+                            <ResultContractPreview contract={resultContract} lang={lang} />
                             {hasResultPackage && (
                                 <section className="apps-approval-results" aria-label={text.approvalResultPackage}>
                                     <div className="apps-approval-results__head"><strong>{text.approvalResultPackage}</strong><span>{selectedOutputs.length + selectedArtifacts.length + selectedPayloadEntries.length}</span></div>
@@ -5807,6 +5813,24 @@ function hasMissingRequiredBackendDependency(plan: BackendAppInstallPlan | null,
     if (appIds.length === 0) return false;
     const selected = new Set(appIds);
     return (plan?.dependencies || []).some((dep) => isBlockingBackendDependency(dep) && backendDependencyMatchesAppIDs(dep, appIds));
+}
+function firstBlockingBackendDependencyForApp(plan: BackendAppInstallPlan | null, appId: string) {
+    const appDependencies = backendDependenciesForApp(plan, appId);
+    const candidates = appDependencies.length > 0 ? appDependencies : plan?.dependencies || [];
+    return candidates.find(isBlockingBackendDependency) || null;
+}
+
+function backendDependencyUnavailableMessage(app: AppEntry, plan: BackendAppInstallPlan | null, text: typeof labels.zh, lang?: string) {
+    const dep = firstBlockingBackendDependencyForApp(plan, app.id);
+    if (!dep?.id) return text.missingRequiredDependency;
+    const zh = isZh(lang);
+    const rawState = String(dep.installed_status || dep.health || dep.action || '').trim();
+    if (zh) {
+        const reason = dep.installed ? (rawState ? '\u672a\u5b89\u88c5\u6216\u5df2\u505c\u7528' : '\u4e0d\u53ef\u7528') : '\u672a\u5b89\u88c5';
+        return app.name + '\u6682\u4e0d\u53ef\u7528\uff1a' + dep.id + ' ' + reason + '\u3002';
+    }
+    const reason = dep.installed ? (rawState ? 'is missing or disabled' : 'is unavailable') : 'is not installed';
+    return app.name + ' is unavailable: ' + dep.id + ' ' + reason + '.';
 }
 
 function backendDependencySummary(dep: BackendAppInstallDependency, text: typeof labels.zh) {

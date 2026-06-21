@@ -67,6 +67,10 @@ func (s *SQLiteStore) ListRecordApprovals(ctx context.Context, tenantID string, 
 		clauses = append(clauses, "workflow_instance_id = ?")
 		args = append(args, workflowInstanceID)
 	}
+	if workflowNodeID := strings.TrimSpace(in.WorkflowNodeID); workflowNodeID != "" {
+		clauses = append(clauses, "workflow_node_id = ?")
+		args = append(args, workflowNodeID)
+	}
 	if businessStatus := strings.TrimSpace(in.BusinessStatus); businessStatus != "" {
 		clauses = append(clauses, "business_status = ?")
 		args = append(args, businessStatus)

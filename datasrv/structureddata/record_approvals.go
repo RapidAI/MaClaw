@@ -110,6 +110,7 @@ func (s *Service) ListRecordApprovals(ctx context.Context, p Principal, in Query
 	in.Kind = strings.TrimSpace(in.Kind)
 	in.WorkflowSkillID = strings.TrimSpace(in.WorkflowSkillID)
 	in.WorkflowInstanceID = strings.TrimSpace(in.WorkflowInstanceID)
+	in.WorkflowNodeID = strings.TrimSpace(in.WorkflowNodeID)
 	in.BusinessStatus = strings.TrimSpace(in.BusinessStatus)
 	in.ResultStatus = strings.TrimSpace(in.ResultStatus)
 	in.AssignedTo = strings.TrimSpace(in.AssignedTo)

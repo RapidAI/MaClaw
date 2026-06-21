@@ -41,11 +41,28 @@ type ResumeLLMCaller interface {
 //
 // Returns nil if parsing fails or no fields could be extracted.
 func ParseResumeForSchema(ctx context.Context, req ResumeParseRequest, llm ResumeLLMCaller) (*ResumeParseResult, error) {
-	if req.Schema == nil || len(req.Schema.Fields) == 0 || req.ResumeText == "" || llm == nil {
-		return nil, fmt.Errorf("invalid request: schema, resume text, and LLM caller are all required")
+	if req.Schema == nil || req.ResumeText == "" || llm == nil {
+		missing := make([]string, 0, 3)
+		if req.Schema == nil {
+			missing = append(missing, "schema")
+		}
+		if req.ResumeText == "" {
+			missing = append(missing, "resume text")
+		}
+		if llm == nil {
+			missing = append(missing, "LLM caller")
+		}
+		return nil, fmt.Errorf("invalid request: missing %s", strings.Join(missing, ", "))
+	}
+	// Collect all effective fields: top-level Fields + all Variant Fields.
+	// Academic templates put fields inside Variants (resume_mode / manual_mode),
+	// leaving top-level Fields empty.
+	allFields := collectAllSchemaFields(req.Schema)
+	if len(allFields) == 0 {
+		return nil, fmt.Errorf("invalid request: schema has no fields (neither top-level nor in variants)")
 	}
 
-	systemPrompt := buildResumeParseSystemPrompt(req.Schema)
+	systemPrompt := buildResumeParseSystemPrompt(allFields)
 	userPrompt := buildResumeParseUserPrompt(req.ResumeText)
 
 	raw, err := llm.CallLLMForResumeParse(ctx, systemPrompt, userPrompt)
@@ -53,7 +70,7 @@ func ParseResumeForSchema(ctx context.Context, req ResumeParseRequest, llm Resum
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}
 
-	result, err := parseResumeResponse(raw, req.Schema)
+	result, err := parseResumeResponse(raw, allFields)
 	if err != nil {
 		return nil, fmt.Errorf("parse LLM response: %w", err)
 	}
@@ -69,18 +86,17 @@ func ResumeParseResultToPrefilled(result *ResumeParseResult, schema *PhaseInputS
 		return nil
 	}
 
-	// Build valid field name set from schema
-	validFields := make(map[string]bool)
-	if schema != nil {
-		for _, f := range schema.Fields {
-			validFields[f.Name] = true
-		}
+	// Build valid field name set from schema (including variant fields)
+	allFields := collectAllSchemaFields(schema)
+	validFields := make(map[string]bool, len(allFields))
+	for _, f := range allFields {
+		validFields[f.Name] = true
 	}
 
 	prefilled := make(map[string]*PrefilledValue, len(result.Fields))
 	for name, value := range result.Fields {
 		// Skip fields not in schema (LLM hallucination)
-		if schema != nil && !validFields[name] {
+		if !validFields[name] {
 			continue
 		}
 		// Skip empty values
@@ -113,9 +129,63 @@ func ResumeParseResultToPrefilled(result *ResumeParseResult, schema *PhaseInputS
 	return prefilled
 }
 
+// --- Field collection ---
+
+// AllFields returns all fields from the schema, including those inside Variants.
+// This is the canonical way to access the complete field set — use this instead of
+// directly reading schema.Fields, which may be empty for variant-based schemas
+// (e.g. academic application templates that put fields inside mutually exclusive
+// input mode variants).
+func (s *PhaseInputSchema) AllFields() []PhaseInputField {
+	return collectAllSchemaFields(s)
+}
+
+// collectAllSchemaFields returns all fields from the schema, including those
+// inside Variants. Academic application templates use Variants to provide
+// mutually exclusive input modes (resume upload vs manual entry), placing all
+// actual form fields inside variants rather than at the top level.
+// This function de-duplicates by field Name (first occurrence wins).
+func collectAllSchemaFields(schema *PhaseInputSchema) []PhaseInputField {
+	if schema == nil {
+		return nil
+	}
+	// Estimate capacity
+	cap := len(schema.Fields)
+	for _, v := range schema.Variants {
+		cap += len(v.Fields)
+	}
+	if cap == 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool, cap)
+	result := make([]PhaseInputField, 0, cap)
+
+	// Top-level fields first
+	for _, f := range schema.Fields {
+		if f.Name == "" || seen[f.Name] {
+			continue
+		}
+		seen[f.Name] = true
+		result = append(result, f)
+	}
+	// Then variant fields (all variants — resume parsing should know about
+	// all possible fields regardless of which variant the user ultimately picks)
+	for _, v := range schema.Variants {
+		for _, f := range v.Fields {
+			if f.Name == "" || seen[f.Name] {
+				continue
+			}
+			seen[f.Name] = true
+			result = append(result, f)
+		}
+	}
+	return result
+}
+
 // --- Prompt construction ---
 
-func buildResumeParseSystemPrompt(schema *PhaseInputSchema) string {
+func buildResumeParseSystemPrompt(fields []PhaseInputField) string {
 	var sb strings.Builder
 	sb.WriteString(`你是一个简历/CV信息提取专家。你的任务是从用户提供的简历文本中，精确提取指定字段的值。
 
@@ -137,10 +207,14 @@ func buildResumeParseSystemPrompt(schema *PhaseInputSchema) string {
 需要提取的字段：
 `)
 
-	for _, f := range schema.Fields {
+	for _, f := range fields {
 		// Skip fields that should never be prefilled (task-specific creative fields
 		// like project_title, core_question — these can't exist in a resume).
 		if noPrefillFieldNames[f.Name] {
+			continue
+		}
+		// Skip file-type fields (e.g. resume_file itself — not extractable from text)
+		if f.Type == "file" || f.Type == "hidden" {
 			continue
 		}
 		sb.WriteString(fmt.Sprintf("- %s (%s): %s", f.Name, f.Type, f.Label))
@@ -172,7 +246,7 @@ func buildResumeParseUserPrompt(resumeText string) string {
 
 // --- Response parsing ---
 
-func parseResumeResponse(raw string, schema *PhaseInputSchema) (*ResumeParseResult, error) {
+func parseResumeResponse(raw string, fields []PhaseInputField) (*ResumeParseResult, error) {
 	// Strip markdown code fence if present
 	raw = strings.TrimSpace(raw)
 	if strings.HasPrefix(raw, "```") {
@@ -211,7 +285,7 @@ func parseResumeResponse(raw string, schema *PhaseInputSchema) (*ResumeParseResu
 	}
 
 	// Validate select fields — value must be one of the options
-	for _, f := range schema.Fields {
+	for _, f := range fields {
 		if f.Type != "select" || len(f.Options) == 0 {
 			continue
 		}

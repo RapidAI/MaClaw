@@ -168,7 +168,12 @@ func knowledgeSourceDesc(r knowledge.SearchResult) string {
 // Called before emitting the AG UI form to frontend.
 // Returns nil if no fields could be prefilled.
 func (h *IMMessageHandler) prefillWorkflowFormFields(userID string, phase *v2.Phase, userMessage string) map[string]*v2.PrefilledValue {
-	if phase == nil || phase.InputSchema == nil || len(phase.InputSchema.Fields) == 0 {
+	if phase == nil || phase.InputSchema == nil {
+		return nil
+	}
+	// Check if schema has any fields at all (including inside Variants).
+	// Academic templates put fields inside Variants, leaving top-level Fields empty.
+	if len(phase.InputSchema.Fields) == 0 && len(phase.InputSchema.Variants) == 0 {
 		return nil
 	}
 
@@ -185,8 +190,12 @@ func (h *IMMessageHandler) prefillWorkflowFormFields(userID string, phase *v2.Ph
 	}
 
 	if len(result) > 0 {
+		totalFields := len(phase.InputSchema.Fields)
+		for _, v := range phase.InputSchema.Variants {
+			totalFields += len(v.Fields)
+		}
 		log.Printf("[workflow-v2-prefill] prefilled %d/%d fields for phase=%s",
-			len(result), len(phase.InputSchema.Fields), phase.ID)
+			len(result), totalFields, phase.ID)
 	}
 	return result
 }
@@ -297,11 +306,18 @@ func (h *IMMessageHandler) sedimentFormDataToMemory(userID, phaseID string, data
 
 	schemaHasReusable := v2.SchemaHasReusableFields(schema)
 
-	// Build a field lookup for label and Reusable check
+	// Build a field lookup for label and Reusable check (including variant fields)
 	fieldMap := make(map[string]v2.PhaseInputField)
 	if schema != nil {
 		for _, f := range schema.Fields {
 			fieldMap[f.Name] = f
+		}
+		for _, variant := range schema.Variants {
+			for _, f := range variant.Fields {
+				if _, exists := fieldMap[f.Name]; !exists {
+					fieldMap[f.Name] = f
+				}
+			}
 		}
 	}
 
@@ -343,13 +359,8 @@ func (h *IMMessageHandler) sedimentFormDataToMemory(userID, phaseID string, data
 
 		// Get the label for a more readable memory entry
 		label := fieldName
-		if schema != nil {
-			for _, f := range schema.Fields {
-				if f.Name == fieldName {
-					label = f.Label
-					break
-				}
-			}
+		if f, ok := fieldMap[fieldName]; ok && f.Label != "" {
+			label = f.Label
 		}
 		// Use field NAME as the stable key (not the per-template label which varies:
 		// "现工作单位" vs "依托单位" vs "单位" for the same field "institution").

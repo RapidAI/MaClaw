@@ -299,6 +299,9 @@ describe('AppsPage', () => {
         await waitFor(() => expect(listMaclawAppApprovalInstancesAllMock).toHaveBeenCalledWith('all', 200));
         expect(screen.getByText('\u5ba1\u6279\u5b9e\u4f8b\u7ba1\u7406')).not.toBeNull();
         expect(screen.getAllByText('Travel expense').length).toBeGreaterThan(0);
+        const detail = document.querySelector('.apps-approval-detail') as HTMLElement;
+        expect(within(detail).getByText('结果契约')).not.toBeNull();
+        expect(within(detail).getAllByText('approval_result').length).toBeGreaterThan(0);
         expect(screen.getByText('EXP-1')).not.toBeNull();
     });
     it('does not repeat pinned apps in the main icon grid', () => {
@@ -2200,6 +2203,8 @@ describe('AppsPage', () => {
         expect(within(workspace).getByRole('button', { name: /全部/ })).not.toBeNull();
         fireEvent.click(pendingLane);
         expect(within(workspace).getAllByText('Travel expense summary').length).toBeGreaterThan(0);
+        expect(within(workspace).getByText('结果契约')).not.toBeNull();
+        expect(within(workspace).getAllByText('approval_result').length).toBeGreaterThan(0);
         expect(document.querySelector('.apps-approval-summary')).toBeNull();
         expect(document.querySelector('.apps-approval-manager')).toBeNull();
     });
@@ -2515,7 +2520,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getByText('执行'));
 
-        await waitFor(() => expect(screen.getAllByText('必需 Skill 依赖缺失或不可用，请先安装或启用依赖').length).toBeGreaterThan(0));
+        await waitFor(() => expect(screen.getAllByText('运行依赖工具暂不可用：disabled-runtime-tool 未安装或已停用。').length).toBeGreaterThan(0));
         const runtimeStatus = document.querySelector('.apps-runtime-status') as HTMLElement;
         const dependencyList = runtimeStatus.querySelector('.apps-install-record__deps') as HTMLElement;
         expect(dependencyList).not.toBeNull();
@@ -2636,6 +2641,63 @@ describe('AppsPage', () => {
             approval_workflow_skill_id: 'missing-expense-workflow',
         })));
         expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalled();
+    });
+
+    it('blocks enterprise normal app MIS operations when only appSkill is unavailable', async () => {
+        const app = {
+            id: 'local-business-dep-app',
+            name: '依赖普通应用',
+            description: 'Business app dependency gate',
+            category: 'CRM',
+            kind: 'enterprise_normal_app',
+            icon: 'briefcase',
+            accent: '#2f5f98',
+            source: 'local',
+            pinned: false,
+            recentUsedAt: '2026-06-17T00:00:00.000Z',
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_normal_app',
+                launchMode: 'business_workspace',
+                datasrv: { domain: 'crm', datasetID: 'crm.customers', objectRole: 'customer', preferredAction: 'crm.customer_upsert' },
+                appSkill: { id: 'disabled-crm-action', name: 'CRM 写入动作', version: '1.0.0' },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [app.id],
+            customApps: [app],
+            recentUsedAtById: { [app.id]: app.recentUsedAt },
+        }));
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: 'enterprise_normal_app' }],
+            dependencies: [{
+                id: 'disabled-crm-action',
+                version: '1.0.0',
+                kind: 'runtime_skill',
+                source: 'hub',
+                required: true,
+                installed: true,
+                installed_status: 'disabled',
+                health: 'disabled',
+                action: 'blocked',
+                app_ids: [app.id],
+            }],
+            has_missing_required: false,
+            has_blocking_dependency: true,
+        });
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getAllByText('依赖普通应用')[0]);
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(screen.getAllByText('依赖普通应用暂不可用：disabled-crm-action 未安装或已停用。').length).toBeGreaterThan(0));
+        const runtimeStatus = document.querySelector('.apps-runtime-status') as HTMLElement;
+        const dependency = within(runtimeStatus).getByText('disabled-crm-action').closest('.apps-install-record__dep') as HTMLElement;
+        expect(dependency.dataset.state).toBe('blocked');
+        expect(runNLSkillAsyncMock).not.toHaveBeenCalled();
     });
 
     it('passes selected file metadata to skill app runs', async () => {

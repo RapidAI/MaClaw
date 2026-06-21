@@ -36,6 +36,8 @@ interface AIAssistantSendResult {
     Error?: string;
     deferred?: boolean;
     Deferred?: boolean;
+    keep_panel?: boolean;
+    KeepPanel?: boolean;
     clear_ui?: boolean;
     ClearUI?: boolean;
     confirmed_resume?: boolean;
@@ -1305,6 +1307,7 @@ function normalizeSendResponse(response: AIAssistantSendResult | null | undefine
         trace_event_count: typeof raw.trace_event_count === 'number' ? raw.trace_event_count : (typeof raw.TraceEventCount === 'number' ? raw.TraceEventCount : undefined),
         evidence_count: typeof raw.evidence_count === 'number' ? raw.evidence_count : (typeof raw.EvidenceCount === 'number' ? raw.EvidenceCount : undefined),
         deferred: typeof raw.deferred === 'boolean' ? raw.deferred : (typeof raw.Deferred === 'boolean' ? raw.Deferred : false),
+        keep_panel: typeof raw.keep_panel === 'boolean' ? raw.keep_panel : (typeof raw.KeepPanel === 'boolean' ? raw.KeepPanel : false),
         clear_ui: typeof raw.clear_ui === 'boolean' ? raw.clear_ui : (typeof raw.ClearUI === 'boolean' ? raw.ClearUI : false),
         confirmed_resume: typeof raw.confirmed_resume === 'boolean' ? raw.confirmed_resume : (typeof raw.ConfirmedResume === 'boolean' ? raw.ConfirmedResume : false),
         trial_reflect_summary: typeof raw.trial_reflect_summary === 'string' ? raw.trial_reflect_summary : (typeof raw.TrialReflectSummary === 'string' ? raw.TrialReflectSummary : ''),
@@ -4492,7 +4495,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const rawResponse = await SubmitAgentView({ view_id: viewId || "", data, request_id: workflowSubmitRound?.requestId || undefined }) as AIAssistantSendResult | null | undefined;
             const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);
             const workflowSubmitAccepted = isWorkflowFormSubmit && !response.error;
-            if (workflowSubmitAccepted) {
+            if (workflowSubmitAccepted && !response.keep_panel) {
                 updateVisibleAgentViewForSession(workflowSubmitSessionKey, current => current?.id === viewId ? null : current);
             }
             if (response?.deferred && !workflowSubmitRound) {

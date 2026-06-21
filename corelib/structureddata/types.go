@@ -989,13 +989,23 @@ type MISInboxItem struct {
 }
 
 type QueryMISInboxInput struct {
-	Limit     int    `json:"limit,omitempty"`
-	DatasetID string `json:"dataset_id,omitempty"`
-	Type      string `json:"type,omitempty"`
-	Status    string `json:"status,omitempty"`
-	IncludeOK bool   `json:"include_ok,omitempty"`
-	Before    string `json:"before,omitempty"`
-	BeforeID  string `json:"before_id,omitempty"`
+	Limit              int    `json:"limit,omitempty"`
+	DatasetID          string `json:"dataset_id,omitempty"`
+	AppID              string `json:"app_id,omitempty"`
+	BlueprintID        string `json:"blueprint_id,omitempty"`
+	ObjectRole         string `json:"object_role,omitempty"`
+	WorkflowSkillID    string `json:"workflow_skill_id,omitempty"`
+	WorkflowInstanceID string `json:"workflow_instance_id,omitempty"`
+	WorkflowNodeID     string `json:"workflow_node_id,omitempty"`
+	BusinessStatus     string `json:"business_status,omitempty"`
+	ResultStatus       string `json:"result_status,omitempty"`
+	Lane               string `json:"lane,omitempty"`
+	UserID             string `json:"user_id,omitempty"`
+	Type               string `json:"type,omitempty"`
+	Status             string `json:"status,omitempty"`
+	IncludeOK          bool   `json:"include_ok,omitempty"`
+	Before             string `json:"before,omitempty"`
+	BeforeID           string `json:"before_id,omitempty"`
 }
 
 type MISInboxResult struct {
@@ -1133,6 +1143,7 @@ type QueryRecordApprovalsInput struct {
 	Kind               string `json:"kind,omitempty"`
 	WorkflowSkillID    string `json:"workflow_skill_id,omitempty"`
 	WorkflowInstanceID string `json:"workflow_instance_id,omitempty"`
+	WorkflowNodeID     string `json:"workflow_node_id,omitempty"`
 	BusinessStatus     string `json:"business_status,omitempty"`
 	ResultStatus       string `json:"result_status,omitempty"`
 	AssignedTo         string `json:"assigned_to,omitempty"`

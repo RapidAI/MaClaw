@@ -67,6 +67,7 @@ func ShouldRecallPrefill(field PhaseInputField, schemaHasAnyReusable bool) bool 
 
 // SchemaHasReusableFields checks if any field in the schema declares Reusable=true.
 // Used to distinguish annotated templates from legacy unannotated ones.
+// Checks both top-level Fields and Variant Fields.
 func SchemaHasReusableFields(schema *PhaseInputSchema) bool {
 	if schema == nil {
 		return false
@@ -74,6 +75,13 @@ func SchemaHasReusableFields(schema *PhaseInputSchema) bool {
 	for _, f := range schema.Fields {
 		if f.Reusable {
 			return true
+		}
+	}
+	for _, v := range schema.Variants {
+		for _, f := range v.Fields {
+			if f.Reusable {
+				return true
+			}
 		}
 	}
 	return false
@@ -97,7 +105,11 @@ func ShouldSediment(field PhaseInputField, schemaHasAnyReusable bool) bool {
 // Returns a map of field name → PrefilledValue for fields that were matched.
 // Fields not matched are absent from the map (not set to nil/empty).
 func PrefillFromContext(schema *PhaseInputSchema, userMessage string, contextTexts []string) map[string]*PrefilledValue {
-	if schema == nil || len(schema.Fields) == 0 {
+	if schema == nil {
+		return nil
+	}
+	allFields := collectAllSchemaFields(schema)
+	if len(allFields) == 0 {
 		return nil
 	}
 
@@ -121,7 +133,7 @@ func PrefillFromContext(schema *PhaseInputSchema, userMessage string, contextTex
 
 	result := make(map[string]*PrefilledValue)
 
-	for _, field := range schema.Fields {
+	for _, field := range allFields {
 		if !ShouldPrefill(field.Name) {
 			continue
 		}

@@ -625,13 +625,23 @@ func inboxQueryFromRequest(r *http.Request) (QueryMISInboxInput, error) {
 		return QueryMISInboxInput{}, err
 	}
 	return QueryMISInboxInput{
-		Limit:     parseLimit(r.URL.Query().Get("limit")),
-		DatasetID: strings.TrimSpace(r.URL.Query().Get("dataset_id")),
-		Type:      strings.TrimSpace(r.URL.Query().Get("type")),
-		Status:    strings.TrimSpace(r.URL.Query().Get("status")),
-		IncludeOK: includeOK,
-		Before:    strings.TrimSpace(r.URL.Query().Get("before")),
-		BeforeID:  strings.TrimSpace(r.URL.Query().Get("before_id")),
+		Limit:              parseLimit(r.URL.Query().Get("limit")),
+		DatasetID:          strings.TrimSpace(r.URL.Query().Get("dataset_id")),
+		AppID:              strings.TrimSpace(r.URL.Query().Get("app_id")),
+		BlueprintID:        strings.TrimSpace(r.URL.Query().Get("blueprint_id")),
+		ObjectRole:         strings.TrimSpace(r.URL.Query().Get("object_role")),
+		WorkflowSkillID:    strings.TrimSpace(r.URL.Query().Get("workflow_skill_id")),
+		WorkflowInstanceID: strings.TrimSpace(r.URL.Query().Get("workflow_instance_id")),
+		WorkflowNodeID:     strings.TrimSpace(r.URL.Query().Get("workflow_node_id")),
+		BusinessStatus:     strings.TrimSpace(r.URL.Query().Get("business_status")),
+		ResultStatus:       strings.TrimSpace(r.URL.Query().Get("result_status")),
+		Lane:               strings.TrimSpace(r.URL.Query().Get("lane")),
+		UserID:             strings.TrimSpace(r.URL.Query().Get("user_id")),
+		Type:               strings.TrimSpace(r.URL.Query().Get("type")),
+		Status:             strings.TrimSpace(r.URL.Query().Get("status")),
+		IncludeOK:          includeOK,
+		Before:             strings.TrimSpace(r.URL.Query().Get("before")),
+		BeforeID:           strings.TrimSpace(r.URL.Query().Get("before_id")),
 	}, nil
 }
 
@@ -1574,6 +1584,7 @@ func (s *HTTPServer) handleListRecordApprovals(w http.ResponseWriter, r *http.Re
 		Kind:               strings.TrimSpace(r.URL.Query().Get("kind")),
 		WorkflowSkillID:    strings.TrimSpace(r.URL.Query().Get("workflow_skill_id")),
 		WorkflowInstanceID: strings.TrimSpace(r.URL.Query().Get("workflow_instance_id")),
+		WorkflowNodeID:     strings.TrimSpace(r.URL.Query().Get("workflow_node_id")),
 		BusinessStatus:     strings.TrimSpace(r.URL.Query().Get("business_status")),
 		ResultStatus:       strings.TrimSpace(r.URL.Query().Get("result_status")),
 		AssignedTo:         strings.TrimSpace(r.URL.Query().Get("assigned_to")),

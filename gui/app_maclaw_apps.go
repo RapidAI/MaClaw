@@ -451,6 +451,9 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 	if err != nil {
 		return nil, err
 	}
+	if plan.HasMissingRequired || plan.HasBlockingDependency {
+		return nil, fmt.Errorf("cannot install MaClaw App: required Skill dependencies are missing or unavailable")
+	}
 	var doc map[string]any
 	if err := json.Unmarshal([]byte(packageJSON), &doc); err != nil {
 		return nil, fmt.Errorf("decode maclaw app package: %w", err)
@@ -492,12 +495,15 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 	}
 	dataSrvRegistration := a.registerMaclawAppInstallationsToDataSrv(entries, source, packageSHA, packageSize, plan.Dependencies)
 	return map[string]any{
-		"schema":               registry.Schema,
-		"installed_at":         now,
-		"app_count":            len(entries),
-		"package_sha":          packageSHA,
-		"package_bytes":        packageSize,
-		"datasrv_registration": dataSrvRegistration,
+		"schema":                  registry.Schema,
+		"installed_at":            now,
+		"app_count":               len(entries),
+		"package_sha":             packageSHA,
+		"package_bytes":           packageSize,
+		"dependencies":            cloneMaclawAppPlanDependencies(plan.Dependencies),
+		"has_missing_required":    plan.HasMissingRequired,
+		"has_blocking_dependency": plan.HasBlockingDependency,
+		"datasrv_registration":    dataSrvRegistration,
 	}, nil
 }
 
@@ -1688,6 +1694,18 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 			if riskLevel := maclawAppStringValue(governance, "riskLevel", "risk_level"); riskLevel != "" {
 				metadata["governance_risk_level"] = riskLevel
 			}
+			if resultContract := anyMap(governance["result_contract"]); resultContract != nil {
+				metadata["result_contract"] = resultContract
+				if schema := maclawAppStringValue(resultContract, "schema"); schema != "" {
+					metadata["result_contract_schema"] = schema
+				}
+				if primary := maclawAppStringValue(resultContract, "primary"); primary != "" {
+					metadata["result_contract_primary"] = primary
+				}
+				if types := maclawAppStringListFromAny(resultContract["types"]); len(types) > 0 {
+					metadata["result_contract_types"] = types
+				}
+			}
 		}
 		appDependencies := cloneMaclawAppPlanDependenciesForApp(dependencies, entry.ID)
 		if len(appDependencies) > 0 {
@@ -1759,7 +1777,7 @@ func maclawAppGovernanceMetadataForEntry(entry parsedMaclawAppEntry) map[string]
 		"required_scopes":  governance["requiredScopes"],
 		"dependencies":     governance["dependencies"],
 		"workspace_layout": governance["workspaceLayout"],
-		"result_contract":  governance["resultContract"],
+		"result_contract":  firstNonEmptyMaclawAppAny(governance["resultContract"], governance["result_contract"]),
 		"test_evidence":    governance["testEvidence"],
 		"submission":       governance["submission"],
 	})
@@ -2573,6 +2591,15 @@ func normalizeMaclawAppKind(kind string) string {
 		return "enterprise_normal_app"
 	}
 	return kind
+}
+
+func firstNonEmptyMaclawAppAny(values ...any) any {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
 }
 
 func anyMap(value any) map[string]any {

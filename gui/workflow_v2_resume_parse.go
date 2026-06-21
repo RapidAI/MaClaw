@@ -1,9 +1,13 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -11,6 +15,9 @@ import (
 	"strings"
 	"time"
 
+	gopdf2 "github.com/VantageDataChat/GoPDF2"
+	legacydoc "github.com/shakinm/xlsReader/doc"
+	"github.com/RapidAI/CodeClaw/corelib"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -169,10 +176,25 @@ func extractTextFromFile(filePath string) (string, error) {
 		return string(data), nil
 
 	case ".pdf":
+		// Primary: Go-native PDF text extraction (no Python required)
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return "", fmt.Errorf("读取 PDF 文件失败: %v", err)
+		}
+		text, err := extractPDFTextNative(data)
+		if err == nil && strings.TrimSpace(text) != "" {
+			return text, nil
+		}
+		// Fallback: Python pymupdf (better quality for complex PDFs)
 		return extractTextViaPython(filePath, "import fitz; doc=fitz.open(r'%s'); print('\\n'.join(page.get_text() for page in doc))")
 
 	case ".docx":
-		return extractTextViaPython(filePath, "from docx import Document; doc=Document(r'%s'); print('\\n'.join(p.text for p in doc.paragraphs))")
+		// Go-native DOCX extraction via zip + XML parsing (same as knowledge/parse.go)
+		return extractDocxTextNative(filePath)
+
+	case ".doc":
+		// Legacy Word 97-2003 format — Go-native via LegacyOfficeReader
+		return extractDocTextNative(filePath)
 
 	default:
 		// Try reading as plain text
@@ -193,8 +215,28 @@ func extractTextViaPython(filePath, pythonTemplate string) (string, error) {
 	safeTemplate := strings.ReplaceAll(pythonTemplate, "r'%s'", "sys.argv[1]")
 	script := "import sys; " + safeTemplate
 
-	// Try python first, then python3
-	for _, pyCmd := range []string{"python", "python3"} {
+	// Build list of Python executables to try:
+	// 1. maclaw's bundled uv venv Python ({MaclawBaseDir}/python/venv/Scripts/python.exe)
+	// 2. maclaw's bundled uv install Python ({MaclawBaseDir}/python/install/python.exe)
+	// 3. System python / python3
+	pyCmds := []string{"python", "python3"}
+	maclawBase := corelib.MaclawBaseDir()
+	// uv venv has installed packages (pymupdf etc.) — prefer it
+	for _, relPath := range []string{
+		filepath.Join("python", "venv", "Scripts", "python.exe"), // Windows uv venv
+		filepath.Join("python", "venv", "bin", "python"),         // Linux/Mac uv venv
+		filepath.Join("python", "install", "python.exe"),         // Windows uv install (bare)
+		filepath.Join("python", "install", "bin", "python"),      // Linux/Mac uv install
+	} {
+		candidate := filepath.Join(maclawBase, relPath)
+		if _, err := os.Stat(candidate); err == nil {
+			pyCmds = append([]string{candidate}, pyCmds...)
+			break // use the first found
+		}
+	}
+
+	// Try each Python executable
+	for _, pyCmd := range pyCmds {
 		// Use a 30s timeout to prevent hanging on corrupted files
 		pyCtx, pyCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		cmd := exec.CommandContext(pyCtx, pyCmd, "-c", script, filePath)
@@ -210,6 +252,117 @@ func extractTextViaPython(filePath, pythonTemplate string) (string, error) {
 	}
 
 	return "", fmt.Errorf("无法解析文件 %s：需要安装 Python 及相关库（pymupdf/python-docx）", filepath.Base(filePath))
+}
+
+// extractPDFTextNative uses the Go-native GoPDF2 library to extract text from PDF bytes.
+// No Python dependency required. Falls back gracefully if extraction fails.
+func extractPDFTextNative(pdfData []byte) (string, error) {
+	text, err := gopdf2.ExtractAllPagesText(pdfData)
+	if err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
+// extractDocxTextNative extracts text from a .docx file using pure Go (zip + XML).
+// Same approach as knowledge/parse.go:parseDOCXNodes but returns plain text instead of nodes.
+func extractDocxTextNative(filePath string) (string, error) {
+	r, err := zip.OpenReader(filePath)
+	if err != nil {
+		return "", fmt.Errorf("无法打开 DOCX 文件: %v", err)
+	}
+	defer r.Close()
+
+	var documentXML []byte
+	for _, f := range r.File {
+		if f.Name == "word/document.xml" {
+			rc, err := f.Open()
+			if err != nil {
+				return "", err
+			}
+			documentXML, err = io.ReadAll(rc)
+			rc.Close()
+			if err != nil {
+				return "", err
+			}
+			break
+		}
+	}
+	if len(documentXML) == 0 {
+		return "", fmt.Errorf("DOCX 文件中未找到 document.xml")
+	}
+
+	// Parse XML to extract paragraph text
+	decoder := xml.NewDecoder(bytes.NewReader(documentXML))
+	var paragraphs []string
+	var paragraph strings.Builder
+	inParagraph := false
+	for {
+		tok, err := decoder.Token()
+		if err != nil {
+			break // EOF or error — flush what we have
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "p":
+				if inParagraph && paragraph.Len() > 0 {
+					paragraphs = append(paragraphs, strings.TrimSpace(paragraph.String()))
+					paragraph.Reset()
+				}
+				inParagraph = true
+			case "tab":
+				if inParagraph {
+					paragraph.WriteString("\t")
+				}
+			case "br", "cr":
+				if inParagraph {
+					paragraph.WriteString("\n")
+				}
+			}
+		case xml.EndElement:
+			if t.Name.Local == "p" && inParagraph {
+				if paragraph.Len() > 0 {
+					paragraphs = append(paragraphs, strings.TrimSpace(paragraph.String()))
+					paragraph.Reset()
+				}
+				inParagraph = false
+			}
+		case xml.CharData:
+			if inParagraph {
+				paragraph.Write(t)
+			}
+		}
+	}
+	if paragraph.Len() > 0 {
+		paragraphs = append(paragraphs, strings.TrimSpace(paragraph.String()))
+	}
+
+	text := strings.Join(paragraphs, "\n")
+	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("DOCX 文件中没有可读取的文本内容")
+	}
+	return text, nil
+}
+
+// extractDocTextNative extracts text from a legacy .doc file (Word 97-2003)
+// using the Go-native LegacyOfficeReader library. No Python required.
+// Uses recover to handle panics from malformed .doc files gracefully.
+func extractDocTextNative(filePath string) (text string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("DOC 文件解析异常: %v", r)
+		}
+	}()
+	document, openErr := legacydoc.OpenFile(filePath)
+	if openErr != nil {
+		return "", fmt.Errorf("无法打开 DOC 文件: %v", openErr)
+	}
+	text = document.GetText()
+	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("DOC 文件中没有可读取的文本内容")
+	}
+	return text, nil
 }
 
 // classifyResumeParseError converts technical LLM errors into user-friendly messages.

@@ -372,7 +372,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		return "MIS data service token is empty. Configure it in Settings > MIS data."
 	}
 	if action == misDataToolActionUnknown {
-		return "missing action. Supported: status, get_capabilities, list_domains, get_domain, list_business_objects, resolve_object_role, list_relationships, resolve_intent, get_inbox, get_inbox_summary, get_stats, export_governance_evidence_pack, export_governance_evidence_summary, run_maintenance, list_business_actions, get_business_action, list_business_rules, evaluate_business_rules, list_event_contracts, get_event_contract, list_event_dead_letters, get_event_dead_letter, retry_event_dead_letter, resolve_event_dead_letter, list_connectors, list_connector_health, get_connector, upsert_connector, delete_connector, test_connector, validate_connector_config, check_connector_readiness, get_connector_health, get_connector_sync_state, list_connector_sync_runs, update_connector_sync_state, plan_connector_sync, sync_connector_batch, suggest_connector_mapping, patch_connector_config, preview_connector_event, ingest_connector_event, execute_business_action, list_business_views, get_business_view, query_business_view, list_dashboards, get_dashboard, run_dashboard, list_reports, get_report, run_report, aggregate_records, list_quality_checks, run_quality_check, list_quality_runs, get_quality_run, list_import_jobs, get_import_job, list_export_jobs, get_export_job, download_export_job, list_operation_plans, create_operation_plan, get_operation_plan, review_operation_plan, apply_operation_plan, cancel_operation_plan, mis.approval.start, mis.approval.list, mis.approval.list_by_record, mis.approval.get, mis.approval.sync_result, mis.approval.my_inbox, mis.approval.my_pending, list_record_approvals, create_record_approval, get_record_approval, review_record_approval, list_audit_logs, export_audit_logs_csv, list_data_events, list_record_revisions, get_record_timeline, get_related_records, list_schema_proposals, get_schema_proposal, list_templates, get_template, bootstrap_templates, create_dataset_from_template, list_datasets, get_dataset, create_dataset, delete_dataset, list_fields, upsert_fields, propose_schema, apply_schema_proposal, validate_record, batch_import_records, bulk_update_records, bulk_delete_records, restore_record, start_batch_import_job, get_import_template_csv, import_records_csv, start_csv_import_job, import_records_jsonl, start_jsonl_import_job, upsert_record, get_record, delete_record, query_records, export_records, export_records_jsonl, start_csv_export_job, start_jsonl_export_job, ingest_event, create_backup, list_backups, get_backup, download_backup, restore_backup"
+		return "missing action. Supported: status, get_capabilities, list_domains, get_domain, list_business_objects, resolve_object_role, list_relationships, resolve_intent, get_inbox, get_inbox_summary, get_stats, export_governance_evidence_pack, export_governance_evidence_summary, run_maintenance, list_business_actions, get_business_action, list_business_rules, evaluate_business_rules, list_event_contracts, get_event_contract, list_event_dead_letters, get_event_dead_letter, retry_event_dead_letter, resolve_event_dead_letter, list_connectors, list_connector_health, get_connector, upsert_connector, delete_connector, test_connector, validate_connector_config, check_connector_readiness, get_connector_health, get_connector_sync_state, list_connector_sync_runs, update_connector_sync_state, plan_connector_sync, sync_connector_batch, suggest_connector_mapping, patch_connector_config, preview_connector_event, ingest_connector_event, execute_business_action, list_business_views, get_business_view, query_business_view, list_dashboards, get_dashboard, run_dashboard, list_reports, get_report, run_report, aggregate_records, list_quality_checks, run_quality_check, list_quality_runs, get_quality_run, list_import_jobs, get_import_job, list_export_jobs, get_export_job, download_export_job, list_operation_plans, create_operation_plan, get_operation_plan, review_operation_plan, apply_operation_plan, cancel_operation_plan, mis.approval.start, mis.approval.list, mis.approval.list_by_record, mis.approval.get, mis.approval.sync_result, mis.approval.my_inbox, mis.approval.my_pending, mis.approval.my_requests, mis.approval.pending_my_approval, mis.approval.handled, mis.approval.attention, list_record_approvals, create_record_approval, get_record_approval, review_record_approval, list_audit_logs, export_audit_logs_csv, list_data_events, list_record_revisions, get_record_timeline, get_related_records, list_schema_proposals, get_schema_proposal, list_templates, get_template, bootstrap_templates, create_dataset_from_template, list_datasets, get_dataset, create_dataset, delete_dataset, list_fields, upsert_fields, propose_schema, apply_schema_proposal, validate_record, batch_import_records, bulk_update_records, bulk_delete_records, restore_record, start_batch_import_job, get_import_template_csv, import_records_csv, start_csv_import_job, import_records_jsonl, start_jsonl_import_job, upsert_record, get_record, delete_record, query_records, export_records, export_records_jsonl, start_csv_export_job, start_jsonl_export_job, ingest_event, create_backup, list_backups, get_backup, download_backup, restore_backup"
 	}
 	switch action {
 	case "status":
@@ -449,10 +449,40 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		return prettyMISDataResponse(data)
 	case misDataToolActionGetInbox, misDataToolActionGetInboxSummary:
 		values := url.Values{}
-		if datasetID, datasetErr := a.resolveOptionalMISDatasetIDArg(cfg, args); datasetErr != nil {
+		if datasetID, datasetErr := a.resolveInboxMISDatasetIDArg(cfg, args); datasetErr != nil {
 			return datasetErr.Error()
 		} else if datasetID != "" {
 			values.Set("dataset_id", datasetID)
+		}
+		if appID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "app_id"), stringArg(args, "app"))); appID != "" {
+			values.Set("app_id", appID)
+		}
+		if blueprintID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "blueprint_id"), stringArg(args, "blueprint"))); blueprintID != "" {
+			values.Set("blueprint_id", blueprintID)
+		}
+		if objectRole := misObjectRoleArg(args); objectRole != "" {
+			values.Set("object_role", objectRole)
+		}
+		if workflowSkillID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_skill_id"), stringArg(args, "approval_workflow_id"), stringArg(args, "workflow_id"))); workflowSkillID != "" {
+			values.Set("workflow_skill_id", workflowSkillID)
+		}
+		if workflowInstanceID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_instance_id"), stringArg(args, "approval_instance_id"))); workflowInstanceID != "" {
+			values.Set("workflow_instance_id", workflowInstanceID)
+		}
+		if workflowNodeID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_node_id"), stringArg(args, "current_node"))); workflowNodeID != "" {
+			values.Set("workflow_node_id", workflowNodeID)
+		}
+		if businessStatus := strings.TrimSpace(stringArg(args, "business_status")); businessStatus != "" {
+			values.Set("business_status", businessStatus)
+		}
+		if resultStatus := strings.TrimSpace(stringArg(args, "result_status")); resultStatus != "" {
+			values.Set("result_status", resultStatus)
+		}
+		if lane := strings.TrimSpace(stringArg(args, "lane")); lane != "" {
+			values.Set("lane", lane)
+		}
+		if userID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "user_id"), stringArg(args, "actor"))); userID != "" {
+			values.Set("user_id", userID)
 		}
 		if itemType := strings.TrimSpace(stringArg(args, "type")); itemType != "" {
 			values.Set("type", itemType)
@@ -922,7 +952,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			return "missing operation_plan_id"
 		}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/operation-plans/"+pathEscape(planID)+"/cancel", map[string]interface{}{})
-	case "list_record_approvals", "mis.approval.list", "mis.approval.list_by_record", "mis.approval.my_inbox", "mis.approval.my_pending":
+	case "list_record_approvals", "mis.approval.list", "mis.approval.list_by_record", "mis.approval.my_inbox", "mis.approval.my_pending", "mis.approval.my_requests", "mis.approval.pending_my_approval", "mis.approval.handled", "mis.approval.attention":
 		values := url.Values{}
 		if datasetID, datasetErr := a.resolveOptionalMISDatasetIDArg(cfg, args); datasetErr != nil {
 			return datasetErr.Error()
@@ -949,6 +979,19 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		if kind := strings.TrimSpace(stringArg(args, "kind")); kind != "" {
 			values.Set("kind", kind)
 		}
+		if lane := strings.TrimSpace(stringArg(args, "lane")); lane != "" {
+			values.Set("lane", lane)
+		}
+		switch action {
+		case "mis.approval.my_requests":
+			values.Set("lane", "my_requests")
+		case "mis.approval.pending_my_approval":
+			values.Set("lane", "pending_my_approval")
+		case "mis.approval.handled":
+			values.Set("lane", "handled")
+		case "mis.approval.attention":
+			values.Set("lane", "attention")
+		}
 		if assignedTo := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "assigned_to"), stringArg(args, "assignee"))); assignedTo != "" {
 			values.Set("assigned_to", assignedTo)
 		} else if (action == "mis.approval.my_inbox" || action == "mis.approval.my_pending") && strings.TrimSpace(cfg.UserID) != "" {
@@ -959,6 +1002,9 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		if workflowInstanceID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_instance_id"), stringArg(args, "approval_instance_id"))); workflowInstanceID != "" {
 			values.Set("workflow_instance_id", workflowInstanceID)
+		}
+		if workflowNodeID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_node_id"), stringArg(args, "current_node"), stringArg(args, "workflowNodeId"))); workflowNodeID != "" {
+			values.Set("workflow_node_id", workflowNodeID)
 		}
 		if businessStatus := strings.TrimSpace(stringArg(args, "business_status")); businessStatus != "" {
 			values.Set("business_status", businessStatus)
@@ -1013,10 +1059,59 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/"+pathEscape(recordID)+"/approvals", compactPayload(body))
 	case "get_record_approval", "mis.approval.get":
 		approvalID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "approval_id"), stringArg(args, "id")))
-		if approvalID == "" {
-			return "missing approval_id"
+		if approvalID != "" {
+			return a.callMISDataAPI(cfg, http.MethodGet, "/api/v1/data/approvals/"+pathEscape(approvalID), nil)
 		}
-		return a.callMISDataAPI(cfg, http.MethodGet, "/api/v1/data/approvals/"+pathEscape(approvalID), nil)
+		values := url.Values{}
+		if datasetID, datasetErr := a.resolveInboxMISDatasetIDArg(cfg, args); datasetErr != nil {
+			return datasetErr.Error()
+		} else if datasetID != "" {
+			values.Set("dataset_id", datasetID)
+		}
+		if appID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "app_id"), stringArg(args, "appId"))); appID != "" {
+			values.Set("app_id", appID)
+		}
+		if blueprintID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "blueprint_id"), stringArg(args, "blueprintId"))); blueprintID != "" {
+			values.Set("blueprint_id", blueprintID)
+		}
+		if objectRole := misObjectRoleArg(args); objectRole != "" {
+			values.Set("object_role", objectRole)
+		}
+		if recordID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "record_id"), stringArg(args, "recordId"))); recordID != "" {
+			values.Set("record_id", recordID)
+		}
+		if workflowSkillID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_skill_id"), stringArg(args, "workflow_id"), stringArg(args, "approval_workflow_id"), stringArg(args, "workflowSkillId"))); workflowSkillID != "" {
+			values.Set("workflow_skill_id", workflowSkillID)
+		}
+		if workflowInstanceID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_instance_id"), stringArg(args, "approval_instance_id"))); workflowInstanceID != "" {
+			values.Set("workflow_instance_id", workflowInstanceID)
+		}
+		if workflowNodeID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_node_id"), stringArg(args, "current_node"), stringArg(args, "workflowNodeId"))); workflowNodeID != "" {
+			values.Set("workflow_node_id", workflowNodeID)
+		}
+		if businessStatus := strings.TrimSpace(stringArg(args, "business_status")); businessStatus != "" {
+			values.Set("business_status", businessStatus)
+		}
+		if resultStatus := strings.TrimSpace(stringArg(args, "result_status")); resultStatus != "" {
+			values.Set("result_status", resultStatus)
+		}
+		if assignedTo := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "assigned_to"), stringArg(args, "assignee"))); assignedTo != "" {
+			values.Set("assigned_to", assignedTo)
+		}
+		if status := strings.TrimSpace(stringArg(args, "status")); status != "" {
+			values.Set("status", status)
+		}
+		if values.Get("record_id") == "" && values.Get("workflow_instance_id") == "" {
+			return "missing approval_id or record_id"
+		}
+		if values.Get("limit") == "" {
+			values.Set("limit", "1")
+		}
+		path := "/api/v1/data/approvals"
+		if encoded := values.Encode(); encoded != "" {
+			path += "?" + encoded
+		}
+		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
 	case "review_record_approval", "mis.approval.sync_result":
 		approvalID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "approval_id"), stringArg(args, "id")))
 		if approvalID == "" {
@@ -1534,6 +1629,13 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 
 func (a *App) resolveOptionalMISDatasetIDArg(cfg corelib.MISDataConfig, args map[string]interface{}) (string, error) {
 	return a.resolveMISDatasetIDArg(cfg, args, false)
+}
+
+func (a *App) resolveInboxMISDatasetIDArg(cfg corelib.MISDataConfig, args map[string]interface{}) (string, error) {
+	if strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "dataset_id"), stringArg(args, "dataset"), stringArg(args, "data_set"))) != "" || strings.TrimSpace(stringArg(args, "domain")) != "" {
+		return a.resolveMISDatasetIDArg(cfg, args, false)
+	}
+	return "", nil
 }
 
 func (a *App) resolveMISDatasetIDArg(cfg corelib.MISDataConfig, args map[string]interface{}, requireInitialized bool) (string, error) {

@@ -122,7 +122,7 @@ replace github.com/energye/systray v1.0.2 => ./gui/internal/systray
 
 replace github.com/RapidAI/CodeClaw/datasrv => ./datasrv
 
-replace github.com/shakinm/xlsReader => github.com/Vantagics/LegacyOfficeReader v0.0.0-20260227214529-f028c77dd3e8
+replace github.com/shakinm/xlsReader => github.com/Vantagics/LegacyOfficeReader v0.0.0-20260621074012-a324c1dbb18b
 
 replace github.com/braheezy/shine-mp3 => ./third_party/shine-mp3
 
