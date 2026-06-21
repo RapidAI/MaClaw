@@ -85,11 +85,14 @@ type skillPackageManifest struct {
 }
 
 type maclawAppTestEvidence struct {
-	RunID                 string `json:"run_id,omitempty"`
-	VerifiedAt            string `json:"verified_at,omitempty"`
-	DefinitionFingerprint string `json:"definition_fingerprint,omitempty"`
-	ArtifactPresent       bool   `json:"artifact_present,omitempty"`
-	ArtifactName          string `json:"artifact_name,omitempty"`
+	RunID                 string         `json:"run_id,omitempty"`
+	VerifiedAt            string         `json:"verified_at,omitempty"`
+	DefinitionFingerprint string         `json:"definition_fingerprint,omitempty"`
+	ArtifactPresent       bool           `json:"artifact_present,omitempty"`
+	ArtifactName          string         `json:"artifact_name,omitempty"`
+	OutputCount           int            `json:"output_count,omitempty"`
+	PrimaryResult         string         `json:"primary_result,omitempty"`
+	ResultPayload         map[string]any `json:"result_payload,omitempty"`
 }
 
 type skillPackageManifestFile struct {
@@ -295,6 +298,13 @@ func maclawAppTestEvidenceFromDefinition(data []byte) *maclawAppTestEvidence {
 		VerifiedAt:            strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "verifiedAt"), stringMapValue(testEvidence, "verified_at"))),
 		DefinitionFingerprint: strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "definitionHash"), stringMapValue(testEvidence, "definition_hash"), stringMapValue(testEvidence, "definitionFingerprint"), stringMapValue(testEvidence, "definition_fingerprint"))),
 		ArtifactName:          strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "artifactName"), stringMapValue(testEvidence, "artifact_name"))),
+		PrimaryResult:         strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "primaryResult"), stringMapValue(testEvidence, "primary_result"))),
+	}
+	if count, ok := maclawAppNumberFromAny(firstNonEmptyMaclawAppAny(testEvidence["outputCount"], testEvidence["output_count"])); ok && count > 0 {
+		out.OutputCount = int(count)
+	}
+	if payload, ok := firstNonEmptyMaclawAppAny(testEvidence["resultPayload"], testEvidence["result_payload"]).(map[string]any); ok && len(payload) > 0 {
+		out.ResultPayload = cloneMapAny(payload)
 	}
 	if boolMapValue(testEvidence, "artifactPresent") || boolMapValue(testEvidence, "artifact_present") {
 		out.ArtifactPresent = true
@@ -305,7 +315,7 @@ func maclawAppTestEvidenceFromDefinition(data []byte) *maclawAppTestEvidence {
 			out.ArtifactPresent = true
 		}
 	}
-	if out.RunID == "" && out.VerifiedAt == "" && out.DefinitionFingerprint == "" && out.ArtifactName == "" && !out.ArtifactPresent {
+	if out.RunID == "" && out.VerifiedAt == "" && out.DefinitionFingerprint == "" && out.ArtifactName == "" && !out.ArtifactPresent && out.OutputCount == 0 && out.PrimaryResult == "" && len(out.ResultPayload) == 0 {
 		return nil
 	}
 	return out

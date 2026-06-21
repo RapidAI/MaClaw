@@ -78,11 +78,14 @@ type HubSearchResult struct {
 }
 
 type MaclawAppTestEvidence struct {
-	RunID                 string `json:"run_id,omitempty"`
-	VerifiedAt            string `json:"verified_at,omitempty"`
-	DefinitionFingerprint string `json:"definition_fingerprint,omitempty"`
-	ArtifactPresent       bool   `json:"artifact_present,omitempty"`
-	ArtifactName          string `json:"artifact_name,omitempty"`
+	RunID                 string         `json:"run_id,omitempty"`
+	VerifiedAt            string         `json:"verified_at,omitempty"`
+	DefinitionFingerprint string         `json:"definition_fingerprint,omitempty"`
+	ArtifactPresent       bool           `json:"artifact_present,omitempty"`
+	ArtifactName          string         `json:"artifact_name,omitempty"`
+	OutputCount           int            `json:"output_count,omitempty"`
+	PrimaryResult         string         `json:"primary_result,omitempty"`
+	ResultPayload         map[string]any `json:"result_payload,omitempty"`
 }
 
 // ────────────────────────────────────────────────────────────────────────────

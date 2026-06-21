@@ -49,11 +49,14 @@ type SkillMetadata struct {
 }
 
 type MaclawAppTestEvidence struct {
-	RunID                 string `yaml:"run_id,omitempty" json:"run_id,omitempty"`
-	VerifiedAt            string `yaml:"verified_at,omitempty" json:"verified_at,omitempty"`
-	DefinitionFingerprint string `yaml:"definition_fingerprint,omitempty" json:"definition_fingerprint,omitempty"`
-	ArtifactPresent       bool   `yaml:"artifact_present,omitempty" json:"artifact_present,omitempty"`
-	ArtifactName          string `yaml:"artifact_name,omitempty" json:"artifact_name,omitempty"`
+	RunID                 string         `yaml:"run_id,omitempty" json:"run_id,omitempty"`
+	VerifiedAt            string         `yaml:"verified_at,omitempty" json:"verified_at,omitempty"`
+	DefinitionFingerprint string         `yaml:"definition_fingerprint,omitempty" json:"definition_fingerprint,omitempty"`
+	ArtifactPresent       bool           `yaml:"artifact_present,omitempty" json:"artifact_present,omitempty"`
+	ArtifactName          string         `yaml:"artifact_name,omitempty" json:"artifact_name,omitempty"`
+	OutputCount           int            `yaml:"output_count,omitempty" json:"output_count,omitempty"`
+	PrimaryResult         string         `yaml:"primary_result,omitempty" json:"primary_result,omitempty"`
+	ResultPayload         map[string]any `yaml:"result_payload,omitempty" json:"result_payload,omitempty"`
 }
 
 // ParseSkillYAML 解析 skill.yaml 为 SkillMetadata。

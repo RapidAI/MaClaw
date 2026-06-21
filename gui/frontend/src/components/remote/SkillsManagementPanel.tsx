@@ -147,6 +147,9 @@ interface MixedSkillSearchResult {
         definition_fingerprint?: string;
         artifact_present?: boolean;
         artifact_name?: string;
+        output_count?: number;
+        primary_result?: string;
+        result_payload?: Record<string, unknown>;
     };
     artifact_contract_required?: boolean;
     artifact_contract_output_modes?: string[];

@@ -18,6 +18,9 @@ export interface MaclawAppMarketPreviewSource {
         definition_fingerprint?: string;
         artifact_present?: boolean;
         artifact_name?: string;
+        output_count?: number;
+        primary_result?: string;
+        result_payload?: Record<string, unknown>;
     };
     artifact_contract_required?: boolean;
     artifact_contract_output_modes?: string[];
@@ -36,7 +39,7 @@ export function MaclawAppMarketPreview({ skill, localizeText }: { skill: MaclawA
     const outputModes = maclawAppArtifactModesLabel(skill);
     const hasSummary = !!(skill.maclaw_app_name || skill.maclaw_app_category || skill.maclaw_app_icon || outputModes);
     const evidence = skill.maclaw_app_test_evidence;
-    const hasDetails = !!(skill.maclaw_app_description || skill.maclaw_app_input_mode || skill.artifact_contract_presentation || skill.maclaw_app_definition_sha256 || evidence?.run_id || evidence?.verified_at);
+    const hasDetails = !!(skill.maclaw_app_description || skill.maclaw_app_input_mode || skill.artifact_contract_presentation || skill.maclaw_app_definition_sha256 || evidence?.run_id || evidence?.verified_at || evidence?.primary_result || evidence?.output_count);
     if (!hasSummary && !hasDetails) return null;
     return (
         <details style={previewStyle}>
