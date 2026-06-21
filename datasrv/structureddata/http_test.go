@@ -5337,6 +5337,26 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 			"dependency_count":                2,
 			"has_missing_required_dependency": false,
 			"has_blocking_dependency":         true,
+			"workspace_layout_entry":          "approval_workspace",
+			"workspace_layout_template":       "classic_split",
+			"workspace_layout_density":        "comfortable",
+			"workspace_layout": map[string]any{
+				"schema":       "maclaw.app.ui.v1",
+				"entry":        "approval_workspace",
+				"template":     "classic_split",
+				"density":      "comfortable",
+				"region_count": 4,
+			},
+			"governance_status":     "local_tested",
+			"governance_risk_level": "medium",
+			"governance": map[string]any{
+				"status":     "local_tested",
+				"risk_level": "medium",
+				"test_evidence": map[string]any{
+					"run_id":           "run-expense-1",
+					"artifact_present": true,
+				},
+			},
 			"dependencies": []any{
 				map[string]any{"id": "mis-expense-claim", "kind": "runtime_skill", "required": true, "source": "hub", "health": "ready"},
 				map[string]any{"id": "skill.expense.approval", "kind": "workflow_skill", "required": true, "source": "hub", "health": "missing", "action": "blocked"},
@@ -5359,6 +5379,9 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if installed.Metadata["dependency_count"] != float64(2) || installed.Metadata["has_missing_required_dependency"] != false || installed.Metadata["has_blocking_dependency"] != true {
 		t.Fatalf("app installation should persist dependency health metadata: %#v", installed.Metadata)
+	}
+	if installed.Metadata["workspace_layout_entry"] != "approval_workspace" || installed.Metadata["workspace_layout_template"] != "classic_split" || installed.Metadata["governance_status"] != "local_tested" {
+		t.Fatalf("app installation should persist app layout and governance metadata: %#v", installed.Metadata)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?app_id=mis.expense", nil)
@@ -5432,6 +5455,9 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	metadata := audit[0].Metadata
 	if metadata["kind"] != "enterprise_approval_app" || metadata["source"] != "hub" || metadata["dependency_count"] != float64(2) || metadata["has_missing_required_dependency"] != false || metadata["has_blocking_dependency"] != true {
 		t.Fatalf("app installation audit should summarize dependency health: %#v", metadata)
+	}
+	if metadata["workspace_layout_entry"] != "approval_workspace" || metadata["workspace_layout_template"] != "classic_split" || metadata["workspace_layout_density"] != "comfortable" || metadata["governance_status"] != "local_tested" || metadata["governance_risk_level"] != "medium" {
+		t.Fatalf("app installation audit should summarize layout and governance: %#v", metadata)
 	}
 	dependencyIDs, ok := metadata["dependency_ids"].([]any)
 	if !ok || len(dependencyIDs) != 2 || dependencyIDs[0] != "mis-expense-claim" || dependencyIDs[1] != "skill.expense.approval" {

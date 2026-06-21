@@ -4418,6 +4418,55 @@ describe('AppsPage', () => {
         expect(screen.getAllByText('人事').length).toBeGreaterThan(0);
     });
 
+    it('turns DataSrv installed MaClaw apps into addable app candidates with layout metadata', async () => {
+        getMISDataConfigMock.mockResolvedValue({ enabled: true, endpoint: 'http://datasrv.test', token: 'token' });
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({
+                service: 'MaClawDataSrv',
+                domains: ['finance'],
+                business_actions: [{ id: 'finance.expense_upsert', domain: 'finance', title: 'Expense upsert' }],
+                app_installations: [{
+                    app_id: 'mis.expense',
+                    blueprint_id: 'mis.expense.approval',
+                    name: 'Expense Approval Installed',
+                    version: '3',
+                    kind: 'enterprise_approval_app',
+                    source: 'hub',
+                    role_bindings: [{ object_role: 'expense_report', domain: 'finance', dataset_id: 'finance.expense_forms', template_id: 'finance.expenses', required: true }],
+                    metadata: {
+                        app_skill_id: 'expense-super-skill',
+                        app_skill_version: '1.0.0',
+                        workflow_skill_ids: ['expense-workflow'],
+                        workspace_layout_entry: 'approval_workspace',
+                        workspace_layout_template: 'dashboard',
+                        workspace_layout_density: 'spacious',
+                        workspace_layout: { entry: 'approval_workspace', template: 'dashboard', density: 'spacious', region_count: 4 },
+                        governance_status: 'local_tested',
+                        dependencies: [{ id: 'expense-workflow', kind: 'workflow_skill', required: true, source: 'hub' }],
+                    },
+                }],
+            }),
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        render(<AppsPage lang="en" />);
+        fireEvent.click(screen.getByTitle('App Studio'));
+
+        await waitFor(() => expect(screen.getByText('Expense Approval Installed')).not.toBeNull());
+        fireEvent.click(screen.getByText('Add to panel'));
+        fireEvent.click(screen.getByText('Close'));
+
+        const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
+        const added = stored.customApps.find((app: any) => app.name === 'Expense Approval Installed');
+        expect(added.kind).toBe('enterprise_approval_app');
+        expect(added.manifest.datasrv).toMatchObject({ domain: 'finance', datasetID: 'finance.expense_forms', objectRole: 'expense_report', blueprintID: 'mis.expense.approval', templateID: 'finance.expenses' });
+        expect(added.manifest.appSkill).toMatchObject({ id: 'expense-super-skill', version: '1.0.0' });
+        expect(added.manifest.mis.approvalBindings[0]).toMatchObject({ workflowSkillId: 'expense-workflow', objectRole: 'expense_report' });
+        expect(added.manifest.ui.layouts.approval_workspace.template).toBe('dashboard');
+        expect(added.manifest.ui.layouts.approval_workspace.density).toBe('spacious');
+        expect(added.manifest.ui.layouts.approval_workspace.studio.importedFromDataSrv).toBe(true);
+    });
     it('turns skill maclaw.apps.json entries into registered tool apps', async () => {
         listSkillAppManifestsMock.mockResolvedValue([
             { id: 'redact', skill_id: 'doc-tools', name: '文档脱敏 Plus', description: 'Redact files', category: '文档处理', icon: 'shield', input_mode: 'file' },

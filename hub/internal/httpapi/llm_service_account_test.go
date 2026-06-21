@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +115,81 @@ func TestGetLLMServiceAccountHandlerIncludesHubCenterAuthorizationCardUsage(t *t
 	if resp.Status.CreditsUsed != 123.45 || resp.Status.CreditsRemaining != 876.55 {
 		t.Fatalf("status credits = used %.2f remaining %.2f", resp.Status.CreditsUsed, resp.Status.CreditsRemaining)
 	}
+	if !resp.Status.Active || !resp.Status.SkipLLMConfig {
+		t.Fatalf("status should be active from HubCenter authorization card: active=%v skip=%v groups=%#v models=%#v authorized=%#v", resp.Status.Active, resp.Status.SkipLLMConfig, resp.Status.ServiceGroupIDs, resp.Status.AvailableModels, resp.Status.AuthorizedModels)
+	}
+	if !containsStringFold(resp.Status.ServiceGroupIDs, "maclaw_official_group") {
+		t.Fatalf("service groups = %#v, want maclaw_official_group", resp.Status.ServiceGroupIDs)
+	}
+	if len(resp.Status.AvailableModels) != 1 || resp.Status.AvailableModels[0] != "auto" {
+		t.Fatalf("available models = %#v, want auto", resp.Status.AvailableModels)
+	}
+}
+
+func TestGetLLMServiceAccountHandlerDoesNotActivateQueuedHubCenterCard(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken := issueViewerTokenForTenant(t, identity, "tenant_acme", "queued@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	tenantSystem := scopedSystemSettingsForTenant("tenant_acme", system)
+	now := time.Now().UTC()
+
+	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "maclaw_official_group", Name: "MaClaw Official"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	accessCtrl := llmservice.NewTenantLLMAccessControl(nil)
+	accessCtrl.UpdateFromHeartbeat("tenant_acme", &llmservice.TenantAuthorizationStatus{
+		HubID:    "hub-1",
+		TenantID: "tenant_acme",
+		Authorizations: []llmservice.AuthorizationSummary{{
+			ID:               "auth-future",
+			ServiceGroupID:   "maclaw_official_group",
+			CreditsTotal:     1000,
+			CreditsUsed:      0,
+			CreditsRemaining: 1000,
+			StartsAt:         now.Add(24 * time.Hour).Format(time.RFC3339),
+			ExpiresAt:        now.Add(48 * time.Hour).Format(time.RFC3339),
+			Status:           "active",
+			Active:           false,
+			Source:           "hubcenter_compute",
+			CardOrderID:      "HC-FUTURE",
+		}},
+	})
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+	SetMaClawModule(&llmservice.MaClawModule{AccessCtrl: accessCtrl})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm/service/account", nil)
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+	GetLLMServiceAccountHandler(identity, system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp llmServiceAccountResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status == nil || len(resp.Status.CreditGrants) != 1 {
+		t.Fatalf("credit grants = %+v", resp.Status)
+	}
+	if grant := resp.Status.CreditGrants[0]; grant.Status != "queued" || grant.Effective || grant.Active {
+		t.Fatalf("queued grant status = %+v", grant)
+	}
+	if resp.Status.Active || resp.Status.CreditsRemaining != 0 || resp.Status.CreditsAvailable != 0 {
+		t.Fatalf("queued card should not activate current service or balance: %+v", resp.Status)
+	}
+}
+
+func containsStringFold(items []string, want string) bool {
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item), want) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestGetLLMServiceAccountHandlerKeepsPeriodLimitedGrantVisible(t *testing.T) {

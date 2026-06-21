@@ -237,12 +237,15 @@ func standalonePythonURLs() ([]string, error) {
 	}
 
 	const githubBase = "https://github.com/astral-sh/python-build-standalone/releases/download/20250106"
-	// npmmirror 官方镜像（中国大陆 CDN 加速）。路径格式: /binaries/python-build-standalone/{release_tag}/{filename}
+	// npmmirror 官方镜像（中国大陆 CDN 加速）
 	const npmmirrorBase = "https://cdn.npmmirror.com/binaries/python-build-standalone/20250106"
+	// cnb.cool（码云 GitBoat）GitHub Release 镜像（中国大陆可达）
+	const cnbBase = "https://cnb.cool/astral-sh/python-build-standalone/-/releases/download/20250106"
 
 	if useChinaMirror.Load() {
 		return []string{
 			npmmirrorBase + "/" + filename,
+			cnbBase + "/" + filename,
 			githubBase + "/" + filename,
 		}, nil
 	}
@@ -283,10 +286,15 @@ func uvInstallURLs() ([]string, error) {
 	const githubBase = "https://github.com/astral-sh/uv/releases/latest/download"
 	// astral.sh 官方 CDN（不走 GitHub 域名，对中国大陆更友好）
 	const astralCDN = "https://releases.astral.sh/github/uv/releases/latest/download"
+	// cnb.cool（码云 GitBoat）GitHub Release 镜像（中国大陆可达）
+	// Note: cnb.cool 用 latest tag 路径可能不支持，用固定 tag 更可靠，但 uv 版本更新频繁
+	// 这里用 latest 语义——如果 cnb.cool 不支持 latest redirect，会 404 然后 fallback
+	const cnbBase = "https://cnb.cool/astral-sh/uv/-/releases/latest/download"
 
 	if useChinaMirror.Load() {
 		return []string{
 			astralCDN + "/" + filename,
+			cnbBase + "/" + filename,
 			githubBase + "/" + filename,
 		}, nil
 	}

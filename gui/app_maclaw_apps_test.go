@@ -167,6 +167,76 @@ func TestSubmitMaclawAppPackagePersistsNormalizedWorkspaceLayout(t *testing.T) {
 		t.Fatalf("expected default tool workspace layout in queued package: %#v", defaultUI)
 	}
 }
+func TestSubmitMaclawAppPackageRecordsGovernanceReviewIssues(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	pkg := `{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [{
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {"id": "missing-governance", "name": "Missing Governance", "kind": "tool_app"}
+		}]
+	}`
+
+	result, err := app.SubmitMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
+	}
+	if result["review_issue_count"] != 2 {
+		t.Fatalf("expected two local governance issues, got %#v", result)
+	}
+	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
+	if err != nil {
+		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
+	}
+	if len(detail.ReviewIssues) != 2 {
+		t.Fatalf("expected review issues in durable queue: %#v", detail.ReviewIssues)
+	}
+	paths := map[string]string{}
+	for _, issue := range detail.ReviewIssues {
+		paths[issue.Path] = issue.Severity
+	}
+	if paths["apps[0].app.governance"] != "warning" || paths["apps[0].app.governance.testEvidence"] != "error" {
+		t.Fatalf("unexpected governance review issues: %#v", detail.ReviewIssues)
+	}
+}
+
+func TestSubmitMaclawAppPackageAcceptsCompleteGovernanceEvidence(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	pkg := `{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [{
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {
+				"id": "complete-governance",
+				"name": "Complete Governance",
+				"kind": "tool_app",
+				"governance": {
+					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"tool_workspace", "template":"document_workspace", "regionCount":4},
+					"testEvidence": {"runId":"run-1", "artifactPresent":true, "artifactCount":1, "verifiedAt":"2026-06-17T01:00:00Z"}
+				}
+			}
+		}]
+	}`
+
+	result, err := app.SubmitMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
+	}
+	if result["review_issue_count"] != 0 {
+		t.Fatalf("expected no governance review issues, got %#v", result)
+	}
+	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
+	if err != nil {
+		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
+	}
+	if len(detail.ReviewIssues) != 0 {
+		t.Fatalf("expected clean governance queue record: %#v", detail.ReviewIssues)
+	}
+}
 func TestSubmitMaclawAppPackageRejectsInvalidManifest(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	if _, err := app.SubmitMaclawAppPackage(`{"schema":"maclaw.app.v1","privateMarker":"x_maclaw_apps"}`); err == nil {
@@ -1031,6 +1101,12 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 			"name": "Expense Approval",
 			"version": "1.2.3",
 			"kind": "enterprise_approval_app",
+			"governance": {
+				"status": "local_tested",
+				"riskLevel": "medium",
+				"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "template":"classic_split", "density":"comfortable", "regionCount":4},
+				"testEvidence": {"runId":"run-expense-1", "artifactPresent":true, "verifiedAt":"2026-06-17T01:00:00Z"}
+			},
 			"binding": {
 				"appSkill": { "id": "expense-super-skill", "version": "1.0.0" },
 				"datasrv": { "domain": "finance", "datasetID": "finance.expense_forms", "templateID": "finance.expenses" },
@@ -1084,6 +1160,17 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	workflowIDs, ok := metadata["workflow_skill_ids"].([]interface{})
 	if !ok || len(workflowIDs) != 1 || workflowIDs[0] != "expense-workflow" {
 		t.Fatalf("registration metadata missing workflow skill ids: %#v", metadata)
+	}
+	if metadata["workspace_layout_entry"] != "approval_workspace" || metadata["workspace_layout_template"] != "classic_split" || metadata["workspace_layout_density"] != "comfortable" {
+		t.Fatalf("registration metadata missing workspace layout summary: %#v", metadata)
+	}
+	workspaceLayout, ok := metadata["workspace_layout"].(map[string]interface{})
+	if !ok || workspaceLayout["entry"] != "approval_workspace" || workspaceLayout["template"] != "classic_split" {
+		t.Fatalf("registration metadata missing workspace layout payload: %#v", metadata)
+	}
+	governance, ok := metadata["governance"].(map[string]interface{})
+	if !ok || metadata["governance_status"] != "local_tested" || metadata["governance_risk_level"] != "medium" || governance["status"] != "local_tested" {
+		t.Fatalf("registration metadata missing governance snapshot: %#v", metadata)
 	}
 	dependencies, ok := metadata["dependencies"].([]interface{})
 	if !ok || len(dependencies) != 2 || metadata["dependency_count"] != float64(2) || metadata["has_missing_required_dependency"] != true || metadata["has_blocking_dependency"] != true {

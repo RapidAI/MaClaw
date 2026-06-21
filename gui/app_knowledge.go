@@ -35,23 +35,34 @@ func (a *App) knowledgeDBPath() string {
 	return filepath.Join(a.GetDataDir(), "knowledge.db")
 }
 
-// KnowledgeClearAll removes all knowledge base content by deleting the database file.
-// The database will be recreated automatically on next access.
+// KnowledgeClearAll removes all knowledge base content by deleting all records
+// and running VACUUM to reclaim disk space. This avoids file-lock conflicts on
+// Windows where deleting an open database file fails.
 func (a *App) KnowledgeClearAll() error {
-	// Close the cached auto-recall store before deleting the DB
-	CloseAutoRecallStore()
-	dbPath := a.knowledgeDBPath()
-	// Remove main DB file and any SQLite auxiliary files (-wal, -shm, -journal)
-	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
-		p := dbPath + suffix
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove %s: %w", p, err)
-		}
+	// If the DB file doesn't exist, there's nothing to clear.
+	if _, err := os.Stat(a.knowledgeDBPath()); os.IsNotExist(err) {
+		return nil
 	}
-	// Reset the source count cache so hasKnowledgeSources returns false immediately
+
+	// Close the cached auto-recall store so it doesn't hold stale data
+	// and to avoid it reading partially-cleared state during purge.
+	CloseAutoRecallStore()
+
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return fmt.Errorf("open knowledge store for purge: %w", err)
+	}
+	defer store.Close()
+
+	ctx := a.knowledgeContext()
+	if err := store.PurgeAll(ctx); err != nil {
+		return fmt.Errorf("purge knowledge base: %w", err)
+	}
+
+	// Reset the source count cache so hasKnowledgeSources returns false immediately.
 	atomic.StoreInt64(&knowledgeSourceCountCache, 0)
 	atomic.StoreInt64(&knowledgeSourceCountTime, time.Now().Unix())
-	log.Printf("[knowledge] ClearAll: database removed at %s", dbPath)
+	log.Printf("[knowledge] ClearAll: all records deleted and database vacuumed")
 	return nil
 }
 

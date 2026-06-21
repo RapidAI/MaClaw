@@ -1752,13 +1752,30 @@ type DataSrvCapabilityItem = {
     description?: string;
 };
 
+type DataSrvAppInstallationItem = {
+    app_id?: string;
+    appId?: string;
+    blueprint_id?: string;
+    blueprintID?: string;
+    name?: string;
+    version?: string | number;
+    kind?: string;
+    source?: string;
+    role_bindings?: Array<Record<string, any>>;
+    roleBindings?: Array<Record<string, any>>;
+    metadata?: Record<string, any>;
+};
+
 function buildDataSrvAppCandidates(caps: any): AppEntry[] {
     const domains = Array.isArray(caps?.domains) ? caps.domains.filter((domain: any) => typeof domain === 'string' && domain.trim()) : [];
     const actions = Array.isArray(caps?.business_actions) ? caps.business_actions as DataSrvCapabilityItem[] : [];
     const views = Array.isArray(caps?.business_views) ? caps.business_views as DataSrvCapabilityItem[] : [];
     const reports = Array.isArray(caps?.reports) ? caps.reports as DataSrvCapabilityItem[] : [];
     const dashboards = Array.isArray(caps?.dashboards) ? caps.dashboards as DataSrvCapabilityItem[] : [];
-    return domains.slice(0, 12).map((domain: string) => {
+    const installedApps = Array.isArray(caps?.app_installations) ? caps.app_installations as DataSrvAppInstallationItem[] : Array.isArray(caps?.appInstallations) ? caps.appInstallations as DataSrvAppInstallationItem[] : [];
+    const installedCandidates = installedApps.map((item) => dataSrvInstalledAppCandidate(item)).filter((item): item is AppEntry => !!item);
+    const installedDomains = new Set(installedCandidates.map((app) => app.manifest?.datasrv?.domain).filter(Boolean));
+    const domainCandidates = domains.slice(0, 12).filter((domain: string) => !installedDomains.has(domain)).map((domain: string) => {
         const action = actions.find((item) => item.domain === domain);
         const view = views.find((item) => item.domain === domain);
         const report = reports.find((item) => item.domain === domain);
@@ -1776,6 +1793,70 @@ function buildDataSrvAppCandidates(caps: any): AppEntry[] {
             manifest: makeDataSrvManifest(domain, action?.id || '', view?.id || '', report?.id || '', dashboard?.id || ''),
         };
     });
+    return [...installedCandidates, ...domainCandidates];
+}
+
+function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntry | null {
+    const appID = String(item?.app_id || item?.appId || '').trim();
+    const name = String(item?.name || appID).trim();
+    if (!appID || !name) return null;
+    const metadata = item.metadata && typeof item.metadata === 'object' ? item.metadata : {};
+    const roleBindings = Array.isArray(item.role_bindings) ? item.role_bindings : Array.isArray(item.roleBindings) ? item.roleBindings : [];
+    const primaryBinding = roleBindings[0] || {};
+    const domain = String(primaryBinding.domain || metadata.domain || '').trim() || appID.split('.')[0] || 'business';
+    const kind = normalizeAppKind(item.kind || metadata.kind || 'enterprise_normal_app');
+    const workflowIDs = Array.isArray(metadata.workflow_skill_ids) ? metadata.workflow_skill_ids.map((id: unknown) => String(id || '').trim()).filter(Boolean) : [];
+    const dependencies = normalizeAppDependencies({ skills: metadata.dependencies }).skills || [];
+    const workflowDependencies: AppSkillDependency[] = workflowIDs.map((id) => ({ id, kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }));
+    const appSkillID = String(metadata.app_skill_id || '').trim();
+    const appSkillVersion = String(metadata.app_skill_version || '').trim();
+    return {
+        id: `datasrv-installed-${appID}`,
+        name,
+        description: String(metadata.description || `${name} DataSrv installed application.`),
+        category: domainCategory(domain),
+        kind,
+        icon: domainIcon(domain),
+        accent: domainAccent(domain),
+        source: 'datasrv',
+        version: normalizeAppVersion(item.version),
+        manifest: {
+            schema: 'maclaw.app.v1',
+            installUnit: 'enterprise_app_pack',
+            privateMarker: 'x_maclaw_apps',
+            entryKind: kind,
+            launchMode: defaultLaunchModeForKind(kind),
+            datasrv: {
+                domain,
+                datasetID: String(primaryBinding.dataset_id || primaryBinding.datasetID || '').trim() || undefined,
+                objectRole: String(primaryBinding.object_role || primaryBinding.objectRole || '').trim() || undefined,
+                blueprintID: String(item.blueprint_id || item.blueprintID || '').trim() || undefined,
+                templateID: String(primaryBinding.template_id || primaryBinding.templateID || '').trim() || undefined,
+            },
+            appSkill: appSkillID ? { id: appSkillID, version: appSkillVersion || undefined, source: 'hub' } : undefined,
+            dependencies: dependencies.length || workflowDependencies.length ? { skills: [...dependencies, ...workflowDependencies] } : undefined,
+            mis: kind === 'enterprise_approval_app' && workflowIDs.length > 0 ? { approvalBindings: [{ event: `${domain}.submitted`, workflowSkillId: workflowIDs[0], objectRole: String(primaryBinding.object_role || primaryBinding.objectRole || '').trim() || domain }] } : undefined,
+            ui: dataSrvInstalledWorkspaceLayout(metadata, kind),
+        },
+    };
+}
+
+function dataSrvInstalledWorkspaceLayout(metadata: Record<string, any>, kind: AppKind): AppWorkspaceLayout {
+    const base = defaultWorkspaceLayoutForKind(kind);
+    const raw = metadata.workspace_layout && typeof metadata.workspace_layout === 'object' ? metadata.workspace_layout : metadata.workspaceLayout && typeof metadata.workspaceLayout === 'object' ? metadata.workspaceLayout : {};
+    const entry = String(raw.entry || metadata.workspace_layout_entry || base.entry || workspaceEntryForKind(kind)).trim();
+    const currentLayouts = base.layouts || {};
+    const currentLayout = { ...(currentLayouts[entry] || currentLayouts[base.entry || workspaceEntryForKind(kind)] || {}) };
+    const layout = {
+        ...currentLayout,
+        ...(String(raw.template || metadata.workspace_layout_template || '').trim() ? { template: String(raw.template || metadata.workspace_layout_template).trim() } : {}),
+        ...(String(raw.density || metadata.workspace_layout_density || '').trim() ? { density: String(raw.density || metadata.workspace_layout_density).trim() } : {}),
+        ...(String(raw.primary_region || raw.primaryRegion || '').trim() ? { primaryRegion: String(raw.primary_region || raw.primaryRegion).trim() } : {}),
+        ...(String(raw.output_region || raw.outputRegion || '').trim() ? { outputRegion: String(raw.output_region || raw.outputRegion).trim() } : {}),
+        ...(Array.isArray(raw.regions) && raw.regions.length > 0 ? { regions: raw.regions } : {}),
+        studio: { ...(currentLayout.studio || {}), savedInManifest: true, importedFromDataSrv: true },
+    };
+    return { ...base, entry, layouts: { ...currentLayouts, [entry]: layout } };
 }
 
 function domainTitle(domain: string) {

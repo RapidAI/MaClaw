@@ -165,6 +165,9 @@ function formatGrantSource(
         const cardKind = hasPeriodLimits(grant) ? formatPeriodCardKind(grant, t) : t("point card", "点卡", "點卡");
         return t(`Recharge card (${cardKind})`, `充值卡（${cardKind}）`, `儲值卡（${cardKind}）`);
     }
+    if (key === "hubcenter_compute") {
+        return t("HubCenter compute card", "HubCenter 算力卡");
+    }
     if (key === "default_new_user_backfill") {
         return t("New user gift", "新用户赠送", "新用戶贈送");
     }

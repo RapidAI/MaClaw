@@ -457,9 +457,6 @@ func (a *App) CheckEnvironment(force bool) {
 			config, err := a.LoadConfig()
 			if err == nil {
 				if config.PauseEnvCheck && config.EnvCheckDone {
-					// Even when env check is "done", always verify core tools
-					// are still accessible. Detection is <100ms, free to run every startup.
-					// Only skip the full installation flow if everything is present.
 					coreMissing := a.detectMissingCoreTools()
 					if coreMissing == "" {
 						a.log(a.tr("Skipping base environment check (core tools verified)."))
@@ -468,145 +465,61 @@ func (a *App) CheckEnvironment(force bool) {
 						return
 					}
 					a.log(a.tr("Core tool missing: %s. Re-running environment setup...", coreMissing))
-					// Fall through to full environment check below
 				}
 			}
 		}
 
-		// ===== Check and Install Visual C++ Redistributable =====
-		a.log(a.tr("Checking Visual C++ Redistributable..."))
+		// Each component is installed independently — one failure does not block others.
+		// Track overall success to decide whether to mark env_check_done.
+		allSuccess := true
+
+		// ===== 1. Visual C++ Redistributable =====
+		a.log(a.tr("[1/4] Checking Visual C++ Redistributable..."))
 		if !a.isVCRedistInstalled() {
 			a.log(a.tr("Visual C++ Redistributable not found. Installing..."))
 			if err := a.installVCRedist(); err != nil {
 				a.log(a.tr("WARNING: Failed to install VC Redistributable: %v", err))
+				// Non-critical: continue with other components
 			} else {
-				a.log(a.tr("-Visual C++ Redistributable installed successfully."))
+				a.log(a.tr("✓ Visual C++ Redistributable installed successfully."))
 			}
 		} else {
-			a.log(a.tr("-Visual C++ Redistributable is already installed."))
+			a.log(a.tr("✓ Visual C++ Redistributable is already installed."))
 		}
 
-		a.log(a.tr("Checking Node.js..."))
-
-		nodeCmd := exec.Command("node", "--version")
-		nodeCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		nodeOutput, nodeErr := nodeCmd.Output()
-		nodeInstalled := nodeErr == nil
-
-		if !nodeInstalled {
-			a.installMutex.Lock()
-			if a.installingNode {
-				a.log(a.tr("Node.js installation already in progress, waiting for completion..."))
-				a.installMutex.Unlock()
-				select {
-				case <-a.nodeInstallDone:
-					a.log(a.tr("Node.js installation completed by another process."))
-					nodeInstalled = true
-				case <-time.After(10 * time.Minute):
-					a.log(a.tr("ERROR: Timeout waiting for Node.js installation to complete."))
-					a.emitEvent("env-check-done")
-					return
-				}
-			} else {
-				a.installingNode = true
-				a.installMutex.Unlock()
-
-				a.log(a.tr("Node.js not found. Downloading and installing..."))
-				if err := a.installNodeJS(); err != nil {
-					a.log(a.tr("Failed to install Node.js: ") + err.Error())
-					a.installMutex.Lock()
-					a.installingNode = false
-					a.installMutex.Unlock()
-					a.emitEvent("env-check-done")
-					return
-				}
-				a.log(a.tr("Node.js installed successfully."))
-
-				a.installMutex.Lock()
-				a.installingNode = false
-				a.installMutex.Unlock()
-
-				select {
-				case a.nodeInstallDone <- true:
-				default:
-				}
-				nodeInstalled = true
-			}
+		// ===== 2. Node.js =====
+		a.log(a.tr("[2/4] Checking Node.js..."))
+		nodeInstalled := a.ensureNodeJS()
+		if nodeInstalled {
+			a.updatePathForNode()
 		} else {
-			a.log(a.tr("-Node.js found: %s", strings.TrimSpace(string(nodeOutput))))
-			nodeInstalled = true
+			a.log(a.tr("WARNING: Node.js installation failed. Some features may not work."))
+			allSuccess = false
+			// Continue — Python and Git don't depend on Node.js
 		}
 
-		if !nodeInstalled {
-			a.log(a.tr("ERROR: Node.js is not available. Cannot proceed."))
-			a.emitEvent("env-check-done")
-			return
+		// ===== 3. Git =====
+		a.log(a.tr("[3/4] Checking Git..."))
+		a.ensureGit()
+
+		// ===== 4. Python =====
+		if nodeInstalled {
+			a.ensureLocalNodeBinary()
 		}
-
-		a.updatePathForNode()
-
-		// Check for Git
-		a.log(a.tr("Checking Git..."))
-		if gitPath, err := exec.LookPath("git"); err == nil {
-			gitCmd := exec.Command(gitPath, "--version")
-			gitCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-			if out, err := gitCmd.Output(); err == nil {
-				a.log(a.tr("-Git found: %s", strings.TrimSpace(string(out))))
-			} else {
-				a.log(a.tr("-Git found at: %s", gitPath))
-			}
-		} else {
-			gitFound := false
-			if _, err := os.Stat(`C:\Program Files\Git\cmd\git.exe`); err == nil {
-				gitFound = true
-			}
-
-			if gitFound {
-				a.updatePathForGit()
-				a.log(a.tr("-Git found in standard location."))
-			} else {
-				a.installMutex.Lock()
-				if a.installingGit {
-					a.log(a.tr("Git installation already in progress, skipping..."))
-					a.installMutex.Unlock()
-					time.Sleep(5 * time.Second)
-				} else {
-					a.installingGit = true
-					a.installMutex.Unlock()
-
-					a.log(a.tr("Git not found. Downloading and installing..."))
-					if err := a.installGitBash(); err != nil {
-						a.log("Failed to install Git: " + err.Error())
-						a.installMutex.Lock()
-						a.installingGit = false
-						a.installMutex.Unlock()
-					} else {
-						a.log(a.tr("-Git installed successfully."))
-						a.updatePathForGit()
-						a.installMutex.Lock()
-						a.installingGit = false
-						a.installMutex.Unlock()
-					}
-				}
-			}
-		}
-
-		a.ensureLocalNodeBinary()
 
 		// Configure China mirror for Python/uv downloads based on user language
 		if normalizeAppLanguageKind(a.CurrentLanguage).IsChinese() {
 			pyenv.SetUseChinaMirror(true)
 		}
 
-		// ===== Check and Install Python =====
-		a.log(a.tr("Checking Python environment..."))
+		a.log(a.tr("[4/4] Checking Python environment..."))
 		pySt := pyenv.Detect()
 		if pySt.Available {
 			label := "system"
 			if pySt.IsPrivate {
 				label = "private"
 			}
-			a.log(a.tr("-Python found: v%s (%s) → %s", pySt.Version, label, pySt.PythonPath))
+			a.log(a.tr("✓ Python found: v%s (%s) → %s", pySt.Version, label, pySt.PythonPath))
 		} else {
 			a.log(a.tr("Python >= 3.10 not found. Installing private Python + uv ..."))
 			a.emitEvent("python-install-start")
@@ -618,8 +531,9 @@ func (a *App) CheckEnvironment(force bool) {
 			})
 			if pySt.Error != "" {
 				a.log(a.tr("WARNING: Python environment setup failed: %s", pySt.Error))
+				allSuccess = false
 			} else {
-				a.log(a.tr("-Python %s installed with venv: %s", pySt.Version, pySt.VenvPath))
+				a.log(a.tr("✓ Python %s installed with venv: %s", pySt.Version, pySt.VenvPath))
 			}
 			a.emitEvent("python-install-done", map[string]interface{}{
 				"available": pySt.Available,
@@ -628,18 +542,13 @@ func (a *App) CheckEnvironment(force bool) {
 			})
 		}
 
-		a.log(a.tr("-Base environment check complete."))
+		a.log(a.tr("— Base environment check complete."))
 
-		// Only mark env check done if Python is available.
-		// If Python installation failed (network issues etc.), leave env_check_done=false
-		// so the next startup will re-attempt installation.
-		if pySt.Available {
+		// Only mark env check done if all critical components are available.
+		if allSuccess {
 			_, _ = a.PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})
 		} else {
-			a.log(a.tr("Python not available — environment check will retry on next startup."))
-			// Do NOT set pause_env_check here — keep whatever the user had.
-			// env_check_done=false ensures Windows path re-runs full check;
-			// Darwin/Linux rely on detectMissingCoreTools regardless of env_check_done.
+			a.log(a.tr("Some components failed — environment check will retry on next startup."))
 		}
 
 		a.emitEvent("env-check-done")
@@ -647,6 +556,100 @@ func (a *App) CheckEnvironment(force bool) {
 		// Always start background tool check/update after base environment is ready
 		go a.installToolsInBackground()
 	}()
+}
+
+// ensureNodeJS checks and installs Node.js. Returns true if Node.js is available after this call.
+func (a *App) ensureNodeJS() bool {
+	nodeCmd := exec.Command("node", "--version")
+	nodeCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	nodeOutput, nodeErr := nodeCmd.Output()
+
+	if nodeErr == nil {
+		a.log(a.tr("✓ Node.js found: %s", strings.TrimSpace(string(nodeOutput))))
+		return true
+	}
+
+	a.installMutex.Lock()
+	if a.installingNode {
+		a.log(a.tr("Node.js installation already in progress, waiting for completion..."))
+		a.installMutex.Unlock()
+		select {
+		case <-a.nodeInstallDone:
+			a.log(a.tr("Node.js installation completed by another process."))
+			return true
+		case <-time.After(10 * time.Minute):
+			a.log(a.tr("ERROR: Timeout waiting for Node.js installation to complete."))
+			return false
+		}
+	}
+
+	a.installingNode = true
+	a.installMutex.Unlock()
+
+	a.log(a.tr("Node.js not found. Downloading and installing..."))
+	if err := a.installNodeJS(); err != nil {
+		a.log(a.tr("Failed to install Node.js: ") + err.Error())
+		a.installMutex.Lock()
+		a.installingNode = false
+		a.installMutex.Unlock()
+		return false
+	}
+	a.log(a.tr("✓ Node.js installed successfully."))
+
+	a.installMutex.Lock()
+	a.installingNode = false
+	a.installMutex.Unlock()
+
+	select {
+	case a.nodeInstallDone <- true:
+	default:
+	}
+	return true
+}
+
+// ensureGit checks and installs Git. Git failure is non-critical.
+func (a *App) ensureGit() {
+	if gitPath, err := exec.LookPath("git"); err == nil {
+		gitCmd := exec.Command(gitPath, "--version")
+		gitCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		if out, err := gitCmd.Output(); err == nil {
+			a.log(a.tr("✓ Git found: %s", strings.TrimSpace(string(out))))
+		} else {
+			a.log(a.tr("✓ Git found at: %s", gitPath))
+		}
+		return
+	}
+
+	// Check standard install location not in PATH
+	if _, err := os.Stat(`C:\Program Files\Git\cmd\git.exe`); err == nil {
+		a.updatePathForGit()
+		a.log(a.tr("✓ Git found in standard location."))
+		return
+	}
+
+	a.installMutex.Lock()
+	if a.installingGit {
+		a.log(a.tr("Git installation already in progress, skipping..."))
+		a.installMutex.Unlock()
+		time.Sleep(5 * time.Second)
+		return
+	}
+	a.installingGit = true
+	a.installMutex.Unlock()
+
+	a.log(a.tr("Git not found. Downloading and installing..."))
+	if err := a.installGitBash(); err != nil {
+		a.log(a.tr("WARNING: Failed to install Git: %v", err))
+		a.installMutex.Lock()
+		a.installingGit = false
+		a.installMutex.Unlock()
+		return
+	}
+	a.log(a.tr("✓ Git installed successfully."))
+	a.updatePathForGit()
+	a.installMutex.Lock()
+	a.installingGit = false
+	a.installMutex.Unlock()
 }
 
 // installToolsInBackground checks, installs and updates AI tools in background
@@ -1057,47 +1060,23 @@ func (a *App) installNodeJS() error {
 	nodeVersion := corelib.RequiredNodeVersion
 	fileName := fmt.Sprintf("node-v%s-%s.msi", nodeVersion, nodeArch)
 
+	// Build prioritized URL list based on user region
 	officialURL := fmt.Sprintf("https://nodejs.org/dist/v%s/%s", nodeVersion, fileName)
-	downloadURL := officialURL
-
+	var urls []string
 	if normalizeAppLanguageKind(a.CurrentLanguage).IsChinese() && nodeArch != "arm64" {
-		mirrorURL := fmt.Sprintf("https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v%s/%s", nodeVersion, fileName)
-		a.log(a.tr("Trying China mirror for faster download..."))
-
-		client := &http.Client{Timeout: 10 * time.Second}
-		headReq, _ := http.NewRequest("HEAD", mirrorURL, nil)
-		headReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-		headResp, err := client.Do(headReq)
-		if err == nil && headResp.StatusCode == http.StatusOK {
-			downloadURL = mirrorURL
-			a.log(a.tr("Using China mirror: %s", mirrorURL))
-		} else {
-			a.log(a.tr("China mirror not available for this version, falling back to official source"))
-		}
-		if headResp != nil {
-			headResp.Body.Close()
-		}
+		tunaURL := fmt.Sprintf("https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v%s/%s", nodeVersion, fileName)
+		npmmirrorURL := fmt.Sprintf("https://cdn.npmmirror.com/binaries/node/v%s/%s", nodeVersion, fileName)
+		urls = []string{tunaURL, npmmirrorURL, officialURL}
+	} else {
+		urls = []string{officialURL}
 	}
 
 	a.log(a.tr("Downloading Node.js %s for %s...", nodeVersion, nodeArch))
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	headReq, _ := http.NewRequest("HEAD", downloadURL, nil)
-	headReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	headResp, err := client.Do(headReq)
-	if err != nil || headResp.StatusCode != http.StatusOK {
-		status := "Unknown"
-		if headResp != nil {
-			status = headResp.Status
-		}
-		return fmt.Errorf("%s", a.tr("Node.js installer is not accessible (Status: %s). Please check your internet connection or mirror availability.", status))
-	}
-	headResp.Body.Close()
-
 	tempDir := a.GetTempDir()
 	msiPath := filepath.Join(tempDir, fileName)
 
-	if err := a.downloadFile(msiPath, downloadURL); err != nil {
+	if err := a.downloadFileWithRetry(msiPath, urls); err != nil {
 		return fmt.Errorf("error downloading Node.js installer: %w", err)
 	}
 
@@ -1333,9 +1312,15 @@ func (a *App) installGitBash() error {
 	fullVersion := "v2.52.0.windows.1"
 	fileName := fmt.Sprintf("Git-%s-64-bit.exe", gitVersion)
 
-	downloadURL := fmt.Sprintf("https://github.com/git-for-windows/git/releases/download/%s/%s", fullVersion, fileName)
+	// Build prioritized URL list based on user region
+	githubURL := fmt.Sprintf("https://github.com/git-for-windows/git/releases/download/%s/%s", fullVersion, fileName)
+	npmmirrorURL := fmt.Sprintf("https://npmmirror.com/mirrors/git-for-windows/%s/%s", fullVersion, fileName)
+
+	var urls []string
 	if normalizeAppLanguageKind(a.CurrentLanguage).IsChinese() {
-		downloadURL = fmt.Sprintf("https://npmmirror.com/mirrors/git-for-windows/%s/%s", fullVersion, fileName)
+		urls = []string{npmmirrorURL, githubURL}
+	} else {
+		urls = []string{githubURL, npmmirrorURL}
 	}
 
 	a.log(a.tr("Downloading Git %s...", gitVersion))
@@ -1343,7 +1328,7 @@ func (a *App) installGitBash() error {
 	tempDir := a.GetTempDir()
 	exePath := filepath.Join(tempDir, fileName)
 
-	if err := a.downloadFile(exePath, downloadURL); err != nil {
+	if err := a.downloadFileWithRetry(exePath, urls); err != nil {
 		return fmt.Errorf("error downloading Git installer: %w", err)
 	}
 
@@ -1410,8 +1395,67 @@ func (a *App) installGitBash() error {
 	return nil
 }
 
-func (a *App) downloadFile(filepath string, url string) error {
-	a.log(fmt.Sprintf("Requesting URL: %s", url))
+func (a *App) downloadFile(destPath string, url string) error {
+	return a.downloadFileWithRetry(destPath, []string{url})
+}
+
+// downloadFileWithRetry downloads from multiple URLs with retry and fallback.
+// Used by Node.js, Git, and VC++ installers.
+func (a *App) downloadFileWithRetry(destPath string, urls []string) error {
+	if len(urls) == 0 {
+		return fmt.Errorf("no download URLs provided")
+	}
+
+	var lastErr error
+	for i, url := range urls {
+		const maxRetries = 2
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			if attempt > 0 {
+				backoff := time.Duration(3*(1<<(attempt-1))) * time.Second
+				a.log(a.tr("Download failed, retrying in %ds (%d/%d)...", int(backoff.Seconds()), attempt, maxRetries))
+				time.Sleep(backoff)
+			}
+
+			err := a.downloadFileSingle(destPath, url)
+			if err == nil {
+				return nil
+			}
+			lastErr = err
+
+			// Unrecoverable errors: switch to next source immediately
+			if a.isDownloadUnrecoverable(err) && i < len(urls)-1 {
+				a.log(a.tr("Source %d unavailable, trying next source...", i+1))
+				break
+			}
+		}
+	}
+	return lastErr
+}
+
+// isDownloadUnrecoverable checks if a download error should trigger immediate fallback.
+func (a *App) isDownloadUnrecoverable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	patterns := []string{
+		"connection refused", "connection reset", "no such host",
+		"network is unreachable", "tls handshake timeout",
+		"connectex:", "wsarecv:", "certificate",
+		"host unreachable", "no route to host",
+		"status: 403", "status: 404", "status: 401",
+	}
+	for _, pat := range patterns {
+		if strings.Contains(msg, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+// downloadFileSingle performs a single HTTP download attempt with proper timeouts.
+func (a *App) downloadFileSingle(destPath string, url string) error {
+	a.log(fmt.Sprintf("Downloading: %s", url))
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -1425,49 +1469,48 @@ func (a *App) downloadFile(filepath string, url string) error {
 		DisableKeepAlives:     true,
 	}
 
-	client := &http.Client{Transport: transport}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   15 * time.Minute, // Total download timeout — prevents infinite hang
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("network error during download: %v. Please check your internet connection or firewall settings.", err)
+		return fmt.Errorf("network error: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.Request.URL.String() != url {
-		a.log(fmt.Sprintf("Redirected to: %s", resp.Request.URL.String()))
-	}
-
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status: %s. The file might not be available on this server.", resp.Status)
+		return fmt.Errorf("download failed with status: %s", resp.Status)
 	}
 
 	size := resp.ContentLength
-	out, err := os.Create(filepath)
+	out, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("failed to create local file: %w", err)
 	}
 	defer out.Close()
 
 	var downloaded int64
-	buffer := make([]byte, 32768)
+	buffer := make([]byte, 64*1024)
 	lastReport := time.Now()
 
 	for {
-		n, err := resp.Body.Read(buffer)
+		n, readErr := resp.Body.Read(buffer)
 		if n > 0 {
 			out.Write(buffer[:n])
 			downloaded += int64(n)
-			if size > 0 && time.Since(lastReport) > 500*time.Millisecond {
+			if size > 0 && time.Since(lastReport) > 2*time.Second {
 				percent := float64(downloaded) / float64(size) * 100
-				a.log(a.tr("Downloading (%.1f%%): %d/%d bytes", percent, downloaded, size))
+				a.log(a.tr("Downloading... %.1f%% (%.1f MB)", percent, float64(downloaded)/(1024*1024)))
 				lastReport = time.Now()
 			}
 		}
-		if err == io.EOF {
+		if readErr == io.EOF {
 			break
 		}
-		if err != nil {
-			return fmt.Errorf("interrupted download: %v. The connection was lost during data transfer.", err)
+		if readErr != nil {
+			return fmt.Errorf("download interrupted: %v", readErr)
 		}
 	}
 

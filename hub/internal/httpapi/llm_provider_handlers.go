@@ -980,7 +980,7 @@ func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.Sys
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
-		mergeHubCenterAuthorizationGrants(ctx, status, principal.TenantID)
+		mergeHubCenterAuthorizationGrants(ctx, system, status, principal.TenantID)
 		providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
@@ -1008,7 +1008,7 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
-		mergeHubCenterAuthorizationGrants(ctx, status, principal.TenantID)
+		mergeHubCenterAuthorizationGrants(ctx, system, status, principal.TenantID)
 		providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
@@ -1027,7 +1027,7 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 	}
 }
 
-func mergeHubCenterAuthorizationGrants(ctx context.Context, status *llmservice.ServiceStatus, tenantID string) {
+func mergeHubCenterAuthorizationGrants(ctx context.Context, system store.SystemSettingsRepository, status *llmservice.ServiceStatus, tenantID string) {
 	if status == nil {
 		return
 	}
@@ -1039,6 +1039,8 @@ func mergeHubCenterAuthorizationGrants(ctx context.Context, status *llmservice.S
 	if authStatus == nil || len(authStatus.Authorizations) == 0 {
 		return
 	}
+	now := time.Now().UTC()
+	reg, _ := llmservice.LoadRegistry(ctx, system)
 	existing := map[string]struct{}{}
 	for _, grant := range status.CreditGrants {
 		for _, key := range activeGrantIdentityKeys(grant) {
@@ -1047,7 +1049,7 @@ func mergeHubCenterAuthorizationGrants(ctx context.Context, status *llmservice.S
 	}
 	added := false
 	for _, auth := range authStatus.Authorizations {
-		grant, ok := activeGrantFromHubCenterAuthorization(auth)
+		grant, ok := activeGrantFromHubCenterAuthorization(auth, now)
 		if !ok {
 			continue
 		}
@@ -1065,6 +1067,9 @@ func mergeHubCenterAuthorizationGrants(ctx context.Context, status *llmservice.S
 		if grant.Active {
 			status.ActiveGrants = append(status.ActiveGrants, grant)
 		}
+		if grant.Effective {
+			appendHubCenterServiceGroup(status, reg, grant.ServiceGroupID)
+		}
 		for _, key := range activeGrantIdentityKeys(grant) {
 			existing[key] = struct{}{}
 		}
@@ -1080,9 +1085,339 @@ func mergeHubCenterAuthorizationGrants(ctx context.Context, status *llmservice.S
 		return activeGrantSortLess(status.ActiveGrants[i], status.ActiveGrants[j])
 	})
 	recalculateServiceStatusCredits(status)
+	if status.CreditsAvailable > 0 && len(status.ActiveGrants) > 0 {
+		status.Active = true
+		status.SkipLLMConfig = true
+	}
+	if status.CreditsRemaining == 0 && status.CreditsAvailable > 0 {
+		status.CreditsRemaining = status.CreditsAvailable
+	}
 }
 
-func activeGrantFromHubCenterAuthorization(auth llmservice.AuthorizationSummary) (llmservice.ActiveGrant, bool) {
+func appendHubCenterServiceGroup(status *llmservice.ServiceStatus, reg *llmservice.Registry, serviceGroupID string) {
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	if serviceGroupID == "" {
+		return
+	}
+	if !stringSliceContainsFold(status.ServiceGroupIDs, serviceGroupID) {
+		status.ServiceGroupIDs = append(status.ServiceGroupIDs, serviceGroupID)
+	}
+	name := serviceGroupID
+	if reg != nil {
+		if group := reg.FindModelServiceGroup(serviceGroupID); group != nil {
+			name = strings.TrimSpace(group.Name)
+			if name == "" {
+				name = group.ID
+			}
+			appendHubCenterAuthorizedModels(status, *group)
+		}
+	}
+	if !stringSliceContainsFold(status.ServiceGroupNames, name) {
+		status.ServiceGroupNames = append(status.ServiceGroupNames, name)
+	}
+}
+
+func appendHubCenterAuthorizedModels(status *llmservice.ServiceStatus, group llmservice.ModelServiceGroup) {
+	if len(group.Models) == 0 && llmservice.IsBuiltinServiceGroup(group.ID) {
+		appendHubCenterAuthorizedModel(status, llmservice.AuthorizedModel{
+			Name:                      "auto",
+			ProviderIDs:               []string{llmservice.MaClawOfficialProviderID},
+			ServiceGroupIDs:           []string{llmservice.MaClawOfficialServiceGroupID},
+			ProviderServiceGroups:     map[string][]string{llmservice.MaClawOfficialProviderID: []string{llmservice.MaClawOfficialServiceGroupID}},
+			ProviderCreditMultipliers: map[string]float64{llmservice.MaClawOfficialProviderID: 1},
+			CreditMultiplier:          1,
+		})
+		return
+	}
+	for _, model := range group.Models {
+		if strings.TrimSpace(model.Name) == "" {
+			continue
+		}
+		if idx := authorizedModelIndex(status.AuthorizedModels, model.Name); idx >= 0 {
+			mergeHubCenterAuthorizedModel(&status.AuthorizedModels[idx], model, group.ID)
+			if !stringSliceContainsFold(status.AvailableModels, model.Name) {
+				status.AvailableModels = append(status.AvailableModels, model.Name)
+			}
+			continue
+		}
+		status.AuthorizedModels = append(status.AuthorizedModels, llmservice.AuthorizedModel{
+			Name:                      model.Name,
+			ProviderIDs:               append([]string(nil), model.ProviderIDs...),
+			ServiceGroupIDs:           []string{group.ID},
+			CapabilityTags:            append([]string(nil), model.CapabilityTags...),
+			Priority:                  model.Priority,
+			ResolutionTier:            model.ResolutionTier,
+			CreditMultiplier:          normalizedHubCenterCreditMultiplier(model.CreditMultiplier),
+			ProviderCapabilityTags:    providerCapabilityTagsForModel(model),
+			ProviderPriorities:        providerPrioritiesForModel(model),
+			ProviderResolutionTiers:   providerResolutionTiersForModel(model),
+			ProviderServiceGroups:     providerServiceGroupsForModel(model, group.ID),
+			ProviderCreditMultipliers: providerCreditMultipliersForModel(model),
+		})
+		if !stringSliceContainsFold(status.AvailableModels, model.Name) {
+			status.AvailableModels = append(status.AvailableModels, model.Name)
+		}
+		if strings.TrimSpace(status.DefaultModel) == "" {
+			status.DefaultModel = model.Name
+		}
+	}
+}
+
+func appendHubCenterAuthorizedModel(status *llmservice.ServiceStatus, model llmservice.AuthorizedModel) {
+	if idx := authorizedModelIndex(status.AuthorizedModels, model.Name); idx >= 0 {
+		target := &status.AuthorizedModels[idx]
+		for _, providerID := range model.ProviderIDs {
+			if !stringSliceContainsFold(target.ProviderIDs, providerID) {
+				target.ProviderIDs = append(target.ProviderIDs, providerID)
+			}
+		}
+		target.CapabilityTags = mergeStringSlicesFold(target.CapabilityTags, model.CapabilityTags)
+		if model.Priority > target.Priority {
+			target.Priority = model.Priority
+		}
+		if target.ResolutionTier == 0 || (model.ResolutionTier > 0 && model.ResolutionTier < target.ResolutionTier) {
+			target.ResolutionTier = model.ResolutionTier
+		}
+		if candidate := normalizedHubCenterCreditMultiplier(model.CreditMultiplier); target.CreditMultiplier <= 0 || candidate < target.CreditMultiplier {
+			target.CreditMultiplier = candidate
+		}
+		for _, serviceGroupID := range model.ServiceGroupIDs {
+			if !stringSliceContainsFold(target.ServiceGroupIDs, serviceGroupID) {
+				target.ServiceGroupIDs = append(target.ServiceGroupIDs, serviceGroupID)
+			}
+		}
+		if target.ProviderServiceGroups == nil {
+			target.ProviderServiceGroups = map[string][]string{}
+		}
+		if target.ProviderCapabilityTags == nil {
+			target.ProviderCapabilityTags = map[string][]string{}
+		}
+		if target.ProviderPriorities == nil {
+			target.ProviderPriorities = map[string]int{}
+		}
+		if target.ProviderResolutionTiers == nil {
+			target.ProviderResolutionTiers = map[string]int{}
+		}
+		for providerID, groupIDs := range model.ProviderServiceGroups {
+			providerID = strings.ToLower(strings.TrimSpace(providerID))
+			for _, groupID := range groupIDs {
+				if !stringSliceContainsFold(target.ProviderServiceGroups[providerID], groupID) {
+					target.ProviderServiceGroups[providerID] = append(target.ProviderServiceGroups[providerID], groupID)
+				}
+			}
+		}
+		if target.ProviderCreditMultipliers == nil {
+			target.ProviderCreditMultipliers = map[string]float64{}
+		}
+		for providerID, multiplier := range model.ProviderCreditMultipliers {
+			target.ProviderCreditMultipliers[strings.ToLower(strings.TrimSpace(providerID))] = multiplier
+		}
+		for providerID, tags := range model.ProviderCapabilityTags {
+			key := strings.ToLower(strings.TrimSpace(providerID))
+			target.ProviderCapabilityTags[key] = mergeStringSlicesFold(target.ProviderCapabilityTags[key], tags)
+		}
+		for providerID, priority := range model.ProviderPriorities {
+			key := strings.ToLower(strings.TrimSpace(providerID))
+			if priority > target.ProviderPriorities[key] {
+				target.ProviderPriorities[key] = priority
+			}
+		}
+		for providerID, tier := range model.ProviderResolutionTiers {
+			key := strings.ToLower(strings.TrimSpace(providerID))
+			if existing := target.ProviderResolutionTiers[key]; existing == 0 || (tier > 0 && tier < existing) {
+				target.ProviderResolutionTiers[key] = tier
+			}
+		}
+	} else {
+		status.AuthorizedModels = append(status.AuthorizedModels, model)
+	}
+	if !stringSliceContainsFold(status.AvailableModels, model.Name) {
+		status.AvailableModels = append(status.AvailableModels, model.Name)
+	}
+	if strings.TrimSpace(status.DefaultModel) == "" {
+		status.DefaultModel = model.Name
+	}
+}
+
+func mergeHubCenterAuthorizedModel(target *llmservice.AuthorizedModel, model llmservice.ModelServiceModel, serviceGroupID string) {
+	if target == nil {
+		return
+	}
+	if !stringSliceContainsFold(target.ServiceGroupIDs, serviceGroupID) {
+		target.ServiceGroupIDs = append(target.ServiceGroupIDs, serviceGroupID)
+	}
+	if target.ProviderServiceGroups == nil {
+		target.ProviderServiceGroups = map[string][]string{}
+	}
+	if target.ProviderCapabilityTags == nil {
+		target.ProviderCapabilityTags = map[string][]string{}
+	}
+	if target.ProviderPriorities == nil {
+		target.ProviderPriorities = map[string]int{}
+	}
+	if target.ProviderResolutionTiers == nil {
+		target.ProviderResolutionTiers = map[string]int{}
+	}
+	if target.ProviderCreditMultipliers == nil {
+		target.ProviderCreditMultipliers = map[string]float64{}
+	}
+	for _, providerID := range model.ProviderIDs {
+		providerID = strings.TrimSpace(providerID)
+		if providerID == "" {
+			continue
+		}
+		cfg := hubCenterModelProviderConfig(model, providerID)
+		if !stringSliceContainsFold(target.ProviderIDs, providerID) {
+			target.ProviderIDs = append(target.ProviderIDs, providerID)
+		}
+		target.CapabilityTags = mergeStringSlicesFold(target.CapabilityTags, cfg.CapabilityTags)
+		if cfg.Priority > target.Priority {
+			target.Priority = cfg.Priority
+		}
+		if target.ResolutionTier == 0 || (cfg.ResolutionTier > 0 && cfg.ResolutionTier < target.ResolutionTier) {
+			target.ResolutionTier = cfg.ResolutionTier
+		}
+		key := strings.ToLower(providerID)
+		if !stringSliceContainsFold(target.ProviderServiceGroups[key], serviceGroupID) {
+			target.ProviderServiceGroups[key] = append(target.ProviderServiceGroups[key], serviceGroupID)
+		}
+		target.ProviderCapabilityTags[key] = mergeStringSlicesFold(target.ProviderCapabilityTags[key], cfg.CapabilityTags)
+		if cfg.Priority > target.ProviderPriorities[key] {
+			target.ProviderPriorities[key] = cfg.Priority
+		}
+		if existing := target.ProviderResolutionTiers[key]; existing == 0 || (cfg.ResolutionTier > 0 && cfg.ResolutionTier < existing) {
+			target.ProviderResolutionTiers[key] = cfg.ResolutionTier
+		}
+		candidate := normalizedHubCenterCreditMultiplier(cfg.CreditMultiplier)
+		if existing, ok := target.ProviderCreditMultipliers[key]; !ok || candidate < existing {
+			target.ProviderCreditMultipliers[key] = candidate
+		}
+	}
+	candidate := normalizedHubCenterCreditMultiplier(model.CreditMultiplier)
+	if target.CreditMultiplier <= 0 || candidate < target.CreditMultiplier {
+		target.CreditMultiplier = candidate
+	}
+}
+
+func hubCenterModelProviderConfig(model llmservice.ModelServiceModel, providerID string) llmservice.ModelServiceProviderConfig {
+	key := strings.ToLower(strings.TrimSpace(providerID))
+	for _, cfg := range model.ProviderConfigs {
+		if strings.ToLower(strings.TrimSpace(cfg.ProviderID)) == key {
+			if cfg.CreditMultiplier <= 0 {
+				cfg.CreditMultiplier = model.CreditMultiplier
+			}
+			if cfg.CreditMultiplier <= 0 {
+				cfg.CreditMultiplier = 1
+			}
+			return cfg
+		}
+	}
+	return llmservice.ModelServiceProviderConfig{
+		ProviderID:       providerID,
+		CapabilityTags:   append([]string(nil), model.CapabilityTags...),
+		Priority:         model.Priority,
+		ResolutionTier:   model.ResolutionTier,
+		CreditMultiplier: normalizedHubCenterCreditMultiplier(model.CreditMultiplier),
+	}
+}
+
+func providerCapabilityTagsForModel(model llmservice.ModelServiceModel) map[string][]string {
+	out := map[string][]string{}
+	for _, providerID := range model.ProviderIDs {
+		cfg := hubCenterModelProviderConfig(model, providerID)
+		key := strings.ToLower(strings.TrimSpace(providerID))
+		if key != "" {
+			out[key] = append([]string(nil), cfg.CapabilityTags...)
+		}
+	}
+	return out
+}
+
+func providerPrioritiesForModel(model llmservice.ModelServiceModel) map[string]int {
+	out := map[string]int{}
+	for _, providerID := range model.ProviderIDs {
+		cfg := hubCenterModelProviderConfig(model, providerID)
+		key := strings.ToLower(strings.TrimSpace(providerID))
+		if key != "" {
+			out[key] = cfg.Priority
+		}
+	}
+	return out
+}
+
+func providerResolutionTiersForModel(model llmservice.ModelServiceModel) map[string]int {
+	out := map[string]int{}
+	for _, providerID := range model.ProviderIDs {
+		cfg := hubCenterModelProviderConfig(model, providerID)
+		key := strings.ToLower(strings.TrimSpace(providerID))
+		if key != "" {
+			out[key] = cfg.ResolutionTier
+		}
+	}
+	return out
+}
+
+func providerServiceGroupsForModel(model llmservice.ModelServiceModel, serviceGroupID string) map[string][]string {
+	out := map[string][]string{}
+	for _, providerID := range model.ProviderIDs {
+		providerID = strings.ToLower(strings.TrimSpace(providerID))
+		if providerID == "" {
+			continue
+		}
+		out[providerID] = []string{serviceGroupID}
+	}
+	return out
+}
+
+func providerCreditMultipliersForModel(model llmservice.ModelServiceModel) map[string]float64 {
+	out := map[string]float64{}
+	for _, providerID := range model.ProviderIDs {
+		providerID = strings.ToLower(strings.TrimSpace(providerID))
+		if providerID == "" {
+			continue
+		}
+		out[providerID] = normalizedHubCenterCreditMultiplier(hubCenterModelProviderConfig(model, providerID).CreditMultiplier)
+	}
+	return out
+}
+
+func normalizedHubCenterCreditMultiplier(value float64) float64 {
+	if value <= 0 {
+		return 1
+	}
+	return value
+}
+
+func authorizedModelIndex(models []llmservice.AuthorizedModel, name string) int {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for i, model := range models {
+		if strings.ToLower(strings.TrimSpace(model.Name)) == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func stringSliceContainsFold(items []string, value string) bool {
+	value = strings.TrimSpace(value)
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item), value) {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeStringSlicesFold(dst []string, src []string) []string {
+	for _, item := range src {
+		if !stringSliceContainsFold(dst, item) {
+			dst = append(dst, item)
+		}
+	}
+	return dst
+}
+
+func activeGrantFromHubCenterAuthorization(auth llmservice.AuthorizationSummary, now time.Time) (llmservice.ActiveGrant, bool) {
 	id := strings.TrimSpace(auth.ID)
 	serviceGroupID := strings.TrimSpace(auth.ServiceGroupID)
 	if id == "" && strings.TrimSpace(auth.CardOrderID) == "" {
@@ -1098,12 +1433,13 @@ func activeGrantFromHubCenterAuthorization(auth llmservice.AuthorizationSummary)
 			status = "inactive"
 		}
 	}
+	status = normalizeHubCenterGrantStatus(status, auth.Active, auth.CreditsTotal, auth.CreditsRemaining, startsAt, expiresAt, now)
 	source := strings.TrimSpace(auth.Source)
 	if source == "" {
 		source = "hubcenter_compute"
 	}
-	effective := status != "queued" && status != "expired"
-	active := auth.Active || (status == "active" && auth.CreditsRemaining > 0)
+	effective := hubCenterGrantCountsTowardCredits(status)
+	active := status == "active" && auth.CreditsRemaining > 0
 	return llmservice.ActiveGrant{
 		ID:               id,
 		ServiceGroupID:   serviceGroupID,
@@ -1119,6 +1455,35 @@ func activeGrantFromHubCenterAuthorization(auth llmservice.AuthorizationSummary)
 		CreditsRemaining: auth.CreditsRemaining,
 		CreditsAvailable: auth.CreditsRemaining,
 	}, true
+}
+
+func normalizeHubCenterGrantStatus(status string, active bool, creditsTotal, creditsRemaining float64, startsAt, expiresAt time.Time, now time.Time) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "" {
+		status = "inactive"
+	}
+	if !startsAt.IsZero() && now.Before(startsAt) {
+		return "queued"
+	}
+	if !expiresAt.IsZero() && !now.Before(expiresAt) {
+		return "expired"
+	}
+	if status == "active" && (!active || creditsRemaining <= 0) {
+		if creditsTotal > 0 && creditsRemaining <= 0 {
+			return "exhausted"
+		}
+		return "inactive"
+	}
+	return status
+}
+
+func hubCenterGrantCountsTowardCredits(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "active", "exhausted", "period_limited":
+		return true
+	default:
+		return false
+	}
 }
 
 func activeGrantIdentityKeys(grant llmservice.ActiveGrant) []string {
