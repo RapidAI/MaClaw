@@ -179,17 +179,7 @@ func (r *haSyncOpRepo) AppendRemoteIfMissing(ctx context.Context, op *store.HASy
 	); err != nil {
 		return err
 	}
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO ha_entity_versions (entity_type, entity_id, version, updated_at, updated_by_node_id)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(entity_type, entity_id) DO UPDATE SET
-			version = excluded.version,
-			updated_at = excluded.updated_at,
-			updated_by_node_id = excluded.updated_by_node_id
-		WHERE excluded.version > ha_entity_versions.version
-		   OR (excluded.version = ha_entity_versions.version AND excluded.updated_at > ha_entity_versions.updated_at)
-	`, op.EntityType, op.EntityID, op.EntityVersion, op.OccurredAt.Format(time.RFC3339), op.SourceNodeID)
-	return err
+	return nil
 }
 
 func (r *haSyncOpRepo) ListAfterSeq(ctx context.Context, afterSeq int64, limit int) ([]*store.HASyncOp, error) {

@@ -709,6 +709,56 @@ func TestListOrdersHydratesAuthorizationUsageByTenantAliasFallback(t *testing.T)
 	}
 }
 
+func TestListOrdersHydratesAuthorizationUsageForEmptyTenantAlias(t *testing.T) {
+	now := time.Date(2026, 6, 19, 14, 0, 0, 0, time.UTC)
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-EMPTY-TENANT": {
+			Order: corecardstore.Order{
+				OrderNo: "HC-EMPTY-TENANT",
+				Email:   "owner@example.com",
+				Status:  corecardstore.StatusActivated,
+				Amount:  88,
+			},
+			HubID:          "hub-1",
+			TenantID:       "",
+			ServiceGroupID: "redeem",
+			Credits:        1000,
+			Period:         "month",
+		},
+	}}
+	authRepo := &authTestRepo{byHub: map[string][]*llmservice.TenantAuthorization{
+		"hub-1\x00tenant_default": {{
+			ID:             "auth-empty-tenant-alias",
+			HubID:          "hub-1",
+			TenantID:       "tenant_default",
+			ServiceGroupID: "redeem",
+			CreditsTotal:   1000,
+			CreditsUsed:    400,
+			StartsAt:       now,
+			ExpiresAt:      now.AddDate(0, 1, 0),
+			Status:         "active",
+			CardOrderID:    "HC-EMPTY-TENANT",
+			CreatedAt:      now,
+		}},
+	}}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	orders, _, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	got := orders[0]
+	if got.AuthorizationID != "auth-empty-tenant-alias" {
+		t.Fatalf("AuthorizationID = %q, want auth-empty-tenant-alias", got.AuthorizationID)
+	}
+	if got.CreditsUsed == nil || *got.CreditsUsed != 400 {
+		t.Fatalf("CreditsUsed = %#v, want 400", got.CreditsUsed)
+	}
+	if got.CreditsRemaining == nil || *got.CreditsRemaining != 600 {
+		t.Fatalf("CreditsRemaining = %#v, want 600", got.CreditsRemaining)
+	}
+}
+
 func TestListOrdersCachesAuthorizationFallbackByHubTenant(t *testing.T) {
 	now := time.Date(2026, 6, 19, 14, 0, 0, 0, time.UTC)
 	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{

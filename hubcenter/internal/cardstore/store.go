@@ -712,9 +712,6 @@ func listOrderAuthorizationsByHubTenantAliases(ctx context.Context, repo llmserv
 
 func orderTenantAuthorizationLookupIDs(tenantID string) []string {
 	tenantID = strings.TrimSpace(tenantID)
-	if tenantID == "" {
-		return nil
-	}
 	seen := map[string]struct{}{}
 	var out []string
 	add := func(id string) {
@@ -726,6 +723,11 @@ func orderTenantAuthorizationLookupIDs(tenantID string) []string {
 		out = append(out, id)
 	}
 	add(tenantID)
+	if tenantID == "" {
+		add("tenant_default")
+		add("default")
+		return out
+	}
 	if tenantID == "tenant_default" {
 		add("default")
 		add("")

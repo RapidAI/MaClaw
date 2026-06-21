@@ -122,7 +122,8 @@ type fakeHAPeerCursorRepo struct {
 }
 
 type fakeHANewsRepo struct {
-	items map[string]*store.NewsArticle
+	items     map[string]*store.NewsArticle
+	createErr error
 }
 
 type fakeHACardOrderRepo struct {
@@ -148,6 +149,9 @@ func (r *fakeRouteSnapshotRefresher) Calls() int {
 }
 
 func (r *fakeHANewsRepo) Create(_ context.Context, article *store.NewsArticle) error {
+	if r.createErr != nil {
+		return r.createErr
+	}
 	if r.items == nil {
 		r.items = map[string]*store.NewsArticle{}
 	}
@@ -581,6 +585,56 @@ func TestApplyRemoteOpStillAppliesWhenRecorderUpdatesEntityVersion(t *testing.T)
 	}
 	if !applied {
 		t.Fatal("remote op was not marked applied")
+	}
+}
+
+func TestApplyRemoteOpRetryAfterApplyFailureIsNotSkippedByRecordedVersion(t *testing.T) {
+	versionsRepo := &fakeHAEntityVersionRepo{items: make(map[string]*store.HAEntityVersion)}
+	opsRepo := &fakeHASyncOpRepo{}
+	newsRepo := &fakeHANewsRepo{createErr: errors.New("transient write failure")}
+	svc := &Service{
+		nodeID:   "hc-1",
+		ops:      opsRepo,
+		versions: versionsRepo,
+		news:     newsRepo,
+	}
+	payload := `{"id":"news-retry","title":"retry me","content":"","category":"notice","pinned":false,"created_at":"2026-05-10T00:00:00Z","updated_at":"2026-05-10T00:00:00Z"}`
+	op := &store.HASyncOp{
+		OpID:          "op-remote-retry",
+		SourceNodeID:  "hc-2",
+		EntityType:    EntityNewsArticle,
+		EntityID:      "news-retry",
+		OpType:        OpUpsert,
+		EntityVersion: 3,
+		OccurredAt:    time.Now().UTC(),
+		PayloadJSON:   payload,
+		PayloadHash:   testPayloadHash(payload),
+	}
+
+	if err := svc.ApplyRemoteOp(context.Background(), op); err == nil {
+		t.Fatal("ApplyRemoteOp() succeeded, want transient failure")
+	}
+	if current, err := versionsRepo.Get(context.Background(), op.EntityType, op.EntityID); err != nil {
+		t.Fatalf("version Get() error = %v", err)
+	} else if current != nil {
+		t.Fatalf("version advanced after failed apply: %+v", current)
+	}
+	if applied, err := opsRepo.HasApplied(context.Background(), op.OpID); err != nil {
+		t.Fatalf("HasApplied() error = %v", err)
+	} else if applied {
+		t.Fatal("failed op was marked applied")
+	}
+
+	newsRepo.createErr = nil
+	if err := svc.ApplyRemoteOp(context.Background(), op); err != nil {
+		t.Fatalf("retry ApplyRemoteOp() error = %v", err)
+	}
+	got, err := newsRepo.GetByID(context.Background(), "news-retry")
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if got == nil || got.Title != "retry me" {
+		t.Fatalf("news item = %+v, want retry payload applied", got)
 	}
 }
 

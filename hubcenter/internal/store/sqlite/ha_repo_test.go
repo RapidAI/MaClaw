@@ -127,14 +127,6 @@ func TestHASyncOpRepoAppendRemoteIfMissingRecordsOnce(t *testing.T) {
 	if items[0].OpID != op.OpID || items[0].SourceNodeID != op.SourceNodeID || items[0].Seq == op.Seq {
 		t.Fatalf("stored op = %+v", items[0])
 	}
-	var version int64
-	var updatedBy string
-	if err := provider.Read.QueryRowContext(ctx, `SELECT version, updated_by_node_id FROM ha_entity_versions WHERE entity_type = ? AND entity_id = ?`, op.EntityType, op.EntityID).Scan(&version, &updatedBy); err != nil {
-		t.Fatalf("load entity version: %v", err)
-	}
-	if version != op.EntityVersion || updatedBy != op.SourceNodeID {
-		t.Fatalf("entity version = %d by %q, want %d by %q", version, updatedBy, op.EntityVersion, op.SourceNodeID)
-	}
 	next := &store.HASyncOp{
 		OpID:         "op-local",
 		SourceNodeID: "hc-1",
@@ -149,8 +141,8 @@ func TestHASyncOpRepoAppendRemoteIfMissingRecordsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppendLocalWithVersion() error = %v", err)
 	}
-	if nextVersion != op.EntityVersion+1 {
-		t.Fatalf("next local version = %d, want %d", nextVersion, op.EntityVersion+1)
+	if nextVersion != 1 {
+		t.Fatalf("next local version = %d, want 1 without remote version advance", nextVersion)
 	}
 }
 
