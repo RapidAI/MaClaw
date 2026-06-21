@@ -136,18 +136,25 @@ func TestAdminPageHAStaticContract(t *testing.T) {
 		}
 	}
 
-	assertHATemplate(t, html, "hc-1", "HubCenter 1", "https://hubs.mypapers.top", []haPeerTemplate{
-		{nodeID: "hc-2", baseURL: "https://hubs.maclaw.top"},
-		{nodeID: "hc-3", baseURL: "https://hubs2.maclaw.top"},
+	assertHATemplate(t, html, "hc-1", "HubCenter 1", "http://hub.mypapers.top:9388", []haPeerTemplate{
+		{nodeID: "hc-2", baseURL: "http://107.172.86.131:9388"},
+		{nodeID: "hc-3", baseURL: "http://66.154.113.63:9388"},
 	})
-	assertHATemplate(t, html, "hc-2", "HubCenter 2", "https://hubs.maclaw.top", []haPeerTemplate{
-		{nodeID: "hc-1", baseURL: "https://hubs.mypapers.top"},
-		{nodeID: "hc-3", baseURL: "https://hubs2.maclaw.top"},
+	assertHATemplate(t, html, "hc-2", "HubCenter 2", "http://107.172.86.131:9388", []haPeerTemplate{
+		{nodeID: "hc-1", baseURL: "http://hub.mypapers.top:9388"},
+		{nodeID: "hc-3", baseURL: "http://66.154.113.63:9388"},
 	})
-	assertHATemplate(t, html, "hc-3", "HubCenter 3", "https://hubs2.maclaw.top", []haPeerTemplate{
-		{nodeID: "hc-1", baseURL: "https://hubs.mypapers.top"},
-		{nodeID: "hc-2", baseURL: "https://hubs.maclaw.top"},
+	assertHATemplate(t, html, "hc-3", "HubCenter 3", "http://66.154.113.63:9388", []haPeerTemplate{
+		{nodeID: "hc-1", baseURL: "http://hub.mypapers.top:9388"},
+		{nodeID: "hc-2", baseURL: "http://107.172.86.131:9388"},
 	})
+	if !strings.Contains(html, `id="haPullBatchSize" type="number" min="1" value="1000"`) {
+		t.Fatal("HA config form must default pull_batch_size to 1000")
+	}
+	if !strings.Contains(html, `id="haSyncIntervalSeconds" type="number" min="1" value="5"`) ||
+		!strings.Contains(html, `id="haPushDebounceSeconds" type="number" min="1" value="5"`) {
+		t.Fatal("HA config form must default sync and push debounce intervals to 5 seconds")
+	}
 	if strings.Contains(html, `while(list.length < 3)`) {
 		t.Fatal("HA peer config renderer must not pad saved peers with empty rows")
 	}

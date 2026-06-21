@@ -69,9 +69,9 @@ ha:
   self_fqdn: $(Get-Fqdn $Center)
   private_key_path: ./data/ha_node_key.pem
   cluster_secret: $ClusterSecret
-  sync_interval_seconds: 180
-  push_debounce_seconds: 180
-  pull_batch_size: 200
+  sync_interval_seconds: 5
+  push_debounce_seconds: 5
+  pull_batch_size: 1000
   heartbeat_sync_min_interval_seconds: 600
   history_retention_days: 0.5
   history_max_retained_ops: 50000

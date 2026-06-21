@@ -466,17 +466,17 @@ Object.assign(I18N_EN, {
       renderHAOverview(data, haConfigCache);
     }
     const haNodeTemplates = {
-      'hc-1': { node_id: 'hc-1', advertise_url: 'https://hubs.mypapers.top', peers: [
-        { enabled: true, node_id: 'hc-2', base_url: 'https://hubs.maclaw.top' },
-        { enabled: true, node_id: 'hc-3', base_url: 'https://hubs2.maclaw.top' }
+      'hc-1': { node_id: 'hc-1', advertise_url: 'http://hub.mypapers.top:9388', peers: [
+        { enabled: true, node_id: 'hc-2', base_url: 'http://107.172.86.131:9388' },
+        { enabled: true, node_id: 'hc-3', base_url: 'http://66.154.113.63:9388' }
       ]},
-      'hc-2': { node_id: 'hc-2', advertise_url: 'https://hubs.maclaw.top', peers: [
-        { enabled: true, node_id: 'hc-1', base_url: 'https://hubs.mypapers.top' },
-        { enabled: true, node_id: 'hc-3', base_url: 'https://hubs2.maclaw.top' }
+      'hc-2': { node_id: 'hc-2', advertise_url: 'http://107.172.86.131:9388', peers: [
+        { enabled: true, node_id: 'hc-1', base_url: 'http://hub.mypapers.top:9388' },
+        { enabled: true, node_id: 'hc-3', base_url: 'http://66.154.113.63:9388' }
       ]},
-      'hc-3': { node_id: 'hc-3', advertise_url: 'https://hubs2.maclaw.top', peers: [
-        { enabled: true, node_id: 'hc-1', base_url: 'https://hubs.mypapers.top' },
-        { enabled: true, node_id: 'hc-2', base_url: 'https://hubs.maclaw.top' }
+      'hc-3': { node_id: 'hc-3', advertise_url: 'http://66.154.113.63:9388', peers: [
+        { enabled: true, node_id: 'hc-1', base_url: 'http://hub.mypapers.top:9388' },
+        { enabled: true, node_id: 'hc-2', base_url: 'http://107.172.86.131:9388' }
       ]}
     };
     function haNodeDisplayName(nodeID){
@@ -621,9 +621,9 @@ Object.assign(I18N_EN, {
         node_name: haNodeDisplayName(template.node_id),
         advertise_url: template.advertise_url,
         cluster_secret: String(cfg.cluster_secret || '').trim(),
-        sync_interval_seconds: Number(cfg.sync_interval_seconds || 30),
-        push_debounce_seconds: Number(cfg.push_debounce_seconds || 180),
-        pull_batch_size: Number(cfg.pull_batch_size || 200),
+        sync_interval_seconds: Number(cfg.sync_interval_seconds || 5),
+        push_debounce_seconds: Number(cfg.push_debounce_seconds || 5),
+        pull_batch_size: Number(cfg.pull_batch_size || 1000),
         heartbeat_sync_min_interval_seconds: Number(cfg.heartbeat_sync_min_interval_seconds || 60),
         peers: template.peers.map(function(peer){ return Object.assign({}, peer, { name: haNodeDisplayName(peer.node_id) }); })
       };
@@ -960,9 +960,9 @@ Object.assign(I18N_EN, {
         node_name: haNodeDisplayName(template.node_id),
         advertise_url: template.advertise_url,
         cluster_secret: current.cluster_secret || '',
-        sync_interval_seconds: Number(current.sync_interval_seconds || 30),
-        push_debounce_seconds: Number(current.push_debounce_seconds || 180),
-        pull_batch_size: Number(current.pull_batch_size || 200),
+        sync_interval_seconds: Number(current.sync_interval_seconds || 5),
+        push_debounce_seconds: Number(current.push_debounce_seconds || 5),
+        pull_batch_size: Number(current.pull_batch_size || 1000),
         heartbeat_sync_min_interval_seconds: Number(current.heartbeat_sync_min_interval_seconds || 60),
         peers: template.peers.map(function(peer){ return Object.assign({}, peer, { name: haNodeDisplayName(peer.node_id) }); })
       };
@@ -997,9 +997,9 @@ Object.assign(I18N_EN, {
       if(secretInput) secretInput.type = 'password';
       if(secretToggleBtn) secretToggleBtn.textContent = tr('haToggleSecret');
       renderHAClusterSecretHint(cfg.cluster_secret || '');
-      document.getElementById('haSyncIntervalSeconds').value = String(cfg.sync_interval_seconds || 30);
-      document.getElementById('haPushDebounceSeconds').value = String(cfg.push_debounce_seconds || 180);
-      document.getElementById('haPullBatchSize').value = String(cfg.pull_batch_size || 200);
+      document.getElementById('haSyncIntervalSeconds').value = String(cfg.sync_interval_seconds || 5);
+      document.getElementById('haPushDebounceSeconds').value = String(cfg.push_debounce_seconds || 5);
+      document.getElementById('haPullBatchSize').value = String(cfg.pull_batch_size || 1000);
       document.getElementById('haHeartbeatSyncMinIntervalSeconds').value = String(cfg.heartbeat_sync_min_interval_seconds || 60);
       renderHAPeerConfigRows(cfg.peers || []);
       renderHAConfigSummary(cfg || {});
