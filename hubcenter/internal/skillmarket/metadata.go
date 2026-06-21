@@ -1,6 +1,7 @@
 package skillmarket
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"gopkg.in/yaml.v3"
@@ -57,6 +58,21 @@ type MaclawAppTestEvidence struct {
 	OutputCount           int            `yaml:"output_count,omitempty" json:"output_count,omitempty"`
 	PrimaryResult         string         `yaml:"primary_result,omitempty" json:"primary_result,omitempty"`
 	ResultPayload         map[string]any `yaml:"result_payload,omitempty" json:"result_payload,omitempty"`
+}
+
+func cloneSkillMarketAnyMap(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var cloned map[string]any
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		return value
+	}
+	return cloned
 }
 
 // ParseSkillYAML 解析 skill.yaml 为 SkillMetadata。

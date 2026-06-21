@@ -2270,7 +2270,7 @@ function App() {
         try {
             const freshConfig = await callBackend(() => LoadConfig());
             const sourceConfig = freshConfig || config;
-            const url = buildHubCardStoreURL((sourceConfig as any)?.remote_hub_url, (sourceConfig as any)?.remote_tenant_id, (sourceConfig as any)?.remote_email, (sourceConfig as any)?.remote_viewer_token, (sourceConfig as any)?.remote_hubcenter_url, (sourceConfig as any)?.remote_hub_id);
+            const url = buildHubCardStoreURL((sourceConfig as any)?.remote_hub_url, (sourceConfig as any)?.remote_tenant_id, (sourceConfig as any)?.remote_email, (sourceConfig as any)?.remote_viewer_token, (sourceConfig as any)?.remote_hubcenter_url, (sourceConfig as any)?.remote_hub_id, undefined, (sourceConfig as any)?.remote_tenant_name);
             if (url) {
                 safeBrowserOpenURL(url);
                 return;

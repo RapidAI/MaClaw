@@ -1650,6 +1650,41 @@ func TestListMaclawAppApprovalInstancesAllLoadsDataSrvLane(t *testing.T) {
 	}
 }
 
+func TestListMaclawAppApprovalInstancesMapsDataSrvAttentionStatus(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	var capturedQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/data/approvals" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"approval-attention-1","dataset_id":"finance.expenses","record_id":"exp-attention-1","app_id":"expense","status":"pending","summary":"Expense needs attention","request":{"approval_instance_id":"wf-attention-1","owner":"alice","applicant":"alice"},"workflow_skill_id":"expense-workflow","workflow_instance_id":"wf-attention-1","workflow_node_id":"finance_review","business_status":"attention","result_status":"attention","result_payload":{"summary":"missing invoice"},"assigned_to":"manager","created_by":"alice","created_at":"2026-06-21T01:00:00Z","updated_at":"2026-06-21T02:00:00Z"}]}`))
+	}))
+	defer server.Close()
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "manager", Role: "approver"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	items, err := app.ListMaclawAppApprovalInstancesAll("attention", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll attention error = %v", err)
+	}
+	if !strings.Contains(capturedQuery, "lane=attention") {
+		t.Fatalf("expected attention lane query, got %s", capturedQuery)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one attention approval, got %#v", items)
+	}
+	got := items[0]
+	if got.Lane != "attention" || got.Status != "attention" || got.BusinessStatus != "attention" || got.ResultStatus != "attention" {
+		t.Fatalf("attention approval should preserve attention lane and status: %#v", got)
+	}
+	if got.Result != "missing invoice" || got.ResultPayload["summary"] != "missing invoice" {
+		t.Fatalf("attention approval should expose result summary: %#v", got)
+	}
+}
+
 func TestListMaclawAppApprovalInstancesMergesDataSrvWithLocal(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	local, err := app.RecordMaclawAppApprovalInstance(maclawAppApprovalInstance{

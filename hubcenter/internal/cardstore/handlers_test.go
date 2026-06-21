@@ -428,6 +428,8 @@ func TestVerifyAlipayReturnQueryIgnoresUnsignedContextParams(t *testing.T) {
 	values.Set("ctx_email", "owner@example.com")
 	values.Set("ctx_hub_id", "hub-1")
 	values.Set("ctx_tenant_id", "tenant-a")
+	values.Set("ctx_hub_name", "Acme Hub")
+	values.Set("ctx_tenant_name", "Acme Tenant")
 
 	verified, err := verifyAlipayReturnQuery(values, string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicKeyDER})))
 	if err != nil {
@@ -439,7 +441,7 @@ func TestVerifyAlipayReturnQueryIgnoresUnsignedContextParams(t *testing.T) {
 }
 func TestAlipayReturnStoreURLsFallsBackToReturnURLContext(t *testing.T) {
 	svc := NewService(nil, &orderTestRepo{}, nil)
-	req := httptest.NewRequest(http.MethodGet, "/api/cardstore/payment/return?ctx_email=owner%40example.com&ctx_hub_id=hub-1&ctx_tenant_id=tenant-a", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/cardstore/payment/return?ctx_email=owner%40example.com&ctx_hub_id=hub-1&ctx_tenant_id=tenant-a&ctx_hub_name=Acme+Hub&ctx_tenant_name=Acme+Tenant", nil)
 
 	storeURL, ordersURL := alipayReturnStoreURLs(req, svc, "HC-MISSING")
 
@@ -448,7 +450,7 @@ func TestAlipayReturnStoreURLsFallsBackToReturnURLContext(t *testing.T) {
 		t.Fatalf("parse store url: %v", err)
 	}
 	q := parsed.Query()
-	if q.Get("email") != "owner@example.com" || q.Get("hub_id") != "hub-1" || q.Get("tenant_id") != "tenant-a" {
+	if q.Get("email") != "owner@example.com" || q.Get("hub_id") != "hub-1" || q.Get("tenant_id") != "tenant-a" || q.Get("hub_name") != "Acme Hub" || q.Get("tenant_name") != "Acme Tenant" {
 		t.Fatalf("query = %s", parsed.RawQuery)
 	}
 	if ordersURL != storeURL+"#ordersPanel" {
@@ -467,7 +469,7 @@ func TestAlipayReturnStoreURLsPreserveOrderTenantContext(t *testing.T) {
 		},
 	}}
 	svc := NewService(nil, orderRepo, nil)
-	req := httptest.NewRequest(http.MethodGet, "/api/cardstore/payment/return", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/cardstore/payment/return?ctx_hub_name=Acme+Hub&ctx_tenant_name=Acme+Tenant", nil)
 
 	storeURL, ordersURL := alipayReturnStoreURLs(req, svc, "HC-RETURN")
 
@@ -479,7 +481,7 @@ func TestAlipayReturnStoreURLsPreserveOrderTenantContext(t *testing.T) {
 		t.Fatalf("path = %q", parsed.Path)
 	}
 	q := parsed.Query()
-	if q.Get("email") != "owner@example.com" || q.Get("hub_id") != "hub-1" || q.Get("tenant_id") != "tenant-a" {
+	if q.Get("email") != "owner@example.com" || q.Get("hub_id") != "hub-1" || q.Get("tenant_id") != "tenant-a" || q.Get("hub_name") != "Acme Hub" || q.Get("tenant_name") != "Acme Tenant" {
 		t.Fatalf("query = %s", parsed.RawQuery)
 	}
 	if ordersURL != storeURL+"#ordersPanel" {

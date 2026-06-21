@@ -2261,19 +2261,19 @@ describe('AppsPage', () => {
         expect(syncPayload.instance.artifacts[0].id).toBe('artifact-99');
     });
     it('shows the approval instance workspace for approval apps', async () => {
-        listMaclawAppApprovalInstancesMock.mockResolvedValue([{
+        listMaclawAppApprovalInstancesMock.mockImplementation(async (_appID, lane) => [{
             app_id: 'expense',
-            app_name: '报销申请',
-            instance_id: 'approval-workspace-1',
-            title: 'Travel expense summary',
+            app_name: '鎶ラ攢鐢宠',
+            instance_id: lane === 'pending_my_approval' ? 'approval-workspace-2' : 'approval-workspace-1',
+            title: lane === 'pending_my_approval' ? 'Lane refreshed expense' : 'Travel expense summary',
             lane: 'pending_my_approval',
             status: 'pending',
-            current_node: 'manager_approval',
+            current_node: lane === 'pending_my_approval' ? 'finance_review' : 'manager_approval',
             updated_at: '2026-06-20T00:00:00Z',
             dataset_id: 'finance.expenses',
             object_role: 'expense_report',
-            approval_id: 'approval-remote-workspace-1',
-            record_id: 'EXP-WORKSPACE-1',
+            approval_id: lane === 'pending_my_approval' ? 'approval-remote-workspace-2' : 'approval-remote-workspace-1',
+            record_id: lane === 'pending_my_approval' ? 'EXP-WORKSPACE-2' : 'EXP-WORKSPACE-1',
         }]);
         render(<AppsPage lang="zh-Hans" />);
 
@@ -2292,7 +2292,8 @@ describe('AppsPage', () => {
         expect(within(workspace).getByRole('button', { name: /^需关注/ })).not.toBeNull();
         expect(within(workspace).getByRole('button', { name: /全部/ })).not.toBeNull();
         fireEvent.click(pendingLane);
-        expect(within(workspace).getAllByText('Travel expense summary').length).toBeGreaterThan(0);
+        await waitFor(() => expect(listMaclawAppApprovalInstancesMock).toHaveBeenCalledWith('expense', 'pending_my_approval', 50));
+        await waitFor(() => expect(within(workspace).getAllByText('Lane refreshed expense').length).toBeGreaterThan(0));
         expect(within(workspace).getByText('结果契约')).not.toBeNull();
         expect(within(workspace).getAllByText('approval_result').length).toBeGreaterThan(0);
         expect(document.querySelector('.apps-approval-summary')).toBeNull();
@@ -3972,7 +3973,7 @@ describe('AppsPage', () => {
         expect(screen.getAllByText('文档归档').length).toBeGreaterThan(0);
     });
 
-    it('shows DataSrv registration status after installing a DataSrv-backed app manifest', async () => {
+    it('shows DataSrv registration status after installing an enterprise normal DataSrv app manifest', async () => {
         recordMaclawAppInstallMock.mockResolvedValueOnce({
             schema: 'maclaw.app.installs.v1',
             app_count: 1,
@@ -3981,7 +3982,7 @@ describe('AppsPage', () => {
                 eligible_count: 1,
                 synced_count: 1,
                 failed_count: 0,
-                items: [{ app_id: 'expense-audit', synced: true, role_binding_count: 1 }],
+                items: [{ app_id: 'customer-import', synced: true, role_binding_count: 1 }],
             },
         });
         render(<AppsPage lang="zh-Hans" />);
@@ -3995,16 +3996,15 @@ describe('AppsPage', () => {
                     privateMarker: 'x_maclaw_apps',
                     installUnit: 'enterprise_app_pack',
                     app: {
-                        id: 'expense-audit',
-                        name: '费用审核',
-                        description: 'Review expense requests',
-                        category: 'OA',
-                        kind: 'enterprise_approval_app',
-                        icon: 'receipt',
+                        id: 'customer-import',
+                        name: '客户导入',
+                        description: 'Import customer profiles',
+                        category: 'CRM',
+                        kind: 'enterprise_normal_app',
+                        icon: 'customer',
                         launchMode: 'agent_dynamic_ui',
                         binding: {
-                            datasrv: { domain: 'finance', datasetID: 'finance.expense_forms' },
-                            mis: { approvalBindings: [{ event: 'finance.submitted', workflowSkillId: 'expense-workflow', objectRole: 'expense_report' }] },
+                            datasrv: { domain: 'sales', datasetID: 'sales.customers', preferredAction: 'sales.customer_upsert' },
                         },
                     },
                 }),
@@ -4014,7 +4014,7 @@ describe('AppsPage', () => {
 
         await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
         const installResult = document.querySelector('.apps-install-result') as HTMLElement;
-        expect(within(installResult).getByText('费用审核')).not.toBeNull();
+        expect(within(installResult).getByText('客户导入')).not.toBeNull();
         await waitFor(() => expect(within(installResult).getByText(/DataSrv 绑定已注册: 1/)).not.toBeNull());
     });
     it('does not exceed the pinned app limit when installing pinned market apps', () => {
@@ -4835,6 +4835,16 @@ describe('AppsPage', () => {
                         workspace_layout_list_columns: ['title', 'applicant', 'current_node', 'status'],
                         workspace_layout: { entry: 'approval_workspace', template: 'dashboard', density: 'spacious', navigation: ['my_requests', 'pending_my_approval', 'attention'], list: { columns: ['title', 'applicant', 'current_node', 'status'] }, region_count: 4 },
                         governance_status: 'local_tested',
+                        test_evidence: {
+                            run_id: 'run-expense-imported',
+                            verified_at: '2026-06-21T11:00:00Z',
+                            definition_fingerprint: 'sha256:expense-app',
+                            artifact_present: true,
+                            artifact_name: 'expense-approval-evidence.zip',
+                            output_count: 3,
+                            primary_result: 'approval_result',
+                            result_payload: { decision: 'approved', business_status: 'finance_approved' },
+                        },
                         dependencies: [{ id: 'expense-workflow', kind: 'workflow_skill', required: true, source: 'hub' }],
                     },
                 }],
@@ -4860,6 +4870,14 @@ describe('AppsPage', () => {
         expect(added.manifest.ui.layouts.approval_workspace.navigation).toEqual(['my_requests', 'pending_my_approval', 'attention']);
         expect(added.manifest.ui.layouts.approval_workspace.list.columns).toEqual(['title', 'applicant', 'current_node', 'status']);
         expect(added.manifest.ui.layouts.approval_workspace.studio.importedFromDataSrv).toBe(true);
+        expect(added.importedRunEvidence).toMatchObject({
+            runID: 'run-expense-imported',
+            definitionHash: 'sha256:expense-app',
+            outputMode: 'approval_result',
+            artifactName: 'expense-approval-evidence.zip',
+            resultPayload: { decision: 'approved', business_status: 'finance_approved' },
+        });
+        expect(added.importedRunEvidence.outputs[0].text).toBe('3');
     });
     it('turns skill maclaw.apps.json entries into registered tool apps', async () => {
         listSkillAppManifestsMock.mockResolvedValue([

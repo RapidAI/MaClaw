@@ -1,4 +1,4 @@
-name: Release Build
+﻿name: Release Build
 
 on:
   push:
@@ -18,7 +18,7 @@ permissions:
 env:
   APP_NAME: MaClaw
   GO_VERSION: '1.25.0'
-  NODE_VERSION: '20'
+  NODE_VERSION: '22'
   RELEASE_CHANNEL: stable
   MANIFEST_NAME: latest.json
 
@@ -29,9 +29,9 @@ jobs:
   verify-noembedding:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -56,7 +56,7 @@ jobs:
       matrix:
         brand: ${{ inputs.BRAND == 'maclaw' && fromJSON('[""]') || inputs.BRAND == 'qianxin' && fromJSON('["qianxin"]') || fromJSON('["", "qianxin"]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Compute brand variables
         shell: pwsh
@@ -81,12 +81,12 @@ jobs:
             echo "BRAND_DISPLAY_NAME=$env:APP_NAME" >> $env:GITHUB_ENV
           }
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -189,10 +189,12 @@ jobs:
           [System.IO.File]::WriteAllText("build/windows/wails.exe.manifest.tmp", $manifest, [System.Text.UTF8Encoding]::new($false))
           # Prepare versioninfo.json
           $parts = $env:VERSION.Split('.')
+          $major = [int]$parts[0]; $minor = [int]$parts[1]; $patch = [int]$parts[2]
+          $build = if ($parts.Length -ge 4) { [int]$parts[3] } else { 0 }
           $versionInfo = @{
             FixedFileInfo = @{
-              FileVersion    = @{ Major=[int]$parts[0]; Minor=[int]$parts[1]; Patch=[int]$parts[2]; Build=[int]$parts[3] }
-              ProductVersion = @{ Major=[int]$parts[0]; Minor=[int]$parts[1]; Patch=[int]$parts[2]; Build=[int]$parts[3] }
+              FileVersion    = @{ Major=$major; Minor=$minor; Patch=$patch; Build=$build }
+              ProductVersion = @{ Major=$major; Minor=$minor; Patch=$patch; Build=$build }
             }
             StringFileInfo = @{
               CompanyName     = $cfg.info.companyName
@@ -221,7 +223,7 @@ jobs:
           go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui -X main.version=$env:VERSION" -o "dist/${outName}_amd64.exe" ./gui/
           Remove-Item gui/resource_windows_amd64.syso -ErrorAction SilentlyContinue
 
-          # --- arm64 (no CGO, NoopEmbedder — cross-compile CGO not supported) ---
+          # --- arm64 (no CGO, NoopEmbedder 鈥?cross-compile CGO not supported) ---
           & $goversioninfo -64 -arm -icon $env:BRAND_ICON_ICO -manifest build/windows/wails.exe.manifest.tmp -o gui/resource_windows_arm64.syso build/windows/versioninfo.json.tmp
           $env:GOARCH='arm64'; $env:CGO_ENABLED='0'
           go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui -X main.version=$env:VERSION" -o "dist/${outName}_arm64.exe" ./gui/
@@ -370,7 +372,7 @@ jobs:
           }
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-artifacts-${{ matrix.brand || 'default' }}
           path: |
@@ -407,9 +409,9 @@ jobs:
   build-ins-maclaw:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -435,7 +437,7 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ./Ins-maclaw/build.ps1
 
       - name: Upload Ins-maclaw bootstrap artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ins-maclaw-artifacts
           if-no-files-found: error
@@ -450,7 +452,7 @@ jobs:
       matrix:
         brand: ${{ inputs.BRAND == 'maclaw' && fromJSON('[""]') || inputs.BRAND == 'qianxin' && fromJSON('["qianxin"]') || fromJSON('["", "qianxin"]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Compute brand variables
         run: |
@@ -472,12 +474,12 @@ jobs:
             echo "BRAND_DISPLAY_NAME=${APP_NAME}" >> $GITHUB_ENV
           fi
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -515,11 +517,11 @@ jobs:
           # amd64
           CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" \
             GOOS=darwin GOARCH=amd64 \
-            go build -tags "${GUI_TAGS}" -ldflags "-X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_amd64" ./gui/
+            go build -tags "${GUI_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_amd64" ./gui/
           # arm64
           CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" \
             GOOS=darwin GOARCH=arm64 \
-            go build -tags "${GUI_TAGS}" -ldflags "-X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_arm64" ./gui/
+            go build -tags "${GUI_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_arm64" ./gui/
 
       - name: Build TUI & maclaw-tool & maclaw-cli (darwin)
         run: |
@@ -832,7 +834,7 @@ jobs:
           done
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: macos-artifacts-${{ matrix.brand || 'default' }}
           path: |
@@ -881,7 +883,7 @@ jobs:
         os_version: [ubuntu-22.04, ubuntu-24.04]
     runs-on: ${{ matrix.os_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Compute brand variables
         run: |
@@ -918,12 +920,12 @@ jobs:
             echo "BUILD_PURE_GO=false" >> $GITHUB_ENV
           fi
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -975,12 +977,12 @@ jobs:
           OUT_NAME="${BRAND_APP_NAME}"
           # Include Ubuntu label in binary name so both versions coexist in artifacts
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-            go build -tags "${WEBKIT_TAGS}" -ldflags "-X main.version=${VERSION}" \
+            go build -tags "${WEBKIT_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" \
             -o "build/bin/${OUT_NAME}_amd64_linux_${UBUNTU_LABEL}" ./gui/
           # Also copy to the generic name for AppImage packaging
           cp "build/bin/${OUT_NAME}_amd64_linux_${UBUNTU_LABEL}" "build/bin/${OUT_NAME}_amd64_linux"
 
-      - name: Build TUI & maclaw-tool & maclaw-cli (linux, pure Go — only on newest runner)
+      - name: Build TUI & maclaw-tool & maclaw-cli (linux, pure Go 鈥?only on newest runner)
         if: env.BUILD_PURE_GO == 'true'
         run: |
           LDFLAGS="-s -w -X main.version=${VERSION}"
@@ -1071,8 +1073,8 @@ jobs:
             echo ""
             echo "Note: This AppImage is built for Ubuntu ${UBUNTU_VER}."
             echo "For other Ubuntu versions, download the matching AppImage:"
-            echo "  Ubuntu 22.04 → *-u2204.AppImage (webkit2gtk-4.0)"
-            echo "  Ubuntu 24.04/26.04 → *-u2404.AppImage (webkit2gtk-4.1)"
+            echo "  Ubuntu 22.04 鈫?*-u2204.AppImage (webkit2gtk-4.0)"
+            echo "  Ubuntu 24.04/26.04 鈫?*-u2404.AppImage (webkit2gtk-4.1)"
             echo ""
 
             if command -v zenity &>/dev/null; then
@@ -1097,7 +1099,7 @@ jobs:
             "dist/${APPIMAGE_NAME}"
 
       - name: Upload Linux GUI artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: linux-gui-${{ matrix.os_version }}-${{ matrix.brand || 'default' }}
           path: |
@@ -1105,7 +1107,7 @@ jobs:
 
       - name: Upload Linux TUI & tool artifacts (newest runner only)
         if: env.BUILD_PURE_GO == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: linux-tui-${{ matrix.brand || 'default' }}
           path: |
@@ -1124,7 +1126,7 @@ jobs:
 
       - name: Upload Linux server artifacts (default brand, newest runner only)
         if: matrix.brand == '' && env.BUILD_PURE_GO == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: linux-server
           path: |
@@ -1145,7 +1147,7 @@ jobs:
         os_version: [ubuntu-22.04-arm, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Compute brand variables
         run: |
@@ -1181,12 +1183,12 @@ jobs:
             echo "BUILD_SRVDEMO=false" >> $GITHUB_ENV
           fi
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -1235,7 +1237,7 @@ jobs:
           mkdir -p dist build/bin
           OUT_NAME="${BRAND_APP_NAME}"
           CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
-            go build -tags "${WEBKIT_TAGS}" -ldflags "-X main.version=${VERSION}" \
+            go build -tags "${WEBKIT_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" \
             -o "build/bin/${OUT_NAME}_arm64_linux_${UBUNTU_LABEL}" ./gui/
           cp "build/bin/${OUT_NAME}_arm64_linux_${UBUNTU_LABEL}" "build/bin/${OUT_NAME}_arm64_linux"
 
@@ -1287,8 +1289,8 @@ jobs:
             echo ""
             echo "Note: This AppImage is built for Ubuntu ${UBUNTU_VER}."
             echo "For other Ubuntu versions, download the matching AppImage:"
-            echo "  Ubuntu 22.04 → *-u2204.AppImage (webkit2gtk-4.0)"
-            echo "  Ubuntu 24.04/26.04 → *-u2404.AppImage (webkit2gtk-4.1)"
+            echo "  Ubuntu 22.04 鈫?*-u2204.AppImage (webkit2gtk-4.0)"
+            echo "  Ubuntu 24.04/26.04 鈫?*-u2404.AppImage (webkit2gtk-4.1)"
             echo ""
 
             if command -v zenity &>/dev/null; then
@@ -1312,7 +1314,7 @@ jobs:
             "dist/${APPIMAGE_NAME}"
 
       - name: Upload Linux ARM64 GUI artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: linux-arm64-gui-${{ matrix.os_version }}-${{ matrix.brand || 'default' }}
           path: |
@@ -1320,7 +1322,7 @@ jobs:
 
       - name: Upload Linux ARM64 srvdemo (default brand, newest runner only)
         if: matrix.brand == '' && env.BUILD_SRVDEMO == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: linux-arm64-srvdemo
           path: |
@@ -1334,13 +1336,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           lfs: false
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
           merge-multiple: true
@@ -1381,6 +1383,8 @@ jobs:
             echo "MANIFEST_NAME=beta.json" >> $GITHUB_ENV
             echo "Detected pre-release tag: channel=beta manifest=beta.json"
           else
+            echo "RELEASE_CHANNEL=stable" >> $GITHUB_ENV
+            echo "MANIFEST_NAME=latest.json" >> $GITHUB_ENV
             echo "Stable release tag: channel=stable manifest=latest.json"
           fi
 
@@ -1438,10 +1442,10 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 
-      - name: Set up Node.js 22 for Cloudflare R2
-        uses: actions/setup-node@v4
+      - name: Set up Node.js for Cloudflare R2
+        uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Upload release assets to Cloudflare R2
         env:
@@ -1484,7 +1488,7 @@ jobs:
           npm install -g wrangler@latest
           wrangler --version
           echo "Uploading release assets to Cloudflare R2 bucket=$R2_BUCKET"
-          # Determine asset prefix based on release channel (stable → latest/, beta → beta/)
+          # Determine asset prefix based on release channel (stable 鈫?latest/, beta 鈫?beta/)
           ASSET_PREFIX="latest"
           if [ "${RELEASE_CHANNEL}" = "beta" ]; then
             ASSET_PREFIX="beta"
@@ -1689,6 +1693,7 @@ jobs:
 
       - name: Skip Gitee release asset upload
         run: echo "Release packages are uploaded to Tencent COS; skipping slow Gitee asset upload."
+
 
 
 

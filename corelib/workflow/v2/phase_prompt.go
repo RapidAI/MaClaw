@@ -2,6 +2,7 @@ package v2
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -98,6 +99,38 @@ func BuildPhasePrompt(state *WorkflowState) string {
 		}
 		sb.WriteString(RenderFormDataFields(phase, true))
 		sb.WriteString("\n")
+	}
+
+	// Inject supplementary documents as reference context for LLM generation.
+	// These are optional materials (research plans, publication lists, etc.) that
+	// the user uploaded alongside the form. Injected in all phases after Phase 1
+	// (which collects them) so the LLM has research direction context.
+	if len(state.SupplementaryDocs) > 0 {
+		sb.WriteString("## 用户提供的补充参考材料\n\n")
+		sb.WriteString("以下文档由用户上传作为参考，请在生成本阶段内容时充分利用这些材料中的信息：\n\n")
+		totalBudget := 10000 // total rune budget across all supplementary docs
+		perDocBudget := totalBudget / len(state.SupplementaryDocs)
+		if perDocBudget > 4000 {
+			perDocBudget = 4000
+		}
+		// Sort by file name for deterministic prompt output
+		suppNames := make([]string, 0, len(state.SupplementaryDocs))
+		for name := range state.SupplementaryDocs {
+			suppNames = append(suppNames, name)
+		}
+		sort.Strings(suppNames)
+		for _, name := range suppNames {
+			content := state.SupplementaryDocs[name]
+			sb.WriteString(fmt.Sprintf("### 📄 %s\n\n", name))
+			runes := []rune(content)
+			if len(runes) > perDocBudget {
+				sb.WriteString(string(runes[:perDocBudget]))
+				sb.WriteString("\n\n...(内容过长已截断)\n\n")
+			} else {
+				sb.WriteString(content)
+				sb.WriteString("\n\n")
+			}
+		}
 	}
 
 	// Auto-inject document parsing guidance when form data contains file paths.

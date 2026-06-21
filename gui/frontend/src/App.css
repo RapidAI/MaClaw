@@ -1536,6 +1536,40 @@ body {
     background: var(--theme-primary);
 }
 
+/* AI assistant panel — wider, more visible scrollbar for easy grab */
+.ai-chat-scrollbar {
+    scrollbar-width: auto;
+    scrollbar-color: var(--theme-primary-soft) rgba(128, 128, 128, 0.08);
+}
+
+.ai-chat-scrollbar::-webkit-scrollbar {
+    width: 12px;
+}
+
+.ai-chat-scrollbar::-webkit-scrollbar-track {
+    background: rgba(128, 128, 128, 0.06);
+    border-radius: 6px;
+}
+
+.ai-chat-scrollbar::-webkit-scrollbar-thumb {
+    background: var(--theme-primary-soft, rgba(100, 140, 200, 0.5));
+    border-radius: 6px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+
+.ai-chat-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: var(--theme-primary, rgba(80, 120, 200, 0.75));
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+
+.ai-chat-scrollbar::-webkit-scrollbar-thumb:active {
+    background: var(--theme-primary, rgba(60, 100, 200, 0.9));
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+
 .global-action-bar {
     flex: 0 0 auto;
     width: 100%;
@@ -9071,10 +9105,15 @@ body {
     transition: all 0.15s;
 }
 
-.prog-tools__btn-reset:hover {
+.prog-tools__btn-reset--danger {
     color: #ef4444;
-    border-color: #ef4444;
-    background: color-mix(in srgb, #ef4444 8%, var(--theme-surface));
+    border-color: color-mix(in srgb, #ef4444 40%, var(--theme-border));
+}
+
+.prog-tools__btn-reset--danger:hover {
+    color: #dc2626;
+    border-color: #dc2626;
+    background: color-mix(in srgb, #ef4444 12%, var(--theme-surface));
 }
 
 /* Toolbar: tabs + search */

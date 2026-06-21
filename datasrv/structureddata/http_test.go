@@ -5429,7 +5429,17 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 				"risk_level": "medium",
 				"test_evidence": map[string]any{
 					"run_id":           "run-expense-1",
+					"verified_at":      "2026-06-21T11:00:00Z",
+					"definition_hash":  "sha256:expense-app",
 					"artifact_present": true,
+					"artifact_name":    "expense-approval-evidence.zip",
+					"artifact_count":   2,
+					"output_count":     3,
+					"primary_result":   "approval_result",
+					"result_payload": map[string]any{
+						"decision":        "approved",
+						"business_status": "finance_approved",
+					},
 				},
 			},
 			"dependencies": []any{
@@ -5467,6 +5477,16 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	resultContract, ok := installed.Metadata["result_contract"].(map[string]any)
 	if !ok || resultContract["primary"] != "approval_result" {
 		t.Fatalf("app installation should persist result contract metadata: %#v", installed.Metadata)
+	}
+	testEvidence, ok := installed.Metadata["test_evidence"].(map[string]any)
+	if !ok || testEvidence["run_id"] != "run-expense-1" || testEvidence["definition_fingerprint"] != "sha256:expense-app" || testEvidence["primary_result"] != "approval_result" {
+		t.Fatalf("app installation should normalize test evidence metadata: %#v", installed.Metadata)
+	}
+	if installed.Metadata["test_evidence_output_count"] != float64(3) || installed.Metadata["test_evidence_artifact_count"] != float64(2) || installed.Metadata["test_evidence_artifact_present"] != true {
+		t.Fatalf("app installation should expose test evidence summaries: %#v", installed.Metadata)
+	}
+	if payload, ok := testEvidence["result_payload"].(map[string]any); !ok || payload["decision"] != "approved" || payload["business_status"] != "finance_approved" {
+		t.Fatalf("app installation should preserve structured test evidence payload: %#v", testEvidence)
 	}
 	workflowMapping, ok := installed.Metadata["workflow_mapping"].(map[string]any)
 	if !ok || workflowMapping["schema"] != "maclaw.app.workflow.v1" || workflowMapping["approvalNode"] != "finance.director_review" {
@@ -5576,6 +5596,9 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if columns := appInstallationStringList(caps.AppInstallations[0].Metadata["workspace_layout_list_columns"]); len(columns) != 4 || columns[2] != "current_node" {
 		t.Fatalf("capabilities should expose workspace list column metadata: %#v", caps.AppInstallations[0].Metadata)
 	}
+	if caps.AppInstallations[0].Metadata["test_evidence_run_id"] != "run-expense-1" || caps.AppInstallations[0].Metadata["test_evidence_primary_result"] != "approval_result" || caps.AppInstallations[0].Metadata["test_evidence_output_count"] != float64(3) {
+		t.Fatalf("capabilities should expose test evidence summaries: %#v", caps.AppInstallations[0].Metadata)
+	}
 
 	audit, err := svc.QueryAuditLogs(context.Background(), Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}, QueryAuditLogsInput{Action: "app.installation_upsert", TargetType: "app_installation", TargetID: "mis.expense", Limit: 1})
 	if err != nil {
@@ -5602,6 +5625,12 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if metadata["result_contract_primary"] != "approval_result" {
 		t.Fatalf("app installation audit should summarize result contract primary: %#v", metadata)
+	}
+	if metadata["test_evidence_run_id"] != "run-expense-1" || metadata["test_evidence_definition_fingerprint"] != "sha256:expense-app" || metadata["test_evidence_output_count"] != float64(3) || metadata["test_evidence_primary_result"] != "approval_result" {
+		t.Fatalf("app installation audit should summarize test evidence: %#v", metadata)
+	}
+	if _, ok := metadata["test_evidence_result_payload"]; ok {
+		t.Fatalf("app installation audit should omit bulky test evidence payload: %#v", metadata)
 	}
 	resultTypes, ok := metadata["result_contract_types"].([]any)
 	if !ok || len(resultTypes) != 4 || resultTypes[0] != "approval_result" {

@@ -426,7 +426,7 @@ Object.assign(I18N_EN, {
 });
 Object.assign(I18N_ZH, {
   navComputeMarket: '\u7b97\u529b\u5546\u5e97', navComputeMarketDesc: '\u5361\u578b\u3001\u8ba2\u5355\u4e0e\u4f7f\u7528\u7edf\u8ba1',
-  navLLMService: 'LLM \u63a5\u5165', navLLMServiceDesc: '\u670d\u52a1\u5546\u3001\u670d\u52a1\u7ec4\u4e0e\u6388\u6743',
+  navLLMService: '\u6a21\u578b\u63a5\u5165\u70b9', navLLMServiceDesc: '\u670d\u52a1\u5546\u3001\u670d\u52a1\u7ec4\u4e0e\u6388\u6743',
   computeMarketTitle: '\u7b97\u529b\u5546\u5e97', computeMarketDesc: '\u7ba1\u7406\u7b97\u529b\u5361\u578b\u3001\u8d2d\u4e70\u8ba2\u5355\u548c\u4f7f\u7528\u7edf\u8ba1\u3002',
   computeMarketStatProviders: '\u670d\u52a1\u5546', computeMarketStatProvidersHint: '\u5df2\u914d\u7f6e\u7684 LLM \u540e\u7aef',
   computeMarketStatGroups: '\u670d\u52a1\u7ec4', computeMarketStatGroupsHint: '\u6a21\u578b\u8def\u7531\u7ec4',
@@ -446,7 +446,7 @@ Object.assign(I18N_ZH, {
   computeMarketViewArchivedOrders: '\u67e5\u770b\u5f52\u6863\u8ba2\u5355', computeMarketViewActiveOrders: '\u67e5\u770b\u5f53\u524d\u8ba2\u5355',
   computeMarketArchiveOrder: '\u5f52\u6863', computeMarketArchivedOrdersDesc: '\u6b63\u5728\u67e5\u770b\u5df2\u5f52\u6863\u7684\u65e7\u8ba2\u5355\uff0c\u8fd9\u4e9b\u8ba2\u5355\u4e0d\u4f1a\u51fa\u73b0\u5728\u5f53\u524d\u961f\u5217\u3002',
   computeMarketStatsTitle: '\u4f7f\u7528\u7edf\u8ba1', computeMarketStatsDesc: '\u6309 Hub/\u79df\u6237\u7ef4\u5ea6\u7684 Token \u6d88\u8017\u7edf\u8ba1\u3002',
-  llmServiceTitle: 'LLM \u63a5\u5165', llmServiceDesc: '\u7ba1\u7406 LLM \u670d\u52a1\u5546\u3001\u7b97\u529b\u4ee3\u7406\u5546\u548c\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
+  llmServiceTitle: '\u6a21\u578b\u63a5\u5165\u70b9', llmServiceDesc: '\u7ba1\u7406 LLM \u670d\u52a1\u5546\u3001\u7b97\u529b\u4ee3\u7406\u5546\u548c\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
   llmServiceProviders: '\u670d\u52a1\u5546', llmServiceGroups: '\u670d\u52a1\u7ec4',
   llmServiceAddProvider: '\u6dfb\u52a0\u670d\u52a1\u5546', llmServiceNoProviders: '\u672a\u914d\u7f6e\u670d\u52a1\u5546\u3002',
   llmServiceProviderName: '\u540d\u79f0', llmServiceProviderURL: 'API \u5730\u5740', llmServiceProviderKey: 'API \u5bc6\u94a5',

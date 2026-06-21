@@ -36,7 +36,7 @@
       <div class="hero-copy">
         <p class="kicker" data-i18n="heroKicker">LLM Compute Access</p>
         <h1 id="heroTitle" data-i18n="heroTitle">为 Hub 租户开通稳定、可审计的 LLM 算力信用点</h1>
-        <p class="lead" data-i18n="heroLead">选择算力卡后创建订单。支付确认后，信用点会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。</p>
+        <p class="lead" data-i18n="heroLead">选择算力卡后创建订单。支付确认后，信用点会写入 HubCenter 授权体系，并可在模型接入点与算力市场后台追踪使用量。</p>
         <div class="hero-actions">
           <a class="primary-link" href="#products" data-i18n="browseCards">查看算力卡</a>
           <a class="secondary-link" href="#ordersPanel" data-i18n="checkOrders">查询订单</a>
@@ -171,7 +171,7 @@
         tenantUnknown: '未绑定 Hub 租户',
         heroKicker: 'LLM Compute Access',
         heroTitle: '为 Hub 租户开通稳定、可审计的 LLM 算力信用点',
-        heroLead: '选择算力卡后创建订单。支付确认后，信用点会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。',
+        heroLead: '选择算力卡后创建订单。支付确认后，信用点会写入 HubCenter 授权体系，并可在模型接入点与算力市场后台追踪使用量。',
         browseCards: '查看算力卡',
         checkOrders: '查询订单',
         routeTitle: '接入链路',
@@ -253,7 +253,7 @@
         tenantUnknown: '未绑定 Hub 租户',
         heroKicker: 'LLM Compute Access',
         heroTitle: '为 Hub 租户开通稳定、可审计的 LLM 算力信用点',
-        heroLead: '选择算力卡后创建订单。支付确认后，信用点会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。',
+        heroLead: '选择算力卡后创建订单。支付确认后，信用点会写入 HubCenter 授权体系，并可在模型接入点与算力市场后台追踪使用量。',
         browseCards: '查看算力卡',
         checkOrders: '查询订单',
         routeTitle: '接入链路',
@@ -327,7 +327,7 @@
         tenantUnknown: '未绑定 Hub 租户',
         heroKicker: 'LLM Compute Access',
         heroTitle: '为 Hub 租户开通稳定、可审计的 LLM 算力信用点',
-        heroLead: '选择算力卡后创建订单。支付确认后，信用点会写入 HubCenter 授权体系，并可在 LLM 接入与算力市场后台追踪使用量。',
+        heroLead: '选择算力卡后创建订单。支付确认后，信用点会写入 HubCenter 授权体系，并可在模型接入点与算力市场后台追踪使用量。',
         browseCards: '查看算力卡',
         checkOrders: '查询订单',
         routeTitle: '接入链路',
@@ -513,12 +513,18 @@
     }
     function writeStoredContext(next) {
       var prev = readStoredContext();
+      var hubID = next.hub_id || prev.hub_id || '';
+      var tenantID = next.tenant_id || prev.tenant_id || '';
+      var sameHub = !next.hub_id || (!!prev.hub_id && String(prev.hub_id) === String(hubID));
+      var sameTenant = sameHub && normalizeContextTenantID(prev.tenant_id) === normalizeContextTenantID(tenantID);
       var ctx = {
         email: next.email || prev.email || '',
-        hub_id: next.hub_id || prev.hub_id || '',
-        tenant_id: next.tenant_id || prev.tenant_id || ''
+        hub_id: hubID,
+        tenant_id: tenantID,
+        hub_name: next.hub_name || (sameHub ? prev.hub_name : '') || '',
+        tenant_name: next.tenant_name || (sameTenant ? prev.tenant_name : '') || ''
       };
-      if (!ctx.email && !ctx.hub_id && !ctx.tenant_id) return;
+      if (!ctx.email && !ctx.hub_id && !ctx.tenant_id && !ctx.hub_name && !ctx.tenant_name) return;
       var raw = JSON.stringify(ctx);
       try { localStorage.setItem(contextStorageKey, raw); return; } catch (e) {}
       try { sessionStorage.setItem(contextStorageKey, raw); } catch (e) {}
@@ -540,19 +546,48 @@
       if (stored) return stored;
       return fallback || '';
     }
+    function normalizeContextTenantID(value) {
+      value = String(value || '').trim();
+      return value === 'tenant_default' ? '' : value;
+    }
+    function storedContextNameValue(keys, hubID, tenantID) {
+      var ctx = readStoredContext();
+      if (!ctx || !ctx.hub_id || String(ctx.hub_id) !== String(hubID || '')) return '';
+      if (tenantID !== undefined && normalizeContextTenantID(ctx.tenant_id) !== normalizeContextTenantID(tenantID)) return '';
+      for (var i = 0; i < keys.length; i++) {
+        var value = ctx[keys[i]];
+        if (value) return value;
+      }
+      return '';
+    }
+    function getContextNameParam(keys, hubID, tenantID) {
+      for (var i = 0; i < keys.length; i++) {
+        var value = getParam(keys[i]);
+        if (value) return value;
+      }
+      return storedContextNameValue(keys, hubID, tenantID);
+    }
     function rememberCurrentContext(email) {
+      var hubID = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
+      var tenantID = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
       writeStoredContext({
         email: email || getParam('email') || storedContextValue(['email']),
-        hub_id: getContextParam(['hub_id', 'hubId', 'hubID', 'hub']),
-        tenant_id: getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default')
+        hub_id: hubID,
+        tenant_id: tenantID,
+        hub_name: getContextNameParam(['hub_name', 'hubName', 'hub_label', 'hubLabel'], hubID),
+        tenant_name: getContextNameParam(['tenant_name', 'tenantName', 'tenant_label', 'tenantLabel'], hubID, tenantID)
       });
     }
     function rememberOrderContext(order) {
       if (!order) return;
+      var hubID = order.hub_id || getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
+      var tenantID = order.tenant_id || getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
       writeStoredContext({
         email: order.email || order.admin_email || document.getElementById('adminEmail').value.trim(),
-        hub_id: order.hub_id || getContextParam(['hub_id', 'hubId', 'hubID', 'hub']),
-        tenant_id: order.tenant_id || getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default')
+        hub_id: hubID,
+        tenant_id: tenantID,
+        hub_name: getContextNameParam(['hub_name', 'hubName', 'hub_label', 'hubLabel'], hubID),
+        tenant_name: getContextNameParam(['tenant_name', 'tenantName', 'tenant_label', 'tenantLabel'], hubID, tenantID)
       });
     }
     function returnContextURL(order) {
@@ -560,10 +595,14 @@
       var email = (order && (order.email || order.admin_email)) || document.getElementById('adminEmail').value.trim() || storedContextValue(['email']);
       var hubID = (order && order.hub_id) || getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
       var tenantID = (order && order.tenant_id) || getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
+      var hubName = getContextNameParam(['hub_name', 'hubName', 'hub_label', 'hubLabel'], hubID);
+      var tenantName = getContextNameParam(['tenant_name', 'tenantName', 'tenant_label', 'tenantLabel'], hubID, tenantID);
       if (order && order.order_no) u.searchParams.set('ctx_order_no', order.order_no);
       if (email) u.searchParams.set('ctx_email', email);
       if (hubID) u.searchParams.set('ctx_hub_id', hubID);
       if (tenantID) u.searchParams.set('ctx_tenant_id', tenantID);
+      if (hubName) u.searchParams.set('ctx_hub_name', hubName);
+      if (tenantName) u.searchParams.set('ctx_tenant_name', tenantName);
       return u.toString();
     }
     function paymentURLWithContext(raw, order) {
@@ -583,11 +622,40 @@
       if (!raw) return true;
       try {
         var ret = new URL(raw, location.origin);
-        if (ret.searchParams.get('ctx_hub_id') && ret.searchParams.get('ctx_tenant_id')) return false;
+        if (ret.searchParams.get('ctx_hub_id') && ret.searchParams.get('ctx_tenant_id')) {
+          var ctx = hubTenantContext();
+          if (ctx.hubName && !ret.searchParams.get('ctx_hub_name')) return true;
+          if (ctx.tenantName && !ret.searchParams.get('ctx_tenant_name')) return true;
+          return false;
+        }
         return ret.pathname === '/compute-store' || ret.pathname === '/api/cardstore/payment/return';
       } catch (e) {
         return raw.indexOf('/compute-store') >= 0 || raw.indexOf('/api/cardstore/payment/return') >= 0;
       }
+    }
+    function compactID(value) {
+      value = String(value || '').trim();
+      if (value.length <= 24) return value;
+      return value.slice(0, 12) + '...' + value.slice(-8);
+    }
+    function hubTenantContext() {
+      var hubID = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
+      var tenantID = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
+      var hubName = getContextNameParam(['hub_name', 'hubName', 'hub_label', 'hubLabel'], hubID);
+      var tenantName = getContextNameParam(['tenant_name', 'tenantName', 'tenant_label', 'tenantLabel'], hubID, tenantID);
+      return {
+        hubID: hubID,
+        tenantID: tenantID,
+        hubName: hubName,
+        tenantName: tenantName,
+        main: (hubName || compactID(hubID)) + (tenantName || tenantID ? ' / ' + (tenantName || compactID(tenantID)) : ''),
+        meta: hubID ? (hubID + (tenantID ? ' / ' + tenantID : '')) : ''
+      };
+    }
+    function renderHubTenant(el, ctx) {
+      if (!el) return;
+      el.title = ctx.meta && ctx.main !== ctx.meta ? ctx.main + '\n' + ctx.meta : (ctx.main || ctx.meta);
+      el.innerHTML = '<span class="context-chip__body"><span class="context-chip__main">' + esc(ctx.main || tr('tenantUnknown')) + '</span>' + (ctx.meta && ctx.main !== ctx.meta ? '<span class="context-chip__meta">' + esc(ctx.meta) + '</span>' : '') + '</span>';
     }
     function findTemplate(id) { return TEMPLATES.find(function(t){ return t.id === id; }) || TEMPLATES[0]; }
     function idSafe(s) { return String(s || 'card').replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 42) || 'card'; }
@@ -633,10 +701,9 @@
         btn.classList.toggle('active', btn.dataset.lang === state.lang);
       });
       var tenantChip = document.getElementById('tenantChip');
-      var hub = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
-      var tenant = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
-      if (hub) {
-        tenantChip.textContent = hub + ' / ' + tenant;
+      var ctx = hubTenantContext();
+      if (ctx.hubID) {
+        renderHubTenant(tenantChip, ctx);
         tenantChip.classList.remove('is-empty');
       } else {
         tenantChip.textContent = tr('tenantUnknown');
@@ -971,7 +1038,9 @@
       var hub = getContextParam(['hub_id', 'hubId', 'hubID', 'hub']);
       var tenant = getContextParam(['tenant_id', 'tenantId', 'tenantID', 'tenant'], 'tenant_default');
       if (hub) {
-        document.getElementById('hubTenantInfo').value = hub + ' / ' + tenant;
+        var ctx = hubTenantContext();
+        document.getElementById('hubTenantInfo').value = ctx.meta && ctx.main !== ctx.meta ? ctx.main + ' (' + ctx.meta + ')' : ctx.main;
+        document.getElementById('hubTenantInfo').title = ctx.meta && ctx.main !== ctx.meta ? ctx.main + '\n' + ctx.meta : ctx.main;
         rememberCurrentContext(email);
       } else {
         showStoreNotice(tenantRequiredMessage(), 'error');

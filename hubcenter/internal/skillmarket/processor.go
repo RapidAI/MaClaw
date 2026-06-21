@@ -298,6 +298,9 @@ func hubMaclawAppTestEvidence(e *MaclawAppTestEvidence) *skill.MaclawAppTestEvid
 		DefinitionFingerprint: e.DefinitionFingerprint,
 		ArtifactPresent:       e.ArtifactPresent,
 		ArtifactName:          e.ArtifactName,
+		OutputCount:           e.OutputCount,
+		PrimaryResult:         e.PrimaryResult,
+		ResultPayload:         cloneSkillMarketAnyMap(e.ResultPayload),
 	}
 }
 

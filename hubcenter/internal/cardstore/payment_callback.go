@@ -164,7 +164,7 @@ func cloneValues(values url.Values) url.Values {
 }
 
 func alipayReturnContextKeys() []string {
-	return []string{"ctx_order_no", "ctx_email", "ctx_hub_id", "ctx_tenant_id"}
+	return []string{"ctx_order_no", "ctx_email", "ctx_hub_id", "ctx_tenant_id", "ctx_hub_name", "ctx_tenant_name"}
 }
 
 func alipayReturnStoreURLs(r *http.Request, svc *Service, orderNo string) (string, string) {
@@ -185,16 +185,22 @@ func alipayReturnStoreURLs(r *http.Request, svc *Service, orderNo string) (strin
 			}
 		}
 	}
-	if len(q) == 0 && r != nil {
+	if r != nil {
 		ctx := r.URL.Query()
-		if strings.TrimSpace(ctx.Get("ctx_email")) != "" {
+		if q.Get("email") == "" && strings.TrimSpace(ctx.Get("ctx_email")) != "" {
 			q.Set("email", strings.TrimSpace(ctx.Get("ctx_email")))
 		}
-		if strings.TrimSpace(ctx.Get("ctx_hub_id")) != "" {
+		if q.Get("hub_id") == "" && strings.TrimSpace(ctx.Get("ctx_hub_id")) != "" {
 			q.Set("hub_id", strings.TrimSpace(ctx.Get("ctx_hub_id")))
 		}
-		if strings.TrimSpace(ctx.Get("ctx_tenant_id")) != "" {
+		if q.Get("tenant_id") == "" && strings.TrimSpace(ctx.Get("ctx_tenant_id")) != "" {
 			q.Set("tenant_id", strings.TrimSpace(ctx.Get("ctx_tenant_id")))
+		}
+		if strings.TrimSpace(ctx.Get("ctx_hub_name")) != "" {
+			q.Set("hub_name", strings.TrimSpace(ctx.Get("ctx_hub_name")))
+		}
+		if strings.TrimSpace(ctx.Get("ctx_tenant_name")) != "" {
+			q.Set("tenant_name", strings.TrimSpace(ctx.Get("ctx_tenant_name")))
 		}
 	}
 	if len(q) == 0 {

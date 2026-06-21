@@ -490,6 +490,7 @@ func cloneHubMaclawAppTestEvidence(e *skill.MaclawAppTestEvidence) *skill.Maclaw
 		return nil
 	}
 	copy := *e
+	copy.ResultPayload = cloneSkillMarketAnyMap(e.ResultPayload)
 	return &copy
 }
 

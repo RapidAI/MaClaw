@@ -24,7 +24,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
@@ -65,7 +65,7 @@ jobs:
           tar czf rapidspeech-linux-x64.tar.gz -C dist .
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: rapidspeech-linux-x64
           path: ${{ env.RS_DIR }}/rapidspeech-linux-x64.tar.gz
@@ -76,7 +76,7 @@ jobs:
   build-macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
@@ -110,7 +110,7 @@ jobs:
           tar czf rapidspeech-macos-universal.tar.gz -C dist .
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: rapidspeech-macos-universal
           path: ${{ env.RS_DIR }}/rapidspeech-macos-universal.tar.gz
@@ -121,7 +121,7 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
@@ -160,7 +160,7 @@ jobs:
           Compress-Archive -Path dist\* -DestinationPath rapidspeech-windows-x64.zip
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: rapidspeech-windows-x64
           path: ${{ env.RS_DIR }}/rapidspeech-windows-x64.zip
@@ -174,7 +174,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
           merge-multiple: true

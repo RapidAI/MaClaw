@@ -819,6 +819,7 @@ export function CodePreviewPanel({
             {/* Code content area */}
             <div
                 ref={scrollRef}
+                className="ai-chat-scrollbar"
                 style={{
                     flex: 1,
                     overflowY: 'auto',

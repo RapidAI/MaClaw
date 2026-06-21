@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MaClaw Hub Center Admin</title>
   <link rel="stylesheet" href="/pro-ui.css">
-  <link rel="stylesheet" href="/admin/assets/css/admin-shell.css?v=archived-order-delete-20260619">
+  <link rel="stylesheet" href="/admin/assets/css/admin-shell.css?v=compact-compute-orders-20260622">
   <link rel="stylesheet" href="/admin/assets/css/admin-responsive.css">
 </head>
 <body>
@@ -179,7 +179,7 @@
         </div>
         <div id="cmSubViewOrders" class="hidden-view">
           <div class="head meta-spaced"><div><div class="item-title" data-i18n="computeMarketOrdersTitle"></div><div class="item-meta" id="cmOrdersDesc" data-i18n="computeMarketOrdersDesc"></div></div><div class="actions"><button class="btn-ghost" id="cmArchivedOrdersBtn" onclick="toggleComputeArchivedOrders()" data-i18n="computeMarketViewArchivedOrders"></button><button class="btn-ghost" onclick="loadComputeOrders()" data-i18n="reload"></button></div></div>
-          <div id="cmOrdersList" class="list"><div class="hint" data-i18n="computeMarketNoOrders"></div></div>
+          <div id="cmOrdersList" class="list"><div class="hint" data-i18n="computeMarketNoOrders"></div></div><div id="cmOrdersPager" class="pager pager-compact cm-orders-pager"><div class="pager-meta" id="cmOrdersPageInfo" aria-live="polite"></div><div class="pager-actions"><button class="btn-ghost" id="cmOrdersPrevBtn" type="button" onclick="changeComputeOrdersPage(-1)" aria-label="Previous compute orders page">&larr;</button><button class="btn-ghost" id="cmOrdersNextBtn" type="button" onclick="changeComputeOrdersPage(1)" aria-label="Next compute orders page">&rarr;</button></div></div>
         </div>
         <div id="cmSubViewStats" class="hidden-view">
           <div class="head meta-spaced"><div><div class="item-title" data-i18n="computeMarketStatsTitle"></div><div class="item-meta" data-i18n="computeMarketStatsDesc"></div></div><button class="btn-primary" onclick="queryComputeStats()" data-i18n="computeMarketQuery"></button></div>
@@ -249,6 +249,6 @@
   <script src="/admin/assets/js/skillmarket-admin.js?v=tab-autoload-20260614-3" defer></script>
   <script src="/admin/assets/js/ha-news-admin.js?v=tab-autoload-20260614-2" defer></script>
   <script src="/admin/assets/js/llm-service-tab.js?v=tab-autoload-20260614-2" defer></script>
-  <script src="/admin/assets/js/compute-market-tab.js?v=restore-archived-order-20260622-3" defer></script>
+  <script src="/admin/assets/js/compute-market-tab.js?v=compact-compute-orders-20260622" defer></script>
 </body>
 </html>

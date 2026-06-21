@@ -62,7 +62,7 @@ export function buildHubCreditsURL(hubURL?: string, viewerToken?: string, tenant
  * Priority: Hub's own `/card_store` page (tenant-scoped purchase).
  * Fallback: HubCenter `/compute-store` (only when Hub URL is unavailable).
  */
-export function buildHubCardStoreURL(hubURL?: string, tenantID?: string, email?: string, viewerToken?: string, hubCenterURL?: string, hubID?: string) {
+export function buildHubCardStoreURL(hubURL?: string, tenantID?: string, email?: string, viewerToken?: string, hubCenterURL?: string, hubID?: string, hubName?: string, tenantName?: string) {
     const base = String(hubURL || '').trim().replace(/\/+$/, '');
     const hubCenterBase = String(hubCenterURL || '').trim().replace(/\/+$/, '');
     const resolvedHubID = String(hubID || '').trim();
@@ -76,7 +76,7 @@ export function buildHubCardStoreURL(hubURL?: string, tenantID?: string, email?:
     // Fallback: if Hub URL is unavailable but HubCenter context exists, link to
     // the HubCenter compute-store (legacy path, should rarely trigger).
     if (hubCenterBase && resolvedHubID) {
-        return appendQuery(`${hubCenterBase}/compute-store`, { hub_id: resolvedHubID, tenant_id: tenantID, email });
+        return appendQuery(`${hubCenterBase}/compute-store`, { hub_id: resolvedHubID, tenant_id: tenantID, hub_name: hubName, tenant_name: tenantName, email });
     }
     return '';
 }

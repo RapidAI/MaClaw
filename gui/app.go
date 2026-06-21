@@ -1044,13 +1044,14 @@ func (a *App) ensureEvolutionPipeline() {
 			if a.memoryStore == nil {
 				return nil
 			}
-			entry := memory.Entry{
-				Content:  content,
-				Category: memory.CategoryTaskArtifact,
-				Tags:     tags,
-				Scope:    memory.ScopeProject,
-			}
-			return a.memoryStore.Save(entry)
+			_, err := a.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
+				Title:            "Skill maintenance plan",
+				Content:          content,
+				Tags:             tags,
+				IdentityTagCount: 2, // ["skill_maintenance", "auto_scheduled"] form stable identity
+				SourceType:       "skill_maintenance",
+			})
+			return err
 		},
 	)
 
@@ -2875,8 +2876,10 @@ func (a *App) RefreshWorkflowV2StateForTab(projectPath string, tabID ...string) 
 	// Emit phase_update directly instead of through emitWorkflowV2Progress to avoid
 	// the suggest_maximize side effect — tab switch is not a new document event.
 	handler.emitWorkflowV2ProgressPayloadOnly(userID, state)
-	// Re-emit doc_update for all phases that have output, so the preview panel
-	// gets the full document content (phase_outputs in progress are truncated).
+	// Re-emit doc_update for all phases that have output, so the frontend
+	// docUpdatePhaseIDsRef is correctly populated — this prevents subsequent
+	// phase_update events from overwriting doc_update content during normal
+	// workflow operation after a tab switch.
 	// Emit directly instead of through emitDocUpdateV2 to avoid repeated store.Load.
 	projectPath = workflowEventProjectPath(state)
 	workflowID := state.ID

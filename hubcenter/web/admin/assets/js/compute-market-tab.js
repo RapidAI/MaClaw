@@ -21,6 +21,8 @@ if (typeof I18N_EN !== 'undefined') {
   let cmEditingCardID = '';
   let cmInitInFlight = null;
   let cmOrdersArchived = false;
+  let cmOrdersPage = 0;
+  const CM_ORDERS_PAGE_SIZE = 20;
   let cmRestoringOrders = {};
 
   var CONFIRMABLE_STATUSES = ['pending', 'personal_created', 'personal_opened'];
@@ -61,7 +63,7 @@ if (typeof I18N_EN !== 'undefined') {
       if (btn) { btn.className = t === tab ? 'btn-secondary' : 'btn-ghost'; btn.setAttribute('aria-pressed', t === tab ? 'true' : 'false'); }
     });
     if (tab === 'orders') {
-      if (preloadedOrders) { renderComputeOrders(preloadedOrders); }
+      if (preloadedOrders) { renderComputeOrders(preloadedOrders.slice(0, CM_ORDERS_PAGE_SIZE), preloadedOrders.length); }
       else { loadComputeOrders(); }
     }
     if (tab === 'payment' && window.loadCMPaymentConfig) loadCMPaymentConfig();
@@ -270,8 +272,9 @@ if (typeof I18N_EN !== 'undefined') {
   async function loadComputeOrders() {
     try {
       updateComputeOrdersArchiveUI();
-      const data = await api('/api/admin/cardstore/orders?limit=50' + (cmOrdersArchived ? '&archived=1' : ''));
-      renderComputeOrders(data.orders || []);
+      const offset = cmOrdersPage * CM_ORDERS_PAGE_SIZE;
+      const data = await api('/api/admin/cardstore/orders?limit=' + CM_ORDERS_PAGE_SIZE + '&offset=' + offset + (cmOrdersArchived ? '&archived=1' : ''));
+      renderComputeOrders(data.orders || [], data.total || 0);
     } catch (e) { renderComputeOrders([]); }
   }
 
@@ -282,9 +285,10 @@ if (typeof I18N_EN !== 'undefined') {
     if (desc) desc.textContent = cmOrdersArchived ? tr('computeMarketArchivedOrdersDesc') : tr('computeMarketOrdersDesc');
   }
 
-  function renderComputeOrders(orders) {
+  function renderComputeOrders(orders, total) {
     const container = document.getElementById('cmOrdersList');
     if (!container) return;
+    total = Math.max(Number(total || 0), orders.length);
     updateComputeOrdersArchiveUI();
     // Update pending badge only when rendering the active list (not archived)
     if (!cmOrdersArchived) {
@@ -293,21 +297,28 @@ if (typeof I18N_EN !== 'undefined') {
       }).length;
       updatePendingBadge(pendingCount);
     }
+    if (!orders.length && cmOrdersPage > 0) {
+      cmOrdersPage = Math.max(0, cmOrdersPage - 1);
+      loadComputeOrders();
+      return;
+    }
+    renderComputeOrdersPager(total);
     if (!orders.length) { container.innerHTML = '<div class="hint">' + tr('computeMarketNoOrders') + '</div>'; return; }
     container.innerHTML = orders.map(function (o) {
-      var statusClass = o.status === 'activated' ? 'ok' : (CONFIRMABLE_STATUSES.indexOf(o.status) >= 0 ? 'warn' : '');
+      var status = String(o.status || '').toLowerCase();
+      var statusClass = status === 'activated' ? 'ok' : (CONFIRMABLE_STATUSES.indexOf(status) >= 0 ? 'warn' : '');
       var orderArg = esc(cmJSArg(o.order_no));
-      var confirmBtn = (!cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0) ? '<button class="btn-primary compact-btn" onclick="confirmComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketConfirmOrder') + '</button>' : '';
+      var confirmBtn = (!cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(status) >= 0) ? '<button class="btn-primary compact-btn" onclick="confirmComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketConfirmOrder') + '</button>' : '';
       var archiveBtn = !cmOrdersArchived ? '<button class="btn-ghost compact-btn" onclick="archiveComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketArchiveOrder') + '</button>' : '';
-      var deleteBtn = (cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0) ? '<button class="btn-danger-ghost compact-btn" onclick="deleteArchivedComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketDeleteArchivedOrder') + '</button>' : '';
-      var restoreBtn = (cmOrdersArchived && String(o.status || '').toLowerCase() === 'activated') ? '<button class="btn-secondary compact-btn" onclick="restoreArchivedComputeOrder(\'' + orderArg + '\', this)">' + tr('computeMarketRestoreOrder') + '</button>' : '';
+      var deleteBtn = (cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(status) >= 0) ? '<button class="btn-danger-ghost compact-btn" onclick="deleteArchivedComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketDeleteArchivedOrder') + '</button>' : '';
+      var restoreBtn = (cmOrdersArchived && status === 'activated') ? '<button class="btn-secondary compact-btn" onclick="restoreArchivedComputeOrder(\'' + orderArg + '\', this)">' + tr('computeMarketRestoreOrder') + '</button>' : '';
       var agent = o.agent_name ? ' \u00b7 ' + tr('computeMarketCardAgent') + ': ' + esc(o.agent_name) : '';
       var archivedMeta = cmOrdersArchived && o.archived_at ? ' \u00b7 ' + tr('computeMarketArchivedAt') + ': ' + esc(new Date(o.archived_at).toLocaleString()) : '';
       var totalCredits = formatCMCredits(o.credits);
       var usedCredits = cmHasNumber(o.credits_used) ? formatCMCredits(o.credits_used) : tr('computeMarketOrderUnknown');
       var remainingCredits = cmHasNumber(o.credits_remaining) ? formatCMCredits(o.credits_remaining) : tr('computeMarketOrderUnknown');
       var validity = formatCMPeriod(o.period);
-      var expiresAt = o.authorization_expires_at ? formatCMDate(o.authorization_expires_at) : (o.status === 'activated' ? tr('computeMarketOrderUnknown') : tr('computeMarketOrderPendingActivation'));
+      var expiresAt = o.authorization_expires_at ? formatCMDate(o.authorization_expires_at) : (status === 'activated' ? tr('computeMarketOrderUnknown') : tr('computeMarketOrderPendingActivation'));
       return '<div class="data-row cm-order-row"><div class="data-row-main cm-order-main">'
         + '<div class="cm-order-head"><strong>' + esc(o.order_no) + '</strong><span class="badge ' + statusClass + '">' + esc(o.status) + '</span></div>'
         + '<span class="data-row-meta cm-order-meta">' + esc(o.email || '') + ' \u00b7 \u00a5' + esc(o.amount || 0) + ' \u00b7 ' + esc(o.product_label || o.product_id || '') + agent + archivedMeta + '</span>'
@@ -320,6 +331,32 @@ if (typeof I18N_EN !== 'undefined') {
     }).join('');
   }
 
+  function renderComputeOrdersPager(total) {
+    var pager = document.getElementById('cmOrdersPager');
+    var info = document.getElementById('cmOrdersPageInfo');
+    var prev = document.getElementById('cmOrdersPrevBtn');
+    var next = document.getElementById('cmOrdersNextBtn');
+    if (!pager || !info || !prev || !next) return;
+    var pages = Math.max(1, Math.ceil(total / CM_ORDERS_PAGE_SIZE));
+    if (total <= CM_ORDERS_PAGE_SIZE) {
+      pager.classList.remove('is-visible');
+    } else {
+      pager.classList.add('is-visible');
+    }
+    var start = total === 0 ? 0 : (cmOrdersPage * CM_ORDERS_PAGE_SIZE) + 1;
+    var end = Math.min(total, (cmOrdersPage + 1) * CM_ORDERS_PAGE_SIZE);
+    info.textContent = start + '-' + end + ' / ' + total;
+    prev.disabled = cmOrdersPage <= 0;
+    next.disabled = cmOrdersPage >= pages - 1;
+  }
+
+  async function changeComputeOrdersPage(delta) {
+    var nextPage = Math.max(0, cmOrdersPage + delta);
+    if (nextPage === cmOrdersPage) return;
+    cmOrdersPage = nextPage;
+    await loadComputeOrders();
+  }
+
   function updatePendingBadge(count) {
     var badge = document.getElementById('cmOrdersPendingBadge');
     if (!badge) return;
@@ -329,6 +366,7 @@ if (typeof I18N_EN !== 'undefined') {
 
   async function toggleComputeArchivedOrders() {
     cmOrdersArchived = !cmOrdersArchived;
+    cmOrdersPage = 0;
     await loadComputeOrders();
   }
 
@@ -609,6 +647,7 @@ if (typeof I18N_EN !== 'undefined') {
   window.hideComputeCardEditor = hideComputeCardEditor;
   window.saveComputeCard = saveComputeCard;
   window.loadComputeOrders = loadComputeOrders;
+  window.changeComputeOrdersPage = changeComputeOrdersPage;
   window.confirmComputeOrder = confirmComputeOrder;
   window.archiveComputeOrder = archiveComputeOrder;
   window.restoreArchivedComputeOrder = restoreArchivedComputeOrder;

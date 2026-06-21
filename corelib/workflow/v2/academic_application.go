@@ -147,6 +147,12 @@ func BuildAcademicApplicationTemplate(p FundingProfile) *WorkflowTemplate {
 				Title:         p.FormTitle,
 				Description:   formDesc,
 				AcceptsResume: true,
+				AcceptsSupplementary: &SupplementaryDocConfig{
+					Label:       "研究方向相关材料（可选）",
+					Description: "可上传研究计划初稿、代表性论文列表、课题组简介、获奖证书扫描件等，系统将在后续阶段参考这些材料生成更精准的内容。支持 PDF、Word、Markdown、TXT 格式，可上传 0~5 份。",
+					MaxFiles:    5,
+					AcceptedTypes: []string{".pdf", ".docx", ".doc", ".md", ".txt"},
+				},
 				// Common fields shared across both variants (always visible)
 				Fields: []PhaseInputField{},
 				// Two mutually exclusive input modes

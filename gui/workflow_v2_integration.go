@@ -658,16 +658,10 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseUpdateEvent(state *v2.WorkflowStat
 		}
 	}
 
-	const maxPhaseOutputInProgress = 8000
 	phaseOutputs := make(map[string]interface{})
 	for _, p := range state.Phases {
 		if p.Output != "" {
-			out := p.Output
-			if len([]rune(out)) > maxPhaseOutputInProgress {
-				runes := []rune(out)
-				out = string(runes[:maxPhaseOutputInProgress]) + "\n\n[... 内容截断，完整内容请查看文档面板 ...]"
-			}
-			phaseOutputs[p.ID] = out
+			phaseOutputs[p.ID] = p.Output
 		}
 	}
 
@@ -795,6 +789,20 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 	// Declare resume upload capability — frontend renders file upload entry at form top
 	if schema.AcceptsResume {
 		view["accepts_resume"] = true
+	}
+	// Declare supplementary documents upload capability
+	if schema.AcceptsSupplementary != nil {
+		suppConfig := map[string]interface{}{
+			"label":       schema.AcceptsSupplementary.Label,
+			"description": schema.AcceptsSupplementary.Description,
+		}
+		if schema.AcceptsSupplementary.MaxFiles > 0 {
+			suppConfig["max_files"] = schema.AcceptsSupplementary.MaxFiles
+		}
+		if len(schema.AcceptsSupplementary.AcceptedTypes) > 0 {
+			suppConfig["accepted_types"] = schema.AcceptsSupplementary.AcceptedTypes
+		}
+		view["accepts_supplementary"] = suppConfig
 	}
 	// Pass through variants (mutually exclusive field groups) if defined.
 	if len(schema.Variants) > 0 {
@@ -1133,12 +1141,12 @@ func (h *IMMessageHandler) recordWorkflowV2Output(userID, output string) {
 	}
 	// Emit phase_update so the progress board reflects the new state.
 	h.emitWorkflowV2Progress(userID, state)
-	// Emit doc_update with full content for the preview panel.
+	// Emit doc_update for the phase that just produced output. This is essential
+	// for the frontend's docUpdatePhaseIDsRef tracking — once a phase receives
+	// doc_update, subsequent phase_update events won't overwrite its content.
 	// The phase that just produced output depends on NeedsConfirm:
 	//   - NeedsConfirm=true: RecordOutput sets WaitingConfirm, ActivePhase() still has output
 	//   - NeedsConfirm=false: RecordOutput auto-advances CurrentPhase, completed phase is at CurrentPhase-1
-	// Always emit so users can navigate to view any completed phase's full content
-	// (without this, NeedsConfirm=false phases only have truncated 8K from phase_update).
 	if phase := state.ActivePhase(); phase != nil && phase.Output != "" {
 		// NeedsConfirm=true path: current phase has output and is WaitingConfirm
 		h.emitDocUpdateV2(userID, phase.ID, phase.Output)

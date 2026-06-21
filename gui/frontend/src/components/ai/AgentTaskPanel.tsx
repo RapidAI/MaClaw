@@ -1143,7 +1143,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                     </button>
                 )}
             </header>
-            <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "16px 24px" }}>
+            <div className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "16px 24px" }}>
                 {view.type === "form" && (
                     <form
                         style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%", maxWidth: 480, margin: "0 auto" }}
@@ -1157,6 +1157,31 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                             <div style={{ color: theme.errorText, background: theme.errorBg, border: `1px solid ${theme.errorBorder}`, borderRadius: 8, padding: "10px 12px", fontSize: 12, lineHeight: 1.5 }}>
                                 {view.formErrors.map((error) => <div key={error}>{error}</div>)}
                             </div>
+                        )}
+                        {view.accepts_resume && (
+                            <ResumeUploadSection
+                                theme={theme}
+                                phaseID={view.id || ""}
+                                onPrefilled={(prefilled) => {
+                                    setFormData((prev) => {
+                                        const updated = { ...prev };
+                                        for (const [name, pv] of Object.entries(prefilled)) {
+                                            // Only fill empty fields — don't overwrite user edits
+                                            if (updated[name] === undefined || updated[name] === "" || updated[name] === null) {
+                                                updated[name] = pv.value;
+                                            }
+                                        }
+                                        return updated;
+                                    });
+                                }}
+                            />
+                        )}
+                        {view.accepts_supplementary && (
+                            <SupplementaryUploadSection
+                                theme={theme}
+                                config={view.accepts_supplementary}
+                                onFilesChanged={() => { /* files stored server-side via UploadSupplementaryDocs */ }}
+                            />
                         )}
                         {view.variants && view.variants.length > 0 && (
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -1579,6 +1604,176 @@ function ResumeUploadSection({ theme, phaseID, onPrefilled }: ResumeUploadSectio
                     选择文件
                 </button>
             )}
+        </div>
+    );
+}
+
+// --- Supplementary Documents Upload Section ---
+// Rendered below the resume upload section for forms that declare accepts_supplementary.
+// Allows uploading 0 to N optional reference documents (research plans, paper lists, etc.)
+// that are stored as context for subsequent LLM generation phases.
+// Each file is uploaded immediately upon selection (no separate "confirm" step).
+
+interface SupplementaryUploadSectionProps {
+    theme: Theme;
+    config: { label: string; description: string; max_files?: number; accepted_types?: string[] };
+    onFilesChanged: (files: string[]) => void;
+}
+
+function SupplementaryUploadSection({ theme, config, onFilesChanged }: SupplementaryUploadSectionProps) {
+    const [files, setFiles] = useState<{ path: string; name: string; status: "uploading" | "done" | "error" }[]>([]);
+    const [uploading, setUploading] = useState(false);
+    const [error, setError] = useState("");
+
+    const maxFiles = config.max_files || 5;
+
+    const handleAdd = async () => {
+        if (files.length >= maxFiles) {
+            setError(`最多上传 ${maxFiles} 份文件`);
+            return;
+        }
+        try {
+            const wailsApp = await getWailsAppModule();
+            const selectFile = wailsApp.SelectAIAssistantFile;
+            if (!selectFile) {
+                setError("文件选择功能不可用");
+                return;
+            }
+
+            const file = await selectFile();
+            if (!file) return;
+
+            // Check accepted types
+            if (config.accepted_types && config.accepted_types.length > 0) {
+                const ext = "." + file.split(".").pop()?.toLowerCase();
+                if (!config.accepted_types.includes(ext)) {
+                    setError(`不支持的文件格式。支持：${config.accepted_types.join("、")}`);
+                    return;
+                }
+            }
+
+            // Check duplicate
+            if (files.some((f) => f.path === file)) {
+                setError("该文件已添加");
+                return;
+            }
+
+            setError("");
+            const fileName = file.split(/[/\\]/).pop() || file;
+            const newEntry = { path: file, name: fileName, status: "uploading" as const };
+            const updated = [...files, newEntry];
+            setFiles(updated);
+            setUploading(true);
+
+            // Upload immediately
+            try {
+                const uploadFn = (wailsApp as any).UploadSupplementaryDocs;
+                if (!uploadFn) {
+                    setFiles((prev) => prev.map((f) => f.path === file ? { ...f, status: "error" } : f));
+                    setError("补充材料上传功能不可用（需要更新应用）");
+                    return;
+                }
+                const rawResult = await uploadFn(JSON.stringify([file]));
+                const parsed = JSON.parse(rawResult);
+                if (parsed.error) {
+                    setFiles((prev) => prev.map((f) => f.path === file ? { ...f, status: "error" } : f));
+                    setError(parsed.error);
+                } else {
+                    // Use the backend-assigned name (may differ from local name due to dedup)
+                    const storedName = parsed.data?.files?.[0] || fileName;
+                    setFiles((prev) => prev.map((f) => f.path === file ? { ...f, name: storedName, status: "done" } : f));
+                    onFilesChanged(updated.map((f) => f.path));
+                }
+            } catch (uploadErr: any) {
+                setFiles((prev) => prev.map((f) => f.path === file ? { ...f, status: "error" } : f));
+                setError(uploadErr?.message || "上传失败");
+            } finally {
+                setUploading(false);
+            }
+        } catch (err: any) {
+            setUploading(false);
+            setError(err?.message || "选择文件失败");
+        }
+    };
+
+    const handleRemove = async (index: number) => {
+        const target = files[index];
+        if (!target) return;
+        try {
+            const wailsApp = await getWailsAppModule();
+            const removeFn = (wailsApp as any).RemoveSupplementaryDoc;
+            if (removeFn && target.status === "done") {
+                await removeFn(target.name);
+            }
+        } catch { /* best-effort removal from backend */ }
+        const updated = files.filter((_, i) => i !== index);
+        setFiles(updated);
+        onFilesChanged(updated.map((f) => f.path));
+        setError("");
+    };
+
+    const containerStyle: React.CSSProperties = {
+        border: `1px dashed ${theme.fieldBorder}`,
+        borderRadius: 10,
+        padding: "12px 16px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+        transition: "all 0.2s ease",
+    };
+
+    return (
+        <div style={containerStyle}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 18 }}>📎</span>
+                <div style={{ flex: 1 }}>
+                    <div style={{ color: theme.text, fontSize: 12, fontWeight: 600 }}>{config.label}</div>
+                    <div style={{ color: theme.textMuted, fontSize: 11, lineHeight: 1.4, marginTop: 2 }}>{config.description}</div>
+                </div>
+                {files.length < maxFiles && (
+                    <button
+                        type="button"
+                        onClick={handleAdd}
+                        disabled={uploading}
+                        style={{
+                            border: `1px solid ${theme.btnBorder}`,
+                            background: "transparent",
+                            color: theme.btnColor,
+                            borderRadius: 8,
+                            padding: "5px 12px",
+                            fontSize: 11,
+                            cursor: uploading ? "wait" : "pointer",
+                            whiteSpace: "nowrap",
+                            opacity: uploading ? 0.5 : 1,
+                        }}
+                    >
+                        + 添加文件
+                    </button>
+                )}
+            </div>
+            {files.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {files.map((file, index) => (
+                        <div key={file.path} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: theme.fieldBg, borderRadius: 6, fontSize: 12 }}>
+                            <span style={{ color: file.status === "done" ? "#4ade80" : file.status === "error" ? theme.errorText : theme.textMuted }}>
+                                {file.status === "done" ? "✅" : file.status === "error" ? "❌" : "⏳"}
+                            </span>
+                            <span style={{ flex: 1, color: theme.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={file.path}>{file.name}</span>
+                            <button
+                                type="button"
+                                onClick={() => void handleRemove(index)}
+                                disabled={uploading}
+                                style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: "pointer", padding: "2px 6px", fontSize: 14, lineHeight: 1 }}
+                                title="移除"
+                            >
+                                ×
+                            </button>
+                        </div>
+                    ))}
+                    <span style={{ color: theme.textMuted, fontSize: 11, marginTop: 2 }}>{files.filter((f) => f.status === "done").length}/{maxFiles} 份已上传</span>
+                </div>
+            )}
+            {error && <div style={{ color: theme.errorText, fontSize: 11 }}>{error}</div>}
         </div>
     );
 }

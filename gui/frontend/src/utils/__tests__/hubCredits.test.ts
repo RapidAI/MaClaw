@@ -22,6 +22,10 @@ describe('hubCredits URL builders', () => {
         expect(buildHubCardStoreURL('', 'tenant acme', 'dev@example.com', '', 'https://hubs.example.com/', 'hub_1')).toBe('https://hubs.example.com/compute-store?hub_id=hub_1&tenant_id=tenant%20acme&email=dev%40example.com');
     });
 
+    it('includes friendly hub and tenant names in the HubCenter compute-store fallback', () => {
+        expect(buildHubCardStoreURL('', 'tenant acme', 'dev@example.com', '', 'https://hubs.example.com/', 'hub_1', 'Acme Hub', 'Acme Tenant')).toBe('https://hubs.example.com/compute-store?hub_id=hub_1&tenant_id=tenant%20acme&hub_name=Acme%20Hub&tenant_name=Acme%20Tenant&email=dev%40example.com');
+    });
+
     it('returns empty card store URL when Hub URL is missing', () => {
         expect(buildHubCardStoreURL('   ')).toBe('');
     });

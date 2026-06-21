@@ -69,8 +69,8 @@ type RoutingDiagnostics struct {
 }
 
 type Service struct {
-	hubs          store.HubRepository
-	links         store.HubUserLinkRepository
+	hubs                 store.HubRepository
+	links                store.HubUserLinkRepository
 	routes               store.HubDomainRouteRepository
 	blockedEmails        store.BlockedEmailRepository
 	blockedIPs           store.BlockedIPRepository
@@ -89,6 +89,36 @@ func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, rou
 
 func (s *Service) SetInvitationCodeRoutes(repo store.InvitationCodeRouteRepository) {
 	s.invitationCodeRoutes = repo
+}
+
+// EmailHasHubTenantLink reports whether an email has an explicit user link to
+// the requested hub and tenant. This is used by flows that already carry an
+// exact hub/tenant context, so duplicate emails across tenants remain valid
+// as long as the target link exists.
+func (s *Service) EmailHasHubTenantLink(ctx context.Context, email, hubID, tenantID string) (bool, error) {
+	if s == nil || s.links == nil {
+		return false, nil
+	}
+	email = strings.TrimSpace(strings.ToLower(email))
+	hubID = strings.TrimSpace(hubID)
+	rawTenantID := strings.TrimSpace(tenantID)
+	tenantID = normalizeCapabilityTenantID(rawTenantID)
+	if email == "" || hubID == "" || rawTenantID == "" {
+		return false, nil
+	}
+	links, err := s.links.ListByEmail(ctx, email)
+	if err != nil {
+		return false, err
+	}
+	for _, link := range links {
+		if link == nil {
+			continue
+		}
+		if strings.TrimSpace(link.HubID) == hubID && normalizeCapabilityTenantID(link.TenantID) == tenantID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Service) Rebuild(ctx context.Context) error {

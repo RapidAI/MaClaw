@@ -1400,7 +1400,7 @@ export function WorkflowDocPreview({
                 )}
 
                 {/* Document content — Markdown rendered */}
-                <div style={{
+                <div className="ai-chat-scrollbar" style={{
                     flex: 1,
                     overflowY: "auto",
                     overflowX: "hidden",

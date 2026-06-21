@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -111,12 +112,37 @@ func TestPreCheckAllowsOversizedPrefixedPythonCommandForAutoSpill(t *testing.T) 
 	}
 }
 
-func TestPreCheckRejectsOversizedNonSpillableBash(t *testing.T) {
-	// A long bash command that is NOT a python -c script should still be rejected
+func TestPreCheckAllowsOversizedNonPythonBashForAutoSpill(t *testing.T) {
 	command := `echo "` + strings.Repeat("x", 5000) + `"`
 	result := preCheckAgentLoopInlinePayloadLimit("bash", `{"command":`+strconv.Quote(command)+`}`, 1)
-	if result == nil {
-		t.Fatal("precheck should reject oversized non-spillable bash command")
+	if result != nil {
+		t.Fatalf("precheck rejected oversized bash command that should be auto-spilled: %+v", result)
+	}
+}
+
+func TestAutoSpillShellScriptWritesCommand(t *testing.T) {
+	dir := t.TempDir()
+	command := "echo hello\n" + strings.Repeat("echo x\n", 20)
+	result, err := autoSpillShellScript(command, dir)
+	if err != nil {
+		t.Fatalf("autoSpillShellScript: %v", err)
+	}
+	defer os.Remove(result.TempFile)
+	if result.TempFile == "" {
+		t.Fatal("TempFile should not be empty")
+	}
+	content, err := os.ReadFile(result.TempFile)
+	if err != nil {
+		t.Fatalf("read spilled shell script: %v", err)
+	}
+	if !strings.Contains(string(content), "echo hello") {
+		t.Fatalf("spilled shell script missing command: %q", content)
+	}
+	if strings.Contains(string(content), "\nset -e\n") {
+		t.Fatalf("spilled shell script should preserve original exit semantics, got %q", content)
+	}
+	if result.Command == "" || !strings.Contains(result.Command, filepath.ToSlash(result.TempFile)) {
+		t.Fatalf("spilled command should execute temp file, got %q for %q", result.Command, result.TempFile)
 	}
 }
 

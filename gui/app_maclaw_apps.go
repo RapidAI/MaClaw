@@ -1066,7 +1066,7 @@ func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, r
 	request := cloneMapAny(item.Request)
 	resultPayload := cloneMapAny(item.ResultPayload)
 	instanceID := firstNonEmptyMaclawAppString(item.WorkflowInstanceID, stringMapValue(request, "approval_instance_id"), item.ID)
-	status := normalizeMaclawAppApprovalStatus(firstNonEmptyMaclawAppString(item.Decision, item.Status, item.ResultStatus, item.BusinessStatus))
+	status := normalizeMaclawAppApprovalStatusForRecordApproval(item)
 	lane := normalizeMaclawAppApprovalLaneForRecordApproval(item, requestedLane, status)
 	result := firstNonEmptyMaclawAppString(item.Reason, stringMapValue(resultPayload, "text"), stringMapValue(resultPayload, "summary"), item.ResultStatus, item.BusinessStatus, status)
 	instance := maclawAppApprovalInstance{
@@ -3162,6 +3162,13 @@ func normalizeMaclawAppApprovalStatus(status string) string {
 	default:
 		return "pending"
 	}
+}
+
+func normalizeMaclawAppApprovalStatusForRecordApproval(item contract.RecordApproval) string {
+	if strings.TrimSpace(item.Kind) == "attention" || strings.TrimSpace(item.BusinessStatus) == "attention" || strings.TrimSpace(item.ResultStatus) == "attention" {
+		return "attention"
+	}
+	return normalizeMaclawAppApprovalStatus(firstNonEmptyMaclawAppString(item.Decision, item.Status, item.ResultStatus, item.BusinessStatus))
 }
 
 func cloneMaclawAppApprovalInstance(instance maclawAppApprovalInstance) maclawAppApprovalInstance {

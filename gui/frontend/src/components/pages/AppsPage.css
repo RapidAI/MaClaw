@@ -941,6 +941,25 @@
     container-type: inline-size;
 }
 
+.apps-approval-toolbar {
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 2px;
+    color: var(--theme-text-secondary);
+    font-size: 0.72rem;
+    font-weight: 800;
+}
+
+.apps-approval-toolbar span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .apps-approval-manager,
 .apps-run-history-manager {
     display: grid;

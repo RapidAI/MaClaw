@@ -109,14 +109,12 @@ svg { display: block; }
 .context-chip {
   display: inline-flex;
   align-items: center;
-  max-width: 260px;
-  min-height: 40px;
+  max-width: min(420px, 42vw);
+  min-height: 48px;
   min-width: 0;
-  padding: 0 13px;
+  padding: 7px 13px;
   overflow: hidden;
   color: #173b68;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   border: 1px solid #c8d7e6;
   border-radius: 9px;
   background: #f7fafc;
@@ -125,6 +123,7 @@ svg { display: block; }
 
 .context-chip::before {
   content: "";
+  flex: 0 0 auto;
   width: 8px;
   height: 8px;
   margin-right: 8px;
@@ -142,6 +141,34 @@ svg { display: block; }
 .context-chip.is-empty::before {
   background: #94a3b8;
   box-shadow: 0 0 0 3px rgba(148, 163, 184, .16);
+}
+
+.context-chip__body {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.context-chip__main,
+.context-chip__meta {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-chip__main {
+  color: #173b68;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.context-chip__meta {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.25;
+  font-weight: 650;
 }
 
 .lang-switch {

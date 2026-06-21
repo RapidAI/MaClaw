@@ -114,6 +114,11 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	})
 	if entrySvc != nil {
 		cardStoreSvc.SetTenantVerifier(func(ctx context.Context, hubID, tenantID, email string) error {
+			if ok, err := entrySvc.EmailHasHubTenantLink(ctx, email, hubID, tenantID); err != nil {
+				return err
+			} else if ok {
+				return nil
+			}
 			resolved, err := entrySvc.ResolveByEmail(ctx, email)
 			if err != nil {
 				return err

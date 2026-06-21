@@ -100,7 +100,7 @@ func appInstallationAuditMetadata(app AppInstallation) map[string]any {
 	if app.Source != "" {
 		metadata["source"] = app.Source
 	}
-	for _, key := range []string{"app_skill_id", "workflow_skill_ids", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "governance_status", "governance_risk_level"} {
+	for _, key := range []string{"app_skill_id", "workflow_skill_ids", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "governance_status", "governance_risk_level"} {
 		if value, ok := app.Metadata[key]; ok {
 			metadata[key] = value
 		}
@@ -131,6 +131,9 @@ func normalizeAppInstallationMetadata(metadata map[string]any, kind string) (map
 		return nil, err
 	}
 	if err := normalizeAppInstallationResultContractMetadata(out); err != nil {
+		return nil, err
+	}
+	if err := normalizeAppInstallationTestEvidenceMetadata(out); err != nil {
 		return nil, err
 	}
 	workflow := appInstallationMap(out["workflow_mapping"])
@@ -263,6 +266,60 @@ func normalizeAppInstallationResultContractMetadata(out map[string]any) error {
 	return nil
 }
 
+func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
+	evidence := appInstallationMap(out["test_evidence"])
+	if evidence == nil {
+		if governance := appInstallationMap(out["governance"]); governance != nil {
+			evidence = appInstallationMap(governance["test_evidence"])
+			if evidence == nil {
+				evidence = appInstallationMap(governance["testEvidence"])
+			}
+		}
+	}
+	if evidence == nil {
+		return nil
+	}
+	normalized := map[string]any{}
+	if schema := firstNonEmptyAppInstallationString(appInstallationString(evidence, "schema"), "maclaw.app.test_evidence.v1"); schema != "maclaw.app.test_evidence.v1" {
+		return fmt.Errorf("%w: metadata.test_evidence.schema must be maclaw.app.test_evidence.v1", ErrInvalidInput)
+	}
+	normalized["schema"] = "maclaw.app.test_evidence.v1"
+	for _, pair := range []struct{ camel, snake, summary string }{
+		{"runId", "run_id", "test_evidence_run_id"},
+		{"verifiedAt", "verified_at", "test_evidence_verified_at"},
+		{"artifactName", "artifact_name", "test_evidence_artifact_name"},
+		{"primaryResult", "primary_result", "test_evidence_primary_result"},
+	} {
+		if value := firstNonEmptyAppInstallationString(appInstallationString(evidence, pair.camel), appInstallationString(evidence, pair.snake), appInstallationString(out, pair.summary)); value != "" {
+			normalized[pair.snake] = value
+			out[pair.summary] = value
+		}
+	}
+	if fingerprint := firstNonEmptyAppInstallationString(appInstallationString(evidence, "definitionFingerprint"), appInstallationString(evidence, "definition_fingerprint"), appInstallationString(evidence, "definitionHash"), appInstallationString(evidence, "definition_hash"), appInstallationString(out, "test_evidence_definition_fingerprint")); fingerprint != "" {
+		normalized["definition_fingerprint"] = fingerprint
+		out["test_evidence_definition_fingerprint"] = fingerprint
+	}
+	if value, ok := firstAppInstallationBool(evidence["artifactPresent"], evidence["artifact_present"], out["test_evidence_artifact_present"]); ok {
+		normalized["artifact_present"] = value
+		out["test_evidence_artifact_present"] = value
+	}
+	for _, pair := range []struct{ camel, snake, summary string }{
+		{"artifactCount", "artifact_count", "test_evidence_artifact_count"},
+		{"outputCount", "output_count", "test_evidence_output_count"},
+	} {
+		if value, ok := firstAppInstallationNumber(evidence[pair.camel], evidence[pair.snake], out[pair.summary]); ok {
+			normalized[pair.snake] = value
+			out[pair.summary] = value
+		}
+	}
+	if payload, ok := firstAppInstallationPresent(evidence["resultPayload"], evidence["result_payload"], out["test_evidence_result_payload"]); ok {
+		normalized["result_payload"] = cloneJSONValue(payload)
+		out["test_evidence_result_payload"] = cloneJSONValue(payload)
+	}
+	out["test_evidence"] = normalized
+	return nil
+}
+
 func appInstallationMap(value any) map[string]any {
 	if item, ok := value.(map[string]any); ok {
 		return item
@@ -327,6 +384,38 @@ func appInstallationStringList(value any) []string {
 		}
 	}
 	return out
+}
+
+func firstAppInstallationBool(values ...any) (bool, bool) {
+	for _, value := range values {
+		if typed, ok := value.(bool); ok {
+			return typed, true
+		}
+	}
+	return false, false
+}
+
+func firstAppInstallationNumber(values ...any) (any, bool) {
+	for _, value := range values {
+		switch typed := value.(type) {
+		case int:
+			return typed, true
+		case int64:
+			return typed, true
+		case float64:
+			return typed, true
+		}
+	}
+	return nil, false
+}
+
+func firstAppInstallationPresent(values ...any) (any, bool) {
+	for _, value := range values {
+		if value != nil {
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 func appInstallationDependencyIDs(value any) []string {

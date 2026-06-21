@@ -464,6 +464,79 @@ func (m *StateMachine) GetStore() WorkflowStore {
 	return m.store
 }
 
+// SupplementaryDocEntry is used by AddSupplementaryDocs to pass extracted text.
+type SupplementaryDocEntry struct {
+	FileName string
+	Text     string
+}
+
+// AddSupplementaryDocs atomically adds supplementary documents to the workflow state.
+// Holds the mutex during the read-modify-write cycle to prevent race conditions
+// with concurrent SubmitForm calls.
+func (m *StateMachine) AddSupplementaryDocs(userID string, docs []SupplementaryDocEntry) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, err := m.store.Load(userID)
+	if err != nil || state == nil || state.Status != StatusActive {
+		return nil, fmt.Errorf("no active workflow for user %s", userID)
+	}
+
+	if state.SupplementaryDocs == nil {
+		state.SupplementaryDocs = make(map[string]string)
+	}
+
+	var processedFiles []string
+	for _, doc := range docs {
+		fileName := doc.FileName
+		// Disambiguate same-name files
+		if _, exists := state.SupplementaryDocs[fileName]; exists {
+			ext := ""
+			if dotIdx := strings.LastIndex(fileName, "."); dotIdx >= 0 {
+				ext = fileName[dotIdx:]
+				fileName = fileName[:dotIdx]
+			}
+			for i := 2; ; i++ {
+				candidate := fmt.Sprintf("%s_%d%s", fileName, i, ext)
+				if _, exists := state.SupplementaryDocs[candidate]; !exists {
+					fileName = candidate
+					break
+				}
+			}
+		}
+		state.SupplementaryDocs[fileName] = doc.Text
+		processedFiles = append(processedFiles, fileName)
+	}
+
+	state.UpdatedAt = time.Now()
+	if err := m.store.Save(state); err != nil {
+		return nil, fmt.Errorf("save failed: %w", err)
+	}
+	return processedFiles, nil
+}
+
+// RemoveSupplementaryDoc atomically removes a supplementary document from the workflow state.
+func (m *StateMachine) RemoveSupplementaryDoc(userID, fileName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, err := m.store.Load(userID)
+	if err != nil || state == nil || state.Status != StatusActive {
+		return fmt.Errorf("no active workflow for user %s", userID)
+	}
+
+	if len(state.SupplementaryDocs) == 0 {
+		return fmt.Errorf("没有已上传的补充材料")
+	}
+	if _, exists := state.SupplementaryDocs[fileName]; !exists {
+		return fmt.Errorf("文件不存在: %s", fileName)
+	}
+
+	delete(state.SupplementaryDocs, fileName)
+	state.UpdatedAt = time.Now()
+	return m.store.Save(state)
+}
+
 // SetActivePhaseForTest advances the stored workflow state to the phase at
 // the given index. This is a test helper — production code uses HandleInput
 // and advanceLocked for proper phase transitions.

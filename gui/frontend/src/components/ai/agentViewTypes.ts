@@ -143,6 +143,13 @@ export type AgentView =
         submitLabel?: string;
         /** When true, the form supports auto-fill from an uploaded resume/CV document. */
         accepts_resume?: boolean;
+        /** When set, the form accepts optional supplementary documents as reference context. */
+        accepts_supplementary?: {
+            label: string;
+            description: string;
+            max_files?: number;
+            accepted_types?: string[];
+        };
     }
     | {
         type: "wizard";

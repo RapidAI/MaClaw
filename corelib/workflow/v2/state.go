@@ -73,6 +73,12 @@ type WorkflowState struct {
 	Status       WorkflowStatus `json:"status"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
+
+	// SupplementaryDocs stores optional supplementary documents uploaded by the user.
+	// These are reference materials (research plans, publication lists, etc.) that
+	// provide context for LLM generation in subsequent phases.
+	// Key: original file name, Value: extracted text content (truncated to budget).
+	SupplementaryDocs map[string]string `json:"supplementary_docs,omitempty"`
 }
 
 // ActivePhase returns the current phase, or nil if workflow is complete.

@@ -95,6 +95,11 @@
     return '';
   }
 
+  function currentComputeTenantName(profile) {
+    profile = profile || currentAdminProfile();
+    return String((profile && (profile.tenant_name || profile.tenant_label || profile.tenant_slug)) || '').trim();
+  }
+
   async function loadComputeStatus() {
     var path = '/api/admin/llm/maclaw-compute-status';
     var params = new URLSearchParams();
@@ -156,11 +161,15 @@
     var email = cached.admin_email || '';
     var hubCenterURL = cached.center_base_url || window._hubCenterBaseURL || '';
     var profile = currentAdminProfile();
+    var tenantName = cached.tenant_name || currentComputeTenantName(profile);
+    var hubName = cached.hub_name || '';
 
     // Fallback: auto-detect from legacy Hub admin context globals
     if (!hubID && window.hubConfigCache) hubID = window.hubConfigCache.hub_id || '';
+    if (!hubName && window.hubConfigCache) hubName = window.hubConfigCache.hub_name || window.hubConfigCache.name || window.hubConfigCache.display_name || '';
     if ((!tenantID || tenantID === 'default') && profile && String(profile.scope || '').toLowerCase() === 'tenant' && profile.tenant_id) tenantID = profile.tenant_id;
     if (!tenantID && window.currentTenantID) tenantID = window.currentTenantID;
+    if (!tenantName) tenantName = currentComputeTenantName(profile);
     if (!email && profile) email = profile.email || '';
     if (!hubCenterURL && window.hubConfigCache) hubCenterURL = window.hubConfigCache.center_base_url || '';
     if (!hubCenterURL) hubCenterURL = 'https://hubs.mypapers.top';
@@ -178,6 +187,8 @@
     var params = new URLSearchParams();
     params.set('hub_id', hubID);
     params.set('tenant_id', tenantID || 'default');
+    if (hubName) params.set('hub_name', hubName);
+    if (tenantName) params.set('tenant_name', tenantName);
     if (email) params.set('email', email);
     var url = hubCenterURL + '/compute-store?' + params.toString();
 

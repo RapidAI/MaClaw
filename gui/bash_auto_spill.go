@@ -17,6 +17,86 @@ type autoSpillResult struct {
 	TempFile string // Path to the temp script file (caller should clean up)
 }
 
+// autoSpillShellScript writes an oversized shell command to a temp script file
+// and returns a short command that executes that script. This handles non-python
+// payloads such as heredocs or generated PowerShell/bash scripts that exceed the
+// inline command limit but are otherwise valid tool calls.
+func autoSpillShellScript(command, workDir string) (*autoSpillResult, error) {
+	if strings.TrimSpace(command) == "" {
+		return nil, fmt.Errorf("empty command")
+	}
+
+	tmpDir := workDir
+	if tmpDir == "" {
+		tmpDir = os.TempDir()
+	}
+
+	ext := ".sh"
+	prefix := "maclaw_shell_*.sh"
+	if runtime.GOOS == "windows" {
+		ext = ".ps1"
+		prefix = "maclaw_shell_*.ps1"
+	}
+
+	tmpFile, err := os.CreateTemp(tmpDir, prefix)
+	if err != nil {
+		tmpFile, err = os.CreateTemp(os.TempDir(), prefix)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create temp shell script: %w", err)
+		}
+	}
+	tmpPath := tmpFile.Name()
+	if !strings.HasSuffix(strings.ToLower(tmpPath), ext) {
+		nextPath := tmpPath + ext
+		tmpFile.Close()
+		if err := os.Rename(tmpPath, nextPath); err != nil {
+			os.Remove(tmpPath)
+			return nil, fmt.Errorf("failed to add script extension: %w", err)
+		}
+		tmpPath = nextPath
+		tmpFile, err = os.OpenFile(tmpPath, os.O_WRONLY|os.O_TRUNC, 0600)
+		if err != nil {
+			os.Remove(tmpPath)
+			return nil, fmt.Errorf("failed to reopen temp shell script: %w", err)
+		}
+	}
+
+	if runtime.GOOS == "windows" {
+		// Windows PowerShell 5.1 reads non-BOM scripts using the active ANSI
+		// codepage. A UTF-8 BOM preserves non-ASCII content in spilled scripts.
+		if _, err := tmpFile.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+			return nil, fmt.Errorf("failed to write powershell BOM: %w", err)
+		}
+	} else {
+		if _, err := tmpFile.WriteString("#!/usr/bin/env bash\n"); err != nil {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+			return nil, fmt.Errorf("failed to write shell prelude: %w", err)
+		}
+	}
+	if _, err := tmpFile.WriteString(command); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return nil, fmt.Errorf("failed to write shell command: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return nil, fmt.Errorf("failed to close temp shell script: %w", err)
+	}
+
+	normalizedPath := filepath.ToSlash(tmpPath)
+	var execCommand string
+	if runtime.GOOS == "windows" {
+		execCommand = fmt.Sprintf(`powershell -NoProfile -ExecutionPolicy Bypass -File "%s"`, normalizedPath)
+	} else {
+		execCommand = fmt.Sprintf(`bash "%s"`, normalizedPath)
+	}
+	log.Printf("[bash-auto-spill] wrote shell command to %s", tmpPath)
+	return &autoSpillResult{Command: execCommand, TempFile: tmpPath}, nil
+}
+
 // autoSpillPythonScript extracts the Python script body from a command containing
 // "python -c ..." (possibly with prefix/suffix commands joined by && or ;),
 // writes it to a temp .py file, and returns a new command that executes the temp file

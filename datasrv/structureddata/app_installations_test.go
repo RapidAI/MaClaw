@@ -39,6 +39,20 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 					"types":    []any{"document", "inline_content"},
 					"delivery": "download",
 				},
+				"testEvidence": map[string]any{
+					"runId":                 "run-pdf-translate-1",
+					"verifiedAt":            "2026-06-21T10:00:00Z",
+					"definitionFingerprint": "sha256:pdf-translate",
+					"artifactPresent":       true,
+					"artifactName":          "translated-contract.docx",
+					"artifactCount":         1,
+					"outputCount":           2,
+					"primaryResult":         "document",
+					"resultPayload": map[string]any{
+						"status": "completed",
+						"pages":  12,
+					},
+				},
 			},
 		},
 	})
@@ -64,6 +78,19 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	if columns := appInstallationStringList(installed.Metadata["workspace_layout_list_columns"]); len(columns) != 2 || columns[0] != "title" || columns[1] != "status" {
 		t.Fatalf("expected workspace list column summary: %#v", installed.Metadata)
 	}
+	evidence, ok := installed.Metadata["test_evidence"].(map[string]any)
+	if !ok || evidence["schema"] != "maclaw.app.test_evidence.v1" || evidence["run_id"] != "run-pdf-translate-1" || evidence["primary_result"] != "document" {
+		t.Fatalf("expected normalized test evidence: %#v", installed.Metadata)
+	}
+	if installed.Metadata["test_evidence_run_id"] != "run-pdf-translate-1" || installed.Metadata["test_evidence_definition_fingerprint"] != "sha256:pdf-translate" || installed.Metadata["test_evidence_artifact_present"] != true || installed.Metadata["test_evidence_primary_result"] != "document" {
+		t.Fatalf("expected test evidence summaries: %#v", installed.Metadata)
+	}
+	if installed.Metadata["test_evidence_artifact_count"] != float64(1) || installed.Metadata["test_evidence_output_count"] != float64(2) {
+		t.Fatalf("expected numeric test evidence summaries: %#v", installed.Metadata)
+	}
+	if payload, ok := evidence["result_payload"].(map[string]any); !ok || payload["status"] != "completed" || payload["pages"] != float64(12) {
+		t.Fatalf("expected structured test evidence result payload: %#v", evidence)
+	}
 
 	audit, err := svc.QueryAuditLogs(context.Background(), principal, QueryAuditLogsInput{Action: "app.installation_upsert", TargetType: "app_installation", TargetID: "tool.pdf.translate", Limit: 1})
 	if err != nil {
@@ -84,6 +111,12 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	}
 	if columns := appInstallationStringList(metadata["workspace_layout_list_columns"]); len(columns) != 2 || columns[0] != "title" || columns[1] != "status" {
 		t.Fatalf("expected audit workspace list column summary: %#v", metadata)
+	}
+	if metadata["test_evidence_run_id"] != "run-pdf-translate-1" || metadata["test_evidence_definition_fingerprint"] != "sha256:pdf-translate" || metadata["test_evidence_artifact_present"] != true || metadata["test_evidence_primary_result"] != "document" {
+		t.Fatalf("expected audit test evidence summaries: %#v", metadata)
+	}
+	if _, ok := metadata["test_evidence_result_payload"]; ok {
+		t.Fatalf("audit metadata should not include bulky test evidence result payload: %#v", metadata)
 	}
 }
 

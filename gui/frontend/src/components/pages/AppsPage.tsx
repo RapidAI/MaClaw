@@ -24,6 +24,7 @@ type AppEntry = {
     version?: number;
     source: 'builtin' | 'skill' | 'datasrv' | 'market' | 'local';
     manifest?: AppManifestBinding;
+    importedRunEvidence?: AppRunHistoryEntry;
 };
 
 type AppIconName = 'receipt' | 'wallet' | 'invoice' | 'warehouse' | 'inventory' | 'customer' | 'users' | 'contract' | 'pdf' | 'shield' | 'sheet' | 'chart' | 'dashboard' | 'database' | 'eraser' | 'truck' | 'calendar' | 'web' | 'sync' | 'bot';
@@ -1754,6 +1755,7 @@ function normalizeStoredAppEntry(app: Partial<AppEntry> | undefined, custom = fa
         accent: String(app.accent || defaultAccentForKind(normalizeAppKind(app.kind))),
         version: normalizeAppVersion(app.version),
         source: migratedSource,
+        importedRunEvidence: normalizeImportedRunEvidence((app as any).importedRunEvidence),
     };
 }
 
@@ -1902,6 +1904,7 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
     const workflowDependencies: AppSkillDependency[] = workflowIDs.map((id) => ({ id, kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }));
     const appSkillID = String(metadata.app_skill_id || '').trim();
     const appSkillVersion = String(metadata.app_skill_version || '').trim();
+    const importedRunEvidence = dataSrvInstalledRunEvidence(metadata, appID);
     return {
         id: `datasrv-installed-${appID}`,
         name,
@@ -1912,6 +1915,7 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
         accent: domainAccent(domain),
         source: 'datasrv',
         version: normalizeAppVersion(item.version),
+        importedRunEvidence,
         manifest: {
             schema: 'maclaw.app.v1',
             installUnit: 'enterprise_app_pack',
@@ -1931,6 +1935,56 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
             ui: dataSrvInstalledWorkspaceLayout(metadata, kind),
         },
     };
+}
+
+function normalizeImportedRunEvidence(raw: unknown): AppRunHistoryEntry | undefined {
+    const value = raw && typeof raw === 'object' ? raw as Partial<AppRunHistoryEntry> : undefined;
+    const runID = String(value?.runID || '').trim();
+    if (!runID) return undefined;
+    const status = value?.status === 'error' || value?.status === 'cancelled' ? value.status : 'done';
+    const at = String(value?.at || '').trim() || new Date().toISOString();
+    return {
+        runID,
+        appID: String(value?.appID || '').trim(),
+        status,
+        definitionHash: String(value?.definitionHash || '').trim() || undefined,
+        outputMode: String(value?.outputMode || '').trim() || 'imported',
+        inputSummary: String(value?.inputSummary || '').trim() || 'Imported DataSrv test evidence',
+        message: String(value?.message || '').trim() || 'Imported DataSrv test evidence',
+        artifactName: String(value?.artifactName || '').trim() || undefined,
+        artifactPath: String(value?.artifactPath || '').trim() || undefined,
+        artifactURI: String(value?.artifactURI || '').trim() || undefined,
+        artifactDownloadState: String(value?.artifactDownloadState || '').trim() || undefined,
+        artifacts: Array.isArray(value?.artifacts) ? value.artifacts : undefined,
+        resultPayload: value?.resultPayload && typeof value.resultPayload === 'object' ? value.resultPayload as Record<string, unknown> : undefined,
+        outputs: Array.isArray(value?.outputs) ? value.outputs : undefined,
+        at,
+    };
+}
+
+function dataSrvInstalledRunEvidence(metadata: Record<string, any>, appID: string): AppRunHistoryEntry | undefined {
+    const evidence = metadata.test_evidence && typeof metadata.test_evidence === 'object' ? metadata.test_evidence : {};
+    const runID = String(evidence.run_id || evidence.runId || metadata.test_evidence_run_id || '').trim();
+    if (!runID) return undefined;
+    const artifactName = String(evidence.artifact_name || evidence.artifactName || metadata.test_evidence_artifact_name || '').trim();
+    const artifactPresent = !!(evidence.artifact_present ?? evidence.artifactPresent ?? metadata.test_evidence_artifact_present);
+    const resultPayload = (evidence.result_payload || evidence.resultPayload || metadata.test_evidence_result_payload) as Record<string, unknown> | undefined;
+    const outputCount = Number(evidence.output_count ?? evidence.outputCount ?? metadata.test_evidence_output_count ?? 0) || 0;
+    const primaryResult = String(evidence.primary_result || evidence.primaryResult || metadata.test_evidence_primary_result || '').trim();
+    return normalizeImportedRunEvidence({
+        runID,
+        appID,
+        status: 'done',
+        definitionHash: String(evidence.definition_fingerprint || evidence.definitionFingerprint || evidence.definition_hash || evidence.definitionHash || metadata.test_evidence_definition_fingerprint || '').trim() || undefined,
+        outputMode: primaryResult || 'imported',
+        inputSummary: 'Imported DataSrv test evidence',
+        message: primaryResult || 'Imported DataSrv test evidence',
+        artifactName: artifactPresent ? artifactName || undefined : undefined,
+        artifacts: artifactPresent && artifactName ? [{ name: artifactName, status: 'ready' }] : undefined,
+        resultPayload: resultPayload && typeof resultPayload === 'object' ? resultPayload : undefined,
+        outputs: outputCount > 0 ? [{ type: 'summary', title: 'Imported outputs', text: String(outputCount) }] : undefined,
+        at: String(evidence.verified_at || evidence.verifiedAt || metadata.test_evidence_verified_at || '').trim() || new Date().toISOString(),
+    });
 }
 
 function dataSrvInstalledWorkspaceLayout(metadata: Record<string, any>, kind: AppKind): AppWorkspaceLayout {
@@ -2877,7 +2931,8 @@ function mergePublishSubmissionsFromQueue(current: Record<string, AppPublishSubm
 
 function latestAppRunEvidence(app: AppEntry): AppRunHistoryEntry | null {
     const expectedHash = appDefinitionFingerprint(app);
-    return loadAppRunHistory(app.id).find((item) => item.status === 'done' && item.definitionHash === expectedHash) || null;
+    const local = loadAppRunHistory(app.id).find((item) => item.status === 'done' && item.definitionHash === expectedHash);
+    return local || normalizeImportedRunEvidence(app.importedRunEvidence) || null;
 }
 
 function appRunHistoryArtifacts(evidence?: AppRunHistoryEntry | null): SkillRunArtifactView[] {
@@ -4069,6 +4124,20 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
         events,
     };
 }
+function approvalInstanceMergeKey(instance: ApprovalInstanceView): string {
+    return [instance.approvalID, instance.id, instance.recordID].find((value) => String(value || '').trim()) || instance.id;
+}
+
+function mergeApprovalInstanceViews(current: ApprovalInstanceView[], incoming: ApprovalInstanceView[]) {
+    const next = [...incoming];
+    const seen = new Set(next.map(approvalInstanceMergeKey));
+    current.forEach((item) => {
+        const key = approvalInstanceMergeKey(item);
+        if (!seen.has(key)) next.push(item);
+    });
+    return next.slice(0, 50);
+}
+
 function appApprovalBinding(app: AppEntry): AppApprovalBinding | undefined {
     return app.manifest?.mis?.approvalBindings?.find((binding) => binding.workflowSkillId);
 }
@@ -4263,6 +4332,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const [skillRunStatus, setSkillRunStatus] = useState<SkillRunStatusView | null>(null);
     const [runHistory, setRunHistory] = useState<AppRunHistoryEntry[]>([]);
     const [approvalInstances, setApprovalInstances] = useState<ApprovalInstanceView[]>([]);
+    const [approvalInstancesLoadState, setApprovalInstancesLoadState] = useState<'idle' | 'loading' | 'error'>('idle');
     const [currentRunContext, setCurrentRunContext] = useState({ inputSummary: '', outputMode: '' });
     const [dependencyRepairState, setDependencyRepairState] = useState<'idle' | 'installing'>('idle');
     const [runtimeDependencyPlan, setRuntimeDependencyPlan] = useState<BackendAppInstallPlan | null>(null);
@@ -4289,6 +4359,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         approvalRunContextRef.current = null;
         setRunHistory(loadAppRunHistory(app?.id || ''));
         setApprovalInstances([]);
+        setApprovalInstancesLoadState('idle');
     }, [app?.id, app?.manifest?.skill?.outputModes]);
     useEffect(() => {
         if (!app || !appNeedsAutomaticRuntimeDependencyCheck(app)) {
@@ -4316,26 +4387,26 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             disposed = true;
         };
     }, [app?.id, app?.kind, app?.source, app?.version]);
-    useEffect(() => {
+    const loadApprovalInstances = useCallback(async (lane: ApprovalLaneFilter = 'all') => {
         if (!app?.id || !isEnterpriseApprovalAppKind(app.kind)) {
             setApprovalInstances([]);
+            setApprovalInstancesLoadState('idle');
             return;
         }
-        let disposed = false;
-        const loadInstances = async () => {
-            try {
-                const records = await ListMaclawAppApprovalInstances(app.id, 'all', 50) as BackendApprovalInstance[];
-                if (disposed) return;
-                setApprovalInstances((records || []).map((item) => backendApprovalInstanceToView(item, lang)).filter(Boolean) as ApprovalInstanceView[]);
-            } catch {
-                if (!disposed) setApprovalInstances([]);
-            }
-        };
-        void loadInstances();
-        return () => {
-            disposed = true;
-        };
+        setApprovalInstancesLoadState('loading');
+        try {
+            const records = await ListMaclawAppApprovalInstances(app.id, lane, 50) as BackendApprovalInstance[];
+            const views = (records || []).map((item) => backendApprovalInstanceToView(item, lang)).filter(Boolean) as ApprovalInstanceView[];
+            setApprovalInstances((current) => lane === 'all' ? views : mergeApprovalInstanceViews(current, views));
+            setApprovalInstancesLoadState('idle');
+        } catch {
+            setApprovalInstancesLoadState('error');
+            if (lane === 'all') setApprovalInstances([]);
+        }
     }, [app?.id, app?.kind, lang]);
+    useEffect(() => {
+        void loadApprovalInstances('all');
+    }, [loadApprovalInstances]);
     const recordRunHistory = (entry: Omit<AppRunHistoryEntry, 'appID' | 'at'>) => {
         const appID = app?.id || '';
         if (!appID) return;
@@ -5051,7 +5122,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                 </>
                             )}
                         </section>
-                        {isApproval && <ApprovalWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} backendInstances={approvalInstances} lang={lang} text={text} style={{ order: runtimeOrder.approval }} layoutRegion={centerRegion} onDecision={updateApprovalInstanceDecision} />}
+                        {isApproval && <ApprovalWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} backendInstances={approvalInstances} approvalLoadState={approvalInstancesLoadState} lang={lang} text={text} style={{ order: runtimeOrder.approval }} layoutRegion={centerRegion} onRefresh={loadApprovalInstances} onDecision={updateApprovalInstanceDecision} />}
                         {isBusiness && <BusinessWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} lang={lang} style={{ order: runtimeOrder.approval }} layoutRegion={centerRegion} />}
                         <section className="apps-runtime-section apps-runtime-status" data-region={outputRegion === 'bottom' ? centerRegion : outputRegion} style={{ order: runtimeOrder.status }}>
                             <div className="apps-runtime-section__title">{text.runtimeStatus}</div>
@@ -5370,26 +5441,23 @@ const RunHistoryManager = ({ apps, lang }: { apps: AppEntry[]; lang?: string }) 
     );
 };
 
-const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, businessNote, backendInstances, lang, text, style, layoutRegion, onDecision }: { app: AppEntry; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; businessEntity: string; businessAction: string; businessNote: string; backendInstances?: ApprovalInstanceView[]; lang?: string; text: typeof labels.zh; style?: CSSProperties; layoutRegion?: string; onDecision?: (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => void | Promise<void> }) => {
-    const [lane, setLane] = useState<'my_requests' | 'pending_my_approval' | 'handled' | 'attention' | 'all'>('my_requests');
+const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, businessNote, backendInstances, approvalLoadState = 'idle', lang, text, style, layoutRegion, onRefresh, onDecision }: { app: AppEntry; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; businessEntity: string; businessAction: string; businessNote: string; backendInstances?: ApprovalInstanceView[]; approvalLoadState?: 'idle' | 'loading' | 'error'; lang?: string; text: typeof labels.zh; style?: CSSProperties; layoutRegion?: string; onRefresh?: (lane: ApprovalLaneFilter) => void | Promise<void>; onDecision?: (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => void | Promise<void> }) => {
+    const [lane, setLane] = useState<ApprovalLaneFilter>('my_requests');
     const [selectedInstanceId, setSelectedInstanceId] = useState('');
     const fallbackInstances = buildApprovalInstances(app, runState, businessEntity, businessAction, businessNote, lang);
     const instances = backendInstances && backendInstances.length > 0 ? backendInstances : fallbackInstances;
     const visibleInstances = lane === 'all' ? instances : lane === 'handled' ? instances.filter((item) => item.status === 'approved' || item.status === 'rejected') : instances.filter((item) => item.lane === lane);
     const selected = visibleInstances.find((item) => item.id === selectedInstanceId) || visibleInstances[0];
     const resultContract = appResultContractForManifest(app);
-    const lanes = [
-        { key: 'my_requests', label: text.myRequests },
-        { key: 'pending_my_approval', label: text.pendingMyApproval },
-        { key: 'handled', label: text.handledApprovals },
-        { key: 'attention', label: text.attentionApprovals },
-        { key: 'all', label: text.allApprovalInstances },
-    ] as const;
+    const lanes = approvalLanes(text);
     const countForLane = (key: typeof lanes[number]['key']) => key === 'all'
         ? instances.length
         : key === 'handled'
             ? instances.filter((item) => item.status === 'approved' || item.status === 'rejected').length
             : instances.filter((item) => item.lane === key).length;
+    useEffect(() => {
+        if (onRefresh) void onRefresh(lane);
+    }, [lane, onRefresh]);
     const selectedOutputs = selected?.outputs || [];
     const selectedArtifacts = selected?.artifacts || [];
     const selectedPayloadEntries = selected?.resultPayload ? Object.entries(selected.resultPayload).filter(([, value]) => formatApprovalResultValue(value)) : [];
@@ -5397,6 +5465,10 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
     return (
         <section className="apps-runtime-section apps-approval-workspace" aria-label={text.approvalWorkspace} data-region={layoutRegion || 'center'} style={style}>
             <div className="apps-runtime-section__title">{text.approvalWorkspace}</div>
+            <div className="apps-approval-toolbar">
+                <span role={approvalLoadState === 'error' ? 'alert' : 'status'}>{approvalLoadState === 'loading' ? text.approvalLoading : approvalLoadState === 'error' ? text.approvalLoadError : text.approvalInstanceData + ': ' + instances.length}</span>
+                <button className="apps-link-button" type="button" disabled={approvalLoadState === 'loading'} onClick={() => onRefresh && void onRefresh(lane)}>{text.approvalRefresh}</button>
+            </div>
             <div className="apps-approval-layout">
                 <nav className="apps-approval-nav" aria-label={text.approvalWorkspace}>
                     {lanes.map((item) => (
@@ -5671,6 +5743,7 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission) {
             icon: app.icon,
             customIconDataUrl: app.customIconDataUrl,
             source: app.source,
+            importedRunEvidence: app.importedRunEvidence,
             launchMode: manifest?.launchMode || defaultLaunchModeForKind(app.kind),
             binding: {
                 datasrv: manifest?.datasrv,
@@ -5928,6 +6001,9 @@ function appHasDataSrvRegistrationCandidate(app: AppEntry) {
     const datasetID = String(datasrv?.datasetID || '').trim();
     if (!isEnterpriseAppKind(app.kind) || !datasetID) return false;
     if (String(datasrv?.objectRole || '').trim()) return true;
+    if (app.kind === 'enterprise_normal_app') {
+        return !!String(datasrv?.preferredAction || datasrv?.preferredView || datasrv?.preferredReport || datasrv?.preferredDashboard || datasrv?.domain || '').trim();
+    }
     return app.kind === 'enterprise_approval_app' && !!(app.manifest?.mis?.approvalBindings || []).some((binding) => String(binding.objectRole || '').trim());
 }
 

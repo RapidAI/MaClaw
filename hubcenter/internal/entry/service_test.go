@@ -492,6 +492,51 @@ func TestResolveByEmailPrefersDefaultLinkedHub(t *testing.T) {
 	}
 }
 
+func TestEmailHasHubTenantLinkAllowsDuplicateEmailTargetTenant(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	if err := st.HubUserLinks.Create(ctx, &store.HubUserLink{
+		ID:        "link_default",
+		HubID:     "hub_default",
+		TenantID:  "",
+		Email:     "owner@example.com",
+		IsDefault: true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create default link: %v", err)
+	}
+	if err := st.HubUserLinks.Create(ctx, &store.HubUserLink{
+		ID:        "link_target",
+		HubID:     "hub_target",
+		TenantID:  "tenant_acme",
+		Email:     "owner@example.com",
+		IsDefault: false,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create target link: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	ok, err := svc.EmailHasHubTenantLink(ctx, "OWNER@example.com", "hub_target", "tenant_acme")
+	if err != nil {
+		t.Fatalf("EmailHasHubTenantLink target: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected target tenant link to be accepted")
+	}
+	ok, err = svc.EmailHasHubTenantLink(ctx, "owner@example.com", "hub_default", "tenant_default")
+	if err != nil {
+		t.Fatalf("EmailHasHubTenantLink default: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected tenant_default alias to match the default tenant link")
+	}
+}
+
 func TestResolveByEmailIgnoresOwnerHubLinksForEntryRouting(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

@@ -335,17 +335,17 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 
 	assertContainsAll(t, html, "compute market cache busting", []string{
-		`/admin/assets/css/admin-shell.css?v=archived-order-delete-20260619`,
-		`/admin/assets/js/compute-market-tab.js?v=restore-archived-order-20260622-3`,
+		`/admin/assets/css/admin-shell.css?v=compact-compute-orders-20260622`,
+		`/admin/assets/js/compute-market-tab.js?v=compact-compute-orders-20260622`,
 	})
 	assertContainsAll(t, js, "compute market archived delete contract", []string{
 		"computeMarketDeleteArchivedOrder",
 		"deleteArchivedComputeOrder",
-		"cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0",
+		"cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(status) >= 0",
 		"computeMarketRestoreOrder",
 		"cmRestoringOrders",
 		"restoreArchivedComputeOrder",
-		"cmOrdersArchived && String(o.status || '').toLowerCase() === 'activated'",
+		"cmOrdersArchived && status === 'activated'",
 		"this)",
 		"/restore",
 		"/api/admin/cardstore/orders/",
@@ -368,6 +368,22 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 	assertContainsAll(t, css, "compute market delete button style", []string{
 		".btn-danger-ghost{background:rgba(214,93,87,.06)",
 		".btn-danger-ghost:hover{background:rgba(214,93,87,.1)",
+	})
+	assertContainsAll(t, html, "compute market order pager", []string{
+		`id="cmOrdersPager"`,
+		`onclick="changeComputeOrdersPage(-1)"`,
+		`onclick="changeComputeOrdersPage(1)"`,
+	})
+	assertContainsAll(t, js, "compute market order paging contract", []string{
+		"const CM_ORDERS_PAGE_SIZE = 20",
+		"limit=' + CM_ORDERS_PAGE_SIZE + '&offset=' + offset",
+		"renderComputeOrdersPager(total)",
+		"window.changeComputeOrdersPage = changeComputeOrdersPage",
+	})
+	assertContainsAll(t, css, "compute market compact order grid", []string{
+		"#cmOrdersList.list{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px",
+		".cm-order-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px",
+		".cm-orders-pager.is-visible{display:flex}",
 	})
 	if strings.HasPrefix(js, "\ufeff") {
 		t.Fatal("compute-market-tab.js must not start with UTF-8 BOM")

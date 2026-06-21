@@ -33,13 +33,33 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 	}
 	background, _ := args["background"].(bool)
 
-	// --- Auto-spill: if command is an oversized inline python script, write it to
-	// a temp file and execute that file instead. This is transparent to the LLM.
+	if rejection, rejected := coretool.RejectRawSSHCommand(command); rejected {
+		return rejection
+	}
+	if rejection, rejected := coretool.RejectBroadBrowserKillCommand(command); rejected {
+		return rejection
+	}
+	if rejection, rejected := coretool.RejectShellBrowserAutomationCommand(command); rejected {
+		return rejection
+	}
+	if rejection, rejected := coretool.RejectBrowserSideEffectHTTPCommand(command); rejected {
+		return rejection
+	}
+
+	// --- Auto-spill: if command is oversized, write it to a temp script and
+	// execute that file instead. This is transparent to the LLM.
 	var autoSpillTempFile string
-	if len([]rune(command)) > maxAgentLoopInlineBashCommandRunes && bashCommandIsAutoSpillable(command) {
-		result, err := autoSpillPythonScript(command, h.resolveToolWorkDirForOwner(stringVal(args, "working_dir"), ownerID))
+	if len([]rune(command)) > maxAgentLoopInlineBashCommandRunes {
+		workDir := h.resolveToolWorkDirForOwner(stringVal(args, "working_dir"), ownerID)
+		var result *autoSpillResult
+		var err error
+		if bashCommandIsAutoSpillable(command) {
+			result, err = autoSpillPythonScript(command, workDir)
+		} else {
+			result, err = autoSpillShellScript(command, workDir)
+		}
 		if err == nil {
-			log.Printf("[bash-auto-spill] rewrote python -c (%d runes) to temp script: %s", len([]rune(command)), result.Command)
+			log.Printf("[bash-auto-spill] rewrote oversized bash command (%d runes) to temp script: %s", len([]rune(command)), result.Command)
 			autoSpillTempFile = result.TempFile
 			command = result.Command
 			if result.TempFile != "" {
@@ -54,21 +74,9 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 				}
 			}
 		} else {
-			log.Printf("[bash-auto-spill] failed to spill: %v, proceeding with original command", err)
+			log.Printf("[bash-auto-spill] failed to spill oversized command: %v", err)
+			return fmt.Sprintf("[error] bash command is too large and could not be written to a temporary script: %v", err)
 		}
-	}
-
-	if rejection, rejected := coretool.RejectRawSSHCommand(command); rejected {
-		return rejection
-	}
-	if rejection, rejected := coretool.RejectBroadBrowserKillCommand(command); rejected {
-		return rejection
-	}
-	if rejection, rejected := coretool.RejectShellBrowserAutomationCommand(command); rejected {
-		return rejection
-	}
-	if rejection, rejected := coretool.RejectBrowserSideEffectHTTPCommand(command); rejected {
-		return rejection
 	}
 
 	// --- Background mode: submit to LocalBackgroundTaskManager ---

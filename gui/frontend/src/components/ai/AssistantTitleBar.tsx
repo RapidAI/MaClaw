@@ -19,13 +19,14 @@ type CardStoreConfig = {
     remote_hub_url?: string;
     remote_hubcenter_url?: string;
     remote_tenant_id?: string;
+    remote_tenant_name?: string;
     remote_viewer_token?: string;
 };
 
 export async function openCurrentTenantCardStore(loadConfig: () => Promise<CardStoreConfig> = LoadConfig, openURL: (url: string) => void = BrowserOpenURL) {
     try {
         const config = await loadConfig();
-        const storeURL = buildHubCardStoreURL(config?.remote_hub_url, config?.remote_tenant_id, config?.remote_email, config?.remote_viewer_token, config?.remote_hubcenter_url, config?.remote_hub_id);
+        const storeURL = buildHubCardStoreURL(config?.remote_hub_url, config?.remote_tenant_id, config?.remote_email, config?.remote_viewer_token, config?.remote_hubcenter_url, config?.remote_hub_id, undefined, config?.remote_tenant_name);
         if (storeURL) openURL(storeURL);
     } catch (error) {
         console.warn("[AIAssistantPanel] Failed to open card store", error);

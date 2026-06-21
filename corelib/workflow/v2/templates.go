@@ -44,6 +44,29 @@ type PhaseInputSchema struct {
 	// most fields (name, institution, H-index, publications, education) can be
 	// extracted from a standard academic CV.
 	AcceptsResume bool `json:"accepts_resume,omitempty"`
+
+	// AcceptsSupplementary declares that this form accepts optional supplementary
+	// documents as additional context for LLM generation in subsequent phases.
+	// Unlike AcceptsResume (which fills form fields), supplementary docs are stored
+	// as-is and injected into phase prompts as reference material.
+	//
+	// Typical use: academic applications — user may upload research proposals,
+	// representative paper lists, project summaries, award certificates, or any
+	// document relevant to their research direction. 0 to N files, all optional.
+	AcceptsSupplementary *SupplementaryDocConfig `json:"accepts_supplementary,omitempty"`
+}
+
+// SupplementaryDocConfig declares how a form accepts optional supplementary documents.
+type SupplementaryDocConfig struct {
+	// Label: UI display label for the upload section (e.g. "研究方向相关材料（可选）")
+	Label string `json:"label"`
+	// Description: help text explaining what types of documents are accepted
+	Description string `json:"description"`
+	// MaxFiles: maximum number of supplementary files (0 = unlimited, default: 5)
+	MaxFiles int `json:"max_files,omitempty"`
+	// AcceptedTypes: file extensions accepted (e.g. [".pdf", ".docx", ".md", ".txt"])
+	// Empty = accept all document types
+	AcceptedTypes []string `json:"accepted_types,omitempty"`
 }
 
 // PhaseInputVariant defines a mutually exclusive field group.
