@@ -1188,28 +1188,6 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                                 {activeVariant?.description && <div style={{ color: theme.textMuted, fontSize: 12, lineHeight: 1.4 }}>{activeVariant.description}</div>}
                             </div>
                         )}
-                        {view.accepts_resume && (
-                            <ResumeUploadSection
-                                theme={theme}
-                                phaseID={view.fields.find(f => f.name === "_workflow_phase")?.value as string || ""}
-                                onPrefilled={(prefilled) => {
-                                    setFormData(prev => {
-                                        const next = { ...prev };
-                                        for (const [name, pv] of Object.entries(prefilled)) {
-                                            if (pv && pv.value != null && pv.value !== "") {
-                                                // Only fill empty fields — don't overwrite user's manual edits
-                                                const current = next[name];
-                                                const isEmpty = current === "" || current === null || current === undefined;
-                                                if (isEmpty) {
-                                                    next[name] = pv.value;
-                                                }
-                                            }
-                                        }
-                                        return next;
-                                    });
-                                }}
-                            />
-                        )}
                         {renderedFields.map((field) => renderField(field, formData[field.name], setFieldValue, theme, s))}
                         {validationErrors.length > 0 && (
                             <div style={{ color: theme.errorText, background: theme.errorBg, border: `1px solid ${theme.errorBorder}`, borderRadius: 8, padding: "10px 12px", fontSize: 12, lineHeight: 1.5 }}>

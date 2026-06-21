@@ -358,7 +358,11 @@ func openAPISpec(version string) map[string]interface{} {
 		"/api/v1/data/app-installations": {
 			stringQueryParam("app_id", "Filter installed MaClaw Apps by app id."),
 			stringQueryParam("blueprint_id", "Filter installed MaClaw Apps by blueprint id."),
+			stringQueryParam("kind", "Filter installed MaClaw Apps by app kind."),
+			stringQueryParam("source", "Filter installed MaClaw Apps by distribution source."),
 			stringQueryParam("status", "Filter installed MaClaw Apps by status such as installed, disabled, or error."),
+			stringQueryParam("workflow_skill_id", "Filter approval apps by workflow skill id."),
+			stringQueryParam("workflow_node", "Filter approval apps by submit, approval, attention, or result workflow node."),
 		},
 		"/api/v1/data/relationships": {
 			stringQueryParam("dataset_id", "Filter relationships by source or target dataset id."),
@@ -966,7 +970,7 @@ func upsertAppInstallationOpenAPIRequestBody() map[string]interface{} {
 		"status":        map[string]interface{}{"type": "string", "description": "Installation status; defaults to installed."},
 		"source":        map[string]interface{}{"type": "string", "description": "Distribution source, usually hub."},
 		"role_bindings": map[string]interface{}{"type": "array", "items": roleBindingSchema, "description": "Semantic object_role to dataset bindings installed for this app."},
-		"metadata":      map[string]interface{}{"type": "object", "description": "Additional app manifest or install metadata."},
+		"metadata":      map[string]interface{}{"type": "object", "description": "Additional app manifest or install metadata, including workflow_mapping for enterprise approval apps."},
 	})
 }
 func resolveObjectRoleOpenAPIRequestBody() map[string]interface{} {

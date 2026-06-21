@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -862,6 +863,62 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 			continue
 		}
 		cleanData[k] = v
+	}
+
+	// --- Resume mode handling ---
+	// If user selected "resume_mode" variant and provided a file path,
+	// parse the resume and replace cleanData with extracted fields.
+	if activeVariant, _ := cleanData["_agent_view_variant"].(string); activeVariant == "resume_mode" {
+		resumePath, _ := cleanData["resume_file"].(string)
+		if resumePath == "" {
+			return &IMAgentResponse{Text: "请选择简历文件", Error: "resume_file is empty"}
+		}
+
+		// Find the manual_mode variant's field schema for extraction targets
+		state := wf.machine.GetActive(userID)
+		var manualSchema *v2.PhaseInputSchema
+		if state != nil {
+			if phase := state.ActivePhase(); phase != nil && phase.InputSchema != nil {
+				// Build a synthetic schema from the manual_mode variant's fields
+				for _, v := range phase.InputSchema.Variants {
+					if v.ID == "manual_mode" {
+						manualSchema = &v2.PhaseInputSchema{
+							Title:  phase.InputSchema.Title,
+							Fields: v.Fields,
+						}
+						break
+					}
+				}
+			}
+		}
+		if manualSchema == nil {
+			return &IMAgentResponse{Text: "工作流配置错误：找不到手动填写字段定义", Error: "manual_mode variant not found"}
+		}
+
+		// Parse resume using LLM
+		parsed := h.app.ParseResumeForWorkflowForm(resumePath, phaseID)
+		var parseResp struct {
+			Error string                       `json:"error,omitempty"`
+			Data  map[string]*v2.PrefilledValue `json:"data,omitempty"`
+		}
+		if err := json.Unmarshal([]byte(parsed), &parseResp); err != nil || parseResp.Error != "" {
+			errMsg := "简历解析失败"
+			if parseResp.Error != "" {
+				errMsg = parseResp.Error
+			}
+			return &IMAgentResponse{Text: errMsg, Error: errMsg}
+		}
+
+		// Replace cleanData with extracted values (switch to manual_mode's field space)
+		cleanData = make(map[string]interface{}, len(parseResp.Data))
+		cleanData["_agent_view_variant"] = "manual_mode" // normalize to manual_mode for BuildPhasePrompt
+		for name, pv := range parseResp.Data {
+			if pv != nil && pv.Value != nil {
+				cleanData[name] = pv.Value
+			}
+		}
+		log.Printf("[workflow-v2] resume_mode: parsed %d fields from %s for phase=%s",
+			len(cleanData)-1, resumePath, phaseID)
 	}
 
 	if err := wf.machine.SubmitForm(userID, cleanData); err != nil {

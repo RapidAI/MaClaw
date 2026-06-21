@@ -68,6 +68,14 @@ func (s *SQLiteStore) ListAppInstallations(ctx context.Context, tenantID string,
 		query += ` AND blueprint_id = ?`
 		args = append(args, strings.TrimSpace(in.BlueprintID))
 	}
+	if strings.TrimSpace(in.Kind) != "" {
+		query += ` AND kind = ?`
+		args = append(args, strings.ToLower(strings.TrimSpace(in.Kind)))
+	}
+	if strings.TrimSpace(in.Source) != "" {
+		query += ` AND source = ?`
+		args = append(args, strings.TrimSpace(in.Source))
+	}
 	if strings.TrimSpace(in.Status) != "" {
 		query += ` AND status = ?`
 		args = append(args, strings.ToLower(strings.TrimSpace(in.Status)))
@@ -88,8 +96,11 @@ func (s *SQLiteStore) ListAppInstallations(ctx context.Context, tenantID string,
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	query += ` LIMIT ?`
-	args = append(args, limit)
+	metadataFiltered := strings.TrimSpace(in.WorkflowSkillID) != "" || strings.TrimSpace(in.WorkflowNode) != ""
+	if !metadataFiltered {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -101,7 +112,13 @@ func (s *SQLiteStore) ListAppInstallations(ctx context.Context, tenantID string,
 			_ = rows.Close()
 			return nil, err
 		}
+		if !appInstallationMatchesMetadataFilters(app, in) {
+			continue
+		}
 		out = append(out, app)
+		if metadataFiltered && len(out) >= limit {
+			break
+		}
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -153,6 +170,54 @@ func (s *SQLiteStore) listAppRoleBindings(ctx context.Context, tenantID, install
 		out = append(out, binding)
 	}
 	return out, rows.Err()
+}
+
+func appInstallationMatchesMetadataFilters(app AppInstallation, in QueryAppInstallationsInput) bool {
+	if workflowSkillID := strings.TrimSpace(in.WorkflowSkillID); workflowSkillID != "" && !appInstallationHasWorkflowSkillID(app.Metadata, workflowSkillID) {
+		return false
+	}
+	if workflowNode := strings.TrimSpace(in.WorkflowNode); workflowNode != "" && !appInstallationHasWorkflowNode(app.Metadata, workflowNode) {
+		return false
+	}
+	return true
+}
+
+func appInstallationHasWorkflowSkillID(metadata map[string]any, workflowSkillID string) bool {
+	workflowSkillID = strings.TrimSpace(workflowSkillID)
+	if workflowSkillID == "" {
+		return true
+	}
+	if value, ok := metadata["workflow_skill_id"].(string); ok && strings.TrimSpace(value) == workflowSkillID {
+		return true
+	}
+	for _, value := range appInstallationStringList(metadata["workflow_skill_ids"]) {
+		if value == workflowSkillID {
+			return true
+		}
+	}
+	return false
+}
+
+func appInstallationHasWorkflowNode(metadata map[string]any, workflowNode string) bool {
+	workflowNode = strings.TrimSpace(workflowNode)
+	if workflowNode == "" {
+		return true
+	}
+	for _, key := range []string{"workflow_node", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node"} {
+		if value, ok := metadata[key].(string); ok && strings.TrimSpace(value) == workflowNode {
+			return true
+		}
+	}
+	workflow := appInstallationMap(metadata["workflow_mapping"])
+	if workflow == nil {
+		return false
+	}
+	for _, key := range []string{"submitNode", "approvalNode", "resultNode", "attentionNode", "submit_node", "approval_node", "result_node", "attention_node"} {
+		if value, ok := workflow[key].(string); ok && strings.TrimSpace(value) == workflowNode {
+			return true
+		}
+	}
+	return false
 }
 
 func scanAppInstallation(scanner interface{ Scan(dest ...any) error }) (AppInstallation, error) {

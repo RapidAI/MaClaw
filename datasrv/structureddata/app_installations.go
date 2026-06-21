@@ -38,6 +38,11 @@ func (s *Service) UpsertAppInstallation(ctx context.Context, p Principal, appID 
 	if err != nil {
 		return nil, err
 	}
+	kind := strings.ToLower(strings.TrimSpace(in.Kind))
+	metadata, err := normalizeAppInstallationMetadata(in.Metadata, kind)
+	if err != nil {
+		return nil, err
+	}
 	now := formatTime(s.now().UTC())
 	app := AppInstallation{
 		ID:           installationID,
@@ -46,11 +51,11 @@ func (s *Service) UpsertAppInstallation(ctx context.Context, p Principal, appID 
 		BlueprintID:  blueprintID,
 		Name:         strings.TrimSpace(in.Name),
 		Version:      strings.TrimSpace(in.Version),
-		Kind:         strings.ToLower(strings.TrimSpace(in.Kind)),
+		Kind:         kind,
 		Status:       normalizeAppInstallationStatus(in.Status),
 		Source:       strings.TrimSpace(in.Source),
 		RoleBindings: roleBindings,
-		Metadata:     cloneJSONMap(in.Metadata),
+		Metadata:     metadata,
 		InstalledBy:  p.UserID,
 		InstalledAt:  now,
 		UpdatedAt:    now,
@@ -67,6 +72,10 @@ func (s *Service) ListAppInstallations(ctx context.Context, p Principal, in Quer
 	defer s.mu.RUnlock()
 	in.AppID = strings.TrimSpace(in.AppID)
 	in.BlueprintID = strings.TrimSpace(in.BlueprintID)
+	in.Kind = strings.ToLower(strings.TrimSpace(in.Kind))
+	in.Source = strings.TrimSpace(in.Source)
+	in.WorkflowSkillID = strings.TrimSpace(in.WorkflowSkillID)
+	in.WorkflowNode = strings.TrimSpace(in.WorkflowNode)
 	in.Status = strings.ToLower(strings.TrimSpace(in.Status))
 	in.Before = strings.TrimSpace(in.Before)
 	in.BeforeID = strings.TrimSpace(in.BeforeID)
@@ -91,7 +100,7 @@ func appInstallationAuditMetadata(app AppInstallation) map[string]any {
 	if app.Source != "" {
 		metadata["source"] = app.Source
 	}
-	for _, key := range []string{"app_skill_id", "workflow_skill_ids", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "result_contract_primary", "result_contract_types", "governance_status", "governance_risk_level"} {
+	for _, key := range []string{"app_skill_id", "workflow_skill_ids", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "result_contract_primary", "result_contract_types", "governance_status", "governance_risk_level"} {
 		if value, ok := app.Metadata[key]; ok {
 			metadata[key] = value
 		}
@@ -108,6 +117,85 @@ func appInstallationAuditMetadata(app AppInstallation) map[string]any {
 		metadata["dependency_ids"] = dependencyIDs
 	}
 	return metadata
+}
+
+func normalizeAppInstallationMetadata(metadata map[string]any, kind string) (map[string]any, error) {
+	out := cloneJSONMap(metadata)
+	if out == nil {
+		out = map[string]any{}
+	}
+	workflow := appInstallationMap(out["workflow_mapping"])
+	if workflow == nil {
+		return out, nil
+	}
+	if schema := firstNonEmptyAppInstallationString(appInstallationString(workflow, "schema"), "maclaw.app.workflow.v1"); schema != "maclaw.app.workflow.v1" {
+		return nil, fmt.Errorf("%w: metadata.workflow_mapping.schema must be maclaw.app.workflow.v1", ErrInvalidInput)
+	}
+	if kind != "" && kind != "enterprise_approval_app" {
+		return nil, fmt.Errorf("%w: metadata.workflow_mapping is only valid for enterprise_approval_app", ErrInvalidInput)
+	}
+	workflow["schema"] = "maclaw.app.workflow.v1"
+	for _, pair := range []struct{ camel, snake, meta string }{
+		{"submitNode", "submit_node", "workflow_submit_node"},
+		{"approvalNode", "approval_node", "workflow_approval_node"},
+		{"resultNode", "result_node", "workflow_result_node"},
+		{"attentionNode", "attention_node", "workflow_attention_node"},
+	} {
+		value := firstNonEmptyAppInstallationString(appInstallationString(workflow, pair.camel), appInstallationString(workflow, pair.snake), appInstallationString(out, pair.meta))
+		if value == "" && pair.camel != "attentionNode" {
+			return nil, fmt.Errorf("%w: metadata.workflow_mapping.%s is required", ErrInvalidInput, pair.camel)
+		}
+		if value != "" {
+			workflow[pair.camel] = value
+			out[pair.meta] = value
+		}
+		delete(workflow, pair.snake)
+	}
+	statusMapping := appInstallationMap(workflow["statusMapping"])
+	if statusMapping == nil {
+		statusMapping = appInstallationMap(workflow["status_mapping"])
+	}
+	if statusMapping != nil {
+		if value := firstNonEmptyAppInstallationString(appInstallationString(statusMapping, "requiresInput"), appInstallationString(statusMapping, "requires_input")); value != "" {
+			statusMapping["requiresInput"] = value
+		}
+		delete(statusMapping, "requires_input")
+		workflow["statusMapping"] = statusMapping
+		delete(workflow, "status_mapping")
+	}
+	out["workflow_mapping"] = workflow
+	out["workflow_mapping_schema"] = "maclaw.app.workflow.v1"
+	return out, nil
+}
+
+func appInstallationMap(value any) map[string]any {
+	if item, ok := value.(map[string]any); ok {
+		return item
+	}
+	if item, ok := value.(map[string]interface{}); ok {
+		return map[string]any(item)
+	}
+	return nil
+}
+
+func appInstallationString(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := values[key].(string); ok {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func firstNonEmptyAppInstallationString(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func appInstallationResultContract(value any) map[string]any {

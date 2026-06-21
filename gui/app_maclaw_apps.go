@@ -1493,6 +1493,9 @@ func parseMaclawAppEntryFromMap(entry map[string]any, path string, seenIDs map[s
 	if err := normalizeMaclawAppWorkspaceLayout(app, kind, path+".app"); err != nil {
 		return parsedMaclawAppEntry{}, err
 	}
+	if err := normalizeMaclawAppWorkflowMapping(app, kind, path+".app"); err != nil {
+		return parsedMaclawAppEntry{}, err
+	}
 	parsed := parsedMaclawAppEntry{
 		Schema: stringMapValue(entry, "schema"),
 		Entry:  entry,
@@ -1518,12 +1521,18 @@ func validateMaclawAppKindContract(entry parsedMaclawAppEntry, path string) erro
 		if len(maclawAppApprovalBindingMapsForEntry(entry)) > 0 {
 			return fmt.Errorf("%s.binding.mis.approvalBindings is only valid for enterprise_approval_app", path)
 		}
+		if maclawAppWorkflowMappingForEntry(entry) != nil {
+			return fmt.Errorf("%s.binding.workflow is only valid for enterprise_approval_app", path)
+		}
 	case "tool_app":
 		if maclawAppDataSrvBlockForEntry(entry) != nil {
 			return fmt.Errorf("%s.binding.datasrv is not valid for tool_app", path)
 		}
 		if len(maclawAppApprovalBindingMapsForEntry(entry)) > 0 {
 			return fmt.Errorf("%s.binding.mis.approvalBindings is not valid for tool_app", path)
+		}
+		if maclawAppWorkflowMappingForEntry(entry) != nil {
+			return fmt.Errorf("%s.binding.workflow is not valid for tool_app", path)
 		}
 	case "automation_app", "":
 		return nil
@@ -1645,6 +1654,19 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 		}
 		if workflowSkillIDs := maclawAppWorkflowSkillIDsForEntry(entry); len(workflowSkillIDs) > 0 {
 			metadata["workflow_skill_ids"] = workflowSkillIDs
+		}
+		if workflowMapping := maclawAppWorkflowMappingForEntry(entry); workflowMapping != nil {
+			metadata["workflow_mapping"] = workflowMapping
+			metadata["workflow_mapping_schema"] = maclawAppStringValue(workflowMapping, "schema")
+			if submitNode := maclawAppStringValue(workflowMapping, "submitNode", "submit_node"); submitNode != "" {
+				metadata["workflow_submit_node"] = submitNode
+			}
+			if approvalNode := maclawAppStringValue(workflowMapping, "approvalNode", "approval_node"); approvalNode != "" {
+				metadata["workflow_approval_node"] = approvalNode
+			}
+			if resultNode := maclawAppStringValue(workflowMapping, "resultNode", "result_node"); resultNode != "" {
+				metadata["workflow_result_node"] = resultNode
+			}
 		}
 		if workspaceLayout := maclawAppWorkspaceLayoutMetadataForEntry(entry); workspaceLayout != nil {
 			metadata["workspace_layout"] = workspaceLayout
@@ -1838,6 +1860,132 @@ func maclawAppApprovalBindingMapsForEntry(entry parsedMaclawAppEntry) []map[stri
 		}
 	}
 	return out
+}
+func maclawAppWorkflowMappingForEntry(entry parsedMaclawAppEntry) map[string]any {
+	for _, holder := range maclawAppBindingHolders(entry) {
+		if workflow := anyMap(holder["workflow"]); workflow != nil {
+			return workflow
+		}
+	}
+	if governance := anyMap(entry.App["governance"]); governance != nil {
+		if workflow := anyMap(governance["workflow"]); workflow != nil {
+			return workflow
+		}
+	}
+	return nil
+}
+
+func normalizeMaclawAppWorkflowMapping(app map[string]any, kind, path string) error {
+	kind = normalizeMaclawAppKind(kind)
+	workflow, owner := maclawAppWorkflowMappingBlock(app)
+	if kind != "enterprise_approval_app" {
+		if workflow != nil {
+			return fmt.Errorf("%s.binding.workflow is only valid for enterprise_approval_app", path)
+		}
+		return nil
+	}
+	objectRole := "record"
+	if binding := anyMap(app["binding"]); binding != nil {
+		if datasrv := anyMap(binding["datasrv"]); datasrv != nil {
+			objectRole = firstNonEmptyMaclawAppString(maclawAppStringValue(datasrv, "objectRole", "object_role", "domain"), objectRole)
+		}
+	}
+	for _, binding := range maclawAppApprovalBindingMapsForApp(app) {
+		objectRole = firstNonEmptyMaclawAppString(maclawAppStringValue(binding, "objectRole", "object_role", "businessObjectRole", "business_object_role", "role"), objectRole)
+	}
+	if workflow == nil {
+		binding := anyMap(app["binding"])
+		if binding == nil {
+			binding = map[string]any{}
+			app["binding"] = binding
+		}
+		binding["workflow"] = defaultMaclawAppWorkflowMapping(objectRole)
+		return nil
+	}
+	if err := normalizeMaclawAppWorkflowMappingDetails(workflow, path+".binding.workflow", objectRole); err != nil {
+		return err
+	}
+	if owner != nil {
+		owner["workflow"] = workflow
+	}
+	return nil
+}
+
+func maclawAppWorkflowMappingBlock(app map[string]any) (map[string]any, map[string]any) {
+	if binding := anyMap(app["binding"]); binding != nil {
+		if workflow := anyMap(binding["workflow"]); workflow != nil {
+			return workflow, binding
+		}
+	}
+	if workflow := anyMap(app["workflow"]); workflow != nil {
+		return workflow, app
+	}
+	return nil, nil
+}
+
+func maclawAppApprovalBindingMapsForApp(app map[string]any) []map[string]any {
+	return maclawAppApprovalBindingMapsForEntry(parsedMaclawAppEntry{App: app})
+}
+
+func defaultMaclawAppWorkflowMapping(objectRole string) map[string]any {
+	role := strings.TrimSpace(objectRole)
+	if role == "" {
+		role = "record"
+	}
+	return map[string]any{
+		"schema":        "maclaw.app.workflow.v1",
+		"submitNode":    role + ".submit",
+		"approvalNode":  role + ".manager_approval",
+		"resultNode":    role + ".result_feedback",
+		"attentionNode": role + ".attention_review",
+		"statusMapping": map[string]any{
+			"pending":       "approval_pending",
+			"approved":      "approved",
+			"rejected":      "rejected",
+			"attention":     "attention",
+			"requiresInput": "requires_input",
+		},
+	}
+}
+
+func normalizeMaclawAppWorkflowMappingDetails(workflow map[string]any, path string, objectRole string) error {
+	if workflow == nil {
+		return fmt.Errorf("%s must be an object", path)
+	}
+	if schema := firstNonEmptyMaclawAppString(maclawAppStringValue(workflow, "schema"), "maclaw.app.workflow.v1"); schema != "maclaw.app.workflow.v1" {
+		return fmt.Errorf("%s.schema must be maclaw.app.workflow.v1", path)
+	}
+	workflow["schema"] = "maclaw.app.workflow.v1"
+	defaults := defaultMaclawAppWorkflowMapping(objectRole)
+	for _, pair := range []struct{ camel, snake string }{{"submitNode", "submit_node"}, {"approvalNode", "approval_node"}, {"resultNode", "result_node"}, {"attentionNode", "attention_node"}} {
+		value := firstNonEmptyMaclawAppString(maclawAppStringValue(workflow, pair.camel), maclawAppStringValue(workflow, pair.snake), maclawAppStringValue(defaults, pair.camel))
+		if value == "" {
+			return fmt.Errorf("%s.%s is required", path, pair.camel)
+		}
+		workflow[pair.camel] = value
+		delete(workflow, pair.snake)
+	}
+	statusMapping := anyMap(workflow["statusMapping"])
+	if statusMapping == nil {
+		statusMapping = anyMap(workflow["status_mapping"])
+	}
+	if statusMapping == nil {
+		statusMapping = map[string]any{}
+	}
+	defaultStatus := anyMap(defaults["statusMapping"])
+	for _, pair := range []struct{ camel, snake string }{{"pending", "pending"}, {"approved", "approved"}, {"rejected", "rejected"}, {"attention", "attention"}, {"requiresInput", "requires_input"}} {
+		value := firstNonEmptyMaclawAppString(maclawAppStringValue(statusMapping, pair.camel), maclawAppStringValue(statusMapping, pair.snake), maclawAppStringValue(defaultStatus, pair.camel))
+		if value == "" {
+			return fmt.Errorf("%s.statusMapping.%s is required", path, pair.camel)
+		}
+		statusMapping[pair.camel] = value
+		if pair.snake != pair.camel {
+			delete(statusMapping, pair.snake)
+		}
+	}
+	workflow["statusMapping"] = statusMapping
+	delete(workflow, "status_mapping")
+	return nil
 }
 
 func maclawAppHasWorkflowSkillForEntry(entry parsedMaclawAppEntry) bool {
@@ -2277,6 +2425,9 @@ func maclawAppGovernanceReviewIssuesFromPackage(pkg map[string]any) []maclawAppR
 		}
 		if !maclawAppHasPublishableResultContract(governance) {
 			issues = append(issues, maclawAppReviewIssue{Path: path + ".governance.resultContract", Severity: "error", Message: "missing result contract", Suggestion: "declare the app output contract before submitting to the capability market"})
+		}
+		if normalizeMaclawAppKind(entry.Kind) == "enterprise_approval_app" && maclawAppWorkflowMappingForEntry(entry) == nil {
+			issues = append(issues, maclawAppReviewIssue{Path: path + ".binding.workflow", Severity: "error", Message: "missing workflow node mapping", Suggestion: "save the approval workflow node mapping in App Studio before submitting to the capability market"})
 		}
 	}
 	return normalizeMaclawAppReviewIssues(issues)

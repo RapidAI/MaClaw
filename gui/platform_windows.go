@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"

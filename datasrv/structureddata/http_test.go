@@ -564,6 +564,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/import-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/export-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/operation-plans":                       {"dataset_id", "operation", "status"},
+		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node"},
 		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "app_id", "blueprint_id", "object_role", "status", "kind", "workflow_skill_id", "workflow_instance_id", "business_status", "result_status", "assigned_to", "overdue"},
 		"/api/v1/data/datasets/{datasetId}/schema-proposals": {"status"},
 		"/api/v1/data/datasets/{datasetId}/records":          {"q", "tag"},
@@ -5338,8 +5339,21 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 			Required:   true,
 		}},
 		Metadata: map[string]any{
-			"app_skill_id":                    "mis-expense-claim",
-			"workflow_skill_ids":              []any{"skill.expense.approval"},
+			"app_skill_id":       "mis-expense-claim",
+			"workflow_skill_ids": []any{"skill.expense.approval"},
+			"workflow_mapping": map[string]any{
+				"schema":        "maclaw.app.workflow.v1",
+				"submit_node":   "expense.intake",
+				"approval_node": "finance.director_review",
+				"result_node":   "expense.result_pack",
+				"status_mapping": map[string]any{
+					"pending":        "finance_pending",
+					"approved":       "finance_approved",
+					"rejected":       "finance_rejected",
+					"attention":      "finance_attention",
+					"requires_input": "finance_more_input",
+				},
+			},
 			"dependency_count":                2,
 			"has_missing_required_dependency": false,
 			"has_blocking_dependency":         true,
@@ -5398,6 +5412,17 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if !ok || resultContract["primary"] != "approval_result" {
 		t.Fatalf("app installation should persist result contract metadata: %#v", installed.Metadata)
 	}
+	workflowMapping, ok := installed.Metadata["workflow_mapping"].(map[string]any)
+	if !ok || workflowMapping["schema"] != "maclaw.app.workflow.v1" || workflowMapping["approvalNode"] != "finance.director_review" {
+		t.Fatalf("app installation should normalize workflow mapping metadata: %#v", installed.Metadata)
+	}
+	statusMapping, ok := workflowMapping["statusMapping"].(map[string]any)
+	if !ok || statusMapping["requiresInput"] != "finance_more_input" {
+		t.Fatalf("app installation should normalize workflow status mapping metadata: %#v", workflowMapping)
+	}
+	if installed.Metadata["workflow_mapping_schema"] != "maclaw.app.workflow.v1" || installed.Metadata["workflow_submit_node"] != "expense.intake" || installed.Metadata["workflow_approval_node"] != "finance.director_review" || installed.Metadata["workflow_result_node"] != "expense.result_pack" {
+		t.Fatalf("app installation should expose workflow node summaries: %#v", installed.Metadata)
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?app_id=mis.expense", nil)
 	auth(req)
@@ -5412,6 +5437,36 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if len(listed.Items) != 1 || listed.Items[0].RoleBindings[0].DatasetID != "finance.expense_forms" {
 		t.Fatalf("unexpected listed app installations: %#v", listed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?kind=enterprise_approval_app&source=hub&workflow_skill_id=skill.expense.approval&workflow_node=finance.director_review", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations by workflow status=%d body=%s", w.Code, w.Body.String())
+	}
+	var workflowListed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&workflowListed); err != nil {
+		t.Fatalf("decode workflow-filtered app installations: %v", err)
+	}
+	if len(workflowListed.Items) != 1 || workflowListed.Items[0].AppID != "mis.expense" {
+		t.Fatalf("expected workflow-filtered app installation: %#v", workflowListed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?workflow_node=finance.cfo_review", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations by missing workflow node status=%d body=%s", w.Code, w.Body.String())
+	}
+	var emptyWorkflowListed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&emptyWorkflowListed); err != nil {
+		t.Fatalf("decode empty workflow-filtered app installations: %v", err)
+	}
+	if len(emptyWorkflowListed.Items) != 0 {
+		t.Fatalf("unexpected workflow-filtered app installations: %#v", emptyWorkflowListed)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/business-objects?app_id=mis.expense&object_role=expense_report", nil)
@@ -5473,6 +5528,9 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if metadata["workspace_layout_entry"] != "approval_workspace" || metadata["workspace_layout_template"] != "classic_split" || metadata["workspace_layout_density"] != "comfortable" || metadata["governance_status"] != "local_tested" || metadata["governance_risk_level"] != "medium" {
 		t.Fatalf("app installation audit should summarize layout and governance: %#v", metadata)
+	}
+	if metadata["workflow_mapping_schema"] != "maclaw.app.workflow.v1" || metadata["workflow_submit_node"] != "expense.intake" || metadata["workflow_approval_node"] != "finance.director_review" || metadata["workflow_result_node"] != "expense.result_pack" {
+		t.Fatalf("app installation audit should summarize workflow mapping: %#v", metadata)
 	}
 	if metadata["result_contract_primary"] != "approval_result" {
 		t.Fatalf("app installation audit should summarize result contract primary: %#v", metadata)

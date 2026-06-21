@@ -133,12 +133,16 @@ type UpsertAppInstallationInput struct {
 }
 
 type QueryAppInstallationsInput struct {
-	AppID       string `json:"app_id,omitempty"`
-	BlueprintID string `json:"blueprint_id,omitempty"`
-	Status      string `json:"status,omitempty"`
-	Limit       int    `json:"limit,omitempty"`
-	Before      string `json:"before,omitempty"`
-	BeforeID    string `json:"before_id,omitempty"`
+	AppID           string `json:"app_id,omitempty"`
+	BlueprintID     string `json:"blueprint_id,omitempty"`
+	Kind            string `json:"kind,omitempty"`
+	Source          string `json:"source,omitempty"`
+	WorkflowSkillID string `json:"workflow_skill_id,omitempty"`
+	WorkflowNode    string `json:"workflow_node,omitempty"`
+	Status          string `json:"status,omitempty"`
+	Limit           int    `json:"limit,omitempty"`
+	Before          string `json:"before,omitempty"`
+	BeforeID        string `json:"before_id,omitempty"`
 }
 type BusinessObjectCatalog struct {
 	ObjectRole         string                   `json:"object_role"`

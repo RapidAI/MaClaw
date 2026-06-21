@@ -36,8 +36,13 @@ func TestBuildAcademicApplicationTemplate_AllProfiles(t *testing.T) {
 			if !p1.InputSchema.AcceptsResume {
 				t.Error("Phase 1 InputSchema.AcceptsResume should be true")
 			}
-			if len(p1.InputSchema.Fields) == 0 {
-				t.Error("Phase 1 must have at least one form field")
+			// Fields are in Variants (resume_mode + manual_mode), not top-level Fields
+			if len(p1.InputSchema.Variants) < 2 {
+				t.Fatalf("Phase 1 must have at least 2 variants (resume_mode + manual_mode), got %d", len(p1.InputSchema.Variants))
+			}
+			manualVariant := p1.InputSchema.Variants[1] // manual_mode
+			if len(manualVariant.Fields) == 0 {
+				t.Error("manual_mode variant must have at least one form field")
 			}
 
 			// All phases must be NeedsConfirm + DocOnly
@@ -67,16 +72,18 @@ func TestBuildAcademicApplicationTemplate_AllProfiles(t *testing.T) {
 }
 
 // TestBuildAcademicApplicationTemplate_CommonFieldsPresent verifies that common
-// academic fields (name, institution, etc.) are present unless explicitly omitted.
+// academic fields (name, institution, etc.) are present in manual_mode variant
+// unless explicitly omitted.
 func TestBuildAcademicApplicationTemplate_CommonFieldsPresent(t *testing.T) {
 	requiredCommon := []string{"name", "gender", "institution", "title", "discipline", "research_direction"}
 
 	for wfType, profile := range academicProfiles {
 		t.Run(wfType, func(t *testing.T) {
 			tmpl := BuildAcademicApplicationTemplate(profile)
-			schema := tmpl.Phases[0].InputSchema
+			// Fields are in manual_mode variant (index 1)
+			manualFields := tmpl.Phases[0].InputSchema.Variants[1].Fields
 			fieldNames := make(map[string]bool)
-			for _, f := range schema.Fields {
+			for _, f := range manualFields {
 				fieldNames[f.Name] = true
 			}
 
@@ -93,7 +100,7 @@ func TestBuildAcademicApplicationTemplate_CommonFieldsPresent(t *testing.T) {
 					continue
 				}
 				if !fieldNames[required] {
-					t.Errorf("common field %q missing from form", required)
+					t.Errorf("common field %q missing from manual_mode variant", required)
 				}
 			}
 		})
@@ -101,7 +108,7 @@ func TestBuildAcademicApplicationTemplate_CommonFieldsPresent(t *testing.T) {
 }
 
 // TestBuildAcademicApplicationTemplate_ReusableFieldsMarked verifies that common
-// fields have Reusable=true (for memory sediment/recall).
+// fields have Reusable=true (for memory sediment/recall) in manual_mode variant.
 func TestBuildAcademicApplicationTemplate_ReusableFieldsMarked(t *testing.T) {
 	// These should always be Reusable when present
 	reusableFieldNames := map[string]bool{
@@ -113,8 +120,8 @@ func TestBuildAcademicApplicationTemplate_ReusableFieldsMarked(t *testing.T) {
 	for wfType, profile := range academicProfiles {
 		t.Run(wfType, func(t *testing.T) {
 			tmpl := BuildAcademicApplicationTemplate(profile)
-			schema := tmpl.Phases[0].InputSchema
-			for _, f := range schema.Fields {
+			manualFields := tmpl.Phases[0].InputSchema.Variants[1].Fields
+			for _, f := range manualFields {
 				if reusableFieldNames[f.Name] && !f.Reusable {
 					t.Errorf("field %q should be Reusable=true", f.Name)
 				}
@@ -124,7 +131,7 @@ func TestBuildAcademicApplicationTemplate_ReusableFieldsMarked(t *testing.T) {
 }
 
 // TestBuildAcademicApplicationTemplate_ExtraFieldsAppended verifies that
-// profile-specific extra fields are appended after common fields.
+// profile-specific extra fields are appended in the manual_mode variant.
 func TestBuildAcademicApplicationTemplate_ExtraFieldsAppended(t *testing.T) {
 	for wfType, profile := range academicProfiles {
 		if len(profile.ExtraFields) == 0 {
@@ -132,14 +139,14 @@ func TestBuildAcademicApplicationTemplate_ExtraFieldsAppended(t *testing.T) {
 		}
 		t.Run(wfType, func(t *testing.T) {
 			tmpl := BuildAcademicApplicationTemplate(profile)
-			schema := tmpl.Phases[0].InputSchema
+			manualFields := tmpl.Phases[0].InputSchema.Variants[1].Fields
 			fieldNames := make(map[string]bool)
-			for _, f := range schema.Fields {
+			for _, f := range manualFields {
 				fieldNames[f.Name] = true
 			}
 			for _, extra := range profile.ExtraFields {
 				if !fieldNames[extra.Name] {
-					t.Errorf("extra field %q not found in generated form", extra.Name)
+					t.Errorf("extra field %q not found in manual_mode variant", extra.Name)
 				}
 			}
 		})
@@ -147,7 +154,7 @@ func TestBuildAcademicApplicationTemplate_ExtraFieldsAppended(t *testing.T) {
 }
 
 // TestBuildAcademicApplicationTemplate_OmitCommonWorks verifies that fields
-// listed in OmitCommon are actually removed from the form.
+// listed in OmitCommon are actually removed from the manual_mode variant.
 func TestBuildAcademicApplicationTemplate_OmitCommonWorks(t *testing.T) {
 	for wfType, profile := range academicProfiles {
 		if len(profile.OmitCommon) == 0 {
@@ -155,9 +162,9 @@ func TestBuildAcademicApplicationTemplate_OmitCommonWorks(t *testing.T) {
 		}
 		t.Run(wfType, func(t *testing.T) {
 			tmpl := BuildAcademicApplicationTemplate(profile)
-			schema := tmpl.Phases[0].InputSchema
+			manualFields := tmpl.Phases[0].InputSchema.Variants[1].Fields
 			fieldNames := make(map[string]bool)
-			for _, f := range schema.Fields {
+			for _, f := range manualFields {
 				fieldNames[f.Name] = true
 			}
 			for _, omitted := range profile.OmitCommon {

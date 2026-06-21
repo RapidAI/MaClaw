@@ -104,7 +104,7 @@ func commonAcademicFields(ageHint string) []PhaseInputField {
 // BuildAcademicApplicationTemplate generates a complete WorkflowTemplate from a FundingProfile.
 // This is the SINGLE implementation of the academic application workflow structure.
 func BuildAcademicApplicationTemplate(p FundingProfile) *WorkflowTemplate {
-	// --- Build Phase 1 form fields ---
+	// --- Build Phase 1 form fields for manual mode ---
 	common := commonAcademicFields(p.AgeLimit)
 
 	// Filter out omitted fields
@@ -112,24 +112,23 @@ func BuildAcademicApplicationTemplate(p FundingProfile) *WorkflowTemplate {
 	for _, name := range p.OmitCommon {
 		omitSet[name] = true
 	}
-	var fields []PhaseInputField
+	var manualFields []PhaseInputField
 	for _, f := range common {
 		if !omitSet[f.Name] {
-			fields = append(fields, f)
+			manualFields = append(manualFields, f)
 		}
 	}
 
 	// Append funding-specific extra fields
-	fields = append(fields, p.ExtraFields...)
+	manualFields = append(manualFields, p.ExtraFields...)
 
 	// Build form description
 	formDesc := p.FormDescription
 	if formDesc == "" {
-		formDesc = "请填写申请人基本信息。"
+		formDesc = "请选择信息输入方式：上传简历/CV由系统自动提取，或手动逐项填写。"
 		if p.FundingInfo != "" {
-			formDesc += fmt.Sprintf("（%s）", p.FundingInfo)
+			formDesc += fmt.Sprintf("\n资助额度：%s", p.FundingInfo)
 		}
-		formDesc += "\n💡 支持上传简历/CV自动填充：上传后系统自动提取信息，您只需微调后提交。"
 	}
 
 	// --- Build phase ID prefix from type (e.g. "nsfc_distinguished_youth" → "dy") ---
@@ -137,7 +136,7 @@ func BuildAcademicApplicationTemplate(p FundingProfile) *WorkflowTemplate {
 
 	// --- Assemble 5 phases ---
 	phases := []PhaseTemplate{
-		// Phase 1: Information collection (form)
+		// Phase 1: Information collection (form with two mutually exclusive input modes)
 		{
 			ID: prefix + "_profile", Name: "申请人基本信息采集",
 			NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
@@ -145,7 +144,25 @@ func BuildAcademicApplicationTemplate(p FundingProfile) *WorkflowTemplate {
 				Title:         p.FormTitle,
 				Description:   formDesc,
 				AcceptsResume: true,
-				Fields:        fields,
+				// Common fields shared across both variants (always visible)
+				Fields: []PhaseInputField{},
+				// Two mutually exclusive input modes
+				Variants: []PhaseInputVariant{
+					{
+						ID:    "resume_mode",
+						Label: "上传简历/CV（自动提取填充）",
+						Fields: []PhaseInputField{
+							{Name: "resume_file", Label: "简历文件", Type: "file", Required: true,
+								Description: "支持 PDF、Word、Markdown 格式的简历或CV",
+								Placeholder: "选择简历文件"},
+						},
+					},
+					{
+						ID:     "manual_mode",
+						Label:  "手动填写",
+						Fields: manualFields,
+					},
+				},
 			},
 		},
 		// Phase 2: Academic foundation

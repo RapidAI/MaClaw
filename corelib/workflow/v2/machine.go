@@ -246,8 +246,17 @@ func (m *StateMachine) SubmitForm(userID string, formData map[string]interface{}
 		return fmt.Errorf("phase %s does not have an input schema", phase.ID)
 	}
 
-	// Validate required fields
-	for _, f := range phase.InputSchema.Fields {
+	// Validate required fields (top-level Fields + active variant's fields)
+	fieldsToValidate := phase.InputSchema.Fields
+	if variantID, ok := formData["_agent_view_variant"].(string); ok && variantID != "" {
+		for _, v := range phase.InputSchema.Variants {
+			if v.ID == variantID {
+				fieldsToValidate = append(fieldsToValidate, v.Fields...)
+				break
+			}
+		}
+	}
+	for _, f := range fieldsToValidate {
 		if !f.Required {
 			continue
 		}

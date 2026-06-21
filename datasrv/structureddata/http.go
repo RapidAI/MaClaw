@@ -518,12 +518,16 @@ func (s *HTTPServer) handleResolveObjectRole(w http.ResponseWriter, r *http.Requ
 func (s *HTTPServer) handleListAppInstallations(w http.ResponseWriter, r *http.Request, p Principal) {
 	limit := parseLimit(r.URL.Query().Get("limit"))
 	in := QueryAppInstallationsInput{
-		AppID:       strings.TrimSpace(r.URL.Query().Get("app_id")),
-		BlueprintID: strings.TrimSpace(r.URL.Query().Get("blueprint_id")),
-		Status:      strings.TrimSpace(r.URL.Query().Get("status")),
-		Limit:       effectiveLimit(limit, 100, 500),
-		Before:      strings.TrimSpace(r.URL.Query().Get("before")),
-		BeforeID:    strings.TrimSpace(r.URL.Query().Get("before_id")),
+		AppID:           strings.TrimSpace(r.URL.Query().Get("app_id")),
+		BlueprintID:     strings.TrimSpace(r.URL.Query().Get("blueprint_id")),
+		Kind:            strings.TrimSpace(r.URL.Query().Get("kind")),
+		Source:          strings.TrimSpace(r.URL.Query().Get("source")),
+		WorkflowSkillID: strings.TrimSpace(r.URL.Query().Get("workflow_skill_id")),
+		WorkflowNode:    strings.TrimSpace(r.URL.Query().Get("workflow_node")),
+		Status:          strings.TrimSpace(r.URL.Query().Get("status")),
+		Limit:           effectiveLimit(limit, 100, 500),
+		Before:          strings.TrimSpace(r.URL.Query().Get("before")),
+		BeforeID:        strings.TrimSpace(r.URL.Query().Get("before_id")),
 	}
 	out, err := s.svc.ListAppInstallations(r.Context(), p, in)
 	writeResult(w, http.StatusOK, appInstallationListResponse(out, limit), err)

@@ -924,6 +924,50 @@ func TestPlanMaclawAppInstallNormalizesWorkspaceLayout(t *testing.T) {
 	}
 }
 
+func TestPlanMaclawAppInstallNormalizesApprovalWorkflowMapping(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	entries, err := parseMaclawAppInstallEntries(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "workflow-defaults",
+			"name": "Workflow Defaults",
+			"kind": "enterprise_approval_app",
+			"binding": {
+				"datasrv": {"domain": "finance", "datasetID": "finance.expenses", "objectRole": "expense_report"},
+				"mis": {"approvalBindings": [{"event": "expense.submitted", "workflowSkillId": "expense-flow", "objectRole": "expense_report"}]}
+			}
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("parseMaclawAppInstallEntries() error = %v", err)
+	}
+	workflow := maclawAppWorkflowMappingForEntry(entries[0])
+	if workflow == nil || workflow["schema"] != "maclaw.app.workflow.v1" || workflow["approvalNode"] != "expense_report.manager_approval" {
+		t.Fatalf("expected default workflow mapping from object role: %#v", workflow)
+	}
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "workflow-explicit",
+			"name": "Workflow Explicit",
+			"kind": "enterprise_approval_app",
+			"binding": {
+				"datasrv": {"domain": "finance", "datasetID": "finance.expenses", "objectRole": "expense_report"},
+				"workflow": {"schema":"maclaw.app.workflow.v1", "submit_node":"expense.intake", "approval_node":"finance.director_review", "result_node":"expense.result_pack", "status_mapping":{"pending":"finance_pending", "approved":"finance_approved", "rejected":"finance_rejected", "attention":"finance_attention"}},
+				"mis": {"approvalBindings": [{"event": "expense.submitted", "workflowSkillId": "expense-flow", "objectRole": "expense_report"}]}
+			}
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	if dep := maclawAppPlanDepForTest(plan, "expense-flow"); dep == nil || dep.Kind != "workflow_skill" {
+		t.Fatalf("expected workflow dependency remains present: %#v", plan.Dependencies)
+	}
+}
+
 func TestPlanMaclawAppInstallRejectsInvalidWorkspaceLayout(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	_, err := app.PlanMaclawAppInstall(`{
@@ -1007,6 +1051,55 @@ func TestPlanMaclawAppInstallEnforcesAppKindContracts(t *testing.T) {
 		})
 	}
 }
+func TestPlanMaclawAppInstallRejectsInvalidWorkflowMapping(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	cases := []struct {
+		name    string
+		pkg     string
+		wantErr string
+	}{
+		{
+			name: "bad workflow schema",
+			pkg: `{
+				"schema": "maclaw.app.v1",
+				"privateMarker": "x_maclaw_apps",
+				"app": {
+					"id": "bad-workflow-schema",
+					"name": "Bad Workflow Schema",
+					"kind": "enterprise_approval_app",
+					"binding": {
+						"workflow": {"schema":"bad.workflow", "submitNode":"a", "approvalNode":"b", "resultNode":"c"},
+						"mis": {"approvalBindings": [{"workflowSkillId": "approval-flow"}]}
+					}
+				}
+			}`,
+			wantErr: "workflow.schema must be maclaw.app.workflow.v1",
+		},
+		{
+			name: "tool app workflow mapping",
+			pkg: `{
+				"schema": "maclaw.app.v1",
+				"privateMarker": "x_maclaw_apps",
+				"app": {
+					"id": "tool-workflow",
+					"name": "Tool Workflow",
+					"kind": "tool_app",
+					"binding": {"skill": {"id":"pdf-tool"}, "workflow": {"schema":"maclaw.app.workflow.v1", "submitNode":"a", "approvalNode":"b", "resultNode":"c"}}
+				}
+			}`,
+			wantErr: "binding.workflow is only valid for enterprise_approval_app",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := app.PlanMaclawAppInstall(tc.pkg)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected %q error, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestPlanMaclawAppInstallTreatsBindingSkillAsDependency(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	plan, err := app.PlanMaclawAppInstall(`{
@@ -1190,6 +1283,14 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 			"binding": {
 				"appSkill": { "id": "expense-super-skill", "version": "1.0.0" },
 				"datasrv": { "domain": "finance", "datasetID": "finance.expense_forms", "templateID": "finance.expenses" },
+				"workflow": {
+					"schema": "maclaw.app.workflow.v1",
+					"submitNode": "expense.intake",
+					"approvalNode": "finance.director_review",
+					"resultNode": "expense.result_pack",
+					"attentionNode": "expense.attention",
+					"statusMapping": {"pending":"finance_pending", "approved":"finance_approved", "rejected":"finance_rejected", "attention":"finance_attention", "requiresInput":"finance_more_input"}
+				},
 				"mis": {
 					"approvalBindings": [{
 						"event": "finance.submitted",
@@ -1243,6 +1344,17 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	}
 	if metadata["workspace_layout_entry"] != "approval_workspace" || metadata["workspace_layout_template"] != "classic_split" || metadata["workspace_layout_density"] != "comfortable" {
 		t.Fatalf("registration metadata missing workspace layout summary: %#v", metadata)
+	}
+	workflowMapping, ok := metadata["workflow_mapping"].(map[string]interface{})
+	if !ok || workflowMapping["schema"] != "maclaw.app.workflow.v1" || workflowMapping["approvalNode"] != "finance.director_review" {
+		t.Fatalf("registration metadata missing workflow mapping: %#v", metadata)
+	}
+	statusMapping, ok := workflowMapping["statusMapping"].(map[string]interface{})
+	if !ok || statusMapping["approved"] != "finance_approved" {
+		t.Fatalf("registration metadata missing workflow status mapping: %#v", workflowMapping)
+	}
+	if metadata["workflow_mapping_schema"] != "maclaw.app.workflow.v1" || metadata["workflow_submit_node"] != "expense.intake" || metadata["workflow_approval_node"] != "finance.director_review" || metadata["workflow_result_node"] != "expense.result_pack" {
+		t.Fatalf("registration metadata missing workflow node summary: %#v", metadata)
 	}
 	workspaceLayout, ok := metadata["workspace_layout"].(map[string]interface{})
 	if !ok || workspaceLayout["entry"] != "approval_workspace" || workspaceLayout["template"] != "classic_split" {
