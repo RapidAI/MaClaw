@@ -2055,11 +2055,21 @@
 
 .apps-run-history__item span,
 .apps-run-history__item em,
-.apps-run-history__item code {
+.apps-run-history__item code,
+.apps-run-history__item small {
     color: var(--theme-text-secondary);
     font-size: 0.7rem;
     font-style: normal;
     font-weight: 700;
+}
+
+.apps-run-history__item small {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    color: var(--theme-text-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .apps-run-history__item code {

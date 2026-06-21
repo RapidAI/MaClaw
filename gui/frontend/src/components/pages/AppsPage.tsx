@@ -3190,6 +3190,20 @@ function formatRunHistoryTime(iso: string) {
     return date.toLocaleString();
 }
 
+function appRunHistoryResultSummary(item: AppRunHistoryEntry, text: typeof labels.zh) {
+    const payload = item.resultPayload;
+    const primaryValue = payload?.business_status || payload?.result_status || payload?.text || payload?.content || payload?.message;
+    const primaryText = formatApprovalResultValue(primaryValue).trim();
+    if (primaryText) return primaryText.slice(0, 160);
+    const output = item.outputs?.find((entry) => approvalOutputBody(entry).trim());
+    if (output) {
+        const title = approvalOutputTitle(output, text);
+        const body = approvalOutputBody(output).trim();
+        return [title, body.slice(0, 120)].filter(Boolean).join(': ');
+    }
+    return '';
+}
+
 function formatRecentUsedAt(value?: string) {
     const timestamp = Number(String(value || '').slice(0, 13));
     if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
@@ -5094,6 +5108,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                                 <div>
                                                     <strong>{item.inputSummary || item.runID}</strong>
                                                     <span>{formatRunHistoryTime(item.at)} · {item.outputMode.toUpperCase()} · {item.runID}</span>
+                                                    {appRunHistoryResultSummary(item, text) && <small className="apps-run-history__result">{appRunHistoryResultSummary(item, text)}</small>}
                                                     {(item.artifactURI || item.artifactPath) && <code>{item.artifactURI || item.artifactPath}</code>}
                                                 </div>
                                             <div className="apps-run-history__side">

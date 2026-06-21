@@ -632,8 +632,19 @@ jobs:
           cp "dist/${OUT_NAME}_arm64.app/Contents/Info.plist" "$UBUNDLE/Contents/Info.plist"
           cp -R "dist/${OUT_NAME}_arm64.app/Contents/Resources/" "$UBUNDLE/Contents/Resources/"
 
+      - name: Check code signing availability
+        id: check-signing
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+        run: |
+          if [ -n "$MACOS_CERTIFICATE_BASE64" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Code Sign macOS App Bundles
-        if: ${{ secrets.MACOS_CERTIFICATE_BASE64 != '' }}
+        if: steps.check-signing.outputs.available == 'true'
         env:
           MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
