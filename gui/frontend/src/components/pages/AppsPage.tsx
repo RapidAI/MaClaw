@@ -1592,20 +1592,23 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                             </select>
                         </div>
                     </div>
-                    <div className="apps-layout-designer__output-row" role="group" aria-label={zh ? '\u8f93\u51fa\u4f4d\u7f6e' : 'Output placement'}>
-                        {studioOutputRegionOptions.map((option) => (
-                            <button
-                                key={option.value}
-                                className="apps-layout-designer__output"
-                                data-active={value.outputRegion === option.value ? 'true' : undefined}
-                                data-testid={`${testIdPrefix}-layout-output-${option.value}`}
-                                type="button"
-                                aria-pressed={value.outputRegion === option.value}
-                                onClick={() => updateLayout({ outputRegion: option.value })}
-                            >
-                                {option[zh ? 'zh' : 'en']}
-                            </button>
-                        ))}
+                    <div className="apps-form-row apps-layout-designer__output-control-row">
+                        <span className="apps-layout-designer__control-spacer" aria-hidden="true" />
+                        <div className="apps-layout-designer__output-row" role="group" aria-label={zh ? '\u8f93\u51fa\u4f4d\u7f6e' : 'Output placement'}>
+                            {studioOutputRegionOptions.map((option) => (
+                                <button
+                                    key={option.value}
+                                    className="apps-layout-designer__output"
+                                    data-active={value.outputRegion === option.value ? 'true' : undefined}
+                                    data-testid={`${testIdPrefix}-layout-output-${option.value}`}
+                                    type="button"
+                                    aria-pressed={value.outputRegion === option.value}
+                                    onClick={() => updateLayout({ outputRegion: option.value })}
+                                >
+                                    {option[zh ? 'zh' : 'en']}
+                                </button>
+                            ))}
+                        </div>
                     </div>
                 </div>
             </div>

@@ -118,6 +118,8 @@ type SeedRunOptions = {
     inputSummary?: string;
     message?: string;
     artifacts?: any[];
+    resultPayload?: Record<string, unknown>;
+    outputs?: any[];
 };
 
 function seedSuccessfulLocalAppRun(app: any, options: SeedRunOptions = {}) {
@@ -139,6 +141,8 @@ function seedSuccessfulLocalAppRun(app: any, options: SeedRunOptions = {}) {
         artifactPath: primaryArtifact.path,
         artifactDownloadState: primaryArtifact.download_state,
         artifacts,
+        resultPayload: options.resultPayload,
+        outputs: options.outputs,
         at: options.at || '2026-06-17T00:05:00.000Z',
     }, ...(history[app.id] || [])];
     window.localStorage.setItem(runHistoryStorageKey, JSON.stringify(history));
@@ -970,7 +974,12 @@ describe('AppsPage', () => {
             },
         };
         window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
-        seedSuccessfulLocalAppRun(app, { runID: 'run-enterprise-ui' });
+        seedSuccessfulLocalAppRun(app, {
+            runID: 'run-enterprise-ui',
+            outputMode: 'business',
+            resultPayload: { business_status: 'renewal_ready', business_record: { id: 'customer-1', status: 'renewal_ready' }, text: 'renewal package ready' },
+            outputs: [{ kind: 'business_record', title: 'Customer renewal', text: '{"id":"customer-1","status":"renewal_ready"}', status: 'ready', data: { id: 'customer-1', status: 'renewal_ready' } }],
+        });
         const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'market-enterprise-ui', submitted_at: '2026-06-17T01:00:00.000Z', status: 'submitted', message: 'queued' });
         (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
 
@@ -989,6 +998,11 @@ describe('AppsPage', () => {
         expect(layout.navigation).toEqual(['customers', 'renewals']);
         expect(layout.list.columns).toEqual(['customer_name', 'status', 'updated_at']);
         expect(payload.apps[0].app.governance.resultContract.primary).toBe('business_status');
+        const evidence = payload.apps[0].app.governance.testEvidence;
+        expect(evidence.outputCount).toBe(1);
+        expect(evidence.resultPayload.business_record).toEqual({ id: 'customer-1', status: 'renewal_ready' });
+        expect(evidence.primaryResult).toBe('renewal_ready');
+        expect(evidence.outputs[0]).toEqual(expect.objectContaining({ kind: 'business_record', title: 'Customer renewal', status: 'ready' }));
     });
 
     it('keeps local channel when the app package bridge queues locally', async () => {
@@ -2917,7 +2931,7 @@ describe('AppsPage', () => {
         expect(screen.queryByText('文件产物卡')).toBeNull();
         expect(screen.queryByText('文件输出卡')).toBeNull();
         expect(screen.getByText('摘要')).not.toBeNull();
-        expect(screen.getByText('生成完成摘要')).not.toBeNull();
+        expect(screen.getAllByText('生成完成摘要').length).toBeGreaterThan(0);
         expect(screen.getAllByText('artifact://skill-run/run-test-1/artifact-1').length).toBeGreaterThan(0);
         expect(screen.getByText('artifact://skill-run/run-test-1/artifact-2')).not.toBeNull();
         expect(screen.getByText('report.pdf · application/pdf · 2048 bytes')).not.toBeNull();

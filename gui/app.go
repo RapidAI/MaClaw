@@ -960,7 +960,7 @@ func (a *App) ensureEvolutionPipeline() {
 	pipeline.UsageTracker = a.usageTracker
 	pipeline.Versioner = &skill.Versioner{}
 	// RepairGate: created without a SandboxExecutor for now (graceful degradation
-	// �?gate passes by default when no executor is configured). A real executor
+	// - gate passes by default when no executor is configured). A real executor
 	// requires wiring into SkillRunner's step execution, which is future work.
 	pipeline.Gate = skill.NewRepairGate(skill.RepairGateConfig{}, nil)
 	pipeline.SkillLoader = func() []corelib.NLSkillEntry {
@@ -979,7 +979,7 @@ func (a *App) ensureEvolutionPipeline() {
 		defer a.skillExecutor.mu.Unlock()
 		return a.skillExecutor.saveSkills(skills)
 	}
-	// Wire LLM for optimization and promotion (lazy config �?picks up provider changes).
+	// Wire LLM for optimization and promotion (lazy config  - picks up provider changes).
 	pipeline.LLM = NewSkillEvolutionLLMAdapter(a.GetMaclawLLMConfig)
 	pipeline.Optimizer = skill.NewSkillOptimizer(pipeline.LLM, pipeline.Gate, pipeline.Versioner)
 
@@ -987,7 +987,7 @@ func (a *App) ensureEvolutionPipeline() {
 	if skillsDir, err := skill.PrimarySkillsDir(); err == nil {
 		pipeline.Promoter = skill.NewNudgePromoter(
 			pipeline.LLM,
-			nil, // StagingValidator �?TODO: wire when security scan adapter is available
+			nil, // StagingValidator  - TODO: wire when security scan adapter is available
 			&skillExecutorRegistrar{app: a},
 			skillsDir,
 		)
@@ -1027,8 +1027,8 @@ func (a *App) ensureEvolutionPipeline() {
 			skillName,
 			skillDir,
 			"skill_evolution_auto",
-			true, // requireRuntimeProof �?must have at least one successful run
-			true, // processNow �?try to upload immediately
+			true, // requireRuntimeProof  - must have at least one successful run
+			true, // processNow  - try to upload immediately
 		); err != nil {
 			log.Printf("[evolution-pipeline] upload enqueue failed for %s: %v", skillName, err)
 		}
@@ -2713,7 +2713,7 @@ func (a *App) startConfigWatcher() {
 						continue
 					}
 					a.log(a.tr("Config file modified: ") + event.Name)
-					// External edit detected �?reload and notify frontend.
+					// External edit detected  - reload and notify frontend.
 					config, err := a.LoadConfig()
 					if err == nil {
 						a.refreshPowerOptimizationStateFromConfig(config)
@@ -5239,7 +5239,7 @@ func (a *App) shouldPreserveHubManagedSecurity(current corelib.AppConfig) bool {
 // from overwriting fields that backend goroutines manage concurrently.
 //
 // SaveConfig is called from the Model Settings panel save button. The frontend
-// snapshot was loaded when the panel opened �?any backend changes since then
+// snapshot was loaded when the panel opened  - any backend changes since then
 // (credentials, LLM provider, onboarding, hub state) would be silently reverted
 // without this protection.
 //
@@ -5343,7 +5343,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	sanitizePetConfig(&config)
 	// Load old config to compare for sync logic.
 	// Use the in-memory configCache (authoritative under configMu) rather than
-	// re-reading from disk �?avoids Windows SHARING_VIOLATION if an antivirus
+	// re-reading from disk  - avoids Windows SHARING_VIOLATION if an antivirus
 	// or sync tool has the file open, and avoids the edge case where the file
 	// doesn't exist yet (first run).
 	var oldConfig corelib.AppConfig
@@ -5373,7 +5373,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	// ── Backend-owned field preservation ──────────────────────────────────
 	// The frontend SaveConfig receives a full config snapshot that may be
 	// stale by the time it arrives (user opened model settings, edited API
-	// keys, then clicked Save �?meanwhile backend goroutines updated
+	// keys, then clicked Save  - meanwhile backend goroutines updated
 	// credentials, LLM provider state, onboarding flags via PatchConfig).
 	// Without this, the stale snapshot would overwrite concurrent updates.
 	//
@@ -6924,7 +6924,7 @@ func (a *App) buildUpdateResult(currentVersion string, release latestReleaseInfo
 }
 
 // CheckUpdateBeta checks for beta/pre-release versions from the beta channel manifests.
-// Called when user opts in to "灏濋矞娴嬭瘯�? (beta test version).
+// Called when user opts in to beta test version (尝鲜测试版).
 func (a *App) CheckUpdateBeta(currentVersion string) (UpdateResult, error) {
 	release, source, err := a.fetchBetaReleaseFast()
 	if err != nil {
