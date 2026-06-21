@@ -4201,7 +4201,21 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const seq = eventSequenceValue(payload);
             if (typeof seq !== 'number' || seq <= 0) return true;
             const currentSeq = agentViewLifecycleSeqBySessionRef.current.get(normalizedSessionKey) || 0;
-            if (seq < currentSeq) return false;
+            if (seq < currentSeq) {
+                // Detect backend restart epoch jump. After restart, the backend
+                // initializes seq from Unix seconds (~1.7B+). Normal stale events
+                // have a gap of at most a few dozen (events emitted in one interaction).
+                // A gap > 100 between cached seq and incoming seq is impossible in
+                // normal operation — it indicates the sequences belong to different
+                // epoch series (old frontend cache vs new backend epoch, or vice versa).
+                const gap = currentSeq - seq;
+                if (gap > 100) {
+                    // Large gap — backend restarted with a new epoch. Reset cache.
+                    agentViewLifecycleSeqBySessionRef.current.set(normalizedSessionKey, seq);
+                    return true;
+                }
+                return false;
+            }
             agentViewLifecycleSeqBySessionRef.current.set(normalizedSessionKey, seq);
             return true;
         };

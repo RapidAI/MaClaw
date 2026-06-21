@@ -1849,7 +1849,28 @@ func (h *IMMessageHandler) handleCodingComplexityCommand(msg IMUserMessage, trim
 	// Consume pending choice
 	raw, loaded := h.pendingWorkflowChoice.LoadAndDelete(msg.UserID)
 	if !loaded {
-		// Stale/expired button click — ignore
+		// No pending choice. Check if a workflow is already active for this user
+		// (common scenario: user double-clicks the button, first click consumed
+		// the pending and started the workflow, second click arrives here).
+		if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+			if active := wf.machine.GetActive(msg.UserID); active != nil {
+				// Workflow is running — re-emit the form if the current phase has one,
+				// or return a helpful message pointing the user to the panel.
+				if phase := active.ActivePhase(); phase != nil && phase.InputSchema != nil && phase.FormData == nil {
+					prefilled := h.prefillWorkflowFormFields(msg.UserID, phase, "")
+					h.emitWorkflowV2PhaseForm(msg.UserID, active, phase, prefilled)
+					result := workflowIMRouteResult{
+						Response: &IMAgentResponse{Text: "📋 请在右侧任务面板填写信息后提交。"},
+					}
+					return &result
+				}
+				result := workflowIMRouteResult{
+					Response: &IMAgentResponse{Text: "✅ 工作流已在进行中，请在右侧面板操作或直接输入内容继续。"},
+				}
+				return &result
+			}
+		}
+		// Truly stale/expired button click — no active workflow either.
 		result := workflowIMRouteResult{
 			Response: &IMAgentResponse{Text: "⚠️ 选择已过期，请重新发送任务。"},
 		}

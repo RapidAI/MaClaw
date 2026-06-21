@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -69,6 +70,23 @@ func (a *App) nextAgentViewSeq() int64 {
 		return 0
 	}
 	return a.agentViewEmissionSeq.Add(1)
+}
+
+// initAgentViewSeqEpoch sets the initial agentViewEmissionSeq to a time-based
+// epoch value. This ensures that after a backend restart, emitted seq values
+// are always greater than any value a surviving frontend WebView might have
+// cached from the previous session.
+//
+// Without this, a backend restart resets the atomic counter to 0, but the
+// frontend's agentViewLifecycleSeqBySessionRef retains the high seq values
+// from before the restart. All post-restart AgentView events (seq=1,2,3...)
+// are rejected as "stale" because they're less than the frontend's cached seq.
+//
+// Using Unix seconds (not millis) keeps values well within int64 range and
+// provides ~1B of headroom per second for Add(1) calls.
+func (a *App) initAgentViewSeqEpoch() {
+	epoch := time.Now().Unix()
+	a.agentViewEmissionSeq.Store(epoch)
 }
 
 func (a *App) clearAgentView(viewID string) bool {

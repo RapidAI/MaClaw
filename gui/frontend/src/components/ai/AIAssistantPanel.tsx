@@ -79,6 +79,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
     const closeAllPreviewPanelsRef = useRef<(() => void) | null>(null);
+    const closeTabWithCleanupRef = useRef<((tabId: string) => void) | null>(null);
     const pendingSkillRecDataRef = useRef<any>(null);
     const skillRecResolvedRef = useRef(false);
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
@@ -292,21 +293,24 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         closeAllPreviewPanelsRef.current?.();
         // Clear any pending skill recording card
         setSkillRecordingCard(null);
-        if (activeTab.type === "project") {
-            clearTabConversation(activeTab.id);
-            setProjectTabMessages([]);
-            return;
-        }
-        if (activeTab.type === "ve" || (activeTab.type === "group" && !!activeTab.veId)) {
-            clearTabConversation(activeTab.id);
-            return;
+        if (activeTab.type !== "local") {
+            // Close the non-local tab with full cleanup (round tracking, preview state,
+            // skill recording, backend agent cancellation). closeTab inside it
+            // automatically switches activeTabId back to "local", allowing the
+            // welcome/guide view to reappear.
+            if (closeTabWithCleanupRef.current) {
+                closeTabWithCleanupRef.current(activeTab.id);
+            } else {
+                // Fallback before ref is assigned (shouldn't happen in practice)
+                closeTab(activeTab.id);
+            }
         }
         // Reset queue interaction state so the welcome view can reappear.
         setQueueInteractionStarted(false);
         setQueueEditDraftActive(false);
         setEditingEntryId(null);
         await clearHistory();
-    }, [activeTab.id, activeTab.type, activeTab.veId, clearHistory, clearTabConversation]);
+    }, [activeTab.id, activeTab.type, clearHistory, closeTab]);
     const isLocalTabActive = activeTab.id === "local";
     const isProjectTabActive = activeTab.type === "project";
     const showChatUI = isLocalTabActive || isProjectTabActive;
@@ -890,6 +894,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         closeTab(tabId);
     }, [clearProjectRoundTrackingForTab, closeTab, skillRecordingTabId]);
+    // Keep ref updated so clearActiveHistory (defined earlier) can close tabs with full cleanup
+    closeTabWithCleanupRef.current = closeTabWithProjectCleanup;
     const createProjectTabFromSearch = useCallback((projectPath: string, taskTitle: string, options?: { autoSend?: boolean }) => {
         const tabExistedInList = hasProjectTab(projectPath);
         const tab = createProjectTabWithContext(projectPath, taskTitle);

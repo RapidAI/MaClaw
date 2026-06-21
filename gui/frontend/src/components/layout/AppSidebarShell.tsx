@@ -8,7 +8,6 @@ import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
 import type { HistoryDiscussionSummary } from './SidebarHistorySessions';
 import type { RecentProject, TaskContextMenu } from './SidebarRecentTasks';
 import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
-
 interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     navTab: string;
     recentTasksPaneWidth: number;
@@ -79,12 +78,9 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     favoriteEmployeeIds?: string[]; favoriteEmployeeNames?: Record<string, string>;
     showCodingToolEntry?: boolean;
     showAppEntry?: boolean;
-    /** List of confirmed-available providers for the quick-switch dropdown. */
     availableProviders?: Array<{ name: string; url: string; isHubService: boolean }>;
-    /** Called when user picks a different provider from the dropdown. */
     onSwitchProvider?: (providerName: string) => void;
 }
-
 export const AppSidebarShell = ({
     navTab,
     recentTasksPaneWidth,

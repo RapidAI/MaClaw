@@ -465,21 +465,30 @@ function renderFields(fields: Array<{ label: string; value: string }>, t: Theme)
     );
 }
 
-function renderActions(
-    actions: ChatAction[],
-    executeAction: (command: string) => void,
-    t: Theme,
-    lang = "en",
-): React.ReactNode {
+function ActionButtons({ actions, executeAction, theme, lang = "en" }: {
+    actions: ChatAction[];
+    executeAction: (command: string) => void;
+    theme: Theme;
+    lang?: string;
+}): React.ReactElement {
+    const [firedIndex, setFiredIndex] = React.useState<number | null>(null);
+    const t = theme;
     return (
         <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", margin: "4px 0" }}>
             {actions.map((a, i) => {
                 const isPrimary = a.style === "primary";
+                const fired = firedIndex !== null;
+                const isThis = firedIndex === i;
                 return (
                     <button
                         key={`action-${i}`}
                         data-testid="action-button"
-                        onClick={() => executeAction(a.command)}
+                        disabled={fired}
+                        onClick={() => {
+                            if (firedIndex !== null) return;
+                            setFiredIndex(i);
+                            executeAction(a.command);
+                        }}
                         style={{
                             ...baseInputBtnStyle,
                             background: isPrimary ? t.btnColor : "transparent",
@@ -496,6 +505,8 @@ function renderActions(
                             overflowWrap: "anywhere",
                             textAlign: "center",
                             whiteSpace: "normal",
+                            opacity: fired ? (isThis ? 0.7 : 0.4) : 1,
+                            cursor: fired ? "default" : "pointer",
                         }}
                     >
                         {formatActionLabel(a, lang)}
@@ -504,6 +515,15 @@ function renderActions(
             })}
         </div>
     );
+}
+
+function renderActions(
+    actions: ChatAction[],
+    executeAction: (command: string) => void,
+    t: Theme,
+    lang = "en",
+): React.ReactNode {
+    return <ActionButtons actions={actions} executeAction={executeAction} theme={t} lang={lang} />;
 }
 
 function formatActionLabel(action: ChatAction, lang: string): string {

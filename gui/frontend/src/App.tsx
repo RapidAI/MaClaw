@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState, useRef, useMemo } from 'react';
+import { Suspense, useCallback, useEffect, useState, useRef, useMemo } from 'react';
 import './App.css';
 import { appVersion, buildNumber } from './version';
 import appIcon from './assets/images/maclaw2.png';
@@ -6,7 +6,6 @@ import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ForkRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, IsNativeRoundedCorners, IsWebviewTransparent } from "../wailsjs/go/main/App";
-
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised, WindowUnmaximise } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
@@ -44,7 +43,6 @@ import { FavoriteEmployeeSettingsPanel } from './components/settings/FavoriteEmp
 import { MAX_USER_FAVORITES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
 import { MainTopHeader } from './components/layout/MainTopHeader';
 import { AppStatusMessageBar } from './components/layout/AppStatusMessageBar';
-
 import { ThanksModal } from './components/modals/ThanksModal';
 import { AboutPanel } from './components/AboutPanel';
 import { ToolRepairProgressDialog } from './components/modals/ToolRepairProgressDialog';
@@ -57,44 +55,11 @@ import { ProviderSelectorDialog } from './components/modals/ProviderSelectorDial
 import { ConfirmDialog } from './components/modals/ConfirmDialog';
 import { DataMigrationOverlay } from './components/DataMigrationOverlay';
 import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
-
-
-
-
+import { AIAssistantPanel, WebSearchConfigPanel, SecurityPolicyPanel, LLMConfigPanel, HubServiceRedeemPanel, EmbeddingConfigPanel, ASRConfigPanel, TTSConfigPanel, MemoryManagementPanel, GeneralSettingsPanel, KnowledgeSettingsPanel, MISDataSettingsPanel, UISettingsPanel, ProgrammingToolsSettingsPanel, GeneralAdvancedSettingsPanel, SystemSettingsPanel, MigrationSettingsPanel, ProxySettingsPanel, LLMCacheSettingsPanel, VirtualEmployeeSettingsPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage } from './appLazyComponents';
 
 const APP_VERSION = appVersion
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
 const DISMISSED_APP_UPDATE_VERSION_KEY = "maclaw:dismissed-app-update-version";
-
-const AIAssistantPanel = lazy(() => import('./components/ai/AIAssistantPanel').then((module) => ({ default: module.AIAssistantPanel })));
-const WebSearchConfigPanel = lazy(() => import('./components/remote/WebSearchConfigPanel').then((module) => ({ default: module.WebSearchConfigPanel })));
-const SecurityPolicyPanel = lazy(() => import('./components/remote/SecurityPolicyPanel').then((module) => ({ default: module.SecurityPolicyPanel })));
-const LLMConfigPanel = lazy(() => import('./components/remote/LLMConfigPanel').then((module) => ({ default: module.LLMConfigPanel })));
-const HubServiceRedeemPanel = lazy(() => import('./components/remote/HubServiceRedeemPanel').then((module) => ({ default: module.HubServiceRedeemPanel })));
-const EmbeddingConfigPanel = lazy(() => import('./components/remote/EmbeddingConfigPanel').then((module) => ({ default: module.EmbeddingConfigPanel })));
-const ASRConfigPanel = lazy(() => import('./components/remote/ASRConfigPanel').then((module) => ({ default: module.ASRConfigPanel })));
-const TTSConfigPanel = lazy(() => import('./components/remote/TTSConfigPanel').then((module) => ({ default: module.TTSConfigPanel })));
-const MemoryManagementPanel = lazy(() => import('./components/remote/MemoryManagementPanel').then((module) => ({ default: module.MemoryManagementPanel })));
-const GeneralSettingsPanel = lazy(() => import('./components/settings/GeneralSettingsPanel').then((module) => ({ default: module.GeneralSettingsPanel })));
-const KnowledgeSettingsPanel = lazy(() => import('./components/settings/KnowledgeSettingsPanel').then((module) => ({ default: module.KnowledgeSettingsPanel })));
-const MISDataSettingsPanel = lazy(() => import('./components/settings/MISDataSettingsPanel').then((module) => ({ default: module.MISDataSettingsPanel })));
-const UISettingsPanel = lazy(() => import('./components/settings/UISettingsPanel').then((module) => ({ default: module.UISettingsPanel })));
-const ProgrammingToolsSettingsPanel = lazy(() => import('./components/settings/ProgrammingToolsSettingsPanel').then((module) => ({ default: module.ProgrammingToolsSettingsPanel })));
-const GeneralAdvancedSettingsPanel = lazy(() => import('./components/settings/GeneralAdvancedSettingsPanel').then((module) => ({ default: module.GeneralAdvancedSettingsPanel })));
-const SystemSettingsPanel = lazy(() => import('./components/settings/SystemSettingsPanel').then((module) => ({ default: module.SystemSettingsPanel })));
-const MigrationSettingsPanel = lazy(() => import('./components/settings/MigrationSettingsPanel').then((module) => ({ default: module.MigrationSettingsPanel })));
-const ProxySettingsPanel = lazy(() => import('./components/settings/ProxySettingsPanel').then((module) => ({ default: module.ProxySettingsPanel })));
-const LLMCacheSettingsPanel = lazy(() => import('./components/settings/LLMCacheSettingsPanel').then((module) => ({ default: module.LLMCacheSettingsPanel })));
-const VirtualEmployeeSettingsPanel = lazy(() => import('./components/settings/VirtualEmployeeSettingsPanel').then((module) => ({ default: module.VirtualEmployeeSettingsPanel })));
-const TutorialPage = lazy(() => import('./components/pages/TutorialPage').then((module) => ({ default: module.TutorialPage })));
-const ApiStorePage = lazy(() => import('./components/pages/ApiStorePage').then((module) => ({ default: module.ApiStorePage })));
-const ProjectManagerPage = lazy(() => import('./components/pages/ProjectManagerPage').then((module) => ({ default: module.ProjectManagerPage })));
-const RemoteSessionsPage = lazy(() => import('./components/pages/RemoteSessionsPage').then((module) => ({ default: module.RemoteSessionsPage })));
-const AppsPage = lazy(() => import('./components/pages/AppsPage').then((module) => ({ default: module.AppsPage })));
-const SkillsPage = lazy(() => import('./components/pages/SkillsPage').then((module) => ({ default: module.SkillsPage })));
-const MCPPage = lazy(() => import('./components/pages/MCPPage').then((module) => ({ default: module.MCPPage })));
-const GossipPage = lazy(() => import('./components/pages/GossipPage').then((module) => ({ default: module.GossipPage })));
-
 const unavailableDigitalEmployeeFeatureStatus = { visible: false, reason: 'unavailable' };
 
 function callBackend<T>(call: () => T | Promise<T>): Promise<T> {
@@ -124,7 +89,6 @@ function safeBrowserOpenURL(url: string) {
         window.open(url, "_blank", "noopener,noreferrer");
     }
 }
-
 function fetchDigitalEmployeeFeatureStatus() {
     return callBackend(() => GetDigitalEmployeeFeatureStatus())
         .then((status: any) => status || { visible: false })

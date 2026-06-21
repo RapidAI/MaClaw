@@ -1837,6 +1837,9 @@ func (a *App) startup(ctx context.Context) {
 	startupBegin := time.Now()
 	log.Printf("[startup] begin")
 	a.ctx = ctx
+	// Initialize agentView sequence with a time-based epoch so post-restart
+	// events are never rejected as stale by a surviving frontend WebView.
+	a.initAgentViewSeqEpoch()
 	a.logStoragePaths("startup.begin", nil)
 	// Initialize code event emitter for code preview panel.
 	a.codeEventEmitter = NewCodeEventEmitter(a)
