@@ -109,6 +109,7 @@ func TestAdminListLLMAuthorizationsMarksExternalComputeAccess(t *testing.T) {
 		Authorizations []struct {
 			ID                      string  `json:"id"`
 			CreditsUsed             float64 `json:"credits_used"`
+			CreditsRemaining        float64 `json:"credits_remaining"`
 			IsExternalComputeAccess bool    `json:"is_external_compute_access"`
 		} `json:"authorizations"`
 	}
@@ -126,6 +127,49 @@ func TestAdminListLLMAuthorizationsMarksExternalComputeAccess(t *testing.T) {
 	}
 	if payload.Authorizations[1].CreditsUsed != 1.1 {
 		t.Fatalf("credits_used = %.17g, want 1.1", payload.Authorizations[1].CreditsUsed)
+	}
+	if payload.Authorizations[1].CreditsRemaining != 98.9 {
+		t.Fatalf("credits_remaining = %.17g, want 98.9", payload.Authorizations[1].CreditsRemaining)
+	}
+}
+
+func TestAdminListLLMAuthorizationsRoundsCreditDisplay(t *testing.T) {
+	repo := &llmDeleteAuthRepo{auths: []*llmservice.TenantAuthorization{{
+		ID:             "card-grant",
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: "group1",
+		CreditsTotal:   520000,
+		CreditsUsed:    12102.734400000001,
+		Status:         "active",
+		Source:         "card",
+	}}}
+	checker := llmservice.NewAuthorizationChecker(repo)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/authorizations", nil)
+	rr := httptest.NewRecorder()
+
+	adminListLLMAuthorizations(checker).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Authorizations []struct {
+			CreditsUsed      float64 `json:"credits_used"`
+			CreditsRemaining float64 `json:"credits_remaining"`
+		} `json:"authorizations"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Authorizations) != 1 {
+		t.Fatalf("authorization count = %d body=%s", len(payload.Authorizations), rr.Body.String())
+	}
+	if payload.Authorizations[0].CreditsUsed != 12102.7344 {
+		t.Fatalf("credits_used = %.17g, want 12102.7344", payload.Authorizations[0].CreditsUsed)
+	}
+	if payload.Authorizations[0].CreditsRemaining != 507897.2656 {
+		t.Fatalf("credits_remaining = %.17g, want 507897.2656", payload.Authorizations[0].CreditsRemaining)
 	}
 }
 

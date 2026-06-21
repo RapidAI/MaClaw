@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -456,6 +457,8 @@ func adminListLLMAuthorizations(checker *llmservice.AuthorizationChecker) http.H
 			}
 			views = append(views, adminLLMAuthorizationView{
 				TenantAuthorization:     auth,
+				CreditsUsed:             roundAdminLLMCreditDisplay(auth.CreditsUsed),
+				CreditsRemaining:        roundAdminLLMCreditDisplay(auth.CreditsRemaining()),
 				IsExternalComputeAccess: isExternalComputeAccessAuthorization(auth),
 			})
 		}
@@ -465,7 +468,13 @@ func adminListLLMAuthorizations(checker *llmservice.AuthorizationChecker) http.H
 
 type adminLLMAuthorizationView struct {
 	*llmservice.TenantAuthorization
-	IsExternalComputeAccess bool `json:"is_external_compute_access"`
+	CreditsUsed             float64 `json:"credits_used"`
+	CreditsRemaining        float64 `json:"credits_remaining"`
+	IsExternalComputeAccess bool    `json:"is_external_compute_access"`
+}
+
+func roundAdminLLMCreditDisplay(v float64) float64 {
+	return math.Round(v*10000) / 10000
 }
 
 func isExternalComputeAccessAuthorization(auth *llmservice.TenantAuthorization) bool {
