@@ -126,6 +126,9 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 			return fmt.Errorf("email %s is not routed to hub=%s tenant=%s", email, hubID, tenantID)
 		})
 	}
+	if err := ensureCardBackedServiceGroupsRequireGrant(context.Background(), cardStoreSvc, llmSvc); err != nil {
+		log.Printf("[llm-init] failed to repair card-backed service group access policy: %v", err)
+	}
 	if err := ensureDefaultComputeCardTypes(context.Background(), cardStoreSvc, llmSvc); err != nil {
 		log.Printf("[llm-init] failed to seed default compute card types: %v", err)
 	}
@@ -244,6 +247,69 @@ func cardstoreHasEnabledPaymentChannel(cfg corecardstore.PersonalPaymentConfig) 
 		}
 	}
 	return false
+}
+
+func ensureCardBackedServiceGroupsRequireGrant(ctx context.Context, cardStoreSvc *cardstore.Service, llmSvc *llmservice.Service) error {
+	if cardStoreSvc == nil || llmSvc == nil {
+		return nil
+	}
+	cardBackedGroups := map[string]struct{}{}
+	cardTypes, err := cardStoreSvc.ListAllCardTypes(ctx)
+	if err != nil {
+		return err
+	}
+	for _, ct := range cardTypes {
+		if ct == nil {
+			continue
+		}
+		if groupID := strings.TrimSpace(ct.ServiceGroupID); groupID != "" {
+			cardBackedGroups[groupID] = struct{}{}
+		}
+	}
+	orders, _, err := cardStoreSvc.ListOrders(ctx, cardstore.OrderFilter{IncludeArchived: true, Limit: 10000})
+	if err != nil {
+		return err
+	}
+	for _, order := range orders {
+		if order == nil {
+			continue
+		}
+		if groupID := strings.TrimSpace(order.ServiceGroupID); groupID != "" {
+			cardBackedGroups[groupID] = struct{}{}
+		}
+	}
+	if len(cardBackedGroups) == 0 {
+		return nil
+	}
+	reg, err := llmSvc.LoadRegistry(ctx)
+	if err != nil || reg == nil {
+		return err
+	}
+	changed := false
+	var repaired []string
+	for i := range reg.ServiceGroups {
+		groupID := strings.TrimSpace(reg.ServiceGroups[i].ID)
+		if groupID == "" {
+			continue
+		}
+		if _, ok := cardBackedGroups[groupID]; !ok {
+			continue
+		}
+		if reg.ServiceGroups[i].AccessPolicy == llmservice.AccessPolicyGrantRequired {
+			continue
+		}
+		reg.ServiceGroups[i].AccessPolicy = llmservice.AccessPolicyGrantRequired
+		changed = true
+		repaired = append(repaired, groupID)
+	}
+	if !changed {
+		return nil
+	}
+	if err := llmSvc.SaveRegistry(ctx, reg); err != nil {
+		return err
+	}
+	log.Printf("[llm-init] repaired card-backed LLM service groups to grant_required: %s", strings.Join(repaired, ","))
+	return nil
 }
 
 func ensureDefaultComputeCardTypes(ctx context.Context, cardStoreSvc *cardstore.Service, llmSvc *llmservice.Service) error {

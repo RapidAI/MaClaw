@@ -16,7 +16,9 @@ import (
 
 const (
 	pullOpsResponseBodyLimit = 128 << 20
+	maxPullBatchSize         = 50000
 	maxConcurrentPeerSyncs   = 16
+	peerPullTimeout          = 120 * time.Second
 )
 
 type PullOpsResponse struct {
@@ -44,12 +46,12 @@ func NewSyncer(svc *Service, interval time.Duration, limit int) *Syncer {
 	if limit <= 0 {
 		limit = 200
 	}
-	if limit > 2000 {
-		limit = 2000
+	if limit > maxPullBatchSize {
+		limit = maxPullBatchSize
 	}
 	return &Syncer{
 		svc:      svc,
-		client:   &http.Client{Timeout: 30 * time.Second},
+		client:   &http.Client{Timeout: peerPullTimeout},
 		interval: interval,
 		limit:    limit,
 		slots:    make(chan struct{}, maxConcurrentPeerSyncs),

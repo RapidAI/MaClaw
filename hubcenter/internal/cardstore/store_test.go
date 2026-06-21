@@ -656,6 +656,59 @@ func TestListOrdersHydratesAuthorizationUsageByOrderIDFallback(t *testing.T) {
 	}
 }
 
+func TestListOrdersHydratesAuthorizationUsageByTenantAliasFallback(t *testing.T) {
+	now := time.Date(2026, 6, 19, 14, 0, 0, 0, time.UTC)
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-DEFAULT-ALIAS": {
+			Order: corecardstore.Order{
+				OrderNo: "HC-DEFAULT-ALIAS",
+				Email:   "owner@example.com",
+				Status:  corecardstore.StatusActivated,
+				Amount:  88,
+			},
+			HubID:          "hub-1",
+			TenantID:       "tenant_default",
+			ServiceGroupID: "redeem",
+			Credits:        1000,
+			Period:         "month",
+		},
+	}}
+	authRepo := &authTestRepo{byHub: map[string][]*llmservice.TenantAuthorization{
+		"hub-1\x00default": {{
+			ID:             "auth-default-alias",
+			HubID:          "hub-1",
+			TenantID:       "default",
+			ServiceGroupID: "redeem",
+			CreditsTotal:   1000,
+			CreditsUsed:    250,
+			StartsAt:       now,
+			ExpiresAt:      now.AddDate(0, 1, 0),
+			Status:         "active",
+			CardOrderID:    "HC-DEFAULT-ALIAS",
+			CreatedAt:      now,
+		}},
+	}}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	orders, _, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	got := orders[0]
+	if got.AuthorizationID != "auth-default-alias" {
+		t.Fatalf("AuthorizationID = %q, want auth-default-alias", got.AuthorizationID)
+	}
+	if got.CreditsUsed == nil || *got.CreditsUsed != 250 {
+		t.Fatalf("CreditsUsed = %#v, want 250", got.CreditsUsed)
+	}
+	if got.CreditsRemaining == nil || *got.CreditsRemaining != 750 {
+		t.Fatalf("CreditsRemaining = %#v, want 750", got.CreditsRemaining)
+	}
+	if authRepo.listByHubTenantCalls != 3 {
+		t.Fatalf("ListByHubTenant calls = %d, want 3 alias lookups", authRepo.listByHubTenantCalls)
+	}
+}
+
 func TestListOrdersCachesAuthorizationFallbackByHubTenant(t *testing.T) {
 	now := time.Date(2026, 6, 19, 14, 0, 0, 0, time.UTC)
 	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
@@ -691,8 +744,8 @@ func TestListOrdersCachesAuthorizationFallbackByHubTenant(t *testing.T) {
 	if len(orders) != 2 {
 		t.Fatalf("orders len = %d, want 2", len(orders))
 	}
-	if authRepo.listByHubTenantCalls != 1 {
-		t.Fatalf("ListByHubTenant calls = %d, want 1", authRepo.listByHubTenantCalls)
+	if authRepo.listByHubTenantCalls != 2 {
+		t.Fatalf("ListByHubTenant calls = %d, want 2 alias lookups", authRepo.listByHubTenantCalls)
 	}
 }
 
@@ -741,8 +794,8 @@ func TestListOrdersCachedMissingAuthorizationIDStillFallsBackByOrderID(t *testin
 	if authRepo.getByIDCalls != 1 {
 		t.Fatalf("GetByID calls = %d, want 1", authRepo.getByIDCalls)
 	}
-	if authRepo.listByHubTenantCalls != 1 {
-		t.Fatalf("ListByHubTenant calls = %d, want 1", authRepo.listByHubTenantCalls)
+	if authRepo.listByHubTenantCalls != 2 {
+		t.Fatalf("ListByHubTenant calls = %d, want 2 alias lookups", authRepo.listByHubTenantCalls)
 	}
 }
 
@@ -784,8 +837,8 @@ func TestListOrdersMismatchedAuthorizationIDFallsBackByOrderID(t *testing.T) {
 	if authRepo.getByIDCalls != 1 {
 		t.Fatalf("GetByID calls = %d, want 1", authRepo.getByIDCalls)
 	}
-	if authRepo.listByHubTenantCalls != 1 {
-		t.Fatalf("ListByHubTenant calls = %d, want 1", authRepo.listByHubTenantCalls)
+	if authRepo.listByHubTenantCalls != 2 {
+		t.Fatalf("ListByHubTenant calls = %d, want 2 alias lookups", authRepo.listByHubTenantCalls)
 	}
 }
 

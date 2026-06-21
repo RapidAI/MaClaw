@@ -10,7 +10,10 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
-const haOpsApplyJSONBodyLimit = 128 << 20
+const (
+	haOpsApplyJSONBodyLimit = 128 << 20
+	haOpsPullMaxBatchSize   = 50000
+)
 
 type haSyncReader interface {
 	NodeID() string
@@ -50,8 +53,8 @@ func HAOpsPullHandler(svc haSyncReader) http.HandlerFunc {
 				writeError(w, http.StatusBadRequest, "INVALID_LIMIT", "limit must be a positive integer")
 				return
 			}
-			if v > 2000 {
-				v = 2000
+			if v > haOpsPullMaxBatchSize {
+				v = haOpsPullMaxBatchSize
 			}
 			limit = v
 		}

@@ -108,6 +108,21 @@ func TestHAOpsPullReturnsOpsWithValidAuth(t *testing.T) {
 	}
 }
 
+func TestHAOpsPullCapsLimitAtLargeBatchSize(t *testing.T) {
+	svc := &fakeHASyncReader{nodeID: "hc-a", authFn: func(r *http.Request) error { return nil }}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/ha/ops?after_seq=5&limit=999999", nil)
+
+	HAOpsPullHandler(svc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if svc.gotLimit != 50000 {
+		t.Fatalf("ListOpsAfterSeq limit = %d, want 50000", svc.gotLimit)
+	}
+}
+
 func TestHAOpsPullHasMoreUsesMaxSeq(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &fakeHASyncReader{

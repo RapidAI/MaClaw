@@ -1328,11 +1328,6 @@ func (s *Service) applyRemoteOp(ctx context.Context, op *store.HASyncOp, rebuild
 	if err := validateRemoteOp(op); err != nil {
 		return false, err
 	}
-	if recorder, ok := s.ops.(remoteOpRecorder); ok {
-		if err := recorder.AppendRemoteIfMissing(ctx, op); err != nil {
-			return false, err
-		}
-	}
 	applied, err := s.ops.HasApplied(ctx, op.OpID)
 	if err != nil {
 		return false, err
@@ -1343,6 +1338,11 @@ func (s *Service) applyRemoteOp(ctx context.Context, op *store.HASyncOp, rebuild
 	current, err := s.versions.Get(ctx, op.EntityType, op.EntityID)
 	if err != nil {
 		return false, err
+	}
+	if recorder, ok := s.ops.(remoteOpRecorder); ok {
+		if err := recorder.AppendRemoteIfMissing(ctx, op); err != nil {
+			return false, err
+		}
 	}
 	if current != nil && !shouldApplyRemoteVersion(current, op) {
 		return false, s.markApplied(ctx, op)

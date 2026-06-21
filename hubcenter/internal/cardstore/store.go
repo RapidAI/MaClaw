@@ -665,7 +665,7 @@ func (h *orderAuthorizationHydrator) find(order *PurchaseOrder) *llmservice.Tena
 	auths, ok := h.byHubTenant[hubTenantKey]
 	if !ok {
 		var err error
-		auths, err = h.service.authRepo.ListByHubTenant(h.ctx, strings.TrimSpace(order.HubID), strings.TrimSpace(order.TenantID))
+		auths, err = listOrderAuthorizationsByHubTenantAliases(h.ctx, h.service.authRepo, strings.TrimSpace(order.HubID), strings.TrimSpace(order.TenantID))
 		if err != nil {
 			auths = nil
 		}
@@ -684,6 +684,71 @@ func (h *orderAuthorizationHydrator) find(order *PurchaseOrder) *llmservice.Tena
 	return selected
 }
 
+func listOrderAuthorizationsByHubTenantAliases(ctx context.Context, repo llmservice.TenantAuthorizationRepository, hubID, tenantID string) ([]*llmservice.TenantAuthorization, error) {
+	if repo == nil {
+		return nil, nil
+	}
+	seen := map[string]struct{}{}
+	var out []*llmservice.TenantAuthorization
+	for _, candidate := range orderTenantAuthorizationLookupIDs(tenantID) {
+		auths, err := repo.ListByHubTenant(ctx, hubID, candidate)
+		if err != nil {
+			return nil, err
+		}
+		for _, auth := range auths {
+			if auth == nil {
+				continue
+			}
+			key := orderTenantAuthorizationDedupKey(auth)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, auth)
+		}
+	}
+	return out, nil
+}
+
+func orderTenantAuthorizationLookupIDs(tenantID string) []string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	add(tenantID)
+	if tenantID == "tenant_default" {
+		add("default")
+		add("")
+	}
+	if tenantID == "default" {
+		add("tenant_default")
+		add("")
+	}
+	if strings.HasPrefix(tenantID, "tenant_") {
+		add(strings.TrimPrefix(tenantID, "tenant_"))
+	} else {
+		add("tenant_" + tenantID)
+	}
+	return out
+}
+
+func orderTenantAuthorizationDedupKey(auth *llmservice.TenantAuthorization) string {
+	if auth.ID != "" {
+		return auth.ID
+	}
+	return auth.HubID + "\x00" + auth.TenantID + "\x00" + auth.ServiceGroupID + "\x00" + auth.Source + "\x00" + auth.CardOrderID
+}
+
 func orderMatchesAuthorization(order *PurchaseOrder, auth *llmservice.TenantAuthorization) bool {
 	if order == nil || auth == nil {
 		return false
@@ -696,7 +761,7 @@ func orderMatchesAuthorization(order *PurchaseOrder, auth *llmservice.TenantAuth
 	if strings.TrimSpace(auth.HubID) != orderHubID {
 		return false
 	}
-	if strings.TrimSpace(auth.TenantID) != orderTenantID {
+	if !orderTenantIDMatchesAuthorization(orderTenantID, strings.TrimSpace(auth.TenantID)) {
 		return false
 	}
 	if authOrderNo := strings.TrimSpace(auth.CardOrderID); authOrderNo != "" && authOrderNo != orderNo {
@@ -706,6 +771,15 @@ func orderMatchesAuthorization(order *PurchaseOrder, auth *llmservice.TenantAuth
 		return false
 	}
 	return true
+}
+
+func orderTenantIDMatchesAuthorization(orderTenantID, authTenantID string) bool {
+	for _, candidate := range orderTenantAuthorizationLookupIDs(orderTenantID) {
+		if candidate == authTenantID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) alipayConfigForContext(ctx context.Context) corecardstore.AlipayDirectConfig {

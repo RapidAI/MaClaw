@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
 )
@@ -146,5 +147,76 @@ func TestInitLLMModuleDoesNotSeedCardsForFreeServiceGroup(t *testing.T) {
 	}
 	if len(types) != 0 {
 		t.Fatalf("enabled card types = %d, want 0", len(types))
+	}
+}
+
+func TestInitLLMModuleRepairsCardBackedFreeServiceGroup(t *testing.T) {
+	ctx := context.Background()
+	provider, err := sqlite.NewProvider(sqlite.Config{
+		DSN:               filepath.Join(t.TempDir(), "hubcenter-llm-init-card-backed.db"),
+		WAL:               false,
+		BusyTimeoutMS:     5000,
+		MaxReadOpenConns:  2,
+		MaxReadIdleConns:  1,
+		MaxWriteOpenConns: 1,
+		MaxWriteIdleConns: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations: %v", err)
+	}
+	if err := sqlite.EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables: %v", err)
+	}
+	st := sqlite.NewStore(provider)
+	registrySvc := llmservice.NewService(st.System)
+	if err := registrySvc.SaveRegistry(ctx, &llmservice.Registry{
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "redeem",
+			Name:         "Redeem",
+			AccessPolicy: llmservice.AccessPolicyFree,
+		}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+	cardRepo := sqlite.NewLLMCardTypeRepo(provider)
+	if err := cardRepo.Create(ctx, &cardstore.CardType{
+		ID:             "redeem-card",
+		ServiceGroupID: "redeem",
+		Label:          "Redeem Card",
+		Credits:        1000,
+		Period:         "month",
+		PriceRMB:       10,
+		Template:       "enterprise_monthly_blue",
+		Enabled:        true,
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Create card type: %v", err)
+	}
+
+	module := InitLLMModule(provider, st.System, "node-a", nil, nil)
+	if module == nil {
+		t.Fatal("InitLLMModule returned nil")
+	}
+	reg, err := module.Service.LoadRegistry(ctx)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	if len(reg.ServiceGroups) != 1 {
+		t.Fatalf("service groups = %d, want 1", len(reg.ServiceGroups))
+	}
+	if got := reg.ServiceGroups[0].AccessPolicy; got != llmservice.AccessPolicyGrantRequired {
+		t.Fatalf("access policy = %q, want %q", got, llmservice.AccessPolicyGrantRequired)
+	}
+	types, err := module.CardStoreSvc.ListEnabledCardTypes(ctx)
+	if err != nil {
+		t.Fatalf("ListEnabledCardTypes: %v", err)
+	}
+	if len(types) != 1 || types[0].ID != "redeem-card" {
+		t.Fatalf("enabled card types = %+v, want only existing redeem-card", types)
 	}
 }

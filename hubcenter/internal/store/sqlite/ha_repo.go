@@ -161,7 +161,7 @@ func (r *haSyncOpRepo) AppendRemoteIfMissing(ctx context.Context, op *store.HASy
 	if op == nil {
 		return nil
 	}
-	_, err := r.db.ExecContext(ctx, `
+	if _, err := r.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO ha_sync_ops (
 			op_id, source_node_id, entity_type, entity_id, op_type,
 			entity_version, occurred_at, payload_json, payload_hash
@@ -176,7 +176,19 @@ func (r *haSyncOpRepo) AppendRemoteIfMissing(ctx context.Context, op *store.HASy
 		op.OccurredAt.Format(time.RFC3339),
 		op.PayloadJSON,
 		op.PayloadHash,
-	)
+	); err != nil {
+		return err
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO ha_entity_versions (entity_type, entity_id, version, updated_at, updated_by_node_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+			version = excluded.version,
+			updated_at = excluded.updated_at,
+			updated_by_node_id = excluded.updated_by_node_id
+		WHERE excluded.version > ha_entity_versions.version
+		   OR (excluded.version = ha_entity_versions.version AND excluded.updated_at > ha_entity_versions.updated_at)
+	`, op.EntityType, op.EntityID, op.EntityVersion, op.OccurredAt.Format(time.RFC3339), op.SourceNodeID)
 	return err
 }
 

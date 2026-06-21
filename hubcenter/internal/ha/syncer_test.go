@@ -64,6 +64,14 @@ func TestSyncPeerClearsBacklogOnEmptySuccess(t *testing.T) {
 	}
 }
 
+func TestNewSyncerAllowsLargePullBatch(t *testing.T) {
+	svc := &Service{}
+	syncer := NewSyncer(svc, time.Second, 50000)
+	if syncer.limit != 50000 {
+		t.Fatalf("limit = %d, want 50000", syncer.limit)
+	}
+}
+
 func TestSyncPeerAdvancesCursorFromEmptyResponseNextSeq(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(&PullOpsResponse{

@@ -20,12 +20,13 @@ import (
 )
 
 type fakeHASyncOpRepo struct {
-	mu         sync.Mutex
-	ops        []*store.HASyncOp
-	remoteOps  []*store.HASyncOp
-	applied    map[string]bool
-	listCalls  int
-	listLimits []int
+	mu             sync.Mutex
+	ops            []*store.HASyncOp
+	remoteOps      []*store.HASyncOp
+	applied        map[string]bool
+	listCalls      int
+	listLimits     []int
+	onAppendRemote func(*store.HASyncOp) error
 }
 
 func TestNewServiceSkipsSelfPeer(t *testing.T) {
@@ -103,6 +104,9 @@ func (r *fakeHASyncOpRepo) AppendRemoteIfMissing(_ context.Context, op *store.HA
 	}
 	cp := *op
 	r.remoteOps = append(r.remoteOps, &cp)
+	if r.onAppendRemote != nil {
+		return r.onAppendRemote(&cp)
+	}
 	return nil
 }
 
@@ -520,6 +524,56 @@ func TestApplyRemoteOpRecordsRemoteOpForTransitiveSync(t *testing.T) {
 	}
 	if len(opsRepo.remoteOps) != 1 || opsRepo.remoteOps[0].OpID != op.OpID {
 		t.Fatalf("remoteOps = %+v", opsRepo.remoteOps)
+	}
+	applied, err := opsRepo.HasApplied(context.Background(), op.OpID)
+	if err != nil {
+		t.Fatalf("HasApplied() error = %v", err)
+	}
+	if !applied {
+		t.Fatal("remote op was not marked applied")
+	}
+}
+
+func TestApplyRemoteOpStillAppliesWhenRecorderUpdatesEntityVersion(t *testing.T) {
+	versionsRepo := &fakeHAEntityVersionRepo{items: make(map[string]*store.HAEntityVersion)}
+	opsRepo := &fakeHASyncOpRepo{onAppendRemote: func(op *store.HASyncOp) error {
+		return versionsRepo.Upsert(context.Background(), &store.HAEntityVersion{
+			EntityType:      op.EntityType,
+			EntityID:        op.EntityID,
+			Version:         op.EntityVersion,
+			UpdatedAt:       op.OccurredAt,
+			UpdatedByNodeID: op.SourceNodeID,
+		})
+	}}
+	newsRepo := &fakeHANewsRepo{}
+	svc := &Service{
+		nodeID:   "hc-1",
+		ops:      opsRepo,
+		versions: versionsRepo,
+		news:     newsRepo,
+	}
+	payload := `{"id":"news-versioned","title":"hello","content":"","category":"notice","pinned":false,"created_at":"2026-05-10T00:00:00Z","updated_at":"2026-05-10T00:00:00Z"}`
+	op := &store.HASyncOp{
+		OpID:          "op-remote-versioned",
+		SourceNodeID:  "hc-2",
+		EntityType:    EntityNewsArticle,
+		EntityID:      "news-versioned",
+		OpType:        OpUpsert,
+		EntityVersion: 3,
+		OccurredAt:    time.Now().UTC(),
+		PayloadJSON:   payload,
+		PayloadHash:   testPayloadHash(payload),
+	}
+
+	if err := svc.ApplyRemoteOp(context.Background(), op); err != nil {
+		t.Fatalf("ApplyRemoteOp() error = %v", err)
+	}
+	got, err := newsRepo.GetByID(context.Background(), "news-versioned")
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if got == nil || got.Title != "hello" {
+		t.Fatalf("news item = %+v, want applied remote payload", got)
 	}
 	applied, err := opsRepo.HasApplied(context.Background(), op.OpID)
 	if err != nil {
