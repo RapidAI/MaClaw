@@ -22,6 +22,14 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 		Source:  "hub",
 		Version: "1.0.0",
 		Metadata: map[string]any{
+			"workspace_layout": map[string]any{
+				"schema":     "maclaw.app.ui.v1",
+				"entry":      "tool_workspace",
+				"template":   "document_workspace",
+				"density":    "compact",
+				"navigation": []any{"input", "output"},
+				"list":       map[string]any{"columns": []any{"title", "status"}},
+			},
 			"governance": map[string]any{
 				"status":     "local_tested",
 				"risk_level": "low",
@@ -47,6 +55,15 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	if types := appInstallationStringList(installed.Metadata["result_contract_types"]); len(types) != 2 || types[0] != "document" || types[1] != "inline_content" {
 		t.Fatalf("expected normalized result contract types: %#v", installed.Metadata)
 	}
+	if installed.Metadata["workspace_layout_entry"] != "tool_workspace" || installed.Metadata["workspace_layout_template"] != "document_workspace" || installed.Metadata["workspace_layout_density"] != "compact" {
+		t.Fatalf("expected workspace layout summaries: %#v", installed.Metadata)
+	}
+	if navigation := appInstallationStringList(installed.Metadata["workspace_layout_navigation"]); len(navigation) != 2 || navigation[0] != "input" || navigation[1] != "output" {
+		t.Fatalf("expected workspace navigation summary: %#v", installed.Metadata)
+	}
+	if columns := appInstallationStringList(installed.Metadata["workspace_layout_list_columns"]); len(columns) != 2 || columns[0] != "title" || columns[1] != "status" {
+		t.Fatalf("expected workspace list column summary: %#v", installed.Metadata)
+	}
 
 	audit, err := svc.QueryAuditLogs(context.Background(), principal, QueryAuditLogsInput{Action: "app.installation_upsert", TargetType: "app_installation", TargetID: "tool.pdf.translate", Limit: 1})
 	if err != nil {
@@ -61,6 +78,12 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	}
 	if types := appInstallationStringList(metadata["result_contract_types"]); len(types) != 2 || types[0] != "document" || types[1] != "inline_content" {
 		t.Fatalf("expected audit result contract types: %#v", metadata)
+	}
+	if navigation := appInstallationStringList(metadata["workspace_layout_navigation"]); len(navigation) != 2 || navigation[0] != "input" || navigation[1] != "output" {
+		t.Fatalf("expected audit workspace navigation summary: %#v", metadata)
+	}
+	if columns := appInstallationStringList(metadata["workspace_layout_list_columns"]); len(columns) != 2 || columns[0] != "title" || columns[1] != "status" {
+		t.Fatalf("expected audit workspace list column summary: %#v", metadata)
 	}
 }
 

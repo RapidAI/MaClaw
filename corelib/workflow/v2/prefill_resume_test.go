@@ -410,3 +410,37 @@ func TestPhaseInputSchema_AllFields_Method(t *testing.T) {
 		t.Fatalf("expected 3 fields from AllFields(), got %d", len(all))
 	}
 }
+
+
+func TestNormalizeDateToISO(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		// Chinese format with day
+		{"1979年3月21日", "1979-03-21"},
+		{"1980年12月5日", "1980-12-05"},
+		{"1985年01月15日", "1985-01-15"},
+		// Chinese format without day (month only)
+		{"1980年5月", "1980-05"},
+		{"1979年12月", "1979-12"},
+		// Already ISO
+		{"1979-03-21", "1979-03-21"},
+		{"1980-05", "1980-05"},
+		// ISO with trailing time (should truncate)
+		{"1979-03-21T00:00:00Z", "1979-03-21"},
+		// Empty/invalid
+		{"", ""},
+		{"未知", ""},
+		{"abc", ""},
+		// Edge cases
+		{"1979年0月", ""},  // invalid month
+		{"1979年13月", ""}, // invalid month
+	}
+	for _, tt := range tests {
+		got := normalizeDateToISO(tt.input)
+		if got != tt.want {
+			t.Errorf("normalizeDateToISO(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}

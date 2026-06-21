@@ -100,7 +100,7 @@ func appInstallationAuditMetadata(app AppInstallation) map[string]any {
 	if app.Source != "" {
 		metadata["source"] = app.Source
 	}
-	for _, key := range []string{"app_skill_id", "workflow_skill_ids", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "governance_status", "governance_risk_level"} {
+	for _, key := range []string{"app_skill_id", "workflow_skill_ids", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "governance_status", "governance_risk_level"} {
 		if value, ok := app.Metadata[key]; ok {
 			metadata[key] = value
 		}
@@ -126,6 +126,9 @@ func normalizeAppInstallationMetadata(metadata map[string]any, kind string) (map
 	out := cloneJSONMap(metadata)
 	if out == nil {
 		out = map[string]any{}
+	}
+	if err := normalizeAppInstallationWorkspaceLayoutMetadata(out); err != nil {
+		return nil, err
 	}
 	if err := normalizeAppInstallationResultContractMetadata(out); err != nil {
 		return nil, err
@@ -172,6 +175,58 @@ func normalizeAppInstallationMetadata(metadata map[string]any, kind string) (map
 	out["workflow_mapping"] = workflow
 	out["workflow_mapping_schema"] = "maclaw.app.workflow.v1"
 	return out, nil
+}
+
+func normalizeAppInstallationWorkspaceLayoutMetadata(out map[string]any) error {
+	layout := appInstallationMap(out["workspace_layout"])
+	if layout == nil {
+		if governance := appInstallationMap(out["governance"]); governance != nil {
+			layout = appInstallationMap(governance["workspace_layout"])
+			if layout == nil {
+				layout = appInstallationMap(governance["workspaceLayout"])
+			}
+		}
+	}
+	if layout == nil {
+		if navigation := appInstallationStringList(out["workspace_layout_navigation"]); len(navigation) > 0 {
+			out["workspace_layout_navigation"] = navigation
+		}
+		if columns := appInstallationStringList(out["workspace_layout_list_columns"]); len(columns) > 0 {
+			out["workspace_layout_list_columns"] = columns
+		}
+		return nil
+	}
+	if schema := firstNonEmptyAppInstallationString(appInstallationString(layout, "schema"), "maclaw.app.ui.v1"); schema != "maclaw.app.ui.v1" {
+		return fmt.Errorf("%w: metadata.workspace_layout.schema must be maclaw.app.ui.v1", ErrInvalidInput)
+	}
+	layout["schema"] = "maclaw.app.ui.v1"
+	if entry := firstNonEmptyAppInstallationString(appInstallationString(layout, "entry"), appInstallationString(out, "workspace_layout_entry")); entry != "" {
+		layout["entry"] = entry
+		out["workspace_layout_entry"] = entry
+	}
+	if template := firstNonEmptyAppInstallationString(appInstallationString(layout, "template"), appInstallationString(out, "workspace_layout_template")); template != "" {
+		layout["template"] = template
+		out["workspace_layout_template"] = template
+	}
+	if density := firstNonEmptyAppInstallationString(appInstallationString(layout, "density"), appInstallationString(out, "workspace_layout_density")); density != "" {
+		layout["density"] = density
+		out["workspace_layout_density"] = density
+	}
+	if navigation := firstNonEmptyAppInstallationStringList(appInstallationStringList(layout["navigation"]), appInstallationStringList(out["workspace_layout_navigation"])); len(navigation) > 0 {
+		layout["navigation"] = navigation
+		out["workspace_layout_navigation"] = navigation
+	}
+	list := appInstallationMap(layout["list"])
+	if list == nil {
+		list = map[string]any{}
+	}
+	if columns := firstNonEmptyAppInstallationStringList(appInstallationStringList(list["columns"]), appInstallationStringList(out["workspace_layout_list_columns"])); len(columns) > 0 {
+		list["columns"] = columns
+		layout["list"] = list
+		out["workspace_layout_list_columns"] = columns
+	}
+	out["workspace_layout"] = layout
+	return nil
 }
 
 func normalizeAppInstallationResultContractMetadata(out map[string]any) error {
@@ -241,6 +296,15 @@ func firstNonEmptyAppInstallationString(values ...string) string {
 func appInstallationResultContract(value any) map[string]any {
 	contract, _ := value.(map[string]any)
 	return contract
+}
+
+func firstNonEmptyAppInstallationStringList(values ...[]string) []string {
+	for _, value := range values {
+		if len(value) > 0 {
+			return value
+		}
+	}
+	return nil
 }
 
 func appInstallationStringList(value any) []string {

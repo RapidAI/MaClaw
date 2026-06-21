@@ -224,6 +224,39 @@ func TestClassifyOpenAIHTTPErrorSurfacesOfficialUnavailable(t *testing.T) {
 	}
 }
 
+func TestClassifyOpenAIHTTPErrorAppendsHubDiagnostics(t *testing.T) {
+	body := []byte(`{"ok":false,"code":"LLM_OFFICIAL_UNAVAILABLE","message":"MaClaw official service is temporarily unavailable","request_id":"llm_123","failure_stage":"upstream_provider","provider_id":"maclaw-official","upstream_host":"api.deepseek.com","upstream_status":504,"hub_status":504,"elapsed_ms":120001}`)
+	got := classifyOpenAIHTTPError(504, body, "MaClawOfficial")
+	for _, want := range []string{
+		"MaClaw official service is temporarily unavailable",
+		"request_id=llm_123",
+		"failure_stage=upstream_provider",
+		"provider_id=maclaw-official",
+		"upstream_host=api.deepseek.com",
+		"upstream_status=504",
+		"hub_status=504",
+		"elapsed_ms=120001",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in %q", want, got)
+		}
+	}
+}
+
+func TestClassifyOpenAIHTTPErrorCleansHubDiagnostics(t *testing.T) {
+	body := []byte(`{"ok":false,"code":"LLM_OFFICIAL_UNAVAILABLE","message":"MaClaw official service is temporarily unavailable","request_id":"llm_123\ntrace","failure_stage":"upstream_provider","provider_id":"maclaw_official","upstream_host":"hubcenter.example.com\napi.deepseek.com","upstream_status":504,"hub_status":504}`)
+	got := classifyOpenAIHTTPError(504, body, "MaClawOfficial")
+	if !strings.Contains(got, "request_id=llm_123 trace") {
+		t.Fatalf("expected compacted request_id diagnostics, got %q", got)
+	}
+	if !strings.Contains(got, "upstream_host=hubcenter.example.com api.deepseek.com") {
+		t.Fatalf("expected compacted upstream_host diagnostics, got %q", got)
+	}
+	if strings.Contains(got, "\n") {
+		t.Fatalf("diagnostics should not contain raw newlines: %q", got)
+	}
+}
+
 func TestClassifyOpenAIHTTPErrorReportsHubCreditsExhausted(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_CREDITS_EXHAUSTED","message":"selected model grant credits are exhausted"}`)
 	got := classifyOpenAIHTTPError(403, body, "MaClawOfficial")

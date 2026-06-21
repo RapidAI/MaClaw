@@ -931,6 +931,66 @@ describe('AppsPage', () => {
         expect(screen.getByText(/"channel": "hub"/)).not.toBeNull();
     });
 
+    it('includes enterprise visual UI metadata in market submission packages', async () => {
+        const app = {
+            id: 'publish-enterprise-ui-app',
+            name: '客户续约工作台',
+            description: 'Publish enterprise UI metadata',
+            category: 'CRM',
+            kind: 'enterprise_normal_app',
+            icon: 'customer',
+            accent: '#4b6572',
+            pinned: false,
+            source: 'local',
+            version: 1,
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_normal_app',
+                launchMode: 'agent_dynamic_ui',
+                appSkill: { id: 'customer-renewal-skill', version: '1.0.0', source: 'hub' },
+                datasrv: { domain: 'sales', objectRole: 'customer', preferredAction: 'sales.customer_upsert' },
+                ui: {
+                    schema: 'maclaw.app.ui.v1',
+                    entry: 'business_workspace',
+                    layouts: {
+                        business_workspace: {
+                            template: 'classic_split',
+                            density: 'compact',
+                            primaryRegion: 'left',
+                            outputRegion: 'right',
+                            navigation: ['customers', 'renewals'],
+                            list: { columns: ['customer_name', 'status', 'updated_at'] },
+                            studio: { savedInManifest: true },
+                        },
+                    },
+                },
+                resultContract: { schema: 'maclaw.app.result.v1', primary: 'business_status', types: ['business_status', 'business_record', 'content'], delivery: { inlineContent: true, artifacts: false, businessRecord: true, notifications: false } },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        seedSuccessfulLocalAppRun(app, { runID: 'run-enterprise-ui' });
+        const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'market-enterprise-ui', submitted_at: '2026-06-17T01:00:00.000Z', status: 'submitted', message: 'queued' });
+        (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+        const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('客户续约工作台')) as HTMLElement;
+        expect(card).toBeTruthy();
+        fireEvent.click(within(card).getByText('提交审核'));
+
+        await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
+        const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
+        const layout = payload.apps[0].app.governance.workspaceLayout;
+        expect(layout.entry).toBe('business_workspace');
+        expect(layout.navigation).toEqual(['customers', 'renewals']);
+        expect(layout.list.columns).toEqual(['customer_name', 'status', 'updated_at']);
+        expect(payload.apps[0].app.governance.resultContract.primary).toBe('business_status');
+    });
+
     it('keeps local channel when the app package bridge queues locally', async () => {
         const submitMaclawAppPackage = vi.fn().mockResolvedValue({
             submission_id: 'local-review-queued',
@@ -1558,6 +1618,22 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Approval app' }));
         expect(within(screen.getByTestId('studio-result-contract')).getAllByText('approval_result').length).toBeGreaterThan(0);
         expect(within(screen.getByTestId('studio-result-contract')).getByText(/approved \/ rejected/)).not.toBeNull();
+    });
+
+    it('saves visual result contract edits from App Studio', () => {
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.change(screen.getByPlaceholderText('Example: Contract filing'), { target: { value: 'Contract Console' } });
+        fireEvent.change(screen.getByTestId('studio-result-primary'), { target: { value: 'content' } });
+        fireEvent.click(screen.getByTestId('studio-result-delivery-artifacts'));
+        fireEvent.click(screen.getByRole('button', { name: 'Create app' }));
+
+        const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
+        const created = stored.customApps.find((app: any) => app.name === 'Contract Console');
+        expect(created.manifest.resultContract.primary).toBe('content');
+        expect(created.manifest.resultContract.delivery.artifacts).toBe(false);
+        expect(created.manifest.resultContract.delivery.inlineContent).toBe(true);
     });
 
     it('copies the draft manifest preview to clipboard', async () => {
@@ -3135,6 +3211,8 @@ describe('AppsPage', () => {
         fireEvent.change(screen.getByTestId('studio-business-preferred-view'), { target: { value: 'sales.customer_directory' } });
         fireEvent.change(screen.getByTestId('studio-business-preferred-report'), { target: { value: 'sales.customer_activity' } });
         fireEvent.change(screen.getByTestId('studio-business-preferred-dashboard'), { target: { value: 'sales.overview' } });
+        fireEvent.change(screen.getByTestId('studio-ui-navigation-0'), { target: { value: 'customers' } });
+        fireEvent.change(screen.getByTestId('studio-ui-column-0'), { target: { value: 'customer_name' } });
         fireEvent.click(screen.getByRole('button', { name: 'Create app' }));
 
         const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
@@ -3154,6 +3232,52 @@ describe('AppsPage', () => {
         });
         expect(created.manifest.resultContract.types).toEqual(expect.arrayContaining(['business_status', 'business_record', 'document']));
         expect(created.manifest.ui.layouts.business_workspace.studio.savedInManifest).toBe(true);
+        expect(created.manifest.ui.layouts.business_workspace.navigation).toEqual(expect.arrayContaining(['customers']));
+        expect(created.manifest.ui.layouts.business_workspace.list.columns).toEqual(expect.arrayContaining(['customer_name']));
+    });
+
+    it('uses visual enterprise UI navigation and columns at runtime', () => {
+        const app = {
+            id: 'visual-business-ui-app',
+            name: 'Visual Business UI',
+            description: 'Runtime reads visual UI metadata',
+            category: 'CRM',
+            kind: 'enterprise_normal_app',
+            icon: 'customer',
+            accent: '#4b6572',
+            pinned: false,
+            source: 'local',
+            version: 1,
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_normal_app',
+                launchMode: 'agent_dynamic_ui',
+                appSkill: { id: 'visual-business-skill', version: '1.0.0', source: 'local' },
+                datasrv: { domain: 'sales', objectRole: 'customer', preferredAction: 'sales.customer_upsert' },
+                ui: {
+                    schema: 'maclaw.app.ui.v1',
+                    entry: 'business_workspace',
+                    layouts: {
+                        business_workspace: {
+                            navigation: ['customers', 'renewals'],
+                            list: { columns: ['customer_name', 'status', 'updated_at'] },
+                        },
+                    },
+                },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getAllByText('Visual Business UI')[0]);
+
+        const workspace = document.querySelector('.apps-business-workspace') as HTMLElement;
+        expect(within(workspace).getByRole('button', { name: 'customers' })).not.toBeNull();
+        expect(within(workspace).getByRole('button', { name: 'renewals' })).not.toBeNull();
+        expect(within(workspace).getByText('customer_name')).not.toBeNull();
+        expect(within(workspace).getByText('Updated')).not.toBeNull();
     });
 
     it('edits enterprise normal business bindings and uses them in appSkill payloads', async () => {
@@ -3225,6 +3349,47 @@ describe('AppsPage', () => {
             preferred_report: 'service.case_report',
             preferred_dashboard: 'service.overview',
         })));
+    });
+
+    it('edits visual result contract settings and persists them', async () => {
+        const app = {
+            id: 'result-contract-edit-app',
+            name: 'Result Contract Editor',
+            description: 'Edit result contract visually',
+            category: 'Document',
+            kind: 'tool_app',
+            icon: 'contract',
+            accent: '#4b6572',
+            pinned: false,
+            source: 'local',
+            version: 1,
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'skill_app',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'tool_app',
+                launchMode: 'skill_app',
+                skill: { id: 'contract-tool', inputMode: 'file', outputModes: ['pdf'] },
+                resultContract: { schema: 'maclaw.app.result.v1', primary: 'artifact', types: ['content', 'document', 'artifact'], outputModes: ['pdf'], delivery: { inlineContent: true, artifacts: true, businessRecord: false, notifications: false } },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Manage apps'));
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Result Contract Editor')) as HTMLElement;
+        fireEvent.click(within(row).getByRole('button', { name: 'Edit' }));
+        fireEvent.change(screen.getByTestId('edit-result-primary'), { target: { value: 'content' } });
+        fireEvent.click(screen.getByTestId('edit-result-delivery-artifacts'));
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        await waitFor(() => {
+            const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
+            const updated = stored.customApps.find((item: any) => item.id === app.id);
+            expect(updated.manifest.resultContract.primary).toBe('content');
+            expect(updated.manifest.resultContract.delivery.artifacts).toBe(false);
+        });
     });
 
     it('persists app order changes from app studio management', () => {
@@ -4652,7 +4817,9 @@ describe('AppsPage', () => {
                         workspace_layout_entry: 'approval_workspace',
                         workspace_layout_template: 'dashboard',
                         workspace_layout_density: 'spacious',
-                        workspace_layout: { entry: 'approval_workspace', template: 'dashboard', density: 'spacious', region_count: 4 },
+                        workspace_layout_navigation: ['my_requests', 'pending_my_approval', 'attention'],
+                        workspace_layout_list_columns: ['title', 'applicant', 'current_node', 'status'],
+                        workspace_layout: { entry: 'approval_workspace', template: 'dashboard', density: 'spacious', navigation: ['my_requests', 'pending_my_approval', 'attention'], list: { columns: ['title', 'applicant', 'current_node', 'status'] }, region_count: 4 },
                         governance_status: 'local_tested',
                         dependencies: [{ id: 'expense-workflow', kind: 'workflow_skill', required: true, source: 'hub' }],
                     },
@@ -4676,6 +4843,8 @@ describe('AppsPage', () => {
         expect(added.manifest.mis.approvalBindings[0]).toMatchObject({ workflowSkillId: 'expense-workflow', objectRole: 'expense_report' });
         expect(added.manifest.ui.layouts.approval_workspace.template).toBe('dashboard');
         expect(added.manifest.ui.layouts.approval_workspace.density).toBe('spacious');
+        expect(added.manifest.ui.layouts.approval_workspace.navigation).toEqual(['my_requests', 'pending_my_approval', 'attention']);
+        expect(added.manifest.ui.layouts.approval_workspace.list.columns).toEqual(['title', 'applicant', 'current_node', 'status']);
         expect(added.manifest.ui.layouts.approval_workspace.studio.importedFromDataSrv).toBe(true);
     });
     it('turns skill maclaw.apps.json entries into registered tool apps', async () => {

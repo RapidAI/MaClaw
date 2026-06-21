@@ -4291,6 +4291,99 @@
 .apps-manage-edit .apps-result-contract {
     grid-column: 1 / -1;
 }
+.apps-result-contract-designer {
+    display: grid;
+    gap: 8px;
+}
+
+.apps-manage-edit .apps-result-contract-designer {
+    grid-column: 1 / -1;
+}
+
+.apps-result-contract-designer__controls {
+    display: grid;
+    grid-template-columns: minmax(160px, 0.7fr) minmax(240px, 1.3fr);
+    gap: 8px;
+    align-items: stretch;
+}
+
+.apps-result-contract-designer__delivery {
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface);
+}
+
+.apps-result-contract-designer__delivery label {
+    min-height: 25px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--theme-text-secondary);
+    font-size: 0.68rem;
+    font-weight: 850;
+    white-space: nowrap;
+}
+
+.apps-result-contract-designer__delivery input {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--theme-accent);
+}
+.apps-enterprise-ui-designer {
+    display: grid;
+    gap: 8px;
+    padding: 11px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--theme-surface-muted) 58%, var(--theme-surface));
+}
+
+.apps-manage-edit .apps-enterprise-ui-designer {
+    grid-column: 1 / -1;
+}
+
+.apps-enterprise-ui-designer__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.apps-ui-list-designer {
+    min-width: 0;
+    display: grid;
+    gap: 7px;
+}
+
+.apps-ui-list-designer__items {
+    display: grid;
+    gap: 6px;
+}
+
+.apps-ui-list-designer__item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px;
+    align-items: center;
+}
+
+.apps-ui-list-designer__item input {
+    width: 100%;
+    min-height: 30px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    padding: 0 8px;
+    font-size: 0.72rem;
+    font-weight: 750;
+}
+
 
 .apps-result-contract__summary {
     min-width: 0;

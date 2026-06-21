@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -26,6 +27,8 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
+
+var globalLLMEndpointRequestSeq uint64
 
 type llmProviderRegistryResponse struct {
 	Enabled                  bool     `json:"enabled"`
@@ -1504,6 +1507,9 @@ func llmV1ModelObject(m llmservice.AuthorizedModel) map[string]any {
 
 func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService, promptCacheSources ...any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		startedAt := time.Now()
+		requestID := newLLMEndpointRequestID()
+		w.Header().Set("X-MaClaw-Request-ID", requestID)
 		principal, err := authenticateViewerRequest(r, identity)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
@@ -1545,11 +1551,25 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		logAuthorizedModel := ""
 		logProviderID := ""
 		logUsage := corelib.TokenUsageStat{}
+		logFailureStage := ""
+		logUpstreamStatus := 0
 		defer func() {
-			metadata := map[string]any{}
+			metadata := map[string]any{
+				"request_id": requestID,
+				"elapsed_ms": time.Since(startedAt).Milliseconds(),
+			}
+			if logFailureStage != "" {
+				metadata["failure_stage"] = logFailureStage
+			}
+			if logUpstreamStatus > 0 {
+				metadata["upstream_status"] = logUpstreamStatus
+			}
 			if provider := providerReg.FindProvider(logProviderID); provider != nil {
 				metadata["upstream_api_url"] = strings.TrimSpace(provider.APIURL)
 				metadata["upstream_host"] = llmEndpointUpstreamHost(provider.APIURL)
+			} else if officialURL := maclawOfficialHubCenterURL(logProviderID); officialURL != "" {
+				metadata["upstream_api_url"] = strings.TrimSpace(officialURL)
+				metadata["upstream_host"] = llmEndpointUpstreamHost(officialURL)
 			}
 			enqueueLLMEndpointAccessLog(system, llmEndpointAccessLogEntry{
 				Email:             principal.Email,
@@ -1577,6 +1597,16 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			logStatusCode = status
 			logErrorCode = code
 			writeError(w, status, code, message)
+		}
+		writeLoggedErrorWithDiag := func(status int, code, message, stage string, upstreamStatus int) {
+			logStatusCode = status
+			logErrorCode = code
+			logFailureStage = strings.TrimSpace(stage)
+			if upstreamStatus > 0 {
+				logUpstreamStatus = upstreamStatus
+			}
+			fields := llmEndpointDiagnosticFields(requestID, logFailureStage, logProviderID, logUpstreamStatus, status, startedAt, providerReg)
+			writeErrorWithFields(w, status, code, message, fields)
 		}
 		writeLoggedBillingDenied := func(status int, denial llmBillingDenial) {
 			logStatusCode = status
@@ -1630,6 +1660,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, wroteStream, err := streamAuthorizedModelRequest(w, r, providerReg, authorizedModel, body, requestedModel, selectedModelDebug)
 			logStatusCode = statusCode
 			logProviderID = strings.TrimSpace(usedProviderID)
+			logUpstreamStatus = statusCode
 			logUsage = usageStat
 			if err != nil {
 				if wroteStream {
@@ -1660,26 +1691,26 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				if queueErr, ok := err.(*providerConcurrencyError); ok {
 					switch queueErr.Kind {
 					case providerConcurrencyQueueFull:
-						writeLoggedError(http.StatusTooManyRequests, "LLM_PROVIDER_QUEUE_FULL", queueErr.Error())
+						writeLoggedErrorWithDiag(http.StatusTooManyRequests, "LLM_PROVIDER_QUEUE_FULL", queueErr.Error(), "hub_provider_queue", 0)
 					default:
-						writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_QUEUE_TIMEOUT", queueErr.Error())
+						writeLoggedErrorWithDiag(http.StatusServiceUnavailable, "LLM_PROVIDER_QUEUE_TIMEOUT", queueErr.Error(), "hub_provider_queue", 0)
 					}
 					return
 				}
 				if resilienceErr, ok := err.(*providerResilienceError); ok {
-					writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_CIRCUIT_OPEN", resilienceErr.Error())
+					writeLoggedErrorWithDiag(http.StatusServiceUnavailable, "LLM_PROVIDER_CIRCUIT_OPEN", resilienceErr.Error(), "hub_provider_circuit", 0)
 					return
 				}
 				if status, code, message, ok := llmEndpointUpstreamAuthOrRateError(statusCode, usedProviderID, err); ok {
-					writeLoggedError(status, code, message)
+					writeLoggedErrorWithDiag(status, code, message, "upstream_provider", statusCode)
 					return
 				}
 				if statusCode >= 500 {
 					status, code, detail := providerUnavailableError(statusCode, usedProviderID, []byte(strings.TrimSpace(fmt.Sprint(err))))
-					writeLoggedError(status, code, detail)
+					writeLoggedErrorWithDiag(status, code, detail, "upstream_provider", statusCode)
 					return
 				}
-				writeLoggedError(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
+				writeLoggedErrorWithDiag(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error(), "hub_to_upstream", statusCode)
 				return
 			}
 			if statusCode < 400 && usedProviderID != "" {
@@ -1705,6 +1736,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		respBody, statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, localCacheHit, err := forwardAuthorizedModelRequestWithCache(r, providerReg, authorizedModel, body, requestedModel, firstPromptCacheSource(promptCacheSources), cacheCfg)
 		logStatusCode = statusCode
 		logProviderID = strings.TrimSpace(usedProviderID)
+		logUpstreamStatus = statusCode
 		logUsage = usageStat
 		if localCacheHit {
 			logUsage.InputCostRMB = 0
@@ -1715,17 +1747,29 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			if queueErr, ok := err.(*providerConcurrencyError); ok {
 				switch queueErr.Kind {
 				case providerConcurrencyQueueFull:
-					writeLoggedError(http.StatusTooManyRequests, "LLM_PROVIDER_QUEUE_FULL", queueErr.Error())
+					writeLoggedErrorWithDiag(http.StatusTooManyRequests, "LLM_PROVIDER_QUEUE_FULL", queueErr.Error(), "hub_provider_queue", 0)
 				default:
-					writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_QUEUE_TIMEOUT", queueErr.Error())
+					writeLoggedErrorWithDiag(http.StatusServiceUnavailable, "LLM_PROVIDER_QUEUE_TIMEOUT", queueErr.Error(), "hub_provider_queue", 0)
 				}
 				return
 			}
 			if resilienceErr, ok := err.(*providerResilienceError); ok {
-				writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_CIRCUIT_OPEN", resilienceErr.Error())
+				writeLoggedErrorWithDiag(http.StatusServiceUnavailable, "LLM_PROVIDER_CIRCUIT_OPEN", resilienceErr.Error(), "hub_provider_circuit", 0)
 				return
 			}
-			writeLoggedError(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
+			if statusCode >= 400 {
+				if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests {
+					status, code, message := providerAuthOrRateError(statusCode, usedProviderID, respBody)
+					writeLoggedErrorWithDiag(status, code, message, "upstream_provider", statusCode)
+					return
+				}
+				if statusCode >= 500 {
+					status, code, message := providerUnavailableError(statusCode, usedProviderID, respBody)
+					writeLoggedErrorWithDiag(status, code, message, "upstream_provider", statusCode)
+					return
+				}
+			}
+			writeLoggedErrorWithDiag(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error(), "hub_to_upstream", statusCode)
 			return
 		}
 		if statusCode < 400 && usedProviderID != "" && !localCacheHit {
@@ -1758,12 +1802,12 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		// sees a raw 401 and tells the user their own credentials are wrong.
 		if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests {
 			hubStatus, hubCode, detail := providerAuthOrRateError(statusCode, usedProviderID, respBody)
-			writeLoggedError(hubStatus, hubCode, detail)
+			writeLoggedErrorWithDiag(hubStatus, hubCode, detail, "upstream_provider", statusCode)
 			return
 		}
 		if statusCode >= 500 {
 			hubStatus, hubCode, detail := providerUnavailableError(statusCode, usedProviderID, respBody)
-			writeLoggedError(hubStatus, hubCode, detail)
+			writeLoggedErrorWithDiag(hubStatus, hubCode, detail, "upstream_provider", statusCode)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -1791,6 +1835,9 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 
 func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService, promptCacheSources ...any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		startedAt := time.Now()
+		requestID := newLLMEndpointRequestID()
+		w.Header().Set("X-MaClaw-Request-ID", requestID)
 		principal, err := authenticateViewerRequest(r, identity)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
@@ -1831,11 +1878,26 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 		logAuthorizedModel := ""
 		logProviderID := ""
 		logUsage := corelib.TokenUsageStat{}
+		logFailureStage := ""
+		logUpstreamStatus := 0
 		defer func() {
-			metadata := map[string]any{"wire_api": "responses"}
+			metadata := map[string]any{
+				"wire_api":   "responses",
+				"request_id": requestID,
+				"elapsed_ms": time.Since(startedAt).Milliseconds(),
+			}
+			if logFailureStage != "" {
+				metadata["failure_stage"] = logFailureStage
+			}
+			if logUpstreamStatus > 0 {
+				metadata["upstream_status"] = logUpstreamStatus
+			}
 			if provider := providerReg.FindProvider(logProviderID); provider != nil {
 				metadata["upstream_api_url"] = strings.TrimSpace(provider.APIURL)
 				metadata["upstream_host"] = llmEndpointUpstreamHost(provider.APIURL)
+			} else if officialURL := maclawOfficialHubCenterURL(logProviderID); officialURL != "" {
+				metadata["upstream_api_url"] = strings.TrimSpace(officialURL)
+				metadata["upstream_host"] = llmEndpointUpstreamHost(officialURL)
 			}
 			enqueueLLMEndpointAccessLog(system, llmEndpointAccessLogEntry{
 				Email:             principal.Email,
@@ -1863,6 +1925,17 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			logStatusCode = status
 			logErrorCode = code
 			writeError(w, status, code, message)
+		}
+		writeLoggedErrorWithDiag := func(status int, code, message, stage string, upstreamStatus int) {
+			logStatusCode = status
+			logErrorCode = code
+			logFailureStage = strings.TrimSpace(stage)
+			if upstreamStatus > 0 {
+				logUpstreamStatus = upstreamStatus
+			}
+			fields := llmEndpointDiagnosticFields(requestID, logFailureStage, logProviderID, logUpstreamStatus, status, startedAt, providerReg)
+			fields["wire_api"] = "responses"
+			writeErrorWithFields(w, status, code, message, fields)
 		}
 		var body map[string]any
 		if err := json.Unmarshal(bodyBytes, &body); err != nil {
@@ -1911,6 +1984,7 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, wroteStream, err := streamAuthorizedResponsesRequest(w, r, providerReg, authorizedModel, body, chatBody, requestedModel, responseModel, selectedModelDebug)
 			logStatusCode = statusCode
 			logProviderID = strings.TrimSpace(usedProviderID)
+			logUpstreamStatus = statusCode
 			logUsage = usageStat
 			chargeStreamUsage := func() {
 				if usedProviderID == "" {
@@ -1942,26 +2016,26 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 				if queueErr, ok := err.(*providerConcurrencyError); ok {
 					switch queueErr.Kind {
 					case providerConcurrencyQueueFull:
-						writeLoggedError(http.StatusTooManyRequests, "LLM_PROVIDER_QUEUE_FULL", queueErr.Error())
+						writeLoggedErrorWithDiag(http.StatusTooManyRequests, "LLM_PROVIDER_QUEUE_FULL", queueErr.Error(), "hub_provider_queue", 0)
 					default:
-						writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_QUEUE_TIMEOUT", queueErr.Error())
+						writeLoggedErrorWithDiag(http.StatusServiceUnavailable, "LLM_PROVIDER_QUEUE_TIMEOUT", queueErr.Error(), "hub_provider_queue", 0)
 					}
 					return
 				}
 				if resilienceErr, ok := err.(*providerResilienceError); ok {
-					writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_CIRCUIT_OPEN", resilienceErr.Error())
+					writeLoggedErrorWithDiag(http.StatusServiceUnavailable, "LLM_PROVIDER_CIRCUIT_OPEN", resilienceErr.Error(), "hub_provider_circuit", 0)
 					return
 				}
 				if status, code, message, ok := llmEndpointUpstreamAuthOrRateError(statusCode, usedProviderID, err); ok {
-					writeLoggedError(status, code, message)
+					writeLoggedErrorWithDiag(status, code, message, "upstream_provider", statusCode)
 					return
 				}
 				if statusCode >= 500 {
 					status, code, detail := providerUnavailableError(statusCode, usedProviderID, []byte(strings.TrimSpace(fmt.Sprint(err))))
-					writeLoggedError(status, code, detail)
+					writeLoggedErrorWithDiag(status, code, detail, "upstream_provider", statusCode)
 					return
 				}
-				writeLoggedError(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
+				writeLoggedErrorWithDiag(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error(), "hub_to_upstream", statusCode)
 				return
 			}
 			if statusCode < 400 && usedProviderID != "" {
@@ -1974,6 +2048,7 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 		respBody, statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, localCacheHit, rawResponses, err := forwardAuthorizedResponsesRequestWithCache(r, providerReg, authorizedModel, body, chatBody, requestedModel, firstPromptCacheSource(promptCacheSources), cacheCfg)
 		logStatusCode = statusCode
 		logProviderID = strings.TrimSpace(usedProviderID)
+		logUpstreamStatus = statusCode
 		logUsage = usageStat
 		if localCacheHit {
 			logUsage.InputCostRMB = 0
@@ -1984,17 +2059,29 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			if queueErr, ok := err.(*providerConcurrencyError); ok {
 				switch queueErr.Kind {
 				case providerConcurrencyQueueFull:
-					writeLoggedError(http.StatusTooManyRequests, "LLM_PROVIDER_QUEUE_FULL", queueErr.Error())
+					writeLoggedErrorWithDiag(http.StatusTooManyRequests, "LLM_PROVIDER_QUEUE_FULL", queueErr.Error(), "hub_provider_queue", 0)
 				default:
-					writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_QUEUE_TIMEOUT", queueErr.Error())
+					writeLoggedErrorWithDiag(http.StatusServiceUnavailable, "LLM_PROVIDER_QUEUE_TIMEOUT", queueErr.Error(), "hub_provider_queue", 0)
 				}
 				return
 			}
 			if resilienceErr, ok := err.(*providerResilienceError); ok {
-				writeLoggedError(http.StatusServiceUnavailable, "LLM_PROVIDER_CIRCUIT_OPEN", resilienceErr.Error())
+				writeLoggedErrorWithDiag(http.StatusServiceUnavailable, "LLM_PROVIDER_CIRCUIT_OPEN", resilienceErr.Error(), "hub_provider_circuit", 0)
 				return
 			}
-			writeLoggedError(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error())
+			if statusCode >= 400 {
+				if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests {
+					status, code, message := providerAuthOrRateError(statusCode, usedProviderID, respBody)
+					writeLoggedErrorWithDiag(status, code, message, "upstream_provider", statusCode)
+					return
+				}
+				if statusCode >= 500 {
+					status, code, message := providerUnavailableError(statusCode, usedProviderID, respBody)
+					writeLoggedErrorWithDiag(status, code, message, "upstream_provider", statusCode)
+					return
+				}
+			}
+			writeLoggedErrorWithDiag(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error(), "hub_to_upstream", statusCode)
 			return
 		}
 		if statusCode < 400 && usedProviderID != "" && !localCacheHit {
@@ -2017,12 +2104,12 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 		}
 		if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests {
 			hubStatus, hubCode, detail := providerAuthOrRateError(statusCode, usedProviderID, respBody)
-			writeLoggedError(hubStatus, hubCode, detail)
+			writeLoggedErrorWithDiag(hubStatus, hubCode, detail, "upstream_provider", statusCode)
 			return
 		}
 		if statusCode >= 500 {
 			hubStatus, hubCode, detail := providerUnavailableError(statusCode, usedProviderID, respBody)
-			writeLoggedError(hubStatus, hubCode, detail)
+			writeLoggedErrorWithDiag(hubStatus, hubCode, detail, "upstream_provider", statusCode)
 			return
 		}
 		if statusCode < 400 && !rawResponses {
@@ -2091,7 +2178,9 @@ func forwardAuthorizedResponsesRequestWithCache(r *http.Request, reg *im.LLMProv
 			respBody, statusCode, usedProviderID, serviceGroupIDs, usageStat, localCacheHit, err := forwardAuthorizedModelRequestWithCache(r, reg, &singleProviderModel, chatBody, externalModel, promptCacheSource, cacheCfg)
 			if err != nil {
 				lastErr = err
-				lastProviderID = providerID
+				lastBody = respBody
+				lastStatus = statusCode
+				lastProviderID = firstNonEmptyString(usedProviderID, providerID)
 				continue
 			}
 			if shouldTryNextProviderStatusForProvider(usedProviderID, statusCode) {
@@ -2114,7 +2203,9 @@ func forwardAuthorizedResponsesRequestWithCache(r *http.Request, reg *im.LLMProv
 			respBody, statusCode, usedProviderID, serviceGroupIDs, usageStat, localCacheHit, err := forwardAuthorizedModelRequestWithCache(r, reg, &singleProviderModel, chatBody, externalModel, promptCacheSource, cacheCfg)
 			if err != nil {
 				lastErr = err
-				lastProviderID = providerID
+				lastBody = respBody
+				lastStatus = statusCode
+				lastProviderID = firstNonEmptyString(usedProviderID, providerID)
 				continue
 			}
 			if shouldTryNextProviderStatusForProvider(usedProviderID, statusCode) {
@@ -2139,6 +2230,8 @@ func forwardAuthorizedResponsesRequestWithCache(r *http.Request, reg *im.LLMProv
 		}
 		if err != nil {
 			lastErr = err
+			lastBody = respBody
+			lastStatus = statusCode
 			lastProviderID = provider.ID
 			continue
 		}
@@ -2162,7 +2255,7 @@ func forwardAuthorizedResponsesRequestWithCache(r *http.Request, reg *im.LLMProv
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
 	}
-	return nil, 0, lastProviderID, nil, corelib.TokenUsageStat{}, false, false, lastErr
+	return lastBody, lastStatus, lastProviderID, nil, corelib.TokenUsageStat{}, false, false, lastErr
 }
 
 func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, reg *im.LLMProviderRegistry, model *llmservice.AuthorizedModel, responsesBody map[string]any, chatBody map[string]any, externalModel string, responseModel string, selectedModelDebug *llmservice.ModelSelectionDebug) (int, string, []string, corelib.TokenUsageStat, bool, error) {
@@ -3495,6 +3588,54 @@ func upstreamGatewayStatus(upstreamStatus int) int {
 	}
 }
 
+func newLLMEndpointRequestID() string {
+	seq := atomic.AddUint64(&globalLLMEndpointRequestSeq, 1)
+	return fmt.Sprintf("llm_%x_%d", time.Now().UnixNano(), seq)
+}
+
+func llmEndpointDiagnosticFields(requestID, failureStage, providerID string, upstreamStatus, hubStatus int, startedAt time.Time, reg *im.LLMProviderRegistry) map[string]any {
+	fields := map[string]any{
+		"request_id": requestID,
+		"hub_status": hubStatus,
+		"elapsed_ms": time.Since(startedAt).Milliseconds(),
+	}
+	if failureStage != "" {
+		fields["failure_stage"] = failureStage
+	}
+	if providerID != "" {
+		fields["provider_id"] = providerID
+	}
+	if upstreamStatus > 0 {
+		fields["upstream_status"] = upstreamStatus
+	}
+	if reg != nil {
+		if provider := reg.FindProvider(providerID); provider != nil {
+			host := llmEndpointUpstreamHost(provider.APIURL)
+			if host != "" {
+				fields["upstream_host"] = host
+			}
+			return fields
+		}
+	}
+	if officialURL := maclawOfficialHubCenterURL(providerID); officialURL != "" {
+		if host := llmEndpointUpstreamHost(officialURL); host != "" {
+			fields["upstream_host"] = host
+		}
+	}
+	return fields
+}
+
+func maclawOfficialHubCenterURL(providerID string) string {
+	if !IsMaClawProviderRequest(providerID) {
+		return ""
+	}
+	module := GetMaClawModule()
+	if module == nil || module.Client == nil {
+		return ""
+	}
+	return strings.TrimSpace(module.Client.CurrentHubCenterURL())
+}
+
 func llmEndpointUpstreamFailureMessage(providerID string, statusCode int, err error) string {
 	providerName := strings.TrimSpace(providerID)
 	if providerName == "" {
@@ -3636,7 +3777,7 @@ func forwardAuthorizedModelRequestWithCache(r *http.Request, reg *im.LLMProvider
 		result, err = executeAuthorizedModelRequestWithCache(r.Context(), r, reg, model, body, externalModel, promptCache, cacheCfg)
 	}
 	if err != nil {
-		return nil, 0, "", nil, corelib.TokenUsageStat{}, false, err
+		return result.respBody, result.statusCode, result.providerID, result.serviceGroupIDs, result.usageStat, result.localCacheHit, err
 	}
 	return result.respBody, result.statusCode, result.providerID, result.serviceGroupIDs, result.usageStat, result.localCacheHit, nil
 }
@@ -3657,6 +3798,8 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 			respBody, statusCode, fwdErr := forwardMaClawOfficialRequestWithCompatRetry(ctx, body, store.TenantIDFromContext(ctx))
 			if fwdErr != nil {
 				lastErr = fwdErr
+				lastBody = respBody
+				lastStatus = statusCode
 				lastProviderID = providerID
 				continue
 			}
@@ -3697,6 +3840,7 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 		}
 		if gateErr := globalProviderResilience.beforeAttempt(provider); gateErr != nil {
 			lastErr = gateErr
+			lastProviderID = provider.ID
 			continue
 		}
 		respBody, statusCode, err := forwardLLMRequest(request, provider, body, externalModel)
@@ -3707,6 +3851,8 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 		}
 		if err != nil {
 			lastErr = err
+			lastBody = respBody
+			lastStatus = statusCode
 			lastProviderID = provider.ID
 			continue
 		}
@@ -3738,7 +3884,7 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
 	}
-	return authorizedModelForwardResult{}, lastErr
+	return authorizedModelForwardResult{respBody: lastBody, statusCode: lastStatus, providerID: lastProviderID}, lastErr
 }
 
 func forwardMaClawOfficialRequestWithCompatRetry(ctx context.Context, body map[string]any, tenantID string) ([]byte, int, error) {

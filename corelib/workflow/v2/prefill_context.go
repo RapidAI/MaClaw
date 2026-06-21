@@ -657,28 +657,36 @@ func extractDate(field PhaseInputField, context string) *PrefilledValue {
 			window = string([]rune(window)[:30])
 		}
 		if d := findDateInText(window); d != "" {
-			return &PrefilledValue{
-				Value:        d,
-				Source:       "context",
-				SourceDetail: "提取自: " + anchor + d,
-				Confidence:   0.85,
-			}
+			return normalizeDatePrefillValue(field, d, "提取自: "+anchor+d)
 		}
 	}
 
 	// For birth_date specifically, also try "出生于XXXX年" pattern
 	if field.Name == "birth_date" {
 		if m := birthDateRe.FindStringSubmatch(context); m != nil {
-			return &PrefilledValue{
-				Value:        m[1],
-				Source:       "context",
-				SourceDetail: "提取自: " + m[0],
-				Confidence:   0.85,
-			}
+			return normalizeDatePrefillValue(field, m[1], "提取自: "+m[0])
 		}
 	}
 
 	return nil
+}
+
+// normalizeDatePrefillValue creates a PrefilledValue for a date field.
+// When the field type is "date" (rendered as <input type="date">),
+// the value is normalized to ISO format (YYYY-MM-DD or YYYY-MM).
+// For text-type date fields, the original format is preserved.
+func normalizeDatePrefillValue(field PhaseInputField, value, sourceDetail string) *PrefilledValue {
+	if field.Type == "date" {
+		if iso := normalizeDateToISO(value); iso != "" {
+			value = iso
+		}
+	}
+	return &PrefilledValue{
+		Value:        value,
+		Source:       "context",
+		SourceDetail: sourceDetail,
+		Confidence:   0.85,
+	}
 }
 
 // findDateInText finds the first date pattern in the given text.

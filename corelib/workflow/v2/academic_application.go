@@ -90,11 +90,14 @@ func commonAcademicFields(ageHint string) []PhaseInputField {
 		{Name: "gender", Label: "性别", Type: "select", Required: true, Reusable: true, Options: []PhaseInputOption{
 			{Label: "男", Value: "男"}, {Label: "女", Value: "女"},
 		}},
-		{Name: "birth_date", Label: "出生日期", Type: "text", Required: true, Reusable: true, Placeholder: birthPlaceholder},
+		{Name: "birth_date", Label: "出生日期", Type: "date", Required: true, Reusable: true, Placeholder: birthPlaceholder},
 		{Name: "institution", Label: "依托单位", Type: "text", Required: true, Reusable: true, Placeholder: "如：XX大学 XX学院"},
 		{Name: "title", Label: "职称", Type: "text", Required: true, Reusable: true, Placeholder: "如：教授/研究员"},
 		{Name: "discipline", Label: "学科领域", Type: "text", Required: true, Reusable: true, Placeholder: "如：计算机科学与技术"},
 		{Name: "research_direction", Label: "主要研究方向", Type: "textarea", Required: true, Reusable: true, Placeholder: "2-3个核心研究方向"},
+		{Name: "google_scholar_url", Label: "Google Scholar 主页", Type: "text", Reusable: true, Placeholder: "如：https://scholar.google.com/citations?user=XXXXX"},
+		{Name: "orcid_url", Label: "ORCID 主页", Type: "text", Reusable: true, Placeholder: "如：https://orcid.org/0000-0002-XXXX-XXXX"},
+		{Name: "dblp_url", Label: "DBLP 主页（计算机类）", Type: "text", Reusable: true, Placeholder: "如：https://dblp.org/pid/xx/xxxx.html"},
 		{Name: "h_index", Label: "H指数", Type: "text", Reusable: true, Placeholder: "如：35"},
 		{Name: "total_papers", Label: "SCI/SSCI论文总数", Type: "text", Reusable: true, Placeholder: "如：120"},
 		{Name: "education", Label: "教育背景", Type: "textarea", Reusable: true, Placeholder: "按时间顺序列出：\n本科→硕士→博士"},
@@ -165,10 +168,11 @@ func BuildAcademicApplicationTemplate(p FundingProfile) *WorkflowTemplate {
 				},
 			},
 		},
-		// Phase 2: Academic foundation
+		// Phase 2: Academic foundation — ToolPolicyFull to allow web_fetch for
+		// Google Scholar / ORCID / DBLP data collection when URLs are provided.
 		{
 			ID: prefix + "_foundation", Name: p.Emphasis.Phase2Title,
-			NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+			NeedsConfirm: true, ToolPolicy: ToolPolicyFull,
 		},
 		// Phase 3: Research plan
 		{
@@ -255,6 +259,25 @@ func academicPhase2Instruction(p *FundingProfile) string {
 		sb.WriteString(fmt.Sprintf("**%s**\n\n", p.ReviewCriteria))
 	}
 
+	// Data collection guidance — always present for Phase 2
+	sb.WriteString(`## 第零步：数据收集（必须先执行，再写文档）
+
+在生成文档之前，必须先从用户提供的学术主页URL中收集真实数据。
+
+**执行步骤**：
+1. 检查用户表单中是否提供了以下URL：google_scholar_url、orcid_url、dblp_url
+2. 对于每个非空的URL，使用 web_fetch 工具抓取页面内容
+3. 从抓取结果中提取：论文列表（标题、期刊、年份、引用数）、H-index、总引用数、合作者信息
+4. 如果 web_fetch 失败（网络问题、页面变化），在文档中标注「[数据源不可用：URL]，以下为用户手动提供的数据」
+5. 如果用户没有提供任何URL且简历中没有具体论文列表，对具体成果使用占位符
+
+**重要**：
+- 只有从URL实际抓取到的数据才能作为"已验证"信息写入文档
+- web_fetch 失败时不要编造替代数据
+- Google Scholar 的引用数可能与简历中不同，以 Google Scholar 为准（注明查询日期）
+
+`)
+
 	if p.Category == FundingTalent {
 		sb.WriteString(`生成文档内容：
 1. **研究方向凝练**：2-3 个主要方向，每个用一句话概括核心贡献
@@ -264,10 +287,18 @@ func academicPhase2Instruction(p *FundingProfile) string {
 3. **学术影响力**：H-index、引用、高被引论文、学术兼职、受邀报告
 4. **获奖情况**：省部级以上奖励
 
+**数据来源规则**：
+- H-index、论文总数等数值：优先使用从 Google Scholar 抓取的实时数据，其次使用表单填写的数字
+- 研究方向：基于用户表单中填写的"主要研究方向"展开
+- 具体论文列表：优先使用从 Google Scholar/ORCID/DBLP 抓取的真实论文数据；其次使用简历中提供的列表；均无时使用占位符「[待补充：...]」
+- 具体项目/奖项：只有用户在简历或表单中明确提供才能写入；未提供时使用占位符
+- 教育背景：使用用户表单中的"教育背景"字段内容
+
 **写作要点**：
 - 突出"原创性"和"系统性"
 - 每个成果要说清"解决了什么科学问题"
 - 体现研究的连贯性和递进关系
+- 宁可留占位符也不能编造具体论文标题或项目编号
 `)
 	} else {
 		sb.WriteString(`生成文档内容：
@@ -276,10 +307,17 @@ func academicPhase2Instruction(p *FundingProfile) string {
 3. **工作条件**：实验平台、计算资源、数据资源
 4. **团队基础**：主要参与人员及分工
 
+**数据来源规则**：
+- 优先使用从 Google Scholar/ORCID/DBLP 抓取的真实数据（如果第零步成功抓取）
+- 其次使用用户在表单和前序阶段中提供的信息
+- 具体成果（论文、专利）：未从任何来源获取到具体列表时使用占位符「[待补充：...]」
+- 工作条件：可基于用户所在单位做合理推断，但不能编造具体设备型号或数据库名称
+
 **写作要点**：
 - 证明你有能力完成本项目
 - 前期工作要与拟研究内容紧密关联
 - 工作条件要说明能支撑本项目实施
+- 宁可留占位符也不能编造不存在的专利号或论文标题
 `)
 	}
 	sb.WriteString("\n")
@@ -346,6 +384,12 @@ func academicPhase4Instruction(p *FundingProfile) string {
 4. **团队建设**：现有团队结构、拟引进人才、梯队规划
 5. **教学工作**：承担课程、教材编写、教学改革
 
+**数据来源规则**：
+- "已培养人才"中的具体数字和学生信息：只使用用户在简历或前序阶段中提供的数据
+- 未提供具体人数时使用占位符「[待补充：已毕业硕士X人/博士X人]」
+- 培养计划和团队建设可以是规划性内容（属于AI可生成的框架）
+- 具体学生姓名、去向：未提供时不列出，用"代表性毕业生去向包括[待补充]"
+
 **写作要点**：
 - 用数据说话（已培养X名博士，其中N人获奖）
 - 培养计划要与研究方向紧密结合
@@ -388,7 +432,25 @@ func academicPhase5Instruction(p *FundingProfile) string {
 }
 
 func academicConstraints() string {
-	return `## 重要约束（违反将导致错误）
+	return `## 重要约束（违反将导致严重错误）
+
+### 内容真实性约束（最高优先级）
+- 【严禁幻觉】绝对禁止编造任何具体事实：论文标题、期刊名、引用数、项目编号、经费金额、获奖名称、年份等。
+- 【严禁杜撰】不得编造不存在的学术成果、数据或引用来填充文档。
+- 【信息来源】所有具体事实必须来自以下来源之一：
+  1. 用户通过表单提交的信息（上方"用户提供的结构化信息"section）
+  2. 用户上传的简历/CV 中提取的内容
+  3. 从用户提供的学术主页 URL（Google Scholar / ORCID / DBLP）通过 web_fetch 抓取的真实数据
+  4. 前序阶段产出物中已确认的内容
+- 【数据不足时的处理】：对于没有数据来源的具体信息，使用占位符格式：
+  - 论文：「[待补充：代表性论文1 - 标题/期刊/年份/引用数]」
+  - 项目：「[待补充：主持项目1 - 名称/来源/经费/年份]」
+  - 获奖：「[待补充：奖励1 - 名称/等级/年份]」
+  - 数据：「[待补充：具体数值]」
+- 【允许生成的内容】：文档结构、章节标题、写作框架、通用表述（不含具体事实的描述性文字）、研究计划（规划性内容）可以由 AI 生成。
+- 【论文信息规则】：除非从 Google Scholar/ORCID 抓取到了具体列表或用户提供了论文列表，否则只能写"申请人在XX领域发表SCI论文N篇"（N来自表单填写的total_papers），不能列出具体论文标题。
+
+### 格式约束
 - 只生成一份文档，输出完毕后立即停止。
 - 【严禁】输出确认提示语、分隔线或任何后续内容。
 - 【严禁】自己模拟用户确认。

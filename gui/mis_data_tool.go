@@ -1111,7 +1111,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		if encoded := values.Encode(); encoded != "" {
 			path += "?" + encoded
 		}
-		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
+		return a.callMISDataFirstItemAPI(cfg, http.MethodGet, path, nil, "approval")
 	case "review_record_approval", "mis.approval.sync_result":
 		approvalID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "approval_id"), stringArg(args, "id")))
 		if approvalID == "" {
@@ -1691,6 +1691,24 @@ func (a *App) callMISDataAPI(cfg corelib.MISDataConfig, method, path string, bod
 		return err.Error()
 	}
 	return prettyMISDataResponse(data)
+}
+
+func (a *App) callMISDataFirstItemAPI(cfg corelib.MISDataConfig, method, path string, body map[string]interface{}, itemName string) string {
+	data, err := a.callMISDataAPIBytes(cfg, method, path, body)
+	if err != nil {
+		return err.Error()
+	}
+	var envelope struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil || len(envelope.Items) == 0 {
+		name := strings.TrimSpace(itemName)
+		if name == "" {
+			name = "item"
+		}
+		return fmt.Sprintf("no %s found", name)
+	}
+	return prettyMISDataResponse(envelope.Items[0])
 }
 
 func (a *App) callMISDataAPIBytes(cfg corelib.MISDataConfig, method, path string, body map[string]interface{}) ([]byte, error) {

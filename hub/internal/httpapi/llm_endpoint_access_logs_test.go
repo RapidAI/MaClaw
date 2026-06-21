@@ -300,6 +300,104 @@ func TestLLMV1ResponsesHandlerWritesAccessLog(t *testing.T) {
 	}
 }
 
+func TestLLMV1ChatCompletionsHandlerWritesOfficialFailureDiagnosticsToAccessLog(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "official-log@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	globalLLMEndpointAccessLogAccumulator.mu.Lock()
+	savedPending := globalLLMEndpointAccessLogAccumulator.pending
+	globalLLMEndpointAccessLogAccumulator.pending = map[store.SystemSettingsRepository]*llmEndpointAccessLogStore{}
+	globalLLMEndpointAccessLogAccumulator.mu.Unlock()
+	defer func() {
+		globalLLMEndpointAccessLogAccumulator.mu.Lock()
+		globalLLMEndpointAccessLogAccumulator.pending = savedPending
+		globalLLMEndpointAccessLogAccumulator.mu.Unlock()
+	}()
+	invalidateLLMRuntimeCaches(system)
+
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           llmservice.MaClawOfficialServiceGroupID,
+			Name:         "MaClaw Official",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{llmservice.MaClawOfficialProviderID}}},
+		}},
+		UserBindings: []llmservice.UserBinding{{Email: "official-log@example.com", ServiceGroupIDs: []string{llmservice.MaClawOfficialServiceGroupID}}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	hubCenter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusGatewayTimeout, map[string]any{"error": map[string]any{"message": "deepseek timeout"}})
+	}))
+	defer hubCenter.Close()
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: hubCenter.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello access log"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	logs, err := currentLLMEndpointAccessLogs(ctx, system)
+	if err != nil {
+		t.Fatalf("currentLLMEndpointAccessLogs: %v", err)
+	}
+	if logs.TotalRequests != 1 || len(logs.Entries) != 1 {
+		t.Fatalf("logs = total:%d entries:%d", logs.TotalRequests, len(logs.Entries))
+	}
+	entry := logs.Entries[0]
+	if entry.ProviderID != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("provider_id = %q, want %q", entry.ProviderID, llmservice.MaClawOfficialProviderID)
+	}
+	if entry.StatusCode != http.StatusGatewayTimeout || entry.ErrorCode != "LLM_OFFICIAL_UNAVAILABLE" {
+		t.Fatalf("unexpected status/error log: status=%d error=%q", entry.StatusCode, entry.ErrorCode)
+	}
+	parsed, err := url.Parse(hubCenter.URL)
+	if err != nil {
+		t.Fatalf("parse hubcenter URL: %v", err)
+	}
+	if entry.Metadata["failure_stage"] != "upstream_provider" {
+		t.Fatalf("metadata failure_stage = %#v, want upstream_provider", entry.Metadata["failure_stage"])
+	}
+	if entry.Metadata["upstream_status"] != float64(http.StatusGatewayTimeout) && entry.Metadata["upstream_status"] != http.StatusGatewayTimeout {
+		t.Fatalf("metadata upstream_status = %#v, want 504", entry.Metadata["upstream_status"])
+	}
+	if entry.Metadata["upstream_host"] != parsed.Host {
+		t.Fatalf("metadata upstream_host = %#v, want %q", entry.Metadata["upstream_host"], parsed.Host)
+	}
+	if entry.Metadata["upstream_api_url"] != hubCenter.URL {
+		t.Fatalf("metadata upstream_api_url = %#v, want %q", entry.Metadata["upstream_api_url"], hubCenter.URL)
+	}
+	if entry.Metadata["request_id"] == "" {
+		t.Fatalf("metadata missing request_id: %#v", entry.Metadata)
+	}
+}
+
 func TestGetLLMEndpointAccessLogsHandlerSupportsFiltering(t *testing.T) {
 	system := newTestLLMServiceSystemSettings()
 	globalLLMEndpointAccessLogAccumulator.mu.Lock()

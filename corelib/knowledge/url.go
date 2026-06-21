@@ -780,7 +780,40 @@ func buildURLSourceAndNodes(req URLSaveRequest, existing Source) (Source, []Docu
 		client := newPublicHTTPClient(time.Duration(timeoutSec) * time.Second)
 		result, err = websearch.FetchWithClient(u.String(), &websearch.FetchOptions{MaxBytes: maxBytes, TimeoutS: timeoutSec}, client)
 		if err != nil {
-			return Source{}, nil, err
+			// For HTTP 403 (anti-bot), try Chrome which has a real browser fingerprint.
+			if !strings.Contains(err.Error(), "HTTP 403") {
+				return Source{}, nil, err
+			}
+		}
+		// Fallback: if static HTTP fetch returned no readable text (JS-rendered SPA pages),
+		// was blocked by anti-bot (403), or returned a JS challenge page, retry with headless Chrome.
+		if err != nil || needsJSRendering(result) {
+			// Give Chrome extra time for cold-start + JS rendering.
+			chromeTimeout := timeoutSec
+			if chromeTimeout < 45 {
+				chromeTimeout = 45
+			}
+			rendered, renderErr := websearch.Fetch(u.String(), &websearch.FetchOptions{
+				MaxBytes: maxBytes,
+				TimeoutS: chromeTimeout,
+				RenderJS: true,
+			})
+			if renderErr == nil && strings.TrimSpace(rendered.Content) != "" {
+				result = rendered
+				err = nil // Clear any prior HTTP error (e.g. 403) since Chrome succeeded.
+			} else if renderErr != nil {
+				// Chrome fallback also failed — return specific error based on cause.
+				if strings.Contains(renderErr.Error(), "Chrome not found") {
+					return Source{}, nil, fmt.Errorf("no readable text extracted from URL (page likely requires JavaScript; install Chrome or Edge to enable rendering)")
+				}
+				return Source{}, nil, fmt.Errorf("no readable text extracted from URL (JavaScript rendering attempted but failed: %v)", renderErr)
+			} else {
+				// renderErr == nil but rendered.Content is still empty.
+				// If we entered fallback due to HTTP error (e.g. 403), result may be nil — return original error.
+				if result == nil {
+					return Source{}, nil, err
+				}
+			}
 		}
 	}
 	finalURL, err := ValidatePublicHTTPURL(result.URL)
@@ -834,6 +867,45 @@ func buildURLSourceAndNodes(req URLSaveRequest, existing Source) (Source, []Docu
 		TokenCount: estimateTokens(text),
 	}
 	return source, []DocumentNode{node}, nil
+}
+
+// needsJSRendering checks if a fetch result indicates the page requires JavaScript
+// rendering to produce meaningful content. This catches:
+// - Empty content (SPA skeleton with no text)
+// - Cloudflare/Akamai JS challenge pages ("enable JavaScript", "checking your browser")
+// - Short boilerplate with no actual page content
+func needsJSRendering(result *websearch.FetchResult) bool {
+	if result == nil {
+		return true
+	}
+	text := strings.TrimSpace(result.Content)
+	if text == "" {
+		return true
+	}
+	// Very short content is suspicious — real pages have more than 200 chars of readable text.
+	if len([]rune(text)) < 200 {
+		lower := strings.ToLower(text)
+		for _, sig := range jsChallengeSignals {
+			if strings.Contains(lower, sig) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+var jsChallengeSignals = []string{
+	"enable javascript",
+	"please turn javascript on",
+	"checking your browser",
+	"just a moment",
+	"verify you are human",
+	"please wait",
+	"ray id",
+	"cf-browser-verification",
+	"ddos protection",
+	"access denied",
+	"attention required",
 }
 
 func newPublicHTTPClient(timeout time.Duration) *http.Client {

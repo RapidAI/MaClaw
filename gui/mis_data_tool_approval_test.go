@@ -356,8 +356,8 @@ func TestMISDataApprovalGetUsesBusinessSemanticQuery(t *testing.T) {
 		"approval_workflow_id": "expense_approval",
 		"approval_instance_id": "appr-3",
 	})
-	if !strings.Contains(out, "approval-3") {
-		t.Fatalf("mis.approval.get semantic output = %s", out)
+	if !strings.Contains(out, "approval-3") || strings.Contains(out, "items") {
+		t.Fatalf("mis.approval.get semantic output should return first approval item, got %s", out)
 	}
 	if len(captured) != 1 {
 		t.Fatalf("captured %d requests, want 1: %#v", len(captured), captured)

@@ -182,12 +182,70 @@ func classifyHubErrorBody(body []byte) string {
 		}
 	}
 	if friendly := classifyHubLLMServiceError(hubCode, hubMessage, retryAfterSeconds, retryAfterAt); friendly != "" {
-		return friendly
+		return appendHubErrorDiagnostics(friendly, hubErr)
 	}
 	if (strings.HasPrefix(hubCode, "LLM_UPSTREAM_") || strings.HasPrefix(hubCode, "LLM_OFFICIAL_")) && strings.TrimSpace(hubMessage) != "" {
-		return hubMessage
+		return appendHubErrorDiagnostics(hubMessage, hubErr)
 	}
 	return ""
+}
+
+func appendHubErrorDiagnostics(message string, hubErr map[string]any) string {
+	parts := make([]string, 0, 8)
+	for _, key := range []string{"request_id", "failure_stage", "provider_id", "upstream_host"} {
+		if value := hubErrorDiagnosticString(hubErr[key]); value != "" {
+			parts = append(parts, key+"="+value)
+		}
+	}
+	for _, key := range []string{"upstream_status", "hub_status", "elapsed_ms"} {
+		if value := hubErrorNumberString(hubErr[key]); value != "" {
+			parts = append(parts, key+"="+value)
+		}
+	}
+	if len(parts) == 0 {
+		return message
+	}
+	return message + " [" + strings.Join(parts, " ") + "]"
+}
+
+func hubErrorDiagnosticString(value any) string {
+	trimmed := strings.Join(strings.Fields(strings.TrimSpace(fmt.Sprint(value))), " ")
+	if trimmed == "" || trimmed == "<nil>" {
+		return ""
+	}
+	const maxLen = 120
+	if len(trimmed) > maxLen {
+		return trimmed[:maxLen] + "..."
+	}
+	return trimmed
+}
+
+func hubErrorNumberString(value any) string {
+	switch v := value.(type) {
+	case float64:
+		if v <= 0 {
+			return ""
+		}
+		return strconv.FormatInt(int64(v), 10)
+	case int64:
+		if v <= 0 {
+			return ""
+		}
+		return strconv.FormatInt(v, 10)
+	case int:
+		if v <= 0 {
+			return ""
+		}
+		return strconv.Itoa(v)
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" || trimmed == "0" {
+			return ""
+		}
+		return trimmed
+	default:
+		return ""
+	}
 }
 
 // classifyOpenAIHTTPError parses OpenAI-compatible API error responses and

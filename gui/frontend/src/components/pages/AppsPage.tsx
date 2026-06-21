@@ -287,6 +287,8 @@ type AppRunHistoryEntry = {
     artifactPath?: string;
     artifactDownloadState?: string;
     artifacts?: SkillRunArtifactView[];
+    resultPayload?: Record<string, unknown>;
+    outputs?: ApprovalInstanceOutputView[];
     at: string;
 };
 
@@ -1323,6 +1325,59 @@ function applyStudioWorkspaceLayout(manifest: AppManifestBinding, kind: AppKind,
     };
 }
 
+function defaultEnterpriseNavigation(kind: AppKind) {
+    return kind === 'enterprise_approval_app' ? ['my_requests', 'pending_my_approval', 'handled', 'attention', 'all'] : ['records', 'recent', 'needs_attention'];
+}
+
+function defaultEnterpriseColumns(kind: AppKind) {
+    return kind === 'enterprise_approval_app' ? ['title', 'applicant', 'current_node', 'status', 'updated_at'] : ['title', 'status', 'owner', 'updated_at'];
+}
+
+function normalizeUIStringList(value: unknown, fallback: string[]) {
+    const raw = Array.isArray(value) ? value : [];
+    const out = raw.map((item) => String(item || '').trim()).filter(Boolean);
+    return out.length ? Array.from(new Set(out)) : fallback;
+}
+
+function appWorkspaceLayoutConfig(app: AppEntry) {
+    const entry = app.manifest?.ui?.entry || workspaceEntryForKind(app.kind);
+    return app.manifest?.ui?.layouts?.[entry] || {};
+}
+
+function appEnterpriseNavigation(app: AppEntry) {
+    return normalizeUIStringList(appWorkspaceLayoutConfig(app).navigation, defaultEnterpriseNavigation(app.kind));
+}
+
+function appEnterpriseColumns(app: AppEntry) {
+    return normalizeUIStringList(appWorkspaceLayoutConfig(app).list?.columns, defaultEnterpriseColumns(app.kind));
+}
+
+function applyEnterpriseUIConfig(manifest: AppManifestBinding, kind: AppKind, navigation: string[], columns: string[]): AppManifestBinding {
+    if (!isEnterpriseAppKind(kind)) return manifest;
+    const baseUI = manifest.ui || defaultWorkspaceLayoutForKind(kind);
+    const entry = baseUI.entry || workspaceEntryForKind(kind);
+    const currentLayouts = baseUI.layouts || {};
+    const currentLayout = currentLayouts[entry] || {};
+    return {
+        ...manifest,
+        ui: {
+            ...baseUI,
+            entry,
+            layouts: {
+                ...currentLayouts,
+                [entry]: {
+                    ...currentLayout,
+                    navigation: normalizeUIStringList(navigation, defaultEnterpriseNavigation(kind)),
+                    list: {
+                        ...(currentLayout.list || {}),
+                        columns: normalizeUIStringList(columns, defaultEnterpriseColumns(kind)),
+                    },
+                },
+            },
+        },
+    };
+}
+
 function defaultRuntimeWorkspaceLayout(kind: AppKind): RuntimeWorkspaceLayout {
     return {
         template: kind === 'tool_app' ? 'document_workspace' : 'classic_split',
@@ -1881,12 +1936,17 @@ function dataSrvInstalledWorkspaceLayout(metadata: Record<string, any>, kind: Ap
     const entry = String(raw.entry || metadata.workspace_layout_entry || base.entry || workspaceEntryForKind(kind)).trim();
     const currentLayouts = base.layouts || {};
     const currentLayout = { ...(currentLayouts[entry] || currentLayouts[base.entry || workspaceEntryForKind(kind)] || {}) };
+    const rawList = raw.list && typeof raw.list === 'object' ? raw.list : {};
+    const navigation = normalizeUIStringList(raw.navigation || metadata.workspace_layout_navigation, []);
+    const columns = normalizeUIStringList(rawList.columns || metadata.workspace_layout_list_columns, []);
     const layout = {
         ...currentLayout,
         ...(String(raw.template || metadata.workspace_layout_template || '').trim() ? { template: String(raw.template || metadata.workspace_layout_template).trim() } : {}),
         ...(String(raw.density || metadata.workspace_layout_density || '').trim() ? { density: String(raw.density || metadata.workspace_layout_density).trim() } : {}),
         ...(String(raw.primary_region || raw.primaryRegion || '').trim() ? { primaryRegion: String(raw.primary_region || raw.primaryRegion).trim() } : {}),
         ...(String(raw.output_region || raw.outputRegion || '').trim() ? { outputRegion: String(raw.output_region || raw.outputRegion).trim() } : {}),
+        ...(navigation.length > 0 ? { navigation } : {}),
+        ...(columns.length > 0 ? { list: { ...(currentLayout.list || {}), ...rawList, columns } } : {}),
         ...(Array.isArray(raw.regions) && raw.regions.length > 0 ? { regions: raw.regions } : {}),
         studio: { ...(currentLayout.studio || {}), savedInManifest: true, importedFromDataSrv: true },
     };
@@ -2328,6 +2388,24 @@ function normalizeApprovalOutputs(outputs?: Array<SkillRunOutputBlockView | Appr
 
 function approvalWorkflowOutputsFromStatus(status?: SkillRunStatusView | null): ApprovalInstanceOutputView[] | undefined {
     return normalizeApprovalOutputs(skillRunOutputBlocks(status));
+}
+
+function appRunResultPayloadFromStatus(status?: SkillRunStatusView | null): Record<string, unknown> | undefined {
+    const payload = approvalWorkflowResultPayloadFromObjects(skillRunApprovalObjects(status), status);
+    if (payload) return payload;
+    const snippet = skillRunOutputSuffix(status).replace(/^ 路 /, '');
+    return snippet ? { text: snippet.slice(0, 500) } : undefined;
+}
+
+function appRunPrimaryResultFromPayload(contract: AppResultContract, payload?: Record<string, unknown>, outputs?: ApprovalInstanceOutputView[]) {
+    const primary = String(contract.primary || '').trim();
+    const value = primary ? payload?.[primary] : undefined;
+    const formatted = formatApprovalResultValue(value).trim();
+    if (formatted) return formatted;
+    const textValue = formatApprovalResultValue(payload?.text || payload?.content || payload?.message).trim();
+    if (textValue) return textValue;
+    const output = outputs?.find((item) => approvalOutputBody(item).trim());
+    return output ? approvalOutputBody(output).trim() : '';
 }
 
 function formatApprovalResultValue(value: unknown): string {
@@ -2837,6 +2915,18 @@ function appRunHistoryArtifactEvidence(artifact: SkillRunArtifactView) {
     };
 }
 
+function appRunHistoryOutputEvidence(output: ApprovalInstanceOutputView) {
+    return {
+        type: output.type,
+        kind: output.kind,
+        title: output.title,
+        text: output.text,
+        status: output.status,
+        artifactId: output.artifact_id,
+        data: output.data,
+    };
+}
+
 function appDependencyEvidence(app: AppEntry) {
     return appSkillDependencies(app).map((dep) => ({
         id: dep.id,
@@ -2861,6 +2951,13 @@ function appWorkspaceLayoutEvidence(app: AppEntry) {
     const layout = ui.layouts?.[entry] || {};
     const runtime = normalizeRuntimeWorkspaceLayout(layout, app.kind);
     const regions = Array.isArray(layout.regions) ? layout.regions : studioRegionsForLayout(app.kind, runtime.template, runtime.primaryRegion, runtime.outputRegion);
+    const enterpriseUI = isEnterpriseAppKind(app.kind) ? {
+        navigation: normalizeUIStringList(layout.navigation, defaultEnterpriseNavigation(app.kind)),
+        list: {
+            ...(layout.list || {}),
+            columns: normalizeUIStringList(layout.list?.columns, defaultEnterpriseColumns(app.kind)),
+        },
+    } : {};
     return {
         schema: ui.schema,
         entry,
@@ -2871,6 +2968,7 @@ function appWorkspaceLayoutEvidence(app: AppEntry) {
         regionCount: regions.length,
         regions,
         savedInManifest: !!layout.studio?.savedInManifest || !!app.manifest?.ui,
+        ...enterpriseUI,
     };
 }
 
@@ -2945,11 +3043,11 @@ function normalizeAppResultContract(value: unknown, kind: AppKind, outputModes: 
     };
 }
 
-function applyAppResultContract(manifest: AppManifestBinding, kind: AppKind): AppManifestBinding {
+function applyAppResultContract(manifest: AppManifestBinding, kind: AppKind, override?: AppResultContract): AppManifestBinding {
     const outputModes = normalizeOutputModes(manifest.skill?.outputModes);
     return {
         ...manifest,
-        resultContract: buildAppResultContract(kind, outputModes),
+        resultContract: normalizeAppResultContract(override, kind, outputModes),
     };
 }
 
@@ -3024,6 +3122,9 @@ function appNeedsAutomaticRuntimeDependencyCheck(app: AppEntry) {
 function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmission) {
     const evidence = latestAppRunEvidence(app);
     const evidenceArtifacts = appRunHistoryArtifacts(evidence);
+    const evidenceOutputs = normalizeApprovalOutputs(evidence?.outputs) || [];
+    const resultContract = appResultContractForManifest(app);
+    const primaryResult = appRunPrimaryResultFromPayload(resultContract, evidence?.resultPayload, evidenceOutputs);
     const primaryArtifact = evidenceArtifacts[0];
     const artifactName = primaryArtifact?.name || (primaryArtifact?.path ? primaryArtifact.path.split(/[\\/]/).pop() : undefined);
     const dependencies = appDependencyEvidence(app);
@@ -3038,7 +3139,7 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
             optionalCount: dependencies.filter((dep) => !dep.required).length,
         },
         workspaceLayout: appWorkspaceLayoutEvidence(app),
-        resultContract: appResultContractForManifest(app),
+        resultContract,
         testEvidence: {
             runId: evidence?.runID,
             definitionHash: evidence?.definitionHash,
@@ -3046,6 +3147,10 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
             artifactCount: evidenceArtifacts.length,
             artifactName,
             artifacts: evidenceArtifacts.map(appRunHistoryArtifactEvidence),
+            outputCount: evidenceOutputs.length,
+            outputs: evidenceOutputs.map(appRunHistoryOutputEvidence),
+            resultPayload: evidence?.resultPayload,
+            primaryResult: primaryResult || undefined,
             verifiedAt: evidence?.at || undefined,
         },
         submission: submission ? {
@@ -4043,6 +4148,26 @@ const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, busi
     const viewRole = String(datasrv.preferredView || datasrv.preferredReport || datasrv.preferredDashboard || '-').trim();
     const appSkillID = businessAppSkillID(app);
     const datasetID = appDataSrvDatasetID(app);
+    const navigationItems = appEnterpriseNavigation(app);
+    const columnItems = appEnterpriseColumns(app);
+    const columnLabel = (column: string) => {
+        const labels: Record<string, string> = {
+            title: zh ? '\u8bb0\u5f55' : 'Record',
+            status: zh ? '\u72b6\u6001' : 'Status',
+            owner: zh ? '\u8d1f\u8d23\u4eba' : 'Owner',
+            updated_at: zh ? '\u66f4\u65b0' : 'Updated',
+            current_node: zh ? '\u5f53\u524d\u8282\u70b9' : 'Current node',
+        };
+        return labels[column] || column;
+    };
+    const rowValue = (row: { id: string; name: string; status: string; owner: string }, column: string) => {
+        if (column === 'title') return row.name;
+        if (column === 'status') return row.status;
+        if (column === 'owner') return row.owner;
+        if (column === 'updated_at') return runState === 'done' ? (zh ? '\u521a\u521a' : 'Just now') : '-';
+        if (column === 'current_node') return runState === 'running' ? (zh ? '\u6267\u884c\u4e2d' : 'Running') : (zh ? '\u5f85\u6267\u884c' : 'Ready');
+        return '-';
+    };
     const bindingItems = [
         { label: zh ? '\u4e1a\u52a1\u57df' : 'DataSrv', value: datasrv.domain || '-' },
         { label: zh ? '\u4e1a\u52a1\u5bf9\u8c61' : 'Object', value: objectRole || '-' },
@@ -4081,14 +4206,13 @@ const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, busi
             </div>
             <div className="apps-business-layout">
                 <nav className="apps-business-nav" aria-label={zh ? '\u89c6\u56fe' : 'Views'}>
-                    {[datasrv.preferredView, datasrv.preferredReport, datasrv.preferredDashboard].filter(Boolean).map((item) => <button key={item} type="button">{item}</button>)}
-                    {!datasrv.preferredView && !datasrv.preferredReport && !datasrv.preferredDashboard && <button type="button">{zh ? '\u9ed8\u8ba4\u89c6\u56fe' : 'Default view'}</button>}
+                    {navigationItems.map((item) => <button key={item} type="button">{item}</button>)}
                 </nav>
                 <div className="apps-business-table" role="table" aria-label={zh ? '\u4e1a\u52a1\u6570\u636e' : 'Business records'}>
-                    <div role="row" className="apps-business-table__head"><span>{zh ? '\u8bb0\u5f55' : 'Record'}</span><span>{zh ? '\u72b6\u6001' : 'Status'}</span><span>{zh ? '\u8d1f\u8d23\u4eba' : 'Owner'}</span></div>
+                    <div role="row" className="apps-business-table__head">{columnItems.map((column) => <span key={column}>{columnLabel(column)}</span>)}</div>
                     {rows.map((row) => (
                         <div role="row" className="apps-business-table__row" data-state={runState} key={row.id}>
-                            <span>{row.name}</span><span>{row.status}</span><span>{row.owner}</span>
+                            {columnItems.map((column) => <span key={row.id + '-' + column}>{rowValue(row, column)}</span>)}
                         </div>
                     ))}
                 </div>
@@ -4279,6 +4403,10 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     const artifactName = String(artifact?.name || artifactPath.split(/[\\/]/).pop() || '').trim();
                     const artifactDownloadState = String(artifact?.download_state || '').trim();
                     const definitionHash = app ? appDefinitionFingerprint(app) : undefined;
+                    const resultPayload = appRunResultPayloadFromStatus(status);
+                    const outputs = normalizeApprovalOutputs(skillRunOutputBlocks(status));
+                    const resultContract = app ? appResultContractForManifest(app) : buildAppResultContract('tool_app', [currentRunContext.outputMode]);
+                    const primaryResult = appRunPrimaryResultFromPayload(resultContract, resultPayload, outputs);
                     const verifiedAt = new Date().toISOString();
                     setValidationMessage('');
                     setRunState('done');
@@ -4288,13 +4416,15 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                         definitionHash,
                         outputMode: currentRunContext.outputMode,
                         inputSummary: currentRunContext.inputSummary,
-                        message: skillRunOutputSuffix(status).replace(/^ · /, '') || text.skillRunCompleted,
+                        message: primaryResult.slice(0, 180) || skillRunOutputSuffix(status).replace(/^ · /, '') || text.skillRunCompleted,
                         artifactID,
                         artifactURI,
                         artifactName,
                         artifactPath,
                         artifactDownloadState,
                         artifacts,
+                        resultPayload,
+                        outputs,
                     });
                     if (app?.source === 'skill' && app.manifest?.skill?.id) {
                         void RecordMaclawAppRunEvidenceForSkill(app.manifest.skill.id, app.id, definitionHash || '', runID, artifactPath || artifactName || artifactURI, verifiedAt).catch(() => undefined);
@@ -6408,6 +6538,69 @@ const ResultContractPreview = ({ contract, lang, testId }: { contract: AppResult
         </section>
     );
 };
+const ResultContractDesigner = ({ contract, onChange, lang, testIdPrefix = 'studio' }: { contract: AppResultContract; onChange: (contract: AppResultContract) => void; lang?: string; testIdPrefix?: string }) => {
+    const zh = isZh(lang);
+    const deliveryItems = [
+        { id: 'inlineContent', label: zh ? '\u5185\u5bb9' : 'Content' },
+        { id: 'artifacts', label: zh ? '\u6587\u4ef6' : 'Files' },
+        { id: 'businessRecord', label: zh ? '\u4e1a\u52a1\u8bb0\u5f55' : 'Business record' },
+        { id: 'notifications', label: zh ? '\u901a\u77e5' : 'Notifications' },
+    ] as const;
+    const updateDelivery = (id: typeof deliveryItems[number]['id'], enabled: boolean) => onChange({ ...contract, delivery: { ...contract.delivery, [id]: enabled } });
+    const typeOptions = contract.types.length ? contract.types : [contract.primary];
+    return (
+        <section className="apps-result-contract-designer" aria-label={zh ? '\u7ed3\u679c\u5951\u7ea6\u8bbe\u8ba1' : 'Result contract designer'}>
+            <ResultContractPreview contract={contract} lang={lang} testId={testIdPrefix + '-result-contract'} />
+            <div className="apps-result-contract-designer__controls">
+                <div className="apps-form-row">
+                    <label>{zh ? '\u4e3b\u7ed3\u679c' : 'Primary result'}</label>
+                    <select data-testid={testIdPrefix + '-result-primary'} value={contract.primary} onChange={(event) => onChange({ ...contract, primary: event.target.value })}>
+                        {typeOptions.map((type) => <option value={type} key={type}>{type}</option>)}
+                    </select>
+                </div>
+                <div className="apps-result-contract-designer__delivery" aria-label={zh ? '\u4ea4\u4ed8\u65b9\u5f0f' : 'Delivery channels'}>
+                    {deliveryItems.map((item) => (
+                        <label key={item.id}>
+                            <input data-testid={testIdPrefix + '-result-delivery-' + item.id} type="checkbox" checked={!!contract.delivery[item.id]} onChange={(event) => updateDelivery(item.id, event.target.checked)} />
+                            <span>{item.label}</span>
+                        </label>
+                    ))}
+                </div>
+            </div>
+        </section>
+    );
+};
+const StringListDesigner = ({ title, items, onChange, lang, testIdPrefix }: { title: string; items: string[]; onChange: (items: string[]) => void; lang?: string; testIdPrefix: string }) => {
+    const zh = isZh(lang);
+    const update = (index: number, value: string) => onChange(items.map((item, itemIndex) => itemIndex === index ? value : item));
+    const remove = (index: number) => onChange(items.filter((_, itemIndex) => itemIndex !== index));
+    return (
+        <div className="apps-ui-list-designer" aria-label={title}>
+            <div className="apps-preview-title-row"><div className="apps-definition__title">{title}</div><button className="apps-secondary-button" type="button" onClick={() => onChange([...items, ''])}>{zh ? '\u6dfb\u52a0' : 'Add'}</button></div>
+            <div className="apps-ui-list-designer__items">
+                {items.map((item, index) => (
+                    <div className="apps-ui-list-designer__item" key={`${testIdPrefix}-${index}`}>
+                        <input data-testid={`${testIdPrefix}-${index}`} value={item} onChange={(event) => update(index, event.target.value)} placeholder={zh ? '\u8f93\u5165 key' : 'Enter key'} />
+                        <button className="apps-secondary-button" type="button" onClick={() => remove(index)}>{zh ? '\u5220\u9664' : 'Remove'}</button>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+const EnterpriseUIConfigDesigner = ({ kind, navigation, columns, onNavigationChange, onColumnsChange, lang, testIdPrefix = 'studio' }: { kind: AppKind; navigation: string[]; columns: string[]; onNavigationChange: (items: string[]) => void; onColumnsChange: (items: string[]) => void; lang?: string; testIdPrefix?: string }) => {
+    const zh = isZh(lang);
+    return (
+        <section className="apps-enterprise-ui-designer" aria-label={zh ? '\u4f01\u4e1a\u754c\u9762\u914d\u7f6e' : 'Enterprise UI configuration'}>
+            <div className="apps-preview-title-row"><div className="apps-definition__title">{zh ? '\u5bfc\u822a\u548c\u5217' : 'Navigation and columns'}</div><span className="apps-count">{workspaceEntryForKind(kind)}</span></div>
+            <div className="apps-enterprise-ui-designer__grid">
+                <StringListDesigner title={zh ? '\u5bfc\u822a' : 'Navigation'} items={navigation} onChange={onNavigationChange} lang={lang} testIdPrefix={testIdPrefix + '-ui-navigation'} />
+                <StringListDesigner title={zh ? '\u5217' : 'Columns'} items={columns} onChange={onColumnsChange} lang={lang} testIdPrefix={testIdPrefix + '-ui-column'} />
+            </div>
+        </section>
+    );
+};
 const WorkflowMappingDesigner = ({ value, onChange, lang, testIdPrefix = 'studio' }: { value: AppWorkflowMapping; onChange: (value: AppWorkflowMapping) => void; lang?: string; testIdPrefix?: string }) => {
     const zh = isZh(lang);
     const update = (patch: Partial<AppWorkflowMapping>) => onChange(normalizeAppWorkflowMapping({ ...value, ...patch }, 'enterprise_approval_app') || value);
@@ -6496,6 +6689,9 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const [approvalObjectRole, setApprovalObjectRole] = useState('record');
     const [workflowMapping, setWorkflowMapping] = useState<AppWorkflowMapping>(defaultAppWorkflowMapping('enterprise_approval_app', 'business', 'record') as AppWorkflowMapping);
     const [dependencySource, setDependencySource] = useState<AppSkillDependency['source']>('hub');
+    const [resultContractDraft, setResultContractDraft] = useState<AppResultContract | undefined>(undefined);
+    const [uiNavigation, setUiNavigation] = useState<string[]>(defaultEnterpriseNavigation('tool_app'));
+    const [uiColumns, setUiColumns] = useState<string[]>(defaultEnterpriseColumns('tool_app'));
     const appReadySkills = useMemo(() => availableSkills.filter(isAppRuntimeSkillLike), [availableSkills]);
     const approvalWorkflowSkills = useMemo(() => availableSkills.filter(isApprovalWorkflowSkillLike), [availableSkills]);
     const defaultInstalledSkillID = () => String(appReadySkills[0]?.name || '').trim();
@@ -6549,6 +6745,9 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setApprovalEvent(isEnterpriseApprovalAppKind(nextKind) ? (approvalEvent.trim() || 'record.submitted') : 'record.submitted');
         setWorkflowMapping(defaultAppWorkflowMapping(nextKind, businessDomain.trim() || 'business', approvalObjectRole.trim() || businessObjectRole.trim() || 'record') || (defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping));
         setDependencySource('hub');
+        setResultContractDraft(undefined);
+        setUiNavigation(defaultEnterpriseNavigation(nextKind));
+        setUiColumns(defaultEnterpriseColumns(nextKind));
         setCopyState('idle');
         setSkillAppSaveState('idle');
         setSkillAppSaveMessage('');
@@ -6617,6 +6816,9 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setBusinessPreferredReport(nextKind === 'enterprise_normal_app' ? nextPreferredReport : '');
         setBusinessPreferredDashboard(nextKind === 'enterprise_normal_app' ? nextPreferredDashboard : '');
         setDependencySource('hub');
+        setResultContractDraft(undefined);
+        setUiNavigation(defaultEnterpriseNavigation(nextKind));
+        setUiColumns(defaultEnterpriseColumns(nextKind));
         setDescription(prompt);
         setCopyState('idle');
     };
@@ -6663,7 +6865,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             accent,
             version: 1,
             source: 'local',
-            manifest: applyAppResultContract(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, kind, { template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion }), kind, workflowMapping), kind),
+            manifest: applyAppResultContract(applyEnterpriseUIConfig(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, kind, { template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion }), kind, workflowMapping), kind, uiNavigation, uiColumns), kind, resultContractDraft),
         };
     };
     const draftApp = buildDraftApp(
@@ -6672,6 +6874,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         kind === 'tool_app' && selectedSkill ? selectedSkill : 'draft-app',
         kind === 'tool_app' && selectedSkill ? 'maclaw.app.json' : 'maclaw.apps.json',
     );
+    const draftResultContract = normalizeAppResultContract(resultContractDraft, kind, draftApp.manifest?.skill?.outputModes || outputModes);
     const draftManifestText = JSON.stringify(appToManifest(draftApp), null, 2);
     const studioLayoutValue: RuntimeWorkspaceLayout = { template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion };
     const updateStudioLayout = (layout: RuntimeWorkspaceLayout) => {
@@ -6723,6 +6926,9 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setDescription('');
         setSkillFields([]);
         setMultipleFiles(false);
+        setResultContractDraft(undefined);
+        setUiNavigation(defaultEnterpriseNavigation(kind));
+        setUiColumns(defaultEnterpriseColumns(kind));
     };
     const persistSkillAppDefinition = async () => {
         const cleanName = name.trim();
@@ -7049,8 +7255,9 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     </section>
                 )}
                 {isEnterpriseApprovalAppKind(kind) && <WorkflowMappingDesigner value={workflowMapping} onChange={setWorkflowMapping} lang={lang} />}
+                {isEnterpriseAppKind(kind) && <EnterpriseUIConfigDesigner kind={kind} navigation={uiNavigation} columns={uiColumns} onNavigationChange={setUiNavigation} onColumnsChange={setUiColumns} lang={lang} testIdPrefix="studio" />}
                 <StudioLayoutDesigner kind={kind} value={studioLayoutValue} onChange={updateStudioLayout} lang={lang} />
-                <ResultContractPreview contract={appResultContractForManifest(draftApp)} lang={lang} testId="studio-result-contract" />
+                <ResultContractDesigner contract={draftResultContract} onChange={setResultContractDraft} lang={lang} testIdPrefix="studio" />
                 <div className="apps-form-row apps-form-row--description">
                     <label>{zh ? '\u63cf\u8ff0' : 'Description'}</label>
                     <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={zh ? '\u7528\u4e8e tooltip \u548c\u53f3\u4fa7\u8fd0\u884c\u533a\u8bf4\u660e' : 'Used in tooltip and right runtime area'} />
@@ -7676,6 +7883,9 @@ type AppEditDraft = Pick<AppEntry, 'name' | 'description' | 'category' | 'icon' 
     outputModes: string[];
     fields: SkillAppField[];
     layout: RuntimeWorkspaceLayout;
+    resultContract: AppResultContract;
+    uiNavigation: string[];
+    uiColumns: string[];
 };
 
 const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed }: {
@@ -7694,7 +7904,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
     const text = isZh(lang) ? labels.zh : labels.en;
     const [manifestAppId, setManifestAppId] = useState('');
     const [editingAppId, setEditingAppId] = useState('');
-    const emptyEditDraft = useMemo<AppEditDraft>(() => ({ name: '', description: '', category: '', icon: 'contract', customIconDataUrl: undefined, accent: defaultAccentForKind('tool_app'), businessDomain: 'business', businessObjectRole: 'record', businessPreferredAction: '', businessPreferredView: '', businessPreferredReport: '', businessPreferredDashboard: '', skillID: '', skillSource: 'local', appSkillID: '', appSkillSource: 'local', appSkillVersion: '', workflowSkillID: '', workflowSkillSource: 'hub', workflowSkillVersion: '', approvalEvent: '', approvalObjectRole: '', workflowMapping: defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping, inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [], layout: defaultRuntimeWorkspaceLayout('tool_app') }), []);
+    const emptyEditDraft = useMemo<AppEditDraft>(() => ({ name: '', description: '', category: '', icon: 'contract', customIconDataUrl: undefined, accent: defaultAccentForKind('tool_app'), businessDomain: 'business', businessObjectRole: 'record', businessPreferredAction: '', businessPreferredView: '', businessPreferredReport: '', businessPreferredDashboard: '', skillID: '', skillSource: 'local', appSkillID: '', appSkillSource: 'local', appSkillVersion: '', workflowSkillID: '', workflowSkillSource: 'hub', workflowSkillVersion: '', approvalEvent: '', approvalObjectRole: '', workflowMapping: defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping, inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [], layout: defaultRuntimeWorkspaceLayout('tool_app'), resultContract: buildAppResultContract('tool_app', ['docx', 'pdf']), uiNavigation: defaultEnterpriseNavigation('tool_app'), uiColumns: defaultEnterpriseColumns('tool_app') }), []);
     const [editDraft, setEditDraft] = useState<AppEditDraft>(emptyEditDraft);
     const editDialogRef = useRef<HTMLDivElement | null>(null);
     const editNameInputRef = useRef<HTMLInputElement | null>(null);
@@ -7769,6 +7979,9 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
             outputModes: normalizeOutputModes(app.manifest?.skill?.outputModes),
             fields: normalizeSkillAppFields(app.manifest?.skill?.fields),
             layout: runtimeWorkspaceLayoutForApp(app),
+            resultContract: appResultContractForManifest(app),
+            uiNavigation: appEnterpriseNavigation(app),
+            uiColumns: appEnterpriseColumns(app),
         });
     }, []);
     useEffect(() => {
@@ -7920,7 +8133,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
             };
         }
         if (manifest) {
-            manifest = applyAppResultContract(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, app.kind, editDraft.layout), app.kind, editDraft.workflowMapping), app.kind);
+            manifest = applyAppResultContract(applyEnterpriseUIConfig(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, app.kind, editDraft.layout), app.kind, editDraft.workflowMapping), app.kind, editDraft.uiNavigation, editDraft.uiColumns), app.kind, editDraft.resultContract);
         }
         const updatedApp: AppEntry = {
             ...app,
@@ -8298,8 +8511,9 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                                 </>
                             )}
                             {editingApp.kind === 'enterprise_approval_app' && <WorkflowMappingDesigner value={editDraft.workflowMapping} onChange={(workflowMapping) => setEditDraft((current) => ({ ...current, workflowMapping }))} lang={lang} testIdPrefix="edit" />}
+                            {isEnterpriseAppKind(editingApp.kind) && <EnterpriseUIConfigDesigner kind={editingApp.kind} navigation={editDraft.uiNavigation} columns={editDraft.uiColumns} onNavigationChange={(uiNavigation) => setEditDraft((current) => ({ ...current, uiNavigation }))} onColumnsChange={(uiColumns) => setEditDraft((current) => ({ ...current, uiColumns }))} lang={lang} testIdPrefix="edit" />}
                             <StudioLayoutDesigner kind={editingApp.kind} value={editDraft.layout} onChange={(layout) => setEditDraft((current) => ({ ...current, layout }))} lang={lang} testIdPrefix="edit" />
-                            <ResultContractPreview contract={buildAppResultContract(editingApp.kind, editDraft.outputModes)} lang={lang} testId="edit-result-contract" />
+                            <ResultContractDesigner contract={normalizeAppResultContract(editDraft.resultContract, editingApp.kind, editDraft.outputModes)} onChange={(resultContract) => setEditDraft((current) => ({ ...current, resultContract }))} lang={lang} testIdPrefix="edit" />
                             <div className="apps-actions apps-manage-edit__actions">
                                 {editSaveMessage && <span className="apps-manage-edit__message" data-state={editSaveState} role="alert">{editSaveMessage}</span>}
                                 <button className="apps-secondary-button" type="button" onClick={cancelEdit}>{text.cancel}</button>

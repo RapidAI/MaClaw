@@ -1685,6 +1685,14 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 			if density := maclawAppStringValue(workspaceLayout, "density"); density != "" {
 				metadata["workspace_layout_density"] = density
 			}
+			if navigation := maclawAppStringListFromAny(workspaceLayout["navigation"]); len(navigation) > 0 {
+				metadata["workspace_layout_navigation"] = navigation
+			}
+			if list := anyMap(workspaceLayout["list"]); list != nil {
+				if columns := maclawAppStringListFromAny(list["columns"]); len(columns) > 0 {
+					metadata["workspace_layout_list_columns"] = columns
+				}
+			}
 		}
 		if governance := maclawAppGovernanceMetadataForEntry(entry); governance != nil {
 			metadata["governance"] = governance
@@ -1731,7 +1739,13 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 }
 
 func maclawAppWorkspaceLayoutMetadataForEntry(entry parsedMaclawAppEntry) map[string]interface{} {
-	ui := anyMap(entry.App["ui"])
+	var ui map[string]any
+	for _, holder := range maclawAppBindingHolders(entry) {
+		if candidate := anyMap(holder["ui"]); candidate != nil {
+			ui = candidate
+			break
+		}
+	}
 	if ui == nil {
 		return nil
 	}
@@ -1757,6 +1771,18 @@ func maclawAppWorkspaceLayoutMetadataForEntry(entry parsedMaclawAppEntry) map[st
 		}
 		if output := maclawAppStringValue(layout, "outputRegion", "output_region"); output != "" {
 			out["output_region"] = output
+		}
+		if navigation := maclawAppStringListFromAny(layout["navigation"]); len(navigation) > 0 {
+			out["navigation"] = navigation
+		}
+		if list := anyMap(layout["list"]); list != nil {
+			listOut := map[string]interface{}{}
+			if columns := maclawAppStringListFromAny(list["columns"]); len(columns) > 0 {
+				listOut["columns"] = columns
+			}
+			if len(listOut) > 0 {
+				out["list"] = listOut
+			}
 		}
 		if regions := anySlice(layout["regions"]); len(regions) > 0 {
 			out["region_count"] = len(regions)

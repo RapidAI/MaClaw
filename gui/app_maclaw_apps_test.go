@@ -1305,6 +1305,20 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 			"binding": {
 				"appSkill": { "id": "expense-super-skill", "version": "1.0.0" },
 				"datasrv": { "domain": "finance", "datasetID": "finance.expense_forms", "templateID": "finance.expenses" },
+				"ui": {
+					"schema": "maclaw.app.ui.v1",
+					"entry": "approval_workspace",
+					"layouts": {
+						"approval_workspace": {
+							"template": "classic_split",
+							"density": "compact",
+							"primaryRegion": "left",
+							"outputRegion": "right",
+							"navigation": ["my_requests", "pending_my_approval", "attention"],
+							"list": {"columns": ["title", "applicant", "current_node", "status"]}
+						}
+					}
+				},
 				"workflow": {
 					"schema": "maclaw.app.workflow.v1",
 					"submitNode": "expense.intake",
@@ -1364,8 +1378,16 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	if !ok || len(workflowIDs) != 1 || workflowIDs[0] != "expense-workflow" {
 		t.Fatalf("registration metadata missing workflow skill ids: %#v", metadata)
 	}
-	if metadata["workspace_layout_entry"] != "approval_workspace" || metadata["workspace_layout_template"] != "classic_split" || metadata["workspace_layout_density"] != "comfortable" {
+	if metadata["workspace_layout_entry"] != "approval_workspace" || metadata["workspace_layout_template"] != "classic_split" || metadata["workspace_layout_density"] != "compact" {
 		t.Fatalf("registration metadata missing workspace layout summary: %#v", metadata)
+	}
+	layoutNavigation, ok := metadata["workspace_layout_navigation"].([]interface{})
+	if !ok || len(layoutNavigation) != 3 || layoutNavigation[0] != "my_requests" || layoutNavigation[1] != "pending_my_approval" || layoutNavigation[2] != "attention" {
+		t.Fatalf("registration metadata missing workspace navigation summary: %#v", metadata)
+	}
+	layoutColumns, ok := metadata["workspace_layout_list_columns"].([]interface{})
+	if !ok || len(layoutColumns) != 4 || layoutColumns[0] != "title" || layoutColumns[1] != "applicant" || layoutColumns[2] != "current_node" || layoutColumns[3] != "status" {
+		t.Fatalf("registration metadata missing workspace list column summary: %#v", metadata)
 	}
 	workflowMapping, ok := metadata["workflow_mapping"].(map[string]interface{})
 	if !ok || workflowMapping["schema"] != "maclaw.app.workflow.v1" || workflowMapping["approvalNode"] != "finance.director_review" {
@@ -1379,8 +1401,13 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 		t.Fatalf("registration metadata missing workflow node summary: %#v", metadata)
 	}
 	workspaceLayout, ok := metadata["workspace_layout"].(map[string]interface{})
-	if !ok || workspaceLayout["entry"] != "approval_workspace" || workspaceLayout["template"] != "classic_split" {
+	if !ok || workspaceLayout["entry"] != "approval_workspace" || workspaceLayout["template"] != "classic_split" || workspaceLayout["density"] != "compact" {
 		t.Fatalf("registration metadata missing workspace layout payload: %#v", metadata)
+	}
+	workspaceList, ok := workspaceLayout["list"].(map[string]interface{})
+	workspaceColumns, columnsOK := workspaceList["columns"].([]interface{})
+	if !ok || !columnsOK || len(workspaceColumns) != 4 || workspaceColumns[2] != "current_node" {
+		t.Fatalf("registration metadata missing workspace list payload: %#v", workspaceLayout)
 	}
 	governance, ok := metadata["governance"].(map[string]interface{})
 	if !ok || metadata["governance_status"] != "local_tested" || metadata["governance_risk_level"] != "medium" || governance["status"] != "local_tested" {

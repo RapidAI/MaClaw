@@ -195,7 +195,8 @@ func buildResumeParseSystemPrompt(fields []PhaseInputField) string {
 3. 对于 select 类型的字段，值必须是给定选项之一，否则设为 ""
 4. 对于 textarea 字段，保持原文格式（换行符等）
 5. 数字字段（如H指数、论文数）提取纯数字
-6. 日期字段保持简历中的原始格式（如"1980年5月"）
+6. 对于 date 类型的字段，返回 ISO 格式：YYYY-MM-DD（如1979-03-21）或 YYYY-MM（如1980-05）
+7. 对于 text 类型的日期字段，保持简历中的原始格式（如"1980年5月"）
 
 请以 JSON 格式返回，结构如下：
 {
@@ -309,6 +310,25 @@ func parseResumeResponse(raw string, fields []PhaseInputField) (*ResumeParseResu
 		}
 	}
 
+	// Normalize date fields — convert Chinese/informal date formats to ISO (YYYY-MM-DD)
+	// so <input type="date"> can display and edit the value correctly.
+	for _, f := range fields {
+		if f.Type != "date" {
+			continue
+		}
+		val, ok := result.Fields[f.Name]
+		if !ok {
+			continue
+		}
+		strVal, ok := val.(string)
+		if !ok || strVal == "" {
+			continue
+		}
+		if normalized := normalizeDateToISO(strVal); normalized != "" {
+			result.Fields[f.Name] = normalized
+		}
+	}
+
 	return &result, nil
 }
 
@@ -371,4 +391,94 @@ func truncateRunes(s string, maxRunes int) string {
 		return s
 	}
 	return string(runes[:maxRunes]) + "..."
+}
+
+// normalizeDateToISO converts common Chinese and informal date formats to ISO 8601
+// format (YYYY-MM-DD or YYYY-MM) suitable for <input type="date">.
+// Returns empty string if the format is unrecognized.
+func normalizeDateToISO(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+
+	// Already ISO format (YYYY-MM-DD or YYYY-MM)
+	if len(s) >= 7 && s[4] == '-' && isDigits(s[:4]) && isDigits(s[5:7]) {
+		m := s[5:7]
+		if m >= "01" && m <= "12" {
+			if len(s) == 7 {
+				return s // YYYY-MM
+			}
+			if len(s) >= 10 && s[7] == '-' && isDigits(s[8:10]) {
+				d := s[8:10]
+				if d >= "01" && d <= "31" {
+					return s[:10] // YYYY-MM-DD (trim any trailing time)
+				}
+			}
+		}
+	}
+
+	// Chinese format: "1979年3月21日" or "1979年3月" or "1979年03月21日"
+	year, month, day := "", "", ""
+	if idx := strings.Index(s, "年"); idx > 0 {
+		year = s[:idx]
+		rest := s[idx+len("年"):]
+		if midx := strings.Index(rest, "月"); midx > 0 {
+			month = rest[:midx]
+			rest2 := rest[midx+len("月"):]
+			if didx := strings.Index(rest2, "日"); didx > 0 {
+				day = rest2[:didx]
+			}
+		}
+	}
+
+	if year == "" || !isDigits(year) || len(year) != 4 {
+		return ""
+	}
+	if month == "" || !isDigits(month) {
+		return ""
+	}
+
+	m := normalizeMonthDay(month, 12)
+	if m == "" {
+		return ""
+	}
+
+	if day != "" && isDigits(day) {
+		d := normalizeMonthDay(day, 31)
+		if d == "" {
+			return ""
+		}
+		return year + "-" + m + "-" + d
+	}
+	return year + "-" + m
+}
+
+func isDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
+// normalizeMonthDay converts a numeric string to 2-digit zero-padded format.
+// Returns "" if the value is out of range [1, max].
+func normalizeMonthDay(s string, max int) string {
+	s = strings.TrimLeft(s, "0")
+	if s == "" {
+		return ""
+	}
+	n := 0
+	for _, c := range s {
+		n = n*10 + int(c-'0')
+	}
+	if n < 1 || n > max {
+		return ""
+	}
+	if n < 10 {
+		return fmt.Sprintf("0%d", n)
+	}
+	return fmt.Sprintf("%d", n)
 }

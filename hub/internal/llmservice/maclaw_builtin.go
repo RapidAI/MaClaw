@@ -285,6 +285,19 @@ func (c *MaClawProviderClient) SetBoundURL(url string) {
 	c.mu.Unlock()
 }
 
+// CurrentHubCenterURL returns the HubCenter URL currently used for forwarding.
+func (c *MaClawProviderClient) CurrentHubCenterURL() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if strings.TrimSpace(c.boundURL) != "" {
+		return c.boundURL
+	}
+	return c.Config.HubCenterURL
+}
+
 // SetRefreshCredentials sets the callback used to lazy-load hub credentials
 // after registration completes (hub_id and hub_secret may be empty at init time).
 func (c *MaClawProviderClient) SetRefreshCredentials(fn func() (string, string)) {

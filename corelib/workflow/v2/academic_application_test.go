@@ -45,13 +45,19 @@ func TestBuildAcademicApplicationTemplate_AllProfiles(t *testing.T) {
 				t.Error("manual_mode variant must have at least one form field")
 			}
 
-			// All phases must be NeedsConfirm + DocOnly
+			// All phases must be NeedsConfirm; most are DocOnly except _foundation (Full for web_fetch)
 			for i, phase := range tmpl.Phases {
 				if !phase.NeedsConfirm {
 					t.Errorf("Phase %d (%s) should have NeedsConfirm=true", i, phase.ID)
 				}
-				if phase.ToolPolicy != ToolPolicyDocOnly {
-					t.Errorf("Phase %d (%s) should have ToolPolicy=DocOnly, got %q", i, phase.ID, phase.ToolPolicy)
+				if strings.HasSuffix(phase.ID, "_foundation") {
+					if phase.ToolPolicy != ToolPolicyFull {
+						t.Errorf("Phase %d (%s) should have ToolPolicy=Full (for web_fetch), got %q", i, phase.ID, phase.ToolPolicy)
+					}
+				} else {
+					if phase.ToolPolicy != ToolPolicyDocOnly {
+						t.Errorf("Phase %d (%s) should have ToolPolicy=DocOnly, got %q", i, phase.ID, phase.ToolPolicy)
+					}
 				}
 			}
 

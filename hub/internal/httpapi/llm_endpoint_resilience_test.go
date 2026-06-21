@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -242,5 +245,316 @@ func TestLLMV1ChatCompletionsHandlerWrapsFinalUpstream500AsBadGateway(t *testing
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte("LLM_UPSTREAM_FAILED")) {
 		t.Fatalf("expected wrapped upstream failure, body = %s", rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if strings.TrimSpace(fmt.Sprint(payload["request_id"])) == "" {
+		t.Fatalf("missing request_id in body = %s", rec.Body.String())
+	}
+	if got := strings.TrimSpace(fmt.Sprint(payload["failure_stage"])); got != "upstream_provider" {
+		t.Fatalf("failure_stage = %q, want upstream_provider; body=%s", got, rec.Body.String())
+	}
+	if got := strings.TrimSpace(fmt.Sprint(payload["provider_id"])); got != "provider-a" {
+		t.Fatalf("provider_id = %q, want provider-a; body=%s", got, rec.Body.String())
+	}
+	if got := int(payload["upstream_status"].(float64)); got != http.StatusInternalServerError {
+		t.Fatalf("upstream_status = %d, want 500; body=%s", got, rec.Body.String())
+	}
+	if strings.TrimSpace(fmt.Sprint(payload["upstream_host"])) == "" {
+		t.Fatalf("missing upstream_host in body = %s", rec.Body.String())
+	}
+	if rec.Header().Get("X-MaClaw-Request-ID") != payload["request_id"] {
+		t.Fatalf("request id header/body mismatch: header=%q body=%v", rec.Header().Get("X-MaClaw-Request-ID"), payload["request_id"])
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerReportsMaClawOfficialHubCenterHost(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "official-upstream@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	globalProviderResilience.reset()
+	defer globalProviderResilience.reset()
+	invalidateLLMRuntimeCaches(system)
+
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           llmservice.MaClawOfficialServiceGroupID,
+			Name:         "MaClaw Official",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{llmservice.MaClawOfficialProviderID}}},
+		}},
+		UserBindings: []llmservice.UserBinding{{Email: "official-upstream@example.com", ServiceGroupIDs: []string{llmservice.MaClawOfficialServiceGroupID}}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	hubCenter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusGatewayTimeout, map[string]any{"error": map[string]any{"message": "deepseek timeout"}})
+	}))
+	defer hubCenter.Close()
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: hubCenter.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	parsed, err := url.Parse(hubCenter.URL)
+	if err != nil {
+		t.Fatalf("parse hubcenter URL: %v", err)
+	}
+	if got := strings.TrimSpace(fmt.Sprint(payload["provider_id"])); got != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("provider_id = %q, want %q; body=%s", got, llmservice.MaClawOfficialProviderID, rec.Body.String())
+	}
+	if got := strings.TrimSpace(fmt.Sprint(payload["failure_stage"])); got != "upstream_provider" {
+		t.Fatalf("failure_stage = %q, want upstream_provider; body=%s", got, rec.Body.String())
+	}
+	if got := strings.TrimSpace(fmt.Sprint(payload["upstream_host"])); got != parsed.Host {
+		t.Fatalf("upstream_host = %q, want HubCenter host %q; body=%s", got, parsed.Host, rec.Body.String())
+	}
+	if got := int(payload["upstream_status"].(float64)); got != http.StatusGatewayTimeout {
+		t.Fatalf("upstream_status = %d, want 504; body=%s", got, rec.Body.String())
+	}
+	if rec.Header().Get("X-MaClaw-Request-ID") != payload["request_id"] {
+		t.Fatalf("request id header/body mismatch: header=%q body=%v", rec.Header().Get("X-MaClaw-Request-ID"), payload["request_id"])
+	}
+}
+
+func TestLLMV1ResponsesHandlerReportsMaClawOfficialHubCenterHost(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "official-responses-upstream@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	globalProviderResilience.reset()
+	defer globalProviderResilience.reset()
+	invalidateLLMRuntimeCaches(system)
+
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           llmservice.MaClawOfficialServiceGroupID,
+			Name:         "MaClaw Official",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{llmservice.MaClawOfficialProviderID}}},
+		}},
+		UserBindings: []llmservice.UserBinding{{Email: "official-responses-upstream@example.com", ServiceGroupIDs: []string{llmservice.MaClawOfficialServiceGroupID}}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	hubCenter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": map[string]any{"message": "deepseek unavailable"}})
+	}))
+	defer hubCenter.Close()
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: hubCenter.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "input": "hello"})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/responses", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	LLMV1ResponsesHandler(identity, system, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	parsed, err := url.Parse(hubCenter.URL)
+	if err != nil {
+		t.Fatalf("parse hubcenter URL: %v", err)
+	}
+	if got := strings.TrimSpace(fmt.Sprint(payload["provider_id"])); got != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("provider_id = %q, want %q; body=%s", got, llmservice.MaClawOfficialProviderID, rec.Body.String())
+	}
+	if got := strings.TrimSpace(fmt.Sprint(payload["failure_stage"])); got != "upstream_provider" {
+		t.Fatalf("failure_stage = %q, want upstream_provider; body=%s", got, rec.Body.String())
+	}
+	if got := strings.TrimSpace(fmt.Sprint(payload["upstream_host"])); got != parsed.Host {
+		t.Fatalf("upstream_host = %q, want HubCenter host %q; body=%s", got, parsed.Host, rec.Body.String())
+	}
+	if got := int(payload["upstream_status"].(float64)); got != http.StatusServiceUnavailable {
+		t.Fatalf("upstream_status = %d, want 503; body=%s", got, rec.Body.String())
+	}
+	if got := strings.TrimSpace(fmt.Sprint(payload["wire_api"])); got != "responses" {
+		t.Fatalf("wire_api = %q, want responses; body=%s", got, rec.Body.String())
+	}
+	if rec.Header().Get("X-MaClaw-Request-ID") != payload["request_id"] {
+		t.Fatalf("request id header/body mismatch: header=%q body=%v", rec.Header().Get("X-MaClaw-Request-ID"), payload["request_id"])
+	}
+}
+
+func TestLLMStreamHandlersReportMaClawOfficialHubCenterHostBeforeStreamStarts(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		body    map[string]any
+		wireAPI string
+	}{
+		{
+			name: "chat stream",
+			path: "/api/llm/v1/chat/completions",
+			body: map[string]any{
+				"model":    "auto",
+				"stream":   true,
+				"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+			},
+		},
+		{
+			name:    "responses stream",
+			path:    "/api/llm/v1/responses",
+			body:    map[string]any{"model": "auto", "input": "hello", "stream": true},
+			wireAPI: "responses",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			previous := GetMaClawModule()
+			defer SetMaClawModule(previous)
+
+			identity, _, _ := newHTTPAPITestServices(t)
+			email := "official-" + strings.ReplaceAll(tt.name, " ", "-") + "@example.com"
+			viewerToken, _ := issueViewerToken(t, identity, email)
+			ctx := context.Background()
+			system := newTestLLMServiceSystemSettings()
+			globalProviderResilience.reset()
+			defer globalProviderResilience.reset()
+			invalidateLLMRuntimeCaches(system)
+
+			if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+				ModelServiceGroups: []llmservice.ModelServiceGroup{{
+					ID:           llmservice.MaClawOfficialServiceGroupID,
+					Name:         "MaClaw Official",
+					AccessPolicy: llmservice.AccessPolicyFree,
+					Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{llmservice.MaClawOfficialProviderID}}},
+				}},
+				UserBindings: []llmservice.UserBinding{{Email: email, ServiceGroupIDs: []string{llmservice.MaClawOfficialServiceGroupID}}},
+			}); err != nil {
+				t.Fatalf("save service registry: %v", err)
+			}
+			if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{}); err != nil {
+				t.Fatalf("save provider registry: %v", err)
+			}
+
+			hubCenter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/llm/v1/chat/completions" {
+					http.NotFound(w, r)
+					return
+				}
+				writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": map[string]any{"message": "stream upstream unavailable"}})
+			}))
+			defer hubCenter.Close()
+			SetMaClawModule(&llmservice.MaClawModule{
+				Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+					HubCenterURL: hubCenter.URL,
+					HubID:        "hub-1",
+					MachineToken: "machine-token",
+				}),
+			})
+
+			bodyBytes, err := json.Marshal(tt.body)
+			if err != nil {
+				t.Fatalf("marshal body: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewReader(bodyBytes))
+			req.Header.Set("Authorization", "Bearer "+viewerToken)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			switch tt.path {
+			case "/api/llm/v1/chat/completions":
+				LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rec, req)
+			case "/api/llm/v1/responses":
+				LLMV1ResponsesHandler(identity, system, nil).ServeHTTP(rec, req)
+			default:
+				t.Fatalf("unsupported path %q", tt.path)
+			}
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503, body = %s", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Header().Get("Content-Type"), "text/event-stream") {
+				t.Fatalf("stream should not start before upstream failure is wrapped; content-type=%q body=%s", rec.Header().Get("Content-Type"), rec.Body.String())
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			parsed, err := url.Parse(hubCenter.URL)
+			if err != nil {
+				t.Fatalf("parse hubcenter URL: %v", err)
+			}
+			if got := strings.TrimSpace(fmt.Sprint(payload["provider_id"])); got != llmservice.MaClawOfficialProviderID {
+				t.Fatalf("provider_id = %q, want %q; body=%s", got, llmservice.MaClawOfficialProviderID, rec.Body.String())
+			}
+			if got := strings.TrimSpace(fmt.Sprint(payload["failure_stage"])); got != "upstream_provider" {
+				t.Fatalf("failure_stage = %q, want upstream_provider; body=%s", got, rec.Body.String())
+			}
+			if got := strings.TrimSpace(fmt.Sprint(payload["upstream_host"])); got != parsed.Host {
+				t.Fatalf("upstream_host = %q, want HubCenter host %q; body=%s", got, parsed.Host, rec.Body.String())
+			}
+			if got := int(payload["upstream_status"].(float64)); got != http.StatusServiceUnavailable {
+				t.Fatalf("upstream_status = %d, want 503; body=%s", got, rec.Body.String())
+			}
+			if tt.wireAPI != "" {
+				if got := strings.TrimSpace(fmt.Sprint(payload["wire_api"])); got != tt.wireAPI {
+					t.Fatalf("wire_api = %q, want %q; body=%s", got, tt.wireAPI, rec.Body.String())
+				}
+			}
+			if rec.Header().Get("X-MaClaw-Request-ID") != payload["request_id"] {
+				t.Fatalf("request id header/body mismatch: header=%q body=%v", rec.Header().Get("X-MaClaw-Request-ID"), payload["request_id"])
+			}
+		})
 	}
 }

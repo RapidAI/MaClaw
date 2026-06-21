@@ -5406,11 +5406,15 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 			"workspace_layout_entry":          "approval_workspace",
 			"workspace_layout_template":       "classic_split",
 			"workspace_layout_density":        "comfortable",
+			"workspace_layout_navigation":     []any{"my_requests", "pending_my_approval", "attention"},
+			"workspace_layout_list_columns":   []any{"title", "applicant", "current_node", "status"},
 			"workspace_layout": map[string]any{
 				"schema":       "maclaw.app.ui.v1",
 				"entry":        "approval_workspace",
 				"template":     "classic_split",
 				"density":      "comfortable",
+				"navigation":   []any{"my_requests", "pending_my_approval", "attention"},
+				"list":         map[string]any{"columns": []any{"title", "applicant", "current_node", "status"}},
 				"region_count": 4,
 			},
 			"governance_status":     "local_tested",
@@ -5453,6 +5457,12 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if installed.Metadata["workspace_layout_entry"] != "approval_workspace" || installed.Metadata["workspace_layout_template"] != "classic_split" || installed.Metadata["governance_status"] != "local_tested" {
 		t.Fatalf("app installation should persist app layout and governance metadata: %#v", installed.Metadata)
+	}
+	if navigation := appInstallationStringList(installed.Metadata["workspace_layout_navigation"]); len(navigation) != 3 || navigation[1] != "pending_my_approval" {
+		t.Fatalf("app installation should persist workspace navigation metadata: %#v", installed.Metadata)
+	}
+	if columns := appInstallationStringList(installed.Metadata["workspace_layout_list_columns"]); len(columns) != 4 || columns[2] != "current_node" {
+		t.Fatalf("app installation should persist workspace list column metadata: %#v", installed.Metadata)
 	}
 	resultContract, ok := installed.Metadata["result_contract"].(map[string]any)
 	if !ok || resultContract["primary"] != "approval_result" {
@@ -5560,6 +5570,12 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if len(caps.AppInstallations) != 1 || caps.AppInstallations[0].AppID != "mis.expense" {
 		t.Fatalf("expected app installation in capabilities: %#v", caps.AppInstallations)
 	}
+	if navigation := appInstallationStringList(caps.AppInstallations[0].Metadata["workspace_layout_navigation"]); len(navigation) != 3 || navigation[1] != "pending_my_approval" {
+		t.Fatalf("capabilities should expose workspace navigation metadata: %#v", caps.AppInstallations[0].Metadata)
+	}
+	if columns := appInstallationStringList(caps.AppInstallations[0].Metadata["workspace_layout_list_columns"]); len(columns) != 4 || columns[2] != "current_node" {
+		t.Fatalf("capabilities should expose workspace list column metadata: %#v", caps.AppInstallations[0].Metadata)
+	}
 
 	audit, err := svc.QueryAuditLogs(context.Background(), Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}, QueryAuditLogsInput{Action: "app.installation_upsert", TargetType: "app_installation", TargetID: "mis.expense", Limit: 1})
 	if err != nil {
@@ -5574,6 +5590,12 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if metadata["workspace_layout_entry"] != "approval_workspace" || metadata["workspace_layout_template"] != "classic_split" || metadata["workspace_layout_density"] != "comfortable" || metadata["governance_status"] != "local_tested" || metadata["governance_risk_level"] != "medium" {
 		t.Fatalf("app installation audit should summarize layout and governance: %#v", metadata)
+	}
+	if navigation := appInstallationStringList(metadata["workspace_layout_navigation"]); len(navigation) != 3 || navigation[1] != "pending_my_approval" {
+		t.Fatalf("app installation audit should summarize workspace navigation: %#v", metadata)
+	}
+	if columns := appInstallationStringList(metadata["workspace_layout_list_columns"]); len(columns) != 4 || columns[2] != "current_node" {
+		t.Fatalf("app installation audit should summarize workspace list columns: %#v", metadata)
 	}
 	if metadata["workflow_mapping_schema"] != "maclaw.app.workflow.v1" || metadata["workflow_submit_node"] != "expense.intake" || metadata["workflow_approval_node"] != "finance.director_review" || metadata["workflow_result_node"] != "expense.result_pack" {
 		t.Fatalf("app installation audit should summarize workflow mapping: %#v", metadata)
