@@ -6,21 +6,21 @@
             NodeID        = 'hc-1'
             NodeName      = 'hubcenter-1'
             PublicBaseURL = 'https://hubs.mypapers.top'
-            AdvertiseURL  = 'https://hubs.mypapers.top'
+            AdvertiseURL  = 'http://hub.mypapers.top:9388'
             DatabaseDSN   = './data/hubcenter-hc-1.db'
         },
         @{
             NodeID        = 'hc-2'
             NodeName      = 'hubcenter-2'
             PublicBaseURL = 'https://hubs.maclaw.top'
-            AdvertiseURL  = 'https://hubs.maclaw.top'
+            AdvertiseURL  = 'http://107.172.86.131:9388'
             DatabaseDSN   = './data/hubcenter-hc-2.db'
         },
         @{
             NodeID        = 'hc-3'
             NodeName      = 'hubcenter-3'
             PublicBaseURL = 'https://hubs2.maclaw.top'
-            AdvertiseURL  = 'https://hubs2.maclaw.top'
+            AdvertiseURL  = 'http://66.154.113.63:9388'
             DatabaseDSN   = './data/hubcenter-hc-3.db'
         }
     )

@@ -1,11 +1,11 @@
 server:
   listen_host: 0.0.0.0
   listen_port: 9399
-  public_base_url: https://hub.maclaw.top
+  public_base_url: https://hub2.maclaw.top
 
 database:
   driver: sqlite
-  dsn: './data/maclaw-hub-maclaw.db'
+  dsn: './data/maclaw-hub2-maclaw.db'
   wal: true
   busy_timeout_ms: 5000
   max_read_open_conns: 8
@@ -23,7 +23,7 @@ pwa:
 
 center:
   enabled: true
-  base_url: https://hubs.maclaw.top
+  base_url: https://hubs2.maclaw.top
   base_urls:
     - https://hubs.mypapers.top
     - https://hubs.maclaw.top

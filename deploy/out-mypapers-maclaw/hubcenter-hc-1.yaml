@@ -5,26 +5,32 @@ server:
 
 ha:
   enabled: true
-  node_id: hc-1
-  node_name: hubcenter-1
-  advertise_url: https://hubs.mypapers.top
+  self_fqdn: hubs.mypapers.top
+  private_key_path: ./data/ha_node_key.pem
   cluster_secret: replace-with-a-long-random-shared-secret
-  sync_interval_seconds: 180
-  push_debounce_seconds: 180
-  pull_batch_size: 200
+  sync_interval_seconds: 5
+  push_debounce_seconds: 5
+  pull_batch_size: 1000
   heartbeat_sync_min_interval_seconds: 600
   history_retention_days: 0.5
   history_max_retained_ops: 50000
   history_prune_interval_minutes: 10
   history_prune_batch_size: 20000
-  peers:
-    - node_id: hc-2
-      name: hubcenter-2
-      base_url: https://hubs.maclaw.top
+  nodes:
+    - fqdn: hubs.mypapers.top
+      node_id: hc-1
+      node_name: hubcenter-1
+      advertise_url: http://hub.mypapers.top:9388
       enabled: true
-    - node_id: hc-3
-      name: hubcenter-3
-      base_url: https://hubs2.maclaw.top
+    - fqdn: hubs.maclaw.top
+      node_id: hc-2
+      node_name: hubcenter-2
+      advertise_url: http://107.172.86.131:9388
+      enabled: true
+    - fqdn: hubs2.maclaw.top
+      node_id: hc-3
+      node_name: hubcenter-3
+      advertise_url: http://66.154.113.63:9388
       enabled: true
 
 database:

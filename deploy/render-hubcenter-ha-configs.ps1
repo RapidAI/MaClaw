@@ -41,6 +41,19 @@ function Quote-YamlString {
     return "'" + ($Value -replace "'", "''") + "'"
 }
 
+function Write-Utf8NoBomFile {
+    param(
+        [string]$Path,
+        [string]$Content
+    )
+
+    if (-not $Content.EndsWith("`n")) {
+        $Content += "`r`n"
+    }
+    $encoding = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
 function Render-HubCenterConfig {
     param(
         [hashtable]$Center,
@@ -123,7 +136,7 @@ function Render-HubConfig {
     if ($null -ne $Hub.CorporateEmailDomains) {
         $corpDomains = @($Hub.CorporateEmailDomains | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim() })
     }
-    $acceptPublicSignup = $true
+    $acceptPublicSignup = $false
     if ($null -ne $Hub.AcceptPublicSignup) {
         $acceptPublicSignup = [bool]$Hub.AcceptPublicSignup
     }
@@ -221,7 +234,7 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 foreach ($center in $centers) {
     $content = Render-HubCenterConfig -Center $center -Centers $centers -ClusterSecret $inventory.ClusterSecret
     $target = Join-Path $OutputDir ("hubcenter-{0}.yaml" -f $center.NodeID)
-    Set-Content -Path $target -Value $content -Encoding UTF8
+    Write-Utf8NoBomFile -Path $target -Content $content
     Write-Host "Wrote $target" -ForegroundColor Green
 }
 
@@ -238,7 +251,7 @@ for ($i = 0; $i -lt $hubs.Count; $i++) {
         'hub-{0}.yaml' -f ($i + 1)
     }
     $hubTarget = Join-Path $OutputDir $hubFileName
-    Set-Content -Path $hubTarget -Value $hubContent -Encoding UTF8
+    Write-Utf8NoBomFile -Path $hubTarget -Content $hubContent
     Write-Host "Wrote $hubTarget" -ForegroundColor Green
 }
 

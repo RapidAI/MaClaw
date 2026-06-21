@@ -1,4 +1,4 @@
-﻿server:
+server:
   listen_host: 0.0.0.0
   listen_port: 9399
   public_base_url: https://hub.mypapers.top
@@ -32,9 +32,11 @@ center:
   heartbeat_interval_sec: 30
 
 hub:
-  name: MaClaw Hub
-  description: Self-hosted MaClaw remote hub
-  visibility: private
+  name: 'MaClaw Hub'
+  description: 'Self-hosted MaClaw remote hub'
+  visibility: 'private'
+  corporate_email_domain: ''
+  accept_public_signup: false
 
 mail:
   enabled: false

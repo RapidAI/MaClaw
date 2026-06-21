@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -157,6 +158,56 @@ func TestAdminPageHAStaticContract(t *testing.T) {
 	}
 	if strings.Contains(html, `while(list.length < 3)`) {
 		t.Fatal("HA peer config renderer must not pad saved peers with empty rows")
+	}
+}
+
+func TestRenderedMypapersMaclawHAConfigsUseDirectFastSync(t *testing.T) {
+	deployRoot := filepath.Join("..", "..", "..", "deploy")
+	for _, fileName := range []string{"hubcenter-hc-1.yaml", "hubcenter-hc-2.yaml", "hubcenter-hc-3.yaml"} {
+		path := filepath.Join(deployRoot, "out-mypapers-maclaw", fileName)
+		contentBytes, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read rendered HA config %s: %v", fileName, err)
+		}
+		if bytes.HasPrefix(contentBytes, []byte{0xEF, 0xBB, 0xBF}) {
+			t.Fatalf("rendered HA config %s must be UTF-8 without BOM", fileName)
+		}
+
+		content := string(contentBytes)
+		assertContainsAll(t, content, fileName, []string{
+			"  sync_interval_seconds: 5",
+			"  push_debounce_seconds: 5",
+			"  pull_batch_size: 1000",
+			"  nodes:",
+			"      advertise_url: http://hub.mypapers.top:9388",
+			"      advertise_url: http://107.172.86.131:9388",
+			"      advertise_url: http://66.154.113.63:9388",
+		})
+		for _, stale := range []string{
+			"  sync_interval_seconds: 180",
+			"  push_debounce_seconds: 180",
+			"  pull_batch_size: 200",
+			"  peers:",
+			"      base_url: https://hubs.",
+		} {
+			if strings.Contains(content, stale) {
+				t.Fatalf("rendered HA config %s contains stale snippet %q", fileName, stale)
+			}
+		}
+	}
+
+	for _, fileName := range []string{"hub-mypapers.yaml", "hub-maclaw.yaml", "hub2-maclaw.yaml"} {
+		path := filepath.Join(deployRoot, "out-mypapers-maclaw", fileName)
+		contentBytes, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read rendered hub config %s: %v", fileName, err)
+		}
+		if bytes.HasPrefix(contentBytes, []byte{0xEF, 0xBB, 0xBF}) {
+			t.Fatalf("rendered hub config %s must be UTF-8 without BOM", fileName)
+		}
+		if !strings.Contains(string(contentBytes), "  accept_public_signup: false") {
+			t.Fatalf("rendered hub config %s must keep public signup disabled unless inventory opts in", fileName)
+		}
 	}
 }
 
