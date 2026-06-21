@@ -153,22 +153,25 @@ type AuthorizedModel struct {
 }
 
 type ActiveGrant struct {
-	ServiceGroupID    string    `json:"service_group_id"`
-	Source            string    `json:"source"`
-	StartsAt          time.Time `json:"starts_at"`
-	ExpiresAt         time.Time `json:"expires_at"`
-	Active            bool      `json:"active"`
-	Effective         bool      `json:"effective"`
-	Status            string    `json:"status,omitempty"`
-	StatusReason      string    `json:"status_reason,omitempty"`
-	CreditsTotal      float64   `json:"credits_total,omitempty"`
-	CreditsUsed       float64   `json:"credits_used,omitempty"`
-	CreditsAvailable  float64   `json:"credits_available,omitempty"`
-	RetryAfterSeconds int64     `json:"retry_after_seconds,omitempty"`
-	RetryAfterAt      string    `json:"retry_after_at,omitempty"`
-	CreditsRemaining  float64   `json:"credits_remaining,omitempty"`
-	PeriodLimits      *CreditPeriodLimits      `json:"period_limits,omitempty"`
-	PeriodUsage       *ActiveGrantPeriodUsage   `json:"period_usage,omitempty"`
+	ID                string                  `json:"id,omitempty"`
+	ServiceGroupID    string                  `json:"service_group_id"`
+	Source            string                  `json:"source"`
+	CardID            string                  `json:"card_id,omitempty"`
+	CardOrderID       string                  `json:"card_order_id,omitempty"`
+	StartsAt          time.Time               `json:"starts_at"`
+	ExpiresAt         time.Time               `json:"expires_at"`
+	Active            bool                    `json:"active"`
+	Effective         bool                    `json:"effective"`
+	Status            string                  `json:"status,omitempty"`
+	StatusReason      string                  `json:"status_reason,omitempty"`
+	CreditsTotal      float64                 `json:"credits_total,omitempty"`
+	CreditsUsed       float64                 `json:"credits_used,omitempty"`
+	CreditsAvailable  float64                 `json:"credits_available,omitempty"`
+	RetryAfterSeconds int64                   `json:"retry_after_seconds,omitempty"`
+	RetryAfterAt      string                  `json:"retry_after_at,omitempty"`
+	CreditsRemaining  float64                 `json:"credits_remaining,omitempty"`
+	PeriodLimits      *CreditPeriodLimits     `json:"period_limits,omitempty"`
+	PeriodUsage       *ActiveGrantPeriodUsage `json:"period_usage,omitempty"`
 }
 
 // ActiveGrantPeriodUsage is the API-facing period usage summary (includes window_end).

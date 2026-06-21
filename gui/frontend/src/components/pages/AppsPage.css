@@ -682,6 +682,10 @@
     grid-template-columns: minmax(250px, 0.82fr) minmax(0, 1.35fr) minmax(280px, 0.95fr);
 }
 
+.apps-runtime-layout[data-template='dashboard'] {
+    grid-template-columns: minmax(230px, 0.78fr) minmax(0, 1.55fr) minmax(300px, 0.9fr);
+}
+
 .apps-runtime-layout[data-density='compact'] {
     gap: 8px;
 }
@@ -689,6 +693,15 @@
 .apps-runtime-layout[data-density='compact'] .apps-runtime-section,
 .apps-runtime-layout[data-density='compact'] .apps-run-history {
     gap: 7px;
+}
+
+.apps-runtime-layout[data-density='spacious'] {
+    gap: 14px;
+}
+
+.apps-runtime-layout[data-density='spacious'] .apps-runtime-section,
+.apps-runtime-layout[data-density='spacious'] .apps-run-history {
+    gap: 12px;
 }
 
 .apps-runtime-layout > [data-region='left'] {
@@ -711,7 +724,8 @@
 @container (max-width: 860px) {
     .apps-runtime-layout[data-template='classic_split'],
     .apps-runtime-layout[data-template='left_nav'],
-    .apps-runtime-layout[data-template='document_workspace'] {
+    .apps-runtime-layout[data-template='document_workspace'],
+    .apps-runtime-layout[data-template='dashboard'] {
         grid-template-columns: minmax(0, 1fr);
     }
 
@@ -4071,9 +4085,18 @@
     grid-template-columns: minmax(96px, 0.78fr) minmax(150px, 1.35fr) minmax(104px, 0.95fr);
 }
 
+.apps-layout-designer__canvas[data-template='dashboard'] {
+    grid-template-columns: minmax(96px, 0.76fr) minmax(156px, 1.42fr) minmax(112px, 0.9fr);
+}
+
 .apps-layout-designer__canvas[data-density='compact'] {
     gap: 5px;
     min-height: 184px;
+}
+
+.apps-layout-designer__canvas[data-density='spacious'] {
+    gap: 10px;
+    min-height: 232px;
 }
 
 .apps-layout-designer__slot {
@@ -4271,7 +4294,8 @@
 
     .apps-layout-designer__canvas,
     .apps-layout-designer__canvas[data-template='left_nav'],
-    .apps-layout-designer__canvas[data-template='document_workspace'] {
+    .apps-layout-designer__canvas[data-template='document_workspace'],
+    .apps-layout-designer__canvas[data-template='dashboard'] {
         grid-template-columns: 1fr;
         grid-template-rows: repeat(4, minmax(58px, auto));
         grid-template-areas:

@@ -1548,14 +1548,50 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setCancelPending(false);
         }
     }, [cancelPending, cancelSession, draftInputValue, inputValue, resetHistoryBrowsing, resizeInput, updateInputValue]);
+    // Wrap executeAction so that on project tabs, a project round is
+    // pre-registered before the send. executeAction's internal sendMessage
+    // call goes through optionsForActiveSession (which adds project_path),
+    // but it doesn't set up projectTabRoundsRef with the correct baseline.
+    // Without pre-registration, the wasSending effect's fallback uses a
+    // stale baseline (after messages are added), causing responses to not
+    // appear in the project tab's message list.
+    const panelExecuteAction = useCallback((command: string) => {
+        if (!isProjectTabActive || !activeTab.projectPath) {
+            return executeAction(command);
+        }
+        // Commands handled entirely in the frontend — they call Wails bindings
+        // directly without sendMessage. Do NOT pre-register a project round
+        // for these (it would create a stale round that's never consumed).
+        if (command.startsWith('__resolve_critical_confirm__') || command.startsWith('__view_trace__')) {
+            return executeAction(command);
+        }
+        // Pre-register the project round with correct baseline (current
+        // messages.length BEFORE executeAction adds user+placeholder).
+        const roundKey = projectSessionKey(activeTab.projectPath);
+        if (roundKey && !projectTabRoundsRef.current.has(roundKey)) {
+            const roundSeq = projectTabRoundSeqRef.current + 1;
+            projectTabRoundSeqRef.current = roundSeq;
+            projectTabRoundsRef.current.set(roundKey, {
+                tabId: activeTab.id,
+                projectPath: activeTab.projectPath,
+                baseline: messagesLengthRef.current,
+                seq: roundSeq,
+            });
+            setProjectTabRouteVersion(version => version + 1);
+        }
+        // Call the original executeAction which handles all special command
+        // logic (__workflow_choice__, __confirm_execution__, etc.) and
+        // internally calls sendMessage with proper options.
+        return executeAction(command);
+    }, [activeTab.id, activeTab.projectPath, executeAction, isProjectTabActive]);
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
-    const renderedOtherMessages = useMemo(() => otherMessages.map((msg: ChatMessage, idx: number) => renderMessage(msg, executeAction, t, idx === lastAssistantIdx, savedFileLabel, lang, isBusy)), [otherMessages, executeAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy]);
+    const renderedOtherMessages = useMemo(() => otherMessages.map((msg: ChatMessage, idx: number) => renderMessage(msg, panelExecuteAction, t, idx === lastAssistantIdx, savedFileLabel, lang, isBusy)), [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy]);
     const chatProgressMessages = useMemo(
         () => activeSessionHasWork ? displayProgressMessages.filter((msg: ChatMessage) => !isToolProgressMessage(msg)) : displayProgressMessages,
         [activeSessionHasWork, displayProgressMessages],
     );
     const compactProgressMessages = useMemo(() => compactCodingAgentProgressMessages(chatProgressMessages), [chatProgressMessages]);
-    const renderedProgressMessages = useMemo(() => compactProgressMessages.map((msg: ChatMessage) => renderMessage(msg, executeAction, t, false, savedFileLabel, lang)), [compactProgressMessages, executeAction, t, savedFileLabel, lang]);
+    const renderedProgressMessages = useMemo(() => compactProgressMessages.map((msg: ChatMessage) => renderMessage(msg, panelExecuteAction, t, false, savedFileLabel, lang)), [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang]);
     const containerStyle: React.CSSProperties = inline ? (maximized ? { ...maximizedInlineStyle, background: t.bg } : { display: "flex", flex: "1 1 0%", flexDirection: "column", minWidth: 0, minHeight: 0, boxSizing: "border-box", overflow: "hidden", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" }) : overlayStyle;
     return (
         <div data-testid="ai-panel-root" style={containerStyle}>

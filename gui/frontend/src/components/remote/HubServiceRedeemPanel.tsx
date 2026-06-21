@@ -12,8 +12,11 @@ interface HubLLMAuthorizedModel {
 }
 
 interface HubLLMActiveGrant {
+    id?: string;
     service_group_id: string;
     source: string;
+    card_id?: string;
+    card_order_id?: string;
     starts_at?: string;
     expires_at: string;
     active?: boolean;
@@ -176,6 +179,11 @@ function formatGrantSource(
 
 function creditGrants(status: HubLLMServiceStatus | null): HubLLMActiveGrant[] {
     return (status?.credit_grants?.length ? status.credit_grants : status?.active_grants) || [];
+}
+
+function grantCardLabel(grant: HubLLMActiveGrant): string {
+    const value = String(grant.card_order_id || grant.card_id || grant.id || "").trim();
+    return value || "-";
 }
 
 function creditTotals(status: HubLLMServiceStatus | null) {
@@ -757,6 +765,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                             <thead>
                                 <tr>
                                     <th scope="col">{t("Service Group", "服务组")}</th>
+                                    <th scope="col">{t("Compute Card", "算力卡")}</th>
                                     <th scope="col">{t("Source", "来源")}</th>
                                     <th scope="col">{t("Starts At", "开始时间")}</th>
                                     <th scope="col">{t("Expires At", "到期时间")}</th>
@@ -768,8 +777,9 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                             </thead>
                             <tbody>
                                 {grantsForDetails.map((grant, index) => (
-                                    <tr key={(grant.service_group_id || "") + "-" + index}>
+                                    <tr key={(grant.card_order_id || grant.card_id || grant.id || grant.service_group_id || "") + "-" + index}>
                                         <td><span className="hub-service-redeem__strong">{grant.service_group_id || "-"}</span></td>
+                                        <td><span className="hub-service-redeem__strong">{grantCardLabel(grant)}</span></td>
                                         <td>{formatGrantSource(grant, t)}</td>
                                         <td>{formatTime(grant.starts_at, lang)}</td>
                                         <td>{formatTime(grant.expires_at, lang)}</td>

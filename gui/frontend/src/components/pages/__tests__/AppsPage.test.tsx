@@ -722,6 +722,9 @@ describe('AppsPage', () => {
         expect(screen.getByText(/maclaw.app.pack.v1/)).not.toBeNull();
         expect(screen.getByText(/"governance"/)).not.toBeNull();
         expect(screen.getByText(/"dependencies"/)).not.toBeNull();
+        expect(screen.getByText('Workspace layout')).not.toBeNull();
+        expect(screen.getByText(/"workspaceLayout"/)).not.toBeNull();
+        expect(screen.getByText(/"entry": "tool_workspace"/)).not.toBeNull();
         expect(screen.getByText(/"installPolicy": "install_on_app_install"/)).not.toBeNull();
         expect(screen.getByText(/"requiredCount": 1/)).not.toBeNull();
         expect(screen.getByText(/"status": "draft"/)).not.toBeNull();
@@ -897,6 +900,11 @@ describe('AppsPage', () => {
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
         expect(payload.schema).toBe('maclaw.app.pack.v1');
         expect(payload.apps[0].app.name).toBe('合同归档');
+        const layout = payload.apps[0].app.governance.workspaceLayout;
+        expect(layout.schema).toBe('maclaw.app.ui.v1');
+        expect(layout.entry).toBe('tool_workspace');
+        expect(layout.template).toBe('document_workspace');
+        expect(layout.regionCount).toBeGreaterThan(0);
         const evidence = payload.apps[0].app.governance.testEvidence;
         expect(evidence.runId).toBe('run-test-1');
         expect(evidence.definitionHash).toMatch(/^[0-9a-f]{8}$/);
@@ -2893,6 +2901,69 @@ describe('AppsPage', () => {
         })));
     });
 
+    it('renders backend dashboard workspace layouts and keeps them editable', async () => {
+        const app = {
+            id: 'ops-dashboard-app',
+            name: 'Operations Dashboard',
+            description: 'Business workspace with dashboard layout',
+            category: 'Operations',
+            kind: 'enterprise_normal_app',
+            icon: 'dashboard',
+            accent: '#4b6572',
+            pinned: true,
+            source: 'market',
+            version: 1,
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_normal_app',
+                launchMode: 'agent_dynamic_ui',
+                datasrv: { domain: 'ops', objectRole: 'ticket' },
+                appSkill: { id: 'ops-dashboard-skill', version: '1.0.0', source: 'hub' },
+                ui: {
+                    schema: 'maclaw.app.ui.v1',
+                    entry: 'business_workspace',
+                    layouts: {
+                        business_workspace: {
+                            type: 'split_view',
+                            template: 'dashboard',
+                            density: 'spacious',
+                            primaryRegion: 'center',
+                            outputRegion: 'modal',
+                            regions: [
+                                { id: 'operation_form', role: 'input', placement: 'center' },
+                                { id: 'record_list', role: 'record_list', placement: 'left' },
+                                { id: 'record_detail', role: 'detail', placement: 'center' },
+                                { id: 'output_panel', role: 'output', placement: 'modal' },
+                            ],
+                            studio: { savedInManifest: true },
+                        },
+                    },
+                },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getAllByText('Operations Dashboard')[0]);
+        await waitFor(() => expect(document.querySelector('.apps-runtime-layout')).not.toBeNull());
+        const runtimeLayout = document.querySelector('.apps-runtime-layout') as HTMLElement;
+        expect(runtimeLayout.dataset.template).toBe('dashboard');
+        expect(runtimeLayout.dataset.density).toBe('spacious');
+        expect(runtimeLayout.dataset.primaryRegion).toBe('center');
+        expect(runtimeLayout.dataset.outputRegion).toBe('modal');
+        expect(document.querySelector('.apps-runtime-input')?.getAttribute('data-region')).toBe('center');
+        expect(document.querySelector('.apps-runtime-output')?.getAttribute('data-region')).toBe('modal');
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Manage apps'));
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Operations Dashboard')) as HTMLElement;
+        fireEvent.click(within(row).getByRole('button', { name: 'Edit' }));
+        const dialog = screen.getByRole('dialog');
+        expect((within(dialog).getByTestId('edit-layout-template') as HTMLSelectElement).value).toBe('dashboard');
+        expect((within(dialog).getByTestId('edit-layout-density') as HTMLSelectElement).value).toBe('spacious');
+    });
     it('saves enterprise normal business bindings from App Studio into the manifest', () => {
         render(<AppsPage lang="en" />);
 

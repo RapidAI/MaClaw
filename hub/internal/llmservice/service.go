@@ -358,8 +358,10 @@ func grantSummary(g Grant, now time.Time) ActiveGrant {
 	// are not effective.
 	effective := status != "queued" && status != "expired"
 	summary := ActiveGrant{
+		ID:               g.ID,
 		ServiceGroupID:   g.ServiceGroupID,
 		Source:           g.Source,
+		CardID:           g.CardID,
 		StartsAt:         g.StartsAt,
 		ExpiresAt:        g.ExpiresAt,
 		Active:           active,

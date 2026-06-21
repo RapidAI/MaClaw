@@ -6,6 +6,7 @@ const GetMaclawLLMProvidersMock = vi.fn();
 const SaveMaclawLLMProvidersMock = vi.fn();
 const TestMaclawLLMMock = vi.fn();
 const GetMaclawAgentMaxIterationsMock = vi.fn();
+const GetSubAgentConcurrencyMock = vi.fn();
 const GetHubLLMServiceStatusMock = vi.fn();
 const FetchProviderModelsMock = vi.fn();
 const LoadConfigMock = vi.fn();
@@ -17,9 +18,11 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SaveMaclawLLMProviders: (...args: unknown[]) => SaveMaclawLLMProvidersMock(...args),
     TestMaclawLLM: (...args: unknown[]) => TestMaclawLLMMock(...args),
     GetMaclawAgentMaxIterations: (...args: unknown[]) => GetMaclawAgentMaxIterationsMock(...args),
+    GetSubAgentConcurrency: (...args: unknown[]) => GetSubAgentConcurrencyMock(...args),
     GetHubLLMServiceStatus: (...args: unknown[]) => GetHubLLMServiceStatusMock(...args),
     LoadConfig: (...args: unknown[]) => LoadConfigMock(...args),
     SetMaclawAgentMaxIterations: vi.fn(),
+    SetSubAgentConcurrency: vi.fn(),
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
     CancelOpenAIOAuth: vi.fn(),
     ImportCodexAuth: vi.fn(),
@@ -58,6 +61,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
         SaveMaclawLLMProvidersMock.mockResolvedValue(undefined);
         GetMaclawAgentMaxIterationsMock.mockResolvedValue(12);
+        GetSubAgentConcurrencyMock.mockResolvedValue(2);
         GetHubLLMServiceStatusMock.mockResolvedValue({ active: false });
         FetchProviderModelsMock.mockResolvedValue([{ id: 'gpt-test', name: 'GPT Test' }]);
         LoadConfigMock.mockResolvedValue({ remote_hub_url: 'https://hub.example.com/', remote_viewer_token: 'viewer token' });

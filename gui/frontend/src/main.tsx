@@ -17,7 +17,11 @@ function localizeStartupText(en: string, zhHans: string, zhHant: string = zhHans
     return lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 }
 
+let startupErrorShown = false
+
 function renderStartupError(error: unknown) {
+    if (startupErrorShown) return  // idempotent — avoid double-render on re-entrant calls
+    startupErrorShown = true
     const container = document.getElementById('root')
     if (!container) return
     const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
@@ -28,7 +32,12 @@ function renderStartupError(error: unknown) {
         </div>
     )
     if (appRoot) {
-        appRoot.render(errorView)
+        try {
+            appRoot.render(errorView)
+        } catch {
+            // React root itself is corrupted — fall back to raw text.
+            container.textContent = message
+        }
         return
     }
     container.textContent = message
@@ -40,7 +49,22 @@ if (!container) {
     throw new Error('Missing #root container')
 }
 
-let appRoot: ReturnType<typeof createRoot> | null = createRoot(container)
+let appRoot: ReturnType<typeof createRoot> | null = createRoot(container, {
+    // React 18 reports errors that don't crash the tree here (e.g. hydration
+    // mismatches, recoverable errors in Suspense boundaries).  Log them to
+    // console rather than crashing.
+    onRecoverableError(error, errorInfo) {
+        console.error('[react] Recoverable error:', error, errorInfo)
+    },
+})
+
+// Tracks whether the initial render() call completed without synchronous
+// failure.  Note: React 18 createRoot.render() is asynchronous — component-
+// level errors propagate via reportError / window.error, not as a synchronous
+// throw from render().  This flag is set immediately after render() returns,
+// meaning it guards only against infrastructure-level failures (missing
+// container, broken JSX transform, etc.).
+let renderScheduled = false
 
 try {
     appRoot.render(
@@ -52,12 +76,34 @@ try {
             </ToastProvider>
         </React.StrictMode>
     )
+    renderScheduled = true
 } catch (error) {
-    console.error('Failed to render app', error)
+    console.error('Failed to schedule initial render', error)
     renderStartupError(error)
 }
 
 window.addEventListener('error', (event) => {
-    console.error('Unhandled startup error', event.error || event.message)
-    renderStartupError(event.error || event.message)
+    if (!renderScheduled) {
+        // Render was never scheduled — show the startup error page.
+        console.error('[startup] Unhandled error before render:', event.error || event.message)
+        renderStartupError(event.error || event.message)
+    } else {
+        // App is running.  Do NOT replace the React tree — that would destroy
+        // all context providers (DialogProvider, ToastProvider, etc.) and cause
+        // cascading "must be used within Provider" errors + white screen.
+        // React's own Suspense/ErrorBoundary propagation handles component
+        // failures; we just log here for diagnostics.
+        console.error('[runtime] Unhandled error:', event.error || event.message)
+    }
+})
+
+window.addEventListener('unhandledrejection', (event) => {
+    // Catches lazy-chunk import() failures and async errors.
+    // Same principle: never nuke the React tree after it's running.
+    if (!renderScheduled) {
+        console.error('[startup] Unhandled rejection before render:', event.reason)
+        renderStartupError(event.reason)
+    } else {
+        console.error('[runtime] Unhandled rejection:', event.reason)
+    }
 })

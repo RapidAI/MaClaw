@@ -130,19 +130,22 @@ type HubLLMAuthorizedModel struct {
 }
 
 type HubLLMActiveGrant struct {
-	ServiceGroupID    string  `json:"service_group_id"`
-	Source            string  `json:"source"`
-	StartsAt          string  `json:"starts_at"`
-	ExpiresAt         string  `json:"expires_at"`
-	Active            bool    `json:"active"`
-	Status            string  `json:"status,omitempty"`
-	StatusReason      string  `json:"status_reason,omitempty"`
-	CreditsTotal      float64 `json:"credits_total,omitempty"`
-	CreditsUsed       float64 `json:"credits_used,omitempty"`
-	CreditsAvailable  float64 `json:"credits_available,omitempty"`
-	RetryAfterSeconds int64   `json:"retry_after_seconds,omitempty"`
-	RetryAfterAt      string  `json:"retry_after_at,omitempty"`
-	CreditsRemaining  float64 `json:"credits_remaining,omitempty"`
+	ID                string              `json:"id,omitempty"`
+	ServiceGroupID    string              `json:"service_group_id"`
+	Source            string              `json:"source"`
+	CardID            string              `json:"card_id,omitempty"`
+	CardOrderID       string              `json:"card_order_id,omitempty"`
+	StartsAt          string              `json:"starts_at"`
+	ExpiresAt         string              `json:"expires_at"`
+	Active            bool                `json:"active"`
+	Status            string              `json:"status,omitempty"`
+	StatusReason      string              `json:"status_reason,omitempty"`
+	CreditsTotal      float64             `json:"credits_total,omitempty"`
+	CreditsUsed       float64             `json:"credits_used,omitempty"`
+	CreditsAvailable  float64             `json:"credits_available,omitempty"`
+	RetryAfterSeconds int64               `json:"retry_after_seconds,omitempty"`
+	RetryAfterAt      string              `json:"retry_after_at,omitempty"`
+	CreditsRemaining  float64             `json:"credits_remaining,omitempty"`
 	PeriodLimits      *HubLLMPeriodLimits `json:"period_limits,omitempty"`
 	PeriodUsage       *HubLLMPeriodUsage  `json:"period_usage,omitempty"`
 }

@@ -593,6 +593,11 @@ func (a *App) CheckEnvironment(force bool) {
 
 		a.ensureLocalNodeBinary()
 
+		// Configure China mirror for Python/uv downloads based on user language
+		if normalizeAppLanguageKind(a.CurrentLanguage).IsChinese() {
+			pyenv.SetUseChinaMirror(true)
+		}
+
 		// ===== Check and Install Python =====
 		a.log(a.tr("Checking Python environment..."))
 		pySt := pyenv.Detect()
@@ -625,8 +630,17 @@ func (a *App) CheckEnvironment(force bool) {
 
 		a.log(a.tr("-Base environment check complete."))
 
-		// Update config to mark base env check done without rewriting a stale full snapshot.
-		_, _ = a.PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})
+		// Only mark env check done if Python is available.
+		// If Python installation failed (network issues etc.), leave env_check_done=false
+		// so the next startup will re-attempt installation.
+		if pySt.Available {
+			_, _ = a.PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})
+		} else {
+			a.log(a.tr("Python not available — environment check will retry on next startup."))
+			// Do NOT set pause_env_check here — keep whatever the user had.
+			// env_check_done=false ensures Windows path re-runs full check;
+			// Darwin/Linux rely on detectMissingCoreTools regardless of env_check_done.
+		}
 
 		a.emitEvent("env-check-done")
 

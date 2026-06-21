@@ -79,6 +79,36 @@ describe('HubServiceRedeemPanel', () => {
         expect(screen.queryByText('Active Grants')).toBeNull();
     });
 
+    it('shows compute card order identity beside used credits', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            skip_llm_config: true,
+            service_group_names: ['LLM'],
+            default_model: 'auto',
+            available_models: ['auto'],
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [{
+                id: 'auth-card-1',
+                card_order_id: 'HC-ORDER-1',
+                service_group_id: 'maclaw_official_group',
+                source: 'hubcenter_compute',
+                starts_at: '2026-05-01T00:00:00Z',
+                expires_at: '2026-06-01T00:00:00Z',
+                active: true,
+                status: 'active',
+                credits_total: 1000,
+                credits_used: 123.45,
+                credits_remaining: 876.55,
+            }],
+        });
+
+        render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
+
+        expect(await screen.findByText('HC-ORDER-1')).toBeTruthy();
+        expect(screen.getByText('Compute Card')).toBeTruthy();
+        expect(screen.getAllByText('123.45').length).toBeGreaterThan(0);
+    });
+
     it('shows queued authorization status and start time instead of generic inactive state', async () => {
         GetHubLLMServiceStatusMock.mockResolvedValue({
             active: false,

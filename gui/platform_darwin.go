@@ -268,6 +268,11 @@ func (a *App) CheckEnvironment(force bool) {
 
 		a.log(a.tr("✓ Base environment check complete."))
 
+		// Configure China mirror for Python/uv downloads based on user language
+		if normalizeAppLanguageKind(a.CurrentLanguage).IsChinese() {
+			pyenv.SetUseChinaMirror(true)
+		}
+
 		// ===== Check and Install Python =====
 		a.log(a.tr("Checking Python environment..."))
 		pySt := pyenv.Detect()
@@ -298,8 +303,12 @@ func (a *App) CheckEnvironment(force bool) {
 			})
 		}
 
-		// Update config to mark base env check done without rewriting a stale full snapshot.
-		_, _ = a.PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})
+		// Only mark env check done if Python is available.
+		if pySt.Available {
+			_, _ = a.PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})
+		} else {
+			a.log(a.tr("Python not available — environment check will retry on next startup."))
+		}
 
 		a.emitEvent("env-check-done")
 

@@ -11,8 +11,11 @@ export interface HubLLMServiceStatus {
 }
 
 export interface HubLLMActiveGrant {
+    id?: string;
     service_group_id?: string;
     source?: string;
+    card_id?: string;
+    card_order_id?: string;
     starts_at?: string;
     expires_at?: string;
     active?: boolean;

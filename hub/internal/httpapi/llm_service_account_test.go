@@ -55,6 +55,67 @@ func TestGetLLMServiceAccountHandlerReturnsStatusAndUsage(t *testing.T) {
 	}
 }
 
+func TestGetLLMServiceAccountHandlerIncludesHubCenterAuthorizationCardUsage(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken := issueViewerTokenForTenant(t, identity, "tenant_acme", "account@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	tenantSystem := scopedSystemSettingsForTenant("tenant_acme", system)
+	now := time.Now().UTC()
+
+	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "maclaw_official_group", Name: "MaClaw Official"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	accessCtrl := llmservice.NewTenantLLMAccessControl(nil)
+	accessCtrl.UpdateFromHeartbeat("tenant_acme", &llmservice.TenantAuthorizationStatus{
+		HubID:    "hub-1",
+		TenantID: "tenant_acme",
+		Authorizations: []llmservice.AuthorizationSummary{{
+			ID:               "auth-card-1",
+			ServiceGroupID:   "maclaw_official_group",
+			CreditsTotal:     1000,
+			CreditsUsed:      123.45,
+			CreditsRemaining: 876.55,
+			StartsAt:         now.Add(-time.Hour).Format(time.RFC3339),
+			ExpiresAt:        now.Add(24 * time.Hour).Format(time.RFC3339),
+			Status:           "active",
+			Active:           true,
+			Source:           "hubcenter_compute",
+			CardOrderID:      "HC-ORDER-1",
+		}},
+	})
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+	SetMaClawModule(&llmservice.MaClawModule{AccessCtrl: accessCtrl})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm/service/account", nil)
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+	GetLLMServiceAccountHandler(identity, system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp llmServiceAccountResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status == nil || len(resp.Status.CreditGrants) != 1 {
+		t.Fatalf("credit grants = %+v", resp.Status)
+	}
+	grant := resp.Status.CreditGrants[0]
+	if grant.ID != "auth-card-1" || grant.CardOrderID != "HC-ORDER-1" {
+		t.Fatalf("grant identity = id:%q order:%q, want auth-card-1/HC-ORDER-1", grant.ID, grant.CardOrderID)
+	}
+	if grant.CreditsUsed != 123.45 || grant.CreditsRemaining != 876.55 {
+		t.Fatalf("grant credits = used %.2f remaining %.2f", grant.CreditsUsed, grant.CreditsRemaining)
+	}
+	if resp.Status.CreditsUsed != 123.45 || resp.Status.CreditsRemaining != 876.55 {
+		t.Fatalf("status credits = used %.2f remaining %.2f", resp.Status.CreditsUsed, resp.Status.CreditsRemaining)
+	}
+}
+
 func TestGetLLMServiceAccountHandlerKeepsPeriodLimitedGrantVisible(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken, _ := issueViewerToken(t, identity, "limited-account@example.com")

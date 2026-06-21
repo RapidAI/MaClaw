@@ -1915,6 +1915,19 @@ function removeActionCommandFromMessages(messages: ChatMessage[], command: strin
     return messages.map(message => removeActionCommandFromMessage(message, command));
 }
 
+/**
+ * Remove ALL actions from the message that contains the given command.
+ * Used for one-shot, mutually exclusive button groups (ask_user choices,
+ * workflow choice panels) where clicking any button should disable the
+ * entire group — not just the clicked button.
+ */
+function disableActionsForCommand(messages: ChatMessage[], command: string): ChatMessage[] {
+    return messages.map(message => {
+        if (!message.actions?.some(a => a.command === command)) return message;
+        return { ...message, actions: undefined };
+    });
+}
+
 function replaceRoundWithError(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, errorText: string, preserveExistingContent = false): ChatMessage[] {
     if (!assistantMessageId && !requestId) {
         return [...messages, {
@@ -4140,8 +4153,19 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const displayText = choice.startsWith('alt_')
                 ? localizeText(uiLang, "Enter workflow", "\u8fdb\u5165\u5de5\u4f5c\u6d41", "\u9032\u5165\u5de5\u4f5c\u6d41")
                 : (choiceLabels[choice] || command);
+            // Persistently disable buttons so they stay grey across re-renders.
+            // Remove ALL actions from the message (not just the clicked one)
+            // because these are mutually exclusive choice buttons.
+            setMessages(prev => disableActionsForCommand(prev, command));
             return sendMessage(command, { uiAction: true, displayText });
         }
+        // Persistently disable action buttons after click. Component-local
+        // firedIndex state may be lost on re-render; removing actions from the
+        // message ensures buttons remain disabled even if React re-mounts the
+        // ActionButtons component.
+        // Remove ALL actions from the containing message — action buttons are
+        // one-shot (mutually exclusive choices or single confirm/cancel).
+        setMessages(prev => disableActionsForCommand(prev, command));
         return sendMessage(command, { uiAction: true });
     }, [activeSessionKeyForEvents, sendMessage, uiLang]);
 

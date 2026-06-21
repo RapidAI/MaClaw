@@ -15,10 +15,20 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+// UseChinaMirror 控制是否使用国内镜像下载 Python/uv。
+// 由宿主程序在启动时根据用户语言设置调用 SetUseChinaMirror。
+var useChinaMirror atomic.Bool
+
+// SetUseChinaMirror 设置是否使用国内镜像。可在任意时机调用，立即生效。
+func SetUseChinaMirror(use bool) {
+	useChinaMirror.Store(use)
+}
 
 // MinPythonMajor 最低 Python 主版本。
 const MinPythonMajor = 3
@@ -207,12 +217,11 @@ func VenvPython() (string, error) {
 	return p, nil
 }
 
-// standalonePythonURL 返回 python-build-standalone 的下载 URL。
-func standalonePythonURL() (string, error) {
-	const baseURL = "https://github.com/astral-sh/python-build-standalone/releases/latest/download"
+// standalonePythonURL 返回 python-build-standalone 的下载 URL 列表（优先级从高到低）。
+func standalonePythonURLs() ([]string, error) {
 	arch, err := resolveArch()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	var filename string
@@ -224,17 +233,39 @@ func standalonePythonURL() (string, error) {
 	case "linux":
 		filename = fmt.Sprintf("cpython-3.12.8+20250106-%s-unknown-linux-gnu-install_only_stripped.tar.gz", arch)
 	default:
-		return "", fmt.Errorf("不支持的操作系统: %s", runtime.GOOS)
+		return nil, fmt.Errorf("不支持的操作系统: %s", runtime.GOOS)
 	}
-	return baseURL + "/" + filename, nil
+
+	const githubBase = "https://github.com/astral-sh/python-build-standalone/releases/download/20250106"
+	// npmmirror 官方镜像（中国大陆 CDN 加速）。路径格式: /binaries/python-build-standalone/{release_tag}/{filename}
+	const npmmirrorBase = "https://cdn.npmmirror.com/binaries/python-build-standalone/20250106"
+
+	if useChinaMirror.Load() {
+		return []string{
+			npmmirrorBase + "/" + filename,
+			githubBase + "/" + filename,
+		}, nil
+	}
+	return []string{
+		githubBase + "/" + filename,
+		npmmirrorBase + "/" + filename,
+	}, nil
 }
 
-// uvInstallURL 返回 uv 的下载 URL。
-func uvInstallURL() (string, error) {
-	const baseURL = "https://github.com/astral-sh/uv/releases/latest/download"
-	arch, err := resolveArch()
+// standalonePythonURL 返回单个 URL（兼容旧调用，优先级最高的源）。
+func standalonePythonURL() (string, error) {
+	urls, err := standalonePythonURLs()
 	if err != nil {
 		return "", err
+	}
+	return urls[0], nil
+}
+
+// uvInstallURL 返回 uv 的下载 URL 列表（优先级从高到低）。
+func uvInstallURLs() ([]string, error) {
+	arch, err := resolveArch()
+	if err != nil {
+		return nil, err
 	}
 
 	var filename string
@@ -246,9 +277,23 @@ func uvInstallURL() (string, error) {
 	case "linux":
 		filename = fmt.Sprintf("uv-%s-unknown-linux-gnu.tar.gz", arch)
 	default:
-		return "", fmt.Errorf("不支持的操作系统: %s", runtime.GOOS)
+		return nil, fmt.Errorf("不支持的操作系统: %s", runtime.GOOS)
 	}
-	return baseURL + "/" + filename, nil
+
+	const githubBase = "https://github.com/astral-sh/uv/releases/latest/download"
+	// astral.sh 官方 CDN（不走 GitHub 域名，对中国大陆更友好）
+	const astralCDN = "https://releases.astral.sh/github/uv/releases/latest/download"
+
+	if useChinaMirror.Load() {
+		return []string{
+			astralCDN + "/" + filename,
+			githubBase + "/" + filename,
+		}, nil
+	}
+	return []string{
+		githubBase + "/" + filename,
+		astralCDN + "/" + filename,
+	}, nil
 }
 
 // resolveArch 将 Go 架构名映射为下载 URL 中使用的架构名。
@@ -266,8 +311,103 @@ func resolveArch() (string, error) {
 // downloadToFile 下载 URL 到本地文件，带进度回调。
 // 使用临时文件 + rename 保证原子性。
 func downloadToFile(url, destPath string, emit ProgressFunc) error {
-	client := &http.Client{Timeout: 15 * time.Minute}
-	resp, err := client.Get(url)
+	return downloadWithFallback([]string{url}, destPath, emit)
+}
+
+// downloadWithFallback 依次尝试多个 URL 下载，每个 URL 最多重试 2 次。
+// 全部失败后返回最后一个错误。
+func downloadWithFallback(urls []string, destPath string, emit ProgressFunc) error {
+	if len(urls) == 0 {
+		return fmt.Errorf("无下载地址")
+	}
+
+	var lastErr error
+	for i, url := range urls {
+		const maxRetries = 2
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			if attempt > 0 {
+				// 指数退避: 3s, 6s
+				backoff := time.Duration(3*(1<<(attempt-1))) * time.Second
+				if emit != nil {
+					emit("retry", 0, fmt.Sprintf("下载失败，%ds 后重试 (%d/%d)...", int(backoff.Seconds()), attempt, maxRetries))
+				}
+				time.Sleep(backoff)
+			}
+
+			err := downloadSingleURL(url, destPath, emit)
+			if err == nil {
+				return nil
+			}
+			lastErr = err
+
+			// 不可恢复的错误：换源比重试更有效
+			if shouldFallbackToNextSource(err) && i < len(urls)-1 {
+				if emit != nil {
+					emit("fallback", 0, fmt.Sprintf("源 %d 不可用，切换到备用源...", i+1))
+				}
+				break // 跳到下一个 URL
+			}
+		}
+	}
+	return lastErr
+}
+
+// shouldFallbackToNextSource 判断错误是否应该立即切换到下一个源（不再重试当前源）。
+// 包括：网络不可达（连接拒绝/DNS/重置）、HTTP 4xx（路径错误/CDN 配置问题）。
+// 不包括：i/o timeout（GFW 随机丢包，重试可能成功）、下载中断（网络抖动）。
+func shouldFallbackToNextSource(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+
+	// 网络层不可达
+	networkPatterns := []string{
+		"connection refused",
+		"connection reset",
+		"no such host",
+		"network is unreachable",
+		"tls handshake timeout",
+		"connectex:",
+		"wsarecv:",
+		"certificate",
+		"host unreachable",
+		"no route to host",
+	}
+	for _, pat := range networkPatterns {
+		if strings.Contains(msg, pat) {
+			return true
+		}
+	}
+
+	// HTTP 4xx — 资源在此源上不存在或被拒绝，重试没有意义
+	if strings.Contains(msg, "http 403") || strings.Contains(msg, "http 404") ||
+		strings.Contains(msg, "http 401") || strings.Contains(msg, "http 410") {
+		return true
+	}
+
+	return false
+}
+
+// downloadSingleURL 执行单次 HTTP 下载。
+func downloadSingleURL(url, destPath string, emit ProgressFunc) error {
+	// 连接超时 30 秒（覆盖中国大陆 GitHub 的慢连接场景），总超时 15 分钟
+	transport := &http.Transport{
+		ResponseHeaderTimeout: 30 * time.Second,
+	}
+	client := &http.Client{
+		Timeout:   15 * time.Minute,
+		Transport: transport,
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("构建请求失败: %w", err)
+	}
+	// 某些 CDN 对无 UA 的请求返回 403
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MaClaw/1.0")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("下载失败: %w", err)
 	}
@@ -275,7 +415,7 @@ func downloadToFile(url, destPath string, emit ProgressFunc) error {
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body)
-		return fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
+		return fmt.Errorf("下载失败: HTTP %d (%s)", resp.StatusCode, url)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
@@ -431,14 +571,14 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 	// --- 步骤 1: 安装 Python ---
 	if !st.Available {
 		emit("python", 0, "正在安装 Python 3.12 ...")
-		pyURL, err := standalonePythonURL()
+		pyURLs, err := standalonePythonURLs()
 		if err != nil {
 			st.Error = fmt.Sprintf("获取 Python 下载地址失败: %v", err)
 			return st
 		}
 
 		archivePath := filepath.Join(base, "python-standalone.tar.gz")
-		if err := downloadToFile(pyURL, archivePath, func(stage string, pct int, msg string) {
+		if err := downloadWithFallback(pyURLs, archivePath, func(stage string, pct int, msg string) {
 			emit("python-download", pct, msg)
 		}); err != nil {
 			st.Error = fmt.Sprintf("下载 Python 失败: %v", err)
@@ -481,19 +621,19 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 	// --- 步骤 2: 安装 uv ---
 	if !st.UVAvailable {
 		emit("uv", 0, "正在安装 uv ...")
-		uvURL, err := uvInstallURL()
+		uvURLs, err := uvInstallURLs()
 		if err != nil {
 			st.Error = fmt.Sprintf("获取 uv 下载地址失败: %v", err)
 			return st
 		}
 
-		isZip := strings.HasSuffix(uvURL, ".zip")
+		isZip := strings.HasSuffix(uvURLs[0], ".zip")
 		ext := ".tar.gz"
 		if isZip {
 			ext = ".zip"
 		}
 		archivePath := filepath.Join(base, "uv-archive"+ext)
-		if err := downloadToFile(uvURL, archivePath, func(stage string, pct int, msg string) {
+		if err := downloadWithFallback(uvURLs, archivePath, func(stage string, pct int, msg string) {
 			emit("uv-download", pct, msg)
 		}); err != nil {
 			st.Error = fmt.Sprintf("下载 uv 失败: %v", err)

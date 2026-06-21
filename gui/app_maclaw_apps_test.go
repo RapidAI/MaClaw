@@ -94,6 +94,79 @@ func TestSubmitMaclawAppPackageQueuesLocalSubmission(t *testing.T) {
 	}
 }
 
+func TestSubmitMaclawAppPackagePersistsNormalizedWorkspaceLayout(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	pkg := `{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [{
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {
+				"id": "studio-layout-app",
+				"name": "Studio Layout App",
+				"kind": "enterprise_normal_app",
+				"ui": {
+					"schema": "maclaw.app.ui.v1",
+					"entry": "business_workspace",
+					"layouts": {
+						"business_workspace": {
+							"template": "dashboard",
+							"density": "spacious",
+							"primaryRegion": "center",
+							"outputRegion": "right",
+							"studio": {"savedInManifest": true, "designerVersion": "2026.06"},
+							"regions": [
+								{"id":"operation_form","role":"input","placement":"left"},
+								{"id":"output_panel","role":"output","placement":"right"}
+							]
+						}
+					}
+				}
+			}
+		}, {
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {"id": "default-tool-layout", "name": "Default Tool", "kind": "tool_app"}
+		}]
+	}`
+
+	result, err := app.SubmitMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
+	}
+	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
+	if err != nil {
+		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
+	}
+	apps, _ := detail.Package["apps"].([]any)
+	if len(apps) != 2 {
+		t.Fatalf("expected two queued package apps, got %#v", detail.Package["apps"])
+	}
+
+	first := anyMap(apps[0])
+	firstApp := anyMap(first["app"])
+	ui := anyMap(firstApp["ui"])
+	layout := anyMap(anyMap(ui["layouts"])["business_workspace"])
+	if ui["schema"] != "maclaw.app.ui.v1" || ui["entry"] != "business_workspace" {
+		t.Fatalf("expected normalized studio ui in queued package: %#v", ui)
+	}
+	if layout["template"] != "dashboard" || layout["density"] != "spacious" || layout["type"] != "split_view" {
+		t.Fatalf("expected custom layout fields plus backend defaults: %#v", layout)
+	}
+	studio := anyMap(layout["studio"])
+	if studio == nil || studio["savedInManifest"] != true || studio["designerVersion"] != "2026.06" {
+		t.Fatalf("expected studio layout metadata to survive queueing: %#v", layout["studio"])
+	}
+
+	second := anyMap(apps[1])
+	secondApp := anyMap(second["app"])
+	defaultUI := anyMap(secondApp["ui"])
+	defaultLayout := anyMap(anyMap(defaultUI["layouts"])["tool_workspace"])
+	if defaultUI["entry"] != "tool_workspace" || defaultLayout["template"] != "document_workspace" {
+		t.Fatalf("expected default tool workspace layout in queued package: %#v", defaultUI)
+	}
+}
 func TestSubmitMaclawAppPackageRejectsInvalidManifest(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	if _, err := app.SubmitMaclawAppPackage(`{"schema":"maclaw.app.v1","privateMarker":"x_maclaw_apps"}`); err == nil {

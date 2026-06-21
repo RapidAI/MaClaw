@@ -39,8 +39,8 @@ type AppSkillDependency = {
     source?: 'local' | 'hub' | 'market' | 'builtin';
     capabilities?: string[];
 };
-type StudioLayoutTemplate = 'classic_split' | 'left_nav' | 'document_workspace';
-type StudioLayoutDensity = 'comfortable' | 'compact';
+type StudioLayoutTemplate = 'classic_split' | 'left_nav' | 'document_workspace' | 'dashboard';
+type StudioLayoutDensity = 'comfortable' | 'compact' | 'spacious';
 type StudioPrimaryRegion = 'left' | 'center' | 'right';
 type StudioOutputRegion = 'right' | 'bottom' | 'modal';
 type RuntimeWorkspaceLayout = {
@@ -1301,8 +1301,8 @@ function defaultRuntimeWorkspaceLayout(kind: AppKind): RuntimeWorkspaceLayout {
 function normalizeRuntimeWorkspaceLayout(raw: any, kind: AppKind): RuntimeWorkspaceLayout {
     const fallback = defaultRuntimeWorkspaceLayout(kind);
     return {
-        template: ['classic_split', 'left_nav', 'document_workspace'].includes(String(raw?.template)) ? raw.template as StudioLayoutTemplate : fallback.template,
-        density: raw?.density === 'compact' ? 'compact' : fallback.density,
+        template: ['classic_split', 'left_nav', 'document_workspace', 'dashboard'].includes(String(raw?.template)) ? raw.template as StudioLayoutTemplate : fallback.template,
+        density: ['compact', 'comfortable', 'spacious'].includes(String(raw?.density)) ? raw.density as StudioLayoutDensity : fallback.density,
         primaryRegion: ['left', 'center', 'right'].includes(String(raw?.primaryRegion)) ? raw.primaryRegion as StudioPrimaryRegion : fallback.primaryRegion,
         outputRegion: ['right', 'bottom', 'modal'].includes(String(raw?.outputRegion)) ? raw.outputRegion as StudioOutputRegion : fallback.outputRegion,
     };
@@ -1329,10 +1329,12 @@ const studioLayoutTemplateOptions: Array<{ value: StudioLayoutTemplate; zh: stri
     { value: 'document_workspace', zh: '\u6587\u6863\u5de5\u4f5c\u53f0', en: 'Document workspace' },
     { value: 'classic_split', zh: '\u7ecf\u5178\u5206\u680f', en: 'Classic split' },
     { value: 'left_nav', zh: '\u5de6\u4fa7\u5bfc\u822a', en: 'Left navigation' },
+    { value: 'dashboard', zh: '\u770b\u677f\u5de5\u4f5c\u53f0', en: 'Dashboard' },
 ];
 const studioLayoutDensityOptions: Array<{ value: StudioLayoutDensity; zh: string; en: string }> = [
     { value: 'comfortable', zh: '\u6807\u51c6', en: 'Comfortable' },
     { value: 'compact', zh: '\u7d27\u51d1', en: 'Compact' },
+    { value: 'spacious', zh: '\u5bbd\u677e', en: 'Spacious' },
 ];
 const studioPrimaryRegionOptions: Array<{ value: StudioPrimaryRegion; zh: string; en: string }> = [
     { value: 'left', zh: '\u5de6\u4fa7', en: 'Left' },
@@ -2738,6 +2740,31 @@ function appDependencyPublishSummary(app: AppEntry, lang?: string) {
     return deps.map((dep) => `${dep.id}${dep.version ? `@${dep.version}` : ''} (${dep.kind}${dep.required ? '' : ', optional'})`).join(', ');
 }
 
+function appWorkspaceLayoutEvidence(app: AppEntry) {
+    const ui = normalizeAppWorkspaceLayout(app.manifest?.ui, app.kind);
+    const entry = ui.entry || workspaceEntryForKind(app.kind);
+    const layout = ui.layouts?.[entry] || {};
+    const runtime = normalizeRuntimeWorkspaceLayout(layout, app.kind);
+    const regions = Array.isArray(layout.regions) ? layout.regions : studioRegionsForLayout(app.kind, runtime.template, runtime.primaryRegion, runtime.outputRegion);
+    return {
+        schema: ui.schema,
+        entry,
+        template: runtime.template,
+        density: runtime.density,
+        primaryRegion: runtime.primaryRegion,
+        outputRegion: runtime.outputRegion,
+        regionCount: regions.length,
+        regions,
+        savedInManifest: !!layout.studio?.savedInManifest || !!app.manifest?.ui,
+    };
+}
+
+function appWorkspaceLayoutPublishSummary(app: AppEntry, lang?: string) {
+    const zh = isZh(lang);
+    const layout = appWorkspaceLayoutEvidence(app);
+    if (!layout.schema || !layout.entry || layout.regionCount <= 0) return zh ? '缺少 workspace layout' : 'Missing workspace layout';
+    return `${layout.entry} / ${layout.template} / ${layout.density} / ${layout.regionCount} regions`;
+}
 function appNeedsRuntimeDependencyCheck(app: AppEntry) {
     if (app.source !== 'market' && app.source !== 'skill' && app.source !== 'local') return false;
     return appDependencyEvidence(app).length > 0;
@@ -2758,6 +2785,7 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
             requiredCount: dependencies.filter((dep) => dep.required).length,
             optionalCount: dependencies.filter((dep) => !dep.required).length,
         },
+        workspaceLayout: appWorkspaceLayoutEvidence(app),
         testEvidence: {
             runId: evidence?.runID,
             definitionHash: evidence?.definitionHash,
@@ -6651,6 +6679,8 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
     const hasTestEvidence = !!evidence;
     const dependencies = appDependencyEvidence(app);
     const hasRequiredDependencies = app.kind === 'automation_app' || dependencies.some((dep) => dep.required && dep.id);
+    const workspaceLayout = appWorkspaceLayoutEvidence(app);
+    const hasWorkspaceLayout = workspaceLayout.schema === 'maclaw.app.ui.v1' && !!workspaceLayout.entry && workspaceLayout.regionCount > 0;
     return [
         {
             label: zh ? '\u57fa\u672c\u4fe1\u606f' : 'Basic information',
@@ -6675,6 +6705,11 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
             label: text.skillDependencies,
             ok: hasRequiredDependencies,
             detail: appDependencyPublishSummary(app, lang),
+        },
+        {
+            label: zh ? 'Workspace layout' : 'Workspace layout',
+            ok: hasWorkspaceLayout,
+            detail: appWorkspaceLayoutPublishSummary(app, lang),
         },
         {
             label: zh ? '\u8fd0\u884c\u8bc1\u636e' : 'Run evidence',

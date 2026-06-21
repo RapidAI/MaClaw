@@ -1504,7 +1504,11 @@ func normalizeMaclawAppWorkspaceLayout(app map[string]any, kind, path string) er
 		if schema, ok := schemaRaw.(string); !ok || strings.TrimSpace(schema) == "" {
 			return fmt.Errorf("%s.ui.schema must be a non-empty string", path)
 		} else {
-			ui["schema"] = strings.TrimSpace(schema)
+			schema = strings.TrimSpace(schema)
+			if schema != "maclaw.app.ui.v1" {
+				return fmt.Errorf("%s.ui.schema must be maclaw.app.ui.v1", path)
+			}
+			ui["schema"] = schema
 		}
 	} else {
 		ui["schema"] = "maclaw.app.ui.v1"

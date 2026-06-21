@@ -980,6 +980,7 @@ func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.Sys
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
+		mergeHubCenterAuthorizationGrants(ctx, status, principal.TenantID)
 		providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
@@ -1007,6 +1008,7 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
+		mergeHubCenterAuthorizationGrants(ctx, status, principal.TenantID)
 		providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
@@ -1022,6 +1024,156 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 			return
 		}
 		writeJSON(w, http.StatusOK, llmServiceAccountResponse{Email: principal.Email, TenantID: principal.TenantID, Status: status, Usage: usage})
+	}
+}
+
+func mergeHubCenterAuthorizationGrants(ctx context.Context, status *llmservice.ServiceStatus, tenantID string) {
+	if status == nil {
+		return
+	}
+	accessCtrl := GetMaClawAccessControl()
+	if accessCtrl == nil {
+		return
+	}
+	authStatus := accessCtrl.GetAuthorizationStatus(ctx, tenantID)
+	if authStatus == nil || len(authStatus.Authorizations) == 0 {
+		return
+	}
+	existing := map[string]struct{}{}
+	for _, grant := range status.CreditGrants {
+		for _, key := range activeGrantIdentityKeys(grant) {
+			existing[key] = struct{}{}
+		}
+	}
+	added := false
+	for _, auth := range authStatus.Authorizations {
+		grant, ok := activeGrantFromHubCenterAuthorization(auth)
+		if !ok {
+			continue
+		}
+		duplicate := false
+		for _, key := range activeGrantIdentityKeys(grant) {
+			if _, seen := existing[key]; seen {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		status.CreditGrants = append(status.CreditGrants, grant)
+		if grant.Active {
+			status.ActiveGrants = append(status.ActiveGrants, grant)
+		}
+		for _, key := range activeGrantIdentityKeys(grant) {
+			existing[key] = struct{}{}
+		}
+		added = true
+	}
+	if !added {
+		return
+	}
+	sort.Slice(status.CreditGrants, func(i, j int) bool {
+		return activeGrantSortLess(status.CreditGrants[i], status.CreditGrants[j])
+	})
+	sort.Slice(status.ActiveGrants, func(i, j int) bool {
+		return activeGrantSortLess(status.ActiveGrants[i], status.ActiveGrants[j])
+	})
+	recalculateServiceStatusCredits(status)
+}
+
+func activeGrantFromHubCenterAuthorization(auth llmservice.AuthorizationSummary) (llmservice.ActiveGrant, bool) {
+	id := strings.TrimSpace(auth.ID)
+	serviceGroupID := strings.TrimSpace(auth.ServiceGroupID)
+	if id == "" && strings.TrimSpace(auth.CardOrderID) == "" {
+		return llmservice.ActiveGrant{}, false
+	}
+	startsAt, _ := time.Parse(time.RFC3339, strings.TrimSpace(auth.StartsAt))
+	expiresAt, _ := time.Parse(time.RFC3339, strings.TrimSpace(auth.ExpiresAt))
+	status := strings.ToLower(strings.TrimSpace(auth.Status))
+	if status == "" {
+		if auth.Active {
+			status = "active"
+		} else {
+			status = "inactive"
+		}
+	}
+	source := strings.TrimSpace(auth.Source)
+	if source == "" {
+		source = "hubcenter_compute"
+	}
+	effective := status != "queued" && status != "expired"
+	active := auth.Active || (status == "active" && auth.CreditsRemaining > 0)
+	return llmservice.ActiveGrant{
+		ID:               id,
+		ServiceGroupID:   serviceGroupID,
+		Source:           source,
+		CardOrderID:      strings.TrimSpace(auth.CardOrderID),
+		StartsAt:         startsAt,
+		ExpiresAt:        expiresAt,
+		Active:           active,
+		Effective:        effective,
+		Status:           status,
+		CreditsTotal:     auth.CreditsTotal,
+		CreditsUsed:      auth.CreditsUsed,
+		CreditsRemaining: auth.CreditsRemaining,
+		CreditsAvailable: auth.CreditsRemaining,
+	}, true
+}
+
+func activeGrantIdentityKeys(grant llmservice.ActiveGrant) []string {
+	var keys []string
+	if id := strings.TrimSpace(grant.ID); id != "" {
+		keys = append(keys, "id:"+id)
+	}
+	if orderID := strings.TrimSpace(grant.CardOrderID); orderID != "" {
+		keys = append(keys, "order:"+orderID)
+	}
+	if cardID := strings.TrimSpace(grant.CardID); cardID != "" {
+		keys = append(keys, "card:"+cardID)
+	}
+	return keys
+}
+
+func activeGrantSortLess(a, b llmservice.ActiveGrant) bool {
+	if a.ExpiresAt.Equal(b.ExpiresAt) {
+		if a.ServiceGroupID == b.ServiceGroupID {
+			return firstGrantIdentity(a) < firstGrantIdentity(b)
+		}
+		return a.ServiceGroupID < b.ServiceGroupID
+	}
+	if a.ExpiresAt.IsZero() {
+		return false
+	}
+	if b.ExpiresAt.IsZero() {
+		return true
+	}
+	return a.ExpiresAt.Before(b.ExpiresAt)
+}
+
+func firstGrantIdentity(grant llmservice.ActiveGrant) string {
+	for _, key := range []string{grant.CardOrderID, grant.CardID, grant.ID} {
+		if key = strings.TrimSpace(key); key != "" {
+			return key
+		}
+	}
+	return grant.Source
+}
+
+func recalculateServiceStatusCredits(status *llmservice.ServiceStatus) {
+	status.CreditsTotal = 0
+	status.CreditsUsed = 0
+	status.CreditsRemaining = 0
+	status.CreditsAvailable = 0
+	for _, grant := range status.CreditGrants {
+		grantStatus := strings.ToLower(strings.TrimSpace(grant.Status))
+		if grantStatus == "queued" || grantStatus == "expired" {
+			continue
+		}
+		status.CreditsTotal += grant.CreditsTotal
+		status.CreditsUsed += grant.CreditsUsed
+		status.CreditsRemaining += grant.CreditsRemaining
+		status.CreditsAvailable += grant.CreditsAvailable
 	}
 }
 

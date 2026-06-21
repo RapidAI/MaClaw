@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import { EventsOn, EventsOff } from '../../wailsjs/runtime';
+import { EventsOn } from '../../wailsjs/runtime';
 
 const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
@@ -37,9 +37,26 @@ const DialogContext = createContext<DialogContextValue | null>(null);
 
 export function useDialog(): DialogContextValue {
     const ctx = useContext(DialogContext);
-    if (!ctx) throw new Error('useDialog must be used within DialogProvider');
+    if (!ctx) {
+        // Defensive fallback: instead of throwing (which would bubble to the
+        // global error handler and potentially destroy the entire React tree),
+        // return a degraded implementation using native browser dialogs.
+        // This can happen during HMR, lazy-chunk reload, or React context loss.
+        if (!dialogFallbackWarned) {
+            dialogFallbackWarned = true;
+            console.warn('[useDialog] DialogContext is null — falling back to native dialogs. This likely means a component using useDialog is rendered outside <DialogProvider>.');
+        }
+        return dialogFallback;
+    }
     return ctx;
 }
+
+/** Stable reference fallback when DialogContext is unavailable. */
+let dialogFallbackWarned = false;
+const dialogFallback: DialogContextValue = {
+    showAlert: async (message: string, title?: string) => { window.alert(title ? `${title}\n\n${message}` : message); },
+    showConfirm: async (message: string, _title?: string) => window.confirm(message),
+};
 
 // ── Provider ──
 
@@ -58,6 +75,9 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
 
     const showAlert = useCallback((message: string, title?: string): Promise<void> => {
         return new Promise(resolve => {
+            // Resolve any pending dialog to prevent Promise leak when showAlert
+            // is called while another dialog is already open (e.g. rapid backend events).
+            resolveRef.current?.(false);
             resolveRef.current = () => resolve();
             setState({ open: true, title: title || '', message, mode: 'alert', lang: document.documentElement.lang || 'en', theme: getCurrentTheme() });
         });
@@ -65,6 +85,8 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
 
     const showConfirm = useCallback((message: string, title?: string, options?: ConfirmOptions): Promise<boolean> => {
         return new Promise(resolve => {
+            // Resolve any pending dialog (dismiss as "cancel") to prevent Promise leak.
+            resolveRef.current?.(false);
             resolveRef.current = resolve;
             setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en', theme: getCurrentTheme(), confirmText: options?.confirmText, cancelText: options?.cancelText });
         });
@@ -75,8 +97,8 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         const handler = (data: { title: string; message: string }) => {
             showAlert(data.message, data.title);
         };
-        EventsOn('show-message', handler);
-        return () => { EventsOff('show-message'); };
+        const unsubscribe = EventsOn('show-message', handler);
+        return unsubscribe;
     }, [showAlert]);
 
     // Escape key
