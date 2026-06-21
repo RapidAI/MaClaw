@@ -114,7 +114,7 @@ steps:
   "maclaw_app_input_mode": "file",
   "maclaw_app_output_modes": ["pdf", "docx"],
   "maclaw_app_definition_sha256": "abc123",
-  "maclaw_app_test_evidence": {"run_id":"run-ok-1","verified_at":"2026-06-17T10:00:00Z","definition_fingerprint":"feedbeef","artifact_present":true,"artifact_name":"invoice.pdf"},
+  "maclaw_app_test_evidence": {"run_id":"run-ok-1","verified_at":"2026-06-17T10:00:00Z","definition_fingerprint":"feedbeef","artifact_present":true,"artifact_name":"invoice.pdf","output_count":1,"primary_result":"invoice_ready","result_payload":{"business_status":"invoice_ready","business_record":{"id":"INV-1","status":"invoice_ready"}}},
   "artifact_contract_required": true,
   "artifact_contract_output_modes": ["pdf", "docx"],
   "artifact_contract_presentation": "preview_or_file",
@@ -169,6 +169,12 @@ steps:
 	}
 	if published.MaclawAppTestEvidence == nil || published.MaclawAppTestEvidence.RunID != "run-ok-1" || published.MaclawAppTestEvidence.DefinitionFingerprint != "feedbeef" || !published.MaclawAppTestEvidence.ArtifactPresent || published.MaclawAppTestEvidence.ArtifactName != "invoice.pdf" {
 		t.Fatalf("unexpected app test evidence: %#v", published.HubSkillMeta)
+	}
+	if published.MaclawAppTestEvidence.OutputCount != 1 || published.MaclawAppTestEvidence.PrimaryResult != "invoice_ready" {
+		t.Fatalf("unexpected structured app test evidence: %#v", published.HubSkillMeta)
+	}
+	if record, ok := published.MaclawAppTestEvidence.ResultPayload["business_record"].(map[string]any); !ok || record["id"] != "INV-1" {
+		t.Fatalf("unexpected app test result payload: %#v", published.HubSkillMeta)
 	}
 	if !published.ArtifactContractRequired || strings.Join(published.ArtifactContractOutputModes, ",") != "pdf,docx" || published.ArtifactContractPresentation != "preview_or_file" {
 		t.Fatalf("unexpected artifact contract: %#v", published.HubSkillMeta)

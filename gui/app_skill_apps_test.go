@@ -577,7 +577,7 @@ func TestPackageSkillForMarketPreservesMaclawAppDefinition(t *testing.T) {
 			"customIconDataUrl": "data:image/png;base64,iVBORw0KGgo=",
 			"kind": "tool_app",
 			"binding": { "skill": { "id": "invoice-app", "inputMode": "file", "outputModes": ["pdf", "docx"] } },
-			"governance": { "testEvidence": { "runId": "run-ok-1", "verifiedAt": "2026-06-17T10:00:00Z", "definitionHash": "feedbeef", "artifactPresent": true, "artifactName": "invoice.pdf" } }
+			"governance": { "testEvidence": { "runId": "run-ok-1", "verifiedAt": "2026-06-17T10:00:00Z", "definitionHash": "feedbeef", "artifactPresent": true, "artifactName": "invoice.pdf", "outputCount": 1, "primaryResult": "invoice_ready", "resultPayload": { "business_status": "invoice_ready", "business_record": { "id": "INV-1", "status": "invoice_ready" } } } }
 		}
 	}`)
 	if err := os.WriteFile(filepath.Join(skillDir, "maclaw.app.json"), appDefinitionData, 0o644); err != nil {
@@ -672,6 +672,12 @@ func TestPackageSkillForMarketPreservesMaclawAppDefinition(t *testing.T) {
 	}
 	if manifest.MaclawAppTestEvidence == nil || manifest.MaclawAppTestEvidence.RunID != "run-ok-1" || manifest.MaclawAppTestEvidence.VerifiedAt != "2026-06-17T10:00:00Z" || manifest.MaclawAppTestEvidence.DefinitionFingerprint != "feedbeef" || !manifest.MaclawAppTestEvidence.ArtifactPresent || manifest.MaclawAppTestEvidence.ArtifactName != "invoice.pdf" {
 		t.Fatalf("package manifest missing app test evidence: %#v", manifest.MaclawAppTestEvidence)
+	}
+	if manifest.MaclawAppTestEvidence.OutputCount != 1 || manifest.MaclawAppTestEvidence.PrimaryResult != "invoice_ready" {
+		t.Fatalf("package manifest missing structured result evidence: %#v", manifest.MaclawAppTestEvidence)
+	}
+	if record, ok := manifest.MaclawAppTestEvidence.ResultPayload["business_record"].(map[string]any); !ok || record["id"] != "INV-1" {
+		t.Fatalf("package manifest missing result payload record: %#v", manifest.MaclawAppTestEvidence.ResultPayload)
 	}
 	appDefinitionSum := sha256.Sum256(appDefinitionData)
 	if manifest.MaclawAppDefinitionSHA256 != hex.EncodeToString(appDefinitionSum[:]) {
