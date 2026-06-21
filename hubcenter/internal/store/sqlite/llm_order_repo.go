@@ -176,6 +176,13 @@ func (r *llmOrderRepo) Archive(ctx context.Context, orderNo string, archivedAt t
 	return err
 }
 
+func (r *llmOrderRepo) Unarchive(ctx context.Context, orderNo string, now time.Time) error {
+	_, err := r.write.ExecContext(ctx,
+		`UPDATE llm_card_orders SET archived_at = '', updated_at = ? WHERE order_no = ?`,
+		now.Format(time.RFC3339), orderNo)
+	return err
+}
+
 // ---------------------------------------------------------------------------
 // scan helpers
 // ---------------------------------------------------------------------------

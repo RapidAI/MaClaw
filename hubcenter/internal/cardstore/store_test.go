@@ -116,6 +116,13 @@ func (r *orderTestRepo) Archive(_ context.Context, orderNo string, archivedAt ti
 	return nil
 }
 
+func (r *orderTestRepo) Unarchive(_ context.Context, orderNo string, _ time.Time) error {
+	if r.byNo != nil && r.byNo[orderNo] != nil {
+		r.byNo[orderNo].ArchivedAt = ""
+	}
+	return nil
+}
+
 type authTestRepo struct {
 	created              []*llmservice.TenantAuthorization
 	byID                 map[string]*llmservice.TenantAuthorization
@@ -1031,6 +1038,42 @@ func TestArchiveOrderKeepsPaymentStatus(t *testing.T) {
 	}
 	if got.ArchivedAt == "" {
 		t.Fatalf("ArchivedAt was not set")
+	}
+}
+
+func TestRestoreArchivedOrderRequiresActivatedArchivedOrder(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-ACTIVATED": {
+			Order:      corecardstore.Order{OrderNo: "HC-ACTIVATED", Email: "owner@example.com", Status: corecardstore.StatusActivated, CreatedAt: now, UpdatedAt: now},
+			HubID:      "hub-1",
+			TenantID:   "tenant-a",
+			ArchivedAt: now.Format(time.RFC3339),
+		},
+		"HC-PENDING": {
+			Order:      corecardstore.Order{OrderNo: "HC-PENDING", Email: "owner@example.com", Status: corecardstore.StatusPending, CreatedAt: now, UpdatedAt: now},
+			HubID:      "hub-1",
+			TenantID:   "tenant-a",
+			ArchivedAt: now.Format(time.RFC3339),
+		},
+		"HC-ACTIVE": {
+			Order: corecardstore.Order{OrderNo: "HC-ACTIVE", Email: "owner@example.com", Status: corecardstore.StatusActivated, CreatedAt: now, UpdatedAt: now},
+			HubID: "hub-1", TenantID: "tenant-a",
+		},
+	}}
+	svc := NewService(nil, orderRepo, nil)
+
+	if err := svc.RestoreArchivedOrder(context.Background(), "HC-ACTIVE"); err == nil || !strings.Contains(err.Error(), "not archived") {
+		t.Fatalf("RestoreArchivedOrder(active) error = %v, want not archived", err)
+	}
+	if err := svc.RestoreArchivedOrder(context.Background(), "HC-PENDING"); err == nil || !strings.Contains(err.Error(), "cannot be restored") {
+		t.Fatalf("RestoreArchivedOrder(pending) error = %v, want cannot be restored", err)
+	}
+	if err := svc.RestoreArchivedOrder(context.Background(), "HC-ACTIVATED"); err != nil {
+		t.Fatalf("RestoreArchivedOrder(activated): %v", err)
+	}
+	if got := orderRepo.byNo["HC-ACTIVATED"].ArchivedAt; got != "" {
+		t.Fatalf("ArchivedAt = %q, want empty after restore", got)
 	}
 }
 

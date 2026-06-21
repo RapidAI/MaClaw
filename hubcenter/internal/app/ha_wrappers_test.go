@@ -200,6 +200,7 @@ func (f *fakeSeedCardOrderRepo) UpdateStatus(context.Context, string, string, ti
 func (f *fakeSeedCardOrderRepo) Update(context.Context, *cardstore.PurchaseOrder) error { return nil }
 func (f *fakeSeedCardOrderRepo) Delete(context.Context, string) error                   { return nil }
 func (f *fakeSeedCardOrderRepo) Archive(context.Context, string, time.Time) error       { return nil }
+func (f *fakeSeedCardOrderRepo) Unarchive(context.Context, string, time.Time) error     { return nil }
 
 type fakeHACardOrderInnerRepo struct {
 	byNo    map[string]*cardstore.PurchaseOrder
@@ -253,6 +254,14 @@ func (f *fakeHACardOrderInnerRepo) Archive(_ context.Context, orderNo string, ar
 	if f.byNo != nil && f.byNo[orderNo] != nil {
 		f.byNo[orderNo].ArchivedAt = archivedAt.Format(time.RFC3339)
 		f.byNo[orderNo].UpdatedAt = archivedAt
+	}
+	return nil
+}
+
+func (f *fakeHACardOrderInnerRepo) Unarchive(_ context.Context, orderNo string, now time.Time) error {
+	if f.byNo != nil && f.byNo[orderNo] != nil {
+		f.byNo[orderNo].ArchivedAt = ""
+		f.byNo[orderNo].UpdatedAt = now
 	}
 	return nil
 }
@@ -606,6 +615,28 @@ func TestHACardOrderRepoDeleteSyncsDeleteOp(t *testing.T) {
 	}
 	if len(sync.upserts) != 0 {
 		t.Fatalf("unexpected upsert syncs = %+v", sync.upserts)
+	}
+}
+
+func TestHACardOrderRepoUnarchiveSyncsOrderUpsert(t *testing.T) {
+	now := time.Now().UTC()
+	inner := &fakeHACardOrderInnerRepo{byNo: map[string]*cardstore.PurchaseOrder{
+		"HC-ARCHIVED": {
+			Order:      corecardstore.Order{OrderNo: "HC-ARCHIVED", Status: corecardstore.StatusActivated, CreatedAt: now, UpdatedAt: now},
+			ArchivedAt: now.Format(time.RFC3339),
+		},
+	}}
+	sync := &fakeHACardOrderSync{}
+	repo := &haCardOrderRepo{inner: inner, sync: sync}
+
+	if err := repo.Unarchive(context.Background(), "HC-ARCHIVED", now.Add(time.Minute)); err != nil {
+		t.Fatalf("Unarchive: %v", err)
+	}
+	if got := inner.byNo["HC-ARCHIVED"].ArchivedAt; got != "" {
+		t.Fatalf("ArchivedAt = %q, want empty", got)
+	}
+	if len(sync.upserts) != 1 || sync.upserts[0].OrderNo != "HC-ARCHIVED" || sync.upserts[0].ArchivedAt != "" {
+		t.Fatalf("sync upserts = %+v, want restored order upsert", sync.upserts)
 	}
 }
 

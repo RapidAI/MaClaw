@@ -186,6 +186,7 @@ type PurchaseOrderRepository interface {
 	Update(ctx context.Context, order *PurchaseOrder) error
 	Delete(ctx context.Context, orderNo string) error
 	Archive(ctx context.Context, orderNo string, archivedAt time.Time) error
+	Unarchive(ctx context.Context, orderNo string, now time.Time) error
 }
 
 // OrderFilter for querying orders.
@@ -880,6 +881,35 @@ func (s *Service) ArchiveOrder(ctx context.Context, orderNo string) error {
 	}
 	if s.auditLog != nil {
 		s.auditLog(ctx, "cardstore.order.archived", fmt.Sprintf("order=%s hub=%s tenant=%s", orderNo, order.HubID, order.TenantID))
+	}
+	return nil
+}
+
+// RestoreArchivedOrder returns an activated archived order to the active order queue.
+func (s *Service) RestoreArchivedOrder(ctx context.Context, orderNo string) error {
+	orderNo = strings.TrimSpace(orderNo)
+	if orderNo == "" {
+		return fmt.Errorf("order_no is required")
+	}
+	order, err := s.orders.GetByOrderNo(ctx, orderNo)
+	if err != nil {
+		return fmt.Errorf("get order: %w", err)
+	}
+	if order == nil {
+		return fmt.Errorf("order %s not found", orderNo)
+	}
+	if strings.TrimSpace(order.ArchivedAt) == "" {
+		return fmt.Errorf("order %s is not archived", orderNo)
+	}
+	if order.Status != corecardstore.StatusActivated {
+		return fmt.Errorf("order %s has status %s and cannot be restored", orderNo, order.Status)
+	}
+	now := time.Now().UTC()
+	if err := s.orders.Unarchive(ctx, orderNo, now); err != nil {
+		return fmt.Errorf("restore order: %w", err)
+	}
+	if s.auditLog != nil {
+		s.auditLog(ctx, "cardstore.order.restored", fmt.Sprintf("order=%s hub=%s tenant=%s", orderNo, order.HubID, order.TenantID))
 	}
 	return nil
 }

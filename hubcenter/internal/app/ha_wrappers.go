@@ -241,6 +241,14 @@ func (r *haCardOrderRepo) Archive(ctx context.Context, orderNo string, archivedA
 	return nil
 }
 
+func (r *haCardOrderRepo) Unarchive(ctx context.Context, orderNo string, now time.Time) error {
+	if err := r.inner.Unarchive(ctx, orderNo, now); err != nil {
+		return err
+	}
+	r.syncOrder(ctx, orderNo, nil)
+	return nil
+}
+
 func (r *haCardOrderRepo) syncOrder(ctx context.Context, orderNo string, fallback *cardstore.PurchaseOrder) {
 	if r.sync == nil {
 		return

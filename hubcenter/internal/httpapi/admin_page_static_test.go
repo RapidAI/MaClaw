@@ -336,16 +336,27 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 
 	assertContainsAll(t, html, "compute market cache busting", []string{
 		`/admin/assets/css/admin-shell.css?v=archived-order-delete-20260619`,
-		`/admin/assets/js/compute-market-tab.js?v=credit-precision-20260622`,
+		`/admin/assets/js/compute-market-tab.js?v=restore-archived-order-20260622`,
 	})
 	assertContainsAll(t, js, "compute market archived delete contract", []string{
 		"computeMarketDeleteArchivedOrder",
 		"deleteArchivedComputeOrder",
 		"cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(o.status) >= 0",
+		"computeMarketRestoreOrder",
+		"restoreArchivedComputeOrder",
+		"cmOrdersArchived && o.status === 'activated'",
+		"/restore",
 		"/api/admin/cardstore/orders/",
 		"method: 'DELETE'",
 		"\\u00b7 \\u00a5",
 	})
+	restoreFn := regexp.MustCompile(`async function restoreArchivedComputeOrder[\s\S]*?async function deleteArchivedComputeOrder`).FindString(js)
+	if restoreFn == "" {
+		t.Fatal("compute market restore contract missing restoreArchivedComputeOrder")
+	}
+	if strings.Contains(restoreFn, "confirm(") {
+		t.Fatal("compute market restore must not ask for confirmation")
+	}
 	assertContainsAll(t, css, "compute market delete button style", []string{
 		".btn-danger-ghost{background:rgba(214,93,87,.06)",
 		".btn-danger-ghost:hover{background:rgba(214,93,87,.1)",

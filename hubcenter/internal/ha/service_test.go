@@ -249,6 +249,17 @@ func (r *fakeHACardOrderRepo) Archive(_ context.Context, orderNo string, archive
 	return nil
 }
 
+func (r *fakeHACardOrderRepo) Unarchive(_ context.Context, orderNo string, now time.Time) error {
+	item, _ := r.GetByOrderNo(context.Background(), orderNo)
+	if item == nil {
+		return nil
+	}
+	item.ArchivedAt = ""
+	item.UpdatedAt = now
+	r.items[orderNo] = item
+	return nil
+}
+
 func (r *fakeHAPeerCursorRepo) Get(_ context.Context, peerNodeID string) (*store.HAPeerCursor, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

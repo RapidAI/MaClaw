@@ -87,6 +87,7 @@ func RegisterLLMRoutes(
 		mux.HandleFunc("DELETE /api/admin/cardstore/orders/{orderNo}", RequireAdmin(adminService, cardstore.AdminDeleteArchivedOrderHandler(cardStoreSvc)))
 		mux.HandleFunc("POST /api/admin/cardstore/orders/{orderNo}/confirm", RequireAdmin(adminService, cardstore.AdminConfirmOrderHandler(cardStoreSvc, adminEmailFromRequest)))
 		mux.HandleFunc("POST /api/admin/cardstore/orders/{orderNo}/archive", RequireAdmin(adminService, cardstore.AdminArchiveOrderHandler(cardStoreSvc)))
+		mux.HandleFunc("POST /api/admin/cardstore/orders/{orderNo}/restore", RequireAdmin(adminService, cardstore.AdminRestoreArchivedOrderHandler(cardStoreSvc)))
 
 		// Admin: Payment config
 		mux.HandleFunc("GET /api/admin/llm/payment-config", RequireAdmin(adminService, adminGetPaymentConfig(llmSvc)))

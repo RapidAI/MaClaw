@@ -206,6 +206,15 @@ func (r *llmDeleteOrderRepo) Archive(_ context.Context, orderNo string, archived
 	return nil
 }
 
+func (r *llmDeleteOrderRepo) Unarchive(_ context.Context, orderNo string, _ time.Time) error {
+	for _, order := range r.orders {
+		if order.OrderNo == orderNo {
+			order.ArchivedAt = ""
+		}
+	}
+	return nil
+}
+
 func TestAdminDeleteLLMServiceGroupRejectsTenantInUse(t *testing.T) {
 	ctx := context.Background()
 	svc := llmservice.NewService(&llmDeleteTestSettings{})

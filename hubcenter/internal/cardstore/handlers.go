@@ -358,6 +358,23 @@ func AdminArchiveOrderHandler(svc *Service) http.HandlerFunc {
 	}
 }
 
+// AdminRestoreArchivedOrderHandler restores an activated archived order to the active queue.
+// POST /api/admin/cardstore/orders/:orderNo/restore
+func AdminRestoreArchivedOrderHandler(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		orderNo := extractPathParam(r, "orderNo")
+		if orderNo == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "orderNo is required"})
+			return
+		}
+		if err := svc.RestoreArchivedOrder(r.Context(), orderNo); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "restored"})
+	}
+}
+
 // AdminDeleteArchivedOrderHandler deletes an archived unpaid order.
 // DELETE /api/admin/cardstore/orders/:orderNo
 func AdminDeleteArchivedOrderHandler(svc *Service) http.HandlerFunc {

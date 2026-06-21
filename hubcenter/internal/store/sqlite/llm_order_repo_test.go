@@ -69,6 +69,24 @@ func TestLLMOrderRepoArchiveFiltersDefaultList(t *testing.T) {
 	if total != 2 || len(all) != 2 {
 		t.Fatalf("all list = total %d len %d, want 2", total, len(all))
 	}
+
+	if err := repo.Unarchive(ctx, "HC-ARCHIVED", now.Add(3*time.Second)); err != nil {
+		t.Fatalf("Unarchive() error = %v", err)
+	}
+	active, total, err = repo.List(ctx, cardstore.OrderFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("List(active after unarchive) error = %v", err)
+	}
+	if total != 2 || len(active) != 2 {
+		t.Fatalf("active after unarchive = total %d orders %+v, want both orders", total, active)
+	}
+	got, err := repo.GetByOrderNo(ctx, "HC-ARCHIVED")
+	if err != nil {
+		t.Fatalf("GetByOrderNo(unarchived) error = %v", err)
+	}
+	if got.ArchivedAt != "" {
+		t.Fatalf("ArchivedAt after Unarchive = %q, want empty", got.ArchivedAt)
+	}
 }
 
 func TestLLMOrderRepoListFiltersMultipleStatuses(t *testing.T) {
