@@ -2,10 +2,11 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
-	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -15,7 +16,9 @@ type workflowDraftGenerateRequest struct {
 	Language    string `json:"language"`
 }
 
-func WorkflowDraftLLMHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
+const workflowDraftDescriptionMaxBytes = 4000
+
+func WorkflowDraftLLMHandler(identity veMachineAuthenticator, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	_ = system
 	_ = securitySvc
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -26,18 +29,47 @@ func WorkflowDraftLLMHandler(identity *auth.IdentityService, system store.System
 		if _, ok := authenticateVEMachine(w, r, identity); !ok {
 			return
 		}
+		r.Body = http.MaxBytesReader(w, r.Body, workflowDraftDescriptionMaxBytes*2)
 		var req workflowDraftGenerateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				writeError(w, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "workflow draft request is too large")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid JSON")
 			return
 		}
-		description := strings.TrimSpace(req.Description)
-		if description == "" {
+		description, ok := normalizeWorkflowDraftDescription(req.Description)
+		if !ok {
 			writeError(w, http.StatusBadRequest, "DESCRIPTION_REQUIRED", "description is required")
 			return
 		}
 		writeJSON(w, http.StatusOK, buildFallbackWorkflowDraft(description, req.Language))
 	}
+}
+
+func normalizeWorkflowDraftDescription(value string) (string, bool) {
+	description := strings.TrimSpace(value)
+	if description == "" {
+		return "", false
+	}
+	if len(description) > workflowDraftDescriptionMaxBytes {
+		var clipped strings.Builder
+		clipped.Grow(workflowDraftDescriptionMaxBytes)
+		for _, r := range description {
+			runeLen := utf8.RuneLen(r)
+			if runeLen < 0 {
+				runeLen = len("\ufffd")
+			}
+			if clipped.Len()+runeLen > workflowDraftDescriptionMaxBytes {
+				break
+			}
+			clipped.WriteRune(r)
+		}
+		description = clipped.String()
+	}
+	return description, true
 }
 
 func buildFallbackWorkflowDraft(description, language string) map[string]any {

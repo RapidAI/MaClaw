@@ -257,7 +257,7 @@
       invalidJsonField: '{field} 中的 JSON 格式无效。',
       invalidConfigField: '{field} 的值无效。',
       configErrorSummary: '继续之前请修复这些问题：',
-      nodeTypes: '构建模块',
+      nodeTypes: '节点类型',
       nodeTypesHelp: '先搭核心审批路径，需要时再增加分支或自动化。',
       coreNodes: '核心路径',
       advancedNodes: '高级',
