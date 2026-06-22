@@ -52,17 +52,8 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
             : String(grant.status ?? grant.Status ?? '').toLowerCase() !== 'queued'
               && String(grant.status ?? grant.Status ?? '').toLowerCase() !== 'expired';
         if (!isEffective) {
-            // Queued grants (not yet started but not expired) still contribute
-            // their full remaining credits to the visible total/remaining so
-            // the user sees "top-up succeeded" immediately in the UI.
-            const grantStatusLower = String(grant.status ?? grant.Status ?? '').toLowerCase();
-            if (grantStatusLower === 'queued') {
-                const queuedRemaining = numeric(grant.credits_remaining ?? grant.CreditsRemaining);
-                if (queuedRemaining > 0) {
-                    total += numeric(grant.credits_total ?? grant.CreditsTotal);
-                    remaining += queuedRemaining;
-                }
-            }
+            // Queued grants can raise the visible total through visibleGrantTotal,
+            // but they are not currently spendable and must not inflate remaining.
             continue;
         }
         total += numeric(grant.credits_total ?? grant.CreditsTotal);
@@ -75,10 +66,8 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
     const effectiveVisibleTotal = Math.max(total, visibleGrantTotal);
     total = Math.max(numeric(status?.credits_total ?? status?.CreditsTotal ?? effectiveVisibleTotal), effectiveVisibleTotal);
     used = numeric(status?.credits_used ?? status?.CreditsUsed ?? used);
-    // Keep our accumulated remaining (which includes queued grants) if it's larger
-    // than backend's status.credits_remaining (which only counts effective grants).
     const statusRemaining = numeric(status?.credits_remaining ?? status?.CreditsRemaining);
-    remaining = Math.max(remaining, statusRemaining);
+    if (statusRemaining > 0) remaining = statusRemaining;
     const statusAvailable = numeric(status?.credits_available ?? status?.CreditsAvailable);
     const statusGrantAvailable = numeric(statusGrant?.credits_available ?? statusGrant?.CreditsAvailable);
     const available = statusAvailable > 0 ? statusAvailable : (grantAvailable > 0 ? grantAvailable : statusGrantAvailable);
