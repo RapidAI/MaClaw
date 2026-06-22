@@ -66,7 +66,10 @@ var entityPatterns = []*regexp.Regexp{
 	// must be extracted as a single entity for accurate BM25/tag matching.
 	// Use {2,} to capture all trailing Chinese chars; the addEntity handler will
 	// use gse segmentation to extract the first Chinese word as the compound.
-	regexp.MustCompile(`(?i)([a-zA-Z]{2,})(` + `[` + chineseRange + `]{2,})`),
+	// This pattern covers both pure-alpha ("api服务器") and alphanumeric ("api2服务器")
+	// identifiers — [a-zA-Z][a-zA-Z0-9]+ requires ≥2 alphanumeric chars total,
+	// excluding single-letter prefixes ("A机器", "V开头") from over-matching.
+	regexp.MustCompile(`(?i)([a-zA-Z][a-zA-Z0-9]+)(` + `[` + chineseRange + `]{2,})`),
 	// Number + Chinese noun: "4090服务器", "4090 服务器"
 	regexp.MustCompile(`(\d{2,})\s*([` + chineseRange + `]{2,6})`),
 	// Chinese noun + number: "服务器4090"
@@ -84,9 +87,9 @@ const chineseRange = `\x{4e00}-\x{9fff}`
 // chineseNounPattern matches sequences of ≥3 Chinese characters.
 var chineseNounPattern = regexp.MustCompile(`([` + chineseRange + `]{3,})`)
 
-// mixedLangCompoundRe matches English word + Chinese noun compounds.
+// mixedLangCompoundRe matches English/alphanumeric word + Chinese noun compounds.
 // Pre-compiled at package level to avoid per-call regexp compilation overhead.
-var mixedLangCompoundRe = regexp.MustCompile(`(?i)([a-zA-Z]{2,})([` + chineseRange + `]{2,})`)
+var mixedLangCompoundRe = regexp.MustCompile(`(?i)([a-zA-Z][a-zA-Z0-9]+)([` + chineseRange + `]{2,})`)
 
 // ExpandQuery extracts key entities and tokens from a user message.
 // Pure rule-based, no LLM dependency, < 5ms latency.

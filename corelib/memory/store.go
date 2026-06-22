@@ -1351,15 +1351,45 @@ func tagExactMatchBoost(entry Entry, entities []string) float64 {
 			continue
 		}
 		for _, tag := range entry.Tags {
-			if strings.ToLower(tag) == entityLower {
+			tagLower := strings.ToLower(tag)
+			if tagLower == entityLower {
 				boost += 5.0 // strong boost for exact tag match
 				break
 			}
+			// Containment boost: entity is a substring of a tag. This bridges
+			// the gap between stored compound tags ("api2服务器", "api2.maclaw.top")
+			// and shorter extracted entities ("api2", "SSH").
+			// Only single-direction: entity ⊂ tag (entity is the query fragment,
+			// tag is the stored label). Reverse direction (tag ⊂ entity) would
+			// cause short tags like "go"/"ai" to spuriously match long entities.
+			// Only apply for entities ≥ 3 runes to avoid noise from short tokens.
+			//
+			// For structured tags ("key:value" format like "tool:ssh"), only match
+			// against the value part — matching the key ("tool") would cause massive
+			// false positives on entries with many structured tags.
+			if len([]rune(entityLower)) >= 3 {
+				matchTarget := tagLower
+				if colonIdx := strings.IndexByte(tagLower, ':'); colonIdx >= 0 {
+					matchTarget = tagLower[colonIdx+1:]
+				}
+				if matchTarget != "" && strings.Contains(matchTarget, entityLower) {
+					boost += 3.0 // moderate boost for containment match
+					break
+				}
+			}
 		}
 	}
+	// Tag specificity normalization: entries with many tags (e.g. 30+ tags on
+	// an aggregated "adaptive retry" entry) match almost any query by chance.
+	// Entries with few, precise tags (e.g. 3 tags on an SSH credential entry)
+	// are much more discriminative when they match. Divide by sqrt(tagCount)
+	// to reward specificity — this is analogous to IDF but for tag cardinality.
+	if tagCount := len(entry.Tags); tagCount > 5 {
+		boost /= math.Sqrt(float64(tagCount) / 5.0)
+	}
 	// Cap to prevent a single entry from dominating.
-	if boost > 10.0 {
-		boost = 10.0
+	if boost > 15.0 {
+		boost = 15.0
 	}
 	return boost
 }
@@ -3832,6 +3862,23 @@ func (s *Store) queryEmbeddingCached(query string) []float32 {
 		return nil
 	}
 	return append([]float32(nil), vec...)
+}
+
+// WarmQueryEmbedding asynchronously pre-computes and caches the embedding for
+// the given query text. This is a fire-and-forget operation — the result is
+// stored in the query embedding cache so that subsequent calls to
+// queryEmbeddingCached (via RecallDynamic/proactive recall) get a cache hit
+// instead of blocking on model inference.
+//
+// This eliminates the cold-start embedding latency from the proactive recall
+// critical path: the host calls WarmQueryEmbedding as soon as the user message
+// arrives, overlapping embedding inference with other prompt-building work.
+// When proactive recall runs ~500ms later, the cache is warm.
+func (s *Store) WarmQueryEmbedding(query string) {
+	if s == nil {
+		return
+	}
+	go s.queryEmbeddingCached(query)
 }
 
 func (s *Store) evictQueryEmbeddingCacheLocked(now time.Time) {

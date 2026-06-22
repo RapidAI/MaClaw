@@ -130,8 +130,8 @@ func TestTagExactMatchBoost_Capped(t *testing.T) {
 	}
 
 	boost := tagExactMatchBoost(entry, []string{"tag1", "tag2", "tag3", "tag4", "tag5"})
-	if boost > 10.0 {
-		t.Errorf("expected boost to be capped at 10.0, got %.1f", boost)
+	if boost > 15.0 {
+		t.Errorf("expected boost to be capped at 15.0, got %.1f", boost)
 	}
 }
 

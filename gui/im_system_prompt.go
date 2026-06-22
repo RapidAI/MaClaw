@@ -582,7 +582,7 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 	log.Printf("[perf] stage=proactive_recall user=%q elapsed=%s project=%q strict_project=%v recalled=%d prompt_context_len=%d", userID, totalRecallElapsed.Round(time.Millisecond), projectPath, strictProject, len(relevant), len(promptContext))
 }
 
-const imProactiveRecallBudget = 2 * time.Second
+const imProactiveRecallBudget = 2500 * time.Millisecond
 
 type imProactiveRecallResult struct {
 	promptContext string

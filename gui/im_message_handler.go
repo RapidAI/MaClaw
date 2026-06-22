@@ -71,6 +71,19 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if preflight.Handled {
 		return preflight.Response
 	}
+
+	// Eager embedding warmup: pre-compute the query embedding in the background
+	// so that proactive recall (which runs later during system prompt construction)
+	// gets a cache hit instead of paying cold-start model inference latency.
+	// Without this, the embedding inference (~400ms on CPU) pushes proactive recall
+	// past its 2s timeout budget, causing ALL recalled memories to be discarded.
+	//
+	// MUST be after prepareIMMessagePreflight: the preflight may rewrite msg.Text
+	// (e.g. confirmationApprovedText replaces "确认" with the full execution plan).
+	// We need to warm the FINAL msg.Text that proactive recall will actually use.
+	if h.memoryStore != nil && msg.Text != "" {
+		h.memoryStore.WarmQueryEmbedding(msg.Text)
+	}
 	preflightDone := time.Since(msgReceivedAt)
 	httpClient := preflight.HTTPClient
 	entriesBeforeClear := preflight.EntriesBeforeClear

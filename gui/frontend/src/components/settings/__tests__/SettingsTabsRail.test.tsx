@@ -4,8 +4,8 @@ import { SettingsTabsRail } from '../SettingsTabsRail';
 import type { SettingsTabOption } from '../../../config/settingsTabs';
 
 const tabs: SettingsTabOption[] = [
-    { id: 'general', label: 'General', desc: 'Language, projects, and environment' },
-    { id: 'pet', label: 'Pet', desc: 'Desktop pet appearance and interaction settings' },
+    { id: 'general', label: 'General', desc: 'Language, projects, and environment', icon: '<svg></svg>' },
+    { id: 'pet', label: 'Pet', desc: 'Desktop pet appearance and interaction settings', icon: '<svg></svg>' },
 ];
 
 describe('SettingsTabsRail', () => {

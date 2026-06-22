@@ -228,6 +228,38 @@ func TestExpandQuery_EnglishChineseCompound_WebPage(t *testing.T) {
 	assertContainsAny(t, result.Entities, []string{"web页面", "web页面打"})
 }
 
+func TestExpandQuery_AlphanumericChineseCompound_API2Server(t *testing.T) {
+	result := ExpandQuery("把api2服务器上的omniroute升级")
+	// "api2服务器" should be extracted as compound (alphanumeric + Chinese)
+	assertContainsAny(t, result.Entities, []string{"api2服务", "api2服务器"})
+	// "api2" should be extracted individually
+	found := false
+	for _, e := range result.Entities {
+		if strings.EqualFold(e, "api2") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'api2' in entities %v", result.Entities)
+	}
+}
+
+func TestExpandQuery_AlphanumericChineseCompound_V3Service(t *testing.T) {
+	result := ExpandQuery("v3服务已停止运行")
+	assertContainsAny(t, result.Entities, []string{"v3服务"})
+}
+
+func TestExpandQuery_SingleLetterChineseNotExtracted(t *testing.T) {
+	// Single-letter prefix + Chinese should NOT match (avoid "A机器", "R语言" over-extraction)
+	result := ExpandQuery("在A机器上部署")
+	for _, e := range result.Entities {
+		if e == "A机器" || e == "A机" {
+			t.Errorf("single-letter+Chinese compound should not be extracted, got %q in %v", e, result.Entities)
+		}
+	}
+}
+
 func TestExpandQuery_TokenizeForTagMatch_MixedCompound(t *testing.T) {
 	result := ExpandQuery("查看api服务器资源")
 	// QueryTokens should include the compound "api服务器" for tag cross-matching

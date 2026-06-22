@@ -2109,7 +2109,7 @@ body {
 
 .settings-top-tab {
     display: grid;
-    grid-template-columns: 8px minmax(0, 1fr);
+    grid-template-columns: 16px minmax(0, 1fr);
     gap: 8px;
     align-items: center;
     min-height: 38px;
@@ -2126,12 +2126,28 @@ body {
     touch-action: manipulation;
 }
 
-.settings-top-tab__mark {
-    width: 8px;
-    height: 8px;
-    border-radius: 999px;
-    background: var(--theme-border);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--theme-border) 25%, transparent);
+.settings-top-tab__icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: var(--theme-text-muted);
+    transition: color var(--transition-fast);
+}
+
+.settings-top-tab__icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+.settings-top-tab:hover .settings-top-tab__icon,
+.settings-top-tab:focus-visible .settings-top-tab__icon {
+    color: var(--theme-primary-strong);
+}
+
+.settings-top-tab.active .settings-top-tab__icon {
+    color: var(--theme-primary);
 }
 
 .settings-top-tab__text,
@@ -2198,11 +2214,6 @@ body {
     font-size: 0.72rem;
     line-height: 1.45;
     overflow-wrap: anywhere;
-}
-
-.settings-top-tab.active .settings-top-tab__mark {
-    background: var(--theme-primary);
-    box-shadow: 0 0 0 4px var(--theme-info-bg);
 }
 
 .settings-top-tab.active .settings-top-tab__label {
@@ -4933,6 +4944,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
     .settings-top-tab,
+    .settings-top-tab__icon,
     .pet-preview-avatar,
     .pet-preview-face,
     .pet-preview-motion-mark,

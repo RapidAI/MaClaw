@@ -81,7 +81,7 @@ export const SettingsTabsRail = ({ tabs, activeTab, onChange }: SettingsTabsRail
                         aria-describedby={tooltip?.id === tab.id ? tooltipId : undefined}
                         aria-label={`${tab.label}: ${tab.desc}`}
                     >
-                        <span className="settings-top-tab__mark" aria-hidden="true" />
+                        <span className="settings-top-tab__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: tab.icon }} />
                         <span className="settings-top-tab__text">
                             <span className="settings-top-tab__label">{tab.label}</span>
                         </span>
