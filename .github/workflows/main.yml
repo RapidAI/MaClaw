@@ -17,7 +17,7 @@ permissions:
 
 env:
   APP_NAME: MaClaw
-  GO_VERSION: '1.25.0'
+  GO_VERSION: '1.25.5'
   NODE_VERSION: '22'
   RELEASE_CHANNEL: stable
   MANIFEST_NAME: latest.json

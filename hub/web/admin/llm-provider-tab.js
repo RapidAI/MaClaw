@@ -1843,3 +1843,66 @@ function llmProviderOptionsSnapshot() {
   }).filter(function(p) { return p.id; });
 }
 window.getLlmProviderOptions = llmProviderOptionsSnapshot;
+
+var MACLAW_OFFICIAL_LLM_PROVIDER_OPTION = { id: 'maclaw_official', name: 'MaClaw \u5b98\u65b9' };
+function llmProviderCurrentOptions() {
+  var byID = {};
+  byID[MACLAW_OFFICIAL_LLM_PROVIDER_OPTION.id] = MACLAW_OFFICIAL_LLM_PROVIDER_OPTION;
+  (llmProviderRegistryCache && llmProviderRegistryCache.providers || []).forEach(function(p) {
+    var id = String(p && p.id || '').trim();
+    if (!id) return;
+    byID[id] = { id: id, name: String(p && p.name || '').trim() || id };
+  });
+  return Object.keys(byID).map(function(id) { return byID[id]; });
+}
+function llmProviderCurrentOptionByID(id) {
+  id = String(id || '').trim();
+  if (!id) return null;
+  return llmProviderCurrentOptions().find(function(p) { return String(p.id || '') === id; }) || null;
+}
+function llmProviderCurrentOptionLabel(provider) {
+  if (!provider) return '-';
+  var id = String(provider.id || '').trim();
+  var name = String(provider.name || '').trim() || id;
+  return name + ' (' + id + ')';
+}
+function llmProviderResolvedCurrentID() {
+  var configured = String(llmProviderRegistryCache && llmProviderRegistryCache.current_provider_id || '').trim();
+  var providers = llmProviderRegistryCache && llmProviderRegistryCache.providers || [];
+  if (configured && llmProviderCurrentOptionByID(configured)) return configured;
+  if (providers.length) return providers[0].id || MACLAW_OFFICIAL_LLM_PROVIDER_OPTION.id;
+  return MACLAW_OFFICIAL_LLM_PROVIDER_OPTION.id;
+}
+function syncLLMProviderCurrentSelectOptions() {
+  if (!llmProviderRegistryCache) return;
+  var currentEl = document.getElementById('llmProvidersCurrent');
+  if (!currentEl) return;
+  var currentID = llmProviderResolvedCurrentID();
+  llmProviderRegistryCache.current_provider_id = currentID;
+  currentEl.innerHTML = llmProviderCurrentOptions().map(function(p) {
+    var id = String(p && p.id || '').trim();
+    return '<option value="' + escapeHtml(id) + '"' + (id === currentID ? ' selected' : '') + '>' + escapeHtml(llmProviderCurrentOptionLabel(p)) + '</option>';
+  }).join('');
+}
+const baseRenderLLMProvidersMaclawOfficialCurrent = typeof renderLLMProviders === 'function' ? renderLLMProviders : null;
+if (baseRenderLLMProvidersMaclawOfficialCurrent) {
+  renderLLMProviders = function() {
+    baseRenderLLMProvidersMaclawOfficialCurrent();
+    syncLLMProviderCurrentSelectOptions();
+  };
+}
+const baseBuildLLMProviderPayloadMaclawOfficialCurrent = typeof buildLLMProviderPayload === 'function' ? buildLLMProviderPayload : null;
+if (baseBuildLLMProviderPayloadMaclawOfficialCurrent) {
+  buildLLMProviderPayload = function() {
+    var payload = baseBuildLLMProviderPayloadMaclawOfficialCurrent();
+    payload.current_provider_id = document.getElementById('llmProvidersCurrent') && document.getElementById('llmProvidersCurrent').value || llmProviderResolvedCurrentID();
+    return payload;
+  };
+}
+const baseSetCurrentLLMProviderMaclawOfficialCurrent = typeof setCurrentLLMProvider === 'function' ? setCurrentLLMProvider : null;
+if (baseSetCurrentLLMProviderMaclawOfficialCurrent) {
+  setCurrentLLMProvider = function(id) {
+    baseSetCurrentLLMProviderMaclawOfficialCurrent(id || MACLAW_OFFICIAL_LLM_PROVIDER_OPTION.id);
+    syncLLMProviderCurrentSelectOptions();
+  };
+}
