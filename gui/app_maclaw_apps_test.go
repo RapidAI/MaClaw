@@ -1827,6 +1827,81 @@ func TestExecuteMaclawAppBusinessOperationQueriesPreferredView(t *testing.T) {
 	}
 }
 
+func TestExecuteMaclawAppBusinessOperationRunsPreferredReport(t *testing.T) {
+	type capturedRequest struct {
+		Method string
+		Path   string
+		Body   map[string]interface{}
+	}
+	captured := []capturedRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&item.Body)
+		}
+		captured = append(captured, item)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ready","rows":[{"id":"report-1"}]}`))
+	}))
+	defer server.Close()
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "operator", Role: "ops"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	result, err := app.ExecuteMaclawAppBusinessOperation(maclawAppBusinessOperationInput{AppID: "purchase-report", PreferredReport: "procurement.purchase_by_status", Filter: map[string]any{"status": "open"}, Limit: 15})
+	if err != nil {
+		t.Fatalf("ExecuteMaclawAppBusinessOperation report error = %v", err)
+	}
+	if result["mode"] != "business_report" || result["target"] != "procurement.purchase_by_status" || result["result_status"] != "ready" {
+		t.Fatalf("unexpected report operation result: %#v", result)
+	}
+	if len(captured) != 1 || captured[0].Method != http.MethodPost || captured[0].Path != "/api/v1/data/reports/procurement.purchase_by_status/run" {
+		t.Fatalf("unexpected report request: %#v", captured)
+	}
+	filter, ok := captured[0].Body["filter"].(map[string]interface{})
+	if !ok || filter["status"] != "open" || captured[0].Body["limit"] != float64(15) {
+		t.Fatalf("report body missing filter/limit: %#v", captured[0].Body)
+	}
+}
+
+func TestExecuteMaclawAppBusinessOperationRunsPreferredDashboard(t *testing.T) {
+	type capturedRequest struct {
+		Method string
+		Path   string
+		Body   map[string]interface{}
+	}
+	captured := []capturedRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&item.Body)
+		}
+		captured = append(captured, item)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","cards":[{"id":"inventory"}]}`))
+	}))
+	defer server.Close()
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "operator", Role: "ops"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	result, err := app.ExecuteMaclawAppBusinessOperation(maclawAppBusinessOperationInput{AppID: "inventory-dashboard", PreferredDashboard: "inventory.overview"})
+	if err != nil {
+		t.Fatalf("ExecuteMaclawAppBusinessOperation dashboard error = %v", err)
+	}
+	if result["mode"] != "business_dashboard" || result["target"] != "inventory.overview" || result["result_status"] != "ok" {
+		t.Fatalf("unexpected dashboard operation result: %#v", result)
+	}
+	if len(captured) != 1 || captured[0].Method != http.MethodPost || captured[0].Path != "/api/v1/data/dashboards/inventory.overview/run" {
+		t.Fatalf("unexpected dashboard request: %#v", captured)
+	}
+	if captured[0].Body != nil {
+		t.Fatalf("dashboard request should not send a body: %#v", captured[0].Body)
+	}
+}
+
 func TestSyncMaclawAppApprovalInstanceToDataSrvCreatesMissingBusinessRecord(t *testing.T) {
 	type capturedRequest struct {
 		Method string

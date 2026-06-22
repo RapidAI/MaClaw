@@ -186,6 +186,7 @@
     draftGenerating: 'Generating workflow draft...',
     draftGenerated: 'Draft generated. Review the nodes, approvers, and terminal handlers before saving.',
     draftNeedDescription: 'Describe the workflow before generating.',
+    draftGenerationCancelled: 'Generation canceled. The current canvas was not changed.',
     draftOverwriteConfirm: 'The canvas already has a draft. Save it first if you want to keep it. Generate anyway and overwrite the current canvas?',
     draftExampleLeaveText: 'Employee submits a leave request with dates and reason. Direct manager approves first. If leave is longer than 3 days, HR also approves. Notify employee after final decision.',
     draftExamplePurchaseText: 'Employee submits a purchase request. If amount is above 10,000, department manager and finance both approve; otherwise only department manager approves. Notify requester after approval.',
@@ -556,7 +557,13 @@
 
   function setDraftAssistantStatus(message, tone) {
     if (!draftAssistantStatus) return;
-    draftAssistantStatus.textContent = message || '';
+    var text = message || '';
+    draftAssistantStatus.textContent = text;
+    if (text) {
+      draftAssistantStatus.setAttribute('title', text);
+    } else {
+      draftAssistantStatus.removeAttribute('title');
+    }
     draftAssistantStatus.classList.toggle('error', tone === 'error');
     draftAssistantStatus.classList.toggle('success', tone === 'success');
   }
@@ -578,6 +585,10 @@
     return state.nodes.length > 0 || state.edges.length > 0;
   }
 
+  function confirmDraftOverwriteIfNeeded() {
+    return !draftHasCanvasContent() || confirm(tr('draftOverwriteConfirm'));
+  }
+
   function draftExampleText(key) {
     var map = {
       leave: 'draftExampleLeaveText',
@@ -585,6 +596,15 @@
       contract: 'draftExampleContractText'
     };
     return tr(map[key] || 'draftExamplePurchaseText');
+  }
+
+  function draftGeneratedStatus(data) {
+    var message = tr('draftGenerated');
+    var notes = data && Array.isArray(data.notes) ? data.notes : [];
+    var note = notes.length > 0 ? String(notes[0] || '').trim() : '';
+    if (!note) return message;
+    if (note.length > 120) note = note.slice(0, 117) + '...';
+    return message + ' ' + note;
   }
 
   async function generateWorkflowDraftFromPrompt() {
@@ -595,7 +615,10 @@
       if (draftPrompt && typeof draftPrompt.focus === 'function') draftPrompt.focus();
       return;
     }
-    if (draftHasCanvasContent() && !confirm(tr('draftOverwriteConfirm'))) return;
+    if (!confirmDraftOverwriteIfNeeded()) {
+      setDraftAssistantStatus(tr('draftGenerationCancelled'));
+      return;
+    }
     setGeneratingDraft(true);
     setDraftAssistantStatus(tr('draftGenerating'));
     try {
@@ -613,7 +636,7 @@
       state.versionStatus = 'draft';
       applyWorkflowGraph(data.graph || { nodes: [], edges: [] });
       markDirty();
-      setDraftAssistantStatus(tr('draftGenerated'), 'success');
+      setDraftAssistantStatus(draftGeneratedStatus(data), 'success');
     } catch (err) {
       setDraftAssistantStatus(err && err.message ? err.message : tr('requestFailed', { error: String(err) }), 'error');
     } finally {

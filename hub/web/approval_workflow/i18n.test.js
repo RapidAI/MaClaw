@@ -87,7 +87,7 @@ var i18nKeys = [
   'workflowNameRequired', 'authRequired', 'requestFailed', 'invalidJsonField', 'invalidConfigField', 'configErrorSummary',
   'designWorkflow', 'emptyHint', 'draftAssistant', 'draftAssistantTitle', 'draftAssistantHint', 'draftExamples',
   'draftExampleLeave', 'draftExamplePurchase', 'draftExampleContract', 'draftPromptPlaceholder', 'generateDraft',
-  'draftGenerating', 'draftGenerated', 'draftNeedDescription', 'draftOverwriteConfirm',
+  'draftGenerating', 'draftGenerated', 'draftNeedDescription', 'draftGenerationCancelled', 'draftOverwriteConfirm',
   'draftExampleLeaveText', 'draftExamplePurchaseText', 'draftExampleContractText',
   'nodeConfiguration', 'closeNodeConfiguration',
   'canvasTools', 'selectTool', 'connectTool', 'deleteEdgeTool', 'connectHint', 'deleteEdgeHint', 'edgeConnectorLabel',

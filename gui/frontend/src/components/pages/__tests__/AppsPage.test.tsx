@@ -3089,6 +3089,13 @@ describe('AppsPage', () => {
     });
 
     it('renders enterprise normal apps as business workspaces without approval instances', async () => {
+        executeMaclawAppBusinessOperationMock.mockResolvedValueOnce({
+            synced: true,
+            mode: 'business_view',
+            target: 'procurement.purchase_order_review',
+            result_status: 'done',
+            response: { rows: [{ id: 'PO-100', status: 'open' }, { id: 'PO-101', status: 'closed' }] },
+        });
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getAllByText('采购入库')[0]);
@@ -3113,6 +3120,9 @@ describe('AppsPage', () => {
             preferred_dashboard: 'procurement.overview',
         })));
         await waitFor(() => expect(screen.getByText(/已完成/)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('id: PO-100 / status: open')).not.toBeNull());
+        expect(screen.getByText('business_view')).not.toBeNull();
+        expect(screen.getByText('记录数')).not.toBeNull();
         expect(container.querySelector('.apps-run-history')).not.toBeNull();
     });
 

@@ -293,6 +293,20 @@ type AppRunHistoryEntry = {
     at: string;
 };
 
+type BusinessOperationResultKind = 'business_record' | 'business_status' | 'table' | 'dashboard' | 'text' | 'external_receipt' | 'error';
+
+type BusinessOperationResultView = {
+    mode: string;
+    target: string;
+    status: string;
+    kind: BusinessOperationResultKind;
+    message: string;
+    recordCount: number;
+    columns: string[];
+    rows: Record<string, unknown>[];
+    response?: Record<string, unknown>;
+};
+
 type ApprovalInstanceEventView = {
     at: string;
     node?: string;
@@ -645,6 +659,9 @@ const labels = {
         runtimeOutput: '\u8f93\u51fa',
         outputText: '\u6587\u672c\u7ed3\u679c',
         outputContent: '\u8f93\u51fa\u5185\u5bb9',
+        businessResultTarget: '\u6267\u884c\u5bf9\u8c61',
+        businessResultType: '\u7ed3\u679c\u7c7b\u578b',
+        businessResultRecords: '\u8bb0\u5f55\u6570',
         noOutputYet: '\u6267\u884c\u5b8c\u6210\u540e\uff0c\u8fd9\u91cc\u663e\u793a\u8f93\u51fa\u6587\u4ef6\u6216\u6587\u672c\u7ed3\u679c\u3002',
         runCompleted: '\u6267\u884c\u5b8c\u6210',
         setAsPinned: '\u8bbe\u4e3a\u5e38\u7528',
@@ -916,6 +933,9 @@ const labels = {
         runtimeOutput: 'Output',
         outputText: 'Text result',
         outputContent: 'Output content',
+        businessResultTarget: 'Target',
+        businessResultType: 'Result type',
+        businessResultRecords: 'Records',
         noOutputYet: 'Output files or text results appear here after execution.',
         runCompleted: 'Run completed',
         setAsPinned: 'Pin to favorites',
@@ -2557,6 +2577,80 @@ function compactStepDetail(step: SkillRunStepView) {
 
 function skillRunOutputBlockText(block: SkillRunOutputBlockView) {
     return String(block.text || '').trim();
+}
+
+function businessOperationRows(value: unknown): Record<string, unknown>[] {
+    if (Array.isArray(value)) return value.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item));
+    if (!value || typeof value !== 'object') return [];
+    const record = value as Record<string, unknown>;
+    for (const key of ['rows', 'records', 'items', 'data', 'results', 'cards', 'widgets', 'charts']) {
+        const candidate = record[key];
+        if (Array.isArray(candidate)) return businessOperationRows(candidate);
+    }
+    const nestedRecord = record.record || record.business_record || record.businessRecord;
+    if (nestedRecord && typeof nestedRecord === 'object' && !Array.isArray(nestedRecord)) return [nestedRecord as Record<string, unknown>];
+    return Object.keys(record).length > 0 ? [record] : [];
+}
+
+function businessOperationColumns(rows: Record<string, unknown>[]): string[] {
+    const columns: string[] = [];
+    for (const row of rows) {
+        for (const key of Object.keys(row)) {
+            if (!columns.includes(key)) columns.push(key);
+            if (columns.length >= 6) return columns;
+        }
+    }
+    return columns;
+}
+
+function businessOperationResultKind(mode: string, response?: Record<string, unknown>): BusinessOperationResultKind {
+    const status = String(response?.status || response?.state || '').trim().toLowerCase();
+    if (['error', 'failed', 'failure', 'denied'].includes(status)) return 'error';
+    if (mode === 'business_dashboard' || Array.isArray(response?.cards) || Array.isArray(response?.widgets) || Array.isArray(response?.charts)) return 'dashboard';
+    if (mode === 'business_view' || mode === 'business_report' || Array.isArray(response?.rows) || Array.isArray(response?.records) || Array.isArray(response?.items) || Array.isArray(response?.results)) return 'table';
+    if (response?.record_id || response?.record || response?.business_record || response?.businessRecord) return 'business_record';
+    if (response?.receipt || response?.external_receipt || response?.externalReceipt) return 'external_receipt';
+    if (response?.message || response?.summary || response?.result || response?.text) return 'text';
+    return 'business_status';
+}
+
+function countBusinessOperationRecords(value: unknown): number {
+    return businessOperationRows(value).length;
+}
+
+function businessOperationResponseSummary(response?: Record<string, unknown>): string {
+    if (!response) return '';
+    const direct = String(response.message || response.summary || response.result || '').trim();
+    if (direct) return direct.slice(0, 180);
+    const rows = ['rows', 'records', 'items', 'data', 'results']
+        .map((key) => response[key])
+        .find((value) => Array.isArray(value)) as unknown[] | undefined;
+    if (rows?.length) {
+        const first = rows[0];
+        if (first && typeof first === 'object') {
+            return Object.entries(first as Record<string, unknown>)
+                .slice(0, 3)
+                .map(([key, value]) => key + ': ' + String(value))
+                .join(' / ')
+                .slice(0, 180);
+        }
+        return String(first).slice(0, 180);
+    }
+    return JSON.stringify(response).slice(0, 180);
+}
+
+function buildBusinessOperationResult(result: Record<string, unknown> | undefined, actionRole: string, text: typeof labels.zh): BusinessOperationResultView {
+    const response = result?.response && typeof result.response === 'object' ? result.response as Record<string, unknown> : undefined;
+    const mode = String(result?.mode || actionRole || 'DataSrv').trim();
+    const target = String(result?.target || result?.endpoint || actionRole || mode).trim();
+    const status = String(result?.result_status || response?.status || response?.state || 'done').trim();
+    const rows = businessOperationRows(response);
+    const columns = businessOperationColumns(rows);
+    const recordCount = rows.length;
+    const kind = businessOperationResultKind(mode, response);
+    const summary = businessOperationResponseSummary(response);
+    const message = summary || text.runCompleted + ': ' + mode + ' / ' + status;
+    return { mode, target, status, kind, message, recordCount, columns, rows, response };
 }
 
 async function openSkillRunArtifactFromUI(runID: string, artifactRef: string, artifactPath: string, remoteOnly: boolean) {
@@ -4330,6 +4424,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const [validationMessage, setValidationMessage] = useState('');
     const [runID, setRunID] = useState('');
     const [skillRunStatus, setSkillRunStatus] = useState<SkillRunStatusView | null>(null);
+    const [businessResult, setBusinessResult] = useState<BusinessOperationResultView | null>(null);
     const [runHistory, setRunHistory] = useState<AppRunHistoryEntry[]>([]);
     const [approvalInstances, setApprovalInstances] = useState<ApprovalInstanceView[]>([]);
     const [approvalInstancesLoadState, setApprovalInstancesLoadState] = useState<'idle' | 'loading' | 'error'>('idle');
@@ -4352,6 +4447,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         setValidationMessage('');
         setRunID('');
         setSkillRunStatus(null);
+        setBusinessResult(null);
         setCurrentRunContext({ inputSummary: '', outputMode: '' });
         setDependencyRepairState('idle');
         setRuntimeDependencyPlan(null);
@@ -4534,6 +4630,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 if (disposed) return;
                 const message = error?.message || String(error || text.skillRunFailed);
                 setValidationMessage(message);
+                setBusinessResult(null);
                 setRunState('error');
                 recordRunHistory({ runID, status: 'error', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message });
                 await finalizeApprovalRunFromStatus({ run_id: runID, status: 'error', error: message }, 'error');
@@ -4850,6 +4947,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 }
             }
             setRunState('running');
+            setBusinessResult(null);
             setCurrentRunContext({ inputSummary, outputMode: 'business' });
             try {
                 const result = await ExecuteMaclawAppBusinessOperation({
@@ -4868,12 +4966,11 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     data: { note: businessNote, action_role: businessActionRole },
                     limit: 50,
                 });
-                const response = result?.response && typeof result.response === 'object' ? result.response as Record<string, unknown> : undefined;
-                const mode = String(result?.mode || businessActionRole || 'DataSrv').trim();
-                const status = String(result?.result_status || response?.status || 'done').trim();
+                const businessOperationResult = buildBusinessOperationResult(result as Record<string, unknown>, businessActionRole, text);
+                setBusinessResult(businessOperationResult);
                 setValidationMessage('');
                 setRunState('done');
-                recordRunHistory({ runID: `business-${Date.now().toString(36)}`, status: 'done', outputMode: 'business', inputSummary, message: text.runCompleted + ': ' + mode + ' / ' + status, resultPayload: response });
+                recordRunHistory({ runID: `business-${Date.now().toString(36)}`, status: 'done', outputMode: 'business', inputSummary, message: text.runCompleted + ': ' + businessOperationResult.mode + ' / ' + businessOperationResult.status, resultPayload: businessOperationResult.response });
                 return;
             } catch (error: any) {
                 const message = error?.message || String(error || text.skillRunFailed);
@@ -5180,6 +5277,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                 setValidationMessage('');
                                 setRunID('');
                                 setSkillRunStatus(null);
+                                setBusinessResult(null);
                                 setCurrentRunContext({ inputSummary: '', outputMode: '' });
                                 setDependencyRepairState('idle');
                                 setRuntimeDependencyPlan(null);
@@ -5188,7 +5286,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                             {runState === 'running' && runID && <button className="apps-secondary-button" type="button" onClick={cancelRun}>{text.cancelRun}</button>}
                             <button className="apps-primary-button" type="button" disabled={runDisabled} onClick={() => runApp()}>{text.run}</button>
                         </div>
-                        <AppRunOutput status={skillRunStatus} runState={runState} resultText={resultText} isTool={isTool} text={text} style={{ order: runtimeOrder.output }} layoutRegion={outputRegion} />
+                        <AppRunOutput status={skillRunStatus} runState={runState} resultText={resultText} businessResult={businessResult} isTool={isTool} text={text} style={{ order: runtimeOrder.output }} layoutRegion={outputRegion} />
                         {(isTool || isBusiness) && (
                             <section className="apps-run-history" data-region={outputRegion === 'bottom' ? 'bottom' : outputRegion} style={{ order: runtimeOrder.history }}>
                                 <div className="apps-preview-title-row">
@@ -5635,15 +5733,35 @@ const SkillRunEvidence = ({ status, runState, text }: { status: SkillRunStatusVi
     );
 };
 
-const AppRunOutput = ({ status, runState, resultText, isTool, text, style, layoutRegion }: { status: SkillRunStatusView | null; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; resultText: string; isTool: boolean; text: typeof labels.zh; style?: CSSProperties; layoutRegion?: string }) => {
+const AppRunOutput = ({ status, runState, resultText, businessResult, isTool, text, style, layoutRegion }: { status: SkillRunStatusView | null; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; resultText: string; businessResult?: BusinessOperationResultView | null; isTool: boolean; text: typeof labels.zh; style?: CSSProperties; layoutRegion?: string }) => {
     const artifacts = skillRunArtifacts(status);
     const runID = String(status?.run_id || '').trim();
     const hasArtifacts = artifacts.length > 0;
     const outputBlocks = skillRunOutputBlocks(status).filter((block) => skillRunOutputBlockText(block));
-    const showTextOutput = runState === 'done' && (!isTool || (!hasArtifacts && outputBlocks.length === 0));
+    const showTextOutput = runState === 'done' && !businessResult && (!isTool || (!hasArtifacts && outputBlocks.length === 0));
     return (
         <section className="apps-runtime-section apps-runtime-output" data-region={layoutRegion || 'right'} style={style}>
             <div className="apps-runtime-section__title">{text.runtimeOutput}</div>
+            {businessResult && (
+                <div className="apps-business-result" role="status">
+                    <div className="apps-business-result__head">
+                        <strong>{businessResult.mode}</strong>
+                        <span>{businessResult.status}</span>
+                    </div>
+                    <dl>
+                        <div><dt>{text.businessResultTarget}</dt><dd>{businessResult.target || '-'}</dd></div>
+                        <div><dt>{text.businessResultType}</dt><dd>{businessResult.kind}</dd></div>
+                        <div><dt>{text.businessResultRecords}</dt><dd>{businessResult.recordCount}</dd></div>
+                    </dl>
+                    {businessResult.rows.length > 0 && businessResult.columns.length > 0 && (
+                        <div className="apps-business-result__table" role="table" aria-label={text.businessResultType}>
+                            <div className="apps-business-result__row apps-business-result__row--head" role="row">{businessResult.columns.slice(0, 4).map((column) => <span role="columnheader" key={column}>{column}</span>)}</div>
+                            {businessResult.rows.slice(0, 4).map((row, rowIndex) => <div className="apps-business-result__row" role="row" key={rowIndex}>{businessResult.columns.slice(0, 4).map((column) => <span role="cell" key={column}>{String(row[column] ?? '-')}</span>)}</div>)}
+                        </div>
+                    )}
+                    {businessResult.message && <pre>{businessResult.message}</pre>}
+                </div>
+            )}
             {outputBlocks.length > 0 && (
                 <div className="apps-output-blocks">
                     {outputBlocks.map((block, index) => {

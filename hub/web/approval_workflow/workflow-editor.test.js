@@ -54,6 +54,17 @@ var approverHelpers = new Function('state', 'tr', [
   }
 );
 
+var draftHelpers = new Function('state', 'confirm', 'tr', [
+  extractFunction('draftHasCanvasContent'),
+  extractFunction('confirmDraftOverwriteIfNeeded'),
+  extractFunction('draftGeneratedStatus')
+].join('\n') + '\nreturn { draftHasCanvasContent: draftHasCanvasContent, confirmDraftOverwriteIfNeeded: confirmDraftOverwriteIfNeeded, draftGeneratedStatus: draftGeneratedStatus };')(
+  state,
+  function () { return draftHelpersConfirmResult; },
+  function (key) { return key === 'draftGenerated' ? 'Draft generated.' : key; }
+);
+var draftHelpersConfirmResult = true;
+
 var testCount = 0;
 var passCount = 0;
 
@@ -156,6 +167,38 @@ var firstAwaitIndex = saveWorkflowDraftSource.indexOf('await ');
 assertTrue(savedRevisionIndex !== -1 && firstAwaitIndex !== -1 && savedRevisionIndex < firstAwaitIndex, 'captures dirty revision before async save work');
 assertTrue(saveWorkflowDraftSource.indexOf('ensureWorkflowDefinition(name, description)') !== -1, 'saves stable workflow metadata snapshot');
 assertTrue(saveWorkflowDraftSource.indexOf('return { version: ver, clean: clearDirty(savedRevision) };') !== -1, 'reports whether save cleared dirty state');
+
+var generateWorkflowDraftSource = extractFunction('generateWorkflowDraftFromPrompt');
+var setDraftAssistantStatusSource = extractFunction('setDraftAssistantStatus');
+var overwriteConfirmIndex = generateWorkflowDraftSource.indexOf('if (!confirmDraftOverwriteIfNeeded()) {');
+var cancelStatusIndex = generateWorkflowDraftSource.indexOf("setDraftAssistantStatus(tr('draftGenerationCancelled'));");
+var draftApiIndex = generateWorkflowDraftSource.indexOf("workflowApi('/api/v1/workflow-drafts/generate'");
+var applyGeneratedGraphIndex = generateWorkflowDraftSource.indexOf('applyWorkflowGraph(data.graph || { nodes: [], edges: [] });');
+var generatedStatusIndex = generateWorkflowDraftSource.indexOf('setDraftAssistantStatus(draftGeneratedStatus(data),');
+assertTrue(overwriteConfirmIndex !== -1, 'asks before overwriting an existing workflow draft');
+assertTrue(draftApiIndex !== -1, 'generates workflow drafts through the LLM draft endpoint');
+assertTrue(overwriteConfirmIndex < draftApiIndex, 'confirms overwrite before calling the LLM draft endpoint');
+assertTrue(applyGeneratedGraphIndex > draftApiIndex, 'fills the canvas with the generated draft graph');
+assertTrue(generatedStatusIndex > applyGeneratedGraphIndex, 'shows generated draft notes after applying the graph');
+assertTrue(generateWorkflowDraftSource.indexOf("body: JSON.stringify({\n          description: description,") !== -1, 'sends the natural-language workflow description to draft generation');
+assertTrue(generateWorkflowDraftSource.indexOf("if (workflowNameInput && data.name && !getWorkflowName()) workflowNameInput.value = data.name;") !== -1, 'keeps an existing workflow name when applying a generated draft');
+assertTrue(cancelStatusIndex !== -1 && cancelStatusIndex < draftApiIndex, 'reports when draft generation is canceled before overwrite');
+assertTrue(setDraftAssistantStatusSource.indexOf("setAttribute('title', text)") !== -1 && setDraftAssistantStatusSource.indexOf("removeAttribute('title')") !== -1, 'keeps full draft assistant status available when visually truncated');
+state.nodes = [];
+state.edges = [];
+draftHelpersConfirmResult = false;
+assertEqual(draftHelpers.draftHasCanvasContent(), false, 'draft canvas content check is false for an empty canvas');
+assertEqual(draftHelpers.confirmDraftOverwriteIfNeeded(), true, 'empty canvas skips overwrite confirmation');
+state.nodes = [{ id: 'node_1' }];
+state.edges = [];
+draftHelpersConfirmResult = false;
+assertEqual(draftHelpers.draftHasCanvasContent(), true, 'draft canvas content check detects existing nodes');
+assertEqual(draftHelpers.confirmDraftOverwriteIfNeeded(), false, 'existing canvas respects overwrite cancellation');
+draftHelpersConfirmResult = true;
+assertEqual(draftHelpers.confirmDraftOverwriteIfNeeded(), true, 'existing canvas proceeds after overwrite confirmation');
+assertEqual(draftHelpers.draftGeneratedStatus({}), 'Draft generated.', 'generated draft status works without notes');
+assertEqual(draftHelpers.draftGeneratedStatus({ notes: ['Select real approvers before saving.'] }), 'Draft generated. Select real approvers before saving.', 'generated draft status includes first LLM note');
+assertEqual(draftHelpers.draftGeneratedStatus({ notes: [Array(130).join('x')] }).length, 'Draft generated. '.length + 120, 'generated draft status truncates long LLM notes');
 
 var getWorkflowAuthSource = extractFunction('getWorkflowAuth');
 assertTrue(getWorkflowAuthSource.indexOf('scrubWorkflowAuthFromLocation()') !== -1, 'scrubs machine credentials from URL after capture');

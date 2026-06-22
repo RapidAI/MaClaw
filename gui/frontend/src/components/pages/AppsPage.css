@@ -1897,6 +1897,94 @@
     grid-row: 2;
 }
 
+.apps-business-result {
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface-muted);
+}
+
+.apps-business-result__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+}
+
+.apps-business-result__head strong,
+.apps-business-result__head span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-business-result__head strong {
+    color: var(--theme-text-primary);
+    font-size: 0.82rem;
+}
+
+.apps-business-result__head span {
+    padding: 2px 7px;
+    border: 1px solid color-mix(in srgb, var(--theme-success) 34%, var(--theme-border));
+    border-radius: 999px;
+    color: var(--theme-success-strong);
+    background: color-mix(in srgb, var(--theme-success-bg) 68%, var(--theme-surface));
+    font-size: 0.7rem;
+    font-weight: 800;
+}
+
+.apps-business-result dl {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin: 0;
+}
+
+.apps-business-result dl div {
+    min-width: 0;
+    padding: 7px 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface);
+}
+
+.apps-business-result dt,
+.apps-business-result dd {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-business-result dt {
+    color: var(--theme-text-secondary);
+    font-size: 0.68rem;
+    font-weight: 800;
+}
+
+.apps-business-result dd {
+    color: var(--theme-text-primary);
+    font-size: 0.78rem;
+    font-weight: 750;
+}
+
+.apps-business-result pre {
+    max-height: 160px;
+    margin: 0;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--theme-text-primary);
+    font: inherit;
+    font-size: 0.8rem;
+    line-height: 1.45;
+}
+
 .apps-output-blocks {
     display: grid;
     gap: 8px;
