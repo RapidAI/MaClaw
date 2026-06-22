@@ -178,7 +178,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     }, []);
 
     const hubInactiveRedeemMessage = useCallback((status?: HubLLMServiceStatus | null): string => {
-        const grants = (status?.credit_grants?.length ? status.credit_grants : status?.active_grants) || [];
+        const grants = ((status?.credit_grants?.length ? status.credit_grants : status?.active_grants) || [])
+            .filter(grant => String(grant.source || "").trim().toLowerCase() !== "hubcenter_compute");
         const findGrant = (target: string) => grants.find(grant => String(grant.status || "").toLowerCase() === target);
         const limited = findGrant("period_limited");
         if (limited) {

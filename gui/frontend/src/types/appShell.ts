@@ -44,6 +44,7 @@ export interface SidebarCurrentProviderTokenUsage {
 }
 
 export interface SidebarHubCreditGrant {
+    source?: string;
     active?: boolean;
     effective?: boolean;
     status?: string;
@@ -68,6 +69,7 @@ export interface SidebarHubCreditGrant {
     RetryAfterAt?: string;
     StartsAt?: string;
     ExpiresAt?: string;
+    Source?: string;
 }
 
 export interface SidebarHubServiceStatus {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -56,7 +55,7 @@ func TestGetLLMServiceAccountHandlerReturnsStatusAndUsage(t *testing.T) {
 	}
 }
 
-func TestGetLLMServiceAccountHandlerIncludesHubCenterAuthorizationCardUsage(t *testing.T) {
+func TestGetLLMServiceAccountHandlerExcludesHubCenterAuthorizationCardUsage(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken := issueViewerTokenForTenant(t, identity, "tenant_acme", "account@example.com")
 	ctx := context.Background()
@@ -102,31 +101,78 @@ func TestGetLLMServiceAccountHandlerIncludesHubCenterAuthorizationCardUsage(t *t
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status == nil || len(resp.Status.CreditGrants) != 1 {
+	if resp.Status == nil {
 		t.Fatalf("credit grants = %+v", resp.Status)
 	}
-	grant := resp.Status.CreditGrants[0]
-	if grant.ID != "auth-card-1" || grant.CardOrderID != "HC-ORDER-1" {
-		t.Fatalf("grant identity = id:%q order:%q, want auth-card-1/HC-ORDER-1", grant.ID, grant.CardOrderID)
+	if len(resp.Status.CreditGrants) != 0 || len(resp.Status.ActiveGrants) != 0 {
+		t.Fatalf("HubCenter tenant grants should not appear in personal service account status: %+v", resp.Status)
 	}
-	if grant.CreditsUsed != 123.45 || grant.CreditsRemaining != 876.55 {
-		t.Fatalf("grant credits = used %.2f remaining %.2f", grant.CreditsUsed, grant.CreditsRemaining)
+	if resp.Status.CreditsUsed != 0 || resp.Status.CreditsRemaining != 0 || resp.Status.CreditsAvailable != 0 {
+		t.Fatalf("HubCenter tenant credits should not be counted as personal credits: %+v", resp.Status)
 	}
-	if resp.Status.CreditsUsed != 123.45 || resp.Status.CreditsRemaining != 876.55 {
-		t.Fatalf("status credits = used %.2f remaining %.2f", resp.Status.CreditsUsed, resp.Status.CreditsRemaining)
-	}
-	if !resp.Status.Active || !resp.Status.SkipLLMConfig {
-		t.Fatalf("status should be active from HubCenter authorization card: active=%v skip=%v groups=%#v models=%#v authorized=%#v", resp.Status.Active, resp.Status.SkipLLMConfig, resp.Status.ServiceGroupIDs, resp.Status.AvailableModels, resp.Status.AuthorizedModels)
-	}
-	if !containsStringFold(resp.Status.ServiceGroupIDs, "maclaw_official_group") {
-		t.Fatalf("service groups = %#v, want maclaw_official_group", resp.Status.ServiceGroupIDs)
-	}
-	if len(resp.Status.AvailableModels) != 1 || resp.Status.AvailableModels[0] != "auto" {
-		t.Fatalf("available models = %#v, want auto", resp.Status.AvailableModels)
+	if resp.Status.Active || resp.Status.SkipLLMConfig {
+		t.Fatalf("HubCenter tenant cards should not activate personal account status: %+v", resp.Status)
 	}
 }
 
-func TestGetLLMServiceAccountHandlerDoesNotActivateQueuedHubCenterCard(t *testing.T) {
+func TestGetLLMServiceStatusHandlerExcludesHubCenterAuthorizationCardUsage(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken := issueViewerTokenForTenant(t, identity, "tenant_acme", "status@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	tenantSystem := scopedSystemSettingsForTenant("tenant_acme", system)
+	now := time.Now().UTC()
+
+	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "maclaw_official_group", Name: "MaClaw Official"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	accessCtrl := llmservice.NewTenantLLMAccessControl(nil)
+	accessCtrl.UpdateFromHeartbeat("tenant_acme", &llmservice.TenantAuthorizationStatus{
+		HubID:    "hub-1",
+		TenantID: "tenant_acme",
+		Authorizations: []llmservice.AuthorizationSummary{{
+			ID:               "auth-card-1",
+			ServiceGroupID:   "maclaw_official_group",
+			CreditsTotal:     1000,
+			CreditsUsed:      123.45,
+			CreditsRemaining: 876.55,
+			StartsAt:         now.Add(-time.Hour).Format(time.RFC3339),
+			ExpiresAt:        now.Add(24 * time.Hour).Format(time.RFC3339),
+			Status:           "active",
+			Active:           true,
+			Source:           "hubcenter_compute",
+			CardOrderID:      "HC-ORDER-1",
+		}},
+	})
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+	SetMaClawModule(&llmservice.MaClawModule{AccessCtrl: accessCtrl})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm/service/status", nil)
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+	GetLLMServiceStatusHandler(identity, system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var status llmservice.ServiceStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if len(status.CreditGrants) != 0 || len(status.ActiveGrants) != 0 {
+		t.Fatalf("HubCenter tenant grants should not appear in personal service status: %+v", status)
+	}
+	if status.CreditsUsed != 0 || status.CreditsRemaining != 0 || status.CreditsAvailable != 0 {
+		t.Fatalf("HubCenter tenant credits should not be counted as personal status credits: %+v", status)
+	}
+	if status.Active || status.SkipLLMConfig {
+		t.Fatalf("HubCenter tenant cards should not activate personal service status: %+v", status)
+	}
+}
+
+func TestGetLLMServiceAccountHandlerExcludesQueuedHubCenterCard(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken := issueViewerTokenForTenant(t, identity, "tenant_acme", "queued@example.com")
 	ctx := context.Background()
@@ -172,18 +218,18 @@ func TestGetLLMServiceAccountHandlerDoesNotActivateQueuedHubCenterCard(t *testin
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status == nil || len(resp.Status.CreditGrants) != 1 {
+	if resp.Status == nil {
 		t.Fatalf("credit grants = %+v", resp.Status)
 	}
-	if grant := resp.Status.CreditGrants[0]; grant.Status != "queued" || grant.Effective || grant.Active {
-		t.Fatalf("queued grant status = %+v", grant)
+	if len(resp.Status.CreditGrants) != 0 || len(resp.Status.ActiveGrants) != 0 {
+		t.Fatalf("queued HubCenter tenant card should not appear in personal status: %+v", resp.Status)
 	}
 	if resp.Status.Active || resp.Status.CreditsRemaining != 0 || resp.Status.CreditsAvailable != 0 {
-		t.Fatalf("queued card should not activate current service or balance: %+v", resp.Status)
+		t.Fatalf("queued HubCenter tenant card should not activate current service or balance: %+v", resp.Status)
 	}
 }
 
-func TestGetLLMServiceAccountHandlerHubCenterPeriodLimitedKeepsRemainingButNotAvailable(t *testing.T) {
+func TestGetLLMServiceAccountHandlerExcludesPeriodLimitedHubCenterCard(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken := issueViewerTokenForTenant(t, identity, "tenant_acme", "limited@example.com")
 	ctx := context.Background()
@@ -229,28 +275,15 @@ func TestGetLLMServiceAccountHandlerHubCenterPeriodLimitedKeepsRemainingButNotAv
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status == nil || len(resp.Status.CreditGrants) != 1 {
+	if resp.Status == nil {
 		t.Fatalf("credit grants = %+v", resp.Status)
 	}
-	grant := resp.Status.CreditGrants[0]
-	if grant.Status != "period_limited" || grant.Active || !grant.Effective {
-		t.Fatalf("period-limited grant status = %+v", grant)
+	if len(resp.Status.CreditGrants) != 0 || len(resp.Status.ActiveGrants) != 0 {
+		t.Fatalf("period-limited HubCenter tenant card should not appear in personal status: %+v", resp.Status)
 	}
-	if grant.CreditsRemaining != 900 || grant.CreditsAvailable != 0 {
-		t.Fatalf("period-limited grant credits = remaining %.1f available %.1f", grant.CreditsRemaining, grant.CreditsAvailable)
+	if resp.Status.Active || resp.Status.CreditsRemaining != 0 || resp.Status.CreditsAvailable != 0 {
+		t.Fatalf("period-limited HubCenter tenant card should not affect personal balance: %+v", resp.Status)
 	}
-	if resp.Status.Active || resp.Status.CreditsRemaining != 900 || resp.Status.CreditsAvailable != 0 {
-		t.Fatalf("period-limited status should keep remaining but not current availability: %+v", resp.Status)
-	}
-}
-
-func containsStringFold(items []string, want string) bool {
-	for _, item := range items {
-		if strings.EqualFold(strings.TrimSpace(item), want) {
-			return true
-		}
-	}
-	return false
 }
 
 func TestGetLLMServiceAccountHandlerKeepsPeriodLimitedGrantVisible(t *testing.T) {

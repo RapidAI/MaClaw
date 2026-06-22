@@ -50,34 +50,36 @@ var englishStopwords = map[string]bool{
 }
 
 // Entity extraction patterns ordered by specificity.
+// Priority principle: patterns that produce HIGH-SIGNAL entities for tag matching
+// should come first, because maxEntities=5 cap means later patterns may be skipped.
+// Named concepts (compounds, acronyms) > specific identifiers (IP, domain) > paths.
 var entityPatterns = []*regexp.Regexp{
 	// Quoted content: "xxx" or 「xxx」 or 『xxx』
 	regexp.MustCompile(`["「『]([^"」』]{2,30})["」』]`),
-	// IP address
-	regexp.MustCompile(`\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b`),
-	// File path (Unix)
-	regexp.MustCompile(`(/[a-zA-Z0-9_][-a-zA-Z0-9_./]*)`),
-	// File path (Windows)
-	regexp.MustCompile(`([A-Z]:\\[-a-zA-Z0-9_\\./]+)`),
-	// Domain name
-	regexp.MustCompile(`\b([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z][-a-zA-Z0-9.]*[a-zA-Z])\b`),
 	// English word + Chinese noun compound: "api服务器", "gpu服务器", "ssh连接", "web页面"
 	// These mixed-language compounds are common in Chinese tech conversations and
 	// must be extracted as a single entity for accurate BM25/tag matching.
-	// Use {2,} to capture all trailing Chinese chars; the addEntity handler will
-	// use gse segmentation to extract the first Chinese word as the compound.
 	// This pattern covers both pure-alpha ("api服务器") and alphanumeric ("api2服务器")
 	// identifiers — [a-zA-Z][a-zA-Z0-9]+ requires ≥2 alphanumeric chars total,
 	// excluding single-letter prefixes ("A机器", "V开头") from over-matching.
 	regexp.MustCompile(`(?i)([a-zA-Z][a-zA-Z0-9]+)(` + `[` + chineseRange + `]{2,})`),
+	// Uppercase acronym (2-6 chars): "GPU", "SSH", "API", "CUDA"
+	regexp.MustCompile(`\b([A-Z]{2,6})\b`),
+	// IP address
+	regexp.MustCompile(`\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b`),
+	// Domain name
+	regexp.MustCompile(`\b([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z][-a-zA-Z0-9.]*[a-zA-Z])\b`),
 	// Number + Chinese noun: "4090服务器", "4090 服务器"
 	regexp.MustCompile(`(\d{2,})\s*([` + chineseRange + `]{2,6})`),
 	// Chinese noun + number: "服务器4090"
 	regexp.MustCompile(`([` + chineseRange + `]{2,6})\s*(\d{2,})`),
 	// English proper noun (2+ capitalized words): "Claude API", "Visual Studio"
 	regexp.MustCompile(`\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+)\b`),
-	// Uppercase acronym (2-6 chars): "GPU", "SSH", "API", "CUDA"
-	regexp.MustCompile(`\b([A-Z]{2,6})\b`),
+	// File path (Unix) — lower priority: long plan texts often contain example paths
+	// that fill up maxEntities before more useful named concepts are extracted.
+	regexp.MustCompile(`(/[a-zA-Z0-9_][-a-zA-Z0-9_./]*)`),
+	// File path (Windows)
+	regexp.MustCompile(`([A-Z]:\\[-a-zA-Z0-9_\\./]+)`),
 	// English technical term (≥4 chars, may contain dots/hyphens): "deploy.sh", "nginx", "pytest"
 	regexp.MustCompile(`\b([a-zA-Z][-a-zA-Z0-9_.]{2,}[a-zA-Z0-9])\b`),
 }

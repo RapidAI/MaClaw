@@ -67,6 +67,34 @@ describe('normalizeSidebarHubCredits', () => {
         expect(credits?.remaining).toBe(80);
     });
 
+    it('does not count tenant compute cards as personal sidebar credits', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credit_grants: [{
+                source: 'hubcenter_compute',
+                status: 'active',
+                active: true,
+                credits_total: 520000,
+                credits_used: 12754.79,
+                credits_remaining: 507245.21,
+            }],
+        });
+
+        expect(credits).toEqual({
+            authorized: true,
+            serviceActive: true,
+            total: 0,
+            used: 0,
+            remaining: 0,
+            tokensPerCredit: 0,
+            expiresAt: '',
+            unlimited: true,
+            status: 'active',
+            retryAfterSeconds: 0,
+            retryAfterAt: '',
+        });
+    });
+
     it('prioritizes a queued future grant over an exhausted older grant', () => {
         const credits = normalizeSidebarHubCredits({
             active: false,

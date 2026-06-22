@@ -5,7 +5,8 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
     const active = status?.active ?? status?.Active ?? false;
     const creditGrants = status?.credit_grants ?? status?.CreditGrants ?? [];
     const activeGrants = status?.active_grants ?? status?.ActiveGrants ?? [];
-    const grants = creditGrants.length ? creditGrants : activeGrants;
+    const grants = (creditGrants.length ? creditGrants : activeGrants)
+        .filter((grant) => String(grant.source ?? grant.Source ?? '').trim().toLowerCase() !== 'hubcenter_compute');
     const hasGrant = grants.length > 0;
     const grantStatusPriority = ['period_limited', 'queued', 'exhausted', 'expired'];
     const periodLimitedGrant = grants.find((grant) => String(grant.status ?? grant.Status ?? '').toLowerCase() === 'period_limited');

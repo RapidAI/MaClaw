@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -334,13 +335,12 @@ func (s *Store) proactiveRecallStaged(query string, opts ProactivePromptOptions,
 	pipeline := StagedRecallPipeline{}
 	result := pipeline.Recall(ctx, s, query, opts.Recall, deadline)
 
-	// Annotate with partial recall marker if not all stages completed.
+	// Log partial recall status for diagnostics. Do NOT annotate entry content
+	// with "[partial recall - deep search skipped]" — this prefix makes the LLM
+	// distrust the recalled information and re-search instead of using it directly.
+	// The partial status is already captured in the log via staged_recall perf events.
 	if result.Partial {
-		for i := range result.Entries {
-			if !strings.HasPrefix(result.Entries[i].Content, "[partial recall - deep search skipped]") {
-				result.Entries[i].Content = "[partial recall - deep search skipped] " + result.Entries[i].Content
-			}
-		}
+		log.Printf("[staged_recall] partial result: stage=%s entries=%d (deep search stages did not complete within deadline)", result.StageReached, len(result.Entries))
 	}
 
 	// Fall back to default 12 entries if expansion cannot complete within budget.

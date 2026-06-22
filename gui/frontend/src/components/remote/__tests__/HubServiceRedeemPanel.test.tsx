@@ -79,7 +79,7 @@ describe('HubServiceRedeemPanel', () => {
         expect(screen.queryByText('Active Grants')).toBeNull();
     });
 
-    it('shows compute card order identity beside used credits', async () => {
+    it('does not show tenant compute cards as personal grant credits', async () => {
         GetHubLLMServiceStatusMock.mockResolvedValue({
             active: true,
             skip_llm_config: true,
@@ -104,9 +104,10 @@ describe('HubServiceRedeemPanel', () => {
 
         render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
 
-        expect(await screen.findByText('HC-ORDER-1')).toBeTruthy();
-        expect(screen.getByText('Compute Card')).toBeTruthy();
-        expect(screen.getAllByText('123.45').length).toBeGreaterThan(0);
+        expect(await screen.findByText('Authorization Breakdown')).toBeTruthy();
+        expect(screen.queryByText('HC-ORDER-1')).toBeNull();
+        expect(screen.queryByText('Compute Card')).toBeNull();
+        expect(screen.queryByText('123.45')).toBeNull();
     });
 
     it('shows queued authorization status and start time instead of generic inactive state', async () => {

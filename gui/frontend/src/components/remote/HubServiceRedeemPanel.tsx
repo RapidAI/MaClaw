@@ -181,7 +181,8 @@ function formatGrantSource(
 }
 
 function creditGrants(status: HubLLMServiceStatus | null): HubLLMActiveGrant[] {
-    return (status?.credit_grants?.length ? status.credit_grants : status?.active_grants) || [];
+    const grants = (status?.credit_grants?.length ? status.credit_grants : status?.active_grants) || [];
+    return grants.filter((grant) => String(grant.source || "").trim().toLowerCase() !== "hubcenter_compute");
 }
 
 function grantCardLabel(grant: HubLLMActiveGrant): string {

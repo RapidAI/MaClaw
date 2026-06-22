@@ -71,7 +71,8 @@ export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: st
     });
 }
 export function hubCreditGrants(status: HubLLMServiceStatus | null): HubLLMActiveGrant[] {
-    return (status?.credit_grants?.length ? status.credit_grants : status?.active_grants) || [];
+    const grants = (status?.credit_grants?.length ? status.credit_grants : status?.active_grants) || [];
+    return grants.filter(grant => String(grant.source || "").trim().toLowerCase() !== "hubcenter_compute");
 }
 
 function hubRetrySeconds(grant?: HubLLMActiveGrant): number {
