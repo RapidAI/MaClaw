@@ -351,7 +351,126 @@ func (s *Store) proactiveRecallStaged(query string, opts ProactivePromptOptions,
 		}
 	}
 
+	// Deduplicate stale session artifacts: when multiple entries cover the same
+	// topic (≥2 shared tags) and one is significantly newer, drop the older one.
+	// This prevents stale "task not executed" session extractions from contradicting
+	// newer entries that contain actual credentials/facts.
+	result.Entries = deduplicateByRecency(result.Entries)
+
 	return result.Entries
+}
+
+// deduplicateByRecency removes older entries when a newer entry covers the same
+// topic. Two entries are considered "same topic" when they share ≥2 meaningful
+// tags (excluding generic tags like "auto", "desktop-user", "online_extracted",
+// "session_extraction", etc.). When detected, the older entry is dropped if:
+//   - The newer entry was created ≥30 minutes after the older one (not a near-
+//     simultaneous extraction from the same session)
+//   - The older entry has a session_extraction tag (it's a session summary, not
+//     a primary fact source)
+//
+// This is a general mechanism: it applies to any topic (SSH, API keys, database
+// credentials, project config, etc.) without hardcoding specific information types.
+func deduplicateByRecency(entries []Entry) []Entry {
+	if len(entries) <= 1 {
+		return entries
+	}
+
+	// Generic tags that don't indicate topic similarity.
+	genericTags := map[string]bool{
+		"auto": true, "desktop-user": true, "online_extracted": true,
+		"extracted": true, "session_extraction": true, "auto_salvaged": true,
+		"trimmed": true, "source_ref": true, "working_state": true,
+		"context_checkpoint": true, "tangible_output": true, "task_sediment": true,
+	}
+
+	// Build a meaningful-tag set for each entry.
+	type taggedEntry struct {
+		entry        Entry
+		meaningfulTags map[string]bool
+		isSessionExt bool
+	}
+	tagged := make([]taggedEntry, len(entries))
+	for i, e := range entries {
+		mt := make(map[string]bool)
+		isSessionExt := false
+		for _, tag := range e.Tags {
+			if genericTags[tag] {
+				if tag == "session_extraction" {
+					isSessionExt = true
+				}
+				continue
+			}
+			// Skip path-like tags and session IDs — they're identity, not topic.
+			if len(tag) > 30 || strings.HasPrefix(tag, "session:") ||
+				strings.HasPrefix(tag, "ref:") || strings.HasPrefix(tag, "desktop-user:") {
+				continue
+			}
+			mt[strings.ToLower(tag)] = true
+		}
+		tagged[i] = taggedEntry{entry: e, meaningfulTags: mt, isSessionExt: isSessionExt}
+	}
+
+	// For each pair, check if one supersedes the other.
+	dropped := make([]bool, len(entries))
+	for i := 0; i < len(tagged); i++ {
+		if dropped[i] {
+			continue
+		}
+		for j := i + 1; j < len(tagged); j++ {
+			if dropped[j] {
+				continue
+			}
+			// Count shared meaningful tags.
+			shared := 0
+			for tag := range tagged[i].meaningfulTags {
+				if tagged[j].meaningfulTags[tag] {
+					shared++
+				}
+			}
+			if shared < 2 {
+				continue
+			}
+
+			// Determine which is newer.
+			ti := tagged[i].entry.UpdatedAt
+			tj := tagged[j].entry.UpdatedAt
+			if ti.IsZero() {
+				ti = tagged[i].entry.CreatedAt
+			}
+			if tj.IsZero() {
+				tj = tagged[j].entry.CreatedAt
+			}
+
+			// Only supersede if ≥30 min apart (not same-session extractions).
+			diff := tj.Sub(ti)
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff < 30*time.Minute {
+				continue
+			}
+
+			// Drop the older one, but only if it's a session extraction
+			// (session summaries are ephemeral conclusions, not primary facts).
+			if ti.Before(tj) && tagged[i].isSessionExt {
+				dropped[i] = true
+				log.Printf("[proactive_recall_dedup] dropping older session_extraction entry %s (shared %d tags with newer %s, age_diff=%v)", tagged[i].entry.ID, shared, tagged[j].entry.ID, diff)
+			} else if tj.Before(ti) && tagged[j].isSessionExt {
+				dropped[j] = true
+				log.Printf("[proactive_recall_dedup] dropping older session_extraction entry %s (shared %d tags with newer %s, age_diff=%v)", tagged[j].entry.ID, shared, tagged[i].entry.ID, diff)
+			}
+		}
+	}
+
+	// Collect survivors.
+	result := make([]Entry, 0, len(entries))
+	for i, e := range entries {
+		if !dropped[i] {
+			result = append(result, e)
+		}
+	}
+	return result
 }
 
 // ---------------------------------------------------------------------------
