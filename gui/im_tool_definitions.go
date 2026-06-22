@@ -228,7 +228,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			def := corememory.ToolDefinitionSchema()
 			return toolDef("memory", def.Description, def.Properties, def.Required)
 		}(),
-		toolDef("compress_context", "主动压缩当前对话上下文。当你完成一个子任务或阶段性工作后，调用此工具将之前的详细工具调用历史替换为一段摘要，释放 context 空间给后续任务。适用于长程任务（>10 轮迭代）中的关键检查点。摘要应包含：已完成的工作、创建/修改的文件、关键决策、下一步计划。",
+		toolDef("compress_context", "主动压缩当前对话上下文，释放 context 空间给后续工作。调用后对话继续，不会中断。适用于长程任务中连续 10+ 轮工具调用后、切换工作方向时、或 context 接近上限时。摘要应包含：已完成的工作、创建/修改的文件、关键决策、下一步计划。",
 			map[string]interface{}{
 				"summary":       map[string]string{"type": "string", "description": "当前工作状态摘要。应包含：已完成的工作、创建/修改的文件列表、关键决策和结论、下一步计划"},
 				"preserve_last": map[string]string{"type": "integer", "description": "保留最近 N 条对话条目不压缩（可选，默认 4，最大 20）"},

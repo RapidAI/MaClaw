@@ -560,26 +560,23 @@ func TestResponseNeutralToolDefersFinalizationForActiveBackgroundTask(t *testing
 		AttachVisibleArtifacts:     func(*IMAgentResponse) {},
 	})
 
-	// Should NOT finalize — should defer to background task check
+	// compress_context never finalizes — loop always continues regardless of background tasks
 	if result.Response != nil {
-		t.Fatalf("expected loop to continue (response=nil) when background task is active, got text=%q", result.Response.Text)
-	}
-	if phase.RecoverReason != agentRecoverBackgroundTaskPending {
-		t.Fatalf("recover reason = %q, want %q", phase.RecoverReason, agentRecoverBackgroundTaskPending)
-	}
-	if !strings.Contains(phase.RecoverPrompt, task.TaskID) {
-		t.Fatalf("recover prompt should mention the active task ID %q, got %q", task.TaskID, phase.RecoverPrompt)
+		t.Fatalf("expected loop to continue (response=nil) after compress_context, got text=%q", result.Response.Text)
 	}
 }
 
-func TestResponseNeutralToolFinalizesWhenNoBackgroundTask(t *testing.T) {
+func TestCompressContextContinuesLoopWhenNoBackgroundTask(t *testing.T) {
 	h := &IMMessageHandler{localBgTaskMgr: coretool.NewLocalBackgroundTaskManager(t.TempDir()), memory: agent.NewConversationMemory()}
 	defer h.memory.Stop()
 	ctx := NewLoopContext("response-neutral-no-bg", 10, nil)
 
 	phase := &agentLoopPhase{}
 
-	// No background task running
+	// No background task running — compress_context should still NOT finalize.
+	// The LLM compresses context to free space for upcoming work.
+	// If it's truly done, the next iteration will produce no tool calls and
+	// the no-tool branch will finalize naturally.
 	result := h.handleAgentLoopPostToolBranch(agentLoopPostToolBranchOptions{
 		Context:                    ctx,
 		UserID:                     desktopUserID,
@@ -596,19 +593,13 @@ func TestResponseNeutralToolFinalizesWhenNoBackgroundTask(t *testing.T) {
 		AttachVisibleArtifacts:     func(*IMAgentResponse) {},
 	})
 
-	// Should finalize — no background task
-	if result.Response == nil {
-		t.Fatal("expected finalization response when no background task is active")
-	}
-	if !strings.Contains(result.Response.Text, "已完成所有工作") {
-		t.Fatalf("finalized response should contain visible content, got %q", result.Response.Text)
-	}
-	if phase.Stage != agentStageFinalize {
-		t.Fatalf("phase stage = %q, want %q", phase.Stage, agentStageFinalize)
+	// Must NOT finalize — loop continues so LLM can deliver or confirm completion
+	if result.Response != nil {
+		t.Fatalf("compress_context must not finalize loop even without background tasks, got response %q", result.Response.Text)
 	}
 }
 
-func TestResponseNeutralToolFinalizesWithHintWhenRecoverCapReached(t *testing.T) {
+func TestCompressContextContinuesLoopEvenWhenRecoverCapReached(t *testing.T) {
 	h := &IMMessageHandler{localBgTaskMgr: coretool.NewLocalBackgroundTaskManager(t.TempDir()), memory: agent.NewConversationMemory()}
 	defer h.memory.Stop()
 	ctx := NewLoopContext("response-neutral-bg-cap", 10, nil)
@@ -642,15 +633,10 @@ func TestResponseNeutralToolFinalizesWithHintWhenRecoverCapReached(t *testing.T)
 		AttachVisibleArtifacts:     func(*IMAgentResponse) {},
 	})
 
-	// Should finalize with task hint appended (recover cap reached, can't defer)
-	if result.Response == nil {
-		t.Fatal("expected finalization when recover cap is reached")
+	// compress_context never finalizes — loop continues regardless of recover cap or background tasks
+	if result.Response != nil {
+		t.Fatalf("compress_context must not finalize loop even with active bg task + recover cap, got response %q", result.Response.Text)
 	}
-	if !strings.Contains(result.Response.Text, task.TaskID) {
-		t.Fatalf("finalized response should include background task hint with task_id=%q, got %q", task.TaskID, result.Response.Text)
-	}
-	if !strings.Contains(result.Response.Text, "Still waiting for build") {
-		t.Fatalf("finalized response should preserve visible content, got %q", result.Response.Text)
-	}
+	_ = task // referenced above in defer
 }
 

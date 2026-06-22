@@ -7,15 +7,18 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
-func TestPostToolBranchFinalizesVisibleContentAfterCompressContext(t *testing.T) {
+func TestPostToolBranchContinuesLoopAfterCompressContext(t *testing.T) {
+	// compress_context should NEVER finalize the loop. The LLM compresses context
+	// to free space for upcoming work. The loop must continue so the LLM can
+	// deliver on its promise (e.g. "let me now generate the report").
 	h := &IMMessageHandler{memory: agent.NewConversationMemory()}
 	defer h.memory.Stop()
-	history := []agent.ConversationEntry{{Role: "assistant", Content: "weather result", ToolCalls: []llm.ToolCall{{ID: "call-compress", Function: llm.ToolCallFunction{Name: "compress_context"}}}}}
+	history := []agent.ConversationEntry{{Role: "assistant", Content: "让我提供综合评估报告", ToolCalls: []llm.ToolCall{{ID: "call-compress", Function: llm.ToolCallFunction{Name: "compress_context"}}}}}
 	phase := &agentLoopPhase{Stage: agentStageExecute}
 
 	result := h.handleAgentLoopPostToolBranch(agentLoopPostToolBranchOptions{
 		UserID:                     desktopUserID,
-		MessageContent:             "weather result",
+		MessageContent:             "让我提供综合评估报告",
 		AssistantHadVisibleContent: true,
 		ToolCalls:                  []llm.ToolCall{{ID: "call-compress", Function: llm.ToolCallFunction{Name: "compress_context"}}},
 		ToolOutcomes:               []toolOutcome{toolOutcomeSucceeded},
@@ -24,17 +27,11 @@ func TestPostToolBranchFinalizesVisibleContentAfterCompressContext(t *testing.T)
 		StreamDone:                 true,
 	})
 
-	if result.Response == nil {
-		t.Fatal("expected visible assistant content to finalize after compress_context")
+	if result.Response != nil {
+		t.Fatalf("compress_context must not finalize loop, got response %q", result.Response.Text)
 	}
-	if result.Response.Text != "weather result" {
-		t.Fatalf("response text = %q, want visible assistant content", result.Response.Text)
-	}
-	if phase.Stage != agentStageFinalize {
-		t.Fatalf("phase stage = %q, want finalize", phase.Stage)
-	}
-	if !result.PostStreamReturnPrepTime {
-		t.Fatal("expected post-stream return prep marker")
+	if phase.Stage == agentStageFinalize {
+		t.Fatal("phase must not be set to finalize after compress_context")
 	}
 }
 
@@ -55,7 +52,7 @@ func TestPostToolBranchDoesNotFinalizeVisibleContentAfterAnswerChangingTool(t *t
 	}
 }
 
-func TestPostToolBranchDoesNotFinalizeMixedResponseNeutralAndAnswerChangingTools(t *testing.T) {
+func TestPostToolBranchContinuesLoopAfterMixedCompressAndOtherTools(t *testing.T) {
 	h := &IMMessageHandler{memory: agent.NewConversationMemory()}
 	defer h.memory.Stop()
 
@@ -75,7 +72,7 @@ func TestPostToolBranchDoesNotFinalizeMixedResponseNeutralAndAnswerChangingTools
 	}
 }
 
-func TestPostToolBranchDoesNotFinalizeFailedPostTurnTool(t *testing.T) {
+func TestPostToolBranchContinuesAfterFailedCompressContext(t *testing.T) {
 	h := &IMMessageHandler{memory: agent.NewConversationMemory()}
 	defer h.memory.Stop()
 
@@ -88,11 +85,11 @@ func TestPostToolBranchDoesNotFinalizeFailedPostTurnTool(t *testing.T) {
 	})
 
 	if result.Response != nil {
-		t.Fatalf("failed post-turn tool should continue recovery loop, got response %q", result.Response.Text)
+		t.Fatalf("failed compress_context should continue loop, got response %q", result.Response.Text)
 	}
 }
 
-func TestPostToolBranchDoesNotFinalizeUncertainPostTurnTool(t *testing.T) {
+func TestPostToolBranchContinuesAfterUncertainCompressContext(t *testing.T) {
 	h := &IMMessageHandler{memory: agent.NewConversationMemory()}
 	defer h.memory.Stop()
 
@@ -105,11 +102,11 @@ func TestPostToolBranchDoesNotFinalizeUncertainPostTurnTool(t *testing.T) {
 	})
 
 	if result.Response != nil {
-		t.Fatalf("uncertain post-turn tool should continue recovery loop, got response %q", result.Response.Text)
+		t.Fatalf("uncertain compress_context should continue loop, got response %q", result.Response.Text)
 	}
 }
 
-func TestPostToolBranchDoesNotFinalizeReasoningOnlyContent(t *testing.T) {
+func TestPostToolBranchContinuesAfterReasoningOnlyCompressContext(t *testing.T) {
 	h := &IMMessageHandler{memory: agent.NewConversationMemory()}
 	defer h.memory.Stop()
 
@@ -122,11 +119,12 @@ func TestPostToolBranchDoesNotFinalizeReasoningOnlyContent(t *testing.T) {
 	})
 
 	if result.Response != nil {
-		t.Fatalf("reasoning-only tool turn must not be emitted as final text, got response %q", result.Response.Text)
+		t.Fatalf("reasoning-only compress_context must not finalize, got response %q", result.Response.Text)
 	}
 }
 
-func TestPostToolBranchFinalizesWithLengthContinuationAfterCompressContext(t *testing.T) {
+func TestPostToolBranchContinuesWithLengthContinuationAfterCompressContext(t *testing.T) {
+	// Even with length-continuation text accumulated, compress_context must not finalize.
 	h := &IMMessageHandler{memory: agent.NewConversationMemory()}
 	defer h.memory.Stop()
 
@@ -139,10 +137,7 @@ func TestPostToolBranchFinalizesWithLengthContinuationAfterCompressContext(t *te
 		ToolOutcomes:               []toolOutcome{toolOutcomeSucceeded},
 	})
 
-	if result.Response == nil {
-		t.Fatal("expected visible assistant content to finalize after compress_context")
-	}
-	if result.Response.Text != "first chunk second chunk" {
-		t.Fatalf("response text = %q, want assembled continuation", result.Response.Text)
+	if result.Response != nil {
+		t.Fatalf("compress_context with length continuation must not finalize, got response %q", result.Response.Text)
 	}
 }

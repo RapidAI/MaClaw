@@ -25,13 +25,15 @@ import (
 func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isProMode bool, trialReflectEnabled bool, suppressCodingContract bool) {
 	b.WriteString(`
 ## 上下文管理（长程任务优化）
-- 当你完成一个子任务或阶段性工作后（如完成了文件创建、完成了一轮测试、完成了数据收集），主动调用 compress_context 工具压缩之前的详细工具调用历史为一段摘要。
+- 当 context 较大（连续执行了 10+ 轮工具调用）或切换工作方向时，调用 compress_context 压缩之前的详细工具调用历史为一段摘要。
+- 调用 compress_context 后你可以继续工作——它不会中断对话，只是释放空间。
 - 摘要应包含：已完成的工作、创建/修改的文件列表、关键决策和结论、下一步计划。
-- 这能释放 context 空间，让后续推理更高效。建议在以下时机调用：
-  - 完成一个独立子任务后（如"文件结构已创建完毕"）
-  - 连续执行了 10+ 轮工具调用后
+- 建议调用时机：
+  - 连续执行了 10+ 轮工具调用后（释放空间给后续工作）
+  - 完成一个独立子任务准备开始下一个时
   - 切换到不同类型的工作时（如从代码编写切换到测试）
 - 不要在每次工具调用后都压缩——只在关键检查点使用。
+- 重要：compress_context 和其他工具调用一样，执行后对话继续。如果你还有未完成的工作，压缩后直接继续执行。
 `)
 
 	if !suppressCodingContract {

@@ -115,67 +115,12 @@ func (h *IMMessageHandler) handleAgentLoopPostToolBranch(opts agentLoopPostToolB
 	stageStartedAt = time.Now()
 	result.History = h.applyPendingContextCompression(opts.UserID, result.History, opts.LastCompressionSummary)
 	logSlow("pending_compression", stageStartedAt)
-	// Some tools only maintain loop state after the answer is already complete.
-	// Do not make those tools force another LLM round and hide the visible answer.
-	if shouldFinalizeAssistantContentAfterResponseNeutralTools(opts.AssistantHadVisibleContent, result.MessageContent, opts.ToolCalls, opts.ToolOutcomes) {
-		// Before finalizing, check if there are active background tasks that
-		// the agent should continue monitoring. Without this check, calling
-		// compress_context while a background task is running causes the loop
-		// to exit prematurely — the no-tool branch's
-		// recoverForPendingBackgroundTaskNoToolReply never gets a chance to run
-		// because we're in the tool branch.
-		var taskHint string
-		if opts.Context != nil {
-			taskHint = h.pendingBackgroundTaskHint(opts.Context.StartedAt)
-		}
-		if taskHint != "" && opts.Phase != nil && opts.Phase.TotalRecoverInjections < maxTotalRecoverInjections {
-			log.Printf("[agent-loop] response-neutral tool with active background task; deferring finalize to check task status")
-			enterRecoverPhase(opts.Phase, agentRecoverBackgroundTaskPending, buildPendingBackgroundTaskRecoverPrompt(taskHint))
-			return result // result.Response == nil → loop continues
-		}
-
-		if opts.Phase != nil {
-			opts.Phase.Stage = agentStageFinalize
-		}
-		finalText := stripThinkingTags(opts.LengthContinuationText + result.MessageContent)
-		finalText = appendPendingBackgroundTaskFinalHint(finalText, taskHint)
-		finalResp := &IMAgentResponse{Text: finalText}
-		if opts.StreamDone {
-			result.PostStreamReturnPrepTime = true
-		}
-		if opts.AttachLLMTelemetry != nil {
-			opts.AttachLLMTelemetry(finalResp)
-		}
-		if opts.AttachVisibleArtifacts != nil {
-			opts.AttachVisibleArtifacts(finalResp)
-		}
-		h.saveConversationHistoryTimed(opts.UserID, result.History, finalResp)
-		result.Response = finalResp
-	}
+	// After tool execution (including compress_context), the loop always continues.
+	// The only valid termination signal is the LLM producing a pure-text response
+	// with no tool calls — handled by the no-tool branch in the caller.
 	return result
-}
-
-func shouldFinalizeAssistantContentAfterResponseNeutralTools(hasVisibleContent bool, content string, toolCalls []llm.ToolCall, toolOutcomes []toolOutcome) bool {
-	if !hasVisibleContent || !assistantMessageHasVisibleContent(content) || len(toolCalls) == 0 || len(toolCalls) != len(toolOutcomes) {
-		return false
-	}
-	for i, tc := range toolCalls {
-		if toolOutcomes[i] != toolOutcomeSucceeded || !isResponseNeutralPostTurnTool(tc.Function.Name) {
-			return false
-		}
-	}
-	return true
 }
 
 func assistantMessageHasVisibleContent(content string) bool {
 	return strings.TrimSpace(stripThinkingTags(content)) != ""
-}
-
-func isResponseNeutralPostTurnTool(name string) bool {
-	switch strings.TrimSpace(name) {
-	case "compress_context":
-		return true
-	default:
-		return false
-	}
 }
