@@ -102,8 +102,9 @@ function assertScriptOrder() {
   }
   let lastIndex = -1;
   expectedScripts.forEach(function(name) {
-    const needle = 'src="/admin/' + name + '"';
-    const idx = html.indexOf(needle);
+    const scriptPattern = new RegExp('src="/admin/' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:\\?[^"]*)?"');
+    const match = scriptPattern.exec(html);
+    const idx = match ? match.index : -1;
     if (idx === -1) {
       fail('index.html is missing script tag for ' + name);
       return;

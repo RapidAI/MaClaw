@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
-import { AppsRailIcon } from './SidebarNavIcons';
+import { AppsRailIcon, SystemIcon, AboutIcon, SettingsIcon, MonitorIcon, SkillsIcon, MCPIcon, GossipIcon } from './SidebarNavIcons';
 
 type SidebarNavRailProps = {
     navTab: string;
@@ -42,17 +42,6 @@ const zhHant = {
     settings: '\u8a2d\u5b9a',
 };
 
-const icon = {
-    lobster: '\u{1F99E}',
-    monitor: '\u{1F4E1}',
-    skills: '\u{1F9E9}',
-    mcp: '\u{1F50C}',
-    gossip: '\u{1F5E3}\uFE0F',
-    settings: '\u2699\uFE0F',
-    about: '\u2139\uFE0F',
-    system: '\u2699\uFE0F',
-};
-
 export const SidebarNavRail = ({
     navTab,
     brandInfo,
@@ -79,11 +68,11 @@ export const SidebarNavRail = ({
     const isTigerClaw = brandInfo?.id === 'qianxin';
 
     const systemMenuItems: SystemMenuItem[] = [
-        { id: 'settings', icon: <span>{icon.settings}</span>, label: lang === 'zh-Hans' ? zhHans.settings : lang === 'zh-Hant' ? zhHant.settings : 'Settings', visible: true },
-        { id: 'remote', icon: <span>{icon.monitor}</span>, label: lang === 'zh-Hans' ? zhHans.monitor : lang === 'zh-Hant' ? zhHant.monitor : 'Monitor', visible: true, badge: runningTaskCount > 0 ? runningTaskCount : undefined },
-        { id: 'skills', icon: <span>{icon.skills}</span>, label: t('skills'), visible: true },
-        { id: 'mcp', icon: <span>{icon.mcp}</span>, label: 'MCP', visible: true },
-        { id: 'gossip', icon: <span>{icon.gossip}</span>, label: t('gossip'), visible: gossipAllowed },
+        { id: 'settings', icon: <SettingsIcon />, label: lang === 'zh-Hans' ? zhHans.settings : lang === 'zh-Hant' ? zhHant.settings : 'Settings', visible: true },
+        { id: 'remote', icon: <MonitorIcon />, label: lang === 'zh-Hans' ? zhHans.monitor : lang === 'zh-Hant' ? zhHant.monitor : 'Monitor', visible: true, badge: runningTaskCount > 0 ? runningTaskCount : undefined },
+        { id: 'skills', icon: <SkillsIcon />, label: t('skills'), visible: true },
+        { id: 'mcp', icon: <MCPIcon />, label: 'MCP', visible: true },
+        { id: 'gossip', icon: <GossipIcon />, label: t('gossip'), visible: gossipAllowed },
     ];
 
     return (
@@ -131,11 +120,11 @@ export const SidebarNavRail = ({
                     transition: 'all 0.2s ease',
                     cursor: 'pointer',
                 }}>
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                        <circle cx="12" cy="10" r="1" fill="#fff" stroke="none" />
-                        <circle cx="8" cy="10" r="1" fill="#fff" stroke="none" />
-                        <circle cx="16" cy="10" r="1" fill="#fff" stroke="none" />
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+                        <circle cx="12" cy="11.5" r="0.8" fill="#fff" stroke="none" />
+                        <circle cx="8.5" cy="11.5" r="0.8" fill="#fff" stroke="none" />
+                        <circle cx="15.5" cy="11.5" r="0.8" fill="#fff" stroke="none" />
                     </svg>
                 </div>
                 <span style={{ fontSize: '0.68rem', lineHeight: 1, fontWeight: 700, color: navTab === 'ai' ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}>{aiAssistantLabel}</span>
@@ -189,12 +178,12 @@ export const SidebarNavRail = ({
                 style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: systemMenuOpen ? 'inset -1px 0 0 var(--theme-text-muted)' : 'none', justifyContent: 'center' }}
                 title={systemLabel}
             >
-                <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.08rem' }}>{icon.system}</span>
+                <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: systemMenuOpen ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}><SystemIcon /></span>
                 <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{systemLabel}</span>
             </div>
 
             <div className={'sidebar-item left-nav-item ' + (navTab === 'about' ? 'active' : '')} onClick={() => switchTool('about')} style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'about' ? 'inset -1px 0 0 var(--theme-text-muted)' : 'none', justifyContent: 'center' }} title={t('about')}>
-                <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.08rem' }}>{icon.about}</span>
+                <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'about' ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}><AboutIcon /></span>
                 <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{t('about')}</span>
             </div>
 
