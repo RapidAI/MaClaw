@@ -2299,6 +2299,23 @@ func (r *SkillRunner) recordSkillUsageExperience(skill *corelib.NLSkillEntry, ex
 		FinalOutcome: finalOutcome,
 		RunArgs:      argsStr,
 	})
+
+	// Invalidate manage_skill outcome records when a qualifying error class
+	// indicates the skill environment is broken (config, dependencies, setup).
+	// This ensures the router does not continue recommending manage_skill based
+	// on stale success data from before the breakage occurred.
+	if errorClass != "" {
+		qualifyingErrors := map[string]bool{
+			"config_error":       true,
+			"dependency_missing": true,
+			"setup_failed":       true,
+			"install_failed":     true,
+		}
+		if qualifyingErrors[errorClass] {
+			r.executor.app.usageTracker.InvalidateOutcomes("manage_skill",
+				fmt.Sprintf("%s: %s", errorClass, skill.Name))
+		}
+	}
 }
 
 // markSelfRepairPending sets SelfRepairPending=true on the most recent run

@@ -2,12 +2,14 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/condeval"
 	"github.com/RapidAI/CodeClaw/hub/internal/capability"
 )
 
@@ -21,6 +23,8 @@ var (
 	ErrNoNodes                 = errors.New("workflow graph has no nodes")
 	ErrDisconnectedNodes       = errors.New("workflow graph has disconnected nodes")
 	ErrTriggerHasIncoming      = errors.New("trigger node cannot have incoming edges")
+	ErrTerminalHasOutgoing     = errors.New("terminal node cannot have outgoing edges")
+	ErrConditionBranchInvalid  = errors.New("condition branch configuration is invalid")
 	ErrEmptyVersionNumber      = errors.New("version number is empty")
 )
 
@@ -378,12 +382,18 @@ func ValidateGraphStructure(graph WorkflowGraph) error {
 	if triggerHasIncomingEdge(graph, trigger.ID) {
 		return ErrTriggerHasIncoming
 	}
+	if terminalHasOutgoingEdge(graph) {
+		return ErrTerminalHasOutgoing
+	}
 
 	// Check for disconnected nodes — every non-trigger node must have at
 	// least one incoming edge, and every non-terminal node must have at
 	// least one outgoing edge. We use reachability from the trigger node.
 	if hasDisconnectedNodes(graph) {
 		return ErrDisconnectedNodes
+	}
+	if err := validateConditionBranchConfigs(graph); err != nil {
+		return err
 	}
 
 	return nil
@@ -396,6 +406,85 @@ func triggerHasIncomingEdge(graph WorkflowGraph, triggerID string) bool {
 		}
 	}
 	return false
+}
+
+func terminalHasOutgoingEdge(graph WorkflowGraph) bool {
+	terminalIDs := make(map[string]struct{})
+	for _, node := range graph.Nodes {
+		if node.Type == NodeTypeTerminal {
+			terminalIDs[node.ID] = struct{}{}
+		}
+	}
+	for _, edge := range graph.Edges {
+		if _, ok := terminalIDs[edge.SourceID]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func validateConditionBranchConfigs(graph WorkflowGraph) error {
+	nodeByID := make(map[string]WorkflowNode, len(graph.Nodes))
+	for _, node := range graph.Nodes {
+		nodeByID[node.ID] = node
+	}
+	for _, node := range graph.Nodes {
+		if node.Type != NodeConditionBranch {
+			continue
+		}
+		var config ConditionBranchConfig
+		if err := json.Unmarshal(node.Config, &config); err != nil {
+			return fmt.Errorf("%w: parse node %s config: %v", ErrConditionBranchInvalid, node.ID, err)
+		}
+		hasRoute := false
+		for _, branch := range config.Branches {
+			targetID := strings.TrimSpace(branch.TargetNodeID)
+			if targetID == "" {
+				continue
+			}
+			hasRoute = true
+			if err := validateConditionBranchTarget(node, targetID, nodeByID); err != nil {
+				return err
+			}
+			if strings.TrimSpace(branch.Expression.Field) == "" || !isConditionBranchOperator(branch.Expression.Operator) {
+				return fmt.Errorf("%w: node %s has invalid branch expression", ErrConditionBranchInvalid, node.ID)
+			}
+		}
+		defaultBranch := strings.TrimSpace(config.DefaultBranch)
+		if defaultBranch != "" {
+			hasRoute = true
+			if err := validateConditionBranchTarget(node, defaultBranch, nodeByID); err != nil {
+				return err
+			}
+		}
+		if !hasRoute {
+			return fmt.Errorf("%w: node %s has no branch or default route", ErrConditionBranchInvalid, node.ID)
+		}
+	}
+	return nil
+}
+
+func validateConditionBranchTarget(source WorkflowNode, targetID string, nodeByID map[string]WorkflowNode) error {
+	target, ok := nodeByID[targetID]
+	if !ok {
+		return fmt.Errorf("%w: node %s targets missing node %s", ErrConditionBranchInvalid, source.ID, targetID)
+	}
+	if target.ID == source.ID {
+		return fmt.Errorf("%w: node %s targets itself", ErrConditionBranchInvalid, source.ID)
+	}
+	if target.Type == NodeTrigger {
+		return fmt.Errorf("%w: node %s targets trigger node %s", ErrConditionBranchInvalid, source.ID, targetID)
+	}
+	return nil
+}
+
+func isConditionBranchOperator(operator string) bool {
+	switch strings.TrimSpace(operator) {
+	case condeval.OpEquals, condeval.OpNotEquals, condeval.OpGreaterThan, condeval.OpLessThan, condeval.OpContains, condeval.OpInList, condeval.OpNotInList, condeval.OpIsEmpty, condeval.OpIsNotEmpty:
+		return true
+	default:
+		return false
+	}
 }
 
 // hasDisconnectedNodes checks if any node in the graph is unreachable from

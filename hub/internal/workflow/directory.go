@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -177,6 +178,9 @@ func (ds *DirectoryService) PendingMyAction(ctx context.Context, userID string) 
 	}
 
 	for _, exec := range pendingExecs {
+		if !pendingApprovalAssignedToUser(exec, userID) {
+			continue
+		}
 		// 2. Get the instance from cache to extract workflow_name, initiator_name, status, etc.
 		inst := instanceCache[exec.InstanceID]
 		if inst == nil {
@@ -239,6 +243,50 @@ func (ds *DirectoryService) PendingMyAction(ctx context.Context, userID string) 
 	})
 
 	return items, nil
+}
+
+func pendingApprovalAssignedToUser(exec NodeExecution, userID string) bool {
+	userID = strings.TrimSpace(userID)
+	if userID == "" || len(exec.Result) == 0 {
+		return true
+	}
+	var resultData map[string]interface{}
+	if err := json.Unmarshal(exec.Result, &resultData); err != nil {
+		return true
+	}
+	ids, hasApproverIDs := stringListFromResult(resultData["approver_ids"])
+	if !hasApproverIDs {
+		return true
+	}
+	for _, id := range ids {
+		if strings.TrimSpace(id) == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func stringListFromResult(value interface{}) ([]string, bool) {
+	switch items := value.(type) {
+	case []interface{}:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
+			}
+		}
+		return out, true
+	case []string:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			if strings.TrimSpace(item) != "" {
+				out = append(out, strings.TrimSpace(item))
+			}
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }
 
 // extractApprovalTimeoutHours extracts the timeout_hours from a node execution's Result field.

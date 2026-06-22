@@ -12,6 +12,7 @@ import (
 
 type mockWorkflowStore struct {
 	publishedVersion *WorkflowVersion
+	version          *WorkflowVersion
 	publishedErr     error
 }
 
@@ -31,6 +32,9 @@ func (m *mockWorkflowStore) UpdateVersion(ctx context.Context, ver *WorkflowVers
 	return nil
 }
 func (m *mockWorkflowStore) GetVersion(ctx context.Context, id string) (*WorkflowVersion, error) {
+	if m.version != nil {
+		return m.version, nil
+	}
 	return nil, nil
 }
 func (m *mockWorkflowStore) GetPublishedVersion(ctx context.Context, workflowID string) (*WorkflowVersion, error) {
@@ -48,8 +52,8 @@ func (m *mockWorkflowStore) ListPendingReviews(ctx context.Context, page, pageSi
 
 type mockInstanceStore struct {
 	createdInstance *WorkflowInstance
-	createdExecs   []*NodeExecution
-	createErr      error
+	createdExecs    []*NodeExecution
+	createErr       error
 }
 
 func (m *mockInstanceStore) Create(ctx context.Context, inst *WorkflowInstance) error {
@@ -76,6 +80,14 @@ func (m *mockInstanceStore) CreateNodeExecution(ctx context.Context, exec *NodeE
 	return nil
 }
 func (m *mockInstanceStore) UpdateNodeExecution(ctx context.Context, id string, status NodeStatus, result json.RawMessage, failReason string) error {
+	for _, exec := range m.createdExecs {
+		if exec.ID == id {
+			exec.Status = status
+			exec.Result = result
+			exec.FailReason = failReason
+			return nil
+		}
+	}
 	return nil
 }
 func (m *mockInstanceStore) GetPendingApprovals(ctx context.Context, approverID string) ([]NodeExecution, error) {
@@ -115,13 +127,32 @@ func (m *mockAuditStore) QueryByDecision(ctx context.Context, decision string, p
 	return nil, 0, nil
 }
 
-type mockDispatcher struct{}
+type mockDispatcher struct {
+	dispatched []string
+}
 
 func (m *mockDispatcher) Dispatch(ctx context.Context, req *ApprovalRequest, approverID string) error {
+	m.dispatched = append(m.dispatched, approverID)
 	return nil
 }
 func (m *mockDispatcher) DispatchFallback(ctx context.Context, req *ApprovalRequest, fallbackID string, reason string) error {
 	return nil
+}
+
+type mockApproverResolver struct {
+	values map[string][]string
+}
+
+func (m mockApproverResolver) ResolveApproverIDs(ctx context.Context, approverIDs []string) ([]string, error) {
+	var out []string
+	for _, id := range approverIDs {
+		if resolved := m.values[id]; len(resolved) > 0 {
+			out = append(out, resolved...)
+			continue
+		}
+		out = append(out, id)
+	}
+	return out, nil
 }
 
 // --- Tests ---
@@ -216,12 +247,79 @@ func TestStartInstance_Success(t *testing.T) {
 	if exec.NodeID != "trigger-1" {
 		t.Errorf("First NodeExecution NodeID = %q, want %q", exec.NodeID, "trigger-1")
 	}
-	if exec.Status != NodeRunning {
-		t.Errorf("NodeExecution Status = %q, want %q", exec.Status, NodeRunning)
+	if exec.Status != NodeCompleted {
+		t.Errorf("Trigger NodeExecution Status = %q, want %q", exec.Status, NodeCompleted)
+	}
+	if len(instStore.createdExecs) < 2 || instStore.createdExecs[1].NodeID != "approval-1" || instStore.createdExecs[1].Status != NodeRunning {
+		t.Errorf("Approval NodeExecution = %#v, want running approval-1", instStore.createdExecs)
 	}
 	if exec.InstanceID != instance.ID {
 		t.Errorf("NodeExecution InstanceID = %q, want %q", exec.InstanceID, instance.ID)
 	}
+}
+
+func TestApprovalRoleReferenceResolvesBeforeDispatchAndDecision(t *testing.T) {
+	roleID := "role:function:finance:finance_approver"
+	approvalCfg, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{roleID},
+		Mode:         ModeSingle,
+		TimeoutHours: 24,
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "trigger-1", Type: NodeTrigger, Label: "Start"},
+			{ID: "approval-1", Type: NodeApproval, Label: "Review", Config: approvalCfg},
+		},
+		Edges: []WorkflowEdge{{ID: "e1", SourceID: "trigger-1", TargetID: "approval-1"}},
+	}
+	version := &WorkflowVersion{ID: "ver-1", WorkflowID: "wf-1", Status: VersionPublished, Graph: graph}
+	wfStore := &mockWorkflowStore{publishedVersion: version, version: version}
+	instStore := &mockInstanceStore{}
+	auditStore := &mockAuditStore{}
+	dispatcher := &mockDispatcher{}
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher, WithApprovalApproverResolver(mockApproverResolver{values: map[string][]string{
+		roleID: {"machine-finance-1"},
+	}}))
+
+	inst, err := executor.StartInstance(context.Background(), "wf-1", `{}`)
+	if err != nil {
+		t.Fatalf("StartInstance returned error: %v", err)
+	}
+	if len(dispatcher.dispatched) != 1 || dispatcher.dispatched[0] != "machine-finance-1" {
+		t.Fatalf("dispatched approvers = %#v, want machine-finance-1", dispatcher.dispatched)
+	}
+	if len(instStore.createdExecs) < 2 || len(instStore.createdExecs[1].Result) == 0 {
+		t.Fatalf("approval node execution missing runtime metadata: %#v", instStore.createdExecs)
+	}
+	var metadata map[string]interface{}
+	if err := json.Unmarshal(instStore.createdExecs[1].Result, &metadata); err != nil {
+		t.Fatalf("decode approval runtime metadata: %v", err)
+	}
+	if got := stringSliceFromAny(metadata["original_approvers"]); len(got) != 1 || got[0] != roleID {
+		t.Fatalf("original_approvers = %#v, want %s", got, roleID)
+	}
+	if got := stringSliceFromAny(metadata["approver_ids"]); len(got) != 1 || got[0] != "machine-finance-1" {
+		t.Fatalf("approver_ids = %#v, want machine-finance-1", got)
+	}
+
+	err = executor.ResumeInstance(context.Background(), inst.ID, "approval-1", ApprovalResponse{
+		ApproverID: "machine-finance-1",
+		Decision:   approvalDecisionApprove,
+	})
+	if err != nil {
+		t.Fatalf("ResumeInstance with resolved approver returned error: %v", err)
+	}
+}
+
+func stringSliceFromAny(value interface{}) []string {
+	items, _ := value.([]interface{})
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func TestStartInstance_NoPublishedVersion(t *testing.T) {

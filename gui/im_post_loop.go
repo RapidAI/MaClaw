@@ -28,6 +28,13 @@ func (h *IMMessageHandler) finalizeIMAgentLoopResponse(msg IMUserMessage, loopCt
 	resp.FinalizeTraceNanos = time.Since(finalizeStartedAt).Nanoseconds()
 	h.schedulePostLoopSideEffects(msg, loopCtx, resp, workflowAgentLoop)
 
+	// V2 workflow doc phase: attach review action buttons when the phase
+	// transitions to WaitingConfirm. This gives the user structured confirm/
+	// supplement/abort choices alongside the free-form input box.
+	if workflowAgentLoop && loopCtx != nil && loopCtx.WorkflowDocPhase {
+		h.appendWorkflowReviewActions(resp, msg.UserID, loopCtx)
+	}
+
 	h.maybeAttachVoiceSummary(resp, msg.Platform, isVoiceInputMessage(msg))
 	return resp
 }

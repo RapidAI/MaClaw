@@ -216,6 +216,22 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 		if idx >= 0 {
 			configSkill := &skills[idx]
 			if len(fs.Steps) > 0 {
+				// Detect skill version change before merging fields.
+				// When the on-disk version differs from the config version,
+				// emit an InvalidationEvent scoped to that skill name so that
+				// stale outcome records for manage_skill are decayed.
+				if oldVersion := configSkill.HubVersion; oldVersion != "" && fs.HubVersion != "" && oldVersion != fs.HubVersion {
+					if tracker := e.app.usageTracker; tracker != nil {
+						event := tool.InvalidationEvent{
+							ToolName:    "manage_skill",
+							Timestamp:   time.Now(),
+							Reason:      fmt.Sprintf("skill_version_changed: %s (%s -> %s)", fs.Name, oldVersion, fs.HubVersion),
+							ScopeTokens: []string{fs.Name},
+						}
+						tracker.ApplyInvalidation(event)
+					}
+				}
+
 				// On-disk skill.yaml is the source of truth for steps.
 				configSkill.Steps = fs.Steps
 				configSkill.SkillDir = fs.SkillDir
@@ -232,6 +248,12 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 				// is allowed to override the on-disk value.
 				if fs.Status != "" && !fileSkillStatusIsOverlay(configSkill.Status) {
 					configSkill.Status = fs.Status
+				}
+
+				// Propagate HubVersion from file to config so subsequent
+				// loads can detect future version changes.
+				if fs.HubVersion != "" {
+					configSkill.HubVersion = fs.HubVersion
 				}
 			}
 			continue

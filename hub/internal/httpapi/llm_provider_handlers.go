@@ -55,6 +55,7 @@ type llmServiceAdminResponse struct {
 	UserBindings                []llmservice.UserBinding       `json:"user_bindings,omitempty"`
 	Cards                       []map[string]any               `json:"cards,omitempty"`
 	Grants                      []llmservice.Grant             `json:"grants,omitempty"`
+	SystemDefaultServiceGroupID string                         `json:"system_default_service_group_id,omitempty"`
 	DefaultNewUserServiceGroups []string                       `json:"default_new_user_service_groups,omitempty"`
 	DefaultNewUserDurationDays  int                            `json:"default_new_user_duration_days,omitempty"`
 	DefaultNewUserCredits       float64                        `json:"default_new_user_credits,omitempty"`
@@ -486,6 +487,7 @@ func writeLLMServiceBindingAudit(ctx context.Context, audit store.AdminAuditRepo
 
 type llmServiceBindingAuditSnapshot struct {
 	GlobalServiceGroupIDs       []string                      `json:"global_service_group_ids"`
+	SystemDefaultServiceGroupID string                        `json:"system_default_service_group_id,omitempty"`
 	DefaultNewUserServiceGroups []string                      `json:"default_new_user_service_groups"`
 	GroupBindings               []llmServiceBindingAuditGroup `json:"group_bindings"`
 	UserBindings                []llmServiceBindingAuditUser  `json:"user_bindings"`
@@ -521,6 +523,7 @@ func buildLLMServiceBindingAuditSnapshot(reg *llmservice.Registry) llmServiceBin
 	clone.Normalize()
 	snapshot := llmServiceBindingAuditSnapshot{
 		GlobalServiceGroupIDs:       append([]string(nil), clone.GlobalServiceGroupIDs...),
+		SystemDefaultServiceGroupID: clone.SystemDefaultServiceGroupID,
 		DefaultNewUserServiceGroups: append([]string(nil), clone.DefaultNewUserServiceGroups...),
 		GroupBindings:               make([]llmServiceBindingAuditGroup, 0, len(clone.GroupBindings)),
 		UserBindings:                make([]llmServiceBindingAuditUser, 0, len(clone.UserBindings)),
@@ -3867,6 +3870,7 @@ func toLLMServiceAdminResponse(r *http.Request, reg *llmservice.Registry, provid
 		UserBindings:                reg.UserBindings,
 		Cards:                       cards,
 		Grants:                      reg.Grants,
+		SystemDefaultServiceGroupID: reg.SystemDefaultServiceGroupID,
 		DefaultNewUserServiceGroups: append([]string(nil), reg.DefaultNewUserServiceGroups...),
 		DefaultNewUserDurationDays:  reg.DefaultNewUserDurationDays,
 		DefaultNewUserCredits:       reg.DefaultNewUserCredits,
@@ -3910,6 +3914,7 @@ func validateLLMServiceGroupReferences(reg *llmservice.Registry) []string {
 		}
 	}
 	check("global service groups", reg.GlobalServiceGroupIDs)
+	check("system default service group", []string{reg.SystemDefaultServiceGroupID})
 	check("new-user default grants", reg.DefaultNewUserServiceGroups)
 	for _, binding := range reg.GroupBindings {
 		label := strings.TrimSpace(binding.GroupID)

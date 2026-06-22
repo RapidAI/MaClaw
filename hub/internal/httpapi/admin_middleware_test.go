@@ -1133,6 +1133,8 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 		{http.MethodGet, "/api/admin/security/settings", nil},
 		{http.MethodPut, "/api/admin/security/settings", map[string]any{}},
 		{http.MethodPut, "/api/admin/security/settings/default-group", map[string]any{}},
+		{http.MethodGet, "/api/admin/security/approval-roles", nil},
+		{http.MethodPut, "/api/admin/security/approval-roles", map[string]any{}},
 		{http.MethodGet, "/api/v1/admin/reviews", nil},
 		{http.MethodGet, "/api/v1/admin/reviews/version-1", nil},
 		{http.MethodPost, "/api/v1/admin/reviews/version-1/approve", map[string]any{}},

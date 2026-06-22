@@ -413,6 +413,14 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "llm-token-usage-changed", current)
 	}
+	// Invalidate LLM-dependent tool outcome records when the provider changes.
+	// PatchConfig (used above) does not go through PatchConfigFields, so the
+	// invalidation hook there is not triggered. We must fire it explicitly.
+	if tracker := a.usageTracker; tracker != nil {
+		for _, toolName := range []string{"craft_tool", "delegate_task", "ask_user"} {
+			tracker.InvalidateOutcomes(toolName, "llm_provider_changed")
+		}
+	}
 	// Immediately notify Hub of the LLM configuration change via heartbeat
 	// so the Hub-side llm_configured flag is updated without waiting for the
 	// next periodic heartbeat cycle.

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -51,15 +53,23 @@ func (s *PGWorkflowStore) GetWorkflow(ctx context.Context, id string) (*Workflow
 		`SELECT id, tenant_id, owner_id, name, description, created_at, updated_at
 		 FROM workflow_definitions WHERE tenant_id = $1 AND id = $2`, store.TenantIDFromContext(ctx), id)
 
-	var def WorkflowDefinition
-	if err := row.Scan(&def.ID, &def.TenantID, &def.OwnerID, &def.Name, &def.Description, &def.CreatedAt, &def.UpdatedAt); err != nil {
+	var (
+		def                  WorkflowDefinition
+		createdAt, updatedAt any
+	)
+	if err := row.Scan(&def.ID, &def.TenantID, &def.OwnerID, &def.Name, &def.Description, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	def.CreatedAt = def.CreatedAt.UTC()
-	def.UpdatedAt = def.UpdatedAt.UTC()
+	var err error
+	if def.CreatedAt, err = scanWorkflowStoreTime(createdAt); err != nil {
+		return nil, fmt.Errorf("scan created_at: %w", err)
+	}
+	if def.UpdatedAt, err = scanWorkflowStoreTime(updatedAt); err != nil {
+		return nil, fmt.Errorf("scan updated_at: %w", err)
+	}
 	return &def, nil
 }
 
@@ -77,12 +87,20 @@ func (s *PGWorkflowStore) ListWorkflows(ctx context.Context, ownerID string) ([]
 
 	var defs []WorkflowDefinition
 	for rows.Next() {
-		var def WorkflowDefinition
-		if err := rows.Scan(&def.ID, &def.TenantID, &def.OwnerID, &def.Name, &def.Description, &def.CreatedAt, &def.UpdatedAt); err != nil {
+		var (
+			def                  WorkflowDefinition
+			createdAt, updatedAt any
+		)
+		if err := rows.Scan(&def.ID, &def.TenantID, &def.OwnerID, &def.Name, &def.Description, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
-		def.CreatedAt = def.CreatedAt.UTC()
-		def.UpdatedAt = def.UpdatedAt.UTC()
+		var parseErr error
+		if def.CreatedAt, parseErr = scanWorkflowStoreTime(createdAt); parseErr != nil {
+			return nil, fmt.Errorf("scan created_at: %w", parseErr)
+		}
+		if def.UpdatedAt, parseErr = scanWorkflowStoreTime(updatedAt); parseErr != nil {
+			return nil, fmt.Errorf("scan updated_at: %w", parseErr)
+		}
 		defs = append(defs, def)
 	}
 	return defs, rows.Err()
@@ -355,13 +373,15 @@ func (s *PGWorkflowStore) scanVersion(row *sql.Row) (*WorkflowVersion, error) {
 		ver             WorkflowVersion
 		status          string
 		graphJSON       []byte
-		submittedAt     *time.Time
-		publishedAt     *time.Time
+		submittedAt     any
+		publishedAt     any
 		rejectionReason string
+		createdAt       any
+		updatedAt       any
 	)
 	if err := row.Scan(
 		&ver.ID, &ver.WorkflowID, &ver.VersionNumber, &status, &graphJSON,
-		&submittedAt, &publishedAt, &rejectionReason, &ver.CreatedAt, &ver.UpdatedAt,
+		&submittedAt, &publishedAt, &rejectionReason, &createdAt, &updatedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -371,15 +391,22 @@ func (s *PGWorkflowStore) scanVersion(row *sql.Row) (*WorkflowVersion, error) {
 
 	ver.Status = VersionStatus(status)
 	ver.RejectionReason = rejectionReason
-	ver.CreatedAt = ver.CreatedAt.UTC()
-	ver.UpdatedAt = ver.UpdatedAt.UTC()
+	var err error
+	if ver.CreatedAt, err = scanWorkflowStoreTime(createdAt); err != nil {
+		return nil, fmt.Errorf("scan created_at: %w", err)
+	}
+	if ver.UpdatedAt, err = scanWorkflowStoreTime(updatedAt); err != nil {
+		return nil, fmt.Errorf("scan updated_at: %w", err)
+	}
 
-	if submittedAt != nil {
-		t := submittedAt.UTC()
+	if t, ok, err := scanNullableWorkflowStoreTime(submittedAt); err != nil {
+		return nil, fmt.Errorf("scan submitted_at: %w", err)
+	} else if ok {
 		ver.SubmittedAt = &t
 	}
-	if publishedAt != nil {
-		t := publishedAt.UTC()
+	if t, ok, err := scanNullableWorkflowStoreTime(publishedAt); err != nil {
+		return nil, fmt.Errorf("scan published_at: %w", err)
+	} else if ok {
 		ver.PublishedAt = &t
 	}
 
@@ -396,28 +423,37 @@ func (s *PGWorkflowStore) scanVersionFromRows(rows *sql.Rows) (*WorkflowVersion,
 		ver             WorkflowVersion
 		status          string
 		graphJSON       []byte
-		submittedAt     *time.Time
-		publishedAt     *time.Time
+		submittedAt     any
+		publishedAt     any
 		rejectionReason string
+		createdAt       any
+		updatedAt       any
 	)
 	if err := rows.Scan(
 		&ver.ID, &ver.WorkflowID, &ver.VersionNumber, &status, &graphJSON,
-		&submittedAt, &publishedAt, &rejectionReason, &ver.CreatedAt, &ver.UpdatedAt,
+		&submittedAt, &publishedAt, &rejectionReason, &createdAt, &updatedAt,
 	); err != nil {
 		return nil, err
 	}
 
 	ver.Status = VersionStatus(status)
 	ver.RejectionReason = rejectionReason
-	ver.CreatedAt = ver.CreatedAt.UTC()
-	ver.UpdatedAt = ver.UpdatedAt.UTC()
+	var err error
+	if ver.CreatedAt, err = scanWorkflowStoreTime(createdAt); err != nil {
+		return nil, fmt.Errorf("scan created_at: %w", err)
+	}
+	if ver.UpdatedAt, err = scanWorkflowStoreTime(updatedAt); err != nil {
+		return nil, fmt.Errorf("scan updated_at: %w", err)
+	}
 
-	if submittedAt != nil {
-		t := submittedAt.UTC()
+	if t, ok, err := scanNullableWorkflowStoreTime(submittedAt); err != nil {
+		return nil, fmt.Errorf("scan submitted_at: %w", err)
+	} else if ok {
 		ver.SubmittedAt = &t
 	}
-	if publishedAt != nil {
-		t := publishedAt.UTC()
+	if t, ok, err := scanNullableWorkflowStoreTime(publishedAt); err != nil {
+		return nil, fmt.Errorf("scan published_at: %w", err)
+	} else if ok {
 		ver.PublishedAt = &t
 	}
 
@@ -426,4 +462,60 @@ func (s *PGWorkflowStore) scanVersionFromRows(rows *sql.Rows) (*WorkflowVersion,
 	}
 
 	return &ver, nil
+}
+
+func scanNullableWorkflowStoreTime(value any) (time.Time, bool, error) {
+	if value == nil {
+		return time.Time{}, false, nil
+	}
+	if ns, ok := value.(sql.NullString); ok && !ns.Valid {
+		return time.Time{}, false, nil
+	}
+	t, err := scanWorkflowStoreTime(value)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if t.IsZero() {
+		return time.Time{}, false, nil
+	}
+	return t, true, nil
+}
+
+func scanWorkflowStoreTime(value any) (time.Time, error) {
+	switch v := value.(type) {
+	case time.Time:
+		return v.UTC(), nil
+	case string:
+		return parseWorkflowStoreTimeString(v)
+	case []byte:
+		return parseWorkflowStoreTimeString(string(v))
+	case sql.NullString:
+		if !v.Valid {
+			return time.Time{}, nil
+		}
+		return parseWorkflowStoreTimeString(v.String)
+	default:
+		return time.Time{}, fmt.Errorf("unsupported timestamp type %T", value)
+	}
+}
+
+func parseWorkflowStoreTimeString(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid timestamp %q", value)
 }

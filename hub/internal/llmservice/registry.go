@@ -40,6 +40,7 @@ type Registry struct {
 	UserBindings                []UserBinding       `json:"user_bindings,omitempty"`
 	Cards                       []RechargeCard      `json:"cards,omitempty"`
 	Grants                      []Grant             `json:"grants,omitempty"`
+	SystemDefaultServiceGroupID string              `json:"system_default_service_group_id,omitempty"`
 	DefaultNewUserServiceGroups []string            `json:"default_new_user_service_groups,omitempty"`
 	DefaultNewUserDurationDays  int                 `json:"default_new_user_duration_days,omitempty"`
 	DefaultNewUserCredits       float64             `json:"default_new_user_credits,omitempty"`
@@ -354,6 +355,7 @@ func (r *Registry) Normalize() {
 		r.Grants[i].PeriodLimits = normalizeCreditPeriodLimits(r.Grants[i].PeriodLimits)
 		r.Grants[i].PeriodUsage = normalizeCreditPeriodUsage(r.Grants[i].PeriodUsage)
 	}
+	r.SystemDefaultServiceGroupID = strings.TrimSpace(r.SystemDefaultServiceGroupID)
 	r.DefaultNewUserServiceGroups = normalizeStringSlice(r.DefaultNewUserServiceGroups)
 	if r.DefaultNewUserDurationDays < 0 {
 		r.DefaultNewUserDurationDays = 0
@@ -725,6 +727,12 @@ func (r *Registry) PurgeOrphanedServiceGroupReferences() bool {
 
 	// Clean GlobalServiceGroupIDs.
 	r.GlobalServiceGroupIDs = filterIDs(r.GlobalServiceGroupIDs)
+
+	// Clean SystemDefaultServiceGroupID.
+	if strings.TrimSpace(r.SystemDefaultServiceGroupID) != "" && r.FindModelServiceGroup(r.SystemDefaultServiceGroupID) == nil {
+		r.SystemDefaultServiceGroupID = ""
+		changed = true
+	}
 
 	// Clean DefaultNewUserServiceGroups.
 	r.DefaultNewUserServiceGroups = filterIDs(r.DefaultNewUserServiceGroups)

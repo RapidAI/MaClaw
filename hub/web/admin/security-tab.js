@@ -56,7 +56,16 @@
         snapshotRegistryFilter: 'all',
         snapshotRegistryQuery: '',
         snapshotRegistrySort: 'exported_at_desc',
-        subTab: 'management'
+        subTab: 'management',
+        approvalRoleView: 'organization',
+        approvalRoleScope: 'global',
+        approvalRoles: null,
+        approvalRolesLoaded: false,
+        approvalRolesLoading: false,
+        approvalSubjectPicker: null,
+        approvalSubjectUsers: null,
+        approvalSubjectEmployees: null,
+        approvalSubjectLoading: false
       };
       restoreSnapshotExportRegistry(global.__securityAdminState);
     }
@@ -193,6 +202,45 @@
     confirmDeleteGroup: { zh: '\u786e\u5b9a\u5220\u9664\u7ec4 "{name}" \u5417\uff1f', en: 'Delete group "{name}"?' },
     enterpriseTitle: { zh: '\u4f01\u4e1a\u7ba1\u7406', en: 'Enterprise Management' },
     enterpriseSubtitle: { zh: '\u4ee5\u7ec4\u7ec7\u67b6\u6784\u4e3a\u4e2d\u5fc3\uff0c\u67e5\u770b\u90e8\u95e8\u3001\u7528\u6237\u7684\u751f\u6548\u7b56\u7565\u548c\u80fd\u529b\u5305\u3002', en: 'Manage effective policies and capability packages from the organization tree.' },
+    approvalRolesTab: { zh: '\u5ba1\u6279\u89d2\u8272', en: 'Approval Roles' },
+    approvalRolesTitle: { zh: '\u5ba1\u6279\u89d2\u8272', en: 'Approval Roles' },
+    approvalRolesDesc: { zh: '\u6309\u7ec4\u7ec7\u6216\u804c\u80fd\u914d\u7f6e\u5ba1\u6279\u89d2\u8272\uff0c\u4f9b\u5ba1\u6279\u5de5\u4f5c\u6d41\u8bbe\u8ba1\u5668\u5f15\u7528\u3002', en: 'Configure approval roles by organization or function for workflow designer reuse.' },
+    approvalRolesOrgView: { zh: '\u7ec4\u7ec7\u89c6\u56fe', en: 'Organization View' },
+    approvalRolesFunctionView: { zh: '\u804c\u80fd\u89c6\u56fe', en: 'Function View' },
+    approvalRolesScope: { zh: '\u8303\u56f4', en: 'Scope' },
+    approvalRolesRole: { zh: '\u89d2\u8272', en: 'Role' },
+    approvalRolesAssignees: { zh: '\u627f\u62c5\u4e3b\u4f53', en: 'Assignees' },
+    approvalRolesPickAssignees: { zh: '\u9009\u62e9\u4e3b\u4f53', en: 'Choose subjects' },
+    approvalSubjectPickerTitle: { zh: '\u9009\u62e9\u5ba1\u6279\u4e3b\u4f53', en: 'Choose approval subjects' },
+    approvalSubjectPickerDesc: { zh: '\u53ef\u9009\u7269\u7406\u5458\u5de5\u3001\u90e8\u95e8\u6570\u5b57\u5458\u5de5\u6216\u4e2a\u4eba\u6570\u5b57\u5206\u8eab\u3002', en: 'Select physical employees, department digital employees, or personal digital twins.' },
+    approvalSubjectSearch: { zh: '\u641c\u7d22\u90ae\u7bb1\u3001\u59d3\u540d\u6216\u6570\u5b57\u5458\u5de5', en: 'Search email, name, or digital employee' },
+    approvalSubjectUsers: { zh: '\u7269\u7406\u5458\u5de5', en: 'Physical employees' },
+    approvalSubjectDigitalEmployees: { zh: '\u6570\u5b57\u5458\u5de5 / \u6570\u5b57\u5206\u8eab', en: 'Digital employees / twins' },
+    departmentDigitalEmployee: { zh: '\u90e8\u95e8\u6570\u5b57\u5458\u5de5', en: 'Department digital employee' },
+    digitalTwin: { zh: '\u6570\u5b57\u5206\u8eab', en: 'Digital twin' },
+    approvalSubjectSelected: { zh: '\u5df2\u9009 {count} \u4e2a\u4e3b\u4f53', en: '{count} subjects selected' },
+    approvalSubjectEmpty: { zh: '\u6ca1\u6709\u53ef\u9009\u4e3b\u4f53', en: 'No selectable subjects' },
+    approvalRolesMode: { zh: '\u6267\u884c\u65b9\u5f0f', en: 'Execution' },
+    approvalRolesHint: { zh: '\u591a\u4e2a\u4e3b\u4f53\u7528\u9017\u53f7\u5206\u9694\uff1b\u53ef\u586b\u5199\u5458\u5de5\u90ae\u7bb1\u3001\u90e8\u95e8\u6570\u5b57\u5458\u5de5\u6216\u4e2a\u4eba\u6570\u5b57\u5206\u8eab\u540d\u79f0\u3002', en: 'Separate assignees with commas. Use employee emails, department digital employees, or personal digital twin names.' },
+    approvalRolesSaved: { zh: '\u5ba1\u6279\u89d2\u8272\u5df2\u4fdd\u5b58', en: 'Approval roles saved' },
+    approvalRolesSaveFailed: { zh: '\u4fdd\u5b58\u5ba1\u6279\u89d2\u8272\u5931\u8d25: ', en: 'Save approval roles failed: ' },
+    approvalRolesGlobal: { zh: '\u5168\u5c40', en: 'Global' },
+    applicantDepartment: { zh: '\u7533\u8bf7\u4eba\u6240\u5728\u90e8\u95e8', en: 'Applicant department' },
+    functionFinance: { zh: '\u8d22\u52a1', en: 'Finance' },
+    functionProcurement: { zh: '\u91c7\u8d2d', en: 'Procurement' },
+    functionLegal: { zh: '\u6cd5\u52a1', en: 'Legal' },
+    functionIT: { zh: 'IT', en: 'IT' },
+    roleDepartmentManager: { zh: '\u90e8\u95e8\u7ecf\u7406', en: 'Department Manager' },
+    roleDirectManager: { zh: '\u76f4\u5c5e\u4e0a\u7ea7', en: 'Direct Manager' },
+    roleLeaveReviewer: { zh: '\u8bf7\u5047\u521d\u5ba1', en: 'Leave Reviewer' },
+    roleFinanceApprover: { zh: '\u8d22\u52a1\u5ba1\u6279\u5458', en: 'Finance Approver' },
+    roleProcurementApprover: { zh: '\u91c7\u8d2d\u5ba1\u6279\u5458', en: 'Procurement Approver' },
+    roleContractApprover: { zh: '\u5408\u540c\u5ba1\u6279\u5458', en: 'Contract Approver' },
+    roleITApprover: { zh: 'IT \u5ba1\u6279\u5458', en: 'IT Approver' },
+    approvalModeManual: { zh: '\u4eba\u5de5\u5ba1\u6279', en: 'Manual approval' },
+    approvalModeDigitalSuggest: { zh: '\u6570\u5b57\u5efa\u8bae + \u4eba\u5de5\u786e\u8ba4', en: 'Digital suggestion + human confirmation' },
+    approvalModeDigitalReview: { zh: '\u6570\u5b57\u521d\u5ba1 + \u4eba\u5de5\u786e\u8ba4', en: 'Digital pre-review + human confirmation' },
+    approvalModeAuto: { zh: '\u81ea\u52a8\u5ba1\u6279', en: 'Automatic approval' },
     objectOverview: { zh: '\u5bf9\u8c61\u6982\u89c8', en: 'Object Overview' },
     exportObjectSnapshotJson: { zh: '\u5bfc\u51fa\u5bf9\u8c61\u603b\u5feb\u7167 JSON', en: 'Export object snapshot JSON' },
     objectSnapshotExported: { zh: '\u5bf9\u8c61\u603b\u5feb\u7167\u5df2\u5bfc\u51fa', en: 'Object snapshot exported' },
@@ -627,6 +675,12 @@
     _s('secDesc', 'textContent', st('enterpriseSubtitle'));
     _s('secManagementTabBtn', 'textContent', st('enterpriseManagementTab'));
     _s('secAuditTabBtn', 'textContent', st('recentChangesTab'));
+    _s('navApprovalRoles', 'textContent', st('approvalRolesTitle'));
+    _s('navApprovalRolesDesc', 'textContent', st('approvalRolesDesc'));
+    _s('approvalRolesPageTitle', 'textContent', st('approvalRolesTitle'));
+    _s('approvalRolesPageDesc', 'textContent', st('approvalRolesDesc'));
+    _s('approvalRolesReloadBtn', 'textContent', st('reload'));
+    _s('secApprovalRolesSaveBtn', 'textContent', st('save'));
     _s('secReloadBtn', 'textContent', st('reload'));
     _s('secCentralizedTitle', 'textContent', st('centralizedPolicy'));
     _s('secOrgTitle', 'textContent', st('orgStructure'));
@@ -3005,12 +3059,503 @@
     }
   };
 
+  var APPROVAL_ROLES_STORAGE_KEY = 'maclaw_approval_roles_v1';
+
+  function approvalRoleId(scopeType, scopeId, roleCode) {
+    return ['role', scopeType || 'global', scopeId || 'global', roleCode || ''].map(encodeURIComponent).join(':');
+  }
+
+  function flattenSecGroups(nodes, out) {
+    out = out || [];
+    (nodes || []).forEach(function(node) {
+      if (!node || !node.id) return;
+      out.push({ id: node.id, name: node.name || node.id });
+      flattenSecGroups(node.children || [], out);
+    });
+    return out;
+  }
+
+  function approvalFunctionScopes() {
+    return [
+      { scopeType: 'function', scopeId: 'finance', scopeName: st('functionFinance') },
+      { scopeType: 'function', scopeId: 'procurement', scopeName: st('functionProcurement') },
+      { scopeType: 'function', scopeId: 'legal', scopeName: st('functionLegal') },
+      { scopeType: 'function', scopeId: 'it', scopeName: st('functionIT') }
+    ];
+  }
+
+  function approvalOrganizationScopes() {
+    var scopes = [
+      { scopeType: 'global', scopeId: 'global', scopeName: st('approvalRolesGlobal') },
+      { scopeType: 'dynamic', scopeId: 'applicant_department', scopeName: st('applicantDepartment') }
+    ];
+    flattenSecGroups(state().groupTree || []).forEach(function(group) {
+      scopes.push({ scopeType: 'department', scopeId: group.id, scopeName: group.name });
+    });
+    return scopes;
+  }
+
+  function approvalRoleTemplates(scope) {
+    if (scope.scopeType === 'function') {
+      if (scope.scopeId === 'finance') return [{ roleCode: 'finance_approver', roleName: st('roleFinanceApprover'), executionMode: 'digital_review' }];
+      if (scope.scopeId === 'procurement') return [{ roleCode: 'procurement_approver', roleName: st('roleProcurementApprover'), executionMode: 'digital_suggest' }];
+      if (scope.scopeId === 'legal') return [{ roleCode: 'contract_approver', roleName: st('roleContractApprover'), executionMode: 'digital_review' }];
+      return [{ roleCode: 'it_approver', roleName: st('roleITApprover'), executionMode: 'manual' }];
+    }
+    return [
+      { roleCode: 'department_manager', roleName: st('roleDepartmentManager'), executionMode: 'manual' },
+      { roleCode: 'direct_manager', roleName: st('roleDirectManager'), executionMode: 'manual' },
+      { roleCode: 'leave_reviewer', roleName: st('roleLeaveReviewer'), executionMode: 'digital_suggest' },
+      { roleCode: 'contract_approver', roleName: st('roleContractApprover'), executionMode: 'digital_review' }
+    ];
+  }
+
+  function normalizeApprovalRoleRecord(role) {
+    if (!role) return null;
+    var scopeType = String(role.scopeType || role.scope_type || 'global');
+    var scopeId = String(role.scopeId || role.scope_id || 'global');
+    var roleCode = String(role.roleCode || role.role_code || role.code || '');
+    if (!roleCode) return null;
+    return {
+      id: approvalRoleId(scopeType, scopeId, roleCode),
+      view: String(role.view || (scopeType === 'function' ? 'function' : 'organization')),
+      scopeType: scopeType,
+      scopeId: scopeId,
+      scopeName: String(role.scopeName || role.scope_name || scopeId),
+      roleCode: roleCode,
+      roleName: String(role.roleName || role.role_name || role.name || roleCode),
+      executionMode: String(role.executionMode || role.execution_mode || 'manual'),
+      assignees: Array.isArray(role.assignees) ? role.assignees : []
+    };
+  }
+
+  function loadApprovalRoles() {
+    var sec = state();
+    if (Array.isArray(sec.approvalRoles)) return sec.approvalRoles;
+    sec.approvalRoles = loadApprovalRolesFromLocal();
+    return sec.approvalRoles;
+  }
+
+  function loadApprovalRolesFromLocal() {
+    var roles = [];
+    try {
+      var raw = global.localStorage && global.localStorage.getItem(APPROVAL_ROLES_STORAGE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        roles = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.roles) ? parsed.roles : []);
+      }
+    } catch (_) {
+      roles = [];
+    }
+    return roles.map(normalizeApprovalRoleRecord).filter(Boolean);
+  }
+
+  async function ensureApprovalRolesLoaded() {
+    var sec = state();
+    if (sec.approvalRolesLoaded) return sec.approvalRoles || [];
+    if (sec.approvalRolesLoading) return sec.approvalRolesLoading;
+    sec.approvalRolesLoading = api('/api/admin/security/approval-roles').then(function(data) {
+      var roles = data && Array.isArray(data.roles) ? data.roles : [];
+      sec.approvalRoles = roles.map(normalizeApprovalRoleRecord).filter(Boolean);
+      sec.approvalRolesLoaded = true;
+      try {
+        if (global.localStorage) global.localStorage.setItem(APPROVAL_ROLES_STORAGE_KEY, JSON.stringify({ roles: sec.approvalRoles, updated_at: data && data.updated_at || '' }));
+      } catch (_) {}
+      return sec.approvalRoles;
+    }).catch(function() {
+      sec.approvalRoles = loadApprovalRolesFromLocal();
+      sec.approvalRolesLoaded = true;
+      return sec.approvalRoles;
+    }).finally(function() {
+      sec.approvalRolesLoading = false;
+    });
+    return sec.approvalRolesLoading;
+  }
+
+  function findApprovalRole(scope, template) {
+    var id = approvalRoleId(scope.scopeType, scope.scopeId, template.roleCode);
+    var roles = loadApprovalRoles();
+    for (var i = 0; i < roles.length; i += 1) {
+      if (roles[i].id === id) return roles[i];
+    }
+    return normalizeApprovalRoleRecord({
+      view: scope.scopeType === 'function' ? 'function' : 'organization',
+      scopeType: scope.scopeType,
+      scopeId: scope.scopeId,
+      scopeName: scope.scopeName,
+      roleCode: template.roleCode,
+      roleName: template.roleName,
+      executionMode: template.executionMode,
+      assignees: []
+    });
+  }
+
+  function approvalExecutionOptions(value) {
+    var options = [
+      ['manual', st('approvalModeManual')],
+      ['digital_suggest', st('approvalModeDigitalSuggest')],
+      ['digital_review', st('approvalModeDigitalReview')],
+      ['auto', st('approvalModeAuto')]
+    ];
+    return options.map(function(option) {
+      return '<option value="' + escapeHtml(option[0]) + '"' + (option[0] === value ? ' selected' : '') + '>' + escapeHtml(option[1]) + '</option>';
+    }).join('');
+  }
+
+  function approvalAssigneeText(role) {
+    return (role.assignees || []).map(function(item) {
+      return String(item && (item.displayName || item.display_name || item.subjectId || item.subject_id || item.id) || '').trim();
+    }).filter(Boolean).join(', ');
+  }
+
+  function approvalAssigneeJSON(role) {
+    try {
+      return JSON.stringify((role && role.assignees || []).map(normalizeApprovalAssignee).filter(Boolean));
+    } catch (_) {
+      return '[]';
+    }
+  }
+
+  function normalizeApprovalAssignee(item) {
+    if (!item) return null;
+    var subjectId = String(item.subjectId || item.subject_id || item.id || item.email || item.name || '').trim();
+    var displayName = String(item.displayName || item.display_name || item.name || subjectId).trim();
+    if (!subjectId && displayName) subjectId = displayName;
+    if (!subjectId) return null;
+    return {
+      subjectType: String(item.subjectType || item.subject_type || 'user').trim() || 'user',
+      subjectId: subjectId,
+      displayName: displayName || subjectId
+    };
+  }
+
+  function setApprovalRoleRowAssignees(row, assignees) {
+    if (!row) return;
+    assignees = (assignees || []).map(normalizeApprovalAssignee).filter(Boolean);
+    var input = row.querySelector('[data-approval-assignees]');
+    var json = row.querySelector('[data-approval-assignees-json]');
+    if (input) input.value = assignees.map(function(item) { return item.displayName || item.subjectId; }).join(', ');
+    if (json) json.value = JSON.stringify(assignees);
+  }
+
+  function rowApprovalAssignees(row) {
+    if (!row) return [];
+    var input = row.querySelector('[data-approval-assignees]');
+    var inputValue = String(input && input.value || '').trim();
+    var json = row.querySelector('[data-approval-assignees-json]');
+    if (json && String(json.value || '').trim()) {
+      try {
+        var parsed = JSON.parse(json.value);
+        if (Array.isArray(parsed)) {
+          var normalized = parsed.map(normalizeApprovalAssignee).filter(Boolean);
+          var jsonText = normalized.map(function(item) { return item.displayName || item.subjectId; }).join(', ');
+          if (!inputValue || inputValue === jsonText) return normalized;
+        }
+      } catch (_) {}
+    }
+    return parseApprovalAssignees(inputValue);
+  }
+
+  function approvalRoleRowById(roleId) {
+    var rows = document.querySelectorAll('#secApprovalRolesRoot .approval-role-row[data-approval-role-id]');
+    for (var i = 0; i < rows.length; i += 1) {
+      if (rows[i].getAttribute('data-approval-role-id') === roleId) return rows[i];
+    }
+    return null;
+  }
+
+  function renderApprovalScopeButtons(scopes) {
+    var sec = state();
+    if (!scopes.length) return hint(st('noGroups'));
+    var active = scopes.some(function(scope) { return scope.scopeType + ':' + scope.scopeId === sec.approvalRoleScope; })
+      ? sec.approvalRoleScope
+      : scopes[0].scopeType + ':' + scopes[0].scopeId;
+    sec.approvalRoleScope = active;
+    return '<div class="approval-role-scope-list">' + scopes.map(function(scope) {
+      var key = scope.scopeType + ':' + scope.scopeId;
+      var cls = key === active ? 'btn-secondary' : 'btn-ghost';
+      return '<button type="button" class="' + cls + '" onclick="setSecApprovalRoleScope(\'' + escapeJsString(key) + '\')"><strong>' + escapeHtml(scope.scopeName) + '</strong><small>' + escapeHtml(scope.scopeType) + '</small></button>';
+    }).join('') + '</div>';
+  }
+
+  function currentApprovalScope(scopes) {
+    var key = state().approvalRoleScope || '';
+    for (var i = 0; i < scopes.length; i += 1) {
+      if (scopes[i].scopeType + ':' + scopes[i].scopeId === key) return scopes[i];
+    }
+    return scopes[0] || null;
+  }
+
+  function renderApprovalRoleRows(scope) {
+    if (!scope) return hint(st('noGroups'));
+    var rows = approvalRoleTemplates(scope).map(function(template) {
+      var role = findApprovalRole(scope, template);
+      return '<div class="approval-role-row" data-approval-role-id="' + escapeHtml(role.id) + '" data-view="' + escapeHtml(role.view) + '" data-scope-type="' + escapeHtml(role.scopeType) + '" data-scope-id="' + escapeHtml(role.scopeId) + '" data-scope-name="' + escapeHtml(role.scopeName) + '" data-role-code="' + escapeHtml(role.roleCode) + '" data-role-name="' + escapeHtml(role.roleName) + '">' +
+        '<div><strong>' + escapeHtml(role.roleName) + '</strong><small>' + escapeHtml(role.roleCode) + '</small></div>' +
+        '<div class="approval-role-assignee-control"><input data-approval-assignees value="' + escapeHtml(approvalAssigneeText(role)) + '" placeholder="user@company.com, invoice-checker"><input type="hidden" data-approval-assignees-json value="' + escapeAttr(approvalAssigneeJSON(role)) + '"><button type="button" class="btn-ghost" onclick="openSecApprovalSubjectPicker(\'' + escapeJsString(role.id) + '\')">' + escapeHtml(st('approvalRolesPickAssignees')) + '</button></div>' +
+        '<select data-approval-mode>' + approvalExecutionOptions(role.executionMode) + '</select>' +
+      '</div>';
+    }).join('');
+    return '<div class="approval-role-table"><div class="approval-role-head"><span>' + escapeHtml(st('approvalRolesRole')) + '</span><span>' + escapeHtml(st('approvalRolesAssignees')) + '</span><span>' + escapeHtml(st('approvalRolesMode')) + '</span></div>' + rows + '</div><div class="hint" style="margin-top:10px">' + escapeHtml(st('approvalRolesHint')) + '</div>';
+  }
+
+  function renderSecApprovalRoles() {
+    var root = document.getElementById('secApprovalRolesRoot');
+    if (!root) return;
+    var sec = state();
+    if (!sec.approvalRolesLoaded && !sec.approvalRolesLoading) {
+      ensureApprovalRolesLoaded().then(renderSecApprovalRoles);
+    }
+    var view = sec.approvalRoleView === 'function' ? 'function' : 'organization';
+    sec.approvalRoleView = view;
+    var scopes = view === 'function' ? approvalFunctionScopes() : approvalOrganizationScopes();
+    var current = currentApprovalScope(scopes);
+    root.innerHTML = '<div class="approval-role-layout">' +
+      '<div><div class="approval-role-view-toggle"><button type="button" class="' + (view === 'organization' ? 'btn-secondary' : 'btn-ghost') + '" onclick="setSecApprovalRoleView(\'organization\')">' + escapeHtml(st('approvalRolesOrgView')) + '</button><button type="button" class="' + (view === 'function' ? 'btn-secondary' : 'btn-ghost') + '" onclick="setSecApprovalRoleView(\'function\')">' + escapeHtml(st('approvalRolesFunctionView')) + '</button></div><div class="item-meta" style="margin:10px 0 8px">' + escapeHtml(st('approvalRolesScope')) + '</div>' + renderApprovalScopeButtons(scopes) + '</div>' +
+      '<div>' + renderApprovalRoleRows(current) + '</div>' +
+    '</div>';
+  }
+
+  global.setSecApprovalRoleView = function setSecApprovalRoleView(view) {
+    var sec = state();
+    sec.approvalRoleView = view === 'function' ? 'function' : 'organization';
+    sec.approvalRoleScope = sec.approvalRoleView === 'function' ? 'function:finance' : 'global:global';
+    renderSecApprovalRoles();
+  };
+
+  global.setSecApprovalRoleScope = function setSecApprovalRoleScope(scopeKey) {
+    state().approvalRoleScope = String(scopeKey || '');
+    renderSecApprovalRoles();
+  };
+
+  function parseApprovalAssignees(value) {
+    return String(value || '').split(',').map(function(item) { return item.trim(); }).filter(Boolean).map(function(item) {
+      var subjectType = item.indexOf('@') !== -1 ? 'user' : (item.indexOf('-') !== -1 ? 'digital_twin' : 'digital_employee');
+      return { subjectType: subjectType, subjectId: item, displayName: item };
+    });
+  }
+
+  async function ensureUserDirectoryLoaded() {
+    var sec = state();
+    if (Array.isArray(sec.userDirectoryCache)) return sec.userDirectoryCache;
+    var data = await api('/api/admin/users');
+    sec.userDirectoryCache = dedupeUsersByEmail(data && data.users || []);
+    return sec.userDirectoryCache;
+  }
+
+  function approvalSubjectVisibleGroupLabel(entry) {
+    var ids = Array.isArray(entry && entry.visible_group_ids) ? entry.visible_group_ids.map(function(id) { return String(id || '').trim(); }).filter(Boolean) : [];
+    var labels = ids.map(function(id) { return groupPathLabel(id); }).filter(function(label) { return label && label !== '-'; });
+    return labels.slice(0, 2).join(', ') + (labels.length > 2 ? ' +' + (labels.length - 2) : '');
+  }
+
+  async function ensureApprovalSubjectDirectoryLoaded() {
+    var sec = state();
+    if (Array.isArray(sec.approvalSubjectUsers) && Array.isArray(sec.approvalSubjectEmployees)) return;
+    if (sec.approvalSubjectLoading) return sec.approvalSubjectLoading;
+    sec.approvalSubjectLoading = Promise.all([
+      ensureUserDirectoryLoaded().catch(function() { return []; }),
+      api('/api/ve/list').catch(function() { return { employees: [] }; })
+    ]).then(function(results) {
+      sec.approvalSubjectUsers = dedupeUsersByEmail(results[0] || []);
+      sec.approvalSubjectEmployees = (results[1] && results[1].employees || []).filter(function(entry) {
+        return String(entry && entry.status || '').toLowerCase() === 'active';
+      });
+    }).finally(function() {
+      sec.approvalSubjectLoading = false;
+    });
+    return sec.approvalSubjectLoading;
+  }
+
+  function approvalSubjectKey(item) {
+    item = normalizeApprovalAssignee(item);
+    return item ? item.subjectType + ':' + item.subjectId : '';
+  }
+
+  function approvalSubjectRows() {
+    var sec = state();
+    var users = (sec.approvalSubjectUsers || []).map(function(user) {
+      var email = String(user && user.email || '').trim();
+      if (!email) return null;
+      return {
+        subjectType: 'user',
+        subjectId: email,
+        displayName: email,
+        group: 'user',
+        meta: [user.sn || '', localizeUserStatus(user.status)].filter(Boolean).join(' | ')
+      };
+    }).filter(Boolean);
+    var employees = (sec.approvalSubjectEmployees || []).map(function(entry) {
+      var id = String(entry.machine_id || entry.id || '').trim();
+      var name = String(entry.name || entry.owner_email || id).trim();
+      if (!id) return null;
+      var owner = String(entry.owner_email || '').trim();
+      var subjectType = owner ? 'digital_twin' : 'digital_employee';
+      var groupLabel = approvalSubjectVisibleGroupLabel(entry);
+      return {
+        subjectType: subjectType,
+        subjectId: id,
+        displayName: name,
+        group: owner ? 'digital_twin' : 'department_digital',
+        ownerEmail: owner,
+        meta: owner ? (text('\u4ee3\u8868', 'On behalf of') + ': ' + owner) : (groupLabel || st('virtualEmployees'))
+      };
+    }).filter(Boolean);
+    return users.concat(employees);
+  }
+
+  function ensureApprovalSubjectPicker() {
+    var overlay = document.getElementById('approvalSubjectPickerOverlay');
+    if (overlay) return overlay;
+    overlay = document.createElement('div');
+    overlay.id = 'approvalSubjectPickerOverlay';
+    overlay.className = 'modal-overlay hidden';
+    overlay.innerHTML =
+      '<div class="modal approval-subject-dialog" role="dialog" aria-modal="true" aria-labelledby="approvalSubjectPickerTitle">' +
+        '<div class="dialog-head"><div><h3 id="approvalSubjectPickerTitle"></h3><p id="approvalSubjectPickerDesc" class="desc"></p></div><button type="button" class="close-btn" onclick="closeSecApprovalSubjectPicker()" aria-label="Close">&times;</button></div>' +
+        '<div class="approval-subject-toolbar"><input id="approvalSubjectSearch" autocomplete="off"><span id="approvalSubjectCount" class="item-meta"></span></div>' +
+        '<div id="approvalSubjectList" class="approval-subject-list"></div>' +
+        '<div class="actions" style="justify-content:flex-end;margin-top:12px"><button type="button" class="btn-ghost" onclick="closeSecApprovalSubjectPicker()">' + escapeHtml(st('cancel')) + '</button><button type="button" class="btn-primary" onclick="confirmSecApprovalSubjectPicker()">' + escapeHtml(st('confirm')) + '</button></div>' +
+      '</div>';
+    overlay.onclick = function(event) {
+      if (event.target === overlay) global.closeSecApprovalSubjectPicker();
+    };
+    document.body.appendChild(overlay);
+    var search = document.getElementById('approvalSubjectSearch');
+    if (search) search.addEventListener('input', renderApprovalSubjectPicker);
+    return overlay;
+  }
+
+  function renderApprovalSubjectPicker() {
+    var sec = state();
+    var picker = sec.approvalSubjectPicker;
+    var overlay = ensureApprovalSubjectPicker();
+    var title = document.getElementById('approvalSubjectPickerTitle');
+    var desc = document.getElementById('approvalSubjectPickerDesc');
+    var search = document.getElementById('approvalSubjectSearch');
+    var list = document.getElementById('approvalSubjectList');
+    var count = document.getElementById('approvalSubjectCount');
+    if (!picker || !list) return;
+    if (title) title.textContent = st('approvalSubjectPickerTitle');
+    if (desc) desc.textContent = st('approvalSubjectPickerDesc');
+    if (search) search.placeholder = st('approvalSubjectSearch');
+    overlay.classList.remove('hidden');
+    if (sec.approvalSubjectLoading) {
+      list.innerHTML = hint(st('loading'));
+      return;
+    }
+    var query = String(search && search.value || '').trim().toLowerCase();
+    var rows = approvalSubjectRows().filter(function(row) {
+      if (!query) return true;
+      return [row.displayName, row.subjectId, row.meta, row.subjectType].join(' ').toLowerCase().indexOf(query) !== -1;
+    });
+    var selectedCount = Object.keys(picker.selected || {}).filter(function(key) { return picker.selected[key]; }).length;
+    if (count) count.textContent = st('approvalSubjectSelected', { count: selectedCount });
+    if (!rows.length) {
+      list.innerHTML = hint(st('approvalSubjectEmpty'));
+      return;
+    }
+    list.innerHTML = ['user', 'digital_twin', 'department_digital'].map(function(group) {
+      var groupRows = rows.filter(function(row) { return row.group === group; });
+      if (!groupRows.length) return '';
+      var label = group === 'user' ? st('approvalSubjectUsers') : (group === 'digital_twin' ? st('digitalTwin') : st('departmentDigitalEmployee'));
+      return '<div class="approval-subject-group"><div class="item-title">' + escapeHtml(label) + ' (' + groupRows.length + ')</div>' + groupRows.map(function(row) {
+        var key = approvalSubjectKey(row);
+        var checked = !!(picker.selected && picker.selected[key]);
+        return '<label class="approval-subject-row"><input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="toggleSecApprovalSubject(\'' + escapeJsString(key) + '\', this.checked)"><span><strong>' + escapeHtml(row.displayName) + '</strong><small>' + escapeHtml(row.meta || row.subjectType) + '</small></span></label>';
+      }).join('') + '</div>';
+    }).join('');
+  }
+
+  global.openSecApprovalSubjectPicker = async function openSecApprovalSubjectPicker(roleId) {
+    var row = approvalRoleRowById(roleId);
+    if (!row) return;
+    var selected = {};
+    rowApprovalAssignees(row).forEach(function(item) {
+      var key = approvalSubjectKey(item);
+      if (key) selected[key] = item;
+    });
+    state().approvalSubjectPicker = { roleId: roleId, selected: selected };
+    ensureApprovalSubjectPicker();
+    renderApprovalSubjectPicker();
+    await ensureApprovalSubjectDirectoryLoaded();
+    renderApprovalSubjectPicker();
+  };
+
+  global.toggleSecApprovalSubject = function toggleSecApprovalSubject(key, checked) {
+    var picker = state().approvalSubjectPicker;
+    if (!picker) return;
+    if (!checked) {
+      delete picker.selected[key];
+      renderApprovalSubjectPicker();
+      return;
+    }
+    var found = approvalSubjectRows().find(function(row) { return approvalSubjectKey(row) === key; });
+    if (found) picker.selected[key] = normalizeApprovalAssignee(found);
+    renderApprovalSubjectPicker();
+  };
+
+  global.confirmSecApprovalSubjectPicker = function confirmSecApprovalSubjectPicker() {
+    var picker = state().approvalSubjectPicker;
+    if (!picker) return;
+    var row = approvalRoleRowById(picker.roleId);
+    setApprovalRoleRowAssignees(row, Object.keys(picker.selected || {}).map(function(key) { return picker.selected[key]; }));
+    global.closeSecApprovalSubjectPicker();
+  };
+
+  global.closeSecApprovalSubjectPicker = function closeSecApprovalSubjectPicker() {
+    var overlay = document.getElementById('approvalSubjectPickerOverlay');
+    if (overlay) overlay.classList.add('hidden');
+    state().approvalSubjectPicker = null;
+  };
+
+  global.saveSecApprovalRoles = async function saveSecApprovalRoles() {
+    var existing = loadApprovalRoles();
+    var byId = {};
+    existing.forEach(function(role) { byId[role.id] = role; });
+    document.querySelectorAll('#secApprovalRolesRoot .approval-role-row[data-approval-role-id]').forEach(function(row) {
+      var id = row.getAttribute('data-approval-role-id') || '';
+      var mode = row.querySelector('[data-approval-mode]');
+      byId[id] = normalizeApprovalRoleRecord({
+        view: row.getAttribute('data-view') || '',
+        scopeType: row.getAttribute('data-scope-type') || '',
+        scopeId: row.getAttribute('data-scope-id') || '',
+        scopeName: row.getAttribute('data-scope-name') || '',
+        roleCode: row.getAttribute('data-role-code') || '',
+        roleName: row.getAttribute('data-role-name') || '',
+        executionMode: mode && mode.value || 'manual',
+        assignees: rowApprovalAssignees(row)
+      });
+    });
+    var roles = Object.keys(byId).map(function(id) { return byId[id]; }).filter(Boolean);
+    try {
+      var saved = await api('/api/admin/security/approval-roles', { method: 'PUT', body: JSON.stringify({ roles: roles }) });
+      roles = saved && Array.isArray(saved.roles) ? saved.roles.map(normalizeApprovalRoleRecord).filter(Boolean) : roles;
+      if (global.localStorage) global.localStorage.setItem(APPROVAL_ROLES_STORAGE_KEY, JSON.stringify({ roles: roles, updated_at: new Date().toISOString() }));
+      state().approvalRoles = roles;
+      state().approvalRolesLoaded = true;
+      showToast(st('approvalRolesSaved'), 'success');
+      renderSecApprovalRoles();
+    } catch (err) {
+      try {
+        if (global.localStorage) global.localStorage.setItem(APPROVAL_ROLES_STORAGE_KEY, JSON.stringify({ roles: roles, updated_at: new Date().toISOString() }));
+        state().approvalRoles = roles;
+        showToast(st('approvalRolesSaved'), 'success');
+        renderSecApprovalRoles();
+      } catch (_) {
+        showToast(st('approvalRolesSaveFailed') + err.message, 'error');
+      }
+    }
+  };
+
   global.selectSecSubTab = function selectSecSubTab(tab) {
     var sec = state();
-    sec.subTab = tab === 'audit' ? 'audit' : 'management';
+    sec.subTab = tab === 'audit' ? 'audit' : (tab === 'approval_roles' ? 'approval_roles' : 'management');
     applySecSubTab();
     if (sec.subTab === 'audit') {
       global.reloadSecAuditLogs();
+    } else if (sec.subTab === 'approval_roles') {
+      ensureApprovalRolesLoaded().then(renderSecApprovalRoles);
     }
   };
 

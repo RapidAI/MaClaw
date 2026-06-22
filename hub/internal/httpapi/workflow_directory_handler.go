@@ -73,6 +73,11 @@ func WorkflowApproverDirectoryHandler(securitySvc *security.SecurityService, ide
 		}
 
 		tenantSystem := scopedSystemSettingsForTenant(tenantID, system)
+		approvalRoles, err := loadApprovalRolesForTenant(r, system, tenantID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "APPROVAL_ROLES_FAILED", err.Error())
+			return
+		}
 		registry := loadVERegistry(r.Context(), tenantSystem)
 		enrichVERegistryOwners(r.Context(), &registry, identity.UsersRepo())
 		enrichVERegistryEmployeeTypes(&registry)
@@ -95,6 +100,7 @@ func WorkflowApproverDirectoryHandler(securitySvc *security.SecurityService, ide
 			"users":            userViews,
 			"machines":         enrichMachineList(r.Context(), machines, identity.UsersRepo()),
 			"employees":        employees,
+			"approval_roles":   approvalRoles.Roles,
 		})
 	}
 }

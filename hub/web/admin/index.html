@@ -257,6 +257,7 @@
         <button data-tab="pwarequests" onclick="openTab('pwarequests')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 7h4"></path><path d="M12 17h.01"></path></svg></span><div class="nav-copy"><span id="navPwaRequests"></span><small id="navPwaRequestsDesc"></small></div></div></button>
         <button data-tab="failurelogs" onclick="openTab('failurelogs')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 4h8l4 4v12H7z"></path><path d="M15 4v4h4"></path><path d="M10 12h4"></path><path d="M10 16h4"></path></svg></span><div class="nav-copy"><span data-i18n="navFailureLogs"></span><small data-i18n="navFailureLogsDesc"></small></div></div></button>
         <button data-tab="console" onclick="openTab('console')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m8 9 3 3-3 3"></path><path d="M13 15h3"></path><rect x="4" y="5" width="16" height="14" rx="2"></rect></svg></span><div class="nav-copy"><span data-i18n="navConsole"></span><small data-i18n="navConsoleDesc"></small></div></div></button>
+        <button data-tab="approvalroles" onclick="openTab('approvalroles')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16"></path><path d="M7 6v14"></path><path d="M17 6v14"></path><path d="M4 20h16"></path><path d="M9.5 11.5 11 13l3.5-3.5"></path></svg></span><div class="nav-copy"><span id="navApprovalRoles" data-i18n="approvalRolesTabTitle"></span><small id="navApprovalRolesDesc" data-i18n="approvalRolesTabSubtitle"></small></div></div></button>
         <button data-tab="security" onclick="openTab('security')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 6 6v5c0 4.2 2.6 7.8 6 10 3.4-2.2 6-5.8 6-10V6l-6-3Z"></path><path d="m9.5 12 1.7 1.7 3.3-3.4"></path></svg></span><div class="nav-copy"><span id="navSecurity" data-i18n="navSecurity"></span><small id="navSecurityDesc" data-i18n="navSecurityDesc"></small></div></div></button>
         <button data-tab="llmproviders" onclick="openTab('llmproviders')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v4"></path><path d="M12 18v4"></path><path d="M2 12h4"></path><path d="M18 12h4"></path><path d="m5 5 2.8 2.8"></path><path d="m16.2 16.2 2.8 2.8"></path><path d="m19 5-2.8 2.8"></path><path d="m7.8 16.2-2.8 2.8"></path></svg></span><div class="nav-copy"><span id="navLLMProviders" data-i18n="llmProvidersTabTitle"></span><small id="navLLMProvidersDesc" data-i18n="llmProvidersTabSubtitle"></small></div></div></button>
         <button data-tab="usagestats" onclick="openTab('usagestats')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 19V9"></path><path d="M12 19V5"></path><path d="M19 19v-7"></path><path d="M4 19h16"></path></svg></span><div class="nav-copy"><span id="navUsageStats" data-i18n="usageStatsTabTitle"></span><small id="navUsageStatsDesc" data-i18n="usageStatsNavDesc"></small></div></div></button>
@@ -596,6 +597,17 @@
             <div class="item-meta" id="tenantMigrationSettingsHint" style="align-self:end"></div>
           </div>
           <div class="actions" style="margin-top:10px"><button class="btn-primary" onclick="saveTenantMigrationSettings()" id="tenantMigrationSettingsSaveBtn"></button></div>
+        </div>
+        <div class="item hidden" id="tenantSystemLLMDefaultsCard" style="margin-top:10px">
+          <div class="head" style="margin-bottom:10px">
+            <div><div class="item-title" id="tenantSystemLLMDefaultsTitle"></div><div class="item-meta" id="tenantSystemLLMDefaultsDesc"></div></div>
+            <button class="btn-ghost" onclick="loadTenantSystemLLMDefaults()" id="tenantSystemLLMDefaultsReloadBtn"></button>
+          </div>
+          <div class="grid2">
+            <div><label for="tenantSystemDefaultLLMServiceGroup" id="tenantSystemDefaultLLMServiceGroupLabel"></label><select id="tenantSystemDefaultLLMServiceGroup"></select></div>
+            <div class="item-meta" id="tenantSystemLLMDefaultsHint" style="align-self:end"></div>
+          </div>
+          <div class="actions" style="margin-top:10px"><button class="btn-primary" onclick="saveTenantSystemLLMDefaults()" id="tenantSystemLLMDefaultsSaveBtn"></button></div>
         </div>
         <!-- Admin profile -->
         <div class="item" style="margin-top:10px">
@@ -1121,6 +1133,18 @@
           <div id="secAuditControls" class="grid3" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;align-items:end;margin-top:10px"></div>
           <div id="secAuditList" style="display:grid;gap:6px;margin-top:10px"></div>
         </div>
+      </section>
+
+      <!-- Tab: Approval Roles -->
+      <section id="tab-approvalroles" class="panel card approval-role-page">
+        <div class="head">
+          <div><h3 id="approvalRolesPageTitle" data-i18n="approvalRolesTabTitle"></h3><div class="desc" id="approvalRolesPageDesc" data-i18n="approvalRolesTabSubtitle"></div></div>
+          <div class="actions">
+            <button class="btn-ghost" type="button" onclick="loadApprovalRolesTab()" id="approvalRolesReloadBtn" data-i18n="reload"></button>
+            <button class="btn-primary" type="button" onclick="saveSecApprovalRoles()" id="secApprovalRolesSaveBtn" data-i18n="save"></button>
+          </div>
+        </div>
+        <div id="secApprovalRolesRoot"></div>
       </section>
 
       <!-- Tab: LLM Providers -->

@@ -43,13 +43,19 @@ var approverHelpers = new Function('state', 'tr', [
   extractFunction('normalizeApproverIds'),
   extractFunction('formatApproverSelection'),
   extractFunction('pruneApproverPickerSelection'),
+  extractFunction('normalizeEmail'),
+  extractFunction('approverRowsForGroup'),
+  extractFunction('approverKindLabel'),
   extractFunction('renderApproverRow')
-].join('\n') + '\nreturn { normalizeApproverIds: normalizeApproverIds, formatApproverSelection: formatApproverSelection, pruneApproverPickerSelection: pruneApproverPickerSelection, renderApproverRow: renderApproverRow };')(
+].join('\n') + '\nreturn { normalizeApproverIds: normalizeApproverIds, formatApproverSelection: formatApproverSelection, pruneApproverPickerSelection: pruneApproverPickerSelection, approverRowsForGroup: approverRowsForGroup, renderApproverRow: renderApproverRow };')(
   state,
   function (key, params) {
     if (key === 'selectedApprovers') return String(params.count) + ' selected';
     if (key === 'virtualEmployee') return 'VE';
     if (key === 'userMachine') return 'Machine';
+    if (key === 'approverRole') return 'Approval role';
+    if (key === 'departmentDigitalEmployee') return 'Department digital employee';
+    if (key === 'digitalTwin') return 'Digital twin';
     return key;
   }
 );
@@ -61,9 +67,33 @@ var draftHelpers = new Function('state', 'confirm', 'tr', [
 ].join('\n') + '\nreturn { draftHasCanvasContent: draftHasCanvasContent, confirmDraftOverwriteIfNeeded: confirmDraftOverwriteIfNeeded, draftGeneratedStatus: draftGeneratedStatus };')(
   state,
   function () { return draftHelpersConfirmResult; },
-  function (key) { return key === 'draftGenerated' ? 'Draft generated.' : key; }
+  function (key) {
+    if (key === 'draftGenerated') return 'Draft generated.';
+    if (key === 'draftGeneratedFallback') return 'Basic draft generated because the LLM service was unavailable. Review and adjust the workflow before saving.';
+    return key;
+  }
 );
 var draftHelpersConfirmResult = true;
+
+var edgeHelpers = new Function('state', [
+  extractFunction('canCreateEdge'),
+  extractFunction('edgeNodeBox'),
+  extractFunction('edgeAnchorPoints'),
+  extractFunction('edgePathD')
+].join('\n') + '\nreturn { canCreateEdge: canCreateEdge, edgeAnchorPoints: edgeAnchorPoints, edgePathD: edgePathD };')(state);
+var conditionOperatorHelpers = new Function([
+  extractFunction('isConditionBranchOperator')
+].join('\n') + '\nreturn { isConditionBranchOperator: isConditionBranchOperator };')();
+var nodeLookupHelpers = new Function('canvasNodes', [
+  extractFunction('findCanvasNodeElement')
+].join('\n') + '\nreturn { findCanvasNodeElement: findCanvasNodeElement };')({
+  querySelectorAll: function () {
+    return [
+      { getAttribute: function () { return 'node "quoted"/1'; }, marker: 'quoted' },
+      { getAttribute: function () { return 'node_2'; }, marker: 'plain' }
+    ];
+  }
+});
 
 var testCount = 0;
 var passCount = 0;
@@ -138,6 +168,17 @@ assertEqual(approverHelpers.formatApproverSelection(['machine-secret-1', 'stale-
 state.approverPicker = { selected: { 'machine-secret-1': true, 'stale-secret-1': true } };
 approverHelpers.pruneApproverPickerSelection();
 assertEqual(Object.keys(state.approverPicker.selected).join(','), 'machine-secret-1', 'drops stale approver ids once directory is loaded');
+var approverRows = approverHelpers.approverRowsForGroup({
+  root: { id: 'root' },
+  membersByGroup: { dept1: ['alice@example.com'] },
+  machinesByEmail: { 'alice@example.com': [{ id: 'machine-alice', name: 'Alice laptop' }] },
+  veEntries: [
+    { id: 'twin-alice', name: 'Alice twin', kind: 'digital_twin', ownerEmail: 'alice@example.com', visibleGroupIds: [] },
+    { id: 'finance-bot', name: 'Finance bot', kind: 'department_digital_employee', ownerEmail: '', visibleGroupIds: ['dept1'] },
+    { id: 'root-bot', name: 'Root bot', kind: 'department_digital_employee', ownerEmail: '', visibleGroupIds: [] }
+  ]
+}, { id: 'dept1' });
+assertEqual(approverRows.map(function (row) { return row.id; }).join(','), 'machine-alice,twin-alice,finance-bot', 'places digital twins under owners and department employees under departments');
 var loadApproverDirectorySource = extractFunction('loadApproverDirectory') + '\n' + extractFunction('fetchApproverDirectory') + '\n' + extractFunction('loadAndRenderApproverDirectory');
 assertTrue(loadApproverDirectorySource.indexOf('.catch(') === -1, 'loads approver directory without catch chaining');
 
@@ -167,6 +208,32 @@ var firstAwaitIndex = saveWorkflowDraftSource.indexOf('await ');
 assertTrue(savedRevisionIndex !== -1 && firstAwaitIndex !== -1 && savedRevisionIndex < firstAwaitIndex, 'captures dirty revision before async save work');
 assertTrue(saveWorkflowDraftSource.indexOf('ensureWorkflowDefinition(name, description)') !== -1, 'saves stable workflow metadata snapshot');
 assertTrue(saveWorkflowDraftSource.indexOf('return { version: ver, clean: clearDirty(savedRevision) };') !== -1, 'reports whether save cleared dirty state');
+var saveClickIndex = source.indexOf("btnSave.addEventListener('click'");
+var saveValidateIndex = source.indexOf('var errors = validateWorkflow();', saveClickIndex);
+var saveBusyIndex = source.indexOf("setBusy(true, 'saving');", saveClickIndex);
+assertTrue(saveClickIndex !== -1 && saveValidateIndex !== -1 && saveValidateIndex < saveBusyIndex, 'validates workflow structure before saving');
+var validateWorkflowSource = extractFunction('validateWorkflow');
+assertTrue(validateWorkflowSource.indexOf("node.type === 'terminal'") !== -1 && validateWorkflowSource.indexOf("tr('terminalNoOutgoing'") !== -1, 'rejects terminal nodes with outgoing edges');
+assertTrue(validateWorkflowSource.indexOf('validateConditionBranchRoutes(errors);') !== -1, 'validates condition branch routing before save or submit');
+var validateConditionBranchRoutesSource = extractFunction('validateConditionBranchRoutes');
+assertTrue(validateConditionBranchRoutesSource.indexOf("tr('conditionBranchNoRoute'") !== -1, 'requires condition branches to have a configured route');
+assertTrue(validateConditionBranchRoutesSource.indexOf("tr('conditionBranchInvalidTarget'") !== -1, 'rejects condition branch targets that do not exist');
+assertTrue(validateConditionBranchRoutesSource.indexOf("tr('conditionBranchInvalidExpression'") !== -1 && validateConditionBranchRoutesSource.indexOf('isConditionBranchOperator(expr.operator)') !== -1, 'rejects condition branch routes without a supported expression operator');
+assertEqual(conditionOperatorHelpers.isConditionBranchOperator('greater_than'), true, 'accepts supported condition branch operators');
+assertEqual(conditionOperatorHelpers.isConditionBranchOperator('>'), false, 'rejects shorthand operators that runtime cannot evaluate');
+assertEqual(nodeLookupHelpers.findCanvasNodeElement('node "quoted"/1').marker, 'quoted', 'finds canvas nodes with selector-sensitive ids');
+var addEdgeSource = extractFunction('addEdge');
+assertTrue(addEdgeSource.indexOf('canCreateEdge(sourceId, targetId)') !== -1, 'validates edge structure before adding canvas edges');
+state.nodes = [
+  { id: 'trigger_1', type: 'trigger' },
+  { id: 'approval_1', type: 'approval' },
+  { id: 'terminal_1', type: 'terminal' }
+];
+assertEqual(edgeHelpers.canCreateEdge('trigger_1', 'approval_1'), true, 'allows a normal trigger to approval edge');
+assertEqual(edgeHelpers.canCreateEdge('terminal_1', 'approval_1'), false, 'prevents creating outgoing edges from terminal nodes');
+assertEqual(edgeHelpers.canCreateEdge('approval_1', 'trigger_1'), false, 'prevents creating incoming edges to trigger nodes');
+assertEqual(edgeHelpers.canCreateEdge('approval_1', 'approval_1'), false, 'prevents self-loop edges');
+assertEqual(edgeHelpers.canCreateEdge('missing', 'approval_1'), false, 'prevents edges with missing source nodes');
 
 var generateWorkflowDraftSource = extractFunction('generateWorkflowDraftFromPrompt');
 var setDraftAssistantStatusSource = extractFunction('setDraftAssistantStatus');
@@ -197,8 +264,41 @@ assertEqual(draftHelpers.confirmDraftOverwriteIfNeeded(), false, 'existing canva
 draftHelpersConfirmResult = true;
 assertEqual(draftHelpers.confirmDraftOverwriteIfNeeded(), true, 'existing canvas proceeds after overwrite confirmation');
 assertEqual(draftHelpers.draftGeneratedStatus({}), 'Draft generated.', 'generated draft status works without notes');
+assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback' }), 'Basic draft generated because the LLM service was unavailable. Review and adjust the workflow before saving.', 'generated draft status distinguishes fallback drafts');
 assertEqual(draftHelpers.draftGeneratedStatus({ notes: ['Select real approvers before saving.'] }), 'Draft generated. Select real approvers before saving.', 'generated draft status includes first LLM note');
 assertEqual(draftHelpers.draftGeneratedStatus({ notes: [Array(130).join('x')] }).length, 'Draft generated. '.length + 120, 'generated draft status truncates long LLM notes');
+
+var rightEdge = edgeHelpers.edgeAnchorPoints(
+  { position: { x: 80, y: 100 } },
+  { offsetWidth: 160, offsetHeight: 64 },
+  { position: { x: 320, y: 108 } },
+  { offsetWidth: 160, offsetHeight: 64 }
+);
+assertEqual(rightEdge.orientation, 'horizontal', 'uses horizontal anchors when generated draft nodes are laid out side by side');
+assertEqual(rightEdge.sx + ',' + rightEdge.sy, '240,132', 'horizontal edge leaves the source node right side');
+assertEqual(rightEdge.tx + ',' + rightEdge.ty, '320,140', 'horizontal edge enters the target node left side');
+assertTrue(edgeHelpers.edgePathD(rightEdge).indexOf('C 280 132, 280 140, 320 140') !== -1, 'horizontal edge path keeps the arrow outside node bodies');
+
+var leftEdge = edgeHelpers.edgeAnchorPoints(
+  { position: { x: 360, y: 100 } },
+  { offsetWidth: 160, offsetHeight: 64 },
+  { position: { x: 80, y: 100 } },
+  { offsetWidth: 160, offsetHeight: 64 }
+);
+assertEqual(leftEdge.sx + ',' + leftEdge.sy, '360,132', 'reverse horizontal edge leaves the source node left side');
+assertEqual(leftEdge.tx + ',' + leftEdge.ty, '240,132', 'reverse horizontal edge enters the target node right side');
+
+var downEdge = edgeHelpers.edgeAnchorPoints(
+  { position: { x: 120, y: 80 } },
+  { offsetWidth: 160, offsetHeight: 64 },
+  { position: { x: 130, y: 260 } },
+  { offsetWidth: 160, offsetHeight: 64 }
+);
+assertEqual(downEdge.orientation, 'vertical', 'uses vertical anchors when target is mostly below source');
+assertEqual(downEdge.sx + ',' + downEdge.sy, '200,144', 'vertical edge leaves the source node bottom side');
+assertEqual(downEdge.tx + ',' + downEdge.ty, '210,260', 'vertical edge enters the target node top side');
+assertTrue(extractFunction('renderEdges').indexOf('ensureEdgeArrowhead(svg);') !== -1, 'defines the arrow marker before rendering edge paths');
+assertTrue(extractFunction('ensureEdgeArrowhead').indexOf('overflow="visible"') !== -1, 'keeps arrowheads visible at node boundaries');
 
 var getWorkflowAuthSource = extractFunction('getWorkflowAuth');
 assertTrue(getWorkflowAuthSource.indexOf('scrubWorkflowAuthFromLocation()') !== -1, 'scrubs machine credentials from URL after capture');

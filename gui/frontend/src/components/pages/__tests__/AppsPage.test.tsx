@@ -938,6 +938,85 @@ describe('AppsPage', () => {
         expect(screen.getByText(/"channel": "hub"/)).not.toBeNull();
     });
 
+
+    it('requires run evidence to cover the declared primary result contract', async () => {
+        const app = {
+            id: 'publish-contract-coverage-app',
+            name: 'Contract Coverage App',
+            description: 'Checks publish evidence against result contract',
+            category: 'CRM',
+            kind: 'enterprise_normal_app',
+            icon: 'customer',
+            accent: '#4b6572',
+            pinned: false,
+            source: 'local',
+            version: 1,
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_normal_app',
+                launchMode: 'agent_dynamic_ui',
+                appSkill: { id: 'contract-coverage-skill', version: '1.0.0', source: 'hub' },
+                datasrv: { domain: 'sales', objectRole: 'customer', preferredAction: 'sales.customer_upsert' },
+                ui: {
+                    schema: 'maclaw.app.ui.v1',
+                    entry: 'business_workspace',
+                    layouts: { business_workspace: { template: 'classic_split', density: 'compact', primaryRegion: 'left', outputRegion: 'right', studio: { savedInManifest: true } } },
+                },
+                resultContract: { schema: 'maclaw.app.result.v1', primary: 'business_status', types: ['business_status', 'business_record', 'content'], delivery: { inlineContent: true, artifacts: false, businessRecord: true, notifications: false } },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        seedSuccessfulLocalAppRun(app, {
+            runID: 'run-contract-text-only',
+            outputMode: 'business',
+            resultPayload: { text: 'plain completion only' },
+            outputs: [{ kind: 'text', title: 'Plain result', text: 'plain completion only', status: 'ready' }],
+        });
+
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Review / publish'));
+        const blockedCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Contract Coverage App')) as HTMLElement;
+        expect(blockedCard).toBeTruthy();
+        expect(within(blockedCard).getByText('Needs work')).not.toBeNull();
+        expect(within(blockedCard).getByText(/Run evidence does not cover result contract: business_status/)).not.toBeNull();
+        expect((within(blockedCard).getByText('Submit for review') as HTMLButtonElement).disabled).toBe(true);
+
+        cleanup();
+        window.localStorage.clear();
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        seedSuccessfulLocalAppRun(app, {
+            runID: 'run-contract-covered',
+            outputMode: 'business',
+            resultPayload: { business_status: 'renewal_ready', business_record: { id: 'customer-1' }, text: 'renewal ready' },
+            outputs: [{ kind: 'business_record', title: 'Customer renewal', text: '{"id":"customer-1"}', status: 'ready', data: { id: 'customer-1' } }],
+        });
+        const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'market-contract-covered', submitted_at: '2026-06-17T01:00:00.000Z', status: 'submitted', message: 'queued' });
+        (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
+
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Review / publish'));
+        const readyCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Contract Coverage App')) as HTMLElement;
+        expect(readyCard).toBeTruthy();
+        expect(within(readyCard).getByText('Ready to submit')).not.toBeNull();
+        expect(within(readyCard).getByText(/primary: business_status/)).not.toBeNull();
+        fireEvent.click(within(readyCard).getByText('Submit for review'));
+
+        await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
+        const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
+        expect(payload.apps[0].app.governance.testEvidence.resultCoverage).toEqual(expect.objectContaining({
+            ok: true,
+            primary: 'business_status',
+            coveredTypes: expect.arrayContaining(['business_status', 'business_record', 'content']),
+            missingTypes: [],
+        }));
+    });
+
     it('includes enterprise visual UI metadata in market submission packages', async () => {
         const app = {
             id: 'publish-enterprise-ui-app',
@@ -983,6 +1062,13 @@ describe('AppsPage', () => {
             resultPayload: { business_status: 'renewal_ready', business_record: { id: 'customer-1', status: 'renewal_ready' }, text: 'renewal package ready' },
             outputs: [{ kind: 'business_record', title: 'Customer renewal', text: '{"id":"customer-1","status":"renewal_ready"}', status: 'ready', data: { id: 'customer-1', status: 'renewal_ready' } }],
         });
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: app.kind }],
+            dependencies: [{ id: 'customer-renewal-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: [app.id] }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        });
         const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'market-enterprise-ui', submitted_at: '2026-06-17T01:00:00.000Z', status: 'submitted', message: 'queued' });
         (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
 
@@ -1001,6 +1087,11 @@ describe('AppsPage', () => {
         expect(layout.navigation).toEqual(['customers', 'renewals']);
         expect(layout.list.columns).toEqual(['customer_name', 'status', 'updated_at']);
         expect(payload.apps[0].app.governance.resultContract.primary).toBe('business_status');
+        const dependencyVerification = payload.apps[0].app.governance.dependencyVerification;
+        expect(dependencyVerification.schema).toBe('maclaw.app.install_plan.v1');
+        expect(dependencyVerification.dependencyCount).toBe(1);
+        expect(dependencyVerification.hasMissingRequired).toBe(false);
+        expect(dependencyVerification.dependencies[0]).toEqual(expect.objectContaining({ id: 'customer-renewal-skill', installed: true, health: 'ready' }));
         const evidence = payload.apps[0].app.governance.testEvidence;
         expect(evidence.outputCount).toBe(1);
         expect(evidence.resultPayload.business_record).toEqual({ id: 'customer-1', status: 'renewal_ready' });
@@ -3122,7 +3213,10 @@ describe('AppsPage', () => {
         await waitFor(() => expect(screen.getByText(/已完成/)).not.toBeNull());
         await waitFor(() => expect(screen.getByText('id: PO-100 / status: open')).not.toBeNull());
         expect(screen.getByText('business_view')).not.toBeNull();
+        expect(screen.getByText('结果类型')).not.toBeNull();
+        expect(screen.getByText('table')).not.toBeNull();
         expect(screen.getByText('记录数')).not.toBeNull();
+        expect(screen.getByText('PO-101')).not.toBeNull();
         expect(container.querySelector('.apps-run-history')).not.toBeNull();
     });
 
@@ -4176,6 +4270,58 @@ describe('AppsPage', () => {
         expect(screen.getByText(/"accent": "#28705f"/)).not.toBeNull();
     });
 
+
+    it('shows dependency verification in market package preview and install results', async () => {
+        const installPlan = {
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: 'market-dep-preview-app', name: 'Dependency Preview App', kind: 'tool_app' }],
+            dependencies: [{ id: 'dep-preview-skill', version: '1.0.0', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'skip', app_ids: ['market-dep-preview-app'] }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        };
+        planMaclawAppInstallMock.mockResolvedValue(installPlan);
+
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(await screen.findByRole('tab', { name: 'Add from market' }));
+        fireEvent.click(await screen.findByText('Import app package'));
+        fireEvent.change(document.querySelector('.apps-market-install textarea') as HTMLTextAreaElement, {
+            target: {
+                value: JSON.stringify({
+                    schema: 'maclaw.app.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    installUnit: 'skill',
+                    app: {
+                        id: 'market-dep-preview-app',
+                        name: 'Dependency Preview App',
+                        description: 'Preview dependency verification',
+                        category: 'Legal',
+                        kind: 'tool_app',
+                        icon: 'contract',
+                        launchMode: 'fixed_skill_ui',
+                        binding: { skill: { id: 'dep-preview-skill', appDefinitionFile: 'maclaw.apps.json', inputMode: 'file' } },
+                    },
+                }),
+            },
+        });
+
+        await waitFor(() => expect(screen.getByText('Dependency verification complete')).not.toBeNull());
+        const previewVerification = document.querySelector('.apps-install-preview .apps-dependency-verification') as HTMLElement;
+        expect(previewVerification).not.toBeNull();
+        expect(within(previewVerification).getByText(/Skill dependencies: 1/)).not.toBeNull();
+        expect(within(previewVerification).getByText(/Blocking deps: 0/)).not.toBeNull();
+        expect(within(previewVerification).getByText('dep-preview-skill')).not.toBeNull();
+
+        fireEvent.click(screen.getByText('Install'));
+
+        await waitFor(() => expect(screen.getByText('Installed: 1 · Skipped: 0')).not.toBeNull());
+        const resultPanel = document.querySelector('.apps-result-panel') as HTMLElement;
+        expect(within(resultPanel).getByText('Dependency verification complete')).not.toBeNull();
+        expect(within(resultPanel).getByText('dep-preview-skill')).not.toBeNull();
+        expect(recordMaclawAppInstallMock).toHaveBeenCalledTimes(1);
+    });
+
     it('previews manifest apps before installing from market', () => {
         render(<AppsPage lang="zh-Hans" />);
 
@@ -4238,6 +4384,34 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('关闭'));
         expect(screen.queryByText('可选文档')).toBeNull();
         expect(screen.getAllByText('保留文档').length).toBeGreaterThan(0);
+    });
+
+    it('keeps dependency verification visible after single market app install', async () => {
+        const installPlan = {
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: 'market-contract-archive', name: '合同归档', kind: 'tool_app' }],
+            dependencies: [{ id: 'contract-archive-skill', version: '1.0.0', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'skip', app_ids: ['market-contract-archive'] }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        };
+        installMaclawAppDependenciesMock.mockResolvedValueOnce(installPlan);
+        recordMaclawAppInstallMock.mockResolvedValueOnce({ schema: 'maclaw.app.install_record.v1', app_count: 1, dependencies: installPlan.dependencies });
+
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Add from market'));
+        const row = Array.from(document.querySelectorAll('.apps-market-row')).find((item) => item.textContent?.includes('合同归档')) as HTMLElement;
+        expect(row).toBeTruthy();
+        fireEvent.click(within(row).getByRole('button', { name: /Add:/ }));
+
+        await waitFor(() => expect(within(row).getByText('Dependency verification complete')).not.toBeNull());
+        const verification = row.querySelector('.apps-dependency-verification') as HTMLElement;
+        expect(verification).not.toBeNull();
+        expect(within(verification).getByText(/Skill dependencies: 1/)).not.toBeNull();
+        expect(within(verification).getByText(/Blocking deps: 0/)).not.toBeNull();
+        expect(within(verification).getByText('contract-archive-skill')).not.toBeNull();
+        expect(recordMaclawAppInstallMock).toHaveBeenCalledTimes(1);
     });
 
     it('shows recent app install records in the market pane', async () => {

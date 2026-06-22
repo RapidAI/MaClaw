@@ -213,8 +213,42 @@ const TENANT_MIGRATION_SETTINGS_I18N = {
   }
 };
 const tmgx = (key, vars = {}) => ((TENANT_MIGRATION_SETTINGS_I18N[currentLang] || TENANT_MIGRATION_SETTINGS_I18N.en)[key] || TENANT_MIGRATION_SETTINGS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const TENANT_SYSTEM_LLM_DEFAULTS_I18N = {
+  en: {
+    title: 'System Default LLM Service Group',
+    desc: 'Approval workflow draft generation and other Hub system features use this service group.',
+    reload: 'Reload',
+    label: 'Default service group',
+    emptyOption: 'Select a service group',
+    noGroups: 'No usable service groups found. Create a model service group with at least one route first.',
+    hint: 'Used by approval workflow natural-language draft generation. It is independent from new-user benefits.',
+    save: 'Save Default LLM',
+    saving: 'Saving...',
+    saved: 'System default LLM service group saved.',
+    required: 'Select a system default LLM service group first.',
+    loadFailed: 'Load system default LLM service group failed: {error}',
+    saveFailed: 'Save system default LLM service group failed: {error}'
+  },
+  zh: {
+    title: '\u7cfb\u7edf\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4',
+    desc: '\u5ba1\u6279\u5de5\u4f5c\u6d41\u8349\u7a3f\u751f\u6210\u7b49 Hub \u7cfb\u7edf\u80fd\u529b\u4f7f\u7528\u8fd9\u4e2a\u670d\u52a1\u7ec4\u3002',
+    reload: '\u5237\u65b0',
+    label: '\u9ed8\u8ba4\u670d\u52a1\u7ec4',
+    emptyOption: '\u9009\u62e9\u670d\u52a1\u7ec4',
+    noGroups: '\u6682\u65e0\u53ef\u7528\u670d\u52a1\u7ec4\u3002\u8bf7\u5148\u521b\u5efa\u81f3\u5c11\u5305\u542b\u4e00\u6761\u8def\u7531\u7684\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
+    hint: '\u7528\u4e8e\u5ba1\u6279\u5de5\u4f5c\u6d41\u81ea\u7136\u8bed\u8a00\u8349\u7a3f\u751f\u6210\uff0c\u4e0e\u65b0\u7528\u6237\u798f\u5229\u4e92\u76f8\u72ec\u7acb\u3002',
+    save: '\u4fdd\u5b58\u9ed8\u8ba4 LLM',
+    saving: '\u4fdd\u5b58\u4e2d...',
+    saved: '\u7cfb\u7edf\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4\u5df2\u4fdd\u5b58\u3002',
+    required: '\u8bf7\u5148\u9009\u62e9\u7cfb\u7edf\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4\u3002',
+    loadFailed: '\u52a0\u8f7d\u7cfb\u7edf\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4\u5931\u8d25: {error}',
+    saveFailed: '\u4fdd\u5b58\u7cfb\u7edf\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4\u5931\u8d25: {error}'
+  }
+};
+const tslx = (key, vars = {}) => ((TENANT_SYSTEM_LLM_DEFAULTS_I18N[currentLang] || TENANT_SYSTEM_LLM_DEFAULTS_I18N.en)[key] || TENANT_SYSTEM_LLM_DEFAULTS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
 const TENANT_MIGRATION_MIN_MB = 100;
 const TENANT_MIGRATION_MAX_MB = 1024;
+let tenantSystemLLMDefaultsCache = null;
 function normalizeTenantMailSenderName(value) {
   return Array.from(String(value || '').trim()).slice(0, TENANT_MAIL_SENDER_MAX_RUNES).join('');
 }
@@ -233,6 +267,15 @@ function applyTenantMigrationSettingsI18n() {
   _s('tenantMigrationMaxMBLabel', 'textContent', tmgx('label'));
   _s('tenantMigrationSettingsHint', 'textContent', tmgx('hint'));
   _s('tenantMigrationSettingsSaveBtn', 'textContent', tmgx('save'));
+}
+function applyTenantSystemLLMDefaultsI18n() {
+  _s('tenantSystemLLMDefaultsTitle', 'textContent', tslx('title'));
+  _s('tenantSystemLLMDefaultsDesc', 'textContent', tslx('desc'));
+  _s('tenantSystemLLMDefaultsReloadBtn', 'textContent', tslx('reload'));
+  _s('tenantSystemDefaultLLMServiceGroupLabel', 'textContent', tslx('label'));
+  _s('tenantSystemLLMDefaultsHint', 'textContent', tslx('hint'));
+  _s('tenantSystemLLMDefaultsSaveBtn', 'textContent', tslx('save'));
+  renderTenantSystemLLMDefaultOptions();
 }
 function tenantMigrationBytesToMB(value) {
   const n = Number(value || 0);
@@ -386,12 +429,14 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
     applySystemRoutingI18n();
     applyTenantMailSenderI18n();
     applyTenantMigrationSettingsI18n();
+    applyTenantSystemLLMDefaultsI18n();
   });
 }
 applyTLSI18n();
 applySystemRoutingI18n();
 applyTenantMailSenderI18n();
 applyTenantMigrationSettingsI18n();
+applyTenantSystemLLMDefaultsI18n();
 function findMailPreset(provider) { return MAIL_PRESETS[provider] || MAIL_PRESETS.custom; }
 function detectMailProvider(cfg) { const host = String(cfg?.smtp_host || '').trim().toLowerCase(); const port = Number(cfg?.smtp_port || 0); const encryption = String(cfg?.smtp_encryption || '').trim().toLowerCase(); for (const [provider, preset] of Object.entries(MAIL_PRESETS)) { if (provider === 'custom') continue; if (host === preset.smtp_host && (!port || port === preset.smtp_port) && (!encryption || encryption === preset.smtp_encryption)) return provider; } return String(cfg?.provider || '').trim() || 'custom'; }
 function renderMailConfig(cfg = {}) { const provider = detectMailProvider(cfg); document.getElementById('mailProvider').value = MAIL_PRESETS[provider] ? provider : 'custom'; document.getElementById('mailHost').value = cfg.smtp_host || ''; document.getElementById('mailPort').value = cfg.smtp_port ? String(cfg.smtp_port) : ''; document.getElementById('mailEncryption').value = cfg.smtp_encryption || 'auto'; document.getElementById('mailUsername').value = cfg.smtp_username || ''; document.getElementById('mailPassword').value = cfg.smtp_password || ''; document.getElementById('mailFromName').value = cfg.from_name || 'MaClaw Hub'; document.getElementById('mailFromEmail').value = cfg.from_email || cfg.smtp_username || ''; }
@@ -403,6 +448,76 @@ async function loadTenantMailSenderName() { applyTenantMailSenderI18n(); try { c
 async function saveTenantMailSenderName() { try { const input = document.getElementById('tenantMailFromName'); const fromName = normalizeTenantMailSenderName(input ? input.value : ''); if (input) input.value = fromName; const data = await api('/api/admin/mail/sender-name', { method: 'POST', body: JSON.stringify({ from_name: fromName }) }); if (input) input.value = (data && data.from_name) || fromName; const msg = tmsx('saved'); setOutput(msg); showToast(msg, 'success'); return data || { from_name: fromName }; } catch (err) { const msg = tmsx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } }
 async function loadTenantMigrationSettings() { applyTenantMigrationSettingsI18n(); try { const data = await api('/api/admin/migration/settings'); const input = document.getElementById('tenantMigrationMaxMB'); if (input) { input.min = String(tenantMigrationBytesToMB(data && data.min_bytes) || TENANT_MIGRATION_MIN_MB); input.max = String(tenantMigrationBytesToMB(data && data.max_bytes) || TENANT_MIGRATION_MAX_MB); input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); } return data || {}; } catch (err) { const msg = tmgx('loadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
 async function saveTenantMigrationSettings() { const input = document.getElementById('tenantMigrationMaxMB'); const valueMB = normalizeTenantMigrationMB(input ? input.value : 0); if (valueMB < TENANT_MIGRATION_MIN_MB || valueMB > TENANT_MIGRATION_MAX_MB) { const msg = tmgx('invalid'); setOutput(msg); showToast(msg, 'error'); return; } const btn = document.getElementById('tenantMigrationSettingsSaveBtn'); const previousLabel = btn ? btn.textContent : ''; if (btn) { btn.disabled = true; btn.textContent = tmgx('saving'); } try { const data = await api('/api/admin/migration/settings', { method: 'PUT', body: JSON.stringify({ max_compressed_bytes: valueMB * 1024 * 1024 }) }); if (input) input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); const msg = tmgx('saved'); setOutput(msg); showToast(msg, 'success'); return data || {}; } catch (err) { const msg = tmgx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } finally { if (btn) { btn.disabled = false; btn.textContent = previousLabel || tmgx('save'); } } }
+function tenantSystemLLMUsableGroups(data) {
+  return (data && data.model_service_groups || []).filter(function(group) {
+    if (!group || !String(group.id || '').trim()) return false;
+    if (String(group.id || '').trim().toLowerCase() === 'default') return false;
+    return Array.isArray(group.models) && group.models.some(function(model) {
+      return String(model && model.name || '').trim() && Array.isArray(model.provider_ids) && model.provider_ids.some(function(id) { return String(id || '').trim(); });
+    });
+  });
+}
+function renderTenantSystemLLMDefaultOptions() {
+  const select = document.getElementById('tenantSystemDefaultLLMServiceGroup');
+  if (!select) return;
+  const data = tenantSystemLLMDefaultsCache || {};
+  const selected = String(data.system_default_service_group_id || '').trim();
+  const groups = tenantSystemLLMUsableGroups(data);
+  if (!groups.length) {
+    select.innerHTML = '<option value="">' + escapeHtml(tslx('noGroups')) + '</option>';
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  select.innerHTML = '<option value="">' + escapeHtml(tslx('emptyOption')) + '</option>' + groups.map(function(group) {
+    const id = String(group.id || '').trim();
+    const name = String(group.name || id).trim();
+    const label = name === id ? id : name + ' (' + id + ')';
+    return '<option value="' + escapeAttr(id) + '"' + (id === selected ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+  }).join('');
+}
+async function loadTenantSystemLLMDefaults() {
+  applyTenantSystemLLMDefaultsI18n();
+  try {
+    tenantSystemLLMDefaultsCache = await api('/api/admin/llm/services?include_cards=false');
+    renderTenantSystemLLMDefaultOptions();
+    return tenantSystemLLMDefaultsCache || {};
+  } catch (err) {
+    const msg = tslx('loadFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  }
+}
+async function saveTenantSystemLLMDefaults() {
+  const select = document.getElementById('tenantSystemDefaultLLMServiceGroup');
+  const serviceGroupID = String(select && select.value || '').trim();
+  if (!serviceGroupID) {
+    const msg = tslx('required');
+    setOutput(msg);
+    showToast(msg, 'error');
+    return;
+  }
+  if (!tenantSystemLLMDefaultsCache) await loadTenantSystemLLMDefaults();
+  const btn = document.getElementById('tenantSystemLLMDefaultsSaveBtn');
+  const previousLabel = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = tslx('saving'); }
+  try {
+    const payload = Object.assign({}, tenantSystemLLMDefaultsCache || {}, { system_default_service_group_id: serviceGroupID });
+    tenantSystemLLMDefaultsCache = await api('/api/admin/llm/services?include_cards=false', { method: 'PUT', body: JSON.stringify(payload) });
+    renderTenantSystemLLMDefaultOptions();
+    const msg = tslx('saved');
+    setOutput(msg);
+    showToast(msg, 'success');
+    return tenantSystemLLMDefaultsCache || {};
+  } catch (err) {
+    const msg = tslx('saveFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+    throw err;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = previousLabel || tslx('save'); }
+  }
+}
 // Machines runtime moved to machines-tab.js
 async function sendTestMail() { try { const email = document.getElementById('testMailEmail').value.trim(); if (!email) { const msg = tr('testRecipientRequired'); setOutput(msg); showToast(msg, 'error'); return; } await saveMailConfig(); const data = await api('/api/admin/mail/test', { method: 'POST', body: JSON.stringify({ email }) }); const msg = data.message || tr('mailSent'); setOutput(msg); showToast(msg, 'success'); } catch (err) { const msg = tr('mailFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
 async function changeAdminPassword() { const currentPassword = document.getElementById('currentPasswordInput').value; const newPassword = document.getElementById('newPasswordInput').value; const confirmPassword = document.getElementById('confirmPasswordInput').value; if (!currentPassword || !newPassword) { const msg = tr('requestFailed'); setOutput(msg); showToast(msg, 'error'); return; } if (newPassword !== confirmPassword) { const msg = ptr('mismatch'); setOutput(msg); showToast(msg, 'error'); return; } try { const data = await api('/api/admin/password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }); if (data.access_token) localStorage.setItem(adminTokenKey, data.access_token); if (data.admin) setAdminProfile(data.admin); document.getElementById('currentPasswordInput').value = ''; document.getElementById('newPasswordInput').value = ''; document.getElementById('confirmPasswordInput').value = ''; refreshAdminHeader(); const msg = ptr('changed'); setOutput(msg); showToast(msg, 'success'); } catch (err) { setOutput(err.message); showToast(err.message, 'error'); } }

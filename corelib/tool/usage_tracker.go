@@ -3,6 +3,7 @@ package tool
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -53,20 +54,26 @@ type ToolExperience struct {
 
 // UsageTracker maintains a rolling window of tool usage history.
 type UsageTracker struct {
-	mu        sync.RWMutex
-	saveMu    sync.Mutex
-	records   []UsageRecord
-	path      string
-	maxItems  int
-	eventSink lifecycle.EventSink
+	mu            sync.RWMutex
+	saveMu        sync.Mutex
+	records       []UsageRecord
+	invalidations map[string]ToolInvalidationState
+	path          string
+	maxItems      int
+	eventSink     lifecycle.EventSink
+
+	// FingerprintProviders is a registry of providers that compute fingerprints
+	// for tool configuration state. Used by checkFingerprint to detect config changes.
+	FingerprintProviders []FingerprintProvider
 }
 
 // NewUsageTracker creates or loads a UsageTracker from the given path.
 func NewUsageTracker(path string) (*UsageTracker, error) {
 	t := &UsageTracker{
-		records:  make([]UsageRecord, 0, 256),
-		path:     path,
-		maxItems: 2000,
+		records:       make([]UsageRecord, 0, 256),
+		invalidations: make(map[string]ToolInvalidationState),
+		path:          path,
+		maxItems:      2000,
 	}
 	if err := t.load(); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("usage_tracker: load: %w", err)
@@ -136,13 +143,36 @@ func (t *UsageTracker) RecordExperience(exp ToolExperience) {
 		RunArgs:      exp.RunArgs,
 	}
 	t.mu.Lock()
+	// Check fingerprint before recording — detects config changes and generates
+	// InvalidationEvent if the fingerprint has changed since last recording.
+	t.checkFingerprint(r.ToolName)
 	t.records = append(t.records, r)
 	if len(t.records) > t.maxItems {
 		excess := len(t.records) - t.maxItems
 		t.records = t.records[excess:]
 	}
+
+	// Track consecutive failures for suppression (inside the lock so that the
+	// snapshot captured below includes the updated suppression state).
+	// NOTE: Legacy callers using Record() pass FollowUp="". A successful outcome
+	// (Success=true) with empty FollowUp is treated as a success signal for
+	// suppression tracking, because Record() predates the FollowUp field but
+	// still represents a tool invocation that worked.
+	if r.FollowUp == "continue" || (r.FollowUp == "" && r.Success) {
+		t.resetConsecutiveFailureLocked(r.ToolName)
+	} else if r.FollowUp == "retry" || r.FollowUp == "abandon" {
+		contextKey := consecutiveFailureKey(tokens)
+		t.recordConsecutiveFailureLocked(r.ToolName, contextKey)
+	}
+
+	// Opportunistic cleanup: lift stale suppressions that are semantically expired
+	// (all failure records aged out of the 7-day window) but still Active=true on disk.
+	// This prevents unbounded growth of the suppressions slice.
+	t.cleanupStaleSuppressionsLocked(r.ToolName)
+
 	snapshot := make([]UsageRecord, len(t.records))
 	copy(snapshot, t.records)
+	invalidations := copyInvalidations(t.invalidations)
 	sink := t.eventSink
 	t.mu.Unlock()
 	if sink != nil {
@@ -156,7 +186,8 @@ func (t *UsageTracker) RecordExperience(exp ToolExperience) {
 			CreatedAt:  r.Timestamp,
 		}))
 	}
-	_ = t.saveSnapshot(snapshot)
+
+	_ = t.saveSnapshot(snapshot, invalidations)
 }
 
 func usageRecordOutcome(r UsageRecord) string {
@@ -316,8 +347,15 @@ func (t *UsageTracker) ContextOutcomeScore(toolName string, queryTokens []string
 	contextScore, contextTotal := t.outcomeScoreWithCount(toolName, querySet)
 
 	// Not enough context-matching records - fall back to global score.
+	// IMPORTANT: Apply context-specific suppression to the global score too,
+	// otherwise a suppressed tool can escape via the global fallback path.
 	if contextTotal < contextOutcomeMinRecords {
 		score, _ := t.outcomeScoreWithCount(toolName, nil)
+		// Re-check suppression with the original context key.
+		contextKey := consecutiveFailureKeyFromSet(querySet)
+		if t.isSuppressedWithAutoLift(toolName, contextKey) {
+			score = math.Min(score, 0.2)
+		}
 		return score
 	}
 
@@ -342,7 +380,7 @@ const contextOutcomeMinRecords = 3
 func (t *UsageTracker) outcomeScoreWithCount(toolName string, querySet map[string]bool) (float64, int) {
 	toolName = normalizeUsageToolName(toolName)
 	cutoff := time.Now().AddDate(0, 0, -7)
-	var total, successes, retries, abandons int
+	var total, successes, retries, abandons float64
 
 	for _, r := range t.records {
 		if r.ToolName != toolName || r.Timestamp.Before(cutoff) {
@@ -357,15 +395,16 @@ func (t *UsageTracker) outcomeScoreWithCount(toolName string, querySet map[strin
 		if !usageRecordDecisive(r) {
 			continue
 		}
-		total++
+		decay := t.decayMultiplier(r.Timestamp, toolName, r.QueryTokens)
+		total += decay
 		if usageRecordSucceeded(r) {
-			successes++
+			successes += decay
 		}
 		switch r.FollowUp {
 		case "retry":
-			retries++
+			retries += decay
 		case "abandon":
-			abandons++
+			abandons += decay
 		}
 	}
 
@@ -373,12 +412,23 @@ func (t *UsageTracker) outcomeScoreWithCount(toolName string, querySet map[strin
 		return 0, 0
 	}
 
-	successRate := float64(successes) / float64(total)
-	retryPenalty := float64(retries) / float64(total) * 0.3
-	abandonPenalty := float64(abandons) / float64(total) * 0.5
+	successRate := successes / total
+	retryPenalty := retries / total * 0.3
+	abandonPenalty := abandons / total * 0.5
 
 	score := successRate - retryPenalty - abandonPenalty
-	return clampFloat(score, 0, 1), total
+	score = clampFloat(score, 0, 1)
+
+	// Apply consecutive failure suppression.
+	contextKey := ""
+	if querySet != nil {
+		contextKey = consecutiveFailureKeyFromSet(querySet)
+	}
+	if t.isSuppressedWithAutoLift(toolName, contextKey) {
+		score = math.Min(score, 0.2)
+	}
+
+	return score, int(math.Ceil(total))
 }
 
 // ExperienceScore returns a [0,1] score for a tool given the current query tokens.
@@ -432,7 +482,8 @@ func (t *UsageTracker) ExperienceScore(toolName string, queryTokens []string) fl
 		}
 		recency := math.Exp(-0.01 * hours)
 
-		evidence := overlap * recency
+		decay := t.decayMultiplier(r.Timestamp, toolName, r.QueryTokens)
+		evidence := overlap * recency * decay
 		evidenceWeight += evidence
 		utilitySum += evidence * usageOutcomeWeight(r)
 	}
@@ -507,17 +558,45 @@ func (t *UsageTracker) load() error {
 	if err != nil {
 		return err
 	}
+
+	// Try new format first (UsageData wrapper with records + invalidations).
+	var ud UsageData
+	if err := json.Unmarshal(data, &ud); err == nil && ud.Records != nil {
+		for i := range ud.Records {
+			ud.Records[i].ToolName = normalizeUsageToolName(ud.Records[i].ToolName)
+			ud.Records[i].RecoveryTool = normalizeUsageToolName(ud.Records[i].RecoveryTool)
+			ud.Records[i].ToolSequence = normalizeUsageToolSequence(ud.Records[i].ToolSequence, 8)
+		}
+		t.mu.Lock()
+		t.records = ud.Records
+		t.invalidations = ud.Invalidations
+		if t.invalidations == nil {
+			t.invalidations = make(map[string]ToolInvalidationState)
+		}
+		t.mu.Unlock()
+		return nil
+	}
+
+	// Fall back to legacy flat array ([]UsageRecord).
 	var records []UsageRecord
-	if err := json.Unmarshal(data, &records); err != nil {
-		return fmt.Errorf("usage_tracker: parse: %w", err)
+	if err := json.Unmarshal(data, &records); err == nil {
+		for i := range records {
+			records[i].ToolName = normalizeUsageToolName(records[i].ToolName)
+			records[i].RecoveryTool = normalizeUsageToolName(records[i].RecoveryTool)
+			records[i].ToolSequence = normalizeUsageToolSequence(records[i].ToolSequence, 8)
+		}
+		t.mu.Lock()
+		t.records = records
+		t.invalidations = make(map[string]ToolInvalidationState)
+		t.mu.Unlock()
+		return nil
 	}
-	for i := range records {
-		records[i].ToolName = normalizeUsageToolName(records[i].ToolName)
-		records[i].RecoveryTool = normalizeUsageToolName(records[i].RecoveryTool)
-		records[i].ToolSequence = normalizeUsageToolSequence(records[i].ToolSequence, 8)
-	}
+
+	// Unparseable: start fresh, log warning.
+	log.Printf("[usage-tracker] warning: cannot parse %s, starting with empty state", t.path)
 	t.mu.Lock()
-	t.records = records
+	t.records = make([]UsageRecord, 0)
+	t.invalidations = make(map[string]ToolInvalidationState)
 	t.mu.Unlock()
 	return nil
 }
@@ -526,8 +605,9 @@ func (t *UsageTracker) save() {
 	t.mu.RLock()
 	snapshot := make([]UsageRecord, len(t.records))
 	copy(snapshot, t.records)
+	invalidations := copyInvalidations(t.invalidations)
 	t.mu.RUnlock()
-	_ = t.saveSnapshot(snapshot)
+	_ = t.saveSnapshot(snapshot, invalidations)
 }
 
 // Save persists the current usage records to disk. Safe for concurrent use.
@@ -535,15 +615,22 @@ func (t *UsageTracker) Save() error {
 	t.mu.RLock()
 	snapshot := make([]UsageRecord, len(t.records))
 	copy(snapshot, t.records)
+	invalidations := copyInvalidations(t.invalidations)
 	t.mu.RUnlock()
-	return t.saveSnapshot(snapshot)
+	return t.saveSnapshot(snapshot, invalidations)
 }
 
-func (t *UsageTracker) saveSnapshot(records []UsageRecord) error {
+func (t *UsageTracker) saveSnapshot(records []UsageRecord, invalidations map[string]ToolInvalidationState) error {
 	if t.path == "" {
 		return nil
 	}
-	data, err := json.Marshal(records)
+
+	ud := UsageData{
+		Records:       records,
+		Invalidations: invalidations,
+	}
+
+	data, err := json.Marshal(ud)
 	if err != nil {
 		return err
 	}

@@ -125,6 +125,27 @@ type maclawAppInstallPlanDependency struct {
 	Message         string   `json:"message,omitempty"`
 }
 
+type maclawAppInstallSkillVersionSnapshot struct {
+	ID      string `json:"id"`
+	Version string `json:"version,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+	Source  string `json:"source,omitempty"`
+}
+
+type maclawAppInstallApprovalBindingSnapshot struct {
+	Event           string `json:"event,omitempty"`
+	ObjectRole      string `json:"object_role,omitempty"`
+	WorkflowSkillID string `json:"workflow_skill_id,omitempty"`
+	WorkflowVersion string `json:"workflow_version,omitempty"`
+}
+
+type maclawAppInstallVersionSnapshot struct {
+	AppEntryVersion string                                     `json:"app_entry_version,omitempty"`
+	AppSkill        *maclawAppInstallSkillVersionSnapshot      `json:"app_skill,omitempty"`
+	WorkflowSkills  []maclawAppInstallSkillVersionSnapshot     `json:"workflow_skills,omitempty"`
+	ApprovalBindings []maclawAppInstallApprovalBindingSnapshot `json:"approval_bindings,omitempty"`
+}
+
 type parsedMaclawAppEntry struct {
 	Schema string
 	Entry  map[string]any
@@ -170,6 +191,7 @@ type maclawAppInstallRecord struct {
 	PackageSHA            string                           `json:"package_sha256,omitempty"`
 	PackageSize           int                              `json:"package_bytes,omitempty"`
 	Dependencies          []maclawAppInstallPlanDependency `json:"dependencies,omitempty"`
+	VersionSnapshot       maclawAppInstallVersionSnapshot   `json:"version_snapshot,omitempty"`
 	HasMissingRequired    bool                             `json:"has_missing_required"`
 	HasBlockingDependency bool                             `json:"has_blocking_dependency,omitempty"`
 	Message               string                           `json:"message,omitempty"`
@@ -504,6 +526,7 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 			PackageSHA:            packageSHA,
 			PackageSize:           packageSize,
 			Dependencies:          cloneMaclawAppPlanDependenciesForApp(plan.Dependencies, entry.ID),
+			VersionSnapshot:       maclawAppInstallVersionSnapshotForEntry(entry),
 			HasMissingRequired:    hasMissingMaclawAppRequiredDependencyForApp(plan.Dependencies, entry.ID),
 			HasBlockingDependency: hasBlockingMaclawAppRequiredDependencyForApp(plan.Dependencies, entry.ID),
 			Message:               "installed locally",
@@ -522,6 +545,7 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 		"package_sha":             packageSHA,
 		"package_bytes":           packageSize,
 		"dependencies":            cloneMaclawAppPlanDependencies(plan.Dependencies),
+		"app_versions":            maclawAppInstallVersionSnapshotsByApp(entries),
 		"has_missing_required":    plan.HasMissingRequired,
 		"has_blocking_dependency": plan.HasBlockingDependency,
 		"datasrv_registration":    dataSrvRegistration,
@@ -1748,6 +1772,92 @@ func (plan *maclawAppInstallPlan) refreshMaclawAppDependencyFlags() {
 	}
 }
 
+func maclawAppInstallVersionSnapshotsByApp(entries []parsedMaclawAppEntry) map[string]maclawAppInstallVersionSnapshot {
+	out := map[string]maclawAppInstallVersionSnapshot{}
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.ID) == "" {
+			continue
+		}
+		out[entry.ID] = maclawAppInstallVersionSnapshotForEntry(entry)
+	}
+	return out
+}
+
+func maclawAppInstallVersionSnapshotForEntry(entry parsedMaclawAppEntry) maclawAppInstallVersionSnapshot {
+	snapshot := maclawAppInstallVersionSnapshot{
+		AppEntryVersion: maclawAppVersionString(firstNonEmptyMaclawAppAny(entry.App["version"], entry.Entry["version"])),
+	}
+	if appSkill := maclawAppAppSkillBlockForEntry(entry); appSkill != nil {
+		if id := maclawAppStringValue(appSkill, "id"); id != "" {
+			skill := maclawAppInstallSkillVersionSnapshot{
+				ID:      id,
+				Version: maclawAppVersionString(firstNonEmptyMaclawAppAny(appSkill["version"], appSkill["version_constraint"], appSkill["versionConstraint"])),
+				Kind:    firstNonEmptyMaclawAppString(maclawAppStringValue(appSkill, "kind"), "runtime_skill"),
+				Source:  maclawAppStringValue(appSkill, "source"),
+			}
+			snapshot.AppSkill = &skill
+		}
+	}
+	workflowSeen := map[string]struct{}{}
+	addWorkflow := func(id, version, kind, source string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		key := strings.ToLower(id)
+		if _, ok := workflowSeen[key]; ok {
+			return
+		}
+		workflowSeen[key] = struct{}{}
+		snapshot.WorkflowSkills = append(snapshot.WorkflowSkills, maclawAppInstallSkillVersionSnapshot{ID: id, Version: version, Kind: firstNonEmptyMaclawAppString(kind, "workflow_skill"), Source: source})
+	}
+	for _, binding := range maclawAppApprovalBindingMapsForEntry(entry) {
+		workflowID := firstNonEmptyMaclawAppString(maclawAppStringValue(binding, "workflowSkillId", "workflow_skill_id"), maclawAppStringValue(binding, "workflowId", "workflow_id"))
+		workflowVersion := maclawAppVersionString(firstNonEmptyMaclawAppAny(binding["workflowVersion"], binding["workflow_version"]))
+		snapshot.ApprovalBindings = append(snapshot.ApprovalBindings, maclawAppInstallApprovalBindingSnapshot{
+			Event:           maclawAppStringValue(binding, "event"),
+			ObjectRole:      maclawAppStringValue(binding, "objectRole", "object_role"),
+			WorkflowSkillID: workflowID,
+			WorkflowVersion: workflowVersion,
+		})
+		addWorkflow(workflowID, workflowVersion, "workflow_skill", maclawAppStringValue(binding, "source"))
+	}
+	for _, dep := range maclawAppDependenciesForEntry(entry) {
+		if strings.TrimSpace(dep.Kind) == "workflow_skill" {
+			addWorkflow(dep.ID, dep.Version, dep.Kind, dep.Source)
+		}
+	}
+	return snapshot
+}
+
+func maclawAppVersionString(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case json.Number:
+		return strings.TrimSpace(v.String())
+	case float64:
+		if v == float64(int64(v)) {
+			return strconv.FormatInt(int64(v), 10)
+		}
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case float32:
+		f := float64(v)
+		if f == float64(int64(f)) {
+			return strconv.FormatInt(int64(f), 10)
+		}
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
 func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source, packageSHA string, packageSize int, dependencies []maclawAppInstallPlanDependency) []maclawAppDataSrvInstallationPayload {
 	payloads := make([]maclawAppDataSrvInstallationPayload, 0, len(entries))
 	for _, entry := range entries {
@@ -1759,6 +1869,11 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 			"package_sha256": packageSHA,
 			"package_bytes":  packageSize,
 			"schema":         entry.Schema,
+		}
+		versionSnapshot := maclawAppInstallVersionSnapshotForEntry(entry)
+		metadata["version_snapshot"] = versionSnapshot
+		if versionSnapshot.AppEntryVersion != "" {
+			metadata["app_entry_version"] = versionSnapshot.AppEntryVersion
 		}
 		if appSkill := maclawAppAppSkillBlockForEntry(entry); appSkill != nil {
 			metadata["app_skill_id"] = maclawAppStringValue(appSkill, "id")
@@ -2576,6 +2691,14 @@ func maclawAppGovernanceReviewIssuesFromPackage(pkg map[string]any) []maclawAppR
 		if !maclawAppHasPublishableResultContract(governance) {
 			issues = append(issues, maclawAppReviewIssue{Path: path + ".governance.resultContract", Severity: "error", Message: "missing result contract", Suggestion: "declare the app output contract before submitting to the capability market"})
 		}
+		if issue := maclawAppDependencyVerificationReviewIssue(entry, governance, path); issue != nil {
+			issues = append(issues, *issue)
+		}
+		if maclawAppHasPublishableTestEvidence(governance) && maclawAppHasPublishableResultContract(governance) {
+			if issue := maclawAppResultCoverageReviewIssue(governance, path); issue != nil {
+				issues = append(issues, *issue)
+			}
+		}
 		if normalizeMaclawAppKind(entry.Kind) == "enterprise_approval_app" && maclawAppWorkflowMappingForEntry(entry) == nil {
 			issues = append(issues, maclawAppReviewIssue{Path: path + ".binding.workflow", Severity: "error", Message: "missing workflow node mapping", Suggestion: "save the approval workflow node mapping in App Studio before submitting to the capability market"})
 		}
@@ -2627,6 +2750,206 @@ func maclawAppHasPublishableTestEvidence(governance map[string]any) bool {
 		return true
 	}
 	return strings.TrimSpace(maclawAppStringValue(testEvidence, "runId", "run_id", "definitionHash", "definition_hash", "verifiedAt", "verified_at")) != ""
+}
+
+func maclawAppDependencyVerificationReviewIssue(entry parsedMaclawAppEntry, governance map[string]any, appPath string) *maclawAppReviewIssue {
+	declared := maclawAppDependenciesForEntry(entry)
+	if len(declared) == 0 {
+		return nil
+	}
+	if governance == nil {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.dependencyVerification", Severity: "error", Message: "missing dependency verification", Suggestion: "run dependency verification before submitting to the capability market"}
+	}
+	verification := anyMap(governance["dependencyVerification"])
+	if verification == nil {
+		verification = anyMap(governance["dependency_verification"])
+	}
+	if verification == nil {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.dependencyVerification", Severity: "error", Message: "missing dependency verification", Suggestion: "run dependency verification before submitting to the capability market"}
+	}
+	if schema := strings.TrimSpace(maclawAppStringValue(verification, "schema")); schema != "" && schema != "maclaw.app.install_plan.v1" {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.dependencyVerification", Severity: "error", Message: "invalid dependency verification schema", Suggestion: "attach the backend PlanMaclawAppInstall result to governance.dependencyVerification"}
+	}
+	if maclawAppBoolValue(verification, "hasMissingRequired", "has_missing_required", "hasBlockingDependency", "has_blocking_dependency") {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.dependencyVerification", Severity: "error", Message: "required dependency is missing or blocked", Suggestion: "install or enable required Skill dependencies before submitting"}
+	}
+	verified := map[string]map[string]any{}
+	for _, item := range anySlice(verification["dependencies"]) {
+		dep := anyMap(item)
+		id := strings.ToLower(strings.TrimSpace(maclawAppStringValue(dep, "id")))
+		if id != "" {
+			verified[id] = dep
+		}
+	}
+	for _, dep := range declared {
+		id := strings.ToLower(strings.TrimSpace(dep.ID))
+		if id == "" {
+			continue
+		}
+		verifiedDep := verified[id]
+		if verifiedDep == nil {
+			return &maclawAppReviewIssue{Path: appPath + ".governance.dependencyVerification", Severity: "error", Message: "dependency verification is missing declared dependency: " + dep.ID, Suggestion: "refresh dependency verification before submitting"}
+		}
+		if dep.Required && maclawAppVerifiedDependencyBlocked(verifiedDep) {
+			return &maclawAppReviewIssue{Path: appPath + ".governance.dependencyVerification", Severity: "error", Message: "required dependency is not ready: " + dep.ID, Suggestion: "install or enable the required Skill dependency before submitting"}
+		}
+	}
+	return nil
+}
+
+func maclawAppVerifiedDependencyBlocked(dep map[string]any) bool {
+	if dep == nil {
+		return true
+	}
+	if installed, ok := dep["installed"].(bool); ok && !installed {
+		return true
+	}
+	health := strings.ToLower(strings.TrimSpace(maclawAppStringValue(dep, "health")))
+	action := strings.ToLower(strings.TrimSpace(maclawAppStringValue(dep, "action")))
+	status := strings.ToLower(strings.TrimSpace(maclawAppStringValue(dep, "installed_status", "installedStatus")))
+	if health == "missing" || health == "disabled" || health == "needs_setup" || health == "unhealthy" {
+		return true
+	}
+	if action == "blocked" || action == "failed" || action == "optional_unhealthy" {
+		return true
+	}
+	if status == "disabled" || status == "error" || status == "failed" {
+		return true
+	}
+	return false
+}
+
+func maclawAppResultCoverageReviewIssue(governance map[string]any, appPath string) *maclawAppReviewIssue {
+	contract := anyMap(governance["resultContract"])
+	if contract == nil {
+		contract = anyMap(governance["result_contract"])
+	}
+	testEvidence := anyMap(governance["testEvidence"])
+	if testEvidence == nil {
+		testEvidence = anyMap(governance["test_evidence"])
+	}
+	if contract == nil || testEvidence == nil {
+		return nil
+	}
+	primary := strings.TrimSpace(maclawAppStringValue(contract, "primary"))
+	if primary == "" {
+		return nil
+	}
+	coverage := anyMap(testEvidence["resultCoverage"])
+	if coverage == nil {
+		coverage = anyMap(testEvidence["result_coverage"])
+	}
+	if coverage != nil {
+		if ok, _ := coverage["ok"].(bool); ok && maclawAppCoveredResultTypesContain(maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(coverage["coveredTypes"], coverage["covered_types"])), primary) {
+			return nil
+		}
+		missing := maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(coverage["missingTypes"], coverage["missing_types"]))
+		if len(missing) == 0 {
+			missing = []string{primary}
+		}
+		return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.resultCoverage", Severity: "error", Message: "run evidence does not cover result contract: " + strings.Join(missing, ", "), Suggestion: "run the app again and verify the declared primary result is present in the result payload or outputs"}
+	}
+	covered := maclawAppCoveredResultTypesFromTestEvidence(testEvidence)
+	if maclawAppCoveredResultTypesContain(covered, primary) {
+		return nil
+	}
+	return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.resultCoverage", Severity: "error", Message: "run evidence does not cover result contract: " + primary, Suggestion: "run the app again and verify the declared primary result is present in the result payload or outputs"}
+}
+
+func maclawAppCoveredResultTypesFromTestEvidence(testEvidence map[string]any) []string {
+	covered := map[string]bool{}
+	add := func(values ...string) {
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value != "" {
+				covered[value] = true
+			}
+		}
+	}
+	if maclawAppBoolValue(testEvidence, "artifactPresent", "artifact_present") {
+		add("artifact", "document")
+	}
+	if count, ok := maclawAppNumberFromAny(firstNonEmptyMaclawAppAny(testEvidence["artifactCount"], testEvidence["artifact_count"])); ok && count > 0 {
+		add("artifact", "document")
+	}
+	if strings.TrimSpace(maclawAppStringValue(testEvidence, "artifactName", "artifact_name", "artifactPath", "artifact_path")) != "" {
+		add("artifact", "document")
+	}
+	payload := anyMap(firstNonEmptyMaclawAppAny(testEvidence["resultPayload"], testEvidence["result_payload"]))
+	if payload != nil {
+		if strings.TrimSpace(maclawAppStringValue(payload, "approval_result", "approvalResult", "approval_status", "approvalStatus", "approval_decision", "approvalDecision", "decision")) != "" {
+			add("approval_result")
+		}
+		if strings.TrimSpace(maclawAppStringValue(payload, "business_status", "businessStatus", "result_status", "resultStatus", "status")) != "" {
+			add("business_status")
+		}
+		if firstNonEmptyMaclawAppAny(payload["business_record"], payload["businessRecord"], payload["record"], payload["record_id"], payload["recordID"], payload["business_record_id"], payload["businessRecordID"]) != nil {
+			add("business_record")
+		}
+		if strings.TrimSpace(maclawAppStringValue(payload, "text", "content", "message", "result", "summary")) != "" {
+			add("content", "text")
+		}
+		if _, ok := firstNonEmptyMaclawAppAny(payload["rows"], payload["records"], payload["items"]).([]any); ok {
+			add("table")
+		}
+		if _, ok := firstNonEmptyMaclawAppAny(payload["cards"], payload["widgets"], payload["charts"]).([]any); ok {
+			add("dashboard")
+		}
+	}
+	for _, item := range anySlice(firstNonEmptyMaclawAppAny(testEvidence["outputs"], testEvidence["output_blocks"])) {
+		output := anyMap(item)
+		kind := strings.ToLower(strings.TrimSpace(maclawAppStringValue(output, "kind", "type")))
+		switch {
+		case strings.Contains(kind, "artifact") || strings.Contains(kind, "document") || strings.Contains(kind, "file"):
+			add("artifact", "document")
+		case strings.Contains(kind, "approval") || strings.Contains(kind, "decision"):
+			add("approval_result")
+		case strings.Contains(kind, "business_status") || kind == "status":
+			add("business_status")
+		case strings.Contains(kind, "business_record") || strings.Contains(kind, "record"):
+			add("business_record")
+		case strings.Contains(kind, "table"):
+			add("table")
+		case strings.Contains(kind, "dashboard"):
+			add("dashboard")
+		case strings.Contains(kind, "notification"):
+			add("notification")
+		case strings.Contains(kind, "receipt"):
+			add("external_receipt")
+		case strings.Contains(kind, "action"):
+			add("action")
+		case strings.Contains(kind, "requires_input"):
+			add("requires_input")
+		case strings.Contains(kind, "error"):
+			add("error")
+		}
+		if strings.TrimSpace(maclawAppStringValue(output, "text", "title", "status")) != "" || output["data"] != nil {
+			add("content", "text")
+		}
+	}
+	out := make([]string, 0, len(covered))
+	for value := range covered {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func maclawAppCoveredResultTypesContain(covered []string, primary string) bool {
+	seen := map[string]bool{}
+	for _, value := range covered {
+		seen[strings.TrimSpace(value)] = true
+	}
+	return seen[primary] || (primary == "document" && seen["artifact"]) || (primary == "artifact" && seen["document"]) || (primary == "text" && seen["content"]) || (primary == "content" && seen["text"])
+}
+
+func maclawAppBoolValue(values map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := values[key].(bool); ok && value {
+			return true
+		}
+	}
+	return false
 }
 
 func maclawAppHasPublishableWorkspaceLayout(app map[string]any, governance map[string]any) bool {

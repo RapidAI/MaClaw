@@ -633,7 +633,7 @@ func BidResponseTemplate() *WorkflowTemplate {
 				InputSchema: &PhaseInputSchema{
 					Title: "招投标信息",
 					Fields: []PhaseInputField{
-						{Name: "bid_doc_path", Label: "招标文件路径", Type: "text", Placeholder: "如：D:\\投标\\招标文件.pdf"},
+						{Name: "bid_doc_path", Label: "招标文件路径", Type: "file", Placeholder: "如：D:\\投标\\招标文件.pdf"},
 						{Name: "bid_doc_text", Label: "或粘贴招标文件内容", Type: "textarea", Placeholder: "将招标文件核心内容粘贴到这里"},
 						{Name: "our_company", Label: "投标公司", Type: "text", Required: true, Placeholder: "我方公司名称"},
 						{Name: "focus_areas", Label: "重点关注", Type: "textarea", Placeholder: "如：技术要求、资质门槛、评分标准"},
@@ -659,7 +659,7 @@ func ContractReviewTemplate() *WorkflowTemplate {
 				InputSchema: &PhaseInputSchema{
 					Title: "合同审查信息",
 					Fields: []PhaseInputField{
-						{Name: "contract_path", Label: "合同文件路径", Type: "text", Placeholder: "如：D:\\合同\\采购合同.pdf"},
+						{Name: "contract_path", Label: "合同文件路径", Type: "file", Placeholder: "如：D:\\合同\\采购合同.pdf"},
 						{Name: "contract_text", Label: "或粘贴合同文本", Type: "textarea", Placeholder: "将合同主要条款内容粘贴到这里"},
 						{Name: "review_purpose", Label: "审查目的", Type: "text", Required: true, Placeholder: "如：签约前风险评估"},
 						{Name: "focus_areas", Label: "重点关注", Type: "textarea", Placeholder: "如：付款条款、违约责任、知识产权"},
@@ -877,7 +877,7 @@ func ChangjiangScholarReviewTemplate() *WorkflowTemplate {
 					Title:       "提供申报材料",
 					Description: "请提供待评审的长江学者申报材料。支持上传文件（PDF/Word）、粘贴文本内容、或指定本机文件路径。",
 					Fields: []PhaseInputField{
-						{Name: "material_path", Label: "申报材料文件路径", Type: "text", Placeholder: "如：D:\\申报材料\\长江学者申报书.pdf（如果文件在本机）"},
+						{Name: "material_path", Label: "申报材料文件路径", Type: "file", Placeholder: "如：D:\\申报材料\\长江学者申报书.pdf（如果文件在本机）"},
 						{Name: "material_text", Label: "或粘贴申报材料文本", Type: "textarea", Placeholder: "将申报书的主要内容粘贴到这里"},
 						{Name: "focus_areas", Label: "重点关注方面（可选）", Type: "textarea", Placeholder: "如：学术成果是否突出、研究计划是否可行"},
 					},
@@ -905,7 +905,7 @@ func NSFCDistinguishedYouthReviewTemplate() *WorkflowTemplate {
 					Title:       "提供申报材料",
 					Description: "请提供待评审的杰青申请书材料。支持上传文件、粘贴文本、或指定本机文件路径。",
 					Fields: []PhaseInputField{
-						{Name: "material_path", Label: "申请书文件路径", Type: "text", Placeholder: "如：D:\\申报材料\\杰青申请书.pdf"},
+						{Name: "material_path", Label: "申请书文件路径", Type: "file", Placeholder: "如：D:\\申报材料\\杰青申请书.pdf"},
 						{Name: "material_text", Label: "或粘贴申请书文本", Type: "textarea", Placeholder: "将申请书的主要内容粘贴到这里"},
 						{Name: "focus_areas", Label: "重点关注方面（可选）", Type: "textarea", Placeholder: "如：学术贡献是否突出、研究方案创新性"},
 					},
@@ -933,7 +933,7 @@ func NSFCExcellentYouthReviewTemplate() *WorkflowTemplate {
 					Title:       "提供申报材料",
 					Description: "请提供待评审的优青申请书材料。支持上传文件、粘贴文本、或指定本机文件路径。",
 					Fields: []PhaseInputField{
-						{Name: "material_path", Label: "申请书文件路径", Type: "text", Placeholder: "如：D:\\申报材料\\优青申请书.pdf"},
+						{Name: "material_path", Label: "申请书文件路径", Type: "file", Placeholder: "如：D:\\申报材料\\优青申请书.pdf"},
 						{Name: "material_text", Label: "或粘贴申请书文本", Type: "textarea", Placeholder: "将申请书的主要内容粘贴到这里"},
 						{Name: "focus_areas", Label: "重点关注方面（可选）", Type: "textarea", Placeholder: "如：发展潜力是否突出、研究方案可行性"},
 					},
@@ -961,7 +961,7 @@ func NSFCYouthReviewTemplate() *WorkflowTemplate {
 					Title:       "提供申报材料",
 					Description: "请提供待评审的青基申请书材料。支持上传文件、粘贴文本、或指定本机文件路径。",
 					Fields: []PhaseInputField{
-						{Name: "material_path", Label: "申请书文件路径", Type: "text", Placeholder: "如：D:\\申报材料\\青基申请书.pdf"},
+						{Name: "material_path", Label: "申请书文件路径", Type: "file", Placeholder: "如：D:\\申报材料\\青基申请书.pdf"},
 						{Name: "material_text", Label: "或粘贴申请书文本", Type: "textarea", Placeholder: "将申请书的主要内容粘贴到这里"},
 						{Name: "focus_areas", Label: "重点关注方面（可选）", Type: "textarea", Placeholder: "如：立项依据是否充分、技术路线可行性"},
 					},
@@ -989,7 +989,7 @@ func NSFCGeneralReviewTemplate() *WorkflowTemplate {
 					Title:       "提供申报材料",
 					Description: "请提供待评审的面上项目申请书材料。支持上传文件、粘贴文本、或指定本机文件路径。",
 					Fields: []PhaseInputField{
-						{Name: "material_path", Label: "申请书文件路径", Type: "text", Placeholder: "如：D:\\申报材料\\面上项目申请书.pdf"},
+						{Name: "material_path", Label: "申请书文件路径", Type: "file", Placeholder: "如：D:\\申报材料\\面上项目申请书.pdf"},
 						{Name: "material_text", Label: "或粘贴申请书文本", Type: "textarea", Placeholder: "将申请书的主要内容粘贴到这里"},
 						{Name: "focus_areas", Label: "重点关注方面（可选）", Type: "textarea", Placeholder: "如：科学问题是否明确、创新点是否突出"},
 					},
@@ -1017,7 +1017,7 @@ func NSFCKeyReviewTemplate() *WorkflowTemplate {
 					Title:       "提供申报材料",
 					Description: "请提供待评审的重点项目申请书材料。支持上传文件、粘贴文本、或指定本机文件路径。",
 					Fields: []PhaseInputField{
-						{Name: "material_path", Label: "申请书文件路径", Type: "text", Placeholder: "如：D:\\申报材料\\重点项目申请书.pdf"},
+						{Name: "material_path", Label: "申请书文件路径", Type: "file", Placeholder: "如：D:\\申报材料\\重点项目申请书.pdf"},
 						{Name: "material_text", Label: "或粘贴申请书文本", Type: "textarea", Placeholder: "将申请书的主要内容粘贴到这里"},
 						{Name: "focus_areas", Label: "重点关注方面（可选）", Type: "textarea", Placeholder: "如：战略意义是否明确、课题设置是否合理"},
 					},

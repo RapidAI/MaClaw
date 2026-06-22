@@ -71,6 +71,23 @@ func (a *App) DismissAgentView(payload AgentViewDismissPayload) (*IMAgentRespons
 	// engine doesn't re-show it on the next HandleInput call.
 	if phaseID, ok := strings.CutPrefix(strings.TrimSpace(payload.ViewID), "workflow:form:"); ok {
 		phaseID = strings.TrimSpace(phaseID)
+
+		// If the user clicked "Cancel Workflow" button, cancel the entire workflow
+		// instead of just skipping the form.
+		if cancelWF, _ := payload.Data["__cancel_workflow"].(bool); cancelWF {
+			a.clearAgentView(payload.ViewID)
+			if h := a.ensureLocalIMHandler(); h != nil {
+				userID := a.workflowOwnerIDForCurrentProject()
+				h.cancelWorkflowForUser(userID)
+			}
+			resp := &IMAgentResponse{
+				Text:           avTr("Workflow cancelled. Describe your task again to start a new workflow.", "工作流已取消。如需重新开始，请直接描述您的任务。"),
+				ResponseSource: imResponseSourceAgentViewDismiss.String(),
+			}
+			normalizeArtifactResponseSource(resp)
+			return resp, nil
+		}
+
 		workflowLifecyclePayload := workflowFormLifecyclePayloadFor("", phaseID, "", payload.Data)
 		a.clearAgentViewWithPayload(payload.ViewID, workflowLifecyclePayload)
 	} else {

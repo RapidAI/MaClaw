@@ -452,6 +452,41 @@ func (a *App) initCoreInfra() {
 				a.usageTracker = tracker
 				a.ensureExperienceLifecycleSink()
 				a.toolRouter.SetUsageTracker(tracker)
+
+				// Register fingerprint providers for invalidation detection.
+				tracker.FingerprintProviders = []tool.FingerprintProvider{
+					tool.NewConfigFingerprintProviderFromFields(func(toolName string) map[string]interface{} {
+						// Fingerprint LLM config fields that affect tool reliability.
+						cfg, err := a.LoadConfig()
+						if err != nil {
+							return nil
+						}
+						switch toolName {
+						case "craft_tool", "delegate_task", "ask_user":
+							return map[string]interface{}{
+								"provider": cfg.MaclawLLMCurrentProvider,
+							}
+						}
+						return nil
+					}),
+					tool.NewSSHFingerprintProviderFromStatic(func(toolName string) *tool.StaticSSHHostConfig {
+						if toolName != "ssh" {
+							return nil
+						}
+						cfg, err := a.LoadConfig()
+						if err != nil || len(cfg.SSHHosts) == 0 {
+							return nil
+						}
+						// Use the first (default) SSH host for fingerprint.
+						h := cfg.SSHHosts[0]
+						return &tool.StaticSSHHostConfig{
+							Host:    h.Host,
+							Port:    h.Port,
+							User:    h.User,
+							KeyPath: h.KeyPath,
+						}
+					}),
+				}
 			}
 		}
 	}
@@ -2723,6 +2758,12 @@ func (a *App) startConfigWatcher() {
 						// Re-sync IM gateways on config change, including gateways
 						// newly enabled by direct config edits.
 						a.syncIMGatewaysFromConfig()
+						// Trigger tool outcome invalidation for externally-modified
+						// SSH host or LLM provider fields. The fingerprint mechanism
+						// catches this on the next RecordExperience call, but
+						// immediate invalidation ensures ContextOutcomeScore is
+						// accurate before that next call.
+						a.invalidateOutcomesFromExternalConfigChange(config)
 					}
 				}
 			case err, ok := <-a.watcher.Errors:
@@ -6541,6 +6582,25 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		runtime.EventsEmit(a.ctx, "llm-token-usage-changed", cfg.MaclawLLMCurrentProvider)
 	}
 
+	// Invalidate tool outcome records when SSH host or LLM provider config changes.
+	// This ensures OutcomeScore reflects current tool reliability rather than stale
+	// historical performance under different conditions (Req 1.1, 1.3, 1.4).
+	if tracker := a.usageTracker; tracker != nil {
+		// SSH host field changes → invalidate "ssh" tool outcomes.
+		for key := range patch {
+			if isSSHConfigField(key) {
+				tracker.InvalidateOutcomes("ssh", fmt.Sprintf("config_change:%s", key))
+				break
+			}
+		}
+		// LLM provider change → invalidate LLM-dependent tool outcomes.
+		if _, changed := patch["maclaw_llm_current_provider"]; changed {
+			for _, toolName := range []string{"craft_tool", "delegate_task", "ask_user"} {
+				tracker.InvalidateOutcomes(toolName, "llm_provider_changed")
+			}
+		}
+	}
+
 	corelib.SetLogDetailEnabled(cfg.LogDetailEnabled)
 	memory.SetMemoryRecallLogEnabled(cfg.MemoryRecallLogEnabled)
 	corelib.SetWorkspaceDir(cfg.WorkingDirectory)
@@ -6596,6 +6656,46 @@ func configPatchKeys(patch map[string]interface{}) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// isSSHConfigField returns true if the patch key relates to SSH host configuration.
+// Matches fields containing ssh_host, ssh_port, ssh_user, ssh_key, or the
+// aggregate ssh_hosts array field.
+func isSSHConfigField(key string) bool {
+	k := strings.ToLower(key)
+	return strings.Contains(k, "ssh_host") ||
+		strings.Contains(k, "ssh_port") ||
+		strings.Contains(k, "ssh_user") ||
+		strings.Contains(k, "ssh_key")
+}
+
+// invalidateOutcomesFromExternalConfigChange triggers tool outcome invalidation
+// when an external config edit (detected by file watcher) may have changed
+// SSH host or LLM provider fields. This is a best-effort comparison against
+// the previous config cache — if the cache is stale, the fingerprint mechanism
+// catches the change on the next RecordExperience call.
+func (a *App) invalidateOutcomesFromExternalConfigChange(newCfg corelib.AppConfig) {
+	tracker := a.usageTracker
+	if tracker == nil {
+		return
+	}
+	// Compare LLM provider against the fingerprint's known state to avoid
+	// redundant invalidation. We fire invalidation unconditionally here because
+	// the file watcher cannot determine which fields changed (it only knows
+	// the file was modified). The fingerprint mechanism will deduplicate if
+	// the provider hasn't actually changed.
+	// This is intentionally simple: invalidate both SSH and LLM tools on any
+	// external config file edit. Cost is minimal (just updates timestamps),
+	// and the decay formula's grace period (multiplier=1.0 at t=0) ensures
+	// no immediate impact if the invalidation was spurious.
+	if len(newCfg.SSHHosts) > 0 {
+		tracker.InvalidateOutcomes("ssh", "external_config_edit")
+	}
+	if newCfg.MaclawLLMCurrentProvider != "" {
+		for _, toolName := range []string{"craft_tool", "delegate_task", "ask_user"} {
+			tracker.InvalidateOutcomes(toolName, "external_config_edit")
+		}
+	}
 }
 
 // PatchConfig performs an atomic read-modify-write on the config file.

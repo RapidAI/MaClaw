@@ -128,17 +128,20 @@ func (s *PgInstanceStore) CreateNodeExecution(ctx context.Context, exec *NodeExe
 }
 
 func (s *PgInstanceStore) UpdateNodeExecution(ctx context.Context, id string, status NodeStatus, result json.RawMessage, failReason string) error {
-	now := time.Now().UTC()
+	var completedAt any
+	if status == NodeCompleted || status == NodeFailed || status == NodeSkipped {
+		completedAt = time.Now().UTC()
+	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE workflow_node_executions SET status = $1, completed_at = $2, result = $3, fail_reason = $4 WHERE id = $5 AND instance_id IN (SELECT id FROM workflow_instances WHERE tenant_id = $6)`,
-		status, now, result, failReason, id, store.TenantIDFromContext(ctx))
+		`UPDATE workflow_node_executions SET status = $1, completed_at = COALESCE($2, completed_at), result = $3, fail_reason = $4 WHERE id = $5 AND instance_id IN (SELECT id FROM workflow_instances WHERE tenant_id = $6)`,
+		status, completedAt, result, failReason, id, store.TenantIDFromContext(ctx))
 	return err
 }
 
 func (s *PgInstanceStore) GetPendingApprovals(ctx context.Context, approverID string) ([]NodeExecution, error) {
 	query := `SELECT wne.id, wne.instance_id, wne.node_id, wne.node_type, wne.status, wne.started_at, wne.completed_at, wne.result, wne.fail_reason
-		 FROM workflow_node_executions wne INNER JOIN workflow_instances wi ON wi.id = wne.instance_id WHERE wne.status = $1 AND wi.tenant_id = $2`
-	args := []any{string(NodeRunning), store.TenantIDFromContext(ctx)}
+		 FROM workflow_node_executions wne INNER JOIN workflow_instances wi ON wi.id = wne.instance_id WHERE wne.status = $1 AND wi.tenant_id = $2 AND wne.node_type = $3`
+	args := []any{string(NodeRunning), store.TenantIDFromContext(ctx), string(NodeApproval)}
 
 	if approverID != "" {
 		// When approverID is provided, filter by instances assigned to that approver.

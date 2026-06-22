@@ -59,7 +59,8 @@ type decisionRequest struct {
 // Flow:
 //  1. Extract the authenticated caller from the X-Owner-ID header (set by auth middleware).
 //  2. Load the instance and its workflow version graph; locate the approval node.
-//  3. Authorize the caller via isConfiguredApprover(cfg, callerID); non-approvers get 403.
+//  3. Resolve Hub approval-role references, then authorize the caller via
+//     isConfiguredApprover(cfg, callerID); non-approvers get 403.
 //  4. Build an ApprovalResponse with ApproverID = caller and delegate to ResumeInstance.
 func (api *DecisionAPI) handleSubmitDecision(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-Owner-ID")
@@ -117,7 +118,12 @@ func (api *DecisionAPI) handleSubmitDecision(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Authorize: only a configured approver for this node may submit a decision.
+	if err := api.executor.resolveApprovalNodeConfig(r.Context(), &cfg); err != nil {
+		apiWriteError(w, http.StatusInternalServerError, "RESOLVE_APPROVERS_FAILED", "failed to resolve approval role references: "+err.Error())
+		return
+	}
+
+	// Authorize: only a resolved approver for this node may submit a decision.
 	if !isConfiguredApprover(&cfg, userID) {
 		apiWriteError(w, http.StatusForbidden, "FORBIDDEN", "caller is not a configured approver for this node")
 		return

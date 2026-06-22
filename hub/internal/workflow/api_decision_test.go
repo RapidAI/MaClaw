@@ -88,6 +88,52 @@ func TestDecisionAPI_AuthorizedApproverAdvancesInstance(t *testing.T) {
 	}
 }
 
+// TestDecisionAPI_ResolvedApprovalRoleApproverAdvancesInstance verifies that
+// the HTTP authorization boundary uses the same Hub approval-role resolution as
+// the executor runtime path.
+func TestDecisionAPI_ResolvedApprovalRoleApproverAdvancesInstance(t *testing.T) {
+	graph := buildApprovalGraph(ApprovalNodeConfig{
+		ApproverIDs:  []string{"role:function:finance:finance_approver"},
+		Mode:         ModeSingle,
+		TimeoutHours: 24,
+	})
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &resumeTestMockWorkflowStore{version: ver}
+	instStore := &resumeTestMockInstanceStore{
+		instance: &WorkflowInstance{
+			ID:            "inst-1",
+			VersionID:     "ver-1",
+			Status:        InstanceRunning,
+			CurrentNodeID: "approval-1",
+			InstanceData:  map[string]interface{}{"requester_id": "initiator-1"},
+		},
+	}
+	auditStore := &mockAuditStore{}
+	dispatcher := &resumeTestMockDispatcher{}
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher, WithApprovalApproverResolver(mockApproverResolver{values: map[string][]string{
+		"role:function:finance:finance_approver": {"machine-finance-1"},
+	}}))
+
+	decisionAPI := NewDecisionAPI(executor, instStore, wfStore)
+	mux := http.NewServeMux()
+	decisionAPI.RegisterRoutes(mux, passthroughOwnerAuth)
+
+	body, _ := json.Marshal(map[string]string{"decision": "approve"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/inst-1/nodes/approval-1/decision", bytes.NewReader(body))
+	req.Header.Set("X-Test-Owner", "machine-finance-1")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if instStore.statusUpdate != InstanceCompleted {
+		t.Errorf("expected instance to advance to %q, got %q", InstanceCompleted, instStore.statusUpdate)
+	}
+}
+
 // TestDecisionAPI_NonApproverForbidden verifies that a caller who is not a
 // configured approver for the node receives 403 and the decision is not routed
 // into ResumeInstance (Requirement 2.1 — approver authorization).

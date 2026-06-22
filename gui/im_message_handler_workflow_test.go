@@ -2461,6 +2461,16 @@ func TestDetectWorkflowReviewIntentFast(t *testing.T) {
 			t.Fatalf("detectWorkflowReviewIntentFast(%q)=(%q,%v), want confirm,true", text, got, ok)
 		}
 	}
+	// __wf_review__ structured button commands
+	if got, ok := detectWorkflowReviewIntentFast("__wf_review__ confirm"); !ok || got != v2.ReviewIntentConfirm {
+		t.Fatalf("__wf_review__ confirm: got (%q,%v), want confirm,true", got, ok)
+	}
+	if got, ok := detectWorkflowReviewIntentFast("__wf_review__ abort"); !ok || got != v2.ReviewIntentCancel {
+		t.Fatalf("__wf_review__ abort: got (%q,%v), want cancel,true", got, ok)
+	}
+	if got, ok := detectWorkflowReviewIntentFast("__wf_review__ supplement_focus"); ok {
+		t.Fatalf("__wf_review__ supplement_focus should return false (not matched), got (%q,%v)", got, ok)
+	}
 	if got, ok := detectWorkflowReviewIntentFast("你直接创建一个"); ok || got != v2.ReviewIntentOther {
 		t.Fatalf("specific file operation should not be fast-confirmed, got (%q,%v)", got, ok)
 	}

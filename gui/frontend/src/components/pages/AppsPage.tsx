@@ -443,6 +443,10 @@ type AppInstallResultItem = {
     detail: string;
 };
 
+type AppGovernanceOverrides = {
+    dependencyVerification?: BackendAppInstallPlan;
+};
+
 type AppPublishSubmission = {
     id: string;
     appID: string;
@@ -791,6 +795,9 @@ const labels = {
         installingDependencies: '\u6b63\u5728\u5b89\u88c5\u4f9d\u8d56',
         missingRequiredDependency: '\u5fc5\u9700 Skill \u4f9d\u8d56\u7f3a\u5931\u6216\u4e0d\u53ef\u7528\uff0c\u8bf7\u5148\u5b89\u88c5\u6216\u542f\u7528\u4f9d\u8d56',
         dependencyPlanError: '\u4f9d\u8d56\u68c0\u67e5\u5931\u8d25',
+        dependencyVerification: '\u4f9d\u8d56\u9a8c\u8bc1',
+        dependencyVerificationReady: '\u4f9d\u8d56\u9a8c\u8bc1\u5df2\u5b8c\u6210',
+        dependencyVerificationBlocked: '\u4f9d\u8d56\u9a8c\u8bc1\u53d1\u73b0\u963b\u65ad\u9879',
         skillDependencies: '\u4f9d\u8d56 Skill',
         installedDependency: '\u5df2\u5b89\u88c5',
         missingDependency: '\u7f3a\u5931',
@@ -1065,6 +1072,9 @@ const labels = {
         installingDependencies: 'Installing dependencies',
         missingRequiredDependency: 'Required Skill dependencies are missing or unavailable. Install or enable them first.',
         dependencyPlanError: 'Dependency check failed',
+        dependencyVerification: 'Dependency verification',
+        dependencyVerificationReady: 'Dependency verification complete',
+        dependencyVerificationBlocked: 'Dependency verification found blocking items',
         skillDependencies: 'Skill dependencies',
         installedDependency: 'Installed',
         missingDependency: 'Missing',
@@ -3212,6 +3222,86 @@ function appResultContractPublishSummary(app: AppEntry, lang?: string) {
     const types = contract.types.slice(0, 4).join(', ');
     return `${zh ? '\u7ed3\u679c' : 'Result'}: ${contract.primary}${types ? ` / ${types}` : ''}`;
 }
+
+function appRunEvidencePayloadValue(payload: Record<string, unknown> | undefined, keys: string[]): unknown {
+    if (!payload) return undefined;
+    for (const key of keys) {
+        const value = payload[key];
+        if (value !== undefined && value !== null && value !== '') return value;
+    }
+    return undefined;
+}
+
+function appRunEvidenceHasText(value: unknown): boolean {
+    return formatApprovalResultValue(value).trim().length > 0;
+}
+
+function appRunEvidenceResultTypes(evidence?: AppRunHistoryEntry | null): string[] {
+    if (!evidence) return [];
+    const covered = new Set<string>();
+    const payload = evidence.resultPayload;
+    const outputs = normalizeApprovalOutputs(evidence.outputs) || [];
+    const artifacts = appRunHistoryArtifacts(evidence);
+    const outputMode = String(evidence.outputMode || '').trim().toLowerCase();
+    const hasPayloadValue = (keys: string[]) => appRunEvidenceHasText(appRunEvidencePayloadValue(payload, keys));
+    const hasOutputKind = (...kinds: string[]) => outputs.some((output) => {
+        const kind = approvalOutputKind(output);
+        return kinds.some((item) => kind === item || kind.includes(item));
+    });
+    const hasOutputBody = outputs.some((output) => appRunEvidenceHasText(approvalOutputBody(output)));
+    if (artifacts.length > 0 || ['pdf', 'docx', 'xlsx', 'file', 'artifact', 'document'].includes(outputMode) || hasOutputKind('artifact', 'document', 'file')) {
+        covered.add('artifact');
+        covered.add('document');
+    }
+    if (hasPayloadValue(['approval_result', 'approvalResult', 'approval_status', 'approvalStatus', 'approval_decision', 'approvalDecision', 'decision']) || hasOutputKind('approval_result', 'approval', 'decision')) {
+        covered.add('approval_result');
+    }
+    if (hasPayloadValue(['business_status', 'businessStatus', 'result_status', 'resultStatus', 'status']) || hasOutputKind('business_status', 'status')) {
+        covered.add('business_status');
+    }
+    if (appRunEvidencePayloadValue(payload, ['business_record', 'businessRecord', 'record']) || hasPayloadValue(['record_id', 'recordID', 'business_record_id', 'businessRecordID']) || hasOutputKind('business_record', 'record')) {
+        covered.add('business_record');
+    }
+    if (hasPayloadValue(['text', 'content', 'message', 'result', 'summary']) || hasOutputBody || hasOutputKind('text', 'content')) {
+        covered.add('content');
+        covered.add('text');
+    }
+    if (hasOutputKind('table') || businessOperationRows(payload).length > 1 || Array.isArray(payload?.rows) || Array.isArray(payload?.records) || Array.isArray(payload?.items)) {
+        covered.add('table');
+    }
+    if (hasOutputKind('dashboard') || Array.isArray(payload?.cards) || Array.isArray(payload?.widgets) || Array.isArray(payload?.charts)) {
+        covered.add('dashboard');
+    }
+    if (hasPayloadValue(['notification', 'notifications']) || hasOutputKind('notification')) covered.add('notification');
+    if (hasPayloadValue(['receipt', 'external_receipt', 'externalReceipt']) || hasOutputKind('external_receipt', 'receipt')) covered.add('external_receipt');
+    if (hasPayloadValue(['action', 'action_result', 'actionResult']) || hasOutputKind('action')) covered.add('action');
+    if (String(payload?.status || payload?.kind || '').toLowerCase() === 'requires_input' || hasOutputKind('requires_input')) covered.add('requires_input');
+    if (String(payload?.status || payload?.kind || '').toLowerCase() === 'error' || hasOutputKind('error')) covered.add('error');
+    return Array.from(covered);
+}
+
+function appRunEvidenceContractCoverage(app: AppEntry, evidence: AppRunHistoryEntry | null, lang?: string) {
+    const zh = isZh(lang);
+    const contract = appResultContractForManifest(app);
+    const coveredTypes = appRunEvidenceResultTypes(evidence);
+    const covered = new Set(coveredTypes);
+    const primary = String(contract.primary || '').trim();
+    const primaryCovered = !primary || covered.has(primary) || (primary === 'document' && covered.has('artifact')) || (primary === 'artifact' && covered.has('document')) || (primary === 'text' && covered.has('content')) || (primary === 'content' && covered.has('text'));
+    const missingTypes = primaryCovered || !primary ? [] : [primary];
+    const evidenceLabel = evidence ? `${evidence.runID || ''} / ${evidence.at || ''}`.trim() : '';
+    const coveredLabel = coveredTypes.length > 0 ? coveredTypes.join(', ') : (zh ? '\u672a\u8bc6\u522b\u7ed3\u679c\u7c7b\u578b' : 'No result type recognized');
+    return {
+        ok: !!evidence && primaryCovered,
+        primary,
+        coveredTypes,
+        missingTypes,
+        detail: !evidence
+            ? (zh ? '\u63d0\u4ea4\u5ba1\u6838\u524d\u5efa\u8bae\u5148\u8bd5\u8fd0\u884c\u4e00\u6b21' : 'Run the app once before review')
+            : primaryCovered
+                ? `${evidenceLabel}${primary ? ` / primary: ${primary}` : ''} / ${zh ? '\u8986\u76d6' : 'covered'}: ${coveredLabel}`
+                : `${evidenceLabel} / ${zh ? '\u8fd0\u884c\u8bc1\u636e\u672a\u8986\u76d6\u7ed3\u679c\u5951\u7ea6' : 'Run evidence does not cover result contract'}: ${missingTypes.join(', ')}`,
+    };
+}
 function defaultAppWorkflowMapping(kind: AppKind, domain = 'business', objectRole = 'record'): AppWorkflowMapping | undefined {
     if (kind !== 'enterprise_approval_app') return undefined;
     const role = String(objectRole || domain || 'record').trim() || 'record';
@@ -3271,12 +3361,13 @@ function appNeedsRuntimeDependencyCheck(app: AppEntry) {
 function appNeedsAutomaticRuntimeDependencyCheck(app: AppEntry) {
     return (app.source === 'market' || app.source === 'skill') && appDependencyEvidence(app).length > 0;
 }
-function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmission) {
+function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmission, overrides: AppGovernanceOverrides = {}) {
     const evidence = latestAppRunEvidence(app);
     const evidenceArtifacts = appRunHistoryArtifacts(evidence);
     const evidenceOutputs = normalizeApprovalOutputs(evidence?.outputs) || [];
     const resultContract = appResultContractForManifest(app);
     const primaryResult = appRunPrimaryResultFromPayload(resultContract, evidence?.resultPayload, evidenceOutputs);
+    const resultCoverage = appRunEvidenceContractCoverage(app, evidence);
     const primaryArtifact = evidenceArtifacts[0];
     const artifactName = primaryArtifact?.name || (primaryArtifact?.path ? primaryArtifact.path.split(/[\\/]/).pop() : undefined);
     const dependencies = appDependencyEvidence(app);
@@ -3290,6 +3381,15 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
             requiredCount: dependencies.filter((dep) => dep.required).length,
             optionalCount: dependencies.filter((dep) => !dep.required).length,
         },
+        dependencyVerification: overrides.dependencyVerification ? {
+            schema: overrides.dependencyVerification.schema || 'maclaw.app.install_plan.v1',
+            verifiedAt: new Date().toISOString(),
+            appCount: overrides.dependencyVerification.apps?.length || 0,
+            dependencyCount: overrides.dependencyVerification.dependencies?.length || 0,
+            hasMissingRequired: !!overrides.dependencyVerification.has_missing_required,
+            hasBlockingDependency: !!overrides.dependencyVerification.has_blocking_dependency,
+            dependencies: parseBackendAppInstallDependencies(overrides.dependencyVerification.dependencies),
+        } : undefined,
         workspaceLayout: appWorkspaceLayoutEvidence(app),
         resultContract,
         testEvidence: {
@@ -3303,6 +3403,12 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
             outputs: evidenceOutputs.map(appRunHistoryOutputEvidence),
             resultPayload: evidence?.resultPayload,
             primaryResult: primaryResult || undefined,
+            resultCoverage: {
+                ok: resultCoverage.ok,
+                primary: resultCoverage.primary,
+                coveredTypes: resultCoverage.coveredTypes,
+                missingTypes: resultCoverage.missingTypes,
+            },
             verifiedAt: evidence?.at || undefined,
         },
         submission: submission ? {
@@ -5873,7 +5979,7 @@ function appDefinitionFingerprint(app: AppEntry): string {
     }));
 }
 
-function appToManifest(app: AppEntry, submission?: AppPublishSubmission) {
+function appToManifest(app: AppEntry, submission?: AppPublishSubmission, governanceOverrides: AppGovernanceOverrides = {}) {
     const manifest = app.manifest;
     return {
         schema: manifest?.schema || 'maclaw.app.v1',
@@ -5906,7 +6012,7 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission) {
                 accent: app.accent,
                 customIconDataUrl: app.customIconDataUrl,
             },
-            governance: appGovernanceForManifest(app, submission),
+            governance: appGovernanceForManifest(app, submission, governanceOverrides),
         },
     };
 }
@@ -5921,11 +6027,11 @@ function appToSkillDefinitionManifest(app: AppEntry) {
     return appToManifest({ ...app, id: skillDefinitionAppId(app) });
 }
 
-function appsToPackManifest(apps: AppEntry[], submissions: Record<string, AppPublishSubmission> = {}) {
+function appsToPackManifest(apps: AppEntry[], submissions: Record<string, AppPublishSubmission> = {}, governanceOverrides: Record<string, AppGovernanceOverrides> = {}) {
     return {
         schema: 'maclaw.app.pack.v1',
         privateMarker: 'x_maclaw_apps',
-        apps: apps.map((app) => appToManifest(app, submissions[app.id])),
+        apps: apps.map((app) => appToManifest(app, submissions[app.id], governanceOverrides[app.id])),
     };
 }
 
@@ -6229,6 +6335,33 @@ function installRecordDependencyStatus(dep: BackendAppInstallDependency, text: t
     return separator > 0 ? summary.slice(0, separator) : dep.installed ? text.installedDependency : text.missingDependency;
 }
 
+const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text }: { plan: BackendAppInstallPlan | null; state: 'idle' | 'loading' | 'ready' | 'error'; error?: string; selectedAppIDs?: string[]; text: typeof labels.zh }) => {
+    if (state === 'idle' && !plan) return null;
+    const appIDs = selectedAppIDs || [];
+    const dependencies = appIDs.length > 0
+        ? (plan?.dependencies || []).filter((dep) => backendDependencyMatchesAppIDs(dep, appIDs))
+        : plan?.dependencies || [];
+    const blockingCount = dependencies.filter(isBlockingBackendDependency).length;
+    const dependencyCount = dependencies.length;
+    const hasBlockingDependency = blockingCount > 0 || !!plan?.has_blocking_dependency || !!plan?.has_missing_required;
+    const status = state === 'loading'
+        ? text.dependencyPlanLoading
+        : state === 'error'
+            ? [text.dependencyPlanError, error].filter(Boolean).join(': ')
+            : hasBlockingDependency
+                ? text.dependencyVerificationBlocked
+                : text.dependencyVerificationReady;
+    return (
+        <div className="apps-dependency-verification" data-state={state === 'error' || hasBlockingDependency ? 'blocked' : state} role={state === 'error' || hasBlockingDependency ? 'alert' : 'group'} aria-label={text.dependencyVerification}>
+            <div className="apps-dependency-verification__head">
+                <strong>{text.dependencyVerification}</strong>
+                <span>{status}</span>
+                {state === 'ready' && <em>{text.skillDependencies}: {dependencyCount} · {text.missingDependencyCount}: {blockingCount}</em>}
+            </div>
+            {dependencyCount > 0 && <InstallRecordDependencies dependencies={dependencies} text={text} />}
+        </div>
+    );
+};
 const InstallRecordDependencies = ({ dependencies, text }: { dependencies?: BackendAppInstallDependency[]; text: typeof labels.zh }) => {
     const items = (dependencies || []).filter((dep) => dep.id);
     if (items.length === 0) return null;
@@ -7562,8 +7695,7 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
             ? !!manifest?.skill?.id
             : true;
     const evidence = latestAppRunEvidence(app);
-    const evidenceArtifactCount = appRunHistoryArtifacts(evidence).length;
-    const hasTestEvidence = !!evidence;
+    const resultCoverage = appRunEvidenceContractCoverage(app, evidence, lang);
     const dependencies = appDependencyEvidence(app);
     const hasRequiredDependencies = app.kind === 'automation_app' || dependencies.some((dep) => dep.required && dep.id);
     const workspaceLayout = appWorkspaceLayoutEvidence(app);
@@ -7605,10 +7737,8 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
         },
         {
             label: zh ? '\u8fd0\u884c\u8bc1\u636e' : 'Run evidence',
-            ok: hasTestEvidence,
-            detail: hasTestEvidence
-                ? `${evidence?.runID || ''} / ${evidence?.at || ''}${evidenceArtifactCount > 0 ? ` / ${evidenceArtifactCount} artifacts` : ''}`
-                : (zh ? '\u63d0\u4ea4\u5ba1\u6838\u524d\u5efa\u8bae\u5148\u8bd5\u8fd0\u884c\u4e00\u6b21' : 'Run the app once before review'),
+            ok: resultCoverage.ok,
+            detail: resultCoverage.detail,
         },
     ];
 }
@@ -7678,8 +7808,9 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
             setSubmittingAppId('');
             return;
         }
+        let dependencyPlan: BackendAppInstallPlan | undefined;
         try {
-            const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
+            dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
             if (dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, [app.id])) {
                 throw new Error(text.missingRequiredDependency);
             }
@@ -7693,7 +7824,7 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
         }
         let submission: AppPublishSubmission | null = null;
         try {
-            submission = await submitAppPackageToEnterpriseMarket(app, appsToPackManifest([app]));
+            submission = await submitAppPackageToEnterpriseMarket(app, appsToPackManifest([app], {}, dependencyPlan ? { [app.id]: { dependencyVerification: dependencyPlan } } : {}));
         } catch (error) {
             submission = {
                 id: `local-review-${app.id}-${Date.now().toString(36)}`,
@@ -8773,10 +8904,12 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
     const [installState, setInstallState] = useState<'idle' | 'installed' | 'error'>('idle');
     const [installMessage, setInstallMessage] = useState('');
     const [installResultItems, setInstallResultItems] = useState<AppInstallResultItem[]>([]);
+    const [installResultDependencyPlan, setInstallResultDependencyPlan] = useState<BackendAppInstallPlan | null>(null);
+    const [installResultAppIDs, setInstallResultAppIDs] = useState<string[]>([]);
     const [selectedInstallKeys, setSelectedInstallKeys] = useState<string[] | null>(null);
     const [confirmHighRiskInstall, setConfirmHighRiskInstall] = useState(false);
     const [marketInstallAppId, setMarketInstallAppId] = useState('');
-    const [marketInstallFeedback, setMarketInstallFeedback] = useState<{ appId: string; state: 'running' | 'done' | 'error'; message: string; dependencies?: BackendAppInstallDependency[] } | null>(null);
+    const [marketInstallFeedback, setMarketInstallFeedback] = useState<{ appId: string; state: 'running' | 'done' | 'error'; message: string; plan?: BackendAppInstallPlan | null; appIDs?: string[]; dependencies?: BackendAppInstallDependency[] } | null>(null);
     const [backendInstallPlan, setBackendInstallPlan] = useState<BackendAppInstallPlan | null>(null);
     const [backendInstallPlanState, setBackendInstallPlanState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
     const [backendInstallPlanError, setBackendInstallPlanError] = useState('');
@@ -8872,7 +9005,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
     const installSingleMarketApp = async (app: AppEntry) => {
         const manifestText = JSON.stringify(appToManifest(app));
         setMarketInstallAppId(app.id);
-        setMarketInstallFeedback({ appId: app.id, state: 'running', message: text.dependencyPlanLoading });
+        setMarketInstallFeedback({ appId: app.id, state: 'running', message: text.dependencyPlanLoading, appIDs: [app.id] });
         try {
             const dependencyInstallPlan = await InstallMaclawAppDependencies(manifestText);
             const dependencyDetails = backendDependenciesForApp(dependencyInstallPlan, app.id);
@@ -8881,6 +9014,8 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                     appId: app.id,
                     state: 'error',
                     message: text.missingRequiredDependency,
+                    plan: dependencyInstallPlan || null,
+                    appIDs: [app.id],
                     dependencies: dependencyDetails.length > 0 ? dependencyDetails : dependencyInstallPlan?.dependencies || [],
                 });
                 return;
@@ -8895,9 +9030,16 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                 // Dependency health is the install gate; audit refresh failures should not discard an otherwise valid local install.
             }
             onInstallApp(app);
-            setMarketInstallFeedback({ appId: app.id, state: 'done', message: installFeedbackMessage });
+            setMarketInstallFeedback({
+                appId: app.id,
+                state: 'done',
+                message: installFeedbackMessage,
+                plan: dependencyInstallPlan || null,
+                appIDs: [app.id],
+                dependencies: dependencyDetails.length > 0 ? dependencyDetails : dependencyInstallPlan?.dependencies || [],
+            });
         } catch (error: any) {
-            setMarketInstallFeedback({ appId: app.id, state: 'error', message: error?.message || text.installError });
+            setMarketInstallFeedback({ appId: app.id, state: 'error', message: error?.message || text.installError, appIDs: [app.id] });
         } finally {
             setMarketInstallAppId('');
         }
@@ -8917,8 +9059,10 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
             const selectableKeys = plan.filter((item) => item.action === 'install' || item.action === 'upgrade').map((item) => item.key);
             const selectedKeys = new Set(selectedInstallKeys ?? selectableKeys);
             const selectedAppIDs = plan.filter((item) => (item.action === 'install' || item.action === 'upgrade') && selectedKeys.has(item.key)).map((item) => item.app.id);
+            let dependencyPlanForResult: BackendAppInstallPlan | null = backendInstallPlanState === 'ready' ? backendInstallPlan : null;
             if (backendInstallPlanState === 'ready' && hasMissingRequiredBackendDependency(backendInstallPlan, selectedAppIDs)) {
                 const dependencyInstallPlan = await InstallMaclawAppDependencies(manifestText);
+                dependencyPlanForResult = dependencyInstallPlan || null;
                 setBackendInstallPlan(dependencyInstallPlan || null);
                 setBackendInstallPlanState('ready');
                 if (hasMissingRequiredBackendDependency(dependencyInstallPlan, selectedAppIDs)) {
@@ -8931,6 +9075,8 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                 setInstallState('idle');
                 setInstallMessage(text.highRiskInstallWarning);
                 setInstallResultItems([]);
+                setInstallResultDependencyPlan(null);
+                setInstallResultAppIDs([]);
                 return;
             }
             const resultItems = plan.map((item): AppInstallResultItem => {
@@ -8965,6 +9111,8 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
             nextApps.forEach(onInstallApp);
             setInstallMessage(installSummaryMessage(installedActionCount, upgradedActionCount, skippedActionCount, text));
             setInstallResultItems(resultItems);
+            setInstallResultDependencyPlan(dependencyPlanForResult);
+            setInstallResultAppIDs(selectedAppIDs);
             setInstallState('installed');
             setConfirmHighRiskInstall(false);
             const installedResultKeys = new Set(resultItems.filter((item) => item.action !== 'skipped').map((item) => item.key));
@@ -8987,6 +9135,8 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
         } catch (error: any) {
             setInstallMessage(error?.message || text.installError);
             setInstallResultItems([]);
+            setInstallResultDependencyPlan(null);
+            setInstallResultAppIDs([]);
             setInstallState('error');
             setConfirmHighRiskInstall(false);
         }
@@ -9013,7 +9163,14 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                                     <span>{app.description}</span>
                                     <small>{app.category} · {appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</small>
                                     {feedback && <small className="apps-market-row__feedback" data-state={feedback.state}>{feedback.message}</small>}
-                                    {feedback?.dependencies?.length ? <InstallRecordDependencies dependencies={feedback.dependencies} text={text} /> : null}
+                                    {feedback?.plan ? (
+                                        <DependencyVerificationPanel
+                                            plan={feedback.plan}
+                                            state={feedback.state === 'running' ? 'loading' : feedback.state === 'error' ? 'ready' : 'ready'}
+                                            selectedAppIDs={feedback.appIDs || [app.id]}
+                                            text={text}
+                                        />
+                                    ) : feedback?.dependencies?.length ? <InstallRecordDependencies dependencies={feedback.dependencies} text={text} /> : null}
                                 </div>
                                 <button className={installed ? 'apps-secondary-button' : 'apps-primary-button'} type="button" disabled={installed || isInstalling} title={`${buttonText}: ${app.name}`} aria-label={`${buttonText}: ${app.name}`} onClick={() => void installSingleMarketApp(app)}>
                                     {buttonText}
@@ -9074,6 +9231,8 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                         setInstallState('idle');
                         setInstallMessage('');
                         setInstallResultItems([]);
+                        setInstallResultDependencyPlan(null);
+                        setInstallResultAppIDs([]);
                         setConfirmHighRiskInstall(false);
                         setSelectedInstallKeys(null);
                     }} placeholder={text.pasteManifest} />
@@ -9088,6 +9247,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                             {backendInstallPlanState === 'loading' && <div className="apps-install-preview__warning">{text.dependencyPlanLoading}</div>}
                             {backendInstallPlanState === 'error' && <div className="apps-install-preview__warning" role="alert">{`${text.dependencyPlanError}: ${backendInstallPlanError}`}</div>}
                             {selectedHasMissingRequiredDependency && <div className="apps-install-preview__warning" role="alert">{text.missingRequiredDependency}</div>}
+                            <DependencyVerificationPanel plan={backendInstallPlan} state={backendInstallPlanState} error={backendInstallPlanError} selectedAppIDs={selectedInstallAppIDs} text={text} />
                             <div className="apps-preview-title-row">
                                 <div className="apps-definition__title">{text.installPreview}</div>
                                 <div className="apps-install-preview__tools">
@@ -9149,7 +9309,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                         </div>
                     )}
                     {installState !== 'idle' && (
-                        <div className={`apps-result-panel${installState === 'installed' && installResultItems.length > 0 ? ' apps-result-panel--stacked' : ''}`} data-state={installState === 'installed' ? 'done' : 'error'} role={installState === 'installed' ? 'status' : 'alert'} aria-live={installState === 'installed' ? 'polite' : undefined}>
+                        <div className={`apps-result-panel${installState === 'installed' && (installResultItems.length > 0 || installResultDependencyPlan) ? ' apps-result-panel--stacked' : ''}`} data-state={installState === 'installed' ? 'done' : 'error'} role={installState === 'installed' ? 'status' : 'alert'} aria-live={installState === 'installed' ? 'polite' : undefined}>
                             <span>{installState === 'installed' ? installMessage : `${text.installError}: ${installMessage}`}</span>
                             {installState === 'installed' && installResultItems.length > 0 && (
                                 <div className="apps-install-result" role="list" aria-label={text.installDetails}>
@@ -9162,6 +9322,9 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                                         </div>
                                     ))}
                                 </div>
+                            )}
+                            {installState === 'installed' && installResultDependencyPlan && (
+                                <DependencyVerificationPanel plan={installResultDependencyPlan} state="ready" selectedAppIDs={installResultAppIDs} text={text} />
                             )}
                         </div>
                     )}

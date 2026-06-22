@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -111,6 +113,15 @@ func validGraph() WorkflowGraph {
 			{ID: "e1", SourceID: "trigger_1", TargetID: "approval_1"},
 		},
 	}
+}
+
+func mustRawJSON(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	return body
 }
 
 // --- Tests ---
@@ -576,6 +587,106 @@ func TestValidateGraphStructure_RejectsIncomingEdgeToTrigger(t *testing.T) {
 	err := ValidateGraphStructure(graph)
 	if err != ErrTriggerHasIncoming {
 		t.Errorf("error = %v, want ErrTriggerHasIncoming", err)
+	}
+}
+
+func TestValidateGraphStructure_RejectsOutgoingEdgeFromTerminal(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "t1", Type: NodeTrigger, Label: "Start"},
+			{ID: "done", Type: NodeTypeTerminal, Label: "Done"},
+			{ID: "a1", Type: NodeApproval, Label: "Approve"},
+		},
+		Edges: []WorkflowEdge{
+			{ID: "e1", SourceID: "t1", TargetID: "done"},
+			{ID: "e2", SourceID: "done", TargetID: "a1"},
+		},
+	}
+	err := ValidateGraphStructure(graph)
+	if err != ErrTerminalHasOutgoing {
+		t.Errorf("error = %v, want ErrTerminalHasOutgoing", err)
+	}
+}
+
+func TestValidateGraphStructure_AcceptsConditionBranchRoutes(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "t1", Type: NodeTrigger, Label: "Start"},
+			{ID: "cond", Type: NodeConditionBranch, Label: "Check", Config: mustRawJSON(t, ConditionBranchConfig{
+				Branches: []BranchCondition{{
+					TargetNodeID: "approve",
+					Expression:   ConditionExpr{Field: "amount", Operator: "greater_than", Value: 1000},
+					Priority:     0,
+				}},
+				DefaultBranch: "done",
+			})},
+			{ID: "approve", Type: NodeApproval, Label: "Approve"},
+			{ID: "done", Type: NodeTypeTerminal, Label: "Done"},
+		},
+		Edges: []WorkflowEdge{
+			{ID: "e1", SourceID: "t1", TargetID: "cond"},
+			{ID: "e2", SourceID: "cond", TargetID: "approve"},
+			{ID: "e3", SourceID: "cond", TargetID: "done"},
+		},
+	}
+	if err := ValidateGraphStructure(graph); err != nil {
+		t.Errorf("ValidateGraphStructure(condition graph) = %v, want nil", err)
+	}
+}
+
+func TestValidateGraphStructure_RejectsConditionBranchWithoutRoute(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "t1", Type: NodeTrigger, Label: "Start"},
+			{ID: "cond", Type: NodeConditionBranch, Label: "Check", Config: mustRawJSON(t, ConditionBranchConfig{})},
+		},
+		Edges: []WorkflowEdge{{ID: "e1", SourceID: "t1", TargetID: "cond"}},
+	}
+	err := ValidateGraphStructure(graph)
+	if !errors.Is(err, ErrConditionBranchInvalid) {
+		t.Errorf("error = %v, want ErrConditionBranchInvalid", err)
+	}
+}
+
+func TestValidateGraphStructure_RejectsConditionBranchMissingTarget(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "t1", Type: NodeTrigger, Label: "Start"},
+			{ID: "cond", Type: NodeConditionBranch, Label: "Check", Config: mustRawJSON(t, ConditionBranchConfig{
+				Branches: []BranchCondition{{
+					TargetNodeID: "missing",
+					Expression:   ConditionExpr{Field: "amount", Operator: "greater_than", Value: 1000},
+				}},
+			})},
+		},
+		Edges: []WorkflowEdge{{ID: "e1", SourceID: "t1", TargetID: "cond"}},
+	}
+	err := ValidateGraphStructure(graph)
+	if !errors.Is(err, ErrConditionBranchInvalid) {
+		t.Errorf("error = %v, want ErrConditionBranchInvalid", err)
+	}
+}
+
+func TestValidateGraphStructure_RejectsConditionBranchInvalidExpression(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "t1", Type: NodeTrigger, Label: "Start"},
+			{ID: "cond", Type: NodeConditionBranch, Label: "Check", Config: mustRawJSON(t, ConditionBranchConfig{
+				Branches: []BranchCondition{{
+					TargetNodeID: "done",
+					Expression:   ConditionExpr{Field: "", Operator: "unknown", Value: true},
+				}},
+			})},
+			{ID: "done", Type: NodeTypeTerminal, Label: "Done"},
+		},
+		Edges: []WorkflowEdge{
+			{ID: "e1", SourceID: "t1", TargetID: "cond"},
+			{ID: "e2", SourceID: "cond", TargetID: "done"},
+		},
+	}
+	err := ValidateGraphStructure(graph)
+	if !errors.Is(err, ErrConditionBranchInvalid) {
+		t.Errorf("error = %v, want ErrConditionBranchInvalid", err)
 	}
 }
 

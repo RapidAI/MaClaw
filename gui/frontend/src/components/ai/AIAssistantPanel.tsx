@@ -1556,6 +1556,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // stale baseline (after messages are added), causing responses to not
     // appear in the project tab's message list.
     const panelExecuteAction = useCallback((command: string) => {
+        // Workflow review "supplement_focus": focus input box after disabling buttons.
+        // This must be handled at the Panel level (not in useAIAssistant hook)
+        // because inputRef is a Panel-local ref not accessible from the hook.
+        if (command === '__wf_review__ supplement_focus') {
+            executeAction(command); // disables buttons in hook
+            requestAnimationFrame(() => inputRef.current?.focus());
+            return;
+        }
         if (!isProjectTabActive || !activeTab.projectPath) {
             return executeAction(command);
         }

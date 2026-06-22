@@ -1188,6 +1188,23 @@ func recordTUISkillUsageExperience(entry *corelib.NLSkillEntry, success bool) {
 		ErrorClass:   errorClass,
 		FinalOutcome: finalOutcome,
 	})
+
+	// Invalidate manage_skill outcome records when a qualifying error class
+	// indicates the skill environment is broken (config, dependencies, setup).
+	// This ensures the router does not continue recommending manage_skill based
+	// on stale success data from before the breakage occurred.
+	if errorClass != "" {
+		qualifyingErrors := map[string]bool{
+			"config_error":       true,
+			"dependency_missing": true,
+			"setup_failed":       true,
+			"install_failed":     true,
+		}
+		if qualifyingErrors[errorClass] {
+			tracker.InvalidateOutcomes("manage_skill",
+				fmt.Sprintf("%s: %s", errorClass, entry.Name))
+		}
+	}
 }
 
 // --- upload ---

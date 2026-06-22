@@ -4143,6 +4143,38 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 displayText: dismissSessionText,
             });
         }
+        const workflowReviewMatch = command.match(/^__wf_review__\s+(\S+)$/);
+        if (workflowReviewMatch) {
+            const action = workflowReviewMatch[1];
+
+            // "补充修改意见": pure frontend action — focus input box, don't send message
+            if (action === 'supplement_focus') {
+                setMessages(prev => disableActionsForCommand(prev, command));
+                return;
+            }
+
+            // "中止": requires user confirmation before sending
+            if (action === 'abort') {
+                const confirmMsg = localizeText(uiLang,
+                    "Are you sure you want to abort the current workflow?\n\nAll progress will be lost and you'll need to start over.",
+                    "\u786e\u5b9a\u8981\u4e2d\u6b62\u5f53\u524d\u5de5\u4f5c\u6d41\u5417\uff1f\n\n\u4e2d\u6b62\u540e\u5f53\u524d\u8fdb\u5ea6\u5c06\u88ab\u6e05\u9664\uff0c\u65e0\u6cd5\u7ee7\u7eed\uff0c\u53ea\u80fd\u91cd\u65b0\u53d1\u8d77\u3002",
+                    "\u78ba\u5b9a\u8981\u4e2d\u6b62\u7576\u524d\u5de5\u4f5c\u6d41\u55ce\uff1f\n\n\u4e2d\u6b62\u5f8c\u7576\u524d\u9032\u5ea6\u5c07\u88ab\u6e05\u9664\uff0c\u7121\u6cd5\u7e7c\u7e8c\uff0c\u53ea\u80fd\u91cd\u65b0\u767c\u8d77\u3002",
+                );
+                if (!window.confirm(confirmMsg)) {
+                    return; // user cancelled — buttons stay clickable
+                }
+                setMessages(prev => disableActionsForCommand(prev, command));
+                const displayText = localizeText(uiLang, "\ud83d\udeab Abort workflow", "\ud83d\udeab \u4e2d\u6b62\u5de5\u4f5c\u6d41", "\ud83d\udeab \u4e2d\u6b62\u5de5\u4f5c\u6d41");
+                return sendMessage(command, { uiAction: true, displayText });
+            }
+
+            // "confirm": send to backend for fast-path processing
+            const displayLabels: Record<string, string> = {
+                confirm: localizeText(uiLang, "\u2705 Confirm and proceed", "\u2705 \u786e\u8ba4\u5e76\u63a8\u8fdb", "\u2705 \u78ba\u8a8d\u4e26\u63a8\u9032"),
+            };
+            setMessages(prev => disableActionsForCommand(prev, command));
+            return sendMessage(command, { uiAction: true, displayText: displayLabels[action] || command });
+        }
         const workflowChoiceMatch = command.match(/^__workflow_choice__\s+(complex|simple|skip|direct|alt_\S+)\s+(\S+)$/);
         if (workflowChoiceMatch) {
             const choice = workflowChoiceMatch[1];
@@ -4544,10 +4576,16 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         // normally wait for backend lifecycle confirmation), swallow backend errors,
         // and skip the legacy sendMessage fallback. Used by session clear / /new / /reset.
         const isWorkflowFormDismiss = typeof viewId === 'string' && viewId.startsWith('workflow:form:');
-        if (!isWorkflowFormDismiss || options?.force) updateVisibleAgentViewForSession(activeSessionKeyForEvents() || 'desktop-user', null);
+        const isCancelWorkflow = !!(data && data.__cancel_workflow);
+        if (!isWorkflowFormDismiss || options?.force || isCancelWorkflow) updateVisibleAgentViewForSession(activeSessionKeyForEvents() || 'desktop-user', null);
         const payload = JSON.stringify({ view_id: viewId || "", data: data || {} });
         try {
-            await DismissAgentView({ view_id: viewId || "", data: data || {} });
+            const result = await DismissAgentView({ view_id: viewId || "", data: data || {} });
+            // When cancelling a workflow, show the confirmation message to the user.
+            if (isCancelWorkflow && result?.text) {
+                const sessionKey = activeSessionKeyForEvents() || 'desktop-user';
+                setMessages(prev => [...prev, { id: `wf-cancel-${Date.now()}`, role: 'assistant' as const, content: result.text, sessionKey, timestamp: Date.now() }]);
+            }
             return;
         } catch (err: any) {
             if (options?.force) return; // Session clear — don't surface backend errors.

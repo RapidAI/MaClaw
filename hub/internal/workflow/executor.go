@@ -37,13 +37,14 @@ type pendingDispatch struct {
 
 // WorkflowExecutor manages the lifecycle of workflow instances.
 type WorkflowExecutor struct {
-	store           WorkflowStore
-	instanceStore   InstanceStore
-	auditStore      AuditStore
-	dispatcher      ApprovalDispatcher
-	notifier        WorkflowNotifier
-	notifDispatcher *NotificationDispatcher
-	confirmTracker  *ConfirmationTracker
+	store            WorkflowStore
+	instanceStore    InstanceStore
+	auditStore       AuditStore
+	dispatcher       ApprovalDispatcher
+	approverResolver ApprovalApproverResolver
+	notifier         WorkflowNotifier
+	notifDispatcher  *NotificationDispatcher
+	confirmTracker   *ConfirmationTracker
 	// resumeLocks serializes the approval read-modify-write-persist cycle in
 	// ResumeInstance per instance, so concurrent decisions on the same node
 	// cannot lose a vote (Requirement 2.6). See instance_locks.go.
@@ -54,6 +55,12 @@ type WorkflowExecutor struct {
 type ApprovalDispatcher interface {
 	Dispatch(ctx context.Context, req *ApprovalRequest, approverID string) error
 	DispatchFallback(ctx context.Context, req *ApprovalRequest, fallbackID string, reason string) error
+}
+
+// ApprovalApproverResolver expands stable approver references, such as Hub
+// approval-role IDs, into concrete runtime approver identities.
+type ApprovalApproverResolver interface {
+	ResolveApproverIDs(ctx context.Context, approverIDs []string) ([]string, error)
 }
 
 // WorkflowNotifier sends notifications to workflow participants.
@@ -93,6 +100,14 @@ func WithNotifier(n WorkflowNotifier) ExecutorOption {
 func WithNotificationDispatcher(nd *NotificationDispatcher) ExecutorOption {
 	return func(e *WorkflowExecutor) {
 		e.notifDispatcher = nd
+	}
+}
+
+// WithApprovalApproverResolver sets the resolver used before dispatching and
+// validating approval decisions.
+func WithApprovalApproverResolver(resolver ApprovalApproverResolver) ExecutorOption {
+	return func(e *WorkflowExecutor) {
+		e.approverResolver = resolver
 	}
 }
 
@@ -270,6 +285,9 @@ func (e *WorkflowExecutor) ResumeInstance(ctx context.Context, instanceID string
 	var cfg ApprovalNodeConfig
 	if err := json.Unmarshal(approvalNode.Config, &cfg); err != nil {
 		return fmt.Errorf("parse approval node config: %w", err)
+	}
+	if err := e.resolveApprovalNodeConfig(ctx, &cfg); err != nil {
+		return err
 	}
 
 	// Determine whether to advance based on approval mode, and persist the
@@ -744,6 +762,9 @@ func (e *WorkflowExecutor) HandleTimeout(ctx context.Context, instanceID, nodeID
 	if err := json.Unmarshal(node.Config, &cfg); err != nil {
 		return fmt.Errorf("parse approval node config: %w", err)
 	}
+	if err := e.resolveApprovalNodeConfig(ctx, &cfg); err != nil {
+		return err
+	}
 
 	return e.handleFallbackRouting(ctx, inst, node, &cfg, "timeout")
 }
@@ -786,6 +807,9 @@ func (e *WorkflowExecutor) HandleUnavailable(ctx context.Context, instanceID, no
 	if err := json.Unmarshal(node.Config, &cfg); err != nil {
 		return fmt.Errorf("parse approval node config: %w", err)
 	}
+	if err := e.resolveApprovalNodeConfig(ctx, &cfg); err != nil {
+		return err
+	}
 
 	return e.handleFallbackRouting(ctx, inst, node, &cfg, "unavailable")
 }
@@ -826,6 +850,9 @@ func (e *WorkflowExecutor) HandleQueueFull(ctx context.Context, instanceID, node
 	var cfg ApprovalNodeConfig
 	if err := json.Unmarshal(node.Config, &cfg); err != nil {
 		return fmt.Errorf("parse approval node config: %w", err)
+	}
+	if err := e.resolveApprovalNodeConfig(ctx, &cfg); err != nil {
+		return err
 	}
 
 	return e.handleFallbackRouting(ctx, inst, node, &cfg, "queue_full")
@@ -1041,7 +1068,7 @@ func (e *WorkflowExecutor) executeNode(ctx context.Context, inst *WorkflowInstan
 	case NodeConditionBranch:
 		execErr = e.executeConditionBranchNode(ctx, inst, node, graph)
 	case NodeApproval:
-		execErr = e.executeApprovalNode(ctx, inst, node, graph)
+		execErr = e.executeApprovalNode(ctx, inst, node, graph, nodeExec.ID)
 	case NodeAction:
 		execErr = e.executeActionNode(ctx, inst, node, graph)
 	case NodeNotification:
@@ -1205,15 +1232,20 @@ func exprInList(fieldVal, condVal interface{}) bool {
 // Approval nodes are blocking: they dispatch the request and wait for
 // response via ResumeInstance. The node stays in "running" status until
 // a response is received.
-func (e *WorkflowExecutor) executeApprovalNode(ctx context.Context, inst *WorkflowInstance, node *WorkflowNode, graph *WorkflowGraph) error {
+func (e *WorkflowExecutor) executeApprovalNode(ctx context.Context, inst *WorkflowInstance, node *WorkflowNode, graph *WorkflowGraph, nodeExecID string) error {
 	var cfg ApprovalNodeConfig
 	if err := json.Unmarshal(node.Config, &cfg); err != nil {
 		return fmt.Errorf("parse approval node config: %w", err)
+	}
+	originalCfg := cfg
+	if err := e.resolveApprovalNodeConfig(ctx, &cfg); err != nil {
+		return err
 	}
 
 	if len(cfg.ApproverIDs) == 0 {
 		return fmt.Errorf("approval node %s has no approvers configured", node.ID)
 	}
+	e.recordApprovalRuntimeMetadata(ctx, inst.ID, node.ID, nodeExecID, originalCfg, cfg)
 
 	// Build the approval request from instance data.
 	req := &ApprovalRequest{
@@ -1313,6 +1345,90 @@ func (e *WorkflowExecutor) executeApprovalNode(ctx context.Context, inst *Workfl
 	}
 
 	// Execution pauses here and will be resumed via ResumeInstance when response arrives.
+	return nil
+}
+
+func (e *WorkflowExecutor) recordApprovalRuntimeMetadata(ctx context.Context, instanceID, nodeID, nodeExecID string, originalCfg, resolvedCfg ApprovalNodeConfig) {
+	if strings.TrimSpace(nodeExecID) == "" {
+		return
+	}
+	payload := map[string]interface{}{
+		"mode":               resolvedCfg.Mode,
+		"min_approvals":      resolvedCfg.MinApprovals,
+		"timeout_hours":      resolvedCfg.TimeoutHours,
+		"approver_ids":       resolvedCfg.ApproverIDs,
+		"approver_order":     resolvedCfg.ApproverOrder,
+		"fallback_approver":  resolvedCfg.FallbackApprover,
+		"original_approvers": originalCfg.ApproverIDs,
+		"original_order":     originalCfg.ApproverOrder,
+		"original_fallback":  originalCfg.FallbackApprover,
+	}
+	if hasApprovalRoleReference(originalCfg) {
+		payload["approval_role_refs"] = collectApprovalRoleReferences(originalCfg)
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		e.surfaceWriteError(ctx, instanceID, nodeID, "marshal_approval_runtime_metadata", err)
+		return
+	}
+	e.surfaceWriteError(ctx, instanceID, nodeID, "update_approval_runtime_metadata",
+		e.instanceStore.UpdateNodeExecution(ctx, nodeExecID, NodeRunning, data, ""))
+}
+
+func hasApprovalRoleReference(cfg ApprovalNodeConfig) bool {
+	return len(collectApprovalRoleReferences(cfg)) > 0
+}
+
+func collectApprovalRoleReferences(cfg ApprovalNodeConfig) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, id := range append(append([]string{}, cfg.ApproverIDs...), cfg.ApproverOrder...) {
+		if strings.HasPrefix(strings.TrimSpace(id), "role:") {
+			appendUniqueString(&out, seen, id)
+		}
+	}
+	if strings.HasPrefix(strings.TrimSpace(cfg.FallbackApprover), "role:") {
+		appendUniqueString(&out, seen, cfg.FallbackApprover)
+	}
+	return out
+}
+
+func appendUniqueString(out *[]string, seen map[string]struct{}, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	if _, ok := seen[value]; ok {
+		return
+	}
+	seen[value] = struct{}{}
+	*out = append(*out, value)
+}
+
+func (e *WorkflowExecutor) resolveApprovalNodeConfig(ctx context.Context, cfg *ApprovalNodeConfig) error {
+	if cfg == nil || e.approverResolver == nil {
+		return nil
+	}
+	var err error
+	cfg.ApproverIDs, err = e.approverResolver.ResolveApproverIDs(ctx, cfg.ApproverIDs)
+	if err != nil {
+		return fmt.Errorf("resolve approval approvers: %w", err)
+	}
+	if len(cfg.ApproverOrder) > 0 {
+		cfg.ApproverOrder, err = e.approverResolver.ResolveApproverIDs(ctx, cfg.ApproverOrder)
+		if err != nil {
+			return fmt.Errorf("resolve approval order: %w", err)
+		}
+	}
+	if strings.TrimSpace(cfg.FallbackApprover) != "" {
+		resolved, err := e.approverResolver.ResolveApproverIDs(ctx, []string{cfg.FallbackApprover})
+		if err != nil {
+			return fmt.Errorf("resolve fallback approver: %w", err)
+		}
+		if len(resolved) > 0 {
+			cfg.FallbackApprover = resolved[0]
+		}
+	}
 	return nil
 }
 

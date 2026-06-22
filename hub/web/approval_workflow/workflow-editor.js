@@ -135,6 +135,28 @@
     approverPickerEmpty: 'No selectable approvers in this department.',
     approverPickerLoadFailed: 'Load organization failed: {error}',
     selectedApprovers: '{count} selected',
+    approverViewOrganization: 'By organization',
+    approverViewFunction: 'By function',
+    approverViewDirect: 'Direct members',
+    approverRole: 'Approval role',
+    departmentDigitalEmployee: 'Department digital employee',
+    digitalTwin: 'Digital twin',
+    functionScopeFinance: 'Finance',
+    functionScopeProcurement: 'Procurement',
+    functionScopeLegal: 'Legal',
+    functionScopeIT: 'IT',
+    departmentManager: 'Department manager',
+    directManager: 'Direct manager',
+    financeApprover: 'Finance approver',
+    procurementApprover: 'Procurement approver',
+    contractApprover: 'Contract approver',
+    itApprover: 'IT approver',
+    applicantDepartmentScope: 'Applicant department',
+    fixedDepartmentScope: 'Fixed department',
+    roleExecutionManual: 'Manual approval',
+    roleExecutionDigitalSuggest: 'Digital suggestion + human confirmation',
+    roleExecutionDigitalReview: 'Digital pre-review + human confirmation',
+    roleExecutionAuto: 'Automatic approval',
     clearSelection: 'Clear',
     cancel: 'Cancel',
     confirm: 'Confirm',
@@ -185,6 +207,7 @@
     configErrorSummary: 'Fix these issues before continuing:',
     draftGenerating: 'Generating workflow draft...',
     draftGenerated: 'Draft generated. Review the nodes, approvers, and terminal handlers before saving.',
+    draftGeneratedFallback: 'Basic draft generated because the LLM service was unavailable. Review and adjust the workflow before saving.',
     draftNeedDescription: 'Describe the workflow before generating.',
     draftGenerationCancelled: 'Generation canceled. The current canvas was not changed.',
     draftOverwriteConfirm: 'The canvas already has a draft. Save it first if you want to keep it. Generate anyway and overwrite the current canvas?',
@@ -195,6 +218,10 @@
     onlyOneTrigger: 'Only one Trigger node is allowed. Found {count} Trigger nodes.',
     disconnectedNode: 'Node "{label}" at ({x}, {y}) is disconnected.',
     triggerNoIncoming: 'Trigger node "{label}" must not have incoming edges.',
+    terminalNoOutgoing: 'Terminal node "{label}" must not have outgoing edges.',
+    conditionBranchNoRoute: 'Condition node "{label}" must route to at least one branch or default target.',
+    conditionBranchInvalidTarget: 'Condition node "{label}" routes to missing target "{target}".',
+    conditionBranchInvalidExpression: 'Condition node "{label}" has a branch without a valid expression field and operator.',
     selectTool: 'Select',
     connectTool: 'Connect',
     deleteEdgeTool: 'Delete Line',
@@ -599,7 +626,7 @@
   }
 
   function draftGeneratedStatus(data) {
-    var message = tr('draftGenerated');
+    var message = data && data.generated_by === 'fallback' ? tr('draftGeneratedFallback') : tr('draftGenerated');
     var notes = data && Array.isArray(data.notes) ? data.notes : [];
     var note = notes.length > 0 ? String(notes[0] || '').trim() : '';
     if (!note) return message;
@@ -1082,10 +1109,19 @@
 
   function clearConnectingState() {
     if (state.connectingFrom) {
-      var fromEl = canvasNodes.querySelector('[data-node-id="' + state.connectingFrom + '"]');
+      var fromEl = findCanvasNodeElement(state.connectingFrom);
       if (fromEl) fromEl.classList.remove('connecting-source');
     }
     state.connectingFrom = null;
+  }
+
+  function findCanvasNodeElement(nodeId) {
+    var id = String(nodeId || '');
+    var nodes = canvasNodes.querySelectorAll('[data-node-id]');
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].getAttribute('data-node-id') === id) return nodes[i];
+    }
+    return null;
   }
 
   document.querySelectorAll('[data-tool-mode]').forEach(function (btn) {
@@ -1237,7 +1273,7 @@
       duplicateNode(targetId);
     } else if (action === 'start_connection') {
       setToolMode('connect');
-      var el = canvasNodes.querySelector('[data-node-id="' + targetId + '"]');
+      var el = findCanvasNodeElement(targetId);
       if (el) handleConnectNodeClick(targetId, el);
     } else if (action === 'delete_incoming_edges') {
       deleteEdgesForNode(targetId, 'incoming');
@@ -1721,9 +1757,9 @@
         node.label = labelInput.value;
         node.label_is_default = false;
         markDirty();
-        var nodeEl = canvasNodes.querySelector('[data-node-id="' + node.id + '"] .canvas-node-label');
+        var nodeFrame = findCanvasNodeElement(node.id);
+        var nodeEl = nodeFrame ? nodeFrame.querySelector('.canvas-node-label') : null;
         if (nodeEl) nodeEl.textContent = node.label;
-        var nodeFrame = canvasNodes.querySelector('[data-node-id="' + node.id + '"]');
         if (nodeFrame) nodeFrame.setAttribute('aria-label', node.label + ' ' + nodeTypeLabel(node.type));
       });
     }
@@ -1917,6 +1953,11 @@
           '<div><h2 id="approverPickerTitle"></h2><p id="approverPickerCount"></p></div>' +
           '<button type="button" class="approver-picker-close" id="approverPickerClose" aria-label="Close">&times;</button>' +
         '</div>' +
+        '<div class="approver-picker-tabs" id="approverPickerTabs">' +
+          '<button type="button" data-approver-view="organization"></button>' +
+          '<button type="button" data-approver-view="function"></button>' +
+          '<button type="button" data-approver-view="direct"></button>' +
+        '</div>' +
         '<input class="approver-picker-search" id="approverPickerSearch" autocomplete="off">' +
         '<div class="approver-picker-body" id="approverPickerBody"></div>' +
         '<div class="approver-picker-actions">' +
@@ -1937,6 +1978,13 @@
       state.approverPicker.selected = {};
       renderApproverPicker();
     });
+    overlay.querySelectorAll('[data-approver-view]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        if (!state.approverPicker) return;
+        state.approverPicker.view = button.getAttribute('data-approver-view') || 'organization';
+        renderApproverPicker();
+      });
+    });
     document.getElementById('approverPickerConfirm').addEventListener('click', function () {
       if (!state.approverPicker) return;
       var ids = Object.keys(state.approverPicker.selected || {}).filter(function (id) { return state.approverPicker.selected[id]; });
@@ -1955,9 +2003,19 @@
       multiple: !!options.multiple,
       selected: selected,
       onConfirm: typeof options.onConfirm === 'function' ? options.onConfirm : function () {},
-      title: options.title || tr('approverPickerTitle')
+      title: options.title || tr('approverPickerTitle'),
+      view: options.view || 'organization'
     };
     document.getElementById('approverPickerTitle').textContent = state.approverPicker.title;
+    var tabLabels = {
+      organization: tr('approverViewOrganization'),
+      function: tr('approverViewFunction'),
+      direct: tr('approverViewDirect')
+    };
+    overlay.querySelectorAll('[data-approver-view]').forEach(function (button) {
+      var view = button.getAttribute('data-approver-view') || '';
+      button.textContent = tabLabels[view] || view;
+    });
     document.getElementById('approverPickerSearch').placeholder = tr('approverPickerSearch');
     document.getElementById('approverPickerSearch').value = '';
     document.getElementById('approverPickerClear').textContent = tr('clearSelection');
@@ -2032,13 +2090,19 @@
       var veEntries = (data && data.employees || []).filter(function (entry) {
         return String(entry && entry.status || '').toLowerCase() === 'active';
       }).map(function (entry) {
+        var ownerEmail = normalizeEmail(entry && entry.owner_email);
+        var visibleGroupIds = Array.isArray(entry && entry.visible_group_ids) ? entry.visible_group_ids.map(function (id) { return String(id || '').trim(); }).filter(Boolean) : [];
         return {
           id: String(entry.machine_id || entry.id || '').trim(),
           name: String(entry.name || entry.owner_email || tr('virtualEmployee')).trim(),
-          kind: 've'
+          kind: ownerEmail ? 'digital_twin' : 'department_digital_employee',
+          ownerEmail: ownerEmail,
+          visibleGroupIds: visibleGroupIds,
+          employeeType: String(entry.employee_type || '').trim()
         };
       }).filter(function (entry) { return entry.id; });
-      var directory = { root: groupRoot, membersByGroup: membersByGroup, usersByEmail: usersByEmail, machinesByEmail: machinesByEmail, veEntries: veEntries, byId: {} };
+      var approvalRoles = (data && data.approval_roles || []).map(normalizeApprovalRole).filter(Boolean);
+      var directory = { root: groupRoot, membersByGroup: membersByGroup, usersByEmail: usersByEmail, machinesByEmail: machinesByEmail, veEntries: veEntries, approvalRoles: approvalRoles, byId: {} };
       indexApproverDirectory(directory);
       state.approverDirectory = directory;
       return directory;
@@ -2061,6 +2125,9 @@
   }
 
   function indexApproverDirectory(directory) {
+    approverRoleCatalog(directory).forEach(function (role) {
+      directory.byId[role.id] = { id: role.id, name: role.scopeName + ' / ' + role.roleName, kind: 'role' };
+    });
     (directory.veEntries || []).forEach(function (entry) {
       directory.byId[entry.id] = entry;
     });
@@ -2084,11 +2151,129 @@
       machines.forEach(function (machine) {
         rows.push({ id: machine.id, name: email, kind: 'machine' });
       });
+      (directory.veEntries || []).filter(function (entry) {
+        return entry.ownerEmail === email;
+      }).forEach(function (entry) {
+        rows.push({
+          id: entry.id,
+          name: entry.name,
+          kind: 'digital_twin',
+          meta: tr('digitalTwin'),
+          detail: email
+        });
+      });
     });
-    if (group === directory.root) {
-      (directory.veEntries || []).forEach(function (entry) { rows.push(entry); });
-    }
+    (directory.veEntries || []).filter(function (entry) {
+      if (entry.ownerEmail) return false;
+      if (Array.isArray(entry.visibleGroupIds) && entry.visibleGroupIds.length) {
+        return entry.visibleGroupIds.indexOf(group.id) !== -1;
+      }
+      return group === directory.root;
+    }).forEach(function (entry) {
+      rows.push({
+        id: entry.id,
+        name: entry.name,
+        kind: 'department_digital_employee',
+        meta: tr('departmentDigitalEmployee')
+      });
+    });
     return rows;
+  }
+
+  function approverRoleCatalog(directory) {
+    if (directory && Array.isArray(directory.approvalRoles) && directory.approvalRoles.length) return directory.approvalRoles;
+    var fromHub = loadStoredApprovalRoles();
+    if (fromHub.length) return fromHub;
+    return defaultApprovalRoles();
+  }
+
+  function loadStoredApprovalRoles() {
+    try {
+      if (!window.localStorage) return [];
+      var raw = window.localStorage.getItem('maclaw_approval_roles_v1');
+      if (!raw) return [];
+      var parsed = JSON.parse(raw);
+      var roles = Array.isArray(parsed) ? parsed : parsed.roles;
+      if (!Array.isArray(roles)) return [];
+      return roles.map(normalizeApprovalRole).filter(Boolean);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function normalizeApprovalRole(role) {
+    if (!role) return null;
+    var scopeType = String(role.scopeType || role.scope_type || '').trim() || 'global';
+    var scopeId = String(role.scopeId || role.scope_id || '').trim() || 'global';
+    var roleCode = String(role.roleCode || role.role_code || role.code || '').trim();
+    var roleName = String(role.roleName || role.role_name || role.name || roleCode).trim();
+    if (!roleCode || !roleName) return null;
+    return {
+      id: approvalRoleId(scopeType, scopeId, roleCode),
+      roleCode: roleCode,
+      roleName: roleName,
+      scopeType: scopeType,
+      scopeId: scopeId,
+      scopeName: String(role.scopeName || role.scope_name || scopeId).trim() || scopeId,
+      view: String(role.view || (scopeType === 'function' ? 'function' : 'organization')).trim(),
+      executionMode: String(role.executionMode || role.execution_mode || 'manual').trim(),
+      assignees: Array.isArray(role.assignees) ? role.assignees : []
+    };
+  }
+
+  function approvalRoleId(scopeType, scopeId, roleCode) {
+    return ['role', scopeType || 'global', scopeId || 'global', roleCode || ''].map(encodeURIComponent).join(':');
+  }
+
+  function defaultApprovalRoles() {
+    return [
+      { scopeType: 'dynamic', scopeId: 'applicant_department', scopeName: tr('applicantDepartmentScope'), roleCode: 'department_manager', roleName: tr('departmentManager') || 'Department Manager', view: 'organization', executionMode: 'manual', assignees: [] },
+      { scopeType: 'dynamic', scopeId: 'applicant_department', scopeName: tr('applicantDepartmentScope'), roleCode: 'direct_manager', roleName: tr('directManager') || 'Direct Manager', view: 'organization', executionMode: 'manual', assignees: [] },
+      { scopeType: 'function', scopeId: 'finance', scopeName: tr('functionScopeFinance'), roleCode: 'finance_approver', roleName: tr('financeApprover') || 'Finance Approver', view: 'function', executionMode: 'digital_review', assignees: [] },
+      { scopeType: 'function', scopeId: 'procurement', scopeName: tr('functionScopeProcurement'), roleCode: 'procurement_approver', roleName: tr('procurementApprover') || 'Procurement Approver', view: 'function', executionMode: 'digital_suggest', assignees: [] },
+      { scopeType: 'function', scopeId: 'legal', scopeName: tr('functionScopeLegal'), roleCode: 'contract_approver', roleName: tr('contractApprover') || 'Contract Approver', view: 'function', executionMode: 'digital_review', assignees: [] },
+      { scopeType: 'function', scopeId: 'it', scopeName: tr('functionScopeIT'), roleCode: 'it_approver', roleName: tr('itApprover') || 'IT Approver', view: 'function', executionMode: 'manual', assignees: [] }
+    ].map(normalizeApprovalRole).filter(Boolean);
+  }
+
+  function approvalRoleRows(view, directory, query) {
+    var roles = approverRoleCatalog(directory).filter(function (role) {
+      if (view === 'function') return role.view === 'function' || role.scopeType === 'function';
+      if (view === 'organization') return role.view !== 'function' && role.scopeType !== 'function';
+      return false;
+    });
+    query = String(query || '').trim().toLowerCase();
+    if (query) {
+      roles = roles.filter(function (role) {
+        return [role.roleName, role.roleCode, role.scopeName, role.scopeId, executionModeLabel(role.executionMode), assigneeSummary(role, directory)].join(' ').toLowerCase().indexOf(query) !== -1;
+      });
+    }
+    return roles.map(function (role) {
+      return {
+        id: role.id,
+        name: role.scopeName + ' / ' + role.roleName,
+        kind: 'role',
+        meta: executionModeLabel(role.executionMode),
+        detail: assigneeSummary(role, directory) || tr('approverPickerEmpty')
+      };
+    });
+  }
+
+  function assigneeSummary(role, directory) {
+    var names = (role.assignees || []).map(function (assignee) {
+      var id = String(assignee && (assignee.subjectId || assignee.subject_id || assignee.id) || '').trim();
+      var entry = id && directory && directory.byId && directory.byId[id];
+      return String(assignee && (assignee.displayName || assignee.display_name || assignee.name) || entry && entry.name || id || '').trim();
+    }).filter(Boolean);
+    return names.slice(0, 3).join(', ') + (names.length > 3 ? ' +' + (names.length - 3) : '');
+  }
+
+  function executionModeLabel(mode) {
+    mode = String(mode || 'manual');
+    if (mode === 'digital_suggest') return tr('roleExecutionDigitalSuggest');
+    if (mode === 'digital_review') return tr('roleExecutionDigitalReview');
+    if (mode === 'auto') return tr('roleExecutionAuto');
+    return tr('roleExecutionManual');
   }
 
   function renderApproverPicker() {
@@ -2105,7 +2290,23 @@
     }
     var queryEl = document.getElementById('approverPickerSearch');
     var query = String(queryEl && queryEl.value || '').trim().toLowerCase();
-    var html = renderApproverGroup(directory, directory.root, query);
+    var view = picker.view || 'organization';
+    var tabs = document.getElementById('approverPickerTabs');
+    if (tabs) {
+      tabs.querySelectorAll('[data-approver-view]').forEach(function (button) {
+        var active = button.getAttribute('data-approver-view') === view;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+    }
+    var html = '';
+    if (view === 'function') {
+      html = renderApproverRowsSection(tr('approverViewFunction'), approvalRoleRows('function', directory, query));
+    } else if (view === 'direct') {
+      html = renderApproverGroup(directory, directory.root, query, { includeRoles: false });
+    } else {
+      html = renderApproverRowsSection(tr('approverRole'), approvalRoleRows('organization', directory, query)) + renderApproverGroup(directory, directory.root, query, { includeRoles: false });
+    }
     body.innerHTML = html || '<div class="approver-picker-empty">' + escapeHtml(tr('approverPickerEmpty')) + '</div>';
     body.querySelectorAll('[data-approver-id]').forEach(function (row) {
       row.addEventListener('click', function () { toggleApproverSelection(row.getAttribute('data-approver-id')); });
@@ -2117,13 +2318,19 @@
     });
   }
 
-  function renderApproverGroup(directory, group, query) {
+  function renderApproverRowsSection(title, rows) {
+    rows = rows || [];
+    if (!rows.length) return '';
+    return '<section class="approver-group approver-role-group"><h3>' + escapeHtml(title) + '</h3>' + rows.map(renderApproverRow).join('') + '</section>';
+  }
+
+  function renderApproverGroup(directory, group, query, options) {
     if (!group) return '<div class="approver-picker-empty">' + escapeHtml(tr('approverPickerEmpty')) + '</div>';
     var rows = approverRowsForGroup(directory, group).filter(function (row) {
       if (!query) return true;
-      return String(row.name || '').toLowerCase().indexOf(query) !== -1 || String(group.name || '').toLowerCase().indexOf(query) !== -1;
+      return [row.name, row.meta, row.detail, approverKindLabel(row.kind), group.name].join(' ').toLowerCase().indexOf(query) !== -1;
     });
-    var childHtml = (group.children || []).map(function (child) { return renderApproverGroup(directory, child, query); }).join('');
+    var childHtml = (group.children || []).map(function (child) { return renderApproverGroup(directory, child, query, options); }).join('');
     var rowsHtml = rows.map(renderApproverRow).join('');
     if (query && !rowsHtml && !childHtml) return '';
     return '<section class="approver-group"><h3>' + escapeHtml(group.name || 'Root') + '</h3>' + (rowsHtml || '<div class="approver-picker-subempty">' + escapeHtml(tr('approverPickerEmpty')) + '</div>') + childHtml + '</section>';
@@ -2134,8 +2341,17 @@
       return '<div class="approver-row disabled"><span>' + escapeHtml(row.name) + '</span><small>' + escapeHtml(row.meta || '') + '</small></div>';
     }
     var selected = !!(state.approverPicker && state.approverPicker.selected && state.approverPicker.selected[row.id]);
-    var kind = row.kind === 've' ? tr('virtualEmployee') : tr('userMachine');
-    return '<div class="approver-row' + (selected ? ' selected' : '') + '" role="button" tabindex="0" data-approver-id="' + escapeAttr(row.id) + '"><span>' + escapeHtml(row.name || kind) + '</span><small>' + escapeHtml(kind) + '</small></div>';
+    var kind = approverKindLabel(row.kind);
+    var detail = row.detail ? '<em>' + escapeHtml(row.detail) + '</em>' : '';
+    return '<div class="approver-row' + (selected ? ' selected' : '') + '" role="button" tabindex="0" data-approver-id="' + escapeAttr(row.id) + '"><span>' + escapeHtml(row.name || kind) + detail + '</span><small>' + escapeHtml(row.meta || kind) + '</small></div>';
+  }
+
+  function approverKindLabel(kind) {
+    if (kind === 'role') return tr('approverRole');
+    if (kind === 've') return tr('virtualEmployee');
+    if (kind === 'department_digital_employee') return tr('departmentDigitalEmployee');
+    if (kind === 'digital_twin') return tr('digitalTwin');
+    return tr('userMachine');
   }
 
   function toggleApproverSelection(id) {
@@ -2165,7 +2381,7 @@
     clearInvalidConfigFieldsForNode(nodeId);
     state.nodes = state.nodes.filter(function (n) { return n.id !== nodeId; });
     state.edges = state.edges.filter(function (e) { return e.source_id !== nodeId && e.target_id !== nodeId; });
-    var el = canvasNodes.querySelector('[data-node-id="' + nodeId + '"]');
+    var el = findCanvasNodeElement(nodeId);
     if (el) el.remove();
     deselectNode();
     renderEdges();
@@ -2231,8 +2447,19 @@
   }
 
   // --- Edges ---
+  function canCreateEdge(sourceId, targetId) {
+    if (!sourceId || !targetId || sourceId === targetId) return false;
+    var sourceNode = state.nodes.find(function (n) { return n.id === sourceId; });
+    var targetNode = state.nodes.find(function (n) { return n.id === targetId; });
+    if (!sourceNode || !targetNode) return false;
+    if (sourceNode.type === 'terminal') return false;
+    if (targetNode.type === 'trigger') return false;
+    return true;
+  }
+
   function addEdge(sourceId, targetId) {
     if (isReadOnlyPreview()) return;
+    if (!canCreateEdge(sourceId, targetId)) return;
     // Prevent duplicate edges
     var exists = state.edges.some(function (e) {
       return e.source_id === sourceId && e.target_id === targetId;
@@ -2252,27 +2479,85 @@
     updateToolModeUI();
   }
 
+  function edgeNodeBox(node, el) {
+    var width = el && el.offsetWidth ? el.offsetWidth : 160;
+    var height = el && el.offsetHeight ? el.offsetHeight : 60;
+    var left = node.position.x;
+    var top = node.position.y;
+    return {
+      left: left,
+      top: top,
+      right: left + width,
+      bottom: top + height,
+      cx: left + width / 2,
+      cy: top + height / 2,
+      width: width,
+      height: height
+    };
+  }
+
+  function edgeAnchorPoints(sourceNode, sourceEl, targetNode, targetEl) {
+    var source = edgeNodeBox(sourceNode, sourceEl);
+    var target = edgeNodeBox(targetNode, targetEl);
+    var dx = target.cx - source.cx;
+    var dy = target.cy - source.cy;
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      var sourceX = dx >= 0 ? source.right : source.left;
+      var targetX = dx >= 0 ? target.left : target.right;
+      return {
+        orientation: 'horizontal',
+        sx: sourceX,
+        sy: source.cy,
+        tx: targetX,
+        ty: target.cy,
+        direction: dx >= 0 ? 1 : -1
+      };
+    }
+    var sourceY = dy >= 0 ? source.bottom : source.top;
+    var targetY = dy >= 0 ? target.top : target.bottom;
+    return {
+      orientation: 'vertical',
+      sx: source.cx,
+      sy: sourceY,
+      tx: target.cx,
+      ty: targetY,
+      direction: dy >= 0 ? 1 : -1
+    };
+  }
+
+  function edgePathD(points) {
+    if (points.orientation === 'horizontal') {
+      var xOffset = Math.max(40, Math.min(180, Math.abs(points.tx - points.sx) * 0.5));
+      var xControl = xOffset * points.direction;
+      return 'M ' + points.sx + ' ' + points.sy + ' C ' + (points.sx + xControl) + ' ' + points.sy + ', ' + (points.tx - xControl) + ' ' + points.ty + ', ' + points.tx + ' ' + points.ty;
+    }
+    var yOffset = Math.max(40, Math.min(160, Math.abs(points.ty - points.sy) * 0.5));
+    var yControl = yOffset * points.direction;
+    return 'M ' + points.sx + ' ' + points.sy + ' C ' + points.sx + ' ' + (points.sy + yControl) + ', ' + points.tx + ' ' + (points.ty - yControl) + ', ' + points.tx + ' ' + points.ty;
+  }
+
+  function ensureEdgeArrowhead(svg) {
+    if (svg.querySelector('#arrowhead')) return;
+    var defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    defs.innerHTML = '<marker id="arrowhead" markerWidth="12" markerHeight="8" refX="10.5" refY="4" orient="auto" markerUnits="strokeWidth" overflow="visible"><path d="M 0 0 L 11 4 L 0 8 z" fill="#94a3b8"/></marker>';
+    svg.insertBefore(defs, svg.firstChild);
+  }
+
   function renderEdges() {
     var svg = canvasEdges.querySelector('svg');
     svg.innerHTML = '';
+    ensureEdgeArrowhead(svg);
 
     state.edges.forEach(function (edge) {
       var sourceNode = state.nodes.find(function (n) { return n.id === edge.source_id; });
       var targetNode = state.nodes.find(function (n) { return n.id === edge.target_id; });
       if (!sourceNode || !targetNode) return;
 
-      var sourceEl = canvasNodes.querySelector('[data-node-id="' + edge.source_id + '"]');
-      var targetEl = canvasNodes.querySelector('[data-node-id="' + edge.target_id + '"]');
+      var sourceEl = findCanvasNodeElement(edge.source_id);
+      var targetEl = findCanvasNodeElement(edge.target_id);
       if (!sourceEl || !targetEl) return;
 
-      var sx = sourceNode.position.x + sourceEl.offsetWidth / 2;
-      var sy = sourceNode.position.y + sourceEl.offsetHeight;
-      var tx = targetNode.position.x + targetEl.offsetWidth / 2;
-      var ty = targetNode.position.y;
-
-      // Bezier curve
-      var midY = (sy + ty) / 2;
-      var d = 'M ' + sx + ' ' + sy + ' C ' + sx + ' ' + midY + ', ' + tx + ' ' + midY + ', ' + tx + ' ' + ty;
+      var d = edgePathD(edgeAnchorPoints(sourceNode, sourceEl, targetNode, targetEl));
 
       var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       path.setAttribute('d', d);
@@ -2323,13 +2608,6 @@
       svg.appendChild(hitPath);
       svg.appendChild(path);
     });
-
-    // Ensure arrowhead marker exists
-    if (!svg.querySelector('#arrowhead')) {
-      var defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-      defs.innerHTML = '<marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8"/></marker>';
-      svg.insertBefore(defs, svg.firstChild);
-    }
   }
 
   // --- Config panel close ---
@@ -2477,7 +2755,65 @@
       }
     });
 
+    state.nodes.filter(function (node) { return node.type === 'terminal'; }).forEach(function (node) {
+      var hasOutgoing = state.edges.some(function (edge) { return edge.source_id === node.id; });
+      if (hasOutgoing) {
+        errors.push(tr('terminalNoOutgoing', { label: node.label }));
+      }
+    });
+
+    validateConditionBranchRoutes(errors);
+
     return errors;
+  }
+
+  function validateConditionBranchRoutes(errors) {
+    var nodesById = {};
+    state.nodes.forEach(function (node) { nodesById[node.id] = node; });
+    state.nodes.filter(function (node) { return node.type === 'condition_branch'; }).forEach(function (node) {
+      var config = node.config || {};
+      var branches = Array.isArray(config.branches) ? config.branches : [];
+      var hasRoute = false;
+      branches.forEach(function (branch) {
+        var targetId = String(branch && branch.target_node_id || '').trim();
+        if (!targetId) return;
+        hasRoute = true;
+        if (!nodesById[targetId] || targetId === node.id || nodesById[targetId].type === 'trigger') {
+          errors.push(tr('conditionBranchInvalidTarget', { label: node.label, target: targetId }));
+        }
+        var expr = branch && branch.expression || {};
+        if (!String(expr.field || '').trim() || !isConditionBranchOperator(expr.operator)) {
+          errors.push(tr('conditionBranchInvalidExpression', { label: node.label }));
+        }
+      });
+      var defaultBranch = String(config.default_branch || '').trim();
+      if (defaultBranch) {
+        hasRoute = true;
+        if (!nodesById[defaultBranch] || defaultBranch === node.id || nodesById[defaultBranch].type === 'trigger') {
+          errors.push(tr('conditionBranchInvalidTarget', { label: node.label, target: defaultBranch }));
+        }
+      }
+      if (!hasRoute) {
+        errors.push(tr('conditionBranchNoRoute', { label: node.label }));
+      }
+    });
+  }
+
+  function isConditionBranchOperator(operator) {
+    switch (String(operator || '').trim()) {
+      case 'equals':
+      case 'not_equals':
+      case 'greater_than':
+      case 'less_than':
+      case 'contains':
+      case 'in_list':
+      case 'not_in_list':
+      case 'is_empty':
+      case 'is_not_empty':
+        return true;
+      default:
+        return false;
+    }
   }
 
   function reachableNodeIds(triggerId) {
@@ -2497,10 +2833,10 @@
 
   // --- Save ---
   btnSave.addEventListener('click', async function () {
-    var configErrors = getInvalidConfigErrors();
-    if (configErrors.length > 0) {
-      showConfigErrors(configErrors);
-      alert(tr('validationErrors', { errors: configErrors.join('\n') }));
+    var errors = validateWorkflow();
+    if (errors.length > 0) {
+      showConfigErrors(errors);
+      alert(tr('validationErrors', { errors: errors.join('\n') }));
       return;
     }
     setBusy(true, 'saving');

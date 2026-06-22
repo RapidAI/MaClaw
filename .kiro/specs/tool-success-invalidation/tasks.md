@@ -6,8 +6,8 @@ Add a decay and suppression layer to the UsageTracker so that OutcomeScore refle
 
 ## Tasks
 
-- [ ] 1. Data models and persistence migration
-  - [ ] 1.1 Define InvalidationEvent, ToolInvalidationState, SuppressionEntry, and UsageData structs
+- [x] 1. Data models and persistence migration
+  - [x] 1.1 Define InvalidationEvent, ToolInvalidationState, SuppressionEntry, and UsageData structs
     - Add `InvalidationEvent` struct with ToolName, Timestamp, Reason, ScopeTokens fields
     - Add `ToolInvalidationState` struct with LastInvalidation, LastFingerprint, Suppressions fields
     - Add `SuppressionEntry` struct with ContextKey, FailureCount, Active fields
@@ -15,7 +15,7 @@ Add a decay and suppression layer to the UsageTracker so that OutcomeScore refle
     - Add `invalidations map[string]ToolInvalidationState` field to UsageTracker
     - _Requirements: 1.5, 2.4, 4.7, 5.1_
 
-  - [ ] 1.2 Implement persistence format migration in load/save
+  - [x] 1.2 Implement persistence format migration in load/save
     - Modify `load()` to try parsing as `UsageData` first, fall back to `[]UsageRecord` flat array
     - Migrate legacy flat array to `UsageData{Records: parsed}` transparently
     - Handle corrupted invalidation section gracefully (start with empty state, log warning)
@@ -33,8 +33,8 @@ Add a decay and suppression layer to the UsageTracker so that OutcomeScore refle
     - Test missing/unreadable storage file startup
     - _Requirements: 5.3, 5.4, 5.5_
 
-- [ ] 2. Decay formula and OutcomeScore integration
-  - [ ] 2.1 Implement `decayMultiplier` method on UsageTracker
+- [x] 2. Decay formula and OutcomeScore integration
+  - [x] 2.1 Implement `decayMultiplier` method on UsageTracker
     - Compute `max(0.1, 1.0 - 0.9 × min(hours_since_invalidation / 48.0, 1.0))`
     - Only decay records that predate the invalidation timestamp
     - Implement scope check: if ScopeTokens non-nil, check Jaccard >= 0.3 threshold
@@ -54,13 +54,13 @@ Add a decay and suppression layer to the UsageTracker so that OutcomeScore refle
     - **Property 3: Most Recent Invalidation Wins (No Compounding)**
     - **Validates: Requirements 2.6, 7.4**
 
-  - [ ] 2.5 Integrate decay into `outcomeScoreWithCount`
+  - [x] 2.5 Integrate decay into `outcomeScoreWithCount`
     - Change from integer counting to float64 weighted accumulation
     - Apply `decayMultiplier` to each record's contribution (total, successes, retry/abandon penalties)
     - Preserve existing formula semantics while applying decay
     - _Requirements: 7.2, 7.6_
 
-  - [ ] 2.6 Integrate decay into `ExperienceScore`
+  - [x] 2.6 Integrate decay into `ExperienceScore`
     - Multiply each record's contribution by `overlap * recency * decay`
     - _Requirements: 7.2, 7.6_
 
@@ -74,24 +74,24 @@ Add a decay and suppression layer to the UsageTracker so that OutcomeScore refle
     - Test scoped invalidation with various Jaccard similarities
     - _Requirements: 7.2, 7.3_
 
-- [ ] 3. Checkpoint - Ensure all tests pass
+- [x] 3. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 4. Consecutive failure suppression
-  - [ ] 4.1 Implement `consecutiveFailureKey` and failure tracking methods
+- [x] 4. Consecutive failure suppression
+  - [x] 4.1 Implement `consecutiveFailureKey` and failure tracking methods
     - Implement `consecutiveFailureKey(queryTokens)`: sorted first 3 tokens joined by "|"
     - Implement `recordConsecutiveFailure(toolName, contextKey)`: increment counter, activate suppression at threshold 3
     - Implement `resetConsecutiveFailure(toolName)`: reset counter on success
     - Implement `isSuppressed(toolName, contextKey)`: check active suppression
     - _Requirements: 4.1, 4.4, 4.5_
 
-  - [ ] 4.2 Integrate suppression into OutcomeScore computation
+  - [x] 4.2 Integrate suppression into OutcomeScore computation
     - After score computation, if `isSuppressed(toolName, contextKey)` → cap score at 0.2
     - Implement suppression auto-lift when all failure records age out of 7-day window
     - Persist suppression state alongside other invalidation state
     - _Requirements: 4.2, 4.6, 4.7_
 
-  - [ ] 4.3 Hook failure/success tracking into RecordExperience
+  - [x] 4.3 Hook failure/success tracking into RecordExperience
     - On success (FollowUp="continue"): call `resetConsecutiveFailure(toolName)`
     - On failure (FollowUp="retry"/"abandon"): call `recordConsecutiveFailure(toolName, contextKey)`
     - _Requirements: 4.3, 4.5_
@@ -106,8 +106,8 @@ Add a decay and suppression layer to the UsageTracker so that OutcomeScore refle
     - Test suppression auto-lift when failures age out of 7-day window
     - _Requirements: 4.4, 4.6_
 
-- [ ] 5. Fingerprint-based change detection
-  - [ ] 5.1 Define FingerprintProvider interface and implement providers
+- [x] 5. Fingerprint-based change detection
+  - [x] 5.1 Define FingerprintProvider interface and implement providers
     - Define `FingerprintProvider` interface: `ComputeFingerprint(toolName string) string`
     - Implement `ConfigFingerprintProvider`: fingerprints tool config fields from AppConfig
     - Implement `SkillFingerprintProvider`: fingerprints skill version + directory mtime
@@ -115,7 +115,7 @@ Add a decay and suppression layer to the UsageTracker so that OutcomeScore refle
     - Implement `computeFingerprint(fields)`: SHA-256 of sorted JSON, truncated to 16 hex chars
     - _Requirements: 3.1, 3.5, 3.6_
 
-  - [ ] 5.2 Implement fingerprint check in RecordExperience
+  - [x] 5.2 Implement fingerprint check in RecordExperience
     - Add `FingerprintProviders` registry to UsageTracker
     - Implement `checkFingerprint(toolName)`: compare current vs stored fingerprint
     - On first-ever recording (LastFingerprint empty): store fingerprint, no event
@@ -134,11 +134,11 @@ Add a decay and suppression layer to the UsageTracker so that OutcomeScore refle
     - Test panic recovery in provider
     - _Requirements: 3.5, 3.6_
 
-- [ ] 6. Checkpoint - Ensure all tests pass
+- [x] 6. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 7. InvalidationEngine public API and event hooks
-  - [ ] 7.1 Implement ApplyInvalidation and InvalidateOutcomes methods
+- [x] 7. InvalidationEngine public API and event hooks
+  - [x] 7.1 Implement ApplyInvalidation and InvalidateOutcomes methods
     - Implement `ApplyInvalidation(event InvalidationEvent)`: persist event, update state, trigger save
     - Implement `InvalidateOutcomes(toolName, reason string)`: public API for manual invalidation with nil ScopeTokens
     - Ensure mutex safety for concurrent access
@@ -146,17 +146,17 @@ Add a decay and suppression layer to the UsageTracker so that OutcomeScore refle
     - Handle invalidation for tool with no existing records (persist timestamp anyway)
     - _Requirements: 6.1, 6.3, 6.4, 6.5, 2.4_
 
-  - [ ] 7.2 Wire PatchConfigFields hook for SSH/LLM config changes
+  - [x] 7.2 Wire PatchConfigFields hook for SSH/LLM config changes
     - In `PatchConfigFields` (gui/app.go): detect SSH host field changes → call `tracker.InvalidateOutcomes(toolName, reason)`
     - In `PatchConfigFields`: detect LLM provider change → call InvalidateOutcomes for craft_tool, delegate_task, ask_user
     - Ensure event generation within 500ms of config write
     - _Requirements: 1.1, 1.3, 1.4_
 
-  - [ ] 7.3 Wire skill scanner hook for skill version changes
+  - [x] 7.3 Wire skill scanner hook for skill version changes
     - After `ScanSkillDir` result comparison: detect skill version change → call ApplyInvalidation with skill-scoped ScopeTokens
     - _Requirements: 1.2_
 
-  - [ ] 7.4 Wire manage_skill error hook for automatic invalidation
+  - [x] 7.4 Wire manage_skill error hook for automatic invalidation
     - On skill execution failure with ErrorClass "config_error", "dependency_missing", "setup_failed", "install_failed": call InvalidateOutcomes("manage_skill", reason)
     - _Requirements: 6.2_
 
@@ -178,8 +178,8 @@ Add a decay and suppression layer to the UsageTracker so that OutcomeScore refle
     - Test config patches with only non-tool fields do NOT trigger invalidation
     - _Requirements: 1.1, 1.2, 1.4_
 
-- [ ] 8. Integration tests and wiring
-  - [ ] 8.1 Wire UsageTracker initialization with invalidation support
+- [x] 8. Integration tests and wiring
+  - [x] 8.1 Wire UsageTracker initialization with invalidation support
     - Ensure UsageTracker loads invalidation state on startup
     - Register FingerprintProviders during app initialization
     - Connect to existing debounced save mechanism for persistence within 1 second
@@ -192,7 +192,7 @@ Add a decay and suppression layer to the UsageTracker so that OutcomeScore refle
     - Backward compat: load legacy flat array file, verify migration
     - _Requirements: 1.1, 1.3, 3.3, 5.3_
 
-- [ ] 9. Final checkpoint - Ensure all tests pass
+- [x] 9. Final checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

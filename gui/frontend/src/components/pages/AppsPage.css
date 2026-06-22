@@ -1729,6 +1729,60 @@
     align-self: stretch;
 }
 
+.apps-dependency-verification {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    padding: 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--theme-surface) 72%, var(--theme-surface-muted));
+}
+
+.apps-dependency-verification[data-state='blocked'] {
+    border-color: color-mix(in srgb, var(--theme-warning) 34%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-warning-bg) 42%, var(--theme-surface));
+}
+
+.apps-dependency-verification__head {
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.apps-dependency-verification__head strong,
+.apps-dependency-verification__head span,
+.apps-dependency-verification__head em {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-dependency-verification__head strong {
+    color: var(--theme-text-primary);
+    font-size: 0.74rem;
+    font-weight: 850;
+}
+
+.apps-dependency-verification__head span {
+    color: var(--theme-text-secondary);
+    font-size: 0.7rem;
+    font-weight: 750;
+}
+
+.apps-dependency-verification__head em {
+    color: var(--theme-text-muted);
+    font-size: 0.68rem;
+    font-style: normal;
+    font-weight: 800;
+}
+
+.apps-dependency-verification[data-state='blocked'] .apps-dependency-verification__head span {
+    color: var(--theme-warning);
+}
 .apps-result-panel .apps-install-record__deps {
     align-self: stretch;
     margin-top: 0;
@@ -1983,6 +2037,46 @@
     font: inherit;
     font-size: 0.8rem;
     line-height: 1.45;
+}
+
+.apps-business-result__table {
+    display: grid;
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface);
+}
+
+.apps-business-result__row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+    min-height: 30px;
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.apps-business-result__row:first-child {
+    border-top: 0;
+}
+
+.apps-business-result__row span {
+    min-width: 0;
+    overflow: hidden;
+    padding: 7px 8px;
+    color: var(--theme-text-primary);
+    font-size: 0.74rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-business-result__row--head {
+    background: var(--theme-surface-muted);
+}
+
+.apps-business-result__row--head span {
+    color: var(--theme-text-secondary);
+    font-size: 0.68rem;
+    font-weight: 850;
 }
 
 .apps-output-blocks {

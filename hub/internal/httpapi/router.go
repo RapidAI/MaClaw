@@ -410,6 +410,8 @@ func NewRouter(
 		mux.HandleFunc("GET /api/admin/security/settings", requireTenantAdmin(GetSecuritySettingsHandler(securitySvc)))
 		mux.HandleFunc("PUT /api/admin/security/settings", requireTenantAdmin(UpdateSecuritySettingsHandler(securitySvc)))
 		mux.HandleFunc("PUT /api/admin/security/settings/default-group", requireTenantAdmin(SetDefaultGroupHandler(securitySvc, adminAudit)))
+		mux.HandleFunc("GET /api/admin/security/approval-roles", requireTenantAdmin(GetApprovalRolesHandler(system)))
+		mux.HandleFunc("PUT /api/admin/security/approval-roles", requireTenantAdmin(UpdateApprovalRolesHandler(system, adminAudit)))
 		// Public endpoint for enrollment group tree
 		mux.HandleFunc("GET /api/enroll/group-tree", EnrollGroupTreeHandler(securitySvc))
 	}
@@ -638,7 +640,7 @@ func NewRouter(
 		// Without WithConfirmationTracker the executor's tracker is nil and
 		// StartTracking is skipped, so no confirmation records are ever created
 		// in production (Finding 1.5 / design Fix Implementation item 5).
-		executor := workflow.NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher, workflow.WithConfirmationTracker(confirmTracker))
+		executor := workflow.NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher, workflow.WithConfirmationTracker(confirmTracker), workflow.WithApprovalApproverResolver(newWorkflowApprovalRoleResolver(system, identity, deviceSvc)))
 		instanceAPI := workflow.NewInstanceAPI(executor, instStore, auditStore)
 		instanceAPI.RegisterRoutes(mux, workflowUserAuth)
 

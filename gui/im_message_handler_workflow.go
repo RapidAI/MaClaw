@@ -998,6 +998,16 @@ func (h *IMMessageHandler) handleWorkflowReview(engine *v2.WorkflowEngine, userI
 		userMessage = fmt.Sprintf("[Context]\n%s\n\n[User reply]\n%s", phaseContext, text)
 	}
 
+	// Defensive: __wf_review__ supplement_focus is a pure frontend action
+	// (focus input box). It should never reach the backend, but if it does
+	// (e.g. network retry, IM gateway), return the review barrier without
+	// changing engine state — do NOT pass it to applyWorkflowReviewIntent
+	// which would clear the phase output.
+	if strings.TrimSpace(strings.ToLower(text)) == "__wf_review__ supplement_focus" {
+		log.Printf("[workflow-review] user=%s defensive: supplement_focus reached backend, returning barrier", userID)
+		return h.reviewBarrierResponse(engine, userID)
+	}
+
 	if reviewIntent, ok := detectWorkflowReviewIntentFast(text); ok {
 		log.Printf("[workflow-review] user=%s text_len=%d intent=%q source=fast-path", userID, len([]rune(text)), reviewIntent)
 		return h.applyWorkflowReviewIntent(engine, userID, reviewIntent, text, platform)
@@ -1074,6 +1084,28 @@ func detectWorkflowReviewIntentFast(text string) (v2.ReviewIntent, bool) {
 	if trimmed == "" {
 		return v2.ReviewIntentOther, false
 	}
+
+	// Structured button commands from workflow review action buttons.
+	// These are deterministic fast-path routes — no LLM classification needed.
+	if strings.HasPrefix(trimmed, "__wf_review__ ") {
+		action := strings.TrimPrefix(trimmed, "__wf_review__ ")
+		switch action {
+		case "confirm":
+			return v2.ReviewIntentConfirm, true
+		case "abort":
+			return v2.ReviewIntentCancel, true
+		case "supplement_focus":
+			// Pure frontend action (focus input box). The REAL protection is the
+			// early interception in handleWorkflowReview (before this function is
+			// even called). This case exists only as documentation — if supplement_focus
+			// somehow bypasses the early interception, returning false here lets it
+			// fall through to the LLM classifier, which is NOT safe (LLM may classify
+			// as "other" → engine clears phase output). The early interception MUST
+			// remain in place.
+			return v2.ReviewIntentOther, false
+		}
+	}
+
 	switch trimmed {
 	case "\u786e\u8ba4", "\u786e\u8ba4\u901a\u8fc7", "\u786e\u5b9a", "\u786e\u5b9a\u7ee7\u7eed", "\u786e\u5b9a\u901a\u8fc7", "\u901a\u8fc7", "\u540c\u610f", "\u53ef\u4ee5", "\u6ca1\u95ee\u9898", "\u6ca1\u610f\u89c1", "\u7ee7\u7eed", "\u7ee7\u7eed\u63a8\u8fdb", "\u5f00\u5de5", "\u5f00\u59cb", "\u5f00\u59cb\u5427", "\u6267\u884c", "\u8d70\u8d77", "\u597d", "\u597d\u7684", "\u5f00\u59cb\u7f16\u7801", "\u5f00\u59cb\u7f16\u7801\u5427", "\u5f00\u59cb\u5199\u4ee3\u7801", "\u5f00\u59cb\u5b9e\u73b0", "\u5f00\u59cb\u5f00\u53d1", "\u5f00\u59cb\u6267\u884c", "\u786e\u8ba4\u5f00\u59cb\u7f16\u7801", "\u786e\u8ba4\u5f00\u59cb\u5b9e\u73b0", "\u786e\u5b9a\u5f00\u59cb\u7f16\u7801", "\u786e\u5b9a\u5f00\u59cb\u5b9e\u73b0":
 		return v2.ReviewIntentConfirm, true
@@ -1205,6 +1237,27 @@ func (h *IMMessageHandler) applyWorkflowReviewIntent(engine *v2.WorkflowEngine, 
 		if hr == nil {
 			return nil
 		}
+		// Handle cancellation directly — don't route through mapHandleResultToWorkflowResponse
+		// because it doesn't have lang context for i18n.
+		if hr.Action == v2.ActionCancelled || hr.Action == v2.ActionCancelAndExecute {
+			lang := h.getWorkflowLang()
+			// Emit frontend cleanup events (phase panel reset + fullscreen banner dismiss).
+			// We have hr.State with the cancelled workflow's metadata — use it for
+			// targeted event routing (specific tab/project clears its panel).
+			if hr.State != nil {
+				emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
+					"id":             hr.State.ID,
+					"status":         string(v2.StatusCancelled),
+					"type":           hr.State.Type,
+					"project_path":   workflowEventProjectPath(hr.State),
+					"event_scope_id": h.app.getEventScopeID(userID),
+				})
+			}
+			if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+				adapter.ResetSuggestMaximize(userID)
+			}
+			return &IMAgentResponse{Text: i18n.T(i18n.MsgWorkflowCancelled, lang)}
+		}
 		// Map HandleResult to WorkflowResponse for existing handler.
 		resp := mapHandleResultToWorkflowResponse(hr)
 		return h.handleWorkflowEngineResponse(engine, userID, resp, platform)
@@ -1254,7 +1307,9 @@ func mapHandleResultToWorkflowResponse(hr *v2.HandleResult) *v2.WorkflowResponse
 			resp.FormSchema = v2MapPhaseInputSchema(hr.Phase.InputSchema)
 		}
 	case v2.ActionCancelled, v2.ActionCancelAndExecute:
-		// Caller handles these before reaching here.
+		// Handled by caller (applyWorkflowReviewIntent) before reaching here.
+		// If somehow reached, set Complete=true so the fullscreen banner is cleared.
+		resp.Complete = true
 	}
 	return resp
 }

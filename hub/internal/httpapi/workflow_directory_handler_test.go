@@ -95,6 +95,9 @@ func TestWorkflowApproverDirectoryHandlerReturnsTenantScopedApprovers(t *testing
 	}}); err != nil {
 		t.Fatalf("save ve registry: %v", err)
 	}
+	if err := tenantSystem.Set(ctx, approvalRolesSettingsKey, `{"roles":[{"scopeType":"function","scopeId":"finance","scopeName":"Finance","roleCode":"finance_approver","roleName":"Finance Approver","executionMode":"digital_review","assignees":[{"subjectType":"user","subjectId":"approver@example.com","displayName":"Approver"}]}]}`); err != nil {
+		t.Fatalf("save approval roles: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workflow-directory/approvers", nil).WithContext(requestCtx)
 	rr := httptest.NewRecorder()
@@ -110,6 +113,7 @@ func TestWorkflowApproverDirectoryHandlerReturnsTenantScopedApprovers(t *testing
 		Users          []map[string]any           `json:"users"`
 		Machines       []map[string]any           `json:"machines"`
 		Employees      []digitalEmployeeEntry     `json:"employees"`
+		ApprovalRoles  []approvalRoleRecord       `json:"approval_roles"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -131,6 +135,9 @@ func TestWorkflowApproverDirectoryHandlerReturnsTenantScopedApprovers(t *testing
 	}
 	if len(body.Employees) != 1 || body.Employees[0].Name != "Runtime Worker" || body.Employees[0].MachineID != "ve-machine-active" {
 		t.Fatalf("unexpected employees: %#v", body.Employees)
+	}
+	if len(body.ApprovalRoles) != 1 || body.ApprovalRoles[0].ID != "role:function:finance:finance_approver" || body.ApprovalRoles[0].Assignees[0].SubjectID != "approver@example.com" {
+		t.Fatalf("unexpected approval roles: %#v", body.ApprovalRoles)
 	}
 }
 

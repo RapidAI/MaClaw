@@ -238,6 +238,89 @@ func TestSubmitMaclawAppPackageAcceptsCompleteGovernanceEvidence(t *testing.T) {
 		t.Fatalf("expected clean governance queue record: %#v", detail.ReviewIssues)
 	}
 }
+
+func TestSubmitMaclawAppPackageFlagsMissingDependencyVerification(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	pkg := `{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [{
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {
+				"id": "missing-dependency-verification",
+				"name": "Missing Dependency Verification",
+				"kind": "enterprise_normal_app",
+				"binding": {
+					"appSkill": {"id":"customer-renewal-skill", "source":"hub"}
+				},
+				"governance": {
+					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"business_workspace", "template":"classic_split", "regionCount":4},
+					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"business_status", "types":["business_status", "business_record", "content"]},
+					"testEvidence": {"runId":"run-business", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"business_status":"ready"}}
+				}
+			}
+		}]
+	}`
+
+	result, err := app.SubmitMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
+	}
+	if result["review_issue_count"] != 1 {
+		t.Fatalf("expected one dependency verification issue, got %#v", result)
+	}
+	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
+	if err != nil {
+		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
+	}
+	issue := detail.ReviewIssues[0]
+	if issue.Path != "apps[0].app.governance.dependencyVerification" || !strings.Contains(issue.Message, "dependency verification") {
+		t.Fatalf("unexpected dependency verification issue: %#v", issue)
+	}
+}
+
+func TestSubmitMaclawAppPackageFlagsResultCoverageMismatch(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	pkg := `{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [{
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {
+				"id": "coverage-mismatch",
+				"name": "Coverage Mismatch",
+				"kind": "enterprise_normal_app",
+				"governance": {
+					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"business_workspace", "template":"classic_split", "regionCount":4},
+					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"business_status", "types":["business_status", "business_record", "content"]},
+					"testEvidence": {"runId":"run-text-only", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"text":"plain completion only"}, "outputs":[{"kind":"text", "text":"plain completion only"}]}
+				}
+			}
+		}]
+	}`
+
+	result, err := app.SubmitMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
+	}
+	if result["review_issue_count"] != 1 {
+		t.Fatalf("expected one result coverage review issue, got %#v", result)
+	}
+	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
+	if err != nil {
+		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
+	}
+	if len(detail.ReviewIssues) != 1 {
+		t.Fatalf("expected one durable review issue: %#v", detail.ReviewIssues)
+	}
+	issue := detail.ReviewIssues[0]
+	if issue.Path != "apps[0].app.governance.testEvidence.resultCoverage" || issue.Severity != "error" || !strings.Contains(issue.Message, "business_status") {
+		t.Fatalf("unexpected result coverage issue: %#v", issue)
+	}
+}
+
 func TestSubmitMaclawAppPackageRejectsInvalidManifest(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	if _, err := app.SubmitMaclawAppPackage(`{"schema":"maclaw.app.v1","privateMarker":"x_maclaw_apps"}`); err == nil {

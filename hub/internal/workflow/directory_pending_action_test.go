@@ -71,8 +71,10 @@ func (m *mockDirectoryInstanceStore) QueryCompleted(ctx context.Context, userID 
 // mockConfirmStore implements ConfirmationStore for testing (not used by PendingMyAction).
 type mockConfirmStore struct{}
 
-func (m *mockConfirmStore) Create(ctx context.Context, conf *Confirmation) error          { return nil }
-func (m *mockConfirmStore) Get(ctx context.Context, id string) (*Confirmation, error)     { return nil, nil }
+func (m *mockConfirmStore) Create(ctx context.Context, conf *Confirmation) error { return nil }
+func (m *mockConfirmStore) Get(ctx context.Context, id string) (*Confirmation, error) {
+	return nil, nil
+}
 func (m *mockConfirmStore) UpdateStatus(ctx context.Context, id string, status ConfirmationStatus, notes string) error {
 	return nil
 }
@@ -255,6 +257,62 @@ func TestPendingMyAction_SortByUrgencyThenDate(t *testing.T) {
 	}
 	if items[2].Urgency != UrgencyNormal {
 		t.Errorf("expected third item urgency=normal, got %s", items[2].Urgency)
+	}
+}
+
+func TestPendingMyAction_FiltersByResolvedApproverIDs(t *testing.T) {
+	now := time.Now().UTC()
+
+	instances := map[string]*WorkflowInstance{
+		"inst-mine": {
+			ID:           "inst-mine",
+			Status:       InstanceRunning,
+			CreatedAt:    now.Add(-2 * time.Hour),
+			InstanceData: map[string]interface{}{"workflow_name": "Mine"},
+		},
+		"inst-other": {
+			ID:           "inst-other",
+			Status:       InstanceRunning,
+			CreatedAt:    now.Add(-1 * time.Hour),
+			InstanceData: map[string]interface{}{"workflow_name": "Other"},
+		},
+	}
+
+	pendingExecs := []NodeExecution{
+		{
+			ID:         "exec-mine",
+			InstanceID: "inst-mine",
+			NodeID:     "approval-mine",
+			Status:     NodeRunning,
+			StartedAt:  now.Add(-2 * time.Hour),
+			Result:     json.RawMessage(`{"timeout_hours":24,"approver_ids":["machine-me"],"original_approvers":["role:function:finance:finance_approver"]}`),
+		},
+		{
+			ID:         "exec-other",
+			InstanceID: "inst-other",
+			NodeID:     "approval-other",
+			Status:     NodeRunning,
+			StartedAt:  now.Add(-1 * time.Hour),
+			Result:     json.RawMessage(`{"timeout_hours":24,"approver_ids":["machine-other"],"original_approvers":["role:function:finance:finance_approver"]}`),
+		},
+	}
+
+	ds := NewDirectoryService(
+		&mockDirectoryInstanceStore{instances: instances},
+		&mockConfirmStore{},
+		&mockNodeExecStore{pendingApprovals: pendingExecs},
+	)
+
+	items, err := ds.PendingMyAction(context.Background(), "machine-me")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d: %#v", len(items), items)
+	}
+	if items[0].InstanceID != "inst-mine" {
+		t.Fatalf("expected only inst-mine, got %#v", items)
 	}
 }
 

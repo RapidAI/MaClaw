@@ -638,20 +638,110 @@ function renderField(
 
     let control: React.ReactNode;
     if (field.type === "textarea") {
+        const isFilePathList = /(?:^|_)(?:file_?)?paths?$/i.test(field.name);
+        const currentLines = isFilePathList ? String(formatValue(value)).split("\n").filter((line) => line.trim() !== "") : [];
         control = (
-            <textarea
-                id={controlId}
-                value={formatValue(value)}
-                placeholder={field.placeholder}
-                minLength={field.minLength}
-                maxLength={field.maxLength}
-                readOnly={field.readOnly}
-                onChange={(event) => {
-                    if (!field.readOnly) setValue(field.name, event.target.value);
-                }}
-                rows={4}
-                style={{ ...commonInputStyle, ...readOnlyInputStyle, resize: "vertical", minHeight: 84 }}
-            />
+            <>
+                {isFilePathList && currentLines.length > 0 ? (
+                    <details style={{ marginBottom: 2 }}>
+                        <summary style={{ fontSize: 11, color: theme.textMuted, cursor: "pointer", userSelect: "none" }}>
+                            ✏️ {label}
+                        </summary>
+                        <textarea
+                            id={controlId}
+                            value={formatValue(value)}
+                            placeholder={field.placeholder}
+                            minLength={field.minLength}
+                            maxLength={field.maxLength}
+                            readOnly={field.readOnly}
+                            onChange={(event) => {
+                                if (!field.readOnly) setValue(field.name, event.target.value);
+                            }}
+                            rows={3}
+                            style={{ ...commonInputStyle, ...readOnlyInputStyle, resize: "vertical", minHeight: 48, marginTop: 4 }}
+                        />
+                    </details>
+                ) : (
+                    <textarea
+                        id={controlId}
+                        value={formatValue(value)}
+                        placeholder={field.placeholder}
+                        minLength={field.minLength}
+                        maxLength={field.maxLength}
+                        readOnly={field.readOnly}
+                        onChange={(event) => {
+                            if (!field.readOnly) setValue(field.name, event.target.value);
+                        }}
+                        rows={4}
+                        style={{ ...commonInputStyle, ...readOnlyInputStyle, resize: "vertical", minHeight: 84 }}
+                    />
+                )}
+                {isFilePathList && (
+                    <div role="list" aria-label={label} style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+                        {currentLines.map((line, index) => {
+                            const fileName = line.split(/[\\/]/).pop() || line;
+                            return (
+                                <div role="listitem" key={index} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: theme.fieldBg, border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, fontSize: 12 }}>
+                                    <span title={line} style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: theme.inputText }}>{fileName}</span>
+                                    {!field.readOnly && (
+                                        <button
+                                            type="button"
+                                            aria-label={`Delete ${fileName}`}
+                                            onClick={() => {
+                                                const raw = String(formatValue(value));
+                                                const lines = raw.split("\n");
+                                                let removed = false;
+                                                const updated = lines.filter((l) => {
+                                                    if (!removed && l.trim() === line.trim()) { removed = true; return false; }
+                                                    return true;
+                                                }).join("\n");
+                                                setValue(field.name, updated);
+                                            }}
+                                            style={{ background: "none", border: "none", color: theme.textMuted, cursor: "pointer", padding: "2px 6px", fontSize: 14, lineHeight: 1, flexShrink: 0 }}
+                                        >
+                                            ×
+                                        </button>
+                                    )}
+                                </div>
+                            );
+                        })}
+                        {!field.readOnly && (
+                            <button
+                                type="button"
+                                aria-label={`${s.browse} ${label}`}
+                                onClick={async () => {
+                                    try {
+                                        const { SelectAIAssistantFiles } = await getWailsAppModule();
+                                        const files = await SelectAIAssistantFiles();
+                                        if (files && files.length > 0) {
+                                            const existingSet = new Set(currentLines);
+                                            const newFiles = files.filter((f) => !existingSet.has(f));
+                                            if (newFiles.length === 0) return;
+                                            const existing = String(formatValue(value)).trim();
+                                            const updated = existing ? `${existing}\n${newFiles.join("\n")}` : newFiles.join("\n");
+                                            setValue(field.name, updated);
+                                        }
+                                    } catch (error) {
+                                        console.warn("File picker failed", error);
+                                    }
+                                }}
+                                style={{
+                                    border: `1px dashed ${theme.btnBorder}`,
+                                    background: "transparent",
+                                    color: theme.btnColor,
+                                    borderRadius: 6,
+                                    padding: "6px 12px",
+                                    cursor: "pointer",
+                                    fontSize: 12,
+                                    textAlign: "center",
+                                }}
+                            >
+                                + {s.browse}
+                            </button>
+                        )}
+                    </div>
+                )}
+            </>
         );
     } else if (field.type === "object_form") {
         const objectValue = normalizeObjectValue(value);
@@ -1146,7 +1236,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
             <div className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "16px 24px" }}>
                 {view.type === "form" && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%", maxWidth: 480, margin: "0 auto" }}
+                        style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%", maxWidth: 640, margin: "0 auto" }}
                         onSubmit={(event) => {
                             event.preventDefault();
                             if (validationErrors.length > 0 || submitting) return;
@@ -1220,11 +1310,19 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                             </div>
                         )}
                         <button type="submit" disabled={submitting} style={{ ...primaryButtonStyle, marginTop: 4, opacity: submitting ? 0.65 : 1, cursor: submitting ? "wait" : "pointer" }}>{submitting ? s.submitting : view.submitLabel || s.submit}</button>
+                        {view.id?.startsWith("workflow:form:") && onDismiss && (
+                            <button type="button" disabled={submitting} onClick={() => {
+                                const isZh = lang?.startsWith("zh");
+                                const msg = isZh ? "确定要放弃当前工作流吗？\n\n放弃后当前进度将被清除，只能重新发起工作流。" : "Are you sure you want to cancel the current workflow?\n\nAll progress will be lost and you'll need to start a new workflow.";
+                                if (!window.confirm(msg)) return;
+                                onDismiss(view.id, { __cancel_workflow: true });
+                            }} style={{ ...buttonStyle, marginTop: 4, color: theme.errorText, borderColor: theme.errorText, opacity: submitting ? 0.5 : 0.75, cursor: submitting ? "not-allowed" : "pointer", fontSize: 11 }}>{lang?.startsWith("zh") ? "放弃工作流" : "Cancel Workflow"}</button>
+                        )}
                     </form>
                 )}
                 {view.type === "wizard" && activeWizardStep && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 480, margin: "0 auto" }}
+                        style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 640, margin: "0 auto" }}
                         onSubmit={(event) => {
                             event.preventDefault();
                             if (submitting) return;
@@ -1298,7 +1396,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                 )}
                 {view.type === "resource_picker" && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 480, margin: "0 auto" }}
+                        style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 640, margin: "0 auto" }}
                         onSubmit={(event) => {
                             event.preventDefault();
                             if (resourceValidationErrors.length > 0 || submitting) return;
@@ -1402,7 +1500,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                     </form>
                 )}
                 {view.type === "approval" && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 480, margin: "0 auto" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 640, margin: "0 auto" }}>
                         <div style={{ border: `1px solid ${theme.divider}`, borderRadius: 8, padding: 12, background: theme.fieldBg }}>
                             <div style={{ fontWeight: 700, marginBottom: 8 }}>{view.action.summary}</div>
                             {view.action.risk && <div style={{ color: theme.textMuted, fontSize: 12 }}>{s.risk}: {view.action.risk}</div>}
@@ -1427,7 +1525,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                     </div>
                 )}
                 {view.type === "progress" && (
-                    <div style={{ display: "grid", gap: 10, width: "100%", maxWidth: 480, margin: "0 auto" }}>
+                    <div style={{ display: "grid", gap: 10, width: "100%", maxWidth: 640, margin: "0 auto" }}>
                         {view.steps.map((step, index) => (
                             <div key={step.id || `${step.title}-${index}`} style={{ display: "grid", gridTemplateColumns: "72px 1fr", gap: 10, borderBottom: `1px solid ${theme.divider}`, paddingBottom: 10 }}>
                                 <span style={{ color: step.status === "error" ? theme.errorText : theme.textMuted, fontSize: 12 }}>{step.status || s.pending}</span>

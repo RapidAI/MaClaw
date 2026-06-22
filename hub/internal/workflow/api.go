@@ -440,7 +440,9 @@ func isGraphValidationError(err error) bool {
 		errors.Is(err, ErrNoTriggerNode) ||
 		errors.Is(err, ErrMultipleTriggers) ||
 		errors.Is(err, ErrTriggerHasIncoming) ||
-		errors.Is(err, ErrDisconnectedNodes)
+		errors.Is(err, ErrDisconnectedNodes) ||
+		errors.Is(err, ErrTerminalHasOutgoing) ||
+		errors.Is(err, ErrConditionBranchInvalid)
 }
 
 func (api *WorkflowAPI) handleValidateVersion(w http.ResponseWriter, r *http.Request) {
