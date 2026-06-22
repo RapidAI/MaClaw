@@ -864,7 +864,9 @@
           </div>
           <div class="workflow-library-list" id="workflowList" role="list" aria-live="polite"></div>
         </section>
-        <div class="palette-title" data-i18n="nodeTypes">Node Types</div>
+        <div class="palette-title" data-i18n="nodeTypes">Build Blocks</div>
+        <div class="palette-help" data-i18n="nodeTypesHelp">Start with the core path, then add routing or automation only when needed.</div>
+        <div class="node-group-title" data-i18n="coreNodes">Core path</div>
         <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="trigger">
           <div class="palette-node-icon trigger">&#9654;</div>
           <div class="palette-node-info">
@@ -886,6 +888,7 @@
             <span data-i18n="approvalDesc">VE approval decision</span>
           </div>
         </div>
+        <div class="node-group-title" data-i18n="advancedNodes">Advanced</div>
         <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="condition_branch">
           <div class="palette-node-icon condition">&#9830;</div>
           <div class="palette-node-info">
@@ -944,6 +947,24 @@
             <p data-i18n="emptyHint" data-i18n-multiline="true">Drag nodes from the left panel onto the canvas<br>to start building your approval workflow.</p>
           </div>
         </div>
+        <section class="workflow-draft-assistant" aria-label="AI workflow draft generator" data-i18n-aria="draftAssistant">
+          <div class="draft-assistant-main">
+            <div class="draft-assistant-head">
+              <strong data-i18n="draftAssistantTitle">Generate a workflow draft</strong>
+              <span data-i18n="draftAssistantHint">Describe the business rule, approvers, fallback, and final notification.</span>
+            </div>
+            <div class="draft-example-row" aria-label="Workflow description examples" data-i18n-aria="draftExamples">
+              <button type="button" data-draft-example="leave" data-i18n="draftExampleLeave">Leave request</button>
+              <button type="button" data-draft-example="purchase" data-i18n="draftExamplePurchase">Purchase approval</button>
+              <button type="button" data-draft-example="contract" data-i18n="draftExampleContract">Contract review</button>
+            </div>
+          </div>
+          <div class="draft-assistant-compose">
+            <textarea id="draftPrompt" data-i18n-placeholder="draftPromptPlaceholder" placeholder="Example: Employee submits a purchase request. If amount is above 10,000, department manager and finance both approve; otherwise only department manager approves. Notify requester after approval."></textarea>
+            <button type="button" class="btn-primary" id="btnGenerateDraft" data-i18n="generateDraft">Generate</button>
+          </div>
+          <div class="draft-assistant-status" id="draftAssistantStatus" role="status" aria-live="polite"></div>
+        </section>
       </main>
 
       <!-- Config Panel (Right) -->

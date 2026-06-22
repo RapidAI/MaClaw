@@ -580,6 +580,7 @@ func NewRouter(
 		}
 	}
 	mux.HandleFunc("GET /api/v1/workflow-directory/approvers", workflowUserAuth(WorkflowApproverDirectoryHandler(securitySvc, identity, deviceSvc, system)))
+	mux.HandleFunc("POST /api/v1/workflow-drafts/generate", WorkflowDraftLLMHandler(identity, system, securitySvc))
 
 	// Workflow CRUD API (user-facing)
 	{

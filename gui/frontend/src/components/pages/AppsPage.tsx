@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
-import { CancelNLSkillRun, DownloadSkillRunArtifact, GetMISDataConfig, GetNLSkillRunStatus, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { CancelNLSkillRun, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, GetMISDataConfig, GetNLSkillRunStatus, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import './AppsPage.css';
 
@@ -4849,11 +4849,39 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     return;
                 }
             }
+            setRunState('running');
             setCurrentRunContext({ inputSummary, outputMode: 'business' });
-            setValidationMessage('');
-            setRunState('done');
-            recordRunHistory({ runID: `business-${Date.now().toString(36)}`, status: 'done', outputMode: 'business', inputSummary, message: text.runCompleted });
-            return;
+            try {
+                const result = await ExecuteMaclawAppBusinessOperation({
+                    app_id: app.id,
+                    app_name: app.name,
+                    dataset_id: app.manifest?.datasrv?.datasetID || '',
+                    object_role: businessObjectRole,
+                    blueprint_id: app.manifest?.datasrv?.blueprintID || '',
+                    business_entity: businessEntity || app.category,
+                    business_action: businessAction || 'create',
+                    business_note: businessNote,
+                    preferred_action: app.manifest?.datasrv?.preferredAction || '',
+                    preferred_view: app.manifest?.datasrv?.preferredView || '',
+                    preferred_report: app.manifest?.datasrv?.preferredReport || '',
+                    preferred_dashboard: app.manifest?.datasrv?.preferredDashboard || '',
+                    data: { note: businessNote, action_role: businessActionRole },
+                    limit: 50,
+                });
+                const response = result?.response && typeof result.response === 'object' ? result.response as Record<string, unknown> : undefined;
+                const mode = String(result?.mode || businessActionRole || 'DataSrv').trim();
+                const status = String(result?.result_status || response?.status || 'done').trim();
+                setValidationMessage('');
+                setRunState('done');
+                recordRunHistory({ runID: `business-${Date.now().toString(36)}`, status: 'done', outputMode: 'business', inputSummary, message: text.runCompleted + ': ' + mode + ' / ' + status, resultPayload: response });
+                return;
+            } catch (error: any) {
+                const message = error?.message || String(error || text.skillRunFailed);
+                setValidationMessage(message);
+                setRunState('error');
+                recordRunHistory({ runID: `failed-${Date.now().toString(36)}`, status: 'error', outputMode: 'business', inputSummary, message });
+                return;
+            }
         }
         setValidationMessage('');
         setRunState('done');

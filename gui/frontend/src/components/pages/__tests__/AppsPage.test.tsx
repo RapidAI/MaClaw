@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const executeMaclawAppBusinessOperationMock = vi.hoisted(() => vi.fn());
 const getMISDataConfigMock = vi.hoisted(() => vi.fn());
 const listNLSkillsMock = vi.hoisted(() => vi.fn());
 const listSkillAppManifestsMock = vi.hoisted(() => vi.fn());
@@ -30,6 +31,7 @@ const showItemInFolderMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     CancelNLSkillRun: (...args: unknown[]) => cancelNLSkillRunMock(...args),
+    ExecuteMaclawAppBusinessOperation: (...args: unknown[]) => executeMaclawAppBusinessOperationMock(...args),
     GetMISDataConfig: (...args: unknown[]) => getMISDataConfigMock(...args),
     GetNLSkillRunStatus: (...args: unknown[]) => getNLSkillRunStatusMock(...args),
     ListNLSkills: (...args: unknown[]) => listNLSkillsMock(...args),
@@ -212,6 +214,7 @@ function seedSuccessfulSkillAppRun(skillID = 'invoice-review', name = '发票审
 describe('AppsPage', () => {
     beforeEach(() => {
         window.localStorage.clear();
+        executeMaclawAppBusinessOperationMock.mockReset().mockResolvedValue({ synced: true, mode: 'business_action', target: 'datasrv.action', result_status: 'done', response: { status: 'done' } });
         getMISDataConfigMock.mockReset().mockResolvedValue({ enabled: false, endpoint: 'http://127.0.0.1:18180' });
         listNLSkillsMock.mockReset().mockResolvedValue([]);
         listSkillAppManifestsMock.mockReset().mockResolvedValue([]);
@@ -3100,8 +3103,16 @@ describe('AppsPage', () => {
         fireEvent.change(screen.getByDisplayValue('新建记录'), { target: { value: 'query' } });
         fireEvent.click(screen.getByText('执行'));
 
-        await waitFor(() => expect(screen.getByText(/已提交/)).not.toBeNull());
-        expect(screen.getAllByText(/procurement.purchase_order_review/).length).toBeGreaterThan(0);
+        await waitFor(() => expect(executeMaclawAppBusinessOperationMock).toHaveBeenCalledWith(expect.objectContaining({
+            app_id: 'purchase-inbound',
+            object_role: 'procurement',
+            business_action: 'query',
+            preferred_action: 'procurement.purchase_order_upsert',
+            preferred_view: 'procurement.purchase_order_review',
+            preferred_report: 'procurement.purchase_by_status',
+            preferred_dashboard: 'procurement.overview',
+        })));
+        await waitFor(() => expect(screen.getByText(/已完成/)).not.toBeNull());
         expect(container.querySelector('.apps-run-history')).not.toBeNull();
     });
 

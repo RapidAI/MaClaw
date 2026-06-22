@@ -2058,6 +2058,10 @@ export function RequestHubCapabilityInstallIntent(arg1) {
 }
 
 // MacLaw App package bindings
+export function ExecuteMaclawAppBusinessOperation(arg1) {
+  return window['go']['main']['App']['ExecuteMaclawAppBusinessOperation'](arg1);
+}
+
 export function InstallMaclawAppDependencies(arg1) {
   return window['go']['main']['App']['InstallMaclawAppDependencies'](arg1);
 }

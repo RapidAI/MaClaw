@@ -1039,6 +1039,7 @@ export function SaveHubMCPHubSecret(arg1:any):Promise<any>;
 export function RequestHubCapabilityInstallIntent(arg1:any):Promise<any>;
 
 // MacLaw App package bindings
+export function ExecuteMaclawAppBusinessOperation(arg1:any):Promise<any>;
 export function InstallMaclawAppDependencies(arg1:string):Promise<any>;
 export function PlanMaclawAppInstall(arg1:string):Promise<any>;
 export function RecordMaclawAppInstall(arg1:string,arg2:string):Promise<any>;

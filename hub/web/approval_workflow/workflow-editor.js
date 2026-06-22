@@ -45,6 +45,7 @@
     selectedEdgeId: null,
     contextMenu: null,
     contextMenuReturnFocus: null,
+    isGeneratingDraft: false,
   };
 
   // --- DOM refs ---
@@ -72,6 +73,9 @@
   const workflowSearchInput = document.getElementById('workflowSearch');
   const workflowStatusFilter = document.getElementById('workflowStatusFilter');
   const reviewPreviewBanner = document.getElementById('reviewPreviewBanner');
+  const draftPrompt = document.getElementById('draftPrompt');
+  const btnGenerateDraft = document.getElementById('btnGenerateDraft');
+  const draftAssistantStatus = document.getElementById('draftAssistantStatus');
 
   const FALLBACK_TEXT = {
     pageTitle: 'Approval Workflow Designer',
@@ -179,6 +183,13 @@
     invalidJsonField: 'Invalid JSON in {field}.',
     invalidConfigField: 'Invalid value in {field}.',
     configErrorSummary: 'Fix these issues before continuing:',
+    draftGenerating: 'Generating workflow draft...',
+    draftGenerated: 'Draft generated. Review the nodes, approvers, and terminal handlers before saving.',
+    draftNeedDescription: 'Describe the workflow before generating.',
+    draftOverwriteConfirm: 'The canvas already has a draft. Save it first if you want to keep it. Generate anyway and overwrite the current canvas?',
+    draftExampleLeaveText: 'Employee submits a leave request with dates and reason. Direct manager approves first. If leave is longer than 3 days, HR also approves. Notify employee after final decision.',
+    draftExamplePurchaseText: 'Employee submits a purchase request. If amount is above 10,000, department manager and finance both approve; otherwise only department manager approves. Notify requester after approval.',
+    draftExampleContractText: 'Sales submits a contract review request. Legal reviews the contract, finance reviews payment terms when amount is above 50,000, then notify sales and archive the result.',
     requireOneTrigger: 'Exactly one Trigger node is required as the workflow entry point.',
     onlyOneTrigger: 'Only one Trigger node is allowed. Found {count} Trigger nodes.',
     disconnectedNode: 'Node "{label}" at ({x}, {y}) is disconnected.',
@@ -439,6 +450,7 @@
     [btnNew, btnSave, btnSubmit].forEach(function (btn) { setControlDisabled(btn, state.isReadOnlyPreview); });
     if (workflowNameInput) workflowNameInput.readOnly = state.isReadOnlyPreview;
     if (workflowDescriptionInput) workflowDescriptionInput.readOnly = state.isReadOnlyPreview;
+    setGeneratingDraft(false);
     paletteNodes.forEach(function (el) {
       el.setAttribute('aria-disabled', state.isReadOnlyPreview ? 'true' : 'false');
       el.setAttribute('draggable', state.isReadOnlyPreview ? 'false' : 'true');
@@ -453,6 +465,7 @@
     state.isBusy = !!isBusy;
     [btnNew, btnSave, btnSubmit].forEach(function (btn) { setControlDisabled(btn, !!isBusy || isReadOnlyPreview()); });
     setControlDisabled(btnValidate, !!isBusy);
+    setGeneratingDraft(state.isGeneratingDraft);
     updateWorkflowLibraryControls();
     if (statusKey) updateVersionStatus(statusKey);
     renderWorkflowLibrary();
@@ -539,6 +552,74 @@
       throw apiErr;
     }
     return data;
+  }
+
+  function setDraftAssistantStatus(message, tone) {
+    if (!draftAssistantStatus) return;
+    draftAssistantStatus.textContent = message || '';
+    draftAssistantStatus.classList.toggle('error', tone === 'error');
+    draftAssistantStatus.classList.toggle('success', tone === 'success');
+  }
+
+  function setGeneratingDraft(generating) {
+    state.isGeneratingDraft = !!generating;
+    var disabled = state.isGeneratingDraft || state.isBusy || isReadOnlyPreview();
+    setControlDisabled(btnGenerateDraft, disabled);
+    if (draftPrompt) {
+      draftPrompt.disabled = disabled;
+      draftPrompt.setAttribute('aria-disabled', draftPrompt.disabled ? 'true' : 'false');
+    }
+    document.querySelectorAll('[data-draft-example]').forEach(function (btn) {
+      setControlDisabled(btn, disabled);
+    });
+  }
+
+  function draftHasCanvasContent() {
+    return state.nodes.length > 0 || state.edges.length > 0;
+  }
+
+  function draftExampleText(key) {
+    var map = {
+      leave: 'draftExampleLeaveText',
+      purchase: 'draftExamplePurchaseText',
+      contract: 'draftExampleContractText'
+    };
+    return tr(map[key] || 'draftExamplePurchaseText');
+  }
+
+  async function generateWorkflowDraftFromPrompt() {
+    if (isReadOnlyPreview() || state.isGeneratingDraft) return;
+    var description = String(draftPrompt && draftPrompt.value || '').trim();
+    if (!description) {
+      setDraftAssistantStatus(tr('draftNeedDescription'), 'error');
+      if (draftPrompt && typeof draftPrompt.focus === 'function') draftPrompt.focus();
+      return;
+    }
+    if (draftHasCanvasContent() && !confirm(tr('draftOverwriteConfirm'))) return;
+    setGeneratingDraft(true);
+    setDraftAssistantStatus(tr('draftGenerating'));
+    try {
+      var data = await workflowApi('/api/v1/workflow-drafts/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          description: description,
+          language: window.ApprovalWorkflowI18n && window.ApprovalWorkflowI18n.currentLang ? window.ApprovalWorkflowI18n.currentLang() : ''
+        })
+      });
+      if (workflowNameInput && data.name && !getWorkflowName()) workflowNameInput.value = data.name;
+      if (workflowDescriptionInput && data.description && !getWorkflowDescription()) workflowDescriptionInput.value = data.description;
+      state.versionId = null;
+      state.versionNumber = '';
+      state.versionStatus = 'draft';
+      applyWorkflowGraph(data.graph || { nodes: [], edges: [] });
+      markDirty();
+      setDraftAssistantStatus(tr('draftGenerated'), 'success');
+    } catch (err) {
+      setDraftAssistantStatus(err && err.message ? err.message : tr('requestFailed', { error: String(err) }), 'error');
+    } finally {
+      setGeneratingDraft(false);
+      updateToolModeUI();
+    }
   }
 
   async function ensureWorkflowDefinition() {
@@ -2319,6 +2400,19 @@
       state.workflowStatusFilter = workflowStatusFilter.value || '';
       renderWorkflowLibrary();
     });
+  }
+
+  document.querySelectorAll('[data-draft-example]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      if (!draftPrompt || state.isGeneratingDraft || isReadOnlyPreview()) return;
+      draftPrompt.value = draftExampleText(btn.getAttribute('data-draft-example'));
+      setDraftAssistantStatus('');
+      draftPrompt.focus();
+    });
+  });
+
+  if (btnGenerateDraft) {
+    btnGenerateDraft.addEventListener('click', generateWorkflowDraftFromPrompt);
   }
 
   btnValidate.addEventListener('click', function () {
