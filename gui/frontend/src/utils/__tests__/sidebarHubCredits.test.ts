@@ -247,6 +247,29 @@ describe('normalizeSidebarHubCredits', () => {
         expect(credits?.remaining).toBe(68341.3);
     });
 
+    it('recognizes PascalCase period limits from backend credit grants', () => {
+        const credits = normalizeSidebarHubCredits({
+            Active: true,
+            CreditsTotal: 70000,
+            CreditsUsed: 1658.7,
+            CreditsRemaining: 2293.43,
+            CreditsAvailable: 2293.43,
+            CreditGrants: [{
+                Status: 'active',
+                Active: true,
+                Effective: true,
+                Source: 'card',
+                CreditsTotal: 70000,
+                CreditsUsed: 1658.7,
+                CreditsRemaining: 68341.3,
+                CreditsAvailable: 2293.43,
+                PeriodLimits: { Monthly: 40000 },
+            }],
+        });
+
+        expect(credits?.remaining).toBe(68341.3);
+    });
+
     it('keeps expired grants authorized for explanation but exposes zero currently available credits', () => {
         const credits = normalizeSidebarHubCredits({
             active: false,

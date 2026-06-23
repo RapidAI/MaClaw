@@ -1,7 +1,7 @@
-import type { SidebarHubCredits, SidebarHubServiceStatus } from '../types/appShell';
+import type { SidebarHubCredits, SidebarHubPeriodLimits, SidebarHubServiceStatus } from '../types/appShell';
 import { grantCanContributeExpiry, latestExpiry, numeric } from './hubCredits';
 
-function hasPositivePeriodLimits(limits: NonNullable<NonNullable<SidebarHubServiceStatus['credit_grants']>[number]['period_limits']>): boolean {
+function hasPositivePeriodLimits(limits: SidebarHubPeriodLimits): boolean {
     return numeric(limits.five_hour ?? limits.FiveHour) > 0 ||
         numeric(limits.daily ?? limits.Daily) > 0 ||
         numeric(limits.weekly ?? limits.Weekly) > 0 ||
