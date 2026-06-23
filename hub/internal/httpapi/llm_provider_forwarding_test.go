@@ -1803,8 +1803,9 @@ func TestLLMV1ChatCompletionsHandlerSynthesizesStreamWhenUpstreamReturnsJSON(t *
 			"choices": []any{map[string]any{
 				"index": 0,
 				"message": map[string]any{
-					"role":    "assistant",
-					"content": "json fallback",
+					"role":              "assistant",
+					"content":           "json fallback",
+					"reasoning_content": "checking official path",
 					"tool_calls": []any{map[string]any{
 						"id":   "call_1",
 						"type": "function",
@@ -1853,7 +1854,7 @@ func TestLLMV1ChatCompletionsHandlerSynthesizesStreamWhenUpstreamReturnsJSON(t *
 	if !strings.Contains(rr.Header().Get("Content-Type"), "text/event-stream") {
 		t.Fatalf("content-type = %q, want text/event-stream", rr.Header().Get("Content-Type"))
 	}
-	if !strings.Contains(rr.Body.String(), "json fallback") || !strings.Contains(rr.Body.String(), "data: [DONE]") || !strings.Contains(rr.Body.String(), `"model":"auto"`) || !strings.Contains(rr.Body.String(), `"index":0`) || !strings.Contains(rr.Body.String(), `"finish_reason":"tool_calls"`) {
+	if !strings.Contains(rr.Body.String(), "json fallback") || !strings.Contains(rr.Body.String(), "checking official path") || !strings.Contains(rr.Body.String(), `"reasoning_content"`) || !strings.Contains(rr.Body.String(), "data: [DONE]") || !strings.Contains(rr.Body.String(), `"model":"auto"`) || !strings.Contains(rr.Body.String(), `"index":0`) || !strings.Contains(rr.Body.String(), `"finish_reason":"tool_calls"`) {
 		t.Fatalf("unexpected synthesized stream body: %s", rr.Body.String())
 	}
 
@@ -1865,6 +1866,23 @@ func TestLLMV1ChatCompletionsHandlerSynthesizesStreamWhenUpstreamReturnsJSON(t *
 	stat := providerReg.TokenUsage["provider-a"]
 	if stat == nil || stat.InputTokens != 8 || stat.OutputTokens != 4 || stat.TotalTokens != 12 || stat.Requests != 1 {
 		t.Fatalf("unexpected synthesized stream usage: %#v", stat)
+	}
+}
+
+func TestSynthesizeOpenAIStreamChunkAcceptsGoStyleReasoningContent(t *testing.T) {
+	chunk, _, err := synthesizeOpenAIStreamChunk([]byte(`{
+		"id":"json-upstream",
+		"choices":[{
+			"message":{"role":"assistant","content":"json fallback","ReasoningContent":"go style thinking"},
+			"finish_reason":"stop"
+		}]
+	}`), "auto")
+	if err != nil {
+		t.Fatalf("synthesizeOpenAIStreamChunk: %v", err)
+	}
+	body := string(chunk)
+	if !strings.Contains(body, `"reasoning_content":"go style thinking"`) {
+		t.Fatalf("synthesized chunk missing go-style reasoning_content: %s", body)
 	}
 }
 

@@ -96,11 +96,13 @@ type maclawAppSubmissionStatusUpdate struct {
 }
 
 type maclawAppInstallPlan struct {
-	Schema                string                           `json:"schema"`
-	Apps                  []maclawAppInstallPlanApp        `json:"apps"`
-	Dependencies          []maclawAppInstallPlanDependency `json:"dependencies"`
-	HasMissingRequired    bool                             `json:"has_missing_required"`
-	HasBlockingDependency bool                             `json:"has_blocking_dependency,omitempty"`
+	Schema                   string                           `json:"schema"`
+	Apps                     []maclawAppInstallPlanApp        `json:"apps"`
+	Dependencies             []maclawAppInstallPlanDependency `json:"dependencies"`
+	WorkflowContractIssues   []maclawAppReviewIssue           `json:"workflow_contract_issues,omitempty"`
+	HasMissingRequired       bool                             `json:"has_missing_required"`
+	HasBlockingDependency    bool                             `json:"has_blocking_dependency,omitempty"`
+	HasWorkflowContractIssue bool                             `json:"has_workflow_contract_issue,omitempty"`
 }
 
 type maclawAppInstallPlanApp struct {
@@ -193,6 +195,7 @@ type maclawAppInstallRecord struct {
 	PackageSize           int                              `json:"package_bytes,omitempty"`
 	Dependencies          []maclawAppInstallPlanDependency `json:"dependencies,omitempty"`
 	VersionSnapshot       maclawAppInstallVersionSnapshot  `json:"version_snapshot,omitempty"`
+	WorkflowContract      map[string]any                   `json:"workflow_contract,omitempty"`
 	HasMissingRequired    bool                             `json:"has_missing_required"`
 	HasBlockingDependency bool                             `json:"has_blocking_dependency,omitempty"`
 	Message               string                           `json:"message,omitempty"`
@@ -360,6 +363,10 @@ func (a *App) PlanMaclawAppInstall(packageJSON string) (maclawAppInstallPlan, er
 			Kind:   normalizeMaclawAppKind(entry.Kind),
 			Schema: entry.Schema,
 		})
+		governance := anyMap(entry.App["governance"])
+		if issue := maclawAppWorkflowContractReviewIssue(entry, governance, fmt.Sprintf("apps[%d].app", len(plan.Apps)-1)); issue != nil {
+			plan.WorkflowContractIssues = append(plan.WorkflowContractIssues, *issue)
+		}
 		for _, dep := range maclawAppDependenciesForEntry(entry) {
 			key := strings.ToLower(dep.ID)
 			existing := depsByID[key]
@@ -402,6 +409,7 @@ func (a *App) PlanMaclawAppInstall(packageJSON string) (maclawAppInstallPlan, er
 		}
 	}
 	plan.refreshMaclawAppDependencyFlags()
+	plan.HasWorkflowContractIssue = len(plan.WorkflowContractIssues) > 0
 	return plan, nil
 }
 
@@ -482,6 +490,7 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 		}
 	}
 	plan.refreshMaclawAppDependencyFlags()
+	plan.HasWorkflowContractIssue = len(plan.WorkflowContractIssues) > 0
 	return plan, nil
 }
 
@@ -498,6 +507,9 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 	}
 	if plan.HasMissingRequired || plan.HasBlockingDependency {
 		return nil, fmt.Errorf("cannot install MaClaw App: required Skill dependencies are missing or unavailable")
+	}
+	if plan.HasWorkflowContractIssue {
+		return nil, fmt.Errorf("cannot install MaClaw App: approval workflow contract is invalid")
 	}
 	var doc map[string]any
 	if err := json.Unmarshal([]byte(packageJSON), &doc); err != nil {
@@ -529,6 +541,7 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 			PackageSize:           packageSize,
 			Dependencies:          cloneMaclawAppPlanDependenciesForApp(plan.Dependencies, entry.ID),
 			VersionSnapshot:       maclawAppInstallVersionSnapshotForEntry(entry),
+			WorkflowContract:      cloneMapAny(maclawAppWorkflowContractForEntry(entry)),
 			HasMissingRequired:    hasMissingMaclawAppRequiredDependencyForApp(plan.Dependencies, entry.ID),
 			HasBlockingDependency: hasBlockingMaclawAppRequiredDependencyForApp(plan.Dependencies, entry.ID),
 			Message:               "installed locally",
@@ -734,6 +747,11 @@ func (a *App) RecordMaclawAppApprovalInstance(instance maclawAppApprovalInstance
 	if instance.CurrentNode == "" {
 		instance.CurrentNode = "submit"
 	}
+	var err error
+	instance, err = a.applyMaclawAppApprovalRuntimeContract(instance)
+	if err != nil {
+		return maclawAppApprovalInstance{}, err
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	if instance.CreatedAt == "" {
 		instance.CreatedAt = now
@@ -774,6 +792,25 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 		return nil, fmt.Errorf("instance app_id and instance_id are required")
 	}
 	instance.Status = normalizeMaclawAppApprovalStatus(instance.Status)
+	input.AppID = firstNonEmptyMaclawAppString(input.AppID, instance.AppID)
+	input.BlueprintID = firstNonEmptyMaclawAppString(input.BlueprintID, instance.BlueprintID)
+	input.DatasetID = firstNonEmptyMaclawAppString(input.DatasetID, instance.DatasetID)
+	input.ObjectRole = firstNonEmptyMaclawAppString(input.ObjectRole, instance.ObjectRole, instance.ApprovalObjectRole)
+	input.RecordID = firstNonEmptyMaclawAppString(input.RecordID, instance.RecordID)
+	input.ApprovalID = firstNonEmptyMaclawAppString(input.ApprovalID, instance.ApprovalID, instance.RecordApprovalID)
+	instance.AppID = firstNonEmptyMaclawAppString(instance.AppID, input.AppID)
+	instance.BlueprintID = firstNonEmptyMaclawAppString(instance.BlueprintID, input.BlueprintID)
+	instance.DatasetID = firstNonEmptyMaclawAppString(instance.DatasetID, input.DatasetID)
+	instance.ObjectRole = firstNonEmptyMaclawAppString(instance.ObjectRole, input.ObjectRole)
+	instance.ApprovalObjectRole = firstNonEmptyMaclawAppString(instance.ApprovalObjectRole, instance.ObjectRole)
+	instance.RecordID = firstNonEmptyMaclawAppString(instance.RecordID, input.RecordID)
+	instance.ApprovalID = firstNonEmptyMaclawAppString(instance.ApprovalID, input.ApprovalID)
+	instance.RecordApprovalID = firstNonEmptyMaclawAppString(instance.RecordApprovalID, instance.ApprovalID)
+	var runtimeErr error
+	instance, runtimeErr = a.applyMaclawAppApprovalRuntimeContract(instance)
+	if runtimeErr != nil {
+		return nil, runtimeErr
+	}
 	input.AppID = firstNonEmptyMaclawAppString(input.AppID, instance.AppID)
 	input.BlueprintID = firstNonEmptyMaclawAppString(input.BlueprintID, instance.BlueprintID)
 	input.DatasetID = firstNonEmptyMaclawAppString(input.DatasetID, instance.DatasetID)
@@ -886,6 +923,99 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 	return map[string]any{"synced": true, "action": "create_record_approval", "dataset_id": input.DatasetID, "approval_id": approvalID, "response": out, "business_record_sync": businessRecordSync}, nil
 }
 
+func (a *App) applyMaclawAppApprovalRuntimeContract(instance maclawAppApprovalInstance) (maclawAppApprovalInstance, error) {
+	registry, err := a.readMaclawAppInstallRegistry()
+	if err != nil {
+		return instance, err
+	}
+	var install *maclawAppInstallRecord
+	for i := range registry.Installs {
+		if strings.EqualFold(strings.TrimSpace(registry.Installs[i].AppID), strings.TrimSpace(instance.AppID)) {
+			install = &registry.Installs[i]
+			break
+		}
+	}
+	if install == nil {
+		return instance, nil
+	}
+	contract := install.WorkflowContract
+	snapshot := install.VersionSnapshot
+	if instance.WorkflowSkillID == "" {
+		instance.WorkflowSkillID = maclawAppRuntimeDefaultWorkflowSkillID(contract, snapshot)
+	}
+	if instance.WorkflowSkillID == "" {
+		return instance, fmt.Errorf("approval workflow contract runtime check failed: missing workflow_skill_id for installed app %s", instance.AppID)
+	}
+	contractWorkflowID := maclawAppStringValue(contract, "workflowSkillId", "workflow_skill_id", "workflowId", "workflow_id")
+	if contractWorkflowID != "" && !strings.EqualFold(contractWorkflowID, instance.WorkflowSkillID) {
+		return instance, fmt.Errorf("approval workflow contract runtime check failed: workflow_skill_id %s does not match installed contract %s", instance.WorkflowSkillID, contractWorkflowID)
+	}
+	binding := maclawAppRuntimeApprovalBindingSnapshot(snapshot, instance)
+	if binding.WorkflowSkillID != "" && !strings.EqualFold(binding.WorkflowSkillID, instance.WorkflowSkillID) {
+		return instance, fmt.Errorf("approval workflow contract runtime check failed: workflow_skill_id %s does not match installed binding %s", instance.WorkflowSkillID, binding.WorkflowSkillID)
+	}
+	if instance.ApprovalEvent == "" {
+		instance.ApprovalEvent = binding.Event
+	}
+	expectedObjectRole := firstNonEmptyMaclawAppString(binding.ObjectRole, maclawAppStringValue(contract, "objectRole", "object_role", "businessObjectRole", "business_object_role"))
+	if instance.ObjectRole == "" {
+		instance.ObjectRole = expectedObjectRole
+		instance.ApprovalObjectRole = firstNonEmptyMaclawAppString(instance.ApprovalObjectRole, instance.ObjectRole)
+	}
+	if instance.ApprovalObjectRole == "" {
+		instance.ApprovalObjectRole = instance.ObjectRole
+	}
+	if expectedObjectRole != "" && !strings.EqualFold(instance.ObjectRole, expectedObjectRole) && !strings.EqualFold(instance.ApprovalObjectRole, expectedObjectRole) {
+		return instance, fmt.Errorf("approval workflow contract runtime check failed: object_role %s does not match installed contract %s", firstNonEmptyMaclawAppString(instance.ObjectRole, instance.ApprovalObjectRole), expectedObjectRole)
+	}
+	expectedVersion := firstNonEmptyMaclawAppString(binding.WorkflowVersion, maclawAppStringValue(contract, "workflowVersion", "workflow_version"), maclawAppRuntimeWorkflowVersion(snapshot, instance.WorkflowSkillID))
+	if instance.WorkflowVersion == "" {
+		instance.WorkflowVersion = expectedVersion
+	}
+	if expectedVersion != "" && instance.WorkflowVersion != "" && instance.WorkflowVersion != expectedVersion {
+		return instance, fmt.Errorf("approval workflow contract runtime check failed: workflow_version %s does not match installed version %s", instance.WorkflowVersion, expectedVersion)
+	}
+	return normalizeMaclawAppApprovalInstanceFields(instance), nil
+}
+
+func maclawAppRuntimeDefaultWorkflowSkillID(contract map[string]any, snapshot maclawAppInstallVersionSnapshot) string {
+	if id := maclawAppStringValue(contract, "workflowSkillId", "workflow_skill_id", "workflowId", "workflow_id"); id != "" {
+		return id
+	}
+	if len(snapshot.ApprovalBindings) == 1 {
+		return snapshot.ApprovalBindings[0].WorkflowSkillID
+	}
+	if len(snapshot.WorkflowSkills) == 1 {
+		return snapshot.WorkflowSkills[0].ID
+	}
+	return ""
+}
+
+func maclawAppRuntimeApprovalBindingSnapshot(snapshot maclawAppInstallVersionSnapshot, instance maclawAppApprovalInstance) maclawAppInstallApprovalBindingSnapshot {
+	for _, binding := range snapshot.ApprovalBindings {
+		if instance.WorkflowSkillID != "" && strings.EqualFold(binding.WorkflowSkillID, instance.WorkflowSkillID) {
+			return binding
+		}
+	}
+	for _, binding := range snapshot.ApprovalBindings {
+		if instance.ApprovalEvent != "" && strings.EqualFold(binding.Event, instance.ApprovalEvent) {
+			return binding
+		}
+	}
+	if len(snapshot.ApprovalBindings) == 1 {
+		return snapshot.ApprovalBindings[0]
+	}
+	return maclawAppInstallApprovalBindingSnapshot{}
+}
+
+func maclawAppRuntimeWorkflowVersion(snapshot maclawAppInstallVersionSnapshot, workflowSkillID string) string {
+	for _, skill := range snapshot.WorkflowSkills {
+		if strings.EqualFold(skill.ID, workflowSkillID) {
+			return skill.Version
+		}
+	}
+	return ""
+}
 func (a *App) findMaclawAppRecordApprovalID(input maclawAppApprovalDataSrvSyncInput, instance maclawAppApprovalInstance) string {
 	out := a.executeMISDataTool(map[string]interface{}{
 		"action":               "list_record_approvals",
@@ -1888,6 +2018,18 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 		if workflowSkillIDs := maclawAppWorkflowSkillIDsForEntry(entry); len(workflowSkillIDs) > 0 {
 			metadata["workflow_skill_ids"] = workflowSkillIDs
 		}
+		if workflowContract := maclawAppWorkflowContractForEntry(entry); workflowContract != nil {
+			metadata["workflow_contract"] = workflowContract
+			if schema := maclawAppStringValue(workflowContract, "schema"); schema != "" {
+				metadata["workflow_contract_schema"] = schema
+			}
+			if workflowSkillID := maclawAppStringValue(workflowContract, "workflowSkillId", "workflow_skill_id"); workflowSkillID != "" {
+				metadata["workflow_contract_skill_id"] = workflowSkillID
+			}
+			if objectRole := maclawAppStringValue(workflowContract, "objectRole", "object_role"); objectRole != "" {
+				metadata["workflow_contract_object_role"] = objectRole
+			}
+		}
 		if workflowMapping := maclawAppWorkflowMappingForEntry(entry); workflowMapping != nil {
 			metadata["workflow_mapping"] = workflowMapping
 			metadata["workflow_mapping_schema"] = maclawAppStringValue(workflowMapping, "schema")
@@ -2025,15 +2167,30 @@ func maclawAppGovernanceMetadataForEntry(entry parsedMaclawAppEntry) map[string]
 		return nil
 	}
 	return compactPayload(map[string]interface{}{
-		"status":           maclawAppStringValue(governance, "status"),
-		"risk_level":       maclawAppStringValue(governance, "riskLevel", "risk_level"),
-		"required_scopes":  governance["requiredScopes"],
-		"dependencies":     governance["dependencies"],
-		"workspace_layout": governance["workspaceLayout"],
-		"result_contract":  firstNonEmptyMaclawAppAny(governance["resultContract"], governance["result_contract"]),
-		"test_evidence":    governance["testEvidence"],
-		"submission":       governance["submission"],
+		"status":            maclawAppStringValue(governance, "status"),
+		"risk_level":        maclawAppStringValue(governance, "riskLevel", "risk_level"),
+		"required_scopes":   governance["requiredScopes"],
+		"dependencies":      governance["dependencies"],
+		"workspace_layout":  governance["workspaceLayout"],
+		"result_contract":   firstNonEmptyMaclawAppAny(governance["resultContract"], governance["result_contract"]),
+		"workflow_contract": firstNonEmptyMaclawAppAny(governance["workflowContract"], governance["workflow_contract"]),
+		"test_evidence":     governance["testEvidence"],
+		"submission":        governance["submission"],
 	})
+}
+
+func maclawAppWorkflowContractForEntry(entry parsedMaclawAppEntry) map[string]any {
+	if governance := anyMap(entry.App["governance"]); governance != nil {
+		if contract := anyMap(firstNonEmptyMaclawAppAny(governance["workflowContract"], governance["workflow_contract"])); contract != nil {
+			return contract
+		}
+	}
+	if binding := anyMap(entry.App["binding"]); binding != nil {
+		if contract := anyMap(firstNonEmptyMaclawAppAny(binding["workflowContract"], binding["workflow_contract"])); contract != nil {
+			return contract
+		}
+	}
+	return nil
 }
 func maclawAppDataSrvRoleBindingsForEntry(entry parsedMaclawAppEntry) []map[string]interface{} {
 	datasrv := maclawAppDataSrvBlockForEntry(entry)
@@ -2711,8 +2868,100 @@ func maclawAppGovernanceReviewIssuesFromPackage(pkg map[string]any) []maclawAppR
 		if normalizeMaclawAppKind(entry.Kind) == "enterprise_approval_app" && maclawAppWorkflowMappingForEntry(entry) == nil {
 			issues = append(issues, maclawAppReviewIssue{Path: path + ".binding.workflow", Severity: "error", Message: "missing workflow node mapping", Suggestion: "save the approval workflow node mapping in App Studio before submitting to the capability market"})
 		}
+		if issue := maclawAppWorkflowContractReviewIssue(entry, governance, path); issue != nil {
+			issues = append(issues, *issue)
+		}
 	}
 	return normalizeMaclawAppReviewIssues(issues)
+}
+
+func maclawAppWorkflowContractReviewIssue(entry parsedMaclawAppEntry, governance map[string]any, appPath string) *maclawAppReviewIssue {
+	if normalizeMaclawAppKind(entry.Kind) != "enterprise_approval_app" {
+		return nil
+	}
+	contract := anyMap(firstNonEmptyMaclawAppAny(governance["workflowContract"], governance["workflow_contract"]))
+	if contract == nil {
+		if binding := anyMap(entry.App["binding"]); binding != nil {
+			contract = anyMap(firstNonEmptyMaclawAppAny(binding["workflowContract"], binding["workflow_contract"]))
+		}
+	}
+	if contract == nil {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.workflowContract", Severity: "error", Message: "missing approval workflow contract", Suggestion: "declare the workflow skill input, decision output, and status mapping contract before submitting"}
+	}
+	if strings.TrimSpace(maclawAppStringValue(contract, "schema")) != "maclaw.app.workflow_contract.v1" {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.workflowContract", Severity: "error", Message: "invalid approval workflow contract schema", Suggestion: "set workflowContract.schema to maclaw.app.workflow_contract.v1"}
+	}
+	workflowSkillID := strings.TrimSpace(maclawAppStringValue(contract, "workflowSkillId", "workflow_skill_id", "workflowId", "workflow_id"))
+	if workflowSkillID == "" || !maclawAppWorkflowContractMatchesWorkflowSkill(entry, workflowSkillID) {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.workflowContract.workflowSkillId", Severity: "error", Message: "approval workflow contract does not match approval binding", Suggestion: "use a workflowSkillId declared by approvalBindings or workflow_skill dependencies"}
+	}
+	objectRole := strings.TrimSpace(maclawAppStringValue(contract, "objectRole", "object_role", "businessObjectRole", "business_object_role"))
+	if objectRole == "" || !maclawAppWorkflowContractMatchesObjectRole(entry, objectRole) {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.workflowContract.objectRole", Severity: "error", Message: "approval workflow contract object role does not match app binding", Suggestion: "align workflowContract.objectRole with approvalBindings.objectRole or binding.datasrv.objectRole"}
+	}
+	for _, required := range []string{"record_ref", "applicant", "business_payload"} {
+		if !maclawAppStringListContains(maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(contract["requiredInputs"], contract["required_inputs"])), required) {
+			return &maclawAppReviewIssue{Path: appPath + ".governance.workflowContract.requiredInputs", Severity: "error", Message: "approval workflow contract is missing required input: " + required, Suggestion: "include record_ref, applicant, and business_payload in workflowContract.requiredInputs"}
+		}
+	}
+	for _, required := range []string{"approved", "rejected", "attention"} {
+		if !maclawAppStringListContains(maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(contract["decisionOutputs"], contract["decision_outputs"])), required) {
+			return &maclawAppReviewIssue{Path: appPath + ".governance.workflowContract.decisionOutputs", Severity: "error", Message: "approval workflow contract is missing decision output: " + required, Suggestion: "include approved, rejected, and attention in workflowContract.decisionOutputs"}
+		}
+	}
+	statusMapping := anyMap(firstNonEmptyMaclawAppAny(contract["statusMapping"], contract["status_mapping"]))
+	for _, required := range []string{"pending", "approved", "rejected", "attention"} {
+		if strings.TrimSpace(maclawAppStringValue(statusMapping, required)) == "" {
+			return &maclawAppReviewIssue{Path: appPath + ".governance.workflowContract.statusMapping", Severity: "error", Message: "approval workflow contract is missing status mapping: " + required, Suggestion: "map pending, approved, rejected, and attention workflow states to app statuses"}
+		}
+	}
+	return nil
+}
+
+func maclawAppWorkflowContractMatchesWorkflowSkill(entry parsedMaclawAppEntry, workflowSkillID string) bool {
+	needle := strings.ToLower(strings.TrimSpace(workflowSkillID))
+	if needle == "" {
+		return false
+	}
+	for _, id := range maclawAppWorkflowSkillIDsForEntry(entry) {
+		if strings.ToLower(strings.TrimSpace(id)) == needle {
+			return true
+		}
+	}
+	for _, dep := range maclawAppDependenciesForEntry(entry) {
+		if strings.TrimSpace(dep.Kind) == "workflow_skill" && strings.ToLower(strings.TrimSpace(dep.ID)) == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func maclawAppWorkflowContractMatchesObjectRole(entry parsedMaclawAppEntry, objectRole string) bool {
+	needle := strings.ToLower(strings.TrimSpace(objectRole))
+	if needle == "" {
+		return false
+	}
+	for _, binding := range maclawAppApprovalBindingMapsForEntry(entry) {
+		if strings.ToLower(strings.TrimSpace(firstNonEmptyMaclawAppString(maclawAppStringValue(binding, "objectRole", "object_role"), maclawAppStringValue(binding, "businessObjectRole", "business_object_role"), maclawAppStringValue(binding, "role")))) == needle {
+			return true
+		}
+	}
+	if datasrv := maclawAppDataSrvBlockForEntry(entry); datasrv != nil {
+		if strings.ToLower(strings.TrimSpace(firstNonEmptyMaclawAppString(maclawAppStringValue(datasrv, "objectRole", "object_role"), maclawAppStringValue(datasrv, "businessObjectRole", "business_object_role"), maclawAppStringValue(datasrv, "domain")))) == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func maclawAppStringListContains(values []string, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	for _, value := range values {
+		if strings.ToLower(strings.TrimSpace(value)) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func maclawAppHasPublishableResultContract(governance map[string]any) bool {

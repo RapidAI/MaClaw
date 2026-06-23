@@ -504,9 +504,14 @@ func parseWorkflowStoreTimeString(value string) (time.Time, error) {
 	if value == "" {
 		return time.Time{}, nil
 	}
+	if monotonic := strings.Index(value, " m="); monotonic >= 0 {
+		value = strings.TrimSpace(value[:monotonic])
+	}
 	layouts := []string{
 		time.RFC3339Nano,
 		time.RFC3339,
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05 -0700 MST",
 		"2006-01-02 15:04:05.999999999-07:00",
 		"2006-01-02 15:04:05.999999999Z07:00",
 		"2006-01-02 15:04:05.999999999",

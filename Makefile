@@ -1,7 +1,13 @@
-.PHONY: check-corelib-deps build-corelib-headless build-tui build-gui build-tool build-all test clean
+.PHONY: check-corelib-deps build-corelib-headless build-tui build-gui build-tool build-all test clean check-bindings
 
 # 输出目录
 BIN_DIR := bin
+
+# Wails 绑定同步检查：Go App 导出方法必须在 JS/TS 绑定文件中有对应声明
+check-bindings:
+	@echo "Checking Wails binding sync..."
+	go run scripts/check_wails_bindings.go
+	@echo "OK: bindings in sync"
 
 # 依赖隔离检查：corelib 不得引用 wails/systray
 check-corelib-deps:
@@ -37,7 +43,7 @@ build-tool:
 	@echo "OK: $(BIN_DIR)/maclaw-tool"
 
 # 全量编译
-build-all: check-corelib-deps build-corelib-headless build-tui build-gui build-tool
+build-all: check-corelib-deps check-bindings build-corelib-headless build-tui build-gui build-tool
 	@echo "All builds passed."
 
 # 运行测试

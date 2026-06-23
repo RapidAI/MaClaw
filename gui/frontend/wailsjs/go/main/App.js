@@ -1318,6 +1318,18 @@ export function SelectAIAssistantFiles() {
   return window['go']['main']['App']['SelectAIAssistantFiles']();
 }
 
+export function ParseResumeForWorkflowForm(arg1, arg2) {
+  return window['go']['main']['App']['ParseResumeForWorkflowForm'](arg1, arg2);
+}
+
+export function UploadSupplementaryDocs(arg1) {
+  return window['go']['main']['App']['UploadSupplementaryDocs'](arg1);
+}
+
+export function RemoveSupplementaryDoc(arg1) {
+  return window['go']['main']['App']['RemoveSupplementaryDoc'](arg1);
+}
+
 export function StartAIAssistantBackgroundTask(arg1) {
   return window['go']['main']['App']['StartAIAssistantBackgroundTask'](arg1);
 }

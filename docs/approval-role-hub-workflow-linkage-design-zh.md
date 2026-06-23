@@ -103,7 +103,7 @@
 
 ### 职能视图
 
-职能视图用于配置跨部门审批角色：
+职能视图用于配置跨部门审批角色。Hub 预置财务、采购、法务、IT、HR、行政、销售、运营、客户成功、安全、风控合规、数据等常见职能；租户管理员可以按公司实际情况自由新增或删除职能，删除职能时同步移除该职能下的审批角色，工作流设计器只引用保存后的角色结果。
 
 ```text
 职能视图
@@ -161,7 +161,7 @@ PUT /api/admin/security/approval-roles
 GET /api/v1/workflow-directory/approvers
 ```
 
-管理端接口使用租户管理员权限，保存到租户级 system settings：`approval_roles_v1`。工作流目录接口在原有组织树、成员、机器、数字员工基础上增加 `approval_roles` 字段，供审批节点选择器按组织视图和职能视图展示。
+管理端接口使用租户管理员权限，保存到租户级 system settings：`approval_roles_v1`。工作流目录接口在原有组织树、成员、机器、数字员工基础上增加 `approval_roles` 和 `function_scopes` 字段，供审批节点选择器按组织视图和职能视图展示；当某个职能已存在但尚未配置审批角色时，设计器在职能视图中显示为不可选提示行，避免配置人误判为职能不存在。
 
 推荐响应结构：
 
@@ -469,7 +469,7 @@ Hub 查询：销售部 / 合同审批员
 ### 工作流设计器侧
 
 - 已选角色不存在：显示“该审批角色已被删除或停用”，要求重新选择。
-- 已选范围下角色无成员：显示“该范围下尚未配置可用审批主体”，提供跳转 Hub 的入口。
+- 已选范围下角色无成员：显示“该范围下尚未配置可用审批主体”，提供跳转 Hub 的入口。`function_scopes` 中存在但无审批角色的职能在选择器中显示为“未配置审批角色”的不可选行。
 - 角色包含数字员工：显示执行方式，避免配置人误以为只有人工审批。
 - 指定成员为数字分身：显示“代表：张三”。
 
@@ -528,7 +528,7 @@ Hub 是组织、数字员工、审批角色的治理中心；工作流设计器�
 
 - Hub `审批角色` Tab。
 - 组织视图：部门、物理员工、部门数字员工、个人数字分身。
-- 职能视图：财务、采购、法务、IT 等职能目录。
+- 职能视图：预置财务、采购、法务、IT、HR、行政、销售、运营、客户成功、安全、风控合规、数据等常见职能，并允许租户自由新增/删除职能。
 - 审批角色绑定物理员工、部门数字员工、个人数字分身。
 - 工作流设计器审批人选择器支持“按组织选择 / 按职能选择 / 指定成员”。
 - 工作流保存角色引用。
@@ -562,8 +562,34 @@ Hub 配置审批角色
 本轮实现后，联动链路需要按以下闭环验收：
 
 - Hub `审批角色` 保存租户级角色配置，角色 ID 使用 `role:{scopeType}:{scopeId}:{roleCode}`，工作流设计器只保存该稳定引用。
-- 工作流目录接口返回 `approval_roles`，审批节点选择器优先使用 Hub 配置；接口不可用时只允许使用本地缓存/默认角色作为兜底展示。
+- 工作流目录接口返回 `approval_roles` 和 `function_scopes`，审批节点选择器优先使用 Hub 配置；接口不可用时只允许使用本地缓存/默认角色作为兜底展示。
 - 组织视图中，部门数字员工按 `visible_group_ids` 归入部门；个人数字分身按 `owner_email` 归入对应物理员工；未配置部门归属的部门数字员工只在根节点兜底展示。
 - 运行时进入审批节点时，将 `role:*` 引用解析为具体审批机器，并把解析后的 `approver_ids` 与原始 `original_approvers` 写入节点执行结果，供待办过滤和审计排查使用。
 - `我的待审批` 以运行时解析后的 `approver_ids` 过滤，历史运行中没有该元数据的审批节点继续按旧逻辑展示，避免旧数据突然消失。
 - 提交审批决定的 HTTP API 必须复用同一套角色解析逻辑后再授权，否则会出现“待办可见，但同意/拒绝被 403 拦截”的断链。
+
+## 当前落地验收矩阵
+
+| 链路 | 落地要求 | 代码/测试锚点 |
+| --- | --- | --- |
+| Hub 独立入口 | `审批角色` 必须是 Hub 左侧独立 Tab，不嵌在组织机构子页里。 | `hub/web/admin/index.html`、`hub/web/admin/admin.js`、`hub/web/admin/validate-admin-modules.js` |
+| Hub 角色配置 | 支持组织视图和职能视图；组织视图复用企业组织树；职能视图覆盖财务、采购、法务、IT 等跨部门角色。 | `hub/web/admin/security-tab.js`、`hub/web/admin/security-tab.test.js` |
+| 审批主体选择 | 可从同一范围内选择物理员工、部门数字员工、个人数字分身；个人数字分身按 `owner_email` 归入物理员工，部门数字员工按 `visible_group_ids` 归入部门。 | `security-tab.test.js` 中 `subject picker writes scoped organization assignees before save` |
+| 保存模型 | Hub 保存租户级 `approval_roles_v1`，角色 ID 为 `role:{scopeType}:{scopeId}:{roleCode}`，并规范化/去重非法输入。 | `approval_roles_handler.go`、`approval_roles_handler_test.go` |
+| 设计器目录 | `/api/v1/workflow-directory/approvers` 返回组织树、部门成员、用户、机器、数字员工和 `approval_roles`。 | `workflow_directory_handler.go`、`workflow_directory_handler_test.go` |
+| 设计器选择器 | 审批节点选择审批人时提供组织视图、职能视图和直接成员视图；组织/职能视图能显示 Hub 审批角色及已配置主体摘要；职能已存在但未配置角色时显示不可选提示。 | `workflow-editor.js`、`workflow-editor.test.js` |
+| 运行时解析 | 工作流保存稳定 `role:*` 引用；进入审批节点或提交审批决定时解析为具体机器/审批主体。 | `workflow_approval_role_resolver.go`、`workflow_approval_role_resolver_test.go`、`api_decision_test.go` |
+| 授权闭环 | 提交审批决定前必须解析角色后再校验调用者；解析为空或解析失败时不允许误放行。 | `TestDecisionAPI_UnresolvedApprovalRoleIsForbidden`、`TestDecisionAPI_ApprovalRoleResolveErrorFailsClosed` |
+
+验收原则：Hub 是审批角色事实源；工作流设计器只引用稳定角色或直接主体；运行时负责把角色展开为具体审批人。首版不引入复杂路由规则，由流程设置人直接选择组织/职能范围和角色，保证配置入口清晰、可解释、可审计。
+
+### 后端兜底校验补充
+
+前端设计器在保存和提交前已校验审批节点必须选择至少一个审批人或审批角色；后端 `ValidateGraphStructure` 与 `/api/v1/workflows/{id}/versions/{vid}/validate` 也需要执行同一条规则。这样即使通过 API 或旧页面绕过前端，空审批节点也不能进入待审核/发布链路。
+
+当前落地锚点：
+
+- `ErrApprovalApproverRequired`：审批节点缺少 `approver_ids` 时返回可识别的图校验错误。
+- `ValidateGraphStructure`：提交审核前拒绝空审批节点，HTTP 层返回 `400 VALIDATION_FAILED`。
+- `ValidateWorkflowGraphDetailed`：设计器校验接口返回节点级错误，便于界面定位到具体审批节点。
+- 测试覆盖：`TestValidateGraphStructure_RejectsApprovalWithoutApprover`、`TestValidateWorkflowGraphDetailed_ApprovalWithoutApprover`、`TestSubmitForReview_RejectsApprovalWithoutApprover`。

@@ -109,6 +109,7 @@ func (s *Service) ListRecordApprovals(ctx context.Context, p Principal, in Query
 	}
 	in.Kind = strings.TrimSpace(in.Kind)
 	in.WorkflowSkillID = strings.TrimSpace(in.WorkflowSkillID)
+	in.WorkflowVersion = strings.TrimSpace(in.WorkflowVersion)
 	in.WorkflowInstanceID = strings.TrimSpace(in.WorkflowInstanceID)
 	in.WorkflowNodeID = strings.TrimSpace(in.WorkflowNodeID)
 	in.BusinessStatus = strings.TrimSpace(in.BusinessStatus)
@@ -198,7 +199,7 @@ func (s *Service) ReviewRecordApproval(ctx context.Context, p Principal, approva
 	default:
 		return nil, fmt.Errorf("%w: decision must be approve or reject", ErrInvalidInput)
 	}
-	out, err := s.store.UpdateRecordApprovalStatus(ctx, p.TenantID, approvalID, status, decision, strings.TrimSpace(in.Reason), p.UserID, in.WorkflowNodeID, in.WorkflowDecisionID, in.BusinessStatus, in.ResultStatus, in.ResultPayload, in.Outputs, in.Artifacts, s.now().UTC())
+	out, err := s.store.UpdateRecordApprovalStatus(ctx, p.TenantID, approvalID, status, decision, strings.TrimSpace(in.Reason), p.UserID, in.WorkflowNodeID, in.WorkflowVersion, in.WorkflowDecisionID, in.BusinessStatus, in.ResultStatus, in.ResultPayload, in.Outputs, in.Artifacts, s.now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -252,6 +253,7 @@ func (s *Service) syncBusinessRecordFromApproval(ctx context.Context, p Principa
 	setString("approval_id", approval.ID)
 	setString("approval_workflow_instance_id", approval.WorkflowInstanceID)
 	setString("approval_workflow_skill_id", approval.WorkflowSkillID)
+	setString("approval_workflow_version", approval.WorkflowVersion)
 	setString("approval_workflow_node_id", approval.WorkflowNodeID)
 	setString("approval_current_node", approval.WorkflowNodeID)
 	setString("approval_current_assignee", approval.AssignedTo)

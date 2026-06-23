@@ -17,21 +17,23 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestFrequencyAnomaly_MemorySaveLoop_Detected(t *testing.T) {
-	// Reproduces the exact bug: LLM calls memory(save) 4 times with
-	// different content (different ArgsHash) in a window of 5 calls.
-	// Layer 1 doesn't fire (different ArgsHash). Layer 2 should fire
-	// because memory dominates the window (4/5 = 80% > 75%) AND
-	// results are not progressing (all return the same "已保存" status).
+	// Reproduces the original bug: LLM calls memory(save) 4 times in a
+	// semantic loop. In real loops, the LLM often retries with similar
+	// content — some ArgsHash values repeat because the LLM rephrases
+	// the same knowledge slightly. Layer 2 fires because:
+	// 1. memory dominates window (4/5 = 80% > 75%)
+	// 2. ArgsHash are NOT all unique (has a repeated hash)
+	// 3. Results are identical ("已保存")
 	d := NewDriftDetector(8, 0.8)
 
-	// One non-memory call at the start (e.g., ssh exec that completed the task)
+	// One non-memory call at the start
 	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "ssh_hash_1", ResultHint: "OmniRoute 降级成功"})
 
-	// Four memory(save) calls with different content but same result format
+	// Four memory(save) calls — note mem_hash_2 is repeated (LLM rephrased same content)
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "mem_hash_1", ResultHint: "已保存"})
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "mem_hash_2", ResultHint: "已保存"})
+	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "mem_hash_2", ResultHint: "已保存"})
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "mem_hash_3", ResultHint: "已保存"})
-	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "mem_hash_4", ResultHint: "已保存"})
 
 	result := d.DetectDrift()
 	if !result.Drifted {
@@ -107,7 +109,7 @@ func TestFrequencyAnomaly_BelowThreshold_NotDetected(t *testing.T) {
 
 func TestFrequencyAnomaly_ExactThreshold_Detected(t *testing.T) {
 	// memory called 6 times in a window of 8 — 75%, at the threshold.
-	// Results are identical → not progressing → DRIFT.
+	// Results are identical AND args have a repeat → DRIFT.
 	d := NewDriftDetector(8, 0.8)
 
 	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "h1", ResultHint: "ok"})
@@ -115,13 +117,13 @@ func TestFrequencyAnomaly_ExactThreshold_Detected(t *testing.T) {
 	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "h2", ResultHint: "ok"})
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m2", ResultHint: "已保存"})
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m3", ResultHint: "已保存"})
+	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m1", ResultHint: "已保存"}) // repeated
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m4", ResultHint: "已保存"})
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m5", ResultHint: "已保存"})
-	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m6", ResultHint: "已保存"})
 
 	result := d.DetectDrift()
 	if !result.Drifted {
-		t.Fatal("memory at 75% of window should trigger frequency anomaly")
+		t.Fatal("memory at 75% of window with repeated args should trigger frequency anomaly")
 	}
 	if result.Pattern != "frequency" {
 		t.Errorf("expected pattern='frequency', got %q", result.Pattern)
@@ -150,14 +152,14 @@ func TestFrequencyAnomaly_Layer1TakesPrecedence(t *testing.T) {
 
 func TestFrequencyAnomaly_PreviewDrift_DetectsFrequency(t *testing.T) {
 	// PreviewDrift should also detect Layer 2 anomalies when results
-	// are not progressing.
+	// are not progressing and args have repeats.
 	d := NewDriftDetector(8, 0.8)
 
 	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "ssh_1", ResultHint: "done"})
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m1", ResultHint: "已保存"})
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m2", ResultHint: "已保存"})
+	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m1", ResultHint: "已保存"}) // repeated
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m3", ResultHint: "已保存"})
-	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m4", ResultHint: "已保存"})
 
 	result := d.PreviewDrift()
 	if !result.Drifted {
@@ -215,12 +217,12 @@ func TestFrequencyAnomaly_SecondDrift_NeedHumanHelp(t *testing.T) {
 	// the same pattern, the second drift should set NeedHumanHelp=true.
 	d := NewDriftDetector(8, 0.8)
 
-	// First drift — results identical (not progressing)
+	// First drift — results identical, args have repeats
 	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "s1", ResultHint: "done"})
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m1", ResultHint: "已保存"})
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m2", ResultHint: "已保存"})
+	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m1", ResultHint: "已保存"}) // repeated
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m3", ResultHint: "已保存"})
-	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m4", ResultHint: "已保存"})
 
 	result1 := d.DetectDrift()
 	if !result1.Drifted {
@@ -232,11 +234,11 @@ func TestFrequencyAnomaly_SecondDrift_NeedHumanHelp(t *testing.T) {
 
 	d.ResetWindow()
 
-	// Second drift (LLM ignored the warning) — still identical results
+	// Second drift (LLM ignored the warning) — still identical results with repeats
+	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m4", ResultHint: "已保存"})
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m5", ResultHint: "已保存"})
+	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m4", ResultHint: "已保存"}) // repeated
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m6", ResultHint: "已保存"})
-	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m7", ResultHint: "已保存"})
-	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m8", ResultHint: "已保存"})
 
 	result2 := d.DetectDrift()
 	if !result2.Drifted {
@@ -283,15 +285,15 @@ func TestIsPollingPattern_SingleCall_True(t *testing.T) {
 }
 
 func TestFrequencyAnomaly_SlowPollWithDifferentArgs_Detected(t *testing.T) {
-	// Even with time gaps between calls, if the args are different AND
-	// results are not progressing, it's a semantic loop.
+	// Even with time gaps between calls, if args have repeats AND results
+	// are not progressing, it's a semantic loop.
 	d := NewDriftDetector(8, 0.8)
 
 	now := time.Now()
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m1", Timestamp: now, ResultHint: "已保存"})
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m2", Timestamp: now.Add(10 * time.Second), ResultHint: "已保存"})
-	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m3", Timestamp: now.Add(20 * time.Second), ResultHint: "已保存"})
-	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m4", Timestamp: now.Add(30 * time.Second), ResultHint: "已保存"})
+	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m1", Timestamp: now.Add(20 * time.Second), ResultHint: "已保存"}) // repeated
+	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m3", Timestamp: now.Add(30 * time.Second), ResultHint: "已保存"})
 
 	result := d.DetectDrift()
 	if !result.Drifted {
@@ -372,19 +374,20 @@ func TestFrequencyAnomaly_MemorySaveLoop_DifferentHash_NotDetected(t *testing.T)
 }
 
 func TestFrequencyAnomaly_MemorySaveLoop_IdenticalResults_Detected(t *testing.T) {
-	// memory(save) called 4 times, all returning identical "已保存".
-	// Results are NOT progressing → semantic loop → DRIFT.
+	// memory(save) called 4 times, results identical "已保存", AND has
+	// repeated ArgsHash (LLM retrying similar content).
+	// Results NOT progressing + args NOT all unique → DRIFT.
 	d := NewDriftDetector(8, 0.8)
 
 	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "s1", ResultHint: "OmniRoute 降级成功"})
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m1", ResultHint: "已保存"})
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m2", ResultHint: "已保存"})
+	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m1", ResultHint: "已保存"}) // repeated
 	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m3", ResultHint: "已保存"})
-	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "m4", ResultHint: "已保存"})
 
 	result := d.DetectDrift()
 	if !result.Drifted {
-		t.Fatal("memory(save) with identical results should trigger frequency anomaly")
+		t.Fatal("memory(save) with repeated ArgsHash and identical results should trigger frequency anomaly")
 	}
 	if result.Pattern != "frequency" {
 		t.Errorf("expected pattern='frequency', got %q", result.Pattern)
@@ -550,5 +553,145 @@ func TestFrequencyAnomaly_BashScaffolding_DifferentHash_NotDetected(t *testing.T
 	result := d.DetectDrift()
 	if result.Drifted {
 		t.Fatal("bash with different ResultHash should NOT trigger drift")
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// Tests for argument-diversity signal (freqArgsAllUnique + isGeneralPurposeExecutor).
+//
+// The mechanism: when a general-purpose executor (bash/ssh) has ALL unique
+// ArgsHash values, the LLM is executing different commands on different targets.
+// This is a batch operation, not a semantic loop — even if results are identical
+// (e.g., successful delete returns empty output).
+// ---------------------------------------------------------------------------
+
+func TestFrequencyAnomaly_BashBatchCleanup_AllUniqueArgs_NotDetected(t *testing.T) {
+	// Reproduces the screensaver cleanup bug: LLM calls bash 6 times with
+	// completely different commands (different registry keys, different files),
+	// all succeeding with empty output "(命令执行完成，无输出)".
+	// Layer 2 should NOT fire because all ArgsHash are unique and majority
+	// of calls succeeded.
+	d := NewDriftDetector(8, 0.8)
+
+	emptyResult := "(命令执行完成，无输出)"
+	emptyHash := "empty_result_hash"
+
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "del_screensaver_exe", ResultHash: emptyHash, ResultHint: emptyResult, Succeeded: true})
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "del_reg_key_1", ResultHash: emptyHash, ResultHint: emptyResult, Succeeded: true})
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "del_reg_key_2", ResultHash: emptyHash, ResultHint: emptyResult, Succeeded: true})
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "stop_service", ResultHash: emptyHash, ResultHint: emptyResult, Succeeded: true})
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "del_startup_entry", ResultHash: emptyHash, ResultHint: emptyResult, Succeeded: true})
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "del_scheduled_task", ResultHash: emptyHash, ResultHint: emptyResult, Succeeded: true})
+
+	result := d.DetectDrift()
+	if result.Drifted {
+		t.Fatalf("bash batch cleanup with all-unique args should NOT trigger drift, got pattern=%q", result.Pattern)
+	}
+}
+
+func TestFrequencyAnomaly_BashBatchCleanup_WithFailures_NotDetected(t *testing.T) {
+	// Same as above but some commands fail (e.g., path not found).
+	// Still should not trigger — different commands on different targets,
+	// majority succeeded (4/6 = 67% > 50%).
+	d := NewDriftDetector(8, 0.8)
+
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "scan_registry", ResultHash: "rh1", ResultHint: "found 3 suspicious keys", Succeeded: true})
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "del_key_hkcu_1", ResultHash: "rh_empty", ResultHint: "(命令执行完成，无输出)", Succeeded: true})
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "del_key_hklm_1", ResultHash: "rh_fail", ResultHint: "[错误] 退出码: exit status 1", Succeeded: false})
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "del_file_c_prog", ResultHash: "rh_empty", ResultHint: "(命令执行完成，无输出)", Succeeded: true})
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "disable_service", ResultHash: "rh_fail", ResultHint: "[错误] 退出码: exit status 1", Succeeded: false})
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "restore_default", ResultHash: "rh_empty", ResultHint: "(命令执行完成，无输出)", Succeeded: true})
+
+	result := d.DetectDrift()
+	if result.Drifted {
+		t.Fatalf("bash batch with unique args and mixed success/failure should NOT trigger, got pattern=%q", result.Pattern)
+	}
+}
+
+func TestFrequencyAnomaly_MemorySave_AllUniqueArgs_NotDetected(t *testing.T) {
+	// memory(save) with all-unique ArgsHash and same results.
+	// Under the argument-diversity mechanism, ALL-unique args = batch operation
+	// signal, regardless of tool name. This is the accepted trade-off:
+	// memory(save) 4x with genuinely different content is indistinguishable
+	// from a batch operation at the frequency detector level. The memory loop
+	// scenario is handled by max iterations (P2), while bash batch cleanup
+	// being killed is P0.
+	d := NewDriftDetector(8, 0.8)
+
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "s1", ResultHash: "rs1", ResultHint: "done", Succeeded: true})
+	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "unique_m1", ResultHash: "same_hash", ResultHint: "已保存", Succeeded: true})
+	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "unique_m2", ResultHash: "same_hash", ResultHint: "已保存", Succeeded: true})
+	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "unique_m3", ResultHash: "same_hash", ResultHint: "已保存", Succeeded: true})
+	d.Record(ToolCallRecord{ToolName: "memory", ArgsHash: "unique_m4", ResultHash: "same_hash", ResultHint: "已保存", Succeeded: true})
+
+	result := d.DetectDrift()
+	if result.Drifted {
+		t.Fatal("memory(save) with ALL-unique args should NOT trigger — argument diversity signals batch operation (P2 handled by max iterations)")
+	}
+}
+
+func TestFrequencyAnomaly_BashSameCommand_Retrying_StillDetected(t *testing.T) {
+	// bash called 4 times but with REPEATED ArgsHash (same command retried).
+	// freqArgsAllUnique returns false → no bypass → drift detected.
+	d := NewDriftDetector(8, 0.8)
+
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "install_cmd", ResultHash: "fail_hash", ResultHint: "[错误] 退出码: exit status 1", Succeeded: false})
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "install_cmd", ResultHash: "fail_hash", ResultHint: "[错误] 退出码: exit status 1", Succeeded: false})
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "install_cmd_v2", ResultHash: "fail_hash", ResultHint: "[错误] 退出码: exit status 1", Succeeded: false})
+	d.Record(ToolCallRecord{ToolName: "bash", ArgsHash: "install_cmd", ResultHash: "fail_hash", ResultHint: "[错误] 退出码: exit status 1", Succeeded: false})
+
+	result := d.DetectDrift()
+	if !result.Drifted {
+		t.Fatal("bash retrying same command (repeated ArgsHash) should still trigger drift")
+	}
+}
+
+func TestFreqArgsAllUnique_AllUnique_True(t *testing.T) {
+	window := []ToolCallRecord{
+		{ToolName: "bash", ArgsHash: "h1", Succeeded: true},
+		{ToolName: "other", ArgsHash: "x", Succeeded: true},
+		{ToolName: "bash", ArgsHash: "h2", Succeeded: true},
+		{ToolName: "bash", ArgsHash: "h3", Succeeded: true},
+		{ToolName: "bash", ArgsHash: "h4", Succeeded: true},
+	}
+	if !freqArgsAllUnique(window, "bash") {
+		t.Fatal("all unique ArgsHash should return true")
+	}
+}
+
+func TestFreqArgsAllUnique_HasDuplicate_False(t *testing.T) {
+	window := []ToolCallRecord{
+		{ToolName: "bash", ArgsHash: "h1", Succeeded: true},
+		{ToolName: "bash", ArgsHash: "h2", Succeeded: true},
+		{ToolName: "bash", ArgsHash: "h1", Succeeded: true}, // duplicate
+		{ToolName: "bash", ArgsHash: "h3", Succeeded: true},
+	}
+	if freqArgsAllUnique(window, "bash") {
+		t.Fatal("duplicate ArgsHash should return false")
+	}
+}
+
+func TestFreqArgsAllUnique_SingleCall_False(t *testing.T) {
+	window := []ToolCallRecord{
+		{ToolName: "bash", ArgsHash: "h1", Succeeded: true},
+		{ToolName: "other", ArgsHash: "x", Succeeded: true},
+	}
+	if freqArgsAllUnique(window, "bash") {
+		t.Fatal("single call should return false (need at least 2)")
+	}
+}
+
+func TestFreqArgsAllUnique_FailureMajority_False(t *testing.T) {
+	// When majority of calls fail, argument diversity does NOT indicate
+	// progress — the LLM is trying different approaches that all fail.
+	window := []ToolCallRecord{
+		{ToolName: "bash", ArgsHash: "h1", Succeeded: false},
+		{ToolName: "bash", ArgsHash: "h2", Succeeded: false},
+		{ToolName: "bash", ArgsHash: "h3", Succeeded: false},
+		{ToolName: "bash", ArgsHash: "h4", Succeeded: true},
+	}
+	if freqArgsAllUnique(window, "bash") {
+		t.Fatal("majority failed calls should return false (not a successful batch)")
 	}
 }

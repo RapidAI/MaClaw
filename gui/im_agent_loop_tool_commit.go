@@ -88,7 +88,7 @@ func (h *IMMessageHandler) commitAgentLoopToolResult(opts agentLoopToolCommitOpt
 	// on the LAST tool_call of the group. Deferred drift will be re-detected
 	// when the last tool_call is committed.
 	isLastInGroup := opts.ParallelGroupTotal <= 1 || opts.ParallelGroupIndex >= opts.ParallelGroupTotal-1
-	conversation, resp := h.observeToolCommitDrift(opts.UserID, tc, opts.TruncatedResult, history, conversation, opts.Phase, opts.DriftDetector, opts.RecordSystemMessages, isLastInGroup)
+	conversation, resp := h.observeToolCommitDrift(opts.UserID, tc, opts.TruncatedResult, history, conversation, opts.Phase, opts.DriftDetector, opts.RecordSystemMessages, isLastInGroup, opts.Execution.Outcome == toolOutcomeSucceeded)
 	if resp != nil {
 		return agentLoopToolCommitResult{Conversation: conversation, History: history, Response: resp}
 	}
@@ -264,6 +264,7 @@ func (h *IMMessageHandler) observeToolCommitDrift(
 	detector *DriftDetector,
 	recordSystemMessages func(int, []interface{}),
 	isLastInGroup bool,
+	succeeded bool,
 ) ([]interface{}, *IMAgentResponse) {
 	if detector == nil {
 		return conversation, nil
@@ -277,6 +278,7 @@ func (h *IMMessageHandler) observeToolCommitDrift(
 		Timestamp:  time.Now(),
 		ResultHint: truncateRunesForDrift(truncated, 200),
 		ResultHash: resultHash,
+		Succeeded:  succeeded,
 	})
 
 	driftResult := detector.DetectDrift()

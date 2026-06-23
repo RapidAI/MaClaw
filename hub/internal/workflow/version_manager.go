@@ -15,17 +15,18 @@ import (
 
 // Sentinel errors for version management.
 var (
-	ErrInvalidStatusTransition = errors.New("invalid version status transition")
-	ErrVersionNotDraft         = errors.New("version is not in draft status")
-	ErrVersionNotPendingReview = errors.New("version is not in pending_review status")
-	ErrVersionNotPublished     = errors.New("version is not in published status")
-	ErrNotWorkflowOwner        = errors.New("user is not the workflow owner")
-	ErrNoNodes                 = errors.New("workflow graph has no nodes")
-	ErrDisconnectedNodes       = errors.New("workflow graph has disconnected nodes")
-	ErrTriggerHasIncoming      = errors.New("trigger node cannot have incoming edges")
-	ErrTerminalHasOutgoing     = errors.New("terminal node cannot have outgoing edges")
-	ErrConditionBranchInvalid  = errors.New("condition branch configuration is invalid")
-	ErrEmptyVersionNumber      = errors.New("version number is empty")
+	ErrInvalidStatusTransition  = errors.New("invalid version status transition")
+	ErrVersionNotDraft          = errors.New("version is not in draft status")
+	ErrVersionNotPendingReview  = errors.New("version is not in pending_review status")
+	ErrVersionNotPublished      = errors.New("version is not in published status")
+	ErrNotWorkflowOwner         = errors.New("user is not the workflow owner")
+	ErrNoNodes                  = errors.New("workflow graph has no nodes")
+	ErrDisconnectedNodes        = errors.New("workflow graph has disconnected nodes")
+	ErrTriggerHasIncoming       = errors.New("trigger node cannot have incoming edges")
+	ErrTerminalHasOutgoing      = errors.New("terminal node cannot have outgoing edges")
+	ErrConditionBranchInvalid   = errors.New("condition branch configuration is invalid")
+	ErrApprovalApproverRequired = errors.New("approval node requires at least one approver")
+	ErrEmptyVersionNumber       = errors.New("version number is empty")
 )
 
 // VersionManager orchestrates the version lifecycle for approval workflows.
@@ -392,6 +393,9 @@ func ValidateGraphStructure(graph WorkflowGraph) error {
 	if hasDisconnectedNodes(graph) {
 		return ErrDisconnectedNodes
 	}
+	if err := validateApprovalNodeConfigs(graph); err != nil {
+		return err
+	}
 	if err := validateConditionBranchConfigs(graph); err != nil {
 		return err
 	}
@@ -423,6 +427,38 @@ func terminalHasOutgoingEdge(graph WorkflowGraph) bool {
 	return false
 }
 
+func validateApprovalNodeConfigs(graph WorkflowGraph) error {
+	for _, node := range graph.Nodes {
+		if node.Type != NodeApproval {
+			continue
+		}
+		hasApprover, err := approvalNodeHasApprover(node)
+		if err != nil {
+			return fmt.Errorf("%w: parse node %s config: %v", ErrApprovalApproverRequired, node.ID, err)
+		}
+		if !hasApprover {
+			return fmt.Errorf("%w: node %s has no approvers", ErrApprovalApproverRequired, node.ID)
+		}
+	}
+	return nil
+}
+
+func approvalNodeHasApprover(node WorkflowNode) (bool, error) {
+	if len(node.Config) == 0 {
+		return false, nil
+	}
+	var config ApprovalNodeConfig
+	if err := json.Unmarshal(node.Config, &config); err != nil {
+		return false, err
+	}
+	for _, id := range config.ApproverIDs {
+		if strings.TrimSpace(id) != "" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func validateConditionBranchConfigs(graph WorkflowGraph) error {
 	nodeByID := make(map[string]WorkflowNode, len(graph.Nodes))
 	for _, node := range graph.Nodes {
@@ -446,7 +482,7 @@ func validateConditionBranchConfigs(graph WorkflowGraph) error {
 			if err := validateConditionBranchTarget(node, targetID, nodeByID); err != nil {
 				return err
 			}
-			if strings.TrimSpace(branch.Expression.Field) == "" || !isConditionBranchOperator(branch.Expression.Operator) {
+			if strings.TrimSpace(branch.Expression.Field) == "" || !isConditionBranchOperator(branch.Expression.Operator) || !conditionBranchExpressionHasRequiredValue(branch.Expression) {
 				return fmt.Errorf("%w: node %s has invalid branch expression", ErrConditionBranchInvalid, node.ID)
 			}
 		}
@@ -484,6 +520,35 @@ func isConditionBranchOperator(operator string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func conditionBranchExpressionHasRequiredValue(expr ConditionExpr) bool {
+	switch strings.TrimSpace(expr.Operator) {
+	case condeval.OpIsEmpty, condeval.OpIsNotEmpty:
+		return true
+	}
+	switch value := expr.Value.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(value) != ""
+	case []string:
+		for _, item := range value {
+			if strings.TrimSpace(item) != "" {
+				return true
+			}
+		}
+		return false
+	case []any:
+		for _, item := range value {
+			if item != nil && strings.TrimSpace(fmt.Sprint(item)) != "" {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
 	}
 }
 

@@ -185,6 +185,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/a2a/group-discussions", requireTenantAdmin(groupDiscussionHandler.handleAdminGroupDiscussions))
 	mux.HandleFunc("POST /api/ve/register", VERegisterHandler(system, identity, userLookup))
 	mux.HandleFunc("PUT /api/ve/settings", VESettingsHandler(system, identity, userLookup))
+	mux.HandleFunc("PUT /api/ve/settings/approval_capability", VEApprovalCapabilityHandler(system, identity))
 	mux.HandleFunc("GET /api/ve/status", VEStatusHandler(system, identity))
 	mux.HandleFunc("GET /api/ve/discoverable", VEDiscoverableHandler(system, identity, deviceSvc, veSecurityVisibilityResolver{securitySvc: securitySvc, users: userLookup}))
 	mux.HandleFunc("POST /api/ve/{id}/initiate", VEInitiateHandler(system, groupDiscussionSvc, identity, deviceSvc))

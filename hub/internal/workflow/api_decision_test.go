@@ -2,7 +2,9 @@ package workflow
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -53,6 +55,51 @@ func newDecisionTestServer(t *testing.T, approverID string) (*http.ServeMux, *re
 	return mux, instStore
 }
 
+type decisionTestApproverResolver struct {
+	values map[string][]string
+	err    error
+}
+
+func (r decisionTestApproverResolver) ResolveApproverIDs(ctx context.Context, approverIDs []string) ([]string, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	var out []string
+	for _, id := range approverIDs {
+		if resolved, ok := r.values[id]; ok {
+			out = append(out, resolved...)
+			continue
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+func newDecisionRoleTestServer(t *testing.T, cfg ApprovalNodeConfig, resolver ApprovalApproverResolver) (*http.ServeMux, *resumeTestMockInstanceStore) {
+	t.Helper()
+
+	graph := buildApprovalGraph(cfg)
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &resumeTestMockWorkflowStore{version: ver}
+	instStore := &resumeTestMockInstanceStore{
+		instance: &WorkflowInstance{
+			ID:            "inst-1",
+			VersionID:     "ver-1",
+			Status:        InstanceRunning,
+			CurrentNodeID: "approval-1",
+			InstanceData:  map[string]interface{}{"requester_id": "initiator-1"},
+		},
+	}
+	auditStore := &mockAuditStore{}
+	dispatcher := &resumeTestMockDispatcher{}
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher, WithApprovalApproverResolver(resolver))
+
+	decisionAPI := NewDecisionAPI(executor, instStore, wfStore)
+	mux := http.NewServeMux()
+	decisionAPI.RegisterRoutes(mux, passthroughOwnerAuth)
+	return mux, instStore
+}
+
 // TestDecisionAPI_AuthorizedApproverAdvancesInstance verifies that a configured
 // approver's decision routes into WorkflowExecutor.ResumeInstance and advances
 // the instance (Requirement 2.1 — the decision entry point).
@@ -92,31 +139,13 @@ func TestDecisionAPI_AuthorizedApproverAdvancesInstance(t *testing.T) {
 // the HTTP authorization boundary uses the same Hub approval-role resolution as
 // the executor runtime path.
 func TestDecisionAPI_ResolvedApprovalRoleApproverAdvancesInstance(t *testing.T) {
-	graph := buildApprovalGraph(ApprovalNodeConfig{
+	mux, instStore := newDecisionRoleTestServer(t, ApprovalNodeConfig{
 		ApproverIDs:  []string{"role:function:finance:finance_approver"},
 		Mode:         ModeSingle,
 		TimeoutHours: 24,
-	})
-	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
-	wfStore := &resumeTestMockWorkflowStore{version: ver}
-	instStore := &resumeTestMockInstanceStore{
-		instance: &WorkflowInstance{
-			ID:            "inst-1",
-			VersionID:     "ver-1",
-			Status:        InstanceRunning,
-			CurrentNodeID: "approval-1",
-			InstanceData:  map[string]interface{}{"requester_id": "initiator-1"},
-		},
-	}
-	auditStore := &mockAuditStore{}
-	dispatcher := &resumeTestMockDispatcher{}
-	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher, WithApprovalApproverResolver(mockApproverResolver{values: map[string][]string{
+	}, decisionTestApproverResolver{values: map[string][]string{
 		"role:function:finance:finance_approver": {"machine-finance-1"},
-	}}))
-
-	decisionAPI := NewDecisionAPI(executor, instStore, wfStore)
-	mux := http.NewServeMux()
-	decisionAPI.RegisterRoutes(mux, passthroughOwnerAuth)
+	}})
 
 	body, _ := json.Marshal(map[string]string{"decision": "approve"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/inst-1/nodes/approval-1/decision", bytes.NewReader(body))
@@ -131,6 +160,86 @@ func TestDecisionAPI_ResolvedApprovalRoleApproverAdvancesInstance(t *testing.T) 
 	}
 	if instStore.statusUpdate != InstanceCompleted {
 		t.Errorf("expected instance to advance to %q, got %q", InstanceCompleted, instStore.statusUpdate)
+	}
+}
+
+// TestDecisionAPI_MixedDirectAndResolvedRoleApprovers verifies that workflow
+// nodes can keep a direct approver and a Hub approval role in the same simple
+// list, matching the workflow designer's mixed picker output.
+func TestDecisionAPI_MixedDirectAndResolvedRoleApprovers(t *testing.T) {
+	mux, instStore := newDecisionRoleTestServer(t, ApprovalNodeConfig{
+		ApproverIDs:  []string{"direct-manager", "role:function:finance:finance_approver"},
+		Mode:         ModeSingle,
+		TimeoutHours: 24,
+	}, decisionTestApproverResolver{values: map[string][]string{
+		"role:function:finance:finance_approver": {"machine-finance-1"},
+	}})
+
+	body, _ := json.Marshal(map[string]string{"decision": "approve"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/inst-1/nodes/approval-1/decision", bytes.NewReader(body))
+	req.Header.Set("X-Test-Owner", "machine-finance-1")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if instStore.statusUpdate != InstanceCompleted {
+		t.Errorf("expected role approver to advance instance to %q, got %q", InstanceCompleted, instStore.statusUpdate)
+	}
+}
+
+// TestDecisionAPI_UnresolvedApprovalRoleIsForbidden verifies that an approval
+// role with no concrete Hub assignees does not authorize arbitrary callers.
+func TestDecisionAPI_UnresolvedApprovalRoleIsForbidden(t *testing.T) {
+	mux, instStore := newDecisionRoleTestServer(t, ApprovalNodeConfig{
+		ApproverIDs:  []string{"role:function:finance:finance_approver"},
+		Mode:         ModeSingle,
+		TimeoutHours: 24,
+	}, decisionTestApproverResolver{values: map[string][]string{
+		"role:function:finance:finance_approver": {},
+	}})
+
+	body, _ := json.Marshal(map[string]string{"decision": "approve"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/inst-1/nodes/approval-1/decision", bytes.NewReader(body))
+	req.Header.Set("X-Test-Owner", "machine-finance-1")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if instStore.statusUpdate != "" {
+		t.Errorf("expected unresolved role to leave instance untouched, got status update %q", instStore.statusUpdate)
+	}
+}
+
+// TestDecisionAPI_ApprovalRoleResolveErrorFailsClosed verifies that resolver
+// failures fail closed before decision processing.
+func TestDecisionAPI_ApprovalRoleResolveErrorFailsClosed(t *testing.T) {
+	mux, instStore := newDecisionRoleTestServer(t, ApprovalNodeConfig{
+		ApproverIDs:  []string{"role:function:finance:finance_approver"},
+		Mode:         ModeSingle,
+		TimeoutHours: 24,
+	}, decisionTestApproverResolver{err: errors.New("directory unavailable")})
+
+	body, _ := json.Marshal(map[string]string{"decision": "approve"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/inst-1/nodes/approval-1/decision", bytes.NewReader(body))
+	req.Header.Set("X-Test-Owner", "machine-finance-1")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 Internal Server Error, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if instStore.statusUpdate != "" {
+		t.Errorf("expected resolver error to leave instance untouched, got status update %q", instStore.statusUpdate)
 	}
 }
 

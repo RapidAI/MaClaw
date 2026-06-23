@@ -44,32 +44,58 @@ var approverHelpers = new Function('state', 'tr', [
   extractFunction('formatApproverSelection'),
   extractFunction('pruneApproverPickerSelection'),
   extractFunction('normalizeEmail'),
+  extractFunction('indexApproverDirectory'),
   extractFunction('approverRowsForGroup'),
+  extractFunction('approverRoleCatalog'),
+  extractFunction('normalizeApprovalFunctionScope'),
+  extractFunction('functionScopeCatalog'),
+  extractFunction('normalizeApprovalRole'),
+  extractFunction('approvalRoleId'),
+  extractFunction('approvalRoleRows'),
+  extractFunction('assigneeSummary'),
+  extractFunction('executionModeLabel'),
   extractFunction('approverKindLabel'),
   extractFunction('renderApproverRow')
-].join('\n') + '\nreturn { normalizeApproverIds: normalizeApproverIds, formatApproverSelection: formatApproverSelection, pruneApproverPickerSelection: pruneApproverPickerSelection, approverRowsForGroup: approverRowsForGroup, renderApproverRow: renderApproverRow };')(
+].join('\n') + '\nreturn { normalizeApproverIds: normalizeApproverIds, formatApproverSelection: formatApproverSelection, pruneApproverPickerSelection: pruneApproverPickerSelection, indexApproverDirectory: indexApproverDirectory, approverRowsForGroup: approverRowsForGroup, approvalRoleRows: approvalRoleRows, normalizeApprovalRole: normalizeApprovalRole, normalizeApprovalFunctionScope: normalizeApprovalFunctionScope, functionScopeCatalog: functionScopeCatalog, renderApproverRow: renderApproverRow };')(
   state,
   function (key, params) {
     if (key === 'selectedApprovers') return String(params.count) + ' selected';
     if (key === 'virtualEmployee') return 'VE';
     if (key === 'userMachine') return 'Machine';
     if (key === 'approverRole') return 'Approval role';
+    if (key === 'approvalRoleNotConfigured') return 'No approval role configured';
     if (key === 'departmentDigitalEmployee') return 'Department digital employee';
     if (key === 'digitalTwin') return 'Digital twin';
+    if (key === 'roleExecutionManual') return 'Manual';
+    if (key === 'roleExecutionDigitalSuggest') return 'Digital suggest';
+    if (key === 'roleExecutionDigitalReview') return 'Digital review';
+    if (key === 'roleExecutionAuto') return 'Auto';
+    if (key === 'approverPickerEmpty') return 'No approvers';
     return key;
   }
 );
 
+var pickerBindingHelpers = new Function('state', 'document', 'openApproverPicker', 'markDirty', 'tr', 'isReadOnlyPreview', [
+  extractFunction('bindApproverPicker'),
+  extractFunction('syncApproverPickerField'),
+  extractFunction('normalizeApproverIds'),
+  extractFunction('formatApproverSelection')
+].join('\n') + '\nreturn { bindApproverPicker: bindApproverPicker, syncApproverPickerField: syncApproverPickerField };');
+
 var draftHelpers = new Function('state', 'confirm', 'tr', [
   extractFunction('draftHasCanvasContent'),
   extractFunction('confirmDraftOverwriteIfNeeded'),
-  extractFunction('draftGeneratedStatus')
-].join('\n') + '\nreturn { draftHasCanvasContent: draftHasCanvasContent, confirmDraftOverwriteIfNeeded: confirmDraftOverwriteIfNeeded, draftGeneratedStatus: draftGeneratedStatus };')(
+  extractFunction('draftGeneratedStatus'),
+  extractFunction('draftExampleText')
+].join('\n') + '\nreturn { draftHasCanvasContent: draftHasCanvasContent, confirmDraftOverwriteIfNeeded: confirmDraftOverwriteIfNeeded, draftGeneratedStatus: draftGeneratedStatus, draftExampleText: draftExampleText };')(
   state,
   function () { return draftHelpersConfirmResult; },
   function (key) {
     if (key === 'draftGenerated') return 'Draft generated.';
-    if (key === 'draftGeneratedFallback') return 'Basic draft generated because the LLM service was unavailable. Review and adjust the workflow before saving.';
+    if (key === 'draftGeneratedFallback') return 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.';
+    if (key === 'draftGeneratedFallbackProvider') return 'Basic draft generated because the LLM provider request failed. Review the workflow before saving, then try again after the provider recovers.';
+    if (key === 'draftGeneratedFallbackResponse') return 'Basic draft generated because the LLM response could not be applied as a workflow. Review the workflow before saving, then refine the description and try again.';
+    if (key === 'draftExampleFullControlsText') return 'full controls example text';
     return key;
   }
 );
@@ -81,9 +107,61 @@ var edgeHelpers = new Function('state', [
   extractFunction('edgeAnchorPoints'),
   extractFunction('edgePathD')
 ].join('\n') + '\nreturn { canCreateEdge: canCreateEdge, edgeAnchorPoints: edgeAnchorPoints, edgePathD: edgePathD };')(state);
+var graphHelpers = new Function('state', [
+  extractFunction('getWorkflowGraph')
+].join('\n') + '\nreturn { getWorkflowGraph: getWorkflowGraph };');
 var conditionOperatorHelpers = new Function([
   extractFunction('isConditionBranchOperator')
 ].join('\n') + '\nreturn { isConditionBranchOperator: isConditionBranchOperator };')();
+var conditionBranchEditorHelpers = new Function([
+  extractFunction('normalizeConditionBranchesForEditor'),
+  extractFunction('conditionBranchOperatorNeedsValue'),
+  extractFunction('conditionBranchValueToInput'),
+  extractFunction('parseConditionBranchValue'),
+  extractFunction('formatConditionBranchSummary'),
+  extractFunction('conditionBranchExpressionHasRequiredValue'),
+  extractFunction('updateConditionBranchField')
+].join('\n') + '\nreturn { normalizeConditionBranchesForEditor: normalizeConditionBranchesForEditor, conditionBranchOperatorNeedsValue: conditionBranchOperatorNeedsValue, conditionBranchValueToInput: conditionBranchValueToInput, parseConditionBranchValue: parseConditionBranchValue, conditionBranchExpressionHasRequiredValue: conditionBranchExpressionHasRequiredValue, updateConditionBranchField: updateConditionBranchField };')();
+var conditionBranchRenderHelpers = new Function('state', 'tr', 'escapeHtml', 'escapeAttr', [
+  extractFunction('renderConditionBranchTargetOptions')
+].join('\n') + '\nreturn { renderConditionBranchTargetOptions: renderConditionBranchTargetOptions };')(
+  state,
+  function (key, params) {
+    if (key === 'conditionNoTarget') return 'No target';
+    if (key === 'conditionMissingTarget') return 'Missing target: ' + params.target;
+    return key;
+  },
+  function (value) { return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); },
+  function (value) { return String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+);
+var validationHelpers = new Function('state', 'tr', 'configPanelBody', 'configFieldLabel', [
+  extractFunction('validateWorkflow'),
+  extractFunction('validateConditionBranchRoutes'),
+  extractFunction('reachableNodeIds'),
+  extractFunction('getInvalidConfigErrors'),
+  extractFunction('normalizeApproverIds'),
+  extractFunction('isConditionBranchOperator'),
+  extractFunction('conditionBranchOperatorNeedsValue'),
+  extractFunction('conditionBranchExpressionHasRequiredValue')
+].join('\n') + '\nreturn { validateWorkflow: validateWorkflow };')(
+  state,
+  function (key, params) {
+    if (key === 'approvalApproverRequired') return 'approver required: ' + params.label;
+    if (key === 'requireOneTrigger') return 'trigger required';
+    if (key === 'onlyOneTrigger') return 'only one trigger';
+    if (key === 'disconnectedNode') return 'disconnected: ' + params.label;
+    if (key === 'triggerNoIncoming') return 'trigger incoming: ' + params.label;
+    if (key === 'terminalNoOutgoing') return 'terminal outgoing: ' + params.label;
+    if (key === 'conditionBranchNoRoute') return 'condition no route: ' + params.label;
+    if (key === 'conditionBranchInvalidTarget') return 'condition bad target: ' + params.target;
+    if (key === 'conditionBranchInvalidExpression') return 'condition bad expression: ' + params.label;
+    if (key === 'invalidJsonField') return 'invalid json: ' + params.field;
+    if (key === 'invalidConfigField') return 'invalid config: ' + params.field;
+    return key;
+  },
+  { querySelectorAll: function () { return []; } },
+  function () { return 'field'; }
+);
 var nodeLookupHelpers = new Function('canvasNodes', [
   extractFunction('findCanvasNodeElement')
 ].join('\n') + '\nreturn { findCanvasNodeElement: findCanvasNodeElement };')({
@@ -165,6 +243,59 @@ assertEqual(approverHelpers.formatApproverSelection(['machine-secret-1'], 'Choos
 state.approverDirectory = { byId: { 'machine-secret-1': { name: 'Alice' }, 've-secret-1': { name: 'Runtime Worker' } } };
 assertEqual(approverHelpers.formatApproverSelection(['machine-secret-1', 've-secret-1'], 'Choose approvers'), 'Alice, Runtime Worker', 'renders approver names from directory');
 assertEqual(approverHelpers.formatApproverSelection(['machine-secret-1', 'stale-secret-1'], 'Choose approvers'), '2 selected', 'does not hide stale selected approver ids behind partial names');
+var roleDirectory = {
+  functionScopes: [
+    { scopeId: 'finance', scopeName: 'Finance' },
+    { scopeId: 'hr', scopeName: 'HR' },
+    { scopeId: 'hr_alt', scopeName: ' HR ' }
+  ],
+  approvalRoles: [
+    approverHelpers.normalizeApprovalRole({
+      scopeType: 'function',
+      scopeId: 'finance',
+      scopeName: 'Finance',
+      roleCode: 'finance_approver',
+      roleName: 'Finance Approver',
+      executionMode: 'digital_review',
+      assignees: [{ subjectId: 'finance-bot', displayName: 'Finance Bot' }]
+    }),
+    approverHelpers.normalizeApprovalRole({
+      scopeType: 'department',
+      scopeId: 'dept-finance',
+      scopeName: 'Finance Department',
+      roleCode: 'department_manager',
+      roleName: 'Department Manager',
+      executionMode: 'manual',
+      assignees: [
+        { subjectType: 'user', subjectId: 'alice@example.com', displayName: 'alice@example.com' },
+        { subjectType: 'digital_twin', subjectId: 'alice-twin', displayName: 'Alice Twin' }
+      ]
+    })
+  ],
+  veEntries: [
+    { id: 'finance-bot', name: 'Finance Bot', kind: 'department_digital_employee' },
+    { id: 'alice-twin', name: 'Alice Twin', kind: 'digital_twin', ownerEmail: 'alice@example.com' }
+  ],
+  machinesByEmail: {},
+  usersByEmail: {},
+  byId: {}
+};
+approverHelpers.indexApproverDirectory(roleDirectory);
+assertEqual(roleDirectory.byId['role:function:finance:finance_approver'].name, 'Finance / Finance Approver', 'indexes Hub approval roles for display');
+assertEqual(approverHelpers.formatApproverSelection(['role:function:finance:finance_approver'], 'Choose approvers'), '1 selected', 'does not show role id from unrelated directory');
+state.approverDirectory = roleDirectory;
+assertEqual(approverHelpers.formatApproverSelection(['role:function:finance:finance_approver'], 'Choose approvers'), 'Finance / Finance Approver', 'renders approval role names from directory');
+var functionRoleRows = approverHelpers.approvalRoleRows('function', roleDirectory, 'finance');
+assertEqual(functionRoleRows.length, 1, 'function role view lists Hub approval roles');
+assertEqual(functionRoleRows[0].detail, 'Finance Bot', 'role row summarizes configured assignees');
+var functionScopeRows = approverHelpers.approvalRoleRows('function', roleDirectory, 'hr');
+assertEqual(functionScopeRows.length, 1, 'function role view lists Hub function scopes without roles');
+assertEqual(functionScopeRows[0].disabled, true, 'function scope without role should render disabled');
+assertEqual(functionScopeRows[0].meta, 'No approval role configured', 'function scope without role explains missing role');
+var organizationRoleRows = approverHelpers.approvalRoleRows('organization', roleDirectory, 'alice twin');
+assertEqual(organizationRoleRows.length, 1, 'organization role view searches configured assignees');
+assertEqual(organizationRoleRows[0].id, 'role:department:dept-finance:department_manager', 'organization role view lists department approval roles');
+state.approverDirectory = { byId: { 'machine-secret-1': { name: 'Alice' }, 've-secret-1': { name: 'Runtime Worker' } } };
 state.approverPicker = { selected: { 'machine-secret-1': true, 'stale-secret-1': true } };
 approverHelpers.pruneApproverPickerSelection();
 assertEqual(Object.keys(state.approverPicker.selected).join(','), 'machine-secret-1', 'drops stale approver ids once directory is loaded');
@@ -173,14 +304,82 @@ var approverRows = approverHelpers.approverRowsForGroup({
   membersByGroup: { dept1: ['alice@example.com'] },
   machinesByEmail: { 'alice@example.com': [{ id: 'machine-alice', name: 'Alice laptop' }] },
   veEntries: [
-    { id: 'twin-alice', name: 'Alice twin', kind: 'digital_twin', ownerEmail: 'alice@example.com', visibleGroupIds: [] },
-    { id: 'finance-bot', name: 'Finance bot', kind: 'department_digital_employee', ownerEmail: '', visibleGroupIds: ['dept1'] },
-    { id: 'root-bot', name: 'Root bot', kind: 'department_digital_employee', ownerEmail: '', visibleGroupIds: [] }
+    { id: 'twin-alice', name: 'Alice twin', kind: 'digital_twin', ownerEmail: 'alice@example.com', visibleGroupIds: [], approvalCapabilityEnabled: true },
+    { id: 'finance-bot', name: 'Finance bot', kind: 'department_digital_employee', ownerEmail: '', visibleGroupIds: ['dept1'], approvalCapabilityEnabled: true },
+    { id: 'root-bot', name: 'Root bot', kind: 'department_digital_employee', ownerEmail: '', visibleGroupIds: [], approvalCapabilityEnabled: true }
   ]
 }, { id: 'dept1' });
 assertEqual(approverRows.map(function (row) { return row.id; }).join(','), 'machine-alice,twin-alice,finance-bot', 'places digital twins under owners and department employees under departments');
 var loadApproverDirectorySource = extractFunction('loadApproverDirectory') + '\n' + extractFunction('fetchApproverDirectory') + '\n' + extractFunction('loadAndRenderApproverDirectory');
 assertTrue(loadApproverDirectorySource.indexOf('.catch(') === -1, 'loads approver directory without catch chaining');
+
+var pickerElements = {};
+function pickerEl(id) {
+  if (!pickerElements[id]) {
+    pickerElements[id] = {
+      id: id,
+      value: '',
+      textContent: '',
+      listener: null,
+      addEventListener: function (eventName, cb) {
+        if (eventName === 'click') this.listener = cb;
+      }
+    };
+  }
+  return pickerElements[id];
+}
+var pickerState = {
+  approverDirectory: {
+    byId: {
+      'role:function:finance:finance_approver': { name: 'Finance / Finance Approver' },
+      'role:department:dept-finance:department_manager': { name: 'Finance Department / Department Manager' }
+    }
+  }
+};
+var pickerDirtyCount = 0;
+var pickerDocument = { getElementById: pickerEl };
+var pickerNode = { config: { approver_ids: [], fallback_approver: '' } };
+var pickerBinding = pickerBindingHelpers(
+  pickerState,
+  pickerDocument,
+  function (options) {
+    options.onConfirm(['role:function:finance:finance_approver', 'role:function:finance:finance_approver', 'role:department:dept-finance:department_manager']);
+  },
+  function () { pickerDirtyCount += 1; },
+  function (key, params) {
+    if (key === 'chooseApprovers') return 'Choose approvers';
+    if (key === 'chooseFallbackApprover') return 'Choose fallback approver';
+    if (key === 'selectedApprovers') return String(params.count) + ' selected';
+    return key;
+  },
+  function () { return false; }
+);
+pickerBinding.bindApproverPicker(pickerNode, 'cfgApproverIdsPicker', true, function (ids) { pickerNode.config.approver_ids = ids; });
+pickerEl('cfgApproverIdsPicker').listener();
+assertEqual(pickerNode.config.approver_ids.join(','), 'role:function:finance:finance_approver,role:department:dept-finance:department_manager', 'approver picker writes selected role ids to node config');
+assertEqual(pickerEl('cfgApproverIds').value, 'role:function:finance:finance_approver, role:department:dept-finance:department_manager', 'approver picker syncs hidden approver ids field');
+assertEqual(pickerEl('cfgApproverIdsPicker').textContent, 'Finance / Finance Approver, Finance Department / Department Manager', 'approver picker syncs readable role summary');
+
+pickerBinding = pickerBindingHelpers(
+  pickerState,
+  pickerDocument,
+  function (options) {
+    options.onConfirm(['role:function:finance:finance_approver', 'role:department:dept-finance:department_manager']);
+  },
+  function () { pickerDirtyCount += 1; },
+  function (key, params) {
+    if (key === 'chooseApprovers') return 'Choose approvers';
+    if (key === 'chooseFallbackApprover') return 'Choose fallback approver';
+    if (key === 'selectedApprovers') return String(params.count) + ' selected';
+    return key;
+  },
+  function () { return false; }
+);
+pickerBinding.bindApproverPicker(pickerNode, 'cfgFallbackPicker', false, function (ids) { pickerNode.config.fallback_approver = ids[0] || ''; });
+pickerEl('cfgFallbackPicker').listener();
+assertEqual(pickerNode.config.fallback_approver, 'role:function:finance:finance_approver', 'fallback picker writes only the first selected role id');
+assertEqual(pickerEl('cfgFallback').value, 'role:function:finance:finance_approver', 'fallback picker syncs hidden fallback field');
+assertTrue(pickerDirtyCount >= 2, 'approver picker confirmation marks workflow dirty');
 
 global.escapeHtml = function (value) { return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
 global.escapeAttr = global.escapeHtml;
@@ -208,19 +407,74 @@ var firstAwaitIndex = saveWorkflowDraftSource.indexOf('await ');
 assertTrue(savedRevisionIndex !== -1 && firstAwaitIndex !== -1 && savedRevisionIndex < firstAwaitIndex, 'captures dirty revision before async save work');
 assertTrue(saveWorkflowDraftSource.indexOf('ensureWorkflowDefinition(name, description)') !== -1, 'saves stable workflow metadata snapshot');
 assertTrue(saveWorkflowDraftSource.indexOf('return { version: ver, clean: clearDirty(savedRevision) };') !== -1, 'reports whether save cleared dirty state');
+var graphState = {
+  nodes: [{
+    id: 'approval-1',
+    type: 'approval',
+    label: 'Approval',
+    position: { x: 10, y: 20 },
+    config: {
+      mode: 'single',
+      approver_ids: ['role:function:finance:finance_approver', 'role:department:dept-finance:department_manager'],
+      fallback_approver: 'role:function:legal:contract_approver'
+    }
+  }],
+  edges: []
+};
+var exportedGraph = graphHelpers(graphState).getWorkflowGraph();
+assertEqual(exportedGraph.nodes[0].config.approver_ids.join(','), 'role:function:finance:finance_approver,role:department:dept-finance:department_manager', 'workflow graph export preserves approval role ids');
+assertEqual(exportedGraph.nodes[0].config.fallback_approver, 'role:function:legal:contract_approver', 'workflow graph export preserves fallback approval role id');
 var saveClickIndex = source.indexOf("btnSave.addEventListener('click'");
 var saveValidateIndex = source.indexOf('var errors = validateWorkflow();', saveClickIndex);
 var saveBusyIndex = source.indexOf("setBusy(true, 'saving');", saveClickIndex);
 assertTrue(saveClickIndex !== -1 && saveValidateIndex !== -1 && saveValidateIndex < saveBusyIndex, 'validates workflow structure before saving');
 var validateWorkflowSource = extractFunction('validateWorkflow');
 assertTrue(validateWorkflowSource.indexOf("node.type === 'terminal'") !== -1 && validateWorkflowSource.indexOf("tr('terminalNoOutgoing'") !== -1, 'rejects terminal nodes with outgoing edges');
+assertTrue(validateWorkflowSource.indexOf("node.type === 'approval'") !== -1 && validateWorkflowSource.indexOf("tr('approvalApproverRequired'") !== -1, 'requires approval nodes to choose approvers or approval roles');
 assertTrue(validateWorkflowSource.indexOf('validateConditionBranchRoutes(errors);') !== -1, 'validates condition branch routing before save or submit');
+state.invalidConfigFields = {};
+state.nodes = [
+  { id: 'trigger_approval_required', type: 'trigger', label: 'Trigger', position: { x: 0, y: 0 }, config: {} },
+  { id: 'approval_required', type: 'approval', label: 'Finance approval', position: { x: 100, y: 0 }, config: { approver_ids: [] } },
+  { id: 'terminal_approval_required', type: 'terminal', label: 'Done', position: { x: 200, y: 0 }, config: {} }
+];
+state.edges = [
+  { source_id: 'trigger_approval_required', target_id: 'approval_required' },
+  { source_id: 'approval_required', target_id: 'terminal_approval_required' }
+];
+assertTrue(validationHelpers.validateWorkflow().indexOf('approver required: Finance approval') !== -1, 'validation blocks approval nodes without an approver or role');
+state.nodes[1].config.approver_ids = ['role:function:finance:finance_approver'];
+assertEqual(validationHelpers.validateWorkflow().indexOf('approver required: Finance approval'), -1, 'validation accepts Hub approval role references as approvers');
 var validateConditionBranchRoutesSource = extractFunction('validateConditionBranchRoutes');
 assertTrue(validateConditionBranchRoutesSource.indexOf("tr('conditionBranchNoRoute'") !== -1, 'requires condition branches to have a configured route');
 assertTrue(validateConditionBranchRoutesSource.indexOf("tr('conditionBranchInvalidTarget'") !== -1, 'rejects condition branch targets that do not exist');
 assertTrue(validateConditionBranchRoutesSource.indexOf("tr('conditionBranchInvalidExpression'") !== -1 && validateConditionBranchRoutesSource.indexOf('isConditionBranchOperator(expr.operator)') !== -1, 'rejects condition branch routes without a supported expression operator');
+assertTrue(validateConditionBranchRoutesSource.indexOf('conditionBranchExpressionHasRequiredValue(expr)') !== -1, 'rejects condition branch routes with missing required values');
 assertEqual(conditionOperatorHelpers.isConditionBranchOperator('greater_than'), true, 'accepts supported condition branch operators');
 assertEqual(conditionOperatorHelpers.isConditionBranchOperator('>'), false, 'rejects shorthand operators that runtime cannot evaluate');
+var normalizedBranches = conditionBranchEditorHelpers.normalizeConditionBranchesForEditor([
+  { label: 'High value', target_node_id: 'approval_1', expression: { field: 'amount', operator: 'greater_than', value: 10000 } }
+]);
+assertEqual(normalizedBranches[0].condition, 'amount greater_than 10000', 'condition branch editor derives readable condition summaries');
+assertEqual(conditionBranchEditorHelpers.conditionBranchValueToInput(['HR', 'Finance']), 'HR, Finance', 'condition branch editor renders list values as comma-separated text');
+assertEqual(JSON.stringify(conditionBranchEditorHelpers.parseConditionBranchValue('in_list', 'HR, Finance')), JSON.stringify(['HR', 'Finance']), 'condition branch editor parses list values');
+assertEqual(conditionBranchEditorHelpers.conditionBranchExpressionHasRequiredValue({ field: 'amount', operator: 'greater_than', value: 0 }), true, 'condition branch editor treats numeric zero as a configured value');
+assertEqual(conditionBranchEditorHelpers.conditionBranchExpressionHasRequiredValue({ field: 'flag', operator: 'equals', value: false }), true, 'condition branch editor treats boolean false as a configured value');
+assertEqual(conditionBranchEditorHelpers.conditionBranchExpressionHasRequiredValue({ field: 'amount', operator: 'in_list', value: [0] }), true, 'condition branch editor treats numeric zero list entries as configured values');
+assertEqual(conditionBranchEditorHelpers.conditionBranchExpressionHasRequiredValue({ field: 'amount', operator: 'in_list', value: [null, ''] }), false, 'condition branch editor rejects empty list values');
+assertEqual(conditionBranchEditorHelpers.conditionBranchExpressionHasRequiredValue({ field: 'amount', operator: 'greater_than', value: '' }), false, 'condition branch editor rejects empty values for comparison operators');
+assertEqual(conditionBranchEditorHelpers.conditionBranchExpressionHasRequiredValue({ field: 'comment', operator: 'is_empty' }), true, 'condition branch editor allows empty-check operators without values');
+var editableConditionNode = { config: { branches: normalizedBranches } };
+conditionBranchEditorHelpers.updateConditionBranchField(editableConditionNode, 0, 'operator', 'is_empty');
+assertEqual(Object.prototype.hasOwnProperty.call(editableConditionNode.config.branches[0].expression, 'value'), false, 'condition branch editor drops values for empty checks');
+conditionBranchEditorHelpers.updateConditionBranchField(editableConditionNode, 0, 'operator', 'less_than');
+conditionBranchEditorHelpers.updateConditionBranchField(editableConditionNode, 0, 'value', '3');
+assertEqual(editableConditionNode.config.branches[0].expression.value, 3, 'condition branch editor writes numeric values back to expression');
+conditionBranchEditorHelpers.updateConditionBranchField(editableConditionNode, 0, 'target_node_id', 'hr_approval');
+assertEqual(editableConditionNode.config.branches[0].target_node_id, 'hr_approval', 'condition branch editor writes selected target node ids');
+state.nodes = [{ id: 'condition_1', type: 'condition_branch', label: 'Condition' }, { id: 'approval_1', type: 'approval', label: 'Approval' }];
+var missingTargetOptions = conditionBranchRenderHelpers.renderConditionBranchTargetOptions('missing_node', 'condition_1');
+assertTrue(missingTargetOptions.indexOf('value="missing_node" selected') !== -1 && missingTargetOptions.indexOf('Missing target: missing_node') !== -1, 'condition branch target selector preserves missing configured targets');
 assertEqual(nodeLookupHelpers.findCanvasNodeElement('node "quoted"/1').marker, 'quoted', 'finds canvas nodes with selector-sensitive ids');
 var addEdgeSource = extractFunction('addEdge');
 assertTrue(addEdgeSource.indexOf('canCreateEdge(sourceId, targetId)') !== -1, 'validates edge structure before adding canvas edges');
@@ -264,10 +518,15 @@ assertEqual(draftHelpers.confirmDraftOverwriteIfNeeded(), false, 'existing canva
 draftHelpersConfirmResult = true;
 assertEqual(draftHelpers.confirmDraftOverwriteIfNeeded(), true, 'existing canvas proceeds after overwrite confirmation');
 assertEqual(draftHelpers.draftGeneratedStatus({}), 'Draft generated.', 'generated draft status works without notes');
-assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback' }), 'Basic draft generated because the LLM service was unavailable. Review and adjust the workflow before saving.', 'generated draft status distinguishes fallback drafts');
-assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', notes: ['LLM draft generation was unavailable, so a basic fallback draft was generated.'] }), 'Basic draft generated because the LLM service was unavailable. Review and adjust the workflow before saving.', 'fallback draft status does not append backend debug notes');
+assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback' }), 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.', 'generated draft status distinguishes fallback drafts');
+assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_settings' }), 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.', 'settings fallback status points to HUB System Settings');
+assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_route' }), 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.', 'route fallback status points to HUB System Settings');
+assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_provider' }), 'Basic draft generated because the LLM provider request failed. Review the workflow before saving, then try again after the provider recovers.', 'provider fallback status does not blame settings');
+assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_response' }), 'Basic draft generated because the LLM response could not be applied as a workflow. Review the workflow before saving, then refine the description and try again.', 'response fallback status asks user to refine description');
+assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', notes: ['LLM draft generation was unavailable, so a basic fallback draft was generated.'] }), 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.', 'fallback draft status does not append backend debug notes');
 assertEqual(draftHelpers.draftGeneratedStatus({ notes: ['Select real approvers before saving.'] }), 'Draft generated. Select real approvers before saving.', 'generated draft status includes first LLM note');
 assertEqual(draftHelpers.draftGeneratedStatus({ notes: [Array(130).join('x')] }).length, 'Draft generated. '.length + 120, 'generated draft status truncates long LLM notes');
+assertEqual(draftHelpers.draftExampleText('fullControls'), 'full controls example text', 'all-controls draft example fills the prompt through the example map');
 
 var rightEdge = edgeHelpers.edgeAnchorPoints(
   { position: { x: 80, y: 100 } },

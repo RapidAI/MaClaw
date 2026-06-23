@@ -316,6 +316,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	logSlowPhase("post_llm", phaseStartedAt)
 	choice := postTurn.Choice
 	msgContent := postTurn.MessageContent
+	msgReasoning := postTurn.MessageReasoning
 	*opts.Conversation = postTurn.Conversation
 	*opts.History = postTurn.History
 	opts.Telemetry.ApplyPostLLMTurn(postTurn)
@@ -372,7 +373,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 			if bufLen > currentLen {
 				finalText = strings.TrimSpace(opts.Context.WorkflowDocBuffer.String())
 			}
-			resp := &IMAgentResponse{Text: finalText}
+			resp := &IMAgentResponse{Text: finalText, Reasoning: msgReasoning}
 			if opts.AttachLLMTelemetry != nil {
 				opts.AttachLLMTelemetry(resp)
 			}
@@ -385,6 +386,9 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	}
 
 	if postTurn.Response != nil {
+		if postTurn.Response.Reasoning == "" {
+			postTurn.Response.Reasoning = msgReasoning
+		}
 		return agentLoopIterationDispatchResult{Response: postTurn.Response}
 	}
 	if postTurn.ContinueLoop {
@@ -424,6 +428,9 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		msgContent = noToolPath.MessageContent
 		opts.Telemetry.ApplyNoToolPath(noToolPath)
 		if noToolPath.Response != nil {
+			if noToolPath.Response.Reasoning == "" {
+				noToolPath.Response.Reasoning = msgReasoning
+			}
 			return agentLoopIterationDispatchResult{Response: noToolPath.Response}
 		}
 		if noToolPath.ContinueLoop {

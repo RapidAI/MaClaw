@@ -15,8 +15,9 @@ import (
 const approvalRolesSettingsKey = "approval_roles_v1"
 
 type approvalRoleStore struct {
-	Roles     []approvalRoleRecord `json:"roles"`
-	UpdatedAt string               `json:"updated_at,omitempty"`
+	Roles          []approvalRoleRecord    `json:"roles"`
+	FunctionScopes []approvalFunctionScope `json:"functionScopes,omitempty"`
+	UpdatedAt      string                  `json:"updated_at,omitempty"`
 }
 
 type approvalRoleRecord struct {
@@ -29,6 +30,12 @@ type approvalRoleRecord struct {
 	RoleName      string                 `json:"roleName"`
 	ExecutionMode string                 `json:"executionMode"`
 	Assignees     []approvalRoleAssignee `json:"assignees"`
+}
+
+type approvalFunctionScope struct {
+	ScopeID   string `json:"scopeId"`
+	ScopeName string `json:"scopeName"`
+	Custom    bool   `json:"custom,omitempty"`
 }
 
 type approvalRoleAssignee struct {
@@ -122,7 +129,30 @@ func saveApprovalRoles(r *http.Request, system store.SystemSettingsRepository, r
 }
 
 func normalizeApprovalRoleStore(saved approvalRoleStore) (approvalRoleStore, error) {
-	out := approvalRoleStore{Roles: []approvalRoleRecord{}, UpdatedAt: strings.TrimSpace(saved.UpdatedAt)}
+	out := approvalRoleStore{Roles: []approvalRoleRecord{}, FunctionScopes: []approvalFunctionScope{}, UpdatedAt: strings.TrimSpace(saved.UpdatedAt)}
+	scopeSeen := map[string]struct{}{}
+	scopeNameSeen := map[string]struct{}{}
+	for _, scope := range saved.FunctionScopes {
+		normalized, ok := normalizeApprovalFunctionScope(scope)
+		if !ok {
+			continue
+		}
+		nameKey := strings.ToLower(strings.TrimSpace(normalized.ScopeName))
+		if _, exists := scopeSeen[normalized.ScopeID]; exists {
+			continue
+		}
+		if nameKey != "" {
+			if _, exists := scopeNameSeen[nameKey]; exists {
+				continue
+			}
+			scopeNameSeen[nameKey] = struct{}{}
+		}
+		scopeSeen[normalized.ScopeID] = struct{}{}
+		out.FunctionScopes = append(out.FunctionScopes, normalized)
+	}
+	if len(out.FunctionScopes) > 80 {
+		return approvalRoleStore{}, fmt.Errorf("too many approval function scopes")
+	}
 	seen := map[string]struct{}{}
 	for _, role := range saved.Roles {
 		normalized, ok := normalizeApprovalRoleRecord(role)
@@ -139,6 +169,63 @@ func normalizeApprovalRoleStore(saved approvalRoleStore) (approvalRoleStore, err
 		return approvalRoleStore{}, fmt.Errorf("too many approval roles")
 	}
 	return out, nil
+}
+
+func normalizeApprovalFunctionScope(scope approvalFunctionScope) (approvalFunctionScope, bool) {
+	scopeID := strings.TrimSpace(scope.ScopeID)
+	scopeName := strings.TrimSpace(scope.ScopeName)
+	if scopeID == "" {
+		scopeID = approvalScopeCodeFromName(scopeName)
+	}
+	if scopeName == "" {
+		scopeName = scopeID
+	}
+	if scopeID == "" || scopeName == "" {
+		return approvalFunctionScope{}, false
+	}
+	return approvalFunctionScope{
+		ScopeID:   scopeID,
+		ScopeName: scopeName,
+		Custom:    scope.Custom,
+	}, true
+}
+
+func approvalScopeCodeFromName(name string) string {
+	raw := strings.TrimSpace(name)
+	if raw ==  {
+ return 
+	}
+	name = strings.ToLower(raw)
+	var b strings.Builder
+	prevUnderscore := false
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevUnderscore = false
+			continue
+		}
+		if b.Len() > 0 && !prevUnderscore {
+			b.WriteByte('_')
+			prevUnderscore = true
+		}
+	}
+	code := strings.Trim(b.String(),  _)
+	if code ==  {
+ code = fmt.Sprintf(function_%08x, approvalScopeHash(raw))
+ }
+ if code[0] < 'a' || code[0] > 'z' {
+ code = function_ + code
+ }
+ return code
+}
+
+func approvalScopeHash(value string) uint32 {
+ var hash uint32 = 2166136261
+ for _, r := range strings.TrimSpace(value) {
+ hash ^= uint32(r)
+ hash *= 16777619
+ }
+ return hash
 }
 
 func normalizeApprovalRoleRecord(role approvalRoleRecord) (approvalRoleRecord, bool) {

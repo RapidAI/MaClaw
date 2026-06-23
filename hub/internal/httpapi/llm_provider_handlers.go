@@ -3130,6 +3130,9 @@ func synthesizeOpenAIStreamChunk(body []byte, externalModel string) ([]byte, cor
 	choice := firstOpenAIChoice(payload)
 	message, _ := choice["message"].(map[string]any)
 	delta := map[string]any{"role": "assistant"}
+	if reasoning := firstStringField(message, "reasoning_content", "ReasoningContent"); reasoning != "" {
+		delta["reasoning_content"] = reasoning
+	}
 	if content, ok := message["content"].(string); ok {
 		delta["content"] = content
 	}
@@ -3158,6 +3161,15 @@ func synthesizeOpenAIStreamChunk(body []byte, externalModel string) ([]byte, cor
 		return nil, corelib.TokenUsageStat{}, fmt.Errorf("marshal synthesized stream chunk: %w", err)
 	}
 	return data, parseUsageStats(body), nil
+}
+
+func firstStringField(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := values[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func synthesizeOpenAIStreamToolCalls(raw any) any {

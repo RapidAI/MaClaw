@@ -302,7 +302,7 @@ export function VEApprovalRulesSection({ rules, onChange, lang }: Props) {
   }, []);
 
   function handleAddRule(category: RuleCategory) {
-    const categoryRules = rules[category];
+    const categoryRules = rules[category] || [];
     if (categoryRules.length >= MAX_RULES_PER_CATEGORY) return;
 
     const newRule: ApprovalRule = {
@@ -320,20 +320,20 @@ export function VEApprovalRulesSection({ rules, onChange, lang }: Props) {
   function handleUpdateRule(category: RuleCategory, ruleId: string, updatedRule: ApprovalRule) {
     const updated = {
       ...rules,
-      [category]: rules[category].map((r) => (r.id === ruleId ? updatedRule : r)),
+      [category]: (rules[category] || []).map((r) => (r.id === ruleId ? updatedRule : r)),
     };
     onChange(updated);
   }
 
   function handleRemoveRule(category: RuleCategory, ruleId: string) {
-    const filtered = rules[category].filter((r) => r.id !== ruleId);
+    const filtered = (rules[category] || []).filter((r) => r.id !== ruleId);
     // Recompute positions
     const reindexed = filtered.map((r, idx) => ({ ...r, position: idx }));
     onChange({ ...rules, [category]: reindexed });
   }
 
   function handleMoveRule(category: RuleCategory, ruleId: string, direction: "up" | "down") {
-    const list = [...rules[category]];
+    const list = [...(rules[category] || [])];
     const idx = list.findIndex((r) => r.id === ruleId);
     if (idx < 0) return;
     const targetIdx = direction === "up" ? idx - 1 : idx + 1;
@@ -361,7 +361,7 @@ export function VEApprovalRulesSection({ rules, onChange, lang }: Props) {
       </p>
 
       {CATEGORIES.map(({ key, labelEn, labelZh, labelZhHant }) => {
-        const categoryRules = rules[key];
+        const categoryRules = rules[key] || [];
         const isCollapsed = collapsedCategories[key];
         const atLimit = categoryRules.length >= MAX_RULES_PER_CATEGORY;
 

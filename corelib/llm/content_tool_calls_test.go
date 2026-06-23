@@ -339,7 +339,7 @@ func TestOpenAISDKChatStreamSuppressesPlainToolCallTokens(t *testing.T) {
 		Model: "test-model",
 	}, []byte(`{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}`), srv.Client(), func(delta string) {
 		streamed.WriteString(delta)
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("openAISDKChatStream: %v", err)
 	}

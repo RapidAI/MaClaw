@@ -9,6 +9,7 @@ import { localizeText } from "./aiAssistantI18n";
 import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
+import { stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
 
 export type { Theme } from "./aiAssistantPanelTheme";
 /* Themed inline markdown rendering */
@@ -869,24 +870,27 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     {msg.reasoning && (() => {
                         const shouldOpen = isLastAssistant && isStreaming;
                         const reasoningLabel = lang === "en" ? "Thinking process..." : "思考过程...";
+                        const displayReasoning = truncateRolePrefixForDisplay(msg.reasoning || "");
+                        if (!displayReasoning.trim()) return null;
                         return (
                             <details key={shouldOpen ? "reasoning-open" : "reasoning-closed"} open={shouldOpen || undefined} style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}>
                                 <summary style={{ cursor: "pointer", opacity: 0.8 }}>{reasoningLabel}</summary>
                                 <div style={{ padding: "4px 8px", color: t.text, opacity: 0.75, maxHeight: "400px", overflow: "auto" }}>
-                                    {renderContentWithCodeBlocks(msg.reasoning, t)}
+                                    {renderContentWithCodeBlocks(displayReasoning, t)}
                                 </div>
                             </details>
                         );
                     })()}
                     {(() => {
-                        const formattedContent = formatUnfinishedSlotNotice(msg.content, msg.unfinishedSlot, lang);
+                        const rawFormattedContent = formatUnfinishedSlotNotice(msg.content, msg.unfinishedSlot, lang);
                         // /btw side query results are collapsible to reduce space.
                         // Detection: requestId starts with "btw-" (set by sendBtwMessage)
                         // OR content starts with the backend prefix (fallback for history reload).
                         const btwPrefix = "🔍 **/btw 查询结果**\n\n";
-                        const isBtwResult = msg.requestId?.startsWith("btw-") || (formattedContent && formattedContent.startsWith(btwPrefix));
-                        if (isBtwResult && formattedContent) {
-                            const btwBody = formattedContent.startsWith(btwPrefix) ? formattedContent.slice(btwPrefix.length) : formattedContent;
+                        const isBtwResult = msg.requestId?.startsWith("btw-") || (rawFormattedContent && rawFormattedContent.startsWith(btwPrefix));
+                        if (isBtwResult && rawFormattedContent) {
+                            const rawBtwBody = rawFormattedContent.startsWith(btwPrefix) ? rawFormattedContent.slice(btwPrefix.length) : rawFormattedContent;
+                            const btwBody = stripRolePrefixForDisplay(rawBtwBody);
                             // Extract first non-empty line as preview in the collapsed summary.
                             const firstLine = btwBody.split('\n').find(l => l.trim()) || '';
                             // Strip markdown formatting for plain-text summary display.
@@ -903,6 +907,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                                 </details>
                             );
                         }
+                        const formattedContent = stripRolePrefixForDisplay(rawFormattedContent);
                         return renderContentWithCodeBlocks(formattedContent, t);
                     })()}
                     {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t, lang)}

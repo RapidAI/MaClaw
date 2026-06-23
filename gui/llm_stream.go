@@ -1251,11 +1251,14 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 			onToken("\x01" + delta)
 		}
 	}
+	reasoningRoleFilter := newRolePrefixStreamFilter(thinkReasoningCbSDK)
 	tf := newThinkFilterWithReasoning(fcf.Callback(), thinkReasoningCbSDK)
 
 	httpDoStartedAt := time.Now()
-	resp, err := llm.DoOpenAIRequestStream(reqCtx, cfg, messages, tools, httpClient, func(delta string) {
+	resp, err := llm.DoOpenAIRequestStreamWithReasoning(reqCtx, cfg, messages, tools, httpClient, func(delta string) {
 		tf.Write(delta)
+	}, func(delta string) {
+		reasoningRoleFilter.Write(delta)
 	})
 	if metrics != nil {
 		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
@@ -1269,6 +1272,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 	}
 
 	tf.Flush()
+	reasoningRoleFilter.Flush()
 	fcf.Flush()
 	tcf.Flush()
 	repf.Flush()
@@ -1286,9 +1290,6 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 	choice := resp.Choices[0]
 	msg := choice.Message
 	rawContent := msg.Content
-	if rawContent == "" {
-		rawContent = msg.ReasoningContent
-	}
 	content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(rawContent)))
 	filteredStr := filteredBuf.String()
 	if filteredStr != "" {

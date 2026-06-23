@@ -189,6 +189,64 @@ describe('normalizeSidebarHubCredits', () => {
         expect(credits?.remaining).toBe(49064.005);
     });
 
+    it('keeps the effective recharge-card balance when top-level remaining is only the period window', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credits_total: 81001,
+            credits_used: 12659.7,
+            credits_remaining: 2293.43,
+            credits_available: 2293.43,
+            credit_grants: [
+                {
+                    status: 'active',
+                    active: true,
+                    effective: true,
+                    source: 'card',
+                    credits_total: 70000,
+                    credits_used: 1658.7,
+                    credits_remaining: 68341.3,
+                    credits_available: 2293.43,
+                    period_limits: { monthly: 40000 },
+                    expires_at: '2027-06-21T10:09:00Z',
+                },
+                {
+                    status: 'exhausted',
+                    active: false,
+                    effective: false,
+                    source: 'default_new_user_backfill',
+                    credits_total: 1000,
+                    credits_used: 1000,
+                    credits_remaining: 0,
+                    expires_at: '2026-07-18T11:20:00Z',
+                },
+                {
+                    status: 'exhausted',
+                    active: false,
+                    effective: false,
+                    source: 'card',
+                    credits_total: 1,
+                    credits_used: 1,
+                    credits_remaining: 0,
+                    expires_at: '2027-06-20T05:58:00Z',
+                },
+                {
+                    status: 'exhausted',
+                    active: false,
+                    effective: false,
+                    source: 'card',
+                    credits_total: 10000,
+                    credits_used: 10000,
+                    credits_remaining: 0,
+                    expires_at: '2027-06-20T07:30:00Z',
+                },
+            ],
+        });
+
+        expect(credits?.total).toBe(81001);
+        expect(credits?.used).toBe(12659.7);
+        expect(credits?.remaining).toBe(68341.3);
+    });
+
     it('keeps expired grants authorized for explanation but exposes zero currently available credits', () => {
         const credits = normalizeSidebarHubCredits({
             active: false,

@@ -1259,6 +1259,13 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                                 theme={theme}
                                 phaseID={view.id || ""}
                                 onPrefilled={(prefilled) => {
+                                    // Switch to manual_mode variant so prefilled fields become visible and submittable.
+                                    // Without this, the form stays in resume_mode where only the file field is rendered,
+                                    // and prefilled data (name, institution, etc.) gets lost on submit.
+                                    const manualVariant = view.type === "form" && view.variants?.find((v) => v.id === "manual_mode");
+                                    if (manualVariant) {
+                                        selectVariant(manualVariant);
+                                    }
                                     setFormData((prev) => {
                                         const updated = { ...prev };
                                         for (const [name, pv] of Object.entries(prefilled)) {
@@ -1630,21 +1637,14 @@ function ResumeUploadSection({ theme, phaseID, onPrefilled }: ResumeUploadSectio
     const handleUpload = async () => {
         try {
             const wailsApp = await getWailsAppModule();
-            const selectFile = wailsApp.SelectAIAssistantFile;
-            const parseResume = (wailsApp as any).ParseResumeForWorkflowForm;
-            if (!selectFile || !parseResume) {
-                setStatus("error");
-                setErrorMsg("简历解析功能不可用（需要更新应用）");
-                return;
-            }
 
-            const file = await selectFile();
+            const file = await wailsApp.SelectAIAssistantFile();
             if (!file) return;
 
             setStatus("parsing");
             setErrorMsg("");
 
-            const rawResult = await parseResume(file, phaseID);
+            const rawResult = await wailsApp.ParseResumeForWorkflowForm(file, phaseID);
             const parsed = JSON.parse(rawResult);
 
             if (parsed.error) {
@@ -1748,13 +1748,8 @@ function SupplementaryUploadSection({ theme, config, onFilesChanged }: Supplemen
         }
         try {
             const wailsApp = await getWailsAppModule();
-            const selectFile = wailsApp.SelectAIAssistantFile;
-            if (!selectFile) {
-                setError("文件选择功能不可用");
-                return;
-            }
 
-            const file = await selectFile();
+            const file = await wailsApp.SelectAIAssistantFile();
             if (!file) return;
 
             // Check accepted types
@@ -1781,13 +1776,7 @@ function SupplementaryUploadSection({ theme, config, onFilesChanged }: Supplemen
 
             // Upload immediately
             try {
-                const uploadFn = (wailsApp as any).UploadSupplementaryDocs;
-                if (!uploadFn) {
-                    setFiles((prev) => prev.map((f) => f.path === file ? { ...f, status: "error" } : f));
-                    setError("补充材料上传功能不可用（需要更新应用）");
-                    return;
-                }
-                const rawResult = await uploadFn(JSON.stringify([file]));
+                const rawResult = await wailsApp.UploadSupplementaryDocs(JSON.stringify([file]));
                 const parsed = JSON.parse(rawResult);
                 if (parsed.error) {
                     setFiles((prev) => prev.map((f) => f.path === file ? { ...f, status: "error" } : f));
@@ -1815,9 +1804,8 @@ function SupplementaryUploadSection({ theme, config, onFilesChanged }: Supplemen
         if (!target) return;
         try {
             const wailsApp = await getWailsAppModule();
-            const removeFn = (wailsApp as any).RemoveSupplementaryDoc;
-            if (removeFn && target.status === "done") {
-                await removeFn(target.name);
+            if (target.status === "done") {
+                await wailsApp.RemoveSupplementaryDoc(target.name);
             }
         } catch { /* best-effort removal from backend */ }
         const updated = files.filter((_, i) => i !== index);

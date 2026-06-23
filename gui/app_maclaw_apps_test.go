@@ -280,6 +280,66 @@ func TestSubmitMaclawAppPackageFlagsMissingDependencyVerification(t *testing.T) 
 	}
 }
 
+func TestSubmitMaclawAppPackageValidatesApprovalWorkflowContract(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	base := func(contract string) string {
+		return `{
+			"schema": "maclaw.app.pack.v1",
+			"privateMarker": "x_maclaw_apps",
+			"apps": [{
+				"schema": "maclaw.app.v1",
+				"privateMarker": "x_maclaw_apps",
+				"app": {
+					"id": "approval-contract",
+					"name": "Approval Contract",
+					"kind": "enterprise_approval_app",
+					"binding": {
+						"datasrv": {"domain":"finance", "datasetID":"finance.expenses", "objectRole":"expense_report"},
+						"mis": {"approvalBindings": [{"event":"expense.submitted", "workflowSkillId":"expense-flow", "workflowVersion":"1.0.0", "objectRole":"expense_report"}]}
+					},
+					"governance": {
+						"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "template":"classic_split", "regionCount":4},
+						"resultContract": {"schema":"maclaw.app.result.v1", "primary":"approval_result", "types":["approval_result", "business_status", "content"]},
+						"dependencyVerification": {"schema":"maclaw.app.install_plan.v1", "dependencies":[{"id":"expense-flow", "kind":"workflow_skill", "installed":true, "health":"ready"}]},
+						"testEvidence": {"runId":"run-approval", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"approval_result":"approved"}}` + contract + `
+					}
+				}
+			}]
+		}`
+	}
+
+	cases := []struct {
+		name       string
+		contract   string
+		wantPath   string
+		wantIssues int
+	}{
+		{name: "missing", wantPath: "apps[0].app.governance.workflowContract", wantIssues: 1},
+		{name: "mismatched workflow", contract: `, "workflowContract":{"schema":"maclaw.app.workflow_contract.v1", "workflowSkillId":"other-flow", "objectRole":"expense_report", "requiredInputs":["record_ref", "applicant", "business_payload"], "decisionOutputs":["approved", "rejected", "attention"], "statusMapping":{"pending":"approval_pending", "approved":"approved", "rejected":"rejected", "attention":"attention"}}`, wantPath: "apps[0].app.governance.workflowContract.workflowSkillId", wantIssues: 1},
+		{name: "complete", contract: `, "workflowContract":{"schema":"maclaw.app.workflow_contract.v1", "workflowSkillId":"expense-flow", "workflowVersion":"1.0.0", "objectRole":"expense_report", "requiredInputs":["record_ref", "applicant", "business_payload"], "decisionOutputs":["approved", "rejected", "attention"], "statusMapping":{"pending":"approval_pending", "approved":"approved", "rejected":"rejected", "attention":"attention"}}`, wantIssues: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := app.SubmitMaclawAppPackage(base(tc.contract))
+			if err != nil {
+				t.Fatalf("SubmitMaclawAppPackage error: %v", err)
+			}
+			if result["review_issue_count"] != tc.wantIssues {
+				t.Fatalf("expected %d workflow contract issue(s), got %#v", tc.wantIssues, result)
+			}
+			detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
+			if err != nil {
+				t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
+			}
+			if len(detail.ReviewIssues) != tc.wantIssues {
+				t.Fatalf("expected %d durable issue(s), got %#v", tc.wantIssues, detail.ReviewIssues)
+			}
+			if tc.wantPath != "" && detail.ReviewIssues[0].Path != tc.wantPath {
+				t.Fatalf("unexpected workflow contract issue: %#v", detail.ReviewIssues[0])
+			}
+		})
+	}
+}
 func TestSubmitMaclawAppPackageFlagsResultCoverageMismatch(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	pkg := `{
@@ -1228,6 +1288,34 @@ func TestPlanMaclawAppInstallHonorsBindingSkillSourcesAndSnakeCaseAppSkill(t *te
 	}
 }
 
+func TestPlanMaclawAppInstallReportsApprovalWorkflowContractIssues(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "approval-contract-plan",
+			"name": "Approval Contract Plan",
+			"kind": "enterprise_approval_app",
+			"binding": {
+				"datasrv": {"domain":"finance", "datasetID":"finance.expenses", "objectRole":"expense_report"},
+				"mis": {"approvalBindings": [{"event":"expense.submitted", "workflowSkillId":"expense-flow", "workflowVersion":"1.0.0", "objectRole":"expense_report"}]}
+			},
+			"governance": {
+				"workflowContract": {"schema":"maclaw.app.workflow_contract.v1", "workflowSkillId":"other-flow", "objectRole":"expense_report", "requiredInputs":["record_ref", "applicant", "business_payload"], "decisionOutputs":["approved", "rejected", "attention"], "statusMapping":{"pending":"approval_pending", "approved":"approved", "rejected":"rejected", "attention":"attention"}}
+			}
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	if !plan.HasWorkflowContractIssue || len(plan.WorkflowContractIssues) != 1 {
+		t.Fatalf("expected workflow contract issue in install plan: %#v", plan)
+	}
+	if plan.WorkflowContractIssues[0].Path != "apps[0].app.governance.workflowContract.workflowSkillId" {
+		t.Fatalf("unexpected workflow contract issue: %#v", plan.WorkflowContractIssues[0])
+	}
+}
 func TestPlanMaclawAppInstallTreatsApprovalBindingsAsWorkflowDependencies(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	plan, err := app.PlanMaclawAppInstall(`{
@@ -1391,6 +1479,15 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 					"types": ["approval_result", "business_status", "business_record", "document", "notification"],
 					"delivery": {"artifacts": true, "businessRecord": true, "notifications": true}
 				},
+				"workflowContract": {
+					"schema": "maclaw.app.workflow_contract.v1",
+					"workflowSkillId": "expense-workflow",
+					"workflowVersion": "2.0.0",
+					"objectRole": "expense_report",
+					"requiredInputs": ["record_ref", "applicant", "business_payload"],
+					"decisionOutputs": ["approved", "rejected", "attention"],
+					"statusMapping": {"pending":"finance_pending", "approved":"finance_approved", "rejected":"finance_rejected", "attention":"finance_attention", "requiresInput":"finance_more_input"}
+				},
 				"testEvidence": {"runId":"run-expense-1", "artifactPresent":true, "verifiedAt":"2026-06-17T01:00:00Z"}
 			},
 			"binding": {
@@ -1515,6 +1612,13 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	if metadata["workflow_mapping_schema"] != "maclaw.app.workflow.v1" || metadata["workflow_submit_node"] != "expense.intake" || metadata["workflow_approval_node"] != "finance.director_review" || metadata["workflow_result_node"] != "expense.result_pack" {
 		t.Fatalf("registration metadata missing workflow node summary: %#v", metadata)
 	}
+	workflowContract, ok := metadata["workflow_contract"].(map[string]interface{})
+	if !ok || workflowContract["schema"] != "maclaw.app.workflow_contract.v1" || workflowContract["workflowSkillId"] != "expense-workflow" || workflowContract["objectRole"] != "expense_report" {
+		t.Fatalf("registration metadata missing workflow contract: %#v", metadata)
+	}
+	if metadata["workflow_contract_schema"] != "maclaw.app.workflow_contract.v1" || metadata["workflow_contract_skill_id"] != "expense-workflow" || metadata["workflow_contract_object_role"] != "expense_report" {
+		t.Fatalf("registration metadata missing workflow contract summary: %#v", metadata)
+	}
 	workspaceLayout, ok := metadata["workspace_layout"].(map[string]interface{})
 	if !ok || workspaceLayout["entry"] != "approval_workspace" || workspaceLayout["template"] != "classic_split" || workspaceLayout["density"] != "compact" {
 		t.Fatalf("registration metadata missing workspace layout payload: %#v", metadata)
@@ -1531,6 +1635,10 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	resultContract, ok := governance["result_contract"].(map[string]interface{})
 	if !ok || resultContract["primary"] != "approval_result" {
 		t.Fatalf("registration metadata missing result contract: %#v", governance)
+	}
+	governanceWorkflowContract, ok := governance["workflow_contract"].(map[string]interface{})
+	if !ok || governanceWorkflowContract["workflowSkillId"] != "expense-workflow" {
+		t.Fatalf("registration metadata missing governance workflow contract: %#v", governance)
 	}
 	topLevelResultContract, ok := metadata["result_contract"].(map[string]interface{})
 	if !ok || topLevelResultContract["schema"] != "maclaw.app.result.v1" || topLevelResultContract["primary"] != "approval_result" || metadata["result_contract_schema"] != "maclaw.app.result.v1" || metadata["result_contract_primary"] != "approval_result" {
@@ -1683,6 +1791,48 @@ func TestMaclawAppApprovalInstancesPersistAndFilter(t *testing.T) {
 	}
 }
 
+func TestMaclawAppApprovalRuntimeContractUsesInstallSnapshot(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.writeMaclawAppInstallRegistry(maclawAppInstallRegistry{
+		Schema:    "maclaw.app.installs.v1",
+		UpdatedAt: "2026-06-23T01:00:00Z",
+		Installs: []maclawAppInstallRecord{{
+			AppID:       "expense-approval",
+			AppName:     "Expense Approval",
+			Kind:        "enterprise_approval_app",
+			InstalledAt: "2026-06-23T01:00:00Z",
+			VersionSnapshot: maclawAppInstallVersionSnapshot{
+				WorkflowSkills:   []maclawAppInstallSkillVersionSnapshot{{ID: "expense-workflow", Version: "2.0.0", Kind: "workflow_skill", Source: "hub"}},
+				ApprovalBindings: []maclawAppInstallApprovalBindingSnapshot{{Event: "finance.submitted", ObjectRole: "expense_report", WorkflowSkillID: "expense-workflow", WorkflowVersion: "2.0.0"}},
+			},
+			WorkflowContract: map[string]any{
+				"schema":          "maclaw.app.workflow_contract.v1",
+				"workflowSkillId": "expense-workflow",
+				"workflowVersion": "2.0.0",
+				"objectRole":      "expense_report",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("write install registry: %v", err)
+	}
+
+	created, err := app.RecordMaclawAppApprovalInstance(maclawAppApprovalInstance{AppID: "expense-approval", InstanceID: "appr-runtime-1", Title: "Expense #1", Status: "pending", CurrentNode: "submit", Owner: "alice"})
+	if err != nil {
+		t.Fatalf("RecordMaclawAppApprovalInstance runtime contract error = %v", err)
+	}
+	if created.WorkflowSkillID != "expense-workflow" || created.WorkflowVersion != "2.0.0" || created.ObjectRole != "expense_report" || created.ApprovalObjectRole != "expense_report" || created.ApprovalEvent != "finance.submitted" {
+		t.Fatalf("runtime contract should fill installed workflow context: %#v", created)
+	}
+
+	_, err = app.RecordMaclawAppApprovalInstance(maclawAppApprovalInstance{AppID: "expense-approval", InstanceID: "appr-runtime-2", Title: "Expense #2", Status: "pending", WorkflowSkillID: "expense-workflow", WorkflowVersion: "9.9.9", ObjectRole: "expense_report"})
+	if err == nil || !strings.Contains(err.Error(), "workflow_version") {
+		t.Fatalf("expected workflow version drift error, got %v", err)
+	}
+	_, err = app.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{DatasetID: "finance.expenses", ObjectRole: "customer", RecordID: "exp-3", Instance: maclawAppApprovalInstance{AppID: "expense-approval", InstanceID: "appr-runtime-3", Title: "Expense #3", Status: "pending", WorkflowSkillID: "expense-workflow", WorkflowVersion: "2.0.0", ObjectRole: "customer"}})
+	if err == nil || !strings.Contains(err.Error(), "object_role") {
+		t.Fatalf("expected object role drift error, got %v", err)
+	}
+}
 func TestListMaclawAppApprovalInstancesAll(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	empty, err := app.ListMaclawAppApprovalInstancesAll("all", 10)

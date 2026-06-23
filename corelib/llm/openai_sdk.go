@@ -52,7 +52,7 @@ func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []b
 	return responseBody, status, nil
 }
 
-func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback) (*Response, int, []byte, error) {
+func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback, onReasoning TokenCallback) (*Response, int, []byte, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -105,6 +105,9 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 		}
 		if reasoning := openAISDKChunkReasoningContent(chunk.RawJSON()); reasoning != "" {
 			reasoningBuf.WriteString(reasoning)
+			if onReasoning != nil {
+				onReasoning(reasoning)
+			}
 		}
 		if choice.FinishReason != "" {
 			finishReason = choice.FinishReason
@@ -170,6 +173,9 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 			}
 			if onToken != nil && len(result.Choices) > 0 && result.Choices[0].Message.Content != "" {
 				onToken(result.Choices[0].Message.Content)
+			}
+			if onReasoning != nil && len(result.Choices) > 0 && result.Choices[0].Message.ReasoningContent != "" {
+				onReasoning(result.Choices[0].Message.ReasoningContent)
 			}
 			return result, capture.statusCode(), nil, nil
 		}

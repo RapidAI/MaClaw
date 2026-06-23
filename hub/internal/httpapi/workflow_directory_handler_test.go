@@ -55,6 +55,9 @@ func TestWorkflowApproverDirectoryHandlerReturnsTenantScopedApprovers(t *testing
 	if err := st.Users.Create(ctx, &store.User{ID: "user-approver", TenantID: tenantID, Email: "approver@example.com", SN: "SN-1", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	if err := st.Users.Create(ctx, &store.User{ID: "user-finance", TenantID: tenantID, Email: "finance@example.com", SN: "SN-FIN", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create finance user: %v", err)
+	}
 	if err := st.Users.Create(ctx, &store.User{ID: "user-other", TenantID: "tenant_other", Email: "other@example.com", SN: "SN-2", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("create other user: %v", err)
 	}
@@ -66,12 +69,22 @@ func TestWorkflowApproverDirectoryHandlerReturnsTenantScopedApprovers(t *testing
 	if root == nil || root.ID == "" {
 		t.Fatal("expected tenant root group")
 	}
+	financeGroup, err := securitySvc.CreateGroup(securityCtx, "Finance", root.ID)
+	if err != nil {
+		t.Fatalf("create finance group: %v", err)
+	}
 	if err := securitySvc.AssignUser(securityCtx, "approver@example.com", root.ID); err != nil {
 		t.Fatalf("assign user: %v", err)
+	}
+	if err := securitySvc.AssignUser(securityCtx, "finance@example.com", financeGroup.ID); err != nil {
+		t.Fatalf("assign finance user: %v", err)
 	}
 
 	if err := st.Machines.Create(ctx, &store.Machine{ID: "machine-approver", TenantID: tenantID, UserID: "user-approver", ClientID: "client-1", Name: "Office PC", Platform: "windows", Status: "online", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("create machine: %v", err)
+	}
+	if err := st.Machines.Create(ctx, &store.Machine{ID: "machine-finance", TenantID: tenantID, UserID: "user-finance", ClientID: "client-fin", Name: "Finance PC", Platform: "windows", Status: "online", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create finance machine: %v", err)
 	}
 	if err := st.Machines.Create(ctx, &store.Machine{ID: "machine-other", TenantID: "tenant_other", UserID: "user-other", ClientID: "client-2", Name: "Other PC", Platform: "windows", Status: "online", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("create other machine: %v", err)
@@ -90,12 +103,14 @@ func TestWorkflowApproverDirectoryHandlerReturnsTenantScopedApprovers(t *testing
 	}
 	if err := saveVERegistry(ctx, tenantSystem, digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
 		{ID: "ve-active", MachineID: "ve-machine-active", Name: "Runtime Worker", Status: veStatusActive, OwnerEmail: "owner@example.com"},
+		{ID: "ve-finance-twin", MachineID: "ve-machine-finance-twin", Name: "Finance Twin", Status: veStatusActive, OwnerEmail: "finance@example.com"},
+		{ID: "ve-finance-bot", MachineID: "ve-machine-finance-bot", Name: "Finance Bot", Status: veStatusActive, VisibleGroupIDs: []string{financeGroup.ID}},
 		{ID: "ve-ghost", MachineID: "ve-ghost", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "deleted-employee", Name: "Deleted Runtime Worker", Status: veStatusActive, OwnerEmail: "owner@example.com"},
 		{ID: "ve-disabled", MachineID: "ve-machine-disabled", Name: "Disabled Worker", Status: veStatusDisabled, OwnerEmail: "owner@example.com"},
 	}}); err != nil {
 		t.Fatalf("save ve registry: %v", err)
 	}
-	if err := tenantSystem.Set(ctx, approvalRolesSettingsKey, `{"roles":[{"scopeType":"function","scopeId":"finance","scopeName":"Finance","roleCode":"finance_approver","roleName":"Finance Approver","executionMode":"digital_review","assignees":[{"subjectType":"user","subjectId":"approver@example.com","displayName":"Approver"}]}]}`); err != nil {
+	if err := tenantSystem.Set(ctx, approvalRolesSettingsKey, `{"functionScopes":[{"scopeId":"finance","scopeName":"Finance"},{"scopeId":"hr","scopeName":"HR","custom":true}],"roles":[{"scopeType":"function","scopeId":"finance","scopeName":"Finance","roleCode":"finance_approver","roleName":"Finance Approver","executionMode":"digital_review","assignees":[{"subjectType":"user","subjectId":"approver@example.com","displayName":"Approver"}]},{"scopeType":"department","scopeId":"`+financeGroup.ID+`","scopeName":"Finance","roleCode":"department_manager","roleName":"Department Manager","executionMode":"manual","assignees":[{"subjectType":"digital_twin","subjectId":"ve-machine-finance-twin","displayName":"Finance Twin"},{"subjectType":"digital_employee","subjectId":"ve-machine-finance-bot","displayName":"Finance Bot"}]}]}`); err != nil {
 		t.Fatalf("save approval roles: %v", err)
 	}
 
@@ -114,6 +129,7 @@ func TestWorkflowApproverDirectoryHandlerReturnsTenantScopedApprovers(t *testing
 		Machines       []map[string]any           `json:"machines"`
 		Employees      []digitalEmployeeEntry     `json:"employees"`
 		ApprovalRoles  []approvalRoleRecord       `json:"approval_roles"`
+		FunctionScopes []approvalFunctionScope    `json:"function_scopes"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -124,20 +140,40 @@ func TestWorkflowApproverDirectoryHandlerReturnsTenantScopedApprovers(t *testing
 	if body.Tree == nil || body.Tree.ID != root.ID || body.Tree.TenantID != tenantID {
 		t.Fatalf("unexpected tree: %#v", body.Tree)
 	}
-	if got := body.MembersByGroup[root.ID]; len(got) != 1 || got[0] != "approver@example.com" {
-		t.Fatalf("members = %#v", got)
+	if len(body.Tree.Children) != 1 || body.Tree.Children[0].ID != financeGroup.ID {
+		t.Fatalf("expected finance group in tree, got %#v", body.Tree.Children)
 	}
-	if !jsonListContains(body.Users, "email", "approver@example.com") || jsonListContains(body.Users, "email", "other@example.com") {
+	if got := body.MembersByGroup[root.ID]; len(got) != 1 || got[0] != "approver@example.com" {
+		t.Fatalf("root members = %#v", got)
+	}
+	if got := body.MembersByGroup[financeGroup.ID]; len(got) != 1 || got[0] != "finance@example.com" {
+		t.Fatalf("finance members = %#v", got)
+	}
+	if !jsonListContains(body.Users, "email", "approver@example.com") || !jsonListContains(body.Users, "email", "finance@example.com") || jsonListContains(body.Users, "email", "other@example.com") {
 		t.Fatalf("unexpected users: %#v", body.Users)
 	}
-	if !jsonListContains(body.Machines, "machine_id", "machine-approver") || jsonListContains(body.Machines, "machine_id", "machine-other") {
+	if !jsonListContains(body.Machines, "machine_id", "machine-approver") || !jsonListContains(body.Machines, "machine_id", "machine-finance") || jsonListContains(body.Machines, "machine_id", "machine-other") {
 		t.Fatalf("unexpected machines: %#v", body.Machines)
 	}
-	if len(body.Employees) != 1 || body.Employees[0].Name != "Runtime Worker" || body.Employees[0].MachineID != "ve-machine-active" {
+	if len(body.Employees) != 3 || !employeeListContains(body.Employees, "ve-machine-active") || !employeeListContains(body.Employees, "ve-machine-finance-twin") || !employeeListContains(body.Employees, "ve-machine-finance-bot") {
 		t.Fatalf("unexpected employees: %#v", body.Employees)
 	}
-	if len(body.ApprovalRoles) != 1 || body.ApprovalRoles[0].ID != "role:function:finance:finance_approver" || body.ApprovalRoles[0].Assignees[0].SubjectID != "approver@example.com" {
+	if len(body.ApprovalRoles) != 2 {
 		t.Fatalf("unexpected approval roles: %#v", body.ApprovalRoles)
+	}
+	if len(body.FunctionScopes) != 2 || body.FunctionScopes[0].ScopeID != "finance" || body.FunctionScopes[1].ScopeID != "hr" || !body.FunctionScopes[1].Custom {
+		t.Fatalf("unexpected function scopes: %#v", body.FunctionScopes)
+	}
+	rolesByID := map[string]approvalRoleRecord{}
+	for _, role := range body.ApprovalRoles {
+		rolesByID[role.ID] = role
+	}
+	if role := rolesByID["role:function:finance:finance_approver"]; role.ID == "" || role.Assignees[0].SubjectID != "approver@example.com" {
+		t.Fatalf("unexpected function approval role: %#v", role)
+	}
+	departmentRoleID := "role:department:" + financeGroup.ID + ":department_manager"
+	if role := rolesByID[departmentRoleID]; role.ID == "" || role.Assignees[0].SubjectID != "ve-machine-finance-twin" || role.Assignees[1].SubjectID != "ve-machine-finance-bot" {
+		t.Fatalf("unexpected department approval role: %#v", role)
 	}
 }
 
@@ -153,6 +189,15 @@ func TestWorkflowApproverDirectoryHandlerMissingDeps(t *testing.T) {
 func jsonListContains(items []map[string]any, key, value string) bool {
 	for _, item := range items {
 		if got, _ := item[key].(string); got == value {
+			return true
+		}
+	}
+	return false
+}
+
+func employeeListContains(items []digitalEmployeeEntry, machineID string) bool {
+	for _, item := range items {
+		if item.MachineID == machineID {
 			return true
 		}
 	}

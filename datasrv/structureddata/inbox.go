@@ -21,6 +21,7 @@ func (s *Service) MISInbox(ctx context.Context, p Principal, in QueryMISInboxInp
 	blueprintID := strings.TrimSpace(in.BlueprintID)
 	objectRole := strings.TrimSpace(in.ObjectRole)
 	workflowSkillID := strings.TrimSpace(in.WorkflowSkillID)
+	workflowVersion := strings.TrimSpace(in.WorkflowVersion)
 	workflowInstanceID := strings.TrimSpace(in.WorkflowInstanceID)
 	workflowNodeID := strings.TrimSpace(in.WorkflowNodeID)
 	businessStatus := strings.TrimSpace(in.BusinessStatus)
@@ -42,7 +43,7 @@ func (s *Service) MISInbox(ctx context.Context, p Principal, in QueryMISInboxInp
 	beforeID := strings.TrimSpace(in.BeforeID)
 	items := []MISInboxItem{}
 	if typeMatches(typeFilter, "approval") {
-		approvals, err := s.store.ListRecordApprovals(ctx, p.TenantID, QueryRecordApprovalsInput{DatasetID: datasetID, AppID: appID, BlueprintID: blueprintID, ObjectRole: objectRole, WorkflowSkillID: workflowSkillID, WorkflowInstanceID: workflowInstanceID, WorkflowNodeID: workflowNodeID, BusinessStatus: businessStatus, ResultStatus: resultStatus, Lane: lane, UserID: userID, Status: defaultInboxStatus(statusFilter, recordApprovalStatusPending, in.IncludeOK), Limit: limit, Before: before, BeforeID: beforeID})
+		approvals, err := s.store.ListRecordApprovals(ctx, p.TenantID, QueryRecordApprovalsInput{DatasetID: datasetID, AppID: appID, BlueprintID: blueprintID, ObjectRole: objectRole, WorkflowSkillID: workflowSkillID, WorkflowVersion: workflowVersion, WorkflowInstanceID: workflowInstanceID, WorkflowNodeID: workflowNodeID, BusinessStatus: businessStatus, ResultStatus: resultStatus, Lane: lane, UserID: userID, Status: defaultInboxStatus(statusFilter, recordApprovalStatusPending, in.IncludeOK), Limit: limit, Before: before, BeforeID: beforeID})
 		if err != nil {
 			return nil, err
 		}

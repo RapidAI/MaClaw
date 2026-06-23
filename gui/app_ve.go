@@ -105,6 +105,11 @@ func (a *App) RegisterVirtualEmployee(name, skillDesc, policy string, list []str
 	} else if policy == "blacklist" {
 		body["blacklist"] = list
 	}
+	// Include current approval capability status on registration so Hub
+	// knows from the start whether this VE can serve as an approver.
+	if approvalCfg, err := a.GetVEApprovalConfig(); err == nil && approvalCfg != nil {
+		body["approval_capability_enabled"] = approvalCfg.Enabled
+	}
 
 	_, err = a.postHubJSON(hubURL, token, "/api/ve/register", body)
 	if err != nil {
@@ -137,6 +142,11 @@ func (a *App) UpdateVESettings(name, skillDesc, policy string, list []string, av
 		body["whitelist"] = list
 	} else if policy == "blacklist" {
 		body["blacklist"] = list
+	}
+	// Include current approval capability status so Hub stays in sync
+	// on every VE settings update (startup, profile edit, etc.).
+	if approvalCfg, err := a.GetVEApprovalConfig(); err == nil && approvalCfg != nil {
+		body["approval_capability_enabled"] = approvalCfg.Enabled
 	}
 
 	_, err = a.putHubJSON(hubURL, token, "/api/ve/settings", body)

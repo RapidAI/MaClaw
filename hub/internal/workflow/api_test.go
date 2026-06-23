@@ -418,7 +418,7 @@ func TestSubmitForReview(t *testing.T) {
 		Graph: WorkflowGraph{
 			Nodes: []WorkflowNode{
 				{ID: "n1", Type: NodeTrigger, Label: "Start"},
-				{ID: "n2", Type: NodeApproval, Label: "Approve"},
+				{ID: "n2", Type: NodeApproval, Label: "Approve", Config: approvalConfigRaw("role:function:finance:finance_approver")},
 			},
 			Edges: []WorkflowEdge{
 				{ID: "e1", SourceID: "n1", TargetID: "n2"},
@@ -477,6 +477,45 @@ func TestSubmitForReview_ValidationError(t *testing.T) {
 				{ID: "e1", SourceID: "n1", TargetID: "n2"},
 				{ID: "e2", SourceID: "n2", TargetID: "n1"},
 			},
+		},
+	}
+
+	req := httptest.NewRequest("POST", "/api/v1/workflows/wf-mine/versions/ver-1/submit", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Code != "VALIDATION_FAILED" {
+		t.Fatalf("code = %q, want VALIDATION_FAILED", body.Code)
+	}
+	if store.versions["ver-1"].Status != VersionDraft {
+		t.Fatalf("status = %q, want draft", store.versions["ver-1"].Status)
+	}
+}
+
+func TestSubmitForReview_RejectsApprovalWithoutApprover(t *testing.T) {
+	_, mux, store := setupTestAPI()
+
+	store.workflows["wf-mine"] = &WorkflowDefinition{ID: "wf-mine", OwnerID: "user-001", Name: "Mine"}
+	store.versions["ver-1"] = &WorkflowVersion{
+		ID:            "ver-1",
+		WorkflowID:    "wf-mine",
+		VersionNumber: "0.1.0",
+		Status:        VersionDraft,
+		Graph: WorkflowGraph{
+			Nodes: []WorkflowNode{
+				{ID: "n1", Type: NodeTrigger, Label: "Start"},
+				{ID: "n2", Type: NodeApproval, Label: "Approve", Config: approvalConfigRaw()},
+			},
+			Edges: []WorkflowEdge{{ID: "e1", SourceID: "n1", TargetID: "n2"}},
 		},
 	}
 

@@ -995,6 +995,7 @@ type QueryMISInboxInput struct {
 	BlueprintID        string `json:"blueprint_id,omitempty"`
 	ObjectRole         string `json:"object_role,omitempty"`
 	WorkflowSkillID    string `json:"workflow_skill_id,omitempty"`
+	WorkflowVersion    string `json:"workflow_version,omitempty"`
 	WorkflowInstanceID string `json:"workflow_instance_id,omitempty"`
 	WorkflowNodeID     string `json:"workflow_node_id,omitempty"`
 	BusinessStatus     string `json:"business_status,omitempty"`
@@ -1142,6 +1143,7 @@ type QueryRecordApprovalsInput struct {
 	Status             string `json:"status,omitempty"`
 	Kind               string `json:"kind,omitempty"`
 	WorkflowSkillID    string `json:"workflow_skill_id,omitempty"`
+	WorkflowVersion    string `json:"workflow_version,omitempty"`
 	WorkflowInstanceID string `json:"workflow_instance_id,omitempty"`
 	WorkflowNodeID     string `json:"workflow_node_id,omitempty"`
 	BusinessStatus     string `json:"business_status,omitempty"`
@@ -1161,6 +1163,7 @@ type ReviewRecordApprovalInput struct {
 	Decision           string                   `json:"decision"`
 	Reason             string                   `json:"reason,omitempty"`
 	WorkflowNodeID     string                   `json:"workflow_node_id,omitempty"`
+	WorkflowVersion    string                   `json:"workflow_version,omitempty"`
 	WorkflowDecisionID string                   `json:"workflow_decision_id,omitempty"`
 	BusinessStatus     string                   `json:"business_status,omitempty"`
 	ResultStatus       string                   `json:"result_status,omitempty"`

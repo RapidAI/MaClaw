@@ -220,7 +220,8 @@ const TENANT_SYSTEM_LLM_DEFAULTS_I18N = {
     reload: 'Reload',
     label: 'Default service group',
     emptyOption: 'Select a service group',
-    noGroups: 'No usable service groups found. Create a model service group with at least one route first.',
+    noGroups: 'No model service groups found. Create a model service group first.',
+    noUsableGroups: 'Model service groups exist, but none have a usable LLM route. Add a configured provider route in Model Services first.',
     hint: 'Used by approval workflow natural-language draft generation. It is independent from new-user benefits.',
     invalidSelected: 'Current setting is unavailable: {id}. Select another usable service group.',
     invalidSelectedOption: 'Current setting unavailable ({id})',
@@ -237,7 +238,8 @@ const TENANT_SYSTEM_LLM_DEFAULTS_I18N = {
     reload: '\u5237\u65b0',
     label: '\u9ed8\u8ba4\u670d\u52a1\u7ec4',
     emptyOption: '\u9009\u62e9\u670d\u52a1\u7ec4',
-    noGroups: '\u6682\u65e0\u53ef\u7528\u670d\u52a1\u7ec4\u3002\u8bf7\u5148\u521b\u5efa\u81f3\u5c11\u5305\u542b\u4e00\u6761\u8def\u7531\u7684\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
+    noGroups: '\u6682\u65e0\u6a21\u578b\u670d\u52a1\u7ec4\u3002\u8bf7\u5148\u521b\u5efa\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
+    noUsableGroups: '\u5df2\u6709\u6a21\u578b\u670d\u52a1\u7ec4\uff0c\u4f46\u6ca1\u6709\u53ef\u7528\u7684 LLM \u8def\u7531\u3002\u8bf7\u5148\u5728\u6a21\u578b\u670d\u52a1\u4e2d\u6dfb\u52a0\u5df2\u914d\u7f6e\u7684\u63d0\u4f9b\u5546\u8def\u7531\u3002',
     hint: '\u7528\u4e8e\u5ba1\u6279\u5de5\u4f5c\u6d41\u81ea\u7136\u8bed\u8a00\u8349\u7a3f\u751f\u6210\uff0c\u4e0e\u65b0\u7528\u6237\u798f\u5229\u4e92\u76f8\u72ec\u7acb\u3002',
     invalidSelected: '\u5f53\u524d\u914d\u7f6e\u4e0d\u53ef\u7528\uff1a{id}\u3002\u8bf7\u6539\u9009\u5176\u4ed6\u53ef\u7528\u670d\u52a1\u7ec4\u3002',
     invalidSelectedOption: '\u5f53\u524d\u914d\u7f6e\u4e0d\u53ef\u7528 ({id})',
@@ -474,7 +476,6 @@ function tenantSystemLLMModelProviderIDs(model) {
 function tenantSystemLLMUsableGroups(data) {
   return (data && data.model_service_groups || []).filter(function(group) {
     if (!group || !String(group.id || '').trim()) return false;
-    if (String(group.id || '').trim().toLowerCase() === 'default') return false;
     return Array.isArray(group.models) && group.models.some(function(model) {
       return String(model && model.name || '').trim() && tenantSystemLLMModelProviderIDs(model).some(tenantSystemLLMProviderIsConfigured);
     });
@@ -486,11 +487,13 @@ function renderTenantSystemLLMDefaultOptions() {
   const data = tenantSystemLLMDefaultsCache || {};
   const selected = String(data.system_default_service_group_id || '').trim();
   const groups = tenantSystemLLMUsableGroups(data);
+  const hasServiceGroups = (data.model_service_groups || []).some(function(group) { return group && String(group.id || '').trim(); });
   const selectedUsable = !!selected && groups.some(function(group) { return String(group && group.id || '').trim() === selected; });
   if (!groups.length) {
-    select.innerHTML = '<option value="">' + escapeHtml(selected ? tslx('invalidSelectedOption', { id: selected }) : tslx('noGroups')) + '</option>';
+    const emptyMessage = hasServiceGroups ? tslx('noUsableGroups') : tslx('noGroups');
+    select.innerHTML = '<option value="">' + escapeHtml(selected ? tslx('invalidSelectedOption', { id: selected }) : emptyMessage) + '</option>';
     select.disabled = true;
-    _s('tenantSystemLLMDefaultsHint', 'textContent', selected ? tslx('invalidSelected', { id: selected }) : tslx('noGroups'));
+    _s('tenantSystemLLMDefaultsHint', 'textContent', selected ? tslx('invalidSelected', { id: selected }) : emptyMessage);
     return;
   }
   select.disabled = false;
@@ -499,7 +502,7 @@ function renderTenantSystemLLMDefaultOptions() {
     const id = String(group.id || '').trim();
     const name = String(group.name || id).trim();
     const label = name === id ? id : name + ' (' + id + ')';
-    return '<option value="' + escapeAttr(id) + '"' + (id === selected ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+    return '<option value="' + escapeHtml(id) + '"' + (id === selected ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
   }).join('');
 }
 async function loadTenantSystemLLMDefaults() {

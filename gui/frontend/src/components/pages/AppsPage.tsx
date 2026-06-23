@@ -25,6 +25,7 @@ type AppEntry = {
     source: 'builtin' | 'skill' | 'datasrv' | 'market' | 'local';
     manifest?: AppManifestBinding;
     importedRunEvidence?: AppRunHistoryEntry;
+    versionSnapshot?: BackendAppInstallVersionSnapshot;
 };
 
 type AppIconName = 'receipt' | 'wallet' | 'invoice' | 'warehouse' | 'inventory' | 'customer' | 'users' | 'contract' | 'pdf' | 'shield' | 'sheet' | 'chart' | 'dashboard' | 'database' | 'eraser' | 'truck' | 'calendar' | 'web' | 'sync' | 'bot';
@@ -162,6 +163,22 @@ type AppWorkflowMapping = {
     approvalNode: string;
     resultNode: string;
     attentionNode?: string;
+    statusMapping: {
+        pending: string;
+        approved: string;
+        rejected: string;
+        attention: string;
+        requiresInput?: string;
+    };
+};
+
+type AppWorkflowContract = {
+    schema: 'maclaw.app.workflow_contract.v1';
+    workflowSkillId: string;
+    workflowVersion?: string;
+    objectRole: string;
+    requiredInputs: string[];
+    decisionOutputs: string[];
     statusMapping: {
         pending: string;
         approved: string;
@@ -1963,9 +1980,12 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
     const kind = normalizeAppKind(item.kind || metadata.kind || 'enterprise_normal_app');
     const workflowIDs = Array.isArray(metadata.workflow_skill_ids) ? metadata.workflow_skill_ids.map((id: unknown) => String(id || '').trim()).filter(Boolean) : [];
     const dependencies = normalizeAppDependencies({ skills: metadata.dependencies })?.skills || [];
-    const workflowDependencies: AppSkillDependency[] = workflowIDs.map((id) => ({ id, kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }));
     const appSkillID = String(metadata.app_skill_id || '').trim();
     const appSkillVersion = String(metadata.app_skill_version || '').trim();
+    const versionSnapshot = dataSrvInstalledVersionSnapshot(metadata, item, workflowIDs, primaryBinding);
+    const workflowVersionByID = new Map((versionSnapshot?.workflow_skills || []).map((skill) => [skill.id || '', skill.version || '']));
+    const workflowDependencies: AppSkillDependency[] = workflowIDs.map((id) => ({ id, version: workflowVersionByID.get(id) || undefined, kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }));
+    const mergedDependencies = mergeDataSrvInstalledDependencies(dependencies, workflowDependencies);
     const importedRunEvidence = dataSrvInstalledRunEvidence(metadata, appID);
     return {
         id: `datasrv-installed-${appID}`,
@@ -1978,6 +1998,7 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
         source: 'datasrv',
         version: normalizeAppVersion(item.version),
         importedRunEvidence,
+        versionSnapshot,
         manifest: {
             schema: 'maclaw.app.v1',
             installUnit: 'enterprise_app_pack',
@@ -1992,10 +2013,165 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
                 templateID: String(primaryBinding.template_id || primaryBinding.templateID || '').trim() || undefined,
             },
             appSkill: appSkillID ? { id: appSkillID, version: appSkillVersion || undefined, source: 'hub' } : undefined,
-            dependencies: dependencies.length || workflowDependencies.length ? { skills: [...dependencies, ...workflowDependencies] } : undefined,
-            mis: kind === 'enterprise_approval_app' && workflowIDs.length > 0 ? { approvalBindings: [{ event: `${domain}.submitted`, workflowSkillId: workflowIDs[0], objectRole: String(primaryBinding.object_role || primaryBinding.objectRole || '').trim() || domain }] } : undefined,
+            dependencies: mergedDependencies.length ? { skills: mergedDependencies } : undefined,
+            mis: kind === 'enterprise_approval_app' && workflowIDs.length > 0 ? { approvalBindings: [dataSrvInstalledApprovalBinding(domain, workflowIDs[0], primaryBinding, versionSnapshot)] } : undefined,
             ui: dataSrvInstalledWorkspaceLayout(metadata, kind),
         },
+    };
+}
+
+function mergeDataSrvInstalledDependencies(base: AppSkillDependency[], recovered: AppSkillDependency[]) {
+    const byID = new Map<string, AppSkillDependency>();
+    [...base, ...recovered].forEach((dep) => {
+        const id = String(dep.id || '').trim();
+        if (!id) return;
+        const existing = byID.get(id);
+        if (!existing) {
+            byID.set(id, { ...dep, id });
+            return;
+        }
+        byID.set(id, {
+            ...existing,
+            ...dep,
+            version: existing.version || dep.version,
+            kind: existing.kind || dep.kind,
+            source: existing.source || dep.source,
+            required: existing.required !== false && dep.required !== false,
+            capabilities: Array.from(new Set([...(existing.capabilities || []), ...(dep.capabilities || [])])),
+        });
+    });
+    return Array.from(byID.values());
+}
+
+function normalizeVersionSnapshotSkill(raw: unknown, fallback?: Partial<BackendAppInstallSkillVersionSnapshot>): BackendAppInstallSkillVersionSnapshot | undefined {
+    const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const id = String(value.id || fallback?.id || '').trim();
+    if (!id) return undefined;
+    const version = String(value.version || fallback?.version || '').trim();
+    const kind = String(value.kind || fallback?.kind || '').trim();
+    const source = String(value.source || fallback?.source || '').trim();
+    return { id, version: version || undefined, kind: kind || undefined, source: source || undefined };
+}
+
+function normalizeVersionSnapshotBinding(raw: unknown, fallback?: Partial<BackendAppInstallApprovalBindingSnapshot>): BackendAppInstallApprovalBindingSnapshot | undefined {
+    const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const workflowSkillID = String(value.workflow_skill_id || value.workflowSkillId || fallback?.workflow_skill_id || '').trim();
+    if (!workflowSkillID) return undefined;
+    const event = String(value.event || fallback?.event || '').trim();
+    const objectRole = String(value.object_role || value.objectRole || fallback?.object_role || '').trim();
+    const workflowVersion = String(value.workflow_version || value.workflowVersion || fallback?.workflow_version || '').trim();
+    return { event: event || undefined, object_role: objectRole || undefined, workflow_skill_id: workflowSkillID, workflow_version: workflowVersion || undefined };
+}
+
+function normalizeVersionSnapshot(raw: unknown): BackendAppInstallVersionSnapshot | undefined {
+    const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : undefined;
+    if (!value) return undefined;
+    const snapshot: BackendAppInstallVersionSnapshot = {};
+    const appEntryVersion = String(value.app_entry_version || value.appEntryVersion || '').trim();
+    if (appEntryVersion) snapshot.app_entry_version = appEntryVersion;
+    const appSkill = normalizeVersionSnapshotSkill(value.app_skill || value.appSkill);
+    if (appSkill) snapshot.app_skill = appSkill;
+    const workflowSkills = (Array.isArray(value.workflow_skills) ? value.workflow_skills : Array.isArray(value.workflowSkills) ? value.workflowSkills : [])
+        .map((item) => normalizeVersionSnapshotSkill(item))
+        .filter((item): item is BackendAppInstallSkillVersionSnapshot => !!item);
+    if (workflowSkills.length) snapshot.workflow_skills = dedupeVersionSnapshotSkills(workflowSkills);
+    const approvalBindings = (Array.isArray(value.approval_bindings) ? value.approval_bindings : Array.isArray(value.approvalBindings) ? value.approvalBindings : [])
+        .map((item) => normalizeVersionSnapshotBinding(item))
+        .filter((item): item is BackendAppInstallApprovalBindingSnapshot => !!item);
+    if (approvalBindings.length) snapshot.approval_bindings = dedupeVersionSnapshotBindings(approvalBindings);
+    return hasVersionSnapshotItems(snapshot) ? snapshot : undefined;
+}
+
+function hasVersionSnapshotItems(snapshot: BackendAppInstallVersionSnapshot | undefined) {
+    return !!snapshot && !!(snapshot.app_entry_version || snapshot.app_skill?.id || snapshot.workflow_skills?.length || snapshot.approval_bindings?.length);
+}
+
+function parseVersionRef(value: string): { id: string; version?: string } | null {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return null;
+    const at = trimmed.lastIndexOf('@');
+    if (at <= 0) return { id: trimmed };
+    const id = trimmed.slice(0, at).trim();
+    const version = trimmed.slice(at + 1).replace(/^v/i, '').trim();
+    return id ? { id, version: version || undefined } : null;
+}
+
+function parseApprovalBindingVersionRef(value: string, fallbackObjectRole: string): BackendAppInstallApprovalBindingSnapshot | undefined {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return undefined;
+    const separator = trimmed.indexOf(':');
+    const event = separator > 0 ? trimmed.slice(0, separator).trim() : '';
+    const workflowRef = parseVersionRef(separator > 0 ? trimmed.slice(separator + 1) : trimmed);
+    if (!workflowRef?.id) return undefined;
+    return { event: event || undefined, object_role: fallbackObjectRole || undefined, workflow_skill_id: workflowRef.id, workflow_version: workflowRef.version };
+}
+
+function dedupeVersionSnapshotSkills(items: BackendAppInstallSkillVersionSnapshot[]) {
+    const seen = new Set<string>();
+    return items.filter((item) => {
+        const key = [item.id, item.version || '', item.kind || '', item.source || ''].join('@');
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+function dedupeVersionSnapshotBindings(items: BackendAppInstallApprovalBindingSnapshot[]) {
+    const seen = new Set<string>();
+    return items.filter((item) => {
+        const key = [item.event || '', item.object_role || '', item.workflow_skill_id || '', item.workflow_version || ''].join('@');
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+function dataSrvInstalledVersionSnapshot(metadata: Record<string, any>, item: DataSrvAppInstallationItem, workflowIDs: string[], primaryBinding: Record<string, any>): BackendAppInstallVersionSnapshot | undefined {
+    const explicit = normalizeVersionSnapshot(metadata.version_snapshot || metadata.versionSnapshot);
+    if (explicit) return explicit;
+    const snapshot: BackendAppInstallVersionSnapshot = {};
+    const appEntryVersion = String(metadata.app_entry_version || metadata.appEntryVersion || item.version || '').trim();
+    if (appEntryVersion) snapshot.app_entry_version = appEntryVersion;
+    const appSkill = normalizeVersionSnapshotSkill(undefined, {
+        id: String(metadata.app_skill_id || '').trim(),
+        version: String(metadata.app_skill_version || '').trim(),
+        kind: 'runtime_skill',
+        source: String(metadata.app_skill_source || metadata.appSkillSource || 'hub').trim(),
+    });
+    if (appSkill) snapshot.app_skill = appSkill;
+    const workflowVersionRefs = parseStringList(metadata.workflow_skill_versions || metadata.workflowSkillVersions)
+        .map(parseVersionRef)
+        .filter((item): item is { id: string; version?: string } => !!item?.id);
+    const workflowSkills = workflowVersionRefs.map((ref) => normalizeVersionSnapshotSkill(undefined, { id: ref.id, version: ref.version, kind: 'workflow_skill', source: 'hub' })).filter((skill): skill is BackendAppInstallSkillVersionSnapshot => !!skill);
+    workflowIDs.forEach((id) => {
+        if (!workflowSkills.some((skill) => skill.id === id)) {
+            const skill = normalizeVersionSnapshotSkill(undefined, { id, kind: 'workflow_skill', source: 'hub' });
+            if (skill) workflowSkills.push(skill);
+        }
+    });
+    if (workflowSkills.length) snapshot.workflow_skills = dedupeVersionSnapshotSkills(workflowSkills);
+    const objectRole = String(primaryBinding.object_role || primaryBinding.objectRole || metadata.object_role || metadata.objectRole || '').trim();
+    const approvalBindings = parseStringList(metadata.approval_binding_versions || metadata.approvalBindingVersions)
+        .map((ref) => parseApprovalBindingVersionRef(ref, objectRole))
+        .filter((binding): binding is BackendAppInstallApprovalBindingSnapshot => !!binding);
+    if (!approvalBindings.length && snapshot.workflow_skills?.length) {
+        const workflow = snapshot.workflow_skills[0];
+        const event = String(metadata.approval_event || metadata.approvalEvent || '').trim();
+        approvalBindings.push({ event: event || undefined, object_role: objectRole || undefined, workflow_skill_id: workflow.id, workflow_version: workflow.version });
+    }
+    if (approvalBindings.length) snapshot.approval_bindings = dedupeVersionSnapshotBindings(approvalBindings);
+    return hasVersionSnapshotItems(snapshot) ? snapshot : undefined;
+}
+
+function dataSrvInstalledApprovalBinding(domain: string, workflowSkillID: string, primaryBinding: Record<string, any>, versionSnapshot: BackendAppInstallVersionSnapshot | undefined): AppApprovalBinding {
+    const objectRole = String(primaryBinding.object_role || primaryBinding.objectRole || '').trim() || domain;
+    const snapshotBinding = (versionSnapshot?.approval_bindings || []).find((binding) => binding.workflow_skill_id === workflowSkillID) || versionSnapshot?.approval_bindings?.[0];
+    const workflowSkill = (versionSnapshot?.workflow_skills || []).find((skill) => skill.id === workflowSkillID);
+    return {
+        event: snapshotBinding?.event || domain + '.submitted',
+        workflowSkillId: snapshotBinding?.workflow_skill_id || workflowSkillID,
+        workflowVersion: snapshotBinding?.workflow_version || workflowSkill?.version || undefined,
+        objectRole: snapshotBinding?.object_role || objectRole,
     };
 }
 
@@ -3248,6 +3424,26 @@ function applyAppResultContract(manifest: AppManifestBinding, kind: AppKind, ove
 function appResultContractForManifest(app: AppEntry): AppResultContract {
     return normalizeAppResultContract(app.manifest?.resultContract, app.kind, app.manifest?.skill?.outputModes || []);
 }
+
+function appWorkflowContractForManifest(app: AppEntry): AppWorkflowContract | undefined {
+    if (app.kind !== 'enterprise_approval_app') return undefined;
+    const binding = appApprovalBinding(app);
+    const workflowSkill = app.manifest?.dependencies?.skills?.find((dependency) => dependency.kind === 'workflow_skill' && (!binding?.workflowSkillId || dependency.id === binding.workflowSkillId));
+    const workflowSkillId = String(binding?.workflowSkillId || workflowSkill?.id || '').trim();
+    const workflowVersion = String(binding?.workflowVersion || workflowSkill?.version || '').trim();
+    const objectRole = String(binding?.objectRole || app.manifest?.datasrv?.objectRole || app.manifest?.datasrv?.domain || '').trim();
+    const workflow = normalizeAppWorkflowMapping(app.manifest?.workflow, app.kind, app.manifest?.datasrv?.domain || 'business', objectRole || 'record');
+    if (!workflowSkillId || !objectRole || !workflow) return undefined;
+    return {
+        schema: 'maclaw.app.workflow_contract.v1',
+        workflowSkillId,
+        workflowVersion: workflowVersion || undefined,
+        objectRole,
+        requiredInputs: ['record_ref', 'applicant', 'business_payload'],
+        decisionOutputs: ['approved', 'rejected', 'attention'],
+        statusMapping: workflow.statusMapping,
+    };
+}
 function appResultContractPublishSummary(app: AppEntry, lang?: string) {
     const zh = isZh(lang);
     const contract = appResultContractForManifest(app);
@@ -3424,6 +3620,7 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
         } : undefined,
         workspaceLayout: appWorkspaceLayoutEvidence(app),
         resultContract,
+        workflowContract: appWorkflowContractForManifest(app),
         testEvidence: {
             runId: evidence?.runID,
             definitionHash: evidence?.definitionHash,
@@ -5289,6 +5486,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 <div>
                     <h2 className="apps-detail__title">{app.name}</h2>
                     <p className="apps-detail__subtitle">{app.description}</p>
+                    <InstallVersionSnapshot snapshot={app.versionSnapshot} text={text} />
                 </div>
             </div>
             <div className="apps-detail__body elegant-scrollbar">

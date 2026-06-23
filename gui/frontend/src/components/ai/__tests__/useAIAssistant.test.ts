@@ -139,7 +139,7 @@ function resetAppMocks() {
     (DismissAgentView as any).mockImplementation(async () => ({ text: 'dismissed', error: '' }));
 }
 
-function assistantMessages(messages: Array<{ role: string; content: string; fields?: unknown; actions?: unknown; confirmation?: { status?: string } }>) {
+function assistantMessages(messages: Array<{ role: string; content: string; reasoning?: string; fields?: unknown; actions?: unknown; confirmation?: { status?: string } }>) {
     return messages.filter(message => message.role === 'assistant');
 }
 
@@ -985,6 +985,197 @@ describe('useAIAssistant property tests', () => {
         expect(assistantMessages(result.current.messages)[0].content).toBe('hello world');
         expect(result.current.sending).toBe(false);
         expect(result.current.streaming).toBe(false);
+    });
+
+    it('keeps streamed thinking and appends final response reasoning', async () => {
+        const pending = deferred<{ text: string; reasoning: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('show thinking');
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', requestEvent('\x01先分析问题。'));
+            emitRuntimeEvent('ai-assistant-token', requestEvent('最终答案'));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+
+        expect(assistantMessages(result.current.messages)[0].content).toBe('最终答案');
+        expect(assistantMessages(result.current.messages)[0].reasoning).toBe('先分析问题。');
+
+        await act(async () => {
+            pending.resolve({ text: '最终答案', reasoning: '再核对官方链路。', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+
+        expect(assistantMessages(result.current.messages)[0].content).toBe('最终答案');
+        expect(assistantMessages(result.current.messages)[0].reasoning).toBe('先分析问题。\n再核对官方链路。');
+    });
+
+    it('deduplicates final reasoning that already contains streamed thinking', async () => {
+        const pending = deferred<{ text: string; reasoning: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('show thinking');
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', requestEvent('\x01step one'));
+            emitRuntimeEvent('ai-assistant-token', requestEvent('answer'));
+        });
+
+        await act(async () => {
+            pending.resolve({ text: 'answer', reasoning: 'step one\nstep two', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+
+        expect(assistantMessages(result.current.messages)[0].content).toBe('answer');
+        expect(assistantMessages(result.current.messages)[0].reasoning).toBe('step one\nstep two');
+    });
+
+    it('does not deduplicate unrelated final reasoning just because it contains a short streamed word', async () => {
+        const pending = deferred<{ text: string; reasoning: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('show thinking');
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', requestEvent('\x01step'));
+            emitRuntimeEvent('ai-assistant-token', requestEvent('answer'));
+        });
+
+        await act(async () => {
+            pending.resolve({ text: 'answer', reasoning: 'next step', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+
+        expect(assistantMessages(result.current.messages)[0].content).toBe('answer');
+        expect(assistantMessages(result.current.messages)[0].reasoning).toBe('step\nnext step');
+    });
+
+    it('does not deduplicate a short streamed prefix of final reasoning', async () => {
+        const pending = deferred<{ text: string; reasoning: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('show thinking');
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', requestEvent('\x01step'));
+            emitRuntimeEvent('ai-assistant-token', requestEvent('answer'));
+        });
+
+        await act(async () => {
+            pending.resolve({ text: 'answer', reasoning: 'stepwise plan', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+
+        expect(assistantMessages(result.current.messages)[0].content).toBe('answer');
+        expect(assistantMessages(result.current.messages)[0].reasoning).toBe('step\nstepwise plan');
+    });
+
+    it('deduplicates a substantial streamed prefix of final reasoning', async () => {
+        const pending = deferred<{ text: string; reasoning: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('show thinking');
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', requestEvent('\x01step one'));
+            emitRuntimeEvent('ai-assistant-token', requestEvent('answer'));
+        });
+
+        await act(async () => {
+            pending.resolve({ text: 'answer', reasoning: 'step one and then step two', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+
+        expect(assistantMessages(result.current.messages)[0].content).toBe('answer');
+        expect(assistantMessages(result.current.messages)[0].reasoning).toBe('step one and then step two');
+    });
+
+    it('does not merge final reasoning on incidental one-character overlap', async () => {
+        const pending = deferred<{ text: string; reasoning: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('show thinking');
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', requestEvent('\x01streamed reasoning.'));
+            emitRuntimeEvent('ai-assistant-token', requestEvent('answer'));
+        });
+
+        await act(async () => {
+            pending.resolve({ text: 'answer', reasoning: '.final reasoning', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+
+        expect(assistantMessages(result.current.messages)[0].content).toBe('answer');
+        expect(assistantMessages(result.current.messages)[0].reasoning).toBe('streamed reasoning.\n.final reasoning');
+    });
+
+    it('keeps a final response that contains reasoning only', async () => {
+        const pending = deferred<{ text: string; reasoning: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('reasoning only');
+        });
+
+        await act(async () => {
+            pending.resolve({ text: '', reasoning: 'checking path', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('');
+        expect(assistantMessages(result.current.messages)[0].reasoning).toBe('checking path');
+        await waitFor(() => {
+            expect(mockUIState.messages.some((message: any) => message.content === '' && message.reasoning === 'checking path')).toBe(true);
+        });
+    });
+
+    it('normalizes Go-style final Reasoning responses', async () => {
+        const pending = deferred<{ Text: string; Reasoning: string; Error: string; Fields: null; Actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('go style reasoning');
+        });
+
+        await act(async () => {
+            pending.resolve({ Text: '', Reasoning: 'go style thought', Error: '', Fields: null, Actions: null });
+            await pending.promise;
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('');
+        expect(assistantMessages(result.current.messages)[0].reasoning).toBe('go style thought');
     });
 
     it('stream-done clears visual busy before the request promise resolves', async () => {

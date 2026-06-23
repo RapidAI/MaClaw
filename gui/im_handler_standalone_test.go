@@ -773,6 +773,26 @@ func TestBuildAgentLoopAssistantTurnStripsRolePrefixFromReasoning(t *testing.T) 
 	}
 }
 
+func TestBuildAgentLoopAssistantTurnExtractsThinkTagsIntoReasoning(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	defer h.memory.Stop()
+
+	turn := h.buildAgentLoopAssistantTurn(nil, llm.Choice{Message: llm.Message{
+		Role:    "assistant",
+		Content: "<think>checking official path</think>Visible answer.",
+	}})
+
+	if turn.Content != "Visible answer." {
+		t.Fatalf("content = %q, want visible answer only", turn.Content)
+	}
+	if turn.Reasoning != "checking official path" {
+		t.Fatalf("reasoning = %q, want extracted think content", turn.Reasoning)
+	}
+	if turn.HistoryEntry.ReasoningContent != "checking official path" {
+		t.Fatalf("history reasoning = %q, want extracted think content", turn.HistoryEntry.ReasoningContent)
+	}
+}
+
 func TestPendingUserReplyBindingSurvivesTranscriptReconciliation(t *testing.T) {
 	question := "请查看并确认需求是否准确，或提出修改意见。确认后我将进入技术设计阶段。"
 	pendingHistory := []agent.ConversationEntry{

@@ -805,6 +805,9 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 		view["accepts_supplementary"] = suppConfig
 	}
 	// Pass through variants (mutually exclusive field groups) if defined.
+	// Prefill values are applied to variant fields the same way as common fields —
+	// this is critical for forms where ALL user-facing fields live inside variants
+	// (e.g. academic application forms: schema.Fields=[] and all fields are in manual_mode variant).
 	if len(schema.Variants) > 0 {
 		variants := make([]map[string]interface{}, 0, len(schema.Variants))
 		for _, v := range schema.Variants {
@@ -831,7 +834,17 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 					}
 					vf["options"] = opts
 				}
-				if f.Default != nil {
+				// Apply prefilled value (from memory/knowledge) or static default.
+				if pv, ok := prefilled[f.Name]; ok && pv != nil && pv.Value != nil {
+					vf["value"] = pv.Value
+					vf["prefill_source"] = pv.Source
+					if pv.SourceDetail != "" {
+						vf["prefill_detail"] = pv.SourceDetail
+					}
+					if pv.NeedsConfirm {
+						vf["prefill_needs_confirm"] = true
+					}
+				} else if f.Default != nil {
 					vf["value"] = f.Default
 				}
 				variantFields = append(variantFields, vf)
@@ -845,7 +858,7 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 		view["variants"] = variants
 	}
 	h.app.emitAgentView(view)
-	log.Printf("[workflow-v2] emitted AG UI form: phase=%s fields=%d variants=%d", phase.ID, len(schema.Fields), len(schema.Variants))
+	log.Printf("[workflow-v2] emitted AG UI form: phase=%s fields=%d variants=%d prefilled=%d", phase.ID, len(schema.Fields), len(schema.Variants), len(prefilled))
 }
 
 // emitWorkflowV2FormWithPrefill re-emits the AG UI form in manual_mode with

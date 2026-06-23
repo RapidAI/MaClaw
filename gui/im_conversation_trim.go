@@ -1283,6 +1283,29 @@ func stripThinkingTags(s string) string {
 	return strings.TrimSpace(cleaned)
 }
 
+func splitThinkingTagsForDisplay(s string) (visible string, reasoning string) {
+	if !strings.Contains(strings.ToLower(s), "<think>") {
+		return strings.TrimSpace(s), ""
+	}
+	var parts []string
+	cleaned := thinkTagPattern.ReplaceAllStringFunc(s, func(match string) string {
+		body := match
+		lower := strings.ToLower(body)
+		if strings.HasPrefix(lower, "<think>") {
+			body = body[len("<think>"):]
+			lower = lower[len("<think>"):]
+		}
+		if end := strings.LastIndex(lower, "</think>"); end >= 0 {
+			body = body[:end]
+		}
+		if trimmed := strings.TrimSpace(body); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+		return ""
+	})
+	return strings.TrimSpace(cleaned), strings.Join(parts, "\n")
+}
+
 func stripRolePrefixHallucination(s string) string {
 	return agent.StripRolePrefixHallucination(s)
 }

@@ -143,6 +143,9 @@ func TestOpenAIStreamReasoningDoesNotEmitRolePrefixContent(t *testing.T) {
 	if got := streamed.String(); strings.Contains(got, sensitive) || strings.Contains(got, "Browser:") {
 		t.Fatalf("reasoning role prefix leaked to streamed tokens: %q", got)
 	}
+	if got := streamed.String(); !strings.Contains(got, "\x01thinking kept\n") {
+		t.Fatalf("reasoning was not streamed to frontend channel: %q", got)
+	}
 	msg := resp.Choices[0].Message
 	if msg.ReasoningContent != "thinking kept" {
 		t.Fatalf("ReasoningContent = %q, want sanitized reasoning", msg.ReasoningContent)

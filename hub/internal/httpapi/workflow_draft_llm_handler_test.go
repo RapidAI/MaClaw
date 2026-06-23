@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -86,19 +87,19 @@ func TestWorkflowDraftLLMHandlerUsesTenantLLMServiceGroup(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&requested); err != nil {
 			t.Fatalf("decode provider request: %v", err)
 		}
-		content := `{"name":"LLM leave workflow","description":"from LLM","graph":{"nodes":[{"id":"n1","type":"trigger","label":"Start","position":{"x":80,"y":80},"config":{"trigger_type":"manual"}},{"id":"n2","type":"condition_branch","label":"Check leave days","position":{"x":300,"y":80},"config":{"branches":[{"label":"More than 3 days","condition":"days > 3","target_node_id":"n3"}],"default_branch":"n4"}},{"id":"n3","type":"approval","label":"HR approval","position":{"x":520,"y":20},"config":{"approver_ids":[],"mode":"single","min_approvals":1}},{"id":"n4","type":"terminal","label":"Complete","position":{"x":740,"y":80},"config":{"result_executors":[],"notifiers":[]}}],"edges":[{"id":"e1","source_id":"n1","target_id":"n2"},{"id":"e2","source_id":"n2","target_id":"n3"},{"id":"e3","source_id":"n2","target_id":"n4"},{"id":"e4","source_id":"n3","target_id":"n4"}]},"notes":["Generated dynamically by LLM"]}`
+		content := `{"name":"LLM leave workflow","description":"from LLM","graph":{"nodes":[{"id":"n1","type":"trigger","label":"Start","position":{"x":80,"y":80},"config":{"trigger_type":"manual"}},{"id":"n2","type":"condition_branch","label":"Check leave days","position":{"x":300,"y":80},"config":{"branches":[{"label":"More than 3 days","condition":"days > 3","target_node_id":"n3"}],"default_branch":"n4"}},{"id":"n3","type":"approval","label":"HR approval","position":{"x":520,"y":20},"config":{"approver_ids":["role:function:hr:hr_approver"],"mode":"single","min_approvals":1}},{"id":"n4","type":"terminal","label":"Complete","position":{"x":740,"y":80},"config":{"result_executors":[],"notifiers":[]}}],"edges":[{"id":"e1","source_id":"n1","target_id":"n2"},{"id":"e2","source_id":"n2","target_id":"n3"},{"id":"e3","source_id":"n2","target_id":"n4"},{"id":"e4","source_id":"n3","target_id":"n4"}]},"notes":["Generated dynamically by LLM"]}`
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(content) + `}}]}`))
 	}))
 	defer upstream.Close()
 
 	settings := &testSystemSettingsRepo{}
-	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-draft-success", settings)
 	if err := im.SaveLLMProviderRegistry(t.Context(), tenantSystem, &im.LLMProviderRegistry{
 		Enabled:           true,
-		CurrentProviderID: "provider-a",
+		CurrentProviderID: "provider-draft-success",
 		Providers: []im.LLMProvider{{
-			ID:      "provider-a",
+			ID:      "provider-draft-success",
 			Name:    "Provider A",
 			APIURL:  upstream.URL + "/v1",
 			APIKey:  "test-key",
@@ -114,7 +115,7 @@ func TestWorkflowDraftLLMHandlerUsesTenantLLMServiceGroup(t *testing.T) {
 			ID:           "draft-group",
 			Name:         "Draft Group",
 			AccessPolicy: llmservice.AccessPolicyFree,
-			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}},
+			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-draft-success"}}},
 		}},
 	}); err != nil {
 		t.Fatalf("save service registry: %v", err)
@@ -123,7 +124,7 @@ func TestWorkflowDraftLLMHandlerUsesTenantLLMServiceGroup(t *testing.T) {
 	authenticator := fakeVEMachineAuth{
 		token: "machine-token",
 		principals: map[string]*auth.MachinePrincipal{
-			"machine-1": {TenantID: "tenant-a", UserID: "designer@example.com", MachineID: "machine-1"},
+			"machine-1": {TenantID: "tenant-draft-success", UserID: "designer@example.com", MachineID: "machine-1"},
 		},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflow-drafts/generate", strings.NewReader(`{"description":"Employee leave longer than 3 days requires HR approval","language":"en"}`))
@@ -168,12 +169,12 @@ func TestWorkflowDraftLLMHandlerRequiresSystemDefaultLLMServiceGroup(t *testing.
 	defer upstream.Close()
 
 	settings := &testSystemSettingsRepo{}
-	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-missing-default", settings)
 	if err := im.SaveLLMProviderRegistry(t.Context(), tenantSystem, &im.LLMProviderRegistry{
 		Enabled:           true,
-		CurrentProviderID: "provider-a",
+		CurrentProviderID: "provider-missing-default",
 		Providers: []im.LLMProvider{{
-			ID:      "provider-a",
+			ID:      "provider-missing-default",
 			Name:    "Provider A",
 			APIURL:  upstream.URL + "/v1",
 			APIKey:  "test-key",
@@ -189,7 +190,7 @@ func TestWorkflowDraftLLMHandlerRequiresSystemDefaultLLMServiceGroup(t *testing.
 			ID:           "draft-group",
 			Name:         "Draft Group",
 			AccessPolicy: llmservice.AccessPolicyFree,
-			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}},
+			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-missing-default"}}},
 		}},
 	}); err != nil {
 		t.Fatalf("save service registry: %v", err)
@@ -198,7 +199,7 @@ func TestWorkflowDraftLLMHandlerRequiresSystemDefaultLLMServiceGroup(t *testing.
 	authenticator := fakeVEMachineAuth{
 		token: "machine-token",
 		principals: map[string]*auth.MachinePrincipal{
-			"machine-1": {TenantID: "tenant-a", UserID: "designer@example.com", MachineID: "machine-1"},
+			"machine-1": {TenantID: "tenant-missing-default", UserID: "designer@example.com", MachineID: "machine-1"},
 		},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflow-drafts/generate", strings.NewReader(`{"description":"Employee leave approval","language":"en"}`))
@@ -221,6 +222,9 @@ func TestWorkflowDraftLLMHandlerRequiresSystemDefaultLLMServiceGroup(t *testing.
 	if out["generated_by"] != "fallback" {
 		t.Fatalf("generated_by = %#v body=%s", out["generated_by"], rec.Body.String())
 	}
+	if out["fallback_reason"] != workflowDraftFallbackReasonSettings {
+		t.Fatalf("fallback_reason = %#v body=%s", out["fallback_reason"], rec.Body.String())
+	}
 }
 
 func TestWorkflowDraftLLMHandlerFallsBackWhenSystemDefaultServiceGroupHasNoModels(t *testing.T) {
@@ -232,12 +236,12 @@ func TestWorkflowDraftLLMHandlerFallsBackWhenSystemDefaultServiceGroupHasNoModel
 	defer upstream.Close()
 
 	settings := &testSystemSettingsRepo{}
-	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-no-models", settings)
 	if err := im.SaveLLMProviderRegistry(t.Context(), tenantSystem, &im.LLMProviderRegistry{
 		Enabled:           true,
-		CurrentProviderID: "provider-a",
+		CurrentProviderID: "provider-no-models",
 		Providers: []im.LLMProvider{{
-			ID:      "provider-a",
+			ID:      "provider-no-models",
 			Name:    "Provider A",
 			APIURL:  upstream.URL + "/v1",
 			APIKey:  "test-key",
@@ -261,7 +265,7 @@ func TestWorkflowDraftLLMHandlerFallsBackWhenSystemDefaultServiceGroupHasNoModel
 	authenticator := fakeVEMachineAuth{
 		token: "machine-token",
 		principals: map[string]*auth.MachinePrincipal{
-			"machine-1": {TenantID: "tenant-a", UserID: "designer@example.com", MachineID: "machine-1"},
+			"machine-1": {TenantID: "tenant-no-models", UserID: "designer@example.com", MachineID: "machine-1"},
 		},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflow-drafts/generate", strings.NewReader(`{"description":"Employee leave approval","language":"en"}`))
@@ -284,11 +288,14 @@ func TestWorkflowDraftLLMHandlerFallsBackWhenSystemDefaultServiceGroupHasNoModel
 	if out["generated_by"] != "fallback" {
 		t.Fatalf("generated_by = %#v body=%s", out["generated_by"], rec.Body.String())
 	}
+	if out["fallback_reason"] != workflowDraftFallbackReasonRoute {
+		t.Fatalf("fallback_reason = %#v body=%s", out["fallback_reason"], rec.Body.String())
+	}
 }
 
 func TestWorkflowDraftLLMHandlerFallsBackWhenSystemDefaultProviderIsMissing(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
-	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-missing-provider", settings)
 	if err := im.SaveLLMProviderRegistry(t.Context(), tenantSystem, &im.LLMProviderRegistry{
 		Enabled: true,
 	}); err != nil {
@@ -309,7 +316,7 @@ func TestWorkflowDraftLLMHandlerFallsBackWhenSystemDefaultProviderIsMissing(t *t
 	authenticator := fakeVEMachineAuth{
 		token: "machine-token",
 		principals: map[string]*auth.MachinePrincipal{
-			"machine-1": {TenantID: "tenant-a", UserID: "designer@example.com", MachineID: "machine-1"},
+			"machine-1": {TenantID: "tenant-missing-provider", UserID: "designer@example.com", MachineID: "machine-1"},
 		},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflow-drafts/generate", strings.NewReader(`{"description":"Employee leave approval","language":"en"}`))
@@ -328,6 +335,166 @@ func TestWorkflowDraftLLMHandlerFallsBackWhenSystemDefaultProviderIsMissing(t *t
 	}
 	if out["generated_by"] != "fallback" {
 		t.Fatalf("generated_by = %#v body=%s", out["generated_by"], rec.Body.String())
+	}
+	if out["fallback_reason"] != workflowDraftFallbackReasonRoute {
+		t.Fatalf("fallback_reason = %#v body=%s", out["fallback_reason"], rec.Body.String())
+	}
+}
+
+func TestWorkflowDraftLLMHandlerFallsBackWithProviderReasonWhenProviderFails(t *testing.T) {
+	var providerCalled bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalled = true
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"temporary upstream failure"}}`))
+	}))
+	defer upstream.Close()
+
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-provider-failure", settings)
+	if err := im.SaveLLMProviderRegistry(t.Context(), tenantSystem, &im.LLMProviderRegistry{
+		Enabled:           true,
+		CurrentProviderID: "provider-failure",
+		Providers: []im.LLMProvider{{
+			ID:      "provider-failure",
+			Name:    "Provider A",
+			APIURL:  upstream.URL + "/v1",
+			APIKey:  "test-key",
+			Model:   "gpt-test",
+			WireAPI: "chat",
+		}},
+	}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := llmservice.SaveRegistry(t.Context(), tenantSystem, &llmservice.Registry{
+		SystemDefaultServiceGroupID: "draft-group",
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "draft-group",
+			Name:         "Draft Group",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-failure"}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	authenticator := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-1": {TenantID: "tenant-provider-failure", UserID: "designer@example.com", MachineID: "machine-1"},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflow-drafts/generate", strings.NewReader(`{"description":"Employee leave approval","language":"en"}`))
+	req.Header.Set("X-Machine-ID", "machine-1")
+	req.Header.Set("Authorization", "Bearer machine-token")
+	rec := httptest.NewRecorder()
+
+	WorkflowDraftLLMHandler(authenticator, settings, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !providerCalled {
+		t.Fatalf("expected configured provider to be called; body=%s", rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out["generated_by"] != "fallback" {
+		t.Fatalf("generated_by = %#v body=%s", out["generated_by"], rec.Body.String())
+	}
+	if out["fallback_reason"] != workflowDraftFallbackReasonProvider {
+		t.Fatalf("fallback_reason = %#v body=%s", out["fallback_reason"], rec.Body.String())
+	}
+}
+
+func TestWorkflowDraftLLMHandlerFallsBackWithResponseReasonWhenLLMGraphIsInvalid(t *testing.T) {
+	var providerCalled bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalled = true
+		content := `{"name":"Broken draft","notes":["missing graph"]}`
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(content) + `}}]}`))
+	}))
+	defer upstream.Close()
+
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-response-invalid", settings)
+	if err := im.SaveLLMProviderRegistry(t.Context(), tenantSystem, &im.LLMProviderRegistry{
+		Enabled:           true,
+		CurrentProviderID: "provider-response-invalid",
+		Providers: []im.LLMProvider{{
+			ID:      "provider-response-invalid",
+			Name:    "Provider A",
+			APIURL:  upstream.URL + "/v1",
+			APIKey:  "test-key",
+			Model:   "gpt-test",
+			WireAPI: "chat",
+		}},
+	}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := llmservice.SaveRegistry(t.Context(), tenantSystem, &llmservice.Registry{
+		SystemDefaultServiceGroupID: "draft-group",
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "draft-group",
+			Name:         "Draft Group",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-response-invalid"}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	authenticator := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-1": {TenantID: "tenant-response-invalid", UserID: "designer@example.com", MachineID: "machine-1"},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflow-drafts/generate", strings.NewReader(`{"description":"Employee leave approval","language":"en"}`))
+	req.Header.Set("X-Machine-ID", "machine-1")
+	req.Header.Set("Authorization", "Bearer machine-token")
+	rec := httptest.NewRecorder()
+
+	WorkflowDraftLLMHandler(authenticator, settings, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !providerCalled {
+		t.Fatal("expected configured provider to be called")
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out["generated_by"] != "fallback" {
+		t.Fatalf("generated_by = %#v body=%s", out["generated_by"], rec.Body.String())
+	}
+	if out["fallback_reason"] != workflowDraftFallbackReasonResponse {
+		t.Fatalf("fallback_reason = %#v body=%s", out["fallback_reason"], rec.Body.String())
+	}
+}
+
+func TestWorkflowDraftFallbackReasonClassifiesSafeCauses(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "settings", err: errors.New("system default LLM service group is not configured"), want: workflowDraftFallbackReasonSettings},
+		{name: "route", err: errors.New("no active model service entitlement"), want: workflowDraftFallbackReasonRoute},
+		{name: "provider", err: errors.New("LLM provider returned HTTP 500"), want: workflowDraftFallbackReasonProvider},
+		{name: "response", err: errors.New("LLM response missing graph"), want: workflowDraftFallbackReasonResponse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := workflowDraftFallbackReason(tc.err); got != tc.want {
+				t.Fatalf("reason = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

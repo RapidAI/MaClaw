@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -141,6 +142,14 @@ func (h *IMMessageHandler) commitAgentLoopAssistantTurn(opts agentLoopAssistantT
 func (h *IMMessageHandler) buildAgentLoopAssistantTurn(ctx *LoopContext, choice llm.Choice) agentLoopAssistantTurn {
 	msgContent := choice.Message.Content
 	msgReasoning := stripRolePrefixHallucination(choice.Message.ReasoningContent)
+	if visible, tagReasoning := splitThinkingTagsForDisplay(msgContent); tagReasoning != "" {
+		msgContent = visible
+		if msgReasoning != "" {
+			msgReasoning = strings.TrimSpace(msgReasoning + "\n" + tagReasoning)
+		} else {
+			msgReasoning = tagReasoning
+		}
+	}
 	if msgContent == "" && msgReasoning != "" {
 		msgContent = msgReasoning
 	}

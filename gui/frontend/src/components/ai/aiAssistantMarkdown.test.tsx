@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderContentWithCodeBlocks } from "./aiAssistantMarkdown";
+import { renderContentWithCodeBlocks, renderMessage } from "./aiAssistantMarkdown";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { lightTheme } from "./aiAssistantPanelTheme";
 
@@ -619,5 +619,61 @@ describe("renderContentWithCodeBlocks", () => {
 
         expect(screen.queryByTestId("markdown-table-prefix")).toBeNull();
         expect(screen.getByText("Internationalization Compatibility Matrix")).toBeTruthy();
+    });
+});
+
+describe("renderMessage assistant display guard", () => {
+    it("strips Browser role prefixes in the main assistant message path", () => {
+        render(<div>{renderMessage({
+            id: "assistant-browser-prefix",
+            role: "assistant",
+            content: "现在情况清楚了。\n\nBrowser: 重复回答。",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText("现在情况清楚了。")).toBeTruthy();
+        expect(screen.queryByText(/Browser:/)).toBeNull();
+    });
+
+    it("strips Browser role prefixes from /btw body without dropping the body", () => {
+        render(<div>{renderMessage({
+            id: "assistant-btw-browser-prefix",
+            role: "assistant",
+            requestId: "btw-test",
+            content: "🔍 **/btw 查询结果**\n\nBrowser: 旁路查询正文。",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText("/btw")).toBeTruthy();
+        expect(screen.getAllByText("旁路查询正文。").length).toBeGreaterThan(0);
+        expect(screen.queryByText(/Browser:/)).toBeNull();
+    });
+
+    it("hides Browser role-prefixed reasoning tails", () => {
+        render(<div>{renderMessage({
+            id: "assistant-reasoning-browser-prefix",
+            role: "assistant",
+            content: "最终回答。",
+            reasoning: "思考中\nBrowser: hidden tool echo",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText("思考中")).toBeTruthy();
+        expect(screen.queryByText(/hidden tool echo/)).toBeNull();
+        expect(screen.queryByText(/Browser:/)).toBeNull();
+    });
+
+    it("does not render an empty reasoning panel after stripping a Browser-only reasoning echo", () => {
+        render(<div>{renderMessage({
+            id: "assistant-browser-only-reasoning",
+            role: "assistant",
+            content: "最终回答。",
+            reasoning: "Browser: hidden tool echo",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText("最终回答。")).toBeTruthy();
+        expect(screen.queryByText("思考过程...")).toBeNull();
+        expect(screen.queryByText(/hidden tool echo/)).toBeNull();
     });
 });

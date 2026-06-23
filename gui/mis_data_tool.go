@@ -1138,6 +1138,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			"decision":             firstNonEmptyMISAgentView(stringArg(args, "decision"), stringArg(args, "result"), stringArg(args, "result_status")),
 			"reason":               firstNonEmptyMISAgentView(stringArg(args, "reason"), stringArg(args, "message")),
 			"workflow_node_id":     stringArg(args, "workflow_node_id"),
+			"workflow_version":     firstNonEmptyMISAgentView(stringArg(args, "workflow_version"), stringArg(args, "approval_workflow_version"), stringArg(args, "workflowVersion")),
 			"workflow_decision_id": stringArg(args, "workflow_decision_id"),
 			"business_status":      stringArg(args, "business_status"),
 			"result_status":        stringArg(args, "result_status"),

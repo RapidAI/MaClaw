@@ -2515,18 +2515,20 @@ func TestDoOpenAIRequestStream_JSONFallbackFromSDKResponse(t *testing.T) {
 			t.Fatalf("decode request: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"plain json"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"plain json","reasoning_content":"plain thought"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`))
 	}))
 	defer srv.Close()
 
 	var streamed string
-	resp, err := DoOpenAIRequestStream(
+	var streamedReasoning string
+	resp, err := DoOpenAIRequestStreamWithReasoning(
 		context.Background(),
 		corelib.MaclawLLMConfig{URL: srv.URL, Model: "deepseek-v4-flash", Protocol: "openai", AgentType: "opencode"},
 		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
 		nil,
 		srv.Client(),
 		func(token string) { streamed += token },
+		func(token string) { streamedReasoning += token },
 	)
 	if err != nil {
 		t.Fatalf("DoOpenAIRequestStream returned error: %v", err)
@@ -2537,8 +2539,14 @@ func TestDoOpenAIRequestStream_JSONFallbackFromSDKResponse(t *testing.T) {
 	if got := resp.Choices[0].Message.Content; got != "plain json" {
 		t.Fatalf("content = %q, want plain json", got)
 	}
+	if got := resp.Choices[0].Message.ReasoningContent; got != "plain thought" {
+		t.Fatalf("reasoning_content = %q, want plain thought", got)
+	}
 	if streamed != "plain json" {
 		t.Fatalf("streamed = %q, want plain json", streamed)
+	}
+	if streamedReasoning != "plain thought" {
+		t.Fatalf("streamedReasoning = %q, want plain thought", streamedReasoning)
 	}
 	if resp.Usage == nil || resp.Usage.TotalTokens != 5 {
 		t.Fatalf("usage = %#v, want total 5", resp.Usage)
@@ -4615,7 +4623,10 @@ func TestParseSSE_ReasoningContent(t *testing.T) {
 		"",
 	}, "\n"))
 
-	resp, err := ParseSSEToResponse(body)
+	var streamed strings.Builder
+	resp, err := parseSSEStream(strings.NewReader(string(body)), func(delta string) {
+		streamed.WriteString(delta)
+	})
 	if err != nil {
 		t.Fatalf("ParseSSEToResponse returned error: %v", err)
 	}
@@ -4628,6 +4639,9 @@ func TestParseSSE_ReasoningContent(t *testing.T) {
 	}
 	if got := msg.Content; got != "The answer is 42." {
 		t.Errorf("content = %q, want %q", got, "The answer is 42.")
+	}
+	if got := streamed.String(); got != "The answer is 42." {
+		t.Errorf("streamed tokens = %q, want content only", got)
 	}
 }
 

@@ -66,9 +66,9 @@ function assertEqual(actual, expected, message) {
   testCount++;
   if (actual === expected) {
     passCount++;
-    console.log('  ✓ ' + message);
+    console.log('  \u2713 ' + message);
   } else {
-    console.log('  ✗ ' + message + ' (expected: ' + JSON.stringify(expected) + ', got: ' + JSON.stringify(actual) + ')');
+    console.log('  \u2717 ' + message + ' (expected: ' + JSON.stringify(expected) + ', got: ' + JSON.stringify(actual) + ')');
   }
 }
 
@@ -86,10 +86,10 @@ var i18nKeys = [
   'statusPublished', 'statusRejected', 'statusSuperseded', 'statusUnpublished',
   'workflowNameRequired', 'authRequired', 'requestFailed', 'invalidJsonField', 'invalidConfigField', 'configErrorSummary',
   'designWorkflow', 'emptyHint', 'draftAssistant', 'draftAssistantTitle', 'draftAssistantHint', 'draftExamples',
-  'draftExampleLeave', 'draftExamplePurchase', 'draftExampleContract', 'draftPromptPlaceholder', 'generateDraft',
+  'draftExampleLeave', 'draftExamplePurchase', 'draftExampleContract', 'draftExampleFullControls', 'draftPromptPlaceholder', 'generateDraft',
   'draftGenerating', 'draftGenerated', 'draftNeedDescription', 'draftGenerationCancelled', 'draftOverwriteConfirm',
-  'draftGeneratedFallback',
-  'draftExampleLeaveText', 'draftExamplePurchaseText', 'draftExampleContractText',
+  'draftGeneratedFallback', 'draftGeneratedFallbackProvider', 'draftGeneratedFallbackResponse',
+  'draftExampleLeaveText', 'draftExamplePurchaseText', 'draftExampleContractText', 'draftExampleFullControlsText',
   'nodeConfiguration', 'closeNodeConfiguration',
   'canvasTools', 'selectTool', 'connectTool', 'deleteEdgeTool', 'connectHint', 'deleteEdgeHint', 'edgeConnectorLabel',
   'contextMenuLabel', 'editNode', 'duplicateNode', 'copySuffix', 'startConnection', 'deleteIncomingEdges', 'deleteOutgoingEdges',
@@ -102,16 +102,24 @@ var i18nKeys = [
 	'approverPickerLoadFailed', 'selectedApprovers', 'clearSelection', 'cancel',
 	'confirm', 'noApproverIdentity', 'virtualEmployee', 'userMachine',
 	'approverViewOrganization', 'approverViewFunction', 'approverViewDirect',
-	'approverRole', 'departmentDigitalEmployee', 'digitalTwin',
+	'approverRole', 'approvalRoleNotConfigured', 'departmentDigitalEmployee', 'digitalTwin',
 	'applicantDepartmentScope', 'fixedDepartmentScope', 'departmentManager', 'directManager',
 	'functionScopeFinance', 'functionScopeProcurement', 'functionScopeLegal', 'functionScopeIT',
-	'financeApprover', 'procurementApprover', 'contractApprover', 'itApprover',
+	'functionScopeHR', 'functionScopeAdministration', 'functionScopeSales', 'functionScopeOperations',
+	'functionScopeCustomerSuccess', 'functionScopeSecurity', 'functionScopeRiskCompliance', 'functionScopeData',
+	'financeApprover', 'procurementApprover', 'contractApprover', 'itApprover', 'hrApprover',
 	'roleExecutionManual', 'roleExecutionDigitalSuggest', 'roleExecutionDigitalReview', 'roleExecutionAuto',
-	'minApprovals', 'timeoutHours', 'fallbackApprover', 'branchesJson', 'defaultBranch', 'actionType', 'selectPlaceholder',
+	'minApprovals', 'timeoutHours', 'fallbackApprover', 'branchesJson', 'conditionBranches', 'addConditionBranch',
+  'removeConditionBranch', 'conditionBranchLabel', 'conditionField', 'conditionOperator', 'conditionValue',
+  'conditionTarget', 'conditionDefaultTarget', 'conditionNoTarget', 'conditionMissingTarget', 'conditionAdvancedJson',
+  'conditionOperatorEquals', 'conditionOperatorNotEquals', 'conditionOperatorGreaterThan', 'conditionOperatorLessThan',
+  'conditionOperatorContains', 'conditionOperatorInList', 'conditionOperatorNotInList', 'conditionOperatorIsEmpty',
+  'conditionOperatorIsNotEmpty', 'defaultBranch', 'actionType', 'selectPlaceholder',
   'updateStatus', 'webhook', 'parametersJson', 'recipients', 'messageTemplate', 'workflowId',
   'inputMappingJson', 'resultExecutorsJson', 'notifiersJson', 'validWorkflow', 'validationErrors',
   'saveDone', 'saveChangedDuringSave', 'submitBlocked', 'submitChangedDuringSave', 'submitDone', 'requireOneTrigger', 'onlyOneTrigger',
   'disconnectedNode', 'triggerNoIncoming', 'terminalNoOutgoing',
+  'approvalApproverRequired',
   'conditionBranchNoRoute', 'conditionBranchInvalidTarget', 'conditionBranchInvalidExpression',
   'language', 'trigger', 'triggerDesc', 'form',
   'formDesc', 'approval', 'approvalDesc', 'conditionBranch', 'conditionBranchDesc', 'action',
@@ -196,10 +204,10 @@ i18nKeys.forEach(function (key) {
   assertEqual(window.ApprovalWorkflowI18n.hasTranslation('zh', key), true, 'Chinese translation exists for ' + key);
 });
 assertEqual(document.documentElement.lang, 'zh-CN', 'sets zh-CN html lang');
-assertEqual(document.title, '审批工作流设计器', 'applies Chinese title');
-assertEqual(h1.textContent, '审批工作流设计器', 'applies Chinese static text');
-assertEqual(input.attrs.placeholder, '按姓名或 ID 搜索用户...', 'applies Chinese placeholder');
-assertEqual(close.attrs['aria-label'], '关闭节点配置', 'applies Chinese aria label');
+assertEqual(document.title, '\u5ba1\u6279\u5de5\u4f5c\u6d41\u8bbe\u8ba1\u5668', 'applies Chinese title');
+assertEqual(h1.textContent, '\u5ba1\u6279\u5de5\u4f5c\u6d41\u8bbe\u8ba1\u5668', 'applies Chinese static text');
+assertEqual(input.attrs.placeholder, '\u6309\u59d3\u540d\u6216 ID \u641c\u7d22\u7528\u6237...', 'applies Chinese placeholder');
+assertEqual(close.attrs['aria-label'], '\u5173\u95ed\u8282\u70b9\u914d\u7f6e', 'applies Chinese aria label');
 assertEqual(empty.innerHTML, '从左侧面板拖拽节点到画布<br>开始搭建审批工作流。', 'renders multiline text');
 assertEqual(storage['maclaw-approval-workflow-lang'], 'zh', 'persists selected language');
 assertEqual(window.lastEvent.type, 'approval-workflow-language-change', 'dispatches language change event');
@@ -208,7 +216,7 @@ assertEqual(buttonZh.attrs['aria-pressed'], 'true', 'sets Chinese language butto
 assertEqual(buttonEn.classList.values.active, false, 'marks English language button inactive');
 assertEqual(buttonEn.attrs['aria-pressed'], 'false', 'sets English language button unpressed');
 
-assertEqual(window.ApprovalWorkflowI18n.t('onlyOneTrigger', { count: 2 }), '只允许一个触发节点。当前发现 2 个触发节点。', 'formats interpolated Chinese message');
+assertEqual(window.ApprovalWorkflowI18n.t('onlyOneTrigger', { count: 2 }), '\u53ea\u5141\u8bb8\u4e00\u4e2a\u89e6\u53d1\u8282\u70b9\u3002\u5f53\u524d\u53d1\u73b0 2 \u4e2a\u89e6\u53d1\u8282\u70b9\u3002', 'formats interpolated Chinese message');
 
 window.localStorage = {
   getItem: function () { throw new Error('blocked'); },

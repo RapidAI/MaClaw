@@ -29,35 +29,50 @@ type veGroupConfig struct {
 }
 
 type digitalEmployeeEntry struct {
-	ID                 string   `json:"id"`
-	MachineID          string   `json:"machine_id"`
-	EmployeeType       string   `json:"employee_type,omitempty"`
-	PlatformID         string   `json:"platform_id,omitempty"`
-	PlatformEmployeeID string   `json:"platform_employee_id,omitempty"`
-	RuntimeProviderID  string   `json:"runtime_provider_id,omitempty"`
-	OwnerUserID        string   `json:"owner_user_id"`
-	OwnerEmail         string   `json:"owner_email,omitempty"`
-	Name               string   `json:"name"`
-	SkillDescription   string   `json:"skill_description"`
-	AvatarDataURL      string   `json:"avatar_data_url,omitempty"`
-	AccessPolicy       string   `json:"access_policy"`
-	Whitelist          []string `json:"whitelist,omitempty"`
-	Blacklist          []string `json:"blacklist,omitempty"`
-	VisibleGroupIDs    []string `json:"visible_group_ids,omitempty"`
-	Resident           bool     `json:"resident,omitempty"`
-	Status             string   `json:"status"`
-	OnlineStatus       string   `json:"online_status"`
-	RegisteredAt       string   `json:"registered_at,omitempty"`
-	UpdatedAt          string   `json:"updated_at,omitempty"`
-	DisabledAt         string   `json:"disabled_at,omitempty"`
-	RejectedAt         string   `json:"rejected_at,omitempty"`
-	RejectReason       string   `json:"reject_reason,omitempty"`
-	RuntimeMissing     bool     `json:"runtime_missing,omitempty"`
-	HistoryRetained    bool     `json:"history_retained,omitempty"`
+	ID                         string   `json:"id"`
+	MachineID                  string   `json:"machine_id"`
+	EmployeeType               string   `json:"employee_type,omitempty"`
+	PlatformID                 string   `json:"platform_id,omitempty"`
+	PlatformEmployeeID         string   `json:"platform_employee_id,omitempty"`
+	RuntimeProviderID          string   `json:"runtime_provider_id,omitempty"`
+	OwnerUserID                string   `json:"owner_user_id"`
+	OwnerEmail                 string   `json:"owner_email,omitempty"`
+	Name                       string   `json:"name"`
+	SkillDescription           string   `json:"skill_description"`
+	AvatarDataURL              string   `json:"avatar_data_url,omitempty"`
+	AccessPolicy               string   `json:"access_policy"`
+	Whitelist                  []string `json:"whitelist,omitempty"`
+	Blacklist                  []string `json:"blacklist,omitempty"`
+	VisibleGroupIDs            []string `json:"visible_group_ids,omitempty"`
+	Resident                   bool     `json:"resident,omitempty"`
+	ApprovalCapabilityEnabled  bool     `json:"approval_capability_enabled,omitempty"`
+	Status                     string   `json:"status"`
+	OnlineStatus               string   `json:"online_status"`
+	RegisteredAt               string   `json:"registered_at,omitempty"`
+	UpdatedAt                  string   `json:"updated_at,omitempty"`
+	DisabledAt                 string   `json:"disabled_at,omitempty"`
+	RejectedAt                 string   `json:"rejected_at,omitempty"`
+	RejectReason               string   `json:"reject_reason,omitempty"`
+	RuntimeMissing             bool     `json:"runtime_missing,omitempty"`
+	HistoryRetained            bool     `json:"history_retained,omitempty"`
 }
 
 type digitalEmployeeRegistry struct {
 	Employees []digitalEmployeeEntry `json:"employees"`
+}
+
+// preserveOwnerManagedFields copies fields that are managed by the VE owner
+// (or admin) through dedicated endpoints, and must not be silently reset to
+// zero values when a different write path (platform registration, settings
+// update without the field, etc.) overwrites the entry.
+//
+// This is the SINGLE place to declare which fields are owner-managed.
+// Adding a new owner-managed field requires only adding one line here;
+// all write paths that call this function automatically preserve it.
+func preserveOwnerManagedFields(previous, next *digitalEmployeeEntry) {
+	next.Resident = previous.Resident
+	next.VisibleGroupIDs = previous.VisibleGroupIDs
+	next.ApprovalCapabilityEnabled = previous.ApprovalCapabilityEnabled
 }
 
 type digitalEmployeeAccessRequest struct {
@@ -363,10 +378,12 @@ func VERegisterHandler(system store.SystemSettingsRepository, authenticator veMa
 			previous := registry.Employees[idx]
 			entry.ID = previous.ID
 			entry.OwnerEmail = firstNonEmptyVE(entry.OwnerEmail, previous.OwnerEmail)
-			entry.VisibleGroupIDs = normalizeVEStringList(previous.VisibleGroupIDs)
-			entry.Resident = previous.Resident
+			preserveOwnerManagedFields(&previous, &entry)
 			if req.AvatarDataURL == nil {
 				entry.AvatarDataURL = previous.AvatarDataURL
+			}
+			if req.ApprovalCapabilityEnabled != nil {
+				entry.ApprovalCapabilityEnabled = *req.ApprovalCapabilityEnabled
 			}
 			entry.RegisteredAt = firstNonEmptyVE(previous.RegisteredAt, now)
 			entry.Status = previous.Status
@@ -387,6 +404,42 @@ func VERegisterHandler(system store.SystemSettingsRepository, authenticator veMa
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"registered": true, "employee": entry})
+	}
+}
+
+// VEApprovalCapabilityHandler updates only the approval_capability_enabled flag
+// for the authenticated VE. This is a lightweight endpoint called by the desktop
+// client when the user toggles the approval capability switch, so the Hub's
+// workflow designer approver picker reflects the change immediately.
+func VEApprovalCapabilityHandler(system store.SystemSettingsRepository, authenticator veMachineAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := authenticateVEMachine(w, r, authenticator)
+		if !ok {
+			return
+		}
+		system := veSystemSettingsForMachine(system, principal)
+		if !requireVEDigitalEmployeeAuthorization(w, r, system) {
+			return
+		}
+		var req struct {
+			Enabled bool `json:"approval_capability_enabled"`
+		}
+		if !decodeVEJSON(w, r, &req, 1024) {
+			return
+		}
+		registry := loadVERegistry(r.Context(), system)
+		idx := registry.findByMachineID(principal.MachineID)
+		if idx < 0 {
+			writeError(w, http.StatusNotFound, "VE_NOT_REGISTERED", "digital employee is not registered")
+			return
+		}
+		registry.Employees[idx].ApprovalCapabilityEnabled = req.Enabled
+		registry.Employees[idx].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := saveVERegistry(r.Context(), system, registry); err != nil {
+			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"approval_capability_enabled": req.Enabled})
 	}
 }
 
@@ -419,14 +472,16 @@ func VESettingsHandler(system store.SystemSettingsRepository, authenticator veMa
 		previous := registry.Employees[idx]
 		entry.ID = previous.ID
 		entry.OwnerEmail = firstNonEmptyVE(entry.OwnerEmail, previous.OwnerEmail)
+		preserveOwnerManagedFields(&previous, &entry)
 		if req.AvatarDataURL == nil {
 			entry.AvatarDataURL = previous.AvatarDataURL
+		}
+		if req.ApprovalCapabilityEnabled != nil {
+			entry.ApprovalCapabilityEnabled = *req.ApprovalCapabilityEnabled
 		}
 		entry.Status = firstNonEmptyVE(previous.Status, veStatusPending)
 		entry.RegisteredAt = previous.RegisteredAt
 		entry.OnlineStatus = veOnlineStatusOnline
-		entry.VisibleGroupIDs = normalizeVEStringList(previous.VisibleGroupIDs)
-		entry.Resident = previous.Resident
 		entry.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		registry.Employees[idx] = entry
 		normalizeVERegistryResidentFlags(&registry)
@@ -1827,12 +1882,13 @@ func VEHistoryDetailHandler(system store.SystemSettingsRepository, groupSvc *Gro
 }
 
 type veSettingsRequest struct {
-	Name             string   `json:"name"`
-	SkillDescription string   `json:"skill_description"`
-	AvatarDataURL    *string  `json:"avatar_data_url"`
-	AccessPolicy     string   `json:"access_policy"`
-	Whitelist        []string `json:"whitelist"`
-	Blacklist        []string `json:"blacklist"`
+	Name                      string   `json:"name"`
+	SkillDescription          string   `json:"skill_description"`
+	AvatarDataURL             *string  `json:"avatar_data_url"`
+	AccessPolicy              string   `json:"access_policy"`
+	Whitelist                 []string `json:"whitelist"`
+	Blacklist                 []string `json:"blacklist"`
+	ApprovalCapabilityEnabled *bool    `json:"approval_capability_enabled,omitempty"`
 }
 
 const (
@@ -1863,17 +1919,22 @@ func digitalEmployeeFromRequest(principal *auth.MachinePrincipal, req veSettings
 		}
 	}
 	policy := normalizeVEAccessPolicy(req.AccessPolicy)
+	approvalEnabled := false
+	if req.ApprovalCapabilityEnabled != nil {
+		approvalEnabled = *req.ApprovalCapabilityEnabled
+	}
 	return digitalEmployeeEntry{
-		ID:               veIDForMachine(principal.MachineID),
-		MachineID:        principal.MachineID,
-		EmployeeType:     veEmployeeTypePhysical,
-		OwnerUserID:      principal.UserID,
-		Name:             name,
-		SkillDescription: strings.TrimSpace(req.SkillDescription),
-		AvatarDataURL:    avatarDataURL,
-		AccessPolicy:     policy,
-		Whitelist:        normalizeVEStringList(req.Whitelist),
-		Blacklist:        normalizeVEStringList(req.Blacklist),
+		ID:                        veIDForMachine(principal.MachineID),
+		MachineID:                 principal.MachineID,
+		EmployeeType:              veEmployeeTypePhysical,
+		OwnerUserID:               principal.UserID,
+		Name:                      name,
+		SkillDescription:          strings.TrimSpace(req.SkillDescription),
+		AvatarDataURL:             avatarDataURL,
+		AccessPolicy:              policy,
+		Whitelist:                 normalizeVEStringList(req.Whitelist),
+		Blacklist:                 normalizeVEStringList(req.Blacklist),
+		ApprovalCapabilityEnabled: approvalEnabled,
 	}, nil
 }
 

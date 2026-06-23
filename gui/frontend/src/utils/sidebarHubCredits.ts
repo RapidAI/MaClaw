@@ -31,8 +31,10 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
     let total = 0;
     let used = 0;
     let remaining = 0;
+    let grantRemaining = 0;
     let grantAvailable = 0;
     let visibleGrantTotal = 0;
+    let effectiveGrantHasPeriodLimits = false;
     for (const grant of grants) {
         const grantStatus = String(grant.status ?? grant.Status ?? '').toLowerCase();
         if (grantStatus !== 'expired') {
@@ -58,8 +60,18 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
         }
         total += numeric(grant.credits_total ?? grant.CreditsTotal);
         used += numeric(grant.credits_used ?? grant.CreditsUsed);
-        remaining += numeric(grant.credits_remaining ?? grant.CreditsRemaining);
+        grantRemaining += numeric(grant.credits_remaining ?? grant.CreditsRemaining);
+        remaining = grantRemaining;
         grantAvailable += numeric(grant.credits_available ?? grant.CreditsAvailable);
+        const limits = grant.period_limits ?? grant.PeriodLimits;
+        if (limits && (
+            numeric(limits.five_hour ?? limits.FiveHour) > 0 ||
+            numeric(limits.daily ?? limits.Daily) > 0 ||
+            numeric(limits.weekly ?? limits.Weekly) > 0 ||
+            numeric(limits.monthly ?? limits.Monthly) > 0
+        )) {
+            effectiveGrantHasPeriodLimits = true;
+        }
     }
     // Include queued grant totals in the floor value so backend's status.credits_total
     // (which excludes queued grants) cannot overwrite/reduce the visible total.
@@ -67,7 +79,9 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
     total = Math.max(numeric(status?.credits_total ?? status?.CreditsTotal ?? effectiveVisibleTotal), effectiveVisibleTotal);
     used = numeric(status?.credits_used ?? status?.CreditsUsed ?? used);
     const statusRemaining = numeric(status?.credits_remaining ?? status?.CreditsRemaining);
-    if (statusRemaining > 0) remaining = statusRemaining;
+    if (statusRemaining > 0) remaining = effectiveGrantHasPeriodLimits
+        ? Math.max(statusRemaining, grantRemaining)
+        : statusRemaining;
     const statusAvailable = numeric(status?.credits_available ?? status?.CreditsAvailable);
     const statusGrantAvailable = numeric(statusGrant?.credits_available ?? statusGrant?.CreditsAvailable);
     const available = statusAvailable > 0 ? statusAvailable : (grantAvailable > 0 ? grantAvailable : statusGrantAvailable);

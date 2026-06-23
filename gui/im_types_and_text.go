@@ -31,6 +31,7 @@ type IMUserMessage = agent.UserMessage
 // IMAgentResponse is the structured reply sent back to Hub.
 type IMAgentResponse struct {
 	Text                                string                        `json:"text"`
+	Reasoning                           string                        `json:"reasoning,omitempty"`
 	ClearUI                             bool                          `json:"clear_ui,omitempty"`
 	Fields                              []IMResponseField             `json:"fields,omitempty"`
 	Actions                             []IMResponseAction            `json:"actions,omitempty"`

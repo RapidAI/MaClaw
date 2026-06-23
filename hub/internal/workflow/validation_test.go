@@ -21,7 +21,7 @@ func TestValidateWorkflowGraphDetailed_EmptyGraph(t *testing.T) {
 func TestValidateWorkflowGraphDetailed_NoTriggerNode(t *testing.T) {
 	graph := WorkflowGraph{
 		Nodes: []WorkflowNode{
-			{ID: "n1", Type: NodeApproval, Label: "Approve", Position: Position{X: 100, Y: 100}},
+			{ID: "n1", Type: NodeApproval, Label: "Approve", Position: Position{X: 100, Y: 100}, Config: approvalConfigRaw("role:function:finance:finance_approver")},
 		},
 	}
 	errs := ValidateWorkflowGraphDetailed(graph)
@@ -132,7 +132,7 @@ func TestValidateWorkflowGraphDetailed_ValidGraph(t *testing.T) {
 	graph := WorkflowGraph{
 		Nodes: []WorkflowNode{
 			{ID: "t1", Type: NodeTrigger, Label: "Start", Position: Position{X: 0, Y: 0}},
-			{ID: "n1", Type: NodeApproval, Label: "Approve", Position: Position{X: 100, Y: 100}},
+			{ID: "n1", Type: NodeApproval, Label: "Approve", Position: Position{X: 100, Y: 100}, Config: approvalConfigRaw("role:function:finance:finance_approver")},
 			{ID: "n2", Type: NodeAction, Label: "Complete", Position: Position{X: 200, Y: 200}},
 		},
 		Edges: []WorkflowEdge{
@@ -143,6 +143,23 @@ func TestValidateWorkflowGraphDetailed_ValidGraph(t *testing.T) {
 	errs := ValidateWorkflowGraphDetailed(graph)
 	if len(errs) != 0 {
 		t.Errorf("expected no errors for valid graph, got %d: %v", len(errs), errs)
+	}
+}
+
+func TestValidateWorkflowGraphDetailed_ApprovalWithoutApprover(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "t1", Type: NodeTrigger, Label: "Start", Position: Position{X: 0, Y: 0}},
+			{ID: "n1", Type: NodeApproval, Label: "Approve", Position: Position{X: 100, Y: 100}, Config: approvalConfigRaw()},
+		},
+		Edges: []WorkflowEdge{{ID: "e1", SourceID: "t1", TargetID: "n1"}},
+	}
+	errs := ValidateWorkflowGraphDetailed(graph)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for approval without approver")
+	}
+	if errs[0].NodeID != "n1" || errs[0].Message != "Approval node must have at least one approver or approval role" {
+		t.Fatalf("unexpected error: %+v", errs[0])
 	}
 }
 
@@ -181,7 +198,6 @@ func TestValidateWorkflowGraphDetailed_SingleNodeTrigger(t *testing.T) {
 	}
 }
 
-
 // --- API endpoint tests ---
 
 func TestValidateVersionEndpoint_ValidGraph(t *testing.T) {
@@ -196,7 +212,7 @@ func TestValidateVersionEndpoint_ValidGraph(t *testing.T) {
 		Graph: WorkflowGraph{
 			Nodes: []WorkflowNode{
 				{ID: "t1", Type: NodeTrigger, Label: "Start", Position: Position{X: 0, Y: 0}},
-				{ID: "n1", Type: NodeApproval, Label: "Approve", Position: Position{X: 100, Y: 100}},
+				{ID: "n1", Type: NodeApproval, Label: "Approve", Position: Position{X: 100, Y: 100}, Config: approvalConfigRaw("role:function:finance:finance_approver")},
 			},
 			Edges: []WorkflowEdge{
 				{ID: "e1", SourceID: "t1", TargetID: "n1"},

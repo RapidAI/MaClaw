@@ -24,6 +24,15 @@ type workflowDraftGenerateRequest struct {
 
 const workflowDraftDescriptionMaxBytes = 4000
 
+const (
+	workflowDraftFallbackReasonSettings = "llm_settings"
+	workflowDraftFallbackReasonRoute    = "llm_route"
+	workflowDraftFallbackReasonProvider = "llm_provider"
+	workflowDraftFallbackReasonResponse = "llm_response"
+)
+
+const workflowDraftDefaultApproverRoleID = "role:dynamic:applicant_department:direct_manager"
+
 func WorkflowDraftLLMHandler(identity veMachineAuthenticator, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	_ = securitySvc
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -57,11 +66,36 @@ func WorkflowDraftLLMHandler(identity veMachineAuthenticator, system store.Syste
 			draft["generated_by"] = "llm"
 			writeJSON(w, http.StatusOK, draft)
 			return
+		} else {
+			draft := buildFallbackWorkflowDraft(description, req.Language)
+			draft["generated_by"] = "fallback"
+			draft["fallback_reason"] = workflowDraftFallbackReason(err)
+			draft["notes"] = []string{"LLM draft generation was unavailable, so a basic fallback draft was generated."}
+			writeJSON(w, http.StatusOK, draft)
+			return
 		}
-		draft := buildFallbackWorkflowDraft(description, req.Language)
-		draft["generated_by"] = "fallback"
-		draft["notes"] = []string{"LLM draft generation was unavailable, so a basic fallback draft was generated."}
-		writeJSON(w, http.StatusOK, draft)
+	}
+}
+
+func workflowDraftFallbackReason(err error) string {
+	if err == nil {
+		return workflowDraftFallbackReasonProvider
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(msg, "settings are not configured"),
+		strings.Contains(msg, "system default llm service group"):
+		return workflowDraftFallbackReasonSettings
+	case strings.Contains(msg, "no active model service entitlement"),
+		strings.Contains(msg, "not authorized for this account"):
+		return workflowDraftFallbackReasonRoute
+	case strings.Contains(msg, "empty llm response"),
+		strings.Contains(msg, "llm response"),
+		strings.Contains(msg, "invalid workflow graph"),
+		strings.Contains(msg, "invalid json"):
+		return workflowDraftFallbackReasonResponse
+	default:
+		return workflowDraftFallbackReasonProvider
 	}
 }
 
@@ -1106,7 +1140,7 @@ func fallbackApprovalNode(id, label string, x, y int) map[string]any {
 		"label":    label,
 		"position": map[string]any{"x": x, "y": y},
 		"config": map[string]any{
-			"approver_ids":      []any{},
+			"approver_ids":      []any{workflowDraftDefaultApproverRoleID},
 			"mode":              "single",
 			"min_approvals":     1,
 			"approver_order":    []any{},

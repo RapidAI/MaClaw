@@ -442,6 +442,7 @@ func isGraphValidationError(err error) bool {
 		errors.Is(err, ErrTriggerHasIncoming) ||
 		errors.Is(err, ErrDisconnectedNodes) ||
 		errors.Is(err, ErrTerminalHasOutgoing) ||
+		errors.Is(err, ErrApprovalApproverRequired) ||
 		errors.Is(err, ErrConditionBranchInvalid)
 }
 

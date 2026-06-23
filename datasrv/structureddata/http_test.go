@@ -513,7 +513,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"workflow_node_id", "workflow_decision_id", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
+	for _, name := range []string{"workflow_node_id", "workflow_version", "workflow_decision_id", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
 		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/approvals/{approvalId}/review", name) {
 			t.Fatalf("openapi approval review body missing %s: %#v", name, paths["/api/v1/data/approvals/{approvalId}/review"])
 		}
@@ -2693,7 +2693,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	if approval.ID == "" || approval.Status != recordApprovalStatusPending || approval.DatasetID != "sales.orders" || approval.RecordID != "SO-2026-0001" || approval.Priority != "high" || approval.AssignedTo != "manager_1" || approval.DueAt.IsZero() {
 		t.Fatalf("unexpected approval: %#v", approval)
 	}
-	if approval.WorkflowSkillID != "approval.sales_order" || approval.WorkflowInstanceID != "wf-so-1" || approval.BusinessStatus != "pending_manager" || approval.ResultStatus != "requires_input" {
+	if approval.WorkflowSkillID != "approval.sales_order" || approval.WorkflowVersion != "1.0.0" || approval.WorkflowInstanceID != "wf-so-1" || approval.BusinessStatus != "pending_manager" || approval.ResultStatus != "requires_input" {
 		t.Fatalf("approval workflow fields were not persisted: %#v", approval)
 	}
 	if approval.ResultPayload["approval_result"] != "requires_input" || len(approval.Outputs) != 1 || approval.Outputs[0].Text != "Waiting for manager" || len(approval.Artifacts) != 1 || approval.Artifacts[0].Name != "draft.pdf" {
@@ -2713,7 +2713,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	if pendingApprovalBusinessRecord.Data["status"] != "pending_manager" || pendingApprovalBusinessRecord.Data["business_status"] != "pending_manager" || pendingApprovalBusinessRecord.Data["result_status"] != "requires_input" || pendingApprovalBusinessRecord.Data["approval_id"] != approval.ID || pendingApprovalBusinessRecord.Data["approval_workflow_instance_id"] != "wf-so-1" || pendingApprovalBusinessRecord.Data["approval_current_assignee"] != "manager_1" {
 		t.Fatalf("approval create did not update business record status: %#v", pendingApprovalBusinessRecord.Data)
 	}
-	if pendingApprovalBusinessRecord.Data["app_id"] != "mis.sales_order" || pendingApprovalBusinessRecord.Data["blueprint_id"] != "mis.sales_order.approval" || pendingApprovalBusinessRecord.Data["object_role"] != "sales_order" || pendingApprovalBusinessRecord.Data["approval_lane"] != "pending_my_approval" || pendingApprovalBusinessRecord.Data["approval_current_node"] != "submit" {
+	if pendingApprovalBusinessRecord.Data["app_id"] != "mis.sales_order" || pendingApprovalBusinessRecord.Data["blueprint_id"] != "mis.sales_order.approval" || pendingApprovalBusinessRecord.Data["object_role"] != "sales_order" || pendingApprovalBusinessRecord.Data["approval_lane"] != "pending_my_approval" || pendingApprovalBusinessRecord.Data["approval_workflow_version"] != "1.0.0" || pendingApprovalBusinessRecord.Data["approval_current_node"] != "submit" {
 		t.Fatalf("approval create did not update business record app approval semantics: %#v", pendingApprovalBusinessRecord.Data)
 	}
 	body = bytes.NewBufferString(`{"kind":"sales_order","priority":"urgent","summary":"Invalid priority should fail","request":{"amount":1200}}`)
@@ -2784,7 +2784,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		t.Fatalf("inbox approval missing result payload metadata: %#v", inboxApproval.Metadata)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/inbox?type=approval&app_id=mis.sales_order&object_role=sales_order&workflow_skill_id=approval.sales_order&workflow_instance_id=wf-so-1&workflow_node_id=submit&business_status=pending_manager&result_status=requires_input&lane=pending_my_approval&user_id=manager_1&limit=10", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/inbox?type=approval&app_id=mis.sales_order&object_role=sales_order&workflow_skill_id=approval.sales_order&workflow_version=1.0.0&workflow_instance_id=wf-so-1&workflow_node_id=submit&business_status=pending_manager&result_status=requires_input&lane=pending_my_approval&user_id=manager_1&limit=10", nil)
 	auth(req)
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -2963,7 +2963,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		t.Fatalf("unexpected second inbox cursor page: first=%#v second=%#v", firstInboxPage, secondInboxPage)
 	}
 
-	body = bytes.NewBufferString(`{"decision":"approve","reason":"sales manager approved","workflow_node_id":"manager_review","workflow_decision_id":"dec-manager","business_status":"approved","result_status":"completed","result_payload":{"approval_result":"approved","business_status":"approved","business_record":{"id":"SO-2026-0001","status":"approved"},"text":"approved"},"outputs":[{"type":"text","title":"Approval","text":"Approved"},{"type":"artifact","artifact_id":"approval-pdf","artifact":{"id":"approval-pdf","name":"approval.pdf","uri":"artifact://approval/1","status":"ready"}}],"artifacts":[{"id":"approval-pdf","name":"approval.pdf","uri":"artifact://approval/1","status":"ready"}]}`)
+	body = bytes.NewBufferString(`{"decision":"approve","reason":"sales manager approved","workflow_node_id":"manager_review","workflow_version":"1.0.1","workflow_decision_id":"dec-manager","business_status":"approved","result_status":"completed","result_payload":{"approval_result":"approved","business_status":"approved","business_record":{"id":"SO-2026-0001","status":"approved"},"text":"approved"},"outputs":[{"type":"text","title":"Approval","text":"Approved"},{"type":"artifact","artifact_id":"approval-pdf","artifact":{"id":"approval-pdf","name":"approval.pdf","uri":"artifact://approval/1","status":"ready"}}],"artifacts":[{"id":"approval-pdf","name":"approval.pdf","uri":"artifact://approval/1","status":"ready"}]}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/approvals/"+approval.ID+"/review", body)
 	auth(req)
 	w = httptest.NewRecorder()
@@ -2978,7 +2978,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	if reviewedApproval.Status != recordApprovalStatusApproved || reviewedApproval.ReviewedBy == "" || reviewedApproval.ReviewedAt.IsZero() {
 		t.Fatalf("unexpected reviewed approval: %#v", reviewedApproval)
 	}
-	if reviewedApproval.WorkflowNodeID != "manager_review" || reviewedApproval.WorkflowDecisionID != "dec-manager" || reviewedApproval.BusinessStatus != "approved" || reviewedApproval.ResultStatus != "completed" {
+	if reviewedApproval.WorkflowNodeID != "manager_review" || reviewedApproval.WorkflowVersion != "1.0.1" || reviewedApproval.WorkflowDecisionID != "dec-manager" || reviewedApproval.BusinessStatus != "approved" || reviewedApproval.ResultStatus != "completed" {
 		t.Fatalf("reviewed approval workflow result was not persisted: %#v", reviewedApproval)
 	}
 	if reviewedApproval.ResultPayload["approval_result"] != "approved" || reviewedApproval.ResultPayload["text"] != "approved" || len(reviewedApproval.Outputs) != 2 || reviewedApproval.Outputs[1].Artifact == nil || reviewedApproval.Outputs[1].Artifact.Name != "approval.pdf" || len(reviewedApproval.Artifacts) != 1 {
@@ -2995,8 +2995,36 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&gotReviewedApproval); err != nil {
 		t.Fatalf("decode reviewed approval detail: %v", err)
 	}
-	if gotReviewedApproval.ResultPayload["approval_result"] != "approved" || len(gotReviewedApproval.Outputs) != 2 || len(gotReviewedApproval.Artifacts) != 1 {
+	if gotReviewedApproval.WorkflowVersion != "1.0.1" || gotReviewedApproval.ResultPayload["approval_result"] != "approved" || len(gotReviewedApproval.Outputs) != 2 || len(gotReviewedApproval.Artifacts) != 1 {
 		t.Fatalf("reviewed approval detail lost result package: %#v", gotReviewedApproval)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?workflow_skill_id=approval.sales_order&workflow_version=1.0.1&limit=10", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("workflow-version approval list status=%d body=%s", w.Code, w.Body.String())
+	}
+	var workflowVersionApprovals ListResponse[RecordApproval]
+	if err := json.NewDecoder(w.Body).Decode(&workflowVersionApprovals); err != nil {
+		t.Fatalf("decode workflow-version approvals: %v", err)
+	}
+	if len(workflowVersionApprovals.Items) != 1 || workflowVersionApprovals.Items[0].ID != reviewedApproval.ID {
+		t.Fatalf("workflow-version filter should return reviewed approval: %#v", workflowVersionApprovals)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?workflow_skill_id=approval.sales_order&workflow_version=9.9.9&limit=10", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("workflow-version miss approval list status=%d body=%s", w.Code, w.Body.String())
+	}
+	var workflowVersionMiss ListResponse[RecordApproval]
+	if err := json.NewDecoder(w.Body).Decode(&workflowVersionMiss); err != nil {
+		t.Fatalf("decode workflow-version miss approvals: %v", err)
+	}
+	if len(workflowVersionMiss.Items) != 0 {
+		t.Fatalf("workflow-version filter should exclude other versions: %#v", workflowVersionMiss)
 	}
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/datasets/sales.orders/records/SO-2026-0001", nil)
 	auth(req)
@@ -3012,7 +3040,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	if approvedBusinessRecord.Data["status"] != "approved" || approvedBusinessRecord.Data["business_status"] != "approved" || approvedBusinessRecord.Data["result_status"] != "completed" || approvedBusinessRecord.Data["approval_id"] != approval.ID || approvedBusinessRecord.Data["approval_workflow_instance_id"] != "wf-so-1" {
 		t.Fatalf("approval review did not update business record status: %#v", approvedBusinessRecord.Data)
 	}
-	if approvedBusinessRecord.Data["app_id"] != "mis.sales_order" || approvedBusinessRecord.Data["blueprint_id"] != "mis.sales_order.approval" || approvedBusinessRecord.Data["object_role"] != "sales_order" || approvedBusinessRecord.Data["approval_lane"] != "handled" || approvedBusinessRecord.Data["approval_current_node"] != "manager_review" {
+	if approvedBusinessRecord.Data["app_id"] != "mis.sales_order" || approvedBusinessRecord.Data["blueprint_id"] != "mis.sales_order.approval" || approvedBusinessRecord.Data["object_role"] != "sales_order" || approvedBusinessRecord.Data["approval_lane"] != "handled" || approvedBusinessRecord.Data["approval_workflow_version"] != "1.0.1" || approvedBusinessRecord.Data["approval_current_node"] != "manager_review" {
 		t.Fatalf("approval review did not update business record app approval semantics: %#v", approvedBusinessRecord.Data)
 	}
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/datasets/sales.orders/records/SO-2026-0001/timeline?limit=10", nil)
@@ -3044,7 +3072,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	if approvalTimelineItem == nil || !foundApprovalRecordRevision || !foundApprovalAudit {
 		t.Fatalf("timeline missing reviewed approval/record/audit items: %#v", reviewedTimeline.Items)
 	}
-	if approvalTimelineItem.Metadata["workflow_node_id"] != "manager_review" || approvalTimelineItem.Metadata["result_status"] != "completed" {
+	if approvalTimelineItem.Metadata["workflow_node_id"] != "manager_review" || approvalTimelineItem.Metadata["workflow_version"] != "1.0.1" || approvalTimelineItem.Metadata["result_status"] != "completed" {
 		t.Fatalf("timeline approval missing workflow metadata: %#v", approvalTimelineItem.Metadata)
 	}
 	if payload, ok := approvalTimelineItem.Metadata["result_payload"].(map[string]any); !ok || payload["approval_result"] != "approved" {
@@ -5387,6 +5415,12 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 		Metadata: map[string]any{
 			"app_skill_id":       "mis-expense-claim",
 			"workflow_skill_ids": []any{"skill.expense.approval"},
+			"version_snapshot": map[string]any{
+				"app_entry_version": "1.2.3",
+				"app_skill":         map[string]any{"id": "mis-expense-claim", "version": "1.0.0", "kind": "runtime_skill", "source": "hub"},
+				"workflow_skills":   []any{map[string]any{"id": "skill.expense.approval", "version": "2.0.0", "kind": "workflow_skill", "source": "hub"}},
+				"approval_bindings": []any{map[string]any{"event": "expense.submitted", "object_role": "expense_report", "workflow_skill_id": "skill.expense.approval", "workflow_version": "2.0.0"}},
+			},
 			"workflow_mapping": map[string]any{
 				"schema":        "maclaw.app.workflow.v1",
 				"submit_node":   "expense.intake",
@@ -5465,6 +5499,18 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if installed.Metadata["dependency_count"] != float64(2) || installed.Metadata["has_missing_required_dependency"] != false || installed.Metadata["has_blocking_dependency"] != true {
 		t.Fatalf("app installation should persist dependency health metadata: %#v", installed.Metadata)
 	}
+	if versionSnapshot, ok := installed.Metadata["version_snapshot"].(map[string]any); !ok || versionSnapshot["app_entry_version"] != "1.2.3" {
+		t.Fatalf("app installation should persist version snapshot metadata: %#v", installed.Metadata)
+	}
+	if installed.Metadata["app_entry_version"] != "1.2.3" || installed.Metadata["app_skill_version"] != "1.0.0" {
+		t.Fatalf("app installation should expose version snapshot summaries: %#v", installed.Metadata)
+	}
+	if workflowVersions := appInstallationStringList(installed.Metadata["workflow_skill_versions"]); len(workflowVersions) != 1 || workflowVersions[0] != "skill.expense.approval@2.0.0" {
+		t.Fatalf("app installation should expose workflow skill version summaries: %#v", installed.Metadata)
+	}
+	if approvalBindingVersions := appInstallationStringList(installed.Metadata["approval_binding_versions"]); len(approvalBindingVersions) != 1 || approvalBindingVersions[0] != "expense.submitted:skill.expense.approval@2.0.0" {
+		t.Fatalf("app installation should expose approval binding version summaries: %#v", installed.Metadata)
+	}
 	if installed.Metadata["workspace_layout_entry"] != "approval_workspace" || installed.Metadata["workspace_layout_template"] != "classic_split" || installed.Metadata["governance_status"] != "local_tested" {
 		t.Fatalf("app installation should persist app layout and governance metadata: %#v", installed.Metadata)
 	}
@@ -5513,6 +5559,9 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if len(listed.Items) != 1 || listed.Items[0].RoleBindings[0].DatasetID != "finance.expense_forms" {
 		t.Fatalf("unexpected listed app installations: %#v", listed)
+	}
+	if listed.Items[0].Metadata["app_skill_version"] != "1.0.0" {
+		t.Fatalf("listed app installation should include version summaries: %#v", listed.Items[0].Metadata)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?kind=enterprise_approval_app&source=hub&workflow_skill_id=skill.expense.approval&workflow_node=finance.director_review", nil)
@@ -5596,6 +5645,9 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if columns := appInstallationStringList(caps.AppInstallations[0].Metadata["workspace_layout_list_columns"]); len(columns) != 4 || columns[2] != "current_node" {
 		t.Fatalf("capabilities should expose workspace list column metadata: %#v", caps.AppInstallations[0].Metadata)
 	}
+	if caps.AppInstallations[0].Metadata["app_entry_version"] != "1.2.3" || caps.AppInstallations[0].Metadata["app_skill_version"] != "1.0.0" {
+		t.Fatalf("capabilities should expose version snapshot summaries: %#v", caps.AppInstallations[0].Metadata)
+	}
 	if caps.AppInstallations[0].Metadata["test_evidence_run_id"] != "run-expense-1" || caps.AppInstallations[0].Metadata["test_evidence_primary_result"] != "approval_result" || caps.AppInstallations[0].Metadata["test_evidence_output_count"] != float64(3) {
 		t.Fatalf("capabilities should expose test evidence summaries: %#v", caps.AppInstallations[0].Metadata)
 	}
@@ -5613,6 +5665,17 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if metadata["workspace_layout_entry"] != "approval_workspace" || metadata["workspace_layout_template"] != "classic_split" || metadata["workspace_layout_density"] != "comfortable" || metadata["governance_status"] != "local_tested" || metadata["governance_risk_level"] != "medium" {
 		t.Fatalf("app installation audit should summarize layout and governance: %#v", metadata)
+	}
+	if metadata["app_entry_version"] != "1.2.3" || metadata["app_skill_version"] != "1.0.0" {
+		t.Fatalf("app installation audit should summarize version snapshot: %#v", metadata)
+	}
+	workflowVersions, ok := metadata["workflow_skill_versions"].([]any)
+	if !ok || len(workflowVersions) != 1 || workflowVersions[0] != "skill.expense.approval@2.0.0" {
+		t.Fatalf("app installation audit should summarize workflow skill versions: %#v", metadata)
+	}
+	approvalBindingVersions, ok := metadata["approval_binding_versions"].([]any)
+	if !ok || len(approvalBindingVersions) != 1 || approvalBindingVersions[0] != "expense.submitted:skill.expense.approval@2.0.0" {
+		t.Fatalf("app installation audit should summarize approval binding versions: %#v", metadata)
 	}
 	if navigation := appInstallationStringList(metadata["workspace_layout_navigation"]); len(navigation) != 3 || navigation[1] != "pending_my_approval" {
 		t.Fatalf("app installation audit should summarize workspace navigation: %#v", metadata)

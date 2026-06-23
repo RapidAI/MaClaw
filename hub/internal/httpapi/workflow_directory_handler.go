@@ -101,6 +101,7 @@ func WorkflowApproverDirectoryHandler(securitySvc *security.SecurityService, ide
 			"machines":         enrichMachineList(r.Context(), machines, identity.UsersRepo()),
 			"employees":        employees,
 			"approval_roles":   approvalRoles.Roles,
+			"function_scopes":  approvalRoles.FunctionScopes,
 		})
 	}
 }

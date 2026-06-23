@@ -6,6 +6,7 @@ import type { AgentView } from "./agentViewTypes";
 import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./aiAssistantPanelTypes";
 import { localizeText } from "./aiAssistantI18n";
 import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey } from "./aiAssistantPanelSessionUtils";
+import { findRolePrefixForDisplay, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -96,6 +97,8 @@ interface AIAssistantSendResult {
     CacheReadTokens?: number;
     cache_write_tokens?: number;
     CacheWriteTokens?: number;
+    reasoning?: string;
+    Reasoning?: string;
 }
 
 interface AIAssistantContextMessage {
@@ -385,6 +388,7 @@ const PROGRESS_EVENT = "ai-assistant-progress";
 const RESPONSE_EVENT = "ai-assistant-response";
 const LOCAL_FORGET_SESSION_ROUNDS_EVENT = "ai-assistant:forget-session-rounds";
 const LOCAL_ACTIVE_SESSION_CHANGED_EVENT = "ai-assistant:active-session-changed";
+const MIN_REASONING_DEDUP_OVERLAP = 8;
 
 // Module-level active session key. Updated by AIAssistantPanel when the active
 // tab changes. The useAIAssistant hook reads this to filter events by session.
@@ -591,13 +595,7 @@ function loadPersistedMessages(): ChatMessage[] {
 }
 
 function stripRolePrefixReasoning(text: string): string {
-    if (!text) return text;
-    if (!text.includes('Browser') && !text.includes('Tool')) return text;
-    if (!text.includes(':') && !text.includes('\uff1a')) return text;
-    const match = rolePrefixPattern.exec(text);
-    if (!match || match.index === undefined) return text;
-    const before = text.slice(0, match.index).trimEnd();
-    return before;
+    return truncateRolePrefixForDisplay(text);
 }
 
 function sanitizeChatMessageForDisplay(message: ChatMessage): ChatMessage {
@@ -726,6 +724,7 @@ function isLocalChatMessage(message: ChatMessage): boolean {
 function hasPersistableMessageContent(message: ChatMessage): boolean {
     if (message.role === 'progress' || message.role === 'system') return false;
     if (message.content.trim() !== '') return true;
+    if (message.reasoning?.trim()) return true;
     if (message.fields?.length) return true;
     if (message.actions?.length) return true;
     if (message.confirmation) return true;
@@ -904,7 +903,7 @@ function sameActiveRound(left: ActiveRound, right: ActiveRound): boolean {
 const IDLE_ROUND: ActiveRound = createIdleRound(0);
 
 function isAssistantPlaceholder(msg: ChatMessage): boolean {
-    return msg.role === 'assistant' && msg.content === '' && !msg.fields?.length && !msg.thumbnailBase64 && !msg.localFilePaths?.length && !msg.localFilePath;
+    return msg.role === 'assistant' && msg.content === '' && !msg.reasoning && !msg.fields?.length && !msg.thumbnailBase64 && !msg.localFilePaths?.length && !msg.localFilePath;
 }
 
 function appendAssistantPlaceholder(messages: ChatMessage[], assistantMessageId: string, requestId = '', sessionKey?: string): ChatMessage[] {
@@ -1289,6 +1288,7 @@ function normalizeSendResponse(response: AIAssistantSendResult | null | undefine
     return {
         ...raw,
         text: typeof raw.text === 'string' ? raw.text : (typeof raw.Text === 'string' ? raw.Text : ''),
+        reasoning: typeof raw.reasoning === 'string' ? raw.reasoning : (typeof raw.Reasoning === 'string' ? raw.Reasoning : ''),
         error: typeof raw.error === 'string' ? raw.error : (typeof raw.Error === 'string' ? raw.Error : ''),
         fields: mergeResponseFields(normalizedFields, counterFields),
         actions: raw.actions ?? raw.Actions,
@@ -1616,11 +1616,6 @@ function resolveResponseSource(response: any): string {
     return '';
 }
 
-// rolePrefixPattern matches hallucinated role prefixes (e.g. "Browser: ..." or
-// "Tool: ...") at the start of a line, with optional Markdown block-level markers.
-// This is the frontend equivalent of the Go-side rolePrefixRe / rolePrefixLineRe.
-const rolePrefixPattern = /^[\s>*\-]*(?:\d+\.\s*)?(Browser|Tool)\s*(?::[ \t]?|：)/m;
-
 type RolePrefixDiagnosticMeta = Record<string, string | number | boolean | null | undefined>;
 type RolePrefixDiagnosticInfo = {
     hasRolePrefix: boolean;
@@ -1630,28 +1625,19 @@ type RolePrefixDiagnosticInfo = {
 };
 
 function hasRolePrefixLeakCandidate(text: string): boolean {
-    if (!text) return false;
-    if (!text.includes('Browser') && !text.includes('Tool')) return false;
-    if (!text.includes(':') && !text.includes('\uff1a')) return false;
-    return rolePrefixPattern.test(text);
+    return !!findRolePrefixForDisplay(text);
 }
 
 function rolePrefixDiagnosticInfo(text: string): RolePrefixDiagnosticInfo {
-    if (!text || (!text.includes('Browser') && !text.includes('Tool'))) {
-        return { hasRolePrefix: false };
-    }
-    if (!text.includes(':') && !text.includes('\uff1a')) {
-        return { hasRolePrefix: false };
-    }
-    const match = rolePrefixPattern.exec(text);
-    if (!match || match.index === undefined) {
+    const match = findRolePrefixForDisplay(text);
+    if (!match) {
         return { hasRolePrefix: false };
     }
     return {
         hasRolePrefix: true,
-        rolePrefixKind: match[1],
+        rolePrefixKind: match.kind,
         rolePrefixIndex: match.index,
-        rolePrefixAtStart: text.slice(0, match.index).trim().length === 0,
+        rolePrefixAtStart: match.atStart,
     };
 }
 
@@ -1727,54 +1713,7 @@ function logRolePrefixDiagnostic(stage: string, before: string, after?: string, 
  * Code blocks (``` fenced) are excluded to avoid false positives.
  */
 function stripRolePrefixFrontend(text: string): string {
-    if (!text) return text;
-    // Fast path: no known prefix keyword present.
-    if (!text.includes('Browser') && !text.includes('Tool')) return text;
-    if (!text.includes(':') && !text.includes('\uff1a')) return text;
-
-    // Split into code-block-aware segments.
-    const parts: Array<{ text: string; isCode: boolean }> = [];
-    let rest = text;
-    while (rest.length > 0) {
-        const idx = rest.indexOf('```');
-        if (idx < 0) {
-            parts.push({ text: rest, isCode: false });
-            break;
-        }
-        if (idx > 0) {
-            parts.push({ text: rest.slice(0, idx), isCode: false });
-        }
-        const closeIdx = rest.indexOf('```', idx + 3);
-        if (closeIdx < 0) {
-            parts.push({ text: rest.slice(idx), isCode: true });
-            break;
-        }
-        const end = closeIdx + 3;
-        parts.push({ text: rest.slice(idx, end), isCode: true });
-        rest = rest.slice(end);
-    }
-
-    // Scan non-code segments for role prefix.
-    let absOffset = 0;
-    for (const part of parts) {
-        if (!part.isCode) {
-            const match = rolePrefixPattern.exec(part.text);
-            if (match && match.index !== undefined) {
-                const matchAbsStart = absOffset + match.index;
-                const prefixEnd = matchAbsStart + match[0].length;
-                const before = text.slice(0, matchAbsStart).trimEnd();
-                if (!before) {
-                    // Case 1: prefix at start - strip it, keep everything after.
-                    return text.slice(prefixEnd).trimStart();
-                }
-                // Case 2: prefix in middle. Match backend behavior and drop
-                // the role-prefixed tail instead of keeping a duplicate block.
-                return before;
-            }
-        }
-        absOffset += part.text.length;
-    }
-    return text;
+    return stripRolePrefixForDisplay(text);
 }
 
 export function resolveFinalRoundContent(message: ChatMessage, response: any): string {
@@ -1846,6 +1785,9 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
     if (streamedContent) {
         return stripRolePrefixFrontend(streamedContent);
     }
+    if (typeof response?.reasoning === 'string' && response.reasoning.trim()) {
+        return '';
+    }
     return buildEmptyTerminalFallback(response);
 }
 
@@ -1858,9 +1800,40 @@ function hasStructuredResponsePayload(response: any): boolean {
     return false;
 }
 
+function resolveFinalRoundReasoning(message: ChatMessage, response: any): string | undefined {
+    const rawFinalReasoning = typeof response?.reasoning === 'string' ? response.reasoning : '';
+    const finalReasoning = stripRolePrefixReasoning(rawFinalReasoning);
+    const streamedReasoning = stripRolePrefixReasoning(message.reasoning || '');
+    if (streamedReasoning && finalReasoning) {
+        return mergeReasoningText(streamedReasoning, finalReasoning) || undefined;
+    }
+    return (streamedReasoning || finalReasoning || '').trim() || undefined;
+}
+
+function mergeReasoningText(streamedReasoning: string, finalReasoning: string): string {
+    const streamed = streamedReasoning.trim();
+    const final = finalReasoning.trim();
+    if (!streamed) return final;
+    if (!final) return streamed;
+    if (streamed === final) return streamed;
+    if (streamed.length >= MIN_REASONING_DEDUP_OVERLAP && final.startsWith(streamed)) return final;
+    if (final.length >= MIN_REASONING_DEDUP_OVERLAP && streamed.endsWith(final)) return streamed;
+    const maxOverlap = Math.min(streamed.length, final.length);
+    if (maxOverlap < MIN_REASONING_DEDUP_OVERLAP) {
+        return `${streamed}${streamed.endsWith('\n') || final.startsWith('\n') ? '' : '\n'}${final}`.trim();
+    }
+    for (let size = maxOverlap; size >= MIN_REASONING_DEDUP_OVERLAP; size--) {
+        if (streamed.endsWith(final.slice(0, size))) {
+            return `${streamed}${final.slice(size)}`.trim();
+        }
+    }
+    return `${streamed}${streamed.endsWith('\n') || final.startsWith('\n') ? '' : '\n'}${final}`.trim();
+}
+
 function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, response: any, preferences: AIAssistantPreferences): ChatMessage[] {
     const finalizeMessage = (message: ChatMessage): ChatMessage | null => {
         const nextContent = resolveFinalRoundContent(message, response);
+        const nextReasoning = resolveFinalRoundReasoning(message, response);
         const nextFields = mergeResponseFields(response.fields, normalizeTraceFields(response, preferences.showTraceEntry));
         const responseActions = normalizeActions(response.actions) || [];
         const traceActions = buildTraceDetailAction(response, preferences.showTraceEntry) || [];
@@ -1873,12 +1846,13 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
         } = responseArtifactPayload(response);
         const nextUnfinishedSlot = (response as any).unfinished_slot;
         const nextRecoverableSession = (response as any).recoverable_session;
-        if (!nextContent && !nextFields?.length && !nextActions?.length && !nextUnfinishedSlot && !nextRecoverableSession && !nextThumbnailBase64 && !nextImageKey && !nextLocalFilePaths?.length) {
+        if (!nextContent && !nextReasoning && !nextFields?.length && !nextActions?.length && !nextUnfinishedSlot && !nextRecoverableSession && !nextThumbnailBase64 && !nextImageKey && !nextLocalFilePaths?.length) {
             return null;
         }
         return {
             ...message,
             content: nextContent,
+            reasoning: nextReasoning,
             fields: nextFields,
             actions: nextActions.length > 0 ? nextActions : undefined,
             confirmation: response.confirmation,

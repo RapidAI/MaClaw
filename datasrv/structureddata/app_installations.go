@@ -100,8 +100,13 @@ func appInstallationAuditMetadata(app AppInstallation) map[string]any {
 	if app.Source != "" {
 		metadata["source"] = app.Source
 	}
-	for _, key := range []string{"app_skill_id", "workflow_skill_ids", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "governance_status", "governance_risk_level"} {
+	for _, key := range []string{"app_entry_version", "app_skill_id", "app_skill_version", "workflow_skill_ids", "workflow_skill_versions", "approval_binding_versions", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "governance_status", "governance_risk_level"} {
 		if value, ok := app.Metadata[key]; ok {
+			metadata[key] = value
+		}
+	}
+	if versionSnapshot := appInstallationVersionSnapshotAuditMetadata(app.Metadata["version_snapshot"]); versionSnapshot != nil {
+		for key, value := range versionSnapshot {
 			metadata[key] = value
 		}
 	}
@@ -131,6 +136,9 @@ func normalizeAppInstallationMetadata(metadata map[string]any, kind string) (map
 		return nil, err
 	}
 	if err := normalizeAppInstallationResultContractMetadata(out); err != nil {
+		return nil, err
+	}
+	if err := normalizeAppInstallationVersionSnapshotMetadata(out); err != nil {
 		return nil, err
 	}
 	if err := normalizeAppInstallationTestEvidenceMetadata(out); err != nil {
@@ -264,6 +272,118 @@ func normalizeAppInstallationResultContractMetadata(out map[string]any) error {
 	out["result_contract"] = contract
 	out["result_contract_schema"] = "maclaw.app.result.v1"
 	return nil
+}
+
+func normalizeAppInstallationVersionSnapshotMetadata(out map[string]any) error {
+	snapshot := appInstallationMap(out["version_snapshot"])
+	if snapshot == nil {
+		snapshot = appInstallationMap(out["versionSnapshot"])
+	}
+	if snapshot == nil {
+		return nil
+	}
+	normalized := map[string]any{}
+	if version := firstNonEmptyAppInstallationString(appInstallationString(snapshot, "app_entry_version"), appInstallationString(snapshot, "appEntryVersion"), appInstallationString(out, "app_entry_version")); version != "" {
+		normalized["app_entry_version"] = version
+		out["app_entry_version"] = version
+	}
+	if appSkill := appInstallationMap(snapshot["app_skill"]); appSkill == nil {
+		if appSkill = appInstallationMap(snapshot["appSkill"]); appSkill != nil {
+			normalizeAppInstallationVersionSkill(normalized, "app_skill", appSkill)
+		}
+	} else {
+		normalizeAppInstallationVersionSkill(normalized, "app_skill", appSkill)
+	}
+	if appSkill := appInstallationMap(normalized["app_skill"]); appSkill != nil {
+		if id := appInstallationString(appSkill, "id"); id != "" {
+			out["app_skill_id"] = id
+		}
+		if version := appInstallationString(appSkill, "version"); version != "" {
+			out["app_skill_version"] = version
+		}
+	}
+	if workflowSkills := normalizeAppInstallationVersionSkills(snapshot["workflow_skills"]); len(workflowSkills) > 0 {
+		normalized["workflow_skills"] = workflowSkills
+		out["workflow_skill_versions"] = appInstallationSkillVersionRefs(workflowSkills, "id", "version")
+	}
+	if bindings := normalizeAppInstallationApprovalBindingVersions(snapshot["approval_bindings"]); len(bindings) > 0 {
+		normalized["approval_bindings"] = bindings
+		out["approval_binding_versions"] = appInstallationApprovalBindingVersionRefs(bindings)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	out["version_snapshot"] = normalized
+	delete(out, "versionSnapshot")
+	return nil
+}
+
+func normalizeAppInstallationVersionSkill(target map[string]any, key string, skill map[string]any) {
+	out := map[string]any{}
+	for _, field := range []string{"id", "version", "kind", "source"} {
+		if value := appInstallationString(skill, field); value != "" {
+			out[field] = value
+		}
+	}
+	if len(out) > 0 {
+		target[key] = out
+	}
+}
+
+func normalizeAppInstallationVersionSkills(value any) []map[string]any {
+	out := []map[string]any{}
+	seen := map[string]struct{}{}
+	for _, item := range appInstallationMapList(value) {
+		skill := map[string]any{}
+		for _, field := range []string{"id", "version", "kind", "source"} {
+			if value := appInstallationString(item, field); value != "" {
+				skill[field] = value
+			}
+		}
+		id := appInstallationString(skill, "id")
+		if id == "" {
+			continue
+		}
+		version := appInstallationString(skill, "version")
+		key := id + "@" + version
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, skill)
+	}
+	return out
+}
+
+func normalizeAppInstallationApprovalBindingVersions(value any) []map[string]any {
+	out := []map[string]any{}
+	seen := map[string]struct{}{}
+	for _, item := range appInstallationMapList(value) {
+		binding := map[string]any{}
+		if event := appInstallationString(item, "event"); event != "" {
+			binding["event"] = event
+		}
+		if objectRole := firstNonEmptyAppInstallationString(appInstallationString(item, "object_role"), appInstallationString(item, "objectRole")); objectRole != "" {
+			binding["object_role"] = objectRole
+		}
+		workflowID := firstNonEmptyAppInstallationString(appInstallationString(item, "workflow_skill_id"), appInstallationString(item, "workflowSkillId"), appInstallationString(item, "workflow_id"), appInstallationString(item, "workflowId"))
+		if workflowID != "" {
+			binding["workflow_skill_id"] = workflowID
+		}
+		if version := firstNonEmptyAppInstallationString(appInstallationString(item, "workflow_version"), appInstallationString(item, "workflowVersion")); version != "" {
+			binding["workflow_version"] = version
+		}
+		if len(binding) == 0 || workflowID == "" {
+			continue
+		}
+		key := firstNonEmptyAppInstallationString(appInstallationString(binding, "event"), "-") + ":" + workflowID + "@" + appInstallationString(binding, "workflow_version")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, binding)
+	}
+	return out
 }
 
 func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
@@ -416,6 +536,109 @@ func firstAppInstallationPresent(values ...any) (any, bool) {
 		}
 	}
 	return nil, false
+}
+
+func appInstallationVersionSnapshotAuditMetadata(value any) map[string]any {
+	snapshot := appInstallationMap(value)
+	if snapshot == nil {
+		return nil
+	}
+	out := map[string]any{}
+	if version := appInstallationString(snapshot, "app_entry_version", "appEntryVersion"); version != "" {
+		out["app_entry_version"] = version
+	}
+	if appSkill := appInstallationMap(snapshot["app_skill"]); appSkill == nil {
+		if appSkill = appInstallationMap(snapshot["appSkill"]); appSkill != nil {
+			if id := appInstallationString(appSkill, "id"); id != "" {
+				out["app_skill_id"] = id
+			}
+			if version := appInstallationString(appSkill, "version"); version != "" {
+				out["app_skill_version"] = version
+			}
+		}
+	} else {
+		if id := appInstallationString(appSkill, "id"); id != "" {
+			out["app_skill_id"] = id
+		}
+		if version := appInstallationString(appSkill, "version"); version != "" {
+			out["app_skill_version"] = version
+		}
+	}
+	if refs := appInstallationSkillVersionRefs(snapshot["workflow_skills"], "id", "version"); len(refs) > 0 {
+		out["workflow_skill_versions"] = refs
+	}
+	if refs := appInstallationApprovalBindingVersionRefs(snapshot["approval_bindings"]); len(refs) > 0 {
+		out["approval_binding_versions"] = refs
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func appInstallationSkillVersionRefs(value any, idKey, versionKey string) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, item := range appInstallationMapList(value) {
+		id := appInstallationString(item, idKey)
+		version := appInstallationString(item, versionKey)
+		ref := id
+		if version != "" {
+			ref = id + "@" + version
+		}
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		out = append(out, ref)
+	}
+	return out
+}
+
+func appInstallationApprovalBindingVersionRefs(value any) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, item := range appInstallationMapList(value) {
+		workflowID := firstNonEmptyAppInstallationString(appInstallationString(item, "workflow_skill_id"), appInstallationString(item, "workflowSkillId"), appInstallationString(item, "workflow_id"), appInstallationString(item, "workflowId"))
+		version := firstNonEmptyAppInstallationString(appInstallationString(item, "workflow_version"), appInstallationString(item, "workflowVersion"))
+		event := appInstallationString(item, "event")
+		ref := workflowID
+		if version != "" {
+			ref = workflowID + "@" + version
+		}
+		if event != "" && ref != "" {
+			ref = event + ":" + ref
+		}
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		out = append(out, ref)
+	}
+	return out
+}
+
+func appInstallationMapList(value any) []map[string]any {
+	out := []map[string]any{}
+	switch items := value.(type) {
+	case []any:
+		for _, item := range items {
+			if mapped := appInstallationMap(item); mapped != nil {
+				out = append(out, mapped)
+			}
+		}
+	case []map[string]any:
+		out = append(out, items...)
+	}
+	return out
 }
 
 func appInstallationDependencyIDs(value any) []string {

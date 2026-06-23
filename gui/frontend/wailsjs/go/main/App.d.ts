@@ -677,6 +677,12 @@ export function SelectAIAssistantFile():Promise<string>;
 
 export function SelectAIAssistantFiles():Promise<Array<string>>;
 
+export function ParseResumeForWorkflowForm(arg1:string,arg2:string):Promise<string>;
+
+export function UploadSupplementaryDocs(arg1:string):Promise<string>;
+
+export function RemoveSupplementaryDoc(arg1:string):Promise<string>;
+
 export function StartAIAssistantBackgroundTask(arg1:any):Promise<any>;
 
 export function GetTrialReflectEnabled():Promise<boolean>;

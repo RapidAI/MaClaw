@@ -1576,6 +1576,15 @@ describe('AppsPage', () => {
         expect(manifest.app.binding.dependencies.skills[0].kind).toBe('workflow_skill');
         expect(manifest.app.binding.dependencies.skills[0].source).toBe('market');
         expect(manifest.app.binding.mis.approvalBindings[0]).toMatchObject({ event: 'finance.expense.submitted', workflowSkillId: 'expense-approval-flow', workflowVersion: '2.1.0', objectRole: 'expense_report' });
+        expect(manifest.app.governance.workflowContract).toMatchObject({
+            schema: 'maclaw.app.workflow_contract.v1',
+            workflowSkillId: 'expense-approval-flow',
+            workflowVersion: '2.1.0',
+            objectRole: 'expense_report',
+            requiredInputs: ['record_ref', 'applicant', 'business_payload'],
+            decisionOutputs: ['approved', 'rejected', 'attention'],
+            statusMapping: expect.objectContaining({ pending: 'approval_pending', approved: 'approved', rejected: 'rejected', attention: 'attention' }),
+        });
     });
 
     it('saves visual approval workflow node mappings into created manifests', async () => {
@@ -5066,6 +5075,8 @@ describe('AppsPage', () => {
                         app_skill_id: 'expense-super-skill',
                         app_skill_version: '1.0.0',
                         workflow_skill_ids: ['expense-workflow'],
+                        workflow_skill_versions: ['expense-workflow@2.1.0'],
+                        approval_binding_versions: ['expense.submitted:expense-workflow@2.1.0'],
                         workspace_layout_entry: 'approval_workspace',
                         workspace_layout_template: 'dashboard',
                         workspace_layout_density: 'spacious',
@@ -5102,7 +5113,14 @@ describe('AppsPage', () => {
         expect(added.kind).toBe('enterprise_approval_app');
         expect(added.manifest.datasrv).toMatchObject({ domain: 'finance', datasetID: 'finance.expense_forms', objectRole: 'expense_report', blueprintID: 'mis.expense.approval', templateID: 'finance.expenses' });
         expect(added.manifest.appSkill).toMatchObject({ id: 'expense-super-skill', version: '1.0.0' });
-        expect(added.manifest.mis.approvalBindings[0]).toMatchObject({ workflowSkillId: 'expense-workflow', objectRole: 'expense_report' });
+        expect(added.manifest.dependencies.skills.find((dep: any) => dep.id === 'expense-workflow')).toMatchObject({ version: '2.1.0', kind: 'workflow_skill' });
+        expect(added.manifest.mis.approvalBindings[0]).toMatchObject({ event: 'expense.submitted', workflowSkillId: 'expense-workflow', workflowVersion: '2.1.0', objectRole: 'expense_report' });
+        expect(added.versionSnapshot).toMatchObject({
+            app_entry_version: '3',
+            app_skill: { id: 'expense-super-skill', version: '1.0.0', kind: 'runtime_skill', source: 'hub' },
+            workflow_skills: [{ id: 'expense-workflow', version: '2.1.0', kind: 'workflow_skill', source: 'hub' }],
+            approval_bindings: [{ event: 'expense.submitted', object_role: 'expense_report', workflow_skill_id: 'expense-workflow', workflow_version: '2.1.0' }],
+        });
         expect(added.manifest.ui.layouts.approval_workspace.template).toBe('dashboard');
         expect(added.manifest.ui.layouts.approval_workspace.density).toBe('spacious');
         expect(added.manifest.ui.layouts.approval_workspace.navigation).toEqual(['my_requests', 'pending_my_approval', 'attention']);
@@ -5116,6 +5134,22 @@ describe('AppsPage', () => {
             resultPayload: { decision: 'approved', business_status: 'finance_approved' },
         });
         expect(added.importedRunEvidence.outputs[0].text).toBe('3');
+
+        fireEvent.click(screen.getByText('Expense Approval Installed'));
+        const runtimeVersionSnapshot = await waitFor(() => {
+            const snapshot = document.querySelector('.apps-detail__header .apps-install-version-snapshot') as HTMLElement | null;
+            expect(snapshot).not.toBeNull();
+            return snapshot as HTMLElement;
+        });
+        expect(runtimeVersionSnapshot.getAttribute('aria-label')).toBe('Version snapshot');
+        expect(within(runtimeVersionSnapshot).getByText('Version')).not.toBeNull();
+        expect(within(runtimeVersionSnapshot).getByText('v3')).not.toBeNull();
+        expect(within(runtimeVersionSnapshot).getByText('App Skill')).not.toBeNull();
+        expect(within(runtimeVersionSnapshot).getByText('expense-super-skill · runtime_skill · hub · v1.0.0')).not.toBeNull();
+        expect(within(runtimeVersionSnapshot).getByText('Approval workflow')).not.toBeNull();
+        expect(within(runtimeVersionSnapshot).getByText('expense-workflow · workflow_skill · hub · v2.1.0')).not.toBeNull();
+        expect(within(runtimeVersionSnapshot).getByText('Approval binding')).not.toBeNull();
+        expect(within(runtimeVersionSnapshot).getByText('expense.submitted · expense_report · expense-workflow@v2.1.0')).not.toBeNull();
     });
     it('turns skill maclaw.apps.json entries into registered tool apps', async () => {
         listSkillAppManifestsMock.mockResolvedValue([

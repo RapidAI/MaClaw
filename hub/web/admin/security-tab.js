@@ -61,6 +61,7 @@
         approvalRoleScope: 'global',
         approvalRoleScopeQuery: '',
         approvalRoles: null,
+        approvalFunctionScopes: null,
         approvalRolesLoaded: false,
         approvalRolesLoading: false,
         approvalSubjectPicker: null,
@@ -211,6 +212,7 @@
     approvalRolesScope: { zh: '\u8303\u56f4', en: 'Scope' },
     approvalRolesSearchScope: { zh: '\u641c\u7d22\u90e8\u95e8\u6216\u804c\u80fd', en: 'Search departments or functions' },
     approvalRolesNoScopeMatch: { zh: '\u6ca1\u6709\u5339\u914d\u7684\u8303\u56f4', en: 'No matching scopes' },
+    approvalRolesNoFunctions: { zh: '\u6682\u65e0\u804c\u80fd\uff0c\u8bf7\u5148\u65b0\u589e\u804c\u80fd\u540e\u518d\u914d\u7f6e\u5ba1\u6279\u89d2\u8272\u3002', en: 'No functions yet. Add a function before configuring approval roles.' },
     approvalRolesConfigured: { zh: '\u5df2\u914d\u7f6e', en: 'configured' },
     approvalRolesUnconfigured: { zh: '\u672a\u914d\u7f6e', en: 'not configured' },
     approvalRolesSubjectsTitle: { zh: '\u53ef\u9009\u4e3b\u4f53', en: 'Available subjects' },
@@ -219,11 +221,19 @@
     approvalRolesSubjectsEmpty: { zh: '\u5f53\u524d\u8303\u56f4\u6682\u65e0\u53ef\u9009\u4e3b\u4f53', en: 'No selectable subjects in this scope' },
     approvalRolesAddRole: { zh: '\u65b0\u589e\u89d2\u8272', en: 'Add role' },
     approvalRolesRemoveRole: { zh: '\u79fb\u9664\u89d2\u8272', en: 'Remove role' },
+    approvalRolesAddFunction: { zh: '\u65b0\u589e\u804c\u80fd', en: 'Add function' },
+    approvalRolesRemoveFunction: { zh: '\u5220\u9664\u804c\u80fd', en: 'Delete function' },
     approvalRolesPromptRoleName: { zh: '\u8f93\u5165\u5ba1\u6279\u89d2\u8272\u540d\u79f0', en: 'Enter approval role name' },
+    approvalRolesPromptFunctionName: { zh: '\u8f93\u5165\u804c\u80fd\u540d\u79f0', en: 'Enter function name' },
     approvalRolesRoleNameRequired: { zh: '\u8bf7\u8f93\u5165\u5ba1\u6279\u89d2\u8272\u540d\u79f0', en: 'Enter an approval role name' },
+    approvalRolesFunctionNameRequired: { zh: '\u8bf7\u8f93\u5165\u804c\u80fd\u540d\u79f0', en: 'Enter a function name' },
+    approvalRolesFunctionExists: { zh: '\u8be5\u804c\u80fd\u5df2\u5b58\u5728\uff0c\u5df2\u5207\u6362\u5230\u73b0\u6709\u804c\u80fd\u3002', en: 'Function already exists. Switched to the existing function.' },
     approvalRolesRoleAdded: { zh: '\u5ba1\u6279\u89d2\u8272\u5df2\u65b0\u589e\uff0c\u8bf7\u4fdd\u5b58\u540e\u751f\u6548', en: 'Approval role added. Save to apply it.' },
     approvalRolesRoleRemoved: { zh: '\u5ba1\u6279\u89d2\u8272\u5df2\u79fb\u9664\uff0c\u8bf7\u4fdd\u5b58\u540e\u751f\u6548', en: 'Approval role removed. Save to apply it.' },
+    approvalRolesFunctionAdded: { zh: '\u804c\u80fd\u5df2\u65b0\u589e\uff0c\u8bf7\u4fdd\u5b58\u540e\u751f\u6548', en: 'Function added. Save to apply it.' },
+    approvalRolesFunctionRemoved: { zh: '\u804c\u80fd\u5df2\u5220\u9664\uff0c\u8bf7\u4fdd\u5b58\u540e\u751f\u6548', en: 'Function deleted. Save to apply it.' },
     approvalRolesConfirmRemove: { zh: '\u786e\u5b9a\u79fb\u9664 "{name}" \u5417\uff1f', en: 'Remove "{name}"?' },
+    approvalRolesConfirmRemoveFunction: { zh: '\u786e\u5b9a\u5220\u9664\u804c\u80fd "{name}" \u5417\uff1f\u8be5\u804c\u80fd\u4e0b\u7684\u5ba1\u6279\u89d2\u8272\u4e5f\u4f1a\u79fb\u9664\u3002', en: 'Delete function "{name}"? Approval roles under it will also be removed.' },
     approvalRolesRole: { zh: '\u89d2\u8272', en: 'Role' },
     approvalRolesAssignees: { zh: '\u627f\u62c5\u4e3b\u4f53', en: 'Assignees' },
     approvalRolesPickAssignees: { zh: '\u9009\u62e9\u4e3b\u4f53', en: 'Choose subjects' },
@@ -246,6 +256,14 @@
     functionProcurement: { zh: '\u91c7\u8d2d', en: 'Procurement' },
     functionLegal: { zh: '\u6cd5\u52a1', en: 'Legal' },
     functionIT: { zh: 'IT', en: 'IT' },
+    functionHR: { zh: 'HR', en: 'HR' },
+    functionAdministration: { zh: '\u884c\u653f', en: 'Administration' },
+    functionSales: { zh: '\u9500\u552e', en: 'Sales' },
+    functionOperations: { zh: '\u8fd0\u8425', en: 'Operations' },
+    functionCustomerSuccess: { zh: '\u5ba2\u6237\u6210\u529f', en: 'Customer Success' },
+    functionSecurity: { zh: '\u5b89\u5168', en: 'Security' },
+    functionRiskCompliance: { zh: '\u98ce\u63a7\u5408\u89c4', en: 'Risk & Compliance' },
+    functionData: { zh: '\u6570\u636e', en: 'Data' },
     roleDepartmentManager: { zh: '\u90e8\u95e8\u7ecf\u7406', en: 'Department Manager' },
     roleDirectManager: { zh: '\u76f4\u5c5e\u4e0a\u7ea7', en: 'Direct Manager' },
     roleLeaveReviewer: { zh: '\u8bf7\u5047\u521d\u5ba1', en: 'Leave Reviewer' },
@@ -253,6 +271,8 @@
     roleProcurementApprover: { zh: '\u91c7\u8d2d\u5ba1\u6279\u5458', en: 'Procurement Approver' },
     roleContractApprover: { zh: '\u5408\u540c\u5ba1\u6279\u5458', en: 'Contract Approver' },
     roleITApprover: { zh: 'IT \u5ba1\u6279\u5458', en: 'IT Approver' },
+    roleHRApprover: { zh: 'HR \u5ba1\u6279\u5458', en: 'HR Approver' },
+    roleFunctionApproverSuffix: { zh: '\u5ba1\u6279\u5458', en: 'Approver' },
     approvalModeManual: { zh: '\u4eba\u5de5\u5ba1\u6279', en: 'Manual approval' },
     approvalModeDigitalSuggest: { zh: '\u6570\u5b57\u5efa\u8bae + \u4eba\u5de5\u786e\u8ba4', en: 'Digital suggestion + human confirmation' },
     approvalModeDigitalReview: { zh: '\u6570\u5b57\u521d\u5ba1 + \u4eba\u5de5\u786e\u8ba4', en: 'Digital pre-review + human confirmation' },
@@ -3100,6 +3120,20 @@
   };
 
   var APPROVAL_ROLES_STORAGE_KEY = 'maclaw_approval_roles_v1';
+  var DEFAULT_APPROVAL_FUNCTIONS = [
+    { scopeId: 'finance', labelKey: 'functionFinance', roleCode: 'finance_approver', roleNameKey: 'roleFinanceApprover', executionMode: 'digital_review' },
+    { scopeId: 'procurement', labelKey: 'functionProcurement', roleCode: 'procurement_approver', roleNameKey: 'roleProcurementApprover', executionMode: 'digital_suggest' },
+    { scopeId: 'legal', labelKey: 'functionLegal', roleCode: 'contract_approver', roleNameKey: 'roleContractApprover', executionMode: 'digital_review' },
+    { scopeId: 'it', labelKey: 'functionIT', roleCode: 'it_approver', roleNameKey: 'roleITApprover', executionMode: 'manual' },
+    { scopeId: 'hr', labelKey: 'functionHR', roleCode: 'hr_approver', roleNameKey: 'roleHRApprover', executionMode: 'digital_suggest' },
+    { scopeId: 'administration', labelKey: 'functionAdministration', roleCode: 'administration_approver', executionMode: 'manual' },
+    { scopeId: 'sales', labelKey: 'functionSales', roleCode: 'sales_approver', executionMode: 'manual' },
+    { scopeId: 'operations', labelKey: 'functionOperations', roleCode: 'operations_approver', executionMode: 'manual' },
+    { scopeId: 'customer_success', labelKey: 'functionCustomerSuccess', roleCode: 'customer_success_approver', executionMode: 'manual' },
+    { scopeId: 'security', labelKey: 'functionSecurity', roleCode: 'security_approver', executionMode: 'digital_review' },
+    { scopeId: 'risk_compliance', labelKey: 'functionRiskCompliance', roleCode: 'risk_compliance_approver', executionMode: 'digital_review' },
+    { scopeId: 'data', labelKey: 'functionData', roleCode: 'data_approver', executionMode: 'manual' }
+  ];
 
   function approvalRoleId(scopeType, scopeId, roleCode) {
     return ['role', scopeType || 'global', scopeId || 'global', roleCode || ''].map(encodeURIComponent).join(':');
@@ -3118,13 +3152,64 @@
     return out;
   }
 
+  function approvalScopeHash(value) {
+    var hash = 2166136261;
+    var text = String(value || '').trim();
+    for (var i = 0; i < text.length; i += 1) {
+      var code = text.codePointAt(i);
+      if (code > 0xffff) i += 1;
+      hash ^= code;
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return ('00000000' + hash.toString(16)).slice(-8);
+  }
+
+  function approvalScopeCodeFromName(name) {
+    var raw = String(name || '').trim();
+    if (!raw) return '';
+    var code = raw.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!code) code = 'function_' + approvalScopeHash(raw);
+    if (!/^[a-z]/.test(code)) code = 'function_' + code;
+    return code;
+  }
+
+  function defaultApprovalFunctionScopes() {
+    return DEFAULT_APPROVAL_FUNCTIONS.map(function(item) {
+      return { scopeType: 'function', scopeId: item.scopeId, scopeName: st(item.labelKey), custom: false };
+    });
+  }
+
+  function normalizeApprovalFunctionScope(scope) {
+    if (!scope) return null;
+    var scopeName = String(scope.scopeName || scope.scope_name || scope.name || '').trim();
+    var scopeId = String(scope.scopeId || scope.scope_id || scope.id || '').trim();
+    if (!scopeId) scopeId = approvalScopeCodeFromName(scopeName);
+    if (!scopeName) scopeName = scopeId;
+    if (!scopeId || !scopeName) return null;
+    return { scopeType: 'function', scopeId: scopeId, scopeName: scopeName, custom: !!scope.custom };
+  }
+
   function approvalFunctionScopes() {
-    return [
-      { scopeType: 'function', scopeId: 'finance', scopeName: st('functionFinance') },
-      { scopeType: 'function', scopeId: 'procurement', scopeName: st('functionProcurement') },
-      { scopeType: 'function', scopeId: 'legal', scopeName: st('functionLegal') },
-      { scopeType: 'function', scopeId: 'it', scopeName: st('functionIT') }
-    ];
+    var sec = state();
+    if (!Array.isArray(sec.approvalFunctionScopes)) {
+      sec.approvalFunctionScopes = defaultApprovalFunctionScopes();
+    }
+    return setApprovalFunctionScopes(sec.approvalFunctionScopes);
+  }
+
+  function setApprovalFunctionScopes(scopes) {
+    var seen = {};
+    var seenNames = {};
+    var normalized = (scopes || []).map(normalizeApprovalFunctionScope).filter(Boolean).filter(function(scope) {
+      var nameKey = String(scope.scopeName || '').trim().toLowerCase();
+      if (seen[scope.scopeId]) return false;
+      if (nameKey && seenNames[nameKey]) return false;
+      seen[scope.scopeId] = true;
+      if (nameKey) seenNames[nameKey] = true;
+      return true;
+    });
+    state().approvalFunctionScopes = normalized;
+    return state().approvalFunctionScopes;
   }
 
   function approvalOrganizationScopes() {
@@ -3140,10 +3225,9 @@
 
   function approvalRoleTemplates(scope) {
     if (scope.scopeType === 'function') {
-      if (scope.scopeId === 'finance') return [{ roleCode: 'finance_approver', roleName: st('roleFinanceApprover'), executionMode: 'digital_review' }];
-      if (scope.scopeId === 'procurement') return [{ roleCode: 'procurement_approver', roleName: st('roleProcurementApprover'), executionMode: 'digital_suggest' }];
-      if (scope.scopeId === 'legal') return [{ roleCode: 'contract_approver', roleName: st('roleContractApprover'), executionMode: 'digital_review' }];
-      return [{ roleCode: 'it_approver', roleName: st('roleITApprover'), executionMode: 'manual' }];
+      var preset = DEFAULT_APPROVAL_FUNCTIONS.find(function(item) { return item.scopeId === scope.scopeId; }) || null;
+      if (preset) return [{ roleCode: preset.roleCode, roleName: preset.roleNameKey ? st(preset.roleNameKey) : (scope.scopeName + ' ' + st('roleFunctionApproverSuffix')), executionMode: preset.executionMode || 'manual' }];
+      return [{ roleCode: approvalRoleCodeFromName(scope.scopeId + '_approver'), roleName: scope.scopeName + ' ' + st('roleFunctionApproverSuffix'), executionMode: 'manual' }];
     }
     return [
       { roleCode: 'department_manager', roleName: st('roleDepartmentManager'), executionMode: 'manual' },
@@ -3241,6 +3325,18 @@
     return roles.map(normalizeApprovalRoleRecord).filter(Boolean);
   }
 
+  function loadApprovalFunctionScopesFromLocal() {
+    try {
+      var raw = global.localStorage && global.localStorage.getItem(APPROVAL_ROLES_STORAGE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.functionScopes)) return setApprovalFunctionScopes(parsed.functionScopes);
+        if (parsed && Array.isArray(parsed.function_scopes)) return setApprovalFunctionScopes(parsed.function_scopes);
+      }
+    } catch (_) {}
+    return setApprovalFunctionScopes(defaultApprovalFunctionScopes());
+  }
+
   async function ensureApprovalRolesLoaded() {
     var sec = state();
     if (sec.approvalRolesLoaded) return sec.approvalRoles || [];
@@ -3248,13 +3344,16 @@
     sec.approvalRolesLoading = api('/api/admin/security/approval-roles').then(function(data) {
       var roles = data && Array.isArray(data.roles) ? data.roles : [];
       sec.approvalRoles = roles.map(normalizeApprovalRoleRecord).filter(Boolean);
+      var incomingScopes = data && (data.functionScopes || data.function_scopes);
+      setApprovalFunctionScopes(Array.isArray(incomingScopes) ? incomingScopes : (data && data.updated_at ? [] : defaultApprovalFunctionScopes()));
       sec.approvalRolesLoaded = true;
       try {
-        if (global.localStorage) global.localStorage.setItem(APPROVAL_ROLES_STORAGE_KEY, JSON.stringify({ roles: sec.approvalRoles, updated_at: data && data.updated_at || '' }));
+        if (global.localStorage) global.localStorage.setItem(APPROVAL_ROLES_STORAGE_KEY, JSON.stringify({ roles: sec.approvalRoles, functionScopes: approvalFunctionScopes(), updated_at: data && data.updated_at || '' }));
       } catch (_) {}
       return sec.approvalRoles;
     }).catch(function() {
       sec.approvalRoles = loadApprovalRolesFromLocal();
+      loadApprovalFunctionScopesFromLocal();
       sec.approvalRolesLoaded = true;
       return sec.approvalRoles;
     }).finally(function() {
@@ -3554,9 +3653,17 @@
         ensureApprovalGroupMembersLoaded(current.scopeId).then(renderSecApprovalRoles).catch(function() {});
       }
     }
+    if (view === 'function' && !scopes.length) {
+      root.innerHTML = '<div class="approval-role-layout">' +
+        '<div class="approval-role-sidebar"><div class="approval-role-view-toggle"><button type="button" class="btn-ghost" onclick="setSecApprovalRoleView(\'organization\')">' + escapeHtml(st('approvalRolesOrgView')) + '</button><button type="button" class="btn-secondary" onclick="setSecApprovalRoleView(\'function\')">' + escapeHtml(st('approvalRolesFunctionView')) + '</button></div><div class="item-meta" style="margin:10px 0 8px">' + escapeHtml(st('approvalRolesScope')) + ' (0)</div><button type="button" class="btn-secondary" style="width:100%;height:32px;margin-bottom:8px" onclick="addSecApprovalFunction()">' + escapeHtml(st('approvalRolesAddFunction')) + '</button>' + hint(st('approvalRolesNoFunctions')) + '</div>' +
+        '<div class="approval-role-editor"><div class="approval-role-current"><div><strong>-</strong><small>' + escapeHtml(st('approvalRolesFunctionView')) + '</small></div><div class="approval-role-current-actions"><button type="button" class="btn-secondary" onclick="addSecApprovalFunction()">' + escapeHtml(st('approvalRolesAddFunction')) + '</button></div></div>' + hint(st('approvalRolesNoFunctions')) + '</div>' +
+        renderApprovalSubjectPreview(null) +
+      '</div>';
+      return;
+    }
     root.innerHTML = '<div class="approval-role-layout">' +
-      '<div class="approval-role-sidebar"><div class="approval-role-view-toggle"><button type="button" class="' + (view === 'organization' ? 'btn-secondary' : 'btn-ghost') + '" onclick="setSecApprovalRoleView(\'organization\')">' + escapeHtml(st('approvalRolesOrgView')) + '</button><button type="button" class="' + (view === 'function' ? 'btn-secondary' : 'btn-ghost') + '" onclick="setSecApprovalRoleView(\'function\')">' + escapeHtml(st('approvalRolesFunctionView')) + '</button></div><div class="item-meta" style="margin:10px 0 8px">' + escapeHtml(st('approvalRolesScope')) + ' (' + scopes.length + ')</div>' + renderApprovalScopeButtons(scopes) + '</div>' +
-      '<div class="approval-role-editor"><div class="approval-role-current"><div><strong>' + escapeHtml(current && current.scopeName || '-') + '</strong><small>' + escapeHtml(current ? current.scopeType : '-') + '</small></div><div class="approval-role-current-actions"><span class="badge info">' + approvalRoleTemplatesForScope(current || {}).length + '</span><button type="button" class="btn-secondary" onclick="addSecApprovalRole()">' + escapeHtml(st('approvalRolesAddRole')) + '</button></div></div>' + renderApprovalRoleRows(current) + '</div>' +
+      '<div class="approval-role-sidebar"><div class="approval-role-view-toggle"><button type="button" class="' + (view === 'organization' ? 'btn-secondary' : 'btn-ghost') + '" onclick="setSecApprovalRoleView(\'organization\')">' + escapeHtml(st('approvalRolesOrgView')) + '</button><button type="button" class="' + (view === 'function' ? 'btn-secondary' : 'btn-ghost') + '" onclick="setSecApprovalRoleView(\'function\')">' + escapeHtml(st('approvalRolesFunctionView')) + '</button></div><div class="item-meta" style="margin:10px 0 8px">' + escapeHtml(st('approvalRolesScope')) + ' (' + scopes.length + ')</div>' + (view === 'function' ? '<button type="button" class="btn-secondary" style="width:100%;height:32px;margin-bottom:8px" onclick="addSecApprovalFunction()">' + escapeHtml(st('approvalRolesAddFunction')) + '</button>' : '') + renderApprovalScopeButtons(scopes) + '</div>' +
+      '<div class="approval-role-editor"><div class="approval-role-current"><div><strong>' + escapeHtml(current && current.scopeName || '-') + '</strong><small>' + escapeHtml(current ? current.scopeType : '-') + '</small></div><div class="approval-role-current-actions"><span class="badge info">' + approvalRoleTemplatesForScope(current || {}).length + '</span>' + (view === 'function' && current ? '<button type="button" class="btn-ghost" onclick="removeSecApprovalFunction(\'' + escapeJsString(current.scopeId) + '\')">' + escapeHtml(st('approvalRolesRemoveFunction')) + '</button>' : '') + '<button type="button" class="btn-secondary" onclick="addSecApprovalRole()">' + escapeHtml(st('approvalRolesAddRole')) + '</button></div></div>' + renderApprovalRoleRows(current) + '</div>' +
       renderApprovalSubjectPreview(current) +
     '</div>';
   }
@@ -3565,7 +3672,8 @@
     syncVisibleApprovalRoleRows();
     var sec = state();
     sec.approvalRoleView = view === 'function' ? 'function' : 'organization';
-    sec.approvalRoleScope = sec.approvalRoleView === 'function' ? 'function:finance' : 'global:global';
+    var functionScopes = approvalFunctionScopes();
+    sec.approvalRoleScope = sec.approvalRoleView === 'function' ? ('function:' + (functionScopes[0] && functionScopes[0].scopeId || 'finance')) : 'global:global';
     renderSecApprovalRoles();
   };
 
@@ -3584,6 +3692,55 @@
       input.focus();
       try { input.setSelectionRange(input.value.length, input.value.length); } catch (_) {}
     }
+  };
+
+  global.addSecApprovalFunction = function addSecApprovalFunction() {
+    syncVisibleApprovalRoleRows();
+    var name = String(prompt(st('approvalRolesPromptFunctionName')) || '').trim();
+    if (!name) {
+      showToast(st('approvalRolesFunctionNameRequired'), 'info');
+      return;
+    }
+    var base = approvalScopeCodeFromName(name);
+    var existing = approvalFunctionScopes().find(function(scope) {
+      return String(scope.scopeId || '').toLowerCase() === base || String(scope.scopeName || '').trim().toLowerCase() === name.toLowerCase();
+    });
+    if (existing) {
+      state().approvalRoleScope = 'function:' + existing.scopeId;
+      showToast(st('approvalRolesFunctionExists'), 'info');
+      renderSecApprovalRoles();
+      return;
+    }
+    var used = {};
+    approvalFunctionScopes().forEach(function(scope) { used[scope.scopeId] = true; });
+    var scopeId = base;
+    var idx = 2;
+    while (used[scopeId]) {
+      scopeId = base + '_' + idx;
+      idx += 1;
+    }
+    var scopes = approvalFunctionScopes().concat([{ scopeType: 'function', scopeId: scopeId, scopeName: name, custom: true }]);
+    setApprovalFunctionScopes(scopes);
+    state().approvalRoleScope = 'function:' + scopeId;
+    showToast(st('approvalRolesFunctionAdded'), 'success');
+    renderSecApprovalRoles();
+  };
+
+  global.removeSecApprovalFunction = function removeSecApprovalFunction(scopeId) {
+    syncVisibleApprovalRoleRows();
+    scopeId = String(scopeId || '').trim();
+    var scope = approvalFunctionScopes().find(function(item) { return item.scopeId === scopeId; });
+    if (!scope || !confirm(st('approvalRolesConfirmRemoveFunction', { name: scope.scopeName || scopeId }))) return;
+    setApprovalFunctionScopes(approvalFunctionScopes().filter(function(item) { return item.scopeId !== scopeId; }));
+    var sec = state();
+    sec.approvalRoles = loadApprovalRoles().filter(function(role) {
+      return !(role && role.scopeType === 'function' && role.scopeId === scopeId);
+    });
+    var next = approvalFunctionScopes()[0] || null;
+    sec.approvalRoleScope = next ? 'function:' + next.scopeId : '';
+    sec.approvalRolesLoaded = true;
+    showToast(st('approvalRolesFunctionRemoved'), 'success');
+    renderSecApprovalRoles();
   };
 
   global.addSecApprovalRole = function addSecApprovalRole() {
@@ -3834,19 +3991,21 @@
 
   global.saveSecApprovalRoles = async function saveSecApprovalRoles() {
     var roles = syncVisibleApprovalRoleRows().map(normalizeApprovalRoleRecord).filter(Boolean);
+    var functionScopes = approvalFunctionScopes();
     var saveBtn = document.getElementById('secApprovalRolesSaveBtn');
     if (saveBtn) saveBtn.disabled = true;
     try {
-      var saved = await api('/api/admin/security/approval-roles', { method: 'PUT', body: JSON.stringify({ roles: roles }) });
+      var saved = await api('/api/admin/security/approval-roles', { method: 'PUT', body: JSON.stringify({ roles: roles, functionScopes: functionScopes }) });
       roles = saved && Array.isArray(saved.roles) ? saved.roles.map(normalizeApprovalRoleRecord).filter(Boolean) : roles;
-      if (global.localStorage) global.localStorage.setItem(APPROVAL_ROLES_STORAGE_KEY, JSON.stringify({ roles: roles, updated_at: new Date().toISOString() }));
+      functionScopes = setApprovalFunctionScopes(saved && (saved.functionScopes || saved.function_scopes) || functionScopes);
+      if (global.localStorage) global.localStorage.setItem(APPROVAL_ROLES_STORAGE_KEY, JSON.stringify({ roles: roles, functionScopes: functionScopes, updated_at: new Date().toISOString() }));
       state().approvalRoles = roles;
       state().approvalRolesLoaded = true;
       showToast(st('approvalRolesSaved'), 'success');
       renderSecApprovalRoles();
     } catch (err) {
       try {
-        if (global.localStorage) global.localStorage.setItem(APPROVAL_ROLES_STORAGE_KEY, JSON.stringify({ roles: roles, updated_at: new Date().toISOString() }));
+        if (global.localStorage) global.localStorage.setItem(APPROVAL_ROLES_STORAGE_KEY, JSON.stringify({ roles: roles, functionScopes: functionScopes, updated_at: new Date().toISOString() }));
         state().approvalRoles = roles;
         showToast(st('approvalRolesSaveFailed') + err.message, 'error');
         renderSecApprovalRoles();

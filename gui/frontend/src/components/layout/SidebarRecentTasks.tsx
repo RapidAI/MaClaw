@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { GetProjectScene } from '../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../wailsjs/runtime';
 import { EVENT_PROJECT_TASK_CLOSED } from '../../constants/events';
@@ -64,6 +65,12 @@ type SidebarRecentTasksProps = {
 };
 
 const textForLang = localizeText;
+// Must sit above existing fixed dropdowns/overlays that use z-index 99999.
+const RECENT_TASK_CREATE_DIALOG_Z_INDEX = 100000;
+
+const getPortalThemeMode = (themeMode?: 'light' | 'dark') => (
+    themeMode || document.getElementById('App')?.getAttribute('data-ai-theme') || undefined
+);
 
 const normalizeTaskCommandInput = (value?: string | null) => {
     // Preserve newlines (multi-line task commands), only collapse horizontal whitespace per line
@@ -107,6 +114,7 @@ export const SidebarRecentTasks = ({
 
     const openCreateDialog = () => {
         if (creatingTaskRef.current) return;
+        if (taskContextMenu) setTaskContextMenu(null);
         setNewTaskName('');
         setCreateDialogOpen(true);
     };
@@ -202,10 +210,11 @@ export const SidebarRecentTasks = ({
             </div>
         ))}
 
-        {createDialogOpen && (
+        {createDialogOpen && createPortal(
             <div
                 className="modal-backdrop"
-                data-ai-theme={themeMode || undefined}
+                data-ai-theme={getPortalThemeMode(themeMode)}
+                style={{ zIndex: RECENT_TASK_CREATE_DIALOG_Z_INDEX }}
                 onMouseDown={e => { createBackdropMouseDownRef.current = e.target === e.currentTarget; }}
                 onClick={e => { if (e.target === e.currentTarget && createBackdropMouseDownRef.current) closeCreateDialog(); createBackdropMouseDownRef.current = false; }}
             >
@@ -257,7 +266,8 @@ export const SidebarRecentTasks = ({
                         </button>
                     </div>
                 </form>
-            </div>
+            </div>,
+            document.body,
         )}
 
         {taskContextMenu && (<>

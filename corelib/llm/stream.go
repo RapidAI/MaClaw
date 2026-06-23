@@ -29,6 +29,20 @@ func DoOpenAIRequestStream(
 	client *http.Client,
 	onToken TokenCallback,
 ) (*Response, error) {
+	return DoOpenAIRequestStreamWithReasoning(ctx, cfg, messages, tools, client, onToken, nil)
+}
+
+// DoOpenAIRequestStreamWithReasoning sends a streaming OpenAI-compatible chat request.
+// It calls onToken for text deltas and onReasoning for reasoning_content deltas.
+func DoOpenAIRequestStreamWithReasoning(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	client *http.Client,
+	onToken TokenCallback,
+	onReasoning TokenCallback,
+) (*Response, error) {
 	endpoint, reqBody, err := BuildOpenAIChatRequestData(cfg, messages, OpenAIChatRequestOptions{
 		Stream: true,
 		Tools:  tools,
@@ -41,7 +55,7 @@ func DoOpenAIRequestStream(
 	log.Printf("[LLM-stream] POST %s model=%s configured_model=%s %s", endpoint, upstreamModel, cfg.Model, traceFields)
 
 	startedAt := time.Now()
-	result, statusCode, body, err := openAISDKChatStream(ctx, cfg, reqBody, client, onToken)
+	result, statusCode, body, err := openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
 	if err != nil {
 		if statusCode == 0 {
 			log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
@@ -56,7 +70,7 @@ func DoOpenAIRequestStream(
 				return nil, err
 			}
 			retryStartedAt := time.Now()
-			result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken)
+			result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
 			if err != nil {
 				if statusCode == 0 {
 					log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(retryStartedAt).Round(time.Millisecond), err, traceFields)
@@ -74,7 +88,7 @@ func DoOpenAIRequestStream(
 					return nil, err
 				}
 				compactStartedAt := time.Now()
-				result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken)
+				result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
 				if err != nil {
 					if statusCode == 0 {
 						log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(compactStartedAt).Round(time.Millisecond), err, traceFields)
@@ -96,7 +110,7 @@ func DoOpenAIRequestStream(
 				return nil, err
 			}
 			compactStartedAt := time.Now()
-			result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken)
+			result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
 			if err != nil {
 				if statusCode == 0 {
 					log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(compactStartedAt).Round(time.Millisecond), err, traceFields)

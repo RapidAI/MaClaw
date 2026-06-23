@@ -8,6 +8,7 @@
  */
 import React, { useMemo } from "react";
 import { renderContentWithCodeBlocks, type Theme as MarkdownTheme } from "./aiAssistantMarkdown";
+import { stripRolePrefixForDisplay } from "./rolePrefixDisplay";
 
 export interface MessageContentRendererProps {
     /** 消息文本内容 */
@@ -24,17 +25,22 @@ export interface MessageContentRendererProps {
  * 用户消息保持 pre-wrap 纯文本。
  */
 export function MessageContentRenderer({ content, theme, isUser }: MessageContentRendererProps) {
-    if (isUser) {
-        return <span style={{ whiteSpace: "pre-wrap" }}>{content}</span>;
-    }
+    const displayContent = useMemo(
+        () => isUser ? content : stripRolePrefixForDisplay(content),
+        [content, isUser]
+    );
 
     // Memoize markdown rendering — only recompute when content or theme changes.
     // During streaming, content changes every chunk but theme is stable,
     // so this prevents redundant renders when parent re-renders for other reasons.
     const rendered = useMemo(
-        () => content ? renderContentWithCodeBlocks(content, theme) : null,
-        [content, theme]
+        () => !isUser && displayContent ? renderContentWithCodeBlocks(displayContent, theme) : null,
+        [displayContent, theme, isUser]
     );
+
+    if (isUser) {
+        return <span style={{ whiteSpace: "pre-wrap" }}>{displayContent}</span>;
+    }
 
     return <>{rendered}</>;
 }

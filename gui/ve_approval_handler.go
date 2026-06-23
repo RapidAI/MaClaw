@@ -42,7 +42,7 @@ func DefaultVEApprovalConfig() VEApprovalConfig {
 	return VEApprovalConfig{
 		Enabled:      false,
 		ACL:          AccessControlList{Mode: ACLWhitelist},
-		Rules:        ApprovalRules{},
+		Rules:        ApprovalRules{AutoReject: []ApprovalRule{}, AutoApprove: []ApprovalRule{}, RequireHuman: []ApprovalRule{}},
 		MaxQueueSize: 50,
 		TimeoutHours: 24,
 		DailyQuota:   100,

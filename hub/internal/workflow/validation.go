@@ -5,10 +5,10 @@ import "fmt"
 // ValidationError represents a single validation issue in a workflow graph.
 // It identifies the affected node (if applicable) and provides a human-readable message.
 type ValidationError struct {
-	NodeID    string   `json:"node_id,omitempty"`
-	NodeLabel string   `json:"node_label,omitempty"`
+	NodeID    string    `json:"node_id,omitempty"`
+	NodeLabel string    `json:"node_label,omitempty"`
 	Position  *Position `json:"position,omitempty"`
-	Message   string   `json:"message"`
+	Message   string    `json:"message"`
 }
 
 // ValidateWorkflowGraphDetailed performs comprehensive validation of a workflow graph
@@ -85,7 +85,25 @@ func ValidateWorkflowGraphDetailed(graph WorkflowGraph) []ValidationError {
 		}
 	}
 
-	// 4. Check for disconnected nodes (BFS from trigger)
+	// 4. Check approval nodes have at least one configured approver or role.
+	for i := range graph.Nodes {
+		n := &graph.Nodes[i]
+		if n.Type != NodeApproval {
+			continue
+		}
+		hasApprover, err := approvalNodeHasApprover(*n)
+		if err != nil || !hasApprover {
+			pos := n.Position
+			errors = append(errors, ValidationError{
+				NodeID:    n.ID,
+				NodeLabel: n.Label,
+				Position:  &pos,
+				Message:   "Approval node must have at least one approver or approval role",
+			})
+		}
+	}
+
+	// 5. Check for disconnected nodes (BFS from trigger)
 	if len(triggerNodes) == 1 {
 		triggerID := triggerNodes[0].ID
 

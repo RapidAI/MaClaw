@@ -107,12 +107,21 @@ func validGraph() WorkflowGraph {
 	return WorkflowGraph{
 		Nodes: []WorkflowNode{
 			{ID: "trigger_1", Type: NodeTrigger, Label: "Start"},
-			{ID: "approval_1", Type: NodeApproval, Label: "Approve"},
+			{ID: "approval_1", Type: NodeApproval, Label: "Approve", Config: approvalConfigRaw("role:function:finance:finance_approver")},
 		},
 		Edges: []WorkflowEdge{
 			{ID: "e1", SourceID: "trigger_1", TargetID: "approval_1"},
 		},
 	}
+}
+
+func approvalConfigRaw(approverIDs ...string) json.RawMessage {
+	body, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  approverIDs,
+		Mode:         ModeSingle,
+		TimeoutHours: 24,
+	})
+	return body
 }
 
 func mustRawJSON(t *testing.T, value any) json.RawMessage {
@@ -620,7 +629,7 @@ func TestValidateGraphStructure_AcceptsConditionBranchRoutes(t *testing.T) {
 				}},
 				DefaultBranch: "done",
 			})},
-			{ID: "approve", Type: NodeApproval, Label: "Approve"},
+			{ID: "approve", Type: NodeApproval, Label: "Approve", Config: approvalConfigRaw("role:function:finance:finance_approver")},
 			{ID: "done", Type: NodeTypeTerminal, Label: "Done"},
 		},
 		Edges: []WorkflowEdge{
@@ -631,6 +640,20 @@ func TestValidateGraphStructure_AcceptsConditionBranchRoutes(t *testing.T) {
 	}
 	if err := ValidateGraphStructure(graph); err != nil {
 		t.Errorf("ValidateGraphStructure(condition graph) = %v, want nil", err)
+	}
+}
+
+func TestValidateGraphStructure_RejectsApprovalWithoutApprover(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "t1", Type: NodeTrigger, Label: "Start"},
+			{ID: "a1", Type: NodeApproval, Label: "Approve", Config: approvalConfigRaw()},
+		},
+		Edges: []WorkflowEdge{{ID: "e1", SourceID: "t1", TargetID: "a1"}},
+	}
+	err := ValidateGraphStructure(graph)
+	if !errors.Is(err, ErrApprovalApproverRequired) {
+		t.Errorf("error = %v, want ErrApprovalApproverRequired", err)
 	}
 }
 
@@ -687,6 +710,96 @@ func TestValidateGraphStructure_RejectsConditionBranchInvalidExpression(t *testi
 	err := ValidateGraphStructure(graph)
 	if !errors.Is(err, ErrConditionBranchInvalid) {
 		t.Errorf("error = %v, want ErrConditionBranchInvalid", err)
+	}
+}
+
+func TestValidateGraphStructure_RejectsConditionBranchMissingRequiredValue(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "t1", Type: NodeTrigger, Label: "Start"},
+			{ID: "cond", Type: NodeConditionBranch, Label: "Check", Config: mustRawJSON(t, ConditionBranchConfig{
+				Branches: []BranchCondition{{
+					TargetNodeID: "done",
+					Expression:   ConditionExpr{Field: "amount", Operator: "greater_than", Value: ""},
+				}},
+			})},
+			{ID: "done", Type: NodeTypeTerminal, Label: "Done"},
+		},
+		Edges: []WorkflowEdge{
+			{ID: "e1", SourceID: "t1", TargetID: "cond"},
+			{ID: "e2", SourceID: "cond", TargetID: "done"},
+		},
+	}
+	err := ValidateGraphStructure(graph)
+	if !errors.Is(err, ErrConditionBranchInvalid) {
+		t.Errorf("error = %v, want ErrConditionBranchInvalid", err)
+	}
+}
+
+func TestValidateGraphStructure_AcceptsConditionBranchListWithZeroValue(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "t1", Type: NodeTrigger, Label: "Start"},
+			{ID: "cond", Type: NodeConditionBranch, Label: "Check", Config: mustRawJSON(t, ConditionBranchConfig{
+				Branches: []BranchCondition{{
+					TargetNodeID: "done",
+					Expression:   ConditionExpr{Field: "amount", Operator: "in_list", Value: []any{0}},
+				}},
+			})},
+			{ID: "done", Type: NodeTypeTerminal, Label: "Done"},
+		},
+		Edges: []WorkflowEdge{
+			{ID: "e1", SourceID: "t1", TargetID: "cond"},
+			{ID: "e2", SourceID: "cond", TargetID: "done"},
+		},
+	}
+	if err := ValidateGraphStructure(graph); err != nil {
+		t.Fatalf("expected list with zero value to be valid, got %v", err)
+	}
+}
+
+func TestValidateGraphStructure_RejectsConditionBranchEmptyListValues(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "t1", Type: NodeTrigger, Label: "Start"},
+			{ID: "cond", Type: NodeConditionBranch, Label: "Check", Config: mustRawJSON(t, ConditionBranchConfig{
+				Branches: []BranchCondition{{
+					TargetNodeID: "done",
+					Expression:   ConditionExpr{Field: "amount", Operator: "in_list", Value: []any{nil, ""}},
+				}},
+			})},
+			{ID: "done", Type: NodeTypeTerminal, Label: "Done"},
+		},
+		Edges: []WorkflowEdge{
+			{ID: "e1", SourceID: "t1", TargetID: "cond"},
+			{ID: "e2", SourceID: "cond", TargetID: "done"},
+		},
+	}
+	err := ValidateGraphStructure(graph)
+	if !errors.Is(err, ErrConditionBranchInvalid) {
+		t.Errorf("error = %v, want ErrConditionBranchInvalid", err)
+	}
+}
+
+func TestValidateGraphStructure_AcceptsConditionBranchEmptyCheckWithoutValue(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "t1", Type: NodeTrigger, Label: "Start"},
+			{ID: "cond", Type: NodeConditionBranch, Label: "Check", Config: mustRawJSON(t, ConditionBranchConfig{
+				Branches: []BranchCondition{{
+					TargetNodeID: "done",
+					Expression:   ConditionExpr{Field: "comment", Operator: "is_empty"},
+				}},
+			})},
+			{ID: "done", Type: NodeTypeTerminal, Label: "Done"},
+		},
+		Edges: []WorkflowEdge{
+			{ID: "e1", SourceID: "t1", TargetID: "cond"},
+			{ID: "e2", SourceID: "cond", TargetID: "done"},
+		},
+	}
+	if err := ValidateGraphStructure(graph); err != nil {
+		t.Fatalf("expected empty check without value to be valid, got %v", err)
 	}
 }
 

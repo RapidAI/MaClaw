@@ -86,7 +86,11 @@ export function VEApprovalCapabilitySection({ lang, footerSlot }: Props) {
             skills: resp.acl?.skills || [],
             entities: resp.acl?.entities || [],
           },
-          rules: resp.rules || { auto_reject: [], auto_approve: [], require_human: [] },
+          rules: {
+            auto_reject: resp.rules?.auto_reject || [],
+            auto_approve: resp.rules?.auto_approve || [],
+            require_human: resp.rules?.require_human || [],
+          },
           max_queue_size: resp.max_queue_size ?? 50,
           timeout_hours: resp.timeout_hours ?? 24,
           daily_quota: resp.daily_quota ?? 100,

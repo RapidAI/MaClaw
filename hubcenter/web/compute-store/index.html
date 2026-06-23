@@ -163,6 +163,7 @@
     };
     var pendingOrderStatuses = ['pending', 'personal_created', 'personal_opened', 'created', 'payment_started', 'payment_failed'];
     var deletableOrderStatuses = ['pending', 'personal_created', 'personal_opened'];
+    var orderLoadSeq = 0;
 
     var TEXT = {
       zh: {
@@ -998,12 +999,13 @@
 
     function paymentDetailHTML(order, channel) {
       channel = channel || {};
-      var html = '<section class="payment-detail" data-payment-detail="' + esc(channel.id || '') + '">'
-        + '<div class="payment-detail__head"><span>' + esc(tr('paymentDetails')) + '</span><strong>' + esc(channel.label || tr(channel.id) || channel.id || '-') + '</strong></div>';
+      var html = '<section class="payment-detail" data-payment-detail="' + esc(channel.id || '') + '">';
       if (channel.pay_url) {
-        html += '<div class="payment-action-card"><strong>' + esc(tr('gatewayPayment')) + '</strong><a class="primary-link" href="' + esc(paymentURLWithContext(channel.pay_url, order)) + '" target="_blank" rel="noopener">' + esc(tr('goPay')) + '</a></div>';
+        html += '<div class="payment-action-card"><div><span>' + esc(tr('paymentDetails')) + '</span><strong>' + esc(channel.label || tr('gatewayPayment')) + '</strong></div><a class="primary-link" href="' + esc(paymentURLWithContext(channel.pay_url, order)) + '" target="_blank" rel="noopener">' + esc(tr('goPay')) + '</a></div>';
       } else if (channel.pay_deep_link) {
-        html += '<div class="payment-action-card"><strong>' + esc(channel.label || tr('goPay')) + '</strong><a class="primary-link" href="' + esc(channel.pay_deep_link) + '">' + esc(tr('goPay')) + '</a></div>';
+        html += '<div class="payment-action-card"><div><span>' + esc(tr('paymentDetails')) + '</span><strong>' + esc(channel.label || tr('goPay')) + '</strong></div><a class="primary-link" href="' + esc(channel.pay_deep_link) + '">' + esc(tr('goPay')) + '</a></div>';
+      } else {
+        html += '<div class="payment-detail__head"><span>' + esc(tr('paymentDetails')) + '</span><strong>' + esc(channel.label || tr(channel.id) || channel.id || '-') + '</strong></div>';
       }
       if (channel.image_url) {
         html += '<div class="payment-qr-block"><img src="' + esc(channel.image_url) + '" alt="' + esc(channel.label || 'Payment QR') + '"><p>' + esc(tr('scanToPay')) + '</p></div>';
@@ -1029,18 +1031,17 @@
       closeOrderDialog();
       var modal = document.createElement('div');
       var payment = orderPaymentChannels(order);
+      var hasMethodSwitcher = payment.channels.length > 1;
       modal.className = 'order-dialog';
       modal.setAttribute('role', 'presentation');
       modal.innerHTML = '<div class="order-dialog__panel" role="dialog" aria-modal="true" aria-labelledby="orderDialogTitle">'
         + '<button type="button" class="order-dialog__close" data-close-order-dialog aria-label="' + esc(tr('close')) + '">&times;</button>'
         + '<div class="order-dialog__header"><div><p class="kicker">' + esc(tr('orderCreatedKicker')) + '</p><h2 id="orderDialogTitle">' + esc(tr('orderCreated')) + '</h2><p class="lead">' + esc(tr('orderCreatedLead')) + '</p></div><span class="order-status pending">' + esc(statusLabel(order.status)) + '</span></div>'
-        + '<div class="payment-workspace">'
-        + '<aside class="payment-methods"><span>' + esc(tr('paymentMethodTitle')) + '</span>'
-        + payment.channels.map(function(ch) {
+        + '<div class="payment-workspace' + (hasMethodSwitcher ? '' : ' payment-workspace--single') + '">'
+        + (hasMethodSwitcher ? '<aside class="payment-methods"><span>' + esc(tr('paymentMethodTitle')) + '</span>' + payment.channels.map(function(ch) {
           var active = ch.id === payment.activeID ? ' is-active' : '';
           return '<button type="button" class="payment-method' + active + '" data-payment-method="' + esc(ch.id) + '" aria-pressed="' + (ch.id === payment.activeID ? 'true' : 'false') + '"><span class="pay-icon" aria-hidden="true">' + paymentIcon(ch.id) + '</span><strong>' + esc(ch.label || tr(ch.id) || ch.id) + '</strong>' + (ch.id === payment.activeID ? '<em>' + esc(tr('currentMethod')) + '</em>' : '') + '</button>';
-        }).join('')
-        + '</aside>'
+        }).join('') + '</aside>' : '')
         + '<div class="payment-result">' + payment.channels.map(function(ch) { return paymentDetailHTML(order, ch); }).join('') + '</div>'
         + '</div>'
         + '<div class="order-summary-title">' + esc(tr('orderSummary')) + '</div>'
@@ -1064,7 +1065,7 @@
         if (event.target === modal) closeOrderDialog();
       });
       document.addEventListener('keydown', handleOrderDialogKeydown);
-      var activeBtn = modal.querySelector('.payment-method.is-active') || modal.querySelector('[data-close-order-dialog]');
+      var activeBtn = modal.querySelector('.payment-method.is-active') || modal.querySelector('.payment-detail:not([hidden]) .primary-link') || modal.querySelector('[data-close-order-dialog]');
       if (activeBtn) activeBtn.focus();
     }
 
@@ -1119,6 +1120,7 @@
     }
 
     async function loadOrders() {
+      var seq = ++orderLoadSeq;
       var email = document.getElementById('adminEmail').value.trim();
       if (!email) {
         document.getElementById('ordersList').innerHTML = '<div class="empty">' + esc(tr('ordersNeedEmail')) + '</div>';
@@ -1141,8 +1143,10 @@
           orders.push(order);
         });
         orders.sort(function(a, b) { return new Date(b.created_at || 0) - new Date(a.created_at || 0); });
+        if (seq !== orderLoadSeq) return;
         renderOrders(orders);
       } catch (e) {
+        if (seq !== orderLoadSeq) return;
         document.getElementById('ordersList').innerHTML = '<div class="empty">' + esc(tr('loadFailed')) + '</div>';
       }
     }

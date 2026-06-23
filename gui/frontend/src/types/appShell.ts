@@ -53,6 +53,12 @@ export interface SidebarHubCreditGrant {
     credits_used?: number;
     credits_remaining?: number;
     credits_available?: number;
+    period_limits?: {
+        five_hour?: number;
+        daily?: number;
+        weekly?: number;
+        monthly?: number;
+    };
     retry_after_seconds?: number;
     retry_after_at?: string;
     starts_at?: string;
@@ -65,6 +71,12 @@ export interface SidebarHubCreditGrant {
     CreditsUsed?: number;
     CreditsRemaining?: number;
     CreditsAvailable?: number;
+    PeriodLimits?: {
+        FiveHour?: number;
+        Daily?: number;
+        Weekly?: number;
+        Monthly?: number;
+    };
     RetryAfterSeconds?: number;
     RetryAfterAt?: string;
     StartsAt?: string;

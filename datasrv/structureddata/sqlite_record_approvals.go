@@ -63,6 +63,10 @@ func (s *SQLiteStore) ListRecordApprovals(ctx context.Context, tenantID string, 
 		clauses = append(clauses, "workflow_skill_id = ?")
 		args = append(args, workflowSkillID)
 	}
+	if workflowVersion := strings.TrimSpace(in.WorkflowVersion); workflowVersion != "" {
+		clauses = append(clauses, "workflow_version = ?")
+		args = append(args, workflowVersion)
+	}
 	if workflowInstanceID := strings.TrimSpace(in.WorkflowInstanceID); workflowInstanceID != "" {
 		clauses = append(clauses, "workflow_instance_id = ?")
 		args = append(args, workflowInstanceID)
@@ -152,7 +156,7 @@ func (s *SQLiteStore) GetRecordApproval(ctx context.Context, tenantID, approvalI
 	return &approval, nil
 }
 
-func (s *SQLiteStore) UpdateRecordApprovalStatus(ctx context.Context, tenantID, approvalID, status, decision, reason, reviewedBy, workflowNodeID, workflowDecisionID, businessStatus, resultStatus string, resultPayload map[string]any, outputs []RecordApprovalOutput, artifacts []RecordApprovalArtifact, now time.Time) (*RecordApproval, error) {
+func (s *SQLiteStore) UpdateRecordApprovalStatus(ctx context.Context, tenantID, approvalID, status, decision, reason, reviewedBy, workflowNodeID, workflowVersion, workflowDecisionID, businessStatus, resultStatus string, resultPayload map[string]any, outputs []RecordApprovalOutput, artifacts []RecordApprovalArtifact, now time.Time) (*RecordApproval, error) {
 	approval, err := s.GetRecordApproval(ctx, tenantID, approvalID)
 	if err != nil {
 		return nil, err
@@ -163,6 +167,9 @@ func (s *SQLiteStore) UpdateRecordApprovalStatus(ctx context.Context, tenantID, 
 	approval.ReviewedBy = strings.TrimSpace(reviewedBy)
 	if workflowNodeID = strings.TrimSpace(workflowNodeID); workflowNodeID != "" {
 		approval.WorkflowNodeID = workflowNodeID
+	}
+	if workflowVersion = strings.TrimSpace(workflowVersion); workflowVersion != "" {
+		approval.WorkflowVersion = workflowVersion
 	}
 	if workflowDecisionID = strings.TrimSpace(workflowDecisionID); workflowDecisionID != "" {
 		approval.WorkflowDecisionID = workflowDecisionID
@@ -184,8 +191,8 @@ func (s *SQLiteStore) UpdateRecordApprovalStatus(ctx context.Context, tenantID, 
 	}
 	approval.ReviewedAt = now
 	approval.UpdatedAt = now
-	res, err := s.db.ExecContext(ctx, `UPDATE record_approvals SET status = ?, decision = ?, reason = ?, reviewed_by = ?, reviewed_at = ?, updated_at = ?, workflow_node_id = ?, workflow_decision_id = ?, business_status = ?, result_status = ?, result_payload_json = ?, outputs_json = ?, artifacts_json = ? WHERE tenant_id = ? AND id = ?`,
-		approval.Status, approval.Decision, approval.Reason, approval.ReviewedBy, formatOptionalPlanTime(approval.ReviewedAt), formatTime(approval.UpdatedAt), approval.WorkflowNodeID, approval.WorkflowDecisionID, approval.BusinessStatus, approval.ResultStatus, jsonObjectString(approval.ResultPayload), jsonArrayString(approval.Outputs), jsonArrayString(approval.Artifacts), tenantID, approvalID)
+	res, err := s.db.ExecContext(ctx, `UPDATE record_approvals SET status = ?, decision = ?, reason = ?, reviewed_by = ?, reviewed_at = ?, updated_at = ?, workflow_node_id = ?, workflow_version = ?, workflow_decision_id = ?, business_status = ?, result_status = ?, result_payload_json = ?, outputs_json = ?, artifacts_json = ? WHERE tenant_id = ? AND id = ?`,
+		approval.Status, approval.Decision, approval.Reason, approval.ReviewedBy, formatOptionalPlanTime(approval.ReviewedAt), formatTime(approval.UpdatedAt), approval.WorkflowNodeID, approval.WorkflowVersion, approval.WorkflowDecisionID, approval.BusinessStatus, approval.ResultStatus, jsonObjectString(approval.ResultPayload), jsonArrayString(approval.Outputs), jsonArrayString(approval.Artifacts), tenantID, approvalID)
 	if err != nil {
 		return nil, err
 	}

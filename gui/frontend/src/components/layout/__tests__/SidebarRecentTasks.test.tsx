@@ -47,13 +47,14 @@ function renderRecentTasks(overrides: Partial<ComponentProps<typeof SidebarRecen
         hideTask: vi.fn(),
         ...overrides,
     };
-    render(<SidebarRecentTasks {...props} />);
-    return props;
+    const view = render(<SidebarRecentTasks {...props} />);
+    return { ...props, container: view.container };
 }
 
 afterEach(() => {
     vi.restoreAllMocks();
     eventsEmitMock.mockClear();
+    document.getElementById('App')?.remove();
 });
 
 describe('SidebarRecentTasks', () => {
@@ -218,6 +219,61 @@ describe('SidebarRecentTasks', () => {
         fireEvent.click(screen.getByTitle('Create task'));
 
         expect(screen.getByLabelText('Task command').closest('.modal-backdrop')?.getAttribute('data-ai-theme')).toBe('dark');
+    });
+
+    it('falls back to the app theme when the portaled create dialog has no theme prop', () => {
+        const appRoot = document.createElement('div');
+        appRoot.id = 'App';
+        appRoot.setAttribute('data-ai-theme', 'dark');
+        document.body.appendChild(appRoot);
+        renderRecentTasks({ themeMode: undefined });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+
+        expect(screen.getByLabelText('Task command').closest('.modal-backdrop')?.getAttribute('data-ai-theme')).toBe('dark');
+    });
+
+    it('portals the create dialog outside the sidebar container so the backdrop covers the window', () => {
+        const { container } = renderRecentTasks();
+
+        fireEvent.click(screen.getByTitle('Create task'));
+
+        const backdrop = screen.getByLabelText('Task command').closest('.modal-backdrop');
+        expect(backdrop).toBeTruthy();
+        expect(backdrop?.parentElement).toBe(document.body);
+        expect(container.contains(backdrop)).toBe(false);
+    });
+
+    it('raises the create dialog backdrop above app chrome and fixed dropdowns', () => {
+        renderRecentTasks();
+
+        fireEvent.click(screen.getByTitle('Create task'));
+
+        const backdrop = screen.getByLabelText('Task command').closest('.modal-backdrop') as HTMLElement;
+        expect(Number(backdrop.style.zIndex)).toBeGreaterThan(99999);
+    });
+
+    it('dismisses any recent-task context menu before opening the create dialog', () => {
+        const setTaskContextMenu = vi.fn();
+        renderRecentTasks({
+            setTaskContextMenu,
+            taskContextMenu: { x: 10, y: 20, projectPath: baseProject.project_path, name: baseProject.name, pinned: false },
+        });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+
+        expect(setTaskContextMenu).toHaveBeenCalledWith(null);
+        expect(screen.getByRole('dialog', { name: 'Create task' })).toBeTruthy();
+    });
+
+    it('does not ask the parent to clear a missing context menu when opening the create dialog', () => {
+        const setTaskContextMenu = vi.fn();
+        renderRecentTasks({ setTaskContextMenu, taskContextMenu: null });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+
+        expect(setTaskContextMenu).not.toHaveBeenCalled();
+        expect(screen.getByRole('dialog', { name: 'Create task' })).toBeTruthy();
     });
 
     it('closes the create dialog with Escape from any dialog control', () => {

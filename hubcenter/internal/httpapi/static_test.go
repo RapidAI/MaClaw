@@ -206,13 +206,28 @@ func TestPackageScriptCopiesFullWebTree(t *testing.T) {
 	}
 }
 
-func TestComputeStoreDoesNotRewriteSignedAlipayPaymentURL(t *testing.T) {
+func readComputeStorePage(t *testing.T) string {
+	t.Helper()
 	pagePath := filepath.Clean(filepath.Join("..", "..", "web", "compute-store", "index.html"))
 	body, err := os.ReadFile(pagePath)
 	if err != nil {
 		t.Fatalf("read compute store page: %v", err)
 	}
-	page := string(body)
+	return string(body)
+}
+
+func readComputeStoreCSS(t *testing.T) string {
+	t.Helper()
+	cssPath := filepath.Clean(filepath.Join("..", "..", "web", "compute-store", "professional.css"))
+	body, err := os.ReadFile(cssPath)
+	if err != nil {
+		t.Fatalf("read compute store css: %v", err)
+	}
+	return string(body)
+}
+
+func TestComputeStoreDoesNotRewriteSignedAlipayPaymentURL(t *testing.T) {
+	page := readComputeStorePage(t)
 	guard := `if (isSignedAlipayPaymentURL(u)) return raw;`
 	rewrite := `u.searchParams.set('return_url', returnContextURL(order));`
 	if !strings.Contains(page, guard) {
@@ -230,12 +245,7 @@ func TestComputeStoreDoesNotRewriteSignedAlipayPaymentURL(t *testing.T) {
 }
 
 func TestComputeStorePrioritizesGatewayPaymentDetails(t *testing.T) {
-	pagePath := filepath.Clean(filepath.Join("..", "..", "web", "compute-store", "index.html"))
-	body, err := os.ReadFile(pagePath)
-	if err != nil {
-		t.Fatalf("read compute store page: %v", err)
-	}
-	page := string(body)
+	page := readComputeStorePage(t)
 	gatewayDetect := `var isGatewayOrder = !!(order.pay_url || order.payment_mode === 'alipay_direct');`
 	selectedByGateway := `var selectedID = isGatewayOrder ? 'alipay_direct' : (order.pay_channel || state.selectedPayChannel || '');`
 	gatewayLabel := `byID[selectedID].label = isGatewayOrder ? tr('gatewayPayment')`
@@ -245,12 +255,7 @@ func TestComputeStorePrioritizesGatewayPaymentDetails(t *testing.T) {
 }
 
 func TestComputeStoreNormalizesSelectedPaymentChannel(t *testing.T) {
-	pagePath := filepath.Clean(filepath.Join("..", "..", "web", "compute-store", "index.html"))
-	body, err := os.ReadFile(pagePath)
-	if err != nil {
-		t.Fatalf("read compute store page: %v", err)
-	}
-	page := string(body)
+	page := readComputeStorePage(t)
 	if !strings.Contains(page, `normalizeSelectedPayChannel();`) {
 		t.Fatalf("compute store must normalize selected payment channel after loading payment config")
 	}
@@ -259,6 +264,45 @@ func TestComputeStoreNormalizesSelectedPaymentChannel(t *testing.T) {
 	}
 	if !strings.Contains(page, `if (!exists) state.selectedPayChannel = state.paymentChannels[0].id;`) {
 		t.Fatalf("compute store must fall back to the first currently enabled payment channel")
+	}
+}
+
+func TestComputeStoreIgnoresStaleOrderLoads(t *testing.T) {
+	page := readComputeStorePage(t)
+	if !strings.Contains(page, `var orderLoadSeq = 0;`) || !strings.Contains(page, `var seq = ++orderLoadSeq;`) {
+		t.Fatalf("compute store must sequence order list requests")
+	}
+	if !strings.Contains(page, `if (seq !== orderLoadSeq) return;`) {
+		t.Fatalf("compute store must ignore stale order list responses")
+	}
+}
+
+func TestComputeStoreHidesPaymentSwitcherForSingleMethod(t *testing.T) {
+	page := readComputeStorePage(t)
+	if !strings.Contains(page, `var hasMethodSwitcher = payment.channels.length > 1;`) {
+		t.Fatalf("compute store must detect whether multiple payment methods are available")
+	}
+	if !strings.Contains(page, `(hasMethodSwitcher ? '<aside class="payment-methods"`) {
+		t.Fatalf("compute store must render the payment method switcher only when useful")
+	}
+	if !strings.Contains(page, `payment-workspace--single`) {
+		t.Fatalf("compute store must use a simplified single-method payment layout")
+	}
+	if !strings.Contains(page, `modal.querySelector('.payment-detail:not([hidden]) .primary-link')`) {
+		t.Fatalf("compute store should focus the primary payment action when no method switcher is shown")
+	}
+	css := readComputeStoreCSS(t)
+	mobileIdx := strings.Index(css, `@media (max-width: 680px)`)
+	actionIdx := -1
+	stackIdx := -1
+	if mobileIdx >= 0 {
+		actionIdx = strings.Index(css[mobileIdx:], `.payment-action-card`)
+		if actionIdx >= 0 {
+			stackIdx = strings.Index(css[mobileIdx+actionIdx:], `flex-direction: column;`)
+		}
+	}
+	if mobileIdx < 0 || actionIdx < 0 || stackIdx < 0 {
+		t.Fatalf("compute store payment action must stack cleanly on narrow screens")
 	}
 }
 

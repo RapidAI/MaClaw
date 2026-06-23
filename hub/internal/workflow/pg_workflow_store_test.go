@@ -123,6 +123,21 @@ func TestPGWorkflowStore_GetWorkflow_NotFound(t *testing.T) {
 	}
 }
 
+func TestParseWorkflowStoreTimeStringAcceptsGoTimeString(t *testing.T) {
+	want := time.Date(2026, 6, 22, 19, 37, 57, 76149226, time.UTC)
+	for _, raw := range []string{
+		"2026-06-22 19:37:57.076149226 +0000 UTC",
+		"2026-06-22 19:37:57.076149226 +0000 UTC m=+1.234567890",
+	} {
+		got, err := parseWorkflowStoreTimeString(raw)
+		if err != nil {
+			t.Fatalf("parseWorkflowStoreTimeString(%q): %v", raw, err)
+		}
+		if !got.Equal(want) {
+			t.Fatalf("parsed time = %s, want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+		}
+	}
+}
 func TestPGWorkflowStore_ListWorkflows(t *testing.T) {
 	store := newTestPGStore(t)
 	ctx := context.Background()

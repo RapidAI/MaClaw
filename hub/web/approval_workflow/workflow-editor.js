@@ -130,7 +130,7 @@
     chooseFallbackApprover: 'Choose fallback approver',
     approverPickerTitle: 'Choose approvers from organization',
     fallbackApproverPickerTitle: 'Choose fallback approver from organization',
-    approverPickerSearch: 'Search department or user',
+    approverPickerSearch: 'Search department, user, or approval role',
     approverPickerLoading: 'Loading organization...',
     approverPickerEmpty: 'No selectable approvers in this department.',
     approverPickerLoadFailed: 'Load organization failed: {error}',
@@ -167,6 +167,27 @@
     timeoutHours: 'Timeout (hours, 1-720)',
     fallbackApprover: 'Fallback Approver',
     branchesJson: 'Branches (JSON)',
+    conditionBranches: 'Branches',
+    addConditionBranch: 'Add branch',
+    removeConditionBranch: 'Remove branch',
+    conditionBranchLabel: 'Branch name',
+    conditionField: 'Field',
+    conditionOperator: 'Operator',
+    conditionValue: 'Value',
+    conditionTarget: 'Target node',
+    conditionDefaultTarget: 'Default target',
+    conditionNoTarget: 'No target',
+    conditionMissingTarget: 'Missing target: {target}',
+    conditionAdvancedJson: 'Advanced JSON',
+    conditionOperatorEquals: 'Equals',
+    conditionOperatorNotEquals: 'Not equals',
+    conditionOperatorGreaterThan: 'Greater than',
+    conditionOperatorLessThan: 'Less than',
+    conditionOperatorContains: 'Contains',
+    conditionOperatorInList: 'In list',
+    conditionOperatorNotInList: 'Not in list',
+    conditionOperatorIsEmpty: 'Is empty',
+    conditionOperatorIsNotEmpty: 'Is not empty',
     defaultBranch: 'Default Branch (target node ID)',
     actionType: 'Action Type',
     selectPlaceholder: 'Select...',
@@ -207,18 +228,22 @@
     configErrorSummary: 'Fix these issues before continuing:',
     draftGenerating: 'Generating workflow draft...',
     draftGenerated: 'Draft generated. Review the nodes, approvers, and terminal handlers before saving.',
-    draftGeneratedFallback: 'Basic draft generated because the LLM service was unavailable. Review and adjust the workflow before saving.',
+    draftGeneratedFallback: 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.',
+    draftGeneratedFallbackProvider: 'Basic draft generated because the LLM provider request failed. Review the workflow before saving, then try again after the provider recovers.',
+    draftGeneratedFallbackResponse: 'Basic draft generated because the LLM response could not be applied as a workflow. Review the workflow before saving, then refine the description and try again.',
     draftNeedDescription: 'Describe the workflow before generating.',
     draftGenerationCancelled: 'Generation canceled. The current canvas was not changed.',
     draftOverwriteConfirm: 'The canvas already has a draft. Save it first if you want to keep it. Generate anyway and overwrite the current canvas?',
     draftExampleLeaveText: 'Employee submits a leave request with dates and reason. Direct manager approves first. If leave is longer than 3 days, HR also approves. Notify employee after final decision.',
     draftExamplePurchaseText: 'Employee submits a purchase request. If amount is above 10,000, department manager and finance both approve; otherwise only department manager approves. Notify requester after approval.',
     draftExampleContractText: 'Sales submits a contract review request. Legal reviews the contract, finance reviews payment terms when amount is above 50,000, then notify sales and archive the result.',
+    draftExampleFullControlsText: 'Create an end-to-end approval workflow. It starts from a manual trigger, collects applicant, amount, attachment, and reason in a form, then department manager approves. Add a condition branch: if amount is above 50,000, run a risk check action and call the finance sub-process before finance approval; otherwise go directly to finance approval. After approval, update the business status, notify applicant and sales, and finish at a terminal node.',
     requireOneTrigger: 'Exactly one Trigger node is required as the workflow entry point.',
     onlyOneTrigger: 'Only one Trigger node is allowed. Found {count} Trigger nodes.',
     disconnectedNode: 'Node "{label}" at ({x}, {y}) is disconnected.',
     triggerNoIncoming: 'Trigger node "{label}" must not have incoming edges.',
     terminalNoOutgoing: 'Terminal node "{label}" must not have outgoing edges.',
+    approvalApproverRequired: 'Approval node "{label}" needs at least one approver or approval role.',
     conditionBranchNoRoute: 'Condition node "{label}" must route to at least one branch or default target.',
     conditionBranchInvalidTarget: 'Condition node "{label}" routes to missing target "{target}".',
     conditionBranchInvalidExpression: 'Condition node "{label}" has a branch without a valid expression field and operator.',
@@ -620,14 +645,20 @@
     var map = {
       leave: 'draftExampleLeaveText',
       purchase: 'draftExamplePurchaseText',
-      contract: 'draftExampleContractText'
+      contract: 'draftExampleContractText',
+      fullControls: 'draftExampleFullControlsText'
     };
     return tr(map[key] || 'draftExamplePurchaseText');
   }
 
   function draftGeneratedStatus(data) {
-    var message = data && data.generated_by === 'fallback' ? tr('draftGeneratedFallback') : tr('draftGenerated');
-    if (data && data.generated_by === 'fallback') return message;
+    if (data && data.generated_by === 'fallback') {
+      var reason = String(data.fallback_reason || '').trim();
+      if (reason === 'llm_provider') return tr('draftGeneratedFallbackProvider');
+      if (reason === 'llm_response') return tr('draftGeneratedFallbackResponse');
+      return tr('draftGeneratedFallback');
+    }
+    var message = tr('draftGenerated');
     var notes = data && Array.isArray(data.notes) ? data.notes : [];
     var note = notes.length > 0 ? String(notes[0] || '').trim() : '';
     if (!note) return message;
@@ -1679,14 +1710,7 @@
         break;
 
       case 'condition_branch':
-        html += '<div class="config-field">';
-        html += '<label>' + escapeHtml(tr('branchesJson')) + '</label>';
-        html += '<textarea id="cfgBranches">' + escapeHtml(JSON.stringify(node.config.branches || [], null, 2)) + '</textarea>';
-        html += '</div>';
-        html += '<div class="config-field">';
-        html += '<label>' + escapeHtml(tr('defaultBranch')) + '</label>';
-        html += '<input type="text" id="cfgDefaultBranch" value="' + escapeAttr(node.config.default_branch || '') + '">';
-        html += '</div>';
+        html += renderConditionBranchConfig(node);
         break;
 
       case 'action':
@@ -1751,6 +1775,159 @@
     return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  function renderConditionBranchConfig(node) {
+    var branches = normalizeConditionBranchesForEditor(node.config && node.config.branches || []);
+    var html = '<div class="config-field condition-branch-config">';
+    html += '<div class="condition-branch-config-head">';
+    html += '<label>' + escapeHtml(tr('conditionBranches')) + '</label>';
+    html += '<button type="button" id="cfgAddConditionBranch" class="condition-branch-add">' + escapeHtml(tr('addConditionBranch')) + '</button>';
+    html += '</div>';
+    html += '<div class="condition-branch-list">';
+    if (!branches.length) {
+      html += '<div class="condition-branch-empty">' + escapeHtml(tr('conditionBranchNoRoute', { label: node.label })) + '</div>';
+    }
+    branches.forEach(function (branch, index) {
+      var expr = branch.expression || {};
+      var operator = String(expr.operator || 'equals');
+      var needsValue = conditionBranchOperatorNeedsValue(operator);
+      html += '<div class="condition-branch-row" data-branch-index="' + index + '">';
+      html += '<div class="condition-branch-row-head">';
+      html += '<strong>' + escapeHtml(tr('conditionBranch')) + ' ' + (index + 1) + '</strong>';
+      html += '<button type="button" class="condition-branch-remove" data-condition-branch-remove="' + index + '">' + escapeHtml(tr('removeConditionBranch')) + '</button>';
+      html += '</div>';
+      html += '<div class="condition-branch-grid">';
+      html += '<label><span>' + escapeHtml(tr('conditionBranchLabel')) + '</span><input type="text" data-condition-branch-field="label" data-branch-index="' + index + '" value="' + escapeAttr(branch.label || '') + '"></label>';
+      html += '<label><span>' + escapeHtml(tr('conditionField')) + '</span><input type="text" data-condition-branch-field="field" data-branch-index="' + index + '" value="' + escapeAttr(expr.field || '') + '" placeholder="leave_days"></label>';
+      html += '<label><span>' + escapeHtml(tr('conditionOperator')) + '</span><select data-condition-branch-field="operator" data-branch-index="' + index + '">' + renderConditionBranchOperatorOptions(operator) + '</select></label>';
+      html += '<label><span>' + escapeHtml(tr('conditionValue')) + '</span><input type="text" data-condition-branch-field="value" data-branch-index="' + index + '" value="' + escapeAttr(conditionBranchValueToInput(expr.value)) + '"' + (needsValue ? '' : ' disabled') + '></label>';
+      html += '<label class="condition-branch-target"><span>' + escapeHtml(tr('conditionTarget')) + '</span><select data-condition-branch-field="target_node_id" data-branch-index="' + index + '">' + renderConditionBranchTargetOptions(branch.target_node_id, node.id) + '</select></label>';
+      html += '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+    html += '</div>';
+    html += '<div class="config-field">';
+    html += '<label>' + escapeHtml(tr('conditionDefaultTarget')) + '</label>';
+    html += '<select id="cfgDefaultBranch">' + renderConditionBranchTargetOptions(node.config.default_branch || '', node.id) + '</select>';
+    html += '</div>';
+    html += '<details class="condition-branch-advanced">';
+    html += '<summary>' + escapeHtml(tr('conditionAdvancedJson')) + '</summary>';
+    html += '<div class="config-field">';
+    html += '<label>' + escapeHtml(tr('branchesJson')) + '</label>';
+    html += '<textarea id="cfgBranchesAdvanced">' + escapeHtml(JSON.stringify(branches, null, 2)) + '</textarea>';
+    html += '</div>';
+    html += '</details>';
+    return html;
+  }
+
+  function renderConditionBranchTargetOptions(selected, currentNodeId) {
+    selected = String(selected || '');
+    var html = '<option value="">' + escapeHtml(tr('conditionNoTarget')) + '</option>';
+    var hasSelected = selected === '';
+    state.nodes.filter(function (node) {
+      return node.id !== currentNodeId && node.type !== 'trigger';
+    }).forEach(function (node) {
+      var value = String(node.id || '');
+      var isSelected = value === selected;
+      hasSelected = hasSelected || isSelected;
+      var text = (node.label || value) + ' (' + value + ')';
+      html += '<option value="' + escapeAttr(value) + '"' + (isSelected ? ' selected' : '') + '>' + escapeHtml(text) + '</option>';
+    });
+    if (!hasSelected && selected) {
+      html += '<option value="' + escapeAttr(selected) + '" selected>' + escapeHtml(tr('conditionMissingTarget', { target: selected })) + '</option>';
+    }
+    return html;
+  }
+
+  function renderConditionBranchOperatorOptions(selected) {
+    var options = [
+      ['equals', tr('conditionOperatorEquals')],
+      ['not_equals', tr('conditionOperatorNotEquals')],
+      ['greater_than', tr('conditionOperatorGreaterThan')],
+      ['less_than', tr('conditionOperatorLessThan')],
+      ['contains', tr('conditionOperatorContains')],
+      ['in_list', tr('conditionOperatorInList')],
+      ['not_in_list', tr('conditionOperatorNotInList')],
+      ['is_empty', tr('conditionOperatorIsEmpty')],
+      ['is_not_empty', tr('conditionOperatorIsNotEmpty')]
+    ];
+    selected = String(selected || 'equals');
+    return options.map(function (option) {
+      return '<option value="' + escapeAttr(option[0]) + '"' + (option[0] === selected ? ' selected' : '') + '>' + escapeHtml(option[1]) + '</option>';
+    }).join('');
+  }
+
+  function normalizeConditionBranchesForEditor(branches) {
+    if (!Array.isArray(branches)) return [];
+    return branches.map(function (branch, index) {
+      branch = branch && typeof branch === 'object' ? branch : {};
+      var expr = branch.expression && typeof branch.expression === 'object' ? branch.expression : {};
+      var normalized = {};
+      Object.keys(branch).forEach(function (key) { normalized[key] = branch[key]; });
+      normalized.target_node_id = String(branch.target_node_id || '').trim();
+      normalized.priority = Number.isFinite(Number(branch.priority)) ? Number(branch.priority) : index;
+      normalized.expression = {
+        field: String(expr.field || branch.field || '').trim(),
+        operator: String(expr.operator || branch.operator || 'equals').trim() || 'equals',
+        value: Object.prototype.hasOwnProperty.call(expr, 'value') ? expr.value : branch.value
+      };
+      if (!conditionBranchOperatorNeedsValue(normalized.expression.operator)) {
+        delete normalized.expression.value;
+      }
+      normalized.label = String(branch.label || branch.condition || formatConditionBranchSummary(normalized.expression)).trim();
+      normalized.condition = String(branch.condition || formatConditionBranchSummary(normalized.expression)).trim();
+      return normalized;
+    });
+  }
+
+  function conditionBranchOperatorNeedsValue(operator) {
+    operator = String(operator || '').trim();
+    return operator !== 'is_empty' && operator !== 'is_not_empty';
+  }
+
+  function conditionBranchValueToInput(value) {
+    if (Array.isArray(value)) return value.join(', ');
+    if (value === undefined || value === null) return '';
+    return String(value);
+  }
+
+  function parseConditionBranchValue(operator, value) {
+    value = String(value || '').trim();
+    if (!conditionBranchOperatorNeedsValue(operator)) return undefined;
+    if (operator === 'in_list' || operator === 'not_in_list') {
+      return value.split(',').map(function (item) { return item.trim(); }).filter(Boolean);
+    }
+    if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value);
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  }
+
+  function formatConditionBranchSummary(expr) {
+    expr = expr || {};
+    var field = String(expr.field || '').trim();
+    var operator = String(expr.operator || '').trim();
+    var value = conditionBranchValueToInput(expr.value);
+    if (!field && !operator) return '';
+    if (!conditionBranchOperatorNeedsValue(operator)) return [field, operator].filter(Boolean).join(' ');
+    return [field, operator, value].filter(Boolean).join(' ');
+  }
+
+  function conditionBranchExpressionHasRequiredValue(expr) {
+    expr = expr || {};
+    var operator = String(expr.operator || '').trim();
+    if (!conditionBranchOperatorNeedsValue(operator)) return true;
+    if (!Object.prototype.hasOwnProperty.call(expr, 'value')) return false;
+    if (Array.isArray(expr.value)) {
+      return expr.value.some(function (item) {
+        return item !== null && item !== undefined && String(item).trim() !== '';
+      });
+    }
+    if (expr.value === null || expr.value === undefined) return false;
+    if (typeof expr.value === 'string') return expr.value.trim() !== '';
+    return true;
+  }
+
   function attachConfigListeners(node) {
     var labelInput = document.getElementById('cfgLabel');
     if (labelInput) {
@@ -1783,8 +1960,7 @@
         bindApproverPicker(node, 'cfgFallbackPicker', false, function (ids) { node.config.fallback_approver = ids[0] || ''; });
         break;
       case 'condition_branch':
-        bindJsonTextarea('cfgBranches', function (v) { node.config.branches = v; });
-        bindInput('cfgDefaultBranch', function (v) { node.config.default_branch = v.trim(); });
+        bindConditionBranchConfig(node);
         break;
       case 'action':
         bindSelect('cfgActionType', function (v) { node.config.action_type = v; });
@@ -1861,6 +2037,99 @@
     if (el) el.addEventListener('input', function () { cb(el.value); markDirty(); });
   }
 
+  function bindConditionBranchConfig(node) {
+    node.config.branches = normalizeConditionBranchesForEditor(node.config.branches || []);
+    var addButton = document.getElementById('cfgAddConditionBranch');
+    if (addButton) {
+      addButton.addEventListener('click', function () {
+        var target = firstConditionBranchTarget(node.id);
+        node.config.branches.push({
+          label: '',
+          condition: '',
+          target_node_id: target,
+          priority: node.config.branches.length,
+          expression: { field: '', operator: 'greater_than', value: '' }
+        });
+        markDirty();
+        showConfigPanel(node.id);
+      });
+    }
+    configPanelBody.querySelectorAll('[data-condition-branch-remove]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        var index = parseInt(button.getAttribute('data-condition-branch-remove'), 10);
+        if (Number.isNaN(index)) return;
+        node.config.branches.splice(index, 1);
+        node.config.branches.forEach(function (branch, branchIndex) { branch.priority = branchIndex; });
+        markDirty();
+        showConfigPanel(node.id);
+      });
+    });
+    configPanelBody.querySelectorAll('[data-condition-branch-field]').forEach(function (el) {
+      var eventName = el.tagName === 'SELECT' ? 'change' : 'input';
+      el.addEventListener(eventName, function () {
+        var index = parseInt(el.getAttribute('data-branch-index'), 10);
+        var field = el.getAttribute('data-condition-branch-field');
+        updateConditionBranchField(node, index, field, el.value);
+        syncConditionBranchAdvancedTextarea(node);
+        markDirty();
+        if (field === 'operator') showConfigPanel(node.id);
+      });
+    });
+    bindSelect('cfgDefaultBranch', function (v) { node.config.default_branch = v.trim(); });
+    bindJsonTextarea('cfgBranchesAdvanced', function (v) {
+      node.config.branches = normalizeConditionBranchesForEditor(v);
+    });
+    var advancedBranches = document.getElementById('cfgBranchesAdvanced');
+    if (advancedBranches) {
+      advancedBranches.addEventListener('blur', function () {
+        var fieldKey = (state.selectedNodeId || '') + ':cfgBranchesAdvanced';
+        if (!state.invalidConfigFields[fieldKey]) showConfigPanel(node.id);
+      });
+    }
+  }
+
+  function firstConditionBranchTarget(currentNodeId) {
+    var target = state.nodes.find(function (node) {
+      return node.id !== currentNodeId && node.type !== 'trigger';
+    });
+    return target ? target.id : '';
+  }
+
+  function updateConditionBranchField(node, index, field, value) {
+    if (!node || !node.config || !Array.isArray(node.config.branches)) return;
+    var branch = node.config.branches[index];
+    if (!branch) return;
+    branch.expression = branch.expression || {};
+    if (field === 'label') {
+      branch.label = value.trim();
+    } else if (field === 'field') {
+      branch.expression.field = value.trim();
+    } else if (field === 'operator') {
+      branch.expression.operator = value.trim() || 'equals';
+      if (!conditionBranchOperatorNeedsValue(branch.expression.operator)) {
+        delete branch.expression.value;
+      } else if (!Object.prototype.hasOwnProperty.call(branch.expression, 'value')) {
+        branch.expression.value = '';
+      }
+    } else if (field === 'value') {
+      var parsed = parseConditionBranchValue(branch.expression.operator, value);
+      if (parsed === undefined) {
+        delete branch.expression.value;
+      } else {
+        branch.expression.value = parsed;
+      }
+    } else if (field === 'target_node_id') {
+      branch.target_node_id = value.trim();
+    }
+    branch.condition = formatConditionBranchSummary(branch.expression);
+    if (!branch.label) branch.label = branch.condition;
+  }
+
+  function syncConditionBranchAdvancedTextarea(node) {
+    var el = document.getElementById('cfgBranchesAdvanced');
+    if (el) el.value = JSON.stringify(normalizeConditionBranchesForEditor(node.config.branches || []), null, 2);
+  }
+
   function bindJsonTextarea(id, cb) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -1893,6 +2162,7 @@
         selectedIds: current,
         title: multiple ? tr('approverPickerTitle') : tr('fallbackApproverPickerTitle'),
         onConfirm: function (ids) {
+          ids = normalizeApproverIds(ids);
           cb(ids);
           syncApproverPickerField(buttonId, ids, multiple);
           markDirty();
@@ -2099,11 +2369,13 @@
           kind: ownerEmail ? 'digital_twin' : 'department_digital_employee',
           ownerEmail: ownerEmail,
           visibleGroupIds: visibleGroupIds,
-          employeeType: String(entry.employee_type || '').trim()
+          employeeType: String(entry.employee_type || '').trim(),
+          approvalCapabilityEnabled: !!(entry && entry.approval_capability_enabled)
         };
       }).filter(function (entry) { return entry.id; });
       var approvalRoles = (data && data.approval_roles || []).map(normalizeApprovalRole).filter(Boolean);
-      var directory = { root: groupRoot, membersByGroup: membersByGroup, usersByEmail: usersByEmail, machinesByEmail: machinesByEmail, veEntries: veEntries, approvalRoles: approvalRoles, byId: {} };
+      var functionScopes = (data && (data.function_scopes || data.functionScopes) || []).map(normalizeApprovalFunctionScope).filter(Boolean);
+      var directory = { root: groupRoot, membersByGroup: membersByGroup, usersByEmail: usersByEmail, machinesByEmail: machinesByEmail, veEntries: veEntries, approvalRoles: approvalRoles, functionScopes: functionScopes, byId: {} };
       indexApproverDirectory(directory);
       state.approverDirectory = directory;
       return directory;
@@ -2153,7 +2425,7 @@
         rows.push({ id: machine.id, name: email, kind: 'machine' });
       });
       (directory.veEntries || []).filter(function (entry) {
-        return entry.ownerEmail === email;
+        return entry.ownerEmail === email && entry.approvalCapabilityEnabled;
       }).forEach(function (entry) {
         rows.push({
           id: entry.id,
@@ -2165,6 +2437,7 @@
       });
     });
     (directory.veEntries || []).filter(function (entry) {
+      if (!entry.approvalCapabilityEnabled) return false;
       if (entry.ownerEmail) return false;
       if (Array.isArray(entry.visibleGroupIds) && entry.visibleGroupIds.length) {
         return entry.visibleGroupIds.indexOf(group.id) !== -1;
@@ -2182,7 +2455,7 @@
   }
 
   function approverRoleCatalog(directory) {
-    if (directory && Array.isArray(directory.approvalRoles) && directory.approvalRoles.length) return directory.approvalRoles;
+    if (directory && Array.isArray(directory.approvalRoles)) return directory.approvalRoles;
     var fromHub = loadStoredApprovalRoles();
     if (fromHub.length) return fromHub;
     return defaultApprovalRoles();
@@ -2202,6 +2475,36 @@
     }
   }
 
+  function normalizeApprovalFunctionScope(scope) {
+    if (!scope) return null;
+    var scopeId = String(scope.scopeId || scope.scope_id || scope.id || '').trim();
+    var scopeName = String(scope.scopeName || scope.scope_name || scope.name || scopeId).trim();
+    if (!scopeId || !scopeName) return null;
+    return { scopeType: 'function', scopeId: scopeId, scopeName: scopeName };
+  }
+
+  function functionScopeCatalog(directory) {
+    var seen = {};
+    var seenNames = {};
+    var scopes = [];
+    function add(scope) {
+      scope = normalizeApprovalFunctionScope(scope);
+      if (!scope) return;
+      var nameKey = String(scope.scopeName || '').trim().toLowerCase();
+      if (seen[scope.scopeId]) return;
+      if (nameKey && seenNames[nameKey]) return;
+      seen[scope.scopeId] = true;
+      if (nameKey) seenNames[nameKey] = true;
+      scopes.push(scope);
+    }
+    if (directory && Array.isArray(directory.functionScopes)) {
+      directory.functionScopes.forEach(add);
+    }
+    approverRoleCatalog(directory).forEach(function (role) {
+      if (role.scopeType === 'function' || role.view === 'function') add(role);
+    });
+    return scopes;
+  }
   function normalizeApprovalRole(role) {
     if (!role) return null;
     var scopeType = String(role.scopeType || role.scope_type || '').trim() || 'global';
@@ -2233,12 +2536,25 @@
       { scopeType: 'function', scopeId: 'finance', scopeName: tr('functionScopeFinance'), roleCode: 'finance_approver', roleName: tr('financeApprover') || 'Finance Approver', view: 'function', executionMode: 'digital_review', assignees: [] },
       { scopeType: 'function', scopeId: 'procurement', scopeName: tr('functionScopeProcurement'), roleCode: 'procurement_approver', roleName: tr('procurementApprover') || 'Procurement Approver', view: 'function', executionMode: 'digital_suggest', assignees: [] },
       { scopeType: 'function', scopeId: 'legal', scopeName: tr('functionScopeLegal'), roleCode: 'contract_approver', roleName: tr('contractApprover') || 'Contract Approver', view: 'function', executionMode: 'digital_review', assignees: [] },
-      { scopeType: 'function', scopeId: 'it', scopeName: tr('functionScopeIT'), roleCode: 'it_approver', roleName: tr('itApprover') || 'IT Approver', view: 'function', executionMode: 'manual', assignees: [] }
+      { scopeType: 'function', scopeId: 'it', scopeName: tr('functionScopeIT'), roleCode: 'it_approver', roleName: tr('itApprover') || 'IT Approver', view: 'function', executionMode: 'manual', assignees: [] },
+      { scopeType: 'function', scopeId: 'hr', scopeName: tr('functionScopeHR'), roleCode: 'hr_approver', roleName: tr('hrApprover') || 'HR Approver', view: 'function', executionMode: 'digital_suggest', assignees: [] },
+      { scopeType: 'function', scopeId: 'administration', scopeName: tr('functionScopeAdministration'), roleCode: 'administration_approver', roleName: tr('functionScopeAdministration') + ' Approver', view: 'function', executionMode: 'manual', assignees: [] },
+      { scopeType: 'function', scopeId: 'sales', scopeName: tr('functionScopeSales'), roleCode: 'sales_approver', roleName: tr('functionScopeSales') + ' Approver', view: 'function', executionMode: 'manual', assignees: [] },
+      { scopeType: 'function', scopeId: 'operations', scopeName: tr('functionScopeOperations'), roleCode: 'operations_approver', roleName: tr('functionScopeOperations') + ' Approver', view: 'function', executionMode: 'manual', assignees: [] },
+      { scopeType: 'function', scopeId: 'customer_success', scopeName: tr('functionScopeCustomerSuccess'), roleCode: 'customer_success_approver', roleName: tr('functionScopeCustomerSuccess') + ' Approver', view: 'function', executionMode: 'manual', assignees: [] },
+      { scopeType: 'function', scopeId: 'security', scopeName: tr('functionScopeSecurity'), roleCode: 'security_approver', roleName: tr('functionScopeSecurity') + ' Approver', view: 'function', executionMode: 'digital_review', assignees: [] },
+      { scopeType: 'function', scopeId: 'risk_compliance', scopeName: tr('functionScopeRiskCompliance'), roleCode: 'risk_compliance_approver', roleName: tr('functionScopeRiskCompliance') + ' Approver', view: 'function', executionMode: 'digital_review', assignees: [] },
+      { scopeType: 'function', scopeId: 'data', scopeName: tr('functionScopeData'), roleCode: 'data_approver', roleName: tr('functionScopeData') + ' Approver', view: 'function', executionMode: 'manual', assignees: [] }
     ].map(normalizeApprovalRole).filter(Boolean);
   }
 
   function approvalRoleRows(view, directory, query) {
-    var roles = approverRoleCatalog(directory).filter(function (role) {
+    var catalog = approverRoleCatalog(directory);
+    var functionRoleScopes = {};
+    catalog.forEach(function (role) {
+      if (role.view === 'function' || role.scopeType === 'function') functionRoleScopes[role.scopeId] = true;
+    });
+    var roles = catalog.filter(function (role) {
       if (view === 'function') return role.view === 'function' || role.scopeType === 'function';
       if (view === 'organization') return role.view !== 'function' && role.scopeType !== 'function';
       return false;
@@ -2249,7 +2565,7 @@
         return [role.roleName, role.roleCode, role.scopeName, role.scopeId, executionModeLabel(role.executionMode), assigneeSummary(role, directory)].join(' ').toLowerCase().indexOf(query) !== -1;
       });
     }
-    return roles.map(function (role) {
+    var rows = roles.map(function (role) {
       return {
         id: role.id,
         name: role.scopeName + ' / ' + role.roleName,
@@ -2258,6 +2574,14 @@
         detail: assigneeSummary(role, directory) || tr('approverPickerEmpty')
       };
     });
+    if (view === 'function') {
+      functionScopeCatalog(directory).forEach(function (scope) {
+        if (functionRoleScopes[scope.scopeId]) return;
+        if (query && [scope.scopeName, scope.scopeId].join(' ').toLowerCase().indexOf(query) === -1) return;
+        rows.push({ disabled: true, name: scope.scopeName, meta: tr('approvalRoleNotConfigured') });
+      });
+    }
+    return rows;
   }
 
   function assigneeSummary(role, directory) {
@@ -2763,6 +3087,13 @@
       }
     });
 
+    state.nodes.filter(function (node) { return node.type === 'approval'; }).forEach(function (node) {
+      var approverIds = normalizeApproverIds(node.config && node.config.approver_ids || []);
+      if (approverIds.length === 0) {
+        errors.push(tr('approvalApproverRequired', { label: node.label }));
+      }
+    });
+
     validateConditionBranchRoutes(errors);
 
     return errors;
@@ -2783,7 +3114,7 @@
           errors.push(tr('conditionBranchInvalidTarget', { label: node.label, target: targetId }));
         }
         var expr = branch && branch.expression || {};
-        if (!String(expr.field || '').trim() || !isConditionBranchOperator(expr.operator)) {
+        if (!String(expr.field || '').trim() || !isConditionBranchOperator(expr.operator) || !conditionBranchExpressionHasRequiredValue(expr)) {
           errors.push(tr('conditionBranchInvalidExpression', { label: node.label }));
         }
       });

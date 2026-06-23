@@ -1381,6 +1381,7 @@ func PlatformEmployeeRegisterHandler(system store.SystemSettingsRepository, tena
 }
 
 func mergePlatformEmployeeRegistration(previous, next digitalEmployeeEntry) digitalEmployeeEntry {
+	preserveOwnerManagedFields(&previous, &next)
 	next.RegisteredAt = firstNonEmpty(previous.RegisteredAt, next.RegisteredAt)
 	next.Status = firstNonEmpty(previous.Status, next.Status)
 	next.OnlineStatus = firstNonEmpty(previous.OnlineStatus, next.OnlineStatus)
@@ -1397,8 +1398,6 @@ func mergePlatformEmployeeRegistration(previous, next digitalEmployeeEntry) digi
 	next.AccessPolicy = firstNonEmpty(previous.AccessPolicy, next.AccessPolicy)
 	next.Whitelist = normalizeVEStringList(previous.Whitelist)
 	next.Blacklist = normalizeVEStringList(previous.Blacklist)
-	next.VisibleGroupIDs = normalizeVEStringList(previous.VisibleGroupIDs)
-	next.Resident = previous.Resident
 	return next
 }
 

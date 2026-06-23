@@ -44,7 +44,7 @@ const removedLegacyFiles = [
 ];
 const expectedExports = {
   'machines-tab.js': ['renderMachineList', 'loadMachines'],
-  'security-tab.js': ['loadSecurityTab', 'selectSecGroup', 'confirmAssignUsers'],
+  'security-tab.js': ['loadSecurityTab', 'loadApprovalRolesTab', 'saveSecApprovalRoles', 'selectSecGroup', 'confirmAssignUsers'],
   'llm-provider-tab.js': ['loadLlmProviders', 'openLlmProviderTab', 'saveLLMProviders'],
   'llm-service-tabs.js': ['loadLlmServiceGroups', 'openLlmServiceGroupTab', 'saveLLMServiceAdmin'],
   'usage-stats-tab.js': ['loadUsageStats']
@@ -57,6 +57,27 @@ function fail(message) {
 
 function read(name) {
   return fs.readFileSync(path.join(root, name), 'utf8');
+}
+
+function extractNamedFunction(source, name) {
+  const marker = 'function ' + name + '(';
+  const start = source.indexOf(marker);
+  if (start < 0) {
+    throw new Error('missing function ' + name);
+  }
+  let depth = 0;
+  for (let i = start; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '{') {
+      depth += 1;
+    } else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(start, i + 1);
+      }
+    }
+  }
+  throw new Error('unterminated function ' + name);
 }
 
 function assertAscii(name) {
@@ -201,9 +222,20 @@ function assertTenantAdminUIHooks() {
       fail('system-tab.js is missing tenant migration settings marker: ' + marker);
     }
   });
-  ['loadTenantSystemLLMDefaults', 'saveTenantSystemLLMDefaults', 'tenantSystemLLMProviderIDs', 'tenantSystemLLMProviderIsConfigured', 'system_default_service_group_id', '/api/admin/llm/services?include_cards=false', '/api/admin/llm/providers'].forEach(function(marker) {
+  ['loadTenantSystemLLMDefaults', 'saveTenantSystemLLMDefaults', 'tenantSystemLLMProviderIDs', 'tenantSystemLLMProviderIsConfigured', 'tenantSystemLLMModelProviderIDs', 'provider_configs', 'system_default_service_group_id', '/api/admin/llm/services?include_cards=false', '/api/admin/llm/providers'].forEach(function(marker) {
     if (!system.includes(marker)) {
       fail('system-tab.js is missing tenant system LLM default marker: ' + marker);
+    }
+  });
+  if (system.includes('escapeAttr(')) {
+    fail('system-tab.js must not call escapeAttr; it is local to other admin modules. Use escapeHtml for option attributes.');
+  }
+  if (system.includes("toLowerCase() === 'default'")) {
+    fail('system-tab.js must not hard-code exclude the default service group; model/provider availability should decide usability.');
+  }
+  ['provider_configs || []', 'cfg && cfg.provider_id', '.some(tenantSystemLLMProviderIsConfigured)', 'value="\' + escapeHtml(id) + \'"', 'noUsableGroups', 'hasServiceGroups'].forEach(function(marker) {
+    if (!system.includes(marker)) {
+      fail('system-tab.js is missing robust tenant system LLM option rendering marker: ' + marker);
     }
   });
   const bootstrap = read('admin-bootstrap.js');
@@ -282,12 +314,42 @@ function assertTenantAdminUIHooks() {
       fail('tenant-tab.js is missing marker: ' + marker);
     }
   });
+  const tenantSystemNavDescMatch = /systemNavDescTenant:\s*\{[^}]+\}/.exec(tenant);
+  const tenantSystemNavDesc = tenantSystemNavDescMatch ? tenantSystemNavDescMatch[0] : '';
+  const tenantSystemDescMentionsCapabilities = tenantSystemNavDesc.includes('Manage tenant mail, LLM, and system capabilities') && tenantSystemNavDesc.includes('\\u7cfb\\u7edf\\u80fd\\u529b');
+  const tenantSystemDescMentionsAccounts = tenantSystemNavDesc.includes('admin account settings') || tenantSystemNavDesc.includes('\\u7ba1\\u7406\\u5458\\u8d26\\u53f7');
+  if (!tenantSystemDescMentionsCapabilities || tenantSystemDescMentionsAccounts) {
+    fail('tenant-tab.js tenant system settings navigation must describe system capabilities, not account settings.');
+  }
   const health = read('admin-module-health.js');
   ['TenantTab', 'loadTenants', 'createTenantAdmin', 'loadLoginTenants'].forEach(function(marker) {
     if (!health.includes(marker)) {
       fail('admin-module-health.js is missing tenant health marker: ' + marker);
     }
   });
+}
+
+function assertTenantSystemLLMDefaultBehavior() {
+  const system = read('system-tab.js');
+  const code = [
+    'var tenantSystemLLMProviderIDs = { "provider-a": true };',
+    extractNamedFunction(system, 'tenantSystemLLMProviderIsConfigured'),
+    extractNamedFunction(system, 'tenantSystemLLMModelProviderIDs'),
+    extractNamedFunction(system, 'tenantSystemLLMUsableGroups'),
+    'var groups = tenantSystemLLMUsableGroups({ model_service_groups: [',
+    '  { id: "default", name: "Default (No Model Access)", models: [] },',
+    '  { id: "default", name: "Default With Route", models: [{ name: "auto", provider_configs: [{ provider_id: "provider-a" }] }] },',
+    '  { id: "official", name: "Official", models: [{ name: "auto", provider_ids: ["maclaw_official"] }] },',
+    '  { id: "missing", name: "Missing", models: [{ name: "auto", provider_configs: [{ provider_id: "missing-provider" }] }] }',
+    ']});',
+    'var ids = groups.map(function(group) { return group.id + ":" + group.name; }).join("|");',
+    'if (ids !== "default:Default With Route|official:Official") throw new Error("unexpected usable groups: " + ids);'
+  ].join('\n');
+  try {
+    new vm.Script(code, { filename: 'system-tab-tenant-llm-default-behavior.js' }).runInNewContext({});
+  } catch (err) {
+    fail('system-tab.js tenant system LLM default behavior regression: ' + err.message);
+  }
 }
 
 function assertEmptyTextNodesAreOwned() {
@@ -681,6 +743,55 @@ function assertSecurityTenantSchemaGuards() {
   });
 }
 
+function assertApprovalRolesHooks() {
+  const html = fs.readFileSync(indexPath, 'utf8');
+  const admin = read('admin.js');
+  const security = read('security-tab.js');
+  const css = read('professional.css');
+  [
+    'data-tab="approvalroles"',
+    'id="tab-approvalroles"',
+    'id="secApprovalRolesRoot"',
+    'onclick="saveSecApprovalRoles()"'
+  ].forEach(function(marker) {
+    if (!html.includes(marker)) {
+      fail('index.html is missing approval roles marker: ' + marker);
+    }
+  });
+  [
+    'approvalroles',
+    "normalized === 'approvalroles'",
+    'window.loadApprovalRolesTab'
+  ].forEach(function(marker) {
+    if (!admin.includes(marker)) {
+      fail('admin.js is missing approval roles tab marker: ' + marker);
+    }
+  });
+  [
+    '/api/admin/security/approval-roles',
+    'APPROVAL_ROLES_STORAGE_KEY',
+    'approvalGroupMemberCache',
+    'approvalSubjectRowsForScope',
+    'openSecApprovalSubjectPicker',
+    'approvalRoleTemplatesForScope',
+    'syncVisibleApprovalRoleRows',
+    'approvalSubjectTypeLabel'
+  ].forEach(function(marker) {
+    if (!security.includes(marker)) {
+      fail('security-tab.js is missing approval roles marker: ' + marker);
+    }
+  });
+  [
+    '#tab-approvalroles .approval-role-layout',
+    '#tab-approvalroles .approval-role-subjects',
+    '.approval-subject-dialog'
+  ].forEach(function(marker) {
+    if (!css.includes(marker)) {
+      fail('professional.css is missing approval roles layout marker: ' + marker);
+    }
+  });
+}
+
 expectedScripts.concat(['MODULES.md', 'check-admin.ps1']).forEach(assertExists);
 expectedScripts.forEach(assertJavaScriptSyntax);
 expectedScripts.forEach(assertModuleExports);
@@ -689,6 +800,7 @@ removedLegacyFiles.forEach(assertMissing);
 assertScriptOrder();
 assertHealthHook();
 assertTenantAdminUIHooks();
+assertTenantSystemLLMDefaultBehavior();
 assertEmptyTextNodesAreOwned();
 assertBlankPlaceholdersAreOwned();
 assertBlankControlsAreOwned();
@@ -703,6 +815,7 @@ assertMaClawComputeProviderGate();
 assertSecurityDefaultGroupUsesName();
 assertSecurityTenantSchemaGuards();
 assertSecurityCapabilityComplianceExportHooks();
+assertApprovalRolesHooks();
 
 if (!process.exitCode) {
   console.log('Admin module validation passed.');

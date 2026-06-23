@@ -49,6 +49,7 @@ type ToolCallRecord struct {
 	Timestamp  time.Time
 	ResultHint string // 工具返回结果的摘要（截断到 200 字符），用于漂移恢复时提供上下文
 	ResultHash string // 工具返回结果的完整哈希，用于漂移检测中比较结果是否变化
+	Succeeded  bool   // 工具调用是否成功（来自 outcome 结构化判定，非文本猜测）
 }
 
 // DriftResult 描述漂移检测结果。
@@ -299,23 +300,35 @@ func (d *DriftDetector) detectFrequencyAnomaly() DriftResult {
 		return DriftResult{}
 	}
 
-	// --- Core mechanism: check if results are changing ---
+	// --- Core mechanism: check if the LLM is making forward progress ---
 	//
-	// This is the same invariant as Layer 1 (#48): if tool results are
-	// changing across calls, external state is progressing. The LLM is
-	// making forward progress, not stuck in a semantic loop.
+	// Two independent signals indicate forward progress (either one suffices):
 	//
-	// Examples:
-	//   - ssh(connect) → "connected" → ssh(exec) → "docker ps output" →
-	//     ssh(check_task) → "completed" → ssh(exec) → "git fetch output"
-	//     → ALL results different → progressing → NOT drift
+	// Signal 1 (result diversity): tool results are changing across calls →
+	// external state is progressing. Same invariant as Layer 1 (#48).
 	//
-	//   - memory(save, "知识A") → "已保存" → memory(save, "知识B") → "已保存"
-	//     → memory(save, "知识C") → "已保存" → ALL results same → stuck → DRIFT
+	// Signal 2 (argument diversity + non-failure): ALL calls have unique
+	// ArgsHash values AND majority are not failures → each call operates on
+	// a different target, completing a different sub-goal. This is the
+	// defining characteristic of a batch operation (deleting different files,
+	// querying different endpoints, writing different config entries).
 	//
-	// We check results across ALL calls to the dominant tool in the window
-	// (not just consecutive ones, since Layer 2 doesn't require consecutiveness).
+	// Why argument diversity alone is a valid progression signal:
+	// The semantic loop Layer 2 detects has a specific shape — the LLM
+	// repeats the same INTENT (e.g., "save knowledge") with superficially
+	// different arguments but achieves no user-facing progress. In that case,
+	// the results are also identical ("已保存") because the operation type is
+	// the same. When results ARE identical but arguments are ALL unique AND
+	// successful, the parsimonious explanation is a batch operation, not a
+	// semantic loop — because a stuck LLM would eventually repeat arguments
+	// (it has limited ways to rephrase the same intent).
+	//
+	// The failure check prevents bypassing drift detection when the LLM is
+	// trying different approaches to solve the same problem and all fail.
 	if freqResultsAreProgressing(window, dominantTool) {
+		return DriftResult{}
+	}
+	if freqArgsAllUnique(window, dominantTool) {
 		return DriftResult{}
 	}
 
@@ -390,6 +403,44 @@ func freqResultsAreProgressing(window []ToolCallRecord, toolName string) bool {
 	// >50% of pairs differ → progressing (not a semantic loop).
 	totalPairs := len(hashes) - 1
 	return diffCount*2 > totalPairs
+}
+
+// freqArgsAllUnique checks whether ALL calls to the dominant tool in the
+// window have unique ArgsHash values. When every call has different arguments,
+// the LLM is executing different commands — this is a batch operation pattern,
+// not a semantic loop.
+//
+// Returns true only when ALL ArgsHash values are distinct (no duplicates)
+// AND the majority of calls succeeded. Even a single repeated ArgsHash means
+// the LLM might be retrying the same operation, which is a weaker signal of
+// progress. The failure check prevents bypassing drift detection when the LLM
+// is trying different approaches to solve the same problem and all fail.
+func freqArgsAllUnique(window []ToolCallRecord, toolName string) bool {
+	seen := make(map[string]struct{})
+	failCount := 0
+	totalCount := 0
+	for i := range window {
+		if window[i].ToolName != toolName {
+			continue
+		}
+		if _, dup := seen[window[i].ArgsHash]; dup {
+			return false
+		}
+		seen[window[i].ArgsHash] = struct{}{}
+		totalCount++
+		if !window[i].Succeeded {
+			failCount++
+		}
+	}
+	if len(seen) < 2 {
+		return false // Need at least 2 calls to be meaningful
+	}
+	// If majority of calls failed, this is not a successful batch operation —
+	// the LLM is trying different approaches that all fail (should be caught).
+	if totalCount > 0 && failCount*2 > totalCount {
+		return false
+	}
+	return true
 }
 
 // isPollingPattern checks whether the given tool's calls in the window
@@ -509,7 +560,7 @@ func (d *DriftDetector) PreviewDrift() DriftResult {
 		for name, count := range toolCounts {
 			if count >= freqAnomalyMinCalls {
 				ratio := float64(count) / float64(len(window))
-				if ratio >= freqAnomalyDominanceRatio && !isPollingPattern(window, name) && !freqResultsAreProgressing(window, name) {
+				if ratio >= freqAnomalyDominanceRatio && !isPollingPattern(window, name) && !freqResultsAreProgressing(window, name) && !freqArgsAllUnique(window, name) {
 					return DriftResult{
 						Drifted:       true,
 						Pattern:       "frequency",
