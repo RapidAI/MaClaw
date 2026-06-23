@@ -2227,6 +2227,7 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 		Approver:           "manager",
 		Result:             "waiting",
 		WorkflowSkillID:    "expense-approval-workflow",
+		WorkflowVersion:    "2.1.0",
 		BusinessStatus:     "approval_pending",
 		ResultStatus:       "pending",
 		ResultPayload:      map[string]any{"business_record": map[string]any{"id": "exp-1"}},
