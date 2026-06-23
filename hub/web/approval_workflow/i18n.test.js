@@ -89,6 +89,7 @@ var i18nKeys = [
   'draftExampleLeave', 'draftExamplePurchase', 'draftExampleContract', 'draftExampleFullControls', 'draftPromptPlaceholder', 'generateDraft',
   'draftGenerating', 'draftGenerated', 'draftNeedDescription', 'draftGenerationCancelled', 'draftOverwriteConfirm',
   'draftGeneratedFallback', 'draftGeneratedFallbackProvider', 'draftGeneratedFallbackResponse', 'draftDebugDetails',
+  'draftDebugServiceGroup', 'draftDebugProvider', 'draftDebugModel', 'draftDebugProviderGroups', 'draftDebugStatus', 'draftDebugError',
   'draftExampleLeaveText', 'draftExamplePurchaseText', 'draftExampleContractText', 'draftExampleFullControlsText',
   'nodeConfiguration', 'closeNodeConfiguration',
   'canvasTools', 'selectTool', 'connectTool', 'deleteEdgeTool', 'connectHint', 'deleteEdgeHint', 'edgeConnectorLabel',

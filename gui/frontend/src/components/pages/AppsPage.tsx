@@ -333,7 +333,20 @@ type AppRunHistoryEntry = {
     artifacts?: SkillRunArtifactView[];
     resultPayload?: Record<string, unknown>;
     outputs?: ApprovalInstanceOutputView[];
+    dependencyVerification?: AppRunEvidenceDependencyVerification;
     at: string;
+};
+
+type AppRunEvidenceDependencyVerification = {
+    schema: 'maclaw.app.install_plan.v1';
+    verifiedAt: string;
+    appCount: number;
+    dependencyCount: number;
+    hasMissingRequired: boolean;
+    hasBlockingDependency: boolean;
+    hasWorkflowContractIssue: boolean;
+    workflowContractIssueCount: number;
+    dependencies: BackendAppInstallDependency[];
 };
 
 type BusinessOperationResultKind = 'business_record' | 'business_status' | 'table' | 'dashboard' | 'text' | 'external_receipt' | 'error';
@@ -2750,7 +2763,7 @@ function approvalWorkflowOutputsFromStatus(status?: SkillRunStatusView | null): 
 function appRunResultPayloadFromStatus(status?: SkillRunStatusView | null): Record<string, unknown> | undefined {
     const payload = approvalWorkflowResultPayloadFromObjects(skillRunApprovalObjects(status), status);
     if (payload) return payload;
-    const snippet = skillRunOutputSuffix(status).replace(/^ 路 /, '');
+    const snippet = skillRunOutputSuffix(status).replace(/^ �?/, '');
     return snippet ? { text: snippet.slice(0, 500) } : undefined;
 }
 
@@ -3138,6 +3151,21 @@ function parseBackendAppInstallDependencies(value: unknown): BackendAppInstallDe
     }, []);
 }
 
+function appRunDependencyVerificationEvidence(app: AppEntry, plan: BackendAppInstallPlan | null | undefined, verifiedAt = new Date().toISOString()): AppRunEvidenceDependencyVerification | undefined {
+    if (!plan) return undefined;
+    const appIDs = [app.id];
+    return {
+        schema: 'maclaw.app.install_plan.v1',
+        verifiedAt,
+        appCount: plan.apps?.length || 0,
+        dependencyCount: plan.dependencies?.length || 0,
+        hasMissingRequired: hasMissingRequiredBackendDependency(plan, appIDs),
+        hasBlockingDependency: !!plan.has_blocking_dependency,
+        hasWorkflowContractIssue: workflowContractHasIssueForAppIDs(plan, appIDs),
+        workflowContractIssueCount: workflowContractIssuesForAppIDs(plan, appIDs).length,
+        dependencies: parseBackendAppInstallDependencies(plan.dependencies),
+    };
+}
 function normalizeRiskLevel(value: unknown): string {
     const risk = String(value || '').trim();
     return ['low', 'medium', 'high', 'critical'].includes(risk) ? risk : '';
@@ -3932,10 +3960,10 @@ function filterSummaryText({ query, category, count, lang, allLabel }: { query: 
     const zh = isZh(lang);
     const categoryText = category === 'all' ? allLabel : category;
     if (trimmedQuery && category !== 'all') {
-        return zh ? `搜索“${trimmedQuery}” · ${categoryText} · ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" · ${categoryText} · ${count} matches`;
+        return zh ? `搜索�?{trimmedQuery}�?· ${categoryText} · ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" · ${categoryText} · ${count} matches`;
     }
     if (trimmedQuery) {
-        return zh ? `搜索“${trimmedQuery}” · ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" · ${count} matches`;
+        return zh ? `搜索�?{trimmedQuery}�?· ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" · ${count} matches`;
     }
     if (category !== 'all') {
         return zh ? `${categoryText} · ${count} \u4e2a\u5e94\u7528` : `${categoryText} · ${count} apps`;

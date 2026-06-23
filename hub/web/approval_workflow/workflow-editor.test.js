@@ -100,6 +100,12 @@ var draftHelpers = new Function('state', 'confirm', 'tr', [
     if (key === 'draftGeneratedFallbackProvider') return 'Basic draft generated because the LLM provider request failed. Review the workflow before saving, then try again after the provider recovers.';
     if (key === 'draftGeneratedFallbackResponse') return 'Basic draft generated because the LLM response could not be applied as a workflow. Review the workflow before saving, then refine the description and try again.';
     if (key === 'draftDebugDetails') return 'Details: ' + vars.details;
+    if (key === 'draftDebugServiceGroup') return 'service group';
+    if (key === 'draftDebugProvider') return 'provider';
+    if (key === 'draftDebugModel') return 'model';
+    if (key === 'draftDebugProviderGroups') return 'provider groups';
+    if (key === 'draftDebugStatus') return 'status';
+    if (key === 'draftDebugError') return 'error';
     if (key === 'draftExampleFullControlsText') return 'full controls example text';
     return key;
   }
@@ -548,7 +554,7 @@ assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback' }), 'Ba
 assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_settings' }), 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.', 'settings fallback status points to HUB System Settings');
 assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_route' }), 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.', 'route fallback status points to HUB System Settings');
 assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_provider' }), 'Basic draft generated because the LLM provider request failed. Review the workflow before saving, then try again after the provider recovers.', 'provider fallback status does not blame settings');
-assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_provider', debug: { service_group_id: 'system-free', provider_id: 'deepseek', model: 'auto', status_code: 550, response: 'context canceled' } }), 'Basic draft generated because the LLM provider request failed. Review the workflow before saving, then try again after the provider recovers. Details: service_group: system-free; provider: deepseek; model: auto; status: 550; error: context canceled', 'provider fallback status includes backend debug details');
+assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_provider', debug: { service_group_id: 'system-free', provider_id: 'deepseek', model: 'auto', provider_service_group_ids: ['system-free'], status_code: 550, response: 'context canceled' } }), 'Basic draft generated because the LLM provider request failed. Review the workflow before saving, then try again after the provider recovers. Details: service group: system-free; provider: deepseek; model: auto; provider groups: system-free; status: 550; error: context canceled', 'provider fallback status includes backend debug details');
 assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_response' }), 'Basic draft generated because the LLM response could not be applied as a workflow. Review the workflow before saving, then refine the description and try again.', 'response fallback status asks user to refine description');
 assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', notes: ['LLM draft generation was unavailable, so a basic fallback draft was generated.'] }), 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.', 'fallback draft status does not append backend debug notes');
 assertEqual(draftHelpers.draftGeneratedStatus({ notes: ['Select real approvers before saving.'] }), 'Draft generated. Select real approvers before saving.', 'generated draft status includes first LLM note');

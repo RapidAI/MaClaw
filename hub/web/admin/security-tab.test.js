@@ -398,6 +398,12 @@ async function runTests() {
     assertIncludes(pickerHtml, 'Alice Twin', 'picker should list department member digital twin');
     assertIncludes(pickerHtml, 'Finance Bot', 'picker should list department digital employee');
     assertNotIncludes(pickerHtml, 'bob@example.com', 'picker should not list non-member physical employee');
+    g.document.elements.approvalSubjectSearch.value = 'no-match-filter';
+    ctx.closeSecApprovalSubjectPicker();
+    await ctx.openSecApprovalSubjectPicker('role:department:dept-finance:department_manager');
+    assertEqual(g.document.elements.approvalSubjectSearch.value, '', 'subject picker search should reset each time it opens');
+    pickerHtml = g.document.elements.approvalSubjectList.innerHTML;
+    assertIncludes(pickerHtml, 'alice@example.com', 'reopened picker should not keep the previous search filter');
 
     ctx.toggleSecApprovalSubject('user:alice@example.com', true);
     ctx.toggleSecApprovalSubject('digital_twin:alice-twin', true);
