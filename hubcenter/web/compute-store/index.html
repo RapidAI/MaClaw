@@ -817,7 +817,7 @@
         state.paymentChannels = (data.payment_channels || []).filter(function(ch){ return ch.enabled; });
         state.paymentMode = data.payment_mode || '';
         state.alipayDirect = !!data.alipay_direct;
-        if (state.paymentChannels.length && !state.selectedPayChannel) state.selectedPayChannel = state.paymentChannels[0].id;
+        normalizeSelectedPayChannel();
         renderProducts();
         renderPaymentChannels();
         if (document.getElementById('adminEmail').value.trim()) loadOrders();
@@ -827,6 +827,15 @@
       } catch (e) {
         document.getElementById('products').innerHTML = '<div class="empty">' + esc(tr('loadFailed')) + '</div>';
       }
+    }
+
+    function normalizeSelectedPayChannel() {
+      if (!state.paymentChannels.length) {
+        state.selectedPayChannel = '';
+        return;
+      }
+      var exists = state.paymentChannels.some(function(ch) { return ch.id === state.selectedPayChannel; });
+      if (!exists) state.selectedPayChannel = state.paymentChannels[0].id;
     }
 
     function renderProducts() {

@@ -2011,6 +2011,8 @@ describe('AppsPage', () => {
             app_id: 'expense',
             app_kind: 'enterprise_approval_app',
             approval_workflow_skill_id: 'expense-approval-workflow',
+            approval_workflow_version: '1.0.0',
+            workflow_version: '1.0.0',
             approval_object_role: 'expense_report',
             object_role: 'expense_report',
             dataset_id: 'finance.expenses',
@@ -2021,6 +2023,7 @@ describe('AppsPage', () => {
         expect(pendingPayload.app_id).toBe('expense');
         expect(pendingPayload.status).toBe('pending');
         expect(pendingPayload.workflow_skill_id).toBe('expense-approval-workflow');
+        expect(pendingPayload.workflow_version).toBe('1.0.0');
         expect(pendingPayload.workflow_decision_id).toBe('run-test-1');
         expect(pendingPayload.dataset_id).toBe('finance.expenses');
         expect(pendingPayload.object_role).toBe('expense_report');
@@ -2031,6 +2034,7 @@ describe('AppsPage', () => {
         expect(completedPayload.status).toBe('approved');
         expect(completedPayload.lane).toBe('handled');
         expect(completedPayload.workflow_decision_id).toBe('run-test-1');
+        expect(completedPayload.workflow_version).toBe('1.0.0');
         expect(completedPayload.business_status).toBe('pending_payment');
         expect(completedPayload.result_status).toBe('approved');
         expect(completedPayload.record_id).toBe('exp-1');
@@ -2044,6 +2048,7 @@ describe('AppsPage', () => {
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].dataset_id).toBe('finance.expenses');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].object_role).toBe('expense_report');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].record_id).toBe('appr-test-1');
+        expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].instance.workflow_version).toBe('1.0.0');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[1][0].record_id).toBe('exp-1');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[1][0].instance.status).toBe('approved');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[1][0].instance.result_payload.business_record.id).toBe('exp-1');
@@ -2090,6 +2095,8 @@ describe('AppsPage', () => {
 
         await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('binding-workflow', expect.objectContaining({
             approval_event: 'finance.submitted',
+            approval_workflow_version: '3.0.0',
+            workflow_version: '3.0.0',
             approval_object_role: 'expense',
             business_entity: 'Finance',
             dataset_id: 'finance.expenses',
@@ -2098,6 +2105,7 @@ describe('AppsPage', () => {
         await waitFor(() => expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalled());
         const payload = recordMaclawAppApprovalInstanceMock.mock.calls[0][0];
         expect(payload.workflow_skill_id).toBe('binding-workflow');
+        expect(payload.workflow_version).toBe('3.0.0');
         expect(payload.approval_event).toBe('finance.submitted');
         expect(payload.approval_object_role).toBe('expense');
         expect(payload.object_role).toBe('expense');
@@ -2106,6 +2114,7 @@ describe('AppsPage', () => {
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].dataset_id).toBe('finance.expenses');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].object_role).toBe('expense');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].app_id).toBe('bound-approval');
+        expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].instance.workflow_version).toBe('3.0.0');
     });
 
     it('passes workflow node mapping into approval skill runs and approval instances', async () => {

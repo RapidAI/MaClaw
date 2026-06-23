@@ -244,6 +244,24 @@ func TestComputeStorePrioritizesGatewayPaymentDetails(t *testing.T) {
 	}
 }
 
+func TestComputeStoreNormalizesSelectedPaymentChannel(t *testing.T) {
+	pagePath := filepath.Clean(filepath.Join("..", "..", "web", "compute-store", "index.html"))
+	body, err := os.ReadFile(pagePath)
+	if err != nil {
+		t.Fatalf("read compute store page: %v", err)
+	}
+	page := string(body)
+	if !strings.Contains(page, `normalizeSelectedPayChannel();`) {
+		t.Fatalf("compute store must normalize selected payment channel after loading payment config")
+	}
+	if !strings.Contains(page, `state.selectedPayChannel = '';`) {
+		t.Fatalf("compute store must clear stale manual payment channel when no channel is available")
+	}
+	if !strings.Contains(page, `if (!exists) state.selectedPayChannel = state.paymentChannels[0].id;`) {
+		t.Fatalf("compute store must fall back to the first currently enabled payment channel")
+	}
+}
+
 func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	webRoot := filepath.Clean(filepath.Join("..", "..", "web"))
 

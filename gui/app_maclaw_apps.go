@@ -1041,6 +1041,7 @@ func maclawAppApprovalSemanticBusinessRecordPatch(instance maclawAppApprovalInst
 		"approval_lane":         maclawAppApprovalBusinessRecordLane(instance),
 		"approval_current_node": instance.CurrentNode,
 		"workflow_skill_id":     instance.WorkflowSkillID,
+		"workflow_version":      instance.WorkflowVersion,
 		"workflow_instance_id":  instance.InstanceID,
 		"workflow_node_id":      instance.CurrentNode,
 		"workflow_decision_id":  instance.WorkflowDecisionID,

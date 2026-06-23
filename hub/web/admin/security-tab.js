@@ -3105,12 +3105,15 @@
     return ['role', scopeType || 'global', scopeId || 'global', roleCode || ''].map(encodeURIComponent).join(':');
   }
 
-  function flattenSecGroups(nodes, out) {
+  function flattenSecGroups(nodes, out, depth, parentNames) {
     out = out || [];
+    depth = Number(depth || 0);
+    parentNames = parentNames || [];
     (nodes || []).forEach(function(node) {
       if (!node || !node.id) return;
-      out.push({ id: node.id, name: node.name || node.id });
-      flattenSecGroups(node.children || [], out);
+      var name = node.name || node.id;
+      out.push({ id: node.id, name: name, depth: depth, pathName: parentNames.concat([name]).join(' / ') });
+      flattenSecGroups(node.children || [], out, depth + 1, parentNames.concat([name]));
     });
     return out;
   }
@@ -3130,7 +3133,7 @@
       { scopeType: 'dynamic', scopeId: 'applicant_department', scopeName: st('applicantDepartment') }
     ];
     flattenSecGroups(state().groupTree || []).forEach(function(group) {
-      scopes.push({ scopeType: 'department', scopeId: group.id, scopeName: group.name });
+      scopes.push({ scopeType: 'department', scopeId: group.id, scopeName: group.name, depth: group.depth || 0, pathName: group.pathName || group.name });
     });
     return scopes;
   }
@@ -3412,8 +3415,9 @@
       var key = scope.scopeType + ':' + scope.scopeId;
       var cls = key === active ? 'btn-secondary' : 'btn-ghost';
       var counts = approvalRoleConfiguredCount(scope);
-      var meta = scope.scopeType + ' | ' + counts.configured + '/' + counts.total + ' ' + st('approvalRolesConfigured');
-      return '<button type="button" class="' + cls + '" onclick="setSecApprovalRoleScope(\'' + escapeJsString(key) + '\')"><strong>' + escapeHtml(scope.scopeName) + '</strong><small>' + escapeHtml(meta) + '</small></button>';
+      var depth = scope.scopeType === 'department' ? Math.min(Number(scope.depth || 0), 6) : 0;
+      var meta = (scope.pathName || scope.scopeType) + ' | ' + counts.configured + '/' + counts.total + ' ' + st('approvalRolesConfigured');
+      return '<button type="button" class="' + cls + '" style="padding-left:' + String(10 + depth * 14) + 'px" onclick="setSecApprovalRoleScope(\'' + escapeJsString(key) + '\')"><strong>' + escapeHtml(scope.scopeName) + '</strong><small>' + escapeHtml(meta) + '</small></button>';
     }).join('') + '</div>';
   }
 
@@ -3440,13 +3444,58 @@
     return '<div class="approval-role-table"><div class="approval-role-head"><span>' + escapeHtml(st('approvalRolesRole')) + '</span><span>' + escapeHtml(st('approvalRolesAssignees')) + '</span><span>' + escapeHtml(st('approvalRolesMode')) + '</span></div>' + rows + '</div><div class="hint" style="margin-top:10px">' + escapeHtml(st('approvalRolesHint')) + '</div>';
   }
 
+  function approvalGroupMemberCache() {
+    var sec = state();
+    if (!sec.approvalRoleGroupMembersById) sec.approvalRoleGroupMembersById = {};
+    if (!sec.approvalRoleGroupMembersLoading) sec.approvalRoleGroupMembersLoading = {};
+    return sec.approvalRoleGroupMembersById;
+  }
+
+  function approvalGroupMemberEmails(scope) {
+    if (!scope || scope.scopeType !== 'department') return null;
+    var cache = approvalGroupMemberCache();
+    return Array.isArray(cache[scope.scopeId]) ? cache[scope.scopeId] : null;
+  }
+
+  function approvalGroupMemberMap(scope) {
+    var emails = approvalGroupMemberEmails(scope);
+    if (!emails) return null;
+    var map = {};
+    emails.forEach(function(email) { map[normalizeEmailKey(email)] = true; });
+    return map;
+  }
+
+  async function ensureApprovalGroupMembersLoaded(groupId) {
+    groupId = String(groupId || '').trim();
+    if (!groupId) return [];
+    var sec = state();
+    var cache = approvalGroupMemberCache();
+    if (Array.isArray(cache[groupId])) return cache[groupId];
+    if (sec.approvalRoleGroupMembersLoading[groupId]) return sec.approvalRoleGroupMembersLoading[groupId];
+    sec.approvalRoleGroupMembersLoading[groupId] = api('/api/admin/security/groups/' + encodeURIComponent(groupId) + '/members').then(function(data) {
+      var members = (data && data.members || []).map(function(email) { return String(email || '').trim(); }).filter(Boolean);
+      cache[groupId] = members;
+      return members;
+    }).finally(function() {
+      sec.approvalRoleGroupMembersLoading[groupId] = false;
+    });
+    return sec.approvalRoleGroupMembersLoading[groupId];
+  }
+
   function approvalSubjectRowsForScope(scope) {
     var rows = approvalSubjectRows();
     if (!scope) return rows;
     if (scope.scopeType === 'department') {
+      var memberMap = approvalGroupMemberMap(scope);
       return rows.filter(function(row) {
-        if (row.group === 'user') return !row.visibleGroupIds || !row.visibleGroupIds.length || row.visibleGroupIds.indexOf(scope.scopeId) !== -1;
-        if (row.group === 'digital_twin') return true;
+        if (row.group === 'user') {
+          if (memberMap) return !!memberMap[normalizeEmailKey(row.subjectId)];
+          return !row.visibleGroupIds || !row.visibleGroupIds.length || row.visibleGroupIds.indexOf(scope.scopeId) !== -1;
+        }
+        if (row.group === 'digital_twin') {
+          if (memberMap && row.ownerEmail) return !!memberMap[normalizeEmailKey(row.ownerEmail)];
+          return !memberMap;
+        }
         var entry = (state().approvalSubjectEmployees || []).find(function(item) {
           return String(item && (item.machine_id || item.id) || '').trim() === row.subjectId;
         });
@@ -3455,6 +3504,14 @@
       });
     }
     return rows;
+  }
+
+  function approvalSubjectTypeLabel(row) {
+    if (!row) return '';
+    if (row.group === 'user') return st('approvalSubjectUsers');
+    if (row.group === 'digital_twin') return st('digitalTwin');
+    if (row.group === 'department_digital') return st('departmentDigitalEmployee');
+    return row.subjectType || '';
   }
 
   function renderApprovalSubjectPreview(scope) {
@@ -3469,7 +3526,7 @@
     } else {
       var rows = approvalSubjectRowsForScope(scope).slice(0, 36);
       body = rows.length ? rows.map(function(row) {
-        return '<div class="approval-role-subject-row"><strong>' + escapeHtml(row.displayName) + '</strong><small>' + escapeHtml((row.meta || row.subjectType) + ' | ' + row.subjectType) + '</small></div>';
+        return '<div class="approval-role-subject-row"><strong>' + escapeHtml(row.displayName) + '</strong><small>' + escapeHtml(approvalSubjectTypeLabel(row) + ' | ' + (row.meta || row.subjectType)) + '</small></div>';
       }).join('') : hint(st('approvalRolesSubjectsEmpty'));
     }
     return '<aside class="approval-role-subjects"><div class="approval-role-subject-head"><div><strong>' + escapeHtml(st('approvalRolesSubjectsTitle')) + '</strong><small>' + escapeHtml(st('approvalRolesSubjectsHint')) + '</small></div></div><div class="approval-role-subject-list">' + body + '</div></aside>';
@@ -3490,6 +3547,13 @@
     sec.approvalRoleView = view;
     var scopes = view === 'function' ? approvalFunctionScopes() : approvalOrganizationScopes();
     var current = currentApprovalScope(scopes);
+    if (current && current.scopeType === 'department') {
+      var cache = approvalGroupMemberCache();
+      var loading = state().approvalRoleGroupMembersLoading && state().approvalRoleGroupMembersLoading[current.scopeId];
+      if (!Array.isArray(cache[current.scopeId]) && !loading) {
+        ensureApprovalGroupMembersLoaded(current.scopeId).then(renderSecApprovalRoles).catch(function() {});
+      }
+    }
     root.innerHTML = '<div class="approval-role-layout">' +
       '<div class="approval-role-sidebar"><div class="approval-role-view-toggle"><button type="button" class="' + (view === 'organization' ? 'btn-secondary' : 'btn-ghost') + '" onclick="setSecApprovalRoleView(\'organization\')">' + escapeHtml(st('approvalRolesOrgView')) + '</button><button type="button" class="' + (view === 'function' ? 'btn-secondary' : 'btn-ghost') + '" onclick="setSecApprovalRoleView(\'function\')">' + escapeHtml(st('approvalRolesFunctionView')) + '</button></div><div class="item-meta" style="margin:10px 0 8px">' + escapeHtml(st('approvalRolesScope')) + ' (' + scopes.length + ')</div>' + renderApprovalScopeButtons(scopes) + '</div>' +
       '<div class="approval-role-editor"><div class="approval-role-current"><div><strong>' + escapeHtml(current && current.scopeName || '-') + '</strong><small>' + escapeHtml(current ? current.scopeType : '-') + '</small></div><div class="approval-role-current-actions"><span class="badge info">' + approvalRoleTemplatesForScope(current || {}).length + '</span><button type="button" class="btn-secondary" onclick="addSecApprovalRole()">' + escapeHtml(st('approvalRolesAddRole')) + '</button></div></div>' + renderApprovalRoleRows(current) + '</div>' +
@@ -3697,7 +3761,7 @@
       return;
     }
     var query = String(search && search.value || '').trim().toLowerCase();
-    var rows = approvalSubjectRows().filter(function(row) {
+    var rows = approvalSubjectRowsForScope(picker.scope).filter(function(row) {
       if (!query) return true;
       return [row.displayName, row.subjectId, row.meta, row.subjectType].join(' ').toLowerCase().indexOf(query) !== -1;
     });
@@ -3714,7 +3778,7 @@
       return '<div class="approval-subject-group"><div class="item-title">' + escapeHtml(label) + ' (' + groupRows.length + ')</div>' + groupRows.map(function(row) {
         var key = approvalSubjectKey(row);
         var checked = !!(picker.selected && picker.selected[key]);
-        return '<label class="approval-subject-row"><input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="toggleSecApprovalSubject(\'' + escapeJsString(key) + '\', this.checked)"><span><strong>' + escapeHtml(row.displayName) + '</strong><small>' + escapeHtml(row.meta || row.subjectType) + '</small></span></label>';
+        return '<label class="approval-subject-row"><input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="toggleSecApprovalSubject(\'' + escapeJsString(key) + '\', this.checked)"><span><strong>' + escapeHtml(row.displayName) + '</strong><small>' + escapeHtml(approvalSubjectTypeLabel(row) + ' | ' + (row.meta || row.subjectType)) + '</small></span></label>';
       }).join('') + '</div>';
     }).join('');
   }
@@ -3727,10 +3791,16 @@
       var key = approvalSubjectKey(item);
       if (key) selected[key] = item;
     });
-    state().approvalSubjectPicker = { roleId: roleId, selected: selected };
+    var scope = {
+      scopeType: row.getAttribute('data-scope-type') || '',
+      scopeId: row.getAttribute('data-scope-id') || '',
+      scopeName: row.getAttribute('data-scope-name') || ''
+    };
+    state().approvalSubjectPicker = { roleId: roleId, selected: selected, scope: scope };
     ensureApprovalSubjectPicker();
     renderApprovalSubjectPicker();
     await ensureApprovalSubjectDirectoryLoaded();
+    if (scope.scopeType === 'department') await ensureApprovalGroupMembersLoaded(scope.scopeId);
     renderApprovalSubjectPicker();
   };
 
@@ -3742,7 +3812,7 @@
       renderApprovalSubjectPicker();
       return;
     }
-    var found = approvalSubjectRows().find(function(row) { return approvalSubjectKey(row) === key; });
+    var found = approvalSubjectRowsForScope(picker.scope).find(function(row) { return approvalSubjectKey(row) === key; });
     if (found) picker.selected[key] = normalizeApprovalAssignee(found);
     renderApprovalSubjectPicker();
   };
@@ -3764,6 +3834,8 @@
 
   global.saveSecApprovalRoles = async function saveSecApprovalRoles() {
     var roles = syncVisibleApprovalRoleRows().map(normalizeApprovalRoleRecord).filter(Boolean);
+    var saveBtn = document.getElementById('secApprovalRolesSaveBtn');
+    if (saveBtn) saveBtn.disabled = true;
     try {
       var saved = await api('/api/admin/security/approval-roles', { method: 'PUT', body: JSON.stringify({ roles: roles }) });
       roles = saved && Array.isArray(saved.roles) ? saved.roles.map(normalizeApprovalRoleRecord).filter(Boolean) : roles;
@@ -3781,6 +3853,8 @@
       } catch (_) {
         showToast(st('approvalRolesSaveFailed') + err.message, 'error');
       }
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
     }
   };
 

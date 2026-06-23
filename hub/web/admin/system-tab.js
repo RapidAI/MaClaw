@@ -459,12 +459,24 @@ function tenantSystemLLMProviderIsConfigured(id) {
   if (key === 'maclaw_official') return true;
   return !!tenantSystemLLMProviderIDs[key];
 }
+function tenantSystemLLMModelProviderIDs(model) {
+  const ids = [];
+  (model && model.provider_ids || []).forEach(function(id) {
+    id = String(id || '').trim();
+    if (id) ids.push(id);
+  });
+  (model && model.provider_configs || []).forEach(function(cfg) {
+    const id = String(cfg && cfg.provider_id || '').trim();
+    if (id) ids.push(id);
+  });
+  return ids;
+}
 function tenantSystemLLMUsableGroups(data) {
   return (data && data.model_service_groups || []).filter(function(group) {
     if (!group || !String(group.id || '').trim()) return false;
     if (String(group.id || '').trim().toLowerCase() === 'default') return false;
     return Array.isArray(group.models) && group.models.some(function(model) {
-      return String(model && model.name || '').trim() && Array.isArray(model.provider_ids) && model.provider_ids.some(tenantSystemLLMProviderIsConfigured);
+      return String(model && model.name || '').trim() && tenantSystemLLMModelProviderIDs(model).some(tenantSystemLLMProviderIsConfigured);
     });
   });
 }

@@ -2327,7 +2327,10 @@ function App() {
         return formatSidebarCredit(credits.used);
     }, [formatSidebarCredit, noHubAuthorizationText]);
 
-    const showHubCreditAction = !!sidebarHubCredits && (!sidebarHubCredits.authorized || sidebarHubCredits.status === 'period_limited' || (sidebarHubCredits.total > 0 && sidebarHubCredits.remaining / sidebarHubCredits.total < 0.2));
+    const showHubCreditAction = !!sidebarHubCredits && (
+        sidebarHubCredits.status === 'period_limited' ||
+        (sidebarHubCredits.authorized && !sidebarHubCredits.unlimited && sidebarHubCredits.remaining < 500)
+    );
 
     const activeRemoteSessionForTool = useMemo(() => {
         return remoteSessions.find((session) => {
