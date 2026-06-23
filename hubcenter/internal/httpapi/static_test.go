@@ -206,6 +206,29 @@ func TestPackageScriptCopiesFullWebTree(t *testing.T) {
 	}
 }
 
+func TestComputeStoreDoesNotRewriteSignedAlipayPaymentURL(t *testing.T) {
+	pagePath := filepath.Clean(filepath.Join("..", "..", "web", "compute-store", "index.html"))
+	body, err := os.ReadFile(pagePath)
+	if err != nil {
+		t.Fatalf("read compute store page: %v", err)
+	}
+	page := string(body)
+	guard := `if (isSignedAlipayPaymentURL(u)) return raw;`
+	rewrite := `u.searchParams.set('return_url', returnContextURL(order));`
+	if !strings.Contains(page, guard) {
+		t.Fatalf("compute store must preserve signed Alipay payment URLs")
+	}
+	if !strings.Contains(page, rewrite) {
+		t.Fatalf("compute store return_url rewrite contract missing")
+	}
+	if !strings.Contains(page, `method === 'alipay.trade.page.pay'`) || !strings.Contains(page, `u.searchParams.get('sign')`) {
+		t.Fatalf("compute store must identify signed Alipay page-pay URLs")
+	}
+	if strings.Index(page, guard) > strings.Index(page, rewrite) {
+		t.Fatalf("signed Alipay guard must run before return_url rewriting")
+	}
+}
+
 func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	webRoot := filepath.Clean(filepath.Join("..", "..", "web"))
 

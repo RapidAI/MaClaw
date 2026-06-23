@@ -222,6 +222,8 @@ const TENANT_SYSTEM_LLM_DEFAULTS_I18N = {
     emptyOption: 'Select a service group',
     noGroups: 'No usable service groups found. Create a model service group with at least one route first.',
     hint: 'Used by approval workflow natural-language draft generation. It is independent from new-user benefits.',
+    invalidSelected: 'Current setting is unavailable: {id}. Select another usable service group.',
+    invalidSelectedOption: 'Current setting unavailable ({id})',
     save: 'Save Default LLM',
     saving: 'Saving...',
     saved: 'System default LLM service group saved.',
@@ -237,6 +239,8 @@ const TENANT_SYSTEM_LLM_DEFAULTS_I18N = {
     emptyOption: '\u9009\u62e9\u670d\u52a1\u7ec4',
     noGroups: '\u6682\u65e0\u53ef\u7528\u670d\u52a1\u7ec4\u3002\u8bf7\u5148\u521b\u5efa\u81f3\u5c11\u5305\u542b\u4e00\u6761\u8def\u7531\u7684\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
     hint: '\u7528\u4e8e\u5ba1\u6279\u5de5\u4f5c\u6d41\u81ea\u7136\u8bed\u8a00\u8349\u7a3f\u751f\u6210\uff0c\u4e0e\u65b0\u7528\u6237\u798f\u5229\u4e92\u76f8\u72ec\u7acb\u3002',
+    invalidSelected: '\u5f53\u524d\u914d\u7f6e\u4e0d\u53ef\u7528\uff1a{id}\u3002\u8bf7\u6539\u9009\u5176\u4ed6\u53ef\u7528\u670d\u52a1\u7ec4\u3002',
+    invalidSelectedOption: '\u5f53\u524d\u914d\u7f6e\u4e0d\u53ef\u7528 ({id})',
     save: '\u4fdd\u5b58\u9ed8\u8ba4 LLM',
     saving: '\u4fdd\u5b58\u4e2d...',
     saved: '\u7cfb\u7edf\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4\u5df2\u4fdd\u5b58\u3002',
@@ -249,6 +253,7 @@ const tslx = (key, vars = {}) => ((TENANT_SYSTEM_LLM_DEFAULTS_I18N[currentLang] 
 const TENANT_MIGRATION_MIN_MB = 100;
 const TENANT_MIGRATION_MAX_MB = 1024;
 let tenantSystemLLMDefaultsCache = null;
+let tenantSystemLLMProviderIDs = {};
 function normalizeTenantMailSenderName(value) {
   return Array.from(String(value || '').trim()).slice(0, TENANT_MAIL_SENDER_MAX_RUNES).join('');
 }
@@ -448,12 +453,18 @@ async function loadTenantMailSenderName() { applyTenantMailSenderI18n(); try { c
 async function saveTenantMailSenderName() { try { const input = document.getElementById('tenantMailFromName'); const fromName = normalizeTenantMailSenderName(input ? input.value : ''); if (input) input.value = fromName; const data = await api('/api/admin/mail/sender-name', { method: 'POST', body: JSON.stringify({ from_name: fromName }) }); if (input) input.value = (data && data.from_name) || fromName; const msg = tmsx('saved'); setOutput(msg); showToast(msg, 'success'); return data || { from_name: fromName }; } catch (err) { const msg = tmsx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } }
 async function loadTenantMigrationSettings() { applyTenantMigrationSettingsI18n(); try { const data = await api('/api/admin/migration/settings'); const input = document.getElementById('tenantMigrationMaxMB'); if (input) { input.min = String(tenantMigrationBytesToMB(data && data.min_bytes) || TENANT_MIGRATION_MIN_MB); input.max = String(tenantMigrationBytesToMB(data && data.max_bytes) || TENANT_MIGRATION_MAX_MB); input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); } return data || {}; } catch (err) { const msg = tmgx('loadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
 async function saveTenantMigrationSettings() { const input = document.getElementById('tenantMigrationMaxMB'); const valueMB = normalizeTenantMigrationMB(input ? input.value : 0); if (valueMB < TENANT_MIGRATION_MIN_MB || valueMB > TENANT_MIGRATION_MAX_MB) { const msg = tmgx('invalid'); setOutput(msg); showToast(msg, 'error'); return; } const btn = document.getElementById('tenantMigrationSettingsSaveBtn'); const previousLabel = btn ? btn.textContent : ''; if (btn) { btn.disabled = true; btn.textContent = tmgx('saving'); } try { const data = await api('/api/admin/migration/settings', { method: 'PUT', body: JSON.stringify({ max_compressed_bytes: valueMB * 1024 * 1024 }) }); if (input) input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); const msg = tmgx('saved'); setOutput(msg); showToast(msg, 'success'); return data || {}; } catch (err) { const msg = tmgx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } finally { if (btn) { btn.disabled = false; btn.textContent = previousLabel || tmgx('save'); } } }
+function tenantSystemLLMProviderIsConfigured(id) {
+  const key = String(id || '').trim().toLowerCase();
+  if (!key) return false;
+  if (key === 'maclaw_official') return true;
+  return !!tenantSystemLLMProviderIDs[key];
+}
 function tenantSystemLLMUsableGroups(data) {
   return (data && data.model_service_groups || []).filter(function(group) {
     if (!group || !String(group.id || '').trim()) return false;
     if (String(group.id || '').trim().toLowerCase() === 'default') return false;
     return Array.isArray(group.models) && group.models.some(function(model) {
-      return String(model && model.name || '').trim() && Array.isArray(model.provider_ids) && model.provider_ids.some(function(id) { return String(id || '').trim(); });
+      return String(model && model.name || '').trim() && Array.isArray(model.provider_ids) && model.provider_ids.some(tenantSystemLLMProviderIsConfigured);
     });
   });
 }
@@ -463,13 +474,16 @@ function renderTenantSystemLLMDefaultOptions() {
   const data = tenantSystemLLMDefaultsCache || {};
   const selected = String(data.system_default_service_group_id || '').trim();
   const groups = tenantSystemLLMUsableGroups(data);
+  const selectedUsable = !!selected && groups.some(function(group) { return String(group && group.id || '').trim() === selected; });
   if (!groups.length) {
-    select.innerHTML = '<option value="">' + escapeHtml(tslx('noGroups')) + '</option>';
+    select.innerHTML = '<option value="">' + escapeHtml(selected ? tslx('invalidSelectedOption', { id: selected }) : tslx('noGroups')) + '</option>';
     select.disabled = true;
+    _s('tenantSystemLLMDefaultsHint', 'textContent', selected ? tslx('invalidSelected', { id: selected }) : tslx('noGroups'));
     return;
   }
   select.disabled = false;
-  select.innerHTML = '<option value="">' + escapeHtml(tslx('emptyOption')) + '</option>' + groups.map(function(group) {
+  _s('tenantSystemLLMDefaultsHint', 'textContent', selected && !selectedUsable ? tslx('invalidSelected', { id: selected }) : tslx('hint'));
+  select.innerHTML = '<option value="">' + escapeHtml(selected && !selectedUsable ? tslx('invalidSelectedOption', { id: selected }) : tslx('emptyOption')) + '</option>' + groups.map(function(group) {
     const id = String(group.id || '').trim();
     const name = String(group.name || id).trim();
     const label = name === id ? id : name + ' (' + id + ')';
@@ -479,13 +493,23 @@ function renderTenantSystemLLMDefaultOptions() {
 async function loadTenantSystemLLMDefaults() {
   applyTenantSystemLLMDefaultsI18n();
   try {
-    tenantSystemLLMDefaultsCache = await api('/api/admin/llm/services?include_cards=false');
+    const results = await Promise.all([
+      api('/api/admin/llm/services?include_cards=false'),
+      api('/api/admin/llm/providers')
+    ]);
+    tenantSystemLLMDefaultsCache = results[0];
+    tenantSystemLLMProviderIDs = {};
+    (results[1] && results[1].providers || []).forEach(function(provider) {
+      const id = String(provider && provider.id || '').trim().toLowerCase();
+      if (id) tenantSystemLLMProviderIDs[id] = true;
+    });
     renderTenantSystemLLMDefaultOptions();
     return tenantSystemLLMDefaultsCache || {};
   } catch (err) {
     const msg = tslx('loadFailed', { error: err.message });
     setOutput(msg);
     showToast(msg, 'error');
+    throw err;
   }
 }
 async function saveTenantSystemLLMDefaults() {
@@ -497,7 +521,13 @@ async function saveTenantSystemLLMDefaults() {
     showToast(msg, 'error');
     return;
   }
-  if (!tenantSystemLLMDefaultsCache) await loadTenantSystemLLMDefaults();
+  if (!tenantSystemLLMDefaultsCache) {
+    try {
+      await loadTenantSystemLLMDefaults();
+    } catch (err) {
+      return;
+    }
+  }
   const btn = document.getElementById('tenantSystemLLMDefaultsSaveBtn');
   const previousLabel = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = tslx('saving'); }

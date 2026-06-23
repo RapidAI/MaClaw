@@ -59,6 +59,7 @@
         subTab: 'management',
         approvalRoleView: 'organization',
         approvalRoleScope: 'global',
+        approvalRoleScopeQuery: '',
         approvalRoles: null,
         approvalRolesLoaded: false,
         approvalRolesLoading: false,
@@ -208,6 +209,21 @@
     approvalRolesOrgView: { zh: '\u7ec4\u7ec7\u89c6\u56fe', en: 'Organization View' },
     approvalRolesFunctionView: { zh: '\u804c\u80fd\u89c6\u56fe', en: 'Function View' },
     approvalRolesScope: { zh: '\u8303\u56f4', en: 'Scope' },
+    approvalRolesSearchScope: { zh: '\u641c\u7d22\u90e8\u95e8\u6216\u804c\u80fd', en: 'Search departments or functions' },
+    approvalRolesNoScopeMatch: { zh: '\u6ca1\u6709\u5339\u914d\u7684\u8303\u56f4', en: 'No matching scopes' },
+    approvalRolesConfigured: { zh: '\u5df2\u914d\u7f6e', en: 'configured' },
+    approvalRolesUnconfigured: { zh: '\u672a\u914d\u7f6e', en: 'not configured' },
+    approvalRolesSubjectsTitle: { zh: '\u53ef\u9009\u4e3b\u4f53', en: 'Available subjects' },
+    approvalRolesSubjectsHint: { zh: '\u6309\u5f53\u524d\u7ec4\u7ec7\u6216\u804c\u80fd\u8303\u56f4\u5c55\u793a\u53ef\u9009\u5458\u5de5\u548c\u6570\u5b57\u5458\u5de5\u3002', en: 'Shows selectable employees and digital workers for the current organization or function scope.' },
+    approvalRolesSubjectsLoad: { zh: '\u52a0\u8f7d\u53ef\u9009\u4e3b\u4f53', en: 'Load subjects' },
+    approvalRolesSubjectsEmpty: { zh: '\u5f53\u524d\u8303\u56f4\u6682\u65e0\u53ef\u9009\u4e3b\u4f53', en: 'No selectable subjects in this scope' },
+    approvalRolesAddRole: { zh: '\u65b0\u589e\u89d2\u8272', en: 'Add role' },
+    approvalRolesRemoveRole: { zh: '\u79fb\u9664\u89d2\u8272', en: 'Remove role' },
+    approvalRolesPromptRoleName: { zh: '\u8f93\u5165\u5ba1\u6279\u89d2\u8272\u540d\u79f0', en: 'Enter approval role name' },
+    approvalRolesRoleNameRequired: { zh: '\u8bf7\u8f93\u5165\u5ba1\u6279\u89d2\u8272\u540d\u79f0', en: 'Enter an approval role name' },
+    approvalRolesRoleAdded: { zh: '\u5ba1\u6279\u89d2\u8272\u5df2\u65b0\u589e\uff0c\u8bf7\u4fdd\u5b58\u540e\u751f\u6548', en: 'Approval role added. Save to apply it.' },
+    approvalRolesRoleRemoved: { zh: '\u5ba1\u6279\u89d2\u8272\u5df2\u79fb\u9664\uff0c\u8bf7\u4fdd\u5b58\u540e\u751f\u6548', en: 'Approval role removed. Save to apply it.' },
+    approvalRolesConfirmRemove: { zh: '\u786e\u5b9a\u79fb\u9664 "{name}" \u5417\uff1f', en: 'Remove "{name}"?' },
     approvalRolesRole: { zh: '\u89d2\u8272', en: 'Role' },
     approvalRolesAssignees: { zh: '\u627f\u62c5\u4e3b\u4f53', en: 'Assignees' },
     approvalRolesPickAssignees: { zh: '\u9009\u62e9\u4e3b\u4f53', en: 'Choose subjects' },
@@ -508,6 +524,10 @@
       .replace(/</g, '\\x3c')
       .replace(/>/g, '\\x3e')
       .replace(/&/g, '\\x26');
+  }
+
+  function escapeAttr(value) {
+    return escapeHtml(value || '');
   }
 
   function normalizeEmailKey(email) {
@@ -3059,6 +3079,26 @@
     }
   };
 
+  global.loadApprovalRolesTab = async function loadApprovalRolesTab() {
+    applySecurityI18n();
+    var title = document.getElementById('pageTitle');
+    var subtitle = document.getElementById('pageSubtitle');
+    if (title) title.textContent = st('approvalRolesTitle');
+    if (subtitle) subtitle.textContent = st('approvalRolesDesc');
+    try {
+      if (!state().groupTree || !state().groupTree.length) await loadGroups();
+    } catch (err) {
+      showToast(st('loadGroupTreeFailed') + err.message, 'error');
+    }
+    try {
+      await ensureApprovalRolesLoaded();
+    } catch (_) {}
+    try {
+      await ensureApprovalSubjectDirectoryLoaded();
+    } catch (_) {}
+    renderSecApprovalRoles();
+  };
+
   var APPROVAL_ROLES_STORAGE_KEY = 'maclaw_approval_roles_v1';
 
   function approvalRoleId(scopeType, scopeId, roleCode) {
@@ -3108,6 +3148,54 @@
       { roleCode: 'leave_reviewer', roleName: st('roleLeaveReviewer'), executionMode: 'digital_suggest' },
       { roleCode: 'contract_approver', roleName: st('roleContractApprover'), executionMode: 'digital_review' }
     ];
+  }
+
+  function approvalRoleTemplateCodes(scope) {
+    var codes = {};
+    approvalRoleTemplates(scope || {}).forEach(function(template) {
+      codes[template.roleCode] = true;
+    });
+    return codes;
+  }
+
+  function approvalCustomRoleTemplates(scope) {
+    if (!scope) return [];
+    var templateCodes = approvalRoleTemplateCodes(scope);
+    return loadApprovalRoles().filter(function(role) {
+      return role && role.scopeType === scope.scopeType && role.scopeId === scope.scopeId && !templateCodes[role.roleCode];
+    }).map(function(role) {
+      return {
+        roleCode: role.roleCode,
+        roleName: role.roleName,
+        executionMode: role.executionMode || 'manual',
+        custom: true
+      };
+    });
+  }
+
+  function approvalRoleTemplatesForScope(scope) {
+    return approvalRoleTemplates(scope || {}).concat(approvalCustomRoleTemplates(scope));
+  }
+
+  function approvalRoleCodeFromName(name) {
+    var code = String(name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!code) code = 'role_' + Date.now();
+    if (!/^[a-z]/.test(code)) code = 'role_' + code;
+    return code;
+  }
+
+  function uniqueApprovalRoleCode(scope, baseCode) {
+    var used = {};
+    approvalRoleTemplatesForScope(scope).forEach(function(template) {
+      used[template.roleCode] = true;
+    });
+    var code = baseCode || 'role_' + Date.now();
+    var idx = 2;
+    while (used[code]) {
+      code = baseCode + '_' + idx;
+      idx += 1;
+    }
+    return code;
   }
 
   function normalizeApprovalRoleRecord(role) {
@@ -3256,12 +3344,54 @@
     return parseApprovalAssignees(inputValue);
   }
 
+  function approvalRoleRecordFromRow(row) {
+    if (!row) return null;
+    var mode = row.querySelector('[data-approval-mode]');
+    return normalizeApprovalRoleRecord({
+      view: row.getAttribute('data-view') || '',
+      scopeType: row.getAttribute('data-scope-type') || '',
+      scopeId: row.getAttribute('data-scope-id') || '',
+      scopeName: row.getAttribute('data-scope-name') || '',
+      roleCode: row.getAttribute('data-role-code') || '',
+      roleName: row.getAttribute('data-role-name') || '',
+      executionMode: mode && mode.value || 'manual',
+      assignees: rowApprovalAssignees(row)
+    });
+  }
+
+  function syncVisibleApprovalRoleRows() {
+    var sec = state();
+    var roles = loadApprovalRoles();
+    var byId = {};
+    roles.forEach(function(role) {
+      if (role && role.id) byId[role.id] = role;
+    });
+    document.querySelectorAll('#secApprovalRolesRoot .approval-role-row[data-approval-role-id]').forEach(function(row) {
+      var role = approvalRoleRecordFromRow(row);
+      if (role && role.id) byId[role.id] = role;
+    });
+    sec.approvalRoles = Object.keys(byId).map(function(id) { return byId[id]; }).filter(Boolean);
+    sec.approvalRolesLoaded = true;
+    return sec.approvalRoles;
+  }
+
   function approvalRoleRowById(roleId) {
     var rows = document.querySelectorAll('#secApprovalRolesRoot .approval-role-row[data-approval-role-id]');
     for (var i = 0; i < rows.length; i += 1) {
       if (rows[i].getAttribute('data-approval-role-id') === roleId) return rows[i];
     }
     return null;
+  }
+
+  function approvalRoleConfiguredCount(scope) {
+    if (!scope) return { configured: 0, total: 0 };
+    var templates = approvalRoleTemplatesForScope(scope);
+    var configured = 0;
+    templates.forEach(function(template) {
+      var role = findApprovalRole(scope, template);
+      if (role && Array.isArray(role.assignees) && role.assignees.length) configured += 1;
+    });
+    return { configured: configured, total: templates.length };
   }
 
   function renderApprovalScopeButtons(scopes) {
@@ -3271,10 +3401,19 @@
       ? sec.approvalRoleScope
       : scopes[0].scopeType + ':' + scopes[0].scopeId;
     sec.approvalRoleScope = active;
-    return '<div class="approval-role-scope-list">' + scopes.map(function(scope) {
+    var query = String(sec.approvalRoleScopeQuery || '').trim().toLowerCase();
+    var visibleScopes = scopes.filter(function(scope) {
+      if (!query) return true;
+      return [scope.scopeName, scope.scopeType, scope.scopeId].join(' ').toLowerCase().indexOf(query) !== -1;
+    });
+    var search = '<input class="approval-role-scope-search" value="' + escapeAttr(sec.approvalRoleScopeQuery || '') + '" placeholder="' + escapeAttr(st('approvalRolesSearchScope')) + '" oninput="setSecApprovalRoleScopeQuery(this.value)">';
+    if (!visibleScopes.length) return search + hint(st('approvalRolesNoScopeMatch'));
+    return search + '<div class="approval-role-scope-list">' + visibleScopes.map(function(scope) {
       var key = scope.scopeType + ':' + scope.scopeId;
       var cls = key === active ? 'btn-secondary' : 'btn-ghost';
-      return '<button type="button" class="' + cls + '" onclick="setSecApprovalRoleScope(\'' + escapeJsString(key) + '\')"><strong>' + escapeHtml(scope.scopeName) + '</strong><small>' + escapeHtml(scope.scopeType) + '</small></button>';
+      var counts = approvalRoleConfiguredCount(scope);
+      var meta = scope.scopeType + ' | ' + counts.configured + '/' + counts.total + ' ' + st('approvalRolesConfigured');
+      return '<button type="button" class="' + cls + '" onclick="setSecApprovalRoleScope(\'' + escapeJsString(key) + '\')"><strong>' + escapeHtml(scope.scopeName) + '</strong><small>' + escapeHtml(meta) + '</small></button>';
     }).join('') + '</div>';
   }
 
@@ -3288,15 +3427,51 @@
 
   function renderApprovalRoleRows(scope) {
     if (!scope) return hint(st('noGroups'));
-    var rows = approvalRoleTemplates(scope).map(function(template) {
+    var rows = approvalRoleTemplatesForScope(scope).map(function(template) {
       var role = findApprovalRole(scope, template);
-      return '<div class="approval-role-row" data-approval-role-id="' + escapeHtml(role.id) + '" data-view="' + escapeHtml(role.view) + '" data-scope-type="' + escapeHtml(role.scopeType) + '" data-scope-id="' + escapeHtml(role.scopeId) + '" data-scope-name="' + escapeHtml(role.scopeName) + '" data-role-code="' + escapeHtml(role.roleCode) + '" data-role-name="' + escapeHtml(role.roleName) + '">' +
-        '<div><strong>' + escapeHtml(role.roleName) + '</strong><small>' + escapeHtml(role.roleCode) + '</small></div>' +
-        '<div class="approval-role-assignee-control"><input data-approval-assignees value="' + escapeHtml(approvalAssigneeText(role)) + '" placeholder="user@company.com, invoice-checker"><input type="hidden" data-approval-assignees-json value="' + escapeAttr(approvalAssigneeJSON(role)) + '"><button type="button" class="btn-ghost" onclick="openSecApprovalSubjectPicker(\'' + escapeJsString(role.id) + '\')">' + escapeHtml(st('approvalRolesPickAssignees')) + '</button></div>' +
+      var assigned = Array.isArray(role.assignees) && role.assignees.length;
+      var removeBtn = template.custom ? '<button type="button" class="btn-ghost approval-role-remove" onclick="removeSecApprovalRole(\'' + escapeJsString(role.id) + '\')">' + escapeHtml(st('approvalRolesRemoveRole')) + '</button>' : '';
+      return '<div class="approval-role-row' + (assigned ? '' : ' approval-role-row-empty') + '" data-approval-role-id="' + escapeAttr(role.id) + '" data-view="' + escapeAttr(role.view) + '" data-scope-type="' + escapeAttr(role.scopeType) + '" data-scope-id="' + escapeAttr(role.scopeId) + '" data-scope-name="' + escapeAttr(role.scopeName) + '" data-role-code="' + escapeAttr(role.roleCode) + '" data-role-name="' + escapeAttr(role.roleName) + '">' +
+        '<div><strong>' + escapeHtml(role.roleName) + '</strong><small>' + escapeHtml(role.roleCode) + ' | ' + escapeHtml(assigned ? st('approvalRolesConfigured') : st('approvalRolesUnconfigured')) + '</small>' + removeBtn + '</div>' +
+        '<div class="approval-role-assignee-control"><input data-approval-assignees value="' + escapeAttr(approvalAssigneeText(role)) + '" placeholder="user@company.com, invoice-checker"><input type="hidden" data-approval-assignees-json value="' + escapeAttr(approvalAssigneeJSON(role)) + '"><button type="button" class="btn-ghost" onclick="openSecApprovalSubjectPicker(\'' + escapeJsString(role.id) + '\')">' + escapeHtml(st('approvalRolesPickAssignees')) + '</button></div>' +
         '<select data-approval-mode>' + approvalExecutionOptions(role.executionMode) + '</select>' +
       '</div>';
     }).join('');
     return '<div class="approval-role-table"><div class="approval-role-head"><span>' + escapeHtml(st('approvalRolesRole')) + '</span><span>' + escapeHtml(st('approvalRolesAssignees')) + '</span><span>' + escapeHtml(st('approvalRolesMode')) + '</span></div>' + rows + '</div><div class="hint" style="margin-top:10px">' + escapeHtml(st('approvalRolesHint')) + '</div>';
+  }
+
+  function approvalSubjectRowsForScope(scope) {
+    var rows = approvalSubjectRows();
+    if (!scope) return rows;
+    if (scope.scopeType === 'department') {
+      return rows.filter(function(row) {
+        if (row.group === 'user' || row.group === 'digital_twin') return true;
+        var entry = (state().approvalSubjectEmployees || []).find(function(item) {
+          return String(item && (item.machine_id || item.id) || '').trim() === row.subjectId;
+        });
+        var ids = Array.isArray(entry && entry.visible_group_ids) ? entry.visible_group_ids.map(function(id) { return String(id || '').trim(); }) : [];
+        return ids.indexOf(scope.scopeId) !== -1;
+      });
+    }
+    return rows;
+  }
+
+  function renderApprovalSubjectPreview(scope) {
+    var sec = state();
+    var loading = !!sec.approvalSubjectLoading;
+    var loaded = Array.isArray(sec.approvalSubjectUsers) || Array.isArray(sec.approvalSubjectEmployees);
+    var body = '';
+    if (loading) {
+      body = hint(st('loading'));
+    } else if (!loaded) {
+      body = '<button type="button" class="btn-secondary approval-role-subject-load" onclick="loadSecApprovalRoleSubjects()">' + escapeHtml(st('approvalRolesSubjectsLoad')) + '</button>';
+    } else {
+      var rows = approvalSubjectRowsForScope(scope).slice(0, 36);
+      body = rows.length ? rows.map(function(row) {
+        return '<div class="approval-role-subject-row"><strong>' + escapeHtml(row.displayName) + '</strong><small>' + escapeHtml((row.meta || row.subjectType) + ' | ' + row.subjectType) + '</small></div>';
+      }).join('') : hint(st('approvalRolesSubjectsEmpty'));
+    }
+    return '<aside class="approval-role-subjects"><div class="approval-role-subject-head"><div><strong>' + escapeHtml(st('approvalRolesSubjectsTitle')) + '</strong><small>' + escapeHtml(st('approvalRolesSubjectsHint')) + '</small></div></div><div class="approval-role-subject-list">' + body + '</div></aside>';
   }
 
   function renderSecApprovalRoles() {
@@ -3306,17 +3481,23 @@
     if (!sec.approvalRolesLoaded && !sec.approvalRolesLoading) {
       ensureApprovalRolesLoaded().then(renderSecApprovalRoles);
     }
+    if (sec.approvalRolesLoading) {
+      root.innerHTML = '<div class="approval-role-layout approval-role-loading"><div class="hint">' + escapeHtml(st('loading')) + '</div><div class="hint">' + escapeHtml(st('approvalRolesHint')) + '</div></div>';
+      return;
+    }
     var view = sec.approvalRoleView === 'function' ? 'function' : 'organization';
     sec.approvalRoleView = view;
     var scopes = view === 'function' ? approvalFunctionScopes() : approvalOrganizationScopes();
     var current = currentApprovalScope(scopes);
     root.innerHTML = '<div class="approval-role-layout">' +
-      '<div><div class="approval-role-view-toggle"><button type="button" class="' + (view === 'organization' ? 'btn-secondary' : 'btn-ghost') + '" onclick="setSecApprovalRoleView(\'organization\')">' + escapeHtml(st('approvalRolesOrgView')) + '</button><button type="button" class="' + (view === 'function' ? 'btn-secondary' : 'btn-ghost') + '" onclick="setSecApprovalRoleView(\'function\')">' + escapeHtml(st('approvalRolesFunctionView')) + '</button></div><div class="item-meta" style="margin:10px 0 8px">' + escapeHtml(st('approvalRolesScope')) + '</div>' + renderApprovalScopeButtons(scopes) + '</div>' +
-      '<div>' + renderApprovalRoleRows(current) + '</div>' +
+      '<div class="approval-role-sidebar"><div class="approval-role-view-toggle"><button type="button" class="' + (view === 'organization' ? 'btn-secondary' : 'btn-ghost') + '" onclick="setSecApprovalRoleView(\'organization\')">' + escapeHtml(st('approvalRolesOrgView')) + '</button><button type="button" class="' + (view === 'function' ? 'btn-secondary' : 'btn-ghost') + '" onclick="setSecApprovalRoleView(\'function\')">' + escapeHtml(st('approvalRolesFunctionView')) + '</button></div><div class="item-meta" style="margin:10px 0 8px">' + escapeHtml(st('approvalRolesScope')) + ' (' + scopes.length + ')</div>' + renderApprovalScopeButtons(scopes) + '</div>' +
+      '<div class="approval-role-editor"><div class="approval-role-current"><div><strong>' + escapeHtml(current && current.scopeName || '-') + '</strong><small>' + escapeHtml(current ? current.scopeType : '-') + '</small></div><div class="approval-role-current-actions"><span class="badge info">' + approvalRoleTemplatesForScope(current || {}).length + '</span><button type="button" class="btn-secondary" onclick="addSecApprovalRole()">' + escapeHtml(st('approvalRolesAddRole')) + '</button></div></div>' + renderApprovalRoleRows(current) + '</div>' +
+      renderApprovalSubjectPreview(current) +
     '</div>';
   }
 
   global.setSecApprovalRoleView = function setSecApprovalRoleView(view) {
+    syncVisibleApprovalRoleRows();
     var sec = state();
     sec.approvalRoleView = view === 'function' ? 'function' : 'organization';
     sec.approvalRoleScope = sec.approvalRoleView === 'function' ? 'function:finance' : 'global:global';
@@ -3324,7 +3505,67 @@
   };
 
   global.setSecApprovalRoleScope = function setSecApprovalRoleScope(scopeKey) {
+    syncVisibleApprovalRoleRows();
     state().approvalRoleScope = String(scopeKey || '');
+    renderSecApprovalRoles();
+  };
+
+  global.setSecApprovalRoleScopeQuery = function setSecApprovalRoleScopeQuery(query) {
+    syncVisibleApprovalRoleRows();
+    state().approvalRoleScopeQuery = String(query || '');
+    renderSecApprovalRoles();
+    var input = document.querySelector('#secApprovalRolesRoot .approval-role-scope-search');
+    if (input) {
+      input.focus();
+      try { input.setSelectionRange(input.value.length, input.value.length); } catch (_) {}
+    }
+  };
+
+  global.addSecApprovalRole = function addSecApprovalRole() {
+    syncVisibleApprovalRoleRows();
+    var sec = state();
+    var view = sec.approvalRoleView === 'function' ? 'function' : 'organization';
+    var scopes = view === 'function' ? approvalFunctionScopes() : approvalOrganizationScopes();
+    var scope = currentApprovalScope(scopes);
+    if (!scope) return;
+    var name = String(prompt(st('approvalRolesPromptRoleName')) || '').trim();
+    if (!name) {
+      showToast(st('approvalRolesRoleNameRequired'), 'info');
+      return;
+    }
+    var roleCode = uniqueApprovalRoleCode(scope, approvalRoleCodeFromName(name));
+    var role = normalizeApprovalRoleRecord({
+      view: scope.scopeType === 'function' ? 'function' : 'organization',
+      scopeType: scope.scopeType,
+      scopeId: scope.scopeId,
+      scopeName: scope.scopeName,
+      roleCode: roleCode,
+      roleName: name,
+      executionMode: 'manual',
+      assignees: []
+    });
+    if (!role) return;
+    sec.approvalRoles = loadApprovalRoles().filter(function(item) { return item.id !== role.id; }).concat([role]);
+    sec.approvalRolesLoaded = true;
+    showToast(st('approvalRolesRoleAdded'), 'success');
+    renderSecApprovalRoles();
+  };
+
+  global.removeSecApprovalRole = function removeSecApprovalRole(roleId) {
+    syncVisibleApprovalRoleRows();
+    var rows = document.querySelectorAll('#secApprovalRolesRoot .approval-role-row[data-approval-role-id]');
+    var roleName = '';
+    for (var i = 0; i < rows.length; i += 1) {
+      if (rows[i].getAttribute('data-approval-role-id') === roleId) {
+        roleName = rows[i].getAttribute('data-role-name') || roleId;
+        break;
+      }
+    }
+    if (!roleId || !confirm(st('approvalRolesConfirmRemove', { name: roleName || roleId }))) return;
+    var sec = state();
+    sec.approvalRoles = loadApprovalRoles().filter(function(role) { return role && role.id !== roleId; });
+    sec.approvalRolesLoaded = true;
+    showToast(st('approvalRolesRoleRemoved'), 'success');
     renderSecApprovalRoles();
   };
 
@@ -3500,6 +3741,7 @@
     if (!picker) return;
     var row = approvalRoleRowById(picker.roleId);
     setApprovalRoleRowAssignees(row, Object.keys(picker.selected || {}).map(function(key) { return picker.selected[key]; }));
+    syncVisibleApprovalRoleRows();
     global.closeSecApprovalSubjectPicker();
   };
 
@@ -3510,24 +3752,7 @@
   };
 
   global.saveSecApprovalRoles = async function saveSecApprovalRoles() {
-    var existing = loadApprovalRoles();
-    var byId = {};
-    existing.forEach(function(role) { byId[role.id] = role; });
-    document.querySelectorAll('#secApprovalRolesRoot .approval-role-row[data-approval-role-id]').forEach(function(row) {
-      var id = row.getAttribute('data-approval-role-id') || '';
-      var mode = row.querySelector('[data-approval-mode]');
-      byId[id] = normalizeApprovalRoleRecord({
-        view: row.getAttribute('data-view') || '',
-        scopeType: row.getAttribute('data-scope-type') || '',
-        scopeId: row.getAttribute('data-scope-id') || '',
-        scopeName: row.getAttribute('data-scope-name') || '',
-        roleCode: row.getAttribute('data-role-code') || '',
-        roleName: row.getAttribute('data-role-name') || '',
-        executionMode: mode && mode.value || 'manual',
-        assignees: rowApprovalAssignees(row)
-      });
-    });
-    var roles = Object.keys(byId).map(function(id) { return byId[id]; }).filter(Boolean);
+    var roles = syncVisibleApprovalRoleRows().map(normalizeApprovalRoleRecord).filter(Boolean);
     try {
       var saved = await api('/api/admin/security/approval-roles', { method: 'PUT', body: JSON.stringify({ roles: roles }) });
       roles = saved && Array.isArray(saved.roles) ? saved.roles.map(normalizeApprovalRoleRecord).filter(Boolean) : roles;
@@ -3540,7 +3765,7 @@
       try {
         if (global.localStorage) global.localStorage.setItem(APPROVAL_ROLES_STORAGE_KEY, JSON.stringify({ roles: roles, updated_at: new Date().toISOString() }));
         state().approvalRoles = roles;
-        showToast(st('approvalRolesSaved'), 'success');
+        showToast(st('approvalRolesSaveFailed') + err.message, 'error');
         renderSecApprovalRoles();
       } catch (_) {
         showToast(st('approvalRolesSaveFailed') + err.message, 'error');
@@ -3550,12 +3775,10 @@
 
   global.selectSecSubTab = function selectSecSubTab(tab) {
     var sec = state();
-    sec.subTab = tab === 'audit' ? 'audit' : (tab === 'approval_roles' ? 'approval_roles' : 'management');
+    sec.subTab = tab === 'audit' ? 'audit' : 'management';
     applySecSubTab();
     if (sec.subTab === 'audit') {
       global.reloadSecAuditLogs();
-    } else if (sec.subTab === 'approval_roles') {
-      ensureApprovalRolesLoaded().then(renderSecApprovalRoles);
     }
   };
 
@@ -4795,6 +5018,11 @@
       title: function() { return st('enterpriseTitle'); },
       subtitle: function() { return st('enterpriseSubtitle'); }
     });
+    global.AdminTabRegistry.registerTab({
+      id: 'approvalroles',
+      title: function() { return st('approvalRolesTitle'); },
+      subtitle: function() { return st('approvalRolesDesc'); }
+    });
   }
 
   applySecurityI18n();
@@ -4802,6 +5030,9 @@
     global.AdminTabRegistry.onLanguageChange(function() {
       var sec = state();
       applySecurityI18n();
+      if (document.getElementById('tab-approvalroles') && document.getElementById('tab-approvalroles').classList.contains('active')) {
+        renderSecApprovalRoles();
+      }
       if (sec.assignGroupId && sec.contextGroupName) {
         _s('assignUsersModalTitle', 'textContent', st('assignTitleWithGroup', { name: sec.contextGroupName }));
       }

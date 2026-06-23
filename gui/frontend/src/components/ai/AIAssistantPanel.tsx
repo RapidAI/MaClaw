@@ -1016,7 +1016,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const showWorkflowPreview = codingPreviewAllowed && workflowState.splitMode && !workflowFormActive;
     const showCodePreview = codingPreviewAllowed && !showAgentView && codePreviewState.active;
     const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView;
-    const splitRatio = anySplitActive ? workflowState.splitRatio : 1;
+    // When the agent task panel (workflow input form) is the only visible right-side
+    // content, cap the left panel ratio to give the form more horizontal space.
+    // The agent-only condition avoids interfering when workflow/code previews share the pane.
+    const agentOnlyPane = showAgentView && !showWorkflowPreview && !showCodePreview;
+    const splitRatio = !anySplitActive ? 1 : agentOnlyPane ? Math.min(workflowState.splitRatio, 0.35) : workflowState.splitRatio;
     const startPreviewResize = useAssistantPreviewResize(setWorkflowSplitRatio);
     const codePreviewStateRef = useRef(codePreviewState);
     codePreviewStateRef.current = codePreviewState;

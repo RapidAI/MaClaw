@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -140,9 +141,9 @@ type maclawAppInstallApprovalBindingSnapshot struct {
 }
 
 type maclawAppInstallVersionSnapshot struct {
-	AppEntryVersion string                                     `json:"app_entry_version,omitempty"`
-	AppSkill        *maclawAppInstallSkillVersionSnapshot      `json:"app_skill,omitempty"`
-	WorkflowSkills  []maclawAppInstallSkillVersionSnapshot     `json:"workflow_skills,omitempty"`
+	AppEntryVersion  string                                    `json:"app_entry_version,omitempty"`
+	AppSkill         *maclawAppInstallSkillVersionSnapshot     `json:"app_skill,omitempty"`
+	WorkflowSkills   []maclawAppInstallSkillVersionSnapshot    `json:"workflow_skills,omitempty"`
 	ApprovalBindings []maclawAppInstallApprovalBindingSnapshot `json:"approval_bindings,omitempty"`
 }
 
@@ -191,7 +192,7 @@ type maclawAppInstallRecord struct {
 	PackageSHA            string                           `json:"package_sha256,omitempty"`
 	PackageSize           int                              `json:"package_bytes,omitempty"`
 	Dependencies          []maclawAppInstallPlanDependency `json:"dependencies,omitempty"`
-	VersionSnapshot       maclawAppInstallVersionSnapshot   `json:"version_snapshot,omitempty"`
+	VersionSnapshot       maclawAppInstallVersionSnapshot  `json:"version_snapshot,omitempty"`
 	HasMissingRequired    bool                             `json:"has_missing_required"`
 	HasBlockingDependency bool                             `json:"has_blocking_dependency,omitempty"`
 	Message               string                           `json:"message,omitempty"`
@@ -2102,6 +2103,9 @@ func maclawAppAppSkillBlockForEntry(entry parsedMaclawAppEntry) map[string]any {
 		}
 		if appSkill := anyMap(holder["app_skill"]); appSkill != nil {
 			return appSkill
+		}
+		if skill := anyMap(holder["skill"]); skill != nil {
+			return skill
 		}
 	}
 	return nil

@@ -159,6 +159,178 @@ func TestWorkflowDraftLLMHandlerUsesTenantLLMServiceGroup(t *testing.T) {
 	}
 }
 
+func TestWorkflowDraftLLMHandlerRequiresSystemDefaultLLMServiceGroup(t *testing.T) {
+	var providerCalled bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalled = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	if err := im.SaveLLMProviderRegistry(t.Context(), tenantSystem, &im.LLMProviderRegistry{
+		Enabled:           true,
+		CurrentProviderID: "provider-a",
+		Providers: []im.LLMProvider{{
+			ID:      "provider-a",
+			Name:    "Provider A",
+			APIURL:  upstream.URL + "/v1",
+			APIKey:  "test-key",
+			Model:   "gpt-test",
+			WireAPI: "chat",
+		}},
+	}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := llmservice.SaveRegistry(t.Context(), tenantSystem, &llmservice.Registry{
+		GlobalServiceGroupIDs: []string{"draft-group"},
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "draft-group",
+			Name:         "Draft Group",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	authenticator := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-1": {TenantID: "tenant-a", UserID: "designer@example.com", MachineID: "machine-1"},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflow-drafts/generate", strings.NewReader(`{"description":"Employee leave approval","language":"en"}`))
+	req.Header.Set("X-Machine-ID", "machine-1")
+	req.Header.Set("Authorization", "Bearer machine-token")
+	rec := httptest.NewRecorder()
+
+	WorkflowDraftLLMHandler(authenticator, settings, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if providerCalled {
+		t.Fatal("provider should not be called without system_default_service_group_id")
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out["generated_by"] != "fallback" {
+		t.Fatalf("generated_by = %#v body=%s", out["generated_by"], rec.Body.String())
+	}
+}
+
+func TestWorkflowDraftLLMHandlerFallsBackWhenSystemDefaultServiceGroupHasNoModels(t *testing.T) {
+	var providerCalled bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalled = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	if err := im.SaveLLMProviderRegistry(t.Context(), tenantSystem, &im.LLMProviderRegistry{
+		Enabled:           true,
+		CurrentProviderID: "provider-a",
+		Providers: []im.LLMProvider{{
+			ID:      "provider-a",
+			Name:    "Provider A",
+			APIURL:  upstream.URL + "/v1",
+			APIKey:  "test-key",
+			Model:   "gpt-test",
+			WireAPI: "chat",
+		}},
+	}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := llmservice.SaveRegistry(t.Context(), tenantSystem, &llmservice.Registry{
+		SystemDefaultServiceGroupID: "draft-group",
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "draft-group",
+			Name:         "Draft Group",
+			AccessPolicy: llmservice.AccessPolicyFree,
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	authenticator := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-1": {TenantID: "tenant-a", UserID: "designer@example.com", MachineID: "machine-1"},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflow-drafts/generate", strings.NewReader(`{"description":"Employee leave approval","language":"en"}`))
+	req.Header.Set("X-Machine-ID", "machine-1")
+	req.Header.Set("Authorization", "Bearer machine-token")
+	rec := httptest.NewRecorder()
+
+	WorkflowDraftLLMHandler(authenticator, settings, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if providerCalled {
+		t.Fatal("provider should not be called when system default service group has no models")
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out["generated_by"] != "fallback" {
+		t.Fatalf("generated_by = %#v body=%s", out["generated_by"], rec.Body.String())
+	}
+}
+
+func TestWorkflowDraftLLMHandlerFallsBackWhenSystemDefaultProviderIsMissing(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	if err := im.SaveLLMProviderRegistry(t.Context(), tenantSystem, &im.LLMProviderRegistry{
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := llmservice.SaveRegistry(t.Context(), tenantSystem, &llmservice.Registry{
+		SystemDefaultServiceGroupID: "draft-group",
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "draft-group",
+			Name:         "Draft Group",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"missing-provider"}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	authenticator := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-1": {TenantID: "tenant-a", UserID: "designer@example.com", MachineID: "machine-1"},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflow-drafts/generate", strings.NewReader(`{"description":"Employee leave approval","language":"en"}`))
+	req.Header.Set("X-Machine-ID", "machine-1")
+	req.Header.Set("Authorization", "Bearer machine-token")
+	rec := httptest.NewRecorder()
+
+	WorkflowDraftLLMHandler(authenticator, settings, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out["generated_by"] != "fallback" {
+		t.Fatalf("generated_by = %#v body=%s", out["generated_by"], rec.Body.String())
+	}
+}
+
 func TestWorkflowDraftLLMResponseTextExtractsArrayContent(t *testing.T) {
 	body := []byte(`{"content":[{"type":"output_text","text":"` + strings.ReplaceAll(workflowDraftMinimalLLMJSON("Array content draft"), `"`, `\"`) + `"}]}`)
 

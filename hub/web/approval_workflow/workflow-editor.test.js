@@ -265,6 +265,7 @@ draftHelpersConfirmResult = true;
 assertEqual(draftHelpers.confirmDraftOverwriteIfNeeded(), true, 'existing canvas proceeds after overwrite confirmation');
 assertEqual(draftHelpers.draftGeneratedStatus({}), 'Draft generated.', 'generated draft status works without notes');
 assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback' }), 'Basic draft generated because the LLM service was unavailable. Review and adjust the workflow before saving.', 'generated draft status distinguishes fallback drafts');
+assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', notes: ['LLM draft generation was unavailable, so a basic fallback draft was generated.'] }), 'Basic draft generated because the LLM service was unavailable. Review and adjust the workflow before saving.', 'fallback draft status does not append backend debug notes');
 assertEqual(draftHelpers.draftGeneratedStatus({ notes: ['Select real approvers before saving.'] }), 'Draft generated. Select real approvers before saving.', 'generated draft status includes first LLM note');
 assertEqual(draftHelpers.draftGeneratedStatus({ notes: [Array(130).join('x')] }).length, 'Draft generated. '.length + 120, 'generated draft status truncates long LLM notes');
 

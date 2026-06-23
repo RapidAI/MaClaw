@@ -4395,7 +4395,17 @@ describe('AppsPage', () => {
             has_blocking_dependency: false,
         };
         installMaclawAppDependenciesMock.mockResolvedValueOnce(installPlan);
-        recordMaclawAppInstallMock.mockResolvedValueOnce({ schema: 'maclaw.app.install_record.v1', app_count: 1, dependencies: installPlan.dependencies });
+        recordMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_record.v1',
+            app_count: 1,
+            dependencies: installPlan.dependencies,
+            app_versions: {
+                'market-contract-archive': {
+                    app_entry_version: '3',
+                    app_skill: { id: 'contract-archive-skill', version: '1.0.0', kind: 'runtime_skill', source: 'hub' },
+                },
+            },
+        });
 
         render(<AppsPage lang="en" />);
 
@@ -4411,6 +4421,13 @@ describe('AppsPage', () => {
         expect(within(verification).getByText(/Skill dependencies: 1/)).not.toBeNull();
         expect(within(verification).getByText(/Blocking deps: 0/)).not.toBeNull();
         expect(within(verification).getByText('contract-archive-skill')).not.toBeNull();
+        const versionSnapshot = row.querySelector('.apps-install-version-snapshot') as HTMLElement;
+        expect(versionSnapshot).not.toBeNull();
+        expect(versionSnapshot.getAttribute('aria-label')).toBe('Version snapshot');
+        expect(within(versionSnapshot).getByText('Version')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('v3')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('App Skill')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('contract-archive-skill · runtime_skill · hub · v1.0.0')).not.toBeNull();
         expect(recordMaclawAppInstallMock).toHaveBeenCalledTimes(1);
     });
 
@@ -4427,6 +4444,12 @@ describe('AppsPage', () => {
                     { id: 'contract-skill', version: '1.0.0', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'skip' },
                     { id: 'policy-skill', version: '2.0.0', kind: 'workflow_skill', source: 'hub', required: true, installed: false, health: 'missing', action: 'blocked' },
                 ],
+                version_snapshot: {
+                    app_entry_version: '4',
+                    app_skill: { id: 'contract-super-app', version: '1.1.0', kind: 'runtime_skill', source: 'hub' },
+                    workflow_skills: [{ id: 'policy-skill', version: '2.0.0', kind: 'workflow_skill', source: 'hub' }],
+                    approval_bindings: [{ event: 'contract.submitted', object_role: 'contract', workflow_skill_id: 'policy-skill', workflow_version: '2.0.0' }],
+                },
                 has_missing_required: true,
             },
         ]);
@@ -4453,6 +4476,17 @@ describe('AppsPage', () => {
         expect(within(blockedDependency).getByText('Missing')).not.toBeNull();
         expect(readyDependency.textContent).toContain('runtime_skill · hub · v1.0.0');
         expect(blockedDependency.textContent).toContain('workflow_skill · hub · v2.0.0');
+        const versionSnapshot = document.querySelector('.apps-install-version-snapshot') as HTMLElement;
+        expect(versionSnapshot).not.toBeNull();
+        expect(versionSnapshot.getAttribute('aria-label')).toBe('Version snapshot');
+        expect(within(versionSnapshot).getByText('Version')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('v4')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('App Skill')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('contract-super-app · runtime_skill · hub · v1.1.0')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('Approval workflow')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('policy-skill · workflow_skill · hub · v2.0.0')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('Approval binding')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('contract.submitted · contract · policy-skill@v2.0.0')).not.toBeNull();
         expect(listMaclawAppInstallsMock).toHaveBeenCalledWith(6);
     });
     it('blocks market install when a required dependency is installed but unavailable', async () => {

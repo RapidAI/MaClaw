@@ -1285,8 +1285,9 @@ func TestRecordMaclawAppInstallPersistsNewestInstallAudit(t *testing.T) {
 		"app": {
 			"id": "market-doc-archive",
 			"name": "Doc Archive",
+			"version": 7,
 			"kind": "tool_app",
-			"binding": { "skill": { "id": "doc-archive" } }
+			"binding": { "skill": { "id": "doc-archive", "version": "1.2.3", "source": "hub" } }
 		}
 	}`
 	result, err := app.RecordMaclawAppInstall(pkg, "market")
@@ -1299,6 +1300,10 @@ func TestRecordMaclawAppInstallPersistsNewestInstallAudit(t *testing.T) {
 	if deps, ok := result["dependencies"].([]maclawAppInstallPlanDependency); !ok || len(deps) != 1 || !deps[0].Installed {
 		t.Fatalf("install result should expose dependency state: %#v", result["dependencies"])
 	}
+	appVersions, ok := result["app_versions"].(map[string]maclawAppInstallVersionSnapshot)
+	if !ok || appVersions["market-doc-archive"].AppEntryVersion != "7" || appVersions["market-doc-archive"].AppSkill == nil || appVersions["market-doc-archive"].AppSkill.Version != "1.2.3" {
+		t.Fatalf("install result should expose app version snapshot: %#v", result["app_versions"])
+	}
 	records, err := app.ListMaclawAppInstalls(10)
 	if err != nil {
 		t.Fatalf("ListMaclawAppInstalls() error = %v", err)
@@ -1308,6 +1313,9 @@ func TestRecordMaclawAppInstallPersistsNewestInstallAudit(t *testing.T) {
 	}
 	if records[0].HasMissingRequired || len(records[0].Dependencies) != 1 || !records[0].Dependencies[0].Installed {
 		t.Fatalf("expected installed dependency snapshot: %#v", records[0])
+	}
+	if records[0].VersionSnapshot.AppEntryVersion != "7" || records[0].VersionSnapshot.AppSkill == nil || records[0].VersionSnapshot.AppSkill.ID != "doc-archive" || records[0].VersionSnapshot.AppSkill.Version != "1.2.3" {
+		t.Fatalf("expected install record version snapshot: %#v", records[0].VersionSnapshot)
 	}
 	if _, err := app.RecordMaclawAppInstall(pkg, "market"); err != nil {
 		t.Fatalf("RecordMaclawAppInstall second call error = %v", err)
@@ -1456,6 +1464,30 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	metadata, ok := captured[0].Body["metadata"].(map[string]interface{})
 	if !ok || metadata["app_skill_id"] != "expense-super-skill" {
 		t.Fatalf("registration body missing metadata: %#v", captured[0].Body)
+	}
+	versionSnapshot, ok := metadata["version_snapshot"].(map[string]interface{})
+	if !ok || versionSnapshot["app_entry_version"] != "1.2.3" {
+		t.Fatalf("registration metadata missing version snapshot: %#v", metadata)
+	}
+	appSkillSnapshot, ok := versionSnapshot["app_skill"].(map[string]interface{})
+	if !ok || appSkillSnapshot["id"] != "expense-super-skill" || appSkillSnapshot["version"] != "1.0.0" {
+		t.Fatalf("registration metadata missing app skill version snapshot: %#v", versionSnapshot)
+	}
+	workflowSnapshots, ok := versionSnapshot["workflow_skills"].([]interface{})
+	if !ok || len(workflowSnapshots) != 1 {
+		t.Fatalf("registration metadata missing workflow skill version snapshot: %#v", versionSnapshot)
+	}
+	workflowSnapshot, ok := workflowSnapshots[0].(map[string]interface{})
+	if !ok || workflowSnapshot["id"] != "expense-workflow" || workflowSnapshot["version"] != "2.0.0" {
+		t.Fatalf("registration metadata missing workflow version: %#v", versionSnapshot)
+	}
+	approvalBindingsSnapshot, ok := versionSnapshot["approval_bindings"].([]interface{})
+	if !ok || len(approvalBindingsSnapshot) != 1 {
+		t.Fatalf("registration metadata missing approval binding snapshot: %#v", versionSnapshot)
+	}
+	approvalBindingSnapshot, ok := approvalBindingsSnapshot[0].(map[string]interface{})
+	if !ok || approvalBindingSnapshot["event"] != "finance.submitted" || approvalBindingSnapshot["workflow_skill_id"] != "expense-workflow" || approvalBindingSnapshot["workflow_version"] != "2.0.0" || approvalBindingSnapshot["object_role"] != "expense_report" {
+		t.Fatalf("registration metadata missing approval binding version snapshot: %#v", versionSnapshot)
 	}
 	workflowIDs, ok := metadata["workflow_skill_ids"].([]interface{})
 	if !ok || len(workflowIDs) != 1 || workflowIDs[0] != "expense-workflow" {

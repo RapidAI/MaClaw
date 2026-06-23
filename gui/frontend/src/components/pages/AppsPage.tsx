@@ -75,6 +75,27 @@ type BackendAppInstallPlan = {
     has_blocking_dependency?: boolean;
 };
 
+type BackendAppInstallSkillVersionSnapshot = {
+    id?: string;
+    version?: string;
+    kind?: string;
+    source?: string;
+};
+
+type BackendAppInstallApprovalBindingSnapshot = {
+    event?: string;
+    object_role?: string;
+    workflow_skill_id?: string;
+    workflow_version?: string;
+};
+
+type BackendAppInstallVersionSnapshot = {
+    app_entry_version?: string;
+    app_skill?: BackendAppInstallSkillVersionSnapshot | null;
+    workflow_skills?: BackendAppInstallSkillVersionSnapshot[];
+    approval_bindings?: BackendAppInstallApprovalBindingSnapshot[];
+};
+
 type BackendAppDataSrvRegistrationItem = {
     app_id?: string;
     synced?: boolean;
@@ -103,6 +124,8 @@ type BackendAppInstallRecord = {
     has_missing_required?: boolean;
     has_blocking_dependency?: boolean;
     datasrv_registration?: BackendAppDataSrvRegistration;
+    version_snapshot?: BackendAppInstallVersionSnapshot;
+    app_versions?: Record<string, BackendAppInstallVersionSnapshot>;
 };
 
 type AppWorkspaceLayout = {
@@ -441,6 +464,7 @@ type AppInstallResultItem = {
     accent: string;
     action: 'installed' | 'upgraded' | 'skipped';
     detail: string;
+    versionSnapshot?: BackendAppInstallVersionSnapshot;
 };
 
 type AppGovernanceOverrides = {
@@ -798,6 +822,9 @@ const labels = {
         dependencyVerification: '\u4f9d\u8d56\u9a8c\u8bc1',
         dependencyVerificationReady: '\u4f9d\u8d56\u9a8c\u8bc1\u5df2\u5b8c\u6210',
         dependencyVerificationBlocked: '\u4f9d\u8d56\u9a8c\u8bc1\u53d1\u73b0\u963b\u65ad\u9879',
+        versionSnapshot: '\u7248\u672c\u5feb\u7167',
+        appSkill: '\u5e94\u7528 Skill',
+        approvalBinding: '\u5ba1\u6279\u7ed1\u5b9a',
         skillDependencies: '\u4f9d\u8d56 Skill',
         installedDependency: '\u5df2\u5b89\u88c5',
         missingDependency: '\u7f3a\u5931',
@@ -1075,6 +1102,9 @@ const labels = {
         dependencyVerification: 'Dependency verification',
         dependencyVerificationReady: 'Dependency verification complete',
         dependencyVerificationBlocked: 'Dependency verification found blocking items',
+        versionSnapshot: 'Version snapshot',
+        appSkill: 'App Skill',
+        approvalBinding: 'Approval binding',
         skillDependencies: 'Skill dependencies',
         installedDependency: 'Installed',
         missingDependency: 'Missing',
@@ -6285,7 +6315,7 @@ function isBlockingBackendDependency(dep: BackendAppInstallDependency) {
     return !!health && health !== 'ready';
 }
 
-function hasMissingRequiredBackendDependency(plan: BackendAppInstallPlan | null, appIds: string[]) {
+function hasMissingRequiredBackendDependency(plan: BackendAppInstallPlan | null | undefined, appIds: string[]) {
     if (appIds.length === 0) return false;
     const selected = new Set(appIds);
     return (plan?.dependencies || []).some((dep) => isBlockingBackendDependency(dep) && backendDependencyMatchesAppIDs(dep, appIds));
@@ -6334,6 +6364,45 @@ function installRecordDependencyStatus(dep: BackendAppInstallDependency, text: t
     const separator = summary.indexOf(':');
     return separator > 0 ? summary.slice(0, separator) : dep.installed ? text.installedDependency : text.missingDependency;
 }
+
+function versionSnapshotSkillText(skill: BackendAppInstallSkillVersionSnapshot | undefined | null) {
+    if (!skill?.id) return '';
+    const meta = [skill.kind, skill.source, skill.version ? 'v' + skill.version : ''].filter(Boolean).join(' · ');
+    return meta ? skill.id + ' · ' + meta : skill.id;
+}
+
+function installVersionSnapshotItems(snapshot: BackendAppInstallVersionSnapshot | undefined | null, text: typeof labels.zh) {
+    if (!snapshot) return [];
+    const items: Array<{ label: string; value: string }> = [];
+    if (snapshot.app_entry_version) items.push({ label: text.appVersion, value: 'v' + snapshot.app_entry_version });
+    const appSkill = versionSnapshotSkillText(snapshot.app_skill);
+    if (appSkill) items.push({ label: text.appSkill, value: appSkill });
+    (snapshot.workflow_skills || []).forEach((skill) => {
+        const value = versionSnapshotSkillText(skill);
+        if (value) items.push({ label: text.workflowSkill, value });
+    });
+    (snapshot.approval_bindings || []).forEach((binding) => {
+        const workflow = [binding.workflow_skill_id, binding.workflow_version ? 'v' + binding.workflow_version : ''].filter(Boolean).join('@');
+        const value = [binding.event, binding.object_role, workflow].filter(Boolean).join(' · ');
+        if (value) items.push({ label: text.approvalBinding, value });
+    });
+    return items;
+}
+
+const InstallVersionSnapshot = ({ snapshot, text }: { snapshot?: BackendAppInstallVersionSnapshot | null; text: typeof labels.zh }) => {
+    const items = installVersionSnapshotItems(snapshot, text);
+    if (items.length === 0) return null;
+    return (
+        <div className="apps-install-version-snapshot" role="list" aria-label={text.versionSnapshot}>
+            {items.map((item, index) => (
+                <span role="listitem" key={item.label + ':' + item.value + ':' + index}>
+                    <strong>{item.label}</strong>
+                    <em>{item.value}</em>
+                </span>
+            ))}
+        </div>
+    );
+};
 
 const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text }: { plan: BackendAppInstallPlan | null; state: 'idle' | 'loading' | 'ready' | 'error'; error?: string; selectedAppIDs?: string[]; text: typeof labels.zh }) => {
     if (state === 'idle' && !plan) return null;
@@ -8909,7 +8978,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
     const [selectedInstallKeys, setSelectedInstallKeys] = useState<string[] | null>(null);
     const [confirmHighRiskInstall, setConfirmHighRiskInstall] = useState(false);
     const [marketInstallAppId, setMarketInstallAppId] = useState('');
-    const [marketInstallFeedback, setMarketInstallFeedback] = useState<{ appId: string; state: 'running' | 'done' | 'error'; message: string; plan?: BackendAppInstallPlan | null; appIDs?: string[]; dependencies?: BackendAppInstallDependency[] } | null>(null);
+    const [marketInstallFeedback, setMarketInstallFeedback] = useState<{ appId: string; state: 'running' | 'done' | 'error'; message: string; plan?: BackendAppInstallPlan | null; appIDs?: string[]; dependencies?: BackendAppInstallDependency[]; versionSnapshot?: BackendAppInstallVersionSnapshot } | null>(null);
     const [backendInstallPlan, setBackendInstallPlan] = useState<BackendAppInstallPlan | null>(null);
     const [backendInstallPlanState, setBackendInstallPlanState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
     const [backendInstallPlanError, setBackendInstallPlanError] = useState('');
@@ -9021,8 +9090,9 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                 return;
             }
             let installFeedbackMessage = text.alreadyInstalled;
+            let installAudit: BackendAppInstallRecord | null = null;
             try {
-                const installAudit = await RecordMaclawAppInstall(manifestText, 'market') as BackendAppInstallRecord;
+                installAudit = await RecordMaclawAppInstall(manifestText, 'market') as BackendAppInstallRecord;
                 const dataSrvSummary = appHasDataSrvRegistrationCandidate(app) ? dataSrvRegistrationSummary(installAudit?.datasrv_registration, text) : '';
                 if (dataSrvSummary) installFeedbackMessage = `${installFeedbackMessage} · ${dataSrvSummary}`;
                 await refreshInstallRecords();
@@ -9037,6 +9107,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                 plan: dependencyInstallPlan || null,
                 appIDs: [app.id],
                 dependencies: dependencyDetails.length > 0 ? dependencyDetails : dependencyInstallPlan?.dependencies || [],
+                versionSnapshot: installAudit?.app_versions?.[app.id] || installAudit?.version_snapshot,
             });
         } catch (error: any) {
             setMarketInstallFeedback({ appId: app.id, state: 'error', message: error?.message || text.installError, appIDs: [app.id] });
@@ -9122,12 +9193,15 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                     const installAudit = await RecordMaclawAppInstall(JSON.stringify(installAuditPackage), 'market') as BackendAppInstallRecord;
                     const dataSrvRegistration = installAudit?.datasrv_registration;
                     await refreshInstallRecords();
-                    if (dataSrvRegistration) {
-                        setInstallResultItems((current) => current.map((item) => !installedResultKeys.has(item.key) ? item : {
+                    setInstallResultItems((current) => current.map((item) => {
+                        if (!installedResultKeys.has(item.key)) return item;
+                        const versionSnapshot = item.appID ? installAudit?.app_versions?.[item.appID] : undefined;
+                        return {
                             ...item,
-                            detail: installDetailWithDataSrvRegistration(item.detail, dataSrvRegistration, item.appID, item.dataSrvCandidate, text),
-                        }));
-                    }
+                            detail: dataSrvRegistration ? installDetailWithDataSrvRegistration(item.detail, dataSrvRegistration, item.appID, item.dataSrvCandidate, text) : item.detail,
+                            versionSnapshot: versionSnapshot || item.versionSnapshot,
+                        };
+                    }));
                 } catch {
                     // Dependency health is the install gate; audit refresh failures should not discard an otherwise valid local install.
                 }
@@ -9171,6 +9245,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                                             text={text}
                                         />
                                     ) : feedback?.dependencies?.length ? <InstallRecordDependencies dependencies={feedback.dependencies} text={text} /> : null}
+                                    <InstallVersionSnapshot snapshot={feedback?.versionSnapshot} text={text} />
                                 </div>
                                 <button className={installed ? 'apps-secondary-button' : 'apps-primary-button'} type="button" disabled={installed || isInstalling} title={`${buttonText}: ${app.name}`} aria-label={`${buttonText}: ${app.name}`} onClick={() => void installSingleMarketApp(app)}>
                                     {buttonText}
@@ -9205,6 +9280,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                                         <strong>{appNames}</strong>
                                         <span>{text.installedAt}: {formatInstallRecordTime(record.installed_at)} · {text.marketSource}: {record.source || '-'}</span>
                                         <small>{text.packageSha}: {sha} · {text.skillDependencies}: {dependencyCount} · {text.missingDependencyCount}: {missingCount}</small>
+                                        <InstallVersionSnapshot snapshot={record.version_snapshot} text={text} />
                                         <InstallRecordDependencies dependencies={dependencies} text={text} />
                                     </div>
                                     <em>{record.has_blocking_dependency || record.has_missing_required || missingCount > 0 ? text.unavailableDependency : text.installedDependency}</em>
@@ -9319,6 +9395,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                                             <strong>{item.name}</strong>
                                             <em>{item.action === 'upgraded' ? text.upgradedItem : item.action === 'installed' ? text.installedCount : text.skippedItem}</em>
                                             <small>{item.detail}</small>
+                                            <InstallVersionSnapshot snapshot={item.versionSnapshot} text={text} />
                                         </div>
                                     ))}
                                 </div>

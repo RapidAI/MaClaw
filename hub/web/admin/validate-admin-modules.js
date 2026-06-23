@@ -186,7 +186,7 @@ function assertTenantAdminUIHooks() {
   if (!admin.includes("normalized === 'system'") || !admin.includes("String(profile.scope || '').toLowerCase() === 'tenant'") || !admin.includes('openDefaultImSub')) {
     fail('admin.js must avoid global-only system loads for tenant admins.');
   }
-  ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName', 'id="tenantMigrationSettingsCard"', 'tenantMigrationMaxMB'].forEach(function(marker) {
+  ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName', 'id="tenantMigrationSettingsCard"', 'tenantMigrationMaxMB', 'id="tenantSystemLLMDefaultsCard"', 'tenantSystemDefaultLLMServiceGroup'].forEach(function(marker) {
     if (!html.includes(marker)) {
       fail('index.html is missing tenant-safe mail settings marker: ' + marker);
     }
@@ -201,8 +201,13 @@ function assertTenantAdminUIHooks() {
       fail('system-tab.js is missing tenant migration settings marker: ' + marker);
     }
   });
+  ['loadTenantSystemLLMDefaults', 'saveTenantSystemLLMDefaults', 'tenantSystemLLMProviderIDs', 'tenantSystemLLMProviderIsConfigured', 'system_default_service_group_id', '/api/admin/llm/services?include_cards=false', '/api/admin/llm/providers'].forEach(function(marker) {
+    if (!system.includes(marker)) {
+      fail('system-tab.js is missing tenant system LLM default marker: ' + marker);
+    }
+  });
   const bootstrap = read('admin-bootstrap.js');
-  ['Promise.allSettled', 'loadTenants', 'loadCenterStatus', 'loadMailConfig', 'loadTenantMigrationSettings', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs'].forEach(function(marker) {
+  ['Promise.allSettled', 'loadTenants', 'loadCenterStatus', 'loadMailConfig', 'loadTenantMigrationSettings', 'loadTenantSystemLLMDefaults', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs'].forEach(function(marker) {
     if (!bootstrap.includes(marker)) {
       fail('admin-bootstrap.js is missing scoped refresh marker: ' + marker);
     }

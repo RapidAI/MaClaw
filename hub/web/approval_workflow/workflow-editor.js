@@ -627,6 +627,7 @@
 
   function draftGeneratedStatus(data) {
     var message = data && data.generated_by === 'fallback' ? tr('draftGeneratedFallback') : tr('draftGenerated');
+    if (data && data.generated_by === 'fallback') return message;
     var notes = data && Array.isArray(data.notes) ? data.notes : [];
     var note = notes.length > 0 ? String(notes[0] || '').trim() : '';
     if (!note) return message;

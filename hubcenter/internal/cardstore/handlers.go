@@ -35,6 +35,11 @@ func ListCardTypesHandler(svc *Service) http.HandlerFunc {
 				"enabled":      ch.Enabled,
 				"has_qr":       ch.ImageURL != "",
 				"has_bank":     ch.BankName != "",
+				"payee":        ch.Payee,
+				"image_url":    ch.ImageURL,
+				"bank_name":    ch.BankName,
+				"bank_account": ch.BankAccount,
+				"bank_holder":  ch.BankHolder,
 				"contact_info": ch.ContactInfo,
 			})
 		}

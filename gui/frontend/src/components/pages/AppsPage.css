@@ -2933,6 +2933,55 @@
     margin-top: 5px;
 }
 
+.apps-install-version-snapshot {
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 5px;
+}
+
+.apps-install-version-snapshot span {
+    max-width: 100%;
+    min-height: 24px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 6px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border-subtle));
+    border-radius: var(--radius-sm);
+    color: var(--theme-text-secondary);
+    background: color-mix(in srgb, var(--theme-primary-soft) 40%, var(--theme-surface));
+}
+
+.apps-install-version-snapshot strong,
+.apps-install-version-snapshot em {
+    display: block;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-install-version-snapshot strong {
+    max-width: 110px;
+    color: var(--theme-text-secondary);
+    font-size: 0.64rem;
+    font-weight: 800;
+}
+
+.apps-install-version-snapshot em {
+    max-width: 260px;
+    padding: 0;
+    border: 0;
+    color: var(--theme-text-primary);
+    background: transparent;
+    font-size: 0.64rem;
+    font-style: normal;
+    font-weight: 850;
+}
+
 .apps-install-record__dep {
     max-width: 100%;
     min-height: 24px;

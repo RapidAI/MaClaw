@@ -208,6 +208,21 @@
         orderCreatedLead: '请按下方方式完成支付。到账确认后，信用点会自动写入租户授权。',
         scanToPay: '请扫码支付后等待管理员确认。',
         goPay: '前往支付',
+        paymentMethodTitle: '选择付款方式',
+        paymentDetails: '付款信息',
+        orderSummary: '订单摘要',
+        currentMethod: '当前方式',
+        gatewayPayment: '支付网关',
+        qrPayment: '扫码付款',
+        paymentRemark: '付款备注',
+        payee: '收款人',
+        bankName: '开户行',
+        bankAccount: '收款账号',
+        bankHolder: '户名',
+        contactInfo: '确认联系',
+        copy: '复制',
+        copied: '已复制',
+        noPaymentDetail: '暂无付款信息，请联系管理员确认。',
         orderNo: '订单号',
         amount: '金额',
         status: '状态',
@@ -290,6 +305,21 @@
         orderCreatedLead: '请按下方方式完成支付。到账确认后，信用点会自动写入租户授权。',
         scanToPay: '请扫码支付后等待管理员确认。',
         goPay: '前往支付',
+        paymentMethodTitle: '选择付款方式',
+        paymentDetails: '付款信息',
+        orderSummary: '订单摘要',
+        currentMethod: '当前方式',
+        gatewayPayment: '支付网关',
+        qrPayment: '扫码付款',
+        paymentRemark: '付款备注',
+        payee: '收款人',
+        bankName: '开户行',
+        bankAccount: '收款账号',
+        bankHolder: '户名',
+        contactInfo: '确认联系',
+        copy: '复制',
+        copied: '已复制',
+        noPaymentDetail: '暂无付款信息，请联系管理员确认。',
         orderNo: '订单号',
         amount: '金额',
         status: '状态',
@@ -364,6 +394,21 @@
         orderCreatedLead: '请按下方方式完成支付。到账确认后，信用点会自动写入租户授权。',
         scanToPay: '请扫码支付后等待管理员确认。',
         goPay: '前往支付',
+        paymentMethodTitle: '选择付款方式',
+        paymentDetails: '付款信息',
+        orderSummary: '订单摘要',
+        currentMethod: '当前方式',
+        gatewayPayment: '支付网关',
+        qrPayment: '扫码付款',
+        paymentRemark: '付款备注',
+        payee: '收款人',
+        bankName: '开户行',
+        bankAccount: '收款账号',
+        bankHolder: '户名',
+        contactInfo: '确认联系',
+        copy: '复制',
+        copied: '已复制',
+        noPaymentDetail: '暂无付款信息，请联系管理员确认。',
         orderNo: '订单号',
         amount: '金额',
         status: '状态',
@@ -438,6 +483,21 @@
         orderCreatedLead: 'Complete payment below. After confirmation, credits are granted to the tenant.',
         scanToPay: 'Scan to pay, then wait for admin confirmation.',
         goPay: 'Go to payment',
+        paymentMethodTitle: 'Choose payment method',
+        paymentDetails: 'Payment details',
+        orderSummary: 'Order summary',
+        currentMethod: 'Current method',
+        gatewayPayment: 'Payment gateway',
+        qrPayment: 'Scan to pay',
+        paymentRemark: 'Payment remark',
+        payee: 'Payee',
+        bankName: 'Bank',
+        bankAccount: 'Account',
+        bankHolder: 'Account name',
+        contactInfo: 'Confirmation contact',
+        copy: 'Copy',
+        copied: 'Copied',
+        noPaymentDetail: 'No payment details available. Contact the administrator.',
         orderNo: 'Order No.',
         amount: 'Amount',
         status: 'Status',
@@ -609,6 +669,8 @@
       if (!raw) return raw;
       try {
         var u = new URL(raw, location.href);
+        // Gateway signatures cover callback parameters; keep signed URLs immutable.
+        if (isSignedAlipayPaymentURL(u)) return raw;
         var ret = u.searchParams.get('return_url') || '';
         if (shouldRewritePaymentReturnURL(ret)) {
           u.searchParams.set('return_url', returnContextURL(order));
@@ -617,6 +679,11 @@
       } catch (e) {
         return raw;
       }
+    }
+    function isSignedAlipayPaymentURL(u) {
+      if (!u || !u.searchParams || !u.searchParams.get('sign')) return false;
+      var method = u.searchParams.get('method') || '';
+      return method === 'alipay.trade.page.pay';
     }
     function shouldRewritePaymentReturnURL(raw) {
       if (!raw) return true;
@@ -753,6 +820,7 @@
         if (state.paymentChannels.length && !state.selectedPayChannel) state.selectedPayChannel = state.paymentChannels[0].id;
         renderProducts();
         renderPaymentChannels();
+        if (document.getElementById('adminEmail').value.trim()) loadOrders();
         document.getElementById('storeState').textContent = tr('ready');
         var total = state.cardTypes.reduce(function(sum, ct){ return Math.max(sum, Number(ct.credits || 0)); }, 0);
         document.getElementById('heroCredit').textContent = total ? total.toLocaleString() : '-';
@@ -877,42 +945,149 @@
       }
     }
 
+    function orderPaymentChannels(order) {
+      var byID = Object.create(null);
+      state.paymentChannels.forEach(function(ch) {
+        if (!ch || !ch.id) return;
+        byID[ch.id] = Object.assign({}, ch);
+      });
+      var selectedID = order.pay_channel || state.selectedPayChannel || '';
+      if (selectedID && !byID[selectedID]) {
+        byID[selectedID] = { id: selectedID, label: order.pay_channel_label || tr(selectedID) || selectedID, enabled: true };
+      }
+      if (!selectedID && (order.pay_url || order.payment_mode === 'alipay_direct')) {
+        selectedID = 'alipay_direct';
+        byID[selectedID] = { id: selectedID, label: tr('gatewayPayment'), enabled: true };
+      }
+      if (!selectedID && (order.pay_qr_url || order.pay_deep_link || order.pay_instruction)) {
+        selectedID = 'payment';
+        byID[selectedID] = { id: selectedID, label: order.pay_channel_label || tr('paymentDetails'), enabled: true };
+      }
+      if (selectedID && byID[selectedID]) {
+        byID[selectedID].label = order.pay_channel_label || byID[selectedID].label || tr(selectedID) || selectedID;
+        byID[selectedID].image_url = order.pay_qr_url || byID[selectedID].image_url || '';
+        byID[selectedID].pay_url = order.pay_url || byID[selectedID].pay_url || '';
+        byID[selectedID].pay_deep_link = order.pay_deep_link || byID[selectedID].pay_deep_link || '';
+        byID[selectedID].pay_instruction = order.pay_instruction || byID[selectedID].pay_instruction || '';
+      }
+      var channels = Object.keys(byID).map(function(id) { return byID[id]; }).filter(function(ch) { return ch && ch.enabled !== false; });
+      if (!channels.length) channels.push({ id: 'payment', label: tr('paymentDetails'), enabled: true });
+      channels.sort(function(a, b) {
+        if (a.id === selectedID) return -1;
+        if (b.id === selectedID) return 1;
+        return 0;
+      });
+      return { channels: channels, activeID: selectedID || channels[0].id };
+    }
+
+    function paymentFieldHTML(labelKey, value, copyable) {
+      if (!value) return '';
+      return '<div class="payment-field"><dt>' + esc(tr(labelKey)) + '</dt><dd><span>' + esc(value) + '</span>'
+        + (copyable ? '<button type="button" data-copy-payment="' + esc(value) + '">' + esc(tr('copy')) + '</button>' : '')
+        + '</dd></div>';
+    }
+
+    function paymentDetailHTML(order, channel) {
+      channel = channel || {};
+      var html = '<section class="payment-detail" data-payment-detail="' + esc(channel.id || '') + '">'
+        + '<div class="payment-detail__head"><span>' + esc(tr('paymentDetails')) + '</span><strong>' + esc(channel.label || tr(channel.id) || channel.id || '-') + '</strong></div>';
+      if (channel.pay_url) {
+        html += '<div class="payment-action-card"><strong>' + esc(tr('gatewayPayment')) + '</strong><a class="primary-link" href="' + esc(paymentURLWithContext(channel.pay_url, order)) + '" target="_blank" rel="noopener">' + esc(tr('goPay')) + '</a></div>';
+      } else if (channel.pay_deep_link) {
+        html += '<div class="payment-action-card"><strong>' + esc(channel.label || tr('goPay')) + '</strong><a class="primary-link" href="' + esc(channel.pay_deep_link) + '">' + esc(tr('goPay')) + '</a></div>';
+      }
+      if (channel.image_url) {
+        html += '<div class="payment-qr-block"><img src="' + esc(channel.image_url) + '" alt="' + esc(channel.label || 'Payment QR') + '"><p>' + esc(tr('scanToPay')) + '</p></div>';
+      }
+      var fields = ''
+        + paymentFieldHTML('payee', channel.payee, false)
+        + paymentFieldHTML('amount', money(order.amount), true)
+        + paymentFieldHTML('paymentRemark', order.order_no || '', true)
+        + paymentFieldHTML('bankName', channel.bank_name, false)
+        + paymentFieldHTML('bankAccount', channel.bank_account, true)
+        + paymentFieldHTML('bankHolder', channel.bank_holder, true)
+        + paymentFieldHTML('contactInfo', channel.contact_info, true);
+      if (fields) html += '<dl class="payment-fields">' + fields + '</dl>';
+      if (channel.pay_instruction) html += '<pre class="instruction">' + esc(channel.pay_instruction) + '</pre>';
+      if (!channel.pay_url && !channel.pay_deep_link && !channel.image_url && !fields && !channel.pay_instruction) {
+        html += '<p class="payment-empty">' + esc(tr('noPaymentDetail')) + '</p>';
+      }
+      return html + '</section>';
+    }
+
     function showOrderResult(order) {
       rememberOrderContext(order);
       closeOrderDialog();
       var modal = document.createElement('div');
+      var payment = orderPaymentChannels(order);
       modal.className = 'order-dialog';
       modal.setAttribute('role', 'presentation');
-      if (order.pay_qr_url) {
-        var paymentHTML = '<img src="' + esc(order.pay_qr_url) + '" alt="Payment QR"><p>' + esc(tr('scanToPay')) + '</p>';
-      } else if (order.pay_url) {
-        var paymentHTML = '<a class="primary-link" href="' + esc(paymentURLWithContext(order.pay_url, order)) + '" target="_blank" rel="noopener">' + esc(tr('goPay')) + '</a>';
-      } else if (order.pay_deep_link) {
-        var paymentHTML = '<a class="primary-link" href="' + esc(order.pay_deep_link) + '">' + esc(tr('goPay')) + '</a>';
-      } else if (order.pay_instruction) {
-        var paymentHTML = '<pre class="instruction">' + esc(order.pay_instruction) + '</pre>';
-      } else {
-        var paymentHTML = '';
-      }
       modal.innerHTML = '<div class="order-dialog__panel" role="dialog" aria-modal="true" aria-labelledby="orderDialogTitle">'
         + '<button type="button" class="order-dialog__close" data-close-order-dialog aria-label="' + esc(tr('close')) + '">&times;</button>'
-        + '<div><p class="kicker">' + esc(tr('orderCreatedKicker')) + '</p><h2 id="orderDialogTitle">' + esc(tr('orderCreated')) + '</h2><p class="lead">' + esc(tr('orderCreatedLead')) + '</p></div>'
-        + '<div class="payment-result">' + paymentHTML + '</div>'
+        + '<div class="order-dialog__header"><div><p class="kicker">' + esc(tr('orderCreatedKicker')) + '</p><h2 id="orderDialogTitle">' + esc(tr('orderCreated')) + '</h2><p class="lead">' + esc(tr('orderCreatedLead')) + '</p></div><span class="order-status pending">' + esc(statusLabel(order.status)) + '</span></div>'
+        + '<div class="payment-workspace">'
+        + '<aside class="payment-methods"><span>' + esc(tr('paymentMethodTitle')) + '</span>'
+        + payment.channels.map(function(ch) {
+          var active = ch.id === payment.activeID ? ' is-active' : '';
+          return '<button type="button" class="payment-method' + active + '" data-payment-method="' + esc(ch.id) + '"><span class="pay-icon" aria-hidden="true">' + paymentIcon(ch.id) + '</span><strong>' + esc(ch.label || tr(ch.id) || ch.id) + '</strong>' + (ch.id === payment.activeID ? '<em>' + esc(tr('currentMethod')) + '</em>' : '') + '</button>';
+        }).join('')
+        + '</aside>'
+        + '<div class="payment-result">' + payment.channels.map(function(ch) { return paymentDetailHTML(order, ch); }).join('') + '</div>'
+        + '</div>'
+        + '<div class="order-summary-title">' + esc(tr('orderSummary')) + '</div>'
         + '<dl class="order-info">'
         + '<div><dt>' + esc(tr('orderNo')) + '</dt><dd>' + esc(order.order_no || '-') + '</dd></div>'
         + '<div><dt>' + esc(tr('amount')) + '</dt><dd>' + esc(money(order.amount)) + '</dd></div>'
         + '<div><dt>' + esc(tr('status')) + '</dt><dd>' + esc(statusLabel(order.status)) + '</dd></div>'
         + '</dl></div>';
       document.body.appendChild(modal);
+      setActivePaymentDetail(modal, payment.activeID);
       modal.querySelectorAll('[data-close-order-dialog]').forEach(function(btn) {
         btn.addEventListener('click', closeOrderDialog);
+      });
+      modal.querySelectorAll('[data-payment-method]').forEach(function(btn) {
+        btn.addEventListener('click', function() { setActivePaymentDetail(modal, btn.getAttribute('data-payment-method')); });
+      });
+      modal.querySelectorAll('[data-copy-payment]').forEach(function(btn) {
+        btn.addEventListener('click', function() { copyPaymentText(btn); });
       });
       modal.addEventListener('click', function(event) {
         if (event.target === modal) closeOrderDialog();
       });
       document.addEventListener('keydown', handleOrderDialogKeydown);
-      var closeBtn = modal.querySelector('[data-close-order-dialog]');
-      if (closeBtn) closeBtn.focus();
+      var activeBtn = modal.querySelector('.payment-method.is-active') || modal.querySelector('[data-close-order-dialog]');
+      if (activeBtn) activeBtn.focus();
+    }
+
+    function setActivePaymentDetail(modal, id) {
+      modal.querySelectorAll('[data-payment-method]').forEach(function(btn) {
+        btn.classList.toggle('is-active', btn.getAttribute('data-payment-method') === id);
+      });
+      modal.querySelectorAll('[data-payment-detail]').forEach(function(detail) {
+        detail.hidden = detail.getAttribute('data-payment-detail') !== id;
+      });
+    }
+
+    function copyPaymentText(button) {
+      var value = button.getAttribute('data-copy-payment') || '';
+      var done = function() {
+        var old = button.textContent;
+        button.textContent = tr('copied');
+        setTimeout(function(){ button.textContent = old; }, 1200);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(value).then(done).catch(done);
+      } else {
+        var textarea = document.createElement('textarea');
+        textarea.value = value;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try { document.execCommand('copy'); } catch (e) {}
+        textarea.remove();
+        done();
+      }
     }
 
     function handleOrderDialogKeydown(event) {
@@ -983,7 +1158,7 @@
     }
 
     function canPayOrder(order) {
-      return isPendingOrder(order) && !!(order && (order.pay_qr_url || order.pay_url || order.pay_deep_link || order.pay_instruction));
+      return isPendingOrder(order) && !!(order && (order.pay_qr_url || order.pay_url || order.pay_deep_link || order.pay_instruction || state.paymentChannels.length));
     }
 
     function isPendingOrder(order) {

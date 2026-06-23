@@ -4,6 +4,7 @@ import type { AgentView, AgentViewField, AgentViewOption, AgentViewTableColumn, 
 import type { Theme } from "./aiAssistantPanelTheme";
 import { agentViewStrings, type AgentViewStrings } from "./agentViewI18n";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
+import { useDialog } from "../CustomDialog";
 
 interface AgentTaskPanelProps {
     view: AgentView;
@@ -1061,6 +1062,7 @@ function isPanelHeaderInteractiveTarget(target: EventTarget | null, currentTarge
 
 export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximize, onSubmit, theme, lang }: AgentTaskPanelProps) {
     const s = useMemo(() => agentViewStrings(lang || "en"), [lang]);
+    const { showConfirm } = useDialog();
     const [activeVariantId, setActiveVariantId] = useState<string | undefined>(() => {
         const variant = activeVariantFor(view);
         return variant?.id;
@@ -1075,6 +1077,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
     const [resourceSelection, setResourceSelection] = useState<string | string[]>(() => initialResourceSelection(view));
     const [fieldMapping, setFieldMapping] = useState<Record<string, string>>(() => initialFieldMapping(view));
     const [submitting, setSubmitting] = useState(false);
+    const [dismissing, setDismissing] = useState(false);
     useEffect(() => {
         const variant = activeVariantFor(view);
         setActiveVariantId(variant?.id);
@@ -1085,6 +1088,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
         setResourceSelection(initialResourceSelection(view));
         setFieldMapping(initialFieldMapping(view));
         setSubmitting(false);
+        setDismissing(false);
     }, [view]);
     const activeVariant = activeVariantFor(view, activeVariantId);
     const renderedFields = visibleFormFields(view, activeVariant);
@@ -1219,7 +1223,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
             <header
                 data-testid="agent-task-panel-header"
                 onDoubleClick={handleHeaderDoubleClick}
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 16px", borderBottom: `1px solid ${theme.divider}`, background: theme.titleBarBg, "--wails-draggable": "no-drag" } as React.CSSProperties}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 14px", borderBottom: `1px solid ${theme.divider}`, background: theme.titleBarBg, "--wails-draggable": "no-drag" } as React.CSSProperties}
             >
                 <div style={{ minWidth: 0 }}>
                     <div style={{ color: theme.titleText, fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", letterSpacing: "-0.01em" }}>
@@ -1233,13 +1237,13 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                     </button>
                 )}
             </header>
-            <div className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "16px 24px" }}>
+            <div className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "16px 14px" }}>
                 {view.type === "form" && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%", maxWidth: 640, margin: "0 auto" }}
+                        style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%" }}
                         onSubmit={(event) => {
                             event.preventDefault();
-                            if (validationErrors.length > 0 || submitting) return;
+                            if (validationErrors.length > 0 || submitting || dismissing) return;
                             void submitAgentView(formSubmissionPayload(renderedFields, formData, activeVariant));
                         }}
                     >
@@ -1309,15 +1313,25 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                                 {s.pleaseFix}{validationErrors.join(", ")}
                             </div>
                         )}
-                        <button type="submit" disabled={submitting} style={{ ...primaryButtonStyle, marginTop: 4, opacity: submitting ? 0.65 : 1, cursor: submitting ? "wait" : "pointer" }}>{submitting ? s.submitting : view.submitLabel || s.submit}</button>
-                        {view.id?.startsWith("workflow:form:") && onDismiss && (
-                            <button type="button" disabled={submitting} onClick={() => {
-                                const isZh = lang?.startsWith("zh");
-                                const msg = isZh ? "确定要放弃当前工作流吗？\n\n放弃后当前进度将被清除，只能重新发起工作流。" : "Are you sure you want to cancel the current workflow?\n\nAll progress will be lost and you'll need to start a new workflow.";
-                                if (!window.confirm(msg)) return;
-                                onDismiss(view.id, { __cancel_workflow: true });
-                            }} style={{ ...buttonStyle, marginTop: 4, color: theme.errorText, borderColor: theme.errorText, opacity: submitting ? 0.5 : 0.75, cursor: submitting ? "not-allowed" : "pointer", fontSize: 11 }}>{lang?.startsWith("zh") ? "放弃工作流" : "Cancel Workflow"}</button>
-                        )}
+                        <div style={{ display: "flex", flexDirection: "row", gap: 10, marginTop: 4, alignItems: "center" }}>
+                            <button type="submit" disabled={submitting || dismissing} style={{ ...primaryButtonStyle, flex: 1, opacity: submitting || dismissing ? 0.65 : 1, cursor: submitting || dismissing ? "wait" : "pointer" }}>{submitting ? s.submitting : view.submitLabel || s.submit}</button>
+                            {view.id?.startsWith("workflow:form:") && onDismiss && (
+                                <button type="button" disabled={submitting || dismissing} onClick={async () => {
+                                    if (dismissing) return;
+                                    setDismissing(true);
+                                    try {
+                                        const isZh = lang?.startsWith("zh");
+                                        const title = isZh ? "确定要放弃当前工作流吗？" : "Cancel Workflow?";
+                                        const msg = isZh ? "放弃后当前进度将被清除，只能重新发起工作流。" : "All progress will be lost and you'll need to start a new workflow.";
+                                        const confirmed = await showConfirm(msg, title);
+                                        if (!confirmed) return;
+                                        onDismiss(view.id, { __cancel_workflow: true });
+                                    } finally {
+                                        setDismissing(false);
+                                    }
+                                }} style={{ ...buttonStyle, color: theme.errorText, borderColor: theme.errorText, opacity: submitting || dismissing ? 0.5 : 0.75, cursor: submitting || dismissing ? "not-allowed" : "pointer", fontSize: 11, whiteSpace: "nowrap" }}>{lang?.startsWith("zh") ? "放弃工作流" : "Cancel Workflow"}</button>
+                            )}
+                        </div>
                     </form>
                 )}
                 {view.type === "wizard" && activeWizardStep && (

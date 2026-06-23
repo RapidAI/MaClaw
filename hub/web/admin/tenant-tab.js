@@ -50,11 +50,11 @@
     loginTenantChoose: { zh: '\u9009\u62e9\u767b\u5f55\u8303\u56f4', en: 'Select login scope' },
     loginTenantGlobal: { zh: '\u5168\u5c40\u7ba1\u7406\u5458\uff08\u4e0d\u9009\u79df\u6237\uff09', en: 'Global admin (no tenant)' },
     loginTenantLoadFailed: { zh: '\u79df\u6237\u9009\u9879\u52a0\u8f7d\u5931\u8d25\uff0c\u5168\u5c40\u7ba1\u7406\u5458\u4ecd\u53ef\u76f4\u63a5\u767b\u5f55\u3002', en: 'Tenant options failed to load. Global admins can still sign in.' },
-    systemNavTenant: { zh: '\u8d26\u53f7\u8bbe\u7f6e', en: 'Account Settings' },
-    systemNavDescTenant: { zh: '\u7ba1\u7406\u672c\u79df\u6237\u7ba1\u7406\u5458\u7684\u90ae\u7bb1\u548c\u5bc6\u7801', en: 'Manage this tenant admin email and password' },
-    systemTitleTenant: { zh: '\u8d26\u53f7\u8bbe\u7f6e', en: 'Account Settings' },
-    systemDescTenant: { zh: '\u79df\u6237\u7ba1\u7406\u5458\u53ef\u5728\u8fd9\u91cc\u66f4\u65b0\u81ea\u5df1\u7684\u90ae\u7bb1\u548c\u767b\u5f55\u5bc6\u7801\u3002', en: 'Tenant admins can update their own email address and login password here.' },
-    systemSubtitleTenant: { zh: '\u79df\u6237\u7ba1\u7406\u5458\u8d26\u53f7\u5b89\u5168\u8bbe\u7f6e\u3002', en: 'Tenant admin account security settings.' },
+    systemNavTenant: { zh: '\u7cfb\u7edf\u8bbe\u7f6e', en: 'System Settings' },
+    systemNavDescTenant: { zh: '\u7ba1\u7406\u672c\u79df\u6237\u7684\u90ae\u4ef6\u3001LLM \u548c\u7ba1\u7406\u5458\u8d26\u53f7', en: 'Manage tenant mail, LLM, and admin account settings' },
+    systemTitleTenant: { zh: '\u7cfb\u7edf\u8bbe\u7f6e', en: 'System Settings' },
+    systemDescTenant: { zh: '\u79df\u6237\u7ba1\u7406\u5458\u53ef\u5728\u8fd9\u91cc\u914d\u7f6e\u79df\u6237\u7ea7\u7cfb\u7edf\u80fd\u529b\u548c\u81ea\u5df1\u7684\u767b\u5f55\u4fe1\u606f\u3002', en: 'Tenant admins configure tenant-level system capabilities and their own sign-in information here.' },
+    systemSubtitleTenant: { zh: '\u79df\u6237\u7ea7\u90ae\u4ef6\u3001LLM \u548c\u8d26\u53f7\u5b89\u5168\u8bbe\u7f6e\u3002', en: 'Tenant mail, LLM, and account security settings.' },
     role: { zh: '\u89d2\u8272', en: 'Role' },
     empty: { zh: '\u6682\u65e0\u79df\u6237\u3002', en: 'No tenants yet.' },
     loading: { zh: '\u52a0\u8f7d\u4e2d...', en: 'Loading...' },
@@ -794,6 +794,8 @@
     if (tenantSenderCard) tenantSenderCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
     var tenantMigrationCard = byID('tenantMigrationSettingsCard');
     if (tenantMigrationCard) tenantMigrationCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
+    var tenantLLMDefaultsCard = byID('tenantSystemLLMDefaultsCard');
+    if (tenantLLMDefaultsCard) tenantLLMDefaultsCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
     if (typeof global.applyImScopeUI === 'function') global.applyImScopeUI();
     applySystemScopeCopy(!!(hasProfile && tenantAdmin));
     applyOverviewScopeUI(!!(hasProfile && tenantAdmin), hasProfile);
