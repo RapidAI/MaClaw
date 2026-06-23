@@ -37,6 +37,11 @@ const (
 	WriteFileMaxSize  = 512 * 1024 // 512 KB per write
 	SendFileMaxSize   = 200 << 20  // 200 MB
 	MaxSearchFileSize = 2 << 20    // 2 MB per file for search tools
+
+	// maxSearchWalkTime caps the directory walk for search tools.
+	// Prevents blocking when projectPath accidentally points to a huge tree
+	// (e.g. user home directory).
+	maxSearchWalkTime = 30 * time.Second
 )
 
 // --- Bash ---
@@ -1060,9 +1065,16 @@ func walkSearchFilesFiltered(base, pattern, excludePattern, fileType string, inc
 		}
 		return visit(base, fileInfoDirEntry{info: info})
 	}
+	deadline := time.Now().Add(maxSearchWalkTime)
+	filesVisited := 0
 	return filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
+		}
+		// Check deadline every 512 entries to avoid per-file syscall overhead.
+		filesVisited++
+		if filesVisited&511 == 0 && time.Now().After(deadline) {
+			return filepath.SkipAll
 		}
 		if path != base && isSearchSymlink(d) {
 			return nil

@@ -52,6 +52,7 @@ var approverHelpers = new Function('state', 'tr', [
   extractFunction('normalizeApprovalFunctionScope'),
   extractFunction('functionScopeCatalog'),
   extractFunction('normalizeApprovalRole'),
+  extractFunction('approvalRoleHasAssignees'),
   extractFunction('approvalRoleId'),
   extractFunction('approvalRoleRows'),
   extractFunction('assigneeSummary'),
@@ -87,16 +88,18 @@ var pickerBindingHelpers = new Function('state', 'document', 'openApproverPicker
 var draftHelpers = new Function('state', 'confirm', 'tr', [
   extractFunction('draftHasCanvasContent'),
   extractFunction('confirmDraftOverwriteIfNeeded'),
+  extractFunction('draftDebugDetails'),
   extractFunction('draftGeneratedStatus'),
   extractFunction('draftExampleText')
-].join('\n') + '\nreturn { draftHasCanvasContent: draftHasCanvasContent, confirmDraftOverwriteIfNeeded: confirmDraftOverwriteIfNeeded, draftGeneratedStatus: draftGeneratedStatus, draftExampleText: draftExampleText };')(
+].join('\n') + '\nreturn { draftHasCanvasContent: draftHasCanvasContent, confirmDraftOverwriteIfNeeded: confirmDraftOverwriteIfNeeded, draftDebugDetails: draftDebugDetails, draftGeneratedStatus: draftGeneratedStatus, draftExampleText: draftExampleText };')(
   state,
   function () { return draftHelpersConfirmResult; },
-  function (key) {
+  function (key, vars) {
     if (key === 'draftGenerated') return 'Draft generated.';
     if (key === 'draftGeneratedFallback') return 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.';
     if (key === 'draftGeneratedFallbackProvider') return 'Basic draft generated because the LLM provider request failed. Review the workflow before saving, then try again after the provider recovers.';
     if (key === 'draftGeneratedFallbackResponse') return 'Basic draft generated because the LLM response could not be applied as a workflow. Review the workflow before saving, then refine the description and try again.';
+    if (key === 'draftDebugDetails') return 'Details: ' + vars.details;
     if (key === 'draftExampleFullControlsText') return 'full controls example text';
     return key;
   }
@@ -298,6 +301,23 @@ var functionScopeRows = approverHelpers.approvalRoleRows('function', roleDirecto
 assertEqual(functionScopeRows.length, 1, 'function role view lists Hub function scopes without roles');
 assertEqual(functionScopeRows[0].disabled, true, 'function scope without role should render disabled');
 assertEqual(functionScopeRows[0].meta, 'No approval role configured', 'function scope without role explains missing role');
+var emptyRoleDirectory = {
+  functionScopes: [{ scopeId: 'finance', scopeName: 'Finance' }],
+  approvalRoles: [
+    approverHelpers.normalizeApprovalRole({
+      scopeType: 'function',
+      scopeId: 'finance',
+      scopeName: 'Finance',
+      roleCode: 'finance_approver',
+      roleName: 'Finance Approver',
+      assignees: []
+    })
+  ],
+  byId: {}
+};
+var emptyRoleRows = approverHelpers.approvalRoleRows('function', emptyRoleDirectory, 'finance');
+assertEqual(emptyRoleRows.length, 1, 'function role view should keep empty Hub role scopes visible');
+assertEqual(emptyRoleRows[0].disabled, true, 'empty Hub role should not be selectable');
 var organizationRoleRows = approverHelpers.approvalRoleRows('organization', roleDirectory, 'alice twin');
 assertEqual(organizationRoleRows.length, 1, 'organization role view searches configured assignees');
 assertEqual(organizationRoleRows[0].id, 'role:department:dept-finance:department_manager', 'organization role view lists department approval roles');
@@ -528,6 +548,7 @@ assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback' }), 'Ba
 assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_settings' }), 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.', 'settings fallback status points to HUB System Settings');
 assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_route' }), 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.', 'route fallback status points to HUB System Settings');
 assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_provider' }), 'Basic draft generated because the LLM provider request failed. Review the workflow before saving, then try again after the provider recovers.', 'provider fallback status does not blame settings');
+assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_provider', debug: { service_group_id: 'system-free', provider_id: 'deepseek', model: 'auto', status_code: 550, response: 'context canceled' } }), 'Basic draft generated because the LLM provider request failed. Review the workflow before saving, then try again after the provider recovers. Details: service_group: system-free; provider: deepseek; model: auto; status: 550; error: context canceled', 'provider fallback status includes backend debug details');
 assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', fallback_reason: 'llm_response' }), 'Basic draft generated because the LLM response could not be applied as a workflow. Review the workflow before saving, then refine the description and try again.', 'response fallback status asks user to refine description');
 assertEqual(draftHelpers.draftGeneratedStatus({ generated_by: 'fallback', notes: ['LLM draft generation was unavailable, so a basic fallback draft was generated.'] }), 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.', 'fallback draft status does not append backend debug notes');
 assertEqual(draftHelpers.draftGeneratedStatus({ notes: ['Select real approvers before saving.'] }), 'Draft generated. Select real approvers before saving.', 'generated draft status includes first LLM note');

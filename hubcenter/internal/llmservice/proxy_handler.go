@@ -46,10 +46,11 @@ func ProxyHandler(cfg *ProxyConfig) http.HandlerFunc {
 		}
 
 		proxyReq := &ProxyRequest{
-			HubID:    hubID,
-			TenantID: tenantID,
-			Body:     parsed,
-			RawBody:  body,
+			HubID:          hubID,
+			TenantID:       tenantID,
+			ServiceGroupID: strings.TrimSpace(r.Header.Get("X-MaClaw-Service-Group-ID")),
+			Body:           parsed,
+			RawBody:        body,
 		}
 
 		resp, err := HandleProxyRequest(r.Context(), cfg, proxyReq)

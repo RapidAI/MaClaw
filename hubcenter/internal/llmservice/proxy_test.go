@@ -877,6 +877,73 @@ func TestHandleProxyRequestUsesProviderConfiguredUpstreamModel(t *testing.T) {
 	}
 }
 
+func TestHandleProxyRequestUsesRequestedServiceGroupWhenModelsOverlap(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","model":"free-upstream","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "paid", Name: "Paid", APIURL: upstream.URL},
+			{ID: "free", Name: "Free", APIURL: upstream.URL},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{
+			{
+				ID:           "paid-group",
+				Name:         "Paid Group",
+				AccessPolicy: AccessPolicyGrantRequired,
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+					ProviderID: "paid",
+					Model:      "paid-upstream",
+				}}}},
+			},
+			{
+				ID:           "system-free",
+				Name:         "System Free",
+				AccessPolicy: AccessPolicyFree,
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+					ProviderID: "free",
+					Model:      "free-upstream",
+				}}}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  upstream.Client(),
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: "system-free",
+		Body:           map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if resp.ProviderID != "free" {
+		t.Fatalf("provider = %q, want free", resp.ProviderID)
+	}
+	if seen["model"] != "free-upstream" {
+		t.Fatalf("upstream model = %#v, want free-upstream", seen["model"])
+	}
+}
+
 func TestHandleProxyRequestEstimatesAndInjectsUsageWhenUpstreamOmitsUsage(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1358,6 +1425,49 @@ func TestHandleProxyRequestDoesNotReturnProviderAuthorizationAsTenantDenial(t *t
 	}
 }
 
+func TestHandleProxyRequestProviderFailureIncludesRoutingDetails(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(550)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream timeout"}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "redeem",
+			Name:         "Redeem",
+			AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+				ProviderID: "deepseek",
+				Model:      "deepseek-v4-flash",
+			}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	_, err := HandleProxyRequest(context.Background(), &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  upstream.Client(),
+	}, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "tenant1",
+		Body:     map[string]any{"model": "auto", "messages": []any{}},
+	})
+	if err == nil {
+		t.Fatal("HandleProxyRequest() error = nil, want provider failure")
+	}
+	for _, want := range []string{"all providers failed", "deepseek", "logical model auto", "upstream model deepseek-v4-flash", "550", "upstream timeout"} {
+		if !contains(err.Error(), want) {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+	}
+}
+
 func TestHandleProxyRequest_CacheHit(t *testing.T) {
 	system := &mockSystemSettings{}
 	svc := NewService(system)
@@ -1375,7 +1485,7 @@ func TestHandleProxyRequest_CacheHit(t *testing.T) {
 	cache := llmpool.NewCache(nil, llmpool.CacheConfig{MemoryMaxEntries: 10})
 	// Pre-populate cache
 	body := map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}
-	cacheKey := buildCacheKey("gpt-4", body)
+	cacheKey := buildServiceGroupCacheKey("g1", "gpt-4", body)
 	_ = cache.Put(context.Background(), &llmpool.CacheEntry{
 		CacheKey:   cacheKey,
 		ProviderID: "p1",
@@ -1401,6 +1511,84 @@ func TestHandleProxyRequest_CacheHit(t *testing.T) {
 	}
 	if bytes.Contains(resp.Body, []byte(`"usage"`)) {
 		t.Fatalf("cache hit response should not include billable usage: %s", resp.Body)
+	}
+}
+
+func TestHandleProxyRequestCacheIsScopedByServiceGroup(t *testing.T) {
+	var providerCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","model":"free-upstream","choices":[{"message":{"content":"free-live"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "paid", Name: "Paid", APIURL: upstream.URL},
+			{ID: "free", Name: "Free", APIURL: upstream.URL},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{
+			{
+				ID:           "paid-group",
+				Name:         "Paid Group",
+				AccessPolicy: AccessPolicyFree,
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+					ProviderID: "paid",
+					Model:      "paid-upstream",
+				}}}},
+			},
+			{
+				ID:           "system-free",
+				Name:         "System Free",
+				AccessPolicy: AccessPolicyFree,
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+					ProviderID: "free",
+					Model:      "free-upstream",
+				}}}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	body := map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+	cache := llmpool.NewCache(nil, llmpool.CacheConfig{MemoryMaxEntries: 10})
+	_ = cache.Put(context.Background(), &llmpool.CacheEntry{
+		CacheKey:   buildServiceGroupCacheKey("paid-group", "auto", body),
+		ProviderID: "paid",
+		Model:      "auto",
+		Payload:    []byte(`{"choices":[{"message":{"content":"paid-cached"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`),
+	})
+
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		Cache:       cache,
+		HTTPClient:  upstream.Client(),
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: "system-free",
+		Body:           body,
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.CacheHit {
+		t.Fatalf("system-free request must not hit paid-group cache")
+	}
+	if providerCalls != 1 {
+		t.Fatalf("provider calls = %d, want 1", providerCalls)
+	}
+	if resp.ProviderID != "free" {
+		t.Fatalf("provider = %q, want free", resp.ProviderID)
+	}
+	if !bytes.Contains(resp.Body, []byte("free-live")) {
+		t.Fatalf("response body = %s, want live free response", resp.Body)
 	}
 }
 

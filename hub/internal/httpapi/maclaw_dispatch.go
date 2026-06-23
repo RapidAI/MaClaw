@@ -39,17 +39,17 @@ func IsMaClawProviderRequest(providerID string) bool {
 
 // ForwardViaMaClaw forwards a request through the MaClaw Official provider (HubCenter proxy).
 // Returns (responseBody, statusCode, error).
-func ForwardViaMaClaw(ctx context.Context, body []byte, tenantID string) ([]byte, int, error) {
+func ForwardViaMaClaw(ctx context.Context, body []byte, tenantID string, serviceGroupIDs ...string) ([]byte, int, error) {
 	module := GetMaClawModule()
 	if module == nil || module.Client == nil {
 		return []byte(`{"error":{"message":"MaClaw official service is not configured"}}`), http.StatusServiceUnavailable, nil
 	}
-	return module.Client.Forward(ctx, body, tenantID)
+	return module.Client.Forward(ctx, body, tenantID, serviceGroupIDs...)
 }
 
 // ForwardStreamViaMaClaw forwards a streaming request through the MaClaw Official provider.
 // The caller must close the returned response body.
-func ForwardStreamViaMaClaw(ctx context.Context, body []byte, tenantID string) (*http.Response, error) {
+func ForwardStreamViaMaClaw(ctx context.Context, body []byte, tenantID string, serviceGroupIDs ...string) (*http.Response, error) {
 	module := GetMaClawModule()
 	if module == nil || module.Client == nil {
 		return &http.Response{
@@ -58,7 +58,7 @@ func ForwardStreamViaMaClaw(ctx context.Context, body []byte, tenantID string) (
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 		}, nil
 	}
-	return module.Client.ForwardStream(ctx, body, tenantID)
+	return module.Client.ForwardStream(ctx, body, tenantID, serviceGroupIDs...)
 }
 
 // GetMaClawAccessControl returns the access control instance for permission checks.

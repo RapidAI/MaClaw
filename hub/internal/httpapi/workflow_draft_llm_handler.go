@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -32,6 +33,30 @@ const (
 )
 
 const workflowDraftDefaultApproverRoleID = "role:dynamic:applicant_department:direct_manager"
+
+type workflowDraftLLMDiagnosticError struct {
+	Err             error
+	ServiceGroupID  string
+	Model           string
+	ProviderID      string
+	ServiceGroupIDs []string
+	StatusCode      int
+	ResponseSnippet string
+}
+
+func (e *workflowDraftLLMDiagnosticError) Error() string {
+	if e == nil || e.Err == nil {
+		return "LLM draft generation failed"
+	}
+	return e.Err.Error()
+}
+
+func (e *workflowDraftLLMDiagnosticError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 func WorkflowDraftLLMHandler(identity veMachineAuthenticator, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	_ = securitySvc
@@ -70,11 +95,56 @@ func WorkflowDraftLLMHandler(identity veMachineAuthenticator, system store.Syste
 			draft := buildFallbackWorkflowDraft(description, req.Language)
 			draft["generated_by"] = "fallback"
 			draft["fallback_reason"] = workflowDraftFallbackReason(err)
+			if debug := workflowDraftFallbackDebug(err); len(debug) > 0 {
+				draft["debug"] = debug
+			}
 			draft["notes"] = []string{"LLM draft generation was unavailable, so a basic fallback draft was generated."}
 			writeJSON(w, http.StatusOK, draft)
 			return
 		}
 	}
+}
+
+func workflowDraftFallbackDebug(err error) map[string]any {
+	if err == nil {
+		return nil
+	}
+	debug := map[string]any{
+		"message": workflowDraftDebugMessage(err),
+	}
+	var diag *workflowDraftLLMDiagnosticError
+	if errors.As(err, &diag) && diag != nil {
+		if diag.ServiceGroupID != "" {
+			debug["service_group_id"] = diag.ServiceGroupID
+		}
+		if diag.Model != "" {
+			debug["model"] = diag.Model
+		}
+		if diag.ProviderID != "" {
+			debug["provider_id"] = diag.ProviderID
+		}
+		if len(diag.ServiceGroupIDs) > 0 {
+			debug["provider_service_group_ids"] = append([]string(nil), diag.ServiceGroupIDs...)
+		}
+		if diag.StatusCode > 0 {
+			debug["status_code"] = diag.StatusCode
+		}
+		if diag.ResponseSnippet != "" {
+			debug["response"] = diag.ResponseSnippet
+		}
+	}
+	return debug
+}
+
+func workflowDraftDebugMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return "LLM draft generation failed"
+	}
+	return workflowDraftSanitizeDebugText(msg, 600)
 }
 
 func workflowDraftFallbackReason(err error) string {
@@ -158,12 +228,32 @@ func generateWorkflowDraftWithLLM(r *http.Request, system store.SystemSettingsRe
 	if err != nil {
 		return nil, err
 	}
-	respBody, statusCode, _, _, err := forwardAuthorizedModelRequest(r, providerReg, model, body, externalModel)
+	respBody, statusCode, providerID, providerServiceGroupIDs, err := forwardAuthorizedModelRequest(r, providerReg, model, body, externalModel)
 	if err != nil {
-		return nil, err
+		diag := workflowDraftLLMDiagnosticError{
+			Err:             err,
+			ServiceGroupID:  serviceGroupID,
+			Model:           model.Name,
+			ProviderID:      providerID,
+			ServiceGroupIDs: providerServiceGroupIDs,
+			StatusCode:      statusCode,
+			ResponseSnippet: workflowDraftProviderResponseSnippet(respBody),
+		}
+		log.Printf("[workflow-draft] LLM provider request failed service_group=%q model=%q provider=%q status=%d err=%v response=%q", diag.ServiceGroupID, diag.Model, diag.ProviderID, diag.StatusCode, err, diag.ResponseSnippet)
+		return nil, &diag
 	}
 	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("LLM provider returned HTTP %d", statusCode)
+		diag := workflowDraftLLMDiagnosticError{
+			Err:             fmt.Errorf("LLM provider returned HTTP %d", statusCode),
+			ServiceGroupID:  serviceGroupID,
+			Model:           model.Name,
+			ProviderID:      providerID,
+			ServiceGroupIDs: providerServiceGroupIDs,
+			StatusCode:      statusCode,
+			ResponseSnippet: workflowDraftProviderResponseSnippet(respBody),
+		}
+		log.Printf("[workflow-draft] LLM provider returned non-success service_group=%q model=%q provider=%q status=%d response=%q", diag.ServiceGroupID, diag.Model, diag.ProviderID, diag.StatusCode, diag.ResponseSnippet)
+		return nil, &diag
 	}
 	content, err := workflowDraftLLMResponseText(respBody)
 	if err != nil {
@@ -177,6 +267,54 @@ func generateWorkflowDraftWithLLM(r *http.Request, system store.SystemSettingsRe
 		draft["description"] = description
 	}
 	return draft, nil
+}
+
+func workflowDraftProviderResponseSnippet(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err == nil {
+		if msg := workflowDraftProviderErrorMessage(payload); msg != "" {
+			return workflowDraftSanitizeDebugText(msg, 800)
+		}
+	}
+	return workflowDraftSanitizeDebugText(string(body), 800)
+}
+
+func workflowDraftProviderErrorMessage(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	if errValue, ok := payload["error"]; ok {
+		switch errPayload := errValue.(type) {
+		case string:
+			return errPayload
+		case map[string]any:
+			for _, key := range []string{"message", "error", "code", "type"} {
+				if text := workflowDraftString(errPayload[key]); text != "" {
+					return text
+				}
+			}
+		}
+	}
+	for _, key := range []string{"message", "detail", "code"} {
+		if text := workflowDraftString(payload[key]); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func workflowDraftSanitizeDebugText(text string, maxLen int) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if maxLen <= 0 || len(text) <= maxLen {
+		return text
+	}
+	if maxLen <= 3 {
+		return text[:maxLen]
+	}
+	return text[:maxLen-3] + "..."
 }
 
 func workflowDraftLLMRequestBody(description, language string) map[string]any {

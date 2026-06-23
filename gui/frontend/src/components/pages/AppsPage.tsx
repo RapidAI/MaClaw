@@ -26,6 +26,7 @@ type AppEntry = {
     manifest?: AppManifestBinding;
     importedRunEvidence?: AppRunHistoryEntry;
     versionSnapshot?: BackendAppInstallVersionSnapshot;
+    workflowContract?: AppWorkflowContract;
 };
 
 type AppIconName = 'receipt' | 'wallet' | 'invoice' | 'warehouse' | 'inventory' | 'customer' | 'users' | 'contract' | 'pdf' | 'shield' | 'sheet' | 'chart' | 'dashboard' | 'database' | 'eraser' | 'truck' | 'calendar' | 'web' | 'sync' | 'bot';
@@ -72,6 +73,8 @@ type BackendAppInstallPlan = {
     schema?: string;
     apps?: Array<{ id: string; name?: string; kind?: string; schema?: string }>;
     dependencies?: BackendAppInstallDependency[];
+    workflow_contract_issues?: AppReviewIssue[];
+    has_workflow_contract_issue?: boolean;
     has_missing_required?: boolean;
     has_blocking_dependency?: boolean;
 };
@@ -843,6 +846,12 @@ const labels = {
         dependencyVerificationBlocked: '\u4f9d\u8d56\u9a8c\u8bc1\u53d1\u73b0\u963b\u65ad\u9879',
         versionSnapshot: '\u7248\u672c\u5feb\u7167',
         appSkill: '\u5e94\u7528 Skill',
+        workflowContract: '\u8fd0\u884c\u5951\u7ea6',
+        workflowContractReady: '\u8fd0\u884c\u5951\u7ea6\u5df2\u5bf9\u9f50',
+        workflowContractBlocked: '\u8fd0\u884c\u5951\u7ea6\u9700\u5904\u7406',
+        workflowContractInputs: '\u8f93\u5165',
+        workflowContractOutputs: '\u8f93\u51fa',
+        workflowContractMissing: '\u672a\u58f0\u660e\u8fd0\u884c\u5951\u7ea6',
         approvalBinding: '\u5ba1\u6279\u7ed1\u5b9a',
         skillDependencies: '\u4f9d\u8d56 Skill',
         installedDependency: '\u5df2\u5b89\u88c5',
@@ -1123,6 +1132,12 @@ const labels = {
         dependencyVerificationBlocked: 'Dependency verification found blocking items',
         versionSnapshot: 'Version snapshot',
         appSkill: 'App Skill',
+        workflowContract: 'Runtime contract',
+        workflowContractReady: 'Runtime contract aligned',
+        workflowContractBlocked: 'Runtime contract needs attention',
+        workflowContractInputs: 'Inputs',
+        workflowContractOutputs: 'Outputs',
+        workflowContractMissing: 'Runtime contract not declared',
         approvalBinding: 'Approval binding',
         skillDependencies: 'Skill dependencies',
         installedDependency: 'Installed',
@@ -1983,6 +1998,7 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
     const appSkillID = String(metadata.app_skill_id || '').trim();
     const appSkillVersion = String(metadata.app_skill_version || '').trim();
     const versionSnapshot = dataSrvInstalledVersionSnapshot(metadata, item, workflowIDs, primaryBinding);
+    const workflowContract = dataSrvInstalledWorkflowContract(metadata, kind);
     const workflowVersionByID = new Map((versionSnapshot?.workflow_skills || []).map((skill) => [skill.id || '', skill.version || '']));
     const workflowDependencies: AppSkillDependency[] = workflowIDs.map((id) => ({ id, version: workflowVersionByID.get(id) || undefined, kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }));
     const mergedDependencies = mergeDataSrvInstalledDependencies(dependencies, workflowDependencies);
@@ -1999,6 +2015,7 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
         version: normalizeAppVersion(item.version),
         importedRunEvidence,
         versionSnapshot,
+        workflowContract,
         manifest: {
             schema: 'maclaw.app.v1',
             installUnit: 'enterprise_app_pack',
@@ -2126,6 +2143,51 @@ function dedupeVersionSnapshotBindings(items: BackendAppInstallApprovalBindingSn
     });
 }
 
+function normalizeAppWorkflowContract(value: unknown, kind: AppKind, fallback?: Partial<AppWorkflowContract>): AppWorkflowContract | undefined {
+    if (kind !== 'enterprise_approval_app') return undefined;
+    const raw = value && typeof value === 'object' ? value as Record<string, any> : {};
+    const statusRaw = raw.statusMapping && typeof raw.statusMapping === 'object'
+        ? raw.statusMapping as Record<string, unknown>
+        : raw.status_mapping && typeof raw.status_mapping === 'object'
+            ? raw.status_mapping as Record<string, unknown>
+            : {};
+    const workflowSkillId = String(raw.workflowSkillId || raw.workflow_skill_id || raw.workflowId || raw.workflow_id || fallback?.workflowSkillId || '').trim();
+    const workflowVersion = String(raw.workflowVersion || raw.workflow_version || fallback?.workflowVersion || '').trim();
+    const objectRole = String(raw.objectRole || raw.object_role || raw.businessObjectRole || raw.business_object_role || fallback?.objectRole || '').trim();
+    if (!workflowSkillId || !objectRole) return undefined;
+    const requiredInputs = parseStringList(raw.requiredInputs || raw.required_inputs || fallback?.requiredInputs);
+    const decisionOutputs = parseStringList(raw.decisionOutputs || raw.decision_outputs || fallback?.decisionOutputs);
+    const fallbackStatus = fallback?.statusMapping || {};
+    const clean = (item: unknown, fallbackValue = '') => String(item || fallbackValue || '').trim();
+    return {
+        schema: 'maclaw.app.workflow_contract.v1',
+        workflowSkillId,
+        workflowVersion: workflowVersion || undefined,
+        objectRole,
+        requiredInputs: requiredInputs.length ? requiredInputs : ['record_ref', 'applicant', 'business_payload'],
+        decisionOutputs: decisionOutputs.length ? decisionOutputs : ['approved', 'rejected', 'attention'],
+        statusMapping: {
+            pending: clean(statusRaw.pending, fallbackStatus.pending || 'approval_pending'),
+            approved: clean(statusRaw.approved, fallbackStatus.approved || 'approved'),
+            rejected: clean(statusRaw.rejected, fallbackStatus.rejected || 'rejected'),
+            attention: clean(statusRaw.attention, fallbackStatus.attention || 'attention'),
+            requiresInput: clean(statusRaw.requiresInput ?? statusRaw.requires_input, fallbackStatus.requiresInput || 'requires_input'),
+        },
+    };
+}
+
+function dataSrvInstalledWorkflowContract(metadata: Record<string, any>, kind: AppKind): AppWorkflowContract | undefined {
+    const rawGovernance = metadata.governance && typeof metadata.governance === 'object' ? metadata.governance as Record<string, any> : {};
+    const raw = metadata.workflow_contract || metadata.workflowContract || rawGovernance.workflow_contract || rawGovernance.workflowContract;
+    const fallback: Partial<AppWorkflowContract> = {
+        workflowSkillId: String(metadata.workflow_contract_skill_id || '').trim(),
+        workflowVersion: String(metadata.workflow_contract_version || '').trim() || undefined,
+        objectRole: String(metadata.workflow_contract_object_role || '').trim(),
+        requiredInputs: parseStringList(metadata.workflow_contract_required_inputs),
+        decisionOutputs: parseStringList(metadata.workflow_contract_decision_outputs),
+    };
+    return normalizeAppWorkflowContract(raw, kind, fallback);
+}
 function dataSrvInstalledVersionSnapshot(metadata: Record<string, any>, item: DataSrvAppInstallationItem, workflowIDs: string[], primaryBinding: Record<string, any>): BackendAppInstallVersionSnapshot | undefined {
     const explicit = normalizeVersionSnapshot(metadata.version_snapshot || metadata.versionSnapshot);
     if (explicit) return explicit;
@@ -3434,15 +3496,102 @@ function appWorkflowContractForManifest(app: AppEntry): AppWorkflowContract | un
     const objectRole = String(binding?.objectRole || app.manifest?.datasrv?.objectRole || app.manifest?.datasrv?.domain || '').trim();
     const workflow = normalizeAppWorkflowMapping(app.manifest?.workflow, app.kind, app.manifest?.datasrv?.domain || 'business', objectRole || 'record');
     if (!workflowSkillId || !objectRole || !workflow) return undefined;
-    return {
-        schema: 'maclaw.app.workflow_contract.v1',
+    return normalizeAppWorkflowContract({
         workflowSkillId,
         workflowVersion: workflowVersion || undefined,
         objectRole,
         requiredInputs: ['record_ref', 'applicant', 'business_payload'],
         decisionOutputs: ['approved', 'rejected', 'attention'],
         statusMapping: workflow.statusMapping,
-    };
+    }, app.kind);
+}
+
+function workflowContractForApp(app: AppEntry): AppWorkflowContract | undefined {
+    return app.workflowContract || appWorkflowContractForManifest(app);
+}
+
+function workflowContractIssueForApp(plan: BackendAppInstallPlan | null | undefined, app: AppEntry): AppReviewIssue | undefined {
+    return workflowContractIssuesForAppIDs(plan, [app.id])[0];
+}
+function workflowContractIssuesForAppIDs(plan: BackendAppInstallPlan | null | undefined, appIDs: string[] = []): AppReviewIssue[] {
+    const issues = plan?.workflow_contract_issues || [];
+    if (issues.length === 0) return [];
+    const selected = new Set(appIDs.flatMap(appInstallIdentityKeys));
+    if (selected.size === 0) return issues;
+    return issues.filter((issue) => {
+        const match = String(issue.path || '').match(/^apps\[(\d+)\]/);
+        if (!match) return true;
+        const app = plan?.apps?.[Number(match[1])];
+        return !!app && appInstallIdentityKeys(app.id).some((key) => selected.has(key));
+    });
+}
+
+function workflowContractHasIssueForAppIDs(plan: BackendAppInstallPlan | null | undefined, appIDs: string[] = []): boolean {
+    const issues = workflowContractIssuesForAppIDs(plan, appIDs);
+    if ((plan?.workflow_contract_issues || []).length > 0) return issues.length > 0;
+    return !!plan?.has_workflow_contract_issue;
+}
+
+function workflowContractIssueMessageForAppIDs(plan: BackendAppInstallPlan | null | undefined, appIDs: string[], text: typeof labels.zh): string {
+    const issue = workflowContractIssuesForAppIDs(plan, appIDs)[0];
+    if (issue?.message) return `${text.workflowContractBlocked}: ${issue.message}`;
+    return text.workflowContractBlocked;
+}
+
+function workflowContractStatus(contract: AppWorkflowContract | undefined, plan: BackendAppInstallPlan | null | undefined, app: AppEntry): 'ready' | 'blocked' | 'missing' {
+    if (workflowContractIssueForApp(plan, app) || plan?.has_workflow_contract_issue) return 'blocked';
+    return contract ? 'ready' : 'missing';
+}
+function workflowContractHasIssue(plan: BackendAppInstallPlan | null | undefined, app: AppEntry): boolean {
+    return workflowContractHasIssueForAppIDs(plan, [app.id]);
+}
+
+function runtimeInstallPlanBlocked(plan: BackendAppInstallPlan | null | undefined, app: AppEntry): boolean {
+    return !!plan?.has_blocking_dependency || hasMissingRequiredBackendDependency(plan, [app.id]) || workflowContractHasIssue(plan, app);
+}
+
+function runtimeInstallPlanBlockMessage(app: AppEntry, plan: BackendAppInstallPlan | null | undefined, text: typeof labels.zh, lang?: string): string {
+    const issue = workflowContractIssueForApp(plan, app);
+    if (issue?.message) return `${text.workflowContractBlocked}: ${issue.message}`;
+    if (plan?.has_workflow_contract_issue) return text.workflowContractBlocked;
+    return backendDependencyUnavailableMessage(app, plan, text, lang);
+}
+
+function workflowContractSummaryItems(contract: AppWorkflowContract | undefined, text: typeof labels.zh) {
+    if (!contract) return [];
+    const items: Array<{ label: string; value: string }> = [
+        { label: text.workflowSkill, value: [contract.workflowSkillId, contract.workflowVersion ? 'v' + contract.workflowVersion : ''].filter(Boolean).join('@') },
+        { label: text.approvalObjectRoleLabel, value: contract.objectRole },
+    ];
+    if (contract.requiredInputs.length) items.push({ label: text.workflowContractInputs, value: contract.requiredInputs.join(', ') });
+    if (contract.decisionOutputs.length) items.push({ label: text.workflowContractOutputs, value: contract.decisionOutputs.join(', ') });
+    return items.filter((item) => item.value);
+}
+
+const WorkflowContractSummary = ({ contract, state, issue, text }: { contract?: AppWorkflowContract; state: 'ready' | 'blocked' | 'missing'; issue?: AppReviewIssue; text: typeof labels.zh }) => {
+    const items = workflowContractSummaryItems(contract, text);
+    const stateLabel = state === 'blocked' ? text.workflowContractBlocked : state === 'ready' ? text.workflowContractReady : text.workflowContractMissing;
+    if (items.length === 0 && state === 'missing') return null;
+    return (
+        <div className="apps-workflow-contract-summary" data-state={state} role={state === 'blocked' ? 'alert' : 'group'} aria-label={text.workflowContract}>
+            <span className="apps-workflow-contract-summary__state">{stateLabel}</span>
+            {issue?.message && <span className="apps-workflow-contract-summary__issue">{issue.message}</span>}
+            {items.map((item, index) => (
+                <span key={item.label + ':' + item.value + ':' + index}>
+                    <strong>{item.label}</strong>
+                    <em>{item.value}</em>
+                </span>
+            ))}
+        </div>
+    );
+};
+
+function appWorkflowContractPublishSummary(app: AppEntry, lang?: string) {
+    const zh = isZh(lang);
+    const contract = workflowContractForApp(app);
+    if (!contract) return zh ? '\u672a\u58f0\u660e\u8fd0\u884c\u5951\u7ea6' : 'Runtime contract not declared';
+    const workflow = [contract.workflowSkillId, contract.workflowVersion ? `v${contract.workflowVersion}` : ''].filter(Boolean).join('@');
+    return [workflow, contract.objectRole, contract.requiredInputs.length ? `${zh ? '\u8f93\u5165' : 'inputs'} ${contract.requiredInputs.length}` : '', contract.decisionOutputs.length ? `${zh ? '\u8f93\u51fa' : 'outputs'} ${contract.decisionOutputs.length}` : ''].filter(Boolean).join(' / ');
 }
 function appResultContractPublishSummary(app: AppEntry, lang?: string) {
     const zh = isZh(lang);
@@ -3616,6 +3765,9 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
             dependencyCount: overrides.dependencyVerification.dependencies?.length || 0,
             hasMissingRequired: !!overrides.dependencyVerification.has_missing_required,
             hasBlockingDependency: !!overrides.dependencyVerification.has_blocking_dependency,
+            hasWorkflowContractIssue: workflowContractHasIssueForAppIDs(overrides.dependencyVerification, [app.id]),
+            workflowContractIssueCount: workflowContractIssuesForAppIDs(overrides.dependencyVerification, [app.id]).length,
+            workflowContractIssues: workflowContractIssuesForAppIDs(overrides.dependencyVerification, [app.id]),
             dependencies: parseBackendAppInstallDependencies(overrides.dependencyVerification.dependencies),
         } : undefined,
         workspaceLayout: appWorkspaceLayoutEvidence(app),
@@ -4812,7 +4964,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
                 if (disposed) return;
                 setRuntimeDependencyPlan(dependencyPlan || null);
-                const blocked = !!dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, [app.id]);
+                const blocked = runtimeInstallPlanBlocked(dependencyPlan, app);
                 setRuntimeDependencyCheckState(blocked ? 'blocked' : 'ready');
             } catch {
                 if (disposed) return;
@@ -5037,10 +5189,10 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         approvalRunContextRef.current = null;
         if (app?.id) onUse?.(app.id);
         if (!options?.skipDependencyCheck && app && appNeedsRuntimeDependencyCheck(app)) {
-            const existingPlanBlocked = !!runtimeDependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(runtimeDependencyPlan, [app.id]);
+            const existingPlanBlocked = runtimeInstallPlanBlocked(runtimeDependencyPlan, app);
             if (existingPlanBlocked) {
                 setRuntimeDependencyCheckState('blocked');
-                setValidationMessage(backendDependencyUnavailableMessage(app, runtimeDependencyPlan, text, lang));
+                setValidationMessage(runtimeInstallPlanBlockMessage(app, runtimeDependencyPlan, text, lang));
                 setRunState('error');
                 return;
             }
@@ -5048,9 +5200,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 setRuntimeDependencyCheckState('checking');
                 const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
                 setRuntimeDependencyPlan(dependencyPlan || null);
-                if (dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, [app.id])) {
+                if (runtimeInstallPlanBlocked(dependencyPlan, app)) {
                     setRuntimeDependencyCheckState('blocked');
-                    setValidationMessage(backendDependencyUnavailableMessage(app, dependencyPlan, text, lang));
+                    setValidationMessage(runtimeInstallPlanBlockMessage(app, dependencyPlan, text, lang));
                     setRunState('error');
                     return;
                 }
@@ -5336,8 +5488,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         try {
             const dependencyInstallPlan = await InstallMaclawAppDependencies(JSON.stringify(appToManifest(app)));
             setRuntimeDependencyPlan(dependencyInstallPlan || null);
-            if (dependencyInstallPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyInstallPlan, [app.id])) {
-                setValidationMessage(backendDependencyUnavailableMessage(app, dependencyInstallPlan, text, lang));
+            if (runtimeInstallPlanBlocked(dependencyInstallPlan, app)) {
+                setValidationMessage(runtimeInstallPlanBlockMessage(app, dependencyInstallPlan, text, lang));
                 setRunState('error');
                 setDependencyRepairState('idle');
                 return;
@@ -5442,12 +5594,13 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     };
     const runtimeDependencyDetails = runtimeDependencyPlan ? backendDependenciesForApp(runtimeDependencyPlan, app.id) : [];
     const visibleRuntimeDependencyDetails = runtimeDependencyDetails.length > 0 ? runtimeDependencyDetails : runtimeDependencyPlan?.dependencies || [];
-    const runtimeDependencyBlocked = !!app && (!!runtimeDependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(runtimeDependencyPlan, [app.id]));
+    const runtimeDependencyBlocked = !!app && runtimeInstallPlanBlocked(runtimeDependencyPlan, app);
     const runtimeDependencyChecking = runtimeDependencyCheckState === 'checking' || dependencyRepairState === 'installing';
     const runtimeDependencyReady = runtimeDependencyCheckState === 'ready' && visibleRuntimeDependencyDetails.length > 0 && !runtimeDependencyBlocked;
-    const runtimeDependencyMessage = backendDependencyUnavailableMessage(app, runtimeDependencyPlan, text, lang);
+    const runtimeDependencyMessage = app ? runtimeInstallPlanBlockMessage(app, runtimeDependencyPlan, text, lang) : backendDependencyUnavailableMessage(app, runtimeDependencyPlan, text, lang);
     const showRuntimeDependencyDetails = visibleRuntimeDependencyDetails.length > 0 && (runState === 'error' || dependencyRepairState === 'installing' || runtimeDependencyBlocked || runtimeDependencyReady);
-    const canInstallRuntimeDependencies = !!app && appNeedsRuntimeDependencyCheck(app) && (runtimeDependencyBlocked || dependencyRepairState === 'installing' || validationMessage === text.missingRequiredDependency);
+    const runtimeWorkflowContractBlocked = !!app && workflowContractHasIssue(runtimeDependencyPlan, app);
+    const canInstallRuntimeDependencies = !!app && appNeedsRuntimeDependencyCheck(app) && !runtimeWorkflowContractBlocked && (runtimeDependencyBlocked || dependencyRepairState === 'installing' || validationMessage === text.missingRequiredDependency);
     const runDisabled = runState === 'running' || dependencyRepairState === 'installing';
     const runtimeStatusMessage = runState === 'done'
         ? text.runCompleted
@@ -5473,6 +5626,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 : runtimeDependencyReady
                     ? 'done'
                     : 'idle';
+    const runtimeWorkflowContract = workflowContractForApp(app);
+    const runtimeWorkflowContractIssue = workflowContractIssueForApp(runtimeDependencyPlan, app);
+    const runtimeWorkflowContractState = workflowContractStatus(runtimeWorkflowContract, runtimeDependencyPlan, app);
     const runtimeLayout = runtimeWorkspaceLayoutForApp(app);
     const runtimeOrder = runtimeWorkspaceOrder(runtimeLayout);
     const inputRegion = runtimeLayout.primaryRegion;
@@ -5487,6 +5643,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     <h2 className="apps-detail__title">{app.name}</h2>
                     <p className="apps-detail__subtitle">{app.description}</p>
                     <InstallVersionSnapshot snapshot={app.versionSnapshot} text={text} />
+                    {isApproval && <WorkflowContractSummary contract={runtimeWorkflowContract} state={runtimeWorkflowContractState} issue={runtimeWorkflowContractIssue} text={text} />}
                 </div>
             </div>
             <div className="apps-detail__body elegant-scrollbar">
@@ -5601,6 +5758,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                             <div className="apps-runtime-section__title">{text.runtimeStatus}</div>
                             <div className={`apps-result-panel${showRuntimeDependencyDetails ? ' apps-result-panel--stacked' : ''}`} data-state={runtimeStatusState}>
                                 <span>{runtimeStatusMessage}</span>
+                                {isApproval && runtimeWorkflowContractState === 'blocked' && <WorkflowContractSummary contract={runtimeWorkflowContract} state={runtimeWorkflowContractState} issue={runtimeWorkflowContractIssue} text={text} />}
                                 {showRuntimeDependencyDetails && <InstallRecordDependencies dependencies={visibleRuntimeDependencyDetails} text={text} />}
                                 {canInstallRuntimeDependencies && (
                                     <button className="apps-secondary-button apps-result-panel__action" type="button" disabled={dependencyRepairState === 'installing'} onClick={() => void installRuntimeDependenciesAndRun()}>
@@ -6625,7 +6783,9 @@ const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text 
         : plan?.dependencies || [];
     const blockingCount = dependencies.filter(isBlockingBackendDependency).length;
     const dependencyCount = dependencies.length;
-    const hasBlockingDependency = blockingCount > 0 || !!plan?.has_blocking_dependency || !!plan?.has_missing_required;
+    const workflowIssues = workflowContractIssuesForAppIDs(plan, appIDs);
+    const hasWorkflowIssue = workflowContractHasIssueForAppIDs(plan, appIDs);
+    const hasBlockingDependency = blockingCount > 0 || !!plan?.has_blocking_dependency || !!plan?.has_missing_required || hasWorkflowIssue;
     const status = state === 'loading'
         ? text.dependencyPlanLoading
         : state === 'error'
@@ -6638,8 +6798,20 @@ const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text 
             <div className="apps-dependency-verification__head">
                 <strong>{text.dependencyVerification}</strong>
                 <span>{status}</span>
-                {state === 'ready' && <em>{text.skillDependencies}: {dependencyCount} · {text.missingDependencyCount}: {blockingCount}</em>}
+                {state === 'ready' && <em>{text.skillDependencies}: {dependencyCount} · {text.missingDependencyCount}: {blockingCount}{hasWorkflowIssue ? ` · ${text.workflowContract}: ${workflowIssues.length || 1}` : ''}</em>}
             </div>
+            {workflowIssues.length > 0 && (
+                <div className="apps-dependency-verification__issues" role="list" aria-label={text.workflowContract}>
+                    {workflowIssues.map((issue, index) => (
+                        <span role="listitem" key={`${issue.path || 'workflow'}-${index}`}>{reviewIssueSummary(issue)}</span>
+                    ))}
+                </div>
+            )}
+            {hasWorkflowIssue && workflowIssues.length === 0 && (
+                <div className="apps-dependency-verification__issues" role="list" aria-label={text.workflowContract}>
+                    <span role="listitem">{text.workflowContractBlocked}</span>
+                </div>
+            )}
             {dependencyCount > 0 && <InstallRecordDependencies dependencies={dependencies} text={text} />}
         </div>
     );
@@ -7980,6 +8152,8 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
     const resultCoverage = appRunEvidenceContractCoverage(app, evidence, lang);
     const dependencies = appDependencyEvidence(app);
     const hasRequiredDependencies = app.kind === 'automation_app' || dependencies.some((dep) => dep.required && dep.id);
+    const workflowContract = workflowContractForApp(app);
+    const hasWorkflowContract = app.kind !== 'enterprise_approval_app' || !!workflowContract;
     const workspaceLayout = appWorkspaceLayoutEvidence(app);
     const hasWorkspaceLayout = workspaceLayout.schema === 'maclaw.app.ui.v1' && !!workspaceLayout.entry && workspaceLayout.regionCount > 0;
     return [
@@ -8011,6 +8185,11 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
             label: zh ? 'Workspace layout' : 'Workspace layout',
             ok: hasWorkspaceLayout,
             detail: appWorkspaceLayoutPublishSummary(app, lang),
+        },
+        {
+            label: text.workflowContract,
+            ok: hasWorkflowContract,
+            detail: app.kind === 'enterprise_approval_app' ? appWorkflowContractPublishSummary(app, lang) : (zh ? '\u975e\u5ba1\u6279\u5e94\u7528\u4e0d\u9700\u8981\u5ba1\u6279\u8fd0\u884c\u5951\u7ea6' : 'Not required for non-approval apps'),
         },
         {
             label: zh ? '\u7ed3\u679c\u5951\u7ea6' : 'Result contract',
@@ -8093,6 +8272,9 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
         let dependencyPlan: BackendAppInstallPlan | undefined;
         try {
             dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
+            if (workflowContractHasIssue(dependencyPlan, app)) {
+                throw new Error(runtimeInstallPlanBlockMessage(app, dependencyPlan, text, lang));
+            }
             if (dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, [app.id])) {
                 throw new Error(text.missingRequiredDependency);
             }
@@ -9268,6 +9450,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
     const selectedInstallSet = new Set(selectedInstallKeys ?? installableKeys);
     const selectedInstallCount = installPlan.filter((item) => (item.action === 'install' || item.action === 'upgrade') && selectedInstallSet.has(item.key)).length;
     const selectedInstallAppIDs = installPlan.filter((item) => (item.action === 'install' || item.action === 'upgrade') && selectedInstallSet.has(item.key)).map((item) => item.app.id);
+    const selectedHasWorkflowContractIssue = backendInstallPlanState === 'ready' && workflowContractHasIssueForAppIDs(backendInstallPlan, selectedInstallAppIDs);
     const selectedHasMissingRequiredDependency = backendInstallPlanState === 'ready' && hasMissingRequiredBackendDependency(backendInstallPlan, selectedInstallAppIDs);
     const upgradeableCount = installPlan.filter((item) => item.action === 'upgrade').length;
     const skippedPreviewCount = installPlan.length - selectedInstallCount;
@@ -9291,11 +9474,11 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
         try {
             const dependencyInstallPlan = await InstallMaclawAppDependencies(manifestText);
             const dependencyDetails = backendDependenciesForApp(dependencyInstallPlan, app.id);
-            if (dependencyInstallPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyInstallPlan, [app.id])) {
+            if (runtimeInstallPlanBlocked(dependencyInstallPlan, app)) {
                 setMarketInstallFeedback({
                     appId: app.id,
                     state: 'error',
-                    message: text.missingRequiredDependency,
+                    message: workflowContractHasIssue(dependencyInstallPlan, app) ? runtimeInstallPlanBlockMessage(app, dependencyInstallPlan, text, lang) : text.missingRequiredDependency,
                     plan: dependencyInstallPlan || null,
                     appIDs: [app.id],
                     dependencies: dependencyDetails.length > 0 ? dependencyDetails : dependencyInstallPlan?.dependencies || [],
@@ -9344,11 +9527,17 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
             const selectedKeys = new Set(selectedInstallKeys ?? selectableKeys);
             const selectedAppIDs = plan.filter((item) => (item.action === 'install' || item.action === 'upgrade') && selectedKeys.has(item.key)).map((item) => item.app.id);
             let dependencyPlanForResult: BackendAppInstallPlan | null = backendInstallPlanState === 'ready' ? backendInstallPlan : null;
+            if (backendInstallPlanState === 'ready' && workflowContractHasIssueForAppIDs(backendInstallPlan, selectedAppIDs)) {
+                throw new Error(workflowContractIssueMessageForAppIDs(backendInstallPlan, selectedAppIDs, text));
+            }
             if (backendInstallPlanState === 'ready' && hasMissingRequiredBackendDependency(backendInstallPlan, selectedAppIDs)) {
                 const dependencyInstallPlan = await InstallMaclawAppDependencies(manifestText);
                 dependencyPlanForResult = dependencyInstallPlan || null;
                 setBackendInstallPlan(dependencyInstallPlan || null);
                 setBackendInstallPlanState('ready');
+                if (workflowContractHasIssueForAppIDs(dependencyInstallPlan, selectedAppIDs)) {
+                    throw new Error(workflowContractIssueMessageForAppIDs(dependencyInstallPlan, selectedAppIDs, text));
+                }
                 if (hasMissingRequiredBackendDependency(dependencyInstallPlan, selectedAppIDs)) {
                     throw new Error(text.missingRequiredDependency);
                 }
@@ -9513,7 +9702,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                 <div className="apps-market-install__body">
                     <div className="apps-preview-title-row">
                         <div className="apps-definition__title">{text.installManifest}</div>
-                        <button className="apps-primary-button" type="button" disabled={!manifestText.trim() || !!installPreview.error || (installPlan.length > 0 && selectedInstallCount === 0)} onClick={installManifest}>{confirmHighRiskInstall ? text.confirmHighRiskInstall : text.install}</button>
+                        <button className="apps-primary-button" type="button" disabled={!manifestText.trim() || !!installPreview.error || selectedHasWorkflowContractIssue || (installPlan.length > 0 && selectedInstallCount === 0)} onClick={installManifest}>{confirmHighRiskInstall ? text.confirmHighRiskInstall : text.install}</button>
                     </div>
                     <textarea aria-label={text.installManifest} value={manifestText} onChange={(event) => {
                         setManifestText(event.target.value);
@@ -9535,6 +9724,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                             {confirmHighRiskInstall && <div className="apps-install-preview__warning" role="alert">{text.highRiskInstallWarning}</div>}
                             {backendInstallPlanState === 'loading' && <div className="apps-install-preview__warning">{text.dependencyPlanLoading}</div>}
                             {backendInstallPlanState === 'error' && <div className="apps-install-preview__warning" role="alert">{`${text.dependencyPlanError}: ${backendInstallPlanError}`}</div>}
+                            {selectedHasWorkflowContractIssue && <div className="apps-install-preview__warning" role="alert">{workflowContractIssueMessageForAppIDs(backendInstallPlan, selectedInstallAppIDs, text)}</div>}
                             {selectedHasMissingRequiredDependency && <div className="apps-install-preview__warning" role="alert">{text.missingRequiredDependency}</div>}
                             <DependencyVerificationPanel plan={backendInstallPlan} state={backendInstallPlanState} error={backendInstallPlanError} selectedAppIDs={selectedInstallAppIDs} text={text} />
                             <div className="apps-preview-title-row">
@@ -9557,7 +9747,8 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                                                 ? `${text.willSkip} · ${text.duplicateApp}`
                                                 : `${text.willSkip} · ${text.notSelected}`;
                                     const backendDependencies = backendDependenciesForApp(backendInstallPlan, item.app.id);
-                                    const hasBlockingDependencies = backendInstallPlanState === 'ready' && backendDependencies.some(isBlockingBackendDependency);
+                                    const workflowIssue = backendInstallPlanState === 'ready' ? workflowContractIssueForApp(backendInstallPlan, item.app) : undefined;
+                                    const hasBlockingDependencies = backendInstallPlanState === 'ready' && (backendDependencies.some(isBlockingBackendDependency) || !!workflowIssue);
                                     const dependencyText = backendInstallPlanState === 'ready' && backendDependencies.length > 0
                                         ? backendDependencies.map((dep) => backendDependencySummary(dep, text)).join(', ')
                                         : item.dependencies.map((dep) => dep.version ? `${dep.id}@${dep.version}` : dep.id).join(', ');
@@ -9584,6 +9775,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                                             <strong>{item.app.name}</strong>
                                             <span>{item.app.category} · {appKinds[item.app.kind][isZh(lang) ? 'zh' : 'en']}</span>
                                             {dependencyText && <small>{text.skillDependencies}: {dependencyText}</small>}
+                                            {workflowIssue && <small>{text.workflowContract}: {reviewIssueSummary(workflowIssue)}</small>}
                                             {item.action === 'upgrade' && item.addedScopes.length > 0 && (
                                                 <small>
                                                     {text.permissionChanges}: +{item.addedScopes.join(', ')}

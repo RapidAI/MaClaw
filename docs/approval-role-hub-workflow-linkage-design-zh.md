@@ -161,7 +161,7 @@ PUT /api/admin/security/approval-roles
 GET /api/v1/workflow-directory/approvers
 ```
 
-管理端接口使用租户管理员权限，保存到租户级 system settings：`approval_roles_v1`。工作流目录接口在原有组织树、成员、机器、数字员工基础上增加 `approval_roles` 和 `function_scopes` 字段，供审批节点选择器按组织视图和职能视图展示；当某个职能已存在但尚未配置审批角色时，设计器在职能视图中显示为不可选提示行，避免配置人误判为职能不存在。
+管理端接口使用租户管理员权限，保存到租户级 system settings：`approval_roles_v1`。工作流目录接口在原有组织树、成员、机器、数字员工基础上增加 `approval_roles` 和 `function_scopes` 字段，供审批节点选择器按组织视图和职能视图展示；只有绑定了审批主体的角色可被工作流选择，当某个职能已存在但尚未配置可用审批角色时，设计器在职能视图中显示为不可选提示行，避免配置人误判为职能不存在。
 
 推荐响应结构：
 
@@ -462,14 +462,14 @@ Hub 查询：销售部 / 合同审批员
 ### Hub 侧
 
 - 当前范围无审批角色：提示“当前范围尚未配置审批角色”，提供“新建审批角色”。
-- 角色无成员：提示“该角色尚未绑定审批主体，工作流引用后运行时会失败”。
+- 角色无成员：作为待配置模板保留在 Hub 页面中，但保存和工作流选择时不作为可用审批角色。
 - 数字员工无审批权限：允许显示，但不可选，提示“未启用审批参与权限”。
 - 个人数字分身无代表人：不可保存。
 
 ### 工作流设计器侧
 
 - 已选角色不存在：显示“该审批角色已被删除或停用”，要求重新选择。
-- 已选范围下角色无成员：显示“该范围下尚未配置可用审批主体”，提供跳转 Hub 的入口。`function_scopes` 中存在但无审批角色的职能在选择器中显示为“未配置审批角色”的不可选行。
+- 已选范围下角色无成员：显示“该范围下尚未配置可用审批主体”，提供跳转 Hub 的入口。`function_scopes` 中存在但无可用审批角色的职能在选择器中显示为“未配置审批角色”的不可选行。
 - 角色包含数字员工：显示执行方式，避免配置人误以为只有人工审批。
 - 指定成员为数字分身：显示“代表：张三”。
 
@@ -562,7 +562,7 @@ Hub 配置审批角色
 本轮实现后，联动链路需要按以下闭环验收：
 
 - Hub `审批角色` 保存租户级角色配置，角色 ID 使用 `role:{scopeType}:{scopeId}:{roleCode}`，工作流设计器只保存该稳定引用。
-- 工作流目录接口返回 `approval_roles` 和 `function_scopes`，审批节点选择器优先使用 Hub 配置；接口不可用时只允许使用本地缓存/默认角色作为兜底展示。
+- 工作流目录接口返回 `approval_roles` 和 `function_scopes`，审批节点选择器优先使用 Hub 配置；仅绑定了审批主体的角色可选，接口不可用时只允许使用本地缓存/默认角色作为兜底展示。
 - 组织视图中，部门数字员工按 `visible_group_ids` 归入部门；个人数字分身按 `owner_email` 归入对应物理员工；未配置部门归属的部门数字员工只在根节点兜底展示。
 - 运行时进入审批节点时，将 `role:*` 引用解析为具体审批机器，并把解析后的 `approver_ids` 与原始 `original_approvers` 写入节点执行结果，供待办过滤和审计排查使用。
 - `我的待审批` 以运行时解析后的 `approver_ids` 过滤，历史运行中没有该元数据的审批节点继续按旧逻辑展示，避免旧数据突然消失。
@@ -577,7 +577,7 @@ Hub 配置审批角色
 | 审批主体选择 | 可从同一范围内选择物理员工、部门数字员工、个人数字分身；个人数字分身按 `owner_email` 归入物理员工，部门数字员工按 `visible_group_ids` 归入部门。 | `security-tab.test.js` 中 `subject picker writes scoped organization assignees before save` |
 | 保存模型 | Hub 保存租户级 `approval_roles_v1`，角色 ID 为 `role:{scopeType}:{scopeId}:{roleCode}`，并规范化/去重非法输入。 | `approval_roles_handler.go`、`approval_roles_handler_test.go` |
 | 设计器目录 | `/api/v1/workflow-directory/approvers` 返回组织树、部门成员、用户、机器、数字员工和 `approval_roles`。 | `workflow_directory_handler.go`、`workflow_directory_handler_test.go` |
-| 设计器选择器 | 审批节点选择审批人时提供组织视图、职能视图和直接成员视图；组织/职能视图能显示 Hub 审批角色及已配置主体摘要；职能已存在但未配置角色时显示不可选提示。 | `workflow-editor.js`、`workflow-editor.test.js` |
+| 设计器选择器 | 审批节点选择审批人时提供组织视图、职能视图和直接成员视图；组织/职能视图能显示 Hub 可用审批角色及已配置主体摘要；职能已存在但未配置可用角色时显示不可选提示。 | `workflow-editor.js`、`workflow-editor.test.js` |
 | 运行时解析 | 工作流保存稳定 `role:*` 引用；进入审批节点或提交审批决定时解析为具体机器/审批主体。 | `workflow_approval_role_resolver.go`、`workflow_approval_role_resolver_test.go`、`api_decision_test.go` |
 | 授权闭环 | 提交审批决定前必须解析角色后再校验调用者；解析为空或解析失败时不允许误放行。 | `TestDecisionAPI_UnresolvedApprovalRoleIsForbidden`、`TestDecisionAPI_ApprovalRoleResolveErrorFailsClosed` |
 

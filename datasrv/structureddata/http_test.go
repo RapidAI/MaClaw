@@ -566,7 +566,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/export-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/operation-plans":                       {"dataset_id", "operation", "status"},
 		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node"},
-		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "app_id", "blueprint_id", "object_role", "status", "kind", "workflow_skill_id", "workflow_instance_id", "workflow_node_id", "business_status", "result_status", "assigned_to", "overdue"},
+		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "app_id", "blueprint_id", "object_role", "status", "kind", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "business_status", "result_status", "assigned_to", "created_by", "reviewed_by", "lane", "overdue", "before", "before_id"},
 		"/api/v1/data/datasets/{datasetId}/schema-proposals": {"status"},
 		"/api/v1/data/datasets/{datasetId}/records":          {"q", "tag"},
 	} {
@@ -3067,6 +3067,15 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		}
 		if item.Type == "audit" && item.Action == "approval.approve" && item.Metadata["business_record_updated"] == true {
 			foundApprovalAudit = true
+			if item.Metadata["app_id"] != "mis.sales_order" || item.Metadata["workflow_skill_id"] != "approval.sales_order" || item.Metadata["workflow_version"] != "1.0.1" || item.Metadata["workflow_instance_id"] != "wf-so-1" || item.Metadata["workflow_node_id"] != "manager_review" || item.Metadata["result_status"] != "completed" {
+				t.Fatalf("approval audit missing app/workflow traceability metadata: %#v", item.Metadata)
+			}
+			if item.Metadata["output_count"] != float64(2) || item.Metadata["artifact_count"] != float64(1) {
+				t.Fatalf("approval audit missing result package summary: %#v", item.Metadata)
+			}
+			if payload, ok := item.Metadata["result_payload"].(map[string]any); !ok || payload["approval_result"] != "approved" {
+				t.Fatalf("approval audit missing result payload metadata: %#v", item.Metadata)
+			}
 		}
 	}
 	if approvalTimelineItem == nil || !foundApprovalRecordRevision || !foundApprovalAudit {

@@ -47,7 +47,7 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 	} else if len(existing) > 0 {
 		reused := existing[0]
 		reused.Reused = true
-		s.audit(ctx, p, "approval.reuse", datasetID, "record", recordID, "Reused pending approval "+reused.ID, map[string]any{"approval_id": reused.ID, "kind": reused.Kind, "app_id": reused.AppID, "blueprint_id": reused.BlueprintID, "object_role": reused.ObjectRole})
+		s.audit(ctx, p, "approval.reuse", datasetID, "record", recordID, "Reused pending approval "+reused.ID, recordApprovalAuditMetadata(reused, nil))
 		return &reused, nil
 	}
 	now := s.now().UTC()
@@ -91,7 +91,7 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 	if err != nil {
 		return nil, err
 	}
-	s.audit(ctx, p, "approval.create", datasetID, "record", recordID, "Created approval "+out.ID, map[string]any{"approval_id": out.ID, "kind": out.Kind, "priority": out.Priority, "assigned_to": out.AssignedTo, "due_at": formatOptionalPlanTime(out.DueAt), "app_id": out.AppID, "blueprint_id": out.BlueprintID, "object_role": out.ObjectRole, "business_record_updated": businessRecordUpdated})
+	s.audit(ctx, p, "approval.create", datasetID, "record", recordID, "Created approval "+out.ID, recordApprovalAuditMetadata(*out, map[string]any{"business_record_updated": businessRecordUpdated}))
 	return out, nil
 }
 
@@ -145,6 +145,7 @@ func validRecordApprovalLane(value string) bool {
 
 func recordApprovalMetadata(approval RecordApproval) map[string]any {
 	return map[string]any{
+		"approval_id":          approval.ID,
 		"app_id":               approval.AppID,
 		"blueprint_id":         approval.BlueprintID,
 		"object_role":          approval.ObjectRole,
@@ -170,6 +171,22 @@ func recordApprovalMetadata(approval RecordApproval) map[string]any {
 	}
 }
 
+func recordApprovalAuditMetadata(approval RecordApproval, extra map[string]any) map[string]any {
+	metadata := recordApprovalMetadata(approval)
+	metadata["status"] = approval.Status
+	metadata["output_count"] = len(approval.Outputs)
+	metadata["artifact_count"] = len(approval.Artifacts)
+	if len(approval.Outputs) == 0 {
+		delete(metadata, "outputs")
+	}
+	if len(approval.Artifacts) == 0 {
+		delete(metadata, "artifacts")
+	}
+	for key, value := range extra {
+		metadata[key] = value
+	}
+	return metadata
+}
 func (s *Service) GetRecordApproval(ctx context.Context, p Principal, approvalID string) (*RecordApproval, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -207,7 +224,7 @@ func (s *Service) ReviewRecordApproval(ctx context.Context, p Principal, approva
 	if err != nil {
 		return nil, err
 	}
-	s.audit(ctx, p, "approval."+decision, out.DatasetID, "record", out.RecordID, "Reviewed approval "+approvalID, map[string]any{"approval_id": approvalID, "decision": decision, "reason": strings.TrimSpace(in.Reason), "business_status": out.BusinessStatus, "result_status": out.ResultStatus, "business_record_updated": businessRecordUpdated})
+	s.audit(ctx, p, "approval."+decision, out.DatasetID, "record", out.RecordID, "Reviewed approval "+approvalID, recordApprovalAuditMetadata(*out, map[string]any{"decision": decision, "reason": strings.TrimSpace(in.Reason), "business_record_updated": businessRecordUpdated}))
 	return out, nil
 }
 

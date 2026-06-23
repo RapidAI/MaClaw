@@ -49,7 +49,7 @@ function looksLikeFilePath(s: string): boolean {
  * Uses the same patterns as the inline regex path groups to find the path substring.
  */
 function extractPathFromContent(s: string): string | null {
-    const m = s.match(/([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)|([A-Za-z]:\\[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\\])|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/);
+    const m = s.match(/([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|([A-Za-z]:\\[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\\])|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/);
     return m ? m[0] : null;
 }
 
@@ -77,7 +77,13 @@ function renderPathLink(filePath: string, key: number, t: Theme): React.ReactNod
 //   \u4e00-\u9fff  CJK unified ideographs (common Chinese/Japanese/Korean characters)
 //   \uff00-\uffef  fullwidth forms (，。（）：！etc)
 // These prevent path regexes from greedily matching through Chinese text.
-const codeBlockPathPattern = /([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))\/[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)/g;
+//
+// EXCEPTION: Groups anchored by a file extension (`.ext` at the end) ALLOW CJK ideographs
+// (\u4e00-\u9fff) in the path, but still exclude CJK punctuation (\u3000-\u303f) and
+// fullwidth forms (\uff00-\uffef). The extension provides a reliable termination point,
+// and CJK punctuation serves as natural sentence delimiters in Chinese text.
+// Only directory groups (ending with `\`) and bare groups (no anchor) exclude ALL CJK.
+const codeBlockPathPattern = /([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))\/[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)/g;
 function renderCodePathLink(filePath: string, key: string, t: Theme): React.ReactNode {
     const display = stripPathWrapping(filePath);
     return <a key={key} href="#" onClick={(event) => openFileInFolder(event, display)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer" }} title={display}>{display}</a>;
@@ -123,12 +129,12 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
     // guarantees alternation order = priority. This eliminates the need for post-match heuristics.
     //
     // Bare path groups (7-12):
-    //   Group 7: Windows dir — ends with \ (e.g. C:\Users\test\)     — allows internal spaces
-    //   Group 8: Windows file — ends with .ext (e.g. C:\file.txt)    — allows internal spaces
-    //   Group 9: Windows bare — no \ or .ext anchor (e.g. D:\game2)  — NO spaces (stops at first space)
-    //   Group 10-11: Unix file — ends with .ext (e.g. ~/file.txt)    — allows internal spaces
+    //   Group 7: Windows dir — ends with \ (e.g. C:\Users\test\)     — allows internal spaces, excludes CJK
+    //   Group 8: Windows file — ends with .ext (e.g. C:\file.txt)    — allows CJK ideographs, excludes CJK punctuation/fullwidth
+    //   Group 9: Windows bare — no \ or .ext anchor (e.g. D:\game2)  — NO spaces, excludes CJK
+    //   Group 10-11: Unix file — ends with .ext (e.g. ~/file.txt)    — allows CJK ideographs, excludes CJK punctuation/fullwidth
     //   Group 12-13: Unix bare — [\w/.\-]+ only (e.g. ~/projects)
-    const re = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^`]+`)|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)|([A-Za-z]:\\[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\\])(?=[\s,;:!?\u3000-\u303f\u4e00-\u9fff\uff00-\uffef`'"\u2018\u2019\u201c\u201d()\[\]]|$)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
+    const re = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^`]+`)|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|([A-Za-z]:\\[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\\])(?=[\s,;:!?\u3000-\u303f\u4e00-\u9fff\uff00-\uffef`'"\u2018\u2019\u201c\u201d()\[\]]|$)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
     let lastIndex = 0;
     let idx = 0;
     const removeTrailingQuoteFromPreviousText = () => {

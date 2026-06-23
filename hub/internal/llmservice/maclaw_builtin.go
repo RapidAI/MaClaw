@@ -108,7 +108,7 @@ func (c *MaClawProviderClient) ensureCredentials() (hubID, token string) {
 }
 
 // Forward sends an LLM request to HubCenter and returns the response.
-func (c *MaClawProviderClient) Forward(ctx context.Context, body []byte, tenantID string) ([]byte, int, error) {
+func (c *MaClawProviderClient) Forward(ctx context.Context, body []byte, tenantID string, serviceGroupIDs ...string) ([]byte, int, error) {
 	c.mu.RLock()
 	targetURL := c.boundURL
 	c.mu.RUnlock()
@@ -131,6 +131,9 @@ func (c *MaClawProviderClient) Forward(ctx context.Context, body []byte, tenantI
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Hub-ID", hubID)
 	req.Header.Set("X-Tenant-ID", tenantID)
+	if serviceGroupID := firstNonEmptyServiceGroupID(serviceGroupIDs); serviceGroupID != "" {
+		req.Header.Set("X-MaClaw-Service-Group-ID", serviceGroupID)
+	}
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -158,7 +161,7 @@ func (c *MaClawProviderClient) Forward(ctx context.Context, body []byte, tenantI
 
 // ForwardStream sends an LLM streaming request to HubCenter. The caller must
 // close the returned response body.
-func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, tenantID string) (*http.Response, error) {
+func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, tenantID string, serviceGroupIDs ...string) (*http.Response, error) {
 	c.mu.RLock()
 	targetURL := c.boundURL
 	c.mu.RUnlock()
@@ -180,6 +183,9 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Hub-ID", hubID)
 	req.Header.Set("X-Tenant-ID", tenantID)
+	if serviceGroupID := firstNonEmptyServiceGroupID(serviceGroupIDs); serviceGroupID != "" {
+		req.Header.Set("X-MaClaw-Service-Group-ID", serviceGroupID)
+	}
 
 	httpClient := c.streamHTTPClient()
 	resp, err := httpClient.Do(req)
@@ -193,6 +199,15 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 		c.resetFailures()
 	}
 	return resp, nil
+}
+
+func firstNonEmptyServiceGroupID(ids []string) string {
+	for _, id := range ids {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (c *MaClawProviderClient) streamHTTPClient() *http.Client {

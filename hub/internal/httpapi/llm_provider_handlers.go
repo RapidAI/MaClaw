@@ -1910,7 +1910,8 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 	var lastStatus int
 	for _, providerID := range llmservice.OrderProvidersForRequest(chatBody, model) {
 		if IsMaClawProviderRequest(providerID) {
-			resp, err := openMaClawOfficialStreamRequest(request, chatBody)
+			serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, providerID)
+			resp, err := openMaClawOfficialStreamRequest(request, chatBody, serviceGroupIDs)
 			if err != nil {
 				lastErr = err
 				lastProviderID = providerID
@@ -1939,9 +1940,9 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 			usageStat, wroteStream, copyErr := writeOpenAIChatAsResponsesStreamResponse(w, resp, provider, model, streamModel, selectedModelDebug)
 			_ = resp.Body.Close()
 			if copyErr != nil {
-				return statusCode, providerID, llmservice.ServiceGroupIDsForProvider(model, providerID), usageStat, wroteStream, copyErr
+				return statusCode, providerID, serviceGroupIDs, usageStat, wroteStream, copyErr
 			}
-			return statusCode, providerID, llmservice.ServiceGroupIDsForProvider(model, providerID), usageStat, wroteStream, nil
+			return statusCode, providerID, serviceGroupIDs, usageStat, wroteStream, nil
 		}
 		provider := reg.FindProvider(providerID)
 		if provider == nil {
@@ -2104,7 +2105,8 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 	var lastStatus int
 	for _, providerID := range llmservice.OrderProvidersForRequest(body, model) {
 		if IsMaClawProviderRequest(providerID) {
-			resp, err := openMaClawOfficialStreamRequest(request, body)
+			serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, providerID)
+			resp, err := openMaClawOfficialStreamRequest(request, body, serviceGroupIDs)
 			if err != nil {
 				lastErr = err
 				lastProviderID = providerID
@@ -2131,7 +2133,7 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 			if copyErr != nil {
 				return statusCode, providerID, llmservice.ServiceGroupIDsForProvider(model, providerID), usageStat, wroteStream, copyErr
 			}
-			return statusCode, providerID, llmservice.ServiceGroupIDsForProvider(model, providerID), usageStat, wroteStream, nil
+			return statusCode, providerID, serviceGroupIDs, usageStat, wroteStream, nil
 		}
 		provider := reg.FindProvider(providerID)
 		if provider == nil {
@@ -2187,12 +2189,12 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 	return lastStatus, lastProviderID, nil, corelib.TokenUsageStat{}, false, lastErr
 }
 
-func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any) (*http.Response, error) {
+func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any, serviceGroupIDs []string) (*http.Response, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal maclaw official stream request: %w", err)
 	}
-	resp, err := ForwardStreamViaMaClaw(r.Context(), payload, store.TenantIDFromContext(r.Context()))
+	resp, err := ForwardStreamViaMaClaw(r.Context(), payload, store.TenantIDFromContext(r.Context()), serviceGroupIDs...)
 	if err != nil {
 		return nil, err
 	}
@@ -2211,7 +2213,7 @@ func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any) (*htt
 			return resp, nil
 		}
 		log.Printf("[LLM-V1] maclaw official returned 400 for stream; retrying with sanitized OpenAI-compatible body")
-		retryResp, retryErr := ForwardStreamViaMaClaw(r.Context(), retryPayload, store.TenantIDFromContext(r.Context()))
+		retryResp, retryErr := ForwardStreamViaMaClaw(r.Context(), retryPayload, store.TenantIDFromContext(r.Context()), serviceGroupIDs...)
 		if retryErr != nil {
 			return nil, retryErr
 		}
@@ -2232,7 +2234,7 @@ func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any) (*htt
 			return resp, nil
 		}
 		log.Printf("[LLM-V1] maclaw official returned 400 for stream; retrying without tool schemas")
-		retryResp, retryErr := ForwardStreamViaMaClaw(r.Context(), retryPayload, store.TenantIDFromContext(r.Context()))
+		retryResp, retryErr := ForwardStreamViaMaClaw(r.Context(), retryPayload, store.TenantIDFromContext(r.Context()), serviceGroupIDs...)
 		if retryErr != nil {
 			return nil, retryErr
 		}
@@ -3446,7 +3448,8 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 	request := r.Clone(ctx)
 	for _, providerID := range llmservice.OrderProvidersForRequest(body, model) {
 		if IsMaClawProviderRequest(providerID) {
-			respBody, statusCode, fwdErr := forwardMaClawOfficialRequestWithCompatRetry(ctx, body, store.TenantIDFromContext(ctx))
+			serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, providerID)
+			respBody, statusCode, fwdErr := forwardMaClawOfficialRequestWithCompatRetry(ctx, body, store.TenantIDFromContext(ctx), serviceGroupIDs)
 			if fwdErr != nil {
 				lastErr = fwdErr
 				lastBody = respBody
@@ -3463,7 +3466,6 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 				continue
 			}
 			usageStat := parseUsageStats(respBody)
-			serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, providerID)
 			if isTerminalProviderStatus(providerID, statusCode) {
 				return authorizedModelForwardResult{
 					respBody:        respBody,
@@ -3538,12 +3540,12 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 	return authorizedModelForwardResult{respBody: lastBody, statusCode: lastStatus, providerID: lastProviderID}, lastErr
 }
 
-func forwardMaClawOfficialRequestWithCompatRetry(ctx context.Context, body map[string]any, tenantID string) ([]byte, int, error) {
+func forwardMaClawOfficialRequestWithCompatRetry(ctx context.Context, body map[string]any, tenantID string, serviceGroupIDs []string) ([]byte, int, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, 0, fmt.Errorf("marshal maclaw official request: %w", err)
 	}
-	respBody, statusCode, err := ForwardViaMaClaw(ctx, payload, tenantID)
+	respBody, statusCode, err := ForwardViaMaClaw(ctx, payload, tenantID, serviceGroupIDs...)
 	if err != nil || statusCode != http.StatusBadRequest {
 		return respBody, statusCode, err
 	}
@@ -3553,7 +3555,7 @@ func forwardMaClawOfficialRequestWithCompatRetry(ctx context.Context, body map[s
 			return respBody, statusCode, nil
 		}
 		log.Printf("[LLM-V1] maclaw official returned 400; retrying with sanitized OpenAI-compatible body")
-		retryRespBody, retryStatusCode, retryErr := ForwardViaMaClaw(ctx, retryPayload, tenantID)
+		retryRespBody, retryStatusCode, retryErr := ForwardViaMaClaw(ctx, retryPayload, tenantID, serviceGroupIDs...)
 		if retryErr == nil && retryStatusCode != http.StatusBadRequest {
 			return retryRespBody, retryStatusCode, nil
 		}
@@ -3568,7 +3570,7 @@ func forwardMaClawOfficialRequestWithCompatRetry(ctx context.Context, body map[s
 			return respBody, statusCode, nil
 		}
 		log.Printf("[LLM-V1] maclaw official returned 400; retrying without tool schemas")
-		retryRespBody, retryStatusCode, retryErr := ForwardViaMaClaw(ctx, retryPayload, tenantID)
+		retryRespBody, retryStatusCode, retryErr := ForwardViaMaClaw(ctx, retryPayload, tenantID, serviceGroupIDs...)
 		if retryErr == nil && retryStatusCode != http.StatusBadRequest {
 			return retryRespBody, retryStatusCode, nil
 		}

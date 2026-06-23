@@ -296,8 +296,11 @@ async function runTests() {
     assertIncludes(html, 'Sales', 'sales function should be available as a preset');
     assertIncludes(html, 'Risk &amp; Compliance', 'risk and compliance function should be available as a preset');
 
-    g.prompt = function() { return 'HR'; };
+    g.prompt = function() { throw new Error('native prompt should not be used for approval functions'); };
     ctx.addSecApprovalFunction();
+    assert(g.document.elements.approvalFunctionDialogOverlay && g.document.elements.approvalFunctionDialogOverlay.classList.contains('show'), 'add function should open the custom input dialog');
+    ctx.closeSecApprovalFunctionDialog();
+    ctx.submitSecApprovalFunctionName('HR');
     assertEqual(g.__securityAdminState.approvalRoleScope, 'function:hr', 'duplicate function name should select existing scope');
     assertEqual(g.__securityAdminState.approvalFunctionScopes.filter(function(item) { return item.scopeId === 'hr'; }).length, 1, 'duplicate function name should not create a second HR scope');
 
@@ -305,20 +308,22 @@ async function runTests() {
     await ctx.loadApprovalRolesTab();
     assertEqual(g.__securityAdminState.approvalFunctionScopes.filter(function(item) { return String(item.scopeName || '').trim().toLowerCase() === 'hr'; }).length, 1, 'same function name with another id should be deduped');
 
-    g.prompt = function() { return '\u4eba\u4e8b'; };
-    ctx.addSecApprovalFunction();
+    ctx.submitSecApprovalFunctionName('\u4eba\u4e8b');
     var zhScope = g.__securityAdminState.approvalFunctionScopes.find(function(item) { return item.scopeName === '\u4eba\u4e8b'; });
     assert(!!zhScope && /^function_[0-9a-f]{8}$/.test(zhScope.scopeId), 'non-Latin function name should get a stable generated scope id');
-    g.prompt = function() { return ' \u4eba\u4e8b '; };
-    ctx.addSecApprovalFunction();
+    ctx.submitSecApprovalFunctionName(' \u4eba\u4e8b ');
     assertEqual(g.__securityAdminState.approvalFunctionScopes.filter(function(item) { return item.scopeName === '\u4eba\u4e8b'; }).length, 1, 'duplicate non-Latin function name should select existing scope');
     ctx.removeSecApprovalFunction(zhScope.scopeId);
 
-    g.prompt = function() { return 'People Ops'; };
-    ctx.addSecApprovalFunction();
+    ctx.submitSecApprovalFunctionName('People Ops');
     html = g.document.elements.secApprovalRolesRoot.innerHTML;
     assertIncludes(html, 'People Ops', 'custom function should render after add');
     assertEqual(g.__securityAdminState.approvalRoleScope, 'function:people_ops', 'new custom function should become selected');
+    ctx.addSecApprovalRole();
+    assert(g.document.elements.approvalRoleDialogOverlay && g.document.elements.approvalRoleDialogOverlay.classList.contains('show'), 'add role should open the custom input dialog');
+    ctx.closeSecApprovalRoleDialog();
+    ctx.submitSecApprovalRoleName('Budget Approver');
+    assert(g.__securityAdminState.approvalRoles.some(function(item) { return item.scopeId === 'people_ops' && item.roleName === 'Budget Approver'; }), 'custom role should be added to the current function scope');
 
     await ctx.saveSecApprovalRoles();
     var putCall = g._apiCalls.find(function(call) {
@@ -326,6 +331,7 @@ async function runTests() {
     });
     var body = JSON.parse(putCall.opts.body);
     assert(body.functionScopes.some(function(item) { return item.scopeId === 'people_ops' && item.scopeName === 'People Ops'; }), 'save payload should include custom function scope');
+    assert(!body.roles.some(function(item) { return item.scopeId === 'people_ops'; }), 'save payload should not persist empty function role templates');
 
     ctx.removeSecApprovalFunction('people_ops');
     html = g.document.elements.secApprovalRolesRoot.innerHTML;
@@ -386,6 +392,7 @@ async function runTests() {
     g.__securityAdminState.approvalRoles = [];
     await ctx.loadApprovalRolesTab();
     await ctx.openSecApprovalSubjectPicker('role:department:dept-finance:department_manager');
+    assert(g.document.elements.approvalSubjectPickerOverlay && g.document.elements.approvalSubjectPickerOverlay.classList.contains('show'), 'subject picker should open as a visible custom dialog');
     var pickerHtml = g.document.elements.approvalSubjectList.innerHTML;
     assertIncludes(pickerHtml, 'alice@example.com', 'picker should list department physical employee');
     assertIncludes(pickerHtml, 'Alice Twin', 'picker should list department member digital twin');

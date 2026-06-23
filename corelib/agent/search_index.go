@@ -201,8 +201,14 @@ func rebuildCachedSearchIndexForScope(root, globPattern, excludePattern, fileTyp
 	return idx, true
 }
 
+// maxSearchIndexBuildTime caps the wall-clock time for building a search
+// index. If the directory tree is too large (e.g. user home directory),
+// this prevents the search from blocking for minutes.
+const maxSearchIndexBuildTime = 30 * time.Second
+
 func buildLocalSearchIndex(root, globPattern, excludePattern, fileType string, includeHidden bool) (*localSearchIndex, bool) {
 	now := time.Now()
+	deadline := now.Add(maxSearchIndexBuildTime)
 	idx := &localSearchIndex{
 		key:      searchIndexCacheKey(root, globPattern, excludePattern, fileType, includeHidden),
 		root:     root,
@@ -217,7 +223,14 @@ func buildLocalSearchIndex(root, globPattern, excludePattern, fileType string, i
 		postings: make(map[string][]int),
 	}
 	truncated := false
+	walkCount := 0
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		// Check deadline every 512 entries to avoid per-entry syscall overhead.
+		walkCount++
+		if walkCount&511 == 0 && time.Now().After(deadline) {
+			truncated = true
+			return filepath.SkipAll
+		}
 		if err != nil {
 			return nil
 		}

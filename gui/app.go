@@ -3104,8 +3104,21 @@ func (a *App) GetCurrentProjectPath() string {
 	if len(config.Projects) > 0 {
 		return config.Projects[0].Path
 	}
+	// Fallback: prefer cwd over home, but only if cwd is NOT the home dir
+	// and NOT a filesystem root. User home and drive roots contain hundreds of
+	// thousands of files which causes search tools to scan for minutes.
 	home, _ := os.UserHomeDir()
-	return home // Fallback
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		cleanCwd := filepath.Clean(cwd)
+		isRoot := len(cleanCwd) <= 3 // "C:\" or "/"
+		isHome := home != "" && strings.EqualFold(cleanCwd, filepath.Clean(home))
+		if !isRoot && !isHome {
+			return cwd
+		}
+	}
+	// Last resort: return home. Callers (setupDirectCodingExecution) have
+	// additional guards that reject home and allocate a task-specific dir.
+	return home
 }
 func (a *App) getClaudeConfigPaths(projectDir string, instanceID string) (string, string, string) {
 	// Use project-specific config directory with instance ID to avoid cross-contamination

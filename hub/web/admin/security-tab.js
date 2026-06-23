@@ -225,6 +225,8 @@
     approvalRolesRemoveFunction: { zh: '\u5220\u9664\u804c\u80fd', en: 'Delete function' },
     approvalRolesPromptRoleName: { zh: '\u8f93\u5165\u5ba1\u6279\u89d2\u8272\u540d\u79f0', en: 'Enter approval role name' },
     approvalRolesPromptFunctionName: { zh: '\u8f93\u5165\u804c\u80fd\u540d\u79f0', en: 'Enter function name' },
+    approvalRolesRoleDialogDesc: { zh: '\u65b0\u589e\u540e\u4f1a\u5728\u5f53\u524d\u8303\u56f4\u4e0b\u751f\u6210\u5ba1\u6279\u89d2\u8272\uff0c\u8bf7\u7ee7\u7eed\u9009\u62e9\u627f\u62c5\u4e3b\u4f53\u5e76\u4fdd\u5b58\u3002', en: 'After adding it, choose assignees for the current scope and save.' },
+    approvalRolesFunctionDialogDesc: { zh: '\u65b0\u589e\u540e\u4f1a\u5207\u6362\u5230\u8be5\u804c\u80fd\uff0c\u8bf7\u7ee7\u7eed\u914d\u7f6e\u5ba1\u6279\u89d2\u8272\u5e76\u4fdd\u5b58\u3002', en: 'After adding it, configure approval roles for this function and save.' },
     approvalRolesRoleNameRequired: { zh: '\u8bf7\u8f93\u5165\u5ba1\u6279\u89d2\u8272\u540d\u79f0', en: 'Enter an approval role name' },
     approvalRolesFunctionNameRequired: { zh: '\u8bf7\u8f93\u5165\u804c\u80fd\u540d\u79f0', en: 'Enter a function name' },
     approvalRolesFunctionExists: { zh: '\u8be5\u804c\u80fd\u5df2\u5b58\u5728\uff0c\u5df2\u5207\u6362\u5230\u73b0\u6709\u804c\u80fd\u3002', en: 'Function already exists. Switched to the existing function.' },
@@ -3419,6 +3421,10 @@
     };
   }
 
+  function approvalRoleHasAssignees(role) {
+    return !!(role && Array.isArray(role.assignees) && role.assignees.length);
+  }
+
   function setApprovalRoleRowAssignees(row, assignees) {
     if (!row) return;
     assignees = (assignees || []).map(normalizeApprovalAssignee).filter(Boolean);
@@ -3694,12 +3700,113 @@
     }
   };
 
+  function ensureApprovalFunctionDialog() {
+    var overlay = document.getElementById('approvalFunctionDialogOverlay');
+    if (overlay) return overlay;
+    overlay = document.createElement('div');
+    overlay.id = 'approvalFunctionDialogOverlay';
+    overlay.className = 'session-modal-overlay';
+    overlay.innerHTML =
+      '<div class="session-modal approval-function-dialog" role="dialog" aria-modal="true" aria-labelledby="approvalFunctionDialogTitle">' +
+        '<button class="close-btn" type="button" onclick="closeSecApprovalFunctionDialog()">&times;</button>' +
+        '<h3 id="approvalFunctionDialogTitle">' + escapeHtml(st('approvalRolesAddFunction')) + '</h3>' +
+        '<p class="desc" id="approvalFunctionDialogDesc">' + escapeHtml(st('approvalRolesFunctionDialogDesc')) + '</p>' +
+        '<label class="approval-function-field" for="approvalFunctionNameInput">' + escapeHtml(st('approvalRolesPromptFunctionName')) + '</label>' +
+        '<input id="approvalFunctionNameInput" autocomplete="off">' +
+        '<div id="approvalFunctionNameError" class="hint approval-function-error" role="alert"></div>' +
+        '<div class="actions approval-function-actions"><button type="button" class="btn-ghost" onclick="closeSecApprovalFunctionDialog()">' + escapeHtml(st('cancel')) + '</button><button type="button" class="btn-primary" onclick="confirmSecApprovalFunctionDialog()">' + escapeHtml(st('confirm')) + '</button></div>' +
+      '</div>';
+    overlay.onclick = function(event) {
+      if (event.target === overlay) global.closeSecApprovalFunctionDialog();
+    };
+    document.body.appendChild(overlay);
+    var input = document.getElementById('approvalFunctionNameInput');
+    if (input) {
+      input.addEventListener('keydown', function(event) {
+        if (event.key === 'Enter') global.confirmSecApprovalFunctionDialog();
+        if (event.key === 'Escape') global.closeSecApprovalFunctionDialog();
+      });
+      input.addEventListener('input', function() {
+        var error = document.getElementById('approvalFunctionNameError');
+        if (error) error.textContent = '';
+      });
+    }
+    return overlay;
+  }
+
+  function setApprovalFunctionDialogError(message) {
+    var error = document.getElementById('approvalFunctionNameError');
+    if (error) error.textContent = message || '';
+  }
+
+  function ensureApprovalRoleDialog() {
+    var overlay = document.getElementById('approvalRoleDialogOverlay');
+    if (overlay) return overlay;
+    overlay = document.createElement('div');
+    overlay.id = 'approvalRoleDialogOverlay';
+    overlay.className = 'session-modal-overlay';
+    overlay.innerHTML =
+      '<div class="session-modal approval-role-dialog" role="dialog" aria-modal="true" aria-labelledby="approvalRoleDialogTitle">' +
+        '<button class="close-btn" type="button" onclick="closeSecApprovalRoleDialog()">&times;</button>' +
+        '<h3 id="approvalRoleDialogTitle">' + escapeHtml(st('approvalRolesAddRole')) + '</h3>' +
+        '<p class="desc" id="approvalRoleDialogDesc">' + escapeHtml(st('approvalRolesRoleDialogDesc')) + '</p>' +
+        '<label class="approval-function-field" for="approvalRoleNameInput">' + escapeHtml(st('approvalRolesPromptRoleName')) + '</label>' +
+        '<input id="approvalRoleNameInput" autocomplete="off">' +
+        '<div id="approvalRoleNameError" class="hint approval-function-error" role="alert"></div>' +
+        '<div class="actions approval-function-actions"><button type="button" class="btn-ghost" onclick="closeSecApprovalRoleDialog()">' + escapeHtml(st('cancel')) + '</button><button type="button" class="btn-primary" onclick="confirmSecApprovalRoleDialog()">' + escapeHtml(st('confirm')) + '</button></div>' +
+      '</div>';
+    overlay.onclick = function(event) {
+      if (event.target === overlay) global.closeSecApprovalRoleDialog();
+    };
+    document.body.appendChild(overlay);
+    var input = document.getElementById('approvalRoleNameInput');
+    if (input) {
+      input.addEventListener('keydown', function(event) {
+        if (event.key === 'Enter') global.confirmSecApprovalRoleDialog();
+        if (event.key === 'Escape') global.closeSecApprovalRoleDialog();
+      });
+      input.addEventListener('input', function() {
+        var error = document.getElementById('approvalRoleNameError');
+        if (error) error.textContent = '';
+      });
+    }
+    return overlay;
+  }
+
+  function setApprovalRoleDialogError(message) {
+    var error = document.getElementById('approvalRoleNameError');
+    if (error) error.textContent = message || '';
+  }
+
   global.addSecApprovalFunction = function addSecApprovalFunction() {
     syncVisibleApprovalRoleRows();
-    var name = String(prompt(st('approvalRolesPromptFunctionName')) || '').trim();
+    var overlay = ensureApprovalFunctionDialog();
+    var title = document.getElementById('approvalFunctionDialogTitle');
+    var desc = document.getElementById('approvalFunctionDialogDesc');
+    var label = document.querySelector ? document.querySelector('label[for="approvalFunctionNameInput"]') : null;
+    var input = document.getElementById('approvalFunctionNameInput');
+    if (title) title.textContent = st('approvalRolesAddFunction');
+    if (desc) desc.textContent = st('approvalRolesFunctionDialogDesc');
+    if (label) label.textContent = st('approvalRolesPromptFunctionName');
+    if (input) input.value = '';
+    setApprovalFunctionDialogError('');
+    overlay.classList.add('show');
+    if (input && typeof input.focus === 'function') {
+      if (typeof global.setTimeout === 'function') global.setTimeout(function() { input.focus(); }, 0);
+      else input.focus();
+    }
+  };
+
+  global.closeSecApprovalFunctionDialog = function closeSecApprovalFunctionDialog() {
+    var overlay = document.getElementById('approvalFunctionDialogOverlay');
+    if (overlay) overlay.classList.remove('show');
+    setApprovalFunctionDialogError('');
+  };
+
+  global.submitSecApprovalFunctionName = function submitSecApprovalFunctionName(name) {
+    name = String(name || '').trim();
     if (!name) {
-      showToast(st('approvalRolesFunctionNameRequired'), 'info');
-      return;
+      return { ok: false, message: st('approvalRolesFunctionNameRequired') };
     }
     var base = approvalScopeCodeFromName(name);
     var existing = approvalFunctionScopes().find(function(scope) {
@@ -3709,7 +3816,7 @@
       state().approvalRoleScope = 'function:' + existing.scopeId;
       showToast(st('approvalRolesFunctionExists'), 'info');
       renderSecApprovalRoles();
-      return;
+      return { ok: true, existing: true };
     }
     var used = {};
     approvalFunctionScopes().forEach(function(scope) { used[scope.scopeId] = true; });
@@ -3724,6 +3831,18 @@
     state().approvalRoleScope = 'function:' + scopeId;
     showToast(st('approvalRolesFunctionAdded'), 'success');
     renderSecApprovalRoles();
+    return { ok: true, scopeId: scopeId };
+  };
+
+  global.confirmSecApprovalFunctionDialog = function confirmSecApprovalFunctionDialog() {
+    var input = document.getElementById('approvalFunctionNameInput');
+    var result = global.submitSecApprovalFunctionName(input && input.value);
+    if (!result || !result.ok) {
+      setApprovalFunctionDialogError(result && result.message || st('approvalRolesFunctionNameRequired'));
+      if (input && typeof input.focus === 'function') input.focus();
+      return;
+    }
+    global.closeSecApprovalFunctionDialog();
   };
 
   global.removeSecApprovalFunction = function removeSecApprovalFunction(scopeId) {
@@ -3750,10 +3869,39 @@
     var scopes = view === 'function' ? approvalFunctionScopes() : approvalOrganizationScopes();
     var scope = currentApprovalScope(scopes);
     if (!scope) return;
-    var name = String(prompt(st('approvalRolesPromptRoleName')) || '').trim();
+    var overlay = ensureApprovalRoleDialog();
+    var title = document.getElementById('approvalRoleDialogTitle');
+    var desc = document.getElementById('approvalRoleDialogDesc');
+    var label = document.querySelector ? document.querySelector('label[for="approvalRoleNameInput"]') : null;
+    var input = document.getElementById('approvalRoleNameInput');
+    if (title) title.textContent = st('approvalRolesAddRole');
+    if (desc) desc.textContent = st('approvalRolesRoleDialogDesc');
+    if (label) label.textContent = st('approvalRolesPromptRoleName');
+    if (input) input.value = '';
+    setApprovalRoleDialogError('');
+    overlay.classList.add('show');
+    if (input && typeof input.focus === 'function') {
+      if (typeof global.setTimeout === 'function') global.setTimeout(function() { input.focus(); }, 0);
+      else input.focus();
+    }
+  };
+
+  global.closeSecApprovalRoleDialog = function closeSecApprovalRoleDialog() {
+    var overlay = document.getElementById('approvalRoleDialogOverlay');
+    if (overlay) overlay.classList.remove('show');
+    setApprovalRoleDialogError('');
+  };
+
+  global.submitSecApprovalRoleName = function submitSecApprovalRoleName(name) {
+    syncVisibleApprovalRoleRows();
+    var sec = state();
+    var view = sec.approvalRoleView === 'function' ? 'function' : 'organization';
+    var scopes = view === 'function' ? approvalFunctionScopes() : approvalOrganizationScopes();
+    var scope = currentApprovalScope(scopes);
+    if (!scope) return { ok: false };
+    name = String(name || '').trim();
     if (!name) {
-      showToast(st('approvalRolesRoleNameRequired'), 'info');
-      return;
+      return { ok: false, message: st('approvalRolesRoleNameRequired') };
     }
     var roleCode = uniqueApprovalRoleCode(scope, approvalRoleCodeFromName(name));
     var role = normalizeApprovalRoleRecord({
@@ -3766,11 +3914,23 @@
       executionMode: 'manual',
       assignees: []
     });
-    if (!role) return;
+    if (!role) return { ok: false };
     sec.approvalRoles = loadApprovalRoles().filter(function(item) { return item.id !== role.id; }).concat([role]);
     sec.approvalRolesLoaded = true;
     showToast(st('approvalRolesRoleAdded'), 'success');
     renderSecApprovalRoles();
+    return { ok: true, roleId: role.id };
+  };
+
+  global.confirmSecApprovalRoleDialog = function confirmSecApprovalRoleDialog() {
+    var input = document.getElementById('approvalRoleNameInput');
+    var result = global.submitSecApprovalRoleName(input && input.value);
+    if (!result || !result.ok) {
+      setApprovalRoleDialogError(result && result.message || st('approvalRolesRoleNameRequired'));
+      if (input && typeof input.focus === 'function') input.focus();
+      return;
+    }
+    global.closeSecApprovalRoleDialog();
   };
 
   global.removeSecApprovalRole = function removeSecApprovalRole(roleId) {
@@ -3882,9 +4042,9 @@
     if (overlay) return overlay;
     overlay = document.createElement('div');
     overlay.id = 'approvalSubjectPickerOverlay';
-    overlay.className = 'modal-overlay hidden';
+    overlay.className = 'session-modal-overlay';
     overlay.innerHTML =
-      '<div class="modal approval-subject-dialog" role="dialog" aria-modal="true" aria-labelledby="approvalSubjectPickerTitle">' +
+      '<div class="session-modal approval-subject-dialog" role="dialog" aria-modal="true" aria-labelledby="approvalSubjectPickerTitle">' +
         '<div class="dialog-head"><div><h3 id="approvalSubjectPickerTitle"></h3><p id="approvalSubjectPickerDesc" class="desc"></p></div><button type="button" class="close-btn" onclick="closeSecApprovalSubjectPicker()" aria-label="Close">&times;</button></div>' +
         '<div class="approval-subject-toolbar"><input id="approvalSubjectSearch" autocomplete="off"><span id="approvalSubjectCount" class="item-meta"></span></div>' +
         '<div id="approvalSubjectList" class="approval-subject-list"></div>' +
@@ -3912,7 +4072,7 @@
     if (title) title.textContent = st('approvalSubjectPickerTitle');
     if (desc) desc.textContent = st('approvalSubjectPickerDesc');
     if (search) search.placeholder = st('approvalSubjectSearch');
-    overlay.classList.remove('hidden');
+    overlay.classList.add('show');
     if (sec.approvalSubjectLoading) {
       list.innerHTML = hint(st('loading'));
       return;
@@ -3985,12 +4145,12 @@
 
   global.closeSecApprovalSubjectPicker = function closeSecApprovalSubjectPicker() {
     var overlay = document.getElementById('approvalSubjectPickerOverlay');
-    if (overlay) overlay.classList.add('hidden');
+    if (overlay) overlay.classList.remove('show');
     state().approvalSubjectPicker = null;
   };
 
   global.saveSecApprovalRoles = async function saveSecApprovalRoles() {
-    var roles = syncVisibleApprovalRoleRows().map(normalizeApprovalRoleRecord).filter(Boolean);
+    var roles = syncVisibleApprovalRoleRows().map(normalizeApprovalRoleRecord).filter(Boolean).filter(approvalRoleHasAssignees);
     var functionScopes = approvalFunctionScopes();
     var saveBtn = document.getElementById('secApprovalRolesSaveBtn');
     if (saveBtn) saveBtn.disabled = true;

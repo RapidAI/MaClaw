@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -1903,6 +1904,19 @@ func parseWorkflowChoiceCommand(text string) (choice, choiceID string, ok bool) 
 	return fields[1], fields[2], true
 }
 
+// isFilesystemRoot returns true for paths that represent the root of a filesystem
+// volume (e.g. "C:\", "D:\", "/"). Scanning these would traverse the entire disk.
+func isFilesystemRoot(cleanPath string) bool {
+	if cleanPath == "/" {
+		return true
+	}
+	// Windows volume roots: "C:\", "D:\", etc.
+	if len(cleanPath) == 3 && cleanPath[1] == ':' && (cleanPath[2] == '\\' || cleanPath[2] == '/') {
+		return true
+	}
+	return false
+}
+
 // setupDirectCodingExecution configures the handler state for direct SubAgent
 // coding execution (skip SDD). Shared by the RouteToDirectCoding legacy path
 // and the user's "simple coding" choice.
@@ -1922,6 +1936,30 @@ func (h *IMMessageHandler) setupDirectCodingExecution(userID, originalText, rawP
 	}
 	if projectPath == "" {
 		projectPath = "."
+	}
+	// Guard: reject user home directory and filesystem roots as projectPath.
+	// Home directories contain hundreds of thousands of files which causes
+	// search tools to hang for minutes. Filesystem roots (C:\, D:\) are even worse.
+	// Instead, allocate a standalone task directory under ~/.maclaw/data/tasks/.
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		cleanedProject := filepath.Clean(projectPath)
+		cleanedHome := filepath.Clean(home)
+		isTooLarge := strings.EqualFold(cleanedProject, cleanedHome) ||
+			projectPath == "." ||
+			isFilesystemRoot(cleanedProject)
+		if isTooLarge {
+			var dataDir string
+			if h.app != nil {
+				dataDir = h.app.GetDataDir()
+			}
+			taskDir := buildStandaloneTaskPath(dataDir, originalText)
+			if taskDir != "" {
+				projectPath = taskDir
+			} else if cwd, err := os.Getwd(); err == nil && cwd != "" && !strings.EqualFold(filepath.Clean(cwd), cleanedHome) {
+				projectPath = cwd
+			}
+			log.Printf("[workflow-v2] setupDirectCodingExecution: allocated task dir %q (rejected home/cwd fallback)", projectPath)
+		}
 	}
 	// Cancel any existing workflow
 	if wf := h.getWorkflowV2(); wf != nil {

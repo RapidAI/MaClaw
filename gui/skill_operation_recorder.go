@@ -318,7 +318,253 @@ func (r *SkillOperationRecorder) suggestDescription(entries []RecordedOp) string
 		len(entries), strings.Join(toolNames, ", "))
 }
 
+// consolidateRecordedOps reduces a raw recording into a cleaner operation list by:
+// 1. Removing diagnostic/read-only bash commands (ls, dir, cat, type, python --version, pip list)
+// 2. Collapsing multiple write_file ops to the same path into one (keeping the last version)
+// 3. Collapsing multiple edit_file ops to the same file by applying them sequentially into a
+//    single write_file of the final content (if the original file was also written by write_file)
+// 4. Deduplicating pip/npm install commands (keep only the last successful install)
+func consolidateRecordedOps(entries []RecordedOp) []RecordedOp {
+	// --- Pass 1: Filter out diagnostic/read-only commands ---
+	var filtered []RecordedOp
+	for _, op := range entries {
+		if !op.Success {
+			continue
+		}
+		if op.ToolName == "bash" {
+			cmd, _ := op.Args["command"].(string)
+			if isDiagnosticCommand(cmd) {
+				continue
+			}
+		}
+		filtered = append(filtered, op)
+	}
+
+	// --- Pass 2: Collapse write_file — keep only last write per path ---
+	// Track last write index per normalized path
+	lastWriteIdx := make(map[string]int) // normalized path → last index in filtered
+	for i, op := range filtered {
+		if op.ToolName == "write_file" {
+			path, _ := op.Args["path"].(string)
+			mode, _ := op.Args["mode"].(string)
+			if path != "" && mode != "append" {
+				lastWriteIdx[normalizePath(path)] = i
+			}
+		}
+	}
+	// Mark superseded writes for removal
+	superseded := make(map[int]bool)
+	for i, op := range filtered {
+		if op.ToolName == "write_file" {
+			path, _ := op.Args["path"].(string)
+			mode, _ := op.Args["mode"].(string)
+			if path != "" && mode != "append" {
+				np := normalizePath(path)
+				if lastIdx, ok := lastWriteIdx[np]; ok && i < lastIdx {
+					superseded[i] = true
+				}
+			}
+		}
+	}
+
+	// --- Pass 3: Collapse edit_file — merge consecutive edits to same file ---
+	// If a file is first written by write_file then edited multiple times,
+	// apply all edits to the write_file content and keep only the final write_file.
+	// Track the "running content" for files created by write_file within this recording.
+	fileContents := make(map[string]int) // normalized path → index in filtered (of write_file)
+	for i, op := range filtered {
+		if superseded[i] {
+			continue
+		}
+		if op.ToolName == "write_file" {
+			path, _ := op.Args["path"].(string)
+			mode, _ := op.Args["mode"].(string)
+			if path != "" && mode != "append" {
+				fileContents[normalizePath(path)] = i
+			}
+		}
+	}
+
+	// Apply edits into the tracked write_file content
+	editsAbsorbed := make(map[int]bool) // indices of edit_file ops absorbed into a write_file
+	for i, op := range filtered {
+		if superseded[i] {
+			continue
+		}
+		if op.ToolName != "edit_file" {
+			continue
+		}
+		path, _ := op.Args["path"].(string)
+		if path == "" {
+			continue
+		}
+		np := normalizePath(path)
+		writeIdx, hasWrite := fileContents[np]
+		if !hasWrite {
+			continue // file was not created in this recording, can't merge
+		}
+		oldStr, _ := op.Args["old_string"].(string)
+		newStr, _ := op.Args["new_string"].(string)
+		if oldStr == "" {
+			continue
+		}
+		// Apply the edit to the write_file's content
+		writeOp := &filtered[writeIdx]
+		content, _ := writeOp.Args["content"].(string)
+		if strings.Contains(content, oldStr) {
+			writeOp.Args["content"] = strings.Replace(content, oldStr, newStr, 1)
+			editsAbsorbed[i] = true
+		}
+	}
+
+	// --- Pass 4: Deduplicate pip/npm install commands ---
+	// Keep only the last actual install command per installer (pip/npm).
+	lastPipIdx := -1
+	lastNpmIdx := -1
+	for i, op := range filtered {
+		if superseded[i] || editsAbsorbed[i] {
+			continue
+		}
+		if op.ToolName != "bash" {
+			continue
+		}
+		cmd, _ := op.Args["command"].(string)
+		if isPipInstallCommand(cmd) {
+			if lastPipIdx >= 0 {
+				superseded[lastPipIdx] = true
+			}
+			lastPipIdx = i
+		} else if isNpmInstallCommand(cmd) {
+			if lastNpmIdx >= 0 {
+				superseded[lastNpmIdx] = true
+			}
+			lastNpmIdx = i
+		}
+	}
+
+	// --- Final pass: build result excluding superseded/absorbed ops ---
+	var result []RecordedOp
+	for i, op := range filtered {
+		if superseded[i] || editsAbsorbed[i] {
+			continue
+		}
+		result = append(result, op)
+	}
+	return result
+}
+
+// isDiagnosticCommand returns true for commands that are read-only exploration/diagnostics
+// and should not be part of a reproducible skill.
+func isDiagnosticCommand(cmd string) bool {
+	if cmd == "" {
+		return true
+	}
+	cmd = strings.TrimSpace(cmd)
+
+	// Multi-line commands are likely intentional scripts — never diagnostic
+	if strings.Contains(cmd, "\n") {
+		return false
+	}
+
+	// Commands with output redirection (>, >>) are side-effectful — not diagnostic
+	if strings.Contains(cmd, " > ") || strings.Contains(cmd, " >> ") {
+		return false
+	}
+
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return true
+	}
+	first := strings.ToLower(filepath.Base(fields[0]))
+
+	// Read-only diagnostic commands (no side effects in any usage pattern)
+	if readOnlyDiagnosticCmds[first] {
+		return true
+	}
+
+	// Version/list checks: python --version, pip list, node --version, npm list
+	if len(fields) >= 2 {
+		switch first {
+		case "python", "python3", "node", "pip", "pip3", "npm":
+			arg := strings.ToLower(fields[1])
+			if arg == "--version" || arg == "-v" || arg == "-V" || arg == "list" || arg == "--list" {
+				return true
+			}
+		}
+	}
+
+	// python -c "import X; print(...)" — one-line import/version checks
+	if (first == "python" || first == "python3") && len(fields) >= 3 {
+		if fields[1] == "-c" {
+			inline := strings.Join(fields[2:], " ")
+			inline = strings.Trim(inline, `"'`)
+			// Only diagnostic if it doesn't write/modify anything
+			if !strings.Contains(inline, "open(") &&
+				!strings.Contains(inline, "write") &&
+				!strings.Contains(inline, "shutil") &&
+				!strings.Contains(inline, "os.remove") &&
+				!strings.Contains(inline, "os.rename") &&
+				!strings.Contains(inline, "pathlib") &&
+				!strings.Contains(inline, "subprocess") &&
+				len(inline) < 200 {
+				return true
+			}
+		}
+	}
+
+	// pip/npm install check commands (not actual installs)
+	if strings.Contains(cmd, "pip list") || strings.Contains(cmd, "pip3 list") {
+		return true
+	}
+
+	return false
+}
+
+// isPipInstallCommand checks if a command is an actual pip install invocation.
+// Matches: "pip install ...", "pip3 install ...", "python -m pip install ..."
+func isPipInstallCommand(cmd string) bool {
+	fields := strings.Fields(cmd)
+	for i, f := range fields {
+		fl := strings.ToLower(f)
+		if (fl == "pip" || fl == "pip3") && i+1 < len(fields) && strings.ToLower(fields[i+1]) == "install" {
+			return true
+		}
+	}
+	return false
+}
+
+// isNpmInstallCommand checks if a command is an actual npm install invocation.
+func isNpmInstallCommand(cmd string) bool {
+	fields := strings.Fields(cmd)
+	for i, f := range fields {
+		if strings.ToLower(f) == "npm" && i+1 < len(fields) {
+			next := strings.ToLower(fields[i+1])
+			if next == "install" || next == "i" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// normalizePath normalizes a file path for comparison (lowercase on Windows, forward slashes).
+func normalizePath(p string) string {
+	p = filepath.ToSlash(p)
+	if runtime.GOOS == "windows" {
+		p = strings.ToLower(p)
+	}
+	return p
+}
+
 func (r *SkillOperationRecorder) generateSkillYAML(name, description string, entries []RecordedOp, workDir string, templates *[]pendingTemplateFile) (string, error) {
+	// ===== Step Consolidation Layer =====
+	// Before converting ops to steps, consolidate the raw recording:
+	// 1. Remove diagnostic/exploratory commands that don't produce side effects
+	// 2. Merge multiple edits to the same file into a single write of the final version
+	// 3. Remove superseded write_file calls (keep only the last write to each path)
+	// 4. Collapse duplicate pip/npm install commands
+	entries = consolidateRecordedOps(entries)
+
 	steps := make([]map[string]interface{}, 0, len(entries))
 
 	for _, op := range entries {
@@ -565,10 +811,17 @@ func portabilizePath(path string, workDir string) string {
 var (
 	skillDirNameInvalidRe = regexp.MustCompile(`[^a-z0-9\-_]`)
 	skillDirNameMultiDash = regexp.MustCompile(`-+`)
-	pipInstallRe         = regexp.MustCompile(`pip[3]?\s+install\s+(.+)`)
-	npmInstallRe         = regexp.MustCompile(`npm\s+install\s+(.+)`)
-	pkgFlagRe            = regexp.MustCompile(`-\S+`)
-	placeholderArgRe     = regexp.MustCompile(`\{\{(\w+)\}\}`)
+	// pipInstallRe captures the package list portion of a pip install command,
+	// stopping at the first shell operator (|, >, ;, &) to avoid capturing
+	// shell syntax as package names.
+	pipInstallRe = regexp.MustCompile(`pip[3]?\s+install\s+((?:[^|>&;])+)`)
+	npmInstallRe = regexp.MustCompile(`npm\s+install\s+((?:[^|>&;])+)`)
+	pkgFlagRe    = regexp.MustCompile(`-\S+`)
+	// validPkgNameRe matches legitimate pip/npm package names:
+	// alphanumeric, hyphens, underscores, dots, brackets (extras), version specifiers.
+	validPkgNameRe   = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9\-_.]*(\[[\w,]+\])?(([><=!~]+).+)?$`)
+	windowsPathRe    = regexp.MustCompile(`[A-Za-z]:\\[\w]`)
+	placeholderArgRe = regexp.MustCompile(`\{\{(\w+)\}\}`)
 	// Credential detection patterns for security warnings
 	credentialPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|bearer)\s*[=:]\s*\S+`),
@@ -579,6 +832,35 @@ var (
 		regexp.MustCompile(`ghp_[a-zA-Z0-9]{36,}`), // GitHub PAT
 	}
 )
+
+// readOnlyDiagnosticCmds are commands that NEVER produce side effects regardless of arguments.
+// Commands like "find", "echo" are intentionally excluded — they CAN have side effects
+// (find -exec rm, echo > file).
+var readOnlyDiagnosticCmds = map[string]bool{
+	"ls": true, "dir": true, "cat": true, "type": true,
+	"pwd": true, "whoami": true, "hostname": true,
+	"which": true, "where": true, "locate": true,
+	"head": true, "tail": true, "wc": true, "file": true,
+	"uname": true, "date": true, "uptime": true, "df": true,
+	"env": true, "printenv": true,
+}
+
+// triggerGenericCmds are commands too generic to be meaningful skill triggers.
+var triggerGenericCmds = map[string]bool{
+	"python": true, "python3": true, "node": true,
+	"pip": true, "pip3": true, "npm": true,
+	"cd": true, "cat": true, "cp": true, "echo": true,
+	"dir": true, "del": true, "type": true, "copy": true,
+	"mv": true, "rm": true, "ls": true, "mkdir": true,
+}
+
+// triggerValidExtensions are file extensions meaningful enough to be skill triggers.
+var triggerValidExtensions = map[string]bool{
+	"pdf": true, "md": true, "txt": true, "html": true, "csv": true, "json": true,
+	"py": true, "js": true, "ts": true, "go": true, "rs": true, "java": true,
+	"png": true, "jpg": true, "svg": true, "mp3": true, "mp4": true,
+	"docx": true, "xlsx": true, "pptx": true, "yaml": true, "xml": true,
+}
 
 // detectDependencies scans bash commands for pip/npm install patterns.
 func detectDependencies(entries []RecordedOp) (pythonDeps []string, nodeDeps []string) {
@@ -605,24 +887,90 @@ func detectDependencies(entries []RecordedOp) (pythonDeps []string, nodeDeps []s
 }
 
 // detectPlatforms infers platform compatibility from recorded operations.
+// Uses positive detection: looks for platform-specific indicators in commands.
+// If both Windows and Unix indicators are found (mixed commands), returns all platforms.
 func detectPlatforms(entries []RecordedOp) []string {
-	hasBashOnly := false
+	hasWindowsIndicator := false
+	hasUnixIndicator := false
+
 	for _, op := range entries {
 		if op.ToolName != "bash" {
 			continue
 		}
 		cmd, _ := op.Args["command"].(string)
-		if needsBashSyntax(cmd) {
-			hasBashOnly = true
-			break
+		if cmd == "" {
+			continue
+		}
+		if hasWindowsSyntax(cmd) {
+			hasWindowsIndicator = true
+		}
+		if hasUnixOnlySyntax(cmd) {
+			hasUnixIndicator = true
 		}
 	}
 
-	if hasBashOnly {
+	switch {
+	case hasWindowsIndicator && !hasUnixIndicator:
+		return []string{"windows"}
+	case hasUnixIndicator && !hasWindowsIndicator:
 		return []string{"linux", "macos"}
+	default:
+		// Both or neither — assume universal
+		return []string{"windows", "linux", "macos"}
 	}
-	// Default: universal
-	return []string{"windows", "linux", "macos"}
+}
+
+// hasWindowsSyntax detects Windows-specific command patterns.
+func hasWindowsSyntax(cmd string) bool {
+	windowsIndicators := []string{
+		`C:\`, `D:\`, `E:\`,
+		`%APPDATA%`, `%USERPROFILE%`, `%WINDIR%`,
+		`$env:`, // PowerShell
+	}
+	for _, ind := range windowsIndicators {
+		if strings.Contains(cmd, ind) {
+			return true
+		}
+	}
+	// Windows-only commands (case-insensitive check on first token)
+	windowsCmds := []string{"dir", "del", "copy", "move", "cls", "findstr", "type", "rmdir", "icacls", "chcp"}
+	fields := strings.Fields(cmd)
+	if len(fields) > 0 {
+		firstToken := strings.ToLower(fields[0])
+		for _, wc := range windowsCmds {
+			if firstToken == wc {
+				return true
+			}
+		}
+	}
+	// Backslash path separators (heuristic: at least one drive:\word pattern)
+	if windowsPathRe.MatchString(cmd) {
+		return true
+	}
+	return false
+}
+
+// hasUnixOnlySyntax detects Unix-specific syntax that does NOT work on Windows.
+// Note: pipes (|), && , || , and 2>&1 work on both Windows cmd/PowerShell and Unix,
+// so they are NOT unix-only indicators.
+func hasUnixOnlySyntax(cmd string) bool {
+	unixOnlyIndicators := []string{
+		"#!/bin/bash", "#!/bin/sh", "#!/usr/bin/env",
+		"export ", "source ",
+		"chmod ", "chown ", "sudo ",
+		"/usr/", "/etc/", "/var/", "/home/", "/opt/",
+		"~/.config/", "~/.local/",
+	}
+	for _, ind := range unixOnlyIndicators {
+		if strings.Contains(cmd, ind) {
+			return true
+		}
+	}
+	// $(...) command substitution — NOT ${...} which is also PowerShell
+	if strings.Contains(cmd, "$(") && !strings.Contains(cmd, "$env:") {
+		return true
+	}
+	return false
 }
 
 // detectRequiredArgs scans step params for {{placeholder}} patterns.
@@ -646,23 +994,6 @@ func detectRequiredArgs(steps []map[string]interface{}) []string {
 		}
 	}
 	return args
-}
-
-// needsBashSyntax checks if a command uses bash-specific syntax.
-func needsBashSyntax(cmd string) bool {
-	bashIndicators := []string{
-		"#!/bin/bash", "#!/bin/sh",
-		"export ", "source ",
-		"$(", "${",
-		" | ", " && ", " || ",
-		">>", "2>&1",
-	}
-	for _, ind := range bashIndicators {
-		if strings.Contains(cmd, ind) {
-			return true
-		}
-	}
-	return false
 }
 
 func formatOpSummaryLine(op RecordedOp) string {
@@ -712,6 +1043,13 @@ func parsePkgList(raw string) []string {
 		}
 		// Skip URLs
 		if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") || strings.HasPrefix(p, "git+") {
+			continue
+		}
+		// Validate: must look like a package name (starts with letter, contains only
+		// alphanumeric/hyphens/dots/underscores, optional extras/version specifier).
+		// This filters shell operators (2>&1, |, &&), shell commands (findstr, tail),
+		// and quoted strings that leak through.
+		if !validPkgNameRe.MatchString(p) {
 			continue
 		}
 		pkgs = append(pkgs, p)
@@ -801,7 +1139,7 @@ func generateTriggers(name, description string, entries []RecordedOp) []string {
 		}
 	}
 
-	// Extract key commands from bash steps
+	// Extract meaningful file extensions from commands (only from path-like tokens)
 	for _, op := range entries {
 		if op.ToolName != "bash" || !op.Success {
 			continue
@@ -811,18 +1149,26 @@ func generateTriggers(name, description string, entries []RecordedOp) []string {
 			continue
 		}
 		parts := strings.Fields(cmd)
+		// Extract first meaningful command name (skip generic commands)
 		if len(parts) > 0 {
 			base := strings.ToLower(filepath.Base(parts[0]))
-			// Skip generic commands
-			if base != "python" && base != "python3" && base != "node" && base != "pip" && base != "pip3" && base != "npm" && base != "cd" && base != "cat" && base != "cp" && base != "echo" && len(base) >= 3 {
+			if !triggerGenericCmds[base] && len(base) >= 3 && isAlphanumeric(base) {
 				triggers[base] = true
 			}
 		}
-		// Look for meaningful arguments (file extensions, tool names)
+		// Only extract file extensions from tokens that look like actual file paths
+		// (contain path separator or start with a letter followed by dot+extension).
 		for _, p := range parts[1:] {
-			ext := filepath.Ext(p)
-			if ext != "" && len(ext) <= 5 {
-				triggers[strings.TrimPrefix(ext, ".")] = true
+			// Strip surrounding quotes
+			p = strings.Trim(p, `"'`)
+			// Must look like a file path: contains / or \ or ends with .ext
+			if !strings.Contains(p, "/") && !strings.Contains(p, "\\") && !strings.Contains(p, ".") {
+				continue
+			}
+			ext := strings.TrimPrefix(filepath.Ext(p), ".")
+			ext = strings.ToLower(ext)
+			if ext != "" && triggerValidExtensions[ext] {
+				triggers[ext] = true
 			}
 		}
 	}
@@ -842,4 +1188,14 @@ func generateTriggers(name, description string, entries []RecordedOp) []string {
 	}
 
 	return result
+}
+
+// isAlphanumeric checks if a string contains only letters, digits, hyphens, and underscores.
+func isAlphanumeric(s string) bool {
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
 }

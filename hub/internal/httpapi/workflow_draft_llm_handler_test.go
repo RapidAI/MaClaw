@@ -160,6 +160,78 @@ func TestWorkflowDraftLLMHandlerUsesTenantLLMServiceGroup(t *testing.T) {
 	}
 }
 
+func TestWorkflowDraftLLMHandlerPassesSystemDefaultServiceGroupToMaClawOfficial(t *testing.T) {
+	var seenServiceGroupID string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/v1/chat/completions" {
+			t.Fatalf("HubCenter path = %s", r.URL.Path)
+		}
+		seenServiceGroupID = r.Header.Get("X-MaClaw-Service-Group-ID")
+		if r.Header.Get("X-Hub-ID") != "hub-1" {
+			t.Fatalf("X-Hub-ID = %q", r.Header.Get("X-Hub-ID"))
+		}
+		if r.Header.Get("X-Tenant-ID") != "tenant-maclaw-draft" {
+			t.Fatalf("X-Tenant-ID = %q", r.Header.Get("X-Tenant-ID"))
+		}
+		content := workflowDraftMinimalLLMJSON("Official LLM draft")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(content) + `}}]}`))
+	}))
+	defer upstream.Close()
+
+	previousModule := GetMaClawModule()
+	SetMaClawModule(&llmservice.MaClawModule{Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+		HubCenterURL: upstream.URL,
+		HubID:        "hub-1",
+		MachineToken: "hub-secret",
+	})})
+	t.Cleanup(func() { SetMaClawModule(previousModule) })
+
+	settings := &testSystemSettingsRepo{}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-maclaw-draft", settings)
+	if err := im.SaveLLMProviderRegistry(t.Context(), tenantSystem, &im.LLMProviderRegistry{Enabled: true}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := llmservice.SaveRegistry(t.Context(), tenantSystem, &llmservice.Registry{
+		SystemDefaultServiceGroupID: "system-free",
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "system-free",
+			Name:         "System Free",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{llmservice.MaClawOfficialProviderID}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	authenticator := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-1": {TenantID: "tenant-maclaw-draft", UserID: "designer@example.com", MachineID: "machine-1"},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflow-drafts/generate", strings.NewReader(`{"description":"Employee leave approval","language":"en"}`))
+	req.Header.Set("X-Machine-ID", "machine-1")
+	req.Header.Set("Authorization", "Bearer machine-token")
+	rec := httptest.NewRecorder()
+
+	WorkflowDraftLLMHandler(authenticator, settings, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if seenServiceGroupID != "system-free" {
+		t.Fatalf("X-MaClaw-Service-Group-ID = %q, want system-free", seenServiceGroupID)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out["generated_by"] != "llm" {
+		t.Fatalf("generated_by = %#v body=%s", out["generated_by"], rec.Body.String())
+	}
+}
+
 func TestWorkflowDraftLLMHandlerRequiresSystemDefaultLLMServiceGroup(t *testing.T) {
 	var providerCalled bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -406,6 +478,19 @@ func TestWorkflowDraftLLMHandlerFallsBackWithProviderReasonWhenProviderFails(t *
 	}
 	if out["fallback_reason"] != workflowDraftFallbackReasonProvider {
 		t.Fatalf("fallback_reason = %#v body=%s", out["fallback_reason"], rec.Body.String())
+	}
+	debug, ok := out["debug"].(map[string]any)
+	if !ok {
+		t.Fatalf("debug missing from provider fallback: %s", rec.Body.String())
+	}
+	if debug["service_group_id"] != "draft-group" || debug["provider_id"] != "provider-failure" || debug["model"] != "auto" {
+		t.Fatalf("debug routing fields = %#v", debug)
+	}
+	if debug["status_code"] != float64(http.StatusInternalServerError) {
+		t.Fatalf("debug status_code = %#v", debug["status_code"])
+	}
+	if debug["response"] != "temporary upstream failure" {
+		t.Fatalf("debug response = %#v", debug["response"])
 	}
 }
 

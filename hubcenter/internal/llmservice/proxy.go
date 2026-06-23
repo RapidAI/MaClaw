@@ -33,11 +33,12 @@ type ProxyConfig struct {
 
 // ProxyRequest holds the parsed incoming LLM proxy request.
 type ProxyRequest struct {
-	HubID    string
-	TenantID string
-	Body     map[string]any
-	RawBody  []byte
-	Model    string
+	HubID          string
+	TenantID       string
+	ServiceGroupID string
+	Body           map[string]any
+	RawBody        []byte
+	Model          string
 }
 
 // ProxyResponse holds the result of a proxied LLM request.
@@ -87,20 +88,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		return nil, fmt.Errorf("load registry: %w", err)
 	}
 
-	var matchedGroup *llmpool.ServiceGroup
-	var dispatchModel *llmpool.DispatchModel
-	for i, group := range reg.ServiceGroups {
-		for j, m := range group.Models {
-			if m.Name == model {
-				matchedGroup = &reg.ServiceGroups[i]
-				dispatchModel = buildDispatchModel(reg, &reg.ServiceGroups[i].Models[j])
-				break
-			}
-		}
-		if matchedGroup != nil {
-			break
-		}
-	}
+	matchedGroup, dispatchModel := matchProxyServiceGroupModel(reg, strings.TrimSpace(req.ServiceGroupID), model)
 	if matchedGroup == nil {
 		return nil, fmt.Errorf("model %q not available on this HubCenter", model)
 	}
@@ -126,7 +114,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 
 	// 4. Check cache
 	if cfg.Cache != nil {
-		cacheKey := buildCacheKey(model, req.Body)
+		cacheKey := buildServiceGroupCacheKey(matchedGroup.ID, model, req.Body)
 		if cached, _ := cfg.Cache.Get(ctx, cacheKey); cached != nil {
 			// Record cache hit usage (no credits deducted)
 			if cfg.Usage != nil {
@@ -193,9 +181,9 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 				cfg.Resilience.RecordFailure(providerID, provider.CircuitBreakerThreshold, provider.CircuitBreakerCooldownMS)
 			}
 			if fwdErr != nil {
-				lastErr = fwdErr
+				lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: %w", providerID, model, upstreamModel, fwdErr)
 			} else {
-				lastErr = fmt.Errorf("provider %s returned HTTP %d", providerID, resp.StatusCode)
+				lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: HTTP %d%s", providerID, model, upstreamModel, resp.StatusCode, proxyProviderErrorSnippet(resp.Body))
 			}
 			continue
 		}
@@ -257,7 +245,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 
 		// Write to cache
 		if cfg.Cache != nil && resp.StatusCode == http.StatusOK {
-			cacheKey := buildCacheKey(model, req.Body)
+			cacheKey := buildServiceGroupCacheKey(matchedGroup.ID, model, req.Body)
 			_ = cfg.Cache.Put(ctx, &llmpool.CacheEntry{
 				CacheKey:   cacheKey,
 				ProviderID: providerID,
@@ -280,11 +268,54 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 	}
 
 	// All providers failed
-	log.Printf("[llm-proxy] all providers failed for model=%s hub=%s tenant=%s lastErr=%v", model, req.HubID, req.TenantID, lastErr)
+	log.Printf("[llm-proxy] all providers failed for model=%s service_group=%s hub=%s tenant=%s lastErr=%v", model, matchedGroup.ID, req.HubID, req.TenantID, lastErr)
 	if lastErr != nil {
 		return nil, fmt.Errorf("all providers failed, last error: %w", lastErr)
 	}
 	return nil, fmt.Errorf("no available providers for model %q", model)
+}
+
+func proxyProviderErrorSnippet(body []byte) string {
+	text := strings.Join(strings.Fields(strings.TrimSpace(string(body))), " ")
+	if text == "" {
+		return ""
+	}
+	if len(text) > 500 {
+		text = text[:497] + "..."
+	}
+	return ": " + text
+}
+
+func matchProxyServiceGroupModel(reg *Registry, serviceGroupID, model string) (*llmpool.ServiceGroup, *llmpool.DispatchModel) {
+	if reg == nil {
+		return nil, nil
+	}
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	model = strings.TrimSpace(model)
+	if serviceGroupID != "" {
+		for i := range reg.ServiceGroups {
+			group := &reg.ServiceGroups[i]
+			if !strings.EqualFold(strings.TrimSpace(group.ID), serviceGroupID) {
+				continue
+			}
+			for j := range group.Models {
+				if strings.TrimSpace(group.Models[j].Name) == model {
+					return group, buildDispatchModel(reg, &group.Models[j])
+				}
+			}
+			return nil, nil
+		}
+		return nil, nil
+	}
+	for i := range reg.ServiceGroups {
+		group := &reg.ServiceGroups[i]
+		for j := range group.Models {
+			if strings.TrimSpace(group.Models[j].Name) == model {
+				return group, buildDispatchModel(reg, &group.Models[j])
+			}
+		}
+	}
+	return nil, nil
 }
 
 func shouldRetryProxyProviderStatus(statusCode int) bool {
@@ -615,6 +646,10 @@ func usageJSONNumber(n json.Number) int64 {
 }
 
 func buildCacheKey(model string, body map[string]any) string {
+	return buildServiceGroupCacheKey("", model, body)
+}
+
+func buildServiceGroupCacheKey(serviceGroupID, model string, body map[string]any) string {
 	// Normalize: remove non-deterministic fields, canonicalize defaults
 	normalized := make(map[string]any)
 	for k, v := range body {
@@ -631,9 +666,15 @@ func buildCacheKey(model string, body map[string]any) string {
 			normalized[k] = v
 		}
 	}
+	if serviceGroupID != "" {
+		normalized["service_group_id"] = serviceGroupID
+	}
 	normalized["model"] = model
 	data, _ := json.Marshal(normalized)
 	h := fmt.Sprintf("%x", sha256Bytes(data))
+	if serviceGroupID != "" {
+		return "llm:" + serviceGroupID + ":" + model + ":" + h[:16]
+	}
 	return "llm:" + model + ":" + h[:16]
 }
 

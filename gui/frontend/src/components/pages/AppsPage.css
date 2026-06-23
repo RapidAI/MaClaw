@@ -1783,6 +1783,30 @@
 .apps-dependency-verification[data-state='blocked'] .apps-dependency-verification__head span {
     color: var(--theme-warning);
 }
+
+.apps-dependency-verification__issues {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    min-width: 0;
+}
+
+.apps-dependency-verification__issues span {
+    max-width: 100%;
+    min-height: 24px;
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 6px;
+    border: 1px solid color-mix(in srgb, var(--theme-warning) 34%, var(--theme-border-subtle));
+    border-radius: var(--radius-sm);
+    color: color-mix(in srgb, var(--theme-warning) 72%, var(--theme-text-primary));
+    background: color-mix(in srgb, var(--theme-warning-bg) 58%, var(--theme-surface));
+    font-size: 0.64rem;
+    font-weight: 820;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .apps-result-panel .apps-install-record__deps {
     align-self: stretch;
     margin-top: 0;
@@ -2982,6 +3006,84 @@
     font-weight: 850;
 }
 
+.apps-workflow-contract-summary {
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    margin-top: 5px;
+}
+
+.apps-workflow-contract-summary > span {
+    max-width: 100%;
+    min-height: 24px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 6px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 20%, var(--theme-border-subtle));
+    border-radius: var(--radius-sm);
+    color: var(--theme-text-secondary);
+    background: color-mix(in srgb, var(--theme-primary-soft) 34%, var(--theme-surface));
+}
+
+.apps-workflow-contract-summary[data-state='ready'] .apps-workflow-contract-summary__state {
+    border-color: color-mix(in srgb, var(--theme-success) 32%, var(--theme-border-subtle));
+    color: color-mix(in srgb, var(--theme-success) 68%, var(--theme-text-primary));
+    background: color-mix(in srgb, var(--theme-success) 12%, var(--theme-surface));
+}
+
+.apps-workflow-contract-summary[data-state='blocked'] .apps-workflow-contract-summary__state,
+.apps-workflow-contract-summary[data-state='blocked'] .apps-workflow-contract-summary__issue {
+    border-color: color-mix(in srgb, var(--theme-danger) 34%, var(--theme-border-subtle));
+    color: color-mix(in srgb, var(--theme-danger) 72%, var(--theme-text-primary));
+    background: color-mix(in srgb, var(--theme-danger) 10%, var(--theme-surface));
+}
+
+.apps-workflow-contract-summary[data-state='missing'] .apps-workflow-contract-summary__state {
+    border-color: color-mix(in srgb, var(--theme-warning) 32%, var(--theme-border-subtle));
+    color: color-mix(in srgb, var(--theme-warning) 72%, var(--theme-text-primary));
+    background: color-mix(in srgb, var(--theme-warning) 10%, var(--theme-surface));
+}
+
+.apps-workflow-contract-summary strong,
+.apps-workflow-contract-summary em {
+    display: block;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-workflow-contract-summary strong {
+    max-width: 120px;
+    color: var(--theme-text-secondary);
+    font-size: 0.64rem;
+    font-weight: 800;
+}
+
+.apps-workflow-contract-summary em {
+    max-width: 260px;
+    padding: 0;
+    border: 0;
+    color: var(--theme-text-primary);
+    background: transparent;
+    font-size: 0.64rem;
+    font-style: normal;
+    font-weight: 850;
+}
+
+.apps-workflow-contract-summary__state,
+.apps-workflow-contract-summary__issue {
+    font-size: 0.64rem;
+    font-weight: 850;
+}
+
+.apps-workflow-contract-summary__issue {
+    flex: 1 1 220px;
+}
 .apps-install-record__dep {
     max-width: 100%;
     min-height: 24px;

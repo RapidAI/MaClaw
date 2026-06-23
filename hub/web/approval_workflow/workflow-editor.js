@@ -231,6 +231,13 @@
     draftGeneratedFallback: 'Basic draft generated because the LLM service was unavailable. In HUB System Settings, confirm the system default LLM service group, then review the workflow before saving.',
     draftGeneratedFallbackProvider: 'Basic draft generated because the LLM provider request failed. Review the workflow before saving, then try again after the provider recovers.',
     draftGeneratedFallbackResponse: 'Basic draft generated because the LLM response could not be applied as a workflow. Review the workflow before saving, then refine the description and try again.',
+    draftDebugDetails: 'Details: {details}',
+    draftDebugServiceGroup: 'service group',
+    draftDebugProvider: 'provider',
+    draftDebugModel: 'model',
+    draftDebugProviderGroups: 'provider groups',
+    draftDebugStatus: 'status',
+    draftDebugError: 'error',
     draftNeedDescription: 'Describe the workflow before generating.',
     draftGenerationCancelled: 'Generation canceled. The current canvas was not changed.',
     draftOverwriteConfirm: 'The canvas already has a draft. Save it first if you want to keep it. Generate anyway and overwrite the current canvas?',
@@ -654,9 +661,11 @@
   function draftGeneratedStatus(data) {
     if (data && data.generated_by === 'fallback') {
       var reason = String(data.fallback_reason || '').trim();
-      if (reason === 'llm_provider') return tr('draftGeneratedFallbackProvider');
-      if (reason === 'llm_response') return tr('draftGeneratedFallbackResponse');
-      return tr('draftGeneratedFallback');
+      var message = tr('draftGeneratedFallback');
+      if (reason === 'llm_provider') message = tr('draftGeneratedFallbackProvider');
+      if (reason === 'llm_response') message = tr('draftGeneratedFallbackResponse');
+      var details = draftDebugDetails(data.debug);
+      return details ? message + ' ' + tr('draftDebugDetails', { details: details }) : message;
     }
     var message = tr('draftGenerated');
     var notes = data && Array.isArray(data.notes) ? data.notes : [];
@@ -664,6 +673,26 @@
     if (!note) return message;
     if (note.length > 120) note = note.slice(0, 117) + '...';
     return message + ' ' + note;
+  }
+
+  function draftDebugDetails(debug) {
+    if (!debug || typeof debug !== 'object') return '';
+    var parts = [];
+    var push = function (label, value) {
+      value = String(value || '').trim();
+      if (!value) return;
+      if (value.length > 160) value = value.slice(0, 157) + '...';
+      parts.push(label + ': ' + value);
+    };
+    push(tr('draftDebugServiceGroup'), debug.service_group_id);
+    push(tr('draftDebugProvider'), debug.provider_id);
+    push(tr('draftDebugModel'), debug.model);
+    if (Array.isArray(debug.provider_service_group_ids) && debug.provider_service_group_ids.length) {
+      push(tr('draftDebugProviderGroups'), debug.provider_service_group_ids.join(', '));
+    }
+    push(tr('draftDebugStatus'), debug.status_code);
+    push(tr('draftDebugError'), debug.response || debug.message);
+    return parts.join('; ');
   }
 
   async function generateWorkflowDraftFromPrompt() {
@@ -2547,6 +2576,10 @@
     };
   }
 
+  function approvalRoleHasAssignees(role) {
+    return !!(role && Array.isArray(role.assignees) && role.assignees.length);
+  }
+
   function approvalRoleId(scopeType, scopeId, roleCode) {
     return ['role', scopeType || 'global', scopeId || 'global', roleCode || ''].map(encodeURIComponent).join(':');
   }
@@ -2572,11 +2605,12 @@
 
   function approvalRoleRows(view, directory, query) {
     var catalog = approverRoleCatalog(directory);
+    var configuredCatalog = catalog.filter(approvalRoleHasAssignees);
     var functionRoleScopes = {};
-    catalog.forEach(function (role) {
+    configuredCatalog.forEach(function (role) {
       if (role.view === 'function' || role.scopeType === 'function') functionRoleScopes[role.scopeId] = true;
     });
-    var roles = catalog.filter(function (role) {
+    var roles = configuredCatalog.filter(function (role) {
       if (view === 'function') return role.view === 'function' || role.scopeType === 'function';
       if (view === 'organization') return role.view !== 'function' && role.scopeType !== 'function';
       return false;

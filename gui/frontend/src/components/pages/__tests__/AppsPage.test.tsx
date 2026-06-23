@@ -1017,6 +1017,66 @@ describe('AppsPage', () => {
         }));
     });
 
+    it('blocks approval app publish submission when workflow contract verification fails', async () => {
+        const app = {
+            id: 'publish-approval-contract-drift',
+            name: 'Approval Contract Publish Drift',
+            description: 'Approval publish contract verification',
+            category: 'Finance',
+            kind: 'enterprise_approval_app',
+            icon: 'receipt',
+            accent: '#2f5f98',
+            pinned: false,
+            source: 'local',
+            version: 1,
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_approval_app',
+                launchMode: 'agent_dynamic_ui',
+                appSkill: { id: 'expense-approval-app', version: '1.0.0', source: 'hub' },
+                datasrv: { domain: 'finance', datasetID: 'finance.expenses', objectRole: 'expense_report', preferredAction: 'finance.expense_upsert' },
+                workflow: { schema: 'maclaw.app.workflow.v1', submitNode: 'expense_report.submit', approvalNode: 'expense_report.manager_approval', resultNode: 'expense_report.result_feedback', attentionNode: 'expense_report.attention_review', statusMapping: { pending: 'approval_pending', approved: 'approved', rejected: 'rejected', attention: 'attention', requiresInput: 'requires_input' } },
+                mis: { approvalBindings: [{ event: 'expense.submitted', workflowSkillId: 'expense-workflow', workflowVersion: '1.0.0', objectRole: 'expense_report' }] },
+                dependencies: { skills: [{ id: 'expense-workflow', version: '1.0.0', kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }] },
+                ui: { schema: 'maclaw.app.ui.v1', entry: 'approval_workspace', layouts: { approval_workspace: { template: 'dashboard', density: 'compact', primaryRegion: 'left', outputRegion: 'right', studio: { savedInManifest: true } } } },
+                resultContract: { schema: 'maclaw.app.result.v1', primary: 'approval_result', types: ['approval_result', 'business_status', 'content'], delivery: { inlineContent: true, artifacts: false, businessRecord: true, notifications: true } },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        seedSuccessfulLocalAppRun(app, {
+            runID: 'run-approval-contract-drift',
+            outputMode: 'approval_result',
+            resultPayload: { decision: 'approved', business_status: 'approved', text: 'approved' },
+            outputs: [{ kind: 'approval_result', title: 'Approval decision', text: 'approved', status: 'approved' }],
+        });
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: app.kind }],
+            dependencies: [{ id: 'expense-workflow', version: '1.0.0', kind: 'workflow_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: [app.id] }],
+            workflow_contract_issues: [{ path: 'apps[0].app.governance.workflowContract.workflowSkillId', severity: 'error', message: 'approval workflow contract does not match approval binding' }],
+            has_workflow_contract_issue: true,
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        });
+        const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'should-not-submit' });
+        (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
+
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Review / publish'));
+        const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Approval Contract Publish Drift')) as HTMLElement;
+        expect(card).toBeTruthy();
+        expect(within(card).getByText('Runtime contract')).not.toBeNull();
+        expect(within(card).getByText(/expense-workflow@v1.0.0/)).not.toBeNull();
+        expect(within(card).getByText('Ready to submit')).not.toBeNull();
+        fireEvent.click(within(card).getByText('Submit for review'));
+
+        await waitFor(() => expect(within(card).getByText(/Runtime contract needs attention: approval workflow contract does not match approval binding/)).not.toBeNull());
+        expect(submitMaclawAppPackage).not.toHaveBeenCalled();
+    });
     it('includes enterprise visual UI metadata in market submission packages', async () => {
         const app = {
             id: 'publish-enterprise-ui-app',
@@ -2785,6 +2845,62 @@ describe('AppsPage', () => {
             app_id: 'skill-app-disabled-runtime-tool-runtime-dep-tool',
             app_kind: 'tool_app',
         })));
+    });
+    it('blocks approval app runs when the workflow contract plan reports drift', async () => {
+        const app = {
+            id: 'local-approval-contract-drift-app',
+            name: 'Approval Contract Drift',
+            description: 'Approval app workflow contract drift',
+            category: 'Finance',
+            kind: 'enterprise_approval_app',
+            icon: 'receipt',
+            accent: '#2f5f98',
+            source: 'local',
+            pinned: false,
+            recentUsedAt: '2026-06-17T00:00:00.000Z',
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_approval_app',
+                launchMode: 'approval_workspace',
+                datasrv: { domain: 'finance', datasetID: 'finance.expenses', objectRole: 'expense_report', preferredAction: 'finance.expense_upsert' },
+                workflow: { schema: 'maclaw.app.workflow.v1', submitNode: 'expense_report.submit', approvalNode: 'expense_report.manager_approval', resultNode: 'expense_report.result_feedback', attentionNode: 'expense_report.attention_review', statusMapping: { pending: 'approval_pending', approved: 'approved', rejected: 'rejected', attention: 'attention', requiresInput: 'requires_input' } },
+                mis: { approvalBindings: [{ event: 'expense.submitted', workflowSkillId: 'expense-workflow', workflowVersion: '1.0.0', objectRole: 'expense_report' }] },
+                dependencies: { skills: [{ id: 'expense-workflow', version: '1.0.0', kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }] },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [app.id],
+            customApps: [app],
+            recentUsedAtById: { [app.id]: app.recentUsedAt },
+        }));
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: 'enterprise_approval_app' }],
+            dependencies: [{ id: 'expense-workflow', version: '1.0.0', kind: 'workflow_skill', required: true, installed: true, health: 'ready', action: 'skip', app_ids: [app.id] }],
+            workflow_contract_issues: [{ path: 'apps[0].app.governance.workflowContract.workflowSkillId', severity: 'error', message: 'approval workflow contract does not match approval binding' }],
+            has_workflow_contract_issue: true,
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        });
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getAllByText('Approval Contract Drift')[0]);
+        fireEvent.click(screen.getByText('Run'));
+
+        await waitFor(() => expect(screen.getAllByText(/Runtime contract needs attention/).length).toBeGreaterThan(0));
+        expect(screen.getAllByText('approval workflow contract does not match approval binding').length).toBeGreaterThan(0);
+        const runtimeStatus = document.querySelector('.apps-runtime-status') as HTMLElement;
+        const workflowContract = runtimeStatus.querySelector('.apps-workflow-contract-summary') as HTMLElement;
+        expect(workflowContract).not.toBeNull();
+        expect(workflowContract.dataset.state).toBe('blocked');
+        expect(within(workflowContract).getByText('Approval workflow')).not.toBeNull();
+        expect(within(workflowContract).getByText('expense-workflow@v1.0.0')).not.toBeNull();
+        expect(screen.queryByText('Install dependencies and run')).toBeNull();
+        expect(installMaclawAppDependenciesMock).not.toHaveBeenCalled();
+        expect(runNLSkillAsyncMock).not.toHaveBeenCalled();
+        expect(recordMaclawAppApprovalInstanceMock).not.toHaveBeenCalled();
     });
     it('installs missing workflow dependencies before starting approval app instances', async () => {
         const app = {
@@ -4561,6 +4677,66 @@ describe('AppsPage', () => {
         expect(screen.getByText(/应用包无效: 必需 Skill 依赖缺失或不可用/)).not.toBeNull();
         expect(screen.queryByText('已安装: 1 · 已跳过: 0')).toBeNull();
     });
+    it('blocks pasted approval app installation when workflow contract verification fails', async () => {
+        const contractIssuePlan = {
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: 'contract-drift-install', name: 'Contract Drift Install', kind: 'enterprise_approval_app' }],
+            dependencies: [{ id: 'expense-workflow', version: '1.0.0', kind: 'workflow_skill', required: true, installed: true, health: 'ready', action: 'skip', app_ids: ['contract-drift-install'] }],
+            workflow_contract_issues: [{ path: 'apps[0].app.governance.workflowContract.workflowSkillId', severity: 'error', message: 'approval workflow contract does not match approval binding' }],
+            has_workflow_contract_issue: true,
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        };
+        planMaclawAppInstallMock.mockResolvedValue(contractIssuePlan);
+        installMaclawAppDependenciesMock.mockResolvedValue(contractIssuePlan);
+
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Add from market'));
+        fireEvent.change(document.querySelector('.apps-market-install textarea') as HTMLTextAreaElement, {
+            target: {
+                value: JSON.stringify({
+                    schema: 'maclaw.app.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    installUnit: 'enterprise_app_pack',
+                    app: {
+                        id: 'contract-drift-install',
+                        name: 'Contract Drift Install',
+                        description: 'Approval workflow contract mismatch',
+                        category: 'Finance',
+                        kind: 'enterprise_approval_app',
+                        icon: 'receipt',
+                        launchMode: 'agent_dynamic_ui',
+                        binding: {
+                            datasrv: { domain: 'finance', datasetID: 'finance.expenses', objectRole: 'expense_report', preferredAction: 'finance.expense_upsert' },
+                            workflow: { schema: 'maclaw.app.workflow.v1', submitNode: 'expense_report.submit', approvalNode: 'expense_report.manager_approval', resultNode: 'expense_report.result_feedback', attentionNode: 'expense_report.attention_review', statusMapping: { pending: 'approval_pending', approved: 'approved', rejected: 'rejected', attention: 'attention', requiresInput: 'requires_input' } },
+                            mis: { approvalBindings: [{ event: 'expense.submitted', workflowSkillId: 'expense-workflow', workflowVersion: '1.0.0', objectRole: 'expense_report' }] },
+                            dependencies: { skills: [{ id: 'expense-workflow', version: '1.0.0', kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }] },
+                        },
+                    },
+                }),
+            },
+        });
+
+        await waitFor(() => expect(screen.getAllByText(/Runtime contract needs attention/).length).toBeGreaterThan(0));
+        expect(screen.getAllByText(/approval workflow contract does not match approval binding/).length).toBeGreaterThan(0);
+        const verification = document.querySelector('.apps-dependency-verification') as HTMLElement;
+        expect(verification).not.toBeNull();
+        expect(verification.dataset.state).toBe('blocked');
+        expect(within(verification).getByText(/Runtime contract: 1/)).not.toBeNull();
+        expect(document.querySelector('.apps-install-preview__row[data-dependency-state="blocked"]')).not.toBeNull();
+
+        const installButton = document.querySelector('.apps-market-install .apps-primary-button') as HTMLButtonElement;
+        expect(installButton.disabled).toBe(true);
+        fireEvent.click(installButton);
+
+        expect(installMaclawAppDependenciesMock).not.toHaveBeenCalled();
+        expect(recordMaclawAppInstallMock).not.toHaveBeenCalled();
+        expect(screen.queryByText('Installed: 1 · Skipped: 0')).toBeNull();
+        fireEvent.click(screen.getByText('Manage apps'));
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('Contract Drift Install'))).toBe(false);
+    });
     it('supports select all and select none in market install preview', () => {
         render(<AppsPage lang="zh-Hans" />);
 
@@ -5077,6 +5253,15 @@ describe('AppsPage', () => {
                         workflow_skill_ids: ['expense-workflow'],
                         workflow_skill_versions: ['expense-workflow@2.1.0'],
                         approval_binding_versions: ['expense.submitted:expense-workflow@2.1.0'],
+                        workflow_contract: {
+                            schema: 'maclaw.app.workflow_contract.v1',
+                            workflow_skill_id: 'expense-workflow',
+                            workflow_version: '2.1.0',
+                            object_role: 'expense_report',
+                            required_inputs: ['record_ref', 'applicant', 'business_payload'],
+                            decision_outputs: ['approved', 'rejected', 'attention'],
+                            status_mapping: { pending: 'finance_pending', approved: 'approved', rejected: 'rejected', attention: 'attention', requires_input: 'requires_input' },
+                        },
                         workspace_layout_entry: 'approval_workspace',
                         workspace_layout_template: 'dashboard',
                         workspace_layout_density: 'spacious',
@@ -5115,6 +5300,15 @@ describe('AppsPage', () => {
         expect(added.manifest.appSkill).toMatchObject({ id: 'expense-super-skill', version: '1.0.0' });
         expect(added.manifest.dependencies.skills.find((dep: any) => dep.id === 'expense-workflow')).toMatchObject({ version: '2.1.0', kind: 'workflow_skill' });
         expect(added.manifest.mis.approvalBindings[0]).toMatchObject({ event: 'expense.submitted', workflowSkillId: 'expense-workflow', workflowVersion: '2.1.0', objectRole: 'expense_report' });
+        expect(added.workflowContract).toMatchObject({
+            schema: 'maclaw.app.workflow_contract.v1',
+            workflowSkillId: 'expense-workflow',
+            workflowVersion: '2.1.0',
+            objectRole: 'expense_report',
+            requiredInputs: ['record_ref', 'applicant', 'business_payload'],
+            decisionOutputs: ['approved', 'rejected', 'attention'],
+            statusMapping: { pending: 'finance_pending', approved: 'approved', rejected: 'rejected', attention: 'attention', requiresInput: 'requires_input' },
+        });
         expect(added.versionSnapshot).toMatchObject({
             app_entry_version: '3',
             app_skill: { id: 'expense-super-skill', version: '1.0.0', kind: 'runtime_skill', source: 'hub' },
@@ -5150,6 +5344,18 @@ describe('AppsPage', () => {
         expect(within(runtimeVersionSnapshot).getByText('expense-workflow · workflow_skill · hub · v2.1.0')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('Approval binding')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('expense.submitted · expense_report · expense-workflow@v2.1.0')).not.toBeNull();
+        const runtimeWorkflowContract = document.querySelector('.apps-detail__header .apps-workflow-contract-summary') as HTMLElement | null;
+        expect(runtimeWorkflowContract).not.toBeNull();
+        expect(runtimeWorkflowContract?.getAttribute('aria-label')).toBe('Runtime contract');
+        expect(within(runtimeWorkflowContract as HTMLElement).getByText('Runtime contract aligned')).not.toBeNull();
+        expect(within(runtimeWorkflowContract as HTMLElement).getByText('Approval workflow')).not.toBeNull();
+        expect(within(runtimeWorkflowContract as HTMLElement).getByText('expense-workflow@v2.1.0')).not.toBeNull();
+        expect(within(runtimeWorkflowContract as HTMLElement).getByText('Business object')).not.toBeNull();
+        expect(within(runtimeWorkflowContract as HTMLElement).getByText('expense_report')).not.toBeNull();
+        expect(within(runtimeWorkflowContract as HTMLElement).getByText('Inputs')).not.toBeNull();
+        expect(within(runtimeWorkflowContract as HTMLElement).getByText('record_ref, applicant, business_payload')).not.toBeNull();
+        expect(within(runtimeWorkflowContract as HTMLElement).getByText('Outputs')).not.toBeNull();
+        expect(within(runtimeWorkflowContract as HTMLElement).getByText('approved, rejected, attention')).not.toBeNull();
     });
     it('turns skill maclaw.apps.json entries into registered tool apps', async () => {
         listSkillAppManifestsMock.mockResolvedValue([

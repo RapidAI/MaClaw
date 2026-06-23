@@ -88,7 +88,7 @@ var i18nKeys = [
   'designWorkflow', 'emptyHint', 'draftAssistant', 'draftAssistantTitle', 'draftAssistantHint', 'draftExamples',
   'draftExampleLeave', 'draftExamplePurchase', 'draftExampleContract', 'draftExampleFullControls', 'draftPromptPlaceholder', 'generateDraft',
   'draftGenerating', 'draftGenerated', 'draftNeedDescription', 'draftGenerationCancelled', 'draftOverwriteConfirm',
-  'draftGeneratedFallback', 'draftGeneratedFallbackProvider', 'draftGeneratedFallbackResponse',
+  'draftGeneratedFallback', 'draftGeneratedFallbackProvider', 'draftGeneratedFallbackResponse', 'draftDebugDetails',
   'draftExampleLeaveText', 'draftExamplePurchaseText', 'draftExampleContractText', 'draftExampleFullControlsText',
   'nodeConfiguration', 'closeNodeConfiguration',
   'canvasTools', 'selectTool', 'connectTool', 'deleteEdgeTool', 'connectHint', 'deleteEdgeHint', 'edgeConnectorLabel',
