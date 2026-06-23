@@ -65,6 +65,28 @@ func filterAuthorizedModelsByProviderRegistry(status *llmservice.ServiceStatus, 
 	if status == nil {
 		return nil, nil
 	}
+	filtered := filterAuthorizedModelsForConfiguredProviders(models, providerReg)
+	filteredStatus := *status
+	filteredStatus.AuthorizedModels = filtered
+	filteredStatus.AvailableModels = make([]string, 0, len(filtered))
+	for _, model := range filtered {
+		filteredStatus.AvailableModels = append(filteredStatus.AvailableModels, model.Name)
+	}
+	filteredStatus.Active = status.Active && len(filtered) > 0
+	filteredStatus.SkipLLMConfig = status.SkipLLMConfig && len(filtered) > 0
+	if len(filtered) > 0 {
+		if best := llmservice.SelectBestModelForRequest(nil, filtered); best != nil {
+			filteredStatus.DefaultModel = best.Name
+		} else {
+			filteredStatus.DefaultModel = filtered[0].Name
+		}
+	} else {
+		filteredStatus.DefaultModel = ""
+	}
+	return &filteredStatus, filtered
+}
+
+func filterAuthorizedModelsForConfiguredProviders(models []llmservice.AuthorizedModel, providerReg *im.LLMProviderRegistry) []llmservice.AuthorizedModel {
 	configuredProviders := map[string]struct{}{}
 	if providerReg != nil {
 		for _, provider := range providerReg.Providers {
@@ -124,24 +146,7 @@ func filterAuthorizedModelsByProviderRegistry(status *llmservice.ServiceStatus, 
 		}
 		filtered = append(filtered, clone)
 	}
-	filteredStatus := *status
-	filteredStatus.AuthorizedModels = filtered
-	filteredStatus.AvailableModels = make([]string, 0, len(filtered))
-	for _, model := range filtered {
-		filteredStatus.AvailableModels = append(filteredStatus.AvailableModels, model.Name)
-	}
-	filteredStatus.Active = status.Active && len(filtered) > 0
-	filteredStatus.SkipLLMConfig = status.SkipLLMConfig && len(filtered) > 0
-	if len(filtered) > 0 {
-		if best := llmservice.SelectBestModelForRequest(nil, filtered); best != nil {
-			filteredStatus.DefaultModel = best.Name
-		} else {
-			filteredStatus.DefaultModel = filtered[0].Name
-		}
-	} else {
-		filteredStatus.DefaultModel = ""
-	}
-	return &filteredStatus, filtered
+	return filtered
 }
 
 func explainFilteredServiceStatusIssues(status *llmservice.ServiceStatus, filtered []llmservice.AuthorizedModel, providerReg *im.LLMProviderRegistry) []string {

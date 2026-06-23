@@ -1176,7 +1176,9 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
 
     const panelStyle: React.CSSProperties = {
         height: "100%",
+        width: "100%",
         minWidth: 0,
+        flex: 1,
         display: "flex",
         flexDirection: "column",
         background: theme.bg,

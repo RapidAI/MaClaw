@@ -1578,6 +1578,7 @@ func TestMaclawAppApprovalInstancesPersistAndFilter(t *testing.T) {
 		Approver:           "manager",
 		Result:             "waiting",
 		WorkflowSkillID:    "expense-approval-workflow",
+		WorkflowVersion:    "2.1.0",
 		BusinessStatus:     "approval_pending",
 		ResultStatus:       "pending",
 		RecordID:           "exp-1",
@@ -1736,7 +1737,7 @@ func TestListMaclawAppApprovalInstancesAllLoadsDataSrvLane(t *testing.T) {
 			t.Fatalf("expected user header, got %q", r.Header.Get("X-MaClaw-User-ID"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"items":[{"id":"approval-remote-1","dataset_id":"finance.expenses","record_id":"exp-1","app_id":"expense","blueprint_id":"expense.v1","object_role":"expense_report","status":"pending","summary":"Expense #1","request":{"approval_instance_id":"wf-1","owner":"alice","applicant":"alice","business_entity":"expense","business_action":"submit","business_note":"taxi"},"workflow_skill_id":"expense-workflow","workflow_instance_id":"wf-1","workflow_node_id":"manager_approval","business_status":"approval_pending","result_status":"pending","result_payload":{"text":"waiting for manager"},"outputs":[{"type":"content","title":"Summary","text":"waiting"}],"artifacts":[{"id":"receipt-1","name":"receipt.pdf","uri":"artifact://receipt"}],"assigned_to":"manager","created_by":"alice","created_at":"2026-06-21T01:00:00Z","updated_at":"2026-06-21T02:00:00Z"}]}`))
+		_, _ = w.Write([]byte(`{"items":[{"id":"approval-remote-1","dataset_id":"finance.expenses","record_id":"exp-1","app_id":"expense","blueprint_id":"expense.v1","object_role":"expense_report","status":"pending","summary":"Expense #1","request":{"approval_instance_id":"wf-1","owner":"alice","applicant":"alice","business_entity":"expense","business_action":"submit","business_note":"taxi"},"workflow_skill_id":"expense-workflow","workflow_version":"4.0.0","workflow_instance_id":"wf-1","workflow_node_id":"manager_approval","business_status":"approval_pending","result_status":"pending","result_payload":{"text":"waiting for manager"},"outputs":[{"type":"content","title":"Summary","text":"waiting"}],"artifacts":[{"id":"receipt-1","name":"receipt.pdf","uri":"artifact://receipt"}],"assigned_to":"manager","created_by":"alice","created_at":"2026-06-21T01:00:00Z","updated_at":"2026-06-21T02:00:00Z"}]}`))
 	}))
 	defer server.Close()
 	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "manager", Role: "approver"}); err != nil {
@@ -1754,7 +1755,7 @@ func TestListMaclawAppApprovalInstancesAllLoadsDataSrvLane(t *testing.T) {
 		t.Fatalf("expected one remote approval, got %#v", items)
 	}
 	got := items[0]
-	if got.AppID != "expense" || got.ApprovalID != "approval-remote-1" || got.RecordApprovalID != "approval-remote-1" || got.InstanceID != "wf-1" || got.Lane != "pending_my_approval" {
+	if got.AppID != "expense" || got.ApprovalID != "approval-remote-1" || got.RecordApprovalID != "approval-remote-1" || got.InstanceID != "wf-1" || got.WorkflowVersion != "4.0.0" || got.Lane != "pending_my_approval" {
 		t.Fatalf("unexpected remote approval identity: %#v", got)
 	}
 	if got.DatasetID != "finance.expenses" || got.ObjectRole != "expense_report" || got.BusinessEntity != "expense" || got.BusinessAction != "submit" || got.BusinessNote != "taxi" {
@@ -2272,13 +2273,13 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	if !ok || preCreatePatchedData["amount"] != float64(1200) || preCreatePatchedData["status"] != "approval_pending" {
 		t.Fatalf("pre-create business record patch should keep pending approval data: %#v", captured[1].Body)
 	}
-	if preCreatePatchedData["app_id"] != "expense" || preCreatePatchedData["blueprint_id"] != "expense.blueprint.v1" || preCreatePatchedData["object_role"] != "expense_report" || preCreatePatchedData["approval_lane"] != "pending_my_approval" || preCreatePatchedData["approval_current_node"] != "manager_review" {
+	if preCreatePatchedData["app_id"] != "expense" || preCreatePatchedData["blueprint_id"] != "expense.blueprint.v1" || preCreatePatchedData["object_role"] != "expense_report" || preCreatePatchedData["approval_lane"] != "pending_my_approval" || preCreatePatchedData["approval_current_node"] != "manager_review" || preCreatePatchedData["workflow_version"] != "2.1.0" {
 		t.Fatalf("pre-create business record patch should include app approval semantics: %#v", captured[1].Body)
 	}
 	if captured[2].Method != http.MethodPost || captured[2].Path != "/api/v1/data/datasets/finance.expenses/records/exp-1/approvals" {
 		t.Fatalf("unexpected create request: %#v", captured[2])
 	}
-	if captured[2].Body["workflow_instance_id"] != "appr-1" || captured[2].Body["business_status"] != "approval_pending" || captured[2].Body["result_status"] != "pending" {
+	if captured[2].Body["workflow_instance_id"] != "appr-1" || captured[2].Body["workflow_version"] != "2.1.0" || captured[2].Body["business_status"] != "approval_pending" || captured[2].Body["result_status"] != "pending" {
 		t.Fatalf("create body missing approval link fields: %#v", captured[2].Body)
 	}
 	if captured[2].Body["app_id"] != "expense" || captured[2].Body["blueprint_id"] != "expense.blueprint.v1" || captured[2].Body["object_role"] != "expense_report" {
@@ -2298,7 +2299,7 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListMaclawAppApprovalInstances after create sync error = %v", err)
 	}
-	if len(stored) != 1 || stored[0].ApprovalID != "approval-remote-1" || stored[0].RecordApprovalID != "approval-remote-1" || stored[0].ObjectRole != "expense_report" {
+	if len(stored) != 1 || stored[0].ApprovalID != "approval-remote-1" || stored[0].RecordApprovalID != "approval-remote-1" || stored[0].ObjectRole != "expense_report" || stored[0].WorkflowVersion != "2.1.0" {
 		t.Fatalf("create sync should persist remote approval context: %#v", stored)
 	}
 	if outputs, ok := captured[2].Body["outputs"].([]interface{}); !ok || len(outputs) != 1 {
@@ -2310,7 +2311,7 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	if captured[3].Method != http.MethodPost || captured[3].Path != "/api/v1/data/approvals/approval-remote-1/review" {
 		t.Fatalf("unexpected review request: %#v", captured[3])
 	}
-	if captured[3].Body["decision"] != "approved" || captured[3].Body["workflow_decision_id"] != "decision-1" || captured[3].Body["business_status"] != "approved" || captured[3].Body["result_status"] != "approved" {
+	if captured[3].Body["decision"] != "approved" || captured[3].Body["workflow_decision_id"] != "decision-1" || captured[3].Body["workflow_version"] != "2.1.0" || captured[3].Body["business_status"] != "approved" || captured[3].Body["result_status"] != "approved" {
 		t.Fatalf("review body missing decision fields: %#v", captured[3].Body)
 	}
 	if captured[3].Body["result_payload"] == nil || captured[3].Body["outputs"] == nil || captured[3].Body["artifacts"] == nil {
@@ -2326,7 +2327,7 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	if !ok || patchedData["amount"] != float64(1200) || patchedData["status"] != "approved" || patchedData["payment_status"] != "pending_payment" {
 		t.Fatalf("business record patch should merge existing data with approval result: %#v", captured[5].Body)
 	}
-	if patchedData["app_id"] != "expense" || patchedData["blueprint_id"] != "expense.blueprint.v1" || patchedData["object_role"] != "expense_report" || patchedData["approval_lane"] != "handled" || patchedData["approval_status"] != "approved" || patchedData["approval_current_node"] != "manager_review" {
+	if patchedData["app_id"] != "expense" || patchedData["blueprint_id"] != "expense.blueprint.v1" || patchedData["object_role"] != "expense_report" || patchedData["approval_lane"] != "handled" || patchedData["approval_status"] != "approved" || patchedData["approval_current_node"] != "manager_review" || patchedData["workflow_version"] != "2.1.0" {
 		t.Fatalf("business record patch should preserve app approval semantics after workflow result patch: %#v", captured[5].Body)
 	}
 }

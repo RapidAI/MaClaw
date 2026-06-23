@@ -229,6 +229,21 @@ func TestComputeStoreDoesNotRewriteSignedAlipayPaymentURL(t *testing.T) {
 	}
 }
 
+func TestComputeStorePrioritizesGatewayPaymentDetails(t *testing.T) {
+	pagePath := filepath.Clean(filepath.Join("..", "..", "web", "compute-store", "index.html"))
+	body, err := os.ReadFile(pagePath)
+	if err != nil {
+		t.Fatalf("read compute store page: %v", err)
+	}
+	page := string(body)
+	gatewayDetect := `var isGatewayOrder = !!(order.pay_url || order.payment_mode === 'alipay_direct');`
+	selectedByGateway := `var selectedID = isGatewayOrder ? 'alipay_direct' : (order.pay_channel || state.selectedPayChannel || '');`
+	gatewayLabel := `byID[selectedID].label = isGatewayOrder ? tr('gatewayPayment')`
+	if !strings.Contains(page, gatewayDetect) || !strings.Contains(page, selectedByGateway) || !strings.Contains(page, gatewayLabel) {
+		t.Fatalf("compute store must keep Alipay gateway orders separate from manual payment channels")
+	}
+}
+
 func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	webRoot := filepath.Clean(filepath.Join("..", "..", "web"))
 

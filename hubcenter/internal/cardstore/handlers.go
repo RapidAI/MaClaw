@@ -41,6 +41,7 @@ func ListCardTypesHandler(svc *Service) http.HandlerFunc {
 				"bank_account": ch.BankAccount,
 				"bank_holder":  ch.BankHolder,
 				"contact_info": ch.ContactInfo,
+				"instruction":  svc.payment.Instruction,
 			})
 		}
 		paymentMode := ""

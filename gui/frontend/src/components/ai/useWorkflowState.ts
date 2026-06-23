@@ -39,7 +39,7 @@ export interface WorkflowUIState {
     docUpdatePhaseIDs: Set<string>;
 }
 
-const DEFAULT_SPLIT_RATIO = 0.42;
+const DEFAULT_SPLIT_RATIO = 0.6;
 
 function normalizeWorkflowDocumentContent(content: unknown): string {
     return typeof content === "string" ? content.trim() : "";

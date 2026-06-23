@@ -118,6 +118,7 @@ func generateWorkflowDraftWithLLM(r *http.Request, system store.SystemSettingsRe
 		return nil, fmt.Errorf("system default LLM service group %q was not found", serviceGroupID)
 	}
 	models, _ := llmservice.BuildAuthorizedModelsForServiceGroups(serviceReg, []string{serviceGroupID})
+	models = filterAuthorizedModelsForConfiguredProviders(models, providerReg)
 	body := workflowDraftLLMRequestBody(description, language)
 	model, externalModel, err := resolveAuthorizedModel(body, models)
 	if err != nil {

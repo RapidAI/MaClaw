@@ -1054,7 +1054,9 @@ a:focus-visible,
   border-radius: 10px;
   background: #fff;
   color: var(--ink);
-  font: 13px/1.65 inherit;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .order-info {

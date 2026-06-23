@@ -224,6 +224,7 @@ type maclawAppApprovalInstance struct {
 	UpdatedAt          string                      `json:"updated_at"`
 	Result             string                      `json:"result"`
 	WorkflowSkillID    string                      `json:"workflow_skill_id,omitempty"`
+	WorkflowVersion    string                      `json:"workflow_version,omitempty"`
 	BusinessStatus     string                      `json:"business_status,omitempty"`
 	ResultStatus       string                      `json:"result_status,omitempty"`
 	WorkflowDecisionID string                      `json:"workflow_decision_id,omitempty"`
@@ -823,6 +824,7 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 			"reason":               instance.Result,
 			"workflow_node_id":     instance.CurrentNode,
 			"workflow_decision_id": instance.WorkflowDecisionID,
+			"workflow_version":     instance.WorkflowVersion,
 			"business_status":      firstNonEmptyMaclawAppString(instance.BusinessStatus, instance.Status),
 			"result_status":        firstNonEmptyMaclawAppString(instance.ResultStatus, instance.Status),
 			"result_payload":       cloneMapAny(instance.ResultPayload),
@@ -860,6 +862,7 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 			"result":               instance.Result,
 		}),
 		"workflow_skill_id":    instance.WorkflowSkillID,
+		"workflow_version":     instance.WorkflowVersion,
 		"workflow_instance_id": instance.InstanceID,
 		"workflow_node_id":     instance.CurrentNode,
 		"workflow_decision_id": instance.WorkflowDecisionID,
@@ -1219,6 +1222,7 @@ func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, r
 		UpdatedAt:          maclawAppApprovalTimeString(item.UpdatedAt),
 		Result:             result,
 		WorkflowSkillID:    item.WorkflowSkillID,
+		WorkflowVersion:    item.WorkflowVersion,
 		BusinessStatus:     item.BusinessStatus,
 		ResultStatus:       item.ResultStatus,
 		WorkflowDecisionID: item.WorkflowDecisionID,
@@ -3531,6 +3535,7 @@ func normalizeMaclawAppApprovalInstanceFields(instance maclawAppApprovalInstance
 	instance.UpdatedAt = strings.TrimSpace(instance.UpdatedAt)
 	instance.Result = strings.TrimSpace(instance.Result)
 	instance.WorkflowSkillID = strings.TrimSpace(instance.WorkflowSkillID)
+	instance.WorkflowVersion = strings.TrimSpace(instance.WorkflowVersion)
 	instance.BusinessStatus = strings.TrimSpace(instance.BusinessStatus)
 	instance.ResultStatus = strings.TrimSpace(instance.ResultStatus)
 	instance.WorkflowDecisionID = strings.TrimSpace(instance.WorkflowDecisionID)
@@ -3558,6 +3563,7 @@ func mergeMaclawAppApprovalInstance(existing, incoming maclawAppApprovalInstance
 	incoming.Approver = firstNonEmptyMaclawAppString(incoming.Approver, existing.Approver)
 	incoming.CreatedAt = firstNonEmptyMaclawAppString(incoming.CreatedAt, existing.CreatedAt)
 	incoming.WorkflowSkillID = firstNonEmptyMaclawAppString(incoming.WorkflowSkillID, existing.WorkflowSkillID)
+	incoming.WorkflowVersion = firstNonEmptyMaclawAppString(incoming.WorkflowVersion, existing.WorkflowVersion)
 	incoming.WorkflowDecisionID = firstNonEmptyMaclawAppString(incoming.WorkflowDecisionID, existing.WorkflowDecisionID)
 	incoming.RecordID = firstNonEmptyMaclawAppString(incoming.RecordID, existing.RecordID)
 	incoming.ApprovalID = firstNonEmptyMaclawAppString(incoming.ApprovalID, existing.ApprovalID, existing.RecordApprovalID)

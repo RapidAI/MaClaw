@@ -123,6 +123,64 @@ func TestAdminRestoreArchivedOrderHandlerIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestListCardTypesHandlerIncludesPaymentChannelDisplayDetails(t *testing.T) {
+	cardRepo := &cardTypeTestRepo{all: []*CardType{{
+		ID:       "ct1",
+		Label:    "Starter",
+		Credits:  100,
+		Period:   "month",
+		PriceRMB: 1,
+		Enabled:  true,
+	}}}
+	svc := NewService(cardRepo, nil, nil)
+	svc.SetPaymentConfig(corecardstore.PersonalPaymentConfig{
+		Instruction: "Use order number as transfer remark.",
+		Channels: []corecardstore.PersonalPaymentChannel{{
+			ID:          "bank_transfer",
+			Label:       "Bank",
+			Payee:       "Finance",
+			Enabled:     true,
+			ImageURL:    "https://pay.example.com/bank.png",
+			BankName:    "Example Bank",
+			BankAccount: "6222000011112222",
+			BankHolder:  "Example Ltd.",
+			ContactInfo: "finance@example.com",
+		}},
+	}, corecardstore.AlipayDirectConfig{})
+	req := httptest.NewRequest(http.MethodGet, "/api/cardstore/types", nil)
+	rr := httptest.NewRecorder()
+
+	ListCardTypesHandler(svc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		PaymentChannels []map[string]any `json:"payment_channels"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.PaymentChannels) != 1 {
+		t.Fatalf("payment_channels len = %d, want 1", len(resp.PaymentChannels))
+	}
+	ch := resp.PaymentChannels[0]
+	for key, want := range map[string]string{
+		"id":           "bank_transfer",
+		"payee":        "Finance",
+		"image_url":    "https://pay.example.com/bank.png",
+		"bank_name":    "Example Bank",
+		"bank_account": "6222000011112222",
+		"bank_holder":  "Example Ltd.",
+		"contact_info": "finance@example.com",
+		"instruction":  "Use order number as transfer remark.",
+	} {
+		if got := ch[key]; got != want {
+			t.Fatalf("payment channel %s = %v, want %q", key, got, want)
+		}
+	}
+}
+
 func TestAlipayConfigForRequestFillsDefaultCallbackURLs(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/cardstore/purchase", nil)
 	req.Host = "hubcenter.example.com"

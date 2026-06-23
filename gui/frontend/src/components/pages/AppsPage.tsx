@@ -369,6 +369,7 @@ type ApprovalInstanceView = {
     updatedAt: string;
     result: string;
     workflowSkillID?: string;
+    workflowVersion?: string;
     workflowDecisionID?: string;
     businessStatus?: string;
     resultStatus?: string;
@@ -398,6 +399,7 @@ type BackendApprovalInstance = {
     updated_at?: string;
     result?: string;
     workflow_skill_id?: string;
+    workflow_version?: string;
     workflow_decision_id?: string;
     approval_event?: string;
     approval_object_role?: string;
@@ -4343,6 +4345,7 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
         updatedAt: String(instance.updated_at || '-').trim(),
         result: String(instance.result || '-').trim(),
         workflowSkillID: String(instance.workflow_skill_id || '').trim(),
+        workflowVersion: String(instance.workflow_version || '').trim(),
         workflowDecisionID: String(instance.workflow_decision_id || '').trim(),
         businessStatus: String(instance.business_status || '').trim(),
         resultStatus: String(instance.result_status || '').trim(),
@@ -4374,6 +4377,12 @@ function appApprovalBinding(app: AppEntry): AppApprovalBinding | undefined {
 
 function appApprovalWorkflowSkillID(app: AppEntry): string {
     return appApprovalBinding(app)?.workflowSkillId || app.manifest?.dependencies?.skills?.find((dependency) => dependency.kind === 'workflow_skill')?.id || app.manifest?.appSkill?.id || app.manifest?.skill?.id || '';
+}
+function appApprovalWorkflowVersion(app: AppEntry): string {
+    const binding = appApprovalBinding(app);
+    if (binding?.workflowVersion) return binding.workflowVersion;
+    const workflowID = binding?.workflowSkillId || '';
+    return app.manifest?.dependencies?.skills?.find((dependency) => dependency.kind === 'workflow_skill' && (!workflowID || dependency.id === workflowID))?.version || '';
 }
 function appDataSrvDatasetID(app: AppEntry): string {
     const datasrv = app.manifest?.datasrv;
@@ -4787,6 +4796,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const outputModes = normalizeOutputModes(app.manifest?.skill?.outputModes);
     const approvalBinding = appApprovalBinding(app);
     const workflowSkillID = appApprovalWorkflowSkillID(app);
+    const workflowVersion = appApprovalWorkflowVersion(app);
     const approvalDatasetID = appDataSrvDatasetID(app);
     const approvalObjectRole = String(approvalBinding?.objectRole || app.manifest?.datasrv?.objectRole || '').trim();
     const approvalBlueprintID = String(app.manifest?.datasrv?.blueprintID || '').trim();
@@ -4950,6 +4960,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     approval_object_role: approvalObjectRole,
                     object_role: approvalObjectRole,
                     approval_workflow_skill_id: workflowSkillID,
+                    approval_workflow_version: workflowVersion,
+                    workflow_version: workflowVersion,
                     current_node: workflowMapping?.approvalNode || '',
                     workflow_mapping: workflowMapping,
                     workflow_status_mapping: workflowMapping?.statusMapping,
@@ -4983,6 +4995,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 app_id: app.id,
                 app_name: app.name,
                 workflow_skill_id: workflowSkillID,
+                workflow_version: workflowVersion || undefined,
                 workflow_decision_id: workflowRunID,
                 approval_event: approvalBinding?.event || undefined,
                 approval_object_role: approvalObjectRole || undefined,
@@ -5158,6 +5171,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             app_id: instance.appID || app.id,
             app_name: app.name,
             workflow_skill_id: instance.workflowSkillID || workflowSkillID,
+            workflow_version: instance.workflowVersion || workflowVersion || undefined,
             workflow_decision_id: `decision-${Date.now().toString(36)}`,
             approval_id: instance.approvalID,
             record_approval_id: instance.approvalID,
@@ -5478,7 +5492,7 @@ const approvalLanes = (text: typeof labels.zh) => [
 ] as const;
 
 function approvalSearchText(item: ApprovalInstanceView, appName: string) {
-    return [appName, item.appName, item.title, item.id, item.currentNode, item.owner, item.approver, item.result, item.workflowSkillID, item.workflowDecisionID, item.datasetID, item.objectRole, item.approvalID, item.businessStatus, item.resultStatus, item.recordID]
+    return [appName, item.appName, item.title, item.id, item.currentNode, item.owner, item.approver, item.result, item.workflowSkillID, item.workflowVersion, item.workflowDecisionID, item.datasetID, item.objectRole, item.approvalID, item.businessStatus, item.resultStatus, item.recordID]
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
@@ -5549,6 +5563,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
             app_id: instance.appID,
             app_name: instance.appName || app?.name,
             workflow_skill_id: instance.workflowSkillID,
+            workflow_version: instance.workflowVersion,
             workflow_decision_id: `decision-${Date.now().toString(36)}`,
             approval_id: instance.approvalID,
             record_approval_id: instance.approvalID,
@@ -5644,7 +5659,7 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision }: { 
                     <div className="apps-approval-detail__head"><strong>{instance.title}</strong><span>{text.currentApprovalNode}: {instance.currentNode}</span></div>
                     <dl className="apps-approval-facts">
                         <div><dt>{text.myRequests}</dt><dd>{instance.owner}</dd></div><div><dt>{text.pendingMyApproval}</dt><dd>{instance.approver}</dd></div><div><dt>{text.approvalResult}</dt><dd>{instance.result}</dd></div>
-                        <div><dt>{text.workflowSkill}</dt><dd>{instance.workflowSkillID || '-'}</dd></div><div><dt>{text.dataSrvRecord}</dt><dd>{instance.recordID || '-'}</dd></div><div><dt>{text.approvalObjectRoleLabel}</dt><dd>{instance.objectRole || '-'}</dd></div>
+                        <div><dt>{text.workflowSkill}</dt><dd>{[instance.workflowSkillID, instance.workflowVersion ? 'v' + instance.workflowVersion : ''].filter(Boolean).join(' @ ') || '-'}</dd></div><div><dt>{text.dataSrvRecord}</dt><dd>{instance.recordID || '-'}</dd></div><div><dt>{text.approvalObjectRoleLabel}</dt><dd>{instance.objectRole || '-'}</dd></div>
                         <div><dt>{text.remoteApprovalLabel}</dt><dd>{instance.approvalID || '-'}</dd></div><div><dt>{text.businessStatusLabel}</dt><dd>{instance.businessStatus || '-'}</dd></div><div><dt>{text.resultStatusLabel}</dt><dd>{instance.resultStatus || approvalStatusLabel(instance.status, lang)}</dd></div>
                     </dl>
                     {instance.detailURL && <div className="apps-approval-detail__links"><a className="apps-link-button" href={instance.detailURL} target="_blank" rel="noreferrer">{text.viewFullWorkflow}</a></div>}
@@ -5768,7 +5783,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                 <div><dt>{text.myRequests}</dt><dd>{selected.owner}</dd></div>
                                 <div><dt>{text.pendingMyApproval}</dt><dd>{selected.approver}</dd></div>
                                 <div><dt>{text.approvalResult}</dt><dd>{selected.result}</dd></div>
-                                <div><dt>{text.workflowSkill}</dt><dd>{selected.workflowSkillID || '-'}</dd></div>
+                                <div><dt>{text.workflowSkill}</dt><dd>{[selected.workflowSkillID, selected.workflowVersion ? 'v' + selected.workflowVersion : ''].filter(Boolean).join(' @ ') || '-'}</dd></div>
                                 <div><dt>{text.dataSrvRecord}</dt><dd>{selected.recordID || '-'}</dd></div>
                                 <div><dt>{text.approvalObjectRoleLabel}</dt><dd>{selected.objectRole || '-'}</dd></div>
                                 <div><dt>{text.remoteApprovalLabel}</dt><dd>{selected.approvalID || '-'}</dd></div>

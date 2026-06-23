@@ -3445,7 +3445,8 @@
     if (!scope) return rows;
     if (scope.scopeType === 'department') {
       return rows.filter(function(row) {
-        if (row.group === 'user' || row.group === 'digital_twin') return true;
+        if (row.group === 'user') return !row.visibleGroupIds || !row.visibleGroupIds.length || row.visibleGroupIds.indexOf(scope.scopeId) !== -1;
+        if (row.group === 'digital_twin') return true;
         var entry = (state().approvalSubjectEmployees || []).find(function(item) {
           return String(item && (item.machine_id || item.id) || '').trim() === row.subjectId;
         });
@@ -3569,6 +3570,15 @@
     renderSecApprovalRoles();
   };
 
+  global.loadSecApprovalRoleSubjects = async function loadSecApprovalRoleSubjects() {
+    try {
+      await ensureApprovalSubjectDirectoryLoaded();
+      renderSecApprovalRoles();
+    } catch (err) {
+      showToast(st('loadUsersFailed') + err.message, 'error');
+    }
+  };
+
   function parseApprovalAssignees(value) {
     return String(value || '').split(',').map(function(item) { return item.trim(); }).filter(Boolean).map(function(item) {
       var subjectType = item.indexOf('@') !== -1 ? 'user' : (item.indexOf('-') !== -1 ? 'digital_twin' : 'digital_employee');
@@ -3623,6 +3633,7 @@
         subjectId: email,
         displayName: email,
         group: 'user',
+        visibleGroupIds: Array.isArray(user.visible_group_ids) ? user.visible_group_ids.map(function(id) { return String(id || '').trim(); }).filter(Boolean) : [],
         meta: [user.sn || '', localizeUserStatus(user.status)].filter(Boolean).join(' | ')
       };
     }).filter(Boolean);

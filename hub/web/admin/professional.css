@@ -80,7 +80,7 @@ button{border-radius:8px;min-height:38px;letter-spacing:0}.btn-primary{backgroun
 #tab-approvalroles .head{align-items:center}
 #tab-approvalroles .head .actions{gap:8px}
 #tab-approvalroles .head .actions button{height:34px;min-height:34px;border-radius:8px;font-size:12px;padding:0 12px}
-#tab-approvalroles .approval-role-layout{display:grid;grid-template-columns:300px minmax(0,1fr);gap:14px;align-items:start}
+#tab-approvalroles .approval-role-layout{display:grid;grid-template-columns:280px minmax(0,1fr) 260px;gap:14px;align-items:start}
 #tab-approvalroles .approval-role-sidebar{min-height:520px;padding:12px;border:1px solid var(--sec-line);border-radius:10px;background:var(--sec-soft)}
 #tab-approvalroles .approval-role-editor{min-width:0}
 #tab-approvalroles .approval-role-current{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;padding:10px 12px;border:1px solid var(--sec-line);border-radius:10px;background:#fff}
@@ -106,6 +106,14 @@ button{border-radius:8px;min-height:38px;letter-spacing:0}.btn-primary{backgroun
 #tab-approvalroles .approval-role-row input,#tab-approvalroles .approval-role-row select{height:34px;font-size:12px;border-radius:8px}
 #tab-approvalroles .approval-role-assignee-control{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center}
 #tab-approvalroles .approval-role-assignee-control button{height:34px;min-height:34px;font-size:12px;padding:0 10px;white-space:nowrap}
+#tab-approvalroles .approval-role-subjects{min-height:520px;padding:12px;border:1px solid var(--sec-line);border-radius:10px;background:#fff}
+#tab-approvalroles .approval-role-subject-head strong{display:block;font-size:13px;color:var(--sec-text)}
+#tab-approvalroles .approval-role-subject-head small{display:block;margin-top:3px;font-size:10px;line-height:1.35;color:var(--sec-muted)}
+#tab-approvalroles .approval-role-subject-list{display:grid;gap:6px;max-height:480px;overflow:auto;margin-top:10px}
+#tab-approvalroles .approval-role-subject-row{padding:8px 9px;border:1px solid #edf1f6;border-radius:8px;background:#fbfcfe}
+#tab-approvalroles .approval-role-subject-row strong{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--sec-text)}
+#tab-approvalroles .approval-role-subject-row small{display:block;margin-top:2px;font-size:10px;line-height:1.25;color:var(--sec-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tab-approvalroles .approval-role-subject-load{width:100%;height:32px;min-height:32px;font-size:12px}
 .approval-subject-dialog{width:min(760px,calc(100% - 36px));max-height:86vh;overflow:auto}
 .approval-subject-dialog .dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
 .approval-subject-dialog .dialog-head h3{margin:0;font-size:18px;color:#172033}
@@ -120,5 +128,5 @@ button{border-radius:8px;min-height:38px;letter-spacing:0}.btn-primary{backgroun
 .approval-subject-row input{width:16px;height:16px;min-height:16px;margin-top:2px}
 .approval-subject-row strong{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:#243044}
 .approval-subject-row small{display:block;margin-top:2px;color:#657386;font-size:11px;line-height:1.35}
-@media (max-width:1180px){#tab-security{--sec-sidebar:280px}#tab-security #secTopBar{grid-template-columns:1fr!important}#tab-security #secManagementPane>div:nth-of-type(2){grid-template-columns:280px minmax(0,1fr)!important}#tab-approvalroles .approval-role-layout{grid-template-columns:280px minmax(0,1fr)}}
-@media (max-width:860px){#tab-security #secTopBar>div:first-child,#tab-security #secManagementPane>div:nth-of-type(2),#tab-approvalroles .approval-role-layout,#tab-approvalroles .approval-role-head,#tab-approvalroles .approval-role-row,#tab-approvalroles .approval-role-assignee-control,.approval-subject-toolbar{grid-template-columns:1fr!important}#tab-security #secSubTabs{width:100%}#tab-security #secSubTabs button{flex:1}#tab-approvalroles .approval-role-sidebar{min-height:0}#tab-approvalroles .approval-role-head{display:none}#tab-approvalroles .approval-role-scope-list{max-height:240px}.approval-subject-toolbar .item-meta{justify-self:start}}
+@media (max-width:1180px){#tab-security{--sec-sidebar:280px}#tab-security #secTopBar{grid-template-columns:1fr!important}#tab-security #secManagementPane>div:nth-of-type(2){grid-template-columns:280px minmax(0,1fr)!important}#tab-approvalroles .approval-role-layout{grid-template-columns:260px minmax(0,1fr)}#tab-approvalroles .approval-role-subjects{grid-column:1 / -1;min-height:0}#tab-approvalroles .approval-role-subject-list{grid-template-columns:repeat(3,minmax(0,1fr));max-height:220px}}
+@media (max-width:860px){#tab-security #secTopBar>div:first-child,#tab-security #secManagementPane>div:nth-of-type(2),#tab-approvalroles .approval-role-layout,#tab-approvalroles .approval-role-head,#tab-approvalroles .approval-role-row,#tab-approvalroles .approval-role-assignee-control,.approval-subject-toolbar{grid-template-columns:1fr!important}#tab-security #secSubTabs{width:100%}#tab-security #secSubTabs button{flex:1}#tab-approvalroles .approval-role-sidebar,#tab-approvalroles .approval-role-subjects{min-height:0}#tab-approvalroles .approval-role-head{display:none}#tab-approvalroles .approval-role-scope-list{max-height:240px}#tab-approvalroles .approval-role-subject-list{grid-template-columns:1fr;max-height:240px}.approval-subject-toolbar .item-meta{justify-self:start}}
