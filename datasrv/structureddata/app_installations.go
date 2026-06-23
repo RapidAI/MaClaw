@@ -100,7 +100,7 @@ func appInstallationAuditMetadata(app AppInstallation) map[string]any {
 	if app.Source != "" {
 		metadata["source"] = app.Source
 	}
-	for _, key := range []string{"app_entry_version", "app_skill_id", "app_skill_version", "workflow_skill_ids", "workflow_skill_versions", "approval_binding_versions", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "governance_status", "governance_risk_level"} {
+	for _, key := range []string{"app_entry_version", "app_skill_id", "app_skill_version", "workflow_skill_ids", "workflow_skill_versions", "approval_binding_versions", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "workflow_contract_schema", "workflow_contract_skill_id", "workflow_contract_version", "workflow_contract_object_role", "workflow_contract_required_inputs", "workflow_contract_decision_outputs", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "governance_status", "governance_risk_level"} {
 		if value, ok := app.Metadata[key]; ok {
 			metadata[key] = value
 		}
@@ -136,6 +136,9 @@ func normalizeAppInstallationMetadata(metadata map[string]any, kind string) (map
 		return nil, err
 	}
 	if err := normalizeAppInstallationResultContractMetadata(out); err != nil {
+		return nil, err
+	}
+	if err := normalizeAppInstallationWorkflowContractMetadata(out, kind); err != nil {
 		return nil, err
 	}
 	if err := normalizeAppInstallationVersionSnapshotMetadata(out); err != nil {
@@ -274,6 +277,81 @@ func normalizeAppInstallationResultContractMetadata(out map[string]any) error {
 	return nil
 }
 
+func normalizeAppInstallationWorkflowContractMetadata(out map[string]any, kind string) error {
+	contract := appInstallationMap(out["workflow_contract"])
+	if contract == nil {
+		contract = appInstallationMap(out["workflowContract"])
+	}
+	if contract == nil {
+		if governance := appInstallationMap(out["governance"]); governance != nil {
+			contract = appInstallationMap(governance["workflow_contract"])
+			if contract == nil {
+				contract = appInstallationMap(governance["workflowContract"])
+			}
+		}
+	}
+	if contract == nil {
+		return nil
+	}
+	if kind != "" && kind != "enterprise_approval_app" {
+		return fmt.Errorf("%w: metadata.workflow_contract is only valid for enterprise_approval_app", ErrInvalidInput)
+	}
+	if schema := firstNonEmptyAppInstallationString(appInstallationString(contract, "schema"), "maclaw.app.workflow_contract.v1"); schema != "maclaw.app.workflow_contract.v1" {
+		return fmt.Errorf("%w: metadata.workflow_contract.schema must be maclaw.app.workflow_contract.v1", ErrInvalidInput)
+	}
+	contract["schema"] = "maclaw.app.workflow_contract.v1"
+	workflowSkillID := firstNonEmptyAppInstallationString(appInstallationString(contract, "workflowSkillId"), appInstallationString(contract, "workflow_skill_id"), appInstallationString(contract, "workflowId"), appInstallationString(contract, "workflow_id"), appInstallationString(out, "workflow_contract_skill_id"))
+	if workflowSkillID == "" {
+		return fmt.Errorf("%w: metadata.workflow_contract.workflowSkillId is required", ErrInvalidInput)
+	}
+	contract["workflowSkillId"] = workflowSkillID
+	out["workflow_contract_skill_id"] = workflowSkillID
+	delete(contract, "workflow_skill_id")
+	delete(contract, "workflowId")
+	delete(contract, "workflow_id")
+	if version := firstNonEmptyAppInstallationString(appInstallationString(contract, "workflowVersion"), appInstallationString(contract, "workflow_version"), appInstallationString(out, "workflow_contract_version")); version != "" {
+		contract["workflowVersion"] = version
+		out["workflow_contract_version"] = version
+	}
+	delete(contract, "workflow_version")
+	objectRole := firstNonEmptyAppInstallationString(appInstallationString(contract, "objectRole"), appInstallationString(contract, "object_role"), appInstallationString(contract, "businessObjectRole"), appInstallationString(contract, "business_object_role"), appInstallationString(out, "workflow_contract_object_role"))
+	if objectRole == "" {
+		return fmt.Errorf("%w: metadata.workflow_contract.objectRole is required", ErrInvalidInput)
+	}
+	contract["objectRole"] = objectRole
+	out["workflow_contract_object_role"] = objectRole
+	delete(contract, "object_role")
+	delete(contract, "businessObjectRole")
+	delete(contract, "business_object_role")
+	requiredInputs := firstNonEmptyAppInstallationStringList(appInstallationStringList(contract["requiredInputs"]), appInstallationStringList(contract["required_inputs"]), appInstallationStringList(out["workflow_contract_required_inputs"]))
+	if len(requiredInputs) > 0 {
+		contract["requiredInputs"] = requiredInputs
+		out["workflow_contract_required_inputs"] = requiredInputs
+	}
+	delete(contract, "required_inputs")
+	decisionOutputs := firstNonEmptyAppInstallationStringList(appInstallationStringList(contract["decisionOutputs"]), appInstallationStringList(contract["decision_outputs"]), appInstallationStringList(out["workflow_contract_decision_outputs"]))
+	if len(decisionOutputs) > 0 {
+		contract["decisionOutputs"] = decisionOutputs
+		out["workflow_contract_decision_outputs"] = decisionOutputs
+	}
+	delete(contract, "decision_outputs")
+	statusMapping := appInstallationMap(contract["statusMapping"])
+	if statusMapping == nil {
+		statusMapping = appInstallationMap(contract["status_mapping"])
+	}
+	if statusMapping != nil {
+		if value := firstNonEmptyAppInstallationString(appInstallationString(statusMapping, "requiresInput"), appInstallationString(statusMapping, "requires_input")); value != "" {
+			statusMapping["requiresInput"] = value
+		}
+		delete(statusMapping, "requires_input")
+		contract["statusMapping"] = statusMapping
+		delete(contract, "status_mapping")
+	}
+	out["workflow_contract"] = contract
+	out["workflow_contract_schema"] = "maclaw.app.workflow_contract.v1"
+	delete(out, "workflowContract")
+	return nil
+}
 func normalizeAppInstallationVersionSnapshotMetadata(out map[string]any) error {
 	snapshot := appInstallationMap(out["version_snapshot"])
 	if snapshot == nil {

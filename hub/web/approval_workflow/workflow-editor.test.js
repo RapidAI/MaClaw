@@ -47,6 +47,8 @@ var approverHelpers = new Function('state', 'tr', [
   extractFunction('indexApproverDirectory'),
   extractFunction('approverRowsForGroup'),
   extractFunction('approverRoleCatalog'),
+  extractFunction('approvalScopeHash'),
+  extractFunction('approvalScopeCodeFromName'),
   extractFunction('normalizeApprovalFunctionScope'),
   extractFunction('functionScopeCatalog'),
   extractFunction('normalizeApprovalRole'),
@@ -236,6 +238,10 @@ assertTrue(extractFunction('isContextMenuOpen').indexOf('!menu.hidden') !== -1, 
 assertTrue(source.indexOf("if (isContextMenuOpen()) {\n        e.preventDefault();\n        return;\n      }") !== -1, 'global Delete and Backspace ignore open context menu without browser defaults');
 assertTrue(source.indexOf("if (e.key === 'Escape') {\n      if (isContextMenuOpen()) {\n        e.preventDefault();\n        hideContextMenu({ restoreFocus: true });\n        return;\n      }") !== -1, 'global Escape closes an open context menu before clearing selection');
 assertEqual(approverHelpers.normalizeApproverIds([' m1 ', 'm1', '', ' ve1 ']).join(','), 'm1,ve1', 'normalizes approver ids without duplicates');
+var zhFunctionScope = approverHelpers.normalizeApprovalFunctionScope({ scopeName: '\u4eba\u4e8b' });
+assertTrue(!!zhFunctionScope && /^function_[0-9a-f]{8}$/.test(zhFunctionScope.scopeId), 'normalizes non-Latin function names to stable scope ids');
+assertEqual(zhFunctionScope.scopeId, approverHelpers.normalizeApprovalFunctionScope({ scopeName: ' \u4eba\u4e8b ' }).scopeId, 'non-Latin function scope ids should be deterministic');
+
 
 state.approverDirectory = null;
 assertEqual(approverHelpers.formatApproverSelection(['machine-secret-1'], 'Choose approvers'), '1 selected', 'hides raw approver id before directory loads');

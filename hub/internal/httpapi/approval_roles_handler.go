@@ -192,8 +192,8 @@ func normalizeApprovalFunctionScope(scope approvalFunctionScope) (approvalFuncti
 
 func approvalScopeCodeFromName(name string) string {
 	raw := strings.TrimSpace(name)
-	if raw ==  {
- return 
+	if raw == "" {
+		return ""
 	}
 	name = strings.ToLower(raw)
 	var b strings.Builder
@@ -209,23 +209,22 @@ func approvalScopeCodeFromName(name string) string {
 			prevUnderscore = true
 		}
 	}
-	code := strings.Trim(b.String(),  _)
-	if code ==  {
- code = fmt.Sprintf(function_%08x, approvalScopeHash(raw))
- }
- if code[0] < 'a' || code[0] > 'z' {
- code = function_ + code
- }
- return code
+	code := strings.Trim(b.String(), "_")
+	if code == "" {
+		code = fmt.Sprintf("function_%08x", approvalScopeHash(raw))
+	}
+	if code[0] < 'a' || code[0] > 'z' {
+		code = "function_" + code
+	}
+	return code
 }
-
 func approvalScopeHash(value string) uint32 {
- var hash uint32 = 2166136261
- for _, r := range strings.TrimSpace(value) {
- hash ^= uint32(r)
- hash *= 16777619
- }
- return hash
+	var hash uint32 = 2166136261
+	for _, r := range strings.TrimSpace(value) {
+		hash ^= uint32(r)
+		hash *= 16777619
+	}
+	return hash
 }
 
 func normalizeApprovalRoleRecord(role approvalRoleRecord) (approvalRoleRecord, bool) {

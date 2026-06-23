@@ -120,6 +120,71 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	}
 }
 
+func TestUpsertAppInstallationNormalizesApprovalWorkflowContract(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	installed, err := svc.UpsertAppInstallation(context.Background(), principal, "approval.expense", UpsertAppInstallationInput{
+		AppID: "approval.expense",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"governance": map[string]any{
+				"workflowContract": map[string]any{
+					"schema":            "maclaw.app.workflow_contract.v1",
+					"workflow_skill_id": "expense-flow",
+					"workflow_version":  "2.0.0",
+					"object_role":       "expense_report",
+					"required_inputs":   []any{"record_ref", "applicant", "business_payload"},
+					"decision_outputs":  []any{"approved", "rejected", "attention"},
+					"status_mapping":    map[string]any{"pending": "approval_pending", "approved": "approved", "rejected": "rejected", "attention": "attention", "requires_input": "requires_input"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation workflow contract: %v", err)
+	}
+	contract, ok := installed.Metadata["workflow_contract"].(map[string]any)
+	if !ok || contract["schema"] != "maclaw.app.workflow_contract.v1" || contract["workflowSkillId"] != "expense-flow" || contract["workflowVersion"] != "2.0.0" || contract["objectRole"] != "expense_report" {
+		t.Fatalf("expected normalized workflow contract: %#v", installed.Metadata)
+	}
+	statusMapping, ok := contract["statusMapping"].(map[string]any)
+	if !ok || statusMapping["requiresInput"] != "requires_input" {
+		t.Fatalf("expected normalized workflow contract status mapping: %#v", contract)
+	}
+	if installed.Metadata["workflow_contract_schema"] != "maclaw.app.workflow_contract.v1" || installed.Metadata["workflow_contract_skill_id"] != "expense-flow" || installed.Metadata["workflow_contract_version"] != "2.0.0" || installed.Metadata["workflow_contract_object_role"] != "expense_report" {
+		t.Fatalf("expected workflow contract summaries: %#v", installed.Metadata)
+	}
+	if inputs := appInstallationStringList(installed.Metadata["workflow_contract_required_inputs"]); len(inputs) != 3 || inputs[0] != "record_ref" || inputs[2] != "business_payload" {
+		t.Fatalf("expected workflow contract input summaries: %#v", installed.Metadata)
+	}
+	if outputs := appInstallationStringList(installed.Metadata["workflow_contract_decision_outputs"]); len(outputs) != 3 || outputs[0] != "approved" || outputs[2] != "attention" {
+		t.Fatalf("expected workflow contract output summaries: %#v", installed.Metadata)
+	}
+}
+
+func TestUpsertAppInstallationRejectsInvalidWorkflowContract(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "normal.bad", UpsertAppInstallationInput{AppID: "normal.bad", Kind: "enterprise_normal_app", Metadata: map[string]any{"workflow_contract": map[string]any{"schema": "maclaw.app.workflow_contract.v1", "workflowSkillId": "flow", "objectRole": "expense"}}})
+	if err == nil {
+		t.Fatal("expected workflow contract kind validation error")
+	}
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "approval.bad", UpsertAppInstallationInput{AppID: "approval.bad", Kind: "enterprise_approval_app", Metadata: map[string]any{"workflow_contract": map[string]any{"schema": "maclaw.app.workflow_contract.v0", "workflowSkillId": "flow", "objectRole": "expense"}}})
+	if err == nil {
+		t.Fatal("expected workflow contract schema validation error")
+	}
+}
 func TestUpsertAppInstallationRejectsInvalidResultContractSchema(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {

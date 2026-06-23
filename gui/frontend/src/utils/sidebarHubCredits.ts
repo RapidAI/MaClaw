@@ -1,6 +1,13 @@
 import type { SidebarHubCredits, SidebarHubServiceStatus } from '../types/appShell';
 import { grantCanContributeExpiry, latestExpiry, numeric } from './hubCredits';
 
+function hasPositivePeriodLimits(limits: NonNullable<NonNullable<SidebarHubServiceStatus['credit_grants']>[number]['period_limits']>): boolean {
+    return numeric(limits.five_hour ?? limits.FiveHour) > 0 ||
+        numeric(limits.daily ?? limits.Daily) > 0 ||
+        numeric(limits.weekly ?? limits.Weekly) > 0 ||
+        numeric(limits.monthly ?? limits.Monthly) > 0;
+}
+
 export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | null): SidebarHubCredits | null {
     const active = status?.active ?? status?.Active ?? false;
     const creditGrants = status?.credit_grants ?? status?.CreditGrants ?? [];
@@ -64,12 +71,7 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
         remaining = grantRemaining;
         grantAvailable += numeric(grant.credits_available ?? grant.CreditsAvailable);
         const limits = grant.period_limits ?? grant.PeriodLimits;
-        if (limits && (
-            numeric(limits.five_hour ?? limits.FiveHour) > 0 ||
-            numeric(limits.daily ?? limits.Daily) > 0 ||
-            numeric(limits.weekly ?? limits.Weekly) > 0 ||
-            numeric(limits.monthly ?? limits.Monthly) > 0
-        )) {
+        if (limits && hasPositivePeriodLimits(limits)) {
             effectiveGrantHasPeriodLimits = true;
         }
     }

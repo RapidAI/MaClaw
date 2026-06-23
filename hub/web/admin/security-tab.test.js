@@ -305,6 +305,15 @@ async function runTests() {
     await ctx.loadApprovalRolesTab();
     assertEqual(g.__securityAdminState.approvalFunctionScopes.filter(function(item) { return String(item.scopeName || '').trim().toLowerCase() === 'hr'; }).length, 1, 'same function name with another id should be deduped');
 
+    g.prompt = function() { return '\u4eba\u4e8b'; };
+    ctx.addSecApprovalFunction();
+    var zhScope = g.__securityAdminState.approvalFunctionScopes.find(function(item) { return item.scopeName === '\u4eba\u4e8b'; });
+    assert(!!zhScope && /^function_[0-9a-f]{8}$/.test(zhScope.scopeId), 'non-Latin function name should get a stable generated scope id');
+    g.prompt = function() { return ' \u4eba\u4e8b '; };
+    ctx.addSecApprovalFunction();
+    assertEqual(g.__securityAdminState.approvalFunctionScopes.filter(function(item) { return item.scopeName === '\u4eba\u4e8b'; }).length, 1, 'duplicate non-Latin function name should select existing scope');
+    ctx.removeSecApprovalFunction(zhScope.scopeId);
+
     g.prompt = function() { return 'People Ops'; };
     ctx.addSecApprovalFunction();
     html = g.document.elements.secApprovalRolesRoot.innerHTML;

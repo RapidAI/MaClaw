@@ -43,6 +43,17 @@ export interface SidebarCurrentProviderTokenUsage {
     localCacheHits?: number;
 }
 
+export interface SidebarHubPeriodLimits {
+    five_hour?: number;
+    daily?: number;
+    weekly?: number;
+    monthly?: number;
+    FiveHour?: number;
+    Daily?: number;
+    Weekly?: number;
+    Monthly?: number;
+}
+
 export interface SidebarHubCreditGrant {
     source?: string;
     active?: boolean;
@@ -53,12 +64,7 @@ export interface SidebarHubCreditGrant {
     credits_used?: number;
     credits_remaining?: number;
     credits_available?: number;
-    period_limits?: {
-        five_hour?: number;
-        daily?: number;
-        weekly?: number;
-        monthly?: number;
-    };
+    period_limits?: SidebarHubPeriodLimits;
     retry_after_seconds?: number;
     retry_after_at?: string;
     starts_at?: string;
@@ -71,12 +77,7 @@ export interface SidebarHubCreditGrant {
     CreditsUsed?: number;
     CreditsRemaining?: number;
     CreditsAvailable?: number;
-    PeriodLimits?: {
-        FiveHour?: number;
-        Daily?: number;
-        Weekly?: number;
-        Monthly?: number;
-    };
+    PeriodLimits?: SidebarHubPeriodLimits;
     RetryAfterSeconds?: number;
     RetryAfterAt?: string;
     StartsAt?: string;

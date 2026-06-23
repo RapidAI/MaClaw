@@ -2475,10 +2475,32 @@
     }
   }
 
+  function approvalScopeHash(value) {
+    var hash = 2166136261;
+    var text = String(value || '').trim();
+    for (var i = 0; i < text.length; i += 1) {
+      var code = text.codePointAt(i);
+      if (code > 0xffff) i += 1;
+      hash ^= code;
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return ('00000000' + hash.toString(16)).slice(-8);
+  }
+
+  function approvalScopeCodeFromName(name) {
+    var raw = String(name || '').trim();
+    if (!raw) return '';
+    var code = raw.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!code) code = 'function_' + approvalScopeHash(raw);
+    if (!/^[a-z]/.test(code)) code = 'function_' + code;
+    return code;
+  }
+
   function normalizeApprovalFunctionScope(scope) {
     if (!scope) return null;
     var scopeId = String(scope.scopeId || scope.scope_id || scope.id || '').trim();
     var scopeName = String(scope.scopeName || scope.scope_name || scope.name || scopeId).trim();
+    if (!scopeId) scopeId = approvalScopeCodeFromName(scopeName);
     if (!scopeId || !scopeName) return null;
     return { scopeType: 'function', scopeId: scopeId, scopeName: scopeName };
   }

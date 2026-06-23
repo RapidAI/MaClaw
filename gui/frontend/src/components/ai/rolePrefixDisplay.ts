@@ -1,4 +1,4 @@
-const displayRolePrefixPattern = /^[ \t>*\-]*(?:\d+\.[ \t]*)?(Browser|Tool)[ \t]*(?::[ \t]?|：)/m;
+const displayRolePrefixPattern = /^[ \t>*\-]*(?:\d+[\.)][ \t]*)?(Browser|Tool)[ \t]*(?::[ \t]?|：)/m;
 
 type RolePrefixDisplayMode = "keep-body" | "truncate";
 

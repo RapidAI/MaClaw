@@ -5421,6 +5421,21 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 				"workflow_skills":   []any{map[string]any{"id": "skill.expense.approval", "version": "2.0.0", "kind": "workflow_skill", "source": "hub"}},
 				"approval_bindings": []any{map[string]any{"event": "expense.submitted", "object_role": "expense_report", "workflow_skill_id": "skill.expense.approval", "workflow_version": "2.0.0"}},
 			},
+			"workflow_contract": map[string]any{
+				"schema":            "maclaw.app.workflow_contract.v1",
+				"workflow_skill_id": "skill.expense.approval",
+				"workflow_version":  "2.0.0",
+				"object_role":       "expense_report",
+				"required_inputs":   []any{"record_ref", "applicant", "business_payload"},
+				"decision_outputs":  []any{"approved", "rejected", "attention"},
+				"status_mapping": map[string]any{
+					"pending":        "finance_pending",
+					"approved":       "finance_approved",
+					"rejected":       "finance_rejected",
+					"attention":      "finance_attention",
+					"requires_input": "finance_more_input",
+				},
+			},
 			"workflow_mapping": map[string]any{
 				"schema":        "maclaw.app.workflow.v1",
 				"submit_node":   "expense.intake",
@@ -5545,6 +5560,23 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if installed.Metadata["workflow_mapping_schema"] != "maclaw.app.workflow.v1" || installed.Metadata["workflow_submit_node"] != "expense.intake" || installed.Metadata["workflow_approval_node"] != "finance.director_review" || installed.Metadata["workflow_result_node"] != "expense.result_pack" {
 		t.Fatalf("app installation should expose workflow node summaries: %#v", installed.Metadata)
 	}
+	workflowContract, ok := installed.Metadata["workflow_contract"].(map[string]any)
+	if !ok || workflowContract["schema"] != "maclaw.app.workflow_contract.v1" || workflowContract["workflowSkillId"] != "skill.expense.approval" || workflowContract["workflowVersion"] != "2.0.0" || workflowContract["objectRole"] != "expense_report" {
+		t.Fatalf("app installation should normalize workflow contract metadata: %#v", installed.Metadata)
+	}
+	contractStatusMapping, ok := workflowContract["statusMapping"].(map[string]any)
+	if !ok || contractStatusMapping["requiresInput"] != "finance_more_input" {
+		t.Fatalf("app installation should normalize workflow contract status mapping: %#v", workflowContract)
+	}
+	if installed.Metadata["workflow_contract_schema"] != "maclaw.app.workflow_contract.v1" || installed.Metadata["workflow_contract_skill_id"] != "skill.expense.approval" || installed.Metadata["workflow_contract_version"] != "2.0.0" || installed.Metadata["workflow_contract_object_role"] != "expense_report" {
+		t.Fatalf("app installation should expose workflow contract summaries: %#v", installed.Metadata)
+	}
+	if inputs := appInstallationStringList(installed.Metadata["workflow_contract_required_inputs"]); len(inputs) != 3 || inputs[0] != "record_ref" || inputs[2] != "business_payload" {
+		t.Fatalf("app installation should expose workflow contract required inputs: %#v", installed.Metadata)
+	}
+	if outputs := appInstallationStringList(installed.Metadata["workflow_contract_decision_outputs"]); len(outputs) != 3 || outputs[0] != "approved" || outputs[2] != "attention" {
+		t.Fatalf("app installation should expose workflow contract decision outputs: %#v", installed.Metadata)
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?app_id=mis.expense", nil)
 	auth(req)
@@ -5560,8 +5592,8 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if len(listed.Items) != 1 || listed.Items[0].RoleBindings[0].DatasetID != "finance.expense_forms" {
 		t.Fatalf("unexpected listed app installations: %#v", listed)
 	}
-	if listed.Items[0].Metadata["app_skill_version"] != "1.0.0" {
-		t.Fatalf("listed app installation should include version summaries: %#v", listed.Items[0].Metadata)
+	if listed.Items[0].Metadata["app_skill_version"] != "1.0.0" || listed.Items[0].Metadata["workflow_contract_skill_id"] != "skill.expense.approval" {
+		t.Fatalf("listed app installation should include version and workflow contract summaries: %#v", listed.Items[0].Metadata)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?kind=enterprise_approval_app&source=hub&workflow_skill_id=skill.expense.approval&workflow_node=finance.director_review", nil)
@@ -5651,6 +5683,9 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if caps.AppInstallations[0].Metadata["test_evidence_run_id"] != "run-expense-1" || caps.AppInstallations[0].Metadata["test_evidence_primary_result"] != "approval_result" || caps.AppInstallations[0].Metadata["test_evidence_output_count"] != float64(3) {
 		t.Fatalf("capabilities should expose test evidence summaries: %#v", caps.AppInstallations[0].Metadata)
 	}
+	if caps.AppInstallations[0].Metadata["workflow_contract_skill_id"] != "skill.expense.approval" || caps.AppInstallations[0].Metadata["workflow_contract_object_role"] != "expense_report" {
+		t.Fatalf("capabilities should expose workflow contract summaries: %#v", caps.AppInstallations[0].Metadata)
+	}
 
 	audit, err := svc.QueryAuditLogs(context.Background(), Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}, QueryAuditLogsInput{Action: "app.installation_upsert", TargetType: "app_installation", TargetID: "mis.expense", Limit: 1})
 	if err != nil {
@@ -5685,6 +5720,12 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if metadata["workflow_mapping_schema"] != "maclaw.app.workflow.v1" || metadata["workflow_submit_node"] != "expense.intake" || metadata["workflow_approval_node"] != "finance.director_review" || metadata["workflow_result_node"] != "expense.result_pack" {
 		t.Fatalf("app installation audit should summarize workflow mapping: %#v", metadata)
+	}
+	if metadata["workflow_contract_schema"] != "maclaw.app.workflow_contract.v1" || metadata["workflow_contract_skill_id"] != "skill.expense.approval" || metadata["workflow_contract_version"] != "2.0.0" || metadata["workflow_contract_object_role"] != "expense_report" {
+		t.Fatalf("app installation audit should summarize workflow contract: %#v", metadata)
+	}
+	if inputs := appInstallationStringList(metadata["workflow_contract_required_inputs"]); len(inputs) != 3 || inputs[1] != "applicant" {
+		t.Fatalf("app installation audit should summarize workflow contract inputs: %#v", metadata)
 	}
 	if metadata["result_contract_primary"] != "approval_result" {
 		t.Fatalf("app installation audit should summarize result contract primary: %#v", metadata)

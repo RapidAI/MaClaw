@@ -185,11 +185,6 @@ function creditGrants(status: HubLLMServiceStatus | null): HubLLMActiveGrant[] {
     return grants.filter((grant) => String(grant.source || "").trim().toLowerCase() !== "hubcenter_compute");
 }
 
-function grantCardLabel(grant: HubLLMActiveGrant): string {
-    const value = String(grant.card_order_id || grant.card_id || grant.id || "").trim();
-    return value || "-";
-}
-
 function creditTotals(status: HubLLMServiceStatus | null) {
     const grants = creditGrants(status);
     const visibleGrants = grants.filter((grant) => String(grant.status || "").toLowerCase() !== "expired");
@@ -306,7 +301,7 @@ function grantStatusLabel(
         active: t("Active", "生效中"),
         queued: t("Not active yet", "未生效"),
         period_limited: t("Period limit exhausted", "周期限额用尽"),
-        exhausted: t("Credits exhausted", "额度已用尽"),
+        exhausted: t("Credits exhausted", "已耗尽"),
         expired: t("Expired", "已过期"),
     };
     let label = labels[status] || (grant.active === false ? t("Queued", "排队中") : t("Active", "生效中"));
@@ -769,7 +764,6 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                             <thead>
                                 <tr>
                                     <th scope="col">{t("Service Group", "服务组")}</th>
-                                    <th scope="col">{t("Compute Card", "算力卡")}</th>
                                     <th scope="col">{t("Source", "来源")}</th>
                                     <th scope="col">{t("Starts At", "开始时间")}</th>
                                     <th scope="col">{t("Expires At", "到期时间")}</th>
@@ -783,7 +777,6 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                                 {grantsForDetails.map((grant, index) => (
                                     <tr key={(grant.card_order_id || grant.card_id || grant.id || grant.service_group_id || "") + "-" + index}>
                                         <td><span className="hub-service-redeem__strong">{grant.service_group_id || "-"}</span></td>
-                                        <td><span className="hub-service-redeem__strong">{grantCardLabel(grant)}</span></td>
                                         <td>{formatGrantSource(grant, t)}</td>
                                         <td>{formatTime(grant.starts_at, lang)}</td>
                                         <td>{formatTime(grant.expires_at, lang)}</td>
