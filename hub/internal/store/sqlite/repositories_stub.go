@@ -1609,6 +1609,215 @@ func (r *sessionRepo) Close(ctx context.Context, sessionID string, exitCode *int
 	return err
 }
 
+func (r *sessionRepo) RecordUserTokenUsageSnapshot(ctx context.Context, tenantID, sourceID, userID string, usage store.UserTokenUsage, observedAt time.Time) error {
+	tenantID = normalizeTenantID(tenantID)
+	sourceID = strings.TrimSpace(sourceID)
+	userID = strings.TrimSpace(userID)
+	if sourceID == "" || userID == "" || usage.TotalTokens() <= 0 {
+		return nil
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	observedAt = observedAt.UTC()
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var prev store.UserTokenUsage
+	err = tx.QueryRowContext(ctx, `
+		SELECT input_tokens, output_tokens, cached_input_tokens, cache_write_tokens
+		  FROM session_token_usage_snapshots
+		 WHERE tenant_id = ? AND session_id = ?`, tenantID, sourceID).
+		Scan(&prev.InputTokens, &prev.OutputTokens, &prev.CachedInputTokens, &prev.CacheWriteTokens)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	delta := usageSnapshotDelta(usage, prev)
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO session_token_usage_snapshots (tenant_id, session_id, user_id, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, session_id) DO UPDATE SET
+			user_id = excluded.user_id,
+			input_tokens = excluded.input_tokens,
+			output_tokens = excluded.output_tokens,
+			cached_input_tokens = excluded.cached_input_tokens,
+			cache_write_tokens = excluded.cache_write_tokens,
+			updated_at = excluded.updated_at`,
+		tenantID, sourceID, userID, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens, observedAt.Format(time.RFC3339)); err != nil {
+		return err
+	}
+
+	if delta.TotalTokens() > 0 {
+		email := strings.ToLower(strings.TrimSpace(userID))
+		var dbEmail string
+		if err := tx.QueryRowContext(ctx, `SELECT LOWER(email) FROM users WHERE tenant_id = ? AND id = ?`, tenantID, userID).Scan(&dbEmail); err == nil {
+			if trimmed := strings.TrimSpace(dbEmail); trimmed != "" {
+				email = strings.ToLower(trimmed)
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if email != "" {
+			day := observedAt.Format("2006-01-02")
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO user_usage_daily (tenant_id, user_email, day, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(tenant_id, user_email, day) DO UPDATE SET
+					input_tokens = user_usage_daily.input_tokens + excluded.input_tokens,
+					output_tokens = user_usage_daily.output_tokens + excluded.output_tokens,
+					cached_input_tokens = user_usage_daily.cached_input_tokens + excluded.cached_input_tokens,
+					cache_write_tokens = user_usage_daily.cache_write_tokens + excluded.cache_write_tokens,
+					updated_at = excluded.updated_at`,
+				tenantID, email, day, delta.InputTokens, delta.OutputTokens, delta.CachedInputTokens, delta.CacheWriteTokens, observedAt.Format(time.RFC3339)); err != nil {
+				return err
+			}
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (r *sessionRepo) SummarizeUserTokenUsage(ctx context.Context, tenantID string, start, end time.Time) ([]store.UserTokenSummary, error) {
+	tenantID = normalizeTenantID(tenantID)
+	if end.Before(start) || end.Equal(start) {
+		return []store.UserTokenSummary{}, nil
+	}
+	startDay := start.UTC().Format("2006-01-02")
+	endDay := end.UTC().Add(-time.Nanosecond).Format("2006-01-02")
+	rows, err := r.readDB.QueryContext(ctx, `
+		SELECT user_email,
+		       SUM(input_tokens),
+		       SUM(output_tokens),
+		       SUM(cached_input_tokens),
+		       SUM(cache_write_tokens)
+		  FROM user_usage_daily
+		 WHERE tenant_id = ?
+		   AND day >= ?
+		   AND day <= ?
+		 GROUP BY user_email`, tenantID, startDay, endDay)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []store.UserTokenSummary{}
+	for rows.Next() {
+		var item store.UserTokenSummary
+		if err := rows.Scan(&item.UserEmail, &item.Usage.InputTokens, &item.Usage.OutputTokens, &item.Usage.CachedInputTokens, &item.Usage.CacheWriteTokens); err != nil {
+			return nil, err
+		}
+		item.UserEmail = strings.ToLower(strings.TrimSpace(item.UserEmail))
+		if item.UserEmail != "" {
+			out = append(out, item)
+		}
+	}
+	return out, rows.Err()
+}
+
+func usageSnapshotDelta(current, previous store.UserTokenUsage) store.UserTokenUsage {
+	if current.TotalTokens() <= 0 {
+		return store.UserTokenUsage{}
+	}
+	if current.TotalTokens() < previous.TotalTokens() {
+		return current
+	}
+	return store.UserTokenUsage{
+		InputTokens:       positiveFieldDelta(current.InputTokens, previous.InputTokens),
+		OutputTokens:      positiveFieldDelta(current.OutputTokens, previous.OutputTokens),
+		CachedInputTokens: positiveFieldDelta(current.CachedInputTokens, previous.CachedInputTokens),
+		CacheWriteTokens:  positiveFieldDelta(current.CacheWriteTokens, previous.CacheWriteTokens),
+	}
+}
+
+func positiveFieldDelta(current, previous int64) int64 {
+	if current > previous {
+		return current - previous
+	}
+	return 0
+}
+
+func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID string, start, end, now time.Time) ([]store.UserDurationSummary, error) {
+	tenantID = normalizeTenantID(tenantID)
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
+	if end.Before(start) || end.Equal(start) {
+		return []store.UserDurationSummary{}, nil
+	}
+	effectiveNow := now
+	if effectiveNow.IsZero() || effectiveNow.After(end) {
+		effectiveNow = end
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT COALESCE(NULLIF(LOWER(u.email), ''), LOWER(s.user_id)) AS user_email,
+		       s.started_at, s.updated_at, s.ended_at
+		  FROM sessions s
+		  LEFT JOIN users u ON u.id = s.user_id AND u.tenant_id = s.tenant_id
+		 WHERE s.tenant_id = ?
+		   AND s.started_at < ?
+		   AND COALESCE(NULLIF(s.ended_at, ''), s.updated_at, s.started_at) >= ?`,
+		tenantID, end.Format(time.RFC3339), start.Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	totals := map[string]int64{}
+	for rows.Next() {
+		var email string
+		var startedRaw string
+		var updatedRaw string
+		var endedRaw sql.NullString
+		if err := rows.Scan(&email, &startedRaw, &updatedRaw, &endedRaw); err != nil {
+			return nil, err
+		}
+		email = strings.ToLower(strings.TrimSpace(email))
+		if email == "" {
+			continue
+		}
+		startedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(startedRaw))
+		if err != nil {
+			continue
+		}
+		activityEnd := effectiveNow
+		if endedRaw.Valid && strings.TrimSpace(endedRaw.String) != "" {
+			if endedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(endedRaw.String)); err == nil {
+				activityEnd = endedAt
+			}
+		} else if strings.TrimSpace(updatedRaw) != "" {
+			if updatedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(updatedRaw)); err == nil {
+				activityEnd = updatedAt
+			}
+		}
+		if activityEnd.After(end) {
+			activityEnd = end
+		}
+		if activityEnd.After(effectiveNow) {
+			activityEnd = effectiveNow
+		}
+		if startedAt.Before(start) {
+			startedAt = start
+		}
+		if activityEnd.After(startedAt) {
+			totals[email] += int64(activityEnd.Sub(startedAt).Seconds())
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]store.UserDurationSummary, 0, len(totals))
+	for email, seconds := range totals {
+		out = append(out, store.UserDurationSummary{UserEmail: email, DurationSeconds: seconds})
+	}
+	return out, nil
+}
+
 func (r *invitationCodeRepo) Create(ctx context.Context, item *store.InvitationCode) error {
 	_, err := r.db.ExecContext(
 		ctx,

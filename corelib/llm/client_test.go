@@ -197,8 +197,38 @@ func TestParseNonStreamOpenAIResponseBodyDetectsTruncatedToolCall(t *testing.T) 
 	if len(choice.Message.ToolCalls) != 0 {
 		t.Fatalf("truncated tool calls should be removed: %#v", choice.Message.ToolCalls)
 	}
-	if choice.FinishReason != "stop" {
-		t.Fatalf("finish_reason = %q, want stop", choice.FinishReason)
+	if choice.FinishReason != "length" {
+		t.Fatalf("finish_reason = %q, want length", choice.FinishReason)
+	}
+}
+
+func TestParseSSEToResponseDetectsTruncatedToolCallAndPreservesLength(t *testing.T) {
+	body := []byte(strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"I'll write the script now:"}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_bad","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"a.txt\",\"content\":\"unterminated"}}]}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"length"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n\n"))
+	resp, err := ParseSSEToResponse(body)
+	if err != nil {
+		t.Fatalf("ParseSSEToResponse: %v", err)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1", len(resp.Choices))
+	}
+	choice := resp.Choices[0]
+	if len(choice.TruncatedToolNames) != 1 || choice.TruncatedToolNames[0] != "write_file" {
+		t.Fatalf("TruncatedToolNames = %#v, want write_file", choice.TruncatedToolNames)
+	}
+	if len(choice.Message.ToolCalls) != 0 {
+		t.Fatalf("truncated tool calls should be removed: %#v", choice.Message.ToolCalls)
+	}
+	if choice.FinishReason != "length" {
+		t.Fatalf("finish_reason = %q, want length", choice.FinishReason)
+	}
+	if choice.Message.Content != "I'll write the script now:" {
+		t.Fatalf("content = %q, want preamble preserved", choice.Message.Content)
 	}
 }
 
@@ -934,6 +964,11 @@ func TestBuildOpenAIModelsEndpointCandidates(t *testing.T) {
 			url:  "https://open.bigmodel.cn/api/coding/paas/v4",
 			want: []string{"https://open.bigmodel.cn/api/coding/paas/v4/models"},
 		},
+		{
+			name: "volcengine tokenplan openai v3",
+			url:  "https://ark.cn-beijing.volces.com/api/plan/v3",
+			want: []string{"https://ark.cn-beijing.volces.com/api/plan/v3/models"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -981,6 +1016,7 @@ func TestResponsesEndpointNormalizesBaseURL(t *testing.T) {
 		{"v1", "https://api.example.com/v1", "https://api.example.com/v1/responses"},
 		{"full", "https://api.example.com/v1/responses", "https://api.example.com/v1/responses"},
 		{"qwen compatible", "https://dashscope.aliyuncs.com/compatible-mode/v1", "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"},
+		{"volcengine tokenplan openai v3", "https://ark.cn-beijing.volces.com/api/plan/v3", "https://ark.cn-beijing.volces.com/api/plan/v3/responses"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2596,6 +2632,45 @@ func TestDoOpenAIRequestStream_SDKPreservesToolCallsAndReasoning(t *testing.T) {
 	}
 	if resp.Usage == nil || resp.Usage.TotalTokens != 10 {
 		t.Fatalf("usage = %#v, want total 10", resp.Usage)
+	}
+}
+
+func TestDoOpenAIRequestStream_SDKDetectsTruncatedToolCall(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"choices":[{"delta":{"content":"I'll write the script now:"}}]}`,
+			`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_bad","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"a.txt\",\"content\":\"unterminated"}}]}}]}`,
+			`data: {"choices":[{"delta":{},"finish_reason":"length"}]}`,
+			`data: [DONE]`,
+			"",
+		}, "\n")))
+	}))
+	defer srv.Close()
+
+	resp, err := DoOpenAIRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "glm-5.1", Protocol: "openai", AgentType: "Kilo Code"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "write a script"}},
+		nil,
+		srv.Client(),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("DoOpenAIRequestStream returned error: %v", err)
+	}
+	choice := resp.Choices[0]
+	if len(choice.TruncatedToolNames) != 1 || choice.TruncatedToolNames[0] != "write_file" {
+		t.Fatalf("TruncatedToolNames = %#v, want write_file", choice.TruncatedToolNames)
+	}
+	if len(choice.Message.ToolCalls) != 0 {
+		t.Fatalf("truncated tool calls should be removed: %#v", choice.Message.ToolCalls)
+	}
+	if choice.FinishReason != "length" {
+		t.Fatalf("finish_reason = %q, want length", choice.FinishReason)
+	}
+	if choice.Message.Content != "I'll write the script now:" {
+		t.Fatalf("content = %q, want preamble preserved", choice.Message.Content)
 	}
 }
 

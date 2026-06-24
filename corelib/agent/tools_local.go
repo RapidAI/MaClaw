@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"io/fs"
 	"mime"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -41,7 +43,8 @@ const (
 	// maxSearchWalkTime caps the directory walk for search tools.
 	// Prevents blocking when projectPath accidentally points to a huge tree
 	// (e.g. user home directory).
-	maxSearchWalkTime = 30 * time.Second
+	maxSearchWalkTime                = 30 * time.Second
+	maxSearchGlobPatternCacheEntries = 256
 )
 
 // --- Bash ---
@@ -49,6 +52,15 @@ const (
 // ToolBash executes a shell command on the host machine.
 // onProgress is called every 30s with a heartbeat message for long-running commands.
 func ToolBash(args map[string]interface{}, onProgress func(string)) string {
+	return ToolBashWithContext(context.Background(), args, onProgress)
+}
+
+// ToolBashWithContext executes a shell command and stops the process tree when
+// the parent context is cancelled or the tool timeout is reached.
+func ToolBashWithContext(parent context.Context, args map[string]interface{}, onProgress func(string)) string {
+	if parent == nil {
+		parent = context.Background()
+	}
 	command := StringArg(args, "command")
 	if command == "" {
 		return "缺少 command 参数"
@@ -67,7 +79,7 @@ func ToolBash(args map[string]interface{}, onProgress func(string)) string {
 	timeout := ResolveBashTimeout(args, command)
 	workDir := ResolvePath(StringArg(args, "working_dir"))
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	ctx, cancel := context.WithTimeout(parent, time.Duration(timeout)*time.Second)
 	defer cancel()
 
 	var shellName string
@@ -142,7 +154,9 @@ func ToolBash(args map[string]interface{}, onProgress func(string)) string {
 	}
 
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if ctx.Err() == context.Canceled {
+			b.WriteString("\n[error] command cancelled")
+		} else if ctx.Err() == context.DeadlineExceeded {
 			b.WriteString(fmt.Sprintf("\n[错误] 命令超时（%d 秒）", timeout))
 		} else {
 			b.WriteString(fmt.Sprintf("\n[错误] 退出码: %v", err))
@@ -324,6 +338,16 @@ func ToolRipgrep(args map[string]interface{}) string {
 }
 
 func ToolRipgrepDetailed(args map[string]interface{}) SearchToolResult {
+	return ToolRipgrepDetailedCtx(context.Background(), args)
+}
+
+func ToolRipgrepDetailedCtx(ctx context.Context, args map[string]interface{}) SearchToolResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return SearchToolResult{Text: "search cancelled", Outcome: SearchToolOutcomeError}
+	}
 	totalStart := time.Now()
 	pattern := StringArg(args, "pattern")
 	if pattern == "" {
@@ -395,11 +419,11 @@ func ToolRipgrepDetailed(args map[string]interface{}) SearchToolResult {
 		if err != nil || info.Size() > MaxSearchFileSize {
 			return nil
 		}
-		if isLikelyBinary(path) {
-			return nil
+		scanned, err := searchFileLinesWithModeCtx(ctx, path, re, outputLimit, outputMode, beforeContext, afterContext, &matches, matchedFiles, fileCounts)
+		if scanned {
+			filesSearched++
 		}
-		filesSearched++
-		if err := searchFileLinesWithMode(path, re, outputLimit, outputMode, beforeContext, afterContext, &matches, matchedFiles, fileCounts); err != nil {
+		if err != nil {
 			return err
 		}
 		if searchOutputLimitReached(outputMode, outputLimit, matches, matchedFiles, fileCounts) {
@@ -408,13 +432,17 @@ func ToolRipgrepDetailed(args map[string]interface{}) SearchToolResult {
 		return nil
 	}
 	candidateStart := time.Now()
-	candidates, ok, stats := indexedSearchCandidates(base, pattern, globPattern, excludePattern, fileType, fixedString, includeHidden)
+	candidates, ok, stats := indexedSearchCandidatesCtx(ctx, base, pattern, globPattern, excludePattern, fileType, fixedString, includeHidden)
 	stats.candidateTime = time.Since(candidateStart)
 	searchStats = stats
 	scanStart := time.Now()
 	if ok {
 		searchStats = stats
-		for _, path := range candidates {
+		for i, path := range candidates {
+			if i&511 == 0 && ctx.Err() != nil {
+				err = ctx.Err()
+				break
+			}
 			info, err := os.Stat(path)
 			if err != nil {
 				continue
@@ -430,9 +458,15 @@ func ToolRipgrepDetailed(args map[string]interface{}) SearchToolResult {
 		}
 	} else {
 		searchStats = stats
-		err = walkSearchFilesFiltered(base, globPattern, excludePattern, fileType, false, includeHidden, visit)
+		err = walkSearchFilesFilteredCtx(ctx, base, globPattern, excludePattern, fileType, false, includeHidden, visit)
 	}
 	searchStats.scanTime = time.Since(scanStart)
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil && (err == context.Canceled || err == context.DeadlineExceeded) {
+		return SearchToolResult{Text: "search cancelled", Outcome: SearchToolOutcomeError}
+	}
 	if err != nil && err != filepath.SkipAll {
 		return SearchToolResult{Text: fmt.Sprintf("search failed: %s", err.Error()), Outcome: SearchToolOutcomeError}
 	}
@@ -494,6 +528,16 @@ func ToolGlob(args map[string]interface{}) string {
 }
 
 func ToolGlobDetailed(args map[string]interface{}) SearchToolResult {
+	return ToolGlobDetailedCtx(context.Background(), args)
+}
+
+func ToolGlobDetailedCtx(ctx context.Context, args map[string]interface{}) SearchToolResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return SearchToolResult{Text: "Glob cancelled", Outcome: SearchToolOutcomeError}
+	}
 	pattern := StringArg(args, "pattern")
 	if pattern == "" {
 		return SearchToolResult{Text: "missing pattern parameter", Outcome: SearchToolOutcomeError}
@@ -515,7 +559,7 @@ func ToolGlobDetailed(args map[string]interface{}) SearchToolResult {
 	excludePattern := resolveSearchExcludePattern(args, base)
 
 	var results []string
-	err = walkSearchFilesFiltered(base, pattern, excludePattern, fileType, includeDirs, includeHidden, func(path string, d fs.DirEntry) error {
+	err = walkSearchFilesFilteredCtx(ctx, base, pattern, excludePattern, fileType, includeDirs, includeHidden, func(path string, d fs.DirEntry) error {
 		if d.IsDir() && !includeDirs {
 			return nil
 		}
@@ -525,6 +569,12 @@ func ToolGlobDetailed(args map[string]interface{}) SearchToolResult {
 		}
 		return nil
 	})
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil && (err == context.Canceled || err == context.DeadlineExceeded) {
+		return SearchToolResult{Text: "Glob cancelled", Outcome: SearchToolOutcomeError}
+	}
 	if err != nil && err != filepath.SkipAll {
 		return SearchToolResult{Text: fmt.Sprintf("Glob failed: %s", err.Error()), Outcome: SearchToolOutcomeError}
 	}
@@ -1055,6 +1105,16 @@ func walkSearchFiles(base, pattern string, includeDirs bool, visit func(string, 
 }
 
 func walkSearchFilesFiltered(base, pattern, excludePattern, fileType string, includeDirs, includeHidden bool, visit func(string, fs.DirEntry) error) error {
+	return walkSearchFilesFilteredCtx(context.Background(), base, pattern, excludePattern, fileType, includeDirs, includeHidden, visit)
+}
+
+func walkSearchFilesFilteredCtx(ctx context.Context, base, pattern, excludePattern, fileType string, includeDirs, includeHidden bool, visit func(string, fs.DirEntry) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	info, err := os.Stat(base)
 	if err != nil {
 		return fmt.Errorf("闂佽崵濮崇拃锕傚垂閹殿喗顐介柣鎰嚟閳绘梻鈧箍鍎遍幊鎰板箺閻樼粯鐓曢柨鏂挎惈婵′粙鏌涢妸锝呭鐎殿噮鍣ｉ幃鈺佺暦閸ャ儮鍋撴繝鍥ㄥ仯濞达絽鎲￠崑銉╂煥? %w", err)
@@ -1063,18 +1123,27 @@ func walkSearchFilesFiltered(base, pattern, excludePattern, fileType string, inc
 		if !matchesSearchFilters(filepath.Base(base), false, pattern, excludePattern, fileType) {
 			return nil
 		}
-		return visit(base, fileInfoDirEntry{info: info})
+		err := visit(base, fileInfoDirEntry{info: info})
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return err
 	}
 	deadline := time.Now().Add(maxSearchWalkTime)
 	filesVisited := 0
-	return filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+	return walkDirCtx(ctx, base, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		// Check deadline every 512 entries to avoid per-file syscall overhead.
 		filesVisited++
-		if filesVisited&511 == 0 && time.Now().After(deadline) {
-			return filepath.SkipAll
+		if filesVisited&511 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if time.Now().After(deadline) {
+				return filepath.SkipAll
+			}
 		}
 		if path != base && isSearchSymlink(d) {
 			return nil
@@ -1107,10 +1176,83 @@ func walkSearchFilesFiltered(base, pattern, excludePattern, fileType string, inc
 		if !matchesSearchFilters(rel, d.IsDir(), pattern, excludePattern, fileType) {
 			return nil
 		}
-		return visit(path, d)
+		err = visit(path, d)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return err
 	})
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
 }
 
+// walkDirCtx reads directories in small batches so cancellation is not blocked by filepath.WalkDir's full-directory ReadDir.
+func walkDirCtx(ctx context.Context, root string, walkFn fs.WalkDirFunc) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	info, err := os.Lstat(root)
+	if err != nil {
+		return walkFn(root, nil, err)
+	}
+	return walkDirCtxEntry(ctx, root, fileInfoDirEntry{info: info}, walkFn)
+}
+
+func walkDirCtxEntry(ctx context.Context, path string, d fs.DirEntry, walkFn fs.WalkDirFunc) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := walkFn(path, d, nil)
+	if err != nil || !d.IsDir() {
+		switch err {
+		case nil, filepath.SkipDir:
+			return nil
+		case filepath.SkipAll:
+			return filepath.SkipAll
+		default:
+			return err
+		}
+	}
+	dir, err := os.Open(path)
+	if err != nil {
+		return walkFn(path, d, err)
+	}
+	defer dir.Close()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entries, err := dir.ReadDir(128)
+		if err != nil && err != io.EOF {
+			if walkErr := walkFn(path, d, err); walkErr != nil && walkErr != filepath.SkipDir {
+				return walkErr
+			}
+			return nil
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+		for _, child := range entries {
+			childPath := filepath.Join(path, child.Name())
+			childErr := walkDirCtxEntry(ctx, childPath, child, walkFn)
+			switch childErr {
+			case nil:
+			case filepath.SkipDir:
+				continue
+			case filepath.SkipAll:
+				return filepath.SkipAll
+			default:
+				return childErr
+			}
+		}
+		if err == io.EOF {
+			return nil
+		}
+	}
+}
 func matchesSearchFilters(rel string, isDir bool, globPattern, excludePattern, fileType string) bool {
 	if excludePattern != "" {
 		matched, err := matchGlob(excludePattern, rel, isDir)
@@ -1131,51 +1273,134 @@ func matchesSearchFilters(rel string, isDir bool, globPattern, excludePattern, f
 }
 
 func matchGlob(pattern, rel string, isDir bool) (bool, error) {
-	patterns := expandSearchGlobPatterns(pattern)
+	patterns, err := cachedSearchGlobPatterns(pattern)
+	if err != nil {
+		return false, err
+	}
 	if len(patterns) == 0 {
 		return true, nil
 	}
+	rel = filepath.ToSlash(rel)
+	if isDir {
+		rel = strings.TrimSuffix(rel, "/") + "/"
+	}
 	for _, pattern := range patterns {
-		matched, err := matchSingleGlob(pattern, rel, isDir)
-		if err != nil {
-			return false, err
-		}
-		if matched {
+		if pattern.match(rel) {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-func matchSingleGlob(pattern, rel string, isDir bool) (bool, error) {
+type compiledSearchGlob struct {
+	pattern    string
+	matchAll   bool
+	simpleBase bool
+	re         *regexp.Regexp
+}
+
+type compiledSearchGlobEntry struct {
+	patterns []compiledSearchGlob
+	err      error
+}
+
+var searchGlobPatternCache = struct {
+	sync.RWMutex
+	byPattern map[string]compiledSearchGlobEntry
+	order     []string
+}{
+	byPattern: make(map[string]compiledSearchGlobEntry),
+}
+
+func cachedSearchGlobPatterns(pattern string) ([]compiledSearchGlob, error) {
+	key := strings.TrimSpace(pattern)
+	searchGlobPatternCache.RLock()
+	if entry, ok := searchGlobPatternCache.byPattern[key]; ok {
+		searchGlobPatternCache.RUnlock()
+		return entry.patterns, entry.err
+	}
+	searchGlobPatternCache.RUnlock()
+
+	patterns, err := compileSearchGlobPatterns(key)
+	entry := compiledSearchGlobEntry{patterns: patterns, err: err}
+	searchGlobPatternCache.Lock()
+	if existing, ok := searchGlobPatternCache.byPattern[key]; ok {
+		searchGlobPatternCache.Unlock()
+		return existing.patterns, existing.err
+	}
+	if len(searchGlobPatternCache.byPattern) >= maxSearchGlobPatternCacheEntries && len(searchGlobPatternCache.order) > 0 {
+		delete(searchGlobPatternCache.byPattern, searchGlobPatternCache.order[0])
+		searchGlobPatternCache.order = searchGlobPatternCache.order[1:]
+	}
+	searchGlobPatternCache.byPattern[key] = entry
+	searchGlobPatternCache.order = append(searchGlobPatternCache.order, key)
+	searchGlobPatternCache.Unlock()
+	return entry.patterns, entry.err
+}
+
+func compileSearchGlobPatterns(pattern string) ([]compiledSearchGlob, error) {
+	raw := expandSearchGlobPatterns(pattern)
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]compiledSearchGlob, 0, len(raw))
+	for _, pattern := range raw {
+		if strings.HasPrefix(filepath.ToSlash(strings.TrimSpace(pattern)), "**/") {
+			compiled, err := compileSingleSearchGlob(strings.TrimPrefix(filepath.ToSlash(strings.TrimSpace(pattern)), "**/"))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, compiled)
+		}
+		compiled, err := compileSingleSearchGlob(pattern)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, compiled)
+	}
+	return out, nil
+}
+
+func compileSingleSearchGlob(pattern string) (compiledSearchGlob, error) {
 	pattern = filepath.ToSlash(strings.TrimSpace(pattern))
-	rel = filepath.ToSlash(rel)
 	rootAnchored := strings.HasPrefix(pattern, "./")
 	if rootAnchored {
 		pattern = strings.TrimPrefix(pattern, "./")
 	}
-	if isDir {
-		rel = strings.TrimSuffix(rel, "/") + "/"
-	}
+	compiled := compiledSearchGlob{pattern: pattern}
 	if pattern == "" || pattern == "**" || pattern == "**/*" {
-		return true, nil
-	}
-	if strings.HasPrefix(pattern, "**/") {
-		matched, err := matchSingleGlob(strings.TrimPrefix(pattern, "**/"), rel, isDir)
-		if err != nil || matched {
-			return matched, err
-		}
+		compiled.matchAll = true
+		return compiled, nil
 	}
 	if !rootAnchored && !strings.Contains(pattern, "/") {
-		return filepath.Match(pattern, filepath.Base(rel))
+		if _, err := filepath.Match(pattern, ""); err != nil {
+			return compiledSearchGlob{}, err
+		}
+		compiled.simpleBase = true
+		return compiled, nil
 	}
 	re := regexp.QuoteMeta(pattern)
 	re = strings.ReplaceAll(re, `\*\*`, `.*`)
 	re = strings.ReplaceAll(re, `\*`, `[^/]*`)
 	re = strings.ReplaceAll(re, `\?`, `[^/]`)
-	return regexp.MatchString("^"+re+"$", rel)
+	compiledRegexp, err := regexp.Compile("^" + re + "$")
+	if err != nil {
+		return compiledSearchGlob{}, err
+	}
+	compiled.re = compiledRegexp
+	return compiled, nil
 }
 
+func (pattern compiledSearchGlob) match(rel string) bool {
+	if pattern.matchAll {
+		return true
+	}
+	if pattern.simpleBase {
+		matched, err := filepath.Match(pattern.pattern, filepath.Base(rel))
+		return err == nil && matched
+	}
+	return pattern.re != nil && pattern.re.MatchString(rel)
+}
 func expandSearchGlobPatterns(pattern string) []string {
 	raw := strings.Fields(strings.TrimSpace(pattern))
 	if len(raw) == 0 {
@@ -1343,23 +1568,31 @@ func isSearchSymlink(d fs.DirEntry) bool {
 	return d.Type()&fs.ModeSymlink != 0
 }
 
-func isLikelyBinary(path string) bool {
+func searchFileLinesWithMode(path string, re *regexp.Regexp, maxResults int, outputMode string, beforeContext, afterContext int, matches *[]string, matchedFiles map[string]bool, fileCounts map[string]int) error {
+	_, err := searchFileLinesWithModeCtx(context.Background(), path, re, maxResults, outputMode, beforeContext, afterContext, matches, matchedFiles, fileCounts)
+	return err
+}
+
+func searchFileLinesWithModeCtx(ctx context.Context, path string, re *regexp.Regexp, maxResults int, outputMode string, beforeContext, afterContext int, matches *[]string, matchedFiles map[string]bool, fileCounts map[string]int) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
-		return true
+		return false, nil
 	}
 	defer f.Close()
 	buf := make([]byte, 8000)
 	n, _ := f.Read(buf)
-	return bytes.Contains(buf[:n], []byte{0})
-}
-
-func searchFileLinesWithMode(path string, re *regexp.Regexp, maxResults int, outputMode string, beforeContext, afterContext int, matches *[]string, matchedFiles map[string]bool, fileCounts map[string]int) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
+	if bytes.Contains(buf[:n], []byte{0}) {
+		return false, nil
 	}
-	defer f.Close()
+	if _, err := f.Seek(0, 0); err != nil {
+		return false, nil
+	}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), MaxSearchFileSize+1)
 	lineNo := 0
@@ -1368,13 +1601,18 @@ func searchFileLinesWithMode(path string, re *regexp.Regexp, maxResults int, out
 	lastOutputLine := 0
 	for scanner.Scan() {
 		lineNo++
+		if lineNo&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return true, err
+			}
+		}
 		line := scanner.Text()
 		if !re.MatchString(line) {
 			if pendingAfter > 0 && outputMode == "content" {
 				appendSearchOutputLine(path, lineNo, line, false, &lastOutputLine, matches)
 				pendingAfter--
 				if len(*matches) >= maxResults {
-					return filepath.SkipAll
+					return true, filepath.SkipAll
 				}
 			}
 			if beforeContext > 0 {
@@ -1388,19 +1626,19 @@ func searchFileLinesWithMode(path string, re *regexp.Regexp, maxResults int, out
 		switch outputMode {
 		case "files_with_matches":
 			matchedFiles[path] = true
-			return nil
+			return true, nil
 		case "count":
 			fileCounts[path]++
 		default:
 			for _, ctx := range previous {
 				appendSearchOutputLine(path, ctx.lineNo, ctx.text, false, &lastOutputLine, matches)
 				if len(*matches) >= maxResults {
-					return filepath.SkipAll
+					return true, filepath.SkipAll
 				}
 			}
 			appendSearchOutputLine(path, lineNo, line, true, &lastOutputLine, matches)
 			if len(*matches) >= maxResults {
-				return filepath.SkipAll
+				return true, filepath.SkipAll
 			}
 			pendingAfter = afterContext
 		}
@@ -1411,7 +1649,7 @@ func searchFileLinesWithMode(path string, re *regexp.Regexp, maxResults int, out
 			}
 		}
 	}
-	return scanner.Err()
+	return true, scanner.Err()
 }
 
 type numberedLine struct {

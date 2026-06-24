@@ -110,6 +110,14 @@ describe("VirtualEmployeeSettingsPanel", () => {
     expect(screen.queryByText(/\u865a\u62df\u5458\u5de5/)).toBeNull();
   });
 
+  it("exposes the main settings sections as named regions", () => {
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="machine-123" />);
+
+    expect(screen.getByRole("region", { name: "\u8eab\u4efd\u4fe1\u606f" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "\u8bbf\u95ee\u4e0e\u8bf7\u6c42" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "\u6587\u4ef6\u8bbf\u95ee" })).toBeTruthy();
+  });
+
   it("places register above approval capability and approval save at the bottom", async () => {
     render(<VirtualEmployeeSettingsPanel remoteMachineId="machine-123" />);
 
@@ -191,6 +199,7 @@ describe("VirtualEmployeeSettingsPanel", () => {
       target: { value: "whitelist" },
     });
     expect(screen.getByText("\u767d\u540d\u5355")).toBeTruthy();
+    expect(screen.getByLabelText("\u767d\u540d\u5355")).toBe(screen.getByTestId("list-input"));
     fireEvent.change(screen.getByLabelText("\u8bbf\u95ee\u7b56\u7565"), {
       target: { value: "blacklist" },
     });

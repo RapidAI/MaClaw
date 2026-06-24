@@ -16,7 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 26
+const currentSchemaVersion = 28
 
 type SQLiteStore struct {
 	db        *sql.DB
@@ -192,6 +192,16 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 	}
 	if version < 26 {
 		if err := s.applyMigrationV26(ctx); err != nil {
+			return err
+		}
+	}
+	if version < 27 {
+		if err := s.applyMigrationV27(ctx); err != nil {
+			return err
+		}
+	}
+	if version < 28 {
+		if err := s.applyMigrationV28(ctx); err != nil {
 			return err
 		}
 	}
@@ -1571,6 +1581,83 @@ func (s *SQLiteStore) applyMigrationV26(ctx context.Context) error {
 	return nil
 }
 
+func (s *SQLiteStore) applyMigrationV27(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	exists, err := sqliteColumnExists(ctx, tx, "record_approvals", "detail_url")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE record_approvals ADD COLUMN detail_url TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 27, formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+func (s *SQLiteStore) applyMigrationV28(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, column := range []struct{ name, ddl string }{
+		{"approval_workflow_id", `ALTER TABLE record_approvals ADD COLUMN approval_workflow_id TEXT NOT NULL DEFAULT ''`},
+		{"trigger_event", `ALTER TABLE record_approvals ADD COLUMN trigger_event TEXT NOT NULL DEFAULT ''`},
+		{"submitted_by", `ALTER TABLE record_approvals ADD COLUMN submitted_by TEXT NOT NULL DEFAULT ''`},
+		{"current_assignee", `ALTER TABLE record_approvals ADD COLUMN current_assignee TEXT NOT NULL DEFAULT ''`},
+		{"current_assignee_type", `ALTER TABLE record_approvals ADD COLUMN current_assignee_type TEXT NOT NULL DEFAULT ''`},
+		{"from_status", `ALTER TABLE record_approvals ADD COLUMN from_status TEXT NOT NULL DEFAULT ''`},
+		{"to_status", `ALTER TABLE record_approvals ADD COLUMN to_status TEXT NOT NULL DEFAULT ''`},
+	} {
+		exists, err := sqliteColumnExists(ctx, tx, "record_approvals", column.name)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := tx.ExecContext(ctx, column.ddl); err != nil {
+				return err
+			}
+		}
+	}
+	for _, stmt := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_record_approvals_workflow_event ON record_approvals(tenant_id, approval_workflow_id, trigger_event, status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_record_approvals_current_assignee ON record_approvals(tenant_id, current_assignee, status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_record_approvals_status_transition ON record_approvals(tenant_id, from_status, to_status, status, created_at)`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 28, formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
 func sqliteTableExists(ctx context.Context, tx *sql.Tx, name string) (bool, error) {
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {

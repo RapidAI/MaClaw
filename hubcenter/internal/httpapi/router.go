@@ -571,10 +571,18 @@ func externalizeAdminResolveResult(resp *entry.ResolveResult) {
 	}
 }
 
-func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryService *entry.Service, mailer *mail.Service, skillStore *skill.SkillStore, failureLogs store.FailureEventLogRepository, gossipRepo store.GossipRepository, gossipCache *GossipCache, smHandlers *SkillMarketHandlers, systemSettings store.SystemSettingsRepository, newsRepo store.NewsRepository, haConfigSvc *ha.ConfigService, haSvcs ...*ha.Service) http.Handler {
+func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryService *entry.Service, mailer *mail.Service, skillStore *skill.SkillStore, failureLogs store.FailureEventLogRepository, gossipRepo store.GossipRepository, gossipCache *GossipCache, smHandlers *SkillMarketHandlers, systemSettings store.SystemSettingsRepository, newsRepo store.NewsRepository, haConfigSvc *ha.ConfigService, optionalSvcs ...any) http.Handler {
 	var haSvc *ha.Service
-	if len(haSvcs) > 0 {
-		haSvc = haSvcs[0]
+	var userUsageRepo store.HubUserUsageRepository
+	for _, svc := range optionalSvcs {
+		switch v := svc.(type) {
+		case *ha.Service:
+			if haSvc == nil {
+				haSvc = v
+			}
+		case store.HubUserUsageRepository:
+			userUsageRepo = v
+		}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", HealthHandler("MaClaw-hubcenter"))
@@ -600,6 +608,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /api/admin/routing/enterprise-mail-domains", RequireAdmin(adminService, ListEnterpriseMailDomainsHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/hubs/runtime", RequireAdmin(adminService, ListHubRuntimeStatusesHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/users/dashboard", RequireAdmin(adminService, ListUserDashboardHandler(hubService)))
+	mux.HandleFunc("GET /api/admin/user-rankings", RequireAdmin(adminService, CenterUserRankingsHandler(userUsageRepo)))
 	mux.HandleFunc("POST /api/admin/hubs/visibility", RequireAdmin(adminService, UpdateHubVisibilityHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/visibility", RequireAdmin(adminService, UpdateHubVisibilityHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/registration-policy", RequireAdmin(adminService, UpdateHubRegistrationPolicyHandler(hubService)))
@@ -626,6 +635,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/hubs/register", RegisterHubHandler(hubService))
 	mux.HandleFunc("POST /api/hubs/{id}/heartbeat", HubHeartbeatHandler(hubService, haSvc))
 	mux.HandleFunc("POST /api/hubs/{id}/user-links/sync", HubUserLinkSyncHandler(hubService))
+	mux.HandleFunc("POST /api/hubs/{id}/user-usage/sync", HubUserUsageSyncHandler(hubService, userUsageRepo))
 	mux.HandleFunc("DELETE /api/hubs/{id}/user-links/sync", HubUserLinkDeleteHandler(hubService))
 	mux.HandleFunc("POST /api/hubs/{id}/invitation-codes/sync", HubInvitationCodeSyncHandler(hubService))
 	mux.HandleFunc("DELETE /api/hubs/{id}/invitation-codes/sync", HubInvitationCodeDeleteHandler(hubService))

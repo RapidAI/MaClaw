@@ -460,6 +460,13 @@ func openAPISpec(version string) map[string]interface{} {
 			stringQueryParam("object_role", "Filter approvals by semantic business object role."),
 			stringQueryParam("status", "Filter approvals by status: pending, approved, or rejected."),
 			stringQueryParam("kind", "Filter approvals by kind."),
+			stringQueryParam("approval_workflow_id", "Filter approvals by business approval workflow id."),
+			stringQueryParam("trigger_event", "Filter approvals by trigger event."),
+			stringQueryParam("submitted_by", "Filter approvals by submitting user."),
+			stringQueryParam("current_assignee", "Filter approvals by current assignee."),
+			stringQueryParam("current_assignee_type", "Filter approvals by current assignee type."),
+			stringQueryParam("from_status", "Filter approvals by previous business status."),
+			stringQueryParam("to_status", "Filter approvals by next business status."),
 			stringQueryParam("workflow_skill_id", "Filter approvals by workflow skill id."),
 			stringQueryParam("workflow_version", "Filter approvals by workflow skill version captured on the approval link."),
 			stringQueryParam("workflow_instance_id", "Filter approvals by workflow instance id."),
@@ -1000,8 +1007,84 @@ func upsertAppInstallationOpenAPIRequestBody() map[string]interface{} {
 		"status":        map[string]interface{}{"type": "string", "description": "Installation status; defaults to installed."},
 		"source":        map[string]interface{}{"type": "string", "description": "Distribution source, usually hub."},
 		"role_bindings": map[string]interface{}{"type": "array", "items": roleBindingSchema, "description": "Semantic object_role to dataset bindings installed for this app."},
-		"metadata":      map[string]interface{}{"type": "object", "description": "Additional app manifest or install metadata, including workflow_mapping for enterprise approval apps."},
+		"metadata":      appInstallationMetadataOpenAPISchema(),
 	})
+}
+func appInstallationMetadataOpenAPISchema() map[string]interface{} {
+	stringArray := map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}}
+	dependencySchema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"id":               map[string]interface{}{"type": "string", "description": "Declared Skill dependency id."},
+			"version":          map[string]interface{}{"type": "string", "description": "Required or installed dependency version."},
+			"kind":             map[string]interface{}{"type": "string", "description": "Dependency kind such as runtime_skill, workflow_skill, connector_skill, or policy_skill."},
+			"source":           map[string]interface{}{"type": "string", "description": "Dependency distribution source such as hub, market, enterprise_hub, local, or builtin."},
+			"required":         map[string]interface{}{"type": "boolean", "description": "Whether the app is blocked when this dependency is unavailable."},
+			"installed":        map[string]interface{}{"type": "boolean", "description": "Whether the dependency was present during install verification."},
+			"health":           map[string]interface{}{"type": "string", "description": "Dependency health such as ready, missing, disabled, needs_setup, or unknown."},
+			"action":           map[string]interface{}{"type": "string", "description": "Dependency plan action such as skip, installed, blocked, failed, optional_missing, or optional_unhealthy."},
+			"app_ids":          stringArray,
+			"installed_status": map[string]interface{}{"type": "string", "description": "Raw installed Skill status when present."},
+			"message":          map[string]interface{}{"type": "string", "description": "Dependency verification or install detail."},
+		},
+	}
+	versionSkillSchema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"id":      map[string]interface{}{"type": "string"},
+			"version": map[string]interface{}{"type": "string"},
+			"kind":    map[string]interface{}{"type": "string"},
+			"source":  map[string]interface{}{"type": "string"},
+		},
+	}
+	return map[string]interface{}{
+		"type":                 "object",
+		"additionalProperties": true,
+		"description":          "MaClaw App install metadata used for audit, dependency health checks, dynamic UI layout, result contracts, and approval workflow traceability.",
+		"properties": map[string]interface{}{
+			"schema":                          map[string]interface{}{"type": "string", "description": "Installed app manifest schema, usually maclaw.app.v1."},
+			"package_sha256":                  map[string]interface{}{"type": "string", "description": "SHA-256 fingerprint of the installed MaClaw App package."},
+			"package_bytes":                   map[string]interface{}{"type": "integer", "description": "Installed MaClaw App package size in bytes."},
+			"app_entry_version":               map[string]interface{}{"type": "string", "description": "Version of the app entry saved in the manifest."},
+			"app_skill_id":                    map[string]interface{}{"type": "string", "description": "Super Skill or runtime Skill id that owns the app entry."},
+			"app_skill_version":               map[string]interface{}{"type": "string", "description": "Installed app Skill version."},
+			"workflow_skill_ids":              stringArray,
+			"workflow_skill_versions":         stringArray,
+			"approval_binding_versions":       stringArray,
+			"dependencies":                    map[string]interface{}{"type": "array", "items": dependencySchema, "description": "Backend-authoritative dependency verification snapshot."},
+			"dependency_count":                map[string]interface{}{"type": "integer", "description": "Number of dependency records captured for this app."},
+			"has_missing_required_dependency": map[string]interface{}{"type": "boolean", "description": "True when a required dependency was missing in the verification snapshot."},
+			"has_blocking_dependency":         map[string]interface{}{"type": "boolean", "description": "True when a required dependency was unavailable or blocked."},
+			"version_snapshot": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"app_entry_version": map[string]interface{}{"type": "string"},
+					"app_skill":         versionSkillSchema,
+					"workflow_skills":   map[string]interface{}{"type": "array", "items": versionSkillSchema},
+					"approval_bindings": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}},
+				},
+			},
+			"workspace_layout":              map[string]interface{}{"type": "object", "description": "Saved dynamic UI layout generated by App Studio."},
+			"workspace_layout_entry":        map[string]interface{}{"type": "string"},
+			"workspace_layout_template":     map[string]interface{}{"type": "string"},
+			"workspace_layout_density":      map[string]interface{}{"type": "string"},
+			"workspace_layout_navigation":   stringArray,
+			"workspace_layout_list_columns": stringArray,
+			"workflow_mapping":              map[string]interface{}{"type": "object", "description": "Approval workflow node mapping for enterprise approval apps."},
+			"workflow_contract":             map[string]interface{}{"type": "object", "description": "Approval workflow skill contract captured at install time."},
+			"workflow_contract_skill_id":    map[string]interface{}{"type": "string"},
+			"workflow_contract_version":     map[string]interface{}{"type": "string"},
+			"workflow_contract_object_role": map[string]interface{}{"type": "string"},
+			"result_contract":               map[string]interface{}{"type": "object", "description": "Declared app output/result contract."},
+			"result_contract_primary":       map[string]interface{}{"type": "string"},
+			"result_contract_types":         stringArray,
+			"test_evidence":                 map[string]interface{}{"type": "object", "description": "Local test evidence captured before market upload or install."},
+			"test_evidence_run_id":          map[string]interface{}{"type": "string"},
+			"test_evidence_verified_at":     map[string]interface{}{"type": "string", "format": "date-time"},
+			"governance_status":             map[string]interface{}{"type": "string"},
+			"governance_risk_level":         map[string]interface{}{"type": "string"},
+		},
+	}
 }
 func resolveObjectRoleOpenAPIRequestBody() map[string]interface{} {
 	return objectRequestBody(true, []string{"object_role"}, map[string]interface{}{
@@ -1494,13 +1577,21 @@ func createRecordApprovalOpenAPIRequestBody() map[string]interface{} {
 
 func recordApprovalWorkflowOpenAPIProperties() map[string]interface{} {
 	return map[string]interface{}{
-		"workflow_skill_id":    map[string]interface{}{"type": "string", "description": "Workflow skill that owns the approval run."},
-		"workflow_version":     map[string]interface{}{"type": "string", "description": "Workflow skill version."},
-		"workflow_instance_id": map[string]interface{}{"type": "string", "description": "External workflow instance id."},
-		"workflow_node_id":     map[string]interface{}{"type": "string", "description": "Current or completed workflow node id."},
-		"workflow_decision_id": map[string]interface{}{"type": "string", "description": "Decision event id from the workflow skill."},
-		"business_status":      map[string]interface{}{"type": "string", "description": "Business-facing state produced by the workflow."},
-		"result_status":        map[string]interface{}{"type": "string", "description": "Machine-readable output state produced by the workflow."},
+		"approval_workflow_id":  map[string]interface{}{"type": "string", "description": "Stable business approval workflow id selected by the MaClaw App binding."},
+		"trigger_event":         map[string]interface{}{"type": "string", "description": "Business event that started the approval workflow."},
+		"submitted_by":          map[string]interface{}{"type": "string", "description": "User id that submitted the business approval request."},
+		"current_assignee":      map[string]interface{}{"type": "string", "description": "Current assignee user, role, or queue shown by app approval views."},
+		"current_assignee_type": map[string]interface{}{"type": "string", "description": "Assignee kind such as user, role, department, queue, or ve."},
+		"from_status":           map[string]interface{}{"type": "string", "description": "Business status before this approval transition."},
+		"to_status":             map[string]interface{}{"type": "string", "description": "Business status after this approval transition."},
+		"workflow_skill_id":     map[string]interface{}{"type": "string", "description": "Workflow skill that owns the approval run."},
+		"workflow_version":      map[string]interface{}{"type": "string", "description": "Workflow skill version."},
+		"workflow_instance_id":  map[string]interface{}{"type": "string", "description": "External workflow instance id."},
+		"workflow_node_id":      map[string]interface{}{"type": "string", "description": "Current or completed workflow node id."},
+		"workflow_decision_id":  map[string]interface{}{"type": "string", "description": "Decision event id from the workflow skill."},
+		"detail_url":            map[string]interface{}{"type": "string", "description": "URL or deep link for opening the full workflow approval instance trace."},
+		"business_status":       map[string]interface{}{"type": "string", "description": "Business-facing state produced by the workflow."},
+		"result_status":         map[string]interface{}{"type": "string", "description": "Machine-readable output state produced by the workflow."},
 	}
 }
 

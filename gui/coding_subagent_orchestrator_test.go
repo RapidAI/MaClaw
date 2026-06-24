@@ -579,11 +579,83 @@ func TestRunCurrentTaskRetainsPartialArtifactsDuringRetry(t *testing.T) {
 	if got.Status != TaskExecInProgress || got.RetryCount != 1 {
 		t.Fatalf("retryable failure should remain in progress with retry count 1, got %#v", got)
 	}
+	if !strings.Contains(got.ErrorSummary, "tests failed") {
+		t.Fatalf("retryable failure should preserve error summary for retry context, got %#v", got)
+	}
 	if strings.Join(got.ActualFiles, ",") != "src/a.go" || strings.Join(got.ActualCreatedFiles, ",") != "src/new.go" {
 		t.Fatalf("partial artifacts should be retained for retry, got modified=%#v created=%#v", got.ActualFiles, got.ActualCreatedFiles)
 	}
 }
 
+func TestRunCurrentTaskInjectsRetryFailureContext(t *testing.T) {
+	orch := NewTaskExecutionOrchestrator()
+	orch.MaxRetries = 2
+	orch.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{orchestrator: orch}
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+
+	calls := 0
+	var retryPrevOutputs []string
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		calls++
+		if calls == 1 {
+			return &CodingSubAgentResult{Status: TaskExecFailed, Error: "go test failed: expected 200 got 500"}
+		}
+		retryPrevOutputs = append([]string(nil), prevOutputs...)
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "fixed after retry"}
+	}
+
+	if summary, passed := runner.RunCurrentTask(nil, nil); passed || !strings.Contains(summary, "will retry") {
+		t.Fatalf("first run should be retryable failure, passed=%v summary=%q", passed, summary)
+	}
+	if got := orch.Tasks[0]; got.RetryCount != 1 || got.Status != TaskExecInProgress || !strings.Contains(got.ErrorSummary, "expected 200") {
+		t.Fatalf("first failure should preserve retry metadata, got %#v", got)
+	}
+
+	if summary, passed := runner.RunCurrentTask(nil, nil); !passed || !strings.Contains(summary, "fixed after retry") {
+		t.Fatalf("second run should pass, passed=%v summary=%q", passed, summary)
+	}
+	joined := strings.Join(retryPrevOutputs, "\n")
+	if !strings.Contains(joined, "Retry context for T1") || !strings.Contains(joined, "expected 200") || !strings.Contains(joined, "Do not repeat") {
+		t.Fatalf("retry prevOutputs missing failure context: %#v", retryPrevOutputs)
+	}
+}
+
+func TestCurrentTaskRetryOutputsAddsRecoveryHint(t *testing.T) {
+	task := &TaskItem{
+		Index:        0,
+		Title:        "Fix generated file",
+		RetryCount:   1,
+		ErrorSummary: "1 guardrail block(s): Set-Content src\\a.go x",
+	}
+
+	outputs := currentTaskRetryOutputs(task)
+	joined := strings.Join(outputs, "\n")
+	if !strings.Contains(joined, "Recovery hint") ||
+		!strings.Contains(joined, "edit_file/edit_lines") ||
+		!strings.Contains(joined, "shell redirection") {
+		t.Fatalf("retry output should include shell-write recovery hint, got %#v", outputs)
+	}
+}
+
+func TestSubAgentRetryRecoveryHintCoversQualityGateTiming(t *testing.T) {
+	cases := []struct {
+		err  string
+		want string
+	}{
+		{err: "no exploration before existing-file edits", want: "Before editing existing files"},
+		{err: "verification ran before the final edit (1 command); rerun test/build/lint/typecheck after editing", want: "after the final edit"},
+		{err: "stale diff was not final diff", want: "after the last edit"},
+	}
+	for _, tc := range cases {
+		got := subAgentRetryRecoveryHint(tc.err)
+		if !strings.Contains(got, tc.want) {
+			t.Fatalf("hint for %q = %q, want containing %q", tc.err, got, tc.want)
+		}
+	}
+}
 func TestRunAllTasksPausesOnRateLimitWithoutRetryStorm(t *testing.T) {
 	orch := NewTaskExecutionOrchestrator()
 	orch.MaxRetries = 3

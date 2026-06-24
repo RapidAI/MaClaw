@@ -100,7 +100,7 @@ func appInstallationAuditMetadata(app AppInstallation) map[string]any {
 	if app.Source != "" {
 		metadata["source"] = app.Source
 	}
-	for _, key := range []string{"app_entry_version", "app_skill_id", "app_skill_version", "workflow_skill_ids", "workflow_skill_versions", "approval_binding_versions", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "workflow_contract_schema", "workflow_contract_skill_id", "workflow_contract_version", "workflow_contract_object_role", "workflow_contract_required_inputs", "workflow_contract_decision_outputs", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "governance_status", "governance_risk_level"} {
+	for _, key := range []string{"schema", "package_sha256", "package_bytes", "app_entry_version", "app_skill_id", "app_skill_version", "workflow_skill_ids", "workflow_skill_versions", "approval_binding_versions", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "workflow_contract_schema", "workflow_contract_skill_id", "workflow_contract_version", "workflow_contract_object_role", "workflow_contract_required_inputs", "workflow_contract_decision_outputs", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "test_evidence_result_coverage_ok", "test_evidence_result_coverage_primary", "test_evidence_covered_types", "test_evidence_missing_types", "test_evidence_dependency_verified_at", "test_evidence_dependency_count", "test_evidence_dependency_missing_required", "test_evidence_dependency_blocking", "test_evidence_workflow_contract_issue", "test_evidence_workflow_contract_issue_count", "governance_status", "governance_risk_level"} {
 		if value, ok := app.Metadata[key]; ok {
 			metadata[key] = value
 		}
@@ -466,12 +466,11 @@ func normalizeAppInstallationApprovalBindingVersions(value any) []map[string]any
 
 func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 	evidence := appInstallationMap(out["test_evidence"])
-	if evidence == nil {
-		if governance := appInstallationMap(out["governance"]); governance != nil {
-			evidence = appInstallationMap(governance["test_evidence"])
-			if evidence == nil {
-				evidence = appInstallationMap(governance["testEvidence"])
-			}
+	governance := appInstallationMap(out["governance"])
+	if evidence == nil && governance != nil {
+		evidence = appInstallationMap(governance["test_evidence"])
+		if evidence == nil {
+			evidence = appInstallationMap(governance["testEvidence"])
 		}
 	}
 	if evidence == nil {
@@ -514,10 +513,100 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 		normalized["result_payload"] = cloneJSONValue(payload)
 		out["test_evidence_result_payload"] = cloneJSONValue(payload)
 	}
+	if coverage := normalizeAppInstallationResultCoverage(evidence, out); coverage != nil {
+		normalized["result_coverage"] = coverage
+	}
+	if verification := normalizeAppInstallationDependencyVerification(evidence, governance, out); verification != nil {
+		normalized["dependency_verification"] = verification
+	}
 	out["test_evidence"] = normalized
 	return nil
 }
 
+func normalizeAppInstallationResultCoverage(evidence, out map[string]any) map[string]any {
+	coverage := appInstallationMap(evidence["resultCoverage"])
+	if coverage == nil {
+		coverage = appInstallationMap(evidence["result_coverage"])
+	}
+	if coverage == nil {
+		coverage = appInstallationMap(out["test_evidence_result_coverage"])
+	}
+	if coverage == nil {
+		return nil
+	}
+	normalized := map[string]any{}
+	if value, ok := firstAppInstallationBool(coverage["ok"], out["test_evidence_result_coverage_ok"]); ok {
+		normalized["ok"] = value
+		out["test_evidence_result_coverage_ok"] = value
+	}
+	if primary := firstNonEmptyAppInstallationString(appInstallationString(coverage, "primary"), appInstallationString(out, "test_evidence_result_coverage_primary")); primary != "" {
+		normalized["primary"] = primary
+		out["test_evidence_result_coverage_primary"] = primary
+	}
+	if covered := firstNonEmptyAppInstallationStringList(appInstallationStringList(coverage["coveredTypes"]), appInstallationStringList(coverage["covered_types"]), appInstallationStringList(out["test_evidence_covered_types"])); len(covered) > 0 {
+		normalized["covered_types"] = covered
+		out["test_evidence_covered_types"] = covered
+	}
+	if missing := firstNonEmptyAppInstallationStringList(appInstallationStringList(coverage["missingTypes"]), appInstallationStringList(coverage["missing_types"]), appInstallationStringList(out["test_evidence_missing_types"])); len(missing) > 0 {
+		normalized["missing_types"] = missing
+		out["test_evidence_missing_types"] = missing
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func normalizeAppInstallationDependencyVerification(evidence, governance, out map[string]any) map[string]any {
+	verification := appInstallationMap(evidence["dependencyVerification"])
+	if verification == nil {
+		verification = appInstallationMap(evidence["dependency_verification"])
+	}
+	if verification == nil && governance != nil {
+		verification = appInstallationMap(governance["dependencyVerification"])
+		if verification == nil {
+			verification = appInstallationMap(governance["dependency_verification"])
+		}
+	}
+	if verification == nil {
+		verification = appInstallationMap(out["test_evidence_dependency_verification"])
+	}
+	if verification == nil {
+		return nil
+	}
+	normalized := map[string]any{}
+	if schema := firstNonEmptyAppInstallationString(appInstallationString(verification, "schema"), "maclaw.app.install_plan.v1"); schema != "maclaw.app.install_plan.v1" {
+		return nil
+	}
+	normalized["schema"] = "maclaw.app.install_plan.v1"
+	if verifiedAt := firstNonEmptyAppInstallationString(appInstallationString(verification, "verifiedAt"), appInstallationString(verification, "verified_at"), appInstallationString(out, "test_evidence_dependency_verified_at")); verifiedAt != "" {
+		normalized["verified_at"] = verifiedAt
+		out["test_evidence_dependency_verified_at"] = verifiedAt
+	}
+	for _, pair := range []struct{ camel, snake, summary string }{
+		{"dependencyCount", "dependency_count", "test_evidence_dependency_count"},
+		{"workflowContractIssueCount", "workflow_contract_issue_count", "test_evidence_workflow_contract_issue_count"},
+	} {
+		if value, ok := firstAppInstallationNumber(verification[pair.camel], verification[pair.snake], out[pair.summary]); ok {
+			normalized[pair.snake] = value
+			out[pair.summary] = value
+		}
+	}
+	for _, pair := range []struct{ camel, snake, summary string }{
+		{"hasMissingRequired", "has_missing_required", "test_evidence_dependency_missing_required"},
+		{"hasBlockingDependency", "has_blocking_dependency", "test_evidence_dependency_blocking"},
+		{"hasWorkflowContractIssue", "has_workflow_contract_issue", "test_evidence_workflow_contract_issue"},
+	} {
+		if value, ok := firstAppInstallationBool(verification[pair.camel], verification[pair.snake], out[pair.summary]); ok {
+			normalized[pair.snake] = value
+			out[pair.summary] = value
+		}
+	}
+	if dependencies := appInstallationMapList(verification["dependencies"]); len(dependencies) > 0 {
+		normalized["dependencies"] = dependencies
+	}
+	return normalized
+}
 func appInstallationMap(value any) map[string]any {
 	if item, ok := value.(map[string]any); ok {
 		return item

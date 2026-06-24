@@ -58,7 +58,11 @@ type directSearchEndpoint struct {
 
 // Search performs the legacy direct web search and returns results.
 func Search(query string, maxResults int) ([]SearchResult, error) {
-	query, maxResults, ctx, cancel, err := prepareSearch(query, maxResults)
+	return SearchCtx(context.Background(), query, maxResults)
+}
+
+func SearchCtx(parent context.Context, query string, maxResults int) ([]SearchResult, error) {
+	query, maxResults, ctx, cancel, err := prepareSearch(parent, query, maxResults)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +79,11 @@ func Search(query string, maxResults int) ([]SearchResult, error) {
 // outages should degrade to ordinary web access instead of making live-data
 // tasks report that search is unavailable.
 func SearchWithProvider(query string, maxResults int, provider corelib.WebSearchProvider) ([]SearchResult, error) {
-	query, maxResults, ctx, cancel, err := prepareSearch(query, maxResults)
+	return SearchWithProviderCtx(context.Background(), query, maxResults, provider)
+}
+
+func SearchWithProviderCtx(parent context.Context, query string, maxResults int, provider corelib.WebSearchProvider) ([]SearchResult, error) {
+	query, maxResults, ctx, cancel, err := prepareSearch(parent, query, maxResults)
 	if err != nil {
 		return nil, err
 	}
@@ -118,10 +126,16 @@ func SearchWithProvider(query string, maxResults int, provider corelib.WebSearch
 	return fallbackDirectSearch(ctx, query, maxResults, provider, err, results)
 }
 
-func prepareSearch(query string, maxResults int) (string, int, context.Context, context.CancelFunc, error) {
+func prepareSearch(parent context.Context, query string, maxResults int) (string, int, context.Context, context.CancelFunc, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return "", 0, nil, nil, fmt.Errorf("query is empty")
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	if err := parent.Err(); err != nil {
+		return "", 0, nil, nil, err
 	}
 	if maxResults <= 0 {
 		maxResults = 8
@@ -129,7 +143,7 @@ func prepareSearch(query string, maxResults int) (string, int, context.Context, 
 	if maxResults > 20 {
 		maxResults = 20
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), searchTimeout)
+	ctx, cancel := context.WithTimeout(parent, searchTimeout)
 	return query, maxResults, ctx, cancel, nil
 }
 
@@ -542,12 +556,22 @@ func searchTavily(ctx context.Context, provider corelib.WebSearchProvider, query
 // for better content extraction, falling back to standard Fetch on failure.
 // Pass a zero-value provider to use standard fetch directly.
 func FetchWithProvider(rawURL string, opts *FetchOptions, provider corelib.WebSearchProvider) (*FetchResult, error) {
+	return FetchWithProviderCtx(context.Background(), rawURL, opts, provider)
+}
+
+func FetchWithProviderCtx(parent context.Context, rawURL string, opts *FetchOptions, provider corelib.WebSearchProvider) (*FetchResult, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
 	provider = normalizeProvider(provider)
 
 	// TinyFish has its own fetch API with better content extraction.
 	if provider.Type == "tinyfish" && provider.Key != "" && opts != nil && opts.SavePath == "" {
 		fetchURL := deriveTinyFishFetchURL(provider.BaseURL)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 		defer cancel()
 		result, err := FetchWithTinyFish(ctx, rawURL, provider.Key, fetchURL)
 		if err == nil && result != nil && result.Content != "" {
@@ -558,7 +582,7 @@ func FetchWithProvider(rawURL string, opts *FetchOptions, provider corelib.WebSe
 		// TinyFish failed — fall through to standard fetch
 	}
 
-	return Fetch(rawURL, opts)
+	return FetchCtx(parent, rawURL, opts)
 }
 
 // deriveTinyFishFetchURL derives the fetch endpoint from the search base URL.
@@ -1071,7 +1095,6 @@ func cleanHTML(s string) string {
 	result = strings.TrimSpace(result)
 	return result
 }
-
 
 // ---------------------------------------------------------------------------
 // Bing China direct HTML search (no API key required)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -33,6 +34,11 @@ const (
 )
 
 const workflowDraftDefaultApproverRoleID = "role:dynamic:applicant_department:direct_manager"
+
+var workflowDraftDebugSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,"'}]+`),
+	regexp.MustCompile(`(?i)((?:"|')?[\w-]*(?:api[_-]?key|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|secret|password)[\w-]*(?:"|')?\s*[:=]\s*(?:"|')?)[^"',\s}]+`),
+}
 
 type workflowDraftLLMDiagnosticError struct {
 	Err             error
@@ -307,14 +313,23 @@ func workflowDraftProviderErrorMessage(payload map[string]any) string {
 }
 
 func workflowDraftSanitizeDebugText(text string, maxLen int) string {
+	text = strings.ToValidUTF8(text, "\ufffd")
 	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
-	if maxLen <= 0 || len(text) <= maxLen {
+	text = workflowDraftRedactDebugSecrets(text)
+	if maxLen <= 0 || utf8.RuneCountInString(text) <= maxLen {
 		return text
 	}
 	if maxLen <= 3 {
-		return text[:maxLen]
+		return string([]rune(text)[:maxLen])
 	}
-	return text[:maxLen-3] + "..."
+	return string([]rune(text)[:maxLen-3]) + "..."
+}
+
+func workflowDraftRedactDebugSecrets(text string) string {
+	for _, pattern := range workflowDraftDebugSecretPatterns {
+		text = pattern.ReplaceAllString(text, "${1}[redacted]")
+	}
+	return text
 }
 
 func workflowDraftLLMRequestBody(description, language string) map[string]any {
@@ -346,6 +361,7 @@ func workflowDraftLLMSystemPrompt(language string) string {
 		"Generate nodes dynamically from the user's language. Do not use a fixed template.",
 		"If the user describes conditions such as if/when/otherwise/\u8d85\u8fc7/\u5927\u4e8e/\u5c0f\u4e8e/\u5426\u5219, create a condition_branch node with branches and default_branch, then connect separate branch target nodes.",
 		"Each condition branch must include target_node_id, priority, and expression {field, operator, value}. You may also include a short label for the editor.",
+		"Each approval node must include config.approver_ids. Use " + workflowDraftDefaultApproverRoleID + " when the user does not name a specific approver.",
 		"Do not collapse conditional approvers into a single approval node. For example, 'if leave is longer than 3 days, HR approves' requires a condition_branch and a separate HR approval node.",
 		"Prefer a readable left-to-right layout: x increases by about 220 for each step; branch nodes may use different y values.",
 	}, "\n")
@@ -973,7 +989,43 @@ func normalizeWorkflowDraftNodeConfig(nodeType string, value any) map[string]any
 	for key, val := range config {
 		out[key] = val
 	}
+	if nodeType == "approval" {
+		out = normalizeWorkflowDraftApprovalConfig(out)
+	}
 	return out
+}
+
+func normalizeWorkflowDraftApprovalConfig(config map[string]any) map[string]any {
+	if config == nil {
+		config = workflowDraftDefaultConfig("approval")
+	}
+	if !workflowDraftHasNonEmptyString(config["approver_ids"]) {
+		config["approver_ids"] = []any{workflowDraftDefaultApproverRoleID}
+	}
+	if strings.EqualFold(workflowDraftString(config["mode"]), "sequential") && !workflowDraftHasNonEmptyString(config["approver_order"]) {
+		config["approver_order"] = []any{workflowDraftDefaultApproverRoleID}
+	}
+	return config
+}
+
+func workflowDraftHasNonEmptyString(value any) bool {
+	switch v := value.(type) {
+	case []any:
+		for _, item := range v {
+			if workflowDraftString(item) != "" {
+				return true
+			}
+		}
+	case []string:
+		for _, item := range v {
+			if strings.TrimSpace(item) != "" {
+				return true
+			}
+		}
+	case string:
+		return strings.TrimSpace(v) != ""
+	}
+	return false
 }
 
 func workflowDraftDefaultConfig(nodeType string) map[string]any {

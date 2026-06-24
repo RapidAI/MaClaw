@@ -3702,19 +3702,19 @@
 
   function ensureApprovalNameDialog(options) {
     var overlay = document.getElementById(options.overlayId);
-    if (overlay) return overlay;
+    if (overlay && overlay.parentNode) return overlay;
     overlay = document.createElement('div');
     overlay.id = options.overlayId;
     overlay.className = 'session-modal-overlay';
     overlay.innerHTML =
-      '<div class="session-modal ' + escapeHtml(options.dialogClass) + '" role="dialog" aria-modal="true" aria-labelledby="' + escapeAttr(options.titleId) + '">' +
-        '<button class="close-btn" type="button" onclick="' + escapeAttr(options.closeAction) + '">&times;</button>' +
+      '<div class="session-modal ' + escapeAttr(options.dialogClass) + '" role="dialog" aria-modal="true" aria-labelledby="' + escapeAttr(options.titleId) + '">' +
+        '<button id="' + escapeAttr(options.closeId) + '" class="close-btn" type="button" onclick="' + escapeAttr(options.closeAction) + '" aria-label="' + escapeAttr(text('\u5173\u95ed', 'Close')) + '">&times;</button>' +
         '<h3 id="' + escapeAttr(options.titleId) + '">' + escapeHtml(st(options.titleKey)) + '</h3>' +
         '<p class="desc" id="' + escapeAttr(options.descId) + '">' + escapeHtml(st(options.descKey)) + '</p>' +
         '<label class="approval-function-field" for="' + escapeAttr(options.inputId) + '">' + escapeHtml(st(options.labelKey)) + '</label>' +
         '<input id="' + escapeAttr(options.inputId) + '" autocomplete="off">' +
         '<div id="' + escapeAttr(options.errorId) + '" class="hint approval-function-error" role="alert"></div>' +
-        '<div class="actions approval-function-actions"><button type="button" class="btn-ghost" onclick="' + escapeAttr(options.closeAction) + '">' + escapeHtml(st('cancel')) + '</button><button type="button" class="btn-primary" onclick="' + escapeAttr(options.confirmAction) + '">' + escapeHtml(st('confirm')) + '</button></div>' +
+        '<div class="actions approval-function-actions"><button id="' + escapeAttr(options.cancelId) + '" type="button" class="btn-ghost" onclick="' + escapeAttr(options.closeAction) + '">' + escapeHtml(st('cancel')) + '</button><button id="' + escapeAttr(options.confirmId) + '" type="button" class="btn-primary" onclick="' + escapeAttr(options.confirmAction) + '">' + escapeHtml(st('confirm')) + '</button></div>' +
       '</div>';
     overlay.onclick = function(event) {
       if (event.target === overlay) options.close();
@@ -3723,8 +3723,15 @@
     var input = document.getElementById(options.inputId);
     if (input) {
       input.addEventListener('keydown', function(event) {
-        if (event.key === 'Enter') options.confirm();
-        if (event.key === 'Escape') options.close();
+        if (event.key === 'Enter') {
+          if (event.isComposing) return;
+          if (typeof event.preventDefault === 'function') event.preventDefault();
+          options.confirm();
+        }
+        if (event.key === 'Escape') {
+          if (typeof event.preventDefault === 'function') event.preventDefault();
+          options.close();
+        }
       });
       input.addEventListener('input', function() {
         var error = document.getElementById(options.errorId);
@@ -3741,20 +3748,32 @@
 
   function openApprovalNameDialog(options) {
     var overlay = ensureApprovalNameDialog(options);
-    var title = document.getElementById(options.titleId);
-    var desc = document.getElementById(options.descId);
-    var label = document.querySelector ? document.querySelector('label[for="' + options.inputId + '"]') : null;
+    refreshApprovalNameDialog(options);
     var input = document.getElementById(options.inputId);
-    if (title) title.textContent = st(options.titleKey);
-    if (desc) desc.textContent = st(options.descKey);
-    if (label) label.textContent = st(options.labelKey);
     if (input) input.value = '';
     setApprovalNameDialogError(options.errorId, '');
     overlay.classList.add('show');
     if (input) {
-      if (typeof global.setTimeout === 'function') global.setTimeout(function() { input.focus(); }, 0);
+      if (typeof global.setTimeout === 'function') global.setTimeout(function() { if (typeof input.focus === 'function') input.focus(); }, 0);
       else if (typeof input.focus === 'function') input.focus();
     }
+  }
+
+  function refreshApprovalNameDialog(options) {
+    var overlay = document.getElementById(options.overlayId);
+    if (!overlay || !overlay.parentNode) return;
+    var title = document.getElementById(options.titleId);
+    var desc = document.getElementById(options.descId);
+    var label = document.querySelector ? document.querySelector('label[for="' + options.inputId + '"]') : null;
+    var close = document.getElementById(options.closeId);
+    var cancel = document.getElementById(options.cancelId);
+    var confirm = document.getElementById(options.confirmId);
+    if (title) title.textContent = st(options.titleKey);
+    if (desc) desc.textContent = st(options.descKey);
+    if (label) label.textContent = st(options.labelKey);
+    if (close) close.setAttribute('aria-label', text('\u5173\u95ed', 'Close'));
+    if (cancel) cancel.textContent = st('cancel');
+    if (confirm) confirm.textContent = st('confirm');
   }
 
   function closeApprovalNameDialog(overlayId, errorId) {
@@ -3767,6 +3786,9 @@
     return {
       overlayId: 'approvalFunctionDialogOverlay',
       dialogClass: 'approval-function-dialog',
+      closeId: 'approvalFunctionDialogClose',
+      cancelId: 'approvalFunctionDialogCancel',
+      confirmId: 'approvalFunctionDialogConfirm',
       titleId: 'approvalFunctionDialogTitle',
       descId: 'approvalFunctionDialogDesc',
       inputId: 'approvalFunctionNameInput',
@@ -3785,6 +3807,9 @@
     return {
       overlayId: 'approvalRoleDialogOverlay',
       dialogClass: 'approval-role-dialog',
+      closeId: 'approvalRoleDialogClose',
+      cancelId: 'approvalRoleDialogCancel',
+      confirmId: 'approvalRoleDialogConfirm',
       titleId: 'approvalRoleDialogTitle',
       descId: 'approvalRoleDialogDesc',
       inputId: 'approvalRoleNameInput',
@@ -4028,16 +4053,16 @@
 
   function ensureApprovalSubjectPicker() {
     var overlay = document.getElementById('approvalSubjectPickerOverlay');
-    if (overlay) return overlay;
+    if (overlay && overlay.parentNode) return overlay;
     overlay = document.createElement('div');
     overlay.id = 'approvalSubjectPickerOverlay';
     overlay.className = 'session-modal-overlay';
     overlay.innerHTML =
       '<div class="session-modal approval-subject-dialog" role="dialog" aria-modal="true" aria-labelledby="approvalSubjectPickerTitle">' +
-        '<div class="dialog-head"><div><h3 id="approvalSubjectPickerTitle"></h3><p id="approvalSubjectPickerDesc" class="desc"></p></div><button type="button" class="close-btn" onclick="closeSecApprovalSubjectPicker()" aria-label="Close">&times;</button></div>' +
+        '<div class="dialog-head"><div><h3 id="approvalSubjectPickerTitle"></h3><p id="approvalSubjectPickerDesc" class="desc"></p></div><button id="approvalSubjectPickerClose" type="button" class="close-btn" onclick="closeSecApprovalSubjectPicker()" aria-label="' + escapeAttr(text('\u5173\u95ed', 'Close')) + '">&times;</button></div>' +
         '<div class="approval-subject-toolbar"><input id="approvalSubjectSearch" autocomplete="off"><span id="approvalSubjectCount" class="item-meta"></span></div>' +
         '<div id="approvalSubjectList" class="approval-subject-list"></div>' +
-        '<div class="actions" style="justify-content:flex-end;margin-top:12px"><button type="button" class="btn-ghost" onclick="closeSecApprovalSubjectPicker()">' + escapeHtml(st('cancel')) + '</button><button type="button" class="btn-primary" onclick="confirmSecApprovalSubjectPicker()">' + escapeHtml(st('confirm')) + '</button></div>' +
+        '<div class="actions" style="justify-content:flex-end;margin-top:12px"><button id="approvalSubjectPickerCancel" type="button" class="btn-ghost" onclick="closeSecApprovalSubjectPicker()">' + escapeHtml(st('cancel')) + '</button><button id="approvalSubjectPickerConfirm" type="button" class="btn-primary" onclick="confirmSecApprovalSubjectPicker()">' + escapeHtml(st('confirm')) + '</button></div>' +
       '</div>';
     overlay.onclick = function(event) {
       if (event.target === overlay) global.closeSecApprovalSubjectPicker();
@@ -4057,10 +4082,16 @@
     var search = document.getElementById('approvalSubjectSearch');
     var list = document.getElementById('approvalSubjectList');
     var count = document.getElementById('approvalSubjectCount');
+    var close = document.getElementById('approvalSubjectPickerClose');
+    var cancel = document.getElementById('approvalSubjectPickerCancel');
+    var confirm = document.getElementById('approvalSubjectPickerConfirm');
     if (!picker || !list) return;
     if (title) title.textContent = st('approvalSubjectPickerTitle');
     if (desc) desc.textContent = st('approvalSubjectPickerDesc');
     if (search) search.placeholder = st('approvalSubjectSearch');
+    if (close) close.setAttribute('aria-label', text('\u5173\u95ed', 'Close'));
+    if (cancel) cancel.textContent = st('cancel');
+    if (confirm) confirm.textContent = st('confirm');
     overlay.classList.add('show');
     if (sec.approvalSubjectLoading) {
       list.innerHTML = hint(st('loading'));
@@ -5425,9 +5456,12 @@
     global.AdminTabRegistry.onLanguageChange(function() {
       var sec = state();
       applySecurityI18n();
+      refreshApprovalNameDialog(approvalFunctionDialogOptions());
+      refreshApprovalNameDialog(approvalRoleDialogOptions());
       if (document.getElementById('tab-approvalroles') && document.getElementById('tab-approvalroles').classList.contains('active')) {
         renderSecApprovalRoles();
       }
+      if (sec.approvalSubjectPicker) renderApprovalSubjectPicker();
       if (sec.assignGroupId && sec.contextGroupName) {
         _s('assignUsersModalTitle', 'textContent', st('assignTitleWithGroup', { name: sec.contextGroupName }));
       }

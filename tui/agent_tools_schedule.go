@@ -239,7 +239,11 @@ func (c *tuiSchedulerCallbacks) ExecuteTool(name, argsJSON string) string {
 	if err := parseJSON(argsJSON, &args); err != nil {
 		return fmt.Sprintf("参数解析失败: %s", err.Error())
 	}
-	return c.app.toolRegistry.Execute(name, args)
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return c.app.toolRegistry.ExecuteCtx(ctx, name, args)
 }
 
 func (c *tuiSchedulerCallbacks) IsToolAllowed(name string) bool {

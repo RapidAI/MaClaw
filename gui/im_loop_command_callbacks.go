@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -220,7 +221,38 @@ func (c *loopCycleCallbacks) ExecuteTool(name, argsJSON string) string {
 	}
 	// Delegate to the host's tool implementations.
 	policyUserID := c.parent.handler.workflowPolicyUserID(strings.TrimSpace(c.parent.userID))
-	return c.parent.handler.executeToolDetailedWithPolicyUserText(policyUserID, name, argsJSON, "", nil).Text
+	ctx, cancel := c.toolContext()
+	defer cancel()
+	return c.parent.handler.executeToolDetailedWithRuntimeContext(ctx, policyUserID, strings.TrimSpace(policyUserID) != "", "", name, argsJSON, "", nil).Text
+}
+
+func (c *loopCycleCallbacks) toolContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	if c == nil || c.parent == nil {
+		return ctx, cancel
+	}
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(25 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if c.parent.IsCancelled() {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return ctx, func() {
+		close(done)
+		cancel()
+	}
 }
 
 func (c *loopCycleCallbacks) IsToolAllowed(name string) bool {

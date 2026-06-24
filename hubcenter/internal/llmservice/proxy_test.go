@@ -8,8 +8,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -944,6 +946,243 @@ func TestHandleProxyRequestUsesRequestedServiceGroupWhenModelsOverlap(t *testing
 	}
 }
 
+func TestHandleProxyRequestSystemFreeFallsBackToFreeAutoGroup(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","model":"deepseek-v4-flash","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "redeem",
+			Name:         "Redeem Free",
+			AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+				ProviderID: "deepseek",
+				Model:      "deepseek-v4-flash",
+			}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  upstream.Client(),
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: "system-free",
+		Body:           map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if resp.ProviderID != "deepseek" {
+		t.Fatalf("provider = %q, want deepseek", resp.ProviderID)
+	}
+	if seen["model"] != "deepseek-v4-flash" {
+		t.Fatalf("upstream model = %#v, want deepseek-v4-flash", seen["model"])
+	}
+}
+
+func TestHandleProxyRequestSystemFreeFallsBackToGrantBackedAutoGroup(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","model":"deepseek-v4-flash","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "redeem",
+			Name:         "Redeem",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+				ProviderID: "deepseek",
+				Model:      "deepseek-v4-flash",
+			}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{{
+		ID:             "auth1",
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: "redeem",
+		CreditsTotal:   100,
+		CreditsUsed:    0,
+		StartsAt:       time.Now().UTC().Add(-time.Hour),
+		ExpiresAt:      time.Now().UTC().Add(time.Hour),
+		Status:         "active",
+	}}}
+
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(authRepo),
+		HTTPClient:  upstream.Client(),
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: "system-free",
+		Body:           map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if resp.ProviderID != "deepseek" {
+		t.Fatalf("provider = %q, want deepseek", resp.ProviderID)
+	}
+	if seen["model"] != "deepseek-v4-flash" {
+		t.Fatalf("upstream model = %#v, want deepseek-v4-flash", seen["model"])
+	}
+}
+
+func TestHandleProxyRequestSystemFreePrefersRedeemOverOtherGrantBackedAutoGroups(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","model":"redeem-upstream","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "other", Name: "Other", APIURL: upstream.URL},
+			{ID: "redeem-provider", Name: "Redeem", APIURL: upstream.URL},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{
+			{
+				ID:           "premium-auto",
+				Name:         "Premium Auto",
+				AccessPolicy: AccessPolicyGrantRequired,
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+					ProviderID: "other",
+					Model:      "premium-upstream",
+				}}}},
+			},
+			{
+				ID:           "redeem",
+				Name:         "Redeem",
+				AccessPolicy: AccessPolicyGrantRequired,
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+					ProviderID: "redeem-provider",
+					Model:      "redeem-upstream",
+				}}}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	now := time.Now().UTC()
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{
+		{
+			ID:             "auth-premium",
+			HubID:          "hub1",
+			TenantID:       "tenant1",
+			ServiceGroupID: "premium-auto",
+			CreditsTotal:   100,
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(time.Hour),
+			Status:         "active",
+		},
+		{
+			ID:             "auth-redeem",
+			HubID:          "hub1",
+			TenantID:       "tenant1",
+			ServiceGroupID: "redeem",
+			CreditsTotal:   100,
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(time.Hour),
+			Status:         "active",
+		},
+	}}
+
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(authRepo),
+		HTTPClient:  upstream.Client(),
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: "system-free",
+		Body:           map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.ProviderID != "redeem-provider" {
+		t.Fatalf("provider = %q, want redeem-provider", resp.ProviderID)
+	}
+	if seen["model"] != "redeem-upstream" {
+		t.Fatalf("upstream model = %#v, want redeem-upstream", seen["model"])
+	}
+}
+
+func TestHandleProxyRequestUnknownExplicitServiceGroupDoesNotFallback(t *testing.T) {
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIURL: "http://127.0.0.1"}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "redeem",
+			Name:         "Redeem Free",
+			AccessPolicy: AccessPolicyFree,
+			Models:       []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek", Model: "deepseek-v4-flash"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  http.DefaultClient,
+	}
+	_, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: "missing-paid-group",
+		Body:           map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), `model "auto" not available on this HubCenter`) {
+		t.Fatalf("HandleProxyRequest() error = %v, want model unavailable", err)
+	}
+}
+
 func TestHandleProxyRequestEstimatesAndInjectsUsageWhenUpstreamOmitsUsage(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1465,6 +1704,39 @@ func TestHandleProxyRequestProviderFailureIncludesRoutingDetails(t *testing.T) {
 		if !contains(err.Error(), want) {
 			t.Fatalf("error = %v, want %q", err, want)
 		}
+	}
+}
+
+func TestProxyProviderErrorSnippetPreservesUTF8(t *testing.T) {
+	snippet := proxyProviderErrorSnippet(bytes.Repeat([]byte("审"), 510))
+	if !utf8.ValidString(snippet) {
+		t.Fatalf("snippet is invalid UTF-8: %q", snippet)
+	}
+	if len([]rune(snippet)) != 502 {
+		t.Fatalf("snippet = %q", snippet)
+	}
+	if !bytes.HasSuffix([]byte(snippet), []byte("...")) {
+		t.Fatalf("snippet should be truncated with ellipsis: %q", snippet)
+	}
+
+	snippet = proxyProviderErrorSnippet([]byte{'o', 'k', 0xff})
+	if !utf8.ValidString(snippet) {
+		t.Fatalf("invalid-byte snippet is invalid UTF-8: %q", snippet)
+	}
+	if snippet != ": ok\ufffd" {
+		t.Fatalf("invalid-byte snippet = %q", snippet)
+	}
+}
+
+func TestProxyProviderErrorSnippetRedactsSecrets(t *testing.T) {
+	snippet := proxyProviderErrorSnippet([]byte(`Authorization: Bearer sk-live {"api_key":"abc123","password":"secret","openai_api_key":"provider-secret","x-api-key":"proxy-secret","accessToken":"access-secret"}`))
+	for _, leaked := range []string{"sk-live", "abc123", "secret", "provider-secret", "proxy-secret", "access-secret"} {
+		if strings.Contains(snippet, leaked) {
+			t.Fatalf("snippet leaked %q: %q", leaked, snippet)
+		}
+	}
+	if strings.Count(snippet, "[redacted]") != 6 {
+		t.Fatalf("snippet = %q, want six redactions", snippet)
 	}
 }
 

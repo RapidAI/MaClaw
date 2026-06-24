@@ -121,8 +121,8 @@ type Service struct {
 	// preview deltas arriving within deltaDebounceInterval are merged into
 	// a single emit to reduce WebSocket broadcast frequency.
 	deltaDebounceMu     sync.Mutex
-	deltaDebounceBuf    map[string]*SessionPreviewDelta // session_id → merged delta
-	deltaDebounceTimers map[string]*time.Timer          // session_id → flush timer
+	deltaDebounceBuf    map[string]*SessionPreviewDelta // session_id -> merged delta
+	deltaDebounceTimers map[string]*time.Timer          // session_id -> flush timer
 }
 
 // deltaDebounceInterval is the window within which consecutive preview deltas
@@ -139,8 +139,8 @@ const previewDBWriteInterval = 2 * time.Second
 // the stale-session TTL expires.
 //
 // IMPORTANT: keep in sync with the canonical list in
-//   - frontend/src/components/remote/types.ts  → TERMINAL_SESSION_STATUSES
-//   - hub/web/dist/_pwa_syntax_check.js        → sessionClosed array
+//   - frontend/src/components/remote/types.ts  -> TERMINAL_SESSION_STATUSES
+//   - hub/web/dist/_pwa_syntax_check.js        -> sessionClosed array
 var terminalStatuses = map[string]bool{
 	"stopped":    true,
 	"finished":   true,
@@ -174,6 +174,20 @@ func NewService(cache *ShardedCache, sessions store.SessionRepository) *Service 
 
 func NewCache() *ShardedCache {
 	return NewShardedCache()
+}
+
+func (s *Service) SummarizeUserDurations(ctx context.Context, tenantID string, start, end, now time.Time) ([]store.UserDurationSummary, error) {
+	if s == nil || s.sessions == nil {
+		return []store.UserDurationSummary{}, nil
+	}
+	return s.sessions.SummarizeUserDurations(ctx, tenantID, start, end, now)
+}
+
+func (s *Service) SummarizeUserTokenUsage(ctx context.Context, tenantID string, start, end time.Time) ([]store.UserTokenSummary, error) {
+	if s == nil || s.sessions == nil {
+		return []store.UserTokenSummary{}, nil
+	}
+	return s.sessions.SummarizeUserTokenUsage(ctx, tenantID, start, end)
 }
 
 func (s *Service) RegisterListener(listener Listener) func() {
@@ -286,6 +300,10 @@ func (s *Service) OnSessionSummary(ctx context.Context, machineID, userID, sessi
 
 	s.emit(Event{Type: "session.summary", TenantID: tenantID, SessionID: sessionID, MachineID: machineID, UserID: userID, Summary: &finalSummary})
 	return nil
+}
+
+func (s *Service) RecordUserTokenUsageSnapshot(ctx context.Context, tenantID, sourceID, userID string, usage store.UserTokenUsage, observedAt time.Time) error {
+	return s.sessions.RecordUserTokenUsageSnapshot(store.WithTenant(ctx, tenantID), tenantID, sourceID, userID, usage, observedAt)
 }
 
 func (s *Service) OnSessionPreviewDelta(ctx context.Context, machineID, userID, sessionID string, delta SessionPreviewDelta) error {
@@ -458,7 +476,7 @@ func (s *Service) OnSessionClosed(ctx context.Context, machineID, userID, sessio
 }
 
 // OnSessionImage dispatches a session.image event to listeners. The image
-// data is not persisted — it is only forwarded to real-time consumers such
+// data is not persisted - it is only forwarded to real-time consumers such
 // as the Feishu notifier.
 func (s *Service) OnSessionImage(ctx context.Context, machineID, userID, sessionID string, img SessionImage) {
 	tenantID := s.eventTenantID(sessionID, ctx)

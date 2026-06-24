@@ -102,3 +102,25 @@
     /* Stats filter responsive */
     @media(max-width:960px){#cmSubViewStats .stage-card{grid-template-columns:repeat(3,minmax(0,1fr))}}
     @media(max-width:640px){#cmSubViewStats .stage-card{grid-template-columns:1fr}}
+
+/* User rankings */
+#tab-userrankings{--head-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19h16'/%3E%3Cpath d='M7 16V9'/%3E%3Cpath d='M12 16V5'/%3E%3Cpath d='M17 16v-4'/%3E%3Cpath d='M6 20h12'/%3E%3C/svg%3E")}
+.user-rankings-filter-grid{display:grid;grid-template-columns:1.1fr 1.1fr repeat(5,minmax(110px,.72fr));gap:10px;align-items:end}
+.user-rankings-filter-grid select,.user-rankings-filter-grid input{height:38px;border-radius:10px}
+.user-rankings-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+.user-rankings-columns>.hint{grid-column:1/-1}
+.user-ranking-list{min-width:0;border:1px solid #e5e8ef;border-radius:12px;background:#fff;overflow:hidden}
+.user-ranking-list-title{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border-bottom:1px solid #edf0f4;background:#f8f9fb}
+.user-ranking-list-title strong{font-size:13px;color:#262b36}
+.user-ranking-table{display:grid}
+.user-ranking-row{display:grid;grid-template-columns:42px minmax(0,1fr) minmax(128px,.45fr);gap:10px;align-items:center;padding:11px 14px;border-bottom:1px solid #edf0f4}
+.user-ranking-row:last-child{border-bottom:0}
+.user-ranking-row:hover{background:#fafbfc}
+.user-ranking-rank{font-variant-numeric:tabular-nums;font-weight:800;color:#596170}
+.user-ranking-main{display:grid;gap:3px;min-width:0}
+.user-ranking-main strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#262b36;font-size:13px}
+.user-ranking-main span,.user-ranking-num span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#707684;font-size:11px}
+.user-ranking-num{display:grid;gap:3px;text-align:right;min-width:0}
+.user-ranking-num strong{font-variant-numeric:tabular-nums;color:#303541;font-size:13px}
+@media(max-width:1180px){.user-rankings-filter-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.user-rankings-columns{grid-template-columns:1fr}}
+@media(max-width:720px){.user-rankings-filter-grid{grid-template-columns:1fr}.user-ranking-row{grid-template-columns:34px minmax(0,1fr);align-items:start}.user-ranking-num{grid-column:2;text-align:left}}

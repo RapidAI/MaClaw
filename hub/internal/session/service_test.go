@@ -24,6 +24,8 @@ type sessionRepoStub struct {
 	closedCode      *int
 	closedStatus    string
 	closedEndedAt   time.Time
+	tokenSourceID   string
+	tokenUsage      store.UserTokenUsage
 }
 
 func (s *sessionRepoStub) Create(ctx context.Context, session *store.Session) error {
@@ -58,6 +60,20 @@ func (s *sessionRepoStub) Close(ctx context.Context, sessionID string, exitCode 
 	s.closedEndedAt = endedAt
 	s.closedStatus = status
 	return nil
+}
+
+func (s *sessionRepoStub) RecordUserTokenUsageSnapshot(ctx context.Context, tenantID, sourceID, userID string, usage store.UserTokenUsage, observedAt time.Time) error {
+	s.tokenSourceID = sourceID
+	s.tokenUsage = usage
+	return nil
+}
+
+func (s *sessionRepoStub) SummarizeUserTokenUsage(ctx context.Context, tenantID string, start, end time.Time) ([]store.UserTokenSummary, error) {
+	return nil, nil
+}
+
+func (s *sessionRepoStub) SummarizeUserDurations(ctx context.Context, tenantID string, start, end, now time.Time) ([]store.UserDurationSummary, error) {
+	return nil, nil
 }
 
 func TestSessionServiceLifecycleUpdatesCacheAndRepository(t *testing.T) {
@@ -142,6 +158,9 @@ func TestSessionServiceLifecycleUpdatesCacheAndRepository(t *testing.T) {
 	if !strings.Contains(repo.summaryJSON, `"token_usage"`) || !strings.Contains(repo.summaryJSON, `"cached_input_tokens":768`) {
 		t.Fatalf("expected summary JSON to persist diagnostic token usage, got %s", repo.summaryJSON)
 	}
+	if repo.tokenSourceID != "" || repo.tokenUsage.TotalTokens() != 0 {
+		t.Fatalf("expected diagnostic session token usage to be ignored, got source=%q usage=%#v", repo.tokenSourceID, repo.tokenUsage)
+	}
 	if repo.closedID != "session-1" || repo.closedStatus != "exited" {
 		t.Fatalf("expected close to be persisted")
 	}
@@ -153,6 +172,23 @@ func TestSessionServiceLifecycleUpdatesCacheAndRepository(t *testing.T) {
 	}
 }
 
+func TestSessionServiceRecordsUserTokenUsageSnapshot(t *testing.T) {
+	repo := &sessionRepoStub{}
+	svc := NewService(NewCache(), repo)
+
+	err := svc.RecordUserTokenUsageSnapshot(store.WithTenant(context.Background(), "tenant_a"), "tenant_a", "gui:machine-1", "user-1", store.UserTokenUsage{
+		InputTokens:       1200,
+		OutputTokens:      80,
+		CachedInputTokens: 768,
+		CacheWriteTokens:  128,
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("RecordUserTokenUsageSnapshot error: %v", err)
+	}
+	if repo.tokenSourceID != "gui:machine-1" || repo.tokenUsage.InputTokens != 1200 || repo.tokenUsage.TotalTokens() != 1280 {
+		t.Fatalf("expected GUI token usage snapshot to be recorded, got source=%q usage=%#v", repo.tokenSourceID, repo.tokenUsage)
+	}
+}
 func TestSessionServicePropagatesTenantToCacheRepositoryAndEvents(t *testing.T) {
 	repo := &sessionRepoStub{}
 	svc := NewService(NewCache(), repo)

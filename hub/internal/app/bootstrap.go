@@ -80,6 +80,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	deviceService.ResetStaleOnlineStatus(context.Background())
 	sessionCache := session.NewCache()
 	sessionService := session.NewService(sessionCache, st.Sessions)
+	centerService.SetStatsProviders(identityService, deviceService, sessionService)
 	gateway := ws.NewGateway(identityService, deviceService, sessionService)
 	sessionService.RegisterListener(gateway.HandleSessionEvent)
 

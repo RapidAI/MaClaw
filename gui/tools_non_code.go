@@ -15,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // registerNonCodeTools registers non-programming tools (Git, file ops, env)
@@ -162,7 +164,7 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 		},
 		Required: []string{"pattern"},
 		Source:   "non_code",
-		Handler: func(args map[string]interface{}) string {
+		HandlerCtx: func(ctx context.Context, args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			path := stringVal(args, "project_path")
 			if path == "" {
 				path = app.getCurrentProjectPath()
@@ -171,7 +173,7 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 			if pattern == "" {
 				return "缺少 pattern 参数"
 			}
-			return searchFilesInProject(path, pattern, stringVal(args, "file_pattern"))
+			return searchFilesInProjectCtx(ctx, path, pattern, stringVal(args, "file_pattern"))
 		},
 	})
 
@@ -188,12 +190,12 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 			"project_path": map[string]string{"type": "string", "description": "项目路径"},
 		},
 		Source: "non_code",
-		Handler: func(args map[string]interface{}) string {
+		HandlerCtx: func(ctx context.Context, args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			path := stringVal(args, "project_path")
 			if path == "" {
 				path = app.getCurrentProjectPath()
 			}
-			return checkProjectHealth(path)
+			return checkProjectHealthCtx(ctx, path)
 		},
 	})
 }
@@ -249,6 +251,16 @@ type searchMatch struct {
 }
 
 func searchFilesInProject(projectPath, pattern, filePattern string) string {
+	return searchFilesInProjectCtx(context.Background(), projectPath, pattern, filePattern)
+}
+
+func searchFilesInProjectCtx(parent context.Context, projectPath, pattern, filePattern string) string {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if err := parent.Err(); err != nil {
+		return "search cancelled"
+	}
 	if projectPath == "" {
 		return "未指定项目路径"
 	}
@@ -259,7 +271,7 @@ func searchFilesInProject(projectPath, pattern, filePattern string) string {
 		return fmt.Sprintf("project_path=%q 范围过大（用户家目录或磁盘根目录）。请指定具体的项目目录，如 %s 下的某个子文件夹。", projectPath, projectPath)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 60*time.Second)
 	defer cancel()
 
 	re, err := regexp.Compile(pattern)
@@ -391,6 +403,10 @@ func searchFilesInProject(projectPath, pattern, filePattern string) string {
 		return "搜索超时（60秒），目录可能过大。请缩小搜索范围或指定更具体的 project_path。"
 	}
 
+	if ctx.Err() == context.Canceled {
+		return "search_files cancelled"
+	}
+
 	if len(results) == 0 {
 		return "未找到匹配结果"
 	}
@@ -471,6 +487,16 @@ func isBinaryExtension(name string) bool {
 // checkProjectHealth checks if a project can build/compile.
 // Build commands have a 30-second timeout to avoid blocking the agent.
 func checkProjectHealth(projectPath string) string {
+	return checkProjectHealthCtx(context.Background(), projectPath)
+}
+
+func checkProjectHealthCtx(parent context.Context, projectPath string) string {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if parent.Err() != nil {
+		return "check_health cancelled"
+	}
 	if projectPath == "" {
 		return "未指定项目路径"
 	}
@@ -479,13 +505,15 @@ func checkProjectHealth(projectPath string) string {
 
 	// Check for Go project.
 	if _, err := os.Stat(filepath.Join(projectPath, "go.mod")); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "go", "vet", "./...")
 		cmd.Dir = projectPath
 		hideCommandWindow(cmd)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
+			if ctx.Err() == context.Canceled {
+				results = append(results, "check_health cancelled")
+			} else if ctx.Err() == context.DeadlineExceeded {
 				results = append(results, "⚠️ Go vet 超时（30s），项目可能较大")
 			} else {
 				results = append(results, fmt.Sprintf("❌ Go vet 发现问题:\n%s", string(out)))

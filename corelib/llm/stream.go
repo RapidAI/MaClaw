@@ -511,9 +511,6 @@ func filterStreamTruncatedToolCalls(msg *Message, finishReason string) (string, 
 		return finishReason, nil
 	}
 	msg.ToolCalls = validCalls
-	if len(msg.ToolCalls) == 0 {
-		return "stop", truncatedNames
-	}
 	return finishReason, truncatedNames
 }
 

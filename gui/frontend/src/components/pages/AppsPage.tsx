@@ -130,6 +130,7 @@ type BackendAppInstallRecord = {
     datasrv_registration?: BackendAppDataSrvRegistration;
     version_snapshot?: BackendAppInstallVersionSnapshot;
     app_versions?: Record<string, BackendAppInstallVersionSnapshot>;
+    package?: Record<string, unknown>;
 };
 
 type AppWorkspaceLayout = {
@@ -151,6 +152,17 @@ type AppResultContract = {
         businessRecord: boolean;
         notifications: boolean;
     };
+};
+
+type AppTestProtocol = {
+    schema: 'maclaw.app.test_protocol.v1';
+    fingerprint?: string;
+    sampleInput: Record<string, unknown>;
+    expectedToolCalls?: Array<Record<string, unknown>>;
+    expectedOutput: Record<string, unknown>;
+    requiredRoles: string[];
+    requiredScopes: string[];
+    riskLevel: 'low' | 'medium' | 'high' | 'critical' | string;
 };
 
 type AppApprovalBinding = {
@@ -207,6 +219,7 @@ type AppManifestBinding = {
     };
     ui?: AppWorkspaceLayout;
     resultContract?: AppResultContract;
+    testProtocol?: AppTestProtocol;
     workflow?: AppWorkflowMapping;
     mis?: {
         approvalBindings?: AppApprovalBinding[];
@@ -322,6 +335,7 @@ type AppRunHistoryEntry = {
     appID: string;
     status: 'done' | 'error' | 'cancelled';
     definitionHash?: string;
+    testProtocolFingerprint?: string;
     outputMode: string;
     inputSummary: string;
     message: string;
@@ -689,6 +703,7 @@ const labels = {
         reviewIssuesMore: '\u53e6',
         reviewIssuesMoreUnit: '\u9879',
         fixReviewIssue: '\u53bb\u4fee\u590d',
+        resolveReviewDependencies: '\u5904\u7406\u4f9d\u8d56',
         appVersion: '\u7248\u672c',
         reviewer: '\u5ba1\u6838\u4eba',
         riskLevel: '\u98ce\u9669',
@@ -897,6 +912,11 @@ const labels = {
         installRecordsError: '\u5b89\u88c5\u8bb0\u5f55\u8bfb\u53d6\u5931\u8d25',
         noInstallRecords: '\u6682\u65e0\u5e94\u7528\u5b89\u88c5\u8bb0\u5f55',
         refreshInstallRecords: '\u5237\u65b0\u8bb0\u5f55',
+        recheckInstallDependencies: '\u68c0\u67e5\u4f9d\u8d56',
+        checkingInstallDependencies: '\u68c0\u67e5\u4e2d',
+        repairInstallDependencies: '\u4fee\u590d\u4f9d\u8d56',
+        repairingInstallDependencies: '\u4fee\u590d\u4e2d',
+        installRecordPackageMissing: '\u5b89\u88c5\u8bb0\u5f55\u7f3a\u5c11\u5e94\u7528\u5305\u5feb\u7167',
         packageSha: '\u5305\u6307\u7eb9',
         installedAt: '\u5b89\u88c5\u65f6\u95f4',
         missingDependencyCount: '\u963b\u65ad\u4f9d\u8d56',
@@ -975,6 +995,7 @@ const labels = {
         reviewIssuesMore: 'plus',
         reviewIssuesMoreUnit: 'more',
         fixReviewIssue: 'Fix',
+        resolveReviewDependencies: 'Resolve dependencies',
         appVersion: 'Version',
         reviewer: 'Reviewer',
         riskLevel: 'Risk',
@@ -1183,6 +1204,11 @@ const labels = {
         installRecordsError: 'Failed to read install records',
         noInstallRecords: 'No app install records yet',
         refreshInstallRecords: 'Refresh records',
+        recheckInstallDependencies: 'Check dependencies',
+        checkingInstallDependencies: 'Checking',
+        repairInstallDependencies: 'Repair dependencies',
+        repairingInstallDependencies: 'Repairing',
+        installRecordPackageMissing: 'Install record has no app package snapshot',
         packageSha: 'Package SHA',
         installedAt: 'Installed at',
         missingDependencyCount: 'Blocking deps',
@@ -2170,7 +2196,7 @@ function normalizeAppWorkflowContract(value: unknown, kind: AppKind, fallback?: 
     if (!workflowSkillId || !objectRole) return undefined;
     const requiredInputs = parseStringList(raw.requiredInputs || raw.required_inputs || fallback?.requiredInputs);
     const decisionOutputs = parseStringList(raw.decisionOutputs || raw.decision_outputs || fallback?.decisionOutputs);
-    const fallbackStatus = fallback?.statusMapping || {};
+    const fallbackStatus: Partial<AppWorkflowContract['statusMapping']> = fallback?.statusMapping || {};
     const clean = (item: unknown, fallbackValue = '') => String(item || fallbackValue || '').trim();
     return {
         schema: 'maclaw.app.workflow_contract.v1',
@@ -2763,7 +2789,7 @@ function approvalWorkflowOutputsFromStatus(status?: SkillRunStatusView | null): 
 function appRunResultPayloadFromStatus(status?: SkillRunStatusView | null): Record<string, unknown> | undefined {
     const payload = approvalWorkflowResultPayloadFromObjects(skillRunApprovalObjects(status), status);
     if (payload) return payload;
-    const snippet = skillRunOutputSuffix(status).replace(/^ �?/, '');
+    const snippet = skillRunOutputSuffix(status).replace(/^ · /, '');
     return snippet ? { text: snippet.slice(0, 500) } : undefined;
 }
 
@@ -3200,6 +3226,35 @@ function reviewIssuesSummary(issues: AppReviewIssue[], text: typeof labels.zh) {
     ].filter(Boolean).join(' / ');
 }
 
+function reviewIssueSeverity(issue: AppReviewIssue) {
+    const severity = String(issue.severity || '').trim().toLowerCase();
+    if (severity === 'critical' || severity === 'error') return 'error';
+    if (severity === 'warning') return 'warning';
+    if (severity === 'info') return 'info';
+    return 'notice';
+}
+
+function reviewIssuesIncludeDependency(issues?: AppReviewIssue[]) {
+    return (issues || []).some((issue) => /dependency|依赖/i.test([issue.path, issue.message, issue.suggestion].filter(Boolean).join(' ')));
+}
+const ReviewIssuesPanel = ({ issues, text, compact = false }: { issues?: AppReviewIssue[]; text: typeof labels.zh; compact?: boolean }) => {
+    const visible = (issues || []).filter((issue) => issue.message).slice(0, 4);
+    const remaining = Math.max(0, (issues || []).length - visible.length);
+    if (visible.length === 0) return null;
+    return (
+        <div className="apps-review-issues" data-compact={compact ? 'true' : 'false'} role="list" aria-label={text.reviewIssues}>
+            {visible.map((issue, index) => (
+                <div className="apps-review-issues__item" data-severity={reviewIssueSeverity(issue)} role="listitem" key={`${issue.path || 'issue'}-${issue.message}-${index}`}>
+                    <strong>{String(issue.severity || 'notice').trim() || 'notice'}</strong>
+                    {issue.path && <span>{issue.path}</span>}
+                    <em>{issue.message}</em>
+                    {issue.suggestion && <small>{issue.suggestion}</small>}
+                </div>
+            ))}
+            {remaining > 0 && <div className="apps-review-issues__more" role="listitem">{text.reviewIssuesMore} {remaining} {text.reviewIssuesMoreUnit}</div>}
+        </div>
+    );
+};
 function packageAppNamesFromRecord(record: Record<string, unknown> | null): string[] {
     const pkg = record?.package || record?.Package;
     const apps = pkg && typeof pkg === 'object' && !Array.isArray(pkg) ? (pkg as Record<string, unknown>).apps : [];
@@ -3515,6 +3570,97 @@ function appResultContractForManifest(app: AppEntry): AppResultContract {
     return normalizeAppResultContract(app.manifest?.resultContract, app.kind, app.manifest?.skill?.outputModes || []);
 }
 
+function buildAppTestProtocol(kind: AppKind, outputModes: string[] = [], resultContract?: AppResultContract): AppTestProtocol {
+    const contract = resultContract || buildAppResultContract(kind, outputModes);
+    const sampleInput = kind === 'enterprise_approval_app'
+        ? { record_ref: 'sample-record', applicant: 'current_user', business_payload: { amount: 1280 } }
+        : kind === 'enterprise_normal_app'
+            ? { business_payload: { note: 'sample' } }
+            : { file: 'sample.pdf', params: '' };
+    const expectedOutput = kind === 'enterprise_approval_app'
+        ? { approval_result: 'approved', primary: contract.primary }
+        : kind === 'enterprise_normal_app'
+            ? { business_status: 'ready', primary: contract.primary }
+            : { status: 'ok', primary: contract.primary };
+    return {
+        schema: 'maclaw.app.test_protocol.v1',
+        sampleInput,
+        expectedOutput,
+        requiredRoles: kind === 'enterprise_approval_app' ? ['applicant', 'approver'] : kind === 'enterprise_normal_app' ? ['operator'] : [],
+        requiredScopes: [],
+        riskLevel: isEnterpriseAppKind(kind) ? 'medium' : 'low',
+    };
+}
+
+function cleanStringList(value: unknown): string[] {
+    return Array.isArray(value) ? value.map((item) => String(item || '').trim()).filter(Boolean) : [];
+}
+
+function plainObjectOrFallback(value: unknown, fallback: Record<string, unknown>): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : fallback;
+}
+
+function normalizeAppTestProtocol(value: unknown, kind: AppKind, outputModes: string[] = [], resultContract?: AppResultContract): AppTestProtocol {
+    const fallback = buildAppTestProtocol(kind, outputModes, resultContract);
+    if (!value || typeof value !== 'object') return fallback;
+    const raw = value as Partial<AppTestProtocol> & Record<string, unknown>;
+    const sampleInput = raw.sampleInput ?? raw.sample_input;
+    const expectedOutput = raw.expectedOutput ?? raw.expected_output ?? raw.expectedResult ?? raw.expected_result;
+    const expectedToolCalls = Array.isArray(raw.expectedToolCalls)
+        ? raw.expectedToolCalls.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item))
+        : Array.isArray(raw.expected_tool_calls)
+            ? raw.expected_tool_calls.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item))
+            : undefined;
+    const normalized: AppTestProtocol = {
+        schema: 'maclaw.app.test_protocol.v1',
+        sampleInput: plainObjectOrFallback(sampleInput, fallback.sampleInput),
+        expectedOutput: plainObjectOrFallback(expectedOutput, fallback.expectedOutput),
+        requiredRoles: cleanStringList(raw.requiredRoles ?? raw.required_roles),
+        requiredScopes: cleanStringList(raw.requiredScopes ?? raw.required_scopes),
+        riskLevel: String((raw.riskLevel ?? raw.risk_level ?? fallback.riskLevel) || '').trim() || fallback.riskLevel,
+    };
+    if (expectedToolCalls?.length) normalized.expectedToolCalls = expectedToolCalls;
+    const fingerprint = String(raw.fingerprint ?? raw.testProtocolFingerprint ?? raw.test_protocol_fingerprint ?? '').trim();
+    if (fingerprint) normalized.fingerprint = fingerprint;
+    return normalized;
+}
+
+function appTestProtocolFingerprint(protocol: AppTestProtocol): string {
+    const { fingerprint: _fingerprint, ...stableProtocol } = protocol;
+    return textHash(stableStringify(stableProtocol));
+}
+
+function appTestProtocolWithFingerprint(protocol: AppTestProtocol): AppTestProtocol {
+    return { ...protocol, fingerprint: appTestProtocolFingerprint(protocol) };
+}
+
+function appTestProtocolForManifest(app: AppEntry): AppTestProtocol {
+    return normalizeAppTestProtocol(app.manifest?.testProtocol, app.kind, app.manifest?.skill?.outputModes || [], appResultContractForManifest(app));
+}
+
+function applyAppTestProtocol(manifest: AppManifestBinding, kind: AppKind, override?: AppTestProtocol): AppManifestBinding {
+    const outputModes = normalizeOutputModes(manifest.skill?.outputModes);
+    const resultContract = normalizeAppResultContract(manifest.resultContract, kind, outputModes);
+    return {
+        ...manifest,
+        testProtocol: appTestProtocolWithFingerprint(normalizeAppTestProtocol(override || manifest.testProtocol, kind, outputModes, resultContract)),
+    };
+}
+
+function appTestProtocolPublishSummary(app: AppEntry, lang?: string): string {
+    const zh = isZh(lang);
+    const protocol = appTestProtocolForManifest(app);
+    const fingerprint = appTestProtocolFingerprint(protocol);
+    const sampleKeys = Object.keys(protocol.sampleInput || {}).length;
+    const outputKeys = Object.keys(protocol.expectedOutput || {}).length;
+    if (sampleKeys === 0 || outputKeys === 0) return zh ? '缺少 sampleInput 或 expectedOutput' : 'Missing sampleInput or expectedOutput';
+    return `${zh ? '协议\u6307\u7eb9' : 'Protocol fingerprint'} ${fingerprint} · ${protocol.riskLevel}`;
+}
+
+function appHasPublishableTestProtocol(app: AppEntry): boolean {
+    const protocol = appTestProtocolForManifest(app);
+    return protocol.schema === 'maclaw.app.test_protocol.v1' && Object.keys(protocol.sampleInput || {}).length > 0 && Object.keys(protocol.expectedOutput || {}).length > 0 && !!appTestProtocolFingerprint(protocol);
+}
 function appWorkflowContractForManifest(app: AppEntry): AppWorkflowContract | undefined {
     if (app.kind !== 'enterprise_approval_app') return undefined;
     const binding = appApprovalBinding(app);
@@ -3771,6 +3917,8 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
     const evidenceArtifacts = appRunHistoryArtifacts(evidence);
     const evidenceOutputs = normalizeApprovalOutputs(evidence?.outputs) || [];
     const resultContract = appResultContractForManifest(app);
+    const testProtocol = appTestProtocolWithFingerprint(appTestProtocolForManifest(app));
+    const testProtocolFingerprint = appTestProtocolFingerprint(testProtocol);
     const primaryResult = appRunPrimaryResultFromPayload(resultContract, evidence?.resultPayload, evidenceOutputs);
     const resultCoverage = appRunEvidenceContractCoverage(app, evidence);
     const primaryArtifact = evidenceArtifacts[0];
@@ -3800,6 +3948,7 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
         } : undefined,
         workspaceLayout: appWorkspaceLayoutEvidence(app),
         resultContract,
+        testProtocol,
         workflowContract: appWorkflowContractForManifest(app),
         testEvidence: {
             runId: evidence?.runID,
@@ -3811,6 +3960,9 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
             outputCount: evidenceOutputs.length,
             outputs: evidenceOutputs.map(appRunHistoryOutputEvidence),
             resultPayload: evidence?.resultPayload,
+            testProtocol,
+            testProtocolFingerprint,
+            dependencyVerification: evidence?.dependencyVerification,
             primaryResult: primaryResult || undefined,
             resultCoverage: {
                 ok: resultCoverage.ok,
@@ -3960,10 +4112,10 @@ function filterSummaryText({ query, category, count, lang, allLabel }: { query: 
     const zh = isZh(lang);
     const categoryText = category === 'all' ? allLabel : category;
     if (trimmedQuery && category !== 'all') {
-        return zh ? `搜索�?{trimmedQuery}�?· ${categoryText} · ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" · ${categoryText} · ${count} matches`;
+        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d · ${categoryText} · ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" · ${categoryText} · ${count} matches`;
     }
     if (trimmedQuery) {
-        return zh ? `搜索�?{trimmedQuery}�?· ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" · ${count} matches`;
+        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d · ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" · ${count} matches`;
     }
     if (category !== 'all') {
         return zh ? `${categoryText} · ${count} \u4e2a\u5e94\u7528` : `${categoryText} · ${count} apps`;
@@ -4074,6 +4226,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
     const [studioOpen, setStudioOpen] = useState(false);
     const [studioTab, setStudioTab] = useState<StudioTab>('create');
     const [studioEditAppId, setStudioEditAppId] = useState('');
+    const [marketInstallPrefill, setMarketInstallPrefill] = useState<{ key: number; manifestText: string }>({ key: 0, manifestText: '' });
     const [activeOperation, setActiveOperation] = useState<AppOperation | null>(null);
     const [approvalInitialAppFilter, setApprovalInitialAppFilter] = useState('all');
     const [tileMenu, setTileMenu] = useState<{ appId: string; x: number; y: number } | null>(null);
@@ -4320,6 +4473,16 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
         setStudioTab('manage');
         setStudioEditAppId(appId);
     };
+    const installDependenciesFromPublish = (appId: string) => {
+        const app = apps.find((item) => item.id === appId);
+        if (!app) return;
+        setStudioOpen(true);
+        setStudioTab('market');
+        setMarketInstallPrefill((current) => ({
+            key: current.key + 1,
+            manifestText: JSON.stringify(appToManifest(app), null, 2),
+        }));
+    };
 
     const appStatusInfo = (app: AppEntry): { key: 'available' | 'running' | 'loading' | 'disabled' | 'error'; label: string } => {
         if (openTabs.includes(app.id)) return { key: 'running', label: text.appRunning };
@@ -4510,7 +4673,9 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                         onAddDiscoveredApp={addDiscoveredApp}
                         onCreateApp={addDiscoveredApp}
                         onInstallMarketApp={installMarketApp}
+                        marketInstallPrefill={marketInstallPrefill}
                         onEditApp={editAppFromStudio}
+                        onInstallDependencies={installDependenciesFromPublish}
                     />
                 ) : activeOperation === 'approval_status' ? (
                     <ApprovalManager
@@ -5028,7 +5193,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const recordRunHistory = (entry: Omit<AppRunHistoryEntry, 'appID' | 'at'>) => {
         const appID = app?.id || '';
         if (!appID) return;
-        const nextEntry: AppRunHistoryEntry = { ...entry, appID, at: new Date().toISOString() };
+        const protocolFingerprint = app ? appTestProtocolFingerprint(appTestProtocolForManifest(app)) : undefined;
+        const nextEntry: AppRunHistoryEntry = { ...entry, testProtocolFingerprint: entry.testProtocolFingerprint || protocolFingerprint, appID, at: new Date().toISOString() };
         setRunHistory((current) => {
             const next = [nextEntry, ...current.filter((item) => item.runID !== nextEntry.runID)].slice(0, 8);
             saveAppRunHistory(appID, next);
@@ -5114,6 +5280,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     const resultContract = app ? appResultContractForManifest(app) : buildAppResultContract('tool_app', [currentRunContext.outputMode]);
                     const primaryResult = appRunPrimaryResultFromPayload(resultContract, resultPayload, outputs);
                     const verifiedAt = new Date().toISOString();
+                    const dependencyVerification = app ? appRunDependencyVerificationEvidence(app, runtimeDependencyPlan, verifiedAt) : undefined;
                     setValidationMessage('');
                     setRunState('done');
                     recordRunHistory({
@@ -5131,6 +5298,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                         artifacts,
                         resultPayload,
                         outputs,
+                        dependencyVerification,
                     });
                     if (app?.source === 'skill' && app.manifest?.skill?.id) {
                         void RecordMaclawAppRunEvidenceForSkill(app.manifest.skill.id, app.id, definitionHash || '', runID, artifactPath || artifactName || artifactURI, verifiedAt).catch(() => undefined);
@@ -5164,7 +5332,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             disposed = true;
             window.clearInterval(timer);
         };
-    }, [runID, runState, text.skillRunCancelled, text.skillRunCompleted, text.skillRunFailed, currentRunContext, finalizeApprovalRunFromStatus]);
+    }, [runID, runState, text.skillRunCancelled, text.skillRunCompleted, text.skillRunFailed, currentRunContext, finalizeApprovalRunFromStatus, runtimeDependencyPlan]);
     if (!app) return <div className="apps-empty">{text.noApps}</div>;
     const isTool = app.kind === 'tool_app';
     const isApproval = isEnterpriseApprovalAppKind(app.kind);
@@ -6046,7 +6214,7 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision }: { 
                         <div><dt>{text.workflowSkill}</dt><dd>{[instance.workflowSkillID, instance.workflowVersion ? 'v' + instance.workflowVersion : ''].filter(Boolean).join(' @ ') || '-'}</dd></div><div><dt>{text.dataSrvRecord}</dt><dd>{instance.recordID || '-'}</dd></div><div><dt>{text.approvalObjectRoleLabel}</dt><dd>{instance.objectRole || '-'}</dd></div>
                         <div><dt>{text.remoteApprovalLabel}</dt><dd>{instance.approvalID || '-'}</dd></div><div><dt>{text.businessStatusLabel}</dt><dd>{instance.businessStatus || '-'}</dd></div><div><dt>{text.resultStatusLabel}</dt><dd>{instance.resultStatus || approvalStatusLabel(instance.status, lang)}</dd></div>
                     </dl>
-                    {instance.detailURL && <div className="apps-approval-detail__links"><a className="apps-link-button" href={instance.detailURL} target="_blank" rel="noreferrer">{text.viewFullWorkflow}</a></div>}
+                    {instance.detailURL && <div className="apps-approval-detail__links"><button className="apps-link-button" type="button" onClick={() => instance.detailURL && BrowserOpenURL(instance.detailURL)}>{text.viewFullWorkflow}</button></div>}
                     {resultContract && <ResultContractPreview contract={resultContract} lang={lang} />}
                     {hasResultPackage && (
                         <section className="apps-approval-results" aria-label={text.approvalResultPackage}>
@@ -6176,7 +6344,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                             </dl>
                             {selected.detailURL && (
                                 <div className="apps-approval-detail__links">
-                                    <a className="apps-link-button" href={selected.detailURL} target="_blank" rel="noreferrer">{text.viewFullWorkflow}</a>
+                                    <button className="apps-link-button" type="button" onClick={() => selected.detailURL && BrowserOpenURL(selected.detailURL)}>{text.viewFullWorkflow}</button>
                                 </div>
                             )}
                             <ResultContractPreview contract={resultContract} lang={lang} />
@@ -6434,6 +6602,7 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission, governa
                 dependencies: manifest?.dependencies,
                 ui: manifest?.ui,
                 resultContract: manifest?.resultContract,
+                testProtocol: manifest?.testProtocol,
                 workflow: manifest?.workflow,
             },
             panel: {
@@ -6587,6 +6756,7 @@ function manifestToAppEntry(raw: any): AppEntry | null {
             dependencies: normalizeAppDependencies(app.binding?.dependencies),
             ui: normalizeAppWorkspaceLayout(app.binding?.ui, kind),
             resultContract: normalizeAppResultContract(app.binding?.resultContract || app.governance?.resultContract, kind, app.binding?.skill?.outputModes || []),
+            testProtocol: appTestProtocolWithFingerprint(normalizeAppTestProtocol(app.binding?.testProtocol || app.governance?.testProtocol || app.governance?.testEvidence?.testProtocol, kind, app.binding?.skill?.outputModes || [], normalizeAppResultContract(app.binding?.resultContract || app.governance?.resultContract, kind, app.binding?.skill?.outputModes || []))),
             workflow: normalizeAppWorkflowMapping(app.binding?.workflow || app.governance?.workflow, kind, app.binding?.datasrv?.domain || 'business', app.binding?.datasrv?.objectRole || app.binding?.datasrv?.domain || 'record'),
             skill: app.binding?.skill ? {
                 ...app.binding.skill,
@@ -6701,7 +6871,7 @@ function backendDependencyMatchesAppIDs(dep: BackendAppInstallDependency, appIds
     return dep.app_ids.some((id) => appInstallIdentityKeys(id).some((key) => selected.has(key)));
 }
 
-function backendDependenciesForApp(plan: BackendAppInstallPlan | null, appId: string) {
+function backendDependenciesForApp(plan: BackendAppInstallPlan | null | undefined, appId: string) {
     return (plan?.dependencies || []).filter((dep) => backendDependencyMatchesAppIDs(dep, [appId]));
 }
 
@@ -6719,13 +6889,13 @@ function hasMissingRequiredBackendDependency(plan: BackendAppInstallPlan | null 
     const selected = new Set(appIds);
     return (plan?.dependencies || []).some((dep) => isBlockingBackendDependency(dep) && backendDependencyMatchesAppIDs(dep, appIds));
 }
-function firstBlockingBackendDependencyForApp(plan: BackendAppInstallPlan | null, appId: string) {
+function firstBlockingBackendDependencyForApp(plan: BackendAppInstallPlan | null | undefined, appId: string) {
     const appDependencies = backendDependenciesForApp(plan, appId);
     const candidates = appDependencies.length > 0 ? appDependencies : plan?.dependencies || [];
     return candidates.find(isBlockingBackendDependency) || null;
 }
 
-function backendDependencyUnavailableMessage(app: AppEntry, plan: BackendAppInstallPlan | null, text: typeof labels.zh, lang?: string) {
+function backendDependencyUnavailableMessage(app: AppEntry, plan: BackendAppInstallPlan | null | undefined, text: typeof labels.zh, lang?: string) {
     const dep = firstBlockingBackendDependencyForApp(plan, app.id);
     if (!dep?.id) return text.missingRequiredDependency;
     const zh = isZh(lang);
@@ -6803,7 +6973,7 @@ const InstallVersionSnapshot = ({ snapshot, text }: { snapshot?: BackendAppInsta
     );
 };
 
-const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text }: { plan: BackendAppInstallPlan | null; state: 'idle' | 'loading' | 'ready' | 'error'; error?: string; selectedAppIDs?: string[]; text: typeof labels.zh }) => {
+const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text }: { plan?: BackendAppInstallPlan | null; state: 'idle' | 'loading' | 'repairing' | 'ready' | 'error'; error?: string; selectedAppIDs?: string[]; text: typeof labels.zh }) => {
     if (state === 'idle' && !plan) return null;
     const appIDs = selectedAppIDs || [];
     const dependencies = appIDs.length > 0
@@ -6814,7 +6984,7 @@ const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text 
     const workflowIssues = workflowContractIssuesForAppIDs(plan, appIDs);
     const hasWorkflowIssue = workflowContractHasIssueForAppIDs(plan, appIDs);
     const hasBlockingDependency = blockingCount > 0 || !!plan?.has_blocking_dependency || !!plan?.has_missing_required || hasWorkflowIssue;
-    const status = state === 'loading'
+    const status = state === 'loading' || state === 'repairing'
         ? text.dependencyPlanLoading
         : state === 'error'
             ? [text.dependencyPlanError, error].filter(Boolean).join(': ')
@@ -6886,7 +7056,7 @@ function appInstallIdentityKeys(appId: string) {
     return Array.from(new Set(keys));
 }
 
-const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onAddDiscoveredApp, onCreateApp, onInstallMarketApp, onEditApp }: {
+const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onAddDiscoveredApp, onCreateApp, onInstallMarketApp, marketInstallPrefill, onEditApp, onInstallDependencies }: {
     apps: AppEntry[];
     hiddenApps: AppEntry[];
     lang?: string;
@@ -6906,7 +7076,9 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
     onAddDiscoveredApp: (app: AppEntry) => void;
     onCreateApp: (app: AppEntry, options?: { keepStudioCreate?: boolean }) => void;
     onInstallMarketApp: (app: AppEntry) => void;
+    marketInstallPrefill: { key: number; manifestText: string };
     onEditApp: (appId: string) => void;
+    onInstallDependencies: (appId: string) => void;
 }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const studioTabs: Array<{ id: StudioTab; label: string }> = [
@@ -6981,8 +7153,8 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
                     >
                         {tab === 'create' && <CreateAppPane lang={lang} onCreateApp={onCreateApp} />}
                         {tab === 'manage' && <ManageAppsPane apps={apps} hiddenApps={hiddenApps} lang={lang} onTogglePin={onTogglePin} onUpdateApp={onUpdateApp} onDuplicateApp={onDuplicateApp} onMoveApp={onMoveApp} onRemoveApp={onRemoveApp} onRestoreApp={onRestoreApp} pendingEditAppId={pendingEditAppId} onPendingEditConsumed={onPendingEditConsumed} />}
-                        {tab === 'market' && <MarketPane apps={apps} lang={lang} onInstallApp={onInstallMarketApp} />}
-                        {tab === 'publish' && <PublishPane apps={apps} lang={lang} onFixApp={onEditApp} />}
+                        {tab === 'market' && <MarketPane apps={apps} lang={lang} onInstallApp={onInstallMarketApp} prefill={marketInstallPrefill} />}
+                        {tab === 'publish' && <PublishPane apps={apps} lang={lang} onFixApp={onEditApp} onInstallDependencies={onInstallDependencies} />}
                     </div>
                 </div>
             </div>
@@ -7425,6 +7597,58 @@ const ResultContractDesigner = ({ contract, onChange, lang, testIdPrefix = 'stud
         </section>
     );
 };
+const TestProtocolDesigner = ({ protocol, onChange, lang, testIdPrefix = 'studio' }: { protocol: AppTestProtocol; onChange: (protocol: AppTestProtocol) => void; lang?: string; testIdPrefix?: string }) => {
+    const zh = isZh(lang);
+    const fingerprint = appTestProtocolFingerprint(protocol);
+    const sampleInputText = JSON.stringify(protocol.sampleInput || {}, null, 2);
+    const expectedOutputText = JSON.stringify(protocol.expectedOutput || {}, null, 2);
+    const updateJson = (field: 'sampleInput' | 'expectedOutput', value: string) => {
+        try {
+            const parsed = JSON.parse(value);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) onChange(appTestProtocolWithFingerprint({ ...protocol, [field]: parsed }));
+        } catch {
+            // Keep the last valid protocol until the user finishes typing valid JSON.
+        }
+    };
+    const updateList = (field: 'requiredRoles' | 'requiredScopes', value: string) => onChange(appTestProtocolWithFingerprint({ ...protocol, [field]: value.split(',').map((item) => item.trim()).filter(Boolean) }));
+    const updateRisk = (riskLevel: string) => onChange(appTestProtocolWithFingerprint({ ...protocol, riskLevel }));
+    return (
+        <section className="apps-test-protocol" aria-label={zh ? '\u53ef\u590d\u73b0\u5b9e\u6d4b\u534f\u8bae' : 'Reproducible test protocol'} data-testid={testIdPrefix + '-test-protocol'}>
+            <div className="apps-preview-title-row">
+                <div className="apps-definition__title">{zh ? '\u53ef\u590d\u73b0\u5b9e\u6d4b\u534f\u8bae' : 'Reproducible test protocol'}</div>
+                <span className="apps-count">maclaw.app.test_protocol.v1</span>
+            </div>
+            <div className="apps-test-protocol__summary">
+                <span>{zh ? '\u6307\u7eb9' : 'Fingerprint'}</span>
+                <code>{fingerprint}</code>
+                <span>{zh ? '\u98ce\u9669' : 'Risk'}</span>
+                <select data-testid={testIdPrefix + '-test-risk'} value={protocol.riskLevel} onChange={(event) => updateRisk(event.target.value)}>
+                    {['low', 'medium', 'high', 'critical'].map((level) => <option value={level} key={level}>{level}</option>)}
+                </select>
+            </div>
+            <div className="apps-test-protocol__grid">
+                <div className="apps-form-row apps-form-row--description">
+                    <label>{zh ? '\u6837\u4f8b\u8f93\u5165' : 'Sample input'}</label>
+                    <textarea data-testid={testIdPrefix + '-test-sample-input'} value={sampleInputText} onChange={(event) => updateJson('sampleInput', event.target.value)} />
+                </div>
+                <div className="apps-form-row apps-form-row--description">
+                    <label>{zh ? '\u671f\u671b\u8f93\u51fa' : 'Expected output'}</label>
+                    <textarea data-testid={testIdPrefix + '-test-expected-output'} value={expectedOutputText} onChange={(event) => updateJson('expectedOutput', event.target.value)} />
+                </div>
+            </div>
+            <div className="apps-test-protocol__grid apps-test-protocol__grid--compact">
+                <div className="apps-form-row">
+                    <label>{zh ? '\u89d2\u8272' : 'Roles'}</label>
+                    <input data-testid={testIdPrefix + '-test-roles'} value={protocol.requiredRoles.join(', ')} onChange={(event) => updateList('requiredRoles', event.target.value)} />
+                </div>
+                <div className="apps-form-row">
+                    <label>{zh ? 'Scope' : 'Scopes'}</label>
+                    <input data-testid={testIdPrefix + '-test-scopes'} value={protocol.requiredScopes.join(', ')} onChange={(event) => updateList('requiredScopes', event.target.value)} />
+                </div>
+            </div>
+        </section>
+    );
+};
 const StringListDesigner = ({ title, items, onChange, lang, testIdPrefix }: { title: string; items: string[]; onChange: (items: string[]) => void; lang?: string; testIdPrefix: string }) => {
     const zh = isZh(lang);
     const update = (index: number, value: string) => onChange(items.map((item, itemIndex) => itemIndex === index ? value : item));
@@ -7545,6 +7769,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const [workflowMapping, setWorkflowMapping] = useState<AppWorkflowMapping>(defaultAppWorkflowMapping('enterprise_approval_app', 'business', 'record') as AppWorkflowMapping);
     const [dependencySource, setDependencySource] = useState<AppSkillDependency['source']>('hub');
     const [resultContractDraft, setResultContractDraft] = useState<AppResultContract | undefined>(undefined);
+    const [testProtocolDraft, setTestProtocolDraft] = useState<AppTestProtocol | undefined>(undefined);
     const [uiNavigation, setUiNavigation] = useState<string[]>(defaultEnterpriseNavigation('tool_app'));
     const [uiColumns, setUiColumns] = useState<string[]>(defaultEnterpriseColumns('tool_app'));
     const appReadySkills = useMemo(() => availableSkills.filter(isAppRuntimeSkillLike), [availableSkills]);
@@ -7601,6 +7826,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setWorkflowMapping(defaultAppWorkflowMapping(nextKind, businessDomain.trim() || 'business', approvalObjectRole.trim() || businessObjectRole.trim() || 'record') || (defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping));
         setDependencySource('hub');
         setResultContractDraft(undefined);
+        setTestProtocolDraft(undefined);
         setUiNavigation(defaultEnterpriseNavigation(nextKind));
         setUiColumns(defaultEnterpriseColumns(nextKind));
         setCopyState('idle');
@@ -7672,6 +7898,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setBusinessPreferredDashboard(nextKind === 'enterprise_normal_app' ? nextPreferredDashboard : '');
         setDependencySource('hub');
         setResultContractDraft(undefined);
+        setTestProtocolDraft(undefined);
         setUiNavigation(defaultEnterpriseNavigation(nextKind));
         setUiColumns(defaultEnterpriseColumns(nextKind));
         setDescription(prompt);
@@ -7720,7 +7947,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             accent,
             version: 1,
             source: 'local',
-            manifest: applyAppResultContract(applyEnterpriseUIConfig(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, kind, { template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion }), kind, workflowMapping), kind, uiNavigation, uiColumns), kind, resultContractDraft),
+            manifest: applyAppTestProtocol(applyAppResultContract(applyEnterpriseUIConfig(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, kind, { template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion }), kind, workflowMapping), kind, uiNavigation, uiColumns), kind, resultContractDraft), kind, testProtocolDraft),
         };
     };
     const draftApp = buildDraftApp(
@@ -7730,6 +7957,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         kind === 'tool_app' && selectedSkill ? 'maclaw.app.json' : 'maclaw.apps.json',
     );
     const draftResultContract = normalizeAppResultContract(resultContractDraft, kind, draftApp.manifest?.skill?.outputModes || outputModes);
+    const draftTestProtocol = appTestProtocolWithFingerprint(normalizeAppTestProtocol(testProtocolDraft, kind, draftApp.manifest?.skill?.outputModes || outputModes, draftResultContract));
     const draftManifestText = JSON.stringify(appToManifest(draftApp), null, 2);
     const studioLayoutValue: RuntimeWorkspaceLayout = { template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion };
     const updateStudioLayout = (layout: RuntimeWorkspaceLayout) => {
@@ -7782,6 +8010,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setSkillFields([]);
         setMultipleFiles(false);
         setResultContractDraft(undefined);
+        setTestProtocolDraft(undefined);
         setUiNavigation(defaultEnterpriseNavigation(kind));
         setUiColumns(defaultEnterpriseColumns(kind));
     };
@@ -8113,6 +8342,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                 {isEnterpriseAppKind(kind) && <EnterpriseUIConfigDesigner kind={kind} navigation={uiNavigation} columns={uiColumns} onNavigationChange={setUiNavigation} onColumnsChange={setUiColumns} lang={lang} testIdPrefix="studio" />}
                 <StudioLayoutDesigner kind={kind} value={studioLayoutValue} onChange={updateStudioLayout} lang={lang} />
                 <ResultContractDesigner contract={draftResultContract} onChange={setResultContractDraft} lang={lang} testIdPrefix="studio" />
+                <TestProtocolDesigner protocol={draftTestProtocol} onChange={setTestProtocolDraft} lang={lang} testIdPrefix="studio" />
                 <div className="apps-form-row apps-form-row--description">
                     <label>{zh ? '\u63cf\u8ff0' : 'Description'}</label>
                     <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={zh ? '\u7528\u4e8e tooltip \u548c\u53f3\u4fa7\u8fd0\u884c\u533a\u8bf4\u660e' : 'Used in tooltip and right runtime area'} />
@@ -8184,6 +8414,7 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
     const hasWorkflowContract = app.kind !== 'enterprise_approval_app' || !!workflowContract;
     const workspaceLayout = appWorkspaceLayoutEvidence(app);
     const hasWorkspaceLayout = workspaceLayout.schema === 'maclaw.app.ui.v1' && !!workspaceLayout.entry && workspaceLayout.regionCount > 0;
+    const hasTestProtocol = appHasPublishableTestProtocol(app);
     return [
         {
             label: zh ? '\u57fa\u672c\u4fe1\u606f' : 'Basic information',
@@ -8225,6 +8456,11 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
             detail: appResultContractPublishSummary(app, lang),
         },
         {
+            label: zh ? '\u6d4b\u8bd5\u534f\u8bae' : 'Test protocol',
+            ok: hasTestProtocol,
+            detail: appTestProtocolPublishSummary(app, lang),
+        },
+        {
             label: zh ? '\u8fd0\u884c\u8bc1\u636e' : 'Run evidence',
             ok: resultCoverage.ok,
             detail: resultCoverage.detail,
@@ -8232,7 +8468,7 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
     ];
 }
 
-const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string; onFixApp: (appId: string) => void }) => {
+const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies }: { apps: AppEntry[]; lang?: string; onFixApp: (appId: string) => void; onInstallDependencies: (appId: string) => void }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const zh = isZh(lang);
     const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
@@ -8453,6 +8689,7 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
                         const canWithdraw = !!submission && ['submitted', 'review_failed', 'approved'].includes(submission.status);
                         const isSubmitting = submittingAppId === app.id;
                         const submitError = submitErrors[app.id] || '';
+                        const hasDependencyReviewIssue = reviewIssuesIncludeDependency(submission?.reviewIssues);
                         return (
                             <article className="apps-publish-card" key={app.id} data-ready={ready ? 'true' : 'false'}>
                                 <div className="apps-publish-card__head">
@@ -8475,6 +8712,7 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
                                         {submission.reviewIssues && submission.reviewIssues.length > 0 && (
                                             <span>{text.reviewIssues}: {reviewIssuesSummary(submission.reviewIssues, text)}</span>
                                         )}
+                                        <ReviewIssuesPanel issues={submission.reviewIssues} text={text} compact />
                                     </div>
                                 )}
                                 {submitError && (
@@ -8506,6 +8744,11 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
                                     {submission?.reviewIssues && submission.reviewIssues.length > 0 && (
                                         <button className="apps-secondary-button" type="button" onClick={() => onFixApp(app.id)}>
                                             {text.fixReviewIssue}
+                                        </button>
+                                    )}
+                                    {hasDependencyReviewIssue && (
+                                        <button className="apps-secondary-button" type="button" onClick={() => onInstallDependencies(app.id)}>
+                                            {text.resolveReviewDependencies}
                                         </button>
                                     )}
                                 </div>
@@ -8604,6 +8847,7 @@ const PublishPane = ({ apps, lang, onFixApp }: { apps: AppEntry[]; lang?: string
                                                 {item.riskLevel && <span>{text.riskLevel}: {item.riskLevel}</span>}
                                                 {detailPackageApps.length > 0 && <span>{text.queueDetailPackageApps}: {detailPackageApps.join(', ')}</span>}
                                                 {item.reviewIssues.length > 0 && <span>{text.reviewIssues}: {reviewIssuesSummary(item.reviewIssues, text)}</span>}
+                                                <ReviewIssuesPanel issues={item.reviewIssues} text={text} compact />
                                                 {detailEvents.length > 0 && <span>{text.queueDetailEvents}: {detailEvents.join(' / ')}</span>}
                                             </div>
                                         )}
@@ -8747,6 +8991,7 @@ type AppEditDraft = Pick<AppEntry, 'name' | 'description' | 'category' | 'icon' 
     fields: SkillAppField[];
     layout: RuntimeWorkspaceLayout;
     resultContract: AppResultContract;
+    testProtocol: AppTestProtocol;
     uiNavigation: string[];
     uiColumns: string[];
 };
@@ -8767,7 +9012,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
     const text = isZh(lang) ? labels.zh : labels.en;
     const [manifestAppId, setManifestAppId] = useState('');
     const [editingAppId, setEditingAppId] = useState('');
-    const emptyEditDraft = useMemo<AppEditDraft>(() => ({ name: '', description: '', category: '', icon: 'contract', customIconDataUrl: undefined, accent: defaultAccentForKind('tool_app'), businessDomain: 'business', businessObjectRole: 'record', businessPreferredAction: '', businessPreferredView: '', businessPreferredReport: '', businessPreferredDashboard: '', skillID: '', skillSource: 'local', appSkillID: '', appSkillSource: 'local', appSkillVersion: '', workflowSkillID: '', workflowSkillSource: 'hub', workflowSkillVersion: '', approvalEvent: '', approvalObjectRole: '', workflowMapping: defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping, inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [], layout: defaultRuntimeWorkspaceLayout('tool_app'), resultContract: buildAppResultContract('tool_app', ['docx', 'pdf']), uiNavigation: defaultEnterpriseNavigation('tool_app'), uiColumns: defaultEnterpriseColumns('tool_app') }), []);
+    const emptyEditDraft = useMemo<AppEditDraft>(() => ({ name: '', description: '', category: '', icon: 'contract', customIconDataUrl: undefined, accent: defaultAccentForKind('tool_app'), businessDomain: 'business', businessObjectRole: 'record', businessPreferredAction: '', businessPreferredView: '', businessPreferredReport: '', businessPreferredDashboard: '', skillID: '', skillSource: 'local', appSkillID: '', appSkillSource: 'local', appSkillVersion: '', workflowSkillID: '', workflowSkillSource: 'hub', workflowSkillVersion: '', approvalEvent: '', approvalObjectRole: '', workflowMapping: defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping, inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [], layout: defaultRuntimeWorkspaceLayout('tool_app'), resultContract: buildAppResultContract('tool_app', ['docx', 'pdf']), testProtocol: buildAppTestProtocol('tool_app', ['docx', 'pdf']), uiNavigation: defaultEnterpriseNavigation('tool_app'), uiColumns: defaultEnterpriseColumns('tool_app') }), []);
     const [editDraft, setEditDraft] = useState<AppEditDraft>(emptyEditDraft);
     const editDialogRef = useRef<HTMLDivElement | null>(null);
     const editNameInputRef = useRef<HTMLInputElement | null>(null);
@@ -8843,6 +9088,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
             fields: normalizeSkillAppFields(app.manifest?.skill?.fields),
             layout: runtimeWorkspaceLayoutForApp(app),
             resultContract: appResultContractForManifest(app),
+            testProtocol: appTestProtocolForManifest(app),
             uiNavigation: appEnterpriseNavigation(app),
             uiColumns: appEnterpriseColumns(app),
         });
@@ -8996,7 +9242,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
             };
         }
         if (manifest) {
-            manifest = applyAppResultContract(applyEnterpriseUIConfig(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, app.kind, editDraft.layout), app.kind, editDraft.workflowMapping), app.kind, editDraft.uiNavigation, editDraft.uiColumns), app.kind, editDraft.resultContract);
+            manifest = applyAppTestProtocol(applyAppResultContract(applyEnterpriseUIConfig(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, app.kind, editDraft.layout), app.kind, editDraft.workflowMapping), app.kind, editDraft.uiNavigation, editDraft.uiColumns), app.kind, editDraft.resultContract), app.kind, editDraft.testProtocol);
         }
         const updatedApp: AppEntry = {
             ...app,
@@ -9377,6 +9623,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                             {isEnterpriseAppKind(editingApp.kind) && <EnterpriseUIConfigDesigner kind={editingApp.kind} navigation={editDraft.uiNavigation} columns={editDraft.uiColumns} onNavigationChange={(uiNavigation) => setEditDraft((current) => ({ ...current, uiNavigation }))} onColumnsChange={(uiColumns) => setEditDraft((current) => ({ ...current, uiColumns }))} lang={lang} testIdPrefix="edit" />}
                             <StudioLayoutDesigner kind={editingApp.kind} value={editDraft.layout} onChange={(layout) => setEditDraft((current) => ({ ...current, layout }))} lang={lang} testIdPrefix="edit" />
                             <ResultContractDesigner contract={normalizeAppResultContract(editDraft.resultContract, editingApp.kind, editDraft.outputModes)} onChange={(resultContract) => setEditDraft((current) => ({ ...current, resultContract }))} lang={lang} testIdPrefix="edit" />
+                            <TestProtocolDesigner protocol={normalizeAppTestProtocol(editDraft.testProtocol, editingApp.kind, editDraft.outputModes, normalizeAppResultContract(editDraft.resultContract, editingApp.kind, editDraft.outputModes))} onChange={(testProtocol) => setEditDraft((current) => ({ ...current, testProtocol }))} lang={lang} testIdPrefix="edit" />
                             <div className="apps-actions apps-manage-edit__actions">
                                 {editSaveMessage && <span className="apps-manage-edit__message" data-state={editSaveState} role="alert">{editSaveMessage}</span>}
                                 <button className="apps-secondary-button" type="button" onClick={cancelEdit}>{text.cancel}</button>
@@ -9390,7 +9637,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
     );
 };
 
-const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: string; onInstallApp: (app: AppEntry) => void }) => {
+const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; lang?: string; onInstallApp: (app: AppEntry) => void; prefill?: { key: number; manifestText: string } }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const [manifestText, setManifestText] = useState('');
     const [installState, setInstallState] = useState<'idle' | 'installed' | 'error'>('idle');
@@ -9408,6 +9655,7 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
     const [installRecords, setInstallRecords] = useState<BackendAppInstallRecord[]>([]);
     const [installRecordsState, setInstallRecordsState] = useState<'loading' | 'ready' | 'error'>('loading');
     const [installRecordsError, setInstallRecordsError] = useState('');
+    const [installRecordChecks, setInstallRecordChecks] = useState<Record<string, { state: 'loading' | 'repairing' | 'ready' | 'error'; plan?: BackendAppInstallPlan | null; error?: string }>>({});
     const refreshInstallRecords = useCallback(async () => {
         setInstallRecordsState('loading');
         setInstallRecordsError('');
@@ -9424,6 +9672,18 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
     useEffect(() => {
         void refreshInstallRecords();
     }, [refreshInstallRecords]);
+    useEffect(() => {
+        const nextManifest = prefill?.manifestText || '';
+        if (!nextManifest) return;
+        setManifestText(nextManifest);
+        setInstallState('idle');
+        setInstallMessage('');
+        setInstallResultItems([]);
+        setInstallResultDependencyPlan(null);
+        setInstallResultAppIDs([]);
+        setConfirmHighRiskInstall(false);
+        setSelectedInstallKeys(null);
+    }, [prefill?.key, prefill?.manifestText]);
     const installPreview = useMemo(() => {
         const value = manifestText.trim();
         if (!value) return { apps: [] as AppEntry[], error: '' };
@@ -9495,6 +9755,37 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
     }, [apps, text.alreadyInstalled, text.marketAdd, text.willUpgrade]);
     const addableMarketCount = marketRows.filter((item) => !item.installed && !item.upgrade).length;
     const upgradeableMarketCount = marketRows.filter((item) => item.upgrade).length;
+    const installRecordKey = (record: BackendAppInstallRecord, index = 0) => [record.package_sha || '', record.installed_at || '', (record.apps || []).map((app) => app.id).join(','), String(index)].join(':');
+    const checkInstallRecordDependencies = async (record: BackendAppInstallRecord, index: number) => {
+        const key = installRecordKey(record, index);
+        if (!record.package) {
+            setInstallRecordChecks((current) => ({ ...current, [key]: { state: 'error', error: text.installRecordPackageMissing } }));
+            return;
+        }
+        setInstallRecordChecks((current) => ({ ...current, [key]: { state: 'loading' } }));
+        try {
+            const plan = await PlanMaclawAppInstall(JSON.stringify(record.package));
+            setInstallRecordChecks((current) => ({ ...current, [key]: { state: 'ready', plan: plan || null } }));
+        } catch (error: any) {
+            setInstallRecordChecks((current) => ({ ...current, [key]: { state: 'error', error: error?.message || String(error || '') } }));
+        }
+    };
+    const repairInstallRecordDependencies = async (record: BackendAppInstallRecord, index: number) => {
+        const key = installRecordKey(record, index);
+        if (!record.package) {
+            setInstallRecordChecks((current) => ({ ...current, [key]: { state: 'error', error: text.installRecordPackageMissing } }));
+            return;
+        }
+        const previous = installRecordChecks[key];
+        setInstallRecordChecks((current) => ({ ...current, [key]: { ...current[key], state: 'repairing', plan: current[key]?.plan || previous?.plan || null } }));
+        try {
+            const plan = await InstallMaclawAppDependencies(JSON.stringify(record.package));
+            setInstallRecordChecks((current) => ({ ...current, [key]: { state: 'ready', plan: plan || null } }));
+            void refreshInstallRecords();
+        } catch (error: any) {
+            setInstallRecordChecks((current) => ({ ...current, [key]: { state: 'error', plan: previous?.plan || null, error: error?.message || String(error || '') } }));
+        }
+    };
     const installSingleMarketApp = async (app: AppEntry) => {
         const manifestText = JSON.stringify(appToManifest(app));
         setMarketInstallAppId(app.id);
@@ -9704,23 +9995,40 @@ const MarketPane = ({ apps, lang, onInstallApp }: { apps: AppEntry[]; lang?: str
                             const dependencyCount = dependencies.length;
                             const missingCount = installRecordMissingDependencyCount(record);
                             const sha = String(record.package_sha || '').slice(0, 12) || '-';
+                            const recordKey = installRecordKey(record, index);
+                            const check = installRecordChecks[recordKey];
+                            const selectedRecordAppIDs = (record.apps || []).map((app) => String(app.id || '')).filter(Boolean);
+                            const checkPanelState = check?.state === 'repairing' ? 'loading' : check?.state;
+                            const canRepairCheckedDependencies = !!record.package && (check?.state === 'ready' || check?.state === 'repairing') && hasMissingRequiredBackendDependency(check.plan, selectedRecordAppIDs);
                             return (
-                                <div className="apps-install-record" key={`${record.package_sha || 'record'}:${record.installed_at || index}`} data-missing={missingCount > 0 ? 'true' : 'false'}>
+                                <div className="apps-install-record" key={recordKey} data-missing={missingCount > 0 ? 'true' : 'false'}>
                                     <div className="apps-install-record__main">
                                         <strong>{appNames}</strong>
                                         <span>{text.installedAt}: {formatInstallRecordTime(record.installed_at)} · {text.marketSource}: {record.source || '-'}</span>
                                         <small>{text.packageSha}: {sha} · {text.skillDependencies}: {dependencyCount} · {text.missingDependencyCount}: {missingCount}</small>
                                         <InstallVersionSnapshot snapshot={record.version_snapshot} text={text} />
                                         <InstallRecordDependencies dependencies={dependencies} text={text} />
+                                        {check && checkPanelState && <DependencyVerificationPanel plan={check.plan || null} state={checkPanelState} error={check.error} selectedAppIDs={selectedRecordAppIDs} text={text} />}
                                     </div>
-                                    <em>{record.has_blocking_dependency || record.has_missing_required || missingCount > 0 ? text.unavailableDependency : text.installedDependency}</em>
+                                    <div className="apps-install-record__actions">
+                                        <button className="apps-secondary-button" type="button" disabled={check?.state === 'loading' || check?.state === 'repairing' || !record.package} onClick={() => void checkInstallRecordDependencies(record, index)}>
+                                            {check?.state === 'loading' || check?.state === 'repairing' ? text.checkingInstallDependencies : text.recheckInstallDependencies}
+                                        </button>
+                                        {canRepairCheckedDependencies && (
+                                            <button className="apps-primary-button" type="button" disabled={check?.state === 'repairing'} onClick={() => void repairInstallRecordDependencies(record, index)}>
+                                                {check?.state === 'repairing' ? text.repairingInstallDependencies : text.repairInstallDependencies}
+                                            </button>
+                                        )}
+                                        {check?.state === 'repairing' && <em>{text.repairingInstallDependencies}</em>}
+                                        {check?.state !== 'repairing' && <em>{record.has_blocking_dependency || record.has_missing_required || missingCount > 0 ? text.unavailableDependency : text.installedDependency}</em>}
+                                    </div>
                                 </div>
                             );
                         })}
                     </div>
                 )}
             </section>
-            <details className="apps-market-install">
+            <details className="apps-market-install" open={!!manifestText.trim() || undefined}>
                 <summary>
                     <span>
                         <span className="apps-definition__title">{text.marketAdvancedImport}</span>

@@ -233,9 +233,15 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 			if msg.ReasoningContent == "" {
 				msg.ReasoningContent = parsedChoice.Message.ReasoningContent
 			}
+			if msg.Content == "" {
+				msg.Content = parsedChoice.Message.Content
+			}
 			truncatedTools = parsedChoice.TruncatedToolNames
 			if len(truncatedTools) > 0 {
 				msg.ToolCalls = parsedChoice.Message.ToolCalls
+				if parsedChoice.FinishReason != "" {
+					finishReason = parsedChoice.FinishReason
+				}
 			} else if len(msg.ToolCalls) == 0 && len(parsedChoice.Message.ToolCalls) > 0 {
 				msg.ToolCalls = parsedChoice.Message.ToolCalls
 			}

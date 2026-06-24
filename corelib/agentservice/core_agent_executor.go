@@ -915,7 +915,11 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		if !c.canUseLocalBash() {
 			return agent.ToolExecutionResult{Result: "Error: " + c.localBashDeniedReason(), Outcome: agent.ToolExecutionOutcomeError}
 		}
-		return agent.ToolExecutionResult{Result: agent.ToolBash(ensureBashWorkingDir(args, c.workspace), c.OnProgress)}
+		ctx := c.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return agent.ToolExecutionResult{Result: agent.ToolBashWithContext(ctx, ensureBashWorkingDir(args, c.workspace), c.OnProgress)}
 	case "ssh":
 		if !c.canUseSSH() {
 			return agent.ToolExecutionResult{Result: "Error: " + c.sshDeniedReason(), Outcome: agent.ToolExecutionOutcomeError}

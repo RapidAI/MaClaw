@@ -159,3 +159,41 @@ func TestExecuteAgentLoopToolCallCancelsContextHandlerOnReplan(t *testing.T) {
 		t.Fatal("tool call did not stop after replan")
 	}
 }
+
+func TestLoopCycleExecuteToolCancelsContextHandler(t *testing.T) {
+	started := make(chan struct{})
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name: "loop_ctx_cancel_tool",
+		HandlerCtx: func(ctx context.Context, args map[string]interface{}, onProgress coretool.ProgressCallback) string {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err().Error()
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	parent := &guiLoopCommandCallbacks{handler: &IMMessageHandler{registry: registry}}
+	cb := &loopCycleCallbacks{parent: parent}
+	done := make(chan string, 1)
+	go func() {
+		done <- cb.ExecuteTool("loop_ctx_cancel_tool", `{}`)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("context handler did not start")
+	}
+	parent.Cancel()
+
+	select {
+	case result := <-done:
+		if result != context.Canceled.Error() {
+			t.Fatalf("result = %q, want context canceled", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tool call did not stop after loop cancel")
+	}
+}

@@ -33,7 +33,7 @@ func (s *SQLiteStore) SaveURL(ctx context.Context, req URLSaveRequest) (Source, 
 	if err := enforceURLDomainPolicy(ctx, s, req.URL); err != nil {
 		return Source{}, err
 	}
-	source, nodes, err := buildURLSourceAndNodes(req, Source{})
+	source, nodes, err := buildURLSourceAndNodes(ctx, req, Source{})
 	if err != nil {
 		return Source{}, err
 	}
@@ -361,7 +361,7 @@ func (s *SQLiteStore) PreviewSourceRefresh(ctx context.Context, id string) (Sour
 			preview.Error = err.Error()
 			return preview, nil
 		}
-		next, nextNodes, err = buildURLSourceAndNodes(URLSaveRequest{
+		next, nextNodes, err = buildURLSourceAndNodes(ctx, URLSaveRequest{
 			URL:         fallbackText(existing.CanonicalURI, existing.URI),
 			OwnerID:     existing.OwnerID,
 			TenantID:    existing.TenantID,
@@ -531,7 +531,7 @@ func (s *SQLiteStore) refreshURLSource(ctx context.Context, existing Source) (So
 	if err := enforceURLDomainPolicy(ctx, s, fallbackText(existing.CanonicalURI, existing.URI)); err != nil {
 		return Source{}, err
 	}
-	source, nodes, err := buildURLSourceAndNodes(URLSaveRequest{
+	source, nodes, err := buildURLSourceAndNodes(ctx, URLSaveRequest{
 		URL:         fallbackText(existing.CanonicalURI, existing.URI),
 		OwnerID:     existing.OwnerID,
 		TenantID:    existing.TenantID,
@@ -743,7 +743,7 @@ func isRefreshableFileSource(kind string) bool {
 	}
 }
 
-func buildURLSourceAndNodes(req URLSaveRequest, existing Source) (Source, []DocumentNode, error) {
+func buildURLSourceAndNodes(ctx context.Context, req URLSaveRequest, existing Source) (Source, []DocumentNode, error) {
 	u, err := ValidatePublicHTTPURL(req.URL)
 	if err != nil {
 		return Source{}, nil, err
@@ -778,7 +778,7 @@ func buildURLSourceAndNodes(req URLSaveRequest, existing Source) (Source, []Docu
 		}
 	} else {
 		client := newPublicHTTPClient(time.Duration(timeoutSec) * time.Second)
-		result, err = websearch.FetchWithClient(u.String(), &websearch.FetchOptions{MaxBytes: maxBytes, TimeoutS: timeoutSec}, client)
+		result, err = websearch.FetchWithClientCtx(ctx, u.String(), &websearch.FetchOptions{MaxBytes: maxBytes, TimeoutS: timeoutSec}, client)
 		if err != nil {
 			// For HTTP 403 (anti-bot), try Chrome which has a real browser fingerprint.
 			if !strings.Contains(err.Error(), "HTTP 403") {
@@ -793,7 +793,7 @@ func buildURLSourceAndNodes(req URLSaveRequest, existing Source) (Source, []Docu
 			if chromeTimeout < 45 {
 				chromeTimeout = 45
 			}
-			rendered, renderErr := websearch.Fetch(u.String(), &websearch.FetchOptions{
+			rendered, renderErr := websearch.FetchCtx(ctx, u.String(), &websearch.FetchOptions{
 				MaxBytes: maxBytes,
 				TimeoutS: chromeTimeout,
 				RenderJS: true,

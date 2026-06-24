@@ -237,6 +237,27 @@ type Session struct {
 	ExitCode    *int
 }
 
+type UserDurationSummary struct {
+	UserEmail       string
+	DurationSeconds int64
+}
+
+type UserTokenUsage struct {
+	InputTokens       int64
+	OutputTokens      int64
+	CachedInputTokens int64
+	CacheWriteTokens  int64
+}
+
+func (u UserTokenUsage) TotalTokens() int64 {
+	return u.InputTokens + u.OutputTokens
+}
+
+type UserTokenSummary struct {
+	UserEmail string
+	Usage     UserTokenUsage
+}
+
 type TenantRepository interface {
 	Create(ctx context.Context, tenant *Tenant) error
 	GetByID(ctx context.Context, id string) (*Tenant, error)
@@ -390,6 +411,9 @@ type SessionRepository interface {
 	UpdatePreview(ctx context.Context, sessionID string, previewText string, outputSeq int64, updatedAt time.Time) error
 	UpdateHostOnline(ctx context.Context, sessionID string, hostOnline bool, updatedAt time.Time) error
 	Close(ctx context.Context, sessionID string, exitCode *int, endedAt time.Time, status string) error
+	RecordUserTokenUsageSnapshot(ctx context.Context, tenantID, sourceID, userID string, usage UserTokenUsage, observedAt time.Time) error
+	SummarizeUserTokenUsage(ctx context.Context, tenantID string, start, end time.Time) ([]UserTokenSummary, error)
+	SummarizeUserDurations(ctx context.Context, tenantID string, start, end, now time.Time) ([]UserDurationSummary, error)
 }
 
 // WorkflowRepository persists intent-understanding sessions and workflow

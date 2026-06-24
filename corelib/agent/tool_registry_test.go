@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -33,6 +34,30 @@ func TestCoreToolRegistry_RegisterAndExecute(t *testing.T) {
 	result = r.Execute("unknown", nil)
 	if !containsAnyFold(result, "未知工具", "unknown tool") {
 		t.Errorf("Execute(unknown) = %q, want error message", result)
+	}
+}
+
+func TestCoreToolRegistry_ExecuteCtxPrefersContextHandler(t *testing.T) {
+	r := NewCoreToolRegistry()
+	r.Register(ToolEntry{
+		Name:    "ctx_echo",
+		Handler: func(args map[string]interface{}) string { return "plain" },
+		HandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
+			if err := ctx.Err(); err != nil {
+				return "cancelled"
+			}
+			return StringArg(args, "text")
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if got := r.ExecuteCtx(ctx, "ctx_echo", map[string]interface{}{"text": "hello"}); got != "cancelled" {
+		t.Fatalf("ExecuteCtx(ctx_echo) = %q, want cancelled", got)
+	}
+	if got := r.Execute("ctx_echo", map[string]interface{}{"text": "hello"}); got != "hello" {
+		t.Fatalf("Execute(ctx_echo) = %q, want hello", got)
 	}
 }
 

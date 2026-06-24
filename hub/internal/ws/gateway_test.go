@@ -19,11 +19,11 @@ import (
 type testIdentityService struct{}
 
 func (s *testIdentityService) AuthenticateMachine(ctx context.Context, machineID, rawToken string) (*auth.MachinePrincipal, error) {
-	return &auth.MachinePrincipal{UserID: "user-1", MachineID: machineID}, nil
+	return &auth.MachinePrincipal{TenantID: store.DefaultTenantID, UserID: "user-1", MachineID: machineID}, nil
 }
 
 func (s *testIdentityService) AuthenticateViewer(ctx context.Context, rawToken string) (*auth.ViewerPrincipal, error) {
-	return &auth.ViewerPrincipal{UserID: "user-1", Email: "viewer@example.com"}, nil
+	return &auth.ViewerPrincipal{TenantID: store.DefaultTenantID, UserID: "user-1", Email: "viewer@example.com"}, nil
 }
 
 func (s *testIdentityService) IssueViewerTokenForUser(ctx context.Context, userID string) (string, error) {
@@ -82,6 +82,10 @@ type testSessionService struct {
 	snapshot         *session.SessionCacheEntry
 	events           []string
 	offlineMachineID string
+	tokenTenantID    string
+	tokenSourceID    string
+	tokenUserID      string
+	tokenUsage       store.UserTokenUsage
 }
 
 type testSecurityProvider struct {
@@ -147,6 +151,13 @@ func (s *testSessionService) OnSessionImage(ctx context.Context, machineID, user
 	s.events = append(s.events, "session.image")
 }
 
+func (s *testSessionService) RecordUserTokenUsageSnapshot(ctx context.Context, tenantID, sourceID, userID string, usage store.UserTokenUsage, observedAt time.Time) error {
+	s.tokenTenantID = tenantID
+	s.tokenSourceID = sourceID
+	s.tokenUserID = userID
+	s.tokenUsage = usage
+	return nil
+}
 func (s *testSessionService) MarkMachineOffline(ctx context.Context, machineID string) error {
 	s.offlineMachineID = machineID
 	return nil
@@ -612,6 +623,61 @@ func TestGatewayHandleSessionSummaryBroadcastsToMachineWatcher(t *testing.T) {
 	}
 }
 
+func TestGatewayMachineHeartbeatRecordsClientLLMTokenUsage(t *testing.T) {
+	sess := &testSessionService{}
+	deviceBinder := &testDeviceBinder{}
+	gateway := NewGateway(&testIdentityService{}, deviceBinder, sess)
+
+	server := httptest.NewServer(http.HandlerFunc(gateway.HandleWS))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial ws: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{
+		"type":    "auth.machine",
+		"payload": map[string]any{"machine_id": "machine-1", "machine_token": "token"},
+	}); err != nil {
+		t.Fatalf("write auth.machine: %v", err)
+	}
+	var ignored map[string]any
+	if err := conn.ReadJSON(&ignored); err != nil {
+		t.Fatalf("read auth.ok: %v", err)
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "machine.heartbeat",
+		"payload": map[string]any{
+			"active_sessions":        1,
+			"heartbeat_interval_sec": 30,
+			"llm_token_usage": map[string]any{
+				"input_tokens":        1200,
+				"output_tokens":       80,
+				"cached_input_tokens": 768,
+				"cache_write_tokens":  128,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write machine.heartbeat: %v", err)
+	}
+	if err := conn.ReadJSON(&ignored); err != nil {
+		t.Fatalf("read heartbeat ack: %v", err)
+	}
+
+	if deviceBinder.heartbeats != 1 {
+		t.Fatalf("expected heartbeat to be recorded by device binder")
+	}
+	if sess.tokenTenantID != store.DefaultTenantID || sess.tokenUserID != "user-1" || sess.tokenSourceID != "gui:machine-1" {
+		t.Fatalf("unexpected token usage identity tenant=%q user=%q source=%q", sess.tokenTenantID, sess.tokenUserID, sess.tokenSourceID)
+	}
+	if sess.tokenUsage.InputTokens != 1200 || sess.tokenUsage.OutputTokens != 80 || sess.tokenUsage.CachedInputTokens != 768 || sess.tokenUsage.CacheWriteTokens != 128 {
+		t.Fatalf("unexpected token usage: %#v", sess.tokenUsage)
+	}
+}
 func TestGatewayMachineDisconnectMarksMachineOffline(t *testing.T) {
 	deviceBinder := &testDeviceBinder{}
 	sessionSvc := &testSessionService{}
@@ -949,7 +1015,7 @@ func TestGatewaySessionImageInputRejectsMachine(t *testing.T) {
 		t.Fatalf("read auth.ok: %v", err)
 	}
 
-	// Machine tries to send session.image_input (should be rejected — only viewers can)
+	// Machine tries to send session.image_input (should be rejected -only viewers can)
 	if err := conn.WriteJSON(map[string]any{
 		"type": "session.image_input",
 		"payload": map[string]any{

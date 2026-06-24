@@ -79,6 +79,10 @@ type newsRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
+type hubUserUsageRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
 
 const hubInstanceSelectColumns = `id, installation_id, hub_origin, default_signup_scope, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
 	       accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, registration_policy_json, hub_secret_hash,
@@ -104,6 +108,7 @@ func NewStore(p *Provider) *store.Store {
 		HAPeerCursors:        &haPeerCursorRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		HAEntityVersions:     &haEntityVersionRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		HAHeartbeatSync:      &haHeartbeatSyncStateRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		HubUserUsage:         &hubUserUsageRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Gossip:               &gossipRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		News:                 &newsRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 	}
@@ -115,6 +120,86 @@ func execWrite(ctx context.Context, batch *writeBatcher, db *sql.DB, query strin
 	}
 	_, err := db.ExecContext(ctx, query, args...)
 	return err
+}
+
+func (r *hubUserUsageRepo) UpsertDaily(ctx context.Context, items []*store.HubUserUsageDaily) error {
+	if len(items) == 0 {
+		return nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO hub_user_usage_daily (hub_id, tenant_id, user_email, day, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, duration_seconds, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(hub_id, tenant_id, user_email, day) DO UPDATE SET
+			input_tokens = excluded.input_tokens,
+			output_tokens = excluded.output_tokens,
+			cached_input_tokens = excluded.cached_input_tokens,
+			cache_write_tokens = excluded.cache_write_tokens,
+			duration_seconds = excluded.duration_seconds,
+			updated_at = excluded.updated_at`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		hubID := strings.TrimSpace(item.HubID)
+		email := strings.ToLower(strings.TrimSpace(item.UserEmail))
+		day := strings.TrimSpace(item.Day)
+		if hubID == "" || email == "" || day == "" {
+			continue
+		}
+		updatedAt := item.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = time.Now().UTC()
+		}
+		if _, err := stmt.ExecContext(ctx, hubID, normalizeStoreTenantID(item.TenantID), email, day, item.InputTokens, item.OutputTokens, item.CachedInputTokens, item.CacheWriteTokens, item.DurationSeconds, updatedAt.UTC().Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (r *hubUserUsageRepo) Summarize(ctx context.Context, hubID, tenantID string, start, end time.Time) ([]*store.HubUserUsageDaily, error) {
+	if end.Before(start) || end.Equal(start) {
+		return []*store.HubUserUsageDaily{}, nil
+	}
+	where := []string{"u.day >= ?", "u.day <= ?"}
+	args := []any{start.UTC().Format("2006-01-02"), end.UTC().Add(-time.Nanosecond).Format("2006-01-02")}
+	if hubID = strings.TrimSpace(hubID); hubID != "" {
+		where = append(where, "u.hub_id = ?")
+		args = append(args, hubID)
+	}
+	if tenantID = normalizeStoreTenantID(tenantID); tenantID != "" {
+		where = append(where, "u.tenant_id = ?")
+		args = append(args, tenantID)
+	}
+	rows, err := r.readDB.QueryContext(ctx, `
+		SELECT u.hub_id, COALESCE(h.name, ''), u.tenant_id, u.user_email,
+		       SUM(u.input_tokens), SUM(u.output_tokens), SUM(u.cached_input_tokens), SUM(u.cache_write_tokens), SUM(u.duration_seconds)
+		  FROM hub_user_usage_daily u
+		  LEFT JOIN hub_instances h ON h.id = u.hub_id
+		 WHERE `+strings.Join(where, " AND ")+`
+		 GROUP BY u.hub_id, u.tenant_id, u.user_email, h.name`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*store.HubUserUsageDaily{}
+	for rows.Next() {
+		item := &store.HubUserUsageDaily{}
+		if err := rows.Scan(&item.HubID, &item.HubName, &item.TenantID, &item.UserEmail, &item.InputTokens, &item.OutputTokens, &item.CachedInputTokens, &item.CacheWriteTokens, &item.DurationSeconds); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 func scanHubInstance(scanner interface{ Scan(dest ...any) error }) (*store.HubInstance, error) {

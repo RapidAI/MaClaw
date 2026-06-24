@@ -27,6 +27,37 @@ func TestParseNonStreamResponsesAPIBodyCapturesPromptCacheUsage(t *testing.T) {
 		t.Fatalf("normalized usage = prompt:%d completion:%d", resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 	}
 }
+
+func TestParseNonStreamResponsesAPIBodyDetectsTruncatedToolCall(t *testing.T) {
+	body := []byte(`{
+		"id": "resp_1",
+		"output": [
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "I'll write the script now:"}]},
+			{"type": "function_call", "call_id": "call_bad", "name": "write_file", "arguments": "{\"path\":\"a.txt\",\"content\":\"unterminated"}
+		]
+	}`)
+	resp, err := ParseNonStreamResponsesAPIBody(body)
+	if err != nil {
+		t.Fatalf("ParseNonStreamResponsesAPIBody: %v", err)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1", len(resp.Choices))
+	}
+	choice := resp.Choices[0]
+	if len(choice.TruncatedToolNames) != 1 || choice.TruncatedToolNames[0] != "write_file" {
+		t.Fatalf("TruncatedToolNames = %#v, want write_file", choice.TruncatedToolNames)
+	}
+	if len(choice.Message.ToolCalls) != 0 {
+		t.Fatalf("truncated tool calls should be removed: %#v", choice.Message.ToolCalls)
+	}
+	if choice.FinishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", choice.FinishReason)
+	}
+	if choice.Message.Content != "I'll write the script now:" {
+		t.Fatalf("content = %q, want preamble preserved", choice.Message.Content)
+	}
+}
+
 func TestExtractResponsesAPIUsageFromEventPayloadCapturesNestedAndTopLevelCacheUsage(t *testing.T) {
 	nested := ExtractResponsesAPIUsageFromEventPayload([]byte(`{
 		"type": "response.completed",

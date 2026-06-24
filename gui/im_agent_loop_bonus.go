@@ -123,6 +123,9 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 
 	var toolExecElapsed time.Duration
 	for _, tc := range choice.Message.ToolCalls {
+		if opts.Context != nil && opts.Context.IsCancelled() {
+			break
+		}
 		tc.Function.Arguments = normalizeAgentLoopToolArgumentsJSON(tc.Function.Arguments)
 		workflowAllowed, workflowReject := h.workflowAllowsBonusRoundToolCall(opts.UserID, opts.Context, tc)
 		toolOnProgress := filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug)
@@ -209,5 +212,11 @@ func (h *IMMessageHandler) executeBonusRoundTool(tc llm.ToolCall, onProgress too
 	if errResult := h.preCheckToolArgsForAgentLoop(tc.Function.Name, tc.Function.Arguments, -1); errResult != nil {
 		return *errResult
 	}
-	return h.executeToolDetailedWithRuntimeState(policyUserID, loopContextHasExplicitRuntimeOwner(ctx), runtimePlatformFromLoopContext(ctx), tc.Function.Name, tc.Function.Arguments, "", onProgress)
+	execCtx := context.Background()
+	if ctx != nil {
+		var cancel context.CancelFunc
+		execCtx, cancel = ctx.Context()
+		defer cancel()
+	}
+	return h.executeToolDetailedWithRuntimeContext(execCtx, policyUserID, loopContextHasExplicitRuntimeOwner(ctx), runtimePlatformFromLoopContext(ctx), tc.Function.Name, tc.Function.Arguments, "", onProgress)
 }

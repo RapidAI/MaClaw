@@ -295,7 +295,9 @@ func (c *tuiLoopCycleCallbacks) ExecuteTool(name, argsJSON string) string {
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return fmt.Sprintf("Error: failed to parse tool arguments: %v", err)
 	}
-	return c.parent.app.toolRegistry.Execute(name, args)
+	ctx, cancel := contextFromCancelPoll(c.ShouldStop)
+	defer cancel()
+	return c.parent.app.toolRegistry.ExecuteCtx(ctx, name, args)
 }
 
 func (c *tuiLoopCycleCallbacks) IsToolAllowed(name string) bool {

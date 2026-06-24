@@ -150,6 +150,30 @@ func RunMigrations(db *sql.DB) error {
 			exit_code INTEGER
 		);`,
 
+		`CREATE TABLE IF NOT EXISTS session_token_usage_snapshots (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			session_id TEXT NOT NULL,
+			user_id TEXT NOT NULL DEFAULT '',
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, session_id)
+		);`,
+		`CREATE TABLE IF NOT EXISTS user_usage_daily (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			user_email TEXT NOT NULL,
+			day TEXT NOT NULL,
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, user_email, day)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_usage_daily_tenant_day ON user_usage_daily(tenant_id, day);`,
+
 		`CREATE TABLE IF NOT EXISTS viewer_tokens (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL,

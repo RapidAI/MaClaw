@@ -74,7 +74,7 @@ func (c *ConnContext) Send(msg any) bool {
 	case c.sendCh <- msg:
 		return true
 	default:
-		// Buffer full — slow client. Close the writer and the underlying
+		// Buffer full - slow client. Close the writer and the underlying
 		// WebSocket so the read loop also terminates.
 		log.Printf("[ws] Send: buffer full for role=%s machine_id=%s, dropping connection", c.Role, c.MachineID)
 		c.closeWriter()
@@ -187,10 +187,11 @@ type MachineHelloPayload struct {
 }
 
 type MachineHeartbeatPayload struct {
-	ActiveSessions       int    `json:"active_sessions,omitempty"`
-	HeartbeatIntervalSec int    `json:"heartbeat_interval_sec,omitempty"`
-	AppVersion           string `json:"app_version,omitempty"`
-	LLMConfigured        *bool  `json:"llm_configured,omitempty"`
+	ActiveSessions       int                     `json:"active_sessions,omitempty"`
+	HeartbeatIntervalSec int                     `json:"heartbeat_interval_sec,omitempty"`
+	AppVersion           string                  `json:"app_version,omitempty"`
+	LLMConfigured        *bool                   `json:"llm_configured,omitempty"`
+	LLMTokenUsage        *corelib.TokenUsageStat `json:"llm_token_usage,omitempty"`
 }
 
 type DeviceBinder interface {
@@ -213,6 +214,7 @@ type SessionService interface {
 	OnSessionImportantEvent(ctx context.Context, machineID, userID, sessionID string, event session.ImportantEvent) error
 	OnSessionClosed(ctx context.Context, machineID, userID, sessionID string, payload map[string]any) error
 	OnSessionImage(ctx context.Context, machineID, userID, sessionID string, img session.SessionImage)
+	RecordUserTokenUsageSnapshot(ctx context.Context, tenantID, sourceID, userID string, usage store.UserTokenUsage, observedAt time.Time) error
 	MarkMachineOffline(ctx context.Context, machineID string) error
 	GetSnapshot(userID, machineID, sessionID string) (*session.SessionCacheEntry, bool)
 	GetSnapshotForTenant(tenantID, userID, machineID, sessionID string) (*session.SessionCacheEntry, bool)
@@ -272,7 +274,7 @@ type Gateway struct {
 	// Set via SetIMProactiveSender after construction.
 	IMProactive IMProactiveSender
 
-	// IMGatewayPlugins maps platform name → gateway plugin for client-side
+	// IMGatewayPlugins maps platform name -> gateway plugin for client-side
 	// IM gateways (QQ Bot, Telegram). Set via RegisterIMGatewayPlugin.
 	IMGatewayPlugins map[string]IMGatewayPlugin
 
@@ -295,7 +297,7 @@ type Gateway struct {
 	viewersByMachine  map[string]map[*ConnContext]struct{}
 	viewersBySession  map[string]map[*ConnContext]struct{}
 	projectsByMachine map[string][]map[string]any
-	toolsByMachine    map[string][]any // machine_id → tool info array
+	toolsByMachine    map[string][]any // machine_id -> tool info array
 }
 
 func NewGateway(identity identityService, devices DeviceBinder, sessions SessionService) *Gateway {
@@ -343,7 +345,7 @@ func (g *Gateway) SetDeviceNotifyHook(hook DeviceNotifyHook) {
 func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 	upgrader := websocket.Upgrader{
 		CheckOrigin:       func(r *http.Request) bool { return true },
-		EnableCompression: true, // permessage-deflate — reduces bandwidth 50-70% for text-heavy preview deltas
+		EnableCompression: true, // permessage-deflate - reduces bandwidth 50-70% for text-heavy preview deltas
 	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -634,7 +636,7 @@ func (g *Gateway) handleMachineAuth(ctx *ConnContext, msg Envelope) error {
 	// and uses it for LLM service API calls (redeem, status, chat completions).
 	// Issuing on every connect ensures the client always has a valid token
 	// (viewer tokens expire after 30 days; reconnects keep it fresh).
-	// Old tokens expire naturally — no accumulation concern for SQLite.
+	// Old tokens expire naturally - no accumulation concern for SQLite.
 	if viewerToken, err := g.Identity.IssueViewerTokenForUser(context.Background(), principal.UserID); err == nil {
 		authPayload["viewer_token"] = viewerToken
 	} else {
@@ -876,7 +878,6 @@ func (g *Gateway) handleMachineHello(ctx *ConnContext, msg Envelope) error {
 	}
 
 	// Include hub_config in hello ack so the client gets digital_employee_authorization
-	// immediately on connection, without waiting for the first heartbeat cycle.
 	ackPayload := map[string]any{"ok": true}
 	g.injectSecurityPolicy(ackPayload, ctx.UserID, ctx.TenantID, "handleMachineHello")
 	g.injectHubConfig(ackPayload, ctx.UserID, ctx.TenantID, "handleMachineHello")
@@ -908,6 +909,17 @@ func (g *Gateway) handleMachineHeartbeat(ctx *ConnContext, msg Envelope) error {
 	if err := g.Devices.Heartbeat(context.Background(), ctx.MachineID, payload); err != nil {
 		log.Printf("[ws] handleMachineHeartbeat: Heartbeat FAILED for machine_id=%s: %v", ctx.MachineID, err)
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
+	}
+	if payload.LLMTokenUsage != nil && g.Sessions != nil {
+		usage := store.UserTokenUsage{
+			InputTokens:       payload.LLMTokenUsage.InputTokens,
+			OutputTokens:      payload.LLMTokenUsage.OutputTokens,
+			CachedInputTokens: payload.LLMTokenUsage.CachedInputTokens,
+			CacheWriteTokens:  payload.LLMTokenUsage.CacheWriteTokens,
+		}
+		if err := g.Sessions.RecordUserTokenUsageSnapshot(store.WithTenant(context.Background(), ctx.TenantID), ctx.TenantID, "gui:"+ctx.MachineID, ctx.UserID, usage, time.Now()); err != nil {
+			log.Printf("[ws] handleMachineHeartbeat: record llm token usage FAILED for machine_id=%s: %v", ctx.MachineID, err)
+		}
 	}
 	ackPayload := map[string]any{"ok": true}
 	g.injectSecurityPolicy(ackPayload, ctx.UserID, ctx.TenantID, "handleMachineHeartbeat")
@@ -1012,7 +1024,7 @@ func (g *Gateway) handleSessionPreviewDelta(ctx *ConnContext, msg Envelope) erro
 	if err := g.Sessions.OnSessionPreviewDelta(store.WithTenant(context.Background(), ctx.TenantID), ctx.MachineID, ctx.UserID, msg.SessionID, payload); err != nil {
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
-	// Skip ack for preview deltas — they are high-frequency fire-and-forget
+	// Skip ack for preview deltas - they are high-frequency fire-and-forget
 	// messages. Omitting the ack reduces round-trip overhead and frees the
 	// WebSocket write buffer for the next incoming delta.
 	return nil
@@ -1405,9 +1417,9 @@ func (g *Gateway) handleIMGatewayMessage(ctx *ConnContext, msg Envelope) error {
 	}
 
 	// Run in a goroutine to avoid blocking the WS read loop.
-	// HandleGatewayMessage → IM Adapter → routeToSingleMachine blocks until
+	// HandleGatewayMessage -> IM Adapter -> routeToSingleMachine blocks until
 	// the Agent replies (up to 180s). If we block here, the read loop cannot
-	// receive the im.agent_response from the same connection → deadlock.
+	// receive the im.agent_response from the same connection -> deadlock.
 	machineID := ctx.MachineID
 	go func() {
 		defer func() {

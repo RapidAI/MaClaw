@@ -117,6 +117,7 @@ type CodingSubAgentCommandResult struct {
 	WorkingDir string
 	Succeeded  bool
 	Summary    string
+	seq        uint64
 }
 
 // CodingSubAgentSearchResult is a compact audit record for code exploration.
@@ -228,39 +229,50 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		summary = fmt.Sprintf("任务 T%d 执行完成，%d 轮迭代，%d 次工具调用", taskDisplayNumber(task), result.Iterations, result.ToolCalls)
 	}
 
-	filesModified := limitSubAgentStringSlice(cb.getFilesModified(), codingSubAgentResultFilesMax)
-	filesCreated := limitSubAgentStringSlice(cb.getFilesCreated(), codingSubAgentResultFilesMax)
-	filesRead := limitSubAgentStringSlice(cb.getFilesRead(), codingSubAgentResultFilesMax)
-	commandsRun := limitSubAgentCommandResults(cb.getCommandsRun(), codingSubAgentResultAuditMax)
-	searchesRun := limitSubAgentSearchResults(cb.getSearchesRun(), codingSubAgentResultAuditMax)
-	guardrailViolations := limitSubAgentGuardrailViolations(cb.getGuardrailViolations(), codingSubAgentResultAuditMax)
-	explorationStatus, explorationSummary := summarizeSubAgentExploration(filesModified, filesRead, searchesRun)
-	verificationStatus, verificationSummary := summarizeSubAgentVerification(filesModified, commandsRun)
-	status, errMsg = applySubAgentVerificationOutcome(status, errMsg, verificationStatus, verificationSummary)
+	audit := collectSubAgentAudit(cb)
+	allFilesModified := audit.AllFilesModified
+	allFilesCreated := audit.AllFilesCreated
+	allFilesRead := audit.AllFilesRead
+	allCommandsRun := audit.AllCommandsRun
+	allSearchesRun := audit.AllSearchesRun
+	allGuardrailViolations := audit.AllGuardrailViolations
+	filesModified := audit.FilesModified
+	filesCreated := audit.FilesCreated
+	filesRead := audit.FilesRead
+	commandsRun := audit.CommandsRun
+	searchesRun := audit.SearchesRun
+	guardrailViolations := audit.GuardrailViolations
+	existingFilesModified := existingSubAgentModifiedFiles(allFilesModified, allFilesCreated)
+	explorationStatus, explorationSummary := summarizeSubAgentExploration(existingFilesModified, allFilesRead, allSearchesRun, audit.ExploredBeforeFirstEdit)
+	verificationStatus, verificationSummary := summarizeSubAgentVerification(allFilesModified, allCommandsRun, audit.LastEditSeq)
+	status, errMsg = applySubAgentExplorationOutcome(status, errMsg, explorationStatus, explorationSummary, len(existingFilesModified))
+	status, errMsg = applySubAgentVerificationOutcome(status, errMsg, subAgentVerificationOutcomeStatus(verificationStatus), verificationSummary)
+	status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, allGuardrailViolations)
 	summary = appendSubAgentFileChangeSummary(summary, filesModified, filesCreated)
 	cb.emitFileActivitySummaryEvent(filesRead, filesModified, filesCreated)
-	if len(guardrailViolations) > 0 {
-		summary = appendSubAgentGuardrailSummary(summary, guardrailViolations)
+	if len(allGuardrailViolations) > 0 {
+		summary = appendSubAgentGuardrailSummary(summary, allGuardrailViolations)
 	}
-	cb.emitGuardrailSummaryEvent(guardrailViolations)
+	cb.emitGuardrailSummaryEvent(allGuardrailViolations)
 	if explorationSummary != "" {
 		summary = appendSubAgentExplorationSummary(summary, explorationStatus, explorationSummary)
 	}
-	cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, countSuccessfulSubAgentSearches(searchesRun))
-	if len(commandsRun) > 0 {
-		summary = appendSubAgentCommandSummary(summary, commandsRun)
+	cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, countSuccessfulSubAgentSearches(allSearchesRun))
+	if len(allCommandsRun) > 0 {
+		summary = appendSubAgentCommandSummary(summary, allCommandsRun)
 	}
-	cb.emitCommandSummaryEvent(commandsRun)
+	cb.emitCommandSummaryEvent(allCommandsRun)
 	if verificationSummary != "" {
 		summary = appendSubAgentVerificationSummary(summary, verificationStatus, verificationSummary)
 	}
-	cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, len(filterSubAgentVerificationCommands(commandsRun)))
-	diffChecked, diffSummary := cb.ensureFinalGitDiff(filesModified)
+	cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, len(filterFreshSubAgentVerificationCommands(allCommandsRun, audit.LastEditSeq)))
+	diffChecked, diffSummary := cb.ensureFinalGitDiff(allFilesModified)
+	status, errMsg = applySubAgentDiffOutcome(status, errMsg, diffChecked, diffSummary, len(allFilesModified))
 	if diffSummary != "" {
 		summary = appendSubAgentDiffSummary(summary, diffSummary)
 	}
-	cb.emitDiffCheckEvent(diffChecked, diffSummary, len(filesModified))
-	cb.emitQualitySummaryEvent(explorationStatus, verificationStatus, diffChecked, filesModified, commandsRun, guardrailViolations)
+	cb.emitDiffCheckEvent(diffChecked, diffSummary, len(allFilesModified))
+	cb.emitQualitySummaryEvent(explorationStatus, verificationStatus, diffChecked, allFilesModified, allFilesCreated, allCommandsRun, audit.LastEditSeq, allGuardrailViolations)
 	cb.emitDiffSummaryEvent(filesModified, filesCreated, diffSummary)
 
 	log.Printf("[coding-subagent] task T%d finished: status=%s iterations=%d tools=%d err=%q",
@@ -297,6 +309,46 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 // coding-only configuration.
 // ---------------------------------------------------------------------------
 
+type codingSubAgentAudit struct {
+	AllFilesModified        []string
+	AllFilesCreated         []string
+	AllFilesRead            []string
+	AllCommandsRun          []CodingSubAgentCommandResult
+	AllSearchesRun          []CodingSubAgentSearchResult
+	AllGuardrailViolations  []CodingSubAgentGuardrailViolation
+	LastEditSeq             uint64
+	FilesModified           []string
+	FilesCreated            []string
+	FilesRead               []string
+	CommandsRun             []CodingSubAgentCommandResult
+	SearchesRun             []CodingSubAgentSearchResult
+	GuardrailViolations     []CodingSubAgentGuardrailViolation
+	ExploredBeforeFirstEdit bool
+}
+
+func collectSubAgentAudit(cb *codingSubAgentCallbacks) codingSubAgentAudit {
+	if cb == nil {
+		return codingSubAgentAudit{}
+	}
+	audit := codingSubAgentAudit{
+		AllFilesModified:        cb.getFilesModified(),
+		AllFilesCreated:         cb.getFilesCreated(),
+		AllFilesRead:            cb.getFilesRead(),
+		AllCommandsRun:          cb.getCommandsRun(),
+		AllSearchesRun:          cb.getSearchesRun(),
+		AllGuardrailViolations:  cb.getGuardrailViolations(),
+		LastEditSeq:             cb.lastEditSequence(),
+		ExploredBeforeFirstEdit: cb.exploredBeforeFirstEdit(),
+	}
+	audit.FilesModified = limitSubAgentStringSlice(audit.AllFilesModified, codingSubAgentResultFilesMax)
+	audit.FilesCreated = limitSubAgentStringSlice(audit.AllFilesCreated, codingSubAgentResultFilesMax)
+	audit.FilesRead = limitSubAgentStringSlice(audit.AllFilesRead, codingSubAgentResultFilesMax)
+	audit.CommandsRun = limitSubAgentCommandResults(audit.AllCommandsRun, codingSubAgentResultAuditMax)
+	audit.SearchesRun = limitSubAgentSearchResults(audit.AllSearchesRun, codingSubAgentResultAuditMax)
+	audit.GuardrailViolations = limitSubAgentGuardrailViolations(audit.AllGuardrailViolations, codingSubAgentResultAuditMax)
+	return audit
+}
+
 type codingSubAgentCallbacks struct {
 	subagent    *CodingSubAgent
 	task        *TaskItem
@@ -324,6 +376,12 @@ type codingSubAgentCallbacks struct {
 	commandsRun    []CodingSubAgentCommandResult
 	searchesRun    []CodingSubAgentSearchResult
 	guardrails     []CodingSubAgentGuardrailViolation
+	eventSeq       uint64
+	firstEditSeq   uint64
+	lastEditSeq    uint64
+	firstReadSeq   uint64
+	firstSearchSeq uint64
+	lastDiffSeq    uint64
 }
 
 type codingFileSnapshot struct {
@@ -363,6 +421,13 @@ func (c *codingSubAgentCallbacks) LLMRequestContext(iteration int) (context.Cont
 		lease.Release()
 		baseCancel()
 	}, nil
+}
+
+func (c *codingSubAgentCallbacks) toolContext() (context.Context, context.CancelFunc) {
+	if c != nil && c.subagent != nil && c.subagent.loopCtx != nil {
+		return c.subagent.loopCtx.Context()
+	}
+	return context.Background(), func() {}
 }
 
 func (c *codingSubAgentCallbacks) GetMaxIterations() int {
@@ -523,7 +588,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 				return codingToolExecutionResult{Text: c.rejectToolCall("Glob", searchArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
-		result := agent.ToolGlobDetailed(searchArgs)
+		ctx, cancel := c.toolContext()
+		defer cancel()
+		result := agent.ToolGlobDetailedCtx(ctx, searchArgs)
 		c.trackSearchResult("Glob", searchArgs, result.Text, result.Outcome == agent.SearchToolOutcomeMatched)
 		return codingToolExecutionResult{Text: result.Text, Outcome: codingOutcomeFromSearchOutcome(result.Outcome)}
 	case "ripgrep":
@@ -533,7 +600,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 				return codingToolExecutionResult{Text: c.rejectToolCall("ripgrep", searchArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
-		result := agent.ToolRipgrepDetailed(searchArgs)
+		ctx, cancel := c.toolContext()
+		defer cancel()
+		result := agent.ToolRipgrepDetailedCtx(ctx, searchArgs)
 		c.trackSearchResult("ripgrep", searchArgs, result.Text, result.Outcome == agent.SearchToolOutcomeMatched)
 		return codingToolExecutionResult{Text: result.Text, Outcome: codingOutcomeFromSearchOutcome(result.Outcome)}
 	case "read_file":
@@ -635,7 +704,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		}
 		// Avoid raw bash heartbeat rows in chat; tool_started/tool_finished events
 		// already keep the AI assistant panel updated while the command runs.
-		commandResult := executeCodingBash(bashArgs, nil)
+		ctx, cancel := c.toolContext()
+		defer cancel()
+		commandResult := executeCodingBashWithContext(ctx, bashArgs, nil)
 		c.trackCommandResult(bashArgs, commandResult.Text, commandResult.succeeded())
 		return commandResult.toolResult()
 	case "list_directory":
@@ -977,55 +1048,33 @@ func rejectDisallowedCodingBashCommand(command string) string {
 	if normalized == "" {
 		return ""
 	}
-	// Windows && is handled by auto-conversion in the bash executor, not by rejection.
-	// The SubAgent's bash tool already wraps commands in PowerShell on Windows.
+	if msg := rejectWindowsShellCompatibilityCommand(command, normalized); msg != "" {
+		return msg
+	}
 	disallowed := false
 	switch {
 	case hasDisallowedGitCommand(normalized):
 		disallowed = true
 	case hasDisallowedRecursiveDeleteCommand(normalized):
-		// Only block recursive deletes that target paths outside the project or root paths.
-		// Within the project dir, SubAgent should be free to clean up build artifacts.
-		if isRootPathDelete(normalized) {
-			disallowed = true
-		}
+		disallowed = true
+	case hasDisallowedShellFileMutation(normalized):
+		disallowed = true
 	}
 	if !disallowed {
 		return ""
 	}
-	return fmt.Sprintf("拒绝执行高风险命令：%s。编码 SubAgent 不允许自动执行 Git 工作区改写或根路径破坏性删除；请改用更小范围的操作。", command)
+	return fmt.Sprintf("拒绝执行高风险命令：%s。编码 SubAgent 不允许自动执行 Git 工作区改写、递归删除或通过 shell 直接改写文件；请改用更小范围的操作或文件编辑工具。", command)
 }
 
-// isRootPathDelete checks if a recursive delete targets a root/system path (not project-relative).
-func isRootPathDelete(normalizedCommand string) bool {
-	// Check common dangerous patterns
-	dangerous := []string{
-		"rm -rf /", "rm -rf /*",
-		"rmdir /s /q c:", "rmdir /s /q d:",
-		"remove-item -recurse -force c:", "remove-item -recurse -force d:",
-		"remove-item -recurse c:\\", "remove-item -recurse d:\\",
-		"del /s /q c:", "del /s /q d:",
+func rejectWindowsShellCompatibilityCommand(command, normalized string) string {
+	if normalizedRemotePlatform() != "windows" {
+		return ""
 	}
-	for _, d := range dangerous {
-		if strings.Contains(normalizedCommand, d) {
-			return true
-		}
+	if !strings.Contains(normalized, "&&") && !strings.Contains(normalized, "mkdir -p") {
+		return ""
 	}
-	// Detect recursive delete of root drive paths (e.g. "rm -rf c:\", "rm -rf d:\users")
-	// but NOT project-relative paths (e.g. "rm -rf ./build", "rm -rf build/")
-	if (strings.Contains(normalizedCommand, "rm -rf") || strings.Contains(normalizedCommand, "rm -r")) &&
-		!strings.Contains(normalizedCommand, "./") &&
-		!strings.Contains(normalizedCommand, "build") {
-		// Check if targeting a root absolute path
-		for _, drive := range []string{"c:\\", "d:\\", "e:\\", "/"} {
-			if strings.Contains(normalizedCommand, "rm -rf "+drive) || strings.Contains(normalizedCommand, "rm -r "+drive) {
-				return true
-			}
-		}
-	}
-	return false
+	return fmt.Sprintf("PowerShell command compatibility: %s uses bash-only syntax such as `mkdir -p` or `&&`. Use PowerShell syntax with `;` separators and set working_dir to the command directory.", command)
 }
-
 func hasDisallowedRecursiveDeleteCommand(normalizedCommand string) bool {
 	fields := shellCommandFields(normalizedCommand)
 	commandPosition := true
@@ -1323,7 +1372,9 @@ func (c *codingSubAgentCallbacks) toolGitDiffResult(args map[string]interface{})
 	if staged, _ := args["staged"].(bool); staged {
 		command = "git diff --staged -- ."
 	}
-	return executeCodingBash(map[string]interface{}{
+	ctx, cancel := c.toolContext()
+	defer cancel()
+	return executeCodingBashWithContext(ctx, map[string]interface{}{
 		"command":     command,
 		"working_dir": workDir,
 		"timeout":     float64(30),
@@ -1376,6 +1427,11 @@ func (c *codingSubAgentCallbacks) trackFile(path string) {
 		c.filesModified = make(map[string]bool)
 	}
 	c.filesModified[displayPath] = true
+	seq := c.nextEventSeqLocked()
+	if c.firstEditSeq == 0 {
+		c.firstEditSeq = seq
+	}
+	c.lastEditSeq = seq
 	count := len(c.filesModified)
 	c.mu.Unlock()
 	c.emitDiffUpdatedEvent(displayPath, count)
@@ -1406,6 +1462,30 @@ func (c *codingSubAgentCallbacks) trackReadFile(path string) {
 	key := canonicalCodingPath(path)
 	c.filesRead[key] = true
 	c.fileSnapshots[key] = snap
+	seq := c.nextEventSeqLocked()
+	if c.firstReadSeq == 0 {
+		c.firstReadSeq = seq
+	}
+}
+
+func (c *codingSubAgentCallbacks) nextEventSeqLocked() uint64 {
+	c.eventSeq++
+	return c.eventSeq
+}
+
+func (c *codingSubAgentCallbacks) exploredBeforeFirstEdit() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.firstEditSeq == 0 {
+		return true
+	}
+	return (c.firstReadSeq > 0 && c.firstReadSeq < c.firstEditSeq) || (c.firstSearchSeq > 0 && c.firstSearchSeq < c.firstEditSeq)
+}
+
+func (c *codingSubAgentCallbacks) lastEditSequence() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastEditSeq
 }
 
 func (c *codingSubAgentCallbacks) getFilesModified() []string {
@@ -1462,8 +1542,10 @@ func (c *codingSubAgentCallbacks) displayProjectPath(path string) string {
 func (c *codingSubAgentCallbacks) trackGitDiff(result string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	seq := c.nextEventSeqLocked()
 	c.gitDiffChecked = true
 	c.lastGitDiff = compactSubAgentDiff(result)
+	c.lastDiffSeq = seq
 }
 
 func (c *codingSubAgentCallbacks) trackCommandResult(args map[string]interface{}, result string, succeeded bool) {
@@ -1474,11 +1556,13 @@ func (c *codingSubAgentCallbacks) trackCommandResult(args map[string]interface{}
 	workDir, _ := args["working_dir"].(string)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	seq := c.nextEventSeqLocked()
 	c.commandsRun = append(c.commandsRun, CodingSubAgentCommandResult{
 		Command:    command,
 		WorkingDir: workDir,
 		Succeeded:  succeeded,
 		Summary:    compactCommandResult(result),
+		seq:        seq,
 	})
 }
 
@@ -1538,6 +1622,10 @@ func (c *codingSubAgentCallbacks) trackSearchResult(toolName string, args map[st
 		Succeeded: succeeded,
 		Summary:   compactSearchResult(result),
 	})
+	seq := c.nextEventSeqLocked()
+	if succeeded && c.firstSearchSeq == 0 {
+		c.firstSearchSeq = seq
+	}
 }
 
 func (c *codingSubAgentCallbacks) getSearchesRun() []CodingSubAgentSearchResult {
@@ -1589,7 +1677,7 @@ func limitSubAgentGuardrailViolations(values []CodingSubAgentGuardrailViolation,
 
 func (c *codingSubAgentCallbacks) ensureFinalGitDiff(filesModified []string) (bool, string) {
 	c.mu.Lock()
-	alreadyChecked := c.gitDiffChecked
+	alreadyChecked := c.gitDiffChecked && c.lastDiffSeq > 0 && c.lastDiffSeq >= c.lastEditSeq
 	lastDiff := c.lastGitDiff
 	c.mu.Unlock()
 
@@ -1623,17 +1711,33 @@ func (c *codingSubAgentCallbacks) requireProjectWriteScope(path string) string {
 }
 
 func (c *codingSubAgentCallbacks) requireProjectReadScope(path, toolName string) string {
-	// Read operations are non-destructive. Allow reading outside project directory
-	// since SubAgent may need to check system headers, SDK paths, compiler locations, etc.
-	// Only write operations are restricted to the project directory.
-	return ""
+	projectPath := c.projectPath()
+	if projectPath == "" {
+		return ""
+	}
+	ok, err := isPathWithinDir(path, projectPath)
+	if err != nil {
+		return fmt.Sprintf("无法确认 %s 路径是否位于项目目录内：%s", toolName, err.Error())
+	}
+	if ok {
+		return ""
+	}
+	return fmt.Sprintf("拒绝读取项目目录外的路径：%s。编码 SubAgent 只能用 %s 读取/搜索项目路径 %s 内的文件。", path, toolName, projectPath)
 }
 
 func (c *codingSubAgentCallbacks) requireProjectWorkingDirScope(path string) string {
-	// Allow SubAgent to run commands with any working directory.
-	// The project scope is already enforced for write operations (file creation).
-	// Build tools often need to run from parent dirs or build subdirs.
-	return ""
+	projectPath := c.projectPath()
+	if projectPath == "" || strings.TrimSpace(path) == "" {
+		return ""
+	}
+	ok, err := isPathWithinDir(path, projectPath)
+	if err != nil {
+		return fmt.Sprintf("无法确认命令 working_dir 是否位于项目目录内：%s", err.Error())
+	}
+	if ok {
+		return ""
+	}
+	return fmt.Sprintf("拒绝在项目目录外执行命令：%s。编码 SubAgent 的 bash working_dir 必须位于项目路径 %s 内。", path, projectPath)
 }
 
 func (c *codingSubAgentCallbacks) requireProjectDiffScope(path string) string {
@@ -2023,7 +2127,35 @@ func aggregateGuardrailViolations(violations []CodingSubAgentGuardrailViolation)
 		seen[key] = len(entries)
 		entries = append(entries, aggregatedGuardrailViolation{Violation: v, Count: 1})
 	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		left := guardrailViolationSummaryPriority(entries[i].Violation)
+		right := guardrailViolationSummaryPriority(entries[j].Violation)
+		if left != right {
+			return left > right
+		}
+		if entries[i].Count != entries[j].Count {
+			return entries[i].Count > entries[j].Count
+		}
+		return false
+	})
 	return entries
+}
+
+func guardrailViolationSummaryPriority(v CodingSubAgentGuardrailViolation) int {
+	switch v.Category {
+	case codingSubAgentGuardrailCategoryGit, codingSubAgentGuardrailCategoryDelete, codingSubAgentGuardrailCategoryShellWrite:
+		return 5
+	case codingSubAgentGuardrailCategoryCommand:
+		return 4
+	case codingSubAgentGuardrailCategoryScope:
+		return 3
+	case codingSubAgentGuardrailCategoryHost:
+		return 2
+	case codingSubAgentGuardrailCategoryPolicy:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func compactCommandResult(result string) string {
@@ -2136,29 +2268,28 @@ func summarizeSubAgentCommands(commands []CodingSubAgentCommandResult) (codingSu
 	return codingSubAgentQualityFailed, fmt.Sprintf("%d bash commands run, %d failed: %s", len(commands), len(failed), compactFailedVerificationCommands(failed))
 }
 
-func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAgentQualityStatus, diffChecked bool, filesModified []string, commands []CodingSubAgentCommandResult, guardrails []CodingSubAgentGuardrailViolation) (codingSubAgentQualityStatus, string, int) {
+func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAgentQualityStatus, diffChecked bool, filesModified, filesCreated []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64, guardrails []CodingSubAgentGuardrailViolation) (codingSubAgentQualityStatus, string, int) {
 	filesModified = uniqueSortedSubAgentStrings(filesModified)
 	var failed []string
 	var warnings []string
 	if len(guardrails) > 0 {
 		failed = append(failed, fmt.Sprintf("%d guardrail block(s)", len(guardrails)))
 	}
-	if verificationStatus == codingSubAgentQualityFailed {
-		failed = append(failed, "verification failed")
-	}
-	failedCommands := countFailedSubAgentCommands(commands)
+	failedCommands := countFailedSubAgentCommands(filterPostEditSubAgentCommands(commands, lastEditSeq))
 	if failedCommands > 0 && verificationStatus != codingSubAgentQualityFailed {
 		warnings = append(warnings, fmt.Sprintf("%d command(s) failed", failedCommands))
 	}
 	if len(filesModified) > 0 {
-		if explorationStatus == codingSubAgentQualityMissing {
-			warnings = append(warnings, "no exploration before edits")
+		if explorationStatus == codingSubAgentQualityMissing && countExistingSubAgentModifiedFiles(filesModified, filesCreated) > 0 {
+			failed = append(failed, "no exploration before existing-file edits")
 		}
 		if verificationStatus == codingSubAgentQualityMissing {
-			warnings = append(warnings, "verification not run")
+			failed = append(failed, "verification not run")
+		} else if verificationStatus == codingSubAgentQualityFailed {
+			failed = append(failed, "verification failed")
 		}
 		if !diffChecked {
-			warnings = append(warnings, "diff not checked")
+			failed = append(failed, "diff not checked")
 		}
 	}
 	if len(failed) > 0 {
@@ -2174,6 +2305,18 @@ func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAge
 	return codingSubAgentQualityPassed, "exploration, verification, and diff check passed", 0
 }
 
+func filterPostEditSubAgentCommands(commands []CodingSubAgentCommandResult, lastEditSeq uint64) []CodingSubAgentCommandResult {
+	if lastEditSeq == 0 || len(commands) == 0 {
+		return commands
+	}
+	filtered := make([]CodingSubAgentCommandResult, 0, len(commands))
+	for _, cmd := range commands {
+		if cmd.seq == 0 || cmd.seq >= lastEditSeq {
+			filtered = append(filtered, cmd)
+		}
+	}
+	return filtered
+}
 func countFailedSubAgentCommands(commands []CodingSubAgentCommandResult) int {
 	count := 0
 	for _, cmd := range commands {
@@ -2219,16 +2362,20 @@ func escapeSubAgentInlineCode(s string) string {
 	return strings.ReplaceAll(s, "`", "'")
 }
 
-func summarizeSubAgentVerification(filesModified []string, commands []CodingSubAgentCommandResult) (codingSubAgentQualityStatus, string) {
+func summarizeSubAgentVerification(filesModified []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64) (codingSubAgentQualityStatus, string) {
 	if len(filesModified) == 0 {
 		return codingSubAgentQualityNotNeeded, "未检测到文件修改，跳过命令验证要求。"
 	}
-	verificationCommands := filterSubAgentVerificationCommands(commands)
+	allVerificationCommands := filterSubAgentVerificationCommands(commands)
+	verificationCommands := filterFreshSubAgentVerificationCommands(commands, lastEditSeq)
 	if len(verificationCommands) == 0 {
 		if len(commands) == 0 {
-			return codingSubAgentQualityMissing, "检测到文件修改，但没有运行 bash 验证命令。"
+			return codingSubAgentQualityMissing, "file changes detected but no bash verification command ran"
 		}
-		return codingSubAgentQualityMissing, fmt.Sprintf("检测到文件修改，并运行了 %d 条 bash 命令，但没有发现 test/build/lint/typecheck 等验证命令。", len(commands))
+		if len(allVerificationCommands) > 0 {
+			return codingSubAgentQualityMissing, fmt.Sprintf("verification ran before the final edit (%d command(s)); rerun test/build/lint/typecheck after editing", len(allVerificationCommands))
+		}
+		return codingSubAgentQualityMissing, fmt.Sprintf("file changes detected; ran %d bash command(s), but none were test/build/lint/typecheck verification", len(commands))
 	}
 	var failed []string
 	for _, cmd := range verificationCommands {
@@ -2243,6 +2390,23 @@ func summarizeSubAgentVerification(filesModified []string, commands []CodingSubA
 		return codingSubAgentQualityFailed, fmt.Sprintf("有 %d 条验证命令失败：%s", len(failed), compactFailedVerificationCommands(failed))
 	}
 	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条 bash 验证命令，未检测到失败。", len(verificationCommands))
+}
+
+func filterFreshSubAgentVerificationCommands(commands []CodingSubAgentCommandResult, lastEditSeq uint64) []CodingSubAgentCommandResult {
+	if len(commands) == 0 {
+		return nil
+	}
+	filtered := make([]CodingSubAgentCommandResult, 0, len(commands))
+	for _, cmd := range commands {
+		if !isSubAgentVerificationCommand(cmd.Command) {
+			continue
+		}
+		if lastEditSeq > 0 && cmd.seq > 0 && cmd.seq < lastEditSeq {
+			continue
+		}
+		filtered = append(filtered, cmd)
+	}
+	return filtered
 }
 
 func filterSubAgentVerificationCommands(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
@@ -2260,7 +2424,7 @@ func filterSubAgentVerificationCommands(commands []CodingSubAgentCommandResult) 
 
 func isSubAgentVerificationCommand(command string) bool {
 	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
-	if normalized == "" {
+	if normalized == "" || suppressesVerificationFailure(normalized) {
 		return false
 	}
 	for _, segment := range shellCommandSegments(normalized) {
@@ -2268,6 +2432,46 @@ func isSubAgentVerificationCommand(command string) bool {
 			return true
 		}
 	}
+	return false
+}
+
+func suppressesVerificationFailure(normalizedCommand string) bool {
+	fields := shellCommandFields(normalizedCommand)
+	var segment []string
+	sawVerification := false
+	flushSegment := func() {
+		if isSubAgentVerificationCommandSegment(segment) {
+			sawVerification = true
+		}
+		segment = nil
+	}
+	for i := 0; i < len(fields); i++ {
+		token := normalizeShellCommandToken(fields[i])
+		if token == "" {
+			continue
+		}
+		if isShellCommandStartMarker(token) {
+			flushSegment()
+			if sawVerification && token == "||" && i+1 < len(fields) {
+				next := normalizeShellExecutableToken(normalizeShellCommandToken(fields[i+1]))
+				if next == "true" || next == ":" {
+					return true
+				}
+				if next == "exit" && i+2 < len(fields) && normalizeShellCommandToken(fields[i+2]) == "0" {
+					return true
+				}
+			}
+			if sawVerification && token == ";" && i+2 < len(fields) {
+				next := normalizeShellExecutableToken(normalizeShellCommandToken(fields[i+1]))
+				if next == "exit" && normalizeShellCommandToken(fields[i+2]) == "0" {
+					return true
+				}
+			}
+			continue
+		}
+		segment = append(segment, token)
+	}
+	flushSegment()
 	return false
 }
 
@@ -2313,7 +2517,7 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 	case "npm", "pnpm", "yarn":
 		return packageManagerRunsVerification(args)
 	case "npx", "pnpx", "yarnx":
-		return firstArgIn(args, "tsc", "eslint", "prettier", "biome", "jest", "vitest")
+		return verificationRunnerCommandFromArgs(args)
 	case "corepack":
 		return corepackRunsVerification(args)
 	case "node":
@@ -2321,7 +2525,7 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 	case "bun", "deno":
 		return firstArgIn(args, "test")
 	case "python", "python3", "py":
-		return len(args) >= 2 && args[0] == "-m" && isVerificationRunner(args[1])
+		return len(args) >= 2 && args[0] == "-m" && isVerificationRunnerCommand(args[1], args[2:])
 	case "pytest", "phpunit", "rspec", "rubocop", "jest", "vitest", "eslint", "prettier", "biome", "tsc":
 		return true
 	case "make":
@@ -2341,7 +2545,7 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 	case "bundle", "bundler":
 		return bundleRunsVerification(args)
 	}
-	return cmd == "test" || isVerificationRunner(cmd)
+	return cmd == "test" || isVerificationRunnerCommand(cmd, args)
 }
 
 func commandNameBase(token string) string {
@@ -2424,7 +2628,7 @@ func packageManagerRunsVerification(args []string) bool {
 		return isVerificationScriptName(args[1])
 	}
 	if (args[0] == "exec" || args[0] == "dlx") && len(args) > 1 {
-		return isVerificationRunner(args[1])
+		return verificationRunnerCommandFromArgs(args[1:])
 	}
 	return false
 }
@@ -2437,7 +2641,7 @@ func corepackRunsVerification(args []string) bool {
 	case "npm", "pnpm", "yarn":
 		return packageManagerRunsVerification(args[1:])
 	case "npx", "pnpx", "yarnx":
-		return len(args) > 1 && isVerificationRunner(args[1])
+		return verificationRunnerCommandFromArgs(args[1:])
 	}
 	return false
 }
@@ -2446,11 +2650,11 @@ func uvRunsVerification(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	if isVerificationRunner(args[0]) {
+	if verificationRunnerCommandFromArgs(args) {
 		return true
 	}
 	if args[0] == "run" && len(args) > 1 {
-		return isVerificationRunner(args[1])
+		return verificationRunnerCommandFromArgs(args[1:])
 	}
 	return false
 }
@@ -2466,7 +2670,7 @@ func pythonProjectToolRunsVerification(cmd string, args []string) bool {
 		}
 	}
 	if args[0] == "run" && len(args) > 1 {
-		return isVerificationRunner(args[1]) || isVerificationScriptName(args[1])
+		return verificationRunnerCommandFromArgs(args[1:]) || isVerificationScriptName(args[1])
 	}
 	return false
 }
@@ -2475,11 +2679,11 @@ func bundleRunsVerification(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	if isVerificationRunner(args[0]) || isVerificationScriptName(args[0]) {
+	if verificationRunnerCommandFromArgs(args) || isVerificationScriptName(args[0]) {
 		return true
 	}
 	if args[0] == "exec" && len(args) > 1 {
-		return isVerificationRunner(args[1]) || isVerificationScriptName(args[1])
+		return verificationRunnerCommandFromArgs(args[1:]) || isVerificationScriptName(args[1])
 	}
 	return false
 }
@@ -2495,6 +2699,58 @@ func isVerificationScriptName(name string) bool {
 		strings.HasPrefix(name, "lint:") ||
 		strings.HasPrefix(name, "typecheck:") ||
 		strings.HasPrefix(name, "type-check:")
+}
+
+func verificationRunnerCommandFromArgs(args []string) bool {
+	args = stripVerificationRunnerOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	return isVerificationRunnerCommand(args[0], args[1:])
+}
+
+func stripVerificationRunnerOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case verificationRunnerOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func verificationRunnerOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "-p", "--package", "--with", "--from", "--python", "--project", "--directory", "--cwd", "--env-file", "--config-file":
+		return true
+	}
+	return false
+}
+func isVerificationRunnerCommand(name string, args []string) bool {
+	switch commandNameBase(name) {
+	case "ruff":
+		return firstArgIn(args, "check")
+	case "golangci-lint":
+		return len(args) == 0 || firstArgIn(args, "run")
+	case "pyre":
+		return len(args) == 0 || firstArgIn(args, "check")
+	case "mypy", "pyright", "basedpyright", "staticcheck", "revive":
+		return true
+	}
+	return isVerificationRunner(name)
 }
 
 func isVerificationRunner(name string) bool {
@@ -2542,18 +2798,39 @@ func compactFailedVerificationCommands(commands []string) string {
 	return strings.Join(parts, "; ")
 }
 
-func summarizeSubAgentExploration(filesModified, filesRead []string, searches []CodingSubAgentSearchResult) (codingSubAgentQualityStatus, string) {
+func summarizeSubAgentExploration(filesModified, filesRead []string, searches []CodingSubAgentSearchResult, exploredBeforeFirstEdit bool) (codingSubAgentQualityStatus, string) {
 	if len(filesModified) == 0 {
-		return codingSubAgentQualityNotNeeded, "未检测到文件修改，跳过探索要求。"
+		return codingSubAgentQualityNotNeeded, "未检测到既有文件修改，跳过探索要求。"
 	}
 	successfulSearches := countSuccessfulSubAgentSearches(searches)
+	if !exploredBeforeFirstEdit {
+		return codingSubAgentQualityMissing, "检测到既有文件修改，但首次修改前没有记录成功搜索或文件读取。"
+	}
 	if successfulSearches > 0 {
-		return codingSubAgentQualityExplored, fmt.Sprintf("修改前/过程中运行了 %d 次成功搜索，并读取了 %d 个文件。", successfulSearches, len(filesRead))
+		return codingSubAgentQualityExplored, fmt.Sprintf("首次修改前已探索；过程中运行了 %d 次成功搜索，并读取了 %d 个文件。", successfulSearches, len(filesRead))
 	}
 	if len(filesRead) > 0 {
-		return codingSubAgentQualityReadOnly, fmt.Sprintf("未记录成功搜索，但读取了 %d 个文件后修改。", len(filesRead))
+		return codingSubAgentQualityReadOnly, fmt.Sprintf("首次修改前已读取文件；未记录成功搜索，但共读取了 %d 个文件。", len(filesRead))
 	}
-	return codingSubAgentQualityMissing, "检测到文件修改，但没有记录成功搜索或文件读取。"
+	return codingSubAgentQualityMissing, "检测到既有文件修改，但没有记录成功搜索或文件读取。"
+}
+
+func existingSubAgentModifiedFiles(filesModified, filesCreated []string) []string {
+	created := make(map[string]bool, len(filesCreated))
+	for _, file := range uniqueSortedSubAgentStrings(filesCreated) {
+		created[file] = true
+	}
+	var existing []string
+	for _, file := range uniqueSortedSubAgentStrings(filesModified) {
+		if !created[file] {
+			existing = append(existing, file)
+		}
+	}
+	return existing
+}
+
+func countExistingSubAgentModifiedFiles(filesModified, filesCreated []string) int {
+	return len(existingSubAgentModifiedFiles(filesModified, filesCreated))
 }
 
 func countSuccessfulSubAgentSearches(searches []CodingSubAgentSearchResult) int {
@@ -2612,12 +2889,63 @@ func applySubAgentVerificationOutcome(status TaskExecStatus, errMsg string, veri
 	return TaskExecFailed, compactSubAgentErrorSummary(verificationSummary)
 }
 
+func applySubAgentExplorationOutcome(status TaskExecStatus, errMsg string, explorationStatus codingSubAgentQualityStatus, explorationSummary string, modifiedExistingCount int) (TaskExecStatus, string) {
+	if status != TaskExecPassed || explorationStatus != codingSubAgentQualityMissing || modifiedExistingCount == 0 {
+		return status, errMsg
+	}
+	if strings.TrimSpace(explorationSummary) == "" {
+		explorationSummary = "no exploration before editing existing files"
+	}
+	return TaskExecFailed, compactSubAgentErrorSummary(explorationSummary)
+}
+
+func applySubAgentGuardrailOutcome(status TaskExecStatus, errMsg string, violations []CodingSubAgentGuardrailViolation) (TaskExecStatus, string) {
+	if status != TaskExecPassed || len(violations) == 0 {
+		return status, errMsg
+	}
+	summary := fmt.Sprintf("%d guardrail block(s)", len(violations))
+	if entries := aggregateGuardrailViolations(violations); len(entries) > 0 {
+		v := entries[0].Violation
+		detail := firstNonEmptySubAgentString(firstLine(v.Summary), strings.TrimSpace(v.Command), strings.TrimSpace(v.Path), strings.TrimSpace(v.Tool))
+		if detail != "" {
+			summary = fmt.Sprintf("%s: %s", summary, detail)
+		}
+	}
+	return TaskExecFailed, compactSubAgentErrorSummary(summary)
+}
+
+func firstNonEmptySubAgentString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func applySubAgentDiffOutcome(status TaskExecStatus, errMsg string, diffChecked bool, diffSummary string, modifiedCount int) (TaskExecStatus, string) {
+	if status != TaskExecPassed || diffChecked || modifiedCount == 0 {
+		return status, errMsg
+	}
+	if strings.TrimSpace(diffSummary) == "" {
+		diffSummary = "git diff self-check did not complete"
+	}
+	return TaskExecFailed, compactSubAgentErrorSummary(diffSummary)
+}
+
 func firstLine(s string) string {
 	s = strings.TrimSpace(s)
 	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
 		return strings.TrimSpace(s[:idx])
 	}
 	return s
+}
+
+func subAgentVerificationOutcomeStatus(status codingSubAgentQualityStatus) codingSubAgentQualityStatus {
+	if status == codingSubAgentQualityMissing {
+		return codingSubAgentQualityFailed
+	}
+	return status
 }
 
 func (c *codingSubAgentCallbacks) OnToken(delta string) {
@@ -2817,7 +3145,7 @@ func (c *codingSubAgentCallbacks) emitDiffCheckEvent(checked bool, diffSummary s
 	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
 
-func (c *codingSubAgentCallbacks) emitQualitySummaryEvent(explorationStatus, verificationStatus codingSubAgentQualityStatus, diffChecked bool, filesModified []string, commands []CodingSubAgentCommandResult, guardrails []CodingSubAgentGuardrailViolation) {
+func (c *codingSubAgentCallbacks) emitQualitySummaryEvent(explorationStatus, verificationStatus codingSubAgentQualityStatus, diffChecked bool, filesModified, filesCreated []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64, guardrails []CodingSubAgentGuardrailViolation) {
 	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
 		return
 	}
@@ -2825,7 +3153,7 @@ func (c *codingSubAgentCallbacks) emitQualitySummaryEvent(explorationStatus, ver
 	if c.task != nil {
 		title = compactSubAgentTaskTitle(c.task.Title)
 	}
-	outcome, summary, count := summarizeSubAgentQuality(explorationStatus, verificationStatus, diffChecked, filesModified, commands, guardrails)
+	outcome, summary, count := summarizeSubAgentQuality(explorationStatus, verificationStatus, diffChecked, filesModified, filesCreated, commands, lastEditSeq, guardrails)
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
 	event.Event = codingAgentEventKindQualitySummary.String()
 	event.Outcome = outcome.String()
@@ -2938,6 +3266,7 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 		b.WriteString(compactSubAgentTaskDescription(c.task.Description))
 		b.WriteString("\n\n")
 	}
+	appendCodingSubAgentPreflightChecklist(&b)
 	if len(c.task.Files) > 0 {
 		b.WriteString("**涉及文件**：\n")
 		appendSubAgentBulletList(&b, c.task.Files, codingSubAgentTaskFilesMax, codingSubAgentPromptBulletMaxRunes)
@@ -2948,6 +3277,18 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 		appendSubAgentBulletList(&b, c.task.AcceptanceCriteria, codingSubAgentAcceptanceCriteriaMax, codingSubAgentPromptBulletMaxRunes)
 	}
 	return b.String()
+}
+
+func appendCodingSubAgentPreflightChecklist(b *strings.Builder) {
+	if b == nil {
+		return
+	}
+	b.WriteString("**Before editing**:\n")
+	b.WriteString("1. Locate relevant code with Glob/ripgrep/read_file.\n")
+	b.WriteString("2. State likely files and risk/impact.\n")
+	b.WriteString("3. Choose the minimal edit approach.\n")
+	b.WriteString("4. Run matching verification command(s): test/build/lint/typecheck.\n")
+	b.WriteString("5. If this is a retry, use retry context and avoid repeating the failed approach.\n\n")
 }
 
 func compactSubAgentTaskDescription(description string) string {
@@ -2965,79 +3306,24 @@ func compactSubAgentTaskDescription(description string) string {
 func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string) string {
 	var b strings.Builder
 
-	b.WriteString(`你是一个专注的编码执行器，具备解决复杂 bug 和实现新功能的系统性能力。
+	b.WriteString(`你是一个专注的编码执行器。目标是像资深工程师一样：先定位和理解，再做最小改动，最后验证并说明风险。
 
-## 复杂问题排查策略
+## 工作流
+- 先用 Glob / ripgrep 定位相关代码，再用 read_file 阅读当前内容；所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
+- 修复 bug 时，优先复现或确认错误，再沿调用链追踪输入、状态变化和影响范围。不要基于猜测修改。
+- 修改已有文件时优先使用 edit_file 或 edit_lines；禁止用 write_file 重写已有文件来做小修改。edit_file 失败时先 read_file 确认当前内容，再改用 edit_lines。
+- write_file 只用于创建新文件，或在用户/仓库流程明确要求时追加 TEST_REPORT.md。
+- bash 用于测试、构建、lint、typecheck、调试命令；长命令必须设置 timeout，working_dir 必须在项目路径内。
 
-当遇到 bug 修复或异常行为时，按以下系统性流程排查：
-1. **复现**：先用 bash 运行相关命令/测试，确认问题确实存在并记录错误信息。
-2. **定位**：用 ripgrep 搜索错误信息中的关键字，追踪调用链。用 Glob 找相关文件。
-3. **理解上下文**：read_file 阅读报错位置上下 50 行，理解数据流和控制流。
-4. **假设验证**：对每个可能的根因，用 ripgrep 搜索相关代码验证假设。
-5. **最小修改**：确认根因后，用 edit_file/edit_lines 做最小范围的精准修改。
-6. **验证**：运行测试/编译确认修复有效且不引入新问题。
+## 验证优先流程
+1. 能自动化覆盖的行为变更，应添加或更新聚焦测试；无法合理自动化时，在总结中说明原因。
+2. 修改后运行匹配的验证命令（test/build/lint/typecheck），失败时分析错误后再修复。
+3. 完成前调用 git_diff 自检，确认改动范围符合任务要求。
+4. 只在用户明确要求或仓库已有流程要求时，才追加 TEST_REPORT.md；不要默认制造报告文件。
 
-关键原则：
-- 改代码前必须先读代码。不要基于猜测修改。
-- 追踪完整调用链：从报错点向上追踪到输入源，向下追踪到影响范围。
-- 一次只修一个问题。修完验证后再处理下一个。
-- 失败两次后换方法，不要重复同样的操作。
-
-## 工具使用策略（严格遵守）
-
-### 读取：先理解再动手
-- 优先用 Glob 查找相关文件，用 ripgrep 搜索函数、类型、配置项或错误信息。
-- 所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
-- 修改已有文件前，必须先 read_file 查看当前内容。不要凭记忆修改。
-- 大文件用 read_file(start_line=N, lines=50) 只读相关段落，不要读整个文件。
-- 用 ripgrep 搜索函数定义、类型引用、import 关系来理解模块依赖。
-
-### 修改已有文件：edit_file / edit_lines（patch 模式）
-- 修改已有文件时，必须优先使用 edit_file 或 edit_lines，不要用 write_file 重写整个文件。
-- **edit_file**（搜索替换）：提供 old_string 和 new_string。适合改动内容明确、上下文唯一的场景。
-- **edit_lines**（行号编辑）：提供行号范围和新内容。适合改动位置明确（先 read_file 看到行号）或文件中有重复内容的场景。
-  - replace: edit_lines(path, operation="replace", start_line=10, end_line=12, content="新内容")
-  - insert:  edit_lines(path, operation="insert", start_line=5, content="插入的行") — 在第 5 行后插入
-  - delete:  edit_lines(path, operation="delete", start_line=10, end_line=15)
-- 一个文件需要改多处时，对每处分别调用，不要试图一次替换完。
-- edit_file 失败（"未找到要替换的内容"）时，用 read_file 确认当前内容，改用 edit_lines 按行号编辑。
-
-### 创建新文件：write_file
-- 只有创建全新文件时才用 write_file(mode=overwrite)。
-- write_file 无单次内容长度限制，可一次写入完整脚本。超过约 6000 字符的大文件建议分块写入（先 overwrite 第一部分，再 append 后续部分），避免模型输出截断。
-
-### Shell 执行：bash
-- 用于编译、运行测试、安装依赖、查看进程状态等。
-- 编译后检查退出码和 stderr，失败时分析错误信息定位问题。
-- 可以用 bash 运行调试命令（打印变量值、检查配置文件内容等）。
-- 长命令使用 timeout 参数防止挂起。
-
-### 禁止行为
-- 禁止用 write_file 重写已有文件来做小修改——这浪费 token 且容易丢失原文件中的其他内容。
-- 禁止不读文件就直接修改——你不知道文件当前的确切内容，edit_file 的 old_string 会匹配失败。
+## 禁止行为
 - 禁止执行破坏性删除、清理或 Git 回滚命令，例如 git reset --hard、git checkout --、git checkout .、git restore、git clean -f、rm -rf、Remove-Item -Recurse、rmdir /s、del /s。
-- bash 的 working_dir 必须在项目路径内；相对路径会按项目路径解析。
-
-## 编码规范
-- **TDD 强制流程（每个任务必须执行）**：
-  1. 先为当前任务编写测试用例（单元测试或集成测试）
-  2. 运行测试 → 确认测试失败（红灯）
-  3. 编写实现代码
-  4. 运行测试 → 确认测试通过（绿灯）
-  5. 如果测试失败，修复代码后重新运行，直到通过
-  6. 将测试用例和测试结果写入项目目录下的 TEST_REPORT.md 文件（使用 write_file mode=append，禁止用 edit_file 修改此文件）
-- TEST_REPORT.md 每个任务的格式：
-  - 标题行：## T{N}: {任务标题}
-  - 测试文件路径
-  - 测试内容简述
-  - 测试状态（通过/失败）
-  - 运行的编译/测试命令
-  - 关键输出摘要
-- 对于无法编写自动化测试的场景（如纯 GUI 渲染），改为：编译验证 + 运行验证（确认程序不崩溃），并在 TEST_REPORT.md 中说明"手动验证：编译通过 + 启动不崩溃"。
-- 每次修改后运行编译/构建命令验证，确保代码可编译。
-- 完成前调用 git_diff 自检，确认改动范围符合任务要求。
-- write_file 始终 UTF-8 编码，直接写中文即可。
-- 完成后简要总结：列出修改的文件、每个文件改了什么、运行过哪些验证命令、是否还有残余风险。
+- 禁止不读文件就直接修改；禁止无关重构、无关格式化、依赖 churn 或 speculative feature work。
 - 遇到无法解决的问题，说明具体原因，不要反复重试相同的失败操作。
 `)
 
@@ -3050,8 +3336,8 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 
 ## Tool-call JSON reliability
 - Keep every tool_call arguments JSON complete and valid. Never truncate JSON strings.
-- write_file has no per-call content limit. However, if content exceeds about 6000 characters, consider splitting into chunks to avoid model output truncation: first call write_file(mode="overwrite"), then call write_file(mode="append") for following chunks.
-- Prefer edit_file or edit_lines for existing files. Use write_file only for new files or TEST_REPORT.md append entries.
+- write_file has no per-call content limit. However, if content exceeds about 6000 characters, split it into chunks to avoid model output truncation: first call write_file(mode="overwrite"), then call write_file(mode="append") for following chunks.
+- Prefer edit_file or edit_lines for existing files. Use write_file only for new files, or TEST_REPORT.md append entries when the user or repo workflow explicitly asks for a report.
 - If a write_file call was rejected because arguments JSON was invalid or incomplete, retry with smaller chunks instead of repeating the same large call.
 
 ## Command guardrails
@@ -3065,24 +3351,19 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	// Platform hint so the LLM generates correct shell commands.
 	b.WriteString(fmt.Sprintf("平台: %s\n", normalizedRemotePlatform()))
 	if normalizedRemotePlatform() == "windows" {
-		b.WriteString("注意: bash 工具通过 PowerShell 执行。使用 PowerShell 语法（如 `;` 分隔命令，`Remove-Item` 删除文件）。\n")
-		b.WriteString("Windows shell contract: do not use bash-only syntax such as `mkdir -p` or `&&`; use `working_dir` for command location and PowerShell syntax for commands. Do not switch CMake generators inside an existing build directory; reuse the existing generator or use a separate build directory.\n")
-		b.WriteString("C/C++ compilation: `cl.exe` is NOT in PATH by default. To compile with MSVC, use a build script (build.bat) that calls vcvars64.bat first, or use `g++`/`gcc` from MinGW if available. Example build.bat:\n")
-		b.WriteString("```\n@echo off\ncall \"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat\" >nul 2>&1\ncl.exe /std:c++17 /EHsc /utf-8 /Fe:output.exe main.cpp\n```\n")
-		b.WriteString("Then run: `bash(command=\".\\build.bat\", working_dir=\"project_path\")`\n")
-		b.WriteString("Alternative: use `g++ -o output.exe main.cpp` if g++ is available (check with `where g++`).\n")
-		b.WriteString("IMPORTANT: Always add `/utf-8` flag to cl.exe to avoid code page 936 warnings with Chinese comments.\n")
+		b.WriteString("Windows shell contract: bash 工具通过 PowerShell 执行；使用 `;` 分隔命令，避免 bash-only 语法如 `mkdir -p` 或 `&&`，并用 working_dir 指定目录；不要在既有 build 目录中切换 CMake generators。\n")
+		b.WriteString("C/C++: cl.exe 通常不在 PATH；需要 MSVC 时用项目已有 build 脚本或先调用 vcvars64.bat，并为 cl.exe 添加 `/utf-8`。\n")
 	}
 
 	if reqCtx != "" {
 		b.WriteString("\n## 需求摘要\n")
-		b.WriteString(truncateRunesForSubAgent(reqCtx, 800))
+		b.WriteString(truncateRunesForSubAgent(reqCtx, 400))
 		b.WriteString("\n")
 	}
 
 	if designCtx != "" {
 		b.WriteString("\n## 设计摘要\n")
-		b.WriteString(truncateRunesForSubAgent(designCtx, 800))
+		b.WriteString(truncateRunesForSubAgent(designCtx, 400))
 		b.WriteString("\n")
 	}
 

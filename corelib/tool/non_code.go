@@ -19,6 +19,16 @@ func RunGitCmd(dir string, args ...string) (string, error) {
 
 // SearchFilesInProject searches for a pattern in project files.
 func SearchFilesInProject(projectPath, pattern, filePattern string) string {
+	return SearchFilesInProjectCtx(context.Background(), projectPath, pattern, filePattern)
+}
+
+func SearchFilesInProjectCtx(ctx context.Context, projectPath, pattern, filePattern string) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return "search cancelled"
+	}
 	if projectPath == "" {
 		return "未指定项目路径"
 	}
@@ -29,7 +39,7 @@ func SearchFilesInProject(projectPath, pattern, filePattern string) string {
 	}
 	args = append(args, projectPath)
 
-	cmd := Command("rg", args...)
+	cmd := CommandContext(ctx, "rg", args...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		result := string(out)
@@ -38,10 +48,16 @@ func SearchFilesInProject(projectPath, pattern, filePattern string) string {
 		}
 		return result
 	}
+	if ctx.Err() != nil {
+		return "search cancelled"
+	}
 
 	var results []string
 	count := 0
 	_ = filepath.Walk(projectPath, func(path string, info os.FileInfo, err error) error {
+		if ctx.Err() != nil {
+			return filepath.SkipAll
+		}
 		if err != nil || info.IsDir() {
 			return nil
 		}
@@ -57,6 +73,9 @@ func SearchFilesInProject(projectPath, pattern, filePattern string) string {
 		if info.Size() > 1024*1024 {
 			return nil
 		}
+		if ctx.Err() != nil {
+			return filepath.SkipAll
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil
@@ -68,6 +87,9 @@ func SearchFilesInProject(projectPath, pattern, filePattern string) string {
 		}
 		return nil
 	})
+	if ctx.Err() != nil {
+		return "search cancelled"
+	}
 
 	if len(results) == 0 {
 		return "未找到匹配结果"
@@ -77,6 +99,16 @@ func SearchFilesInProject(projectPath, pattern, filePattern string) string {
 
 // CheckProjectHealth checks if a project can build/compile.
 func CheckProjectHealth(projectPath string) string {
+	return CheckProjectHealthCtx(context.Background(), projectPath)
+}
+
+func CheckProjectHealthCtx(parent context.Context, projectPath string) string {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if parent.Err() != nil {
+		return "check_health cancelled"
+	}
 	if projectPath == "" {
 		return "未指定项目路径"
 	}
@@ -84,12 +116,14 @@ func CheckProjectHealth(projectPath string) string {
 	var results []string
 
 	if _, err := os.Stat(filepath.Join(projectPath, "go.mod")); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 		defer cancel()
 		cmd := CommandContext(ctx, "go", "vet", "./...")
 		cmd.Dir = projectPath
 		if out, err := cmd.CombinedOutput(); err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
+			if ctx.Err() == context.Canceled {
+				results = append(results, "check_health cancelled")
+			} else if ctx.Err() == context.DeadlineExceeded {
 				results = append(results, "⚠️ Go vet 超时（30s），项目可能较大")
 			} else {
 				results = append(results, fmt.Sprintf("❌ Go vet 发现问题:\n%s", string(out)))

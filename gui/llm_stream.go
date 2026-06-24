@@ -114,18 +114,17 @@ func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []
 	// as a separate system message. Keeping msg.Content clean ensures the
 	// assistant message in conversation history only contains the LLM's
 	// own text, not system-injected recovery instructions.
-	if len(msg.ToolCalls) == 0 {
-		return llmFinishReasonStop.String(), truncatedNames
-	}
 	return finishReason, truncatedNames
 }
 
 // truncatedRequiredFields maps tool names to their required fields for
-// truncation detection. Only tools with large-content fields that can
-// consume the entire output budget need to be listed here.
+// truncation detection. These are the tool calls most likely to become unsafe
+// when output stops after emitting only part of the argument object.
 var truncatedRequiredFields = map[string][]string{
 	"write_file": {"path", "content"},
 	"edit_file":  {"path", "old_string", "new_string"},
+	"edit_lines": {"path", "operation", "start_line"},
+	"bash":       {"command"},
 }
 
 // detectTruncatedRequiredField checks if a parsed tool call argument map is
@@ -136,12 +135,16 @@ var truncatedRequiredFields = map[string][]string{
 // pattern where a large field (e.g. content) consumed the entire output
 // budget, preventing subsequent required fields from being generated.
 func detectTruncatedRequiredField(toolName string, parsed map[string]interface{}) string {
-	fields, ok := truncatedRequiredFields[toolName]
+	fields, ok := truncatedRequiredFields[strings.TrimSpace(toolName)]
 	if !ok {
 		return ""
 	}
 	for _, f := range fields {
-		if _, exists := parsed[f]; !exists {
+		value, exists := parsed[f]
+		if !exists {
+			return f
+		}
+		if s, ok := value.(string); ok && strings.TrimSpace(s) == "" {
 			return f
 		}
 	}

@@ -378,8 +378,11 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 
 		// Execute tool calls.
-		totalToolCalls += len(choice.Message.ToolCalls)
 		for _, tc := range choice.Message.ToolCalls {
+			if cb.ShouldStop() {
+				return LoopResult{Error: "cancelled", Iterations: iteration + 1, ToolCalls: totalToolCalls}
+			}
+			totalToolCalls++
 			argsJSON := normalizeLoopToolArguments(tc.Function.Arguments)
 			execResult, syntheticFailure := validateLoopToolArguments(tc.Function.Name, argsJSON)
 			if !syntheticFailure {

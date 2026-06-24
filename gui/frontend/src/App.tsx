@@ -862,7 +862,10 @@ function App() {
     }, [showModelSettings, activeTab]);
 
     // Clear fetched model list when switching provider tabs
-    useEffect(() => { setFetchedModelList([]); }, [activeTab, activeTool]);
+    useEffect(() => {
+        setFetchedModelList([]);
+        setModelListOpen(false);
+    }, [activeTab, activeTool]);
 
     const [showInstallSkillModal, setShowInstallSkillModal] = useState(false);
     const [selectedSkillsToInstall, setSelectedSkillsToInstall] = useState<string[]>([]);
@@ -966,6 +969,7 @@ function App() {
     const [showModelRecommend, setShowModelRecommend] = useState(false);
     const [fetchedModelList, setFetchedModelList] = useState<{id: string; name?: string}[]>([]);
     const [fetchingModelList, setFetchingModelList] = useState(false);
+    const [modelListOpen, setModelListOpen] = useState(false);
     const [providerFilter, setProviderFilter] = useState<'all' | 'china' | 'global'>('all');
     const [selectedProviderForUrl, setSelectedProviderForUrl] = useState<ProviderEndpoint | null>(null);
     const [hoveredProvider, setHoveredProvider] = useState<{ provider: ProviderEndpoint, x: number, y: number } | null>(null);
@@ -3087,6 +3091,9 @@ ${instruction}`;
         }
     };
     const codexConfigUpdating = codexConfigUpdateCount > 0;
+    const virtualEmployeeLayoutClassName = veSettingsAuthorized
+        ? 'settings-ve-layout'
+        : 'settings-ve-layout settings-ve-layout--favorites-only';
     return (
         <div
             className="app-viewport"
@@ -3447,22 +3454,24 @@ ${instruction}`;
                                 <MigrationSettingsPanel lang={lang} showToastMessage={showToastMessage} />
                             </div>
                             {veNavigationAvailable && (
-                                <div className="settings-content settings-panel" hidden={settingsTab !== 'virtualEmployee'}>
-                                    <div className="settings-ve-section">
+                                <div className="settings-content settings-panel settings-content--virtual-employee" hidden={settingsTab !== 'virtualEmployee'}>
+                                    <div className={virtualEmployeeLayoutClassName}>
+                                        {veSettingsAuthorized && (
+                                            <div className="settings-ve-section settings-ve-section--primary">
+                                                <VirtualEmployeeSettingsPanel remoteMachineId={config?.remote_machine_id || ''} lang={lang} />
+                                            </div>
+                                        )}
+                                        <div className="settings-ve-section settings-ve-section--side">
                                             <FavoriteEmployeeSettingsPanel
-                                            favoriteEmployeeIds={userFavoriteEmployeeIds}
-                                            veList={veList}
-                                            onAdd={(veId) => handleSetFavoriteEmployee(veList.find(v => participantIdentityMatches(v.id, veId) || participantIdentityMatches(v.machine_id, veId)) || { id: veId, name: veId, skill_description: '', access_policy: 'public', status: 'active', online_status: 'online' })}
-                                            onRemove={handleRemoveFavoriteEmployee}
-                                            onReorder={handleReorderFavorites}
-                                            lang={lang}
-                                        />
-                                    </div>
-                                    {veSettingsAuthorized && (
-                                        <div className="settings-ve-section settings-ve-section--divided">
-                                            <VirtualEmployeeSettingsPanel remoteMachineId={config?.remote_machine_id || ''} lang={lang} />
+                                                favoriteEmployeeIds={userFavoriteEmployeeIds}
+                                                veList={veList}
+                                                onAdd={(veId) => handleSetFavoriteEmployee(veList.find(v => participantIdentityMatches(v.id, veId) || participantIdentityMatches(v.machine_id, veId)) || { id: veId, name: veId, skill_description: '', access_policy: 'public', status: 'active', online_status: 'online' })}
+                                                onRemove={handleRemoveFavoriteEmployee}
+                                                onReorder={handleReorderFavorites}
+                                                lang={lang}
+                                            />
                                         </div>
-                                    )}
+                                    </div>
                                 </div>
                             )}
 
@@ -4125,16 +4134,56 @@ ${instruction}`;
                                                 const modelOptions = fetchedModelList.length > 0
                                                     ? fetchedModelList
                                                     : getKnownModelOptions(activeTool, currentModel.model_name);
-                                                const datalistId = `model-options-${activeTool}-${activeTab}`;
+                                                const currentModelId = currentModel.model_id || '';
+                                                const normalizedQuery = currentModelId.trim().toLowerCase();
+                                                const matchingModelOptions = normalizedQuery
+                                                    ? modelOptions.filter((m) => {
+                                                        const id = String(m.id || '').toLowerCase();
+                                                        const name = String(m.name || '').toLowerCase();
+                                                        return id.includes(normalizedQuery) || name.includes(normalizedQuery);
+                                                    })
+                                                    : modelOptions;
+                                                const visibleModelOptions = matchingModelOptions.length > 0 ? matchingModelOptions : modelOptions;
+                                                const optionsId = `provider-config-model-options-${activeTool}-${activeTab}`;
                                                 return (
-                                                    <>
+                                                    <div
+                                                        className="provider-config-model-combobox"
+                                                        onBlur={(e) => {
+                                                            const nextFocus = e.relatedTarget as Node | null;
+                                                            if (!nextFocus || !e.currentTarget.contains(nextFocus)) {
+                                                                setModelListOpen(false);
+                                                            }
+                                                        }}
+                                                    >
                                                         <input
                                                             type="text"
                                                             className="form-input provider-config-model-select"
                                                             data-field="model-id"
-                                                            list={datalistId}
-                                                            value={currentModel.model_id || ''}
-                                                            onChange={(e) => handleModelIdChange(e.target.value)}
+                                                            role="combobox"
+                                                            aria-autocomplete="list"
+                                                            aria-haspopup="listbox"
+                                                            aria-expanded={modelListOpen && modelOptions.length > 0}
+                                                            aria-controls={optionsId}
+                                                            value={currentModelId}
+                                                            onChange={(e) => {
+                                                                handleModelIdChange(e.target.value);
+                                                                if (modelOptions.length > 0) setModelListOpen(true);
+                                                            }}
+                                                            onFocus={() => {
+                                                                if (modelOptions.length > 0) setModelListOpen(true);
+                                                            }}
+                                                            onKeyDown={(e) => {
+                                                                if (e.key === 'Escape') setModelListOpen(false);
+                                                                if (e.key === 'ArrowDown' && modelOptions.length > 0) {
+                                                                    setModelListOpen(true);
+                                                                    window.setTimeout(() => {
+                                                                        document.getElementById(optionsId)?.querySelector<HTMLButtonElement>('.provider-config-model-option')?.focus();
+                                                                    }, 0);
+                                                                }
+                                                                if (e.key === 'Enter' && modelOptions.length > 0) {
+                                                                    setModelListOpen(true);
+                                                                }
+                                                            }}
                                                             placeholder={fetchingModelList
                                                                 ? localizeText("Loading...", "加载中...", "載入中...")
                                                                 : modelOptions.length > 0
@@ -4146,17 +4195,49 @@ ${instruction}`;
                                                             spellCheck={false}
                                                             autoComplete="off"
                                                         />
-                                                        <datalist id={datalistId}>
-                                                            {modelOptions.map((m, i) => (
-                                                                <option key={`${m.id}-${i}`} value={m.id}>
-                                                                    {m.name && m.name !== m.id ? m.name : ''}
-                                                                </option>
-                                                            ))}
-                                                        </datalist>
-                                                    </>
+                                                        <button
+                                                            type="button"
+                                                            className="provider-config-model-toggle"
+                                                            aria-label={localizeText("Show model list", "显示模型列表", "顯示模型列表")}
+                                                            aria-haspopup="listbox"
+                                                            aria-expanded={modelListOpen && modelOptions.length > 0}
+                                                            disabled={fetchingModelList || modelOptions.length === 0}
+                                                            onClick={() => setModelListOpen((open) => modelOptions.length > 0 ? !open : false)}
+                                                        >
+                                                            v
+                                                        </button>
+                                                        {modelListOpen && modelOptions.length > 0 && (
+                                                            <div
+                                                                id={optionsId}
+                                                                className="provider-config-model-options"
+                                                                role="listbox"
+                                                            >
+                                                                {visibleModelOptions.map((m, i) => (
+                                                                    <button
+                                                                        key={`${m.id}-${i}`}
+                                                                        type="button"
+                                                                        className="provider-config-model-option"
+                                                                        role="option"
+                                                                        aria-selected={m.id === currentModelId}
+                                                                        onMouseDown={(e) => e.preventDefault()}
+                                                                        onClick={() => {
+                                                                            handleModelIdChange(m.id);
+                                                                            setModelListOpen(false);
+                                                                        }}
+                                                                    >
+                                                                        <span className="provider-config-model-option-id">{m.id}</span>
+                                                                        {m.name && m.name !== m.id && (
+                                                                            <span className="provider-config-model-option-name">{m.name}</span>
+                                                                        )}
+                                                                    </button>
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                    </div>
                                                 );
                                                 })()}
                                             <button
+                                                type="button"
                                                 className="btn-link provider-config-fetch-button"
                                                 disabled={fetchingModelList}
                                                 data-loading={fetchingModelList ? 'true' : 'false'}
@@ -4172,15 +4253,19 @@ ${instruction}`;
                                                     const protocol = activeTool === 'claude' ? 'anthropic' : 'openai';
                                                     setFetchingModelList(true);
                                                     setFetchedModelList([]);
+                                                    setModelListOpen(false);
                                                     try {
                                                         const userAgent = currentModel.agent_type || currentModel.user_agent || 'openclaw';
                                                         const models = await FetchProviderModels(url, key, protocol, userAgent);
                                                         if (models && models.length > 0) {
                                                             setFetchedModelList(models.map((m: any) => ({ id: m.id || '', name: m.name || '' })));
+                                                            setModelListOpen(true);
                                                         } else {
+                                                            setModelListOpen(false);
                                                             setStatus(localizeText("Provider returned empty model list", "服务商返回的模型列表为空", "服務商返回的模型列表為空"));
                                                         }
                                                     } catch (e) {
+                                                        setModelListOpen(false);
                                                         setStatus(localizeText("Fetch models failed: ", "获取模型列表失败：", "取得模型列表失敗：") + e);
                                                     } finally {
                                                         setFetchingModelList(false);

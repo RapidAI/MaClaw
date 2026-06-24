@@ -228,7 +228,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	}
 	_ = InitLLMModule(provider, systemSettings, nodeID, entryService, haSvc)
 
-	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.FailureLogs, gossipRepo, gossipCache, smHandlers, systemSettings, st.News, haConfigSvc, haSvc)
+	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.FailureLogs, gossipRepo, gossipCache, smHandlers, systemSettings, st.News, haConfigSvc, haSvc, st.HubUserUsage)
 
 	app.Store = st
 	app.AdminService = adminService

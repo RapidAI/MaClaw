@@ -44,6 +44,21 @@ const USAGE_STATS_I18N = {
     colCostRMB: 'Charge',
     loadFailed: 'Load usage stats failed: {error}',
     generatedAt: 'Generated at {time}'
+    , subtabUsage: 'Usage Report'
+    , subtabRanking: 'Ranking'
+    , rankingPeriodYearly: 'Yearly'
+    , rankingDimension: 'Display'
+    , rankingAll: 'All'
+    , rankingTokens: 'Tokens'
+    , rankingDuration: 'Online Time'
+    , rankingYear: 'Year'
+    , rankingEmpty: 'No ranking data found for the selected period.'
+    , rankingTokenRank: 'Token Rank'
+    , rankingDurationRank: 'Time Rank'
+    , rankingPager: 'Showing {start}-{end} / {total}'
+    , rankingPrev: 'Previous'
+    , rankingNext: 'Next'
+    , rankingLoadFailed: 'Load user rankings failed: {error}'
   },
   zh: {
     navLabel: '\u4f7f\u7528\u7edf\u8ba1',
@@ -86,17 +101,37 @@ const USAGE_STATS_I18N = {
     colCostRMB: '\u8ba1\u8d39',
     loadFailed: '\u52a0\u8f7d\u4f7f\u7528\u7edf\u8ba1\u5931\u8d25: {error}',
     generatedAt: '\u751f\u6210\u65f6\u95f4 {time}'
+    , subtabUsage: '\u7528\u91cf\u7edf\u8ba1'
+    , subtabRanking: '\u6392\u884c\u699c'
+    , rankingPeriodYearly: '\u6309\u5e74'
+    , rankingDimension: '\u663e\u793a\u7ef4\u5ea6'
+    , rankingAll: '\u5168\u90e8'
+    , rankingTokens: 'Token \u91cf'
+    , rankingDuration: '\u5728\u7ebf\u65f6\u957f'
+    , rankingYear: '\u5e74\u4efd'
+    , rankingEmpty: '\u5f53\u524d\u5468\u671f\u6682\u65e0\u6392\u884c\u6570\u636e\u3002'
+    , rankingTokenRank: 'Token \u6392\u540d'
+    , rankingDurationRank: '\u65f6\u957f\u6392\u540d'
+    , rankingPager: '\u663e\u793a {start}-{end} / {total}'
+    , rankingPrev: '\u4e0a\u4e00\u9875'
+    , rankingNext: '\u4e0b\u4e00\u9875'
+    , rankingLoadFailed: '\u52a0\u8f7d\u7528\u6237\u6392\u884c\u5931\u8d25: {error}'
   }
 };
 const ust = (key, vars = {}) => ((USAGE_STATS_I18N[currentLang] || USAGE_STATS_I18N.en)[key] || USAGE_STATS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
 let usageStatsCache = null;
 let usageStatsState = {
+  subtab: 'usage',
   scope: 'user',
   period: 'daily',
   date: '',
   month: '',
-  entity: ''
+  year: '',
+  entity: '',
+  rankingDimension: 'all',
+  rankingPage: 1
 };
+let userRankingCache = null;
 function usageStatsTenantScoped() {
   const profile = typeof adminProfile === 'function' ? adminProfile() : null;
   return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant');
@@ -109,6 +144,7 @@ function ensureUsageStatsDefaults() {
   const now = new Date();
   if (!usageStatsState.date) usageStatsState.date = now.toISOString().slice(0, 10);
   if (!usageStatsState.month) usageStatsState.month = now.toISOString().slice(0, 7);
+  if (!usageStatsState.year) usageStatsState.year = String(now.getUTCFullYear());
 }
 function fmtInt(value) {
   const locale = currentLang === 'zh' ? 'zh-CN' : 'en-US';
@@ -134,6 +170,13 @@ function fmtRMB(value) {
   if (!Number.isFinite(n)) return '0';
   return n.toFixed(n >= 100 ? 2 : 4).replace(/0+$/, '').replace(/\.$/, '') || '0';
 }
+function fmtDuration(seconds) {
+  const total = Math.max(0, Number(seconds || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours > 0) return hours + 'h ' + minutes + 'm';
+  return minutes + 'm';
+}
 function usageMetricCard(label, value, hint) {
   return '<div class="metric" style="padding:12px 13px"><label>' + escapeHtml(label) + '</label><strong>' + escapeHtml(value) + '</strong>' + (hint ? ('<span>' + escapeHtml(hint) + '</span>') : '') + '</div>';
 }
@@ -141,9 +184,17 @@ function ensureUsageStatsUI() {
   if (document.getElementById('usageStatsRoot')) return;
   const tab = document.getElementById('tab-usagestats');
   if (!tab) return;
+  if (!document.getElementById('userRankingStyles')) {
+    const style = document.createElement('style');
+    style.id = 'userRankingStyles';
+    style.textContent = '#userRankingCards{align-items:stretch}.user-ranking-card{min-width:0;height:100%;padding:12px 13px!important;gap:8px!important;display:grid!important;grid-template-rows:22px 1fr}.user-ranking-card-title{display:flex;align-items:center;min-width:0;height:22px;font-size:13px;line-height:22px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-ranking-card-metrics{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;grid-auto-rows:44px;gap:6px!important;align-items:stretch}.user-ranking-card-metrics .usage-rank-chip{min-height:44px;display:flex;flex-direction:column;justify-content:center}.user-ranking-card-metrics .usage-rank-label,.user-ranking-card-metrics .usage-rank-value{line-height:1.15}@media(max-width:1180px){#userRankingCards{grid-template-columns:repeat(2,minmax(0,1fr))!important}}@media(max-width:760px){#userRankingCards{grid-template-columns:1fr!important}}';
+    document.head.appendChild(style);
+  }
   const host = document.createElement('div');
   host.id = 'usageStatsRoot';
   host.innerHTML = '' +
+    '<div class="filter-group usage-stats-subtabs" style="margin-bottom:12px"><button id="usageStatsSubtabUsage" class="btn-secondary" type="button" onclick="switchUsageStatsSubtab(\'usage\')"></button><button id="usageStatsSubtabRanking" class="btn-ghost" type="button" onclick="switchUsageStatsSubtab(\'ranking\')"></button></div>' +
+    '<div id="usageStatsUsagePane">' +
     '<div class="item" style="padding:12px 14px"><div class="grid2" style="gap:8px">' +
     '<div><label id="usageStatsScopeLabel"></label><select id="usageStatsScope" style="height:36px" onchange="onUsageStatsFilterChange()"><option value="user" id="usageStatsScopeUser"></option><option value="group" id="usageStatsScopeGroup"></option><option value="provider" id="usageStatsScopeProvider"></option></select></div>' +
     '<div><label id="usageStatsPeriodLabel"></label><select id="usageStatsPeriod" style="height:36px" onchange="onUsageStatsFilterChange()"><option value="daily" id="usageStatsPeriodDaily"></option><option value="monthly" id="usageStatsPeriodMonthly"></option></select></div>' +
@@ -155,6 +206,17 @@ function ensureUsageStatsUI() {
     '<div class="usage-stats-detail-grid">' +
     '<div class="item" style="padding:12px 14px"><div class="item-title" style="font-size:14px" id="usageStatsTrendTitle"></div><div id="usageStatsTrend" style="margin-top:8px"></div></div>' +
     '<div class="item" style="padding:12px 14px"><div class="item-title" style="font-size:14px" id="usageStatsRowsTitle"></div><div id="usageStatsRows" style="margin-top:8px"></div></div>' +
+    '</div></div>' +
+    '<div id="usageStatsRankingPane" class="hidden">' +
+    '<div class="item" style="padding:12px 14px"><div class="grid3" style="gap:8px">' +
+    '<div><label id="userRankingPeriodLabel"></label><select id="userRankingPeriod" style="height:36px" onchange="onUserRankingFilterChange()"><option value="daily" id="userRankingPeriodDaily"></option><option value="monthly" id="userRankingPeriodMonthly"></option><option value="yearly" id="userRankingPeriodYearly"></option></select></div>' +
+    '<div id="userRankingDateWrap"><label id="userRankingDateLabel"></label><input id="userRankingDate" style="height:36px" type="date" onchange="onUserRankingFilterChange()"></div>' +
+    '<div id="userRankingMonthWrap"><label id="userRankingMonthLabel"></label><input id="userRankingMonth" style="height:36px" type="month" onchange="onUserRankingFilterChange()"></div>' +
+    '<div id="userRankingYearWrap"><label id="userRankingYearLabel"></label><input id="userRankingYear" style="height:36px" type="number" min="1970" max="9999" onchange="onUserRankingFilterChange()"></div>' +
+    '<div><label id="userRankingDimensionLabel"></label><select id="userRankingDimension" style="height:36px" onchange="onUserRankingFilterChange()"><option value="all" id="userRankingDimensionAll"></option><option value="tokens" id="userRankingDimensionTokens"></option><option value="duration" id="userRankingDimensionDuration"></option></select></div>' +
+    '</div><div id="userRankingGeneratedAt" class="item-meta" style="margin-top:8px;font-size:11px"></div></div>' +
+    '<div id="userRankingCards" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:10px"></div>' +
+    '<div id="userRankingPager" class="pager hidden" style="margin-top:12px"><div id="userRankingPagerMeta" class="pager-meta"></div><div class="pager-actions"><button id="userRankingPrev" class="btn-ghost" type="button" onclick="changeUserRankingPage(-1)"></button><button id="userRankingNext" class="btn-ghost" type="button" onclick="changeUserRankingPage(1)"></button></div></div>' +
     '</div>';
   tab.appendChild(host);
   syncUsageStatsScopeVisibility();
@@ -178,6 +240,21 @@ function applyUsageStatsI18n() {
   _s('usageStatsEntityLabel', 'textContent', ust('entity'));
   _s('usageStatsTrendTitle', 'textContent', ust('trendTitle'));
   _s('usageStatsRowsTitle', 'textContent', ust('rowsTitle'));
+  _s('usageStatsSubtabUsage', 'textContent', ust('subtabUsage'));
+  _s('usageStatsSubtabRanking', 'textContent', ust('subtabRanking'));
+  _s('userRankingPeriodLabel', 'textContent', ust('period'));
+  _s('userRankingPeriodDaily', 'textContent', ust('periodDaily'));
+  _s('userRankingPeriodMonthly', 'textContent', ust('periodMonthly'));
+  _s('userRankingPeriodYearly', 'textContent', ust('rankingPeriodYearly'));
+  _s('userRankingDateLabel', 'textContent', ust('date'));
+  _s('userRankingMonthLabel', 'textContent', ust('month'));
+  _s('userRankingYearLabel', 'textContent', ust('rankingYear'));
+  _s('userRankingDimensionLabel', 'textContent', ust('rankingDimension'));
+  _s('userRankingDimensionAll', 'textContent', ust('rankingAll'));
+  _s('userRankingDimensionTokens', 'textContent', ust('rankingTokens'));
+  _s('userRankingDimensionDuration', 'textContent', ust('rankingDuration'));
+  _s('userRankingPrev', 'textContent', ust('rankingPrev'));
+  _s('userRankingNext', 'textContent', ust('rankingNext'));
   renderUsageStats();
 }
 function syncUsageStatsFiltersFromState() {
@@ -194,6 +271,32 @@ function syncUsageStatsFiltersFromState() {
   const monthWrap = document.getElementById('usageStatsMonthWrap');
   if (dateWrap) dateWrap.style.display = usageStatsState.period === 'daily' ? 'block' : 'none';
   if (monthWrap) monthWrap.style.display = usageStatsState.period === 'monthly' ? 'block' : 'none';
+}
+function syncUserRankingFiltersFromState() {
+  ensureUsageStatsDefaults();
+  const periodEl = document.getElementById('userRankingPeriod');
+  const dateEl = document.getElementById('userRankingDate');
+  const monthEl = document.getElementById('userRankingMonth');
+  const yearEl = document.getElementById('userRankingYear');
+  const dimEl = document.getElementById('userRankingDimension');
+  if (periodEl) periodEl.value = usageStatsState.period;
+  if (dateEl) dateEl.value = usageStatsState.date;
+  if (monthEl) monthEl.value = usageStatsState.month;
+  if (yearEl) yearEl.value = usageStatsState.year;
+  if (dimEl) dimEl.value = usageStatsState.rankingDimension;
+  const dateWrap = document.getElementById('userRankingDateWrap');
+  const monthWrap = document.getElementById('userRankingMonthWrap');
+  const yearWrap = document.getElementById('userRankingYearWrap');
+  if (dateWrap) dateWrap.style.display = usageStatsState.period === 'daily' ? 'block' : 'none';
+  if (monthWrap) monthWrap.style.display = usageStatsState.period === 'monthly' ? 'block' : 'none';
+  if (yearWrap) yearWrap.style.display = usageStatsState.period === 'yearly' ? 'block' : 'none';
+}
+function switchUsageStatsSubtab(tab) {
+  usageStatsState.subtab = tab === 'ranking' ? 'ranking' : 'usage';
+  usageStatsState.rankingPage = 1;
+  renderUsageStats();
+  if (usageStatsState.subtab === 'ranking') loadUserRankings();
+  else loadUsageStats();
 }
 function buildUsageStatsEntityOptions() {
   const root = document.getElementById('usageStatsEntity');
@@ -285,11 +388,21 @@ function renderUsageSummary() {
 }
 function renderUsageStats() {
   ensureUsageStatsUI();
+  const usagePane = document.getElementById('usageStatsUsagePane');
+  const rankingPane = document.getElementById('usageStatsRankingPane');
+  const usageBtn = document.getElementById('usageStatsSubtabUsage');
+  const rankingBtn = document.getElementById('usageStatsSubtabRanking');
+  if (usagePane) usagePane.classList.toggle('hidden', usageStatsState.subtab !== 'usage');
+  if (rankingPane) rankingPane.classList.toggle('hidden', usageStatsState.subtab !== 'ranking');
+  if (usageBtn) usageBtn.className = usageStatsState.subtab === 'usage' ? 'btn-secondary' : 'btn-ghost';
+  if (rankingBtn) rankingBtn.className = usageStatsState.subtab === 'ranking' ? 'btn-secondary' : 'btn-ghost';
   syncUsageStatsFiltersFromState();
+  syncUserRankingFiltersFromState();
   buildUsageStatsEntityOptions();
   renderUsageSummary();
   renderUsageTrend();
   renderUsageRows();
+  renderUserRankings();
   const generatedAt = document.getElementById('usageStatsGeneratedAt');
   if (!generatedAt) return;
   if (usageStatsCache && usageStatsCache.generated_at) {
@@ -299,6 +412,42 @@ function renderUsageStats() {
   } else {
     generatedAt.textContent = '';
   }
+}
+function renderUserRankings() {
+  const root = document.getElementById('userRankingCards');
+  if (!root) return;
+  const rows = userRankingCache && userRankingCache.rows || [];
+  if (!rows.length) {
+    root.innerHTML = '<div class="hint" style="grid-column:1/-1">' + ust('rankingEmpty') + '</div>';
+  } else {
+    root.innerHTML = rows.map(function(row) {
+      const email = row.user_email || row.user_name || '-';
+      return '<div class="item user-ranking-card">' +
+        '<div class="item-title mono user-ranking-card-title" title="' + escapeHtml(email) + '">' + escapeHtml(email) + '</div>' +
+        '<div class="usage-rank-sub user-ranking-card-metrics">' +
+        '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('rankingTokens') + '</span><span class="usage-rank-value">' + fmtInt(row.total_tokens) + '</span></div>' +
+        '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('rankingDuration') + '</span><span class="usage-rank-value">' + fmtDuration(row.duration_seconds) + '</span></div>' +
+        '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('rankingTokenRank') + '</span><span class="usage-rank-value">#' + fmtInt(row.token_rank) + '</span></div>' +
+        '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('rankingDurationRank') + '</span><span class="usage-rank-value">#' + fmtInt(row.duration_rank) + '</span></div>' +
+        '</div></div>';
+    }).join('');
+  }
+  const generatedAt = document.getElementById('userRankingGeneratedAt');
+  if (generatedAt && userRankingCache && userRankingCache.generated_at) {
+    const locale = currentLang === 'zh' ? 'zh-CN' : 'en-US';
+    generatedAt.textContent = ust('generatedAt', { time: new Date(userRankingCache.generated_at).toLocaleString(locale) });
+  }
+  const pager = document.getElementById('userRankingPager');
+  const meta = document.getElementById('userRankingPagerMeta');
+  const prev = document.getElementById('userRankingPrev');
+  const next = document.getElementById('userRankingNext');
+  const total = Number(userRankingCache && userRankingCache.total || 0);
+  const page = Number(userRankingCache && userRankingCache.page || usageStatsState.rankingPage);
+  const pageSize = Number(userRankingCache && userRankingCache.page_size || 100);
+  if (pager) pager.classList.toggle('hidden', total <= pageSize && page <= 1);
+  if (meta) meta.textContent = total ? ust('rankingPager', { start: String((page - 1) * pageSize + 1), end: String(Math.min(total, page * pageSize)), total: String(total) }) : '';
+  if (prev) prev.disabled = page <= 1;
+  if (next) next.disabled = page * pageSize >= total;
 }
 function onUsageStatsFilterChange() {
   if (!usageStatsTenantScoped()) return;
@@ -316,9 +465,33 @@ function onUsageStatsFilterChange() {
   usageStatsState.entity = scopeChanged ? '' : (entityEl && entityEl.value || '');
   loadUsageStats();
 }
+function onUserRankingFilterChange() {
+  const periodEl = document.getElementById('userRankingPeriod');
+  const dateEl = document.getElementById('userRankingDate');
+  const monthEl = document.getElementById('userRankingMonth');
+  const yearEl = document.getElementById('userRankingYear');
+  const dimEl = document.getElementById('userRankingDimension');
+  usageStatsState.period = periodEl && periodEl.value || 'daily';
+  usageStatsState.date = dateEl && dateEl.value || usageStatsState.date;
+  usageStatsState.month = monthEl && monthEl.value || usageStatsState.month;
+  usageStatsState.year = yearEl && yearEl.value || usageStatsState.year;
+  usageStatsState.rankingDimension = dimEl && dimEl.value || 'all';
+  usageStatsState.rankingPage = 1;
+  loadUserRankings();
+}
+function changeUserRankingPage(delta) {
+  const next = Math.max(1, usageStatsState.rankingPage + delta);
+  if (next === usageStatsState.rankingPage) return;
+  usageStatsState.rankingPage = next;
+  loadUserRankings();
+}
 async function loadUsageStats() {
   if (!usageStatsTenantScoped()) {
     syncUsageStatsScopeVisibility();
+    return;
+  }
+  if (usageStatsState.subtab === 'ranking') {
+    loadUserRankings();
     return;
   }
   ensureUsageStatsDefaults();
@@ -342,6 +515,31 @@ async function loadUsageStats() {
     showToast(msg, 'error');
   }
 }
+async function loadUserRankings() {
+  if (!usageStatsTenantScoped()) {
+    syncUsageStatsScopeVisibility();
+    return;
+  }
+  ensureUsageStatsDefaults();
+  ensureUsageStatsUI();
+  syncUserRankingFiltersFromState();
+  try {
+    const params = new URLSearchParams();
+    params.set('period', usageStatsState.period);
+    params.set('dimension', usageStatsState.rankingDimension);
+    params.set('page', String(usageStatsState.rankingPage));
+    params.set('page_size', '100');
+    if (usageStatsState.period === 'daily') params.set('date', usageStatsState.date);
+    if (usageStatsState.period === 'monthly') params.set('month', usageStatsState.month);
+    if (usageStatsState.period === 'yearly') params.set('year', usageStatsState.year);
+    userRankingCache = await api('/api/admin/user-rankings?' + params.toString());
+    renderUsageStats();
+  } catch (err) {
+    const msg = ust('rankingLoadFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  }
+}
 function registerUsageStatsTab() {
   if (!window.AdminTabRegistry || typeof window.AdminTabRegistry.registerTab !== 'function') return;
   window.AdminTabRegistry.registerTab({
@@ -357,6 +555,7 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
   });
 }
 window.loadUsageStats = loadUsageStats;
+window.loadUserRankings = loadUserRankings;
 registerUsageStatsTab();
 ensureUsageStatsUI();
 applyUsageStatsI18n();

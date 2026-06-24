@@ -323,12 +323,39 @@ func TestAdminPageSplitScriptOrder(t *testing.T) {
 		"assets/js/ha-news-admin.js",
 		"assets/js/llm-service-tab.js",
 		"assets/js/compute-market-tab.js",
+		"assets/js/user-rankings-tab.js",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("admin split script order = %v, want %v", got, want)
 	}
 }
 
+func TestAdminPageUserRankingsContract(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/user-rankings-tab.js")
+	core := readAdminAsset(t, "admin/assets/js/admin-core.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+
+	assertContainsAll(t, html, "user rankings script", []string{
+		`/admin/assets/js/user-rankings-tab.js?v=user-rankings-20260624-1`,
+	})
+	assertContainsAll(t, core, "user rankings lazy tab restore", []string{
+		`requested==='usermgmt'||requested==='userrankings'`,
+		`if(name==='userrankings'&&typeof initUserRankingsTab==='function')initUserRankingsTab()`,
+	})
+	assertContainsAll(t, js, "user rankings frontend contract", []string{
+		`/api/admin/user-rankings?`,
+		`/api/admin/hubs`,
+		`client-reported actual LLM usage`,
+		`localStorage.getItem('maclawHubCenterActiveTab')`,
+		`openTab('userrankings')`,
+	})
+	assertContainsAll(t, css, "user rankings layout", []string{
+		`#tab-userrankings`,
+		`.user-rankings-filter-grid`,
+		`.user-ranking-row`,
+	})
+}
 func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 	html := readAdminPageHTML(t)
 	js := readAdminAsset(t, "admin/assets/js/compute-market-tab.js")

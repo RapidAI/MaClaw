@@ -33,6 +33,16 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 	appID := strings.TrimSpace(in.AppID)
 	blueprintID := strings.TrimSpace(in.BlueprintID)
 	objectRole := strings.TrimSpace(in.ObjectRole)
+	approvalWorkflowID := strings.TrimSpace(in.ApprovalWorkflowID)
+	triggerEvent := strings.TrimSpace(in.TriggerEvent)
+	submittedBy := strings.TrimSpace(in.SubmittedBy)
+	if submittedBy == "" {
+		submittedBy = p.UserID
+	}
+	currentAssignee := strings.TrimSpace(in.CurrentAssignee)
+	if currentAssignee == "" {
+		currentAssignee = strings.TrimSpace(in.AssignedTo)
+	}
 	if existing, err := s.store.ListRecordApprovals(ctx, p.TenantID, QueryRecordApprovalsInput{
 		DatasetID:   datasetID,
 		RecordID:    recordID,
@@ -52,33 +62,41 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 	}
 	now := s.now().UTC()
 	approval := RecordApproval{
-		ID:                 newID("approval"),
-		TenantID:           p.TenantID,
-		DatasetID:          datasetID,
-		RecordID:           recordID,
-		AppID:              appID,
-		BlueprintID:        blueprintID,
-		ObjectRole:         objectRole,
-		Status:             recordApprovalStatusPending,
-		Kind:               kind,
-		Priority:           priority,
-		Summary:            strings.TrimSpace(in.Summary),
-		Request:            cloneJSONMap(in.Request),
-		WorkflowSkillID:    strings.TrimSpace(in.WorkflowSkillID),
-		WorkflowVersion:    strings.TrimSpace(in.WorkflowVersion),
-		WorkflowInstanceID: strings.TrimSpace(in.WorkflowInstanceID),
-		WorkflowNodeID:     strings.TrimSpace(in.WorkflowNodeID),
-		WorkflowDecisionID: strings.TrimSpace(in.WorkflowDecisionID),
-		BusinessStatus:     strings.TrimSpace(in.BusinessStatus),
-		ResultStatus:       strings.TrimSpace(in.ResultStatus),
-		ResultPayload:      cloneJSONMap(in.ResultPayload),
-		Outputs:            cloneJSONValue(in.Outputs),
-		Artifacts:          cloneJSONValue(in.Artifacts),
-		AssignedTo:         strings.TrimSpace(in.AssignedTo),
-		CreatedBy:          p.UserID,
-		CreatedAt:          now,
-		DueAt:              dueAt,
-		UpdatedAt:          now,
+		ID:                  newID("approval"),
+		TenantID:            p.TenantID,
+		DatasetID:           datasetID,
+		RecordID:            recordID,
+		AppID:               appID,
+		BlueprintID:         blueprintID,
+		ObjectRole:          objectRole,
+		ApprovalWorkflowID:  approvalWorkflowID,
+		TriggerEvent:        triggerEvent,
+		SubmittedBy:         submittedBy,
+		CurrentAssignee:     currentAssignee,
+		CurrentAssigneeType: strings.TrimSpace(in.CurrentAssigneeType),
+		FromStatus:          strings.TrimSpace(in.FromStatus),
+		ToStatus:            strings.TrimSpace(in.ToStatus),
+		Status:              recordApprovalStatusPending,
+		Kind:                kind,
+		Priority:            priority,
+		Summary:             strings.TrimSpace(in.Summary),
+		Request:             cloneJSONMap(in.Request),
+		WorkflowSkillID:     strings.TrimSpace(in.WorkflowSkillID),
+		WorkflowVersion:     strings.TrimSpace(in.WorkflowVersion),
+		WorkflowInstanceID:  strings.TrimSpace(in.WorkflowInstanceID),
+		WorkflowNodeID:      strings.TrimSpace(in.WorkflowNodeID),
+		WorkflowDecisionID:  strings.TrimSpace(in.WorkflowDecisionID),
+		DetailURL:           strings.TrimSpace(in.DetailURL),
+		BusinessStatus:      strings.TrimSpace(in.BusinessStatus),
+		ResultStatus:        strings.TrimSpace(in.ResultStatus),
+		ResultPayload:       cloneJSONMap(in.ResultPayload),
+		Outputs:             cloneJSONValue(in.Outputs),
+		Artifacts:           cloneJSONValue(in.Artifacts),
+		AssignedTo:          strings.TrimSpace(in.AssignedTo),
+		CreatedBy:           p.UserID,
+		CreatedAt:           now,
+		DueAt:               dueAt,
+		UpdatedAt:           now,
 	}
 	if approval.Summary == "" {
 		approval.Summary = "Approval requested for " + recordID
@@ -103,6 +121,13 @@ func (s *Service) ListRecordApprovals(ctx context.Context, p Principal, in Query
 	in.AppID = strings.TrimSpace(in.AppID)
 	in.BlueprintID = strings.TrimSpace(in.BlueprintID)
 	in.ObjectRole = strings.TrimSpace(in.ObjectRole)
+	in.ApprovalWorkflowID = strings.TrimSpace(in.ApprovalWorkflowID)
+	in.TriggerEvent = strings.TrimSpace(in.TriggerEvent)
+	in.SubmittedBy = strings.TrimSpace(in.SubmittedBy)
+	in.CurrentAssignee = strings.TrimSpace(in.CurrentAssignee)
+	in.CurrentAssigneeType = strings.TrimSpace(in.CurrentAssigneeType)
+	in.FromStatus = strings.TrimSpace(in.FromStatus)
+	in.ToStatus = strings.TrimSpace(in.ToStatus)
 	in.Status = strings.TrimSpace(in.Status)
 	if in.Status != "" && !validRecordApprovalStatus(in.Status) {
 		return nil, fmt.Errorf("%w: invalid approval status", ErrInvalidInput)
@@ -145,29 +170,37 @@ func validRecordApprovalLane(value string) bool {
 
 func recordApprovalMetadata(approval RecordApproval) map[string]any {
 	return map[string]any{
-		"approval_id":          approval.ID,
-		"app_id":               approval.AppID,
-		"blueprint_id":         approval.BlueprintID,
-		"object_role":          approval.ObjectRole,
-		"kind":                 approval.Kind,
-		"priority":             approval.Priority,
-		"assigned_to":          approval.AssignedTo,
-		"due_at":               formatOptionalPlanTime(approval.DueAt),
-		"workflow_skill_id":    approval.WorkflowSkillID,
-		"workflow_version":     approval.WorkflowVersion,
-		"workflow_instance_id": approval.WorkflowInstanceID,
-		"workflow_node_id":     approval.WorkflowNodeID,
-		"workflow_decision_id": approval.WorkflowDecisionID,
-		"business_status":      approval.BusinessStatus,
-		"result_status":        approval.ResultStatus,
-		"request":              cloneJSONMap(approval.Request),
-		"result_payload":       cloneJSONMap(approval.ResultPayload),
-		"outputs":              cloneJSONValue(approval.Outputs),
-		"artifacts":            cloneJSONValue(approval.Artifacts),
-		"decision":             approval.Decision,
-		"reason":               approval.Reason,
-		"created_by":           approval.CreatedBy,
-		"reviewed_by":          approval.ReviewedBy,
+		"approval_id":           approval.ID,
+		"app_id":                approval.AppID,
+		"blueprint_id":          approval.BlueprintID,
+		"object_role":           approval.ObjectRole,
+		"approval_workflow_id":  approval.ApprovalWorkflowID,
+		"trigger_event":         approval.TriggerEvent,
+		"submitted_by":          approval.SubmittedBy,
+		"current_assignee":      approval.CurrentAssignee,
+		"current_assignee_type": approval.CurrentAssigneeType,
+		"from_status":           approval.FromStatus,
+		"to_status":             approval.ToStatus,
+		"kind":                  approval.Kind,
+		"priority":              approval.Priority,
+		"assigned_to":           approval.AssignedTo,
+		"due_at":                formatOptionalPlanTime(approval.DueAt),
+		"workflow_skill_id":     approval.WorkflowSkillID,
+		"workflow_version":      approval.WorkflowVersion,
+		"workflow_instance_id":  approval.WorkflowInstanceID,
+		"workflow_node_id":      approval.WorkflowNodeID,
+		"workflow_decision_id":  approval.WorkflowDecisionID,
+		"detail_url":            approval.DetailURL,
+		"business_status":       approval.BusinessStatus,
+		"result_status":         approval.ResultStatus,
+		"request":               cloneJSONMap(approval.Request),
+		"result_payload":        cloneJSONMap(approval.ResultPayload),
+		"outputs":               cloneJSONValue(approval.Outputs),
+		"artifacts":             cloneJSONValue(approval.Artifacts),
+		"decision":              approval.Decision,
+		"reason":                approval.Reason,
+		"created_by":            approval.CreatedBy,
+		"reviewed_by":           approval.ReviewedBy,
 	}
 }
 
@@ -216,7 +249,18 @@ func (s *Service) ReviewRecordApproval(ctx context.Context, p Principal, approva
 	default:
 		return nil, fmt.Errorf("%w: decision must be approve or reject", ErrInvalidInput)
 	}
-	out, err := s.store.UpdateRecordApprovalStatus(ctx, p.TenantID, approvalID, status, decision, strings.TrimSpace(in.Reason), p.UserID, in.WorkflowNodeID, in.WorkflowVersion, in.WorkflowDecisionID, in.BusinessStatus, in.ResultStatus, in.ResultPayload, in.Outputs, in.Artifacts, s.now().UTC())
+	fromStatus := strings.TrimSpace(in.FromStatus)
+	if fromStatus == "" {
+		fromStatus = current.BusinessStatus
+	}
+	toStatus := strings.TrimSpace(in.ToStatus)
+	if toStatus == "" {
+		toStatus = strings.TrimSpace(in.BusinessStatus)
+	}
+	if toStatus == "" {
+		toStatus = status
+	}
+	out, err := s.store.UpdateRecordApprovalStatus(ctx, p.TenantID, approvalID, status, decision, strings.TrimSpace(in.Reason), p.UserID, in.WorkflowInstanceID, in.WorkflowNodeID, in.WorkflowVersion, in.WorkflowDecisionID, in.DetailURL, in.BusinessStatus, in.ResultStatus, in.CurrentAssignee, in.CurrentAssigneeType, fromStatus, toStatus, in.ResultPayload, in.Outputs, in.Artifacts, s.now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -264,6 +308,12 @@ func (s *Service) syncBusinessRecordFromApproval(ctx context.Context, p Principa
 	setString("app_id", approval.AppID)
 	setString("blueprint_id", approval.BlueprintID)
 	setString("object_role", approval.ObjectRole)
+	setString("approval_workflow_id", approval.ApprovalWorkflowID)
+	setString("approval_trigger_event", approval.TriggerEvent)
+	setString("approval_submitted_by", approval.SubmittedBy)
+	setString("approval_current_assignee_type", approval.CurrentAssigneeType)
+	setString("approval_from_status", approval.FromStatus)
+	setString("approval_to_status", approval.ToStatus)
 	setString("approval_status", approval.Status)
 	setString("approval_lane", approvalBusinessRecordLane(approval))
 	setString("approval_decision", approval.Decision)
@@ -273,7 +323,12 @@ func (s *Service) syncBusinessRecordFromApproval(ctx context.Context, p Principa
 	setString("approval_workflow_version", approval.WorkflowVersion)
 	setString("approval_workflow_node_id", approval.WorkflowNodeID)
 	setString("approval_current_node", approval.WorkflowNodeID)
-	setString("approval_current_assignee", approval.AssignedTo)
+	setString("approval_detail_url", approval.DetailURL)
+	if approval.CurrentAssignee != "" {
+		setString("approval_current_assignee", approval.CurrentAssignee)
+	} else {
+		setString("approval_current_assignee", approval.AssignedTo)
+	}
 	if !changed {
 		return false, nil
 	}

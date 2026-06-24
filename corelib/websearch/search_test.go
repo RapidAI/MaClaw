@@ -2,6 +2,8 @@ package websearch
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -392,7 +394,7 @@ func TestExtractAttrRequiresAttributeBoundary(t *testing.T) {
 }
 
 func TestPrepareSearchCapsMaxResults(t *testing.T) {
-	query, maxResults, _, cancel, err := prepareSearch("golang", 99)
+	query, maxResults, _, cancel, err := prepareSearch(context.Background(), "golang", 99)
 	if err != nil {
 		t.Fatalf("prepareSearch() error = %v", err)
 	}
@@ -403,9 +405,9 @@ func TestPrepareSearchCapsMaxResults(t *testing.T) {
 }
 
 func TestApplyContentWindowUsesRuneOffsets(t *testing.T) {
-	result := &FetchResult{Content: "甲乙丙丁戊"}
+	result := &FetchResult{Content: "\u7532\u4e59\u4e19\u4e01\u620a"}
 	applyContentWindow(result, 1, 2)
-	if result.Content != "乙丙" {
+	if result.Content != "\u4e59\u4e19" {
 		t.Fatalf("Content = %q", result.Content)
 	}
 	if result.TotalChars != 5 {
@@ -416,6 +418,42 @@ func TestApplyContentWindowUsesRuneOffsets(t *testing.T) {
 	}
 	if result.NextOffset != 3 {
 		t.Fatalf("NextOffset = %d", result.NextOffset)
+	}
+}
+
+func TestFetchFTPCtxReturnsCancelledBeforeDial(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := fetchFTPCtx(ctx, "ftp://127.0.0.1/file.txt", &FetchOptions{TimeoutS: 30})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("fetchFTPCtx error = %v, want context.Canceled", err)
+	}
+}
+
+func TestFetchWithChromeCtxReturnsCancelledBeforeLookup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := fetchWithChromeCtx(ctx, "https://example.com", &FetchOptions{RenderJS: true, TimeoutS: 30})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("fetchWithChromeCtx error = %v, want context.Canceled", err)
+	}
+}
+
+func TestCloseConnOnContextDoneClosesConn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	left, right := net.Pipe()
+	defer right.Close()
+
+	stop := closeConnOnContextDone(ctx, left)
+	cancel()
+	buf := make([]byte, 1)
+	_, err := left.Read(buf)
+	stop()
+	stop()
+	if err == nil {
+		t.Fatal("left.Read succeeded after context cancellation, want closed connection error")
 	}
 }
 

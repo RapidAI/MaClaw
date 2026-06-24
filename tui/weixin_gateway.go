@@ -404,7 +404,9 @@ func (c *tuiWeixinCallbacks) ExecuteTool(name, argsJSON string) string {
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return fmt.Sprintf("参数解析失败: %v", err)
 	}
-	return c.app.toolRegistry.Execute(name, args)
+	ctx, cancel := contextFromCancelPoll(c.ShouldStop)
+	defer cancel()
+	return c.app.toolRegistry.ExecuteCtx(ctx, name, args)
 }
 
 func (c *tuiWeixinCallbacks) IsToolAllowed(name string) bool {

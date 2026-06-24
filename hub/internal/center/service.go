@@ -136,6 +136,22 @@ type syncUserLinkRequest struct {
 	IsDefault bool   `json:"is_default"`
 }
 
+type syncUserUsageRequest struct {
+	HubSecret string                 `json:"hub_secret"`
+	Items     []syncUserUsagePayload `json:"items"`
+}
+
+type syncUserUsagePayload struct {
+	TenantID          string `json:"tenant_id,omitempty"`
+	UserEmail         string `json:"user_email"`
+	Day               string `json:"day"`
+	InputTokens       int64  `json:"input_tokens"`
+	OutputTokens      int64  `json:"output_tokens"`
+	CachedInputTokens int64  `json:"cached_input_tokens"`
+	CacheWriteTokens  int64  `json:"cache_write_tokens"`
+	DurationSeconds   int64  `json:"duration_seconds"`
+}
+
 type entryResolveRequest struct {
 	Email    string `json:"email,omitempty"`
 	Domain   string `json:"domain,omitempty"`
@@ -158,6 +174,19 @@ type TenantLister interface {
 	List(ctx context.Context) ([]*store.Tenant, error)
 }
 
+type UserDurationSummarizer interface {
+	SummarizeUserDurations(ctx context.Context, tenantID string, start, end, now time.Time) ([]store.UserDurationSummary, error)
+}
+
+type UserTokenSummarizer interface {
+	SummarizeUserTokenUsage(ctx context.Context, tenantID string, start, end time.Time) ([]store.UserTokenSummary, error)
+}
+
+type UserUsageSummarizer interface {
+	UserDurationSummarizer
+	UserTokenSummarizer
+}
+
 type Service struct {
 	cfg      *config.Config
 	settings SystemSettingsRepository
@@ -165,6 +194,7 @@ type Service struct {
 	users    UserCounter
 	machines MachineCounter
 	tenants  TenantLister
+	sessions UserUsageSummarizer
 
 	mu               sync.Mutex
 	heartbeatStarted bool
@@ -197,9 +227,12 @@ func (s *Service) VerifyHubSecretHash(ctx context.Context, secretHash string) bo
 	}
 	return hashHubSecret(record.HubSecret) == secretHash
 }
-func (s *Service) SetStatsProviders(users UserCounter, machines MachineCounter) {
+func (s *Service) SetStatsProviders(users UserCounter, machines MachineCounter, sessions ...UserUsageSummarizer) {
 	s.users = users
 	s.machines = machines
+	if len(sessions) > 0 {
+		s.sessions = sessions[0]
+	}
 }
 
 func (s *Service) SetTenantRepository(tenants TenantLister) {
@@ -1773,6 +1806,9 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 			record.LastBaseURL = baseURL
 			record.LastRegisteredAt = time.Now().Unix()
 
+			if err := s.syncUserUsage(ctx, baseURL, record); err != nil {
+				log.Printf("[center] user usage sync failed: %v", err)
+			}
 			return s.saveRegistration(context.Background(), record)
 		}
 
@@ -1846,6 +1882,121 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 	}
 	return nil
 }
+
+func (s *Service) syncUserUsage(ctx context.Context, baseURL string, record registrationRecord) error {
+	if s == nil || s.sessions == nil || strings.TrimSpace(baseURL) == "" || strings.TrimSpace(record.HubID) == "" || strings.TrimSpace(record.HubSecret) == "" {
+		return nil
+	}
+	tenantIDs := []string{store.DefaultTenantID}
+	if s.tenants != nil {
+		if tenants, err := s.tenants.List(ctx); err == nil {
+			seen := map[string]struct{}{}
+			tenantIDs = tenantIDs[:0]
+			for _, tenant := range tenants {
+				if tenant == nil || strings.TrimSpace(tenant.ID) == "" {
+					continue
+				}
+				tenantID := store.NormalizeTenantID(tenant.ID)
+				if _, ok := seen[tenantID]; ok {
+					continue
+				}
+				seen[tenantID] = struct{}{}
+				tenantIDs = append(tenantIDs, tenantID)
+			}
+		}
+	}
+	if len(tenantIDs) == 0 {
+		tenantIDs = []string{store.DefaultTenantID}
+	}
+
+	now := time.Now().UTC()
+	startDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -6)
+	items := []syncUserUsagePayload{}
+	for _, tenantID := range tenantIDs {
+		for dayStart := startDay; dayStart.Before(now.AddDate(0, 0, 1)); dayStart = dayStart.AddDate(0, 0, 1) {
+			dayEnd := dayStart.AddDate(0, 0, 1)
+			ctxTenant := store.WithTenant(ctx, tenantID)
+			tokenRows, err := s.sessions.SummarizeUserTokenUsage(ctxTenant, tenantID, dayStart, dayEnd)
+			if err != nil {
+				return err
+			}
+			durationRows, err := s.sessions.SummarizeUserDurations(ctxTenant, tenantID, dayStart, dayEnd, now)
+			if err != nil {
+				return err
+			}
+			byEmail := map[string]*syncUserUsagePayload{}
+			for _, row := range tokenRows {
+				email := strings.ToLower(strings.TrimSpace(row.UserEmail))
+				if email == "" {
+					continue
+				}
+				item := byEmail[email]
+				if item == nil {
+					item = &syncUserUsagePayload{TenantID: centerSyncTenantID(tenantID), UserEmail: email, Day: dayStart.Format("2006-01-02")}
+					byEmail[email] = item
+				}
+				item.InputTokens = row.Usage.InputTokens
+				item.OutputTokens = row.Usage.OutputTokens
+				item.CachedInputTokens = row.Usage.CachedInputTokens
+				item.CacheWriteTokens = row.Usage.CacheWriteTokens
+			}
+			for _, row := range durationRows {
+				email := strings.ToLower(strings.TrimSpace(row.UserEmail))
+				if email == "" {
+					continue
+				}
+				item := byEmail[email]
+				if item == nil {
+					item = &syncUserUsagePayload{TenantID: centerSyncTenantID(tenantID), UserEmail: email, Day: dayStart.Format("2006-01-02")}
+					byEmail[email] = item
+				}
+				item.DurationSeconds = row.DurationSeconds
+			}
+			for _, item := range byEmail {
+				if item.InputTokens+item.OutputTokens+item.CachedInputTokens+item.CacheWriteTokens+item.DurationSeconds > 0 {
+					items = append(items, *item)
+				}
+			}
+		}
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(syncUserUsageRequest{HubSecret: record.HubSecret, Items: items})
+	if err != nil {
+		return err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/hubs/"+url.PathEscape(record.HubID)+"/user-usage/sync", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := s.client.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		var apiErr centerErrorPayload
+		_ = json.Unmarshal(body, &apiErr)
+		message := strings.TrimSpace(apiErr.Message)
+		if message == "" {
+			message = fmt.Sprintf("hub center user usage sync failed with status %d", resp.StatusCode)
+		}
+		return errors.New(message)
+	}
+	return nil
+}
+
+func centerSyncTenantID(tenantID string) string {
+	tenantID = store.NormalizeTenantID(tenantID)
+	if tenantID == store.DefaultTenantID {
+		return ""
+	}
+	return tenantID
+}
+
 func normalizeEmail(email string) string {
 	return strings.TrimSpace(strings.ToLower(email))
 }

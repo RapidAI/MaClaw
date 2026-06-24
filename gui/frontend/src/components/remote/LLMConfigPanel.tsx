@@ -24,6 +24,7 @@ import { TokenUsagePanel } from "./TokenUsagePanel";
 import { PROVIDER_LOGOS } from "./providerLogos";
 import { useDialog } from "../CustomDialog";
 import { KNOWN_USER_AGENTS, commitCustomAgentValue, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent } from "./userAgent";
+import { ProviderModelCombobox } from "./ProviderModelCombobox";
 
 interface Props {
     lang?: string;
@@ -58,6 +59,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [providerModels, setProviderModels] = useState<{id: string; name: string}[]>([]);
     const [providerModelsFetching, setProviderModelsFetching] = useState(false);
     const [providerModelsError, setProviderModelsError] = useState<string | null>(null);
+    const [providerModelListOpen, setProviderModelListOpen] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const loadSeqRef = useRef(0);
 
@@ -268,6 +270,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     useEffect(() => {
         setProviderModels([]);
         setProviderModelsError(null);
+        setProviderModelListOpen(false);
     }, [dlgSelectedIdx, dlgOpen]);
 
     const dlgIsNone = dlgSelectedIdx === null && !dlgHubSelected;
@@ -283,15 +286,20 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setProviderModelsFetching(true);
         setProviderModelsError(null);
         setProviderModels([]);
+        setProviderModelListOpen(false);
         try {
             const models = await FetchProviderModels(dlgProvider.url, dlgProvider.key, dlgProvider.protocol || "openai", effectiveAgentType(dlgProvider));
             setProviderModels(models || []);
             if (!models || models.length === 0) {
                 setProviderModelsError(t("No models returned", "服务商返回了空的模型列表"));
+                setProviderModelListOpen(false);
+            } else {
+                setProviderModelListOpen(true);
             }
         } catch (e) {
             setProviderModelsError(String(e));
             setProviderModels([]);
+            setProviderModelListOpen(false);
         } finally {
             setProviderModelsFetching(false);
         }
@@ -367,7 +375,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 url: ep.url,
                 model: ep.model,
                 protocol: ep.protocol || "openai",
-                agent_type: ep.agent_type || copy[dlgSelectedIdx].agent_type,
+                wire_api: ep.wire_api || "",
+                agent_type: ep.agent_type || "",
                 context_length: ep.context_length || 128000,
             };
             return copy;
@@ -659,10 +668,13 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                 {dlgProviders.map((p, i) => {
                                     const isHubProvider = hasHubEntitlement && p.name === HUB_SERVICE_PROVIDER_NAME;
                                     const active = isHubProvider ? dlgHubSelected : dlgSelectedIdx === i;
-                                    const badge: Record<string, string> = {};
+                                    const badge: Record<string, string> = {
+                                        "\u706b\u5c71\u5f15\u64ceTokenPlan": "OpenAI",
+                                        "\u706b\u5c71\u5f15\u64ceTokenPlan (Anthropic)": "Anthropic",
+                                    };
                                     const tag = isHubProvider && hubOfficial.kind !== "active" ? hubOfficial.label : badge[p.name];
                                     return (
-                                        <button className="llm-config-provider-chip" key={i} onClick={() => isHubProvider ? dlgSelectHubService() : dlgSelectProvider(i)} style={{
+                                        <button className="llm-config-provider-chip" key={i} aria-label={tag ? `${p.name} ${tag}` : p.name} onClick={() => isHubProvider ? dlgSelectHubService() : dlgSelectProvider(i)} style={{
                                             fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
                                             background: active ? colors.primaryLight : colors.surface,
                                             color: active ? colors.primaryDark : colors.text,
@@ -954,55 +966,19 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                 autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
                                         )
                                     ) : (
-                                        /* All other providers: fetch models, then choose from the dropdown. */
-                                        <div style={{ position: "relative" }}>
-                                            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                                                <input
-                                                    type="text"
-                                                    style={{ ...inputStyle, flex: 1 }}
-                                                    list={`llm-provider-models-${dlgSelectedIdx}`}
-                                                    value={dlgProvider.model || ""}
-                                                    onChange={e => dlgUpdateField("model", e.target.value)}
-                                                    placeholder={providerModelsFetching
-                                                        ? t("Loading...", "加载中...")
-                                                        : providerModels.length > 0
-                                                            ? t("Select or type model name", "选择或输入模型名称", "選擇或輸入模型名稱")
-                                                            : t("Type model name or click Fetch", "输入模型名称或点击《获取》", "輸入模型名稱或點擊《獲取》")}
-                                                    disabled={providerModelsFetching}
-                                                    autoCapitalize="off"
-                                                    autoCorrect="off"
-                                                    spellCheck={false}
-                                                    autoComplete="off"
-                                                />
-                                                <datalist id={`llm-provider-models-${dlgSelectedIdx}`}>
-                                                    {providerModels.map(m => (
-                                                        <option key={m.id} value={m.id}>
-                                                            {m.name !== m.id ? m.name : ''}
-                                                        </option>
-                                                    ))}
-                                                </datalist>
-                                                {/* Fetch button — always visible so user knows the feature exists */}
-                                                <button
-                                                    onClick={handleFetchProviderModels}
-                                                    disabled={providerModelsFetching || !dlgProvider.url}
-                                                    style={{
-                                                        fontSize: "0.72rem", padding: "6px 10px", cursor: (providerModelsFetching || !dlgProvider.url) ? "not-allowed" : "pointer",
-                                                        background: colors.surface, color: colors.text,
-                                                        border: `1px solid ${colors.border}`, borderRadius: 4,
-                                                        whiteSpace: "nowrap", flexShrink: 0,
-                                                        opacity: (providerModelsFetching || !dlgProvider.url) ? 0.5 : 1,
-                                                    }}
-                                                    title={t("Fetch available models from provider", "从服务商获取可用模型列表")}
-                                                >
-                                                    {providerModelsFetching ? t("Loading...", "加载中...") : t("Fetch", "获取", "獲取")}
-                                                </button>
-                                            </div>
-                                            {providerModelsError && (
-                                                <div style={{ fontSize: "0.68rem", color: colors.danger, marginTop: 4 }}>
-                                                    {providerModelsError}
-                                                </div>
-                                            )}
-                                        </div>
+                                        <ProviderModelCombobox
+                                            selectedIdx={dlgSelectedIdx}
+                                            value={dlgProvider.model || ""}
+                                            models={providerModels}
+                                            fetching={providerModelsFetching}
+                                            error={providerModelsError}
+                                            open={providerModelListOpen}
+                                            canFetch={!!dlgProvider.url}
+                                            onOpenChange={setProviderModelListOpen}
+                                            onChange={value => dlgUpdateField("model", value)}
+                                            onFetch={handleFetchProviderModels}
+                                            t={t}
+                                        />
                                     )}
                                 </div>
 

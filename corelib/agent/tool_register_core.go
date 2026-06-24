@@ -8,6 +8,8 @@ package agent
 // via CoreToolDeps. Nil deps gracefully disable the corresponding tools.
 
 import (
+	"context"
+
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -32,9 +34,13 @@ type CoreToolDeps struct {
 
 	// WebSearchHandler handles web_search. Injected by host.
 	WebSearchHandler ToolHandler
+	// WebSearchHandlerCtx handles web_search with cancellation. Injected by host.
+	WebSearchHandlerCtx ToolHandlerCtx
 
 	// WebFetchHandler handles web_fetch. Injected by host.
 	WebFetchHandler ToolHandler
+	// WebFetchHandlerCtx handles web_fetch with cancellation. Injected by host.
+	WebFetchHandlerCtx ToolHandlerCtx
 
 	// OnBashProgress is called periodically during long-running bash commands.
 	OnBashProgress func(msg string)
@@ -69,7 +75,9 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"timeout":     map[string]string{"type": "integer", "description": "Timeout seconds, default 600, range 240-600"},
 		},
 		Required: []string{"command"},
-		Handler:  guardedHandler(deps, "bash", func(args map[string]interface{}) string { return ToolBash(args, deps.OnBashProgress) }),
+		HandlerCtx: guardedHandlerCtx(deps, "bash", func(ctx context.Context, args map[string]interface{}) string {
+			return ToolBashWithContext(ctx, args, deps.OnBashProgress)
+		}),
 	})
 
 	r.Register(ToolEntry{
@@ -123,7 +131,9 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"stats":          map[string]string{"type": "boolean", "description": "When true, append local search/index statistics to the result."},
 		},
 		Required: []string{"pattern"},
-		Handler:  func(args map[string]interface{}) string { return ToolRipgrep(args) },
+		HandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
+			return ToolRipgrepDetailedCtx(ctx, args).Text
+		},
 	})
 
 	r.Register(ToolEntry{
@@ -141,7 +151,9 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"include_dirs":   map[string]string{"type": "boolean", "description": "是否返回目录，默认 false。只有需要找目录结构时设 true。"},
 		},
 		Required: []string{"pattern"},
-		Handler:  func(args map[string]interface{}) string { return ToolGlob(args) },
+		HandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
+			return ToolGlobDetailedCtx(ctx, args).Text
+		},
 	})
 
 	r.Register(ToolEntry{
@@ -317,14 +329,15 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"max_results": map[string]string{"type": "integer", "description": "Max results, default 8, max 20"},
 		},
 		Required: []string{"query"},
-		Handler: guardedHandler(deps, "web_search", func() ToolHandler {
+		HandlerCtx: guardedHandlerCtx(deps, "web_search", func(ctx context.Context, args map[string]interface{}) string {
+			if deps.WebSearchHandlerCtx != nil {
+				return deps.WebSearchHandlerCtx(ctx, args)
+			}
 			if deps.WebSearchHandler != nil {
-				return deps.WebSearchHandler
+				return deps.WebSearchHandler(args)
 			}
-			return func(args map[string]interface{}) string {
-				return "Web search is not configured. Please set up a web search provider."
-			}
-		}()),
+			return "Web search is not configured. Please set up a web search provider."
+		}),
 	})
 
 	r.Register(ToolEntry{
@@ -339,14 +352,15 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"max_chars": map[string]string{"type": "integer", "description": "Max characters to return (optional)"},
 		},
 		Required: []string{"url"},
-		Handler: guardedHandler(deps, "web_fetch", func() ToolHandler {
+		HandlerCtx: guardedHandlerCtx(deps, "web_fetch", func(ctx context.Context, args map[string]interface{}) string {
+			if deps.WebFetchHandlerCtx != nil {
+				return deps.WebFetchHandlerCtx(ctx, args)
+			}
 			if deps.WebFetchHandler != nil {
-				return deps.WebFetchHandler
+				return deps.WebFetchHandler(args)
 			}
-			return func(args map[string]interface{}) string {
-				return "Web fetch is not configured."
-			}
-		}()),
+			return "Web fetch is not configured."
+		}),
 	})
 
 	// --- Tools requiring host-injected handlers via ExtraHandlers ---
@@ -528,6 +542,20 @@ func guardedHandler(deps CoreToolDeps, name string, next ToolHandler) ToolHandle
 			}
 		}
 		return next(args)
+	}
+}
+
+func guardedHandlerCtx(deps CoreToolDeps, name string, next ToolHandlerCtx) ToolHandlerCtx {
+	return func(ctx context.Context, args map[string]interface{}) string {
+		if deps.SecurityGuard != nil {
+			if ok, reason := deps.SecurityGuard(name, args); !ok {
+				if reason == "" {
+					reason = "blocked by security policy"
+				}
+				return "[system rejected] " + reason
+			}
+		}
+		return next(ctx, args)
 	}
 }
 

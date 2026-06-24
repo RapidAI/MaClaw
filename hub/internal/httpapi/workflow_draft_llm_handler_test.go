@@ -583,6 +583,35 @@ func TestWorkflowDraftFallbackReasonClassifiesSafeCauses(t *testing.T) {
 	}
 }
 
+func TestWorkflowDraftSanitizeDebugTextPreservesUTF8(t *testing.T) {
+	got := workflowDraftSanitizeDebugText("  上游 服务 暂时不可用，请稍后重试  ", 8)
+	if !utf8.ValidString(got) {
+		t.Fatalf("sanitized debug text is invalid UTF-8: %q", got)
+	}
+	if got != "上游 服务..." {
+		t.Fatalf("sanitized debug text = %q", got)
+	}
+	got = workflowDraftSanitizeDebugText(string([]byte{'o', 'k', 0xff}), 20)
+	if !utf8.ValidString(got) {
+		t.Fatalf("sanitized invalid debug text is invalid UTF-8: %q", got)
+	}
+	if got != "ok\ufffd" {
+		t.Fatalf("sanitized invalid debug text = %q", got)
+	}
+}
+
+func TestWorkflowDraftSanitizeDebugTextRedactsSecrets(t *testing.T) {
+	got := workflowDraftSanitizeDebugText(`Authorization: Bearer sk-live "api_key":"abc123" password=secret openai_api_key=provider-secret x-api-key: proxy-secret accessToken=access-secret`, 400)
+	for _, leaked := range []string{"sk-live", "abc123", "secret", "provider-secret", "proxy-secret", "access-secret"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("sanitized debug text leaked %q: %q", leaked, got)
+		}
+	}
+	if strings.Count(got, "[redacted]") != 6 {
+		t.Fatalf("sanitized debug text = %q, want six redactions", got)
+	}
+}
+
 func TestWorkflowDraftLLMResponseTextExtractsArrayContent(t *testing.T) {
 	body := []byte(`{"content":[{"type":"output_text","text":"` + strings.ReplaceAll(workflowDraftMinimalLLMJSON("Array content draft"), `"`, `\"`) + `"}]}`)
 
@@ -652,6 +681,9 @@ func TestParseWorkflowDraftLLMResponseNormalizesUnsafeGraph(t *testing.T) {
 	if approvalConfig["mode"] != "single" || approvalConfig["timeout_hours"] != 24 {
 		t.Fatalf("approval defaults = %#v", approvalConfig)
 	}
+	if approvers := approvalConfig["approver_ids"].([]any); len(approvers) != 1 || approvers[0] != workflowDraftDefaultApproverRoleID {
+		t.Fatalf("approval default approvers = %#v", approvalConfig["approver_ids"])
+	}
 	if nodes[2]["id"] != "approve_2" {
 		t.Fatalf("duplicate node id not made unique: %#v", nodes[2]["id"])
 	}
@@ -696,6 +728,67 @@ func TestParseWorkflowDraftLLMResponseSanitizesGeneratedIDs(t *testing.T) {
 	edges := graph["edges"].([]map[string]any)
 	if edges[0]["source_id"] != "Start_Node" || edges[0]["target_id"] != "Condition_leave" || edges[1]["target_id"] != "HR_approval_1" {
 		t.Fatalf("edges were not remapped: %#v", edges)
+	}
+}
+
+func TestParseWorkflowDraftLLMResponseRepairsMissingApprovalApprovers(t *testing.T) {
+	content := `{
+		"name": "Missing approver",
+		"graph": {
+			"nodes": [
+				{"id": "start", "type": "trigger", "label": "Start", "position": {"x": 80, "y": 80}, "config": {}},
+				{"id": "approval_manager", "type": "approval", "label": "Manager approval", "position": {"x": 300, "y": 80}, "config": {}},
+				{"id": "done", "type": "terminal", "label": "Done", "position": {"x": 520, "y": 80}, "config": {}}
+			],
+			"edges": [
+				{"id": "e1", "source_id": "start", "target_id": "approval_manager"},
+				{"id": "e2", "source_id": "approval_manager", "target_id": "done"}
+			]
+		}
+	}`
+
+	draft, err := parseWorkflowDraftLLMResponse(content)
+	if err != nil {
+		t.Fatalf("parseWorkflowDraftLLMResponse: %v", err)
+	}
+	graph := draft["graph"].(map[string]any)
+	nodes := graph["nodes"].([]map[string]any)
+	approvalConfig := nodes[1]["config"].(map[string]any)
+	approvers, _ := approvalConfig["approver_ids"].([]any)
+	if len(approvers) != 1 || approvers[0] != workflowDraftDefaultApproverRoleID {
+		t.Fatalf("approval approvers = %#v", approvalConfig["approver_ids"])
+	}
+	if err := validateNormalizedWorkflowDraftGraph(graph); err != nil {
+		t.Fatalf("normalized graph is not valid: %v graph=%#v", err, graph)
+	}
+}
+
+func TestParseWorkflowDraftLLMResponsePreservesConfiguredApprovalApprovers(t *testing.T) {
+	content := `{
+		"name": "Configured approver",
+		"graph": {
+			"nodes": [
+				{"id": "start", "type": "trigger", "label": "Start", "position": {"x": 80, "y": 80}, "config": {}},
+				{"id": "approval_manager", "type": "approval", "label": "Manager approval", "position": {"x": 300, "y": 80}, "config": {"approver_ids": ["role:function:hr:hr_approver"]}},
+				{"id": "done", "type": "terminal", "label": "Done", "position": {"x": 520, "y": 80}, "config": {}}
+			],
+			"edges": [
+				{"id": "e1", "source_id": "start", "target_id": "approval_manager"},
+				{"id": "e2", "source_id": "approval_manager", "target_id": "done"}
+			]
+		}
+	}`
+
+	draft, err := parseWorkflowDraftLLMResponse(content)
+	if err != nil {
+		t.Fatalf("parseWorkflowDraftLLMResponse: %v", err)
+	}
+	graph := draft["graph"].(map[string]any)
+	nodes := graph["nodes"].([]map[string]any)
+	approvalConfig := nodes[1]["config"].(map[string]any)
+	approvers, _ := approvalConfig["approver_ids"].([]any)
+	if len(approvers) != 1 || approvers[0] != "role:function:hr:hr_approver" {
+		t.Fatalf("approval approvers = %#v", approvalConfig["approver_ids"])
 	}
 }
 

@@ -110,6 +110,8 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 	log.Printf("[subagent-runner] delegating T%d to SubAgent: %s", displayIndex, taskTitle)
 	turnCtx.Emit(onProgress, turnCtx.TaskEvent("starting", task, taskTitle))
 
+	prevOutputs = append(prevOutputs, currentTaskRetryOutputs(task)...)
+
 	// Mark task as in-progress.
 	r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecInProgress, "")
 
@@ -167,6 +169,7 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 		if canRetry {
 			// Retry available; will be re-executed on next call.
 			log.Printf("[subagent-runner] T%d failed (retry %d/%d): %s", displayIndex, retryCount, r.orchestrator.MaxRetries, resultError)
+			r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecInProgress, resultError)
 			event := turnCtx.TaskEvent("retrying", task, taskTitle)
 			event.Detail = fmt.Sprintf("%d/%d", retryCount, r.orchestrator.MaxRetries)
 			turnCtx.Emit(onProgress, event)
@@ -615,6 +618,65 @@ func previousTaskFileOutputs(t *TaskItem) []string {
 		outputs = append(outputs, fmt.Sprintf("%s (%s by T%d: %s passed)", compactSubAgentPathText(f), kind, taskDisplayNumber(t), title))
 	}
 	return outputs
+}
+
+func currentTaskRetryOutputs(t *TaskItem) []string {
+	if t == nil || t.RetryCount <= 0 || strings.TrimSpace(t.ErrorSummary) == "" {
+		return nil
+	}
+	title := compactSubAgentTaskTitle(t.Title)
+	errSummary := compactSubAgentErrorSummary(t.ErrorSummary)
+	message := fmt.Sprintf("Retry context for T%d (%s): previous attempt failed with: %s. Do not repeat the same failed approach; inspect the error, adjust the fix, and run verification again.",
+		taskDisplayNumber(t), title, errSummary)
+	if hint := subAgentRetryRecoveryHint(errSummary); hint != "" {
+		message += " Recovery hint: " + hint
+	}
+	return []string{message}
+}
+
+func subAgentRetryRecoveryHint(errSummary string) string {
+	normalized := strings.ToLower(strings.TrimSpace(errSummary))
+	if normalized == "" {
+		return ""
+	}
+	switch {
+	case strings.Contains(normalized, "no exploration before existing-file edits") ||
+		strings.Contains(normalized, "no exploration before editing existing files") ||
+		strings.Contains(normalized, "first edit") ||
+		strings.Contains(normalized, "首次修改前"):
+		return "Before editing existing files, use Glob/ripgrep/read_file to inspect the relevant code. Then make the minimal edit and continue with verification."
+	case strings.Contains(normalized, "before the final edit") ||
+		strings.Contains(normalized, "rerun test/build/lint/typecheck after editing"):
+		return "Run verification after the final edit, not before it. Re-run the focused test/build/lint/typecheck command after making changes and use that fresh result."
+	case strings.Contains(normalized, "stale diff") ||
+		strings.Contains(normalized, "final diff"):
+		return "Run git_diff after the last edit so the self-check reflects the final workspace state."
+	case strings.Contains(normalized, "shell_write") ||
+		strings.Contains(normalized, "shell 直接改写文件") ||
+		strings.Contains(normalized, "set-content") ||
+		strings.Contains(normalized, "add-content") ||
+		strings.Contains(normalized, "out-file") ||
+		strings.Contains(normalized, "writefilesync") ||
+		strings.Contains(normalized, "redirection"):
+		return "Use read_file first, then edit_file/edit_lines for existing files; use write_file only for new files. Do not use shell redirection or file-writing shell helpers."
+	case strings.Contains(normalized, "项目目录外") ||
+		strings.Contains(normalized, "outside project") ||
+		strings.Contains(normalized, "project path") ||
+		strings.Contains(normalized, "working_dir"):
+		return "Stay inside the assigned project path. Use project-relative paths and set bash working_dir to a directory under the project."
+	case strings.Contains(normalized, "git diff self-check") ||
+		strings.Contains(normalized, "diff not checked") ||
+		strings.Contains(normalized, "git diff failed"):
+		return "Run git_diff after edits; if it fails, inspect the repository/working_dir state before finalizing."
+	case strings.Contains(normalized, "no verification") ||
+		strings.Contains(normalized, "verification not run") ||
+		strings.Contains(normalized, "验证命令") ||
+		strings.Contains(normalized, "test/build/lint/typecheck"):
+		return "Run a focused verification command that matches the change, such as test/build/lint/typecheck, and use its output to guide the next edit."
+	case strings.Contains(normalized, "guardrail"):
+		return "Address the blocked policy directly before retrying; choose the allowed tool path instead of repeating the blocked tool call."
+	}
+	return ""
 }
 
 func compactSubAgentTaskTitle(title string) string {

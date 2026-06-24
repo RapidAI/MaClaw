@@ -22,6 +22,7 @@ const (
 	codingCommandResultStartError codingCommandResultKind = "start_error"
 	codingCommandResultExitError  codingCommandResultKind = "exit_error"
 	codingCommandResultTimeout    codingCommandResultKind = "timeout"
+	codingCommandResultCancelled  codingCommandResultKind = "cancelled"
 )
 
 type codingCommandExecutionResult struct {
@@ -45,6 +46,8 @@ func (r codingCommandExecutionResult) toolOutcome() codingToolOutcome {
 		outcome = codingToolOutcomeSuccess
 	case codingCommandResultTimeout:
 		outcome = codingToolOutcomeTimeout
+	case codingCommandResultCancelled:
+		outcome = codingToolOutcomeFailed
 	case codingCommandResultExitError:
 		// Exit code 1 with meaningful stdout is informational (not a real error).
 		// The "command exited with code N" suffix doesn't count as meaningful output.
@@ -66,6 +69,10 @@ func (r codingCommandExecutionResult) toolOutcome() codingToolOutcome {
 }
 
 func executeCodingBash(args map[string]interface{}, onProgress coretool.ProgressCallback) codingCommandExecutionResult {
+	return executeCodingBashWithContext(context.Background(), args, onProgress)
+}
+
+func executeCodingBashWithContext(parent context.Context, args map[string]interface{}, onProgress coretool.ProgressCallback) codingCommandExecutionResult {
 	command, _ := args["command"].(string)
 	if command == "" {
 		return codingCommandExecutionResult{Text: "missing command parameter", Kind: codingCommandResultStartError, ExitCode: -1}
@@ -73,7 +80,13 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 
 	timeout := resolveCodingCommandTimeout(args, command)
 	workDir := resolvePath(stringVal(args, "working_dir"))
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	if parent == nil {
+		parent = context.Background()
+	}
+	if err := parent.Err(); err != nil {
+		return codingCommandExecutionResult{Text: fmt.Sprintf("command cancelled before start: %v", err), Kind: codingCommandResultCancelled, ExitCode: -1}
+	}
+	ctx, cancel := context.WithTimeout(parent, time.Duration(timeout)*time.Second)
 	defer cancel()
 
 	var shellName string
@@ -148,6 +161,10 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 	if ctx.Err() == context.DeadlineExceeded {
 		output = appendCodingCommandStatus(output, fmt.Sprintf("command timed out after %d seconds", timeout))
 		return codingCommandExecutionResult{Text: output, Kind: codingCommandResultTimeout, ExitCode: -1}
+	}
+	if ctx.Err() == context.Canceled {
+		output = appendCodingCommandStatus(output, "command cancelled")
+		return codingCommandExecutionResult{Text: output, Kind: codingCommandResultCancelled, ExitCode: -1}
 	}
 	exitCode := -1
 	if exitErr, ok := err.(*exec.ExitError); ok {

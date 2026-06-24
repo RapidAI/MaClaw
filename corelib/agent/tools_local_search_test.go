@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,6 +12,35 @@ import (
 	"time"
 )
 
+func TestIntersectSortedSearchIDs(t *testing.T) {
+	got := intersectSortedSearchIDs([]int{1, 3, 4, 8, 9}, []int{0, 3, 7, 8, 10})
+	want := []int{3, 8}
+	if len(got) != len(want) {
+		t.Fatalf("intersectSortedSearchIDs length = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("intersectSortedSearchIDs[%d] = %d, want %d: %#v", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestSearchIndexRelativePath(t *testing.T) {
+	root := filepath.Clean(t.TempDir())
+	child := filepath.Join(root, "pkg", "main.go")
+	rel, ok := searchIndexRelativePath(root, child)
+	if !ok || rel != filepath.Join("pkg", "main.go") {
+		t.Fatalf("searchIndexRelativePath child = %q, %v; want pkg/main.go true", rel, ok)
+	}
+	rel, ok = searchIndexRelativePath(root, root)
+	if !ok || rel != "." {
+		t.Fatalf("searchIndexRelativePath root = %q, %v; want . true", rel, ok)
+	}
+	rel, ok = searchIndexRelativePath(root, filepath.Join(filepath.Dir(root), "outside.go"))
+	if ok || rel != "" {
+		t.Fatalf("searchIndexRelativePath outside root = %q, %v; want empty false", rel, ok)
+	}
+}
 func TestToolFileReadLineRange(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sample.txt")
@@ -27,6 +58,99 @@ func TestToolFileReadLineRange(t *testing.T) {
 	}
 	if strings.Contains(out, "one") || strings.Contains(out, "four") {
 		t.Fatalf("FileRead included lines outside requested range:\n%s", out)
+	}
+}
+
+func TestToolGlobDetailedCtxReturnsCancelled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := ToolGlobDetailedCtx(ctx, map[string]interface{}{
+		"path":    dir,
+		"pattern": "**/*.go",
+	})
+	if result.Outcome != SearchToolOutcomeError || !strings.Contains(result.Text, "cancelled") {
+		t.Fatalf("expected cancelled Glob result, got outcome=%s text=%q", result.Outcome, result.Text)
+	}
+}
+
+func TestToolRipgrepDetailedCtxReturnsCancelled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := ToolRipgrepDetailedCtx(ctx, map[string]interface{}{
+		"path":    dir,
+		"pattern": "package",
+	})
+	if result.Outcome != SearchToolOutcomeError || !strings.Contains(result.Text, "cancelled") {
+		t.Fatalf("expected cancelled ripgrep result, got outcome=%s text=%q", result.Outcome, result.Text)
+	}
+}
+
+func TestWalkSearchFilesFilteredCtxReturnsCancelledAfterVisitCancels(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := walkSearchFilesFilteredCtx(ctx, dir, "**/*.go", "", "", false, false, func(string, fs.DirEntry) error {
+		cancel()
+		return nil
+	})
+	if err != context.Canceled {
+		t.Fatalf("walkSearchFilesFilteredCtx error = %v, want context.Canceled", err)
+	}
+}
+
+func TestWalkSearchFilesFilteredCtxStopsImmediatelyAfterVisitCancels(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.go", "b.go", "c.go"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("package test\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	visited := 0
+
+	err := walkSearchFilesFilteredCtx(ctx, dir, "**/*.go", "", "", false, false, func(string, fs.DirEntry) error {
+		visited++
+		cancel()
+		return nil
+	})
+	if err != context.Canceled {
+		t.Fatalf("walkSearchFilesFilteredCtx error = %v, want context.Canceled", err)
+	}
+	if visited != 1 {
+		t.Fatalf("visited %d files after cancellation, want 1", visited)
+	}
+}
+
+func TestWalkSearchFilesFilteredCtxSingleFileReturnsCancelledAfterVisitCancels(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := walkSearchFilesFilteredCtx(ctx, path, "*.go", "", "", false, false, func(string, fs.DirEntry) error {
+		cancel()
+		return nil
+	})
+	if err != context.Canceled {
+		t.Fatalf("walkSearchFilesFilteredCtx single-file error = %v, want context.Canceled", err)
 	}
 }
 
@@ -1290,6 +1414,23 @@ func TestToolRipgrepSkipsCommonGeneratedDirsByDefault(t *testing.T) {
 	}
 }
 
+func TestToolRipgrepSkipsBinaryFiles(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "payload.bin")
+	if err := os.WriteFile(binaryPath, []byte{'T', 'a', 'r', 'g', 'e', 't', 0, 'x'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := ToolRipgrep(map[string]interface{}{
+		"path":    dir,
+		"pattern": "Target",
+		"stats":   true,
+	})
+	if strings.Contains(out, binaryPath) || !strings.Contains(out, "no matches found") || !strings.Contains(out, "searched=0") {
+		t.Fatalf("ripgrep should skip binary files, got:\n%s", out)
+	}
+}
+
 func TestToolRipgrepRejectsInvalidOutputMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "main.go")
@@ -1753,6 +1894,18 @@ func TestContentTrigramsBytesMatchesStringEntryPoint(t *testing.T) {
 	}
 }
 
+func TestContentTrigramsBytesASCIIFastPathNormalizesTerms(t *testing.T) {
+	got := contentTrigramsBytes([]byte("Target-Value TARGET_value"))
+	for _, want := range []string{"tar", "arg", "val", "get", "t_v"} {
+		if !got[want] {
+			t.Fatalf("contentTrigramsBytes missing %q from ASCII input: %#v", want, got)
+		}
+	}
+	if got["t-v"] {
+		t.Fatalf("contentTrigramsBytes included separator trigram: %#v", got)
+	}
+}
+
 func TestToolRipgrepLocalIndexDoesNotRequireOptionalGroup(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "main.go")
@@ -1905,6 +2058,86 @@ func TestLocalSearchIndexDirtyCandidatesTreatsSameFutureMetadataAsClean(t *testi
 	files := idx.dirtyCandidateFiles("", "", "", false)
 	if len(files) != 0 {
 		t.Fatalf("dirty candidates = %#v, want unchanged future-metadata file treated as clean", files)
+	}
+}
+
+func TestBuildLocalSearchIndexCtxReturnsFalseWhenCancelled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc TargetCancelledIndex() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if idx, ok := buildLocalSearchIndexCtx(ctx, dir, "", "", "", false); ok || idx != nil {
+		t.Fatalf("buildLocalSearchIndexCtx returned idx=%#v ok=%v, want cancelled failure", idx, ok)
+	}
+}
+
+func TestIndexedSearchCandidatesCtxReportsCancelled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc TargetCancelledCandidates() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	candidates, ok, stats := indexedSearchCandidatesCtx(ctx, dir, "TargetCancelledCandidates", "", "", "", false, false)
+	if ok || len(candidates) != 0 || stats.fallbackReason != "cancelled" {
+		t.Fatalf("indexedSearchCandidatesCtx = ok=%v candidates=%#v stats=%+v, want cancelled fallback", ok, candidates, stats)
+	}
+}
+
+func TestRebuildCachedSearchIndexForScopeCtxSkipsCacheWhenCancelled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc TargetCancelledRebuild() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if idx, ok := rebuildCachedSearchIndexForScopeCtx(ctx, dir, "", "", "", false); ok || idx != nil {
+		t.Fatalf("rebuildCachedSearchIndexForScopeCtx returned idx=%#v ok=%v, want cancelled failure", idx, ok)
+	}
+	key := searchIndexCacheKey(filepath.Clean(dir), "", "", "", false)
+	searchIndexCache.Lock()
+	_, cached := searchIndexCache.byRoot[key]
+	searchIndexCache.Unlock()
+	if cached {
+		t.Fatalf("cancelled rebuild cached index for %s", key)
+	}
+}
+
+func TestLocalSearchIndexDirtyCandidatesCtxReturnsEmptyWhenCancelled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\nfunc TargetDirtyCancelled() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := &localSearchIndex{
+		root:    dir,
+		builtAt: time.Now().Add(-time.Hour),
+		fileSet: map[string]bool{},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if files := idx.dirtyCandidateFilesCtx(ctx, "", "", "", false); len(files) != 0 {
+		t.Fatalf("dirtyCandidateFilesCtx returned %#v, want empty cancelled result", files)
+	}
+}
+
+func TestLocalSearchIndexDirtyCandidatesReportsIncompleteWhenRootMissing(t *testing.T) {
+	dir := t.TempDir()
+	idx := &localSearchIndex{
+		root:    filepath.Join(dir, "missing"),
+		builtAt: time.Now(),
+		fileSet: map[string]bool{},
+	}
+
+	files, complete := idx.dirtyCandidateFilesWithStatusCtx(context.Background(), "", "", "", false)
+	if complete || len(files) != 0 {
+		t.Fatalf("dirtyCandidateFilesWithStatusCtx = files=%#v complete=%v, want incomplete empty result", files, complete)
 	}
 }
 

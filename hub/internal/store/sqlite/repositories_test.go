@@ -382,6 +382,49 @@ func TestMachineTenantUserDeletesDoNotCrossTenants(t *testing.T) {
 		t.Fatalf("tenant_b machine = %#v err=%v, want preserved", got, err)
 	}
 }
+func TestSessionRepositoryUserTokenUsageSnapshotDeltasAndReset(t *testing.T) {
+	st := newTestStore(t)
+	ctx := store.WithTenant(context.Background(), "tenant_acme")
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	user := &store.User{ID: "u_rank", TenantID: "tenant_acme", Email: "rank@example.com", SN: "SN-RANK", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	usage := store.UserTokenUsage{InputTokens: 100, OutputTokens: 20, CachedInputTokens: 30, CacheWriteTokens: 5}
+	if err := st.Sessions.RecordUserTokenUsageSnapshot(ctx, user.TenantID, "gui:machine-1", user.ID, usage, now); err != nil {
+		t.Fatalf("record first snapshot: %v", err)
+	}
+	if err := st.Sessions.RecordUserTokenUsageSnapshot(ctx, user.TenantID, "gui:machine-1", user.ID, usage, now.Add(time.Minute)); err != nil {
+		t.Fatalf("record duplicate snapshot: %v", err)
+	}
+	mixedUsage := store.UserTokenUsage{InputTokens: 180, OutputTokens: 10, CachedInputTokens: 30, CacheWriteTokens: 5}
+	if err := st.Sessions.RecordUserTokenUsageSnapshot(ctx, user.TenantID, "gui:machine-1", user.ID, mixedUsage, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("record mixed snapshot: %v", err)
+	}
+	resetUsage := store.UserTokenUsage{InputTokens: 10, OutputTokens: 2, CachedInputTokens: 1, CacheWriteTokens: 1}
+	if err := st.Sessions.RecordUserTokenUsageSnapshot(ctx, user.TenantID, "gui:machine-1", user.ID, resetUsage, now.Add(3*time.Minute)); err != nil {
+		t.Fatalf("record reset snapshot: %v", err)
+	}
+
+	rows, err := st.Sessions.SummarizeUserTokenUsage(ctx, user.TenantID, now, now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("summarize token usage: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1: %#v", len(rows), rows)
+	}
+	got := rows[0]
+	if got.UserEmail != "rank@example.com" {
+		t.Fatalf("email = %q", got.UserEmail)
+	}
+	if got.Usage.InputTokens != 190 || got.Usage.OutputTokens != 22 || got.Usage.CachedInputTokens != 31 || got.Usage.CacheWriteTokens != 6 {
+		t.Fatalf("usage = %#v", got.Usage)
+	}
+	if got.Usage.TotalTokens() != 212 {
+		t.Fatalf("total tokens = %d, want input + output only", got.Usage.TotalTokens())
+	}
+}
 func TestUsersAllowSameEmailAcrossTenants(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

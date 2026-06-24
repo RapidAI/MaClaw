@@ -2349,7 +2349,9 @@
     padding: 0 7px;
     border: 1px solid var(--theme-border);
     border-radius: var(--radius-sm);
+    background: transparent;
     color: var(--theme-primary-strong);
+    font: inherit;
     background: var(--theme-surface);
     font-size: 0.7rem;
     font-weight: 800;
@@ -3314,6 +3316,89 @@
     word-break: break-word;
 }
 
+.apps-review-issues {
+    display: grid;
+    gap: 5px;
+    margin-top: 5px;
+}
+
+.apps-review-issues__item,
+.apps-review-issues__more {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 3px 6px;
+    padding: 6px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--theme-surface) 76%, var(--theme-surface-muted));
+}
+
+.apps-review-issues__item strong {
+    min-width: 54px;
+    color: var(--theme-text-secondary);
+    font-size: 0.62rem;
+    font-weight: 900;
+    text-transform: uppercase;
+}
+
+.apps-review-issues__item span,
+.apps-review-issues__item em,
+.apps-review-issues__item small,
+.apps-review-issues__more {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-style: normal;
+}
+
+.apps-review-issues__item span {
+    color: var(--theme-text-muted);
+    font-size: 0.62rem;
+    font-weight: 760;
+}
+
+.apps-review-issues__item em {
+    grid-column: 2;
+    color: var(--theme-text-primary);
+    font-size: 0.68rem;
+    font-weight: 780;
+}
+
+.apps-review-issues__item small {
+    grid-column: 2;
+    color: var(--theme-text-secondary);
+    font-size: 0.65rem;
+}
+
+.apps-review-issues__item[data-severity='error'] {
+    border-color: color-mix(in srgb, var(--theme-danger) 30%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-danger-bg) 52%, var(--theme-surface));
+}
+
+.apps-review-issues__item[data-severity='error'] strong {
+    color: var(--theme-danger);
+}
+
+.apps-review-issues__item[data-severity='warning'] {
+    border-color: color-mix(in srgb, var(--theme-warning) 32%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-warning-bg) 48%, var(--theme-surface));
+}
+
+.apps-review-issues__item[data-severity='warning'] strong {
+    color: var(--theme-warning);
+}
+
+.apps-review-issues__item[data-severity='info'] strong {
+    color: var(--theme-primary-strong);
+}
+
+.apps-review-issues__more {
+    display: block;
+    color: var(--theme-text-secondary);
+    font-size: 0.66rem;
+    font-weight: 780;
+}
 .apps-publish-submission--error {
     border-color: color-mix(in srgb, var(--theme-danger) 28%, var(--theme-border));
     background: color-mix(in srgb, var(--theme-danger-bg) 58%, var(--theme-surface));
@@ -4758,6 +4843,73 @@
 }
 
 
+.apps-test-protocol {
+    display: grid;
+    gap: 9px;
+    padding: 11px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--theme-surface-muted) 58%, var(--theme-surface));
+}
+
+.apps-manage-edit .apps-test-protocol {
+    grid-column: 1 / -1;
+}
+
+.apps-test-protocol__summary {
+    display: grid;
+    grid-template-columns: minmax(48px, max-content) minmax(96px, 1fr) minmax(36px, max-content) minmax(104px, 0.45fr);
+    gap: 8px;
+    align-items: center;
+    padding: 7px 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface);
+}
+
+.apps-test-protocol__summary span {
+    color: var(--theme-text-secondary);
+    font-size: 0.68rem;
+    font-weight: 850;
+    white-space: nowrap;
+}
+
+.apps-test-protocol__summary code {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--theme-text-primary);
+    font-size: 0.72rem;
+    font-weight: 850;
+}
+
+.apps-test-protocol__summary select {
+    min-height: 30px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    padding: 0 8px;
+    font-size: 0.72rem;
+    font-weight: 800;
+}
+
+.apps-test-protocol__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.apps-test-protocol__grid--compact .apps-form-row {
+    grid-template-columns: minmax(54px, max-content) minmax(0, 1fr);
+}
+
+.apps-test-protocol textarea {
+    min-height: 104px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
 .apps-result-contract__summary {
     min-width: 0;
     display: grid;

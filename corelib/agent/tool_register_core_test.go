@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -90,6 +91,27 @@ func TestCoreSearchToolsExposeLargeRepoSearchOptions(t *testing.T) {
 	)
 }
 
+func TestCoreSearchToolsUseContextHandlers(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for _, tc := range []struct {
+		name string
+		args map[string]interface{}
+	}{
+		{name: "ripgrep", args: map[string]interface{}{"pattern": "needle", "path": t.TempDir()}},
+		{name: "Glob", args: map[string]interface{}{"pattern": "**/*.go", "path": t.TempDir()}},
+	} {
+		got := reg.ExecuteCtx(ctx, tc.name, tc.args)
+		if !strings.Contains(strings.ToLower(got), "cancelled") {
+			t.Fatalf("%s cancelled result = %q, want cancelled", tc.name, got)
+		}
+	}
+}
+
 func TestCoreWriteFileToolGuidesChunkedLargeContent(t *testing.T) {
 	reg := NewCoreToolRegistry()
 	RegisterCoreTools(reg, CoreToolDeps{})
@@ -157,6 +179,49 @@ func TestRegisterCoreToolsSecurityGuardBlocksBeforeHandler(t *testing.T) {
 	}
 }
 
+func TestRegisterCoreToolsSecurityGuardBlocksBeforeCtxHandler(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	ran := false
+	RegisterCoreTools(reg, CoreToolDeps{
+		SecurityGuard: func(name string, args map[string]interface{}) (bool, string) {
+			if name == "web_search" {
+				return false, "network disabled"
+			}
+			return true, ""
+		},
+		WebSearchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
+			ran = true
+			return "handler ran"
+		},
+	})
+
+	got := reg.ExecuteCtx(context.Background(), "web_search", map[string]interface{}{"query": "golang"})
+	if got != "[system rejected] network disabled" {
+		t.Fatalf("guarded web_search ctx = %q", got)
+	}
+	if ran {
+		t.Fatal("guarded web_search ctx handler ran despite security rejection")
+	}
+}
+
+func TestRegisterCoreToolsWebHandlersReceiveContext(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{
+		WebFetchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
+			if err := ctx.Err(); err != nil {
+				return "ctx cancelled"
+			}
+			return "ctx active"
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := reg.ExecuteCtx(ctx, "web_fetch", map[string]interface{}{"url": "https://example.com"})
+	if got != "ctx cancelled" {
+		t.Fatalf("web_fetch ctx handler = %q, want ctx cancelled", got)
+	}
+}
 func TestRegisterCoreToolsSecurityGuardWrapsExtraHandlers(t *testing.T) {
 	reg := NewCoreToolRegistry()
 	RegisterCoreTools(reg, CoreToolDeps{

@@ -8,12 +8,22 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
+
+var proxyDebugSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,"'}]+`),
+	regexp.MustCompile(`(?i)((?:"|')?[\w-]*(?:api[_-]?key|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|secret|password)[\w-]*(?:"|')?\s*[:=]\s*(?:"|')?)[^"',\s}]+`),
+}
+
+const proxySystemFreeAliasServiceGroupID = "system-free"
+
+var proxySystemFreeFallbackServiceGroupIDs = []string{"redeem", "maclaw-official"}
 
 // ProxyConfig holds runtime dependencies for the LLM proxy.
 type ProxyConfig struct {
@@ -91,6 +101,9 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 	matchedGroup, dispatchModel := matchProxyServiceGroupModel(reg, strings.TrimSpace(req.ServiceGroupID), model)
 	if matchedGroup == nil {
 		return nil, fmt.Errorf("model %q not available on this HubCenter", model)
+	}
+	if requestedGroupID := strings.TrimSpace(req.ServiceGroupID); requestedGroupID != "" && !strings.EqualFold(requestedGroupID, strings.TrimSpace(matchedGroup.ID)) {
+		log.Printf("[llm-proxy] resolved service_group alias requested=%s matched=%s model=%s hub=%s tenant=%s", requestedGroupID, matchedGroup.ID, model, req.HubID, req.TenantID)
 	}
 
 	// 3. Check tenant authorization only when this service group requires a card/grant.
@@ -276,14 +289,23 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 }
 
 func proxyProviderErrorSnippet(body []byte) string {
-	text := strings.Join(strings.Fields(strings.TrimSpace(string(body))), " ")
+	text := strings.ToValidUTF8(string(body), "\ufffd")
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	text = proxyRedactDebugSecrets(text)
 	if text == "" {
 		return ""
 	}
-	if len(text) > 500 {
-		text = text[:497] + "..."
+	if len([]rune(text)) > 500 {
+		text = string([]rune(text)[:497]) + "..."
 	}
 	return ": " + text
+}
+
+func proxyRedactDebugSecrets(text string) string {
+	for _, pattern := range proxyDebugSecretPatterns {
+		text = pattern.ReplaceAllString(text, "${1}[redacted]")
+	}
+	return text
 }
 
 func matchProxyServiceGroupModel(reg *Registry, serviceGroupID, model string) (*llmpool.ServiceGroup, *llmpool.DispatchModel) {
@@ -298,24 +320,79 @@ func matchProxyServiceGroupModel(reg *Registry, serviceGroupID, model string) (*
 			if !strings.EqualFold(strings.TrimSpace(group.ID), serviceGroupID) {
 				continue
 			}
-			for j := range group.Models {
-				if strings.TrimSpace(group.Models[j].Name) == model {
-					return group, buildDispatchModel(reg, &group.Models[j])
-				}
+			if dispatchModel := matchProxyGroupModel(reg, group, model); dispatchModel != nil {
+				return group, dispatchModel
 			}
-			return nil, nil
+			return matchProxySystemFreeFallback(reg, serviceGroupID, model)
 		}
-		return nil, nil
+		return matchProxySystemFreeFallback(reg, serviceGroupID, model)
 	}
 	for i := range reg.ServiceGroups {
 		group := &reg.ServiceGroups[i]
-		for j := range group.Models {
-			if strings.TrimSpace(group.Models[j].Name) == model {
-				return group, buildDispatchModel(reg, &group.Models[j])
-			}
+		if dispatchModel := matchProxyGroupModel(reg, group, model); dispatchModel != nil {
+			return group, dispatchModel
 		}
 	}
 	return nil, nil
+}
+
+func matchProxyGroupModel(reg *Registry, group *llmpool.ServiceGroup, model string) *llmpool.DispatchModel {
+	if group == nil {
+		return nil
+	}
+	for j := range group.Models {
+		if strings.TrimSpace(group.Models[j].Name) == model {
+			return buildDispatchModel(reg, &group.Models[j])
+		}
+	}
+	return nil
+}
+
+func matchProxySystemFreeFallback(reg *Registry, serviceGroupID, model string) (*llmpool.ServiceGroup, *llmpool.DispatchModel) {
+	if !isProxySystemFreeAlias(serviceGroupID) {
+		return nil, nil
+	}
+	if group, dispatchModel := matchProxyServiceGroupModelByAccessPolicy(reg, model, AccessPolicyFree); group != nil {
+		return group, dispatchModel
+	}
+	for _, fallbackID := range proxySystemFreeFallbackServiceGroupIDs {
+		if group, dispatchModel := matchProxyServiceGroupModelByID(reg, fallbackID, model); group != nil {
+			return group, dispatchModel
+		}
+	}
+	return matchProxyServiceGroupModelByAccessPolicy(reg, model, AccessPolicyGrantRequired)
+}
+
+func matchProxyServiceGroupModelByID(reg *Registry, serviceGroupID, model string) (*llmpool.ServiceGroup, *llmpool.DispatchModel) {
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	for i := range reg.ServiceGroups {
+		group := &reg.ServiceGroups[i]
+		if !strings.EqualFold(strings.TrimSpace(group.ID), serviceGroupID) {
+			continue
+		}
+		if dispatchModel := matchProxyGroupModel(reg, group, model); dispatchModel != nil {
+			return group, dispatchModel
+		}
+		return nil, nil
+	}
+	return nil, nil
+}
+
+func matchProxyServiceGroupModelByAccessPolicy(reg *Registry, model, accessPolicy string) (*llmpool.ServiceGroup, *llmpool.DispatchModel) {
+	for i := range reg.ServiceGroups {
+		group := &reg.ServiceGroups[i]
+		if normalizeServiceGroupAccessPolicy(group.AccessPolicy) != accessPolicy {
+			continue
+		}
+		if dispatchModel := matchProxyGroupModel(reg, group, model); dispatchModel != nil {
+			return group, dispatchModel
+		}
+	}
+	return nil, nil
+}
+
+func isProxySystemFreeAlias(serviceGroupID string) bool {
+	return strings.EqualFold(strings.TrimSpace(serviceGroupID), proxySystemFreeAliasServiceGroupID)
 }
 
 func shouldRetryProxyProviderStatus(statusCode int) bool {

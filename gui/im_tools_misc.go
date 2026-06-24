@@ -2105,6 +2105,13 @@ func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string
 // Web Search & Fetch Tools
 // ---------------------------------------------------------------------------
 
+func (h *IMMessageHandler) imToolContext() (context.Context, context.CancelFunc) {
+	if h != nil && h.currentLoopCtx != nil {
+		return h.currentLoopCtx.Context()
+	}
+	return context.Background(), func() {}
+}
+
 func (h *IMMessageHandler) toolWebSearch(args map[string]interface{}) string {
 	query := stringVal(args, "query")
 	if query == "" {
@@ -2124,7 +2131,9 @@ func (h *IMMessageHandler) toolWebSearch(args map[string]interface{}) string {
 		}
 	}
 
-	results, err := websearch.SearchWithProvider(query, maxResults, provider)
+	ctx, cancel := h.imToolContext()
+	defer cancel()
+	results, err := websearch.SearchWithProviderCtx(ctx, query, maxResults, provider)
 	if err != nil {
 		return fmt.Sprintf("搜索失败: %s", err.Error())
 	}
@@ -2193,7 +2202,9 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 		}
 	}
 
-	result, err := websearch.FetchWithProvider(rawURL, opts, fetchProvider)
+	ctx, cancel := h.imToolContext()
+	defer cancel()
+	result, err := websearch.FetchWithProviderCtx(ctx, rawURL, opts, fetchProvider)
 	if err != nil {
 		return fmt.Sprintf("抓取失败: %s", err.Error())
 	}

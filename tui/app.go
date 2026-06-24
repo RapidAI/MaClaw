@@ -229,7 +229,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 			"knowledge_save_text":    app.toolKnowledgeSaveText,
 			"knowledge_save_url":     app.toolKnowledgeSaveURL,
 		},
-		WebSearchHandler: func(args map[string]interface{}) string {
+		WebSearchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
 			// Use the first configured web search provider, or DuckDuckGo fallback.
 			var provider corelib.WebSearchProvider
 			if len(app.appConfig.WebSearchProviders) > 0 {
@@ -246,9 +246,9 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 			if provider.Type == "" {
 				provider.Type = "duckduckgo"
 			}
-			return agent.ToolWebSearch(provider, args)
+			return agent.ToolWebSearchCtx(ctx, provider, args)
 		},
-		WebFetchHandler: func(args map[string]interface{}) string {
+		WebFetchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
 			// Use the same provider as web_search for enhanced fetch (e.g. TinyFish).
 			var provider corelib.WebSearchProvider
 			if len(app.appConfig.WebSearchProviders) > 0 {
@@ -262,7 +262,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 					provider = app.appConfig.WebSearchProviders[0]
 				}
 			}
-			return agent.ToolWebFetchWithProvider(args, provider)
+			return agent.ToolWebFetchWithProviderCtx(ctx, args, provider)
 		},
 	})
 
@@ -2523,7 +2523,9 @@ func (c *tuiCallbacks) ExecuteTool(name, argsJSON string) string {
 		return tuiFormat(tuiConfigLang(c.app.appConfig), "toolArgParseFailed", err.Error())
 	}
 	start := time.Now()
-	result := c.app.toolRegistry.Execute(name, args)
+	ctx, cancel := contextFromCancelPoll(c.ShouldStop)
+	defer cancel()
+	result := c.app.toolRegistry.ExecuteCtx(ctx, name, args)
 	elapsed := time.Since(start)
 
 	// Update the tool status message with completion + optional elapsed time.
@@ -2780,7 +2782,9 @@ func (c *tuiBtwCallbacks) ExecuteTool(name, argsJSON string) string {
 	}
 
 	// Delegate to the shared tool registry.
-	result := c.app.toolRegistry.Execute(name, args)
+	ctx, cancel := contextFromCancelPoll(c.ShouldStop)
+	defer cancel()
+	result := c.app.toolRegistry.ExecuteCtx(ctx, name, args)
 
 	if c.program != nil {
 		c.program.Send(views.ChatStreamMsg{Type: "tool_result", Tool: name})

@@ -53,8 +53,37 @@ func BenchmarkIndexedSearchCandidates(b *testing.B) {
 	}
 }
 
+func BenchmarkMatchGlobCached(b *testing.B) {
+	pattern := "**/*.{go,tsx,md} **/internal/**"
+	rels := []string{
+		"cmd/app/main.go",
+		"web/src/App.tsx",
+		"docs/README.md",
+		"pkg/internal/cache.txt",
+	}
+	resetSearchGlobPatternCacheForBenchmark()
+	if matched, err := matchGlob(pattern, rels[0], false); err != nil || !matched {
+		b.Fatalf("glob warmup failed: matched=%v err=%v", matched, err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		matched, err := matchGlob(pattern, rels[i%len(rels)], false)
+		if err != nil || !matched {
+			b.Fatalf("matchGlob failed: matched=%v err=%v", matched, err)
+		}
+	}
+}
 func resetSearchIndexCacheForBenchmark() {
 	searchIndexCache.Lock()
 	searchIndexCache.byRoot = make(map[string]*localSearchIndex)
 	searchIndexCache.Unlock()
+}
+
+func resetSearchGlobPatternCacheForBenchmark() {
+	searchGlobPatternCache.Lock()
+	searchGlobPatternCache.byPattern = make(map[string]compiledSearchGlobEntry)
+	searchGlobPatternCache.order = nil
+	searchGlobPatternCache.Unlock()
 }

@@ -480,8 +480,29 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		if objectRole := misObjectRoleArg(args); objectRole != "" {
 			values.Set("object_role", objectRole)
 		}
-		if workflowSkillID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_skill_id"), stringArg(args, "approval_workflow_id"), stringArg(args, "workflow_id"))); workflowSkillID != "" {
+		if workflowSkillID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_skill_id"), stringArg(args, "workflowSkillId"))); workflowSkillID != "" {
 			values.Set("workflow_skill_id", workflowSkillID)
+		}
+		if approvalWorkflowID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "approval_workflow_id"), stringArg(args, "approvalWorkflowId"), stringArg(args, "workflow_id"))); approvalWorkflowID != "" {
+			values.Set("approval_workflow_id", approvalWorkflowID)
+		}
+		if triggerEvent := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "trigger_event"), stringArg(args, "event"), stringArg(args, "approval_event"))); triggerEvent != "" {
+			values.Set("trigger_event", triggerEvent)
+		}
+		if submittedBy := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "submitted_by"), stringArg(args, "applicant"), stringArg(args, "owner"))); submittedBy != "" {
+			values.Set("submitted_by", submittedBy)
+		}
+		if currentAssignee := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "current_assignee"), stringArg(args, "assigned_to"), stringArg(args, "assignee"), stringArg(args, "approver"))); currentAssignee != "" {
+			values.Set("current_assignee", currentAssignee)
+		}
+		if currentAssigneeType := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "current_assignee_type"), stringArg(args, "assignee_type"))); currentAssigneeType != "" {
+			values.Set("current_assignee_type", currentAssigneeType)
+		}
+		if fromStatus := strings.TrimSpace(stringArg(args, "from_status")); fromStatus != "" {
+			values.Set("from_status", fromStatus)
+		}
+		if toStatus := strings.TrimSpace(stringArg(args, "to_status")); toStatus != "" {
+			values.Set("to_status", toStatus)
 		}
 		if workflowInstanceID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_instance_id"), stringArg(args, "approval_instance_id"))); workflowInstanceID != "" {
 			values.Set("workflow_instance_id", workflowInstanceID)
@@ -1014,8 +1035,29 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		} else if (action == "mis.approval.my_inbox" || action == "mis.approval.my_pending") && strings.TrimSpace(cfg.UserID) != "" {
 			values.Set("assigned_to", strings.TrimSpace(cfg.UserID))
 		}
-		if workflowSkillID := strings.TrimSpace(stringArg(args, "workflow_skill_id")); workflowSkillID != "" {
+		if workflowSkillID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_skill_id"), stringArg(args, "workflowSkillId"))); workflowSkillID != "" {
 			values.Set("workflow_skill_id", workflowSkillID)
+		}
+		if approvalWorkflowID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "approval_workflow_id"), stringArg(args, "approvalWorkflowId"), stringArg(args, "workflow_id"))); approvalWorkflowID != "" {
+			values.Set("approval_workflow_id", approvalWorkflowID)
+		}
+		if triggerEvent := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "trigger_event"), stringArg(args, "event"), stringArg(args, "approval_event"))); triggerEvent != "" {
+			values.Set("trigger_event", triggerEvent)
+		}
+		if submittedBy := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "submitted_by"), stringArg(args, "applicant"), stringArg(args, "owner"))); submittedBy != "" {
+			values.Set("submitted_by", submittedBy)
+		}
+		if currentAssignee := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "current_assignee"), stringArg(args, "assigned_to"), stringArg(args, "assignee"), stringArg(args, "approver"))); currentAssignee != "" {
+			values.Set("current_assignee", currentAssignee)
+		}
+		if currentAssigneeType := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "current_assignee_type"), stringArg(args, "assignee_type"))); currentAssigneeType != "" {
+			values.Set("current_assignee_type", currentAssigneeType)
+		}
+		if fromStatus := strings.TrimSpace(stringArg(args, "from_status")); fromStatus != "" {
+			values.Set("from_status", fromStatus)
+		}
+		if toStatus := strings.TrimSpace(stringArg(args, "to_status")); toStatus != "" {
+			values.Set("to_status", toStatus)
 		}
 		if workflowInstanceID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_instance_id"), stringArg(args, "approval_instance_id"))); workflowInstanceID != "" {
 			values.Set("workflow_instance_id", workflowInstanceID)
@@ -1053,25 +1095,33 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			return "missing id"
 		}
 		body := map[string]interface{}{
-			"app_id":               firstNonEmptyMISAgentView(stringArg(args, "app_id"), stringArg(args, "appId")),
-			"blueprint_id":         firstNonEmptyMISAgentView(stringArg(args, "blueprint_id"), stringArg(args, "blueprintId")),
-			"object_role":          misObjectRoleArg(args),
-			"kind":                 stringArg(args, "kind"),
-			"priority":             stringArg(args, "priority"),
-			"summary":              stringArg(args, "summary"),
-			"assigned_to":          stringArg(args, "assigned_to"),
-			"due_at":               stringArg(args, "due_at"),
-			"request":              args["request"],
-			"workflow_skill_id":    firstNonEmptyMISAgentView(stringArg(args, "workflow_skill_id"), stringArg(args, "workflow_id"), stringArg(args, "approval_workflow_id"), stringArg(args, "workflowSkillId")),
-			"workflow_version":     firstNonEmptyMISAgentView(stringArg(args, "workflow_version"), stringArg(args, "approval_workflow_version"), stringArg(args, "workflowVersion")),
-			"workflow_instance_id": firstNonEmptyMISAgentView(stringArg(args, "workflow_instance_id"), stringArg(args, "approval_instance_id")),
-			"workflow_node_id":     stringArg(args, "workflow_node_id"),
-			"workflow_decision_id": stringArg(args, "workflow_decision_id"),
-			"business_status":      stringArg(args, "business_status"),
-			"result_status":        stringArg(args, "result_status"),
-			"result_payload":       args["result_payload"],
-			"outputs":              args["outputs"],
-			"artifacts":            args["artifacts"],
+			"app_id":                firstNonEmptyMISAgentView(stringArg(args, "app_id"), stringArg(args, "appId")),
+			"blueprint_id":          firstNonEmptyMISAgentView(stringArg(args, "blueprint_id"), stringArg(args, "blueprintId")),
+			"object_role":           misObjectRoleArg(args),
+			"kind":                  stringArg(args, "kind"),
+			"priority":              stringArg(args, "priority"),
+			"summary":               stringArg(args, "summary"),
+			"assigned_to":           firstNonEmptyMISAgentView(stringArg(args, "assigned_to"), stringArg(args, "current_assignee"), stringArg(args, "approver")),
+			"due_at":                stringArg(args, "due_at"),
+			"request":               args["request"],
+			"approval_workflow_id":  firstNonEmptyMISAgentView(stringArg(args, "approval_workflow_id"), stringArg(args, "approvalWorkflowId"), stringArg(args, "workflow_id")),
+			"trigger_event":         firstNonEmptyMISAgentView(stringArg(args, "trigger_event"), stringArg(args, "event"), stringArg(args, "approval_event")),
+			"submitted_by":          firstNonEmptyMISAgentView(stringArg(args, "submitted_by"), stringArg(args, "applicant"), stringArg(args, "owner")),
+			"current_assignee":      firstNonEmptyMISAgentView(stringArg(args, "current_assignee"), stringArg(args, "assigned_to"), stringArg(args, "approver")),
+			"current_assignee_type": firstNonEmptyMISAgentView(stringArg(args, "current_assignee_type"), stringArg(args, "assignee_type")),
+			"from_status":           stringArg(args, "from_status"),
+			"to_status":             stringArg(args, "to_status"),
+			"workflow_skill_id":     firstNonEmptyMISAgentView(stringArg(args, "workflow_skill_id"), stringArg(args, "workflowSkillId")),
+			"workflow_version":      firstNonEmptyMISAgentView(stringArg(args, "workflow_version"), stringArg(args, "approval_workflow_version"), stringArg(args, "workflowVersion")),
+			"workflow_instance_id":  firstNonEmptyMISAgentView(stringArg(args, "workflow_instance_id"), stringArg(args, "approval_instance_id")),
+			"workflow_node_id":      stringArg(args, "workflow_node_id"),
+			"workflow_decision_id":  stringArg(args, "workflow_decision_id"),
+			"detail_url":            firstNonEmptyMISAgentView(stringArg(args, "detail_url"), stringArg(args, "detailUrl")),
+			"business_status":       stringArg(args, "business_status"),
+			"result_status":         stringArg(args, "result_status"),
+			"result_payload":        args["result_payload"],
+			"outputs":               args["outputs"],
+			"artifacts":             args["artifacts"],
 		}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/datasets/"+pathEscape(datasetID)+"/records/"+pathEscape(recordID)+"/approvals", compactPayload(body))
 	case "get_record_approval", "mis.approval.get":
@@ -1097,8 +1147,29 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		if recordID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "record_id"), stringArg(args, "recordId"))); recordID != "" {
 			values.Set("record_id", recordID)
 		}
-		if workflowSkillID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_skill_id"), stringArg(args, "workflow_id"), stringArg(args, "approval_workflow_id"), stringArg(args, "workflowSkillId"))); workflowSkillID != "" {
+		if workflowSkillID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_skill_id"), stringArg(args, "workflowSkillId"))); workflowSkillID != "" {
 			values.Set("workflow_skill_id", workflowSkillID)
+		}
+		if approvalWorkflowID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "approval_workflow_id"), stringArg(args, "approvalWorkflowId"), stringArg(args, "workflow_id"))); approvalWorkflowID != "" {
+			values.Set("approval_workflow_id", approvalWorkflowID)
+		}
+		if triggerEvent := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "trigger_event"), stringArg(args, "event"), stringArg(args, "approval_event"))); triggerEvent != "" {
+			values.Set("trigger_event", triggerEvent)
+		}
+		if submittedBy := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "submitted_by"), stringArg(args, "applicant"), stringArg(args, "owner"))); submittedBy != "" {
+			values.Set("submitted_by", submittedBy)
+		}
+		if currentAssignee := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "current_assignee"), stringArg(args, "assigned_to"), stringArg(args, "assignee"), stringArg(args, "approver"))); currentAssignee != "" {
+			values.Set("current_assignee", currentAssignee)
+		}
+		if currentAssigneeType := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "current_assignee_type"), stringArg(args, "assignee_type"))); currentAssigneeType != "" {
+			values.Set("current_assignee_type", currentAssigneeType)
+		}
+		if fromStatus := strings.TrimSpace(stringArg(args, "from_status")); fromStatus != "" {
+			values.Set("from_status", fromStatus)
+		}
+		if toStatus := strings.TrimSpace(stringArg(args, "to_status")); toStatus != "" {
+			values.Set("to_status", toStatus)
 		}
 		if workflowInstanceID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "workflow_instance_id"), stringArg(args, "approval_instance_id"))); workflowInstanceID != "" {
 			values.Set("workflow_instance_id", workflowInstanceID)
@@ -1135,16 +1206,22 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			return "missing approval_id"
 		}
 		body := map[string]interface{}{
-			"decision":             firstNonEmptyMISAgentView(stringArg(args, "decision"), stringArg(args, "result"), stringArg(args, "result_status")),
-			"reason":               firstNonEmptyMISAgentView(stringArg(args, "reason"), stringArg(args, "message")),
-			"workflow_node_id":     stringArg(args, "workflow_node_id"),
-			"workflow_version":     firstNonEmptyMISAgentView(stringArg(args, "workflow_version"), stringArg(args, "approval_workflow_version"), stringArg(args, "workflowVersion")),
-			"workflow_decision_id": stringArg(args, "workflow_decision_id"),
-			"business_status":      stringArg(args, "business_status"),
-			"result_status":        stringArg(args, "result_status"),
-			"result_payload":       args["result_payload"],
-			"outputs":              args["outputs"],
-			"artifacts":            args["artifacts"],
+			"decision":              firstNonEmptyMISAgentView(stringArg(args, "decision"), stringArg(args, "result"), stringArg(args, "result_status")),
+			"reason":                firstNonEmptyMISAgentView(stringArg(args, "reason"), stringArg(args, "message")),
+			"workflow_instance_id":  firstNonEmptyMISAgentView(stringArg(args, "workflow_instance_id"), stringArg(args, "approval_instance_id")),
+			"current_assignee":      firstNonEmptyMISAgentView(stringArg(args, "current_assignee"), stringArg(args, "assigned_to"), stringArg(args, "approver")),
+			"current_assignee_type": firstNonEmptyMISAgentView(stringArg(args, "current_assignee_type"), stringArg(args, "assignee_type")),
+			"from_status":           stringArg(args, "from_status"),
+			"to_status":             stringArg(args, "to_status"),
+			"workflow_node_id":      stringArg(args, "workflow_node_id"),
+			"workflow_version":      firstNonEmptyMISAgentView(stringArg(args, "workflow_version"), stringArg(args, "approval_workflow_version"), stringArg(args, "workflowVersion")),
+			"workflow_decision_id":  stringArg(args, "workflow_decision_id"),
+			"detail_url":            firstNonEmptyMISAgentView(stringArg(args, "detail_url"), stringArg(args, "detailUrl")),
+			"business_status":       stringArg(args, "business_status"),
+			"result_status":         stringArg(args, "result_status"),
+			"result_payload":        args["result_payload"],
+			"outputs":               args["outputs"],
+			"artifacts":             args["artifacts"],
 		}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/approvals/"+pathEscape(approvalID)+"/review", compactPayload(body))
 	case "list_audit_logs", "export_audit_logs_csv":

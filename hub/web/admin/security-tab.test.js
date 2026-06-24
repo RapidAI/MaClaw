@@ -77,6 +77,7 @@ function createMockDOM() {
   }
   function makeElement(id) {
     var attrs = {};
+    var listeners = {};
     var el = {
       id: id || '',
       _innerHTML: '',
@@ -85,11 +86,20 @@ function createMockDOM() {
       disabled: false,
       checked: false,
       style: {},
+      _listeners: listeners,
       classList: createClassList(),
       parentNode: null,
       setAttribute: function(name, value) { attrs[name] = String(value); },
       getAttribute: function(name) { return Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null; },
-      addEventListener: function() {},
+      addEventListener: function(type, handler) {
+        if (!listeners[type]) listeners[type] = [];
+        listeners[type].push(handler);
+      },
+      dispatchEvent: function(event) {
+        event = event || {};
+        event.target = event.target || el;
+        (listeners[event.type] || []).forEach(function(handler) { handler(event); });
+      },
       appendChild: function(child) { if (child) child.parentNode = el; },
       removeChild: function(child) { if (child) child.parentNode = null; },
       focus: function() {},
@@ -106,11 +116,14 @@ function createMockDOM() {
       get: function() { return el._innerHTML; },
       set: function(value) {
         el._innerHTML = String(value || '');
-        var idRe = /\sid="([^"]+)"/g;
+        var idRe = /<([a-zA-Z0-9]+)([^>]*\sid="([^"]+)"[^>]*)>/g;
         var match;
         while ((match = idRe.exec(el._innerHTML))) {
-          if (!elements[match[1]]) elements[match[1]] = makeElement(match[1]);
-          elements[match[1]].parentNode = el;
+          var id = match[3];
+          if (!elements[id]) elements[id] = makeElement(id);
+          var tagAttrs = attrsFromTag(match[0]);
+          Object.keys(tagAttrs).forEach(function(name) { elements[id].setAttribute(name, tagAttrs[name]); });
+          elements[id].parentNode = el;
         }
         if (el.id === 'secApprovalRolesRoot') {
           approvalRoleRows = [];
@@ -153,7 +166,7 @@ function createMockDOM() {
       return [];
     },
     body: {
-      appendChild: function(el) { if (el && el.id) elements[el.id] = el; },
+      appendChild: function(el) { if (el) { el.parentNode = this; if (el.id) elements[el.id] = el; } },
       removeChild: function(el) { if (el && el.id && elements[el.id] === el) delete elements[el.id]; }
     },
     addEventListener: function() {},
@@ -165,6 +178,7 @@ function createMockGlobal() {
   var apiCalls = [];
   var toasts = [];
   var registeredTabs = [];
+  var languageCallbacks = [];
   var storage = {};
   var mockGlobal = {
     currentLang: 'zh',
@@ -186,7 +200,7 @@ function createMockGlobal() {
     },
     AdminTabRegistry: {
       registerTab: function(definition) { registeredTabs.push(definition); },
-      onLanguageChange: function() {}
+      onLanguageChange: function(callback) { languageCallbacks.push(callback); }
     },
     showToast: function(msg, type) { toasts.push({ msg: msg, type: type }); },
     setOutput: function() {},
@@ -228,7 +242,8 @@ function createMockGlobal() {
     },
     _apiCalls: apiCalls,
     _toasts: toasts,
-    _registeredTabs: registeredTabs
+    _registeredTabs: registeredTabs,
+    _languageCallbacks: languageCallbacks
   };
   mockGlobal.window = mockGlobal;
   return mockGlobal;
@@ -299,7 +314,20 @@ async function runTests() {
     g.prompt = function() { throw new Error('native prompt should not be used for approval functions'); };
     ctx.addSecApprovalFunction();
     assert(g.document.elements.approvalFunctionDialogOverlay && g.document.elements.approvalFunctionDialogOverlay.classList.contains('show'), 'add function should open the custom input dialog');
-    ctx.closeSecApprovalFunctionDialog();
+    assertEqual(g.document.elements.approvalFunctionDialogClose.getAttribute('aria-label'), 'Close', 'add function dialog close button should be localized');
+    g.document.elements.approvalFunctionNameInput.value = 'Keyboard Function';
+    assert((g.document.elements.approvalFunctionNameInput._listeners.keydown || []).length > 0, 'function dialog input should register keydown handlers');
+    var prevented = false;
+    g.document.elements.approvalFunctionNameInput.dispatchEvent({ type: 'keydown', key: 'Enter', isComposing: true, preventDefault: function() { prevented = true; } });
+    assertEqual(prevented, false, 'IME composing Enter should not submit the function dialog');
+    assert(!g.__securityAdminState.approvalFunctionScopes.some(function(item) { return item.scopeName === 'Keyboard Function'; }), 'IME composing Enter should not add a function');
+    g.document.elements.approvalFunctionNameInput.dispatchEvent({ type: 'keydown', key: 'Enter', isComposing: false, preventDefault: function() { prevented = true; } });
+    assertEqual(prevented, true, 'regular Enter should prevent default before submitting');
+    assert(g.__securityAdminState.approvalFunctionScopes.some(function(item) { return item.scopeName === 'Keyboard Function'; }), 'regular Enter should submit the function dialog');
+    assert(!g.document.elements.approvalFunctionDialogOverlay.classList.contains('show'), 'submitted function dialog should close');
+    ctx.addSecApprovalFunction();
+    g.document.elements.approvalFunctionNameInput.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault: function() { prevented = true; } });
+    assert(!g.document.elements.approvalFunctionDialogOverlay.classList.contains('show'), 'Escape should close the function dialog');
     ctx.submitSecApprovalFunctionName('HR');
     assertEqual(g.__securityAdminState.approvalRoleScope, 'function:hr', 'duplicate function name should select existing scope');
     assertEqual(g.__securityAdminState.approvalFunctionScopes.filter(function(item) { return item.scopeId === 'hr'; }).length, 1, 'duplicate function name should not create a second HR scope');
@@ -321,6 +349,17 @@ async function runTests() {
     assertEqual(g.__securityAdminState.approvalRoleScope, 'function:people_ops', 'new custom function should become selected');
     ctx.addSecApprovalRole();
     assert(g.document.elements.approvalRoleDialogOverlay && g.document.elements.approvalRoleDialogOverlay.classList.contains('show'), 'add role should open the custom input dialog');
+    assertEqual(g.document.elements.approvalRoleDialogClose.getAttribute('aria-label'), 'Close', 'add role dialog close button should be localized');
+    g.currentLang = 'zh';
+    ctx.currentLang = 'zh';
+    assert(g._languageCallbacks.length > 0, 'security tab should register a language change callback');
+    g._languageCallbacks.forEach(function(callback) { callback(); });
+    assertEqual(g.document.elements.approvalRoleDialogTitle.textContent, '\u65b0\u589e\u89d2\u8272', 'open add role dialog title should refresh after language change');
+    assertEqual(g.document.elements.approvalRoleDialogCancel.textContent, '\u53d6\u6d88', 'open add role dialog cancel button should refresh after language change');
+    assertEqual(g.document.elements.approvalRoleDialogConfirm.textContent, '\u786e\u8ba4', 'open add role dialog confirm button should refresh after language change');
+    assertEqual(g.document.elements.approvalRoleDialogClose.getAttribute('aria-label'), '\u5173\u95ed', 'open add role dialog close label should refresh after language change');
+    g.currentLang = 'en';
+    ctx.currentLang = 'en';
     ctx.closeSecApprovalRoleDialog();
     ctx.submitSecApprovalRoleName('Budget Approver');
     assert(g.__securityAdminState.approvalRoles.some(function(item) { return item.scopeId === 'people_ops' && item.roleName === 'Budget Approver'; }), 'custom role should be added to the current function scope');
@@ -393,6 +432,7 @@ async function runTests() {
     await ctx.loadApprovalRolesTab();
     await ctx.openSecApprovalSubjectPicker('role:department:dept-finance:department_manager');
     assert(g.document.elements.approvalSubjectPickerOverlay && g.document.elements.approvalSubjectPickerOverlay.classList.contains('show'), 'subject picker should open as a visible custom dialog');
+    assertEqual(g.document.elements.approvalSubjectPickerClose.getAttribute('aria-label'), '\u5173\u95ed', 'subject picker close button should be localized');
     var pickerHtml = g.document.elements.approvalSubjectList.innerHTML;
     assertIncludes(pickerHtml, 'alice@example.com', 'picker should list department physical employee');
     assertIncludes(pickerHtml, 'Alice Twin', 'picker should list department member digital twin');

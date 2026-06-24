@@ -20,7 +20,7 @@ func (c *coreAgentCallbacks) executeWebSearch(args map[string]interface{}) strin
 	}
 
 	provider := c.resolveWebSearchProvider()
-	results, err := websearch.SearchWithProvider(query, maxResults, provider)
+	results, err := websearch.SearchWithProviderCtx(c.parentContext(), query, maxResults, provider)
 	if err != nil {
 		return fmt.Sprintf("Error: search failed: %v", err)
 	}
@@ -61,7 +61,7 @@ func (c *coreAgentCallbacks) executeWebFetch(args map[string]interface{}) string
 		TimeoutS: corelib.NormalizeAgentTimeoutSec(intArg(args, "timeout", corelib.DefaultAgentTimeoutSec)),
 	}
 
-	result, err := websearch.Fetch(rawURL, opts)
+	result, err := websearch.FetchCtx(c.parentContext(), rawURL, opts)
 	if err != nil {
 		return fmt.Sprintf("Error: fetch failed: %v", err)
 	}

@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -58,13 +59,27 @@ type FetchResult struct {
 // For HTML pages, it extracts the main text content.
 // For other content types, it returns raw text or saves to file.
 func Fetch(rawURL string, opts *FetchOptions) (*FetchResult, error) {
-	return FetchWithClient(rawURL, opts, nil)
+	return FetchCtx(context.Background(), rawURL, opts)
 }
 
 // FetchWithClient is Fetch with an optional caller-provided HTTP client for
 // HTTP(S) requests. It keeps the existing extraction pipeline while allowing
 // security-sensitive callers to enforce their own dial and redirect policy.
 func FetchWithClient(rawURL string, opts *FetchOptions, client *http.Client) (*FetchResult, error) {
+	return FetchWithClientCtx(context.Background(), rawURL, opts, client)
+}
+
+func FetchCtx(parent context.Context, rawURL string, opts *FetchOptions) (*FetchResult, error) {
+	return FetchWithClientCtx(parent, rawURL, opts, nil)
+}
+
+func FetchWithClientCtx(parent context.Context, rawURL string, opts *FetchOptions, client *http.Client) (*FetchResult, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
 	if rawURL == "" {
 		return nil, fmt.Errorf("URL is empty")
 	}
@@ -103,7 +118,7 @@ func FetchWithClient(rawURL string, opts *FetchOptions, client *http.Client) (*F
 		return nil, fmt.Errorf("FTPS (FTP over TLS) is not supported yet, use ftp:// instead")
 	}
 	if strings.HasPrefix(rawURL, "ftp://") {
-		return fetchFTP(rawURL, opts)
+		return fetchFTPCtx(parent, rawURL, opts)
 	}
 
 	// Try headless Chrome first if requested
@@ -111,13 +126,15 @@ func FetchWithClient(rawURL string, opts *FetchOptions, client *http.Client) (*F
 		if client != nil {
 			return nil, fmt.Errorf("RenderJS cannot be used with a custom HTTP client")
 		}
-		if result, err := fetchWithChrome(rawURL, opts); err == nil {
+		if result, err := fetchWithChromeCtx(parent, rawURL, opts); err == nil {
 			return result, nil
+		} else if parent.Err() != nil {
+			return nil, parent.Err()
 		}
 		// Fallback to HTTP if Chrome fails
 	}
 
-	return fetchHTTPWithClient(rawURL, opts, client)
+	return fetchHTTPWithClientCtx(parent, rawURL, opts, client)
 }
 
 func fetchHTTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {
@@ -125,7 +142,14 @@ func fetchHTTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 }
 
 func fetchHTTPWithClient(rawURL string, opts *FetchOptions, client *http.Client) (*FetchResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(opts.TimeoutS)*time.Second)
+	return fetchHTTPWithClientCtx(context.Background(), rawURL, opts, client)
+}
+
+func fetchHTTPWithClientCtx(parent context.Context, rawURL string, opts *FetchOptions, client *http.Client) (*FetchResult, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, time.Duration(opts.TimeoutS)*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
@@ -517,6 +541,16 @@ func isTextContent(ct string) bool {
 // fetchFTP downloads a file via FTP protocol using raw TCP commands.
 // Supports anonymous login and ftp://user:pass@host/path format.
 func fetchFTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {
+	return fetchFTPCtx(context.Background(), rawURL, opts)
+}
+
+func fetchFTPCtx(parent context.Context, rawURL string, opts *FetchOptions) (*FetchResult, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid FTP URL: %w", err)
@@ -548,11 +582,14 @@ func fetchFTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 	if dialTimeout > 15*time.Second {
 		dialTimeout = 15 * time.Second
 	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), dialTimeout)
+	dialer := &net.Dialer{Timeout: dialTimeout}
+	conn, err := dialer.DialContext(parent, "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		return nil, fmt.Errorf("FTP connect failed: %w", err)
 	}
 	defer conn.Close()
+	stopClosingControlConn := closeConnOnContextDone(parent, conn)
+	defer stopClosingControlConn()
 	conn.SetDeadline(deadline)
 
 	reader := bufio.NewReader(conn)
@@ -563,6 +600,9 @@ func fetchFTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 		for range 100 { // safety limit: max 100 lines per response
 			line, err := reader.ReadString('\n')
 			if err != nil {
+				if ctxErr := parent.Err(); ctxErr != nil {
+					return 0, full.String(), ctxErr
+				}
 				return 0, full.String(), err
 			}
 			full.WriteString(line)
@@ -580,6 +620,9 @@ func fetchFTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 	sendCmd := func(cmd string) (int, string, error) {
 		_, err := fmt.Fprintf(conn, "%s\r\n", cmd)
 		if err != nil {
+			if ctxErr := parent.Err(); ctxErr != nil {
+				return 0, "", ctxErr
+			}
 			return 0, "", err
 		}
 		return readResp()
@@ -629,11 +672,17 @@ func fetchFTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 	}
 
 	// Open data connection
-	dataConn, err := net.DialTimeout("tcp", net.JoinHostPort(dataHost, dataPort), 10*time.Second)
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
+	dataDialer := &net.Dialer{Timeout: 10 * time.Second}
+	dataConn, err := dataDialer.DialContext(parent, "tcp", net.JoinHostPort(dataHost, dataPort))
 	if err != nil {
 		return nil, fmt.Errorf("FTP data connect failed: %w", err)
 	}
 	defer dataConn.Close()
+	stopClosingDataConn := closeConnOnContextDone(parent, dataConn)
+	defer stopClosingDataConn()
 	dataConn.SetDeadline(deadline)
 
 	// Send RETR command
@@ -649,6 +698,9 @@ func fetchFTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 	body, err := io.ReadAll(io.LimitReader(dataConn, opts.MaxBytes))
 	dataConn.Close()
 	if err != nil {
+		if ctxErr := parent.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, fmt.Errorf("FTP data read failed: %w", err)
 	}
 
@@ -727,17 +779,52 @@ func containsBinaryBytes(data []byte) bool {
 }
 
 // ---------------------------------------------------------------------------
+// Connection cancellation helpers
+// ---------------------------------------------------------------------------
+
+// closeConnOnContextDone closes conn when ctx is cancelled so blocking socket reads wake up.
+func closeConnOnContextDone(ctx context.Context, conn net.Conn) func() {
+	if ctx == nil || conn == nil || ctx.Done() == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var stopOnce sync.Once
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+	return func() {
+		stopOnce.Do(func() {
+			close(done)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Headless Chrome rendering (optional)
 // ---------------------------------------------------------------------------
 
 // fetchWithChrome uses headless Chrome via CDP to render JS-heavy pages.
 func fetchWithChrome(rawURL string, opts *FetchOptions) (*FetchResult, error) {
+	return fetchWithChromeCtx(context.Background(), rawURL, opts)
+}
+
+func fetchWithChromeCtx(parent context.Context, rawURL string, opts *FetchOptions) (*FetchResult, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
 	chromePath := findChrome()
 	if chromePath == "" {
 		return nil, fmt.Errorf("Chrome not found")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(opts.TimeoutS)*time.Second)
+	ctx, cancel := context.WithTimeout(parent, time.Duration(opts.TimeoutS)*time.Second)
 	defer cancel()
 
 	// Use Chrome's --dump-dom flag to get rendered HTML
@@ -767,8 +854,20 @@ func fetchWithChrome(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 		return nil, fmt.Errorf("Chrome start failed: %w", err)
 	}
 
-	body, _ := io.ReadAll(io.LimitReader(stdoutPipe, opts.MaxBytes))
-	_ = cmd.Wait()
+	body, readErr := io.ReadAll(io.LimitReader(stdoutPipe, opts.MaxBytes))
+	waitErr := cmd.Wait()
+	if ctxErr := parent.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("Chrome read output failed: %w", readErr)
+	}
+	if waitErr != nil {
+		return nil, fmt.Errorf("Chrome exited with error: %w", waitErr)
+	}
 	if len(body) == 0 {
 		return nil, fmt.Errorf("Chrome returned empty output")
 	}

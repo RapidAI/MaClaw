@@ -45,76 +45,101 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 	}
 
 	createOut := app.executeMISDataTool(map[string]interface{}{
-		"action":               "create_record_approval",
-		"dataset_id":           "finance.expenses",
-		"record_id":            "exp-1",
-		"app_id":               "mis.expense",
-		"blueprint_id":         "mis.expense.approval",
-		"object_role":          "expense_report",
-		"kind":                 "approval",
-		"summary":              "Expense approval",
-		"workflow_skill_id":    "expense-approval-workflow",
-		"workflow_version":     "1.2.0",
-		"workflow_instance_id": "wf-inst-1",
-		"workflow_node_id":     "manager_review",
-		"workflow_decision_id": "decision-1",
-		"business_status":      "approval_pending",
-		"result_status":        "pending",
-		"request":              map[string]interface{}{"amount": 88},
-		"result_payload":       map[string]interface{}{"business_record": map[string]interface{}{"id": "exp-1"}},
-		"outputs":              []interface{}{map[string]interface{}{"type": "business_record", "title": "Expense record"}},
-		"artifacts":            []interface{}{map[string]interface{}{"id": "artifact-1", "name": "approval.pdf"}},
+		"action":                "create_record_approval",
+		"dataset_id":            "finance.expenses",
+		"record_id":             "exp-1",
+		"app_id":                "mis.expense",
+		"blueprint_id":          "mis.expense.approval",
+		"object_role":           "expense_report",
+		"kind":                  "approval",
+		"summary":               "Expense approval",
+		"approval_workflow_id":  "expense_approval",
+		"trigger_event":         "expense.submitted",
+		"submitted_by":          "employee_1",
+		"current_assignee":      "manager",
+		"current_assignee_type": "user",
+		"from_status":           "submitted",
+		"to_status":             "approval_pending",
+		"workflow_skill_id":     "expense-approval-workflow",
+		"workflow_version":      "1.2.0",
+		"workflow_instance_id":  "wf-inst-1",
+		"workflow_node_id":      "manager_review",
+		"workflow_decision_id":  "decision-1",
+		"business_status":       "approval_pending",
+		"result_status":         "pending",
+		"request":               map[string]interface{}{"amount": 88},
+		"result_payload":        map[string]interface{}{"business_record": map[string]interface{}{"id": "exp-1"}},
+		"outputs":               []interface{}{map[string]interface{}{"type": "business_record", "title": "Expense record"}},
+		"artifacts":             []interface{}{map[string]interface{}{"id": "artifact-1", "name": "approval.pdf"}},
 	})
 	if !strings.Contains(createOut, `"ok": true`) {
 		t.Fatalf("create_record_approval output = %s", createOut)
 	}
 
 	listOut := app.executeMISDataTool(map[string]interface{}{
-		"action":               "list_record_approvals",
-		"dataset_id":           "finance.expenses",
-		"app_id":               "mis.expense",
-		"blueprint_id":         "mis.expense.approval",
-		"object_role":          "expense_report",
-		"workflow_skill_id":    "expense-approval-workflow",
-		"approval_instance_id": "wf-inst-1",
-		"workflow_node_id":     "manager_review",
-		"business_status":      "approval_pending",
-		"result_status":        "pending",
+		"action":                "list_record_approvals",
+		"dataset_id":            "finance.expenses",
+		"app_id":                "mis.expense",
+		"blueprint_id":          "mis.expense.approval",
+		"object_role":           "expense_report",
+		"approval_workflow_id":  "expense_approval",
+		"trigger_event":         "expense.submitted",
+		"submitted_by":          "employee_1",
+		"current_assignee":      "manager",
+		"current_assignee_type": "user",
+		"from_status":           "submitted",
+		"to_status":             "approval_pending",
+		"workflow_skill_id":     "expense-approval-workflow",
+		"approval_instance_id":  "wf-inst-1",
+		"workflow_node_id":      "manager_review",
+		"business_status":       "approval_pending",
+		"result_status":         "pending",
 	})
 	if !strings.Contains(listOut, `"ok": true`) {
 		t.Fatalf("list_record_approvals output = %s", listOut)
 	}
 
 	reviewOut := app.executeMISDataTool(map[string]interface{}{
-		"action":               "review_record_approval",
-		"approval_id":          "approval-1",
-		"decision":             "approved",
-		"reason":               "Policy matched",
-		"workflow_node_id":     "finance_review",
-		"workflow_decision_id": "decision-2",
-		"business_status":      "approved",
-		"result_status":        "approved",
-		"result_payload":       map[string]interface{}{"business_record": map[string]interface{}{"id": "exp-1", "status": "approved"}},
-		"outputs":              []interface{}{map[string]interface{}{"type": "text", "title": "Decision", "text": "approved"}},
-		"artifacts":            []interface{}{map[string]interface{}{"id": "artifact-1", "name": "approval.pdf"}},
+		"action":                "review_record_approval",
+		"approval_id":           "approval-1",
+		"decision":              "approved",
+		"reason":                "Policy matched",
+		"workflow_instance_id":  "wf-inst-1",
+		"current_assignee":      "finance_queue",
+		"current_assignee_type": "queue",
+		"from_status":           "approval_pending",
+		"to_status":             "approved",
+		"workflow_node_id":      "finance_review",
+		"workflow_decision_id":  "decision-2",
+		"business_status":       "approved",
+		"result_status":         "approved",
+		"result_payload":        map[string]interface{}{"business_record": map[string]interface{}{"id": "exp-1", "status": "approved"}},
+		"outputs":               []interface{}{map[string]interface{}{"type": "text", "title": "Decision", "text": "approved"}},
+		"artifacts":             []interface{}{map[string]interface{}{"id": "artifact-1", "name": "approval.pdf"}},
 	})
 	if !strings.Contains(reviewOut, `"ok": true`) {
 		t.Fatalf("review_record_approval output = %s", reviewOut)
 	}
 
 	inboxOut := app.executeMISDataTool(map[string]interface{}{
-		"action":               "get_inbox",
-		"type":                 "approval",
-		"app_id":               "mis.expense",
-		"blueprint_id":         "mis.expense.approval",
-		"object_role":          "expense_report",
-		"workflow_skill_id":    "expense-approval-workflow",
-		"approval_instance_id": "wf-inst-1",
-		"workflow_node_id":     "manager_review",
-		"business_status":      "approval_pending",
-		"result_status":        "pending",
-		"lane":                 "pending_my_approval",
-		"actor":                "manager_1",
+		"action":                "get_inbox",
+		"type":                  "approval",
+		"app_id":                "mis.expense",
+		"blueprint_id":          "mis.expense.approval",
+		"object_role":           "expense_report",
+		"approval_workflow_id":  "expense_approval",
+		"trigger_event":         "expense.submitted",
+		"current_assignee":      "manager",
+		"current_assignee_type": "user",
+		"from_status":           "submitted",
+		"to_status":             "approval_pending",
+		"workflow_skill_id":     "expense-approval-workflow",
+		"approval_instance_id":  "wf-inst-1",
+		"workflow_node_id":      "manager_review",
+		"business_status":       "approval_pending",
+		"result_status":         "pending",
+		"lane":                  "pending_my_approval",
+		"actor":                 "manager_1",
 	})
 	if !strings.Contains(inboxOut, `"ok": true`) {
 		t.Fatalf("get_inbox output = %s", inboxOut)
@@ -128,16 +153,23 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 		t.Fatalf("unexpected create request: %#v", create)
 	}
 	for key, want := range map[string]string{
-		"app_id":               "mis.expense",
-		"blueprint_id":         "mis.expense.approval",
-		"object_role":          "expense_report",
-		"workflow_skill_id":    "expense-approval-workflow",
-		"workflow_version":     "1.2.0",
-		"workflow_instance_id": "wf-inst-1",
-		"workflow_node_id":     "manager_review",
-		"workflow_decision_id": "decision-1",
-		"business_status":      "approval_pending",
-		"result_status":        "pending",
+		"app_id":                "mis.expense",
+		"blueprint_id":          "mis.expense.approval",
+		"object_role":           "expense_report",
+		"approval_workflow_id":  "expense_approval",
+		"trigger_event":         "expense.submitted",
+		"submitted_by":          "employee_1",
+		"current_assignee":      "manager",
+		"current_assignee_type": "user",
+		"from_status":           "submitted",
+		"to_status":             "approval_pending",
+		"workflow_skill_id":     "expense-approval-workflow",
+		"workflow_version":      "1.2.0",
+		"workflow_instance_id":  "wf-inst-1",
+		"workflow_node_id":      "manager_review",
+		"workflow_decision_id":  "decision-1",
+		"business_status":       "approval_pending",
+		"result_status":         "pending",
 	} {
 		if got := strings.TrimSpace(asTestString(create.Body[key])); got != want {
 			t.Fatalf("create body[%s] = %q, want %q; body=%#v", key, got, want, create.Body)
@@ -164,6 +196,19 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 		"app_id=mis.expense",
 		"blueprint_id=mis.expense.approval",
 		"object_role=expense_report",
+		"approval_workflow_id=expense_approval",
+		"trigger_event=expense.submitted",
+		"submitted_by=employee_1",
+		"current_assignee=manager",
+		"current_assignee_type=user",
+		"from_status=submitted",
+		"to_status=approval_pending",
+		"approval_workflow_id=expense_approval",
+		"trigger_event=expense.submitted",
+		"current_assignee=manager",
+		"current_assignee_type=user",
+		"from_status=submitted",
+		"to_status=approval_pending",
 		"workflow_skill_id=expense-approval-workflow",
 		"workflow_instance_id=wf-inst-1",
 		"workflow_node_id=manager_review",
@@ -180,11 +225,16 @@ func TestMISDataApprovalActionsCarryWorkflowLinkFields(t *testing.T) {
 		t.Fatalf("unexpected review request: %#v", review)
 	}
 	for key, want := range map[string]string{
-		"decision":             "approved",
-		"workflow_node_id":     "finance_review",
-		"workflow_decision_id": "decision-2",
-		"business_status":      "approved",
-		"result_status":        "approved",
+		"decision":              "approved",
+		"workflow_instance_id":  "wf-inst-1",
+		"current_assignee":      "finance_queue",
+		"current_assignee_type": "queue",
+		"from_status":           "approval_pending",
+		"to_status":             "approved",
+		"workflow_node_id":      "finance_review",
+		"workflow_decision_id":  "decision-2",
+		"business_status":       "approved",
+		"result_status":         "approved",
 	} {
 		if got := strings.TrimSpace(asTestString(review.Body[key])); got != want {
 			t.Fatalf("review body[%s] = %q, want %q; body=%#v", key, got, want, review.Body)
@@ -297,8 +347,8 @@ func TestMISDataApprovalSemanticActions(t *testing.T) {
 	if captured[0].Method != http.MethodPost || captured[0].Path != "/api/v1/data/datasets/finance.expenses/records/exp-2/approvals" {
 		t.Fatalf("unexpected semantic start request: %#v", captured[0])
 	}
-	if got := strings.TrimSpace(asTestString(captured[0].Body["workflow_skill_id"])); got != "expense_approval" {
-		t.Fatalf("semantic start workflow_skill_id = %q; body=%#v", got, captured[0].Body)
+	if got := strings.TrimSpace(asTestString(captured[0].Body["approval_workflow_id"])); got != "expense_approval" {
+		t.Fatalf("semantic start approval_workflow_id = %q; body=%#v", got, captured[0].Body)
 	}
 	if got := strings.TrimSpace(asTestString(captured[0].Body["workflow_version"])); got != "2.0.0" {
 		t.Fatalf("semantic start workflow_version = %q; body=%#v", got, captured[0].Body)
@@ -363,7 +413,7 @@ func TestMISDataApprovalGetUsesBusinessSemanticQuery(t *testing.T) {
 		t.Fatalf("captured %d requests, want 1: %#v", len(captured), captured)
 	}
 	got := captured[0]
-	if got.Method != http.MethodGet || got.Path != "/api/v1/data/approvals" || !strings.Contains(got.Query, "app_id=mis.expense") || !strings.Contains(got.Query, "object_role=expense_report") || !strings.Contains(got.Query, "record_id=exp-3") || !strings.Contains(got.Query, "workflow_skill_id=expense_approval") || !strings.Contains(got.Query, "workflow_instance_id=appr-3") || !strings.Contains(got.Query, "limit=1") {
+	if got.Method != http.MethodGet || got.Path != "/api/v1/data/approvals" || !strings.Contains(got.Query, "app_id=mis.expense") || !strings.Contains(got.Query, "object_role=expense_report") || !strings.Contains(got.Query, "record_id=exp-3") || !strings.Contains(got.Query, "approval_workflow_id=expense_approval") || !strings.Contains(got.Query, "workflow_instance_id=appr-3") || !strings.Contains(got.Query, "limit=1") {
 		t.Fatalf("unexpected semantic get request: %#v", got)
 	}
 }
@@ -553,8 +603,8 @@ func TestMISDataBusinessObjectRoleActionsAndDatasetResolution(t *testing.T) {
 	if captured[5].Method != http.MethodPost || captured[5].Path != "/api/v1/data/datasets/finance.expenses/records/exp-4/approvals" {
 		t.Fatalf("unexpected approval start request: %#v", captured[5])
 	}
-	if got := strings.TrimSpace(asTestString(captured[5].Body["workflow_skill_id"])); got != "expense_approval" {
-		t.Fatalf("approval workflow_skill_id = %q; body=%#v", got, captured[5].Body)
+	if got := strings.TrimSpace(asTestString(captured[5].Body["approval_workflow_id"])); got != "expense_approval" {
+		t.Fatalf("approval approval_workflow_id = %q; body=%#v", got, captured[5].Body)
 	}
 	if got := strings.TrimSpace(asTestString(captured[5].Body["app_id"])); got != "mis.expense" {
 		t.Fatalf("approval app_id = %q; body=%#v", got, captured[5].Body)

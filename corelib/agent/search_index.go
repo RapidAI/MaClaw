@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"hash/fnv"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ const (
 	searchIndexCacheTTL     = 10 * time.Minute
 	maxDirtySearchFiles     = 1000
 	maxDirtySearchRatio     = 0.25
+	maxDirtySearchScanTime  = 3 * time.Second
 )
 
 var maxIndexedSearchFiles = 100000
@@ -64,6 +66,16 @@ var searchIndexCache = struct {
 }
 
 func indexedSearchCandidates(base, pattern, globPattern, excludePattern, fileType string, fixedString, includeHidden bool) ([]string, bool, searchCandidateStats) {
+	return indexedSearchCandidatesCtx(context.Background(), base, pattern, globPattern, excludePattern, fileType, fixedString, includeHidden)
+}
+
+func indexedSearchCandidatesCtx(ctx context.Context, base, pattern, globPattern, excludePattern, fileType string, fixedString, includeHidden bool) ([]string, bool, searchCandidateStats) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, searchCandidateStats{fallbackReason: "cancelled"}
+	}
 	info, err := os.Stat(base)
 	if err != nil || !info.IsDir() {
 		return nil, false, searchCandidateStats{fallbackReason: "base_not_directory"}
@@ -78,9 +90,15 @@ func indexedSearchCandidates(base, pattern, globPattern, excludePattern, fileTyp
 	}
 	root = filepath.Clean(root)
 
-	idx, ok := cachedSearchIndex(root, globPattern, excludePattern, fileType, includeHidden)
+	idx, ok := cachedSearchIndexCtx(ctx, root, globPattern, excludePattern, fileType, includeHidden)
 	if !ok {
+		if err := ctx.Err(); err != nil {
+			return nil, false, searchCandidateStats{fallbackReason: "cancelled"}
+		}
 		return nil, false, searchCandidateStats{fallbackReason: "index_unavailable"}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, searchCandidateStats{fallbackReason: "cancelled"}
 	}
 	stats := searchCandidateStats{indexed: true, indexedFiles: len(idx.files)}
 
@@ -94,15 +112,27 @@ func indexedSearchCandidates(base, pattern, globPattern, excludePattern, fileTyp
 
 	candidates := indexedCandidatesFromTrigrams(idx, queryTrigrams)
 	files := filterIndexedCandidateFiles(idx, root, globPattern, excludePattern, fileType, candidates)
-	dirtyFiles := idx.dirtyCandidateFiles(globPattern, excludePattern, fileType, includeHidden)
+	dirtyFiles, dirtyOK := idx.dirtyCandidateFilesBudgetedCtx(ctx, globPattern, excludePattern, fileType, includeHidden)
+	if ctx.Err() != nil {
+		return nil, false, searchCandidateStats{fallbackReason: "cancelled"}
+	}
+	if !dirtyOK {
+		return nil, false, searchCandidateStats{fallbackReason: "dirty_scan_timeout"}
+	}
 	if shouldRebuildSearchIndex(idx, len(dirtyFiles)) {
-		if rebuilt, ok := rebuildCachedSearchIndexForScope(root, globPattern, excludePattern, fileType, includeHidden); ok {
+		if rebuilt, ok := rebuildCachedSearchIndexForScopeCtx(ctx, root, globPattern, excludePattern, fileType, includeHidden); ok {
 			idx = rebuilt
 			stats.indexedFiles = len(idx.files)
 			stats.rebuilt = true
 			candidates = indexedCandidatesFromTrigrams(idx, queryTrigrams)
 			files = filterIndexedCandidateFiles(idx, root, globPattern, excludePattern, fileType, candidates)
-			dirtyFiles = idx.dirtyCandidateFiles(globPattern, excludePattern, fileType, includeHidden)
+			dirtyFiles, dirtyOK = idx.dirtyCandidateFilesBudgetedCtx(ctx, globPattern, excludePattern, fileType, includeHidden)
+			if ctx.Err() != nil {
+				return nil, false, searchCandidateStats{fallbackReason: "cancelled"}
+			}
+			if !dirtyOK {
+				return nil, false, searchCandidateStats{fallbackReason: "dirty_scan_timeout"}
+			}
 		}
 	}
 	stats.candidateFiles = len(files)
@@ -113,15 +143,31 @@ func indexedSearchCandidates(base, pattern, globPattern, excludePattern, fileTyp
 	return files, true, stats
 }
 
-func filterIndexedCandidateFiles(idx *localSearchIndex, root, globPattern, excludePattern, fileType string, candidates map[int]bool) []string {
+func searchIndexRelativePath(root, path string) (string, bool) {
+	if path == root {
+		return ".", true
+	}
+	if len(path) > len(root) && strings.HasPrefix(path, root) && os.IsPathSeparator(path[len(root)]) {
+		return path[len(root)+1:], true
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return "", false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	return rel, true
+}
+func filterIndexedCandidateFiles(idx *localSearchIndex, root, globPattern, excludePattern, fileType string, candidates []int) []string {
 	files := make([]string, 0, len(candidates))
-	for id := range candidates {
+	for _, id := range candidates {
 		if id < 0 || id >= len(idx.files) {
 			continue
 		}
 		path := idx.files[id]
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
+		rel, ok := searchIndexRelativePath(root, path)
+		if !ok {
 			continue
 		}
 		if !matchesSearchFilters(rel, false, globPattern, excludePattern, fileType) {
@@ -132,19 +178,10 @@ func filterIndexedCandidateFiles(idx *localSearchIndex, root, globPattern, exclu
 	return files
 }
 
-func indexedCandidatesFromTrigrams(idx *localSearchIndex, queryTrigrams []string) map[int]bool {
-	candidates := make(map[int]bool)
-	for _, id := range idx.postings[queryTrigrams[0]] {
-		candidates[id] = true
-	}
+func indexedCandidatesFromTrigrams(idx *localSearchIndex, queryTrigrams []string) []int {
+	candidates := append([]int(nil), idx.postings[queryTrigrams[0]]...)
 	for _, trigram := range queryTrigrams[1:] {
-		next := make(map[int]bool)
-		for _, id := range idx.postings[trigram] {
-			if candidates[id] {
-				next[id] = true
-			}
-		}
-		candidates = next
+		candidates = intersectSortedSearchIDs(candidates, idx.postings[trigram])
 		if len(candidates) == 0 {
 			break
 		}
@@ -152,7 +189,35 @@ func indexedCandidatesFromTrigrams(idx *localSearchIndex, queryTrigrams []string
 	return candidates
 }
 
+func intersectSortedSearchIDs(a, b []int) []int {
+	out := a[:0]
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch {
+		case a[i] == b[j]:
+			out = append(out, a[i])
+			i++
+			j++
+		case a[i] < b[j]:
+			i++
+		default:
+			j++
+		}
+	}
+	return out
+}
+
 func cachedSearchIndex(root, globPattern, excludePattern, fileType string, includeHidden bool) (*localSearchIndex, bool) {
+	return cachedSearchIndexCtx(context.Background(), root, globPattern, excludePattern, fileType, includeHidden)
+}
+
+func cachedSearchIndexCtx(ctx context.Context, root, globPattern, excludePattern, fileType string, includeHidden bool) (*localSearchIndex, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return nil, false
+	}
 	now := time.Now()
 	key := searchIndexCacheKey(root, globPattern, excludePattern, fileType, includeHidden)
 	searchIndexCache.Lock()
@@ -168,8 +233,11 @@ func cachedSearchIndex(root, globPattern, excludePattern, fileType string, inclu
 		searchIndexCache.Unlock()
 	}
 
-	idx, ok := buildLocalSearchIndex(root, globPattern, excludePattern, fileType, includeHidden)
+	idx, ok := buildLocalSearchIndexCtx(ctx, root, globPattern, excludePattern, fileType, includeHidden)
 	if !ok {
+		return nil, false
+	}
+	if ctx.Err() != nil {
 		return nil, false
 	}
 
@@ -190,8 +258,15 @@ func rebuildCachedSearchIndex(root string) (*localSearchIndex, bool) {
 }
 
 func rebuildCachedSearchIndexForScope(root, globPattern, excludePattern, fileType string, includeHidden bool) (*localSearchIndex, bool) {
-	idx, ok := buildLocalSearchIndex(root, globPattern, excludePattern, fileType, includeHidden)
+	return rebuildCachedSearchIndexForScopeCtx(context.Background(), root, globPattern, excludePattern, fileType, includeHidden)
+}
+
+func rebuildCachedSearchIndexForScopeCtx(ctx context.Context, root, globPattern, excludePattern, fileType string, includeHidden bool) (*localSearchIndex, bool) {
+	idx, ok := buildLocalSearchIndexCtx(ctx, root, globPattern, excludePattern, fileType, includeHidden)
 	if !ok {
+		return nil, false
+	}
+	if ctx != nil && ctx.Err() != nil {
 		return nil, false
 	}
 	searchIndexCache.Lock()
@@ -207,6 +282,16 @@ func rebuildCachedSearchIndexForScope(root, globPattern, excludePattern, fileTyp
 const maxSearchIndexBuildTime = 30 * time.Second
 
 func buildLocalSearchIndex(root, globPattern, excludePattern, fileType string, includeHidden bool) (*localSearchIndex, bool) {
+	return buildLocalSearchIndexCtx(context.Background(), root, globPattern, excludePattern, fileType, includeHidden)
+}
+
+func buildLocalSearchIndexCtx(ctx context.Context, root, globPattern, excludePattern, fileType string, includeHidden bool) (*localSearchIndex, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return nil, false
+	}
 	now := time.Now()
 	deadline := now.Add(maxSearchIndexBuildTime)
 	idx := &localSearchIndex{
@@ -224,12 +309,14 @@ func buildLocalSearchIndex(root, globPattern, excludePattern, fileType string, i
 	}
 	truncated := false
 	walkCount := 0
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	err := walkDirCtx(ctx, root, func(path string, d os.DirEntry, err error) error {
 		// Check deadline every 512 entries to avoid per-entry syscall overhead.
 		walkCount++
-		if walkCount&511 == 0 && time.Now().After(deadline) {
-			truncated = true
-			return filepath.SkipAll
+		if walkCount&511 == 0 {
+			if ctx.Err() != nil || time.Now().After(deadline) {
+				truncated = true
+				return filepath.SkipAll
+			}
 		}
 		if err != nil {
 			return nil
@@ -244,8 +331,8 @@ func buildLocalSearchIndex(root, globPattern, excludePattern, fileType string, i
 			if !includeHidden && isHiddenSearchPath(d.Name()) {
 				return nil
 			}
-			rel, err := filepath.Rel(root, path)
-			if err != nil {
+			rel, ok := searchIndexRelativePath(root, path)
+			if !ok {
 				return nil
 			}
 			if excludePattern != "" {
@@ -275,6 +362,10 @@ func buildLocalSearchIndex(root, globPattern, excludePattern, fileType string, i
 		if err != nil || info.Size() > MaxSearchFileSize {
 			return nil
 		}
+		if ctx.Err() != nil {
+			truncated = true
+			return filepath.SkipAll
+		}
 		data, err := os.ReadFile(path)
 		if err != nil || bytes.Contains(data[:min(len(data), 8000)], []byte{0}) {
 			return nil
@@ -289,6 +380,9 @@ func buildLocalSearchIndex(root, globPattern, excludePattern, fileType string, i
 		return nil
 	})
 	if err != nil || truncated || len(idx.files) == 0 {
+		return nil, false
+	}
+	if ctx.Err() != nil {
 		return nil, false
 	}
 	return idx, true
@@ -348,9 +442,43 @@ func pruneSearchIndexCacheLocked(now time.Time) {
 }
 
 func (idx *localSearchIndex) dirtyCandidateFiles(globPattern, excludePattern, fileType string, includeHidden bool) []string {
+	return idx.dirtyCandidateFilesCtx(context.Background(), globPattern, excludePattern, fileType, includeHidden)
+}
+
+func (idx *localSearchIndex) dirtyCandidateFilesCtx(ctx context.Context, globPattern, excludePattern, fileType string, includeHidden bool) []string {
+	files, _ := idx.dirtyCandidateFilesWithStatusCtx(ctx, globPattern, excludePattern, fileType, includeHidden)
+	return files
+}
+
+func (idx *localSearchIndex) dirtyCandidateFilesBudgetedCtx(ctx context.Context, globPattern, excludePattern, fileType string, includeHidden bool) ([]string, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dirtyCtx, cancel := context.WithTimeout(ctx, maxDirtySearchScanTime)
+	defer cancel()
+	return idx.dirtyCandidateFilesWithStatusCtx(dirtyCtx, globPattern, excludePattern, fileType, includeHidden)
+}
+
+func (idx *localSearchIndex) dirtyCandidateFilesWithStatusCtx(ctx context.Context, globPattern, excludePattern, fileType string, includeHidden bool) ([]string, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var files []string
-	_ = filepath.WalkDir(idx.root, func(path string, d os.DirEntry, err error) error {
+	if ctx.Err() != nil {
+		return files, false
+	}
+	complete := true
+	walkCount := 0
+	err := walkDirCtx(ctx, idx.root, func(path string, d os.DirEntry, err error) error {
+		walkCount++
+		if walkCount&511 == 0 && ctx.Err() != nil {
+			complete = false
+			return filepath.SkipAll
+		}
 		if err != nil {
+			if path == idx.root {
+				complete = false
+			}
 			return nil
 		}
 		if path != idx.root && isSearchSymlink(d) {
@@ -365,8 +493,8 @@ func (idx *localSearchIndex) dirtyCandidateFiles(globPattern, excludePattern, fi
 		if d.IsDir() {
 			return nil
 		}
-		rel, err := filepath.Rel(idx.root, path)
-		if err != nil {
+		rel, ok := searchIndexRelativePath(idx.root, path)
+		if !ok {
 			return nil
 		}
 		if !matchesSearchFilters(rel, false, globPattern, excludePattern, fileType) {
@@ -382,7 +510,13 @@ func (idx *localSearchIndex) dirtyCandidateFiles(globPattern, excludePattern, fi
 		files = append(files, path)
 		return nil
 	})
-	return files
+	if err != nil {
+		complete = false
+	}
+	if ctx.Err() != nil {
+		complete = false
+	}
+	return files, complete
 }
 
 func (idx *localSearchIndex) fileMetadataUnchanged(path string, info os.FileInfo) bool {
@@ -634,7 +768,6 @@ func outFirst(items []string) string {
 func queryTrigrams(terms []string) []string {
 	set := make(map[string]bool)
 	for _, term := range terms {
-		term = strings.ToLower(term)
 		for trigram := range contentTrigrams(term) {
 			set[trigram] = true
 		}
@@ -651,6 +784,39 @@ func contentTrigrams(s string) map[string]bool {
 }
 
 func contentTrigramsBytes(data []byte) map[string]bool {
+	seen := make(map[[3]byte]bool)
+	var window [3]byte
+	windowLen := 0
+	for _, b := range data {
+		if b >= utf8.RuneSelf {
+			return contentTrigramsUnicodeBytes(data)
+		}
+		switch {
+		case b >= 'A' && b <= 'Z':
+			b += 'a' - 'A'
+		case (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_':
+		default:
+			b = ' '
+		}
+		if windowLen < 3 {
+			window[windowLen] = b
+			windowLen++
+		} else {
+			window[0], window[1], window[2] = window[1], window[2], b
+		}
+		if windowLen < 3 || window[0] == ' ' || window[1] == ' ' || window[2] == ' ' {
+			continue
+		}
+		seen[window] = true
+	}
+	out := make(map[string]bool, len(seen))
+	for trigram := range seen {
+		out[string(trigram[:])] = true
+	}
+	return out
+}
+
+func contentTrigramsUnicodeBytes(data []byte) map[string]bool {
 	seen := make(map[[3]rune]bool)
 	var window [3]rune
 	windowLen := 0

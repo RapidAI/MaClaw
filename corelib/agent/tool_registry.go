@@ -13,6 +13,7 @@ package agent
 // TUI uses it directly.
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -21,6 +22,9 @@ import (
 // ToolHandler is a function that executes a tool and returns the result.
 type ToolHandler func(args map[string]interface{}) string
 
+// ToolHandlerCtx is a function that executes a tool with cancellation.
+type ToolHandlerCtx func(ctx context.Context, args map[string]interface{}) string
+
 // ToolEntry binds a tool's LLM-facing definition with its execution handler.
 type ToolEntry struct {
 	Name        string
@@ -28,6 +32,7 @@ type ToolEntry struct {
 	Properties  map[string]interface{}
 	Required    []string
 	Handler     ToolHandler
+	HandlerCtx  ToolHandlerCtx
 }
 
 // CoreToolRegistry holds registered tools with their definitions and handlers.
@@ -62,6 +67,30 @@ func (r *CoreToolRegistry) Execute(name string, args map[string]interface{}) str
 	r.mu.RUnlock()
 	if !ok {
 		return fmt.Sprintf("未知工具: %s", name)
+	}
+	if entry.HandlerCtx != nil {
+		return entry.HandlerCtx(context.Background(), args)
+	}
+	if entry.Handler == nil {
+		return fmt.Sprintf("工具 %s 未实现 handler", name)
+	}
+	return entry.Handler(args)
+}
+
+// ExecuteCtx dispatches a tool call by name with cancellation support.
+// Returns an error message if the tool is not found.
+func (r *CoreToolRegistry) ExecuteCtx(ctx context.Context, name string, args map[string]interface{}) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.mu.RLock()
+	entry, ok := r.tools[name]
+	r.mu.RUnlock()
+	if !ok {
+		return fmt.Sprintf("未知工具: %s", name)
+	}
+	if entry.HandlerCtx != nil {
+		return entry.HandlerCtx(ctx, args)
 	}
 	if entry.Handler == nil {
 		return fmt.Sprintf("工具 %s 未实现 handler", name)

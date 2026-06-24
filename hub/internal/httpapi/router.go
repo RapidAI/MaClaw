@@ -525,6 +525,7 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/capabilities/mcp-hub-secrets", MCPHubSecretUpsertHandler(identity, capabilitySvc))
 	mux.HandleFunc("GET /api/admin/billing/customer-account", requireTenantAdmin(AdminBillingCustomerAccountHandler(system, centerSvc)))
 	mux.HandleFunc("GET /api/admin/billing/licenses", requireTenantAdmin(AdminBillingLicensesHandler(system, centerSvc)))
+	mux.HandleFunc("GET /api/admin/user-rankings", requireTenantAdmin(GetUserRankingsHandler(sessionSvc)))
 	mux.HandleFunc("GET /api/admin/capability-market/policy", requireTenantAdmin(AdminCapabilityMarketPolicyGetHandler(system)))
 	mux.HandleFunc("PUT /api/admin/capability-market/policy", requireTenantAdmin(AdminCapabilityMarketPolicyUpdateHandler(system)))
 	mux.HandleFunc("GET /api/admin/capability-market/acquisition-requests", requireTenantAdmin(AdminCapabilityAcquisitionRequestsHandler(capabilitySvc)))

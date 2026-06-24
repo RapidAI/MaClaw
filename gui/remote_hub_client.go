@@ -1082,10 +1082,33 @@ func (c *RemoteHubClient) collectSessionMetadata() []SessionMetadata {
 	return meta
 }
 
+func (c *RemoteHubClient) collectLLMTokenUsage() *corelib.TokenUsageStat {
+	all := c.app.GetAllLLMTokenUsage()
+	if len(all) == 0 {
+		return nil
+	}
+	total := &corelib.TokenUsageStat{}
+	for _, stat := range all {
+		if stat == nil {
+			continue
+		}
+		total.InputTokens += stat.InputTokens
+		total.OutputTokens += stat.OutputTokens
+		total.CachedInputTokens += stat.CachedInputTokens
+		total.CacheWriteTokens += stat.CacheWriteTokens
+	}
+	total.TotalTokens = total.InputTokens + total.OutputTokens
+	if total.TotalTokens <= 0 {
+		return nil
+	}
+	return total
+}
+
 func (c *RemoteHubClient) SendHeartbeat() error {
 	// Collect session metadata before acquiring the connection lock to
 	// avoid holding c.mu while iterating sessions (manager has its own lock).
 	sessions := c.collectSessionMetadata()
+	llmTokenUsage := c.collectLLMTokenUsage()
 	cfg, _ := c.app.LoadConfig()
 
 	c.mu.Lock()
@@ -1106,6 +1129,7 @@ func (c *RemoteHubClient) SendHeartbeat() error {
 			"heartbeat_interval_sec": profile.HeartbeatSec,
 			"app_version":            profile.AppVersion,
 			"llm_configured":         c.app.isMaclawLLMConfigured(),
+			"llm_token_usage":        llmTokenUsage,
 			"sessions":               sessions,
 		},
 	}

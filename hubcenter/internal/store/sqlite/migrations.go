@@ -129,6 +129,21 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_gossip_comments_post_id ON gossip_comments(post_id);`,
+		`CREATE TABLE IF NOT EXISTS hub_user_usage_daily (
+			hub_id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL DEFAULT '',
+			user_email TEXT NOT NULL,
+			day TEXT NOT NULL,
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+			duration_seconds INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (hub_id, tenant_id, user_email, day)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_hub_user_usage_daily_day ON hub_user_usage_daily(day);`,
+		`CREATE INDEX IF NOT EXISTS idx_hub_user_usage_daily_scope_day ON hub_user_usage_daily(hub_id, tenant_id, day);`,
 		// News (announcements)
 		`CREATE TABLE IF NOT EXISTS news_articles (
 			id TEXT PRIMARY KEY,

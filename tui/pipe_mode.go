@@ -13,6 +13,7 @@ package main
 // remains clean for piping.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -151,7 +152,7 @@ func runPrompt(promptText string) {
 			return app.appConfig
 		}),
 		SSHHandler: sshHandler,
-		WebSearchHandler: func(args map[string]interface{}) string {
+		WebSearchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
 			var provider corelib.WebSearchProvider
 			if len(app.appConfig.WebSearchProviders) > 0 {
 				for _, p := range app.appConfig.WebSearchProviders {
@@ -167,9 +168,9 @@ func runPrompt(promptText string) {
 			if provider.Type == "" {
 				provider.Type = "duckduckgo"
 			}
-			return agent.ToolWebSearch(provider, args)
+			return agent.ToolWebSearchCtx(ctx, provider, args)
 		},
-		WebFetchHandler: func(args map[string]interface{}) string {
+		WebFetchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
 			var provider corelib.WebSearchProvider
 			if len(app.appConfig.WebSearchProviders) > 0 {
 				for _, p := range app.appConfig.WebSearchProviders {
@@ -182,7 +183,7 @@ func runPrompt(promptText string) {
 					provider = app.appConfig.WebSearchProviders[0]
 				}
 			}
-			return agent.ToolWebFetchWithProvider(args, provider)
+			return agent.ToolWebFetchWithProviderCtx(ctx, args, provider)
 		},
 	})
 
@@ -313,7 +314,9 @@ func (c *pipeCallbacks) ExecuteTool(name, argsJSON string) string {
 	if !c.quiet {
 		fmt.Fprintf(os.Stderr, "⚙ %s\n", name)
 	}
-	return c.app.toolRegistry.Execute(name, args)
+	ctx, cancel := contextFromCancelPoll(c.ShouldStop)
+	defer cancel()
+	return c.app.toolRegistry.ExecuteCtx(ctx, name, args)
 }
 
 func (c *pipeCallbacks) IsToolAllowed(name string) bool {

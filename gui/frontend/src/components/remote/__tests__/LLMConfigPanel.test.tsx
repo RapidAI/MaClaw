@@ -145,6 +145,83 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
     });
 
+    it('shows Volcengine TokenPlan protocol variants in the provider chip list', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'MaClaw\u5b98\u65b9', url: 'https://hub.example.com/api/llm/v1', key: 'viewer-token', model: 'auto', protocol: 'openai' },
+                { name: '\u706b\u5c71\u5f15\u64ceTokenPlan', url: 'https://ark.cn-beijing.volces.com/api/plan/v3', key: '', model: 'Auto', protocol: 'openai', wire_api: 'responses', supports_vision: false },
+                { name: '\u706b\u5c71\u5f15\u64ceTokenPlan (Anthropic)', url: 'https://ark.cn-beijing.volces.com/api/plan', key: '', model: 'Auto', protocol: 'anthropic', agent_type: 'claude code 2.0', supports_vision: false },
+                { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
+            ],
+            current: 'Custom1',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+
+        expect(await screen.findByRole('button', { name: /\u706b\u5c71\u5f15\u64ceTokenPlan\s+OpenAI/ })).toBeTruthy();
+        expect(await screen.findByRole('button', { name: /\u706b\u5c71\u5f15\u64ceTokenPlan \(Anthropic\)\s+Anthropic/ })).toBeTruthy();
+    });
+
+    it('fetches Volcengine TokenPlan models through the OpenAI v3 endpoint', async () => {
+        FetchProviderModelsMock.mockResolvedValue([{ id: 'Auto', name: 'Auto' }]);
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: '\u706b\u5c71\u5f15\u64ceTokenPlan', url: 'https://ark.cn-beijing.volces.com/api/plan/v3', key: 'secret', model: 'Auto', protocol: 'openai', wire_api: 'responses', supports_vision: false },
+                { name: '\u706b\u5c71\u5f15\u64ceTokenPlan (Anthropic)', url: 'https://ark.cn-beijing.volces.com/api/plan', key: 'secret', model: 'Auto', protocol: 'anthropic', agent_type: 'claude code 2.0', supports_vision: false },
+            ],
+            current: '\u706b\u5c71\u5f15\u64ceTokenPlan',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Fetch' }));
+
+        await waitFor(() => {
+            expect(FetchProviderModelsMock).toHaveBeenCalledWith('https://ark.cn-beijing.volces.com/api/plan/v3', 'secret', 'openai', 'openclaw');
+        });
+    });
+
+    it('quick-fills Volcengine TokenPlan OpenAI endpoint without stale Anthropic fields', async () => {
+        TestMaclawLLMMock.mockResolvedValue({ message: 'hello', supports_vision: false });
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    name: 'Custom1',
+                    url: '',
+                    key: '',
+                    model: '',
+                    protocol: 'anthropic',
+                    agent_type: 'claude code 2.0',
+                    wire_api: 'anthropic',
+                    is_custom: true,
+                    supports_vision: false,
+                },
+            ],
+            current: 'Custom1',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: '\u706b\u5c71\u5f15\u64ceTokenPlan (OpenAI)' } });
+        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        await waitFor(() => {
+            expect(TestMaclawLLMMock).toHaveBeenCalledWith({
+                url: 'https://ark.cn-beijing.volces.com/api/plan/v3',
+                key: 'secret',
+                model: 'Auto',
+                protocol: 'openai',
+                agent_type: 'openclaw',
+                wire_api: 'responses',
+            });
+        });
+    });
+
     it('keeps MaClaw Official visible when official grants are period-limited', async () => {
         GetHubLLMServiceStatusMock.mockResolvedValue({
             active: false,

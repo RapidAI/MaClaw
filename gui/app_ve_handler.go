@@ -934,6 +934,13 @@ func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 		handler := c.app.ensureLocalIMHandler()
 		if handler != nil && handler.registry != nil {
 			tool, ok := handler.registry.Get(name)
+			if ok && tool.HandlerCtx != nil {
+				ctx := c.ctx
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				return tool.HandlerCtx(ctx, args, nil)
+			}
 			if ok && tool.Handler != nil {
 				return tool.Handler(args)
 			}

@@ -148,6 +148,46 @@ func TestNoToolBranchDoesNotFinalizeCompletedLocalStoredInfoWithoutLookup(t *tes
 	}
 }
 
+func TestNoToolBranchRecoversTruncatedWriteFileBeforeFinalize(t *testing.T) {
+	h := &IMMessageHandler{}
+	phase := &agentLoopPhase{Stage: agentStageConverge}
+	conversation := []interface{}{
+		map[string]string{"role": "user", "content": "write a script"},
+	}
+	recorded := false
+
+	result := h.handleAgentLoopNoToolBranch(agentLoopNoToolBranchOptions{
+		UserText:                 "write a script",
+		MessageContent:           "I'll write the script now:",
+		Choice:                   llm.Choice{FinishReason: "length", TruncatedToolNames: []string{"write_file"}},
+		Phase:                    phase,
+		Conversation:             conversation,
+		Tools:                    []map[string]interface{}{toolDef("write_file", "write", nil, nil)},
+		LengthContinuationBuffer: &strings.Builder{},
+		RecordSystemMessages:     func(int, []interface{}) { recorded = true },
+	})
+
+	if !result.ContinueLoop {
+		t.Fatal("truncated write_file must continue the loop instead of finalizing text")
+	}
+	if result.ReadyToFinalize || result.Response != nil {
+		t.Fatalf("result finalized despite truncated tool call: %+v", result)
+	}
+	if phase.TruncationRetries != 1 {
+		t.Fatalf("TruncationRetries = %d, want 1", phase.TruncationRetries)
+	}
+	if !recorded {
+		t.Fatal("expected recovery system message to be recorded")
+	}
+	if len(result.Conversation) != len(conversation)+1 {
+		t.Fatalf("conversation len = %d, want %d", len(result.Conversation), len(conversation)+1)
+	}
+	systemMsg, ok := result.Conversation[len(result.Conversation)-1].(map[string]string)
+	if !ok || systemMsg["role"] != "system" || !strings.Contains(systemMsg["content"], "write_file") {
+		t.Fatalf("last message = %#v, want write_file recovery system hint", result.Conversation[len(result.Conversation)-1])
+	}
+}
+
 func TestNoToolReplyHeuristicDoesNotTreatPromisedSummaryAsComplete(t *testing.T) {
 	intent, ok := classifyAgentNoToolReplyByHeuristic("I will send the summary shortly.")
 	if !ok || intent != agentNoToolReplyPromise {

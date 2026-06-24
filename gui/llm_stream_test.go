@@ -16,6 +16,51 @@ func TestGuiSSEIdleTimeoutIsConservative(t *testing.T) {
 	}
 }
 
+func TestFilterTruncatedToolCallsTreatsEmptyRequiredFieldAsTruncated(t *testing.T) {
+	msg := &llm.Message{
+		ToolCalls: []llm.ToolCall{{
+			ID:   "call_bad",
+			Type: "function",
+			Function: llm.ToolCallFunction{
+				Name:      "bash",
+				Arguments: `{"command":""}`,
+			},
+		}},
+	}
+
+	finishReason, truncated := filterTruncatedToolCalls(msg, "length")
+	if finishReason != "length" {
+		t.Fatalf("finishReason = %q, want length", finishReason)
+	}
+	if len(truncated) != 1 || truncated[0] != "bash" {
+		t.Fatalf("truncated = %#v, want bash", truncated)
+	}
+	if len(msg.ToolCalls) != 0 {
+		t.Fatalf("truncated tool call should be removed: %#v", msg.ToolCalls)
+	}
+}
+
+func TestFilterTruncatedToolCallsTrimsToolNameForRequiredFieldDetection(t *testing.T) {
+	msg := &llm.Message{
+		ToolCalls: []llm.ToolCall{{
+			ID:   "call_bad",
+			Type: "function",
+			Function: llm.ToolCallFunction{
+				Name:      " bash ",
+				Arguments: `{"command":""}`,
+			},
+		}},
+	}
+
+	_, truncated := filterTruncatedToolCalls(msg, "length")
+	if len(truncated) != 1 || truncated[0] != " bash " {
+		t.Fatalf("truncated = %#v, want original tool name preserved", truncated)
+	}
+	if len(msg.ToolCalls) != 0 {
+		t.Fatalf("truncated tool call should be removed: %#v", msg.ToolCalls)
+	}
+}
+
 func TestClassifyOpenAIHTTPErrorUsesConfiguredProviderName(t *testing.T) {
 	body := []byte(`{"error":{"message":"forbidden","type":"forbidden"}}`)
 	got := classifyOpenAIHTTPError(403, body, "MaClawOfficial")

@@ -230,6 +230,24 @@ type HAHeartbeatSyncState struct {
 	LastSyncedSeenAt *time.Time `json:"last_synced_seen_at,omitempty"`
 }
 
+type HubUserUsageDaily struct {
+	HubID             string    `json:"hub_id"`
+	TenantID          string    `json:"tenant_id,omitempty"`
+	UserEmail         string    `json:"user_email"`
+	Day               string    `json:"day"`
+	InputTokens       int64     `json:"input_tokens"`
+	OutputTokens      int64     `json:"output_tokens"`
+	CachedInputTokens int64     `json:"cached_input_tokens"`
+	CacheWriteTokens  int64     `json:"cache_write_tokens"`
+	DurationSeconds   int64     `json:"duration_seconds"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	HubName           string    `json:"hub_name,omitempty"`
+}
+
+func (u HubUserUsageDaily) TotalTokens() int64 {
+	return u.InputTokens + u.OutputTokens
+}
+
 type SystemSettingEntry struct {
 	Key       string    `json:"key"`
 	ValueJSON string    `json:"value_json"`
@@ -337,6 +355,12 @@ type HAHeartbeatSyncStateRepository interface {
 	Get(ctx context.Context, hubID string) (*HAHeartbeatSyncState, error)
 	Upsert(ctx context.Context, item *HAHeartbeatSyncState) error
 }
+
+type HubUserUsageRepository interface {
+	UpsertDaily(ctx context.Context, items []*HubUserUsageDaily) error
+	Summarize(ctx context.Context, hubID, tenantID string, start, end time.Time) ([]*HubUserUsageDaily, error)
+}
+
 type GossipPost struct {
 	ID        string
 	MachineID string
@@ -416,10 +440,10 @@ type Store struct {
 	HAPeerCursors        HAPeerCursorRepository
 	HAEntityVersions     HAEntityVersionRepository
 	HAHeartbeatSync      HAHeartbeatSyncStateRepository
+	HubUserUsage         HubUserUsageRepository
 	Gossip               GossipRepository
 	News                 NewsRepository
 }
-
 
 // ---------------------------------------------------------------------------
 // LLM Node Binding (HA anti-double-spend)

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { EventsOn, EventsOff, BrowserOpenURL } from "../../../wailsjs/runtime";
 import { localizeText } from "../../i18n";
 import {
@@ -453,6 +453,7 @@ const normalizeSensitivePolicy = (policy: string): SensitiveQueryPolicy => {
 
 export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
   const c = copy(lang);
+  const sectionId = useId();
   const [name, setName] = useState("");
   const [skillDescription, setSkillDescription] = useState("");
   const [accessPolicy, setAccessPolicy] = useState<AccessPolicy | "">("");
@@ -999,197 +1000,253 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
       )}
 
       <div className="ve-form">
-        <div className="ve-form-row">
-          <label className="ve-form-label" htmlFor="ve-name">{c.name}</label>
-          <div className="ve-form-field">
-            <input
-              id="ve-name"
-              className="ve-form-input"
-              type="text"
-              value={name}
-              maxLength={50}
-              onChange={(e) => {
-                setName(e.target.value);
-                setNameError(validateName(e.target.value));
-              }}
-              placeholder={c.namePlaceholder}
-              disabled={formDisabled}
-            />
-            {nameError && (
-              <span data-testid="name-error" role="alert" className="ve-form-error">
-                {nameError}
-              </span>
-            )}
+        <section className="ve-form-section" aria-labelledby={`${sectionId}-identity`}>
+          <div className="ve-form-section__header">
+            <h4 className="ve-form-section__title" id={`${sectionId}-identity`}>
+              {textForLang(lang, "Identity", "\u8eab\u4efd\u4fe1\u606f", "\u8eab\u5206\u8cc7\u8a0a")}
+            </h4>
           </div>
-        </div>
 
-        <div className="ve-form-row ve-form-row--top">
-          <label className="ve-form-label">{c.avatar}</label>
-          <div className="ve-form-field">
-            <div className="ve-avatar-editor" data-testid="ve-avatar-editor">
-              <div className="ve-avatar-editor__stage" data-circle={avatarCircle ? "true" : "false"}>
-                {avatarPreviewURL ? (
-                  <img
-                    src={avatarPreviewURL}
-                    alt=""
-                    className="ve-avatar-editor__image ve-avatar-editor__image--fit"
-                    style={avatarPreviewStyle}
-                    onLoad={(e) => {
-                      const img = e.currentTarget;
-                      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-                        setAvatarImageSize({ width: img.naturalWidth, height: img.naturalHeight });
-                      }
-                    }}
-                    onError={(e) => {
-                      const failedSource = e.currentTarget.currentSrc || e.currentTarget.src;
-                      const replacementFailed = !!avatarSourceURL && avatarSourceURL !== avatarDataURL && failedSource === avatarSourceURL;
-                      setAvatarSourceURL("");
-                      if (!replacementFailed) setAvatarDataURL("");
-                      setAvatarImageSize(null);
-                      setAvatarNeedsCrop(false);
-                      setAvatarError(c.avatarInvalid);
-                    }}
-                  />
-                ) : (
-                  <span className="ve-avatar-editor__fallback" aria-hidden="true">
-                    {name.trim().slice(0, 1).toUpperCase() || "DE"}
-                  </span>
-                )}
-              </div>
-              <div className="ve-avatar-editor__controls">
-                <div className="ve-avatar-editor__actions">
-                  <input
-                    ref={avatarFileInputRef}
-                    data-testid="ve-avatar-file-input"
-                    type="file"
-                    accept={avatarAcceptAttr}
-                    className="ve-avatar-editor__file"
-                    onChange={handleAvatarFileChange}
-                    disabled={formDisabled}
-                  />
-                  <button
-                    type="button"
-                    className="ve-btn ve-btn--secondary"
-                    onClick={() => avatarFileInputRef.current?.click()}
-                    disabled={formDisabled}
-                    data-testid="ve-avatar-upload-btn"
-                  >
-                    {avatarPreviewURL ? c.avatarReplace : c.avatarUpload}
-                  </button>
-                  {avatarPreviewURL && !formDisabled && (
-                    <button
-                      type="button"
-                      className="ve-btn ve-btn--ghost"
-                      onClick={handleClearAvatar}
-                      data-testid="ve-avatar-clear-btn"
-                    >
-                      {c.avatarClear}
-                    </button>
+          <div className="ve-form-row">
+            <label className="ve-form-label" htmlFor="ve-name">{c.name}</label>
+            <div className="ve-form-field">
+              <input
+                id="ve-name"
+                className="ve-form-input"
+                type="text"
+                value={name}
+                maxLength={50}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setNameError(validateName(e.target.value));
+                }}
+                placeholder={c.namePlaceholder}
+                disabled={formDisabled}
+              />
+              {nameError && (
+                <span data-testid="name-error" role="alert" className="ve-form-error">
+                  {nameError}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="ve-form-row ve-form-row--top">
+            <label className="ve-form-label">{c.avatar}</label>
+            <div className="ve-form-field">
+              <div className="ve-avatar-editor" data-testid="ve-avatar-editor">
+                <div className="ve-avatar-editor__stage" data-circle={avatarCircle ? "true" : "false"}>
+                  {avatarPreviewURL ? (
+                    <img
+                      src={avatarPreviewURL}
+                      alt=""
+                      className="ve-avatar-editor__image ve-avatar-editor__image--fit"
+                      style={avatarPreviewStyle}
+                      onLoad={(e) => {
+                        const img = e.currentTarget;
+                        if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+                          setAvatarImageSize({ width: img.naturalWidth, height: img.naturalHeight });
+                        }
+                      }}
+                      onError={(e) => {
+                        const failedSource = e.currentTarget.currentSrc || e.currentTarget.src;
+                        const replacementFailed = !!avatarSourceURL && avatarSourceURL !== avatarDataURL && failedSource === avatarSourceURL;
+                        setAvatarSourceURL("");
+                        if (!replacementFailed) setAvatarDataURL("");
+                        setAvatarImageSize(null);
+                        setAvatarNeedsCrop(false);
+                        setAvatarError(c.avatarInvalid);
+                      }}
+                    />
+                  ) : (
+                    <span className="ve-avatar-editor__fallback" aria-hidden="true">
+                      {name.trim().slice(0, 1).toUpperCase() || "DE"}
+                    </span>
                   )}
                 </div>
-                <label className="ve-avatar-editor__switch">
-                  <input
-                    type="checkbox"
-                    checked={avatarCircle}
-                    onChange={(e) => setAvatarCircle(e.target.checked)}
-                  />
-                  <span>{c.avatarCircle}</span>
-                </label>
-                {avatarSourceURL && !formDisabled && (
-                  <div className="ve-avatar-editor__sliders">
-                    <label>
-                      <span>{c.avatarZoom}</span>
-                      <input type="range" min="1" max="3" step="0.01" value={avatarScale} onChange={(e) => { setAvatarScale(Number(e.target.value)); setAvatarNeedsCrop(true); }} />
-                    </label>
-                    <label>
-                      <span>{c.avatarHorizontal}</span>
-                      <input type="range" min="-80" max="80" step="1" value={avatarOffsetX} onChange={(e) => { setAvatarOffsetX(Number(e.target.value)); setAvatarNeedsCrop(true); }} />
-                    </label>
-                    <label>
-                      <span>{c.avatarVertical}</span>
-                      <input type="range" min="-80" max="80" step="1" value={avatarOffsetY} onChange={(e) => { setAvatarOffsetY(Number(e.target.value)); setAvatarNeedsCrop(true); }} />
-                    </label>
+                <div className="ve-avatar-editor__controls">
+                  <div className="ve-avatar-editor__actions">
+                    <input
+                      ref={avatarFileInputRef}
+                      data-testid="ve-avatar-file-input"
+                      type="file"
+                      accept={avatarAcceptAttr}
+                      className="ve-avatar-editor__file"
+                      onChange={handleAvatarFileChange}
+                      disabled={formDisabled}
+                    />
+                    <button
+                      type="button"
+                      className="ve-btn ve-btn--secondary"
+                      onClick={() => avatarFileInputRef.current?.click()}
+                      disabled={formDisabled}
+                      data-testid="ve-avatar-upload-btn"
+                    >
+                      {avatarPreviewURL ? c.avatarReplace : c.avatarUpload}
+                    </button>
+                    {avatarPreviewURL && !formDisabled && (
+                      <button
+                        type="button"
+                        className="ve-btn ve-btn--ghost"
+                        onClick={handleClearAvatar}
+                        data-testid="ve-avatar-clear-btn"
+                      >
+                        {c.avatarClear}
+                      </button>
+                    )}
                   </div>
-                )}
-                <p className="ve-form-hint">{c.avatarHint}</p>
-                {avatarError && <span role="alert" className="ve-form-error">{avatarError}</span>}
+                  <label className="ve-avatar-editor__switch">
+                    <input
+                      type="checkbox"
+                      checked={avatarCircle}
+                      onChange={(e) => setAvatarCircle(e.target.checked)}
+                    />
+                    <span>{c.avatarCircle}</span>
+                  </label>
+                  {avatarSourceURL && !formDisabled && (
+                    <div className="ve-avatar-editor__sliders">
+                      <label>
+                        <span>{c.avatarZoom}</span>
+                        <input type="range" min="1" max="3" step="0.01" value={avatarScale} onChange={(e) => { setAvatarScale(Number(e.target.value)); setAvatarNeedsCrop(true); }} />
+                      </label>
+                      <label>
+                        <span>{c.avatarHorizontal}</span>
+                        <input type="range" min="-80" max="80" step="1" value={avatarOffsetX} onChange={(e) => { setAvatarOffsetX(Number(e.target.value)); setAvatarNeedsCrop(true); }} />
+                      </label>
+                      <label>
+                        <span>{c.avatarVertical}</span>
+                        <input type="range" min="-80" max="80" step="1" value={avatarOffsetY} onChange={(e) => { setAvatarOffsetY(Number(e.target.value)); setAvatarNeedsCrop(true); }} />
+                      </label>
+                    </div>
+                  )}
+                  <p className="ve-form-hint">{c.avatarHint}</p>
+                  {avatarError && <span role="alert" className="ve-form-error">{avatarError}</span>}
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <div className="ve-form-row ve-form-row--top">
-          <label className="ve-form-label" htmlFor="ve-skill">{c.skill}</label>
-          <div className="ve-form-field">
-            <textarea
-              id="ve-skill"
-              className="ve-form-input ve-form-textarea"
-              value={skillDescription}
-              maxLength={500}
-              rows={3}
-              onChange={(e) => {
-                setSkillDescription(e.target.value);
-                setSkillError(validateSkillDescription(e.target.value));
-              }}
-              placeholder={c.skillPlaceholder}
-              disabled={formDisabled}
-            />
-            {skillError && (
-              <span data-testid="skill-error" role="alert" className="ve-form-error">
-                {skillError}
-              </span>
-            )}
+          <div className="ve-form-row ve-form-row--top">
+            <label className="ve-form-label" htmlFor="ve-skill">{c.skill}</label>
+            <div className="ve-form-field">
+              <textarea
+                id="ve-skill"
+                className="ve-form-input ve-form-textarea"
+                value={skillDescription}
+                maxLength={500}
+                rows={3}
+                onChange={(e) => {
+                  setSkillDescription(e.target.value);
+                  setSkillError(validateSkillDescription(e.target.value));
+                }}
+                placeholder={c.skillPlaceholder}
+                disabled={formDisabled}
+              />
+              {skillError && (
+                <span data-testid="skill-error" role="alert" className="ve-form-error">
+                  {skillError}
+                </span>
+              )}
+            </div>
           </div>
-        </div>
+        </section>
 
-        <div className="ve-form-row-dual">
-          <div className="ve-form-row-dual-item">
-            <label className="ve-form-label" htmlFor="ve-policy">{c.accessPolicy}</label>
-            <select
-              id="ve-policy"
-              className="ve-form-input ve-form-select"
-              value={accessPolicy}
-              onChange={(e) => {
-                const val = e.target.value as AccessPolicy | "";
-                setAccessPolicy(val);
-                setPolicyError(validatePolicy(val));
-              }}
-            >
-              <option value="">{c.choose}</option>
-              {policyOptions(lang).map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-            {policyError && (
-              <span data-testid="policy-error" role="alert" className="ve-form-error">
-                {policyError}
-              </span>
-            )}
+        <section className="ve-form-section" aria-labelledby={`${sectionId}-access`}>
+          <div className="ve-form-section__header">
+            <h4 className="ve-form-section__title" id={`${sectionId}-access`}>
+              {textForLang(lang, "Access & Requests", "\u8bbf\u95ee\u4e0e\u8bf7\u6c42", "\u5b58\u53d6\u8207\u8acb\u6c42")}
+            </h4>
           </div>
-          <div className="ve-form-row-dual-item">
-            <label className="ve-form-label" htmlFor="ve-sensitive-policy">{c.sensitiveTitle}</label>
-            <select
-              id="ve-sensitive-policy"
-              className="ve-form-input ve-form-select"
-              value={sensitiveQueryPolicy}
-              onChange={(e) =>
-                handleSensitiveQueryPolicyChange(
-                  e.target.value as SensitiveQueryPolicy,
-                )
-              }
-            >
-              <option value="confirm">{c.confirm}</option>
-              <option value="deny">{c.deny}</option>
-              <option value="allow">{c.allow}</option>
-            </select>
+
+          <div className="ve-form-row-dual">
+            <div className="ve-form-row-dual-item">
+              <label className="ve-form-label" htmlFor="ve-policy">{c.accessPolicy}</label>
+              <select
+                id="ve-policy"
+                className="ve-form-input ve-form-select"
+                value={accessPolicy}
+                onChange={(e) => {
+                  const val = e.target.value as AccessPolicy | "";
+                  setAccessPolicy(val);
+                  setPolicyError(validatePolicy(val));
+                }}
+              >
+                <option value="">{c.choose}</option>
+                {policyOptions(lang).map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              {policyError && (
+                <span data-testid="policy-error" role="alert" className="ve-form-error">
+                  {policyError}
+                </span>
+              )}
+            </div>
+            <div className="ve-form-row-dual-item">
+              <label className="ve-form-label" htmlFor="ve-sensitive-policy">{c.sensitiveTitle}</label>
+              <select
+                id="ve-sensitive-policy"
+                className="ve-form-input ve-form-select"
+                value={sensitiveQueryPolicy}
+                onChange={(e) =>
+                  handleSensitiveQueryPolicyChange(
+                    e.target.value as SensitiveQueryPolicy,
+                  )
+                }
+              >
+                <option value="confirm">{c.confirm}</option>
+                <option value="deny">{c.deny}</option>
+                <option value="allow">{c.allow}</option>
+              </select>
+            </div>
           </div>
-        </div>
 
-        <p className="ve-form-hint ve-sensitive-hint">{c.sensitiveHint}</p>
+          <p className="ve-form-hint ve-sensitive-hint">{c.sensitiveHint}</p>
 
-        <div data-testid="ve-auth-sound-section" className="ve-form-group">
+          {showListEditor && !formDisabled && (
+            <div data-testid="list-editor" className="ve-form-group">
+              <label className="ve-form-label" htmlFor={`${sectionId}-access-list-input`}>
+                {accessPolicy === "whitelist" ? c.whitelist : c.blacklist}
+              </label>
+              <div className="ve-list-input-row">
+                <input
+                  id={`${sectionId}-access-list-input`}
+                  data-testid="list-input"
+                  className="ve-form-input"
+                  type="text"
+                  value={listInput}
+                  onChange={(e) => setListInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleAddToList();
+                  }}
+                  placeholder={c.listPlaceholder}
+                />
+                <button className="ve-btn ve-btn--secondary" onClick={handleAddToList} data-testid="list-add-btn">
+                  {c.add}
+                </button>
+              </div>
+              <ul data-testid="list-items" className="ve-list-items">
+                {(accessPolicy === "whitelist" ? whitelist : blacklist).map(
+                  (item) => (
+                    <li key={item} className="ve-list-item">
+                      <span className="ve-list-item-text">{item}</span>
+                      <button
+                        className="ve-btn ve-btn--ghost"
+                        onClick={() => handleRemoveFromList(item)}
+                        data-testid={"remove-" + item}
+                      >
+                        {c.remove}
+                      </button>
+                    </li>
+                  ),
+                )}
+              </ul>
+            </div>
+          )}
+
+          <div data-testid="ve-auth-sound-section" className="ve-form-group">
           <div className="ve-form-row-dual">
             <div className="ve-form-row-dual-item">
               <label className="ve-form-label" htmlFor="ve-auth-sound-preset">
@@ -1230,10 +1287,16 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
               "當別人請求存取這個 GUI 數字員工時，頂部提醒會閃爍，並播放這段鈴聲數秒。",
             )}
           </p>
-        </div>
+          </div>
+        </section>
 
         {/* Allowed access directory section (Requirements 1.1-1.8, 2.2) */}
-        <div data-testid="ve-allowed-dirs-section" className="ve-form-group">
+        <section data-testid="ve-allowed-dirs-section" className="ve-form-section ve-form-section--compact" aria-labelledby={`${sectionId}-files`}>
+          <div className="ve-form-section__header">
+            <h4 className="ve-form-section__title" id={`${sectionId}-files`}>
+              {textForLang(lang, "File Access", "\u6587\u4ef6\u8bbf\u95ee", "\u6a94\u6848\u5b58\u53d6")}
+            </h4>
+          </div>
           <div className="ve-dirs-header">
             <label className="ve-form-label">
               {textForLang(lang, "Allowed Access Directories", "\u5141\u8bb8\u8bbf\u95ee\u76ee\u5f55", "\u5141\u8a31\u5b58\u53d6\u76ee\u9304")}
@@ -1282,47 +1345,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
               )}
             </p>
           )}
-        </div>
-
-        {showListEditor && !formDisabled && (
-          <div data-testid="list-editor" className="ve-form-group">
-            <label className="ve-form-label">
-              {accessPolicy === "whitelist" ? c.whitelist : c.blacklist}
-            </label>
-            <div className="ve-list-input-row">
-              <input
-                data-testid="list-input"
-                className="ve-form-input"
-                type="text"
-                value={listInput}
-                onChange={(e) => setListInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAddToList();
-                }}
-                placeholder={c.listPlaceholder}
-              />
-              <button className="ve-btn ve-btn--secondary" onClick={handleAddToList} data-testid="list-add-btn">
-                {c.add}
-              </button>
-            </div>
-            <ul data-testid="list-items" className="ve-list-items">
-              {(accessPolicy === "whitelist" ? whitelist : blacklist).map(
-                (item) => (
-                  <li key={item} className="ve-list-item">
-                    <span className="ve-list-item-text">{item}</span>
-                    <button
-                      className="ve-btn ve-btn--ghost"
-                      onClick={() => handleRemoveFromList(item)}
-                      data-testid={"remove-" + item}
-                    >
-                      {c.remove}
-                    </button>
-                  </li>
-                ),
-              )}
-            </ul>
-          </div>
-        )}
+        </section>
 
         {!isPending && (
           <div className="ve-form-actions">
@@ -1337,8 +1360,10 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
           </div>
         )}
 
-        {/* Approval Capability Section (Requirements 3.1, 3.4, 3.5, 3.6, 3.7) */}
-        <VEApprovalCapabilitySection lang={lang} footerSlot={approvalWorkflowDesign} />
+        <section className="ve-form-section ve-form-section--approval">
+          {/* Approval Capability Section (Requirements 3.1, 3.4, 3.5, 3.6, 3.7) */}
+          <VEApprovalCapabilitySection lang={lang} footerSlot={approvalWorkflowDesign} />
+        </section>
       </div>
     </div>
   );

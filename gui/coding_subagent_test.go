@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -50,6 +51,12 @@ func TestBuildCodingSubAgentSystemPrompt_Minimal(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "git_diff") {
 		t.Error("prompt should require git_diff self-check")
+	}
+	if !strings.Contains(prompt, "验证优先流程") || !strings.Contains(prompt, "test/build/lint/typecheck") {
+		t.Error("prompt should prefer focused verification over mandatory report writing")
+	}
+	if strings.Contains(prompt, "每个任务必须执行") || strings.Contains(prompt, "将测试用例和测试结果写入") {
+		t.Error("prompt should not require every task to write TEST_REPORT.md")
 	}
 	if !strings.Contains(prompt, "Single-task contract") || !strings.Contains(prompt, "Avoid broad refactors") {
 		t.Error("prompt should contain explicit single-task scope contract")
@@ -132,6 +139,25 @@ func TestCodingSubAgentPromptCapsTaskLists(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentTaskUserMessageIncludesPreflightChecklist(t *testing.T) {
+	task := &TaskItem{Index: 1, Title: "Fix handler", Description: "Resolve request failure"}
+	cb := &codingSubAgentCallbacks{task: task}
+
+	userMsg := cb.buildTaskUserMessage()
+	for _, want := range []string{
+		"Before editing",
+		"Glob/ripgrep/read_file",
+		"risk/impact",
+		"minimal edit",
+		"verification",
+		"retry context",
+	} {
+		if !strings.Contains(userMsg, want) {
+			t.Fatalf("task user message missing %q: %q", want, userMsg)
+		}
+	}
+}
+
 func TestCodingSubAgentPromptCapsTitleAndDescription(t *testing.T) {
 	task := &TaskItem{
 		Index:       5,
@@ -147,7 +173,7 @@ func TestCodingSubAgentPromptCapsTitleAndDescription(t *testing.T) {
 	if strings.Contains(userMsg, strings.Repeat("very long title ", 20)) {
 		t.Fatalf("expected task title to be compacted, got %q", userMsg)
 	}
-	if len([]rune(userMsg)) > codingSubAgentTaskDescriptionMaxRunes+codingSubAgentTaskTitleMaxRunes+200 {
+	if len([]rune(userMsg)) > codingSubAgentTaskDescriptionMaxRunes+codingSubAgentTaskTitleMaxRunes+600 {
 		t.Fatalf("task user message too long: %d", len([]rune(userMsg)))
 	}
 }
@@ -557,6 +583,23 @@ func TestCodingSubAgentExecuteToolStopsWhenCancelled(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentToolContextCancelDoesNotCancelLoop(t *testing.T) {
+	ctx := NewLoopContext("coding-test", 1, nil)
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{loopCtx: ctx, projectPath: t.TempDir()},
+	}
+
+	toolCtx, cancel := cb.toolContext()
+	cancel()
+
+	if err := toolCtx.Err(); err != context.Canceled {
+		t.Fatalf("tool context error = %v, want context.Canceled", err)
+	}
+	if ctx.IsCancelled() {
+		t.Fatalf("tool context cleanup cancelled the parent loop")
+	}
+}
+
 func TestCodingSubAgentExecuteToolHandlesMissingHostHandler(t *testing.T) {
 	cb := &codingSubAgentCallbacks{
 		subagent: &CodingSubAgent{projectPath: t.TempDir()},
@@ -666,12 +709,29 @@ func TestExecuteCodingBashReturnsStructuredOutcome(t *testing.T) {
 	}
 }
 
+func TestExecuteCodingBashWithContextReturnsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := executeCodingBashWithContext(ctx, map[string]interface{}{"command": "definitely-should-not-run"}, nil)
+	if result.Kind != codingCommandResultCancelled {
+		t.Fatalf("cancelled result kind = %q, want %q; result=%#v", result.Kind, codingCommandResultCancelled, result)
+	}
+	if result.toolResult().Outcome != codingToolOutcomeFailed {
+		t.Fatalf("cancelled tool outcome = %q, want %q", result.toolResult().Outcome, codingToolOutcomeFailed)
+	}
+	if !strings.Contains(result.Text, "command cancelled before start") {
+		t.Fatalf("cancelled result should explain cancellation, got %q", result.Text)
+	}
+}
+
 func TestCodingCommandExecutionResultSucceededMatchesToolOutcome(t *testing.T) {
 	cases := []codingCommandExecutionResult{
 		{Text: "ok", Kind: codingCommandResultOK, ExitCode: 0},
 		{Text: "matched output\ncommand exited with code 1", Kind: codingCommandResultExitError, ExitCode: 1},
 		{Text: "[stderr] compiler failed\ncommand exited with code 1", Kind: codingCommandResultExitError, ExitCode: 1},
 		{Text: "command timed out after 1 seconds", Kind: codingCommandResultTimeout, ExitCode: -1},
+		{Text: "command cancelled", Kind: codingCommandResultCancelled, ExitCode: -1},
 	}
 	for _, tc := range cases {
 		want := tc.toolResult().Outcome == codingToolOutcomeSuccess
@@ -815,6 +875,41 @@ func TestCodingSubAgentEmitsGuardrailSummaryEvent(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentEmitsGuardrailSummaryEventCountsLateBlocks(t *testing.T) {
+	var progress []string
+	cb := &codingSubAgentCallbacks{
+		task: &TaskItem{Index: 10, Title: "Guard many edits"},
+		subagent: &CodingSubAgent{
+			onProgress: func(text string) {
+				progress = append(progress, text)
+			},
+		},
+	}
+
+	violations := make([]CodingSubAgentGuardrailViolation, 0, codingSubAgentResultAuditMax+1)
+	for i := 0; i < codingSubAgentResultAuditMax; i++ {
+		violations = append(violations, CodingSubAgentGuardrailViolation{
+			Tool:     "read_file",
+			Category: codingSubAgentGuardrailCategoryScope,
+			Path:     fmt.Sprintf("../outside-%02d.go", i),
+			Summary:  "outside project",
+		})
+	}
+	violations = append(violations, CodingSubAgentGuardrailViolation{
+		Tool:     "bash",
+		Category: codingSubAgentGuardrailCategoryGit,
+		Command:  "git reset --hard",
+		Summary:  "late destructive git command",
+	})
+	cb.emitGuardrailSummaryEvent(violations)
+
+	joined := strings.Join(progress, "\n")
+	if !strings.Contains(joined, `"outcome":"blocked"`) ||
+		!strings.Contains(joined, fmt.Sprintf(`"count":%d`, codingSubAgentResultAuditMax+1)) ||
+		!strings.Contains(joined, `"summary":"blocked | bash | category:git | late destructive git command"`) {
+		t.Fatalf("late high-risk guardrail block should remain visible in summary event, got %#v", progress)
+	}
+}
 func TestCodingSubAgentEmitsCommandSummaryEvent(t *testing.T) {
 	var progress []string
 	cb := &codingSubAgentCallbacks{
@@ -842,6 +937,31 @@ func TestCodingSubAgentEmitsCommandSummaryEvent(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentEmitsCommandSummaryEventCountsLateFailures(t *testing.T) {
+	var progress []string
+	cb := &codingSubAgentCallbacks{
+		task: &TaskItem{Index: 11, Title: "Run many commands"},
+		subagent: &CodingSubAgent{
+			onProgress: func(text string) {
+				progress = append(progress, text)
+			},
+		},
+	}
+
+	commands := make([]CodingSubAgentCommandResult, 0, codingSubAgentResultAuditMax+1)
+	for i := 0; i < codingSubAgentResultAuditMax; i++ {
+		commands = append(commands, CodingSubAgentCommandResult{Command: fmt.Sprintf("echo ok-%02d", i), Succeeded: true})
+	}
+	commands = append(commands, CodingSubAgentCommandResult{Command: "npm test", Succeeded: false})
+	cb.emitCommandSummaryEvent(commands)
+
+	joined := strings.Join(progress, "\n")
+	if !strings.Contains(joined, `"outcome":"failed"`) ||
+		!strings.Contains(joined, fmt.Sprintf(`"count":%d`, codingSubAgentResultAuditMax+1)) ||
+		!strings.Contains(joined, "npm test") {
+		t.Fatalf("late command failure should remain visible in summary event, got %#v", progress)
+	}
+}
 func TestCodingSubAgentEmitsFileActivitySummaryEvent(t *testing.T) {
 	var progress []string
 	cb := &codingSubAgentCallbacks{
@@ -883,14 +1003,14 @@ func TestCodingSubAgentEmitsQualitySummaryEvent(t *testing.T) {
 		},
 	}
 
-	cb.emitQualitySummaryEvent("missing", "missing", false, []string{"main.go"}, nil, nil)
+	cb.emitQualitySummaryEvent("missing", "missing", false, []string{"main.go"}, nil, nil, 0, nil)
 
 	joined := strings.Join(progress, "\n")
 	if !strings.Contains(joined, `"event":"quality_summary"`) ||
 		!strings.Contains(joined, `"phase":"result"`) ||
 		!strings.Contains(joined, `"task_id":"T13"`) ||
-		!strings.Contains(joined, `"outcome":"warning"`) ||
-		!strings.Contains(joined, `"summary":"no exploration before edits; verification not run; diff not checked"`) ||
+		!strings.Contains(joined, `"outcome":"failed"`) ||
+		!strings.Contains(joined, `"summary":"no exploration before existing-file edits; verification not run; diff not checked"`) ||
 		!strings.Contains(joined, `"count":3`) {
 		t.Fatalf("expected structured quality progress, got %#v", progress)
 	}
@@ -1882,6 +2002,28 @@ func TestCodingSubAgentCommandTracking(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentCommandResultJSONOmitsInternalSequence(t *testing.T) {
+	cmd := CodingSubAgentCommandResult{
+		Command:    "go test ./...",
+		WorkingDir: "D:\\repo",
+		Succeeded:  true,
+		Summary:    "ok",
+		seq:        42,
+	}
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(data)
+	if strings.Contains(encoded, "seq") || strings.Contains(encoded, "42") {
+		t.Fatalf("internal sequence must not be serialized, got %s", encoded)
+	}
+	for _, want := range []string{"Command", "WorkingDir", "Succeeded", "Summary"} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("serialized command result missing %s: %s", want, encoded)
+		}
+	}
+}
 func TestCodingSubAgentRejectedCommandTracking(t *testing.T) {
 	cb := &codingSubAgentCallbacks{}
 	cb.trackCommandResult(map[string]interface{}{
@@ -1983,22 +2125,33 @@ func TestSummarizeSubAgentCommands(t *testing.T) {
 }
 
 func TestSummarizeSubAgentQuality(t *testing.T) {
-	status, summary, count := summarizeSubAgentQuality("not_needed", "not_needed", false, nil, nil, nil)
+	status, summary, count := summarizeSubAgentQuality("not_needed", "not_needed", false, nil, nil, nil, 0, nil)
 	if status != "passed" || count != 0 || !strings.Contains(summary, "no file changes") {
 		t.Fatalf("empty quality summary = %q, %q, %d", status, summary, count)
 	}
 
-	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: true}}, nil)
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: true}}, 0, nil)
 	if status != "passed" || count != 0 || !strings.Contains(summary, "passed") {
 		t.Fatalf("passed quality summary = %q, %q, %d", status, summary, count)
 	}
 
-	status, summary, count = summarizeSubAgentQuality("missing", "missing", false, []string{"main.go"}, []CodingSubAgentCommandResult{{Command: "npm test", Succeeded: false}}, nil)
-	if status != "warning" || count != 4 || !strings.Contains(summary, "1 command(s) failed") || !strings.Contains(summary, "verification not run") {
-		t.Fatalf("warning quality summary = %q, %q, %d", status, summary, count)
+	status, summary, count = summarizeSubAgentQuality("missing", "missing", false, []string{"main.go"}, nil, []CodingSubAgentCommandResult{{Command: "npm test", Succeeded: false}}, 0, nil)
+	if status != "failed" || count != 4 || !strings.Contains(summary, "1 command(s) failed") || !strings.Contains(summary, "verification not run") || !strings.Contains(summary, "no exploration before existing-file edits") {
+		t.Fatalf("failed quality summary = %q, %q, %d", status, summary, count)
 	}
 
-	status, summary, count = summarizeSubAgentQuality("explored", "failed", true, []string{"main.go"}, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: false}}, []CodingSubAgentGuardrailViolation{{Tool: "bash"}})
+	status, summary, count = summarizeSubAgentQuality("missing", "passed", true, []string{"new.go"}, []string{"new.go"}, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: true}}, 0, nil)
+	if status != "passed" || count != 0 || !strings.Contains(summary, "passed") {
+		t.Fatalf("created-only quality summary should not require exploration, got %q, %q, %d", status, summary, count)
+	}
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./...", Succeeded: false, seq: 1},
+		{Command: "go test ./...", Succeeded: true, seq: 3},
+	}, 2, nil)
+	if status != "passed" || count != 0 || strings.Contains(summary, "command(s) failed") {
+		t.Fatalf("stale pre-edit command failure should not warn after fresh pass, got %q, %q, %d", status, summary, count)
+	}
+	status, summary, count = summarizeSubAgentQuality("explored", "failed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: false}}, 0, []CodingSubAgentGuardrailViolation{{Tool: "bash"}})
 	if status != "failed" || count != 2 || !strings.Contains(summary, "guardrail") || !strings.Contains(summary, "verification failed") {
 		t.Fatalf("failed quality summary = %q, %q, %d", status, summary, count)
 	}
@@ -2079,30 +2232,77 @@ func TestSearchResultSummaryAndStatus(t *testing.T) {
 }
 
 func TestSummarizeSubAgentExploration(t *testing.T) {
-	status, summary := summarizeSubAgentExploration(nil, nil, nil)
+	status, summary := summarizeSubAgentExploration(nil, nil, nil, true)
 	if status != "not_needed" || !strings.Contains(summary, "跳过") {
 		t.Fatalf("not_needed exploration = (%q, %q)", status, summary)
 	}
 
-	status, summary = summarizeSubAgentExploration([]string{"main.go"}, nil, nil)
+	status, summary = summarizeSubAgentExploration([]string{"main.go"}, nil, nil, true)
 	if status != "missing" || !strings.Contains(summary, "没有记录") {
 		t.Fatalf("missing exploration = (%q, %q)", status, summary)
 	}
 
-	status, summary = summarizeSubAgentExploration([]string{"main.go"}, []string{"main.go"}, nil)
-	if status != "read_only" || !strings.Contains(summary, "读取了 1 个文件") {
+	status, summary = summarizeSubAgentExploration([]string{"main.go"}, []string{"main.go"}, nil, true)
+	if status != "read_only" || !strings.Contains(summary, "1") {
 		t.Fatalf("read_only exploration = (%q, %q)", status, summary)
 	}
 
 	status, summary = summarizeSubAgentExploration([]string{"main.go"}, []string{"main.go"}, []CodingSubAgentSearchResult{
 		{Tool: "ripgrep", Query: "func main", Succeeded: true},
 		{Tool: "Glob", Query: "**/*.go", Succeeded: false},
-	})
+	}, true)
 	if status != "explored" || !strings.Contains(summary, "1 次成功搜索") {
 		t.Fatalf("explored summary = (%q, %q)", status, summary)
 	}
 }
 
+func TestSummarizeSubAgentExplorationRequiresPreEditEvidence(t *testing.T) {
+	status, summary := summarizeSubAgentExploration(
+		[]string{"main.go"},
+		[]string{"main.go"},
+		[]CodingSubAgentSearchResult{{Tool: "ripgrep", Query: "func main", Succeeded: true}},
+		false,
+	)
+	if status != codingSubAgentQualityMissing || !strings.Contains(summary, "首次修改前") {
+		t.Fatalf("post-edit exploration should be missing, got (%q, %q)", status, summary)
+	}
+}
+
+func TestCodingSubAgentExploredBeforeFirstEdit(t *testing.T) {
+	project := t.TempDir()
+	file := filepath.Join(project, "main.go")
+	if err := os.WriteFile(file, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	readFirst := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	readFirst.trackReadFile(file)
+	readFirst.trackFile(file)
+	if !readFirst.exploredBeforeFirstEdit() {
+		t.Fatal("read before edit should satisfy pre-edit exploration")
+	}
+
+	editFirst := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	editFirst.trackFile(file)
+	editFirst.trackReadFile(file)
+	if editFirst.exploredBeforeFirstEdit() {
+		t.Fatal("read after edit should not satisfy pre-edit exploration")
+	}
+
+	failedSearchFirst := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	failedSearchFirst.trackSearchResult("ripgrep", map[string]interface{}{"pattern": "func main"}, "no matches", false)
+	failedSearchFirst.trackFile(file)
+	if failedSearchFirst.exploredBeforeFirstEdit() {
+		t.Fatal("failed search before edit should not satisfy pre-edit exploration")
+	}
+
+	successSearchFirst := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	successSearchFirst.trackSearchResult("ripgrep", map[string]interface{}{"pattern": "func main"}, "main.go:1:func main", true)
+	successSearchFirst.trackFile(file)
+	if !successSearchFirst.exploredBeforeFirstEdit() {
+		t.Fatal("successful search before edit should satisfy pre-edit exploration")
+	}
+}
 func TestAppendSubAgentExplorationSummary(t *testing.T) {
 	summary := appendSubAgentExplorationSummary("完成", "read_only", "读取了 1 个文件后修改。")
 	if !strings.Contains(summary, "## 探索状态") || !strings.Contains(summary, "READ_ONLY") {
@@ -2111,19 +2311,19 @@ func TestAppendSubAgentExplorationSummary(t *testing.T) {
 }
 
 func TestSummarizeSubAgentVerification(t *testing.T) {
-	status, summary := summarizeSubAgentVerification(nil, nil)
+	status, summary := summarizeSubAgentVerification(nil, nil, 0)
 	if status != "not_needed" || !strings.Contains(summary, "跳过") {
 		t.Fatalf("not_needed summary = (%q, %q)", status, summary)
 	}
 
-	status, summary = summarizeSubAgentVerification([]string{"main.go"}, nil)
-	if status != "missing" || !strings.Contains(summary, "没有运行") {
+	status, summary = summarizeSubAgentVerification([]string{"main.go"}, nil, 0)
+	if status != "missing" || !strings.Contains(summary, "verification command") {
 		t.Fatalf("missing summary = (%q, %q)", status, summary)
 	}
 
 	status, summary = summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{
 		{Command: "go test ./..." + strings.Repeat(" very-long-flag", 30), Succeeded: false},
-	})
+	}, 0)
 	if status != "failed" || !strings.Contains(summary, "go test ./...") || !strings.Contains(summary, "截断") {
 		t.Fatalf("failed summary = (%q, %q)", status, summary)
 	}
@@ -2131,7 +2331,7 @@ func TestSummarizeSubAgentVerification(t *testing.T) {
 	status, summary = summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{
 		{Command: "go test ./...", Succeeded: true},
 		{Command: "go vet ./...", Succeeded: true},
-	})
+	}, 0)
 	if status != "passed" || !strings.Contains(summary, "2 条") {
 		t.Fatalf("passed summary = (%q, %q)", status, summary)
 	}
@@ -2141,15 +2341,15 @@ func TestSummarizeSubAgentVerificationIgnoresNonVerificationCommands(t *testing.
 	status, summary := summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{
 		{Command: "git status --short", Succeeded: true},
 		{Command: "pwd", Succeeded: true},
-	})
-	if status != "missing" || !strings.Contains(summary, "没有发现") {
+	}, 0)
+	if status != "missing" || !strings.Contains(summary, "test/build/lint/typecheck") {
 		t.Fatalf("non-verification commands should not satisfy verification, got (%q, %q)", status, summary)
 	}
 
 	status, summary = summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{
 		{Command: "git status --short", Succeeded: false},
 		{Command: "go test ./...", Succeeded: true},
-	})
+	}, 0)
 	if status != "passed" || !strings.Contains(summary, "1 条") {
 		t.Fatalf("only verification commands should determine pass count, got (%q, %q)", status, summary)
 	}
@@ -2179,21 +2379,43 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"deno test",
 		"npm run typecheck",
 		"npm exec eslint .",
+		"npm exec -- eslint .",
 		"pnpm exec vitest run",
+		"pnpm dlx --package typescript tsc --noEmit",
 		"yarn dlx tsc --noEmit",
 		"corepack pnpm test",
 		"corepack yarn run lint",
 		"corepack npx eslint .",
+		"corepack npx --yes eslint .",
 		"npx tsc --noEmit",
+		"npx --yes tsc --noEmit",
+		"npx --package typescript tsc --noEmit",
 		"npx.cmd tsc --noEmit",
 		"cargo clippy --all-targets",
 		"go vet ./...",
 		"go build ./...",
+		"golangci-lint run ./...",
+		"golangci-lint.exe run",
+		"staticcheck ./...",
+		"revive ./...",
 		"pytest tests",
 		"pytest.exe tests",
 		"python -m pytest tests",
+		"ruff check .",
+		"ruff.exe check .",
+		"python -m ruff check .",
+		"mypy src",
+		"python -m mypy src",
+		"pyright",
+		"basedpyright src",
+		"pyre check",
 		"uv run pytest tests",
+		"uv run --with pytest pytest tests",
+		"uvx --from ruff ruff check .",
+		"uv run ruff check .",
 		"poetry run pytest tests",
+		"poetry run -- mypy src",
+		"poetry run mypy src",
 		"pipenv run pytest tests",
 		"hatch run test",
 		"pdm run pytest",
@@ -2220,6 +2442,8 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"cross-env CI=1 npm test",
 		"cross-env-shell CI=1 npm run lint",
 		"time go test ./...",
+		"mkdir out || true; go test ./...",
+		"optional-setup || true && go test ./...",
 	}
 	for _, command := range positive {
 		if !isSubAgentVerificationCommand(command) {
@@ -2251,6 +2475,18 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"time echo test",
 		"rg \"TODO\" .",
 		"git diff -- .",
+		"go test ./... || true",
+		"npm test || exit 0",
+		"pytest tests ; exit 0",
+		"go test ./... | tee test.log || true",
+		"ruff format .",
+		"python -m ruff format .",
+		"uv run --with ruff ruff format .",
+		"uv run ruff format .",
+		"npx --yes vite --host 0.0.0.0",
+		"npm exec -- vite --host 0.0.0.0",
+		"golangci-lint cache clean",
+		"pyre init",
 	}
 	for _, command := range negative {
 		if isSubAgentVerificationCommand(command) {
@@ -2259,6 +2495,33 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 	}
 }
 
+func TestSummarizeSubAgentVerificationRequiresPostEditVerification(t *testing.T) {
+	commands := []CodingSubAgentCommandResult{
+		{Command: "go test ./...", Succeeded: true, seq: 1},
+	}
+	status, summary := summarizeSubAgentVerification([]string{"main.go"}, commands, 2)
+	if status != codingSubAgentQualityMissing || !strings.Contains(summary, "before the final edit") {
+		t.Fatalf("stale verification should be missing, got (%q, %q)", status, summary)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: "go test ./...", Succeeded: false, seq: 1},
+		{Command: "go test ./...", Succeeded: true, seq: 3},
+	}
+	status, summary = summarizeSubAgentVerification([]string{"main.go"}, commands, 2)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("fresh passing verification should ignore stale pre-edit failure, got (%q, %q)", status, summary)
+	}
+}
+func TestSummarizeSubAgentVerificationRejectsSuppressedFailureCommands(t *testing.T) {
+	status, summary := summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{
+		{Command: "go test ./... || true", Succeeded: true},
+		{Command: "npm test || exit 0", Succeeded: true},
+	}, 0)
+	if status != codingSubAgentQualityMissing || !strings.Contains(summary, "test/build/lint/typecheck") {
+		t.Fatalf("suppressed verification commands should be missing, got (%q, %q)", status, summary)
+	}
+}
 func TestSummarizeSubAgentVerificationCapsFailedCommands(t *testing.T) {
 	var commands []CodingSubAgentCommandResult
 	for i := 0; i < codingSubAgentFailedVerificationSummaryMax+2; i++ {
@@ -2268,7 +2531,7 @@ func TestSummarizeSubAgentVerificationCapsFailedCommands(t *testing.T) {
 		})
 	}
 
-	status, summary := summarizeSubAgentVerification([]string{"main.go"}, commands)
+	status, summary := summarizeSubAgentVerification([]string{"main.go"}, commands, 0)
 	if status != "failed" {
 		t.Fatalf("status = %q, want failed; summary=%q", status, summary)
 	}
@@ -2287,6 +2550,47 @@ func TestAppendSubAgentVerificationSummary(t *testing.T) {
 	}
 }
 
+func TestCountExistingSubAgentModifiedFiles(t *testing.T) {
+	got := countExistingSubAgentModifiedFiles(
+		[]string{"new.go", "existing.go", "existing.go", "also_existing.go"},
+		[]string{"new.go"},
+	)
+	if got != 2 {
+		t.Fatalf("existing modified count = %d, want 2", got)
+	}
+
+	got = countExistingSubAgentModifiedFiles([]string{"new.go"}, []string{"new.go"})
+	if got != 0 {
+		t.Fatalf("created-only modified count = %d, want 0", got)
+	}
+}
+
+func TestApplySubAgentExplorationOutcomeFailsPassedTaskWhenExistingEditsLackExploration(t *testing.T) {
+	status, errMsg := applySubAgentExplorationOutcome(TaskExecPassed, "", codingSubAgentQualityMissing, "no exploration", 1)
+	if status != TaskExecFailed || errMsg != "no exploration" {
+		t.Fatalf("missing exploration should fail existing-file edits, got status=%s err=%q", status, errMsg)
+	}
+
+	status, errMsg = applySubAgentExplorationOutcome(TaskExecPassed, "", codingSubAgentQualityMissing, "created only", 0)
+	if status != TaskExecPassed || errMsg != "" {
+		t.Fatalf("created-only edits should not require prior exploration, got status=%s err=%q", status, errMsg)
+	}
+
+	status, errMsg = applySubAgentExplorationOutcome(TaskExecPassed, "", codingSubAgentQualityReadOnly, "read file", 1)
+	if status != TaskExecPassed || errMsg != "" {
+		t.Fatalf("read-only exploration should satisfy exploration gate, got status=%s err=%q", status, errMsg)
+	}
+
+	status, errMsg = applySubAgentExplorationOutcome(TaskExecFailed, "model error", codingSubAgentQualityMissing, "no exploration", 1)
+	if status != TaskExecFailed || errMsg != "model error" {
+		t.Fatalf("existing failure should be preserved, got status=%s err=%q", status, errMsg)
+	}
+
+	status, errMsg = applySubAgentExplorationOutcome(TaskExecPassed, "", codingSubAgentQualityMissing, "", 1)
+	if status != TaskExecFailed || !strings.Contains(errMsg, "no exploration before editing existing files") {
+		t.Fatalf("missing exploration should use default diagnostic, got status=%s err=%q", status, errMsg)
+	}
+}
 func TestApplySubAgentVerificationOutcome(t *testing.T) {
 	status, errMsg := applySubAgentVerificationOutcome(TaskExecPassed, "", "failed", "go test failed")
 	if status != TaskExecFailed || errMsg != "go test failed" {
@@ -2307,6 +2611,65 @@ func TestApplySubAgentVerificationOutcome(t *testing.T) {
 	status, errMsg = applySubAgentVerificationOutcome(TaskExecPassed, "", "failed", longVerification)
 	if status != TaskExecFailed || !strings.Contains(errMsg, "截断") {
 		t.Fatalf("failed verification should compact long errors, got status=%s err=%q", status, errMsg)
+	}
+}
+
+func TestSubAgentVerificationOutcomeStatusTreatsMissingAsFailed(t *testing.T) {
+	if got := subAgentVerificationOutcomeStatus(codingSubAgentQualityMissing); got != codingSubAgentQualityFailed {
+		t.Fatalf("missing verification outcome = %q, want %q", got, codingSubAgentQualityFailed)
+	}
+	status, errMsg := applySubAgentVerificationOutcome(TaskExecPassed, "", subAgentVerificationOutcomeStatus(codingSubAgentQualityMissing), "no verification command")
+	if status != TaskExecFailed || errMsg != "no verification command" {
+		t.Fatalf("missing verification should fail passed task after outcome mapping, got status=%s err=%q", status, errMsg)
+	}
+	if got := subAgentVerificationOutcomeStatus(codingSubAgentQualityNotNeeded); got != codingSubAgentQualityNotNeeded {
+		t.Fatalf("not-needed verification outcome = %q, want %q", got, codingSubAgentQualityNotNeeded)
+	}
+	if got := subAgentVerificationOutcomeStatus(codingSubAgentQualityPassed); got != codingSubAgentQualityPassed {
+		t.Fatalf("passed verification outcome = %q, want %q", got, codingSubAgentQualityPassed)
+	}
+}
+
+func TestApplySubAgentGuardrailOutcomeFailsPassedTask(t *testing.T) {
+	violations := []CodingSubAgentGuardrailViolation{
+		{Tool: "bash", Category: codingSubAgentGuardrailCategoryGit, Command: "git reset --hard", Summary: "blocked destructive git command"},
+		{Tool: "read_file", Category: codingSubAgentGuardrailCategoryScope, Path: "../secret.txt", Summary: "outside project"},
+	}
+	status, errMsg := applySubAgentGuardrailOutcome(TaskExecPassed, "", violations)
+	if status != TaskExecFailed || !strings.Contains(errMsg, "2 guardrail block") || !strings.Contains(errMsg, "blocked destructive git command") {
+		t.Fatalf("guardrail outcome should fail passed task with compact diagnostic, got status=%s err=%q", status, errMsg)
+	}
+
+	status, errMsg = applySubAgentGuardrailOutcome(TaskExecFailed, "model error", violations)
+	if status != TaskExecFailed || errMsg != "model error" {
+		t.Fatalf("guardrail outcome should not replace existing failure, got status=%s err=%q", status, errMsg)
+	}
+
+	status, errMsg = applySubAgentGuardrailOutcome(TaskExecPassed, "", nil)
+	if status != TaskExecPassed || errMsg != "" {
+		t.Fatalf("empty guardrail outcome should not fail task, got status=%s err=%q", status, errMsg)
+	}
+}
+
+func TestApplySubAgentDiffOutcomeFailsPassedTaskWhenModifiedDiffMissing(t *testing.T) {
+	status, errMsg := applySubAgentDiffOutcome(TaskExecPassed, "", false, "git diff failed", 1)
+	if status != TaskExecFailed || errMsg != "git diff failed" {
+		t.Fatalf("missing diff check should fail passed task, got status=%s err=%q", status, errMsg)
+	}
+
+	status, errMsg = applySubAgentDiffOutcome(TaskExecPassed, "", false, "", 1)
+	if status != TaskExecFailed || !strings.Contains(errMsg, "git diff self-check") {
+		t.Fatalf("missing diff check should use default diagnostic, got status=%s err=%q", status, errMsg)
+	}
+
+	status, errMsg = applySubAgentDiffOutcome(TaskExecPassed, "", false, "no diff", 0)
+	if status != TaskExecPassed || errMsg != "" {
+		t.Fatalf("unchanged task should not require diff check, got status=%s err=%q", status, errMsg)
+	}
+
+	status, errMsg = applySubAgentDiffOutcome(TaskExecFailed, "model error", false, "git diff failed", 1)
+	if status != TaskExecFailed || errMsg != "model error" {
+		t.Fatalf("diff outcome should not replace existing failure, got status=%s err=%q", status, errMsg)
 	}
 }
 
@@ -2339,6 +2702,33 @@ func TestLimitSubAgentResultAuditSlices(t *testing.T) {
 	}
 	if got := len(limitSubAgentGuardrailViolations(guardrails, codingSubAgentResultAuditMax)); got != codingSubAgentResultAuditMax {
 		t.Fatalf("limited guardrails = %d, want %d", got, codingSubAgentResultAuditMax)
+	}
+}
+
+func TestCollectSubAgentAuditKeepsUnboundedGateInputs(t *testing.T) {
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: t.TempDir()}}
+	for i := 0; i < codingSubAgentResultFilesMax+3; i++ {
+		path := fmt.Sprintf("file-%03d.go", i)
+		cb.trackFile(path)
+	}
+	for i := 0; i < codingSubAgentResultAuditMax+2; i++ {
+		cb.trackCommandResult(map[string]interface{}{"command": fmt.Sprintf("go test ./pkg/%03d", i)}, "ok", true)
+		cb.trackSearchResult("ripgrep", map[string]interface{}{"pattern": fmt.Sprintf("symbol-%03d", i)}, "match", true)
+		cb.trackGuardrailViolation("bash", map[string]interface{}{"command": fmt.Sprintf("git reset --hard %03d", i)}, "blocked")
+	}
+
+	audit := collectSubAgentAudit(cb)
+	if len(audit.AllFilesModified) != codingSubAgentResultFilesMax+3 || len(audit.FilesModified) != codingSubAgentResultFilesMax {
+		t.Fatalf("files audit lengths = all %d limited %d", len(audit.AllFilesModified), len(audit.FilesModified))
+	}
+	if len(audit.AllCommandsRun) != codingSubAgentResultAuditMax+2 || len(audit.CommandsRun) != codingSubAgentResultAuditMax {
+		t.Fatalf("command audit lengths = all %d limited %d", len(audit.AllCommandsRun), len(audit.CommandsRun))
+	}
+	if len(audit.AllSearchesRun) != codingSubAgentResultAuditMax+2 || len(audit.SearchesRun) != codingSubAgentResultAuditMax {
+		t.Fatalf("search audit lengths = all %d limited %d", len(audit.AllSearchesRun), len(audit.SearchesRun))
+	}
+	if len(audit.AllGuardrailViolations) != codingSubAgentResultAuditMax+2 || len(audit.GuardrailViolations) != codingSubAgentResultAuditMax {
+		t.Fatalf("guardrail audit lengths = all %d limited %d", len(audit.AllGuardrailViolations), len(audit.GuardrailViolations))
 	}
 }
 
@@ -2406,6 +2796,37 @@ func TestCodingSubAgentListDirectoryFailureHasErrorOutcome(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentEnsureFinalGitDiffReusesFreshDiff(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent:       &CodingSubAgent{projectPath: t.TempDir()},
+		gitDiffChecked: true,
+		lastGitDiff:    "diff --git a/main.go b/main.go\n+fresh",
+		lastEditSeq:    2,
+		lastDiffSeq:    3,
+	}
+	checked, summary := cb.ensureFinalGitDiff([]string{"main.go"})
+	if !checked || !strings.Contains(summary, "+fresh") {
+		t.Fatalf("fresh diff should be reused, checked=%v summary=%q", checked, summary)
+	}
+}
+
+func TestCodingSubAgentEnsureFinalGitDiffRejectsStaleDiff(t *testing.T) {
+	missingProject := filepath.Join(t.TempDir(), "missing-project")
+	cb := &codingSubAgentCallbacks{
+		subagent:       &CodingSubAgent{handler: &IMMessageHandler{}, projectPath: missingProject},
+		gitDiffChecked: true,
+		lastGitDiff:    "diff --git a/main.go b/main.go\n+stale",
+		lastEditSeq:    5,
+		lastDiffSeq:    4,
+	}
+	checked, summary := cb.ensureFinalGitDiff([]string{"main.go"})
+	if checked {
+		t.Fatalf("stale diff should force a new final diff check, got checked=true summary=%q", summary)
+	}
+	if strings.Contains(summary, "+stale") {
+		t.Fatalf("stale diff summary should not be reused, got %q", summary)
+	}
+}
 func TestCodingSubAgentFinalGitDiffFailureDoesNotMarkChecked(t *testing.T) {
 	missingProject := filepath.Join(t.TempDir(), "missing-project")
 	cb := &codingSubAgentCallbacks{

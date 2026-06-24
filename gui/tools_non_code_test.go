@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,62 @@ func TestSearchFilesInProject_NoMatch(t *testing.T) {
 	result := searchFilesInProject(dir, "nonexistent_pattern_xyz", "")
 	if strings.Contains(result, "error") {
 		t.Errorf("unexpected error: %s", result)
+	}
+}
+
+func TestSearchFilesInProjectCtxCancelled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("needle\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := searchFilesInProjectCtx(ctx, dir, "needle", "")
+	if !strings.Contains(result, "cancelled") {
+		t.Fatalf("expected cancelled result, got %q", result)
+	}
+}
+
+func TestRegisterNonCodeSearchFilesUsesContextHandler(t *testing.T) {
+	registry := NewToolRegistry()
+	app := &App{}
+	registerNonCodeTools(registry, app)
+
+	tool, ok := registry.Get("search_files")
+	if !ok {
+		t.Fatal("search_files not registered")
+	}
+	if tool.HandlerCtx == nil {
+		t.Fatal("search_files should use HandlerCtx for cancellation")
+	}
+}
+
+func TestCheckProjectHealthCtxCancelled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.21\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := checkProjectHealthCtx(ctx, dir)
+	if !strings.Contains(result, "cancelled") {
+		t.Fatalf("expected cancelled result, got %q", result)
+	}
+}
+
+func TestRegisterNonCodeCheckHealthUsesContextHandler(t *testing.T) {
+	registry := NewToolRegistry()
+	app := &App{}
+	registerNonCodeTools(registry, app)
+
+	tool, ok := registry.Get("check_health")
+	if !ok {
+		t.Fatal("check_health not registered")
+	}
+	if tool.HandlerCtx == nil {
+		t.Fatal("check_health should use HandlerCtx for cancellation")
 	}
 }
 
@@ -43,7 +100,6 @@ func TestRunGitCmd_InvalidDir(t *testing.T) {
 		t.Error("expected error for invalid dir")
 	}
 }
-
 
 func TestSearchFilesInProject_FindsMatch(t *testing.T) {
 	dir := t.TempDir()

@@ -4,6 +4,7 @@ package agent
 // functions. These use corelib/websearch which has no GUI dependencies.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -14,6 +15,13 @@ import (
 
 // ToolWebSearch performs a web search using the configured provider.
 func ToolWebSearch(provider corelib.WebSearchProvider, args map[string]interface{}) string {
+	return ToolWebSearchCtx(context.Background(), provider, args)
+}
+
+func ToolWebSearchCtx(ctx context.Context, provider corelib.WebSearchProvider, args map[string]interface{}) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	query := StringArg(args, "query")
 	if query == "" {
 		return "缺少 query 参数"
@@ -26,7 +34,7 @@ func ToolWebSearch(provider corelib.WebSearchProvider, args map[string]interface
 		}
 	}
 
-	results, err := websearch.SearchWithProvider(query, maxResults, provider)
+	results, err := websearch.SearchWithProviderCtx(ctx, query, maxResults, provider)
 	if err != nil {
 		return fmt.Sprintf("搜索失败: %v", err)
 	}
@@ -55,11 +63,22 @@ func ToolWebFetch(args map[string]interface{}) string {
 	return ToolWebFetchWithProvider(args, corelib.WebSearchProvider{})
 }
 
+func ToolWebFetchCtx(ctx context.Context, args map[string]interface{}) string {
+	return ToolWebFetchWithProviderCtx(ctx, args, corelib.WebSearchProvider{})
+}
+
 // ToolWebFetchWithProvider fetches content from a URL using a provider-aware
 // fetch. When the provider has enhanced fetch capabilities (e.g. TinyFish),
 // it uses the provider's API for better content extraction, falling back to
 // standard fetch on failure.
 func ToolWebFetchWithProvider(args map[string]interface{}, provider corelib.WebSearchProvider) string {
+	return ToolWebFetchWithProviderCtx(context.Background(), args, provider)
+}
+
+func ToolWebFetchWithProviderCtx(ctx context.Context, args map[string]interface{}, provider corelib.WebSearchProvider) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	rawURL := StringArg(args, "url")
 	if rawURL == "" {
 		return "缺少 url 参数"
@@ -82,7 +101,7 @@ func ToolWebFetchWithProvider(args map[string]interface{}, provider corelib.WebS
 		opts.MaxChars = int(v)
 	}
 
-	result, err := websearch.FetchWithProvider(rawURL, opts, provider)
+	result, err := websearch.FetchWithProviderCtx(ctx, rawURL, opts, provider)
 	if err != nil {
 		return fmt.Sprintf("抓取失败: %v", err)
 	}

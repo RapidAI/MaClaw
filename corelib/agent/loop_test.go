@@ -81,6 +81,18 @@ type contextProviderCallbacks struct {
 	finished int32
 }
 
+type stopAfterFirstToolCallbacks struct {
+	*mockCallbacks
+}
+
+func (m *stopAfterFirstToolCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	result := m.mockCallbacks.ExecuteToolStructured(name, args)
+	if len(m.toolCalls) == 1 {
+		m.stopped = true
+	}
+	return result
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
@@ -314,7 +326,8 @@ func TestRunLoop_TruncatedToolCallInjectsRecoveryWithoutExecuting(t *testing.T) 
 			return
 		}
 		for _, msg := range req.Messages {
-			if msg["role"] == "user" && strings.Contains(fmt.Sprint(msg["content"]), "Previous tool call arguments were incomplete") && strings.Contains(fmt.Sprint(msg["content"]), "write_file.content <= 1800") {
+			content := fmt.Sprint(msg["content"])
+			if msg["role"] == "user" && strings.Contains(content, "Previous tool call arguments were incomplete") && strings.Contains(content, "For write_file: no per-call content length limit") {
 				sawRecoveryPrompt.Store(true)
 			}
 			if _, ok := msg["tool_call_id"]; ok {
@@ -855,6 +868,65 @@ func TestRunLoop_Cancelled_ReturnsError(t *testing.T) {
 	result := RunLoop(cb, "hi", nil, nil)
 	if result.Error != "cancelled" {
 		t.Fatalf("expected 'cancelled' error, got %q", result.Error)
+	}
+}
+
+func TestRunLoop_CancelBetweenToolCallsSkipsRemainingTools(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]interface{}{
+							{
+								"id":   "call_1",
+								"type": "function",
+								"function": map[string]interface{}{
+									"name":      "first",
+									"arguments": `{}`,
+								},
+							},
+							{
+								"id":   "call_2",
+								"type": "function",
+								"function": map[string]interface{}{
+									"name":      "second",
+									"arguments": `{}`,
+								},
+							},
+						},
+					},
+					"finish_reason": "tool_calls",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &stopAfterFirstToolCallbacks{mockCallbacks: &mockCallbacks{
+		config: corelib.MaclawLLMConfig{
+			URL:   server.URL,
+			Model: "test",
+			Key:   "test-key",
+		},
+		maxIter:    3,
+		sysPrompt:  "test",
+		toolResult: "ok",
+	}}
+
+	result := RunLoop(cb, "do tools", nil, nil)
+	if result.Error != "cancelled" {
+		t.Fatalf("RunLoop error = %q, want cancelled", result.Error)
+	}
+	if got := strings.Join(cb.toolCalls, ","); got != "first" {
+		t.Fatalf("executed tools = %q, want first only", got)
+	}
+	if result.ToolCalls != 1 {
+		t.Fatalf("ToolCalls = %d, want 1", result.ToolCalls)
 	}
 }
 

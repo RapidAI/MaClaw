@@ -21,7 +21,7 @@ export const HUB_SERVICE_PROVIDER_NAME = "MaClaw\u5b98\u65b9"; // Must match Go 
 export const LLM_CONFIG_LOAD_TIMEOUT_MS = 5000;
 
 /** Known OpenAI-compatible providers for quick-fill in custom provider config. */
-export const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string; context_length?: number; protocol?: string; agent_type?: string }[] = [
+export const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string; context_length?: number; protocol?: string; agent_type?: string; wire_api?: string }[] = [
     { name: "OpenAI Official", url: "https://api.openai.com/v1", model: "gpt-5.4", context_length: 128000 },
     { name: "DeepSeek", url: "https://api.deepseek.com/v1", model: "deepseek-chat", context_length: 128000 },
     { name: "\u667a\u8c31\u9f99\u867e", url: "https://open.bigmodel.cn/api/coding/paas/v4", model: "glm-5.1", context_length: 180000 },
@@ -29,6 +29,8 @@ export const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string;
     { name: "Kimi (\u6708\u4e4b\u6697\u9762)", url: "https://api.kimi.com/coding/v1", model: "kimi-k2-thinking", context_length: 128000 },
     { name: "\u8baf\u98de\u661f\u8fb0", url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", model: "astron-code-latest", context_length: 128000 },
     { name: "Doubao (\u8c46\u5305)", url: "https://ark.cn-beijing.volces.com/api/coding", model: "doubao-seed-code-preview-latest", context_length: 128000 },
+    { name: "\u706b\u5c71\u5f15\u64ceTokenPlan (Anthropic)", url: "https://ark.cn-beijing.volces.com/api/plan", model: "Auto", context_length: 128000, protocol: "anthropic", agent_type: "claude code 2.0" },
+    { name: "\u706b\u5c71\u5f15\u64ceTokenPlan (OpenAI)", url: "https://ark.cn-beijing.volces.com/api/plan/v3", model: "Auto", context_length: 128000, protocol: "openai", wire_api: "responses" },
     { name: "MiniMax", url: "https://api.minimaxi.com/v1", model: "MiniMax-M2.7", context_length: 128000 },
     { name: "\u817e\u8baf\u4e91", url: "https://api.lkeap.cloud.tencent.com/coding/v3", model: "glm-5", context_length: 128000 },
     { name: "xAI (Grok)", url: "https://api.x.ai/v1", model: "grok-3", context_length: 131072 },
