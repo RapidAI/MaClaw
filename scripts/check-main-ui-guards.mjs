@@ -443,7 +443,7 @@ requireFile('gui/frontend/src/components/layout/sidebarLayout.ts');
 requireFile('gui/frontend/src/components/layout/SidebarNavRail.tsx');
 requireFile('gui/frontend/src/components/layout/SidebarAiPane.tsx');
 requireFile('gui/frontend/src/components/layout/SidebarToolSelector.tsx');
-requireFile('gui/frontend/src/components/layout/SidebarRecentTasks.tsx');
+requireFile('gui/frontend/src/components/layout/SidebarTaskManagement.tsx');
 requireFile('gui/frontend/src/components/layout/SidebarSystemStatus.tsx');
 requireFile('gui/frontend/src/components/layout/MainTopHeader.tsx');
 requireFile('gui/frontend/src/components/layout/MainTopHeaderActions.tsx');
@@ -862,7 +862,7 @@ for (const rel of [
   'gui/frontend/src/components/layout/SidebarNavRail.tsx',
   'gui/frontend/src/components/layout/SidebarAiPane.tsx',
   'gui/frontend/src/components/layout/SidebarToolSelector.tsx',
-  'gui/frontend/src/components/layout/SidebarRecentTasks.tsx',
+  'gui/frontend/src/components/layout/SidebarTaskManagement.tsx',
   'gui/frontend/src/components/layout/SidebarSystemStatus.tsx',
   'gui/frontend/src/components/layout/MainTopHeader.tsx',
   'gui/frontend/src/components/layout/AppStatusMessageBar.tsx',
@@ -907,10 +907,10 @@ requireIncludes('gui/frontend/src/components/layout/SidebarNavRail.tsx', 'runnin
 requireIncludes('gui/frontend/src/components/layout/SidebarAiPane.tsx', 'export const SidebarAiPane', 'sidebar AI pane export');
 requireIncludes('gui/frontend/src/components/layout/SidebarAiPane.tsx', 'handleRecentTasksResizeStart', 'recent tasks resize handle wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarToolSelector.tsx', 'export const SidebarToolSelector', 'sidebar tool selector export');
-requireIncludes('gui/frontend/src/components/layout/SidebarRecentTasks.tsx', 'export const SidebarRecentTasks', 'sidebar recent tasks export');
-requireIncludes('gui/frontend/src/components/layout/SidebarRecentTasks.tsx', 'renameTask', 'recent task rename wiring');
-requireIncludes('gui/frontend/src/components/layout/SidebarRecentTasks.tsx', 'pinTask', 'recent task pin wiring');
-requireIncludes('gui/frontend/src/components/layout/SidebarRecentTasks.tsx', 'hideTask', 'recent task hide wiring');
+requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'export const SidebarTaskManagement', 'sidebar task management export');
+requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'renameTask', 'recent task rename wiring');
+requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'pinTask', 'recent task pin wiring');
+requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'hideTask', 'recent task hide wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarToolSelector.tsx', 'Claude Code', 'Claude Code selector entry');
 requireIncludes('gui/frontend/src/components/layout/SidebarToolSelector.tsx', 'CodeBuddy', 'CodeBuddy selector entry');
 requireIncludes('gui/frontend/src/components/layout/SidebarToolSelector.tsx', 'Kilo Code', 'Kilo Code selector entry');
@@ -918,7 +918,7 @@ requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'f
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'formatSidebarHubUsedCredits', 'hub credits used display wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'formatSidebarHubExpiry', 'hub credits expiry display wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'sidebarCurrentProviderTokenUsage.isHubService', 'hub service credits visibility condition');
-requireIncludes('gui/frontend/src/components/layout/SidebarRecentTasks.tsx', 'visibleRecentProjects.map', 'recent tasks list stays in sidebar recent tasks component');
+requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'visibleTasks.map', 'recent tasks list stays in sidebar task management component');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'showHubCreditAction', 'hub credits action stays in sidebar system status');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'openHubCreditsPage', 'hub credits purchase action wiring');
 requireIncludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'export const MainTopHeader', 'non-AI top header export');

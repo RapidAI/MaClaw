@@ -2088,7 +2088,7 @@ func TestInstallMaclawAppDependenciesSkipsInstalledAndBlocksUnsupportedSource(t 
 			"name": "Dependency Install App",
 			"kind": "enterprise_approval_app",
 			"binding": { "appSkill": { "id": "installed-app-skill" } },
-			"dependencies": { "skills": [{ "id": "dependency-install-workflow", "kind": "workflow_skill", "required": true, "source": "local" }, { "id": "manual-only-skill", "required": true, "source": "local" }] }
+			"dependencies": { "skills": [{ "id": "dependency-install-workflow", "kind": "workflow_skill", "required": true, "source": "local" }, { "id": "manual-only-skill", "required": true, "source": "builtin" }] }
 		}
 	}`)
 	if err != nil {
@@ -2108,6 +2108,7 @@ func TestInstallMaclawAppDependenciesSkipsInstalledAndBlocksUnsupportedSource(t 
 func TestMaclawAppInstallSkillSourceNormalizesHubAndMarket(t *testing.T) {
 	cases := map[string]string{
 		"":               "skillhub",
+		"local":          "skillhub",
 		"hub":            "skillhub",
 		"skillhub":       "skillhub",
 		"market":         "skillmarket",
@@ -2120,8 +2121,8 @@ func TestMaclawAppInstallSkillSourceNormalizesHubAndMarket(t *testing.T) {
 			t.Fatalf("maclawAppInstallSkillSource(%q) = %q,%v want %q,true", input, got, ok, want)
 		}
 	}
-	if got, ok := maclawAppInstallSkillSource("local"); ok || got != "" {
-		t.Fatalf("local source should not auto-install, got %q,%v", got, ok)
+	if got, ok := maclawAppInstallSkillSource("builtin"); ok || got != "" {
+		t.Fatalf("builtin source should not auto-install, got %q,%v", got, ok)
 	}
 }
 

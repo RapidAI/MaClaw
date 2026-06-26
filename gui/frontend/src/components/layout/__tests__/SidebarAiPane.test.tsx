@@ -5,7 +5,7 @@ import type React from 'react';
 import { SidebarAiPane, isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeMiddleTabs } from '../SidebarAiPane';
 
 vi.mock('../SidebarToolSelector', () => ({ SidebarToolSelector: () => <div data-testid="tool-selector" /> }));
-vi.mock('../SidebarRecentTasks', () => ({ SidebarRecentTasks: () => <div data-testid="recent-tasks" /> }));
+vi.mock('../SidebarTaskManagement', () => ({ SidebarTaskManagement: () => <div data-testid="task-management" /> }));
 vi.mock('../SidebarSystemStatus', () => ({ SidebarSystemStatus: () => <div data-testid="system-status" /> }));
 vi.mock('../../ai/VirtualEmployeeTab', () => ({ VirtualEmployeeTab: () => <div data-testid="digital-employees" /> }));
 vi.mock('../SidebarHistorySessions', () => ({ SidebarHistorySessions: ({ enabled = true }: { enabled?: boolean }) => enabled ? <div data-testid="history-sessions" /> : null }));
@@ -15,7 +15,7 @@ const noop = vi.fn();
 function renderPane(status: any, overrides: Partial<React.ComponentProps<typeof SidebarAiPane>> = {}) {
     render(
         <SidebarAiPane
-            recentTasksPaneWidth={260}
+            taskManagementPaneWidth={260}
             lang="en"
             aiThemeMode="light"
             maclawLLMOnline
@@ -28,15 +28,15 @@ function renderPane(status: any, overrides: Partial<React.ComponentProps<typeof 
             activeTool="codex"
             toolDropdownOpen={false}
             setToolDropdownOpen={noop}
-            recentProjects={[]}
+            tasks={[]}
             renamingTaskPath={null}
             setRenamingTaskPath={noop}
             renameValue=""
             setRenameValue={noop}
-            resumeRecentProject={noop}
+            resumeTask={noop}
             continueWorkflowProject={noop}
-            createRecentTask={noop}
-            refreshRecentProjects={noop}
+            createTask={noop}
+            refreshTasks={noop}
             taskContextMenu={null}
             setTaskContextMenu={noop}
             renameTask={async () => undefined}
@@ -53,8 +53,8 @@ function renderPane(status: any, overrides: Partial<React.ComponentProps<typeof 
             noHubAuthorizationText="No auth"
             showHubCreditAction={false}
             openHubCreditsPage={noop}
-            handleRecentTasksResizeStart={noop}
-            isRecentTasksResizing={false}
+            handleTaskManagementResizeStart={noop}
+            isTaskManagementResizing={false}
             switchTool={noop}
             digitalEmployeeFeatureStatus={status}
             {...overrides}
@@ -63,10 +63,10 @@ function renderPane(status: any, overrides: Partial<React.ComponentProps<typeof 
 }
 
 describe('SidebarAiPane digital employee tabs', () => {
-    it('shows only recent tasks when feature status is hidden', () => {
+    it('shows only task management when feature status is hidden', () => {
         renderPane({ visible: false, reason: 'no_digital_employees', actual_count: 0 });
 
-        expect(screen.getByTestId('recent-tasks')).toBeTruthy();
+        expect(screen.getByTestId('task-management')).toBeTruthy();
         expect(screen.queryByText('Digital')).toBeNull();
         expect(screen.queryByText('History')).toBeNull();
     });

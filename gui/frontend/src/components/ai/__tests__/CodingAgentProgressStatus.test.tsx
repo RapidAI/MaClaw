@@ -19,6 +19,7 @@ import {
     codingAgentGuardrailStatusTone,
     codingAgentQualityStatusLabel,
     codingAgentQualityStatusTone,
+    codingAgentProgressTone,
     formatCodingAgentDuration,
     codingAgentStatusClassName,
     codingAgentStatusDataAttrs,
@@ -565,6 +566,13 @@ describe('CodingAgentProgressStatus', () => {
         expect(codingAgentStatusLabel('queued', 'zh-Hans')).toBe('\u72b6\u6001');
     });
 
+    it('uses event outcome tones for coding-agent summary progress rows', () => {
+        expect(codingAgentProgressTone({ phase: 'result', title: 'Quality summary', event: 'quality_summary', outcome: 'failed' }).accent).toBe('#c43d34');
+        expect(codingAgentProgressTone({ phase: 'result', title: 'Verification summary', event: 'verification_summary', outcome: 'missing' }).accent).toBe('#64748b');
+        expect(codingAgentProgressTone({ phase: 'result', title: 'Diff check', event: 'diff_check', outcome: 'checked' }).accent).toBe('#4f7f6f');
+        expect(codingAgentProgressTone({ phase: 'failed', title: 'Failed' }).accent).toBe('#c43d34');
+    });
+
     it('classifies active and terminal phases for monitor diagnostics', () => {
         expect(isCodingAgentActivePhase('starting')).toBe(true);
         expect(isCodingAgentActivePhase('running')).toBe(true);
@@ -629,5 +637,24 @@ describe('CodingAgentProgressStatus', () => {
         expect(status.className).toContain('coding-agent-status');
         expect(status.className).toContain('coding-agent-status--chat-progress');
         expect(status.className).toContain('coding-agent-status--failed');
+    });
+
+    it('renders quality summary failures as failed chat progress instead of generic result rows', () => {
+        render(
+            <>
+                {renderCodingAgentProgressStatus(
+                    makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"quality_summary","phase":"result","task_id":"T4","title":"Apply patch","outcome":"failed","summary":"verification not run","count":1}'),
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </>,
+        );
+
+        const status = screen.getByTestId('coding-agent-progress');
+        expect(status.textContent).toContain('Quality Failed');
+        expect(status.textContent).toContain('1 issues');
+        expect(status.textContent).toContain('T4');
+        expect(status.getAttribute('aria-label')).toBe('Coding Agent | Quality Failed | T4 | 1 issues | Apply patch');
+        expect(status.style.border).toContain('rgba(196, 61, 52, 0.22)');
     });
 });

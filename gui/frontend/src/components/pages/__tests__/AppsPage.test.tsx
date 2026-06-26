@@ -5365,6 +5365,43 @@ describe('AppsPage', () => {
         expect(within(installResult).getByText('客户导入')).not.toBeNull();
         await waitFor(() => expect(within(installResult).getByText(/DataSrv 绑定已注册: 1/)).not.toBeNull());
     });
+    it('blocks enterprise app installation when install evidence cannot be saved', async () => {
+        recordMaclawAppInstallMock.mockRejectedValueOnce(new Error('DataSrv registration failed'));
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Add from market'));
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    schema: 'maclaw.app.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    installUnit: 'enterprise_app_pack',
+                    app: {
+                        id: 'customer-import-audit-required',
+                        name: 'Customer Import Audit Required',
+                        description: 'Import customer profiles',
+                        category: 'CRM',
+                        kind: 'enterprise_normal_app',
+                        icon: 'customer',
+                        launchMode: 'agent_dynamic_ui',
+                        binding: {
+                            datasrv: { domain: 'sales', datasetID: 'sales.customers', preferredAction: 'sales.customer_upsert' },
+                            appSkill: { id: 'customer-import-skill', version: '1.0.0', source: 'hub' },
+                        },
+                    },
+                }),
+            },
+        });
+        fireEvent.click(screen.getByText('Install'));
+
+        await waitFor(() => expect(recordMaclawAppInstallMock).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(screen.getByText(/Invalid app package: DataSrv registration failed/)).not.toBeNull());
+        expect(screen.queryByText('Installed: 1 路 Skipped: 0')).toBeNull();
+        fireEvent.click(screen.getByText('Manage apps'));
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('Customer Import Audit Required'))).toBe(false);
+    });
+
     it('does not exceed the pinned app limit when installing pinned market apps', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
@@ -6246,6 +6283,98 @@ describe('AppsPage', () => {
         expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('发票审核');
         const outputSelect = container.querySelector('.apps-form-row select') as HTMLSelectElement;
         expect(Array.from(outputSelect.options).map((option) => option.value)).toEqual(['pdf']);
+    });
+
+    it('restores enterprise MaClaw App skill definitions without downgrading them to tool apps', async () => {
+        listSkillAppManifestsMock.mockResolvedValue([
+            {
+                id: 'expense-approval',
+                skill_id: 'expense-super-skill',
+                name: '费用审批',
+                description: 'Submit and approve expenses',
+                category: '财务',
+                kind: 'enterprise_approval_app',
+                app_definition_file: 'maclaw.app.json',
+                app_definition: {
+                    schema: 'maclaw.app.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    installUnit: 'enterprise_app_pack',
+                    app: {
+                        id: 'expense-approval',
+                        name: '费用审批',
+                        description: 'Submit and approve expenses',
+                        kind: 'enterprise_approval_app',
+                        icon: 'receipt',
+                        binding: {
+                            appSkill: { id: 'expense-super-skill', version: '1.0.0', source: 'local' },
+                            dependencies: { skills: [{ id: 'expense-workflow', kind: 'workflow_skill', version: '2.0.0', required: true, source: 'hub' }] },
+                            ui: {
+                                schema: 'maclaw.app.ui.v1',
+                                entry: 'approval_workspace',
+                                layouts: {
+                                    approval_workspace: {
+                                        template: 'classic_split',
+                                        density: 'compact',
+                                        primaryRegion: 'center',
+                                        outputRegion: 'bottom',
+                                        regions: [
+                                            { id: 'request_form', role: 'input', placement: 'center' },
+                                            { id: 'approval_inbox', role: 'instance_list', placement: 'left' },
+                                            { id: 'result_panel', role: 'output', placement: 'bottom' },
+                                        ],
+                                    },
+                                },
+                            },
+                            mis: { approvalBindings: [{ event: 'expense.submitted', workflowSkillId: 'expense-workflow', workflowVersion: '2.0.0', objectRole: 'expense_report' }] },
+                        },
+                        governance: {
+                            resultContract: { schema: 'maclaw.app.result.v1', primary: 'approval_result', types: ['approval_result', 'business_status'] },
+                            workflowContract: { schema: 'maclaw.app.workflow_contract.v1', workflowSkillId: 'expense-workflow', workflowVersion: '2.0.0', objectRole: 'expense_report' },
+                            testEvidence: {
+                                runId: 'run-expense-1',
+                                definitionHash: 'hash-expense-1',
+                                resultPayload: { approval_result: 'approved', business_status: 'finance_approved' },
+                                approvalInstance: {
+                                    instanceId: 'wf-expense-1',
+                                    approvalID: 'approval-expense-1',
+                                    recordID: 'expense-1',
+                                    status: 'approved',
+                                    currentNode: 'expense.result',
+                                    workflowSkillId: 'expense-workflow',
+                                    businessStatus: 'finance_approved',
+                                    resultStatus: 'approved',
+                                    resultPayload: { approval_result: 'approved' },
+                                    outputs: [{ kind: 'approval_result', text: 'approved', status: 'ready' }],
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        ]);
+        render(<AppsPage lang="zh-Hans" />);
+
+        await waitFor(() => expect(screen.getAllByText('费用审批').length).toBeGreaterThan(0));
+        const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
+        const restored = [...(stored.customApps || []), ...(stored.editedApps || [])].find((app: any) => app.id === 'expense-approval');
+        expect(restored).toBeTruthy();
+        expect(restored.kind).toBe('enterprise_approval_app');
+        expect(restored.manifest.appSkill).toEqual(expect.objectContaining({ id: 'expense-super-skill' }));
+        expect(restored.manifest.dependencies.skills[0]).toEqual(expect.objectContaining({ id: 'expense-workflow', kind: 'workflow_skill' }));
+        expect(restored.manifest.mis.approvalBindings[0]).toEqual(expect.objectContaining({ workflowSkillId: 'expense-workflow' }));
+        expect(restored.manifest.ui.layouts.approval_workspace.primaryRegion).toBe('center');
+        expect(restored.manifest.ui.layouts.approval_workspace.outputRegion).toBe('bottom');
+        expect(restored.manifest.ui.layouts.approval_workspace.regions).toHaveLength(3);
+        expect(restored.importedRunEvidence.runID).toBe('run-expense-1');
+        expect(restored.importedRunEvidence.definitionHash).toBe('hash-expense-1');
+        expect(restored.importedRunEvidence.approvalInstance).toEqual(expect.objectContaining({
+            approvalID: 'approval-expense-1',
+            currentNode: 'expense.result',
+            workflowSkillId: 'expense-workflow',
+            businessStatus: 'finance_approved',
+            resultStatus: 'approved',
+        }));
+        expect(restored.importedRunEvidence.approvalInstance.resultPayload).toEqual(expect.objectContaining({ approval_result: 'approved' }));
     });
 
     it('installs apps from a pasted app pack manifest', async () => {

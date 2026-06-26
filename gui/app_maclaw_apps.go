@@ -4499,7 +4499,7 @@ func maclawAppSubmissionDependenciesFromPackage(pkg map[string]any) []maclawAppI
 }
 func maclawAppInstallSkillSource(source string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(source)) {
-	case "", "hub", "skillhub":
+	case "", "local", "hub", "skillhub":
 		return string(skillSearchSourceSkillHub), true
 	case "market", "skillmarket":
 		return string(skillSearchSourceSkillMarket), true

@@ -8,7 +8,7 @@ import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { SidebarTaskEvidencePanel } from './SidebarTaskEvidencePanel';
 
-export type RecentProject = {
+export type TaskManagementItem = {
     id?: string;
     name?: string;
     project_path: string;
@@ -31,9 +31,9 @@ export type RecentProject = {
 
 export type TaskContextMenu = { x: number; y: number; projectPath: string; name: string; pinned: boolean } | null;
 
-type RecentTaskIconKind = 'pin' | 'reference' | 'task';
+type TaskIconKind = 'pin' | 'reference' | 'task';
 
-const RECENT_TASK_ICON_PROPS = {
+const TASK_ICON_PROPS = {
     fill: 'none',
     stroke: 'currentColor',
     strokeWidth: 1.7,
@@ -49,19 +49,19 @@ const CREATE_TASK_ICON_PROPS = {
     strokeLinejoin: 'round' as const,
 };
 
-const taskIconKindForProject = (proj: RecentProject): RecentTaskIconKind => {
+const taskIconKindForProject = (proj: TaskManagementItem): TaskIconKind => {
     if (proj.pinned) return 'pin';
     return proj.tags?.includes('forked_task') ? 'reference' : 'task';
 };
 
-const recentTaskIconLabel = (kind: RecentTaskIconKind, lang: string) => {
+const taskIconLabel = (kind: TaskIconKind, lang: string) => {
     if (kind === 'pin') return textForLang(lang, 'Pinned task', '\u7f6e\u9876\u4efb\u52a1', '\u7f6e\u9802\u4efb\u52d9');
     if (kind === 'reference') return textForLang(lang, 'Referenced task', '\u5f15\u7528\u4efb\u52a1', '\u5f15\u7528\u4efb\u52d9');
     return textForLang(lang, 'Task', '\u4efb\u52a1', '\u4efb\u52d9');
 };
 
-const RecentTaskTypeIcon = ({ kind, lang }: { kind: RecentTaskIconKind; lang: string }) => {
-    const label = recentTaskIconLabel(kind, lang);
+const TaskTypeIcon = ({ kind, lang }: { kind: TaskIconKind; lang: string }) => {
+    const label = taskIconLabel(kind, lang);
 
     return (
         <span
@@ -72,29 +72,29 @@ const RecentTaskTypeIcon = ({ kind, lang }: { kind: RecentTaskIconKind; lang: st
             <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
                 {kind === 'pin' && (
                     <>
-                        <path {...RECENT_TASK_ICON_PROPS} d="M15 4 20 9" />
-                        <path {...RECENT_TASK_ICON_PROPS} d="M14 10 8 16" />
-                        <path {...RECENT_TASK_ICON_PROPS} d="M5 19 8 16" />
-                        <path {...RECENT_TASK_ICON_PROPS} d="M8.5 5.5 18.5 15.5" />
-                        <path {...RECENT_TASK_ICON_PROPS} d="M10 4 20 14" />
+                        <path {...TASK_ICON_PROPS} d="M15 4 20 9" />
+                        <path {...TASK_ICON_PROPS} d="M14 10 8 16" />
+                        <path {...TASK_ICON_PROPS} d="M5 19 8 16" />
+                        <path {...TASK_ICON_PROPS} d="M8.5 5.5 18.5 15.5" />
+                        <path {...TASK_ICON_PROPS} d="M10 4 20 14" />
                     </>
                 )}
                 {kind === 'reference' && (
                     <>
-                        <path {...RECENT_TASK_ICON_PROPS} d="M7 4h8l4 4v12H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />
-                        <path {...RECENT_TASK_ICON_PROPS} d="M15 4v5h5" />
-                        <path {...RECENT_TASK_ICON_PROPS} d="M9 13h6" />
-                        <path {...RECENT_TASK_ICON_PROPS} d="M9 17h4" />
+                        <path {...TASK_ICON_PROPS} d="M7 4h8l4 4v12H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />
+                        <path {...TASK_ICON_PROPS} d="M15 4v5h5" />
+                        <path {...TASK_ICON_PROPS} d="M9 13h6" />
+                        <path {...TASK_ICON_PROPS} d="M9 17h4" />
                     </>
                 )}
                 {kind === 'task' && (
                     <>
-                        <path {...RECENT_TASK_ICON_PROPS} d="M8 6h11" />
-                        <path {...RECENT_TASK_ICON_PROPS} d="M8 12h11" />
-                        <path {...RECENT_TASK_ICON_PROPS} d="M8 18h11" />
-                        <path {...RECENT_TASK_ICON_PROPS} d="m3.5 6 1 1 2-2" />
-                        <path {...RECENT_TASK_ICON_PROPS} d="m3.5 12 1 1 2-2" />
-                        <path {...RECENT_TASK_ICON_PROPS} d="m3.5 18 1 1 2-2" />
+                        <path {...TASK_ICON_PROPS} d="M8 6h11" />
+                        <path {...TASK_ICON_PROPS} d="M8 12h11" />
+                        <path {...TASK_ICON_PROPS} d="M8 18h11" />
+                        <path {...TASK_ICON_PROPS} d="m3.5 6 1 1 2-2" />
+                        <path {...TASK_ICON_PROPS} d="m3.5 12 1 1 2-2" />
+                        <path {...TASK_ICON_PROPS} d="m3.5 18 1 1 2-2" />
                     </>
                 )}
             </svg>
@@ -111,11 +111,19 @@ const CreateTaskIcon = () => (
     </svg>
 );
 
+const SaveTaskIcon = () => (
+    <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block', flexShrink: 0 }}>
+        <path {...CREATE_TASK_ICON_PROPS} d="M6 4h10l2 2v14H6z" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M9 4v6h6V4" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M9 16h6" />
+    </svg>
+);
+
 function emitProjectTaskClosed(projectPath: string) {
     try {
         EventsEmit(EVENT_PROJECT_TASK_CLOSED, projectPath);
     } catch (error) {
-        console.warn('[SidebarRecentTasks] project close event emit failed:', error);
+        console.warn('[SidebarTaskManagement] project close event emit failed:', error);
     }
 }
 
@@ -123,20 +131,20 @@ function requestSaveCurrentChatAsTask() {
     window.dispatchEvent(new CustomEvent('ai-save-current-chat-as-task'));
 }
 
-type SidebarRecentTasksProps = {
+type SidebarTaskManagementProps = {
     lang: string;
     themeMode?: 'light' | 'dark';
-    recentProjects: RecentProject[];
+    tasks: TaskManagementItem[];
     renamingTaskPath: string | null;
     setRenamingTaskPath: (path: string | null) => void;
     renameValue: string;
     setRenameValue: (value: string) => void;
-    resumeRecentProject: (projectPath: string) => Promise<void> | void;
+    resumeTask: (projectPath: string) => Promise<void> | void;
     continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
-    onRecentTaskSwitchBlocked?: () => void;
-    createRecentTask: (name: string, workingDir?: string) => Promise<void> | void;
-    refreshRecentProjects: () => void;
+    onTaskSwitchBlocked?: () => void;
+    createTask: (name: string, workingDir?: string) => Promise<void> | void;
+    refreshTasks: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
     renameTask: (projectPath: string, name: string) => Promise<unknown>;
@@ -146,7 +154,7 @@ type SidebarRecentTasksProps = {
 
 const textForLang = localizeText;
 // Must sit above existing fixed dropdowns/overlays that use z-index 99999.
-const RECENT_TASK_CREATE_DIALOG_Z_INDEX = 100000;
+const TASK_CREATE_DIALOG_Z_INDEX = 100000;
 
 const getPortalThemeMode = (themeMode?: 'light' | 'dark') => (
     themeMode || document.getElementById('App')?.getAttribute('data-ai-theme') || undefined
@@ -165,26 +173,26 @@ const normalizeTaskCommandInput = (value?: string | null) => {
     return trimmed.slice(0, 2000);
 };
 
-export const SidebarRecentTasks = ({
+export const SidebarTaskManagement = ({
     lang,
     themeMode,
-    recentProjects,
+    tasks,
     renamingTaskPath,
     setRenamingTaskPath,
     renameValue,
     setRenameValue,
-    resumeRecentProject,
+    resumeTask,
     continueWorkflowProject = () => {},
     assistantReady = true,
-    onRecentTaskSwitchBlocked,
-    createRecentTask,
-    refreshRecentProjects,
+    onTaskSwitchBlocked,
+    createTask,
+    refreshTasks,
     taskContextMenu,
     setTaskContextMenu,
     renameTask,
     pinTask,
     hideTask,
-}: SidebarRecentTasksProps) => {
+}: SidebarTaskManagementProps) => {
     const [creatingTask, setCreatingTask] = useState(false);
     const [createDialogOpen, setCreateDialogOpen] = useState(false);
     const [newTaskName, setNewTaskName] = useState('');
@@ -196,7 +204,7 @@ export const SidebarRecentTasks = ({
     const [openingTaskPath, setOpeningTaskPath] = useState<string | null>(null);
     const creatingTaskRef = useRef(false);
     const createBackdropMouseDownRef = useRef(false);
-    const visibleRecentProjects = recentProjects.filter(proj => proj.has_output !== false);
+    const visibleTasks = tasks.filter(proj => proj.has_output !== false);
 
     const openCreateDialog = () => {
         if (creatingTaskRef.current) return;
@@ -220,7 +228,7 @@ export const SidebarRecentTasks = ({
             const dir = await SelectWorkingDir();
             if (dir) setNewTaskWorkingDir(dir);
         } catch (error) {
-            console.error('[SidebarRecentTasks] SelectWorkingDir failed:', error);
+            console.error('[SidebarTaskManagement] SelectWorkingDir failed:', error);
         } finally {
             setSelectingWorkingDir(false);
         }
@@ -235,9 +243,9 @@ export const SidebarRecentTasks = ({
         try {
             const workingDir = newTaskWorkingDir.trim();
             if (workingDir) {
-                await createRecentTask(taskName, workingDir);
+                await createTask(taskName, workingDir);
             } else {
-                await createRecentTask(taskName);
+                await createTask(taskName);
             }
             setCreateDialogOpen(false);
             setNewTaskName('');
@@ -260,7 +268,7 @@ export const SidebarRecentTasks = ({
             const detail = await GetProjectScene(projectPath);
             setSceneDetail((detail || null) as ProjectSceneDetail | null);
         } catch (error) {
-            console.error('[SidebarRecentTasks] GetProjectScene failed:', error);
+            console.error('[SidebarTaskManagement] GetProjectScene failed:', error);
             setSceneDetail({ project_path: projectPath, name: fallbackName || projectPath, recent_artifacts: [] });
         } finally {
             setSceneDetailLoading(false);
@@ -271,12 +279,12 @@ export const SidebarRecentTasks = ({
         if (renamingTaskPath) return;
         if (openingTaskPath === projectPath) return;
         if (!assistantReady) {
-            onRecentTaskSwitchBlocked?.();
+            onTaskSwitchBlocked?.();
             return;
         }
         setOpeningTaskPath(projectPath);
         try {
-            await resumeRecentProject(projectPath);
+            await resumeTask(projectPath);
         } finally {
             setOpeningTaskPath(current => current === projectPath ? null : current);
         }
@@ -285,39 +293,44 @@ export const SidebarRecentTasks = ({
     return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '10px 8px 8px' }}>
         <div style={{ padding: '2px 8px 9px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.68rem', color: 'var(--theme-text-muted)', fontWeight: 700, letterSpacing: '0.02em' }}>
-            <span>{textForLang(lang, 'New Task', '\u65b0\u5efa\u4efb\u52a1', '\u65b0\u5efa\u4efb\u52d9')}</span>
-            <button
-                type="button"
-                onClick={openCreateDialog}
-                disabled={creatingTask}
-                aria-label={textForLang(lang, 'Create task', '创建任务', '建立任務')}
-                title={textForLang(lang, 'Create task', '创建任务', '建立任務')}
-                style={{ width: '22px', height: '22px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: '1px solid color-mix(in srgb, var(--theme-primary) 44%, var(--theme-border))', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-primary) 13%, var(--theme-surface))', color: 'var(--theme-primary)', cursor: creatingTask ? 'default' : 'pointer', lineHeight: 1, padding: 0, opacity: creatingTask ? 0.55 : 1, boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 10%, transparent)' }}
-            >
-                <CreateTaskIcon />
-            </button>
-            <button
-                type="button"
-                onClick={requestSaveCurrentChatAsTask}
-                aria-label={textForLang(lang, 'Save current chat as task', '保存当前对话为任务', '保存目前對話為任務')}
-                title={textForLang(lang, 'Save current chat as task', '保存当前对话为任务', '保存目前對話為任務')}
-                style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: '1px solid color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border))', borderRadius: '6px', background: 'var(--theme-surface)', color: 'var(--theme-primary)', cursor: 'pointer', lineHeight: 1, padding: '4px 7px', fontSize: '0.66rem', fontWeight: 700, whiteSpace: 'nowrap' }}
-            >
-                {textForLang(lang, 'Save as Task', '保存为任务', '保存為任務')}
-            </button>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                <span>{textForLang(lang, 'New Task', '\u65b0\u5efa\u4efb\u52a1', '\u65b0\u5efa\u4efb\u52d9')}</span>
+                <button
+                    type="button"
+                    onClick={openCreateDialog}
+                    disabled={creatingTask}
+                    aria-label={textForLang(lang, 'Create task', '创建任务', '建立任務')}
+                    title={textForLang(lang, 'Create task', '创建任务', '建立任務')}
+                    style={{ width: '22px', height: '22px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: '1px solid color-mix(in srgb, var(--theme-primary) 44%, var(--theme-border))', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-primary) 13%, var(--theme-surface))', color: 'var(--theme-primary)', cursor: creatingTask ? 'default' : 'pointer', lineHeight: 1, padding: 0, opacity: creatingTask ? 0.55 : 1, boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 10%, transparent)' }}
+                >
+                    <CreateTaskIcon />
+                </button>
+            </span>
+            <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                <span>{textForLang(lang, 'Save as Task', '保存为任务', '保存為任務')}</span>
+                <button
+                    type="button"
+                    onClick={requestSaveCurrentChatAsTask}
+                    aria-label={textForLang(lang, 'Save current chat as task', '保存当前对话为任务', '保存目前對話為任務')}
+                    title={textForLang(lang, 'Save current chat as task', '保存当前对话为任务', '保存目前對話為任務')}
+                    style={{ width: '22px', height: '22px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: '1px solid color-mix(in srgb, var(--theme-primary) 44%, var(--theme-border))', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-primary) 13%, var(--theme-surface))', color: 'var(--theme-primary)', cursor: 'pointer', lineHeight: 1, padding: 0, boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 10%, transparent)' }}
+                >
+                    <SaveTaskIcon />
+                </button>
+            </span>
         </div>
-        {visibleRecentProjects.length === 0 ? (
+        {visibleTasks.length === 0 ? (
             <div style={{ padding: '24px 8px', textAlign: 'center', fontSize: '0.78rem', color: 'var(--theme-text-muted)', opacity: 0.65 }}>
                 {textForLang(lang, 'No tasks', '\u6682\u65e0\u4efb\u52a1', '\u66ab\u7121\u4efb\u52d9')}
             </div>
-        ) : visibleRecentProjects.map(proj => {
+        ) : visibleTasks.map(proj => {
             const taskIconKind = taskIconKindForProject(proj);
             return <div key={proj.id || proj.project_path}>
                 <div onDoubleClick={() => { void handleTaskDoubleClick(proj.project_path); }} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned }); }} style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '6px', padding: '7px 8px', borderRadius: '8px', cursor: openingTaskPath === proj.project_path ? 'progress' : 'pointer', transition: 'background 0.15s', opacity: openingTaskPath === proj.project_path ? 0.78 : 1 }} title={`${proj.name || proj.project_path}\n${proj.project_path}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                    <RecentTaskTypeIcon kind={taskIconKind} lang={lang} />
+                    <TaskTypeIcon kind={taskIconKind} lang={lang} />
                     <span style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
                         {proj.active_workflow && <span title={`${proj.active_workflow.type || 'workflow'} ${proj.active_workflow.phase || ''}`.trim()} style={{ display: 'inline-flex', maxWidth: '100%', marginBottom: '3px', padding: '1px 5px', borderRadius: '999px', border: '1px solid color-mix(in srgb, var(--theme-primary) 42%, transparent)', color: 'var(--theme-primary)', background: 'color-mix(in srgb, var(--theme-primary) 8%, transparent)', fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{textForLang(lang, 'Stage output', '\u9636\u6bb5\u4ea7\u51fa', '\u968e\u6bb5\u7522\u51fa')}</span>}
-                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshRecentProjects(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{proj.name || proj.project_path}</span>}
+                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{proj.name || proj.project_path}</span>}
                         <span style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{openingTaskPath === proj.project_path ? textForLang(lang, 'Restoring...', '恢复中...', '恢復中...') : (proj.preview || proj.project_path)}</span>
                         {openingTaskPath === proj.project_path && <span aria-label={textForLang(lang, 'Restoring task', '正在恢复任务', '正在恢復任務')} style={{ display: 'block', marginTop: '6px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}><span style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} /></span>}
                     </span>
@@ -332,7 +345,7 @@ export const SidebarRecentTasks = ({
                 className="modal-backdrop"
                 data-ai-theme={getPortalThemeMode(themeMode)}
                 data-ai-dark-scheme={getPortalDarkScheme()}
-                style={{ zIndex: RECENT_TASK_CREATE_DIALOG_Z_INDEX }}
+                style={{ zIndex: TASK_CREATE_DIALOG_Z_INDEX }}
                 onMouseDown={e => { createBackdropMouseDownRef.current = e.target === e.currentTarget; }}
                 onClick={e => { if (e.target === e.currentTarget && createBackdropMouseDownRef.current) closeCreateDialog(); createBackdropMouseDownRef.current = false; }}
             >
@@ -340,7 +353,7 @@ export const SidebarRecentTasks = ({
                     className="modal-content"
                     role="dialog"
                     aria-modal="true"
-                    aria-labelledby="recent-task-dialog-title"
+                    aria-labelledby="task-management-dialog-title"
                     onMouseDown={e => e.stopPropagation()}
                     onClick={e => e.stopPropagation()}
                     onKeyDown={e => { if (e.key === 'Escape') closeCreateDialog(); }}
@@ -348,15 +361,15 @@ export const SidebarRecentTasks = ({
                     style={{ width: '420px', maxWidth: '92vw', textAlign: 'left' }}
                 >
                     <div className="modal-header">
-                        <h3 id="recent-task-dialog-title" style={{ fontSize: '0.88rem', margin: 0 }}>{textForLang(lang, 'Create task', '创建任务', '建立任務')}</h3>
+                        <h3 id="task-management-dialog-title" style={{ fontSize: '0.88rem', margin: 0 }}>{textForLang(lang, 'Create task', '创建任务', '建立任務')}</h3>
                         <button type="button" className="btn-close" onClick={closeCreateDialog} disabled={creatingTask}>X</button>
                     </div>
                     <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }} htmlFor="recent-task-name-input">
+                        <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }} htmlFor="task-management-name-input">
                             {textForLang(lang, 'Task command', '任务命令', '任務命令')}
                         </label>
                         <textarea
-                            id="recent-task-name-input"
+                            id="task-management-name-input"
                             autoFocus
                             value={newTaskName}
                             onChange={e => setNewTaskName(e.target.value)}
@@ -414,8 +427,8 @@ export const SidebarRecentTasks = ({
             <div style={{ position: 'fixed', left: taskContextMenu.x, top: taskContextMenu.y, zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '132px' }}>
                 {[
                     { label: textForLang(lang, 'Rename', '\u91cd\u547d\u540d', '\u91cd\u547d\u540d'), icon: 'edit', action: () => { setRenamingTaskPath(taskContextMenu.projectPath); setRenameValue(taskContextMenu.name); setTaskContextMenu(null); } },
-                    { label: taskContextMenu.pinned ? textForLang(lang, 'Unpin', '\u53d6\u6d88\u7f6e\u9876', '\u53d6\u6d88\u7f6e\u9802') : textForLang(lang, 'Pin', '\u7f6e\u9876', '\u7f6e\u9802'), icon: 'PIN', action: async () => { await pinTask(taskContextMenu.projectPath, !taskContextMenu.pinned); refreshRecentProjects(); setTaskContextMenu(null); } },
-                    { label: textForLang(lang, 'Remove', '\u5220\u9664', '\u522a\u9664'), icon: 'X', action: async () => { await hideTask(taskContextMenu.projectPath); emitProjectTaskClosed(taskContextMenu.projectPath); refreshRecentProjects(); setTaskContextMenu(null); } },
+                    { label: taskContextMenu.pinned ? textForLang(lang, 'Unpin', '\u53d6\u6d88\u7f6e\u9876', '\u53d6\u6d88\u7f6e\u9802') : textForLang(lang, 'Pin', '\u7f6e\u9876', '\u7f6e\u9802'), icon: 'PIN', action: async () => { await pinTask(taskContextMenu.projectPath, !taskContextMenu.pinned); refreshTasks(); setTaskContextMenu(null); } },
+                    { label: textForLang(lang, 'Remove', '\u5220\u9664', '\u522a\u9664'), icon: 'X', action: async () => { await hideTask(taskContextMenu.projectPath); emitProjectTaskClosed(taskContextMenu.projectPath); refreshTasks(); setTaskContextMenu(null); } },
                 ].map(item => <div key={item.label} onClick={item.action} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 12px', cursor: 'pointer', fontSize: '0.78rem', color: 'var(--theme-text-primary)' }}><span>{item.icon}</span><span>{item.label}</span></div>)}
             </div>
         </>)}

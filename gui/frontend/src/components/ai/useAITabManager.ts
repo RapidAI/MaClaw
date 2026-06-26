@@ -223,7 +223,7 @@ function persistProjectTabHistories(tabStates: Map<string, AITabState>, tabs: AI
 
         // Also persist histories from tabStates that aren't in the current tab
         // list (hydrated from previous session, tab was reconciled away but may
-        // be re-opened from "最近任务" later). Cap at 10 to prevent unbounded
+        // be re-opened from task management later). Cap at 10 to prevent unbounded
         // localStorage growth from closed tabs. Keep the most recently active.
         const MAX_ORPHAN_HISTORIES = 10;
         const orphans: Array<[string, AITabState]> = [];
@@ -744,7 +744,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // Initialize tab state — preserve any history already hydrated from
         // localStorage (e.g., the tab was persisted in a previous session but
         // removed from the tab list during backend reconciliation, and now is
-        // being re-opened from "最近任务"). Only set empty history if there is
+        // being re-opened from task management). Only set empty history if there is
         // truly no prior state for this tabId.
         const existingHydratedState = tabStatesRef.current.get(tabId);
         if (!existingHydratedState || !Array.isArray(existingHydratedState.history) || existingHydratedState.history.length === 0) {
@@ -763,7 +763,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
 
         // Register the tab session with the backend. This is the SINGLE place
         // where tab→projectPath mapping is established. All code paths that
-        // create a project tab (recent task click, fork, pending open) go
+        // create a project tab (task management open, fork, pending open) go
         // through this function, so the backend always knows about the tab.
         // Fire-and-forget: session may already exist (idempotent on backend).
         // If this deterministic tab id was closed moments ago, serialize the

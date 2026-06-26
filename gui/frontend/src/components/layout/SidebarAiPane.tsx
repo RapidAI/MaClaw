@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties, type MouseEvent as Re
 import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { SidebarToolSelector } from './SidebarToolSelector';
-import { SidebarRecentTasks, type RecentProject, type TaskContextMenu } from './SidebarRecentTasks';
+import { SidebarTaskManagement, type TaskManagementItem, type TaskContextMenu } from './SidebarTaskManagement';
 import { SidebarSystemStatus } from './SidebarSystemStatus';
 import { VirtualEmployeeTab, type VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import { darkTheme, lightTheme } from '../ai/aiAssistantPanelTheme';
@@ -39,7 +39,7 @@ export function shouldShowDigitalEmployeeMiddleTabs(status: any, nowMs = Date.no
 }
 
 type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
-    recentTasksPaneWidth: number;
+    taskManagementPaneWidth: number;
     lang: string;
     aiThemeMode?: 'light' | 'dark';
     maclawLLMOnline: boolean;
@@ -54,17 +54,17 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     activeTool: string;
     toolDropdownOpen: boolean;
     setToolDropdownOpen: (updater: (prev: boolean) => boolean) => void;
-    recentProjects: RecentProject[];
+    tasks: TaskManagementItem[];
     renamingTaskPath: string | null;
     setRenamingTaskPath: (path: string | null) => void;
     renameValue: string;
     setRenameValue: (value: string) => void;
-    resumeRecentProject: (projectPath: string) => Promise<void> | void;
+    resumeTask: (projectPath: string) => Promise<void> | void;
     continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
-    onRecentTaskSwitchBlocked?: () => void;
-    createRecentTask: (name: string, workingDir?: string) => Promise<void> | void;
-    refreshRecentProjects: () => void;
+    onTaskSwitchBlocked?: () => void;
+    createTask: (name: string, workingDir?: string) => Promise<void> | void;
+    refreshTasks: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
     renameTask: (projectPath: string, name: string) => Promise<unknown>;
@@ -81,8 +81,8 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     openHubCardStorePage?: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
-    handleRecentTasksResizeStart: (e: ReactMouseEvent<HTMLDivElement>) => void;
-    isRecentTasksResizing: boolean;
+    handleTaskManagementResizeStart: (e: ReactMouseEvent<HTMLDivElement>) => void;
+    isTaskManagementResizing: boolean;
     switchTool: (tool: string) => void;
     onOpenVEConversation?: (ve: VirtualEmployeeEntry) => void;
     onOpenHistoryDiscussion?: (discussion: HistoryDiscussionSummary) => void;
@@ -102,7 +102,7 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
 };
 
 export const SidebarAiPane = ({
-    recentTasksPaneWidth,
+    taskManagementPaneWidth,
     lang,
     aiThemeMode,
     maclawLLMOnline,
@@ -117,17 +117,17 @@ export const SidebarAiPane = ({
     activeTool,
     toolDropdownOpen,
     setToolDropdownOpen,
-    recentProjects,
+    tasks,
     renamingTaskPath,
     setRenamingTaskPath,
     renameValue,
     setRenameValue,
-    resumeRecentProject,
+    resumeTask,
     continueWorkflowProject,
     assistantReady = true,
-    onRecentTaskSwitchBlocked,
-    createRecentTask,
-    refreshRecentProjects,
+    onTaskSwitchBlocked,
+    createTask,
+    refreshTasks,
     taskContextMenu,
     setTaskContextMenu,
     renameTask,
@@ -149,8 +149,8 @@ export const SidebarAiPane = ({
     openHubCardStorePage,
     codingAgentProgress = null,
     codingAgentTurnSnapshot = null,
-    handleRecentTasksResizeStart,
-    isRecentTasksResizing,
+    handleTaskManagementResizeStart,
+    isTaskManagementResizing,
     switchTool,
     onOpenVEConversation,
     onOpenHistoryDiscussion,
@@ -181,17 +181,17 @@ export const SidebarAiPane = ({
     };
     return (
         <>
-            <div style={{ width: `${recentTasksPaneWidth}px`, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--theme-border)', background: 'var(--theme-page-bg)', minHeight: 0, overflow: 'hidden' }}>
+            <div style={{ width: `${taskManagementPaneWidth}px`, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--theme-border)', background: 'var(--theme-page-bg)', minHeight: 0, overflow: 'hidden' }}>
                 <SidebarToolSelector activeTool={activeTool} toolDropdownOpen={toolDropdownOpen} setToolDropdownOpen={setToolDropdownOpen} config={config} switchTool={switchTool} visible={showCodingToolEntry} />
                 {visibleTabs.length > 1 && <SidebarMiddleTabs active={middleTab} labels={tabLabels} onChange={setMiddleTab} visibleTabs={visibleTabs} />}
                 <div data-testid="sidebar-ai-content-slot" style={middleContentSlotStyle}>
-                    {middleTab === 'tasks' && <SidebarRecentTasks lang={lang} themeMode={aiThemeMode} recentProjects={recentProjects} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeRecentProject={resumeRecentProject} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onRecentTaskSwitchBlocked={onRecentTaskSwitchBlocked} createRecentTask={createRecentTask} refreshRecentProjects={refreshRecentProjects} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} />}
+                    {middleTab === 'tasks' && <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} />}
                     {middleTab === 'employees' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-employees" style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} onRenameEmployee={onRenameEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-history" style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}
                 </div>
                 <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} backgroundTaskCount={backgroundTaskCount} localLLMCacheEnabled={(config as any)?.llm_prompt_cache?.enabled === true} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openHubCardStorePage={openHubCardStorePage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} availableProviders={availableProviders} onSwitchProvider={onSwitchProvider} />
             </div>
-            <div onMouseDown={handleRecentTasksResizeStart} title={lang === 'en' ? 'Drag to resize middle panel' : lang === 'zh-Hant' ? '拖動調整中間面板寬度' : '拖动调整中间面板宽度'} style={{ width: '6px', flexShrink: 0, cursor: 'col-resize', background: isRecentTasksResizing ? 'color-mix(in srgb, var(--theme-primary) 42%, transparent)' : 'transparent', borderRight: '1px solid var(--theme-border)', transition: 'background 120ms ease', ['--wails-draggable' as any]: 'no-drag' }} />
+            <div onMouseDown={handleTaskManagementResizeStart} title={lang === 'en' ? 'Drag to resize middle panel' : lang === 'zh-Hant' ? '拖動調整中間面板寬度' : '拖动调整中间面板宽度'} style={{ width: '6px', flexShrink: 0, cursor: 'col-resize', background: isTaskManagementResizing ? 'color-mix(in srgb, var(--theme-primary) 42%, transparent)' : 'transparent', borderRight: '1px solid var(--theme-border)', transition: 'background 120ms ease', ['--wails-draggable' as any]: 'no-drag' }} />
         </>
     );
 };

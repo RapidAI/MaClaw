@@ -6,12 +6,12 @@ import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingA
 import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
 import type { HistoryDiscussionSummary } from './SidebarHistorySessions';
-import type { RecentProject, TaskContextMenu } from './SidebarRecentTasks';
+import type { TaskManagementItem, TaskContextMenu } from './SidebarTaskManagement';
 import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import type { AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
 interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     navTab: string;
-    recentTasksPaneWidth: number;
+    taskManagementPaneWidth: number;
     aiThemeMode: 'light' | 'dark';
     aiDarkSchemeId: AssistantDarkSchemeId;
     brandInfo: { id: string } | null;
@@ -36,17 +36,17 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     activeTool: string;
     toolDropdownOpen: boolean;
     setToolDropdownOpen: (updater: (prev: boolean) => boolean) => void;
-    recentProjects: RecentProject[];
+    tasks: TaskManagementItem[];
     renamingTaskPath: string | null;
     setRenamingTaskPath: (path: string | null) => void;
     renameValue: string;
     setRenameValue: (value: string) => void;
-    resumeRecentProject: (projectPath: string) => Promise<void> | void;
+    resumeTask: (projectPath: string) => Promise<void> | void;
     continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
-    onRecentTaskSwitchBlocked?: () => void;
-    createRecentTask: (name: string, workingDir?: string) => Promise<void> | void;
-    refreshRecentProjects: () => void;
+    onTaskSwitchBlocked?: () => void;
+    createTask: (name: string, workingDir?: string) => Promise<void> | void;
+    refreshTasks: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
     renameTask: (projectPath: string, name: string) => Promise<unknown>;
@@ -63,8 +63,8 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     openHubCardStorePage?: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
-    handleRecentTasksResizeStart: (e: ReactMouseEvent<HTMLDivElement>) => void;
-    isRecentTasksResizing: boolean;
+    handleTaskManagementResizeStart: (e: ReactMouseEvent<HTMLDivElement>) => void;
+    isTaskManagementResizing: boolean;
     onOpenVEConversation?: (ve: VirtualEmployeeEntry) => void;
     favoriteEmployees?: FavoriteEmployeeSlot[];
     veAuthorized?: boolean;
@@ -85,7 +85,7 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
 }
 export const AppSidebarShell = ({
     navTab,
-    recentTasksPaneWidth,
+    taskManagementPaneWidth,
     aiThemeMode,
     aiDarkSchemeId,
     brandInfo,
@@ -110,17 +110,17 @@ export const AppSidebarShell = ({
     activeTool,
     toolDropdownOpen,
     setToolDropdownOpen,
-    recentProjects,
+    tasks,
     renamingTaskPath,
     setRenamingTaskPath,
     renameValue,
     setRenameValue,
-    resumeRecentProject,
+    resumeTask,
     continueWorkflowProject,
     assistantReady = true,
-    onRecentTaskSwitchBlocked,
-    createRecentTask,
-    refreshRecentProjects,
+    onTaskSwitchBlocked,
+    createTask,
+    refreshTasks,
     taskContextMenu,
     setTaskContextMenu,
     renameTask,
@@ -142,8 +142,8 @@ export const AppSidebarShell = ({
     openHubCardStorePage,
     codingAgentProgress = null,
     codingAgentTurnSnapshot = null,
-    handleRecentTasksResizeStart,
-    isRecentTasksResizing,
+    handleTaskManagementResizeStart,
+    isTaskManagementResizing,
     onOpenVEConversation,
     favoriteEmployees = [],
     veAuthorized = false,
@@ -165,7 +165,7 @@ export const AppSidebarShell = ({
 <>
             <div style={{
                 height: '30px',
-                width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + recentTasksPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px`,
+                width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px`,
                 position: 'absolute',
                 top: 0,
                 left: 0,
@@ -173,7 +173,7 @@ export const AppSidebarShell = ({
                 '--wails-draggable': 'drag'
             } as any}></div>
 
-            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + recentTasksPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px` } as any} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined}>
+            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px` } as any} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined}>
                           <SidebarNavRail
                     navTab={navTab}
                     brandInfo={brandInfo}
@@ -196,7 +196,7 @@ export const AppSidebarShell = ({
                     showAppEntry={showAppEntry}
                 />        {navTab === 'ai' && (
                     <SidebarAiPane
-                        recentTasksPaneWidth={recentTasksPaneWidth}
+                        taskManagementPaneWidth={taskManagementPaneWidth}
                         lang={lang}
                         aiThemeMode={aiThemeMode}
                         maclawLLMOnline={maclawLLMOnline}
@@ -211,17 +211,17 @@ export const AppSidebarShell = ({
                         activeTool={activeTool}
                         toolDropdownOpen={toolDropdownOpen}
                         setToolDropdownOpen={setToolDropdownOpen}
-                        recentProjects={recentProjects}
+                        tasks={tasks}
                         renamingTaskPath={renamingTaskPath}
                         setRenamingTaskPath={setRenamingTaskPath}
                         renameValue={renameValue}
                         setRenameValue={setRenameValue}
-                        resumeRecentProject={resumeRecentProject}
+                        resumeTask={resumeTask}
                         continueWorkflowProject={continueWorkflowProject}
                         assistantReady={assistantReady}
-                        onRecentTaskSwitchBlocked={onRecentTaskSwitchBlocked}
-                        createRecentTask={createRecentTask}
-                        refreshRecentProjects={refreshRecentProjects}
+                        onTaskSwitchBlocked={onTaskSwitchBlocked}
+                        createTask={createTask}
+                        refreshTasks={refreshTasks}
                         taskContextMenu={taskContextMenu}
                         setTaskContextMenu={setTaskContextMenu}
                         renameTask={renameTask}
@@ -241,8 +241,8 @@ export const AppSidebarShell = ({
                         openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openHubCardStorePage={openHubCardStorePage}
                         codingAgentProgress={codingAgentProgress}
                         codingAgentTurnSnapshot={codingAgentTurnSnapshot}
-                        handleRecentTasksResizeStart={handleRecentTasksResizeStart}
-                        isRecentTasksResizing={isRecentTasksResizing}
+                        handleTaskManagementResizeStart={handleTaskManagementResizeStart}
+                        isTaskManagementResizing={isTaskManagementResizing}
                         switchTool={switchTool}
                         onOpenVEConversation={onOpenVEConversation}
                         onSetFavoriteEmployee={onSetFavoriteEmployee}

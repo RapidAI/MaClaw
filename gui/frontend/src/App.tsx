@@ -362,17 +362,17 @@ function App() {
     const [refreshKey, setRefreshKey] = useState<number>(0);
     const [activeTool, setActiveTool] = useState<string>("claude");
     const [codexConfigUpdateCount, setCodexConfigUpdateCount] = useState(0);
-    const [recentTasksPaneWidth, setRecentTasksPaneWidth] = useState(260);
-    const [isRecentTasksResizing, setIsRecentTasksResizing] = useState(false);
-    const recentTasksResizeStartX = useRef(0);
-    const recentTasksResizeStartWidth = useRef(380);
+    const [taskManagementPaneWidth, setTaskManagementPaneWidth] = useState(260);
+    const [isTaskManagementResizing, setIsTaskManagementResizing] = useState(false);
+    const taskManagementResizeStartX = useRef(0);
+    const taskManagementResizeStartWidth = useRef(380);
     const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
     const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean } | null>(null);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
-    const [recentProjects, setRecentProjects] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
-    const recentProjectsRef = useRef(recentProjects);
-    recentProjectsRef.current = recentProjects;
+    const [taskItems, setTaskItems] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
+    const taskItemsRef = useRef(taskItems);
+    taskItemsRef.current = taskItems;
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
@@ -1202,28 +1202,28 @@ function App() {
         }
     };
 
-    const handleRecentTasksResizeStart = (e: React.MouseEvent<HTMLDivElement>) => {
+    const handleTaskManagementResizeStart = (e: React.MouseEvent<HTMLDivElement>) => {
         e.preventDefault();
         e.stopPropagation();
-        recentTasksResizeStartX.current = e.clientX;
-        recentTasksResizeStartWidth.current = recentTasksPaneWidth;
-        setIsRecentTasksResizing(true);
+        taskManagementResizeStartX.current = e.clientX;
+        taskManagementResizeStartWidth.current = taskManagementPaneWidth;
+        setIsTaskManagementResizing(true);
     };
 
     useEffect(() => {
-        if (!isRecentTasksResizing) return;
+        if (!isTaskManagementResizing) return;
         const handleMove = (event: MouseEvent) => {
-            const nextWidth = recentTasksResizeStartWidth.current + event.clientX - recentTasksResizeStartX.current;
-            setRecentTasksPaneWidth(Math.min(460, Math.max(180, nextWidth)));
+            const nextWidth = taskManagementResizeStartWidth.current + event.clientX - taskManagementResizeStartX.current;
+            setTaskManagementPaneWidth(Math.min(460, Math.max(180, nextWidth)));
         };
-        const handleUp = () => setIsRecentTasksResizing(false);
+        const handleUp = () => setIsTaskManagementResizing(false);
         window.addEventListener('mousemove', handleMove);
         window.addEventListener('mouseup', handleUp);
         return () => {
             window.removeEventListener('mousemove', handleMove);
             window.removeEventListener('mouseup', handleUp);
         };
-    }, [isRecentTasksResizing]);
+    }, [isTaskManagementResizing]);
 
     const logEndRef = useRef<HTMLTextAreaElement>(null);
 
@@ -2022,17 +2022,17 @@ function App() {
         () => codingAgentTurnSnapshot?.latest || activeCodingAgentProgress(aiAssistant.progressMessages || [], aiAssistant.sending),
         [codingAgentTurnSnapshot, aiAssistant.sending, aiAssistant.progressMessages],
     );
-    const refreshRecentProjects = useCallback(() => {
-        callBackend(() => ListTasks(50)).then((r: any) => setRecentProjects(r || [])).catch(() => setRecentProjects([]));
+    const refreshTasks = useCallback(() => {
+        callBackend(() => ListTasks(50)).then((r: any) => setTaskItems(r || [])).catch(() => setTaskItems([]));
     }, []);
 
     useEffect(() => {
-        if (navTab === 'ai') refreshRecentProjects();
-    }, [navTab, refreshRecentProjects]);
+        if (navTab === 'ai') refreshTasks();
+    }, [navTab, refreshTasks]);
 
     useEffect(() => {
         const refresh = () => {
-            if (navTabRef.current === 'ai') refreshRecentProjects();
+            if (navTabRef.current === 'ai') refreshTasks();
         };
         const offProjectIndexChanged = safeEventsOn(EVENT_PROJECT_INDEX_CHANGED, refresh);
         const offTasksChanged = safeEventsOn(EVENT_TASKS_CHANGED, refresh);
@@ -2040,13 +2040,13 @@ function App() {
             if (typeof offProjectIndexChanged === 'function') offProjectIndexChanged(); else safeEventsOff(EVENT_PROJECT_INDEX_CHANGED);
             if (typeof offTasksChanged === 'function') offTasksChanged(); else safeEventsOff(EVENT_TASKS_CHANGED);
         };
-    }, [refreshRecentProjects]);
+    }, [refreshTasks]);
 
-    const resumeRecentProject = useCallback(async (projectPath: string) => {
+    const resumeTask = useCallback(async (projectPath: string) => {
         const startedAt = performance.now();
         try {
             switchTool('ai');
-            const proj = recentProjectsRef.current.find(p => p.project_path === projectPath);
+            const proj = taskItemsRef.current.find(p => p.project_path === projectPath);
             console.info("[task_management] open requested", { taskPath: projectPath });
             await ResumeTask(projectPath);
             const title = proj?.name || projectPath.split(/[\\/]/).pop() || projectPath;
@@ -2056,18 +2056,18 @@ function App() {
                 taskTitle: title,
                 autoSend: false,
             });
-            refreshRecentProjects();
+            refreshTasks();
         } catch (error) {
             console.error("resumeTask failed:", error);
         }
-    }, [refreshRecentProjects, switchTool]);
+    }, [refreshTasks, switchTool]);
 
     const continueWorkflowProject = useCallback(async (projectPath: string) => {
         const sourcePath = projectPath.trim();
         if (!sourcePath) return;
         try {
             switchTool('ai');
-            const proj = recentProjectsRef.current.find(p => p.project_path === sourcePath || p.active_workflow?.project_path === sourcePath);
+            const proj = taskItemsRef.current.find(p => p.project_path === sourcePath || p.active_workflow?.project_path === sourcePath);
             const title = proj?.name || sourcePath.split(/[\\/]/).pop() || sourcePath;
             setPendingProjectTabOpen({
                 projectPath: sourcePath,
@@ -2079,15 +2079,15 @@ function App() {
         }
     }, [switchTool]);
 
-    const createRecentTask = useCallback(async (name: string, workingDir?: string) => {
+    const createTask = useCallback(async (name: string, workingDir?: string) => {
         const taskName = name.trim();
         if (!taskName) return;
         try {
             const created = await CreateTask(taskName, (workingDir || '').trim());
             if (created?.project_path) {
-                setRecentProjects(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, 10));
+                setTaskItems(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, 10));
             } else {
-                refreshRecentProjects();
+                refreshTasks();
                 return;
             }
             switchTool('ai');
@@ -2098,11 +2098,11 @@ function App() {
                 prepareMode: 'new-agent',
                 autoSend: true,
             });
-            refreshRecentProjects();
+            refreshTasks();
         } catch (error) {
             console.error("CreateTask failed:", error);
         }
-    }, [refreshRecentProjects, switchTool]);
+    }, [refreshTasks, switchTool]);
 
     const normalizeSidebarProviderState = useCallback((data?: SidebarProviderStateWire) => {
         const list = (data?.providers ?? data?.Providers ?? [])
@@ -3108,7 +3108,7 @@ ${instruction}`;
                 <div id="App" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
             <AppSidebarShell
                 navTab={navTab}
-                recentTasksPaneWidth={recentTasksPaneWidth}
+                taskManagementPaneWidth={taskManagementPaneWidth}
                 aiThemeMode={aiThemeMode}
                 aiDarkSchemeId={aiDarkSchemeId}
                 brandInfo={brandInfo}
@@ -3131,17 +3131,17 @@ ${instruction}`;
                 activeTool={activeTool}
                 toolDropdownOpen={toolDropdownOpen}
                 setToolDropdownOpen={setToolDropdownOpen}
-                recentProjects={recentProjects}
+                tasks={taskItems}
                 renamingTaskPath={renamingTaskPath}
                 setRenamingTaskPath={setRenamingTaskPath}
                 renameValue={renameValue}
                 setRenameValue={setRenameValue}
-                resumeRecentProject={resumeRecentProject}
+                resumeTask={resumeTask}
                 continueWorkflowProject={continueWorkflowProject}
                 assistantReady={aiAssistant.ready}
-                onRecentTaskSwitchBlocked={() => showToastMessage(localizeText('System is warming up. Please switch later.', '系统正在预热，请稍后切换。', '系統正在預熱，請稍後切換。'))}
-                createRecentTask={createRecentTask}
-                refreshRecentProjects={refreshRecentProjects}
+                onTaskSwitchBlocked={() => showToastMessage(localizeText('System is warming up. Please switch later.', '系统正在预热，请稍后切换。', '系統正在預熱，請稍後切換。'))}
+                createTask={createTask}
+                refreshTasks={refreshTasks}
                 taskContextMenu={taskContextMenu}
                 setTaskContextMenu={setTaskContextMenu}
                 renameTask={RenameTask}
@@ -3163,8 +3163,8 @@ ${instruction}`;
                 openHubCardStorePage={openHubCardStorePage}
                 codingAgentProgress={codingAgentProgress}
                 codingAgentTurnSnapshot={codingAgentTurnSnapshot}
-                handleRecentTasksResizeStart={handleRecentTasksResizeStart}
-                isRecentTasksResizing={isRecentTasksResizing}
+                handleTaskManagementResizeStart={handleTaskManagementResizeStart}
+                isTaskManagementResizing={isTaskManagementResizing}
                 onOpenVEConversation={(ve) => { switchTool('ai'); setPendingVEOpen(ve); }}
                 onOpenHistoryDiscussion={(discussion) => { switchTool('ai'); setPendingHistoryDiscussionOpen(discussion); }}
                 favoriteEmployees={favoriteEmployeeSlots}

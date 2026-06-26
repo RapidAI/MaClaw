@@ -1349,7 +1349,7 @@ describe('AIAssistantPanel property tests', () => {
         loadProjectContextMock.mockResolvedValue({
             project_name: '北京天气',
             recent_progress: [
-                'Forked from recent task.',
+                'Forked from task.',
                 'Source task: D:\\Users\\alice\\.maclaw\\data\\tasks\\source-task',
                 '查询了北京今天的天气，当前多云，适合继续跟进预报。',
                 '',
@@ -1379,7 +1379,7 @@ describe('AIAssistantPanel property tests', () => {
         const bodyText = document.body.textContent || '';
         expect(bodyText).toContain('最近进展：查询了北京今天的天气');
         expect(bodyText).toContain('相关产物和来源已载入，AI 会参考。可以直接继续问。');
-        expect(bodyText).not.toContain('Forked from recent task');
+        expect(bodyText).not.toContain('Forked from task');
         expect(bodyText).not.toContain('Source task:');
         expect(bodyText).not.toContain('关键产出物');
         expect(bodyText).not.toContain('最近产物来源');
@@ -1387,7 +1387,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(queryByText(/read_file/)).toBeNull();
     });
 
-    it('restores project tab chat history after closing and reopening the recent task', async () => {
+    it('restores project tab chat history after closing and reopening the task', async () => {
         const projectPath = 'D:/tasks/reopen-closed-history';
         loadProjectContextMock.mockResolvedValue({
             project_name: 'Reopen closed history',
@@ -1456,8 +1456,8 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('ai-tab-local')).toBeTruthy();
     });
 
-    it('restores backend-copied conversation when opening a forked recent task with a fresh project path', async () => {
-        const projectPath = 'D:/tasks/forked-recent-task';
+    it('restores backend-copied conversation when opening a forked task with a fresh project path', async () => {
+        const projectPath = 'D:/tasks/forked-task';
         loadProjectConversationHistoryMock.mockResolvedValue([
             { role: 'user', content: 'what can biomedical engineering graduates do?' },
             { role: 'assistant', content: 'They can work in medical devices, hospitals, R&D, or further study.' },

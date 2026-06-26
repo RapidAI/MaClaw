@@ -495,6 +495,7 @@ MaClaw App Skill
 这些依赖必须显式声明、安装时检查，并能从当前 Hub 或能力市场下载安装。
 
 App Studio 保存到 Skill 包时，工具型 App 可以继续使用 `binding.skill` 和 `maclaw.apps.json` 的轻量多入口格式；企业审批型/企业普通型 App 必须作为超级 Skill 的完整 `maclaw.app.json` 保存，使用 `binding.appSkill` 指向当前超级 Skill，并原样保留动态 UI layout、MIS/DataSrv 绑定、审批 workflow 绑定、dependencies.skills、workflow/result contract、governance/testEvidence。不能把企业 App 降级成只含 input/output 字段的工具型 manifest。
+已保存的企业超级 Skill 再被 App Studio/Skill discovery 读回时，也必须返回完整 `maclaw.app.json` 定义；GUI 恢复成本地 AppEntry 时保持 `enterprise_approval_app` / `enterprise_normal_app` 类型、真实 app id、动态 layout、appSkill/dependencies、approval bindings 和 importedRunEvidence。不能在发现阶段把企业 App 过滤掉，也不能恢复成 `tool_app`。
 
 ### 依赖类型
 
@@ -604,7 +605,7 @@ PlanMaclawAppInstall(packageJSON)
   后端权威解析 maclaw.app.v1 / maclaw.app.pack.v1，汇总 appSkill 和 dependencies.skills，返回已安装、缺失、可选缺失、阻断信息。
 
 InstallMaclawAppDependencies(packageJSON)
-  安装缺失的必需 Skill 依赖；hub/skillhub 走 SkillHub，market/skillmarket 走 SkillMarket，enterprise_hub 走企业 Hub；local/builtin 等不能自动安装的来源保持 blocked。
+  安装缺失的必需 Skill 依赖；local/hub/skillhub 走 SkillHub（local 表示设计态本地 Skill，进入 App 包安装态后按当前 Hub 解析），market/skillmarket 走 SkillMarket，enterprise_hub 走企业 Hub；builtin/未知来源等不能自动安装的来源保持 blocked。
 
 RecordMaclawAppInstall(packageJSON, source)
   写入本机 app_install_records.json，保存 App、安装来源、包指纹、依赖快照、必需依赖是否仍缺失。重复安装同一 App 时按 app_id upsert，保留最新记录。

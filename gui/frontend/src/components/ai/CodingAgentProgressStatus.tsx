@@ -245,12 +245,65 @@ export function codingAgentStatusTone(phase: string): CodingAgentStatusTone {
     return CODING_AGENT_PHASE_TONES[normalizeCodingAgentPhase(phase)];
 }
 
+export function codingAgentProgressTone(progress: CodingAgentProgress): CodingAgentStatusTone {
+    const normalized = normalizeCodingAgentProgress(progress);
+    switch ((normalized.event || "").trim().toLowerCase()) {
+        case "guardrail_summary":
+            return codingAgentGuardrailStatusTone(normalized.outcome);
+        case "command_summary":
+            return codingAgentCommandStatusTone(normalized.outcome);
+        case "file_activity_summary":
+            return codingAgentFileActivityStatusTone(normalized.outcome);
+        case "quality_summary":
+            return codingAgentQualityStatusTone(normalized.outcome);
+        case "exploration_summary":
+            return codingAgentExplorationStatusTone(normalized.outcome);
+        case "verification_summary":
+            return codingAgentVerificationStatusTone(normalized.outcome);
+        case "diff_check":
+            return codingAgentDiffCheckStatusTone(normalized.outcome);
+        case "tool_finished":
+            return codingAgentToolOutcomeTone(normalized.outcome);
+        default:
+            return codingAgentStatusTone(normalized.phase);
+    }
+}
+
+function codingAgentProgressStatusText(progress: CodingAgentProgress, lang: string): string {
+    const normalized = normalizeCodingAgentProgress(progress);
+    const event = (normalized.event || "").trim().toLowerCase();
+    const label = (en: string, zh: string) => lang.startsWith("zh") ? zh : en;
+    if (!normalized.outcome) return codingAgentStatusLabel(normalized.phase, lang);
+    switch (event) {
+        case "guardrail_summary":
+            return `${label("Guard", "\u8fb9\u754c")} ${codingAgentGuardrailStatusLabel(normalized.outcome, lang)}`;
+        case "command_summary":
+            return `${label("Commands", "\u547d\u4ee4")} ${codingAgentCommandStatusLabel(normalized.outcome, lang)}`;
+        case "file_activity_summary":
+            return `${label("Activity", "\u6587\u4ef6\u52a8\u4f5c")} ${codingAgentFileActivityStatusLabel(normalized.outcome, lang)}`;
+        case "quality_summary":
+            return `${label("Quality", "\u8d28\u91cf")} ${codingAgentQualityStatusLabel(normalized.outcome, lang)}`;
+        case "exploration_summary":
+            return `${label("Explore", "\u63a2\u7d22")} ${codingAgentExplorationStatusLabel(normalized.outcome, lang)}`;
+        case "verification_summary":
+            return `${label("Verify", "\u9a8c\u8bc1")} ${codingAgentVerificationStatusLabel(normalized.outcome, lang)}`;
+        case "diff_check":
+            return `${label("Diff check", "Diff \u81ea\u68c0")} ${codingAgentDiffCheckStatusLabel(normalized.outcome, lang)}`;
+        case "tool_finished":
+            return `${label("Tool", "\u5de5\u5177")} ${codingAgentToolOutcomeLabel(normalized.outcome, lang)}`;
+        default:
+            return codingAgentStatusLabel(normalized.phase, lang);
+    }
+}
+
 export function renderCodingAgentProgressStatus(msg: ChatMessage, t: CodingAgentProgressTheme, lang: string): React.ReactNode {
     const progress = parseCodingAgentProgress(msg.content);
     if (!progress) return null;
-    const tone = codingAgentStatusTone(progress.phase);
+    const tone = codingAgentProgressTone(progress);
     const agentLabel = lang.startsWith("zh") ? "\u7f16\u7a0b\u667a\u80fd\u4f53" : "Coding Agent";
     const displayText = codingAgentDisplayText(progress, lang);
+    const statusText = codingAgentProgressStatusText(progress, lang);
+    const metaText = codingAgentProgressMetaText(progress, lang);
     return (
         <div
             key={msg.id}
@@ -278,9 +331,9 @@ export function renderCodingAgentProgressStatus(msg: ChatMessage, t: CodingAgent
             }}
         >
             <span style={{ color: tone.accent, fontWeight: 700, flexShrink: 0 }}>{agentLabel}</span>
-            <span style={{ color: tone.accent, fontWeight: 600, flexShrink: 0 }}>{codingAgentStatusLabel(progress.phase, lang)}</span>
+            <span style={{ color: tone.accent, fontWeight: 600, flexShrink: 0 }}>{statusText}</span>
             {progress.taskID && <span style={{ color: t.fieldLabel, flexShrink: 0 }}>{progress.taskID}</span>}
-            {progress.detail && <span style={{ color: t.fieldLabel, flexShrink: 0 }}>{progress.detail}</span>}
+            {metaText && <span style={{ color: t.fieldLabel, flexShrink: 0 }}>{metaText}</span>}
             {progress.title && <span style={{ color: t.text, minWidth: 0, overflowWrap: "anywhere" }}>{progress.title}</span>}
         </div>
     );
@@ -411,7 +464,7 @@ function findLatestCodingAgentEventDetail(events: CodingAgentProgress[], eventNa
 export function codingAgentDisplayText(progress: CodingAgentProgress, lang: string): string {
     const normalized = normalizeCodingAgentProgress(progress);
     const agentLabel = lang.startsWith("zh") ? "\u7f16\u7a0b\u667a\u80fd\u4f53" : "Coding Agent";
-    return [agentLabel, codingAgentStatusLabel(normalized.phase, lang), normalized.taskID, codingAgentProgressMetaText(normalized, lang), normalized.title].filter(Boolean).join(" | ");
+    return [agentLabel, codingAgentProgressStatusText(normalized, lang), normalized.taskID, codingAgentProgressMetaText(normalized, lang), normalized.title].filter(Boolean).join(" | ");
 }
 
 export function codingAgentVariantDisplayText(progress: CodingAgentProgress, lang: string, variant: CodingAgentStatusVariant): string {
@@ -419,13 +472,13 @@ export function codingAgentVariantDisplayText(progress: CodingAgentProgress, lan
     const normalized = normalizeCodingAgentProgress(progress);
     const agentLabel = lang.startsWith("zh") ? "\u7f16\u7a0b\u667a\u80fd\u4f53" : "Coding Agent";
     const taskStatusLabel = lang.startsWith("zh") ? "\u4efb\u52a1\u72b6\u6001" : "Task status";
-    return [agentLabel, taskStatusLabel, codingAgentStatusLabel(normalized.phase, lang), normalized.taskID, codingAgentProgressMetaText(normalized, lang), normalized.title, codingAgentFilePreviewText(normalized, lang)].filter(Boolean).join(" | ");
+    return [agentLabel, taskStatusLabel, codingAgentProgressStatusText(normalized, lang), normalized.taskID, codingAgentProgressMetaText(normalized, lang), normalized.title, codingAgentFilePreviewText(normalized, lang)].filter(Boolean).join(" | ");
 }
 
 export function codingAgentCompactText(progress: CodingAgentProgress, lang: string): string {
     const normalized = normalizeCodingAgentProgress(progress);
     const agentLabel = lang.startsWith("zh") ? "\u7f16\u7a0b\u667a\u80fd\u4f53" : "Coding Agent";
-    return [agentLabel, codingAgentStatusLabel(normalized.phase, lang), normalized.taskID, codingAgentProgressMetaText(normalized, lang)].filter(Boolean).join(" | ");
+    return [agentLabel, codingAgentProgressStatusText(normalized, lang), normalized.taskID, codingAgentProgressMetaText(normalized, lang)].filter(Boolean).join(" | ");
 }
 
 export function codingAgentProgressMetaText(progress: CodingAgentProgress, lang: string): string | undefined {

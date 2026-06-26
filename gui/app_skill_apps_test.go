@@ -379,6 +379,76 @@ func TestSaveMaclawAppDefinitionForSkillWritesEnterpriseAppFile(t *testing.T) {
 	}
 }
 
+func TestListSkillAppManifestsReadsEnterpriseAppDefinition(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "expense-super-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# Expense approval super skill\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "maclaw.app.json"), []byte(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"installUnit": "enterprise_app_pack",
+		"app": {
+			"id": "expense-approval",
+			"name": "Expense Approval",
+			"kind": "enterprise_approval_app",
+			"binding": {
+				"appSkill": {"id": "expense-super-skill", "version": "1.0.0"},
+				"dependencies": {"skills": [{"id": "expense-workflow", "kind": "workflow_skill", "version": "2.0.0", "required": true, "source": "hub"}]},
+				"ui": {"schema": "maclaw.app.ui.v1", "entry": "approval_workspace", "layouts": {"approval_workspace": {"template": "classic_split", "primaryRegion": "center", "outputRegion": "bottom", "regions": [{"id": "request_form", "role": "input", "placement": "center"}, {"id": "result_panel", "role": "output", "placement": "bottom"}]}}},
+				"mis": {"approvalBindings": [{"event": "expense.submitted", "workflowSkillId": "expense-workflow", "workflowVersion": "2.0.0", "objectRole": "expense_report"}]}
+			},
+			"governance": {
+				"testEvidence": {"runId": "run-expense-1", "definitionHash": "hash-expense-1", "approvalInstance": {"instanceId": "wf-expense-1", "status": "approved", "currentNode": "expense.result", "workflowSkillId": "expense-workflow", "businessStatus": "finance_approved", "resultStatus": "approved", "resultPayload": {"approval_result": "approved"}}}
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatalf("WriteFile maclaw.app.json: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "expense-super-skill", SkillDir: skillDir, Status: "active"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	entries := app.ListSkillAppManifests()
+	if len(entries) != 1 {
+		t.Fatalf("ListSkillAppManifests len=%d want 1: %#v", len(entries), entries)
+	}
+	got := entries[0]
+	if got.ID != "expense-approval" || got.SkillID != "expense-super-skill" || got.Kind != "enterprise_approval_app" || got.AppDefinitionFile != "maclaw.app.json" {
+		t.Fatalf("unexpected enterprise app discovery entry: %#v", got)
+	}
+	if got.AppDefinition == nil {
+		t.Fatalf("enterprise app discovery should include full app definition: %#v", got)
+	}
+	appObj := got.AppDefinition["app"].(map[string]interface{})
+	binding := appObj["binding"].(map[string]interface{})
+	ui := binding["ui"].(map[string]interface{})
+	layout := ui["layouts"].(map[string]interface{})["approval_workspace"].(map[string]interface{})
+	if layout["primaryRegion"] != "center" || layout["outputRegion"] != "bottom" {
+		t.Fatalf("enterprise app discovery should preserve dynamic layout: %#v", layout)
+	}
+	governance := appObj["governance"].(map[string]interface{})
+	evidence := governance["testEvidence"].(map[string]interface{})
+	approvalInstance := evidence["approvalInstance"].(map[string]interface{})
+	if approvalInstance["workflowSkillId"] != "expense-workflow" || approvalInstance["resultPayload"].(map[string]interface{})["approval_result"] != "approved" {
+		t.Fatalf("enterprise app discovery should preserve approval evidence: %#v", evidence)
+	}
+}
+
 func TestSaveMaclawAppDefinitionForSkillUpdatesMaclawAppsManifestEntry(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

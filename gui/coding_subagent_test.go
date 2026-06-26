@@ -3787,6 +3787,47 @@ func TestAppendSubAgentQualityFailure(t *testing.T) {
 	}
 }
 
+func TestUnresolvedFailedSubAgentCommandsRequireLaterEquivalentRealSuccess(t *testing.T) {
+	commands := []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", Succeeded: false, Summary: "FAIL", seq: 1},
+		{Command: "go test ./api", Succeeded: true, Summary: "ok", seq: 2},
+	}
+	unresolved := unresolvedFailedSubAgentCommands(commands)
+	if len(unresolved) != 1 || unresolved[0].Command != "go test ./gui" {
+		t.Fatalf("different successful command should not resolve failed command, got %#v", unresolved)
+	}
+
+	commands = append(commands, CodingSubAgentCommandResult{Command: "go   test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3})
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("later equivalent real success should resolve failed command, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: "pytest tests", Succeeded: false, Summary: "FAIL", seq: 1},
+		{Command: "pytest tests", Succeeded: true, Summary: "no tests collected in 0.01s", seq: 2},
+	}
+	unresolved = unresolvedFailedSubAgentCommands(commands)
+	if len(unresolved) != 2 {
+		t.Fatalf("empty-success verification should not resolve failed command and should remain actionable, got %#v", unresolved)
+	}
+}
+
+func TestUnresolvedFailedSubAgentDynamicToolsRequireLaterSameTargetSuccess(t *testing.T) {
+	tools := []CodingSubAgentDynamicToolResult{
+		{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: false, Summary: "browser closed", seq: 1},
+		{Tool: "call_mcp_tool", Name: "browser/open", Succeeded: true, Summary: "opened", seq: 2},
+	}
+	unresolved := unresolvedFailedSubAgentDynamicTools(tools)
+	if len(unresolved) != 1 || unresolved[0].Name != "browser/screenshot" {
+		t.Fatalf("different successful dynamic tool target should not resolve failed target, got %#v", unresolved)
+	}
+
+	tools = append(tools, CodingSubAgentDynamicToolResult{Tool: "call_mcp_tool", Name: " browser/screenshot ", Succeeded: true, Summary: "captured", seq: 3})
+	if unresolved := unresolvedFailedSubAgentDynamicTools(tools); len(unresolved) != 0 {
+		t.Fatalf("later same dynamic tool target success should resolve failed target, got %#v", unresolved)
+	}
+}
+
 func TestCodingSubAgentCodeGraphCommandCountsAsExploration(t *testing.T) {
 	project := t.TempDir()
 	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
