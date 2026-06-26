@@ -21,6 +21,17 @@ import (
 
 var recentTaskForkMu sync.Mutex
 
+const (
+	taskManagementTag        = "task_management"
+	taskUserCreatedTag       = "task_user_created"
+	taskUserSavedTag         = "task_user_saved"
+	taskForkedTag            = "forked_task"
+	taskLegacyManualTag      = "manual_task"
+	taskLegacyRecentTag      = "recent_task"
+	taskSourceTagPrefix      = "source:"
+	taskSavedConversationTag = "saved_conversation"
+)
+
 func normalizeProjectSessionPath(projectPath string) string {
 	projectPath = strings.TrimSpace(projectPath)
 	if projectPath == "" {
@@ -181,6 +192,57 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 	return results
 }
 
+// ListTasks returns the user-visible task management list. Unlike SearchProjects,
+// this intentionally excludes automatic project/memory sediment and fork rows.
+func (a *App) ListTasks(limit int) []ProjectSearchResult {
+	return a.SearchTasks("", limit)
+}
+
+// SearchTasks searches only explicit task-management records.
+func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return nil
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	searchLimit := limit * 4
+	if searchLimit < 50 {
+		searchLimit = 50
+	}
+	var records []memory.ProjectRecord
+	if strings.TrimSpace(query) == "" {
+		records = pi.ListRecent(searchLimit)
+	} else {
+		records = pi.Search(query, searchLimit)
+	}
+	scenesByPath := projectSceneMap(a.memoryStore.SceneIndex(searchLimit * 2))
+	results := make([]ProjectSearchResult, 0, len(records))
+	for _, rec := range records {
+		if !isTaskManagementRecord(rec) {
+			continue
+		}
+		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		result := projectRecordToSearchResult(pi, rec)
+		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
+			enrichProjectSearchResultWithScene(&result, scene)
+		}
+		result.ActiveWorkflow = a.activeWorkflowForProject(projectWorkflowProjectPathForRecord(rec))
+		results = append(results, result)
+		if len(results) >= limit {
+			break
+		}
+	}
+	return results
+}
+
 func collapseRecentTaskForkRecords(records []memory.ProjectRecord) []memory.ProjectRecord {
 	if len(records) <= 1 {
 		return records
@@ -213,20 +275,20 @@ func collapseRecentTaskForkRecords(records []memory.ProjectRecord) []memory.Proj
 }
 
 func recentTaskLineageKey(rec memory.ProjectRecord) string {
-	if !projectRecordHasTag(rec, "forked_task") {
+	if !projectRecordHasTag(rec, taskForkedTag) {
 		return normalizeRecentTaskPathKey(rec.ProjectPath)
 	}
 	for _, tag := range rec.Tags {
-		if strings.HasPrefix(tag, "source:") {
-			return normalizeRecentTaskPathKey(strings.TrimPrefix(tag, "source:"))
+		if strings.HasPrefix(tag, taskSourceTagPrefix) {
+			return normalizeRecentTaskPathKey(strings.TrimPrefix(tag, taskSourceTagPrefix))
 		}
 	}
 	return normalizeRecentTaskPathKey(rec.ProjectPath)
 }
 
 func preferRecentTaskRecord(candidate, current memory.ProjectRecord) bool {
-	candidateFork := projectRecordHasTag(candidate, "forked_task")
-	currentFork := projectRecordHasTag(current, "forked_task")
+	candidateFork := projectRecordHasTag(candidate, taskForkedTag)
+	currentFork := projectRecordHasTag(current, taskForkedTag)
 	if candidateFork != currentFork {
 		return candidateFork
 	}
@@ -416,6 +478,11 @@ func (a *App) CreateRecentTask(name string) ProjectSearchResult {
 	return a.CreateRecentTaskWithWorkingDir(name, "")
 }
 
+// CreateTask creates a user-visible task-management record.
+func (a *App) CreateTask(name, workingDir string) ProjectSearchResult {
+	return a.CreateRecentTaskWithWorkingDir(name, workingDir)
+}
+
 // CreateRecentTaskWithWorkingDir creates a standalone task record with an
 // optional execution working directory.
 func (a *App) CreateRecentTaskWithWorkingDir(name, workingDir string) ProjectSearchResult {
@@ -423,7 +490,93 @@ func (a *App) CreateRecentTaskWithWorkingDir(name, workingDir string) ProjectSea
 	if taskName == "" {
 		return ProjectSearchResult{}
 	}
-	return a.createRecentTaskRecordWithWorkingDir(taskName, "", nil, normalizeRecentTaskWorkingDir(workingDir), false)
+	return a.createRecentTaskRecordWithWorkingDir(taskName, "", []string{taskManagementTag, taskUserCreatedTag}, normalizeRecentTaskWorkingDir(workingDir), false)
+}
+
+// SaveCurrentChatAsTask saves the current main assistant conversation as a
+// task-management entry that can be reopened in a project tab later.
+func (a *App) SaveCurrentChatAsTask(name string) ProjectSearchResult {
+	taskName := normalizeRecentTaskName(name)
+	if taskName == "" {
+		taskName = a.SuggestCurrentTaskName()
+	}
+	if taskName == "" {
+		taskName = "Saved task"
+	}
+	content := fmt.Sprintf("# %s\n\nSaved from current main assistant conversation.\nSaved at: %s", recentTaskDisplayTitle(taskName), time.Now().Format(time.RFC3339))
+	workingDir := a.currentTaskManagementWorkingDir()
+	created := a.createRecentTaskRecordWithWorkingDir(taskName, content, []string{taskManagementTag, taskUserSavedTag, taskSavedConversationTag}, workingDir, false)
+	if created.ProjectPath == "" {
+		return created
+	}
+	a.saveCurrentConversationForTask(created.ProjectPath, workingDir)
+	return created
+}
+
+func (a *App) saveCurrentConversationForTask(taskProjectPath, executionProjectPath string) {
+	taskProjectPath = normalizeProjectSessionPath(taskProjectPath)
+	executionProjectPath = normalizeProjectSessionPath(executionProjectPath)
+	if taskProjectPath == "" {
+		return
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil || handler.memory == nil {
+		return
+	}
+	sourceEntries := handler.memory.Load(desktopUserID)
+	if len(sourceEntries) == 0 {
+		return
+	}
+	handler.memory.Save(projectSessionOwnerID(taskProjectPath), sourceEntries)
+	log.Printf("[project_search] SaveCurrentChatAsTask copied entries=%d task=%q execution_project=%q", len(sourceEntries), taskProjectPath, executionProjectPath)
+}
+
+// SuggestCurrentTaskName derives a short default name from the current main
+// assistant conversation. The frontend lets the user edit this before saving.
+func (a *App) SuggestCurrentTaskName() string {
+	a.ensureInteractionInfra()
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return "Saved task"
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil || handler.memory == nil {
+		return "Saved task"
+	}
+	entries := handler.memory.Load(desktopUserID)
+	for _, entry := range entries {
+		role := strings.TrimSpace(strings.ToLower(entry.Role))
+		if role != "user" {
+			continue
+		}
+		content := stringifyProjectConversationContent(entry.Content)
+		if content == "" {
+			continue
+		}
+		return recentTaskDisplayTitle(content)
+	}
+	return "Saved task"
+}
+
+// ResumeTask keeps a task-management named API for callers that should not
+// depend on the older project-search terminology.
+func (a *App) ResumeTask(taskPath string) string {
+	return a.ResumeProject(taskPath)
+}
+
+func (a *App) currentTaskManagementWorkingDir() string {
+	if a == nil {
+		return ""
+	}
+	if workflowDir := normalizeRecentTaskWorkingDir(a.GetWorkflowWorkingDir()); workflowDir != "" {
+		return workflowDir
+	}
+	return normalizeRecentTaskWorkingDir(a.GetCurrentProjectPath())
 }
 
 // ForkRecentTask returns the independent task/session for a recent task. The
@@ -458,7 +611,7 @@ func (a *App) ForkRecentTask(sourceProjectPath string) ProjectSearchResult {
 			return ProjectSearchResult{}
 		}
 		if pi != nil {
-			if rec := pi.Get(sourceProjectPath); rec != nil && projectRecordHasTag(*rec, "forked_task") {
+			if rec := pi.Get(sourceProjectPath); rec != nil && projectRecordHasTag(*rec, taskForkedTag) {
 				a.ensureRecentTaskWorkspace(rec.ProjectPath, rec.Name)
 				log.Printf("[project_search] ForkRecentTask reuse existing fork source=%q fork=%q reason=source_is_fork elapsed=%s", sourceProjectPath, rec.ProjectPath, time.Since(started).Round(time.Millisecond))
 				return projectRecordToSearchResult(pi, *rec)
@@ -483,8 +636,8 @@ func (a *App) ForkRecentTask(sourceProjectPath string) ProjectSearchResult {
 		}
 
 		workingDir := a.recentTaskWorkingDir(sourceProjectPath)
-		content := fmt.Sprintf("# %s\n\nForked from recent task.\nSource task: %s\nFork ID: %d", taskName, sourceProjectPath, time.Now().UnixNano())
-		created := a.createRecentTaskRecordWithWorkingDir(taskName, content, []string{"forked_task", "source:" + sourceProjectPath}, workingDir, false)
+		content := fmt.Sprintf("# %s\n\nOpened from task management.\nSource task: %s\nFork ID: %d", taskName, sourceProjectPath, time.Now().UnixNano())
+		created := a.createRecentTaskRecordWithWorkingDir(taskName, content, []string{taskForkedTag, taskSourceTagPrefix + sourceProjectPath}, workingDir, false)
 		if created.ProjectPath == "" {
 			log.Printf("[project_search] ForkRecentTask create failed source=%q elapsed=%s", sourceProjectPath, time.Since(started).Round(time.Millisecond))
 			return created
@@ -516,14 +669,14 @@ func findVisibleForkForSource(pi *memory.ProjectIndex, sourceProjectPath string)
 		if rec.ProjectPath == sourceProjectPath {
 			continue
 		}
-		if !projectRecordHasTag(rec, "forked_task") {
+		if !projectRecordHasTag(rec, taskForkedTag) {
 			continue
 		}
 		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
 			continue
 		}
 		for _, tag := range rec.Tags {
-			if strings.HasPrefix(tag, "source:") && normalizeRecentTaskPathKey(strings.TrimPrefix(tag, "source:")) == sourceKey {
+			if strings.HasPrefix(tag, taskSourceTagPrefix) && normalizeRecentTaskPathKey(strings.TrimPrefix(tag, taskSourceTagPrefix)) == sourceKey {
 				clone := rec
 				return &clone
 			}
@@ -542,6 +695,10 @@ func normalizeRecentTaskWorkingDir(workingDir string) string {
 	normalized, _, err := normalizeWorkflowProjectPath(workingDir)
 	if err != nil {
 		log.Printf("[project_search] invalid recent task working directory %q: %v", workingDir, err)
+		return ""
+	}
+	if !filepath.IsAbs(normalized) {
+		log.Printf("[project_search] invalid recent task working directory %q: path must be absolute", workingDir)
 		return ""
 	}
 	return normalizeProjectSessionPath(normalized)
@@ -592,6 +749,21 @@ func (a *App) recentTaskExecutionProjectPath(projectPath string) string {
 	return projectPath
 }
 
+func (a *App) ensureRecentTaskExecutionWorkingDir(taskProjectPath, executionProjectPath string) error {
+	taskProjectPath = normalizeProjectSessionPath(taskProjectPath)
+	executionProjectPath, created, err := ensureAbsoluteDirectoryPath(executionProjectPath, "recent task working directory")
+	if err != nil {
+		return err
+	}
+	if taskProjectPath == "" || executionProjectPath == "" || taskProjectPath == executionProjectPath {
+		return nil
+	}
+	if created {
+		log.Printf("[project_search] created recent task working directory task=%q working_dir=%q", taskProjectPath, executionProjectPath)
+	}
+	return nil
+}
+
 func projectRecordHasTag(rec memory.ProjectRecord, target string) bool {
 	target = strings.TrimSpace(target)
 	if target == "" {
@@ -605,13 +777,27 @@ func projectRecordHasTag(rec memory.ProjectRecord, target string) bool {
 	return false
 }
 
+func isTaskManagementRecord(rec memory.ProjectRecord) bool {
+	if projectRecordHasTag(rec, taskForkedTag) {
+		return false
+	}
+	if projectRecordHasTag(rec, taskManagementTag) ||
+		projectRecordHasTag(rec, taskUserCreatedTag) ||
+		projectRecordHasTag(rec, taskUserSavedTag) {
+		return true
+	}
+	// Backward-compatible display for tasks the user explicitly created before
+	// task-management tags existed.
+	return projectRecordHasTag(rec, taskLegacyManualTag) && projectRecordHasTag(rec, taskLegacyRecentTag)
+}
+
 func projectWorkflowProjectPathForRecord(rec memory.ProjectRecord) string {
-	if !projectRecordHasTag(rec, "forked_task") {
+	if !projectRecordHasTag(rec, taskForkedTag) {
 		return rec.ProjectPath
 	}
 	for _, tag := range rec.Tags {
-		if strings.HasPrefix(tag, "source:") {
-			if source := strings.TrimSpace(strings.TrimPrefix(tag, "source:")); source != "" {
+		if strings.HasPrefix(tag, taskSourceTagPrefix) {
+			if source := strings.TrimSpace(strings.TrimPrefix(tag, taskSourceTagPrefix)); source != "" {
 				return source
 			}
 		}
@@ -751,7 +937,7 @@ func (a *App) createRecentTaskRecordWithWorkingDir(taskName, taskContent string,
 	}
 	taskFile := filepath.Join(taskDir, "task.md")
 	if strings.TrimSpace(taskContent) == "" {
-		taskContent = fmt.Sprintf("# %s\n\n%s\n\nCreated from recent tasks.\nTask ID: %d", displayTitle, taskName, now.UnixNano())
+		taskContent = fmt.Sprintf("# %s\n\n%s\n\nCreated from task management.\nTask ID: %d", displayTitle, taskName, now.UnixNano())
 	}
 	if workingDir != "" && !strings.Contains(taskContent, "\nWorking directory:") {
 		taskContent += "\nWorking directory: " + workingDir
@@ -760,7 +946,7 @@ func (a *App) createRecentTaskRecordWithWorkingDir(taskName, taskContent string,
 		log.Printf("[project_search] CreateRecentTask write task file failed: %v", err)
 		return ProjectSearchResult{}
 	}
-	tags := append([]string{"manual_task", "recent_task", taskDir}, extraTags...)
+	tags := append([]string{taskLegacyManualTag, taskLegacyRecentTag, taskDir}, extraTags...)
 	if workingDir != "" {
 		tags = append(tags, recentTaskWorkingDirTag(workingDir))
 	}
@@ -1845,7 +2031,7 @@ func (a *App) SendMessageForTab(tabID, text, projectPathHint string) (*IMAgentRe
 	// and all downstream components isolate by userID.
 	return a.SendAIAssistantMessage(AIAssistantSendRequest{
 		Text:         text,
-		ProjectPath:  executionProjectPath,
+		ProjectPath:  projectPath,
 		EventScopeID: tabID,
 	})
 }

@@ -321,14 +321,19 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	*opts.History = postTurn.History
 	opts.Telemetry.ApplyPostLLMTurn(postTurn)
 
-	// V2 workflow doc buffer: accumulate non-empty text output from each iteration
+	// V2 workflow doc buffer: accumulate non-empty final text output
 	// so captureWorkflowDocAfterAgentLoop can use the complete accumulated text
 	// instead of just resp.Text (which only contains the last iteration's output).
+	// Tool-call rounds often contain process narration ("I'll inspect/write..."),
+	// so exclude them from the phase document buffer.
 	// Strip thinking tags before accumulating — they are not part of the document.
-	if opts.Context != nil && opts.Context.WorkflowAgentLoop && msgContent != "" {
+	if opts.Context != nil && opts.Context.WorkflowAgentLoop && msgContent != "" && len(choice.Message.ToolCalls) == 0 {
 		cleaned := stripThinkingTags(msgContent)
 		if opts.Context.WorkflowDocPhase {
 			cleaned = v2.SanitizePhaseOutput(opts.Context.WorkflowPhaseID, msgContent)
+			if !workflowDocTextLooksComplete(opts.Context.WorkflowPhaseID, cleaned) {
+				cleaned = ""
+			}
 		}
 		if cleaned != "" {
 			if opts.Context.WorkflowDocBuffer.Len() > 0 {
@@ -356,10 +361,10 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		currentLen := len([]rune(trimmed))
 
 		shouldFinalize := false
-		if currentLen >= 200 {
+		if currentLen >= 200 && workflowDocTextLooksComplete(opts.Context.WorkflowPhaseID, trimmed) {
 			// Condition 1: substantial output in current iteration
 			shouldFinalize = true
-		} else if bufLen >= 500 && opts.Iteration > 0 {
+		} else if bufLen >= 500 && opts.Iteration > 0 && workflowDocTextLooksComplete(opts.Context.WorkflowPhaseID, opts.Context.WorkflowDocBuffer.String()) {
 			// Condition 2: enough accumulated across iterations, LLM is wrapping up
 			shouldFinalize = true
 		}

@@ -186,17 +186,34 @@ func TestArtifactWorkflowPhaseDoesNotExposeProjectMutationTools(t *testing.T) {
 		toolDef("write_file", "write file", nil, nil),
 		toolDef("edit_file", "edit file", nil, nil),
 		toolDef("task", "task", nil, nil),
+		toolDef("craft_tool", "craft tool", nil, nil),
+		toolDef("manage_skill", "manage skill", nil, nil),
+		toolDef("search_and_install_skill", "search and install skill", nil, nil),
 		toolDef("office", "office", nil, nil),
 		toolDef("generate_pdf", "generate pdf", nil, nil),
 		toolDef("send_file", "send file", nil, nil),
 	})
 
+	catalog := []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("task", "task", nil, nil),
+		toolDef("craft_tool", "craft tool", nil, nil),
+		toolDef("manage_skill", "manage skill", nil, nil),
+		toolDef("search_and_install_skill", "search and install skill", nil, nil),
+		toolDef("office", "office", nil, nil),
+		toolDef("generate_pdf", "generate pdf", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+	}
 	filtered := handler.applyWorkflowToolFilterWithCatalog(userID,
 		[]map[string]interface{}{toolDef("task", "task", nil, nil), toolDef("edit_file", "edit file", nil, nil)},
-		handler.getTools(),
+		catalog,
 	)
 	names := toolNameSetForWorkflowFilterTest(filtered)
-	for _, name := range []string{"write_file", "office", "generate_pdf", "send_file"} {
+	for _, name := range []string{"write_file", "manage_skill", "search_and_install_skill", "craft_tool", "office", "generate_pdf", "send_file"} {
 		if !names[name] {
 			t.Fatalf("artifact phase should expose %s, got %#v", name, names)
 		}
@@ -229,6 +246,79 @@ func TestArtifactWorkflowPhaseDoesNotExposeProjectMutationTools(t *testing.T) {
 	}
 	if allowed, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "bash", `{"command":"touch src/main.go"}`); allowed {
 		t.Fatal("artifact phase should reject mutating bash")
+	}
+}
+
+func TestPresentationPPTGenerationPhaseUsesArtifactToolPolicy(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "presentation-ppt-generation-artifact-policy-user"
+	if _, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowPresentationDesign,
+		Summary:  "make a Beijing celebration deck",
+	}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if wf := handler.getWorkflowV2(); wf == nil || wf.machine == nil {
+		t.Fatal("workflow V2 machine should be available")
+	} else {
+		wf.machine.SetActivePhaseForTest(userID, 3)
+	}
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("task", "task", nil, nil),
+		toolDef("craft_tool", "craft tool", nil, nil),
+		toolDef("manage_skill", "manage skill", nil, nil),
+		toolDef("search_and_install_skill", "search and install skill", nil, nil),
+		toolDef("office", "office", nil, nil),
+		toolDef("generate_pdf", "generate pdf", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+	})
+
+	filtered := handler.applyWorkflowToolFilterWithCatalog(userID,
+		[]map[string]interface{}{toolDef("task", "task", nil, nil), toolDef("edit_file", "edit file", nil, nil)},
+		handler.getTools(),
+	)
+	names := toolNameSetForWorkflowFilterTest(filtered)
+	for _, name := range []string{"write_file", "manage_skill", "search_and_install_skill", "craft_tool", "office", "generate_pdf", "send_file"} {
+		if !names[name] {
+			t.Fatalf("ppt_generation phase should expose %s, got %#v", name, names)
+		}
+	}
+	for _, name := range []string{"edit_file", "task", "bash"} {
+		if names[name] {
+			t.Fatalf("ppt_generation phase should not expose %s, got %#v", name, names)
+		}
+	}
+	if allowed, reason := handler.isWorkflowToolCallAllowedForOwner(userID, "write_file", `{"path":"deck.pptx","content":"body"}`); !allowed {
+		t.Fatalf("ppt_generation write_file should allow artifact output: %s", reason)
+	}
+	if allowed, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "write_file", `{"path":"src/main.go","content":"package main"}`); allowed {
+		t.Fatal("ppt_generation phase should reject source writes")
+	}
+	if allowed, reason := handler.isWorkflowToolCallAllowedForOwner(userID, "manage_skill", `{"action":"run","name":"pptx-generator","args":{"output":"deck.pptx"}}`); !allowed {
+		t.Fatalf("ppt_generation manage_skill should allow artifact skills: %s", reason)
+	}
+	if allowed, reason := handler.isWorkflowToolCallAllowedForOwner(userID, "search_and_install_skill", `{"query":"pptx generator skill"}`); !allowed {
+		t.Fatalf("ppt_generation search_and_install_skill should allow artifact skill discovery: %s", reason)
+	}
+	if allowed, reason := handler.isWorkflowToolCallAllowedForOwner(userID, "craft_tool", `{"name":"pptx_builder","description":"generate a pptx artifact"}`); !allowed {
+		t.Fatalf("ppt_generation craft_tool should allow artifact tool creation: %s", reason)
+	}
+	if allowed, reason := handler.isWorkflowToolCallAllowedForOwner(userID, "craft_tool", `{"task":"generate report.csv artifact"}`); !allowed {
+		t.Fatalf("ppt_generation craft_tool should allow non-source artifact tasks: %s", reason)
+	}
+	if allowed, reason := handler.isWorkflowToolCallAllowedForOwner(userID, "craft_tool", `{"task":"read src/main.go and generate an architecture deck"}`); !allowed {
+		t.Fatalf("ppt_generation craft_tool should allow read-only source references for artifact generation: %s", reason)
+	}
+	if allowed, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "craft_tool", `{"task":"write src/main.go and update the app"}`); allowed {
+		t.Fatal("ppt_generation craft_tool should reject project mutation tasks")
+	}
+	if allowed, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "craft_tool", `{"task":"写入src/main.go并更新应用"}`); allowed {
+		t.Fatal("ppt_generation craft_tool should reject compact project mutation references")
 	}
 }
 

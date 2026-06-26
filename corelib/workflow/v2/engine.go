@@ -178,34 +178,7 @@ func (r *WorkflowRegistry) registerBuiltinTemplates() {
 		}
 		phases := make([]PhaseSpec, 0, len(v2Tmpl.Phases))
 		for _, phase := range v2Tmpl.Phases {
-			var schema *PhaseInputSchemaSpec
-			if phase.InputSchema != nil {
-				fields := make([]PhaseInputFieldSpec, 0, len(phase.InputSchema.Fields))
-				for _, field := range phase.InputSchema.Fields {
-					fields = append(fields, PhaseInputFieldSpec{
-						Name:        field.Name,
-						Label:       field.Label,
-						Type:        field.Type,
-						Required:    field.Required,
-						Description: field.Description,
-						Placeholder: field.Placeholder,
-						Options:     clonePhaseInputOptions(field.Options),
-						Default:     field.Default,
-					})
-				}
-				schema = &PhaseInputSchemaSpec{
-					Title:       phase.InputSchema.Title,
-					Description: phase.InputSchema.Description,
-					Fields:      fields,
-				}
-			}
-			phases = append(phases, PhaseSpec{
-				ID:           phase.ID,
-				Name:         phase.Name,
-				NeedsConfirm: phase.NeedsConfirm,
-				ToolPolicy:   ToolFilterPolicy(phase.ToolPolicy),
-				InputSchema:  schema,
-			})
+			phases = append(phases, phaseTemplateToSpec(WorkflowType(v2Tmpl.Type), phase))
 		}
 		var requiresInput *InputRequirement
 		if len(v2Tmpl.Phases) > 0 && v2Tmpl.Phases[0].InputSchema != nil && v2Tmpl.Phases[0].InputSchema.Title != "" {
@@ -237,6 +210,112 @@ func clonePhaseInputOptions(options []PhaseInputOption) []PhaseInputOptionSpec {
 		})
 	}
 	return out
+}
+
+func phaseTemplateToSpec(workflowType WorkflowType, phase PhaseTemplate) PhaseSpec {
+	kind, mutationScope, _ := phaseMetadataSemantics(workflowType, CanonicalPhaseID(phase.ID))
+	spec := PhaseSpec{
+		ID:            phase.ID,
+		Name:          phase.Name,
+		NeedsConfirm:  phase.NeedsConfirm,
+		ToolPolicy:    ToolFilterPolicy(phase.ToolPolicy),
+		Kind:          firstPhaseKind(phase.Kind, kind),
+		MutationScope: firstMutationScope(phase.MutationScope, mutationScope),
+	}
+	spec.InputSchema = phaseInputSchemaToSpec(phase.InputSchema)
+	return spec
+}
+
+func phaseSpecToTemplate(workflowType WorkflowType, spec PhaseSpec) PhaseTemplate {
+	kind, mutationScope, _ := phaseMetadataSemantics(workflowType, CanonicalPhaseID(spec.ID))
+	tmpl := PhaseTemplate{
+		ID:            spec.ID,
+		Name:          spec.Name,
+		NeedsConfirm:  spec.NeedsConfirm,
+		ToolPolicy:    ToolPolicy(spec.ToolPolicy),
+		Kind:          firstPhaseKind(spec.Kind, kind),
+		MutationScope: firstMutationScope(spec.MutationScope, mutationScope),
+	}
+	tmpl.InputSchema = phaseInputSchemaFromSpec(spec.InputSchema)
+	return tmpl
+}
+
+func clonePhaseInputOptionsBack(options []PhaseInputOptionSpec) []PhaseInputOption {
+	if len(options) == 0 {
+		return nil
+	}
+	out := make([]PhaseInputOption, 0, len(options))
+	for _, option := range options {
+		out = append(out, PhaseInputOption{
+			Label: option.Label,
+			Value: option.Value,
+		})
+	}
+	return out
+}
+
+func phaseInputFieldToSpec(field PhaseInputField) PhaseInputFieldSpec {
+	return PhaseInputFieldSpec{
+		Name:        field.Name,
+		Label:       field.Label,
+		Type:        field.Type,
+		Required:    field.Required,
+		Description: field.Description,
+		Placeholder: field.Placeholder,
+		Options:     clonePhaseInputOptions(field.Options),
+		Default:     field.Default,
+		Reusable:    field.Reusable,
+	}
+}
+
+func phaseInputFieldFromSpec(field PhaseInputFieldSpec) PhaseInputField {
+	return PhaseInputField{
+		Name:        field.Name,
+		Label:       field.Label,
+		Type:        field.Type,
+		Required:    field.Required,
+		Description: field.Description,
+		Placeholder: field.Placeholder,
+		Options:     clonePhaseInputOptionsBack(field.Options),
+		Default:     field.Default,
+		Reusable:    field.Reusable,
+	}
+}
+
+func phaseInputSchemaToSpec(schema *PhaseInputSchema) *PhaseInputSchemaSpec {
+	if schema == nil {
+		return nil
+	}
+	spec := &PhaseInputSchemaSpec{
+		Title:         schema.Title,
+		Description:   schema.Description,
+		Fields:        make([]PhaseInputFieldSpec, 0, len(schema.Fields)),
+		Variants:      make([]PhaseInputVariantSpec, 0, len(schema.Variants)),
+		AcceptsResume: schema.AcceptsResume,
+	}
+	for _, field := range schema.Fields {
+		spec.Fields = append(spec.Fields, phaseInputFieldToSpec(field))
+	}
+	for _, variant := range schema.Variants {
+		vs := PhaseInputVariantSpec{
+			ID:     variant.ID,
+			Label:  variant.Label,
+			Fields: make([]PhaseInputFieldSpec, 0, len(variant.Fields)),
+		}
+		for _, field := range variant.Fields {
+			vs.Fields = append(vs.Fields, phaseInputFieldToSpec(field))
+		}
+		spec.Variants = append(spec.Variants, vs)
+	}
+	if schema.AcceptsSupplementary != nil {
+		spec.AcceptsSupplementary = &SupplementaryDocConfigSpec{
+			Label:         schema.AcceptsSupplementary.Label,
+			Description:   schema.AcceptsSupplementary.Description,
+			MaxFiles:      schema.AcceptsSupplementary.MaxFiles,
+			AcceptedTypes: append([]string(nil), schema.AcceptsSupplementary.AcceptedTypes...),
+		}
+	}
+	return spec
 }
 
 func (r *WorkflowRegistry) Register(tmpl *TemplateSpec) error {
@@ -375,12 +454,7 @@ func (e *WorkflowEngine) StartWorkflowWithOptions(userID string, intent Structur
 				// Register the template in V2 registry from V1 TemplateSpec.
 				v2Phases := make([]PhaseTemplate, 0, len(tmpl.Phases))
 				for _, p := range tmpl.Phases {
-					v2Phases = append(v2Phases, PhaseTemplate{
-						ID:           p.ID,
-						Name:         p.Name,
-						NeedsConfirm: p.NeedsConfirm,
-						ToolPolicy:   ToolPolicy(p.ToolPolicy),
-					})
+					v2Phases = append(v2Phases, phaseSpecToTemplate(tmpl.Type, p))
 				}
 				e.machine.GetRegistry().Register(&WorkflowTemplate{
 					Type:        string(intent.Category),
@@ -891,13 +965,16 @@ func (e *WorkflowEngine) BuildPhasePrompt(userID string) string {
 		Phases:       make([]Phase, 0, len(tmpl.Phases)),
 	}
 	for i, spec := range tmpl.Phases {
+		kind, mutationScope, _ := phaseMetadataSemantics(tmpl.Type, CanonicalPhaseID(spec.ID))
 		phase := Phase{
-			ID:           spec.ID,
-			Name:         spec.Name,
-			NeedsConfirm: spec.NeedsConfirm,
-			ToolPolicy:   spec.ToolPolicy,
-			InputSchema:  phaseInputSchemaFromSpec(spec.InputSchema),
-			Output:       ws.PhaseOutputs[spec.ID],
+			ID:            spec.ID,
+			Name:          spec.Name,
+			NeedsConfirm:  spec.NeedsConfirm,
+			ToolPolicy:    spec.ToolPolicy,
+			Kind:          firstPhaseKind(spec.Kind, kind),
+			MutationScope: firstMutationScope(spec.MutationScope, mutationScope),
+			InputSchema:   phaseInputSchemaFromSpec(spec.InputSchema),
+			Output:        ws.PhaseOutputs[spec.ID],
 		}
 		switch {
 		case i < ws.PhaseIndex:
@@ -927,30 +1004,33 @@ func phaseInputSchemaFromSpec(spec *PhaseInputSchemaSpec) *PhaseInputSchema {
 		return nil
 	}
 	schema := &PhaseInputSchema{
-		Title:       spec.Title,
-		Description: spec.Description,
-		Fields:      make([]PhaseInputField, 0, len(spec.Fields)),
+		Title:         spec.Title,
+		Description:   spec.Description,
+		Fields:        make([]PhaseInputField, 0, len(spec.Fields)),
+		Variants:      make([]PhaseInputVariant, 0, len(spec.Variants)),
+		AcceptsResume: spec.AcceptsResume,
 	}
 	for _, field := range spec.Fields {
-		cloned := PhaseInputField{
-			Name:        field.Name,
-			Label:       field.Label,
-			Type:        field.Type,
-			Required:    field.Required,
-			Description: field.Description,
-			Placeholder: field.Placeholder,
-			Default:     field.Default,
+		schema.Fields = append(schema.Fields, phaseInputFieldFromSpec(field))
+	}
+	for _, variant := range spec.Variants {
+		cloned := PhaseInputVariant{
+			ID:     variant.ID,
+			Label:  variant.Label,
+			Fields: make([]PhaseInputField, 0, len(variant.Fields)),
 		}
-		if len(field.Options) > 0 {
-			cloned.Options = make([]PhaseInputOption, 0, len(field.Options))
-			for _, opt := range field.Options {
-				cloned.Options = append(cloned.Options, PhaseInputOption{
-					Label: opt.Label,
-					Value: opt.Value,
-				})
-			}
+		for _, field := range variant.Fields {
+			cloned.Fields = append(cloned.Fields, phaseInputFieldFromSpec(field))
 		}
-		schema.Fields = append(schema.Fields, cloned)
+		schema.Variants = append(schema.Variants, cloned)
+	}
+	if spec.AcceptsSupplementary != nil {
+		schema.AcceptsSupplementary = &SupplementaryDocConfig{
+			Label:         spec.AcceptsSupplementary.Label,
+			Description:   spec.AcceptsSupplementary.Description,
+			MaxFiles:      spec.AcceptsSupplementary.MaxFiles,
+			AcceptedTypes: append([]string(nil), spec.AcceptsSupplementary.AcceptedTypes...),
+		}
 	}
 	return schema
 }
@@ -960,6 +1040,9 @@ func (e *WorkflowEngine) GetPhaseToolFilter(userID string) ToolFilterPolicy {
 func (e *WorkflowEngine) GetActivePhaseToolFilter(userID string) ToolFilterPolicy {
 	ws := e.GetActiveWorkflow(userID)
 	if ws == nil {
+		return ToolFilterNone
+	}
+	if ws.PendingReviewPhaseID != "" {
 		return ToolFilterNone
 	}
 	tmpl := e.registry.Match(ws.Type)
@@ -1166,7 +1249,7 @@ func PhaseMetadata(tmpl *TemplateSpec) []PhaseMeta {
 			continue
 		}
 		seen[id] = true
-		kind, mutationScope, activatesOrchestrator := phaseMetadataSemantics(tmpl.Type, id)
+		derivedKind, derivedMutationScope, activatesOrchestrator := phaseMetadataSemantics(tmpl.Type, id)
 		toolPolicy := phase.ToolPolicy
 		if id == "tasks" && tmpl.Type == WorkflowCoding && toolPolicy == "" {
 			toolPolicy = ToolPolicyPlanning
@@ -1178,9 +1261,9 @@ func PhaseMetadata(tmpl *TemplateSpec) []PhaseMeta {
 			ExpectsDocument:       phase.NeedsConfirm,
 			NeedsConfirm:          phase.NeedsConfirm,
 			CanSkip:               phase.CanSkip,
-			Kind:                  kind,
+			Kind:                  firstPhaseKind(phase.Kind, derivedKind),
 			ToolPolicy:            toolPolicy,
-			MutationScope:         firstMutationScope(phase.MutationScope, mutationScope),
+			MutationScope:         firstMutationScope(phase.MutationScope, derivedMutationScope),
 			ActivatesOrchestrator: activatesOrchestrator,
 		})
 	}
@@ -1209,6 +1292,15 @@ func phaseMetadataSemantics(workflowType WorkflowType, phaseID string) (PhaseKin
 		}
 	}
 	return PhaseKindUnknown, MutationScopeUnknown, false
+}
+
+func firstPhaseKind(values ...PhaseKind) PhaseKind {
+	for _, value := range values {
+		if value != PhaseKindUnknown {
+			return value
+		}
+	}
+	return PhaseKindUnknown
 }
 
 func firstMutationScope(values ...MutationScope) MutationScope {

@@ -2389,12 +2389,16 @@ func (r *knowledgeShareRepo) List(ctx context.Context, filter store.KnowledgeSha
 	if !filter.IncludeDeleted {
 		where = append(where, "status <> 'deleted'")
 	}
-	if ownerUserID := strings.TrimSpace(filter.OwnerUserID); ownerUserID != "" {
+	ownerUserID := strings.TrimSpace(filter.OwnerUserID)
+	ownerUserEmail := strings.TrimSpace(filter.OwnerUserEmail)
+	if ownerUserID != "" && ownerUserEmail != "" {
+		where = append(where, "(owner_user_id = ? OR LOWER(owner_user_email) = LOWER(?))")
+		args = append(args, ownerUserID, ownerUserEmail)
+	} else if ownerUserID != "" {
 		where = append(where, "owner_user_id = ?")
 		args = append(args, ownerUserID)
-	}
-	if ownerUserEmail := strings.TrimSpace(filter.OwnerUserEmail); ownerUserEmail != "" {
-		where = append(where, "owner_user_email = ?")
+	} else if ownerUserEmail != "" {
+		where = append(where, "LOWER(owner_user_email) = LOWER(?)")
 		args = append(args, ownerUserEmail)
 	}
 	if user := strings.TrimSpace(filter.User); user != "" {

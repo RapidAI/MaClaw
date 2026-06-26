@@ -7,7 +7,7 @@ import { useCodePreviewState, type CodePreviewUIState } from "./useCodePreviewSt
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { renderMessage } from "./aiAssistantMarkdown";
-import { lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme } from "./aiAssistantPanelTheme";
+import { lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme, type Theme } from "./aiAssistantPanelTheme";
 import { getAssistantDarkScheme } from "./assistantDarkSchemes";
 import "./ensureAIAssistantPanelStyles";
 import { localizeText } from "./aiAssistantI18n";
@@ -57,6 +57,174 @@ export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
 export function canShowAssistantCodingPreviewForTab(tab: Pick<AITab, "type"> | null | undefined): boolean { return tab?.type === "local" || tab?.type === "project"; }
 
+function normalizeWorkflowPhaseStatus(status: unknown): string {
+    return String(status || "").trim().toLowerCase();
+}
+
+function isWorkflowPhaseRunningStatus(status: unknown): boolean {
+    const normalized = normalizeWorkflowPhaseStatus(status);
+    return normalized === "running" || normalized === "executing" || normalized === "active";
+}
+
+function isWorkflowPhaseTerminalStatus(status: unknown): boolean {
+    const normalized = normalizeWorkflowPhaseStatus(status);
+    return normalized === "completed" || normalized === "skipped" || normalized === "cancelled" || normalized === "canceled";
+}
+
+function WorkflowReviewInlinePrompt({
+    lang,
+    onAbort,
+    onConfirm,
+    onRequestRevision,
+    onViewDocument,
+    phaseName,
+    theme: t,
+}: {
+    lang?: string;
+    onAbort: () => void;
+    onConfirm: () => void;
+    onRequestRevision: () => void;
+    onViewDocument: () => void;
+    phaseName: string;
+    theme: Theme;
+}) {
+    const resolvedPhaseName = phaseName.trim();
+    const title = lang === "en"
+        ? `${resolvedPhaseName || "Current phase"} is waiting for review`
+        : resolvedPhaseName
+            ? `当前「${resolvedPhaseName}」等待确认`
+            : "当前阶段等待确认";
+    const description = lang === "en"
+        ? "This is not stopped. Review the workflow document and choose how to continue."
+        : "这不是停止状态。请查看工作流文档，并选择继续推进或补充修改。";
+    const viewLabel = lang === "en" ? "View document" : "查看文档";
+    const confirmLabel = lang === "en" ? "Confirm & proceed" : "确认并推进";
+    const reviseLabel = lang === "en" ? "Provide feedback" : "输入补充/修改意见";
+    const abortLabel = lang === "en" ? "Abort" : "中止";
+    const baseButtonStyle = {
+        borderRadius: 999,
+        border: `1px solid ${t.titleBarBorder}`,
+        cursor: "pointer",
+        fontSize: 12,
+        fontWeight: 700,
+        padding: "6px 10px",
+    } as const;
+
+    return (
+        <div
+            aria-live="polite"
+            data-testid="workflow-review-inline-prompt"
+            style={{
+                flexShrink: 0,
+                padding: "9px 10px 10px",
+                borderTop: `1px solid ${t.inputBarBorder}`,
+                background: `linear-gradient(135deg, color-mix(in srgb, ${t.headingColor} 12%, ${t.inputBarBg}) 0%, ${t.inputBarBg} 72%)`,
+                color: t.text,
+            }}
+        >
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ minWidth: 220, flex: "1 1 260px" }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 3 }}>{title}</div>
+                    <div style={{ color: t.textMuted, fontSize: 12 }}>{description}</div>
+                </div>
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <button
+                        type="button"
+                        onClick={onViewDocument}
+                        style={{
+                            ...baseButtonStyle,
+                            background: t.fieldBg,
+                            color: t.text,
+                        }}
+                    >
+                        {viewLabel}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={onRequestRevision}
+                        style={{ ...baseButtonStyle, background: t.fieldBg, color: t.text }}
+                    >
+                        {reviseLabel}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={onAbort}
+                        style={{ ...baseButtonStyle, background: "transparent", color: "#dc2626", borderColor: "color-mix(in srgb, #dc2626 45%, transparent)" }}
+                    >
+                        {abortLabel}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={onConfirm}
+                        style={{ ...baseButtonStyle, background: t.headingColor, borderColor: t.headingColor, color: "#fff" }}
+                    >
+                        {confirmLabel}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function WorkflowFormInlinePrompt({
+    formActive,
+    generatingDocument,
+    lang,
+    phaseName,
+    theme: t,
+}: {
+    formActive: boolean;
+    generatingDocument?: boolean;
+    lang?: string;
+    phaseName: string;
+    theme: Theme;
+}) {
+    const resolvedPhaseName = phaseName.trim();
+    const title = generatingDocument
+        ? (lang === "en" ? "Generating workflow document" : "正在生成工作流文档")
+        : formActive
+        ? (lang === "en" ? "Workflow form is ready" : "工作流表单已打开")
+        : (lang === "en" ? "Opening workflow form" : "正在打开工作流表单");
+    const description = generatingDocument
+        ? (lang === "en"
+            ? `Generating the phase document${resolvedPhaseName ? ` for ${resolvedPhaseName}` : ""}. The review controls will appear here when it is ready.`
+            : `正在生成${resolvedPhaseName ? `「${resolvedPhaseName}」` : "当前阶段"}文档，完成后会在这里显示确认推进入口。`)
+        : formActive
+        ? (lang === "en"
+            ? `Fill in the form on the right to continue${resolvedPhaseName ? `: ${resolvedPhaseName}` : "."}`
+            : `请在右侧表单填写并提交${resolvedPhaseName ? `「${resolvedPhaseName}」` : ""}，提交后会继续推进。`)
+        : (lang === "en"
+            ? `Preparing the right-side form${resolvedPhaseName ? ` for ${resolvedPhaseName}` : ""}.`
+            : `正在准备右侧表单${resolvedPhaseName ? `「${resolvedPhaseName}」` : ""}，请稍候。`);
+    const statusText = generatingDocument
+        ? (lang === "en" ? "Generating document" : "生成文档中")
+        : (lang === "en" ? "Waiting for form input" : "等待表单输入");
+
+    return (
+        <div
+            aria-live="polite"
+            data-testid="workflow-form-inline-prompt"
+            style={{
+                flexShrink: 0,
+                padding: "8px 10px 9px",
+                borderTop: `1px solid ${t.inputBarBorder}`,
+                background: t.inputBarBg,
+                color: t.text,
+                fontSize: 12,
+            }}
+        >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
+                <span style={{ fontWeight: 800 }}>{title}</span>
+                <span style={{ color: t.textMuted }}>{statusText}</span>
+            </div>
+            <div style={{ color: t.textMuted, marginBottom: 7 }}>{description}</div>
+            <div style={{ height: 3, overflow: "hidden", borderRadius: 999, background: `color-mix(in srgb, ${t.headingColor} 16%, transparent)` }}>
+                <div style={{ width: generatingDocument ? "78%" : formActive ? "62%" : "38%", height: "100%", borderRadius: "inherit", background: t.headingColor, animation: "sidebar-task-restore-progress 0.9s ease-in-out infinite alternate" }} />
+            </div>
+        </div>
+    );
+}
+
 function hasRestorableProjectConversation(history: unknown[] | undefined): boolean {
     if (!Array.isArray(history)) return false;
     return history.some((message) => {
@@ -74,6 +242,12 @@ function normalizeRestoredProjectHistoryContent(value: unknown): string {
     } catch {
         return String(value);
     }
+}
+
+function suppressWorkflowReviewActions(message: ChatMessage): ChatMessage {
+    if (!Array.isArray(message.actions) || message.actions.length === 0) return message;
+    const actions = message.actions.filter(action => !String(action?.command || "").startsWith("__wf_review__"));
+    return actions.length === message.actions.length ? message : { ...message, actions: actions.length > 0 ? actions : undefined };
 }
 
 async function loadRestoredProjectConversationHistory(projectPath: string): Promise<ChatMessage[]> {
@@ -118,6 +292,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
     const [queueEditDraftActive, setQueueEditDraftActive] = useState(false);
     const [knowledgeDialogOpen, setKnowledgeDialogOpen] = useState(false);
+    const [saveTaskDialogOpen, setSaveTaskDialogOpen] = useState(false);
+    const [saveTaskName, setSaveTaskName] = useState("");
+    const [savingTask, setSavingTask] = useState(false);
     const [workflowEnabled, setWorkflowEnabled] = useState(false);
     const [skillRecordingTabId, setSkillRecordingTabId] = useState<string | null>(null);
     const [skillRecordingCount, setSkillRecordingCount] = useState(0);
@@ -1124,10 +1301,23 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // is the current phase's data collection step; the doc panel has no content
     // yet (document is produced only after form submission + agent loop).
     const workflowFormActive = showAgentView && (agentView?.id?.startsWith("workflow:form:") ?? false);
+    const [workflowFormGeneratingPhaseID, setWorkflowFormGeneratingPhaseID] = useState<string | null>(null);
+    const workflowAwaitingForm = workflowState.active && workflowState.awaitingForm;
     const showWorkflowPreview = codingPreviewAllowed && workflowState.splitMode && !workflowFormActive;
     const showCodePreview = codingPreviewAllowed && !showAgentView && codePreviewState.active;
     const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;
+    const workflowCurrentPhaseMeta = useMemo(
+        () => workflowState.phases.find(phase => phase.id === workflowState.currentPhaseID),
+        [workflowState.currentPhaseID, workflowState.phases],
+    );
+    const workflowCurrentPhaseStatus = normalizeWorkflowPhaseStatus(workflowCurrentPhaseMeta?.status);
+    const workflowCurrentPhaseRunning = isWorkflowPhaseRunningStatus(workflowCurrentPhaseStatus);
+    const workflowCurrentPhaseTerminal = isWorkflowPhaseTerminalStatus(workflowCurrentPhaseStatus);
+    const workflowAwaitingReview = workflowState.active && workflowCurrentPhaseStatus === "waiting_confirm";
+    const workflowReviewPhaseName = workflowCurrentPhaseMeta?.name || workflowState.currentPhaseID;
+    const workflowFormPhaseName = workflowCurrentPhaseMeta?.name || workflowState.currentPhaseID;
+    const workflowCurrentPhaseID = workflowState.currentPhaseID || "";
     const startPreviewResize = useAssistantPreviewResize(setWorkflowSplitRatio);
     const codePreviewStateRef = useRef(codePreviewState);
     codePreviewStateRef.current = codePreviewState;
@@ -1227,6 +1417,22 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             ? streamingSessionKey === activeSessionKey
             : (isProjectTabActive ? hasForegroundRoundForActiveProject : (isLocalTabActive && !hasForegroundProjectRound)));
     const isBusy = (hasExplicitBusySessionList ? activeSessionIsSending : hasActiveDetachedProjectRound || activeSessionIsSending);
+    useEffect(() => {
+        if (!workflowFormGeneratingPhaseID) return;
+        if (
+            workflowAwaitingReview
+            || workflowCurrentPhaseTerminal
+            || workflowFormGeneratingPhaseID !== workflowCurrentPhaseID
+            || (!workflowAwaitingForm && !workflowCurrentPhaseRunning && !isBusy)
+        ) {
+            setWorkflowFormGeneratingPhaseID(null);
+        }
+    }, [isBusy, workflowAwaitingForm, workflowAwaitingReview, workflowCurrentPhaseID, workflowCurrentPhaseRunning, workflowCurrentPhaseTerminal, workflowFormGeneratingPhaseID]);
+    const workflowFormGeneratingDocument = !!workflowCurrentPhaseID
+        && workflowFormGeneratingPhaseID === workflowCurrentPhaseID
+        && !workflowFormActive
+        && !workflowAwaitingReview
+        && (isBusy || workflowCurrentPhaseRunning);
     const activeSessionHasWork = isBusy || activeSessionIsStreaming;
     const displayProgressMessages = activeSessionHasWork ? progressMessages : [];
     useEffect(() => {
@@ -1256,12 +1462,23 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     latestSubmitLockedRef.current = submitLocked;
     latestShowChatUIRef.current = showChatUI;
     const showThinkingState = activeSessionIsStreaming;
-    const showProcessingState = isBusy && (!activeSessionIsStreaming || hasActiveDetachedProjectRound);
-    const showBusySpinner = isBusy;
+    const showProcessingState = workflowAwaitingForm || workflowFormGeneratingDocument || (isBusy && (!activeSessionIsStreaming || hasActiveDetachedProjectRound));
+    const inputVisualBusy = isBusy || workflowAwaitingForm || workflowFormGeneratingDocument;
+    const showBusySpinner = inputVisualBusy;
     const codingAgentTurnSnapshot = useMemo(() => activeSessionHasWork ? latestCodingAgentTurnSnapshot(displayProgressMessages) : null, [activeSessionHasWork, displayProgressMessages]);
     const codingAgentProgress = useMemo(() => codingAgentTurnSnapshot?.latest || activeCodingAgentProgress(displayProgressMessages, activeSessionHasWork), [activeSessionHasWork, codingAgentTurnSnapshot, displayProgressMessages]);
     const latestToolProgress = useMemo(() => findLatestToolProgressText(displayProgressMessages, activeSessionHasWork), [activeSessionHasWork, displayProgressMessages]);
-    const activeProcessingText = codingAgentProgress
+    const workflowFormStatusText = workflowFormActive
+        ? (lang === "en" ? "Waiting for the workflow form on the right..." : "等待右侧工作流表单填写…")
+        : (lang === "en" ? "Opening the workflow form on the right..." : "正在打开右侧工作流表单…");
+    const workflowFormGeneratingText = lang === "en"
+        ? "Generating the workflow document... (you can type ahead)"
+        : "正在生成工作流文档…（可继续输入）";
+    const activeProcessingText = workflowFormGeneratingDocument
+        ? workflowFormGeneratingText
+        : workflowAwaitingForm
+        ? workflowFormStatusText
+        : codingAgentProgress
         ? codingAgentCompactText(codingAgentProgress, lang)
         : latestToolProgress
             ? `${formatToolProgressStatus(latestToolProgress, lang)} · ${lang === "en" ? "you can type ahead" : "\u53ef\u7ee7\u7eed\u8f93\u5165"}`
@@ -1275,27 +1492,69 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         await sendMessageForTab(msg);
     }, [cancelSession, isBusy, lang, sendMessageForTab]);
+    const deriveTaskNameFromMessages = useCallback(() => {
+        const firstUser = messages.find((m: ChatMessage) => m.role === "user");
+        const text = firstUser && typeof firstUser.content === "string" ? firstUser.content.trim() : "";
+        const runes = [...text];
+        return runes.length > 30 ? runes.slice(0, 30).join("") + "..." : text || (lang === "en" ? "Saved task" : "\u5df2\u4fdd\u5b58\u4efb\u52a1");
+    }, [lang, messages]);
+
+    const openSaveTaskDialog = useCallback(async () => {
+        if (!isLocalTabActive) return;
+        let suggested = deriveTaskNameFromMessages();
+        try {
+            const { SuggestCurrentTaskName } = await getWailsAppModule();
+            if (typeof SuggestCurrentTaskName === "function") {
+                const backendName = String(await SuggestCurrentTaskName() || "").trim();
+                if (backendName) suggested = backendName;
+            }
+        } catch (error) {
+            console.warn("[AIAssistantPanel] SuggestCurrentTaskName failed:", error);
+        }
+        setSaveTaskName(suggested);
+        setSaveTaskDialogOpen(true);
+    }, [deriveTaskNameFromMessages, isLocalTabActive]);
+    useEffect(() => {
+        const handler = () => { void openSaveTaskDialog(); };
+        window.addEventListener('ai-save-current-chat-as-task', handler);
+        return () => window.removeEventListener('ai-save-current-chat-as-task', handler);
+    }, [openSaveTaskDialog]);
+
+    const submitSaveTask = useCallback(async () => {
+        if (savingTask) return;
+        const taskName = saveTaskName.trim() || deriveTaskNameFromMessages();
+        setSavingTask(true);
+        try {
+            const { SaveCurrentChatAsTask } = await getWailsAppModule();
+            if (typeof SaveCurrentChatAsTask !== "function") return;
+            await SaveCurrentChatAsTask(taskName);
+            setSaveTaskDialogOpen(false);
+            onTaskPrefsChanged?.();
+        } catch (err) {
+            console.error("[SaveCurrentChatAsTask] failed:", err);
+        } finally {
+            setSavingTask(false);
+        }
+    }, [deriveTaskNameFromMessages, onTaskPrefsChanged, saveTaskName, savingTask]);
+
     const handleForkCurrentChat = useCallback(async (taskName: string) => {
         let derivedName = taskName;
         if (!derivedName) {
-            const firstUser = messages.find((m: ChatMessage) => m.role === "user");
-            const text = firstUser && typeof firstUser.content === "string" ? firstUser.content : "";
-            const runes = [...text];
-            derivedName = runes.length > 30 ? runes.slice(0, 30).join("") + "..." : text || (lang === "en" ? "New task" : "\u65b0\u4efb\u52a1");
+            derivedName = deriveTaskNameFromMessages();
         }
         try {
-            const { CreateRecentTask, ForkConversationToProject } = await getWailsAppModule();
-            const result = await CreateRecentTask(derivedName);
+            const { SaveCurrentChatAsTask } = await getWailsAppModule();
+            const result = await SaveCurrentChatAsTask(derivedName);
             if (!result || !result.project_path) return;
-            await ForkConversationToProject(result.project_path);
             const tab = createProjectTab(result.project_path, result.name || derivedName);
             if (tab) {
                 saveTabState(tab.id, { history: [...messages], scrollTop: 0, inputText: "" });
             }
+            onTaskPrefsChanged?.();
         } catch (err) {
-            console.error("[ForkCurrentChat] failed:", err);
+            console.error("[SaveCurrentChat] failed:", err);
         }
-    }, [createProjectTab, lang, messages, saveTabState]);
+    }, [createProjectTab, deriveTaskNameFromMessages, messages, onTaskPrefsChanged, saveTabState]);
     const initLabel = getAssistantInitLabel(initStatus, lang);
     const preparingPlaceholderText = activeProjectPrepareMode === "new-agent"
         ? (lang === "en" ? "Creating agent instance... type ahead, Enter will wait" : "正在创建 Agent 实例... 可预输入，Enter 会等待")
@@ -1304,6 +1563,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         ? initLabel
         : activeProjectPreparing
             ? preparingPlaceholderText
+            : workflowAwaitingForm
+            ? (workflowFormGeneratingDocument
+                ? (lang === "en" ? "Generating the workflow document..." : "正在生成工作流文档…")
+                : workflowFormActive
+                ? (lang === "en" ? "Fill in the workflow form on the right to continue" : "请在右侧工作流表单填写并提交")
+                : (lang === "en" ? "Opening the workflow form on the right..." : "正在打开右侧工作流表单…"))
+            : workflowAwaitingReview
+            ? (lang === "en" ? "Review the document on the right, then confirm or provide feedback" : "请先查看右侧文档，再确认推进或输入补充意见")
             : showThinkingState
             ? thinkingText
             : showProcessingState
@@ -1357,7 +1624,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Show welcome for an idle, empty conversation on local tab or a cleared project tab.
     // NOTE: welcome view is shown in both inline (embedded panel) and overlay (standalone window)
     // modes — the embedded panel is now the primary usage mode.
-    const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || isProjectTabActive);
+    const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || isProjectTabActive);
     const hasConversation = otherMessages.length + displayProgressMessages.length > 0;
     const { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ hasConversation, messages: displayMessages, ready, scrollToTopSeq });
     useEffect(() => {
@@ -1669,6 +1936,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setCancelPending(false);
         }
     }, [cancelPending, cancelSession, draftInputValue, inputValue, resetHistoryBrowsing, resizeInput, updateInputValue]);
+    const panelSubmitAgentView = useCallback((viewId: string | undefined, data: Record<string, unknown>) => {
+        if (typeof viewId === "string" && viewId.startsWith("workflow:form:")) {
+            const submittedPhaseID = typeof data?._workflow_phase === "string" && data._workflow_phase.trim()
+                ? data._workflow_phase.trim()
+                : workflowCurrentPhaseID;
+            if (submittedPhaseID) {
+                setWorkflowFormGeneratingPhaseID(submittedPhaseID);
+            }
+        }
+        return submitAgentView?.(viewId, data);
+    }, [submitAgentView, workflowCurrentPhaseID]);
     // Wrap executeAction so that on project tabs, a project round is
     // pre-registered before the send. executeAction's internal sendMessage
     // call goes through optionsForActiveSession (which adds project_path),
@@ -1714,21 +1992,40 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return executeAction(command);
     }, [activeTab.id, activeTab.projectPath, executeAction, isProjectTabActive]);
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
-    const renderedOtherMessages = useMemo(() => otherMessages.map((msg: ChatMessage, idx: number) => renderMessage(msg, panelExecuteAction, t, idx === lastAssistantIdx, savedFileLabel, lang, isBusy)), [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy]);
+    const renderedOtherMessages = useMemo(() => otherMessages.map((msg: ChatMessage, idx: number) => renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, idx === lastAssistantIdx, savedFileLabel, lang, isBusy)), [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy]);
     const chatProgressMessages = useMemo(
         () => activeSessionHasWork ? displayProgressMessages.filter((msg: ChatMessage) => !isToolProgressMessage(msg)) : displayProgressMessages,
         [activeSessionHasWork, displayProgressMessages],
     );
     const compactProgressMessages = useMemo(() => compactCodingAgentProgressMessages(chatProgressMessages), [chatProgressMessages]);
-    const renderedProgressMessages = useMemo(() => compactProgressMessages.map((msg: ChatMessage) => renderMessage(msg, panelExecuteAction, t, false, savedFileLabel, lang)), [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang]);
+    const renderedProgressMessages = useMemo(() => compactProgressMessages.map((msg: ChatMessage) => renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, false, savedFileLabel, lang)), [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang]);
     const containerStyle: React.CSSProperties = inline ? (maximized ? { ...maximizedInlineStyle, background: t.bg } : { display: "flex", flex: "1 1 0%", flexDirection: "column", minWidth: 0, minHeight: 0, boxSizing: "border-box", overflow: "hidden", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" }) : overlayStyle;
     return (
         <div data-testid="ai-panel-root" style={containerStyle}>
             {inline && <AssistantDragHandle />}
-            <AssistantTitleBar clearHistory={clearActiveHistory} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
+            <AssistantTitleBar clearHistory={clearActiveHistory} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onSaveCurrentTask={isLocalTabActive ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
             <div data-testid="ai-panel-content-row" style={{ display: "flex", flexDirection: "row", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
             <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }}>
             <KnowledgeDialog open={knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
+            {saveTaskDialogOpen && (
+                <div data-testid="save-task-dialog-backdrop" style={{ position: "fixed", inset: 0, zIndex: 50000, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(15, 23, 42, 0.28)", padding: 16 }} onMouseDown={event => { if (event.target === event.currentTarget && !savingTask) setSaveTaskDialogOpen(false); }}>
+                    <form role="dialog" aria-modal="true" aria-labelledby="save-task-dialog-title" onSubmit={event => { event.preventDefault(); void submitSaveTask(); }} style={{ width: 390, maxWidth: "calc(100vw - 32px)", background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: 8, boxShadow: "0 12px 32px rgba(15, 23, 42, 0.22)", color: t.text, overflow: "hidden" }} onMouseDown={event => event.stopPropagation()}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 14px", borderBottom: `1px solid ${t.titleBarBorder}` }}>
+                            <h3 id="save-task-dialog-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: t.text }}>{localizeText(lang, "Save as Task", "\u4fdd\u5b58\u4e3a\u4efb\u52a1", "\u4fdd\u5b58\u70ba\u4efb\u52d9")}</h3>
+                            <button type="button" disabled={savingTask} onClick={() => setSaveTaskDialogOpen(false)} style={{ border: "none", background: "transparent", color: t.text, opacity: 0.62, cursor: savingTask ? "default" : "pointer", fontSize: 14, lineHeight: 1 }}>x</button>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "14px" }}>
+                            <label htmlFor="save-task-name" style={{ fontSize: 12, fontWeight: 700, color: t.promptColor }}>{localizeText(lang, "Task name", "\u4efb\u52a1\u540d\u79f0", "\u4efb\u52d9\u540d\u7a31")}</label>
+                            <input id="save-task-name" autoFocus value={saveTaskName} disabled={savingTask} onChange={event => setSaveTaskName(event.target.value)} onKeyDown={event => { if (event.key === "Escape" && !savingTask) setSaveTaskDialogOpen(false); }} style={{ width: "100%", boxSizing: "border-box", border: `1px solid ${t.fieldBorder}`, borderRadius: 6, background: t.fieldBg, color: t.text, fontSize: 13, padding: "7px 9px", outline: "none", fontFamily: "inherit" }} />
+                            <p style={{ margin: "4px 0 0", fontSize: 12, lineHeight: 1.45, color: t.promptColor }}>{localizeText(lang, "The current main conversation history and task context will be saved. Double-click it in Task Management to continue in a separate tab.", "\u5c06\u4fdd\u5b58\u5f53\u524d\u4e3b\u5bf9\u8bdd\u5386\u53f2\u548c\u4efb\u52a1\u4e0a\u4e0b\u6587\u3002\u4e4b\u540e\u53ef\u5728\u4efb\u52a1\u7ba1\u7406\u4e2d\u53cc\u51fb\uff0c\u4ee5\u72ec\u7acb Tab \u7ee7\u7eed\u3002", "\u5c07\u4fdd\u5b58\u76ee\u524d\u4e3b\u5c0d\u8a71\u6b77\u53f2\u548c\u4efb\u52d9\u4e0a\u4e0b\u6587\u3002\u4e4b\u5f8c\u53ef\u5728\u4efb\u52d9\u7ba1\u7406\u4e2d\u96d9\u64ca\uff0c\u4ee5\u7368\u7acb Tab \u7e7c\u7e8c\u3002")}</p>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px 12px", borderTop: `1px solid ${t.titleBarBorder}` }}>
+                            <button type="button" disabled={savingTask} onClick={() => setSaveTaskDialogOpen(false)} style={{ border: `1px solid ${t.titleBarBorder}`, borderRadius: 6, background: t.fieldBg, color: t.text, cursor: savingTask ? "default" : "pointer", fontSize: 12, padding: "5px 12px" }}>{localizeText(lang, "Cancel", "\u53d6\u6d88", "\u53d6\u6d88")}</button>
+                            <button type="submit" disabled={savingTask || !saveTaskName.trim()} style={{ border: `1px solid ${t.btnBorder}`, borderRadius: 6, background: t.headingColor, color: "#fff", cursor: savingTask || !saveTaskName.trim() ? "default" : "pointer", opacity: savingTask || !saveTaskName.trim() ? 0.62 : 1, fontSize: 12, padding: "5px 12px" }}>{savingTask ? localizeText(lang, "Saving...", "\u4fdd\u5b58\u4e2d...", "\u4fdd\u5b58\u4e2d...") : localizeText(lang, "Save", "\u4fdd\u5b58", "\u4fdd\u5b58")}</button>
+                        </div>
+                    </form>
+                </div>
+            )}
             <AITabBar tabs={tabState.tabs} activeTabId={tabState.activeTabId} theme={t} onActivate={activateTab} onClose={closeTabWithProjectCleanup} onInviteToTab={(tab) => {
                 if (tab.type === "ve") {
                     const tabSt = getTabState(tab.id);
@@ -1805,7 +2102,27 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     </div>
                 </div>}
                 {!showWelcomeView && skillRecordingCard && <InlineChatCard card={skillRecordingCard} onResolve={(cardId, action, values) => { const resolvedCardId = cardId; setSkillRecordingCard((prev: any) => prev ? { ...prev, resolved: true, resolvedAction: action, resolvedValues: values } : null); handleResolveSkillRecordingCard(action, values); setTimeout(() => setSkillRecordingCard((prev: any) => prev && prev.id === resolvedCardId ? null : prev), 2000); }} theme={{ cardBg: t.fieldBg, cardBorder: t.titleBarBorder, textColor: t.text, mutedColor: t.promptColor, accentColor: "#4f7f6f", inputBg: t.fieldBg, inputBorder: t.titleBarBorder, buttonBg: "#4f7f6f", buttonText: "#fff", dangerColor: "#dc2626" }} lang={lang} />}
-                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={isBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
+                {!showWelcomeView && codingPreviewAllowed && (workflowAwaitingForm || workflowFormGeneratingDocument) && (
+                    <WorkflowFormInlinePrompt
+                        formActive={workflowFormActive}
+                        generatingDocument={workflowFormGeneratingDocument}
+                        lang={lang}
+                        phaseName={workflowFormPhaseName}
+                        theme={t}
+                    />
+                )}
+                {!showWelcomeView && codingPreviewAllowed && workflowAwaitingReview && (
+                    <WorkflowReviewInlinePrompt
+                        lang={lang}
+                        onAbort={() => panelExecuteAction('__wf_review__ abort')}
+                        onConfirm={() => panelExecuteAction('__wf_review__ confirm')}
+                        onRequestRevision={() => panelExecuteAction('__wf_review__ supplement_focus')}
+                        onViewDocument={() => openDocPreview(workflowState.currentPhaseID)}
+                        phaseName={workflowReviewPhaseName}
+                        theme={t}
+                    />
+                )}
+                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
             </>}
             <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} />
             {renameGroupTargetTab && (
@@ -1822,7 +2139,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             )}
             {participantInviteTargetTab && <TabParticipantInviteDialog key={participantInviteTargetTab.id} tab={participantInviteTargetTab} lang={lang} theme={t} onClose={() => setParticipantInviteTargetTabId(null)} onAddParticipantToTab={addParticipantToTab} />}
             </div>
-            <AssistantPreviewPane agentView={agentView} codePreviewState={codePreviewState} closeCodePreview={closeCodePreview} closeDocPreview={closeDocPreview} dismissAgentView={dismissAgentView} lang={lang} selectCodeFile={selectCodeFile} submitAgentView={submitAgentView} showCodePreview={showCodePreview} showAgentView={showAgentView} showWorkflowPreview={showWorkflowPreview} splitRatio={splitRatio} startPreviewResize={startPreviewResize} theme={t} themeMode={themeMode} workflowState={workflowState} />
+            <AssistantPreviewPane agentView={agentView} codePreviewState={codePreviewState} closeCodePreview={closeCodePreview} closeDocPreview={closeDocPreview} dismissAgentView={dismissAgentView} lang={lang} selectCodeFile={selectCodeFile} submitAgentView={panelSubmitAgentView} showCodePreview={showCodePreview} showAgentView={showAgentView} showWorkflowPreview={showWorkflowPreview} splitRatio={splitRatio} startPreviewResize={startPreviewResize} theme={t} themeMode={themeMode} workflowState={workflowState} />
             </div>
         </div>
     );

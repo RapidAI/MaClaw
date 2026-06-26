@@ -109,11 +109,13 @@ type PhaseInputOption struct {
 }
 
 type PhaseTemplate struct {
-	ID           string
-	Name         string
-	NeedsConfirm bool
-	ToolPolicy   ToolPolicy
-	ExecMode     PhaseExecMode // how this phase is executed (default = agent loop)
+	ID            string
+	Name          string
+	NeedsConfirm  bool
+	ToolPolicy    ToolPolicy
+	Kind          PhaseKind
+	MutationScope MutationScope
+	ExecMode      PhaseExecMode // how this phase is executed (default = agent loop)
 
 	// InputSchema declares a structured AG UI form for this phase's information
 	// collection. When non-nil, the state machine returns ActionShowForm on first
@@ -334,7 +336,7 @@ func CodingTemplate() *WorkflowTemplate {
 		Description: "需求 → 设计 → 任务分解 → 逐任务编码 → 验收。适用于开发应用、游戏、工具、系统、追踪系统。Software coding workflow for building applications, games, tools, systems, C++, backend, frontend, implementation, refactoring, and issue tracking systems.",
 		Keywords:    []string{"开发", "编写", "实现", "写代码", "游戏", "应用", "工具", "系统", "重构"},
 		Phases: []PhaseTemplate{
-			{ID: "requirements", Name: "需求文档", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+			{ID: "requirements", Name: "需求文档", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc,
 				InputSchema: &PhaseInputSchema{
 					Title: "项目基本信息",
 					Fields: []PhaseInputField{
@@ -345,10 +347,10 @@ func CodingTemplate() *WorkflowTemplate {
 					},
 				},
 			},
-			{ID: "design", Name: "技术设计", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
-			{ID: "tasks", Name: "任务分解", NeedsConfirm: true, ToolPolicy: ToolPolicyPlanning},
-			{ID: "implementation", Name: "编码执行", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, ExecMode: ExecModeSubAgent},
-			{ID: "verification", Name: "验收确认", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, ExecMode: ExecModeAutoFromPrev},
+			{ID: "design", Name: "技术设计", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc},
+			{ID: "tasks", Name: "任务分解", NeedsConfirm: true, ToolPolicy: ToolPolicyPlanning, Kind: PhaseKindCodePlanning, MutationScope: MutationScopeWorkflowDoc},
+			{ID: "implementation", Name: "编码执行", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindExecution, MutationScope: MutationScopeProject, ExecMode: ExecModeSubAgent},
+			{ID: "verification", Name: "验收确认", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindReview, MutationScope: MutationScopeProject, ExecMode: ExecModeAutoFromPrev},
 		},
 	}
 }
@@ -365,9 +367,9 @@ func MaintenanceTemplate() *WorkflowTemplate {
 		Keywords:     []string{"维护", "重构", "改造", "迁移", "改为", "改成", "换成", "升级", "refactor", "migrate", "maintenance"},
 		SemanticOnly: true, // Only activated via IUM LLM classification, not BM25 text matching
 		Phases: []PhaseTemplate{
-			{ID: "maint_analysis", Name: "影响分析与方案", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
-			{ID: "maint_execution", Name: "重构执行", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, ExecMode: ExecModeSubAgent},
-			{ID: "maint_verification", Name: "验证", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, ExecMode: ExecModeAutoFromPrev},
+			{ID: "maint_analysis", Name: "影响分析与方案", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc},
+			{ID: "maint_execution", Name: "重构执行", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindExecution, MutationScope: MutationScopeProject, ExecMode: ExecModeSubAgent},
+			{ID: "maint_verification", Name: "验证", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindReview, MutationScope: MutationScopeProject, ExecMode: ExecModeAutoFromPrev},
 		},
 	}
 }
@@ -379,7 +381,7 @@ func PresentationTemplate() *WorkflowTemplate {
 		Description: "受众分析 → 内容大纲 → 逐页脚本 → 生成 PPT。适用于产品介绍、方案汇报、商业展示、演示文稿、幻灯片和 slide deck 设计。",
 		Keywords:    []string{"ppt", "幻灯片", "演示文稿", "slide", "PPT"},
 		Phases: []PhaseTemplate{
-			{ID: "audience_goal", Name: "受众与目标", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+			{ID: "audience_goal", Name: "受众与目标", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc,
 				InputSchema: &PhaseInputSchema{
 					Title: "PPT基本信息",
 					Fields: []PhaseInputField{
@@ -392,9 +394,9 @@ func PresentationTemplate() *WorkflowTemplate {
 					},
 				},
 			},
-			{ID: "outline", Name: "内容大纲", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
-			{ID: "slide_scripting", Name: "逐页脚本", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
-			{ID: "ppt_generation", Name: "PPT 生成", NeedsConfirm: false, ToolPolicy: ToolPolicyFull},
+			{ID: "outline", Name: "内容大纲", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc},
+			{ID: "slide_scripting", Name: "逐页脚本", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc},
+			{ID: "ppt_generation", Name: "PPT 生成", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindArtifactGeneration, MutationScope: MutationScopeArtifact},
 		},
 	}
 }

@@ -82,6 +82,7 @@ type SkillAppManifestEntry struct {
 	Name              string                  `json:"name"`
 	Description       string                  `json:"description,omitempty"`
 	Category          string                  `json:"category,omitempty"`
+	Kind              string                  `json:"kind,omitempty"`
 	Icon              string                  `json:"icon,omitempty"`
 	CustomIconDataURL string                  `json:"custom_icon_data_url,omitempty"`
 	InputMode         string                  `json:"input_mode,omitempty"`
@@ -89,6 +90,7 @@ type SkillAppManifestEntry struct {
 	OutputModes       []string                `json:"output_modes,omitempty"`
 	Fields            []SkillAppManifestField `json:"fields,omitempty"`
 	AppDefinitionFile string                  `json:"app_definition_file,omitempty"`
+	AppDefinition     map[string]any          `json:"app_definition,omitempty"`
 	Governance        map[string]any          `json:"governance,omitempty"`
 }
 
@@ -2514,7 +2516,7 @@ func recordMaclawSingleAppRunEvidence(skillName string, skillDir string, appID s
 		governance = map[string]any{}
 		app["governance"] = governance
 	}
-	governance["testEvidence"] = evidence
+	governance["testEvidence"] = mergeMaclawAppRunEvidence(governance["testEvidence"], evidence)
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode maclaw app definition: %w", err)
@@ -2566,7 +2568,7 @@ func recordMaclawAppsRunEvidence(skillName string, skillDir string, appID string
 	if manifest.Apps[targetIndex].Governance == nil {
 		manifest.Apps[targetIndex].Governance = map[string]any{}
 	}
-	manifest.Apps[targetIndex].Governance["testEvidence"] = evidence
+	manifest.Apps[targetIndex].Governance["testEvidence"] = mergeMaclawAppRunEvidence(manifest.Apps[targetIndex].Governance["testEvidence"], evidence)
 	out, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode maclaw.apps.json: %w", err)
@@ -2575,6 +2577,19 @@ func recordMaclawAppsRunEvidence(skillName string, skillDir string, appID string
 		return nil, fmt.Errorf("write maclaw.apps.json: %w", err)
 	}
 	return maclawAppRunEvidenceResult(skillName, "maclaw.apps.json", out, evidence, artifactName), nil
+}
+
+func mergeMaclawAppRunEvidence(existing any, incoming map[string]any) map[string]any {
+	merged := map[string]any{}
+	if current, ok := existing.(map[string]any); ok {
+		for key, value := range current {
+			merged[key] = value
+		}
+	}
+	for key, value := range incoming {
+		merged[key] = value
+	}
+	return merged
 }
 
 func maclawAppDefinitionIDMatches(definitionID string, appID string, skillName string) bool {
@@ -2690,7 +2705,13 @@ func maclawAppDefinitionFileFromDoc(doc map[string]any) string {
 	app, _ := doc["app"].(map[string]any)
 	binding, _ := app["binding"].(map[string]any)
 	skillBinding, _ := binding["skill"].(map[string]any)
-	value := firstNonEmptySkillAppString(stringMapValue(skillBinding, "appDefinitionFile"), stringMapValue(skillBinding, "app_definition_file"))
+	appSkillBinding, _ := binding["appSkill"].(map[string]any)
+	value := firstNonEmptySkillAppString(
+		stringMapValue(skillBinding, "appDefinitionFile"),
+		stringMapValue(skillBinding, "app_definition_file"),
+		stringMapValue(appSkillBinding, "appDefinitionFile"),
+		stringMapValue(appSkillBinding, "app_definition_file"),
+	)
 	if value == "maclaw.apps.json" {
 		return "maclaw.apps.json"
 	}
@@ -2751,16 +2772,17 @@ func skillAppManifestEntryFromDefinitionDoc(doc map[string]any, skillName string
 	}
 	binding, _ := app["binding"].(map[string]any)
 	skillBinding, _ := binding["skill"].(map[string]any)
-	entry := SkillAppManifestEntry{
-		ID:                strings.TrimSpace(stringMapValue(app, "id")),
-		SkillID:           skillName,
-		Name:              strings.TrimSpace(stringMapValue(app, "name")),
-		Description:       stringMapValue(app, "description"),
-		Category:          firstNonEmptySkillAppString(stringMapValue(app, "category"), "Skill"),
-		Icon:              normalizeSkillAppIconName(stringMapValue(app, "icon")),
-		CustomIconDataURL: normalizeMaclawAppCustomIconDataURL(firstNonEmptySkillAppString(stringMapValue(app, "customIconDataUrl"), stringMapValue(app, "custom_icon_data_url"))),
-		InputMode:         normalizeSkillAppInputMode(firstNonEmptySkillAppString(stringMapValue(skillBinding, "inputMode"), stringMapValue(skillBinding, "input_mode"))),
-		MultipleFiles:     boolMapValue(skillBinding, "multipleFiles") || boolMapValue(skillBinding, "multiple_files"),
+		entry := SkillAppManifestEntry{
+			ID:                strings.TrimSpace(stringMapValue(app, "id")),
+			SkillID:           skillName,
+			Name:              strings.TrimSpace(stringMapValue(app, "name")),
+			Description:       stringMapValue(app, "description"),
+			Category:          firstNonEmptySkillAppString(stringMapValue(app, "category"), "Skill"),
+			Kind:              firstNonEmptySkillAppString(stringMapValue(app, "kind"), "tool_app"),
+			Icon:              normalizeSkillAppIconName(stringMapValue(app, "icon")),
+			CustomIconDataURL: normalizeMaclawAppCustomIconDataURL(firstNonEmptySkillAppString(stringMapValue(app, "customIconDataUrl"), stringMapValue(app, "custom_icon_data_url"))),
+			InputMode:         normalizeSkillAppInputMode(firstNonEmptySkillAppString(stringMapValue(skillBinding, "inputMode"), stringMapValue(skillBinding, "input_mode"))),
+			MultipleFiles:     boolMapValue(skillBinding, "multipleFiles") || boolMapValue(skillBinding, "multiple_files"),
 		OutputModes:       normalizeSkillAppOutputModes(firstNonEmptyStringSlice(stringSliceMapValue(skillBinding, "outputModes"), stringSliceMapValue(skillBinding, "output_modes"))),
 		Fields:            normalizeSkillAppFields(skillAppFieldsFromAny(skillBinding["fields"])),
 	}
@@ -2830,32 +2852,46 @@ func normalizeMaclawAppDefinitionForSkill(appJSON string, skillName string) (map
 	if appName == "" {
 		return nil, "", "", fmt.Errorf("maclaw app definition app.name is required")
 	}
-	kind := strings.TrimSpace(stringMapValue(app, "kind"))
-	if kind != "" && kind != "tool_app" {
-		return nil, "", "", fmt.Errorf("only tool_app can be saved into a skill package")
+	kind := normalizeMaclawAppKind(stringMapValue(app, "kind"))
+	if kind == "" {
+		kind = "tool_app"
 	}
-	app["kind"] = "tool_app"
+	if kind != "tool_app" && kind != "enterprise_approval_app" && kind != "enterprise_normal_app" {
+		return nil, "", "", fmt.Errorf("maclaw app kind %q cannot be saved into a skill package", kind)
+	}
+	app["kind"] = kind
 	binding, _ := app["binding"].(map[string]any)
 	if binding == nil {
 		binding = map[string]any{}
 		app["binding"] = binding
 	}
-	skillBinding, _ := binding["skill"].(map[string]any)
+	skillBindingKey := "skill"
+	if kind != "tool_app" {
+		skillBindingKey = "appSkill"
+	}
+	skillBinding, _ := binding[skillBindingKey].(map[string]any)
 	if skillBinding == nil {
 		skillBinding = map[string]any{}
-		binding["skill"] = skillBinding
+		binding[skillBindingKey] = skillBinding
 	}
 	boundSkill := strings.TrimSpace(stringMapValue(skillBinding, "id"))
 	if boundSkill != "" && boundSkill != skillName {
-		return nil, "", "", fmt.Errorf("maclaw app binding skill id %q does not match target skill %q", boundSkill, skillName)
+		return nil, "", "", fmt.Errorf("maclaw app binding %s id %q does not match target skill %q", skillBindingKey, boundSkill, skillName)
 	}
 	skillBinding["id"] = skillName
 	appDefinitionFile := firstNonEmptySkillAppString(stringMapValue(skillBinding, "appDefinitionFile"), stringMapValue(skillBinding, "app_definition_file"))
 	if appDefinitionFile != "" && appDefinitionFile != "maclaw.app.json" && appDefinitionFile != "maclaw.apps.json" {
-		return nil, "", "", fmt.Errorf("maclaw app binding skill appDefinitionFile must be maclaw.app.json or maclaw.apps.json")
+		return nil, "", "", fmt.Errorf("maclaw app binding %s appDefinitionFile must be maclaw.app.json or maclaw.apps.json", skillBindingKey)
+	}
+	if kind != "tool_app" && appDefinitionFile == "maclaw.apps.json" {
+		return nil, "", "", fmt.Errorf("enterprise MaClaw App definitions must be saved as maclaw.app.json")
 	}
 	if stringMapValue(app, "launchMode") == "" {
-		app["launchMode"] = "fixed_skill_ui"
+		if kind == "tool_app" {
+			app["launchMode"] = "fixed_skill_ui"
+		} else {
+			app["launchMode"] = "agent_dynamic_ui"
+		}
 	}
 	return doc, appID, appName, nil
 }
@@ -2930,9 +2966,12 @@ func readMaclawAppDefinitionAsSkillApp(path string, fallbackSkillID string) (Ski
 	if !ok {
 		return SkillAppManifestEntry{}, false
 	}
-	kind := strings.TrimSpace(stringMapValue(app, "kind"))
-	if kind != "" && kind != "tool_app" {
+	kind := normalizeMaclawAppKind(stringMapValue(app, "kind"))
+	if kind != "" && kind != "tool_app" && kind != "enterprise_approval_app" && kind != "enterprise_normal_app" {
 		return SkillAppManifestEntry{}, false
+	}
+	if kind == "" {
+		kind = "tool_app"
 	}
 	id := strings.TrimSpace(stringMapValue(app, "id"))
 	name := strings.TrimSpace(stringMapValue(app, "name"))
@@ -2944,15 +2983,21 @@ func readMaclawAppDefinitionAsSkillApp(path string, fallbackSkillID string) (Ski
 		Name:              name,
 		Description:       stringMapValue(app, "description"),
 		Category:          stringMapValue(app, "category"),
+		Kind:              kind,
 		Icon:              stringMapValue(app, "icon"),
 		CustomIconDataURL: normalizeMaclawAppCustomIconDataURL(firstNonEmptySkillAppString(stringMapValue(app, "customIconDataUrl"), stringMapValue(app, "custom_icon_data_url"))),
 		SkillID:           fallbackSkillID,
+		AppDefinition:     doc,
 	}
 	if panel, ok := app["panel"].(map[string]interface{}); ok && entry.CustomIconDataURL == "" {
 		entry.CustomIconDataURL = normalizeMaclawAppCustomIconDataURL(firstNonEmptySkillAppString(stringMapValue(panel, "customIconDataUrl"), stringMapValue(panel, "custom_icon_data_url")))
 	}
 	if binding, ok := app["binding"].(map[string]interface{}); ok {
-		if skillBinding, ok := binding["skill"].(map[string]interface{}); ok {
+		skillBinding, _ := binding["skill"].(map[string]interface{})
+		if kind != "tool_app" {
+			skillBinding, _ = binding["appSkill"].(map[string]interface{})
+		}
+		if skillBinding != nil {
 			if skillID := strings.TrimSpace(stringMapValue(skillBinding, "id")); skillID != "" {
 				entry.SkillID = skillID
 			}

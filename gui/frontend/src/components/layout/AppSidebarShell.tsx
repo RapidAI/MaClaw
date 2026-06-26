@@ -45,7 +45,7 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
     onRecentTaskSwitchBlocked?: () => void;
-    createRecentTask: (name: string) => Promise<void> | void;
+    createRecentTask: (name: string, workingDir?: string) => Promise<void> | void;
     refreshRecentProjects: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;

@@ -421,7 +421,7 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 		// Prefer the project path from the tab-scoped userID over the global
 		// GetCurrentProjectPath(). This ensures the workflow's events carry a path
 		// that matches the frontend tab for event routing.
-		if tabPath := projectPathFromSessionOwnerID(msg.UserID); tabPath != "" {
+		if tabPath := h.executionProjectPathForOwner(msg.UserID); tabPath != "" {
 			projectPath = tabPath
 		} else if h.app != nil {
 			projectPath = strings.TrimSpace(h.app.GetCurrentProjectPath())
@@ -588,6 +588,12 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 // The agent loop produces the phase document, then the response is returned to the user.
 // The loop runs once to completion — output is captured post-loop by recordWorkflowV2Output.
 func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowState, modifyHint string) workflowIMRouteResult {
+	if state == nil {
+		return workflowIMRouteResult{Response: &IMAgentResponse{
+			Text:  "❌ 工作流阶段无法启动：工作流状态不存在",
+			Error: "workflow state is nil",
+		}}
+	}
 	phase := state.ActivePhase()
 	if phase == nil {
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "✅ 工作流已完成"}}
@@ -603,6 +609,14 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 		h.emitWorkflowV2Progress(userID, state)
 		return workflowIMRouteResult{Response: &IMAgentResponse{
 			Text: "📋 请在右侧面板填写信息后提交。",
+		}}
+	}
+	if err := ensureWorkflowV2PhaseWorkDir(state); err != nil {
+		log.Printf("[workflow-v2] phase workdir unavailable: user=%s type=%s phase=%s project=%q err=%v", userID, state.Type, phase.ID, state.ProjectPath, err)
+		h.emitWorkflowV2Progress(userID, state)
+		return workflowIMRouteResult{Response: &IMAgentResponse{
+			Text:  fmt.Sprintf("❌ 工作流阶段无法启动：%s", err.Error()),
+			Error: err.Error(),
 		}}
 	}
 
@@ -661,6 +675,34 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 		WorkflowPhaseID:   phase.ID,
 		PhasePrompt:       phasePrompt,
 	}
+}
+
+func ensureWorkflowV2PhaseWorkDir(state *v2.WorkflowState) error {
+	if state == nil {
+		return nil
+	}
+	projectPath, created, err := ensureAbsoluteDirectoryPath(state.ProjectPath, "workflow project path")
+	state.ProjectPath = projectPath
+	if err != nil {
+		return err
+	}
+	if projectPath == "" {
+		return nil
+	}
+	if created {
+		log.Printf("[workflow-v2] created phase workdir type=%s phase=%s project=%q", state.Type, activeWorkflowV2PhaseID(state), projectPath)
+	}
+	return nil
+}
+
+func activeWorkflowV2PhaseID(state *v2.WorkflowState) string {
+	if state == nil {
+		return ""
+	}
+	if phase := state.ActivePhase(); phase != nil {
+		return phase.ID
+	}
+	return ""
 }
 
 // buildFormDataInlinedUserText constructs a user message that directly embeds
@@ -1991,7 +2033,7 @@ func isFilesystemRoot(cleanPath string) bool {
 func (h *IMMessageHandler) setupDirectCodingExecution(userID, originalText, rawProjectPath string) workflowIMRouteResult {
 	projectPath := rawProjectPath
 	if projectPath == "" {
-		if tabPath := projectPathFromSessionOwnerID(userID); tabPath != "" {
+		if tabPath := h.executionProjectPathForOwner(userID); tabPath != "" {
 			projectPath = tabPath
 		} else if h.app != nil {
 			projectPath = strings.TrimSpace(h.app.GetCurrentProjectPath())

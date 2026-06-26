@@ -705,7 +705,12 @@ func newKnowledgeShareID() string {
 }
 
 func renderKnowledgeSharePublicHTML(view KnowledgeShareUserView) string {
-	title := html.EscapeString(firstNonEmptyKnowledgeShare(view.Title, view.KnowledgeID))
+	rawTitle := firstNonEmptyKnowledgeShare(view.Title)
+	title := html.EscapeString(rawTitle)
+	titleHeading := ""
+	if strings.TrimSpace(view.Title) != "" {
+		titleHeading = `<h1 class="hero-title">` + html.EscapeString(strings.TrimSpace(view.Title)) + `</h1>`
+	}
 	description := html.EscapeString(view.Description)
 	jsonURL := html.EscapeString(knowledgeShareSafeHref(view.AgentImport))
 	shareURL := html.EscapeString(knowledgeShareSafeHref(view.ShareURL))
@@ -737,7 +742,7 @@ func renderKnowledgeSharePublicHTML(view KnowledgeShareUserView) string {
 <title>{{TITLE}} - MaClaw Knowledge Share</title>
 <style>
 :root{--page:#eef3f7;--panel:#fff;--panel-soft:#f7f9fb;--ink:#172234;--muted:#5f6e82;--line:#dbe4ed;--line-strong:#c5d1de;--brand:#385875;--brand-strong:#263f59;--brand-soft:#e8f0f7;--success:#2f7a55}
-*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at 18% 10%,rgba(104,135,163,.16),transparent 28%),linear-gradient(135deg,#f8fafc 0%,var(--page) 58%,#e6edf4 100%);color:var(--ink)}a{color:var(--brand-strong)}.shell{width:min(1120px,calc(100% - 32px));margin:0 auto;padding:44px 0 56px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:10px;color:var(--brand-strong);font-weight:900;letter-spacing:.02em}.mark{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--brand-strong);color:#fff;font-weight:950}.lang-toggle{display:inline-flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.78)}.lang-toggle button{border:0;border-radius:999px;background:transparent;color:var(--muted);cursor:pointer;font-weight:850;padding:7px 11px}.lang-toggle button[aria-pressed=true]{background:var(--brand);color:#fff}.hero{overflow:hidden;border:1px solid var(--line);border-radius:20px;background:rgba(255,255,255,.92);box-shadow:0 24px 70px rgba(38,61,84,.14)}.hero-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(320px,.9fr);gap:0}.main{padding:34px}.side{display:grid;align-content:start;gap:14px;border-left:1px solid var(--line);background:linear-gradient(180deg,#fbfcfe 0%,#f4f7fa 100%);padding:28px}.kicker{display:inline-flex;align-items:center;gap:8px;width:max-content;padding:5px 9px;border:1px solid var(--line);border-radius:999px;background:var(--panel-soft);color:var(--brand);font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.kicker::before{content:"";width:7px;height:7px;border-radius:99px;background:var(--success)}h1{margin:16px 0 12px;font-size:clamp(30px,4vw,48px);line-height:1.08;letter-spacing:-.03em;color:var(--ink);overflow-wrap:anywhere}.desc{max-width:72ch;margin:0;color:#415166;font-size:17px;line-height:1.78;white-space:pre-wrap}.stats{display:grid;grid-template-columns:repeat(4,minmax(110px,1fr));gap:10px;margin-top:26px}.stat{padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--panel-soft)}.stat strong{display:block;color:var(--ink);font-size:22px;line-height:1.05}.stat span{display:block;margin-top:5px;color:var(--muted);font-size:12px;font-weight:850}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:28px}.button{display:inline-flex;min-height:44px;align-items:center;justify-content:center;gap:8px;padding:11px 15px;border-radius:10px;border:1px solid var(--line-strong);background:#fff;text-decoration:none;font-weight:900;color:var(--ink);cursor:pointer}.button.primary{border-color:var(--brand);background:var(--brand);color:#fff}.button:hover{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}.section-title{margin:0;color:var(--ink);font-size:14px;font-weight:950}.meta{display:grid;gap:10px}.meta-row{display:grid;gap:4px;padding:12px;border:1px solid var(--line);border-radius:12px;background:#fff}.meta-row span{color:var(--muted);font-size:12px;font-weight:850}.meta-row code,.meta-row strong{min-width:0;color:var(--ink);font-size:13px;overflow-wrap:anywhere}.linkbox{display:grid;gap:8px;padding:14px;border:1px solid var(--line);border-radius:14px;background:#fff}.linkbox a{overflow-wrap:anywhere;font-size:13px}.note{margin:0;color:var(--muted);font-size:13px;line-height:1.55}.copied{color:var(--success);font-weight:850}.footer{margin-top:18px;color:var(--muted);font-size:12px;text-align:center}.zh [data-lang=en],.en [data-lang=zh]{display:none}@media(max-width:840px){.shell{padding-top:24px}.hero-grid{grid-template-columns:1fr}.side{border-left:0;border-top:1px solid var(--line)}.main{padding:24px}.topbar{align-items:flex-start}.brand{font-size:14px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(prefers-reduced-motion:no-preference){.button,.lang-toggle button{transition:border-color .18s ease,box-shadow .18s ease,background .18s ease,color .18s ease}}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at 18% 10%,rgba(104,135,163,.16),transparent 28%),linear-gradient(135deg,#f8fafc 0%,var(--page) 58%,#e6edf4 100%);color:var(--ink)}a{color:var(--brand-strong)}.shell{width:min(1120px,calc(100% - 32px));margin:0 auto;padding:44px 0 56px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:10px;color:var(--brand-strong);font-weight:900;letter-spacing:.02em}.mark{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--brand-strong);color:#fff;font-weight:950}.lang-toggle{display:inline-flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.78)}.lang-toggle button{border:0;border-radius:999px;background:transparent;color:var(--muted);cursor:pointer;font-weight:850;padding:7px 11px}.lang-toggle button[aria-pressed=true]{background:var(--brand);color:#fff}.hero{overflow:hidden;border:1px solid var(--line);border-radius:20px;background:rgba(255,255,255,.92);box-shadow:0 24px 70px rgba(38,61,84,.14)}.hero-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(320px,.9fr);gap:0}.main{padding:34px}.side{display:grid;align-content:start;gap:14px;border-left:1px solid var(--line);background:linear-gradient(180deg,#fbfcfe 0%,#f4f7fa 100%);padding:28px}.kicker{display:inline-flex;align-items:center;gap:8px;width:max-content;padding:5px 9px;border:1px solid var(--line);border-radius:999px;background:var(--panel-soft);color:var(--brand);font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.kicker::before{content:"";width:7px;height:7px;border-radius:99px;background:var(--success)}.hero-title{margin:16px 0 12px;font-size:clamp(30px,4vw,48px);line-height:1.08;letter-spacing:-.03em;color:var(--ink);overflow-wrap:anywhere}.desc{max-width:72ch;margin:16px 0 0;color:#415166;font-size:17px;line-height:1.78;white-space:pre-wrap}.stats{display:grid;grid-template-columns:repeat(4,minmax(110px,1fr));gap:10px;margin-top:26px}.stat{padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--panel-soft)}.stat strong{display:block;color:var(--ink);font-size:22px;line-height:1.05}.stat span{display:block;margin-top:5px;color:var(--muted);font-size:12px;font-weight:850}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:28px}.button{display:inline-flex;min-height:44px;align-items:center;justify-content:center;gap:8px;padding:11px 15px;border-radius:10px;border:1px solid var(--line-strong);background:#fff;text-decoration:none;font-weight:900;color:var(--ink);cursor:pointer}.button.primary{border-color:var(--brand);background:var(--brand);color:#fff}.button:hover{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}.section-title{margin:0;color:var(--ink);font-size:14px;font-weight:950}.meta{display:grid;gap:10px}.meta-row{display:grid;gap:4px;padding:12px;border:1px solid var(--line);border-radius:12px;background:#fff}.meta-row span{color:var(--muted);font-size:12px;font-weight:850}.meta-row code,.meta-row strong{min-width:0;color:var(--ink);font-size:13px;overflow-wrap:anywhere}.linkbox{display:grid;gap:8px;padding:14px;border:1px solid var(--line);border-radius:14px;background:#fff}.linkbox a{overflow-wrap:anywhere;font-size:13px}.note{margin:0;color:var(--muted);font-size:13px;line-height:1.55}.copied{color:var(--success);font-weight:850}.footer{margin-top:18px;color:var(--muted);font-size:12px;text-align:center}.zh [data-lang=en],.en [data-lang=zh]{display:none}@media(max-width:840px){.shell{padding-top:24px}.hero-grid{grid-template-columns:1fr}.side{border-left:0;border-top:1px solid var(--line)}.main{padding:24px}.topbar{align-items:flex-start}.brand{font-size:14px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(prefers-reduced-motion:no-preference){.button,.lang-toggle button{transition:border-color .18s ease,box-shadow .18s ease,background .18s ease,color .18s ease}}
 </style>
 </head>
 <body class="zh">
@@ -750,7 +755,7 @@ func renderKnowledgeSharePublicHTML(view KnowledgeShareUserView) string {
 <div class="hero-grid">
 <section class="main">
 <div class="kicker" data-lang="zh">知识分享</div><div class="kicker" data-lang="en">Knowledge Share</div>
-<h1>{{TITLE}}</h1>
+{{TITLE_HEADING}}
 <p class="desc">{{DESCRIPTION}}</p>
 <div class="stats" aria-label="Knowledge share statistics">
 <div class="stat"><strong>{{SOURCE_COUNT}}</strong><span data-lang="zh">来源条目</span><span data-lang="en">Sources</span></div>
@@ -761,7 +766,7 @@ func renderKnowledgeSharePublicHTML(view KnowledgeShareUserView) string {
 <div class="actions">
 <a class="button primary" href="{{JSON_URL}}"><span data-lang="zh">Agent 导入 JSON</span><span data-lang="en">Agent import JSON</span></a>
 <button class="button" type="button" data-copy="{{SHARE_URL}}"><span data-lang="zh">复制分享链接</span><span data-lang="en">Copy share link</span></button>
-<a class="button" href="/hub/knowledge/shares/mine"><span data-lang="zh">管理我的分享</span><span data-lang="en">Manage my shares</span></a>
+<a class="button" href="/hub/knowledge/shares/mine" data-manage-shares><span data-lang="zh">管理我的分享</span><span data-lang="en">Manage my shares</span></a>
 </div>
 </section>
 <aside class="side">
@@ -810,12 +815,27 @@ func renderKnowledgeSharePublicHTML(view KnowledgeShareUserView) string {
     await copyText(button.dataset.copy || '');
     document.querySelectorAll('[data-copied]').forEach((node) => { node.hidden = false; window.setTimeout(() => { node.hidden = true; }, 1600); });
   }));
+  const tokenSuffix = (() => {
+    const read = (params) => params.get('token') || params.get('viewer_token') || params.get('access_token') || '';
+    const hash = String(window.location.hash || '').replace(/^#/, '');
+    const hashToken = read(new URLSearchParams(hash));
+    if (hashToken) return '#token=' + encodeURIComponent(hashToken);
+    const queryToken = read(new URLSearchParams(window.location.search || ''));
+    if (queryToken) return '#token=' + encodeURIComponent(queryToken);
+    return '';
+  })();
+  if (tokenSuffix) {
+    document.querySelectorAll('[data-manage-shares]').forEach((node) => {
+      node.setAttribute('href', '/hub/knowledge/shares/mine' + tokenSuffix);
+    });
+  }
 })();
 </script>
 </body>
 </html>`
 	return strings.NewReplacer(
 		"{{TITLE}}", title,
+		"{{TITLE_HEADING}}", titleHeading,
 		"{{DESCRIPTION}}", description,
 		"{{JSON_URL}}", jsonURL,
 		"{{SHARE_URL}}", shareURL,

@@ -258,8 +258,8 @@ func (h *IMMessageHandler) applyWorkflowAutoAdvanceResponse(userID string, advRe
 
 // resolveWorkflowPhaseDocText determines the best available document text
 // for a completed workflow phase. Priority cascade:
-//  1. WorkflowDocBuffer (accumulated LLM text output across iterations)
-//  2. WorkflowWrittenFiles (files written via write_file during the loop) — wins if longer than buffer
+//  1. WorkflowWrittenFiles (files written via write_file during the loop)
+//  2. WorkflowDocBuffer (accumulated no-tool-call LLM text output)
 //  3. resp.Text (last iteration's finalized text)
 //  4. resp.Error (error message as last resort)
 //
@@ -267,20 +267,15 @@ func (h *IMMessageHandler) applyWorkflowAutoAdvanceResponse(userID string, advRe
 func resolveWorkflowPhaseDocText(loopCtx *LoopContext, resp *IMAgentResponse) (string, string) {
 	var docText string
 	source := "resp.Text"
+	if loopCtx != nil && len(loopCtx.WorkflowWrittenFiles) > 0 {
+		if fileContent := readWorkflowWrittenFiles(loopCtx.WorkflowWrittenFiles); fileContent != "" {
+			return fileContent, "written_files"
+		}
+	}
 	if loopCtx != nil && loopCtx.WorkflowDocBuffer.Len() > 0 {
 		if t := strings.TrimSpace(loopCtx.WorkflowDocBuffer.String()); t != "" {
 			docText = t
 			source = "buffer"
-		}
-	}
-	// If buffer content is short (just LLM commentary) but files were written,
-	// read the written files as the actual phase output. This is the common path
-	// for ToolPolicyFull phases where LLM writes documents to disk.
-	if loopCtx != nil && len(loopCtx.WorkflowWrittenFiles) > 0 {
-		fileContent := readWorkflowWrittenFiles(loopCtx.WorkflowWrittenFiles)
-		if fileContent != "" && len([]rune(fileContent)) > len([]rune(docText)) {
-			docText = fileContent
-			source = "written_files"
 		}
 	}
 	if docText == "" && resp != nil {

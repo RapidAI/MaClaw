@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, cleanup, fireEvent, waitFor, act, within, screen } from '@testing-library/react';
 import * as fc from 'fast-check';
 import { AIAssistantPanel, canShowAssistantCodingPreviewForTab } from '../AIAssistantPanel';
 import { openCurrentTenantCardStore } from '../AssistantTitleBar';
@@ -7,13 +7,15 @@ import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } f
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock, loadProjectConversationHistoryMock, createProjectTabSessionMock, cancelSessionForSessionMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock, loadProjectConversationHistoryMock, createProjectTabSessionMock, cancelSessionForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
     showItemInFolderMock: vi.fn().mockResolvedValue(undefined),
     loadProjectContextMock: vi.fn().mockResolvedValue({ project_name: '', recent_progress: '', key_artifacts: [] }),
     loadProjectConversationHistoryMock: vi.fn().mockResolvedValue([]),
     createProjectTabSessionMock: vi.fn().mockResolvedValue(undefined),
     cancelSessionForSessionMock: vi.fn().mockResolvedValue(''),
+    saveCurrentChatAsTaskMock: vi.fn().mockResolvedValue({ project_path: 'D:/tasks/saved', name: 'Saved task' }),
+    suggestCurrentTaskNameMock: vi.fn().mockResolvedValue('Suggested task'),
     listVirtualEmployeesMock: vi.fn().mockResolvedValue([
         { id: 've-a', machine_id: 've-a', name: 'Agent A', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
         { id: 've-b', machine_id: 've-b', name: 'Contract Bot', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
@@ -54,8 +56,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SetWorkflowWorkingDir: vi.fn(),
     LoadProjectContext: loadProjectContextMock,
     LoadProjectConversationHistory: loadProjectConversationHistoryMock,
-    SearchProjects: vi.fn().mockResolvedValue([]),
-    ResumeProject: vi.fn(),
+    SearchTasks: vi.fn().mockResolvedValue([]),
+    ResumeTask: vi.fn(),
+    SaveCurrentChatAsTask: saveCurrentChatAsTaskMock,
+    SuggestCurrentTaskName: suggestCurrentTaskNameMock,
     CreateProjectTabSession: createProjectTabSessionMock,
     CancelAIAssistantSessionForSession: cancelSessionForSessionMock,
     RenameTask: vi.fn(),
@@ -175,6 +179,10 @@ describe('AIAssistantPanel property tests', () => {
         loadProjectConversationHistoryMock.mockResolvedValue([]);
         createProjectTabSessionMock.mockReset();
         createProjectTabSessionMock.mockResolvedValue(undefined);
+        saveCurrentChatAsTaskMock.mockReset();
+        saveCurrentChatAsTaskMock.mockResolvedValue({ project_path: 'D:/tasks/saved', name: 'Saved task' });
+        suggestCurrentTaskNameMock.mockReset();
+        suggestCurrentTaskNameMock.mockResolvedValue('Suggested task');
         listVirtualEmployeesMock.mockReset();
         listVirtualEmployeesMock.mockResolvedValue([
             { id: 've-a', machine_id: 've-a', name: 'Agent A', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
@@ -197,6 +205,350 @@ describe('AIAssistantPanel property tests', () => {
         expect(canShowAssistantCodingPreviewForTab({ type: 'project' })).toBe(true);
         expect(canShowAssistantCodingPreviewForTab({ type: 've' })).toBe(false);
         expect(canShowAssistantCodingPreviewForTab({ type: 'group' })).toBe(false);
+    });
+
+    it('saves the current main conversation as a task from the title bar', async () => {
+        const onTaskPrefsChanged = vi.fn();
+        renderPanel({
+            state: {
+                messages: [
+                    makeMsg({ id: 'save-user', role: 'user', content: 'Create a launch deck' }),
+                    makeMsg({ id: 'save-assistant', role: 'assistant', content: 'Working on the deck.' }),
+                ],
+            },
+            actions: { onTaskPrefsChanged },
+        });
+
+        fireEvent.click(screen.getByTestId('save-current-task-btn'));
+
+        const input = await screen.findByLabelText('Task name');
+        expect((input as HTMLInputElement).value).toBe('Suggested task');
+        fireEvent.change(input, { target: { value: 'Launch deck task' } });
+        fireEvent.click(screen.getByText('Save'));
+
+        await waitFor(() => expect(saveCurrentChatAsTaskMock).toHaveBeenCalledWith('Launch deck task'));
+        expect(onTaskPrefsChanged).toHaveBeenCalled();
+    });
+
+    it('binds workflow review confirmation to the input area when the current phase waits for review', async () => {
+        const executeAction = vi.fn().mockResolvedValue(undefined);
+        const reviewMessage = makeMsg({
+            id: 'workflow-review-message-actions',
+            role: 'assistant',
+            content: 'Please review the phase document.',
+            actions: [
+                { label: 'Confirm & proceed', command: '__wf_review__ confirm', style: 'primary' },
+                { label: 'Provide feedback', command: '__wf_review__ supplement_focus', style: 'default' },
+            ],
+        });
+        const { getByTestId, queryByTestId } = renderPanel({
+            lang: 'en',
+            state: { messages: [reviewMessage], sending: false, streaming: false, ready: true },
+            actions: { executeAction },
+        });
+        expect(document.querySelectorAll('[data-testid="action-button"]').length).toBe(0);
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-review-inline-test',
+            type: 'general',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'outline',
+            phases: [
+                { id: 'outline', name: 'Outline', index: 0, expects_document: true, status: 'waiting_confirm' },
+            ],
+        }));
+
+        const prompt = await waitFor(() => getByTestId('workflow-review-inline-prompt'));
+        expect(prompt.textContent || '').toContain('Outline is waiting for review');
+        expect(document.querySelectorAll('[data-testid="action-button"]').length).toBe(0);
+        const viewDocumentButton = within(prompt).getByRole('button', { name: 'View document' }) as HTMLButtonElement;
+        expect(viewDocumentButton.disabled).toBe(false);
+        fireEvent.click(viewDocumentButton);
+        await waitFor(() => expect(document.body.textContent || '').toContain('Workflow progress'));
+
+        fireEvent.click(within(prompt).getByRole('button', { name: 'Confirm & proceed' }));
+        expect(executeAction).toHaveBeenCalledWith('__wf_review__ confirm');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-review-inline-test',
+            type: 'general',
+            status: 'completed',
+            event_scope_id: 'local',
+            current_phase: 'outline',
+            phases: [
+                { id: 'outline', name: 'Outline', index: 0, expects_document: true, status: 'waiting_confirm' },
+            ],
+        }));
+        await waitFor(() => expect(queryByTestId('workflow-review-inline-prompt')).toBeNull());
+    });
+
+    it('binds workflow review confirmation to the active project tab event scope', async () => {
+        const executeAction = vi.fn().mockResolvedValue(undefined);
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            lang: 'en',
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/workflow-review-project-tab',
+                taskTitle: 'Workflow review project tab',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            actions: { executeAction },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const projectTab = document.querySelector('[data-testid^="ai-tab-proj-"]') as HTMLElement | null;
+        expect(projectTab).toBeTruthy();
+        const projectTabId = projectTab!.getAttribute('data-testid')!.replace('ai-tab-', '');
+        fireEvent.click(getByTestId(`ai-tab-${projectTabId}`));
+
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-review-wrong-scope',
+            type: 'general',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'outline',
+            phases: [
+                { id: 'outline', name: 'Outline', index: 0, expects_document: true, status: 'waiting_confirm' },
+            ],
+        }));
+        expect(queryByTestId('workflow-review-inline-prompt')).toBeNull();
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-review-project-scope',
+            type: 'general',
+            status: 'active',
+            event_scope_id: projectTabId,
+            current_phase: 'outline',
+            phases: [
+                { id: 'outline', name: 'Project Outline', index: 0, expects_document: true, status: 'waiting_confirm' },
+            ],
+        }));
+
+        const prompt = await waitFor(() => getByTestId('workflow-review-inline-prompt'));
+        expect(prompt.textContent || '').toContain('Project Outline is waiting for review');
+        fireEvent.click(within(prompt).getByRole('button', { name: 'Confirm & proceed' }));
+        expect(executeAction).toHaveBeenCalledWith('__wf_review__ confirm');
+    });
+
+    it('keeps visible input progress while waiting for a workflow form to open', async () => {
+        const cancelSession = vi.fn<() => Promise<CancelAIAssistantResult>>().mockResolvedValue({ canceledText: '' });
+        const { getByTestId } = renderPanel({
+            lang: 'en',
+            actions: { cancelSession },
+        });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-awaiting-form-test',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true },
+            ],
+        }));
+
+        const prompt = await waitFor(() => getByTestId('workflow-form-inline-prompt'));
+        expect(prompt.textContent || '').toContain('Opening workflow form');
+        expect(getByTestId('ai-cancel-progress')).toBeTruthy();
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.disabled).toBe(false);
+        expect(input.getAttribute('aria-label') || '').toContain('Opening the workflow form');
+    });
+
+    it('shows document generation progress after a workflow form is submitted', async () => {
+        const workflowForm: AgentView = {
+            id: 'workflow:form:audience_goal',
+            type: 'form',
+            title: 'Audience & goals',
+            fields: [{ name: '_workflow_phase', type: 'hidden', value: 'audience_goal' }],
+            submitLabel: 'Submit workflow form',
+        };
+        const submitAgentView = vi.fn().mockResolvedValue(undefined);
+        const props = defaultPanelProps();
+        props.lang = 'en';
+        props.state = {
+            ...props.state,
+            sending: true,
+            busySessionKeys: ['desktop-user'],
+            agentView: workflowForm,
+        };
+        props.actions = { ...props.actions, submitAgentView };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-generating-doc-test',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true },
+            ],
+        }));
+
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Workflow form is ready'));
+        fireEvent.click(document.querySelector('button[type="submit"]') as HTMLButtonElement);
+        await waitFor(() => expect(submitAgentView).toHaveBeenCalledWith('workflow:form:audience_goal', expect.objectContaining({
+            _workflow_phase: 'audience_goal',
+        })));
+
+        rerender(<AIAssistantPanel
+            {...props}
+            state={{
+                ...props.state,
+                sending: true,
+                busySessionKeys: ['desktop-user'],
+                agentView: null,
+            }}
+        />);
+
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Generating workflow document'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.getAttribute('aria-label') || '').toContain('Generating the workflow document');
+    });
+
+    it('keeps the input spinner when submitted workflow phase is running after the form closes', async () => {
+        const workflowForm: AgentView = {
+            id: 'workflow:form:audience_goal',
+            type: 'form',
+            title: 'Audience & goals',
+            fields: [{ name: '_workflow_phase', type: 'hidden', value: 'audience_goal' }],
+            submitLabel: 'Submit workflow form',
+        };
+        const submitAgentView = vi.fn().mockResolvedValue(undefined);
+        const props = defaultPanelProps();
+        props.lang = 'en';
+        props.state = {
+            ...props.state,
+            agentView: workflowForm,
+        };
+        props.actions = { ...props.actions, submitAgentView };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-running-after-form-submit-test',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, status: 'pending', expects_document: true },
+            ],
+        }));
+
+        fireEvent.click(document.querySelector('button[type="submit"]') as HTMLButtonElement);
+        await waitFor(() => expect(submitAgentView).toHaveBeenCalled());
+
+        rerender(<AIAssistantPanel
+            {...props}
+            state={{
+                ...props.state,
+                sending: false,
+                busySessionKeys: [],
+                agentView: null,
+            }}
+        />);
+        act(() => phaseUpdateHandler({
+            id: 'workflow-running-after-form-submit-test',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: false,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, status: 'running', expects_document: true },
+            ],
+        }));
+
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Generating workflow document'));
+        const sendButton = within(getByTestId('ai-input-bar')).getByLabelText('Send') as HTMLButtonElement;
+        expect(sendButton.querySelector('span')).toBeTruthy();
+        expect(sendButton.querySelector('svg')).toBeNull();
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.getAttribute('aria-label') || '').toContain('Generating the workflow document');
+    });
+
+    it('does not carry submitted-form generation text across workflow phases', async () => {
+        const workflowForm: AgentView = {
+            id: 'workflow:form:audience_goal',
+            type: 'form',
+            title: 'Audience & goals',
+            fields: [{ name: '_workflow_phase', type: 'hidden', value: 'audience_goal' }],
+            submitLabel: 'Submit workflow form',
+        };
+        const submitAgentView = vi.fn().mockResolvedValue(undefined);
+        const props = defaultPanelProps();
+        props.lang = 'en';
+        props.state = {
+            ...props.state,
+            sending: true,
+            busySessionKeys: ['desktop-user'],
+            agentView: workflowForm,
+        };
+        props.actions = { ...props.actions, submitAgentView };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-generating-phase-switch-test',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true },
+                { id: 'outline', name: 'Outline', index: 1, expects_document: true },
+            ],
+        }));
+
+        fireEvent.click(document.querySelector('button[type="submit"]') as HTMLButtonElement);
+        await waitFor(() => expect(submitAgentView).toHaveBeenCalled());
+
+        rerender(<AIAssistantPanel
+            {...props}
+            state={{
+                ...props.state,
+                sending: true,
+                busySessionKeys: ['desktop-user'],
+                agentView: null,
+            }}
+        />);
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Generating workflow document'));
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-generating-phase-switch-test',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'outline',
+            awaiting_form: true,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true },
+                { id: 'outline', name: 'Outline', index: 1, expects_document: true },
+            ],
+        }));
+
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Opening workflow form'));
+        expect(getByTestId('workflow-form-inline-prompt').textContent || '').not.toContain('Generating workflow document');
     });
 
     it('keeps local coding preview off digital employee tabs and restores it on local tab', async () => {

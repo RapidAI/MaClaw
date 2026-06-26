@@ -150,15 +150,27 @@ export function GetProjectScene(arg1:string):Promise<main.ProjectSceneDetail>;
 
 export function SearchProjects(arg1:string,arg2:number):Promise<Array<main.ProjectSearchResult>>;
 
+export function ListTasks(arg1:number):Promise<Array<main.ProjectSearchResult>>;
+
+export function SearchTasks(arg1:string,arg2:number):Promise<Array<main.ProjectSearchResult>>;
+
 export function CreateRecentTask(arg1:string):Promise<main.ProjectSearchResult>;
 
 export function CreateRecentTaskWithWorkingDir(arg1:string,arg2:string):Promise<main.ProjectSearchResult>;
+
+export function CreateTask(arg1:string,arg2:string):Promise<main.ProjectSearchResult>;
 
 export function ForkRecentTask(arg1:string):Promise<main.ProjectSearchResult>;
 
 export function ForkConversationToProject(arg1:string):Promise<void>;
 
+export function SaveCurrentChatAsTask(arg1:string):Promise<main.ProjectSearchResult>;
+
+export function SuggestCurrentTaskName():Promise<string>;
+
 export function ResumeProject(arg1:string):Promise<string>;
+
+export function ResumeTask(arg1:string):Promise<string>;
 
 export function CheckVEApprovalCapabilityStatus(arg1:string):Promise<main.VEApprovalCapabilityStatus>;
 

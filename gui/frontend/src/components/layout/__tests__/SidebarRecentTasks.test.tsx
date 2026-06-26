@@ -118,6 +118,16 @@ describe('SidebarRecentTasks', () => {
         expect(createButton.textContent).not.toContain('+');
     });
 
+    it('requests saving the current main chat as a task from the header button', () => {
+        const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+        renderRecentTasks();
+
+        expect(screen.getByText('Save as Task')).toBeTruthy();
+        fireEvent.click(screen.getByTitle('Save current chat as task'));
+
+        expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'ai-save-current-chat-as-task' }));
+    });
+
     it('blocks task switching while the assistant is warming up', () => {
         const resumeRecentProject = vi.fn();
         const onRecentTaskSwitchBlocked = vi.fn();

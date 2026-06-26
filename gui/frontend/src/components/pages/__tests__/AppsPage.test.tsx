@@ -127,6 +127,7 @@ type SeedRunOptions = {
     resultPayload?: Record<string, unknown>;
     outputs?: any[];
     dependencyVerification?: any;
+    approvalInstance?: any;
 };
 
 function seedSuccessfulLocalAppRun(app: any, options: SeedRunOptions = {}) {
@@ -151,6 +152,7 @@ function seedSuccessfulLocalAppRun(app: any, options: SeedRunOptions = {}) {
         resultPayload: options.resultPayload,
         outputs: options.outputs,
         dependencyVerification: options.dependencyVerification,
+        approvalInstance: options.approvalInstance,
         at: options.at || '2026-06-17T00:05:00.000Z',
     }, ...(history[app.id] || [])];
     window.localStorage.setItem(runHistoryStorageKey, JSON.stringify(history));
@@ -1143,6 +1145,136 @@ describe('AppsPage', () => {
         }));
     });
 
+    it('requires approval instance evidence before publishing approval apps', async () => {
+        const app = {
+            id: 'publish-approval-instance-evidence',
+            name: 'Approval Instance Evidence App',
+            description: 'Checks approval publish evidence against instance data',
+            category: 'Finance',
+            kind: 'enterprise_approval_app',
+            icon: 'receipt',
+            accent: '#2f5f98',
+            pinned: false,
+            source: 'local',
+            version: 1,
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_approval_app',
+                launchMode: 'agent_dynamic_ui',
+                appSkill: { id: 'expense-approval-app', version: '1.0.0', source: 'hub' },
+                datasrv: { domain: 'finance', datasetID: 'finance.expenses', objectRole: 'expense_report', preferredAction: 'finance.expense_upsert' },
+                workflow: { schema: 'maclaw.app.workflow.v1', submitNode: 'expense_report.submit', approvalNode: 'expense_report.manager_approval', resultNode: 'expense_report.result_feedback', attentionNode: 'expense_report.attention_review', statusMapping: { pending: 'approval_pending', approved: 'approved', rejected: 'rejected', attention: 'attention', requiresInput: 'requires_input' } },
+                mis: { approvalBindings: [{ event: 'expense.submitted', workflowSkillId: 'expense-workflow', workflowVersion: '1.0.0', objectRole: 'expense_report' }] },
+                dependencies: { skills: [{ id: 'expense-workflow', version: '1.0.0', kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }] },
+                ui: { schema: 'maclaw.app.ui.v1', entry: 'approval_workspace', layouts: { approval_workspace: { template: 'dashboard', density: 'compact', primaryRegion: 'left', outputRegion: 'right', studio: { savedInManifest: true } } } },
+                resultContract: { schema: 'maclaw.app.result.v1', primary: 'approval_result', types: ['approval_result', 'business_status', 'content'], delivery: { inlineContent: true, artifacts: false, businessRecord: true, notifications: true } },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        seedSuccessfulLocalAppRun(app, {
+            runID: 'run-approval-no-instance',
+            outputMode: 'approval_result',
+            resultPayload: { decision: 'approved', business_status: 'approved', text: 'approved' },
+            outputs: [{ kind: 'approval_result', title: 'Approval decision', text: 'approved', status: 'approved' }],
+        });
+
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Review / publish'));
+        const blockedCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Approval Instance Evidence App')) as HTMLElement;
+        expect(blockedCard).toBeTruthy();
+        expect(within(blockedCard).getByText('Approval instance evidence')).not.toBeNull();
+        expect(within(blockedCard).getByText('Needs work')).not.toBeNull();
+        expect(within(blockedCard).getByText(/Missing instanceId, status, or approval instance view verification/)).not.toBeNull();
+        expect((within(blockedCard).getByText('Submit for review') as HTMLButtonElement).disabled).toBe(true);
+
+        cleanup();
+        window.localStorage.clear();
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        seedSuccessfulLocalAppRun(app, {
+            runID: 'run-approval-instance-without-result-package',
+            outputMode: 'approval_result',
+            resultPayload: { decision: 'approved', business_status: 'approved', text: 'approved' },
+            outputs: [{ kind: 'approval_result', title: 'Approval decision', text: 'approved', status: 'approved' }],
+            approvalInstance: {
+                instanceId: 'appr-no-result-package',
+                approvalID: 'approval-remote-no-result-package',
+                status: 'approved',
+                currentNode: 'expense_report.result_feedback',
+                workflowSkillId: 'expense-workflow',
+                workflowVersion: '1.0.0',
+                businessStatus: 'approved',
+                resultStatus: 'approved',
+                approvalInstanceViewVerified: true,
+                approvalViews: { handled: true, all: true },
+            },
+        });
+        render(<AppsPage lang="en" />);
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Review / publish'));
+        const incompleteCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Approval Instance Evidence App')) as HTMLElement;
+        expect(incompleteCard).toBeTruthy();
+        expect(within(incompleteCard).getByText('Needs work')).not.toBeNull();
+        expect(within(incompleteCard).getByText(/missing resultPayload, outputs, or artifacts/)).not.toBeNull();
+        expect((within(incompleteCard).getByText('Submit for review') as HTMLButtonElement).disabled).toBe(true);
+
+        cleanup();
+        window.localStorage.clear();
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        seedSuccessfulLocalAppRun(app, {
+            runID: 'run-approval-with-instance',
+            outputMode: 'approval_result',
+            resultPayload: { decision: 'approved', business_status: 'approved', text: 'approved' },
+            outputs: [{ kind: 'approval_result', title: 'Approval decision', text: 'approved', status: 'approved' }],
+            approvalInstance: {
+                instanceId: 'appr-publish-evidence-1',
+                approvalID: 'approval-remote-publish-1',
+                recordID: 'expense-1',
+                datasetID: 'finance.expenses',
+                objectRole: 'expense_report',
+                approvalEvent: 'expense.submitted',
+                approvalWorkflowID: 'expense-workflow',
+                status: 'approved',
+                currentNode: 'expense_report.result_feedback',
+                workflowSkillId: 'expense-workflow',
+                workflowVersion: '1.0.0',
+                businessStatus: 'approved',
+                resultStatus: 'approved',
+                resultPayload: { decision: 'approved', business_status: 'approved', text: 'approved' },
+                outputs: [{ kind: 'approval_result', title: 'Approval decision', text: 'approved', status: 'approved' }],
+                approvalInstanceViewVerified: true,
+                approvalViews: { my_requests: true, pending_my_approval: true, handled: true, all: true },
+            },
+        });
+
+        const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'market-approval-instance-evidence', submitted_at: '2026-06-17T01:00:00.000Z', status: 'submitted', message: 'queued' });
+        (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Review / publish'));
+        const readyCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Approval Instance Evidence App')) as HTMLElement;
+        expect(readyCard).toBeTruthy();
+        expect(within(readyCard).getByText('Ready to submit')).not.toBeNull();
+        expect(within(readyCard).getByText(/appr-publish-evidence-1 \/ approved \/ expense_report.result_feedback/)).not.toBeNull();
+        expect((within(readyCard).getByText('Submit for review') as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.click(within(readyCard).getByText('Submit for review'));
+        await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
+        const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
+        expect(payload.apps[0].app.governance.testEvidence.approvalInstance).toMatchObject({
+            instanceId: 'appr-publish-evidence-1',
+            approvalID: 'approval-remote-publish-1',
+            status: 'approved',
+            currentNode: 'expense_report.result_feedback',
+            workflowSkillId: 'expense-workflow',
+            businessStatus: 'approved',
+            resultStatus: 'approved',
+            resultPayload: { decision: 'approved', business_status: 'approved', text: 'approved' },
+            approvalInstanceViewVerified: true,
+        });    });
     it('blocks approval app publish submission when workflow contract verification fails', async () => {
         const app = {
             id: 'publish-approval-contract-drift',
@@ -1176,6 +1308,20 @@ describe('AppsPage', () => {
             outputMode: 'approval_result',
             resultPayload: { decision: 'approved', business_status: 'approved', text: 'approved' },
             outputs: [{ kind: 'approval_result', title: 'Approval decision', text: 'approved', status: 'approved' }],
+            approvalInstance: {
+                instanceId: 'appr-contract-drift',
+                approvalID: 'approval-contract-drift',
+                status: 'approved',
+                currentNode: 'expense_report.result_feedback',
+                workflowSkillId: 'expense-workflow',
+                workflowVersion: '1.0.0',
+                businessStatus: 'approved',
+                resultStatus: 'approved',
+                resultPayload: { decision: 'approved', business_status: 'approved', text: 'approved' },
+                outputs: [{ kind: 'approval_result', title: 'Approval decision', text: 'approved', status: 'approved' }],
+                approvalInstanceViewVerified: true,
+                approvalViews: { my_requests: true, all: true },
+            },
         });
         planMaclawAppInstallMock.mockResolvedValueOnce({
             schema: 'maclaw.app.install_plan.v1',
@@ -1328,7 +1474,6 @@ describe('AppsPage', () => {
                 runID: 'run-imported-republish',
                 appID: 'datasrv-installed-republish-app',
                 status: 'done',
-                definitionHash: 'sha256:imported-republish',
                 outputMode: 'content',
                 inputSummary: 'Imported DataSrv test evidence',
                 message: 'Imported DataSrv test evidence',
@@ -1376,6 +1521,7 @@ describe('AppsPage', () => {
                 testProtocol: { schema: 'maclaw.app.test_protocol.v1', requiredRuns: 1, cases: [{ id: 'smoke', name: 'Smoke', required: true, expectedOutputs: ['content'] }] },
             },
         };
+        (app.importedRunEvidence as any).definitionHash = testAppDefinitionFingerprint(app);
         window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
         planMaclawAppInstallMock.mockResolvedValueOnce({
             schema: 'maclaw.app.install_plan.v1',
@@ -1399,6 +1545,7 @@ describe('AppsPage', () => {
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
         const evidence = payload.apps[0].app.governance.testEvidence;
+        expect(evidence.definitionHash).toBe(testAppDefinitionFingerprint(app));
         expect(evidence.dependencyVerification).toEqual(expect.objectContaining({
             schema: 'maclaw.app.install_plan.v1',
             verifiedAt: '2026-06-21T10:58:00Z',
@@ -2517,6 +2664,7 @@ describe('AppsPage', () => {
                     business_status: 'pending_payment',
                     result_status: 'approved',
                     business_record: { id: 'exp-1', status: 'pending_payment' },
+                    current_node: 'expense.result_feedback',
                     text: 'approved with note',
                 }),
             },
@@ -2526,6 +2674,9 @@ describe('AppsPage', () => {
             ],
             artifacts: [{ id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'approval.pdf', status: 'ready' }],
         });
+        syncMaclawAppApprovalInstanceToDataSrvMock
+            .mockResolvedValueOnce({ synced: true, approval_id: 'approval-remote-submit', dataset_id: 'finance.expenses' })
+            .mockResolvedValueOnce({ synced: true, approval_id: 'approval-remote-final', record_id: 'exp-1', dataset_id: 'finance.expenses' });
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getAllByText('报销申请')[0]);
@@ -2581,6 +2732,30 @@ describe('AppsPage', () => {
         expect(completedPayload.outputs).toHaveLength(2);
         expect(completedPayload.artifacts[0].name).toBe('approval.pdf');
         expect(completedPayload.events.map((event: any) => event.action)).toContain('workflow_completed');
+        await waitFor(() => {
+            const history = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
+            expect(history.expense?.[0]?.approvalInstance).toMatchObject({
+                instanceId: 'appr-test-1',
+                status: 'approved',
+                currentNode: 'expense.result_feedback',
+                approvalID: 'approval-remote-final',
+                datasetID: 'finance.expenses',
+                objectRole: 'expense_report',
+                approvalObjectRole: 'expense_report',
+                approvalEvent: 'expense.submitted',
+                approvalWorkflowID: 'expense.submitted',
+                workflowSkillId: 'expense-approval-workflow',
+                workflowVersion: '1.0.0',
+                businessStatus: 'pending_payment',
+                resultStatus: 'approved',
+                recordID: 'exp-1',
+                detailURL: 'skill-run://run-test-1',
+                resultPayload: expect.objectContaining({ business_record: { id: 'exp-1', status: 'pending_payment' } }),
+                outputs: expect.arrayContaining([expect.objectContaining({ title: 'Expense record' })]),
+                artifacts: expect.arrayContaining([expect.objectContaining({ name: 'approval.pdf' })]),
+                approvalInstanceViewVerified: true,
+            });
+        });
         await waitFor(() => expect(syncMaclawAppApprovalInstanceToDataSrvMock).toHaveBeenCalledTimes(2));
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].dataset_id).toBe('finance.expenses');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].object_role).toBe('expense_report');
@@ -3653,6 +3828,67 @@ describe('AppsPage', () => {
         expect(runNLSkillAsyncMock).not.toHaveBeenCalled();
     });
 
+    it('does not block runtime when a blocking dependency belongs to another app', async () => {
+        const app = {
+            id: 'local-business-scoped-dep-app',
+            name: 'Scoped Dependency App',
+            description: 'Business app dependency scope gate',
+            category: 'CRM',
+            kind: 'enterprise_normal_app',
+            icon: 'briefcase',
+            accent: '#2f5f98',
+            source: 'local',
+            pinned: false,
+            recentUsedAt: '2026-06-17T00:00:00.000Z',
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_normal_app',
+                launchMode: 'business_workspace',
+                datasrv: { domain: 'crm', datasetID: 'crm.customers', objectRole: 'customer', preferredAction: 'crm.customer_upsert' },
+                appSkill: { id: 'crm-action-ready', name: 'CRM action', version: '1.0.0' },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [app.id],
+            customApps: [app],
+            recentUsedAtById: { [app.id]: app.recentUsedAt },
+        }));
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [
+                { id: app.id, name: app.name, kind: 'enterprise_normal_app' },
+                { id: 'other-app', name: 'Other App', kind: 'enterprise_normal_app' },
+            ],
+            dependencies: [{
+                id: 'other-blocked-skill',
+                version: '1.0.0',
+                kind: 'runtime_skill',
+                source: 'hub',
+                required: true,
+                installed: false,
+                health: 'missing',
+                action: 'blocked',
+                app_ids: ['other-app'],
+            }],
+            has_missing_required: true,
+            has_blocking_dependency: true,
+        });
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getAllByText('Scoped Dependency App')[0]);
+        fireEvent.click(screen.getByText('Run'));
+
+        await waitFor(() => expect(planMaclawAppInstallMock).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('crm-action-ready', expect.objectContaining({
+            app_id: app.id,
+            app_kind: 'enterprise_normal_app',
+            datasrv_domain: 'crm',
+            preferred_action: 'crm.customer_upsert',
+        })));
+        expect(screen.queryByText(/Scoped Dependency App is unavailable/)).toBeNull();
+    });
     it('passes selected file metadata to skill app runs', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
@@ -3986,6 +4222,19 @@ describe('AppsPage', () => {
         expect(screen.getByText('记录数')).not.toBeNull();
         expect(screen.getByText('PO-101')).not.toBeNull();
 		expect(container.querySelector('.apps-run-history')).not.toBeNull();
+        const history = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
+        expect(history['purchase-inbound']?.[0]).toMatchObject({
+            status: 'done',
+            outputMode: 'business',
+            resultPayload: {
+                mode: 'business_view',
+                target: 'procurement.purchase_order_review',
+                result_status: 'done',
+                business_status: 'done',
+                rows: [{ id: 'PO-100', status: 'open' }, { id: 'PO-101', status: 'closed' }],
+            },
+            outputs: [expect.objectContaining({ kind: 'table', status: 'done' })],
+        });
 	});
 
 	it('shows structured business errors for enterprise normal app operations', async () => {
@@ -4884,6 +5133,46 @@ describe('AppsPage', () => {
                 apps: [{ id: 'market-contract-approval', name: 'Contract Approval', kind: 'enterprise_approval_app' }],
                 dependencies: [{ id: 'contract-workflow', kind: 'workflow_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'installed' }],
                 app_versions: { 'market-contract-approval': { app_entry_version: '1', workflow_skills: [{ id: 'contract-workflow', kind: 'workflow_skill', source: 'hub' }] } },
+                install_evidence: {
+                    'market-contract-approval': {
+                        version_snapshot: { app_entry_version: '1', workflow_skills: [{ id: 'contract-workflow', kind: 'workflow_skill', source: 'hub' }] },
+                        dependencies: [{ id: 'contract-workflow', kind: 'workflow_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'installed' }],
+                        dependency_verification: {
+                            schema: 'maclaw.app.install_plan.v1',
+                            verified_at: '2026-06-26T08:00:00.000Z',
+                            app_count: 1,
+                            dependency_count: 1,
+                            has_missing_required: false,
+                            has_blocking_dependency: false,
+                            dependencies: [{ id: 'contract-workflow', kind: 'workflow_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'installed' }],
+                        },
+                        test_evidence: {
+                            run_id: 'run-hub-contract-approval',
+                            verified_at: '2026-06-26T08:01:00.000Z',
+                            primary_result: 'approved',
+                            approval_instance: {
+                                instanceId: 'approval-hub-contract-1',
+                                approvalID: 'approval-remote-hub-contract-1',
+                                recordID: 'contract-1',
+                                datasetID: 'legal.contracts',
+                                objectRole: 'contract',
+                                approvalEvent: 'contract.submitted',
+                                approvalWorkflowID: 'contract-workflow',
+                                status: 'approved',
+                                currentNode: 'contract.result_feedback',
+                                workflowSkillId: 'contract-workflow',
+                                workflowVersion: '1.0.0',
+                                businessStatus: 'executed',
+                                resultStatus: 'approved',
+                                resultPayload: { approval_result: 'approved', business_status: 'executed', business_record: { id: 'contract-1' } },
+                                outputs: [{ kind: 'approval_result', title: 'Approval decision', text: 'approved', status: 'approved' }],
+                                artifacts: [{ id: 'artifact-contract-approval', uri: 'artifact://contract/approval.pdf', name: 'contract-approval.pdf', status: 'ready' }],
+                                approvalInstanceViewVerified: true,
+                                approvalViews: { my_requests: true, pending_my_approval: true, handled: true, all: true },
+                            },
+                        },
+                    },
+                },
             },
         });
 
@@ -4905,6 +5194,33 @@ describe('AppsPage', () => {
         await waitFor(() => expect(within(row).getByText('Already installed · Source package 2 · installed 1 · 1 dependencies')).not.toBeNull());
         fireEvent.click(screen.getByText('Manage apps'));
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('Contract Approval'))).toBe(true);
+        const storedApp = latestStoredCustomApp('Contract Approval');
+        expect(storedApp.importedRunEvidence.approvalInstance).toMatchObject({
+            instanceId: 'approval-hub-contract-1',
+            approvalID: 'approval-remote-hub-contract-1',
+            recordID: 'contract-1',
+            datasetID: 'legal.contracts',
+            objectRole: 'contract',
+            approvalEvent: 'contract.submitted',
+            approvalWorkflowID: 'contract-workflow',
+            status: 'approved',
+            currentNode: 'contract.result_feedback',
+            workflowSkillId: 'contract-workflow',
+            workflowVersion: '1.0.0',
+            businessStatus: 'executed',
+            resultStatus: 'approved',
+            resultPayload: { approval_result: 'approved', business_status: 'executed', business_record: { id: 'contract-1' } },
+            outputs: [{ kind: 'approval_result', title: 'Approval decision', text: 'approved', status: 'approved' }],
+            artifacts: [{ id: 'artifact-contract-approval', uri: 'artifact://contract/approval.pdf', name: 'contract-approval.pdf', status: 'ready' }],
+            approvalInstanceViewVerified: true,
+        });
+        expect(storedApp.importedRunEvidence.dependencyVerification).toMatchObject({
+            schema: 'maclaw.app.install_plan.v1',
+            dependencyCount: 1,
+            hasMissingRequired: false,
+            hasBlockingDependency: false,
+        });
+        expect(storedApp.versionSnapshot).toMatchObject({ app_entry_version: '1' });
     });
     it('ignores Hub MaClaw App search results without an app id', async () => {
         searchMixedSkillsMock.mockResolvedValueOnce([{
@@ -4973,7 +5289,7 @@ describe('AppsPage', () => {
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('合同归档'))).toBe(false);
     });
 
-    it('installs an app from a pasted market manifest', () => {
+    it('installs an app from a pasted market manifest', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
@@ -4999,7 +5315,7 @@ describe('AppsPage', () => {
         });
         fireEvent.click(screen.getByText('安装'));
 
-        expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull();
+        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
         expect(screen.getAllByText('文档归档').length).toBeGreaterThan(0);
         fireEvent.click(screen.getByText('关闭'));
         expect(screen.getAllByText('文档归档').length).toBeGreaterThan(0);
@@ -5049,7 +5365,7 @@ describe('AppsPage', () => {
         expect(within(installResult).getByText('客户导入')).not.toBeNull();
         await waitFor(() => expect(within(installResult).getByText(/DataSrv 绑定已注册: 1/)).not.toBeNull());
     });
-    it('does not exceed the pinned app limit when installing pinned market apps', () => {
+    it('does not exceed the pinned app limit when installing pinned market apps', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
         for (const name of ['文档脱敏', '表格分析']) {
@@ -5081,6 +5397,7 @@ describe('AppsPage', () => {
             },
         });
         fireEvent.click(screen.getByText('安装'));
+        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
         fireEvent.click(screen.getByText('应用管理'));
 
         expect(screen.getByText('8/8')).not.toBeNull();
@@ -5391,6 +5708,65 @@ describe('AppsPage', () => {
         expect(JSON.stringify(auditPackage)).not.toContain('pack-unselected');
         expect(JSON.stringify(auditPackage)).not.toContain('market-pack-unselected');
         expect(screen.getByText('Installed: 1 · Skipped: 1')).not.toBeNull();
+    });
+
+    it('does not bypass dependency installation when market preview plan is still loading', async () => {
+        const selectedPlan = {
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: 'market-race-install', name: 'Race Install App', kind: 'tool_app' }],
+            dependencies: [{ id: 'race-install-skill', kind: 'runtime_skill', source: 'hub', required: true, installed: false, health: 'missing', action: 'blocked', app_ids: ['market-race-install'] }],
+            has_missing_required: true,
+            has_blocking_dependency: true,
+        };
+        const repairedPlan = {
+            ...selectedPlan,
+            dependencies: [{ id: 'race-install-skill', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'installed', app_ids: ['market-race-install'] }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        };
+        let resolvePreviewPlan: (value: unknown) => void = () => undefined;
+        planMaclawAppInstallMock
+            .mockImplementationOnce(() => new Promise((resolve) => { resolvePreviewPlan = resolve; }))
+            .mockResolvedValueOnce(selectedPlan);
+        installMaclawAppDependenciesMock.mockResolvedValueOnce(repairedPlan);
+
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Add from market'));
+        fireEvent.click(await screen.findByText('Import app package'));
+        fireEvent.change(screen.getByPlaceholderText('Paste app package JSON (maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json)'), {
+            target: {
+                value: JSON.stringify({
+                    schema: 'maclaw.app.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    installUnit: 'skill',
+                    app: {
+                        id: 'race-install',
+                        name: 'Race Install App',
+                        description: 'Install before preview plan resolves',
+                        category: 'Legal',
+                        kind: 'tool_app',
+                        icon: 'sheet',
+                        launchMode: 'fixed_skill_ui',
+                        binding: { skill: { id: 'race-install-skill', appDefinitionFile: 'maclaw.apps.json', inputMode: 'file' } },
+                    },
+                }),
+            },
+        });
+        await waitFor(() => expect(planMaclawAppInstallMock).toHaveBeenCalledTimes(1));
+
+        fireEvent.click(screen.getByText('Install'));
+
+        await waitFor(() => expect(planMaclawAppInstallMock).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
+        const dependencyPackage = JSON.parse(String(installMaclawAppDependenciesMock.mock.calls[0][0]));
+        expect(dependencyPackage.schema).toBe('maclaw.app.v1');
+        expect(dependencyPackage.app.id).toBe('market-race-install');
+        await waitFor(() => expect(recordMaclawAppInstallMock).toHaveBeenCalledTimes(1));
+        expect(screen.getByText('Installed: 1 · Skipped: 0')).not.toBeNull();
+
+        resolvePreviewPlan(selectedPlan);
     });
 
     it('keeps dependency verification visible after single market app install', async () => {
@@ -5776,7 +6152,7 @@ describe('AppsPage', () => {
         expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(false);
     });
 
-    it('preserves custom uploaded-style app icons from installed manifests', () => {
+    it('preserves custom uploaded-style app icons from installed manifests', async () => {
         const customIconDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
         render(<AppsPage lang="en" />);
 
@@ -5805,9 +6181,13 @@ describe('AppsPage', () => {
         });
         fireEvent.click(screen.getByText('Install'));
 
-        expect(document.querySelector(`img.apps-custom-app-icon[src="${customIconDataUrl}"]`)).not.toBeNull();
+        await waitFor(() => expect(document.querySelector(`img.apps-custom-app-icon[src="${customIconDataUrl}"]`)).not.toBeNull());
         fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
-        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Custom Icon Tool')) as HTMLElement;
+        const row = await waitFor(() => {
+            const found = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Custom Icon Tool')) as HTMLElement | undefined;
+            expect(found).toBeTruthy();
+            return found as HTMLElement;
+        });
         fireEvent.click(within(row).getByTitle('Manifest'));
         expect(document.querySelector('.apps-manage-manifest')?.textContent).toContain(customIconDataUrl);
     });
@@ -5868,7 +6248,7 @@ describe('AppsPage', () => {
         expect(Array.from(outputSelect.options).map((option) => option.value)).toEqual(['pdf']);
     });
 
-    it('installs apps from a pasted app pack manifest', () => {
+    it('installs apps from a pasted app pack manifest', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getByTitle('应用程序工作室'));
@@ -5900,7 +6280,7 @@ describe('AppsPage', () => {
         });
         fireEvent.click(screen.getByText('安装'));
 
-        expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull();
+        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
         expect(screen.getAllByText('文档校验').length).toBeGreaterThan(0);
     });
 
@@ -6391,9 +6771,26 @@ describe('AppsPage', () => {
                         workspace_layout_entry: 'approval_workspace',
                         workspace_layout_template: 'dashboard',
                         workspace_layout_density: 'spacious',
+                        workspace_layout_primary_region: 'request_form',
+                        workspace_layout_output_region: 'result_panel',
+                        workspace_layout_region_count: 3,
+                        workspace_layout_region_ids: ['request_form', 'approval_inbox', 'result_panel'],
                         workspace_layout_navigation: ['my_requests', 'pending_my_approval', 'attention'],
                         workspace_layout_list_columns: ['title', 'applicant', 'current_node', 'status'],
-                        workspace_layout: { entry: 'approval_workspace', template: 'dashboard', density: 'spacious', navigation: ['my_requests', 'pending_my_approval', 'attention'], list: { columns: ['title', 'applicant', 'current_node', 'status'] }, region_count: 4 },
+                        workspace_layout: {
+                            entry: 'approval_workspace',
+                            template: 'dashboard',
+                            density: 'spacious',
+                            primaryRegion: 'request_form',
+                            outputRegion: 'result_panel',
+                            navigation: ['my_requests', 'pending_my_approval', 'attention'],
+                            list: { columns: ['title', 'applicant', 'current_node', 'status'] },
+                            regions: [
+                                { id: 'request_form', role: 'input', placement: 'left' },
+                                { id: 'approval_inbox', role: 'instance_list', placement: 'center' },
+                                { id: 'result_panel', role: 'output', placement: 'bottom' },
+                            ],
+                        },
                         governance_status: 'local_tested',
                         test_evidence: {
                             run_id: 'run-expense-imported',
@@ -6411,21 +6808,24 @@ describe('AppsPage', () => {
                             test_protocol_fingerprint: 'proto-expense',
                             artifact_present: true,
                             artifact_name: 'expense-approval-evidence.zip',
+                            artifacts: [{ id: 'artifact-expense-evidence', uri: 'artifact://expense/evidence.zip', name: 'expense-approval-evidence.zip', status: 'ready' }],
                             output_count: 3,
+                            outputs: [{ kind: 'table', title: 'Approval rows', text: 'expense approved', status: 'ready', data: { rows: [{ id: 'expense-1', status: 'finance_approved' }] } }],
                             primary_result: 'approval_result',
                             result_payload: { decision: 'approved', business_status: 'finance_approved' },
-                            dependency_verification: {
-                                schema: 'maclaw.app.install_plan.v1',
-                                verified_at: '2026-06-21T10:58:00Z',
-                                dependency_count: 1,
-                                has_missing_required: false,
-                                has_blocking_dependency: false,
-                                has_workflow_contract_issue: false,
-                                workflow_contract_issue_count: 0,
-                                has_governance_review_issue: false,
-                                governance_review_issue_count: 0,
-                                dependencies: [{ id: 'expense-workflow', version: '2.1.0', kind: 'workflow_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: ['datasrv-installed-mis.expense'] }],
-                            },
+                            approval_instance: { approval_id: 'approval-remote-imported', record_id: 'expense-1', status: 'approved', current_node: 'expense_report.result_feedback', approval_instance_view_verified: true, approval_views: { my_requests: true, handled: true, all: true } },
+                        },
+                        dependency_verification: {
+                            schema: 'maclaw.app.install_plan.v1',
+                            verified_at: '2026-06-21T10:58:00Z',
+                            dependency_count: 1,
+                            has_missing_required: false,
+                            has_blocking_dependency: false,
+                            has_workflow_contract_issue: false,
+                            workflow_contract_issue_count: 0,
+                            has_governance_review_issue: false,
+                            governance_review_issue_count: 0,
+                            dependencies: [{ id: 'expense-workflow', version: '2.1.0', kind: 'workflow_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: ['mis.expense'] }],
                         },
                         test_evidence_dependency_verified_at: '2026-06-21T10:58:00Z',
                         test_evidence_dependency_count: 1,
@@ -6452,7 +6852,8 @@ describe('AppsPage', () => {
         const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
         const added = stored.customApps.find((app: any) => app.name === 'Expense Approval Installed');
         expect(added.kind).toBe('enterprise_approval_app');
-        expect(added.manifest.datasrv).toMatchObject({ domain: 'finance', datasetID: 'finance.expense_forms', objectRole: 'expense_report', blueprintID: 'mis.expense.approval', templateID: 'finance.expenses' });
+        expect(added.id).toBe('datasrv-installed-mis.expense');
+        expect(added.manifest.datasrv).toMatchObject({ appID: 'mis.expense', domain: 'finance', datasetID: 'finance.expense_forms', objectRole: 'expense_report', blueprintID: 'mis.expense.approval', templateID: 'finance.expenses' });
         expect(added.manifest.appSkill).toMatchObject({ id: 'expense-super-skill', version: '1.0.0' });
         expect(added.manifest.dependencies.skills.find((dep: any) => dep.id === 'expense-workflow')).toMatchObject({ version: '2.1.0', kind: 'workflow_skill' });
         expect(added.manifest.testProtocol).toMatchObject({
@@ -6482,8 +6883,15 @@ describe('AppsPage', () => {
         });
         expect(added.manifest.ui.layouts.approval_workspace.template).toBe('dashboard');
         expect(added.manifest.ui.layouts.approval_workspace.density).toBe('spacious');
+        expect(added.manifest.ui.layouts.approval_workspace.primaryRegion).toBe('request_form');
+        expect(added.manifest.ui.layouts.approval_workspace.outputRegion).toBe('result_panel');
         expect(added.manifest.ui.layouts.approval_workspace.navigation).toEqual(['my_requests', 'pending_my_approval', 'attention']);
         expect(added.manifest.ui.layouts.approval_workspace.list.columns).toEqual(['title', 'applicant', 'current_node', 'status']);
+        expect(added.manifest.ui.layouts.approval_workspace.regions).toEqual([
+            { id: 'request_form', role: 'input', placement: 'left' },
+            { id: 'approval_inbox', role: 'instance_list', placement: 'center' },
+            { id: 'result_panel', role: 'output', placement: 'bottom' },
+        ]);
         expect(added.manifest.ui.layouts.approval_workspace.studio.importedFromDataSrv).toBe(true);
         expect(added.importedRunEvidence).toMatchObject({
             runID: 'run-expense-imported',
@@ -6491,7 +6899,9 @@ describe('AppsPage', () => {
             testProtocolFingerprint: 'proto-expense',
             outputMode: 'approval_result',
             artifactName: 'expense-approval-evidence.zip',
+            artifacts: [{ id: 'artifact-expense-evidence', uri: 'artifact://expense/evidence.zip', name: 'expense-approval-evidence.zip', status: 'ready' }],
             resultPayload: { decision: 'approved', business_status: 'finance_approved' },
+            outputs: [{ kind: 'table', title: 'Approval rows', text: 'expense approved', status: 'ready', data: { rows: [{ id: 'expense-1', status: 'finance_approved' }] } }],
             dependencyVerification: {
                 schema: 'maclaw.app.install_plan.v1',
                 verifiedAt: '2026-06-21T10:58:00Z',
@@ -6505,7 +6915,16 @@ describe('AppsPage', () => {
             },
         });
         expect(added.importedRunEvidence.dependencyVerification.dependencies[0]).toMatchObject({ id: 'expense-workflow', installed: true, health: 'ready' });
-        expect(added.importedRunEvidence.outputs[0].text).toBe('3');
+        expect(added.importedRunEvidence.approvalInstance).toMatchObject({
+            instanceId: 'approval-remote-imported',
+            approvalID: 'approval-remote-imported',
+            recordID: 'expense-1',
+            status: 'approved',
+            currentNode: 'expense_report.result_feedback',
+            approvalInstanceViewVerified: true,
+            approvalViews: { my_requests: true, handled: true, all: true },
+        });
+        expect(added.importedRunEvidence.outputs[0]).toMatchObject({ kind: 'table', title: 'Approval rows', text: 'expense approved' });
 
         fireEvent.click(screen.getByText('Expense Approval Installed'));
         const runtimeVersionSnapshot = await waitFor(() => {
@@ -6534,6 +6953,58 @@ describe('AppsPage', () => {
         expect(within(runtimeWorkflowContract as HTMLElement).getByText('record_ref, applicant, business_payload')).not.toBeNull();
         expect(within(runtimeWorkflowContract as HTMLElement).getByText('Outputs')).not.toBeNull();
         expect(within(runtimeWorkflowContract as HTMLElement).getByText('approved, rejected, attention')).not.toBeNull();
+        await waitFor(() => expect(planMaclawAppInstallMock).toHaveBeenCalled());
+        const runtimePlanPayload = JSON.parse(planMaclawAppInstallMock.mock.calls.at(-1)?.[0] as string);
+        expect(runtimePlanPayload.app.id).toBe('mis.expense');
+    });
+    it('blocks DataSrv installed MaClaw apps at runtime when dependency verification fails', async () => {
+        getMISDataConfigMock.mockResolvedValue({ enabled: true, endpoint: 'http://datasrv.test', token: 'token' });
+        planMaclawAppInstallMock.mockResolvedValue({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: 'mis.blocked', name: 'Blocked DataSrv Approval', kind: 'enterprise_approval_app' }],
+            dependencies: [{ id: 'blocked-workflow', version: '9.9.9', kind: 'workflow_skill', required: true, source: 'hub', installed: false, health: 'missing', action: 'blocked', app_ids: ['mis.blocked'] }],
+            has_missing_required: true,
+            has_blocking_dependency: true,
+        });
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({
+                service: 'MaClawDataSrv',
+                domains: ['finance'],
+                app_installations: [{
+                    app_id: 'mis.blocked',
+                    blueprint_id: 'mis.blocked.approval',
+                    name: 'Blocked DataSrv Approval',
+                    version: '1',
+                    kind: 'enterprise_approval_app',
+                    role_bindings: [{ object_role: 'expense_report', domain: 'finance', dataset_id: 'finance.expense_forms', required: true }],
+                    metadata: {
+                        workflow_skill_ids: ['blocked-workflow'],
+                        workflow_skill_versions: ['blocked-workflow@9.9.9'],
+                        approval_binding_versions: ['expense.submitted:blocked-workflow@9.9.9'],
+                        dependencies: [{ id: 'blocked-workflow', kind: 'workflow_skill', required: true, source: 'hub' }],
+                    },
+                }],
+            }),
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        render(<AppsPage lang="en" />);
+        fireEvent.click(screen.getByTitle('App Studio'));
+
+        await waitFor(() => expect(screen.getByText('Blocked DataSrv Approval')).not.toBeNull());
+        fireEvent.click(screen.getByText('Add to panel'));
+        fireEvent.click(screen.getByText('Close'));
+        fireEvent.click(screen.getByText('Blocked DataSrv Approval'));
+
+        await waitFor(() => expect(planMaclawAppInstallMock).toHaveBeenCalled());
+        const blockedPlanPayload = JSON.parse(planMaclawAppInstallMock.mock.calls.at(-1)?.[0] as string);
+        expect(blockedPlanPayload.app.id).toBe('mis.blocked');
+        await waitFor(() => expect(screen.getByText(/Blocked DataSrv Approval is unavailable: blocked-workflow is not installed\./)).not.toBeNull());
+        fireEvent.click(screen.getByText('Run'));
+
+        expect(runNLSkillAsyncMock).not.toHaveBeenCalled();
+        expect(screen.getByText(/Blocked DataSrv Approval is unavailable: blocked-workflow is not installed\./)).not.toBeNull();
     });
     it('turns skill maclaw.apps.json entries into registered tool apps', async () => {
         listSkillAppManifestsMock.mockResolvedValue([

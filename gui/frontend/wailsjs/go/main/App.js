@@ -307,12 +307,24 @@ export function SearchProjects(arg1, arg2) {
   return window['go']['main']['App']['SearchProjects'](arg1, arg2);
 }
 
+export function ListTasks(arg1) {
+  return window['go']['main']['App']['ListTasks'](arg1);
+}
+
+export function SearchTasks(arg1, arg2) {
+  return window['go']['main']['App']['SearchTasks'](arg1, arg2);
+}
+
 export function CreateRecentTask(arg1) {
   return window['go']['main']['App']['CreateRecentTask'](arg1);
 }
 
 export function CreateRecentTaskWithWorkingDir(arg1, arg2) {
   return window['go']['main']['App']['CreateRecentTaskWithWorkingDir'](arg1, arg2);
+}
+
+export function CreateTask(arg1, arg2) {
+  return window['go']['main']['App']['CreateTask'](arg1, arg2);
 }
 
 export function ForkRecentTask(arg1) {
@@ -323,8 +335,20 @@ export function ForkConversationToProject(arg1) {
   return window['go']['main']['App']['ForkConversationToProject'](arg1);
 }
 
+export function SaveCurrentChatAsTask(arg1) {
+  return window['go']['main']['App']['SaveCurrentChatAsTask'](arg1);
+}
+
+export function SuggestCurrentTaskName() {
+  return window['go']['main']['App']['SuggestCurrentTaskName']();
+}
+
 export function ResumeProject(arg1) {
   return window['go']['main']['App']['ResumeProject'](arg1);
+}
+
+export function ResumeTask(arg1) {
+  return window['go']['main']['App']['ResumeTask'](arg1);
 }
 
 export function CheckVEApprovalCapabilityStatus(arg1) {

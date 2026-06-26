@@ -4650,7 +4650,6 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         };
         try {
             if (isWorkflowFormSubmit) {
-                await waitForForegroundIdle(submitRoundSessionKey);
                 workflowSubmitRound = startAgentViewSubmitRound(createForegroundRequestID());
             }
             const rawResponse = await SubmitAgentView({ view_id: viewId || "", data, request_id: workflowSubmitRound?.requestId || undefined }) as AIAssistantSendResult | null | undefined;
@@ -4699,7 +4698,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 displayText: localizeText(uiLang, "Submit structured data", "\u63d0\u4ea4\u7ed3\u6784\u5316\u6570\u636e", "\u63d0\u4ea4\u7d50\u69cb\u5316\u8cc7\u6599"),
             });
         }
-    }, [activeSessionKeyForEvents, clearTransientProgress, clearWorkflowFormAliasForView, emitPetStateForAssistant, flushStreamTokenBuffer, forgetInFlightRound, injectSupplementary, preferences, rememberInFlightRound, resetActiveRound, resetStreamTokenBuffer, sendMessage, setRoundState, startResponseTimeout, stopResponseTimeout, uiLang, updateVisibleAgentViewForSession, waitForForegroundIdle]);
+    }, [activeSessionKeyForEvents, clearTransientProgress, clearWorkflowFormAliasForView, emitPetStateForAssistant, flushStreamTokenBuffer, forgetInFlightRound, injectSupplementary, preferences, rememberInFlightRound, resetActiveRound, resetStreamTokenBuffer, sendMessage, setRoundState, startResponseTimeout, stopResponseTimeout, uiLang, updateVisibleAgentViewForSession]);
 
     const dismissAgentView = useCallback(async (viewId: string | undefined, data?: Record<string, unknown>, options?: { force?: boolean }) => {
         // force: unconditionally clear frontend UI (even for workflow forms that

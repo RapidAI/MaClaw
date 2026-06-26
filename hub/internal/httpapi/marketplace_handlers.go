@@ -642,10 +642,30 @@ func enterpriseMaclawAppCapabilityMetadata(pkg map[string]any, entry enterpriseM
 		"x_maclaw_apps_preview":        []map[string]any{{"id": entry.ID, "name": entry.Name, "kind": entry.Kind, "description": entry.Description}},
 		"submitted_package_app_count":  len(anySliceFromMap(pkg, "apps")),
 	}
-	if entry.Governance != nil {
-		if workspaceLayout := anyMapFromMap(entry.Governance, "workspaceLayout", "workspace_layout"); workspaceLayout != nil {
-			metadata["workspace_layout"] = workspaceLayout
+	if workspaceLayout := enterpriseMaclawAppWorkspaceLayoutForEntry(entry); workspaceLayout != nil {
+		metadata["workspace_layout"] = workspaceLayout
+		if primary := firstNonEmpty(stringFromAny(workspaceLayout["primaryRegion"]), stringFromAny(workspaceLayout["primary_region"])); primary != "" {
+			metadata["workspace_layout_primary_region"] = primary
 		}
+		if output := firstNonEmpty(stringFromAny(workspaceLayout["outputRegion"]), stringFromAny(workspaceLayout["output_region"])); output != "" {
+			metadata["workspace_layout_output_region"] = output
+		}
+		if regions := anySliceFromMap(workspaceLayout, "regions"); len(regions) > 0 {
+			metadata["workspace_layout_region_count"] = len(regions)
+			ids := make([]string, 0, len(regions))
+			for _, raw := range regions {
+				if region, ok := raw.(map[string]any); ok {
+					if id := stringFromMap(region, "id"); id != "" {
+						ids = append(ids, id)
+					}
+				}
+			}
+			if len(ids) > 0 {
+				metadata["workspace_layout_region_ids"] = ids
+			}
+		}
+	}
+	if entry.Governance != nil {
 		if resultContract := anyMapFromMap(entry.Governance, "resultContract", "result_contract"); resultContract != nil {
 			metadata["result_contract"] = resultContract
 		}
@@ -661,6 +681,37 @@ func enterpriseMaclawAppCapabilityMetadata(pkg map[string]any, entry enterpriseM
 		}
 	}
 	return compactMetadata(metadata)
+}
+
+func enterpriseMaclawAppWorkspaceLayoutForEntry(entry enterpriseMaclawAppPackageEntry) map[string]any {
+	if entry.Governance != nil {
+		if workspaceLayout := anyMapFromMap(entry.Governance, "workspaceLayout", "workspace_layout"); workspaceLayout != nil {
+			return workspaceLayout
+		}
+	}
+	ui := anyMapFromMap(entry.App, "ui")
+	if ui == nil {
+		return nil
+	}
+	entryName := stringFromMap(ui, "entry")
+	layouts := anyMapFromMap(ui, "layouts")
+	layout := anyMapFromMap(layouts, entryName)
+	if layout == nil {
+		return nil
+	}
+	out := map[string]any{
+		"schema": stringFromMap(ui, "schema"),
+		"entry":  entryName,
+	}
+	if generated, ok := ui["generated"].(bool); ok {
+		out["generated"] = generated
+	}
+	for _, key := range []string{"template", "density", "primaryRegion", "primary_region", "outputRegion", "output_region", "navigation", "list", "regions"} {
+		if value, ok := layout[key]; ok {
+			out[key] = value
+		}
+	}
+	return compactMetadata(out)
 }
 
 func CapabilityMaclawAppPackageHandler(svc *capability.Service, identity viewerAuthenticator) http.HandlerFunc {

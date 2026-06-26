@@ -119,6 +119,10 @@ function emitProjectTaskClosed(projectPath: string) {
     }
 }
 
+function requestSaveCurrentChatAsTask() {
+    window.dispatchEvent(new CustomEvent('ai-save-current-chat-as-task'));
+}
+
 type SidebarRecentTasksProps = {
     lang: string;
     themeMode?: 'light' | 'dark';
@@ -291,6 +295,15 @@ export const SidebarRecentTasks = ({
                 style={{ width: '22px', height: '22px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: '1px solid color-mix(in srgb, var(--theme-primary) 44%, var(--theme-border))', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-primary) 13%, var(--theme-surface))', color: 'var(--theme-primary)', cursor: creatingTask ? 'default' : 'pointer', lineHeight: 1, padding: 0, opacity: creatingTask ? 0.55 : 1, boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 10%, transparent)' }}
             >
                 <CreateTaskIcon />
+            </button>
+            <button
+                type="button"
+                onClick={requestSaveCurrentChatAsTask}
+                aria-label={textForLang(lang, 'Save current chat as task', '保存当前对话为任务', '保存目前對話為任務')}
+                title={textForLang(lang, 'Save current chat as task', '保存当前对话为任务', '保存目前對話為任務')}
+                style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: '1px solid color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border))', borderRadius: '6px', background: 'var(--theme-surface)', color: 'var(--theme-primary)', cursor: 'pointer', lineHeight: 1, padding: '4px 7px', fontSize: '0.66rem', fontWeight: 700, whiteSpace: 'nowrap' }}
+            >
+                {textForLang(lang, 'Save as Task', '保存为任务', '保存為任務')}
             </button>
         </div>
         {visibleRecentProjects.length === 0 ? (

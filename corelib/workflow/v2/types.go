@@ -647,11 +647,14 @@ type PhaseSpec struct {
 
 // PhaseInputSchemaSpec declares a structured form for a phase.
 type PhaseInputSchemaSpec struct {
-	Title           string                `json:"title"`
-	Description     string                `json:"description,omitempty"`
-	TitleI18N       map[string]string     `json:"title_i18n,omitempty"`
-	DescriptionI18N map[string]string     `json:"description_i18n,omitempty"`
-	Fields          []PhaseInputFieldSpec `json:"fields"`
+	Title                string                      `json:"title"`
+	Description          string                      `json:"description,omitempty"`
+	TitleI18N            map[string]string           `json:"title_i18n,omitempty"`
+	DescriptionI18N      map[string]string           `json:"description_i18n,omitempty"`
+	Fields               []PhaseInputFieldSpec       `json:"fields"`
+	Variants             []PhaseInputVariantSpec     `json:"variants,omitempty"`
+	AcceptsResume        bool                        `json:"accepts_resume,omitempty"`
+	AcceptsSupplementary *SupplementaryDocConfigSpec `json:"accepts_supplementary,omitempty"`
 }
 
 // Clone returns a deep copy of the PhaseInputSchemaSpec.
@@ -669,6 +672,23 @@ func (s *PhaseInputSchemaSpec) Clone() *PhaseInputSchemaSpec {
 		cp.Fields[i].DescriptionI18N = cloneStringMap(s.Fields[i].DescriptionI18N)
 		cp.Fields[i].PlaceholderI18N = cloneStringMap(s.Fields[i].PlaceholderI18N)
 		cp.Fields[i].Options = append([]PhaseInputOptionSpec(nil), s.Fields[i].Options...)
+	}
+	cp.Variants = make([]PhaseInputVariantSpec, len(s.Variants))
+	copy(cp.Variants, s.Variants)
+	for i := range cp.Variants {
+		cp.Variants[i].Fields = make([]PhaseInputFieldSpec, len(s.Variants[i].Fields))
+		copy(cp.Variants[i].Fields, s.Variants[i].Fields)
+		for j := range cp.Variants[i].Fields {
+			cp.Variants[i].Fields[j].LabelI18N = cloneStringMap(s.Variants[i].Fields[j].LabelI18N)
+			cp.Variants[i].Fields[j].DescriptionI18N = cloneStringMap(s.Variants[i].Fields[j].DescriptionI18N)
+			cp.Variants[i].Fields[j].PlaceholderI18N = cloneStringMap(s.Variants[i].Fields[j].PlaceholderI18N)
+			cp.Variants[i].Fields[j].Options = append([]PhaseInputOptionSpec(nil), s.Variants[i].Fields[j].Options...)
+		}
+	}
+	if s.AcceptsSupplementary != nil {
+		supp := *s.AcceptsSupplementary
+		supp.AcceptedTypes = append([]string(nil), s.AcceptsSupplementary.AcceptedTypes...)
+		cp.AcceptsSupplementary = &supp
 	}
 	return &cp
 }
@@ -702,6 +722,20 @@ type PhaseInputFieldSpec struct {
 	MinLength       *int                   `json:"min_length,omitempty"`
 	MaxLength       *int                   `json:"max_length,omitempty"`
 	Pattern         string                 `json:"pattern,omitempty"`
+	Reusable        bool                   `json:"reusable,omitempty"`
+}
+
+type PhaseInputVariantSpec struct {
+	ID     string                `json:"id"`
+	Label  string                `json:"label"`
+	Fields []PhaseInputFieldSpec `json:"fields"`
+}
+
+type SupplementaryDocConfigSpec struct {
+	Label         string   `json:"label"`
+	Description   string   `json:"description"`
+	MaxFiles      int      `json:"max_files,omitempty"`
+	AcceptedTypes []string `json:"accepted_types,omitempty"`
 }
 
 // PhaseInputOptionSpec defines a selectable option.

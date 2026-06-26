@@ -147,7 +147,9 @@ type BackendAppInstallRecord = {
     app_versions?: Record<string, BackendAppInstallVersionSnapshot>;
     workspace_layout?: Record<string, unknown>;
 	result_contract?: Record<string, unknown>;
+	workflow_contract?: Record<string, unknown>;
 	test_evidence?: Record<string, unknown>;
+	dependency_verification?: Record<string, unknown>;
 	install_evidence?: Record<string, unknown>;
 	package?: Record<string, unknown>;
 };
@@ -244,6 +246,7 @@ type AppManifestBinding = {
         approvalBindings?: AppApprovalBinding[];
     };
     datasrv?: {
+        appID?: string;
         domain: string;
         datasetID?: string;
         objectRole?: string;
@@ -384,7 +387,38 @@ type AppRunHistoryEntry = {
     resultPayload?: Record<string, unknown>;
     outputs?: ApprovalInstanceOutputView[];
     dependencyVerification?: AppRunEvidenceDependencyVerification;
+    approvalInstance?: AppRunApprovalInstanceEvidence;
     at: string;
+};
+
+type AppRunApprovalInstanceEvidence = {
+    instanceId: string;
+    approvalInstanceId?: string;
+    approvalID?: string;
+    workflowInstanceId?: string;
+    status: string;
+    lane?: string;
+    currentNode?: string;
+    datasetID?: string;
+    blueprintID?: string;
+    objectRole?: string;
+    approvalObjectRole?: string;
+    approvalEvent?: string;
+    approvalWorkflowID?: string;
+    workflowSkillId?: string;
+    workflowVersion?: string;
+    businessStatus?: string;
+    resultStatus?: string;
+    result?: string;
+    recordID?: string;
+    detailURL?: string;
+    resultPayload?: Record<string, unknown>;
+    outputs?: ApprovalInstanceOutputView[];
+    artifacts?: ApprovalInstanceArtifactView[];
+    viewVerified?: boolean;
+    approvalInstanceViewVerified?: boolean;
+    approvalViews?: Record<string, unknown>;
+    verifiedAt?: string;
 };
 
 type AppRunEvidenceDependencyVerification = {
@@ -1331,7 +1365,7 @@ const labels = {
         upgradedItem: 'Upgraded',
         skippedItem: 'Skipped',
         installDetails: 'Install details',
-        hubInstallSummary: 'Source package {source} 路 installed {installed}',
+        hubInstallSummary: 'Source package {source} · installed {installed}',
         hubInstallDependencySummary: '{count} dependencies',
         installRecords: 'Recent installs',
         installRecordsHint: 'Local app package installs and Skill dependency audit',
@@ -2278,6 +2312,7 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
             entryKind: kind,
             launchMode: defaultLaunchModeForKind(kind),
             datasrv: {
+                appID,
                 domain,
                 datasetID: String(primaryBinding.dataset_id || primaryBinding.datasetID || '').trim() || undefined,
                 objectRole: String(primaryBinding.object_role || primaryBinding.objectRole || '').trim() || undefined,
@@ -2517,6 +2552,7 @@ function normalizeImportedRunEvidence(raw: unknown): AppRunHistoryEntry | undefi
         resultPayload: value?.resultPayload && typeof value.resultPayload === 'object' ? value.resultPayload as Record<string, unknown> : undefined,
         outputs: Array.isArray(value?.outputs) ? value.outputs : undefined,
         dependencyVerification,
+        approvalInstance: normalizeAppRunApprovalInstanceEvidence((value as any)?.approvalInstance || (value as any)?.approval_instance || (value as any)?.approval),
         at,
     };
 }
@@ -2618,9 +2654,12 @@ function dataSrvInstalledRunEvidence(metadata: Record<string, any>, appID: strin
     const runID = String(evidence.run_id || evidence.runId || metadata.test_evidence_run_id || '').trim();
     if (!runID) return undefined;
     const artifactName = String(evidence.artifact_name || evidence.artifactName || metadata.test_evidence_artifact_name || '').trim();
-    const artifactPresent = !!(evidence.artifact_present ?? evidence.artifactPresent ?? metadata.test_evidence_artifact_present);
+    const evidenceArtifacts = Array.isArray(evidence.artifacts) ? evidence.artifacts as ApprovalInstanceArtifactView[] : [];
+    const artifactPresent = !!(evidence.artifact_present ?? evidence.artifactPresent ?? metadata.test_evidence_artifact_present) || evidenceArtifacts.length > 0;
     const resultPayload = (evidence.result_payload || evidence.resultPayload || metadata.test_evidence_result_payload) as Record<string, unknown> | undefined;
     const outputCount = Number(evidence.output_count ?? evidence.outputCount ?? metadata.test_evidence_output_count ?? 0) || 0;
+    const rawEvidenceOutputs = firstAppEvidenceValue(evidence.outputs, evidence.output_blocks, evidence.outputBlocks, metadata.test_evidence_outputs, metadata.outputs);
+    const evidenceOutputs = normalizeApprovalOutputs(Array.isArray(rawEvidenceOutputs) ? rawEvidenceOutputs as Array<SkillRunOutputBlockView | ApprovalInstanceOutputView | null | undefined> : undefined) || [];
     const primaryResult = String(evidence.primary_result || evidence.primaryResult || metadata.test_evidence_primary_result || '').trim();
     const testProtocolFingerprint = appEvidenceString(evidence.testProtocolFingerprint, evidence.test_protocol_fingerprint, evidence.testProtocolHash, evidence.test_protocol_hash, metadata.test_evidence_test_protocol_fingerprint);
     return normalizeImportedRunEvidence({
@@ -2632,11 +2671,12 @@ function dataSrvInstalledRunEvidence(metadata: Record<string, any>, appID: strin
         outputMode: primaryResult || 'imported',
         inputSummary: 'Imported DataSrv test evidence',
         message: primaryResult || 'Imported DataSrv test evidence',
-        artifactName: artifactPresent ? artifactName || undefined : undefined,
-        artifacts: artifactPresent && artifactName ? [{ name: artifactName, status: 'ready' }] : undefined,
+        artifactName: artifactPresent ? artifactName || evidenceArtifacts[0]?.name || undefined : undefined,
+        artifacts: evidenceArtifacts.length > 0 ? evidenceArtifacts : artifactPresent && artifactName ? [{ name: artifactName, status: 'ready' }] : undefined,
         resultPayload: resultPayload && typeof resultPayload === 'object' ? resultPayload : undefined,
-        outputs: outputCount > 0 ? [{ type: 'summary', title: 'Imported outputs', text: String(outputCount) }] : undefined,
+        outputs: evidenceOutputs.length > 0 ? evidenceOutputs : outputCount > 0 ? [{ type: 'summary', title: 'Imported outputs', text: String(outputCount) }] : undefined,
         dependencyVerification: dataSrvInstalledDependencyVerificationEvidence(metadata, evidence),
+        approvalInstance: firstAppEvidenceValue(evidence.approvalInstance, evidence.approval_instance, evidence.approval, metadata.test_evidence_approval_instance, metadata.approvalInstance, metadata.approval_instance),
         at: String(evidence.verified_at || evidence.verifiedAt || metadata.test_evidence_verified_at || '').trim() || new Date().toISOString(),
     });
 }
@@ -2685,8 +2725,8 @@ function dataSrvInstalledWorkspaceLayout(metadata: Record<string, any>, kind: Ap
         ...currentLayout,
         ...(String(raw.template || metadata.workspace_layout_template || '').trim() ? { template: String(raw.template || metadata.workspace_layout_template).trim() } : {}),
         ...(String(raw.density || metadata.workspace_layout_density || '').trim() ? { density: String(raw.density || metadata.workspace_layout_density).trim() } : {}),
-        ...(String(raw.primary_region || raw.primaryRegion || '').trim() ? { primaryRegion: String(raw.primary_region || raw.primaryRegion).trim() } : {}),
-        ...(String(raw.output_region || raw.outputRegion || '').trim() ? { outputRegion: String(raw.output_region || raw.outputRegion).trim() } : {}),
+        ...(String(raw.primary_region || raw.primaryRegion || metadata.workspace_layout_primary_region || '').trim() ? { primaryRegion: String(raw.primary_region || raw.primaryRegion || metadata.workspace_layout_primary_region).trim() } : {}),
+        ...(String(raw.output_region || raw.outputRegion || metadata.workspace_layout_output_region || '').trim() ? { outputRegion: String(raw.output_region || raw.outputRegion || metadata.workspace_layout_output_region).trim() } : {}),
         ...(navigation.length > 0 ? { navigation } : {}),
         ...(columns.length > 0 ? { list: { ...(currentLayout.list || {}), ...rawList, columns } } : {}),
         ...(Array.isArray(raw.regions) && raw.regions.length > 0 ? { regions: raw.regions } : {}),
@@ -2960,7 +3000,7 @@ function structuredBusinessErrorMessage(error: StructuredBusinessErrorView | nul
 function skillRunOutputSuffix(status?: SkillRunStatusView | null) {
 	const snippet = String(status?.summary?.last_output_snippet || status?.session_progress?.last_result || '').trim();
 	if (!snippet) return '';
-	return ` 路 ${snippet.slice(0, 120)}`;
+	return ` · ${snippet.slice(0, 120)}`;
 }
 
 function skillRunArtifactKeys(artifact?: SkillRunArtifactView | null) {
@@ -3115,7 +3155,7 @@ function approvalWorkflowResultPayloadFromObjects(objects: Record<string, any>[]
             if (Object.prototype.hasOwnProperty.call(object, sourceKey)) mergeApprovalPayloadValue(payload, targetKey, object[sourceKey]);
         }
     }
-    const snippet = skillRunOutputSuffix(status).replace(/^ 路 /, '');
+    const snippet = skillRunOutputSuffix(status).replace(/^ · /, '');
     if (payload.text === undefined && snippet && parseSkillRunResultObjects(snippet).length === 0) payload.text = snippet.slice(0, 500);
     return Object.keys(payload).length > 0 ? payload : undefined;
 }
@@ -3198,7 +3238,7 @@ function approvalWorkflowOutputsFromStatus(status?: SkillRunStatusView | null): 
 function appRunResultPayloadFromStatus(status?: SkillRunStatusView | null): Record<string, unknown> | undefined {
     const payload = approvalWorkflowResultPayloadFromObjects(skillRunApprovalObjects(status), status);
     if (payload) return payload;
-    const snippet = skillRunOutputSuffix(status).replace(/^ 路 /, '');
+    const snippet = skillRunOutputSuffix(status).replace(/^ · /, '');
     return snippet ? { text: snippet.slice(0, 500) } : undefined;
 }
 
@@ -3250,7 +3290,7 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
     const objects = skillRunApprovalObjects(status);
     const explicitDecision = firstSkillRunResultString(objects, ['approval_result', 'approvalResult', 'approval_status', 'approvalStatus', 'approval_decision', 'approvalDecision', 'decision']);
     const decision = normalizeApprovalWorkflowDecision(explicitDecision, lifecycle);
-    const outputText = skillRunOutputSuffix(status).replace(/^ 路 /, '');
+    const outputText = skillRunOutputSuffix(status).replace(/^ · /, '');
     const fallbackText = lifecycle === 'cancelled'
         ? (zh ? 'Skill \u5df2\u53d6\u6d88' : 'Skill cancelled')
         : lifecycle === 'error'
@@ -3292,7 +3332,7 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
 function skillRunProgressMessage(status: SkillRunStatusView | null, fallback: string, runID: string) {
     const progress = String(status?.session_progress?.progress_summary || status?.session_progress?.current_task || status?.summary?.current_step || '').trim();
     const statusText = String(status?.status || '').trim();
-    return [fallback, runID, statusText, progress].filter(Boolean).join(' 路 ');
+    return [fallback, runID, statusText, progress].filter(Boolean).join(' · ');
 }
 
 function compactStepLabel(step: SkillRunStepView) {
@@ -3379,6 +3419,29 @@ function buildBusinessOperationResult(result: Record<string, unknown> | undefine
     const summary = businessOperationResponseSummary(response);
     const message = summary || text.runCompleted + ': ' + mode + ' / ' + status;
     return { mode, target, status, kind, message, recordCount, columns, rows, response };
+}
+
+function businessOperationRunEvidence(result: BusinessOperationResultView): Pick<AppRunHistoryEntry, 'resultPayload' | 'outputs'> {
+    const response = result.response && typeof result.response === 'object' ? result.response : {};
+    const resultPayload: Record<string, unknown> = {
+        ...response,
+        mode: result.mode,
+        target: result.target,
+        result_status: result.status,
+        status: String((response as Record<string, unknown>).status || result.status),
+        business_status: String((response as Record<string, unknown>).business_status || result.status),
+        response,
+    };
+    if (result.rows.length > 0 && !Array.isArray(resultPayload.rows)) resultPayload.rows = result.rows;
+    const outputs: ApprovalInstanceOutputView[] = [{
+        type: result.kind,
+        kind: result.kind,
+        title: result.target || result.mode,
+        text: result.message,
+        status: result.status,
+        data: resultPayload,
+    }];
+    return { resultPayload, outputs };
 }
 
 async function openSkillRunArtifactFromUI(runID: string, artifactRef: string, artifactPath: string, remoteOnly: boolean) {
@@ -3590,7 +3653,7 @@ function parseBackendAppInstallDependencies(value: unknown): BackendAppInstallDe
 
 function appRunDependencyVerificationEvidence(app: AppEntry, plan: BackendAppInstallPlan | null | undefined, verifiedAt = new Date().toISOString()): AppRunEvidenceDependencyVerification | undefined {
     if (!plan) return undefined;
-    const appIDs = [app.id];
+    const appIDs = [canonicalAppManifestID(app)];
     const workflowContractIssues = workflowContractIssuesForAppIDs(plan, appIDs);
     const governanceReviewIssues = governanceReviewIssuesForAppIDs(plan, appIDs);
     return {
@@ -3632,7 +3695,7 @@ function reviewIssueSummary(issue: AppReviewIssue) {
     return [issue.severity, issue.path, issue.message, issue.suggestion]
         .map((value) => String(value || '').trim())
         .filter(Boolean)
-        .join(' 路 ');
+        .join(' · ');
 }
 
 function reviewIssueMetadataText(issue: AppReviewIssue, key: string) {
@@ -3654,10 +3717,10 @@ function workflowContractIssueDetails(issue: AppReviewIssue, text: typeof labels
     return [
         workflowID ? { label: text.workflowSkill, value: workflowID } : null,
         version ? { label: text.appVersion, value: version } : null,
-        event ? { label: zh ? '浜嬩欢' : 'Event', value: event } : null,
+        event ? { label: 'Event', value: event } : null,
         objectRole ? { label: text.approvalObjectRoleLabel, value: objectRole } : null,
-        installedStatus ? { label: zh ? '瀹夎鐘舵€? : 'Status', value: installedStatus } : null,
-        health ? { label: zh ? '鍋ュ悍' : 'Health', value: health } : null,
+        installedStatus ? { label: 'Status', value: installedStatus } : null,
+        health ? { label: 'Health', value: health } : null,
     ].filter((item): item is { label: string; value: string } => !!item);
 }
 function reviewIssuesSummary(issues: AppReviewIssue[], text: typeof labels.zh) {
@@ -3678,7 +3741,7 @@ function reviewIssueSeverity(issue: AppReviewIssue) {
 }
 
 function reviewIssuesIncludeDependency(issues?: AppReviewIssue[]) {
-    return (issues || []).some((issue) => /dependency|渚濊禆/i.test([issue.path, issue.message, issue.suggestion].filter(Boolean).join(' ')));
+    return (issues || []).some((issue) => /dependency|skill/i.test([issue.path, issue.message, issue.suggestion].filter(Boolean).join(' ')));
 }
 const ReviewIssuesPanel = ({ issues, text, compact = false }: { issues?: AppReviewIssue[]; text: typeof labels.zh; compact?: boolean }) => {
     const visible = (issues || []).filter((issue) => issue.message).slice(0, 4);
@@ -3717,7 +3780,7 @@ function eventSummariesFromRecord(record: Record<string, unknown> | null): strin
         return [event.at, event.status, event.channel, event.submission_id || event.submissionID]
             .map((value) => String(value || '').trim())
             .filter(Boolean)
-            .join(' 路 ');
+            .join(' · ');
     }).filter(Boolean);
 }
 
@@ -3860,10 +3923,38 @@ function mergePublishSubmissionsFromQueue(current: Record<string, AppPublishSubm
     return changed ? next : current;
 }
 
+function runEvidenceMatchesCurrentDefinition(evidence: AppRunHistoryEntry | undefined | null, expectedHash: string) {
+    return !!evidence && !!String(evidence.definitionHash || '').trim() && evidence.definitionHash === expectedHash;
+}
+
 function latestAppRunEvidence(app: AppEntry): AppRunHistoryEntry | null {
     const expectedHash = appDefinitionFingerprint(app);
     const local = loadAppRunHistory(app.id).find((item) => item.status === 'done' && item.definitionHash === expectedHash);
-    return local || normalizeImportedRunEvidence(app.importedRunEvidence) || null;
+    if (local) return local;
+    const imported = normalizeImportedRunEvidence(app.importedRunEvidence);
+    return runEvidenceMatchesCurrentDefinition(imported, expectedHash) ? imported || null : null;
+}
+
+function latestAvailableAppRunEvidence(app: AppEntry): AppRunHistoryEntry | null {
+    return loadAppRunHistory(app.id).find((item) => item.status === 'done') || normalizeImportedRunEvidence(app.importedRunEvidence) || null;
+}
+
+function appRunEvidenceFreshnessCheck(app: AppEntry, lang?: string) {
+    const zh = isZh(lang);
+    const expectedHash = appDefinitionFingerprint(app);
+    const evidence = latestAvailableAppRunEvidence(app);
+    const actualHash = String(evidence?.definitionHash || '').trim();
+    const ok = !!evidence && actualHash === expectedHash;
+    return {
+        ok,
+        detail: !evidence
+            ? (zh ? '提交审核前需要先运行一次当前应用' : 'Run the current app before review')
+            : !actualHash
+                ? (zh ? '运行证据缺少当前应用定义指纹，请重新测试' : 'Run evidence is missing the current app definition fingerprint; rerun the test')
+                : ok
+                    ? `${evidence.runID || ''} / ${actualHash}`.trim()
+                    : (zh ? '运行证据不是当前应用定义，请重新测试' : 'Run evidence is stale for the current app definition; rerun the test'),
+    };
 }
 
 function appRunHistoryArtifacts(evidence?: AppRunHistoryEntry | null): SkillRunArtifactView[] {
@@ -4141,8 +4232,8 @@ function appTestProtocolPublishSummary(app: AppEntry, lang?: string): string {
     const fingerprint = appTestProtocolFingerprint(protocol);
     const sampleKeys = Object.keys(protocol.sampleInput || {}).length;
     const outputKeys = Object.keys(protocol.expectedOutput || {}).length;
-    if (sampleKeys === 0 || outputKeys === 0) return zh ? '缂哄皯 sampleInput 鎴?expectedOutput' : 'Missing sampleInput or expectedOutput';
-    return `${zh ? '鍗忚\u6307\u7eb9' : 'Protocol fingerprint'} ${fingerprint} 路 ${protocol.riskLevel}`;
+    if (sampleKeys === 0 || outputKeys === 0) return zh ? '缺少 sampleInput 或 expectedOutput' : 'Missing sampleInput or expectedOutput';
+    return `${zh ? '协议指纹' : 'Protocol fingerprint'} ${fingerprint} · ${protocol.riskLevel}`;
 }
 
 function appHasPublishableTestProtocol(app: AppEntry): boolean {
@@ -4173,7 +4264,7 @@ function workflowContractForApp(app: AppEntry): AppWorkflowContract | undefined 
 }
 
 function workflowContractIssueForApp(plan: BackendAppInstallPlan | null | undefined, app: AppEntry): AppReviewIssue | undefined {
-    return workflowContractIssuesForAppIDs(plan, [app.id])[0];
+    return workflowContractIssuesForAppIDs(plan, [canonicalAppManifestID(app)])[0];
 }
 function workflowContractIssuesForAppIDs(plan: BackendAppInstallPlan | null | undefined, appIDs: string[] = []): AppReviewIssue[] {
     const issues = plan?.workflow_contract_issues || [];
@@ -4214,7 +4305,7 @@ function governanceReviewHasIssueForAppIDs(plan: BackendAppInstallPlan | null | 
 }
 
 function governanceReviewIssueForApp(plan: BackendAppInstallPlan | null | undefined, app: AppEntry): AppReviewIssue | undefined {
-    return governanceReviewIssuesForAppIDs(plan, [app.id])[0];
+    return governanceReviewIssuesForAppIDs(plan, [canonicalAppManifestID(app)])[0];
 }
 
 function governanceReviewIssueMessageForAppIDs(plan: BackendAppInstallPlan | null | undefined, appIDs: string[], text: typeof labels.zh): string {
@@ -4234,17 +4325,18 @@ function workflowContractStatus(contract: AppWorkflowContract | undefined, plan:
     return contract ? 'ready' : 'missing';
 }
 function workflowContractHasIssue(plan: BackendAppInstallPlan | null | undefined, app: AppEntry): boolean {
-    return workflowContractHasIssueForAppIDs(plan, [app.id]);
+    return workflowContractHasIssueForAppIDs(plan, [canonicalAppManifestID(app)]);
 }
 
 function runtimeInstallPlanBlocked(plan: BackendAppInstallPlan | null | undefined, app: AppEntry): boolean {
-    return !!plan?.has_blocking_dependency || hasMissingRequiredBackendDependency(plan, [app.id]) || governanceReviewHasIssueForAppIDs(plan, [app.id]) || workflowContractHasIssue(plan, app);
+    const appIDs = [canonicalAppManifestID(app)];
+    return hasMissingRequiredBackendDependency(plan, appIDs) || governanceReviewHasIssueForAppIDs(plan, appIDs) || workflowContractHasIssue(plan, app);
 }
 
 function runtimeInstallPlanBlockMessage(app: AppEntry, plan: BackendAppInstallPlan | null | undefined, text: typeof labels.zh, lang?: string): string {
     const governanceIssue = governanceReviewIssueForApp(plan, app);
     if (governanceIssue?.message) return `${text.reviewIssues}: ${governanceIssue.message}`;
-    if (governanceReviewHasIssueForAppIDs(plan, [app.id])) return text.reviewIssues;
+    if (governanceReviewHasIssueForAppIDs(plan, [canonicalAppManifestID(app)])) return text.reviewIssues;
     const issue = workflowContractIssueForApp(plan, app);
     if (issue?.message) return `${text.workflowContractBlocked}: ${issue.message}`;
     if (plan?.has_workflow_contract_issue) return text.workflowContractBlocked;
@@ -4351,6 +4443,121 @@ function appRunEvidenceResultTypes(evidence?: AppRunHistoryEntry | null): string
     return Array.from(covered);
 }
 
+function normalizeAppRunApprovalInstanceEvidence(raw: unknown): AppRunApprovalInstanceEvidence | undefined {
+    const value = appEvidenceRecord(raw);
+    if (!value) return undefined;
+    const approvalID = appEvidenceString(value.approvalID, value.approvalId, value.approval_id, value.recordApprovalID, value.record_approval_id);
+    const instanceId = appEvidenceString(value.instanceId, value.approvalInstanceId, value.workflowInstanceId, value.instance_id, value.approval_instance_id, value.workflow_instance_id, approvalID);
+    const status = appEvidenceString(value.status, value.approvalStatus, value.approval_status, value.resultStatus, value.result_status);
+    if (!instanceId) return undefined;
+    const approvalViews = appEvidenceRecord(value.approvalViews || value.approval_views);
+    const approvalInstanceViewVerified = appEvidenceBool(value.approvalInstanceViewVerified, value.approval_instance_view_verified, value.approvalViewVerified, value.approval_view_verified, value.viewVerified, value.view_verified);
+    return {
+        instanceId,
+        approvalInstanceId: appEvidenceString(value.approvalInstanceId, value.approval_instance_id) || instanceId,
+        approvalID: approvalID || undefined,
+        workflowInstanceId: appEvidenceString(value.workflowInstanceId, value.workflow_instance_id) || instanceId,
+        status,
+        lane: appEvidenceString(value.lane, value.approvalLane, value.approval_lane) || undefined,
+        currentNode: appEvidenceString(value.currentNode, value.current_node) || undefined,
+        datasetID: appEvidenceString(value.datasetID, value.dataset_id) || undefined,
+        blueprintID: appEvidenceString(value.blueprintID, value.blueprint_id) || undefined,
+        objectRole: appEvidenceString(value.objectRole, value.object_role) || undefined,
+        approvalObjectRole: appEvidenceString(value.approvalObjectRole, value.approval_object_role) || undefined,
+        approvalEvent: appEvidenceString(value.approvalEvent, value.approval_event) || undefined,
+        approvalWorkflowID: appEvidenceString(value.approvalWorkflowID, value.approvalWorkflowId, value.approval_workflow_id) || undefined,
+        workflowSkillId: appEvidenceString(value.workflowSkillId, value.workflow_skill_id) || undefined,
+        workflowVersion: appEvidenceString(value.workflowVersion, value.workflow_version) || undefined,
+        businessStatus: appEvidenceString(value.businessStatus, value.business_status) || undefined,
+        resultStatus: appEvidenceString(value.resultStatus, value.result_status) || undefined,
+        result: appEvidenceString(value.result, value.message) || undefined,
+        recordID: appEvidenceString(value.recordID, value.record_id) || undefined,
+        detailURL: appEvidenceString(value.detailURL, value.detailUrl, value.detail_url) || undefined,
+        resultPayload: appEvidenceRecord(value.resultPayload || value.result_payload),
+        outputs: Array.isArray(value.outputs) ? value.outputs as ApprovalInstanceOutputView[] : undefined,
+        artifacts: Array.isArray(value.artifacts) ? value.artifacts as ApprovalInstanceArtifactView[] : undefined,
+        viewVerified: appEvidenceBool(value.viewVerified, value.view_verified),
+        approvalInstanceViewVerified,
+        approvalViews,
+        verifiedAt: appEvidenceString(value.verifiedAt, value.verified_at) || undefined,
+    };
+}
+
+function approvalViewsHaveVerifiedLane(value: Record<string, unknown> | undefined): boolean {
+    if (!value) return false;
+    if (appEvidenceBool(value.verified, value.ok) === true) return true;
+    return ['my_requests', 'pending_my_approval', 'handled', 'attention', 'all'].some((key) => value[key] !== undefined && value[key] !== null);
+}
+
+function appRunApprovalInstanceEvidenceFromBackend(instance: BackendApprovalInstance, verifiedAt: string): AppRunApprovalInstanceEvidence | undefined {
+    const instanceId = String(instance.instance_id || instance.approval_id || instance.record_approval_id || '').trim();
+    const approvalID = String(instance.approval_id || instance.record_approval_id || '').trim();
+    if (!instanceId) return undefined;
+    return {
+        instanceId,
+        approvalInstanceId: instanceId,
+        approvalID: approvalID || undefined,
+        workflowInstanceId: instanceId,
+        status: String(instance.status || instance.result_status || '').trim(),
+        lane: String(instance.lane || '').trim() || undefined,
+        currentNode: String(instance.current_node || '').trim() || undefined,
+        datasetID: String(instance.dataset_id || '').trim() || undefined,
+        blueprintID: String(instance.blueprint_id || '').trim() || undefined,
+        objectRole: String(instance.object_role || '').trim() || undefined,
+        approvalObjectRole: String(instance.approval_object_role || instance.object_role || '').trim() || undefined,
+        approvalEvent: String(instance.approval_event || '').trim() || undefined,
+        approvalWorkflowID: String(instance.approval_workflow_id || '').trim() || undefined,
+        workflowSkillId: String(instance.workflow_skill_id || '').trim() || undefined,
+        workflowVersion: String(instance.workflow_version || '').trim() || undefined,
+        businessStatus: String(instance.business_status || '').trim() || undefined,
+        resultStatus: String(instance.result_status || '').trim() || undefined,
+        result: String(instance.result || '').trim() || undefined,
+        recordID: String(instance.record_id || '').trim() || undefined,
+        detailURL: String(instance.detail_url || '').trim() || undefined,
+        resultPayload: instance.result_payload && typeof instance.result_payload === 'object' ? instance.result_payload : undefined,
+        outputs: Array.isArray(instance.outputs) ? instance.outputs : undefined,
+        artifacts: Array.isArray(instance.artifacts) ? instance.artifacts : undefined,
+        viewVerified: true,
+        approvalInstanceViewVerified: true,
+        approvalViews: { my_requests: true, all: true, verified: true },
+        verifiedAt,
+    };
+}
+
+function appRunEvidenceApprovalInstanceCheck(app: AppEntry, evidence: AppRunHistoryEntry | null, lang?: string) {
+    const zh = isZh(lang);
+    if (!isEnterpriseApprovalAppKind(app.kind)) {
+        return { ok: true, detail: zh ? '非审批型应用不需要审批实例证据' : 'Not required for non-approval apps' };
+    }
+    const approvalInstance = normalizeAppRunApprovalInstanceEvidence(evidence?.approvalInstance);
+    const hasStatus = !!String(approvalInstance?.status || '').trim();
+    const hasCurrentNode = !!String(approvalInstance?.currentNode || '').trim();
+    const hasWorkflowSkill = !!String(approvalInstance?.workflowSkillId || '').trim();
+    const hasResultStatus = !!String(approvalInstance?.resultStatus || approvalInstance?.businessStatus || '').trim();
+    const hasResultPackage = !!(approvalInstance?.resultPayload && Object.keys(approvalInstance.resultPayload).length > 0)
+        || !!(approvalInstance?.outputs && approvalInstance.outputs.length > 0)
+        || !!(approvalInstance?.artifacts && approvalInstance.artifacts.length > 0);
+    const viewVerified = approvalInstance?.approvalInstanceViewVerified === true || approvalInstance?.viewVerified === true || approvalViewsHaveVerifiedLane(approvalInstance?.approvalViews);
+    const ok = !!approvalInstance?.instanceId && hasStatus && hasCurrentNode && hasWorkflowSkill && hasResultStatus && hasResultPackage && viewVerified;
+    const missingDetail = () => {
+        if (!approvalInstance?.instanceId || !hasStatus || !viewVerified) {
+            return zh ? '缺少 instanceId、status 或审批实例视图校验证据' : 'Missing instanceId, status, or approval instance view verification';
+        }
+        if (!hasCurrentNode || !hasWorkflowSkill || !hasResultStatus) {
+            return zh ? '缺少 currentNode、workflowSkillId 或 businessStatus/resultStatus' : 'Missing currentNode, workflowSkillId, or businessStatus/resultStatus';
+        }
+        return zh ? '审批实例证据缺少 resultPayload、outputs 或 artifacts 结果包' : 'Approval instance evidence is missing resultPayload, outputs, or artifacts';
+    };
+    return {
+        ok,
+        approvalInstance,
+        detail: !evidence
+            ? (zh ? '提交审核前需要先运行一次审批流程' : 'Run the approval workflow once before review')
+            : ok
+                ? `${approvalInstance?.instanceId} / ${approvalInstance?.status}${approvalInstance?.currentNode ? ` / ${approvalInstance.currentNode}` : ''}`
+                : missingDetail(),
+    };
+}
 function appRunEvidenceContractCoverage(app: AppEntry, evidence: AppRunHistoryEntry | null, lang?: string) {
     const zh = isZh(lang);
     const contract = appResultContractForManifest(app);
@@ -4441,8 +4648,10 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
     const testProtocolFingerprint = appTestProtocolFingerprint(testProtocol);
     const primaryResult = appRunPrimaryResultFromPayload(resultContract, evidence?.resultPayload, evidenceOutputs);
     const resultCoverage = appRunEvidenceContractCoverage(app, evidence);
+    const approvalInstanceEvidence = normalizeAppRunApprovalInstanceEvidence(evidence?.approvalInstance);
     const primaryArtifact = evidenceArtifacts[0];
     const artifactName = primaryArtifact?.name || (primaryArtifact?.path ? primaryArtifact.path.split(/[\\/]/).pop() : undefined);
+    const appIDs = [canonicalAppManifestID(app)];
     const dependencies = appDependencyEvidence(app);
     return {
         status: submission?.status || (evidence ? 'local_tested' : 'draft'),
@@ -4461,12 +4670,12 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
             dependencyCount: overrides.dependencyVerification.dependencies?.length || 0,
             hasMissingRequired: !!overrides.dependencyVerification.has_missing_required,
             hasBlockingDependency: !!overrides.dependencyVerification.has_blocking_dependency,
-            hasWorkflowContractIssue: workflowContractHasIssueForAppIDs(overrides.dependencyVerification, [app.id]),
-            workflowContractIssueCount: workflowContractIssuesForAppIDs(overrides.dependencyVerification, [app.id]).length,
-            hasGovernanceReviewIssue: governanceReviewHasIssueForAppIDs(overrides.dependencyVerification, [app.id]),
-            governanceReviewIssueCount: governanceReviewIssuesForAppIDs(overrides.dependencyVerification, [app.id]).length,
-            workflowContractIssues: workflowContractIssuesForAppIDs(overrides.dependencyVerification, [app.id]),
-            governanceReviewIssues: governanceReviewIssuesForAppIDs(overrides.dependencyVerification, [app.id]),
+            hasWorkflowContractIssue: workflowContractHasIssueForAppIDs(overrides.dependencyVerification, appIDs),
+            workflowContractIssueCount: workflowContractIssuesForAppIDs(overrides.dependencyVerification, appIDs).length,
+            hasGovernanceReviewIssue: governanceReviewHasIssueForAppIDs(overrides.dependencyVerification, appIDs),
+            governanceReviewIssueCount: governanceReviewIssuesForAppIDs(overrides.dependencyVerification, appIDs).length,
+            workflowContractIssues: workflowContractIssuesForAppIDs(overrides.dependencyVerification, appIDs),
+            governanceReviewIssues: governanceReviewIssuesForAppIDs(overrides.dependencyVerification, appIDs),
             dependencies: parseBackendAppInstallDependencies(overrides.dependencyVerification.dependencies),
         } : undefined,
         workspaceLayout: appWorkspaceLayoutEvidence(app),
@@ -4486,6 +4695,7 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
             testProtocol,
             testProtocolFingerprint,
             dependencyVerification: evidence?.dependencyVerification,
+            approvalInstance: approvalInstanceEvidence,
             primaryResult: primaryResult || undefined,
             resultCoverage: {
                 ok: resultCoverage.ok,
@@ -4557,7 +4767,7 @@ function buildAppTileTooltip(app: AppEntry, text: typeof labels.zh, statusLabel:
     return [
         app.name,
         app.description,
-        `${appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} 路 ${sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}`,
+        `${appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} · ${sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}`,
         `${text.appStatus}: ${statusLabel}`,
         `${text.recentUsed}: ${recent || text.neverUsed}`,
     ].filter(Boolean).join('\n');
@@ -4635,13 +4845,13 @@ function filterSummaryText({ query, category, count, lang, allLabel }: { query: 
     const zh = isZh(lang);
     const categoryText = category === 'all' ? allLabel : category;
     if (trimmedQuery && category !== 'all') {
-        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d 路 ${categoryText} 路 ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" 路 ${categoryText} 路 ${count} matches`;
+        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d · ${categoryText} · ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" · ${categoryText} · ${count} matches`;
     }
     if (trimmedQuery) {
-        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d 路 ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" 路 ${count} matches`;
+        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d · ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" · ${count} matches`;
     }
     if (category !== 'all') {
-        return zh ? `${categoryText} 路 ${count} \u4e2a\u5e94\u7528` : `${categoryText} 路 ${count} apps`;
+        return zh ? `${categoryText} · ${count} \u4e2a\u5e94\u7528` : `${categoryText} · ${count} apps`;
     }
     return '';
 }
@@ -5035,7 +5245,16 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
             const existingIndex = current.findIndex((item) => appInstallIdentityKeys(app.id).some((id) => appInstallIdentityKeys(item.id).includes(id)));
             if (existingIndex >= 0) {
                 const existing = current[existingIndex];
-                if (normalizeAppVersion(app.version) <= normalizeAppVersion(existing.version)) return current;
+                if (normalizeAppVersion(app.version) <= normalizeAppVersion(existing.version)) {
+                    const evidencePatch: Partial<AppEntry> = {};
+                    if (app.importedRunEvidence && !existing.importedRunEvidence) evidencePatch.importedRunEvidence = app.importedRunEvidence;
+                    if (app.versionSnapshot && !existing.versionSnapshot) evidencePatch.versionSnapshot = app.versionSnapshot;
+                    if (app.workflowContract && !existing.workflowContract) evidencePatch.workflowContract = app.workflowContract;
+                    if (Object.keys(evidencePatch).length === 0) return current;
+                    const next = [...current];
+                    next[existingIndex] = { ...existing, ...evidencePatch };
+                    return next;
+                }
                 const next = [...current];
                 next[existingIndex] = {
                     ...app,
@@ -5398,7 +5617,7 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
         {
             id: `${app.id}-current`,
             appID: app.id,
-            title: submitted ? `${title} 路 ${businessAction}` : title,
+            title: submitted ? `${title} · ${businessAction}` : title,
             lane: 'my_requests',
             status: draftStatus,
             currentNode: draftNode,
@@ -5466,7 +5685,7 @@ function approvalCurrentNodeText(instance: Pick<ApprovalInstanceView, 'currentNo
     if (!instance) return '-';
     const nodes = Array.isArray(instance.currentNodeIDs) ? instance.currentNodeIDs.filter((node) => String(node || '').trim()).map((node) => String(node).trim()) : [];
     if (nodes.length > 0) return nodes.join(' / ');
-    return String(instance.currentNode || (isZh(lang) ? '褰撳墠鑺傜偣' : 'Current node')).trim();
+    return String(instance.currentNode || 'Current node').trim();
 }
 function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?: string): ApprovalInstanceView | null {
     const id = String(instance.instance_id || '').trim();
@@ -5486,7 +5705,7 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
     const approvalID = String(instance.approval_id || instance.record_approval_id || '').trim();
     const objectRole = String(instance.object_role || instance.approval_object_role || '').trim();
     const currentNodeIDs = normalizeApprovalCurrentNodeIDs(instance);
-    const currentNode = currentNodeIDs[0] || String(instance.current_node || (isZh(lang) ? '褰撳墠鑺傜偣' : 'Current node')).trim();
+    const currentNode = currentNodeIDs[0] || String(instance.current_node || 'Current node').trim();
     return {
         id,
         appID: String(instance.app_id || '').trim(),
@@ -5637,12 +5856,41 @@ function approvalDataSrvSyncEvent(result: unknown, lang?: string) {
 		decision: synced ? 'synced' : 'sync_failed',
 		action: synced ? 'datasrv_sync_ok' : 'datasrv_sync_failed',
 		message: synced
-			? (zh ? 'DataSrv 鍚屾瀹屾垚' : 'DataSrv sync completed')
-			: (reason || (zh ? 'DataSrv 鍚屾澶辫触' : 'DataSrv sync failed')),
+            ? 'DataSrv sync completed'
+            : (reason || 'DataSrv sync failed'),
 		metadata: compactApprovalRecord(record),
 	};
 }
 
+function firstNonEmptySyncString(...values: unknown[]) {
+	for (const value of values) {
+		const text = String(value || '').trim();
+		if (text) return text;
+	}
+	return '';
+}
+
+function approvalDataSrvRecordFromSyncResult(result: unknown) {
+	const record = result && typeof result === 'object' ? result as Record<string, any> : {};
+	const response = record.response && typeof record.response === 'object' ? record.response as Record<string, any> : {};
+	const responseItem = response.item && typeof response.item === 'object' ? response.item as Record<string, any> : {};
+	return {
+		approvalID: firstNonEmptySyncString(record.approval_id, record.approvalId, record.record_approval_id, record.recordApprovalID, response.approval_id, response.approvalId, response.record_approval_id, response.recordApprovalID, response.id, responseItem.approval_id, responseItem.id),
+		recordID: firstNonEmptySyncString(record.record_id, record.recordID, response.record_id, response.recordID, responseItem.record_id, responseItem.recordID),
+		datasetID: firstNonEmptySyncString(record.dataset_id, record.datasetID, response.dataset_id, response.datasetID, responseItem.dataset_id, responseItem.datasetID),
+	};
+}
+
+function mergeApprovalInstanceDataSrvSyncResult(instance: BackendApprovalInstance, result: unknown): BackendApprovalInstance {
+	const remote = approvalDataSrvRecordFromSyncResult(result);
+	if (!remote.approvalID && !remote.recordID && !remote.datasetID) return instance;
+	return {
+		...instance,
+		...(remote.approvalID ? { approval_id: remote.approvalID, record_approval_id: remote.approvalID } : {}),
+		...(remote.recordID ? { record_id: remote.recordID } : {}),
+		...(remote.datasetID ? { dataset_id: remote.datasetID } : {}),
+	};
+}
 async function syncApprovalInstanceToDataSrvWithEvents(app: AppEntry, instance: BackendApprovalInstance, lang?: string): Promise<BackendApprovalInstance> {
 	const syncPayload = approvalDataSrvSyncPayload(app, instance);
 	if (!syncPayload) return instance;
@@ -5652,12 +5900,12 @@ async function syncApprovalInstanceToDataSrvWithEvents(app: AppEntry, instance: 
 	} catch (error: any) {
 		syncResult = {
 			synced: false,
-			reason: error?.message || String(error || (isZh(lang) ? 'DataSrv 鍚屾澶辫触' : 'DataSrv sync failed')),
+            reason: error?.message || String(error || 'DataSrv sync failed'),
 		};
 	}
 	const syncEvent = approvalDataSrvSyncEvent(syncResult, lang);
 	const nextInstance: BackendApprovalInstance = {
-		...instance,
+		...mergeApprovalInstanceDataSrvSyncResult(instance, syncResult),
 		updated_at: syncEvent.at,
 		events: [...(instance.events || []), syncEvent],
 	};
@@ -5921,7 +6169,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
 	};
 	const finalizeApprovalRunFromStatus = useCallback(async (status: SkillRunStatusView | null, lifecycle: 'done' | 'error' | 'cancelled') => {
         const context = approvalRunContextRef.current;
-        if (!context || !app?.id || !isEnterpriseApprovalAppKind(app.kind)) return;
+        if (!context || !app?.id || !isEnterpriseApprovalAppKind(app.kind)) return undefined;
         approvalRunContextRef.current = null;
         const completion = approvalWorkflowResultFromSkillRunStatus(status, lifecycle, lang);
         const now = new Date().toISOString();
@@ -5972,10 +6220,12 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
 			if (syncedView) {
 				setApprovalInstances((current) => [syncedView, ...current.filter((item) => item.id !== syncedView.id)].slice(0, 50));
 			}
+                return syncedInstance;
 		} catch (error: any) {
 			const businessError = structuredBusinessErrorFromUnknown(error);
 			setRuntimeBusinessError(businessError);
 			setValidationMessage(structuredBusinessErrorMessage(businessError, error?.message || String(error || 'approval sync failed')));
+                return payload;
 		}
 	}, [app, lang, runID]);
     useEffect(() => {
@@ -6005,13 +6255,17 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
 					setValidationMessage('');
 					setRuntimeBusinessError(null);
 					setRunState('done');
+                    const finalizedApprovalInstance = await finalizeApprovalRunFromStatus(status || null, lifecycle);
+                    const approvalInstance = app && isEnterpriseApprovalAppKind(app.kind) && finalizedApprovalInstance
+                        ? appRunApprovalInstanceEvidenceFromBackend(finalizedApprovalInstance, verifiedAt)
+                        : undefined;
                     recordRunHistory({
                         runID,
                         status: 'done',
                         definitionHash,
                         outputMode: currentRunContext.outputMode,
                         inputSummary: currentRunContext.inputSummary,
-                        message: primaryResult.slice(0, 180) || skillRunOutputSuffix(status).replace(/^ 路 /, '') || text.skillRunCompleted,
+                        message: primaryResult.slice(0, 180) || skillRunOutputSuffix(status).replace(/^ · /, '') || text.skillRunCompleted,
                         artifactID,
                         artifactURI,
                         artifactName,
@@ -6021,11 +6275,11 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                         resultPayload,
                         outputs,
                         dependencyVerification,
+                        approvalInstance,
                     });
                     if (app?.source === 'skill' && app.manifest?.skill?.id) {
                         void RecordMaclawAppRunEvidenceForSkill(app.manifest.skill.id, app.id, definitionHash || '', runID, artifactPath || artifactName || artifactURI, verifiedAt).catch(() => undefined);
                     }
-                    await finalizeApprovalRunFromStatus(status || null, lifecycle);
 				} else if (lifecycle === 'error') {
 					const businessError = structuredBusinessErrorFromUnknown(skillRunErrorMessage(status));
 					const message = structuredBusinessErrorMessage(businessError, skillRunErrorMessage(status) || text.skillRunFailed);
@@ -6082,15 +6336,15 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     }).filter(Boolean).join(', ');
     const selectedFileLabel = selectedFiles.length > 1 ? (isZh(lang) ? `${selectedFiles.length} \u4e2a\u6587\u4ef6` : `${selectedFiles.length} files`) : fileName;
     const toolInputSummary = showFileInput && showParamInput
-        ? `${selectedFileLabel || text.noFile}${(fieldSummary || toolParams.trim()) ? ` 路 ${(fieldSummary || toolParams.trim()).slice(0, 42)}` : ''}`
+        ? `${selectedFileLabel || text.noFile}${(fieldSummary || toolParams.trim()) ? ` · ${(fieldSummary || toolParams.trim()).slice(0, 42)}` : ''}`
         : showParamInput
             ? (fieldSummary || toolParams.trim() || (isZh(lang) ? '\u672a\u586b\u5199\u53c2\u6570' : 'No parameters'))
             : (selectedFileLabel || text.noFile);
     const resultText = isTool
-        ? `${text.generatedOutput}: ${toolInputSummary} -> ${outputMode.toUpperCase()}${runID ? ` 路 ${text.skillRunCompleted}: ${runID}` : ''}${skillRunOutputSuffix(skillRunStatus)}`
+        ? `${text.generatedOutput}: ${toolInputSummary} -> ${outputMode.toUpperCase()}${runID ? ` · ${text.skillRunCompleted}: ${runID}` : ''}${skillRunOutputSuffix(skillRunStatus)}`
         : isAutomation
             ? (isZh(lang) ? '\u81ea\u52a8\u5316\u63a7\u5236\u53f0\u5df2\u542f\u52a8\uff0cAgent \u5c06\u6309\u5e94\u7528\u5b9a\u4e49\u6267\u884c\u548c\u56de\u62a5\u3002' : 'Automation console started. Agent will run and report by app definition.')
-            : `${text.submitted}: ${businessEntity || app.category} 路 ${businessAction} 路 ${isBusiness ? businessActionRole : (app.manifest?.datasrv?.preferredAction || app.manifest?.datasrv?.domain || 'DataSrv')}`;
+            : `${text.submitted}: ${businessEntity || app.category} · ${businessAction} · ${isBusiness ? businessActionRole : (app.manifest?.datasrv?.preferredAction || app.manifest?.datasrv?.domain || 'DataSrv')}`;
 	const markDirty = () => {
 		setRunState('idle');
 		setValidationMessage('');
@@ -6399,7 +6653,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
 				setValidationMessage('');
 				setRuntimeBusinessError(null);
 				setRunState('done');
-				recordRunHistory({ runID: `business-${Date.now().toString(36)}`, status: 'done', outputMode: 'business', inputSummary, message: text.runCompleted + ': ' + businessOperationResult.mode + ' / ' + businessOperationResult.status, resultPayload: businessOperationResult.response });
+					recordRunHistory({ runID: `business-${Date.now().toString(36)}`, status: 'done', outputMode: 'business', inputSummary, message: text.runCompleted + ': ' + businessOperationResult.mode + ' / ' + businessOperationResult.status, ...businessOperationRunEvidence(businessOperationResult) });
 				return;
 			} catch (error: any) {
 				const message = setRuntimeError(error, text.skillRunFailed);
@@ -6529,7 +6783,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         recordRunHistory({ runID, status: 'cancelled', outputMode, inputSummary: toolInputSummary, message: text.skillRunCancelled });
         await finalizeApprovalRunFromStatus({ run_id: runID, status: 'cancelled', summary: { last_error_snippet: text.skillRunCancelled } }, 'cancelled');
     };
-    const runtimeDependencyDetails = runtimeDependencyPlan ? backendDependenciesForApp(runtimeDependencyPlan, app.id) : [];
+    const runtimeAppID = app ? canonicalAppManifestID(app) : '';
+    const runtimeDependencyDetails = runtimeDependencyPlan ? backendDependenciesForApp(runtimeDependencyPlan, runtimeAppID) : [];
     const visibleRuntimeDependencyDetails = runtimeDependencyDetails.length > 0 ? runtimeDependencyDetails : runtimeDependencyPlan?.dependencies || [];
     const runtimeDependencyBlocked = !!app && runtimeInstallPlanBlocked(runtimeDependencyPlan, app);
     const runtimeDependencyChecking = runtimeDependencyCheckState === 'checking' || dependencyRepairState === 'installing';
@@ -6537,7 +6792,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const runtimeDependencyMessage = app ? runtimeInstallPlanBlockMessage(app, runtimeDependencyPlan, text, lang) : backendDependencyUnavailableMessage(app, runtimeDependencyPlan, text, lang);
     const showRuntimeDependencyDetails = visibleRuntimeDependencyDetails.length > 0 && (runState === 'error' || dependencyRepairState === 'installing' || runtimeDependencyBlocked || runtimeDependencyReady);
     const runtimeWorkflowContractBlocked = !!app && workflowContractHasIssue(runtimeDependencyPlan, app);
-    const runtimeGovernanceReviewBlocked = !!app && governanceReviewHasIssueForAppIDs(runtimeDependencyPlan, [app.id]);
+    const runtimeGovernanceReviewBlocked = !!app && governanceReviewHasIssueForAppIDs(runtimeDependencyPlan, [runtimeAppID]);
     const canInstallRuntimeDependencies = !!app && appNeedsRuntimeDependencyCheck(app) && !runtimeWorkflowContractBlocked && !runtimeGovernanceReviewBlocked && (runtimeDependencyBlocked || dependencyRepairState === 'installing' || validationMessage === text.missingRequiredDependency);
     const runDisabled = runState === 'running' || dependencyRepairState === 'installing';
     const runtimeStatusMessage = runState === 'done'
@@ -6756,7 +7011,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                             <div className="apps-run-history__item" data-state={item.status} key={`${item.runID}-${item.at}`}>
                                                 <div>
                                                     <strong>{item.inputSummary || item.runID}</strong>
-                                                    <span>{formatRunHistoryTime(item.at)} 路 {item.outputMode.toUpperCase()} 路 {item.runID}</span>
+                                                    <span>{formatRunHistoryTime(item.at)} · {item.outputMode.toUpperCase()} · {item.runID}</span>
                                                     {appRunHistoryResultSummary(item, text) && <small className="apps-run-history__result">{appRunHistoryResultSummary(item, text)}</small>}
                                                     {(item.artifactURI || item.artifactPath) && <code>{item.artifactURI || item.artifactPath}</code>}
                                                 </div>
@@ -7071,8 +7326,8 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                         <button className="apps-approval-row" data-state={item.status} data-selected={selected?.id === item.id ? 'true' : 'false'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
                             <div>
                                 <strong>{item.title}</strong>
-                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)} 路 {text.approvalResult}: {approvalStatusLabel(item.status, lang)}</span>
-                                <small>{text.approvalInstanceId}: {item.id} 路 {item.updatedAt}</small>
+                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)} · {text.approvalResult}: {approvalStatusLabel(item.status, lang)}</span>
+                                <small>{text.approvalInstanceId}: {item.id} · {item.updatedAt}</small>
                                 <div className="apps-approval-row__meta"><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span></div>
                             </div>
                             <em>{approvalStatusLabel(item.status, lang)}</em>
@@ -7115,7 +7370,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                         const artifactRef = output.artifact ? approvalArtifactReference(output.artifact) : '';
                                         return (
                                             <div className="apps-approval-output" data-kind={kind} key={`${selected.id}-output-${index}-${approvalOutputTitle(output, text)}`}>
-                                                <div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' 路 ')}</span></div>
+                                                <div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' · ')}</span></div>
                                                 {body && <pre>{body}</pre>}
                                                 {artifactRef && <code>{artifactRef}</code>}
                                             </div>
@@ -7123,7 +7378,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                     })}
                                     {selectedArtifacts.map((artifact, index) => (
                                         <div className="apps-approval-artifact" key={`${selected.id}-artifact-${index}-${approvalArtifactReference(artifact)}`}>
-                                            <div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' 路 ')}</span></div>
+                                            <div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' · ')}</span></div>
                                             <code>{approvalArtifactReference(artifact)}</code>
                                         </div>
                                     ))}
@@ -7143,8 +7398,8 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                     { node: approvalCurrentNodeText(selected, lang) },
                                     { node: isZh(lang) ? '\u7ed3\u679c\u53cd\u9988' : 'Result feedback' },
                                 ] as ApprovalInstanceEventView[]).map((event, index) => {
-                                    const primary = [event.node, event.decision].filter(Boolean).join(' 路 ') || event.message || '-';
-                                    const secondary = [event.actor, event.at].filter(Boolean).join(' 路 ');
+                                    const primary = [event.node, event.decision].filter(Boolean).join(' · ') || event.message || '-';
+                                    const secondary = [event.actor, event.at].filter(Boolean).join(' · ');
                                     return (
                                         <div key={`${selected.id}-event-${index}-${primary}`}><span /><p><strong>{primary}</strong>{secondary && <small>{secondary}</small>}{event.message && primary !== event.message && <small>{event.message}</small>}</p></div>
                                     );
@@ -7182,7 +7437,7 @@ const SkillRunEvidence = ({ status, runState, text }: { status: SkillRunStatusVi
                             <span className="apps-run-step__dot" />
                             <div>
                                 <strong>{compactStepLabel(step)}</strong>
-                                <span>{[step.status, step.duration_ms ? `${step.duration_ms}ms` : '', compactStepDetail(step)].filter(Boolean).join(' 路 ')}</span>
+                                <span>{[step.status, step.duration_ms ? `${step.duration_ms}ms` : '', compactStepDetail(step)].filter(Boolean).join(' · ')}</span>
                             </div>
                         </div>
                     ))}
@@ -7286,7 +7541,7 @@ const AppRunOutput = ({ status, runState, resultText, businessResult, isTool, te
                         const artifactName = String(artifact.name || artifactPath.split(/[\\/]/).pop() || '').trim();
                         const artifactDownloadState = String(artifact.download_state || '').trim().toLowerCase();
                         const artifactRemoteOnly = artifactDownloadState === 'remote' && !artifactPath;
-                        const artifactMeta = [artifactName, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : '', artifactRemoteOnly ? 'remote' : ''].filter(Boolean).join(' 路 ');
+                        const artifactMeta = [artifactName, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : '', artifactRemoteOnly ? 'remote' : ''].filter(Boolean).join(' · ');
                         const artifactRef = artifactID || artifactURI;
                         const artifactDisplayRef = artifactURI || artifactName || artifactPath || String(artifact.remote_url || artifactID || '').trim();
                         const normalizedArtifactStatus = artifactStatus.toLowerCase();
@@ -7363,14 +7618,22 @@ function appDefinitionFingerprint(app: AppEntry): string {
     }));
 }
 
+function canonicalAppManifestID(app: AppEntry): string {
+    const dataSrvAppID = String(app.manifest?.datasrv?.appID || '').trim();
+    if (app.source === 'datasrv' && dataSrvAppID) return dataSrvAppID;
+    if (app.source === 'datasrv' && app.id.startsWith('datasrv-installed-')) return app.id.slice('datasrv-installed-'.length);
+    return app.id;
+}
+
 function appToManifest(app: AppEntry, submission?: AppPublishSubmission, governanceOverrides: AppGovernanceOverrides = {}) {
     const manifest = app.manifest;
+    const appID = canonicalAppManifestID(app);
     return {
         schema: manifest?.schema || 'maclaw.app.v1',
         privateMarker: manifest?.privateMarker || 'x_maclaw_apps',
         installUnit: manifest?.installUnit || 'builtin',
         app: {
-            id: app.id,
+            id: appID,
             name: app.name,
             version: normalizeAppVersion(app.version),
             description: app.description,
@@ -7608,7 +7871,7 @@ function installSummaryMessage(installedCount: number, upgradedCount: number, sk
     const parts = [`${text.installedCount}: ${installedCount}`];
     if (upgradedCount > 0) parts.push(`${text.upgradedCount}: ${upgradedCount}`);
     parts.push(`${text.skippedCount}: ${skippedCount}`);
-    return parts.join(' 路 ');
+    return parts.join(' · ');
 }
 
 function formatHubInstallScopeSummary(sourceAppCount: number | undefined, installedAppCount: number | undefined, dependencyCount: number | undefined, text: typeof labels.zh) {
@@ -7622,7 +7885,7 @@ function formatHubInstallScopeSummary(sourceAppCount: number | undefined, instal
     if (Number.isFinite(dependencies) && dependencies > 0) {
         parts.push(text.hubInstallDependencySummary.replace('{count}', String(dependencies)));
     }
-    return parts.join(' 路 ');
+    return parts.join(' · ');
 }
 function dataSrvRegistrationNumber(value: unknown) {
     const numberValue = Number(value || 0);
@@ -7635,7 +7898,7 @@ function dataSrvRegistrationSummary(registration: BackendAppDataSrvRegistration 
     const syncedCount = dataSrvRegistrationNumber(registration.synced_count);
     const reason = String(registration.reason || '').trim();
     if (registration.synced) return `${text.datasrvRegistrationReady}: ${syncedCount || eligibleCount}/${eligibleCount}`;
-    if (syncedCount > 0) return `${text.datasrvRegistrationFailed}: ${syncedCount}/${eligibleCount}${reason ? ` 路 ${reason}` : ''}`;
+    if (syncedCount > 0) return `${text.datasrvRegistrationFailed}: ${syncedCount}/${eligibleCount}${reason ? ` · ${reason}` : ''}`;
     return `${text.datasrvRegistrationSkipped}: ${reason || `${syncedCount}/${eligibleCount}`}`;
 }
 
@@ -7665,7 +7928,7 @@ function appHasDataSrvRegistrationCandidate(app: AppEntry) {
 function installDetailWithDataSrvRegistration(detail: string, registration: BackendAppDataSrvRegistration | undefined | null, appID: string | undefined, dataSrvCandidate: boolean | undefined, text: typeof labels.zh) {
     if (!appID || !dataSrvCandidate) return detail;
     const summary = dataSrvRegistrationSummaryForApp(registration, appID, text);
-    return summary ? `${detail} 路 ${summary}` : detail;
+    return summary ? `${detail} · ${summary}` : detail;
 }
 
 function backendDependencyMatchesAppIDs(dep: BackendAppInstallDependency, appIds: string[]) {
@@ -7700,7 +7963,7 @@ function firstBlockingBackendDependencyForApp(plan: BackendAppInstallPlan | null
 }
 
 function backendDependencyUnavailableMessage(app: AppEntry, plan: BackendAppInstallPlan | null | undefined, text: typeof labels.zh, lang?: string) {
-    const dep = firstBlockingBackendDependencyForApp(plan, app.id);
+    const dep = firstBlockingBackendDependencyForApp(plan, canonicalAppManifestID(app));
     if (!dep?.id) return text.missingRequiredDependency;
     const zh = isZh(lang);
     const rawState = String(dep.installed_status || dep.health || dep.action || '').trim();
@@ -7740,8 +8003,8 @@ function installRecordDependencyStatus(dep: BackendAppInstallDependency, text: t
 
 function versionSnapshotSkillText(skill: BackendAppInstallSkillVersionSnapshot | undefined | null) {
     if (!skill?.id) return '';
-    const meta = [skill.kind, skill.source, skill.version ? 'v' + skill.version : ''].filter(Boolean).join(' 路 ');
-    return meta ? skill.id + ' 路 ' + meta : skill.id;
+    const meta = [skill.kind, skill.source, skill.version ? 'v' + skill.version : ''].filter(Boolean).join(' · ');
+    return meta ? skill.id + ' · ' + meta : skill.id;
 }
 
 function installVersionSnapshotItems(snapshot: BackendAppInstallVersionSnapshot | undefined | null, text: typeof labels.zh) {
@@ -7756,7 +8019,7 @@ function installVersionSnapshotItems(snapshot: BackendAppInstallVersionSnapshot 
     });
     (snapshot.approval_bindings || []).forEach((binding) => {
         const workflow = [binding.workflow_skill_id, binding.workflow_version ? 'v' + binding.workflow_version : ''].filter(Boolean).join('@');
-        const value = [binding.event, binding.object_role, workflow].filter(Boolean).join(' 路 ');
+        const value = [binding.event, binding.object_role, workflow].filter(Boolean).join(' · ');
         if (value) items.push({ label: text.approvalBinding, value });
     });
     return items;
@@ -7788,14 +8051,14 @@ function installRecordStringList(value: unknown): string[] {
 function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeof labels.zh) {
     const items: Array<{ label: string; value: string }> = [];
     const layout = record.workspace_layout || {};
-    const layoutValue = [layout.entry, layout.template, layout.density].map(installRecordString).filter(Boolean).join(' 路 ');
+    const layoutValue = [layout.entry, layout.template, layout.density].map(installRecordString).filter(Boolean).join(' · ');
     if (layoutValue) items.push({ label: text.workspaceLayout, value: layoutValue });
     const contract = record.result_contract || {};
     const resultTypes = installRecordStringList(contract.types);
     const resultValue = [
         installRecordString(contract.primary),
         resultTypes.length ? `${resultTypes.length} types` : '',
-    ].filter(Boolean).join(' 路 ');
+    ].filter(Boolean).join(' · ');
     if (resultValue) items.push({ label: text.resultContract, value: resultValue });
     const evidence = record.test_evidence || {};
     const protocol = evidence.testProtocol && typeof evidence.testProtocol === 'object'
@@ -7806,7 +8069,7 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
     const evidenceValue = [
         installRecordString(evidence.runId || evidence.run_id),
         installRecordString(evidence.testProtocolFingerprint || evidence.test_protocol_fingerprint || protocol.fingerprint || protocol.hash),
-    ].filter(Boolean).join(' 路 ');
+    ].filter(Boolean).join(' · ');
     if (evidenceValue) items.push({ label: text.testEvidence, value: evidenceValue });
     return items;
 }
@@ -7852,10 +8115,31 @@ function installEvidenceRecordForApp(installAudit: BackendAppInstallRecord | nul
         version_snapshot: normalizeVersionSnapshot(record.version_snapshot),
         workspace_layout: record.workspace_layout && typeof record.workspace_layout === 'object' ? record.workspace_layout : undefined,
         result_contract: record.result_contract && typeof record.result_contract === 'object' ? record.result_contract : undefined,
+        workflow_contract: record.workflow_contract && typeof record.workflow_contract === 'object' ? record.workflow_contract : undefined,
         test_evidence: record.test_evidence && typeof record.test_evidence === 'object' ? record.test_evidence : undefined,
+        dependency_verification: record.dependency_verification && typeof record.dependency_verification === 'object' ? record.dependency_verification : undefined,
         dependencies: parseBackendAppInstallDependencies(record.dependencies),
         has_missing_required: !!record.has_missing_required,
         has_blocking_dependency: !!record.has_blocking_dependency,
+    };
+}
+
+function installedAppWithInstallEvidence(app: AppEntry, installAudit: BackendAppInstallRecord | null | undefined): AppEntry {
+    const installEvidence = installEvidenceRecordForApp(installAudit, app.id);
+    const versionSnapshot = installEvidence?.version_snapshot || installRecordVersionSnapshotForApp(installAudit, app.id);
+    const workflowContract = normalizeAppWorkflowContract(installEvidence?.workflow_contract, app.kind, workflowContractForApp(app));
+    const importedRunEvidence = installEvidence?.test_evidence
+        ? dataSrvInstalledRunEvidence({
+            test_evidence: installEvidence.test_evidence,
+            dependency_verification: installEvidence.dependency_verification,
+            dependencies: installEvidence.dependencies,
+        }, app.id)
+        : undefined;
+    return {
+        ...app,
+        versionSnapshot: versionSnapshot || app.versionSnapshot,
+        workflowContract: workflowContract || app.workflowContract,
+        importedRunEvidence: importedRunEvidence || app.importedRunEvidence,
     };
 }
 
@@ -7884,7 +8168,7 @@ const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text 
             <div className="apps-dependency-verification__head">
                 <strong>{text.dependencyVerification}</strong>
                 <span>{status}</span>
-                {state === 'ready' && <em>{text.skillDependencies}: {dependencyCount} 路 {text.missingDependencyCount}: {blockingCount}{hasWorkflowIssue ? ` 路 ${text.workflowContract}: ${workflowIssues.length || 1}` : ''}{hasGovernanceIssue ? ` 路 ${text.reviewIssues}: ${governanceIssues.length || 1}` : ''}</em>}
+                {state === 'ready' && <em>{text.skillDependencies}: {dependencyCount} · {text.missingDependencyCount}: {blockingCount}{hasWorkflowIssue ? ` · ${text.workflowContract}: ${workflowIssues.length || 1}` : ''}{hasGovernanceIssue ? ` · ${text.reviewIssues}: ${governanceIssues.length || 1}` : ''}</em>}
             </div>
             {workflowIssues.length > 0 && (
                 <div className="apps-dependency-verification__issues" role="list" aria-label={text.workflowContract}>
@@ -7938,7 +8222,7 @@ const InstallRecordDependencies = ({ dependencies, text }: { dependencies?: Back
                     dep.source,
                     dep.version ? `v${dep.version}` : '',
                     state !== 'ready' ? installedStatus || health : '',
-                ].filter(Boolean).join(' 路 ');
+                ].filter(Boolean).join(' · ');
                 return (
                     <div className="apps-install-record__dep" data-state={state} role="listitem" key={`${dep.id}-${dep.version || ''}-${index}`} title={backendDependencySummary(dep, text)}>
                         <strong>{dep.id}</strong>
@@ -8113,7 +8397,7 @@ const DataSrvDiscoverySummary = ({ discovery, lang }: { discovery: DataSrvDiscov
         { label: zh ? '\u770b\u677f' : 'Dashboards', value: discovery.dashboards },
     ];
     const endpoint = discovery.endpoint || 'http://127.0.0.1:18180';
-    const meta = discovery.error ? `${endpoint} 路 ${discovery.error}` : endpoint;
+    const meta = discovery.error ? `${endpoint} · ${discovery.error}` : endpoint;
     return (
         <div className="apps-datasrv-summary" data-status={discovery.status} aria-label={text.datasrvDiscovery}>
             <div className="apps-datasrv-summary__main">
@@ -8297,12 +8581,12 @@ function marketAppEntryFromMixedSkillResult(result: any, lang?: string): AppEntr
     const name = String(result?.maclaw_app_name || result?.maclawAppName || result?.name || appID).trim();
     if (!capabilityID || !appID || !name) return null;
     const kind = normalizeAppKind(result?.maclaw_app_kind || result?.maclawAppKind || result?.app_kind || result?.kind);
-    const sourceLabel = String(result?.source_label || result?.source || (isZh(lang) ? '绉佹湁甯傚満' : 'Enterprise Hub')).trim();
+    const sourceLabel = String(result?.source_label || result?.source || 'Enterprise Hub').trim();
     return {
         id: appID.startsWith('market-') ? appID : `market-${appID}`,
         name,
         description: String(result?.maclaw_app_description || result?.maclawAppDescription || result?.description || '').trim(),
-        category: String(result?.maclaw_app_category || result?.maclawAppCategory || (isEnterpriseAppKind(kind) ? (isZh(lang) ? '浼佷笟搴旂敤' : 'Enterprise') : 'Market')).trim(),
+        category: String(result?.maclaw_app_category || result?.maclawAppCategory || (isEnterpriseAppKind(kind) ? 'Enterprise' : 'Market')).trim(),
         kind,
         icon: normalizeSkillAppIcon(result?.maclaw_app_icon || result?.maclawAppIcon || (isEnterpriseApprovalAppKind(kind) ? 'shield' : isEnterpriseAppKind(kind) ? 'database' : 'contract')),
         accent: defaultAccentForKind(kind),
@@ -8446,7 +8730,7 @@ const StudioSkillPicker = ({
             {selectedSummary && (
                 <div className="apps-skill-picker__selected">
                     <strong>{selectedSummary.name}</strong>
-                    <span>{selectedSummary.id} 路 {selectedSummary.sourceLabel}</span>
+                    <span>{selectedSummary.id} · {selectedSummary.sourceLabel}</span>
                 </div>
             )}
             <div className="apps-skill-picker__list" role="listbox" aria-label={label}>
@@ -9378,7 +9662,9 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
             ? !!manifest?.skill?.id
             : true;
     const evidence = latestAppRunEvidence(app);
+    const evidenceFreshness = appRunEvidenceFreshnessCheck(app, lang);
     const resultCoverage = appRunEvidenceContractCoverage(app, evidence, lang);
+    const approvalInstanceEvidence = appRunEvidenceApprovalInstanceCheck(app, evidence, lang);
     const dependencies = appDependencyEvidence(app);
     const hasRequiredDependencies = app.kind === 'automation_app' || dependencies.some((dep) => dep.required && dep.id);
     const workflowContract = workflowContractForApp(app);
@@ -9434,8 +9720,13 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
         },
         {
             label: zh ? '\u8fd0\u884c\u8bc1\u636e' : 'Run evidence',
-            ok: resultCoverage.ok,
-            detail: resultCoverage.detail,
+            ok: evidenceFreshness.ok && resultCoverage.ok,
+            detail: evidenceFreshness.ok ? resultCoverage.detail : evidenceFreshness.detail,
+        },
+        {
+            label: zh ? '\u5ba1\u6279\u5b9e\u4f8b\u8bc1\u636e' : 'Approval instance evidence',
+            ok: approvalInstanceEvidence.ok,
+            detail: approvalInstanceEvidence.detail,
         },
     ];
 }
@@ -9516,10 +9807,11 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
         let dependencyPlan: BackendAppInstallPlan | undefined;
         try {
             dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
+            const appIDs = [canonicalAppManifestID(app)];
             if (workflowContractHasIssue(dependencyPlan, app)) {
                 throw new Error(runtimeInstallPlanBlockMessage(app, dependencyPlan, text, lang));
             }
-            if (dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, [app.id])) {
+            if (dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, appIDs)) {
                 throw new Error(text.missingRequiredDependency);
             }
         } catch (error) {
@@ -9733,7 +10025,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                     <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                                     <div>
                                         <strong>{app.name}</strong>
-                                        <span>{app.category} 路 {appKinds[app.kind][zh ? 'zh' : 'en']}</span>
+                                        <span>{app.category} · {appKinds[app.kind][zh ? 'zh' : 'en']}</span>
                                     </div>
                                     <em>{submission ? submissionStatus : ready ? text.readyToSubmit : text.needsWork}</em>
                                 </div>
@@ -9828,14 +10120,14 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                     <div className="apps-publish-queue__row" key={item.submissionID}>
                                         <div className="apps-publish-queue__body">
                                             <strong>{item.submissionID}</strong>
-                                            <span>{item.appNames.join(', ') || item.appIDs.join(', ') || '-'} 路 {item.channel || 'local'} 路 {item.status || 'submitted'}</span>
+                                            <span>{item.appNames.join(', ') || item.appIDs.join(', ') || '-'} · {item.channel || 'local'} · {item.status || 'submitted'}</span>
                                             <small>
                                                 {item.submittedAt}
-                                                {item.packageSHA ? ` 路 sha256:${item.packageSHA.slice(0, 12)}` : ''}
-                                                {item.packageBytes ? ` 路 ${formatPackageBytes(item.packageBytes)}` : ''}
+                                                {item.packageSHA ? ` · sha256:${item.packageSHA.slice(0, 12)}` : ''}
+                                                {item.packageBytes ? ` · ${formatPackageBytes(item.packageBytes)}` : ''}
                                                 {dependencyCount ? ` | ${text.skillDependencies}:${dependencyCount} ${text.missingDependencyCount}:${missingDependencyCount}` : ''}
-                                                {item.eventCount ? ` 路 ${text.eventHistory}:${item.eventCount}${item.lastEventAt ? ` ${item.lastEventAt}` : ''}` : ''}
-                                                {item.message ? ` 路 ${item.message}` : ''}
+                                                {item.eventCount ? ` · ${text.eventHistory}:${item.eventCount}${item.lastEventAt ? ` ${item.lastEventAt}` : ''}` : ''}
+                                                {item.message ? ` · ${item.message}` : ''}
                                             </small>
                                             {queuePackageErrorId === item.submissionID && <small>{text.queuePackageUnavailable}</small>}
                                             {queueSyncErrorId === item.submissionID && <small>{text.queueHubSyncFailed}</small>}
@@ -10417,7 +10709,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                         <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                         <div>
                             <div className="apps-manage-row__name">{app.name}</div>
-                            <div className="apps-manage-row__desc">{app.category} 路 {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</div>
+                            <div className="apps-manage-row__desc">{app.category} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</div>
                         </div>
                         <div className="apps-manage-actions">
                             <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === 0} title={manageFilterActive ? text.clearFilterToSort : text.moveTop} onClick={() => onMoveApp(app.id, "top")}>Top</button>
@@ -10457,7 +10749,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                             <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                             <div>
                                 <div className="apps-manage-row__name">{app.name}</div>
-                                <div className="apps-manage-row__desc">{app.category} 路 {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</div>
+                                <div className="apps-manage-row__desc">{app.category} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</div>
                             </div>
                             <div className="apps-manage-actions">
                                 <button className="apps-secondary-button" type="button" title={text.restore} onClick={() => onRestoreApp(app.id)}>{text.restore}</button>
@@ -10473,7 +10765,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                         <div className="apps-manage-edit-dialog__header">
                             <div>
                                 <div className="apps-definition__title" id="apps-manage-edit-title">{text.edit}</div>
-                                <div className="apps-manage-edit-dialog__subtitle">{editingApp.name} 路 {editingApp.category}</div>
+                                <div className="apps-manage-edit-dialog__subtitle">{editingApp.name} · {editingApp.category}</div>
                             </div>
                             <button className="apps-icon-button" type="button" title={text.cancel} aria-label={text.cancel} onClick={cancelEdit}>
                                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
@@ -10905,7 +11197,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                 const dependencyInstallPlan = (hubInstall?.install_plan || null) as BackendAppInstallPlan | null;
                 const installAudit = (hubInstall?.install_record || null) as BackendAppInstallRecord | null;
                 const installedAppIDs = parsed.apps.map((item) => item.id);
-                parsed.apps.forEach(onInstallApp);
+                parsed.apps.forEach((installedApp) => onInstallApp(installedAppWithInstallEvidence(installedApp, installAudit)));
                 await refreshInstallRecords();
                 const primaryAppID = installedAppIDs[0] || app.id;
                 const dependencyDetails = dependencyInstallPlan?.dependencies || [];
@@ -10915,7 +11207,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                 setMarketInstallFeedback({
                     appId: app.id,
                     state: 'done',
-                    message: scopeSummary ? `${text.alreadyInstalled} 路 ${scopeSummary}` : text.alreadyInstalled,
+                    message: scopeSummary ? `${text.alreadyInstalled} · ${scopeSummary}` : text.alreadyInstalled,
                     plan: dependencyInstallPlan || null,
                     appIDs: installedAppIDs.length > 0 ? installedAppIDs : [app.id],
                     dependencies: dependencyDetails,
@@ -10943,12 +11235,12 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
             try {
                 installAudit = await RecordMaclawAppInstall(manifestText, 'market') as BackendAppInstallRecord;
                 const dataSrvSummary = appHasDataSrvRegistrationCandidate(app) ? dataSrvRegistrationSummary(installAudit?.datasrv_registration, text) : '';
-                if (dataSrvSummary) installFeedbackMessage = `${installFeedbackMessage} 路 ${dataSrvSummary}`;
+                if (dataSrvSummary) installFeedbackMessage = `${installFeedbackMessage} · ${dataSrvSummary}`;
                 await refreshInstallRecords();
             } catch {
                 // Dependency health is the install gate; audit refresh failures should not discard an otherwise valid local install.
             }
-            onInstallApp(app);
+            onInstallApp(installedAppWithInstallEvidence(app, installAudit));
             setMarketInstallFeedback({
                 appId: app.id,
                 state: 'done',
@@ -10982,15 +11274,23 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
             const selectedAppIDs = plan.filter((item) => (item.action === 'install' || item.action === 'upgrade') && selectedKeys.has(item.key)).map((item) => item.app.id);
             const selectedApps = plan.filter((item) => (item.action === 'install' || item.action === 'upgrade') && selectedKeys.has(item.key)).map((item) => item.app);
             const selectedInstallManifestText = selectedApps.length > 0 ? JSON.stringify(appsToInstallManifest(selectedApps)) : '';
+            const shouldUseBackendInstallGate = parsed?.schema === 'maclaw.app.v1' || parsed?.schema === 'maclaw.app.pack.v1';
             let dependencyPlanForResult: BackendAppInstallPlan | null = backendInstallPlanState === 'ready' ? backendInstallPlan : null;
-            if (backendInstallPlanState === 'ready' && governanceReviewHasIssueForAppIDs(backendInstallPlan, selectedAppIDs)) {
-                throw new Error(governanceReviewIssueMessageForAppIDs(backendInstallPlan, selectedAppIDs, text));
+            if (shouldUseBackendInstallGate && selectedInstallManifestText) {
+                if (!dependencyPlanForResult) {
+                    dependencyPlanForResult = await PlanMaclawAppInstall(selectedInstallManifestText);
+                    setBackendInstallPlan(dependencyPlanForResult || null);
+                    setBackendInstallPlanState('ready');
+                }
+                if (governanceReviewHasIssueForAppIDs(dependencyPlanForResult, selectedAppIDs)) {
+                    throw new Error(governanceReviewIssueMessageForAppIDs(dependencyPlanForResult, selectedAppIDs, text));
+                }
+                if (workflowContractHasIssueForAppIDs(dependencyPlanForResult, selectedAppIDs)) {
+                    throw new Error(workflowContractIssueMessageForAppIDs(dependencyPlanForResult, selectedAppIDs, text));
+                }
             }
-            if (backendInstallPlanState === 'ready' && workflowContractHasIssueForAppIDs(backendInstallPlan, selectedAppIDs)) {
-                throw new Error(workflowContractIssueMessageForAppIDs(backendInstallPlan, selectedAppIDs, text));
-            }
-            if (backendInstallPlanState === 'ready' && hasMissingRequiredBackendDependency(backendInstallPlan, selectedAppIDs)) {
-                const dependencyInstallPlan = await InstallMaclawAppDependencies(selectedInstallManifestText || manifestText);
+            if (shouldUseBackendInstallGate && selectedInstallManifestText && hasMissingRequiredBackendDependency(dependencyPlanForResult, selectedAppIDs)) {
+                const dependencyInstallPlan = await InstallMaclawAppDependencies(selectedInstallManifestText);
                 dependencyPlanForResult = dependencyInstallPlan || null;
                 setBackendInstallPlan(dependencyInstallPlan || null);
                 setBackendInstallPlanState('ready');
@@ -11057,6 +11357,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                     const installAudit = await RecordMaclawAppInstall(JSON.stringify(installAuditPackage), 'market') as BackendAppInstallRecord;
                     const dataSrvRegistration = installAudit?.datasrv_registration;
                     await refreshInstallRecords();
+                    nextApps.forEach((installedApp) => onInstallApp(installedAppWithInstallEvidence(installedApp, installAudit)));
 	                    setInstallResultItems((current) => current.map((item) => {
 	                        if (!installedResultKeys.has(item.key)) return item;
 	                        const versionSnapshot = item.appID ? installRecordVersionSnapshotForApp(installAudit, item.appID) : undefined;
@@ -11087,7 +11388,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                 <div className="apps-preview-title-row">
                     <div>
                         <div className="apps-definition__title">{text.marketApps}</div>
-                        <div className="apps-market-list__meta">{text.marketAddableCount} {addableMarketCount} 路 {text.marketUpgradeableCount} {upgradeableMarketCount}</div>
+                        <div className="apps-market-list__meta">{text.marketAddableCount} {addableMarketCount} · {text.marketUpgradeableCount} {upgradeableMarketCount}</div>
                     </div>
                 </div>
                 <div className="apps-market-search">
@@ -11119,7 +11420,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                                 <div className="apps-market-row__main">
                                     <strong>{app.name}</strong>
                                     <span>{app.description}</span>
-                                    <small>{app.category} 路 {appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} 路 {app.marketSourceLabel || sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</small>
+                                    <small>{app.category} · {appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} · {app.marketSourceLabel || sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</small>
                                     {feedback && <small className="apps-market-row__feedback" data-state={feedback.state}>{feedback.message}</small>}
                                     {feedback?.plan ? (
                                         <DependencyVerificationPanel
@@ -11168,8 +11469,8 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                                 <div className="apps-install-record" key={recordKey} data-missing={missingCount > 0 ? 'true' : 'false'}>
                                     <div className="apps-install-record__main">
                                         <strong>{appNames}</strong>
-                                        <span>{text.installedAt}: {formatInstallRecordTime(record.installed_at)} 路 {text.marketSource}: {record.source || '-'}</span>
-                                        <small>{text.packageSha}: {sha} 路 {text.skillDependencies}: {dependencyCount} 路 {text.missingDependencyCount}: {missingCount}</small>
+                                        <span>{text.installedAt}: {formatInstallRecordTime(record.installed_at)} · {text.marketSource}: {record.source || '-'}</span>
+                                        <small>{text.packageSha}: {sha} · {text.skillDependencies}: {dependencyCount} · {text.missingDependencyCount}: {missingCount}</small>
                                         <InstallVersionSnapshot snapshot={record.version_snapshot} text={text} />
                                         <InstallRecordEvidenceSnapshot record={record} text={text} />
                                         <InstallRecordDependencies dependencies={dependencies} text={text} />
@@ -11234,7 +11535,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                                 <div className="apps-install-preview__tools">
                                     <button className="apps-secondary-button" type="button" disabled={installableKeys.length === 0 || selectedInstallCount === installableKeys.length} onClick={() => { setConfirmHighRiskInstall(false); setSelectedInstallKeys(installableKeys); }}>{text.selectAll}</button>
                                     <button className="apps-secondary-button" type="button" disabled={selectedInstallCount === 0} onClick={() => { setConfirmHighRiskInstall(false); setSelectedInstallKeys([]); }}>{text.clearSelection}</button>
-                                    <span className="apps-count">{`${text.installableCount} ${installableKeys.length - upgradeableCount} 路 ${text.upgradeableCount} ${upgradeableCount} 路 ${text.willSkip} ${skippedPreviewCount}`}</span>
+                                    <span className="apps-count">{`${text.installableCount} ${installableKeys.length - upgradeableCount} · ${text.upgradeableCount} ${upgradeableCount} · ${text.willSkip} ${skippedPreviewCount}`}</span>
                                     <span className="apps-count">{selectedInstallCount}/{installPlan.length}</span>
                                 </div>
                             </div>
@@ -11244,10 +11545,10 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                                     const statusText = checked
                                         ? item.action === 'upgrade' ? `${text.willUpgrade} v${normalizeAppVersion(item.installed?.version)} -> v${normalizeAppVersion(item.app.version)}` : text.willInstall
                                         : item.action === 'installed'
-                                            ? `${text.willSkip} 路 ${text.alreadyInstalled}`
+                                            ? `${text.willSkip} · ${text.alreadyInstalled}`
                                             : item.action === 'duplicate'
-                                                ? `${text.willSkip} 路 ${text.duplicateApp}`
-                                                : `${text.willSkip} 路 ${text.notSelected}`;
+                                                ? `${text.willSkip} · ${text.duplicateApp}`
+                                                : `${text.willSkip} · ${text.notSelected}`;
                                     const backendDependencies = backendDependenciesForApp(backendInstallPlan, item.app.id);
                                     const workflowIssue = backendInstallPlanState === 'ready' ? workflowContractIssueForApp(backendInstallPlan, item.app) : undefined;
                                     const governanceIssue = backendInstallPlanState === 'ready' ? governanceReviewIssueForApp(backendInstallPlan, item.app) : undefined;
@@ -11255,7 +11556,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                                     const dependencyText = backendInstallPlanState === 'ready' && backendDependencies.length > 0
                                         ? backendDependencies.map((dep) => backendDependencySummary(dep, text)).join(', ')
                                         : item.dependencies.map((dep) => dep.version ? `${dep.id}@${dep.version}` : dep.id).join(', ');
-                                    const checkboxLabel = `${item.app.name} 路 ${statusText}`;
+                                    const checkboxLabel = `${item.app.name} · ${statusText}`;
                                     return (
                                     <label className="apps-install-preview__row" key={item.key} data-action={checked ? 'install' : 'skip'} data-dependency-state={hasBlockingDependencies ? 'blocked' : undefined} title={statusText}>
                                         <input
@@ -11276,14 +11577,14 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                                         <span className="apps-app-icon" style={{ '--apps-icon-color': item.app.accent } as CSSProperties}><AppIcon icon={item.app.icon} customIconDataUrl={item.app.customIconDataUrl} /></span>
                                         <div>
                                             <strong>{item.app.name}</strong>
-                                            <span>{item.app.category} 路 {appKinds[item.app.kind][isZh(lang) ? 'zh' : 'en']}</span>
+                                            <span>{item.app.category} · {appKinds[item.app.kind][isZh(lang) ? 'zh' : 'en']}</span>
                                             {dependencyText && <small>{text.skillDependencies}: {dependencyText}</small>}
                                             {governanceIssue && <small>{text.reviewIssues}: {reviewIssueSummary(governanceIssue)}</small>}
                                             {workflowIssue && <small>{text.workflowContract}: {reviewIssueSummary(workflowIssue)}</small>}
                                             {item.action === 'upgrade' && item.addedScopes.length > 0 && (
                                                 <small>
                                                     {text.permissionChanges}: +{item.addedScopes.join(', ')}
-                                                    {item.highRiskScopes.length > 0 ? ` 路 ${text.highRiskPermission}: ${item.highRiskScopes.join(', ')}` : ''}
+                                                    {item.highRiskScopes.length > 0 ? ` · ${text.highRiskPermission}: ${item.highRiskScopes.join(', ')}` : ''}
                                                 </small>
                                             )}
                                         </div>

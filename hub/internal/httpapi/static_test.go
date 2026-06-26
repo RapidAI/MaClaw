@@ -268,6 +268,43 @@ func TestHubAdminPageIncludesFailureLogsUI(t *testing.T) {
 	}
 }
 
+func TestKnowledgeSharesPageUsesAutoViewerSessionFlow(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "web", "knowledge_shares", "index.html"))
+	if err != nil {
+		t.Fatalf("read knowledge shares index: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		`const SESSION_STORAGE_KEY = 'hubKnowledgeViewerToken'`,
+		`const PAGE_SIZE = 20;`,
+		`function tokenFromLocation()`,
+		`queryParams.get('token')`,
+		`cleanTokenFromURL()`,
+		`params.delete(key)`,
+		`const dirtyShareIDs = new Set();`,
+		`if (dirtyShareIDs.size > 0) return true;`,
+		`grid-template-columns: repeat(2, minmax(0, 1fr));`,
+		`id="pager" class="pager" hidden`,
+		`function goToSharePage(page)`,
+		`Open this page from MaClaw GUI`,
+		`Sliding renewal`,
+		`resp.status === 401`,
+		`sessionSavedTitle`,
+		`authFailedTitle`,
+		`id="clearSession"`,
+		`localStorage.removeItem(SESSION_STORAGE_KEY)`,
+		`window.setInterval(() => {`,
+		`/api/knowledge/shares/mine?limit=${PAGE_SIZE}&offset=${offset}`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("knowledge shares page missing %s", want)
+		}
+	}
+	if strings.Contains(content, `id="token"`) || strings.Contains(content, `saveToken`) {
+		t.Fatalf("knowledge shares page should not expose manual viewer token input anymore")
+	}
+}
+
 func TestMaClawComputeModuleShowsModuleAuthorizationBadge(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "maclaw-compute-module.js"))
 	if err != nil {

@@ -566,10 +566,35 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 					"description": "Archive reviewed contracts",
 					"kind": "tool_app",
 					"version": "3",
+					"ui": {
+						"schema": "maclaw.app.ui.v1",
+						"entry": "tool_workspace",
+						"generated": true,
+						"layouts": {
+							"tool_workspace": {
+								"template": "document_workspace",
+								"density": "compact",
+								"primaryRegion": "file_queue",
+								"outputRegion": "output_panel",
+								"navigation": ["input", "output"],
+								"list": {"columns": ["title", "status"]},
+								"regions": [
+									{"id": "file_queue", "role": "input", "placement": "left"},
+									{"id": "output_panel", "role": "output", "placement": "right"}
+								]
+							}
+						}
+					},
 					"governance": {
-						"workspaceLayout": {"entry": "tool_workspace", "template": "document_workspace", "density": "compact"},
 						"resultContract": {"primary": "artifact", "types": ["artifact", "content"]},
-						"testEvidence": {"runId": "run-contract", "testProtocolFingerprint": "proto-contract"},
+						"workflowContract": {"schema": "maclaw.app.workflow_contract.v1", "workflowSkillId": "contract-approval", "objectRole": "contract"},
+						"testEvidence": {
+							"runId": "run-contract",
+							"testProtocolFingerprint": "proto-contract",
+							"outputs": [{"kind": "document", "title": "Archived contract", "artifact_id": "artifact-contract"}],
+							"artifacts": [{"id": "artifact-contract", "uri": "artifact://contract/archive.pdf", "name": "archive.pdf"}],
+							"approvalInstance": {"approvalID": "approval-contract-1", "recordID": "contract-1", "datasetID": "legal.contracts", "objectRole": "contract", "approvalEvent": "contract.submitted", "approvalWorkflowID": "contract-approval", "status": "approved", "currentNode": "contract.result", "workflowSkillId": "contract-approval", "workflowVersion": "1.2.0", "businessStatus": "archived", "resultStatus": "approved", "resultPayload": {"approval_result": "approved", "business_status": "archived", "business_record": {"id": "contract-1"}}, "outputs": [{"kind": "approval_result", "title": "Approval", "text": "approved", "status": "approved"}], "artifacts": [{"id": "artifact-contract", "uri": "artifact://contract/archive.pdf", "name": "archive.pdf"}], "approvalInstanceViewVerified": true}
+						},
 						"dependencyVerification": {"schema": "maclaw.app.install_plan.v1", "dependencyCount": 1}
 					}
 				}
@@ -618,16 +643,49 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 		t.Fatalf("missing submitter metadata: %+v", metadata)
 	}
 	layout := metadata["workspace_layout"].(map[string]any)
-	if layout["template"] != "document_workspace" {
+	if layout["template"] != "document_workspace" || layout["primaryRegion"] != "file_queue" || layout["outputRegion"] != "output_panel" {
 		t.Fatalf("workspace layout metadata=%+v", layout)
+	}
+	regions, ok := layout["regions"].([]any)
+	if !ok || len(regions) != 2 {
+		t.Fatalf("workspace layout should preserve regions: %+v", layout)
+	}
+	if metadata["workspace_layout_primary_region"] != "file_queue" || metadata["workspace_layout_output_region"] != "output_panel" || metadata["workspace_layout_region_count"] != float64(2) {
+		t.Fatalf("workspace layout summaries=%+v", metadata)
 	}
 	resultContract := metadata["result_contract"].(map[string]any)
 	if resultContract["primary"] != "artifact" {
 		t.Fatalf("result contract metadata=%+v", resultContract)
 	}
+	workflowContract := metadata["workflow_contract"].(map[string]any)
+	if workflowContract["workflowSkillId"] != "contract-approval" || workflowContract["objectRole"] != "contract" {
+		t.Fatalf("workflow contract metadata=%+v", workflowContract)
+	}
 	testEvidence := metadata["maclaw_app_test_evidence"].(map[string]any)
 	if testEvidence["runId"] != "run-contract" || testEvidence["testProtocolFingerprint"] != "proto-contract" {
 		t.Fatalf("test evidence metadata=%+v", testEvidence)
+	}
+	if outputs, ok := testEvidence["outputs"].([]any); !ok || len(outputs) != 1 {
+		t.Fatalf("test evidence should preserve outputs: %+v", testEvidence)
+	}
+	if artifacts, ok := testEvidence["artifacts"].([]any); !ok || len(artifacts) != 1 {
+		t.Fatalf("test evidence should preserve artifacts: %+v", testEvidence)
+	}
+	approvalInstance := testEvidence["approvalInstance"].(map[string]any)
+	if approvalInstance["approvalID"] != "approval-contract-1" || approvalInstance["recordID"] != "contract-1" || approvalInstance["status"] != "approved" {
+		t.Fatalf("test evidence should preserve approval instance: %+v", testEvidence)
+	}
+	if approvalInstance["currentNode"] != "contract.result" || approvalInstance["workflowSkillId"] != "contract-approval" || approvalInstance["businessStatus"] != "archived" || approvalInstance["resultStatus"] != "approved" {
+		t.Fatalf("test evidence should preserve approval instance workflow/result fields: %+v", approvalInstance)
+	}
+	if payload, ok := approvalInstance["resultPayload"].(map[string]any); !ok || payload["business_status"] != "archived" {
+		t.Fatalf("test evidence should preserve approval instance result payload: %+v", approvalInstance)
+	}
+	if outputs, ok := approvalInstance["outputs"].([]any); !ok || len(outputs) != 1 {
+		t.Fatalf("test evidence should preserve approval instance outputs: %+v", approvalInstance)
+	}
+	if artifacts, ok := approvalInstance["artifacts"].([]any); !ok || len(artifacts) != 1 {
+		t.Fatalf("test evidence should preserve approval instance artifacts: %+v", approvalInstance)
 	}
 	tenantBItems, err := svc.List(capability.WithTenant(context.Background(), "tenant_b"), corelib.CapabilityTypeSkill)
 	if err != nil || len(tenantBItems) != 0 {
@@ -647,8 +705,50 @@ func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
 			"name":        "Download App",
 			"description": "Downloaded from Hub",
 			"kind":        "tool_app",
+			"ui": map[string]any{
+				"schema":    "maclaw.app.ui.v1",
+				"entry":     "tool_workspace",
+				"generated": true,
+				"layouts": map[string]any{
+					"tool_workspace": map[string]any{
+						"template":      "document_workspace",
+						"density":       "compact",
+						"primaryRegion": "file_queue",
+						"outputRegion":  "output_panel",
+						"regions": []any{
+							map[string]any{"id": "file_queue", "role": "input", "placement": "left"},
+							map[string]any{"id": "output_panel", "role": "output", "placement": "right"},
+						},
+					},
+				},
+			},
 			"governance": map[string]any{
-				"testEvidence": map[string]any{"runId": "run-download"},
+				"workflowContract": map[string]any{"schema": "maclaw.app.workflow_contract.v1", "workflowSkillId": "download-workflow", "objectRole": "download_record"},
+				"testEvidence": map[string]any{
+					"runId": "run-download",
+					"outputs": []any{
+						map[string]any{"kind": "table", "title": "Rows", "data": map[string]any{"rows": []any{map[string]any{"id": "download-1"}}}},
+					},
+					"artifacts": []any{map[string]any{"id": "artifact-download", "uri": "artifact://download/result.pdf", "name": "result.pdf"}},
+					"approvalInstance": map[string]any{
+						"approvalID":                   "approval-download-1",
+						"recordID":                     "download-1",
+						"datasetID":                    "downloads",
+						"objectRole":                   "download_record",
+						"approvalEvent":                "download.submitted",
+						"approvalWorkflowID":           "download-workflow",
+						"status":                       "approved",
+						"currentNode":                  "download.result",
+						"workflowSkillId":              "download-workflow",
+						"workflowVersion":              "1.0.0",
+						"businessStatus":               "ready",
+						"resultStatus":                 "approved",
+						"resultPayload":                map[string]any{"approval_result": "approved", "business_status": "ready", "business_record": map[string]any{"id": "download-1"}},
+						"outputs":                      []any{map[string]any{"kind": "approval_result", "title": "Approval", "text": "approved", "status": "approved"}},
+						"artifacts":                    []any{map[string]any{"id": "artifact-download", "uri": "artifact://download/result.pdf", "name": "result.pdf"}},
+						"approvalInstanceViewVerified": true,
+					},
+				},
 			},
 		},
 	}
@@ -713,7 +813,43 @@ func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
 	if app["id"] != "download-app" || app["name"] != "Download App" {
 		t.Fatalf("unexpected app entry: %+v", app)
 	}
+	ui, _ := app["ui"].(map[string]any)
+	layouts, _ := ui["layouts"].(map[string]any)
+	layout, _ := layouts["tool_workspace"].(map[string]any)
+	if layout["primaryRegion"] != "file_queue" || layout["outputRegion"] != "output_panel" {
+		t.Fatalf("download package should preserve workspace placement: %+v", layout)
+	}
+	if regions, ok := layout["regions"].([]any); !ok || len(regions) != 2 {
+		t.Fatalf("download package should preserve workspace regions: %+v", layout)
+	}
 	governance, _ := app["governance"].(map[string]any)
+	workflowContract, _ := governance["workflowContract"].(map[string]any)
+	if workflowContract["workflowSkillId"] != "download-workflow" || workflowContract["objectRole"] != "download_record" {
+		t.Fatalf("download package should preserve workflow contract: %+v", workflowContract)
+	}
+	testEvidence, _ := governance["testEvidence"].(map[string]any)
+	if outputs, ok := testEvidence["outputs"].([]any); !ok || len(outputs) != 1 {
+		t.Fatalf("download package should preserve test evidence outputs: %+v", testEvidence)
+	}
+	if artifacts, ok := testEvidence["artifacts"].([]any); !ok || len(artifacts) != 1 {
+		t.Fatalf("download package should preserve test evidence artifacts: %+v", testEvidence)
+	}
+	approvalInstance, _ := testEvidence["approvalInstance"].(map[string]any)
+	if approvalInstance["approvalID"] != "approval-download-1" || approvalInstance["recordID"] != "download-1" || approvalInstance["status"] != "approved" {
+		t.Fatalf("download package should preserve approval instance evidence: %+v", testEvidence)
+	}
+	if approvalInstance["currentNode"] != "download.result" || approvalInstance["workflowSkillId"] != "download-workflow" || approvalInstance["businessStatus"] != "ready" || approvalInstance["resultStatus"] != "approved" {
+		t.Fatalf("download package should preserve approval instance workflow/result fields: %+v", approvalInstance)
+	}
+	if payload, ok := approvalInstance["resultPayload"].(map[string]any); !ok || payload["business_status"] != "ready" {
+		t.Fatalf("download package should preserve approval instance result payload: %+v", approvalInstance)
+	}
+	if outputs, ok := approvalInstance["outputs"].([]any); !ok || len(outputs) != 1 {
+		t.Fatalf("download package should preserve approval instance outputs: %+v", approvalInstance)
+	}
+	if artifacts, ok := approvalInstance["artifacts"].([]any); !ok || len(artifacts) != 1 {
+		t.Fatalf("download package should preserve approval instance artifacts: %+v", approvalInstance)
+	}
 	submission, _ := governance["submission"].(map[string]any)
 	if submission["channel"] != "hub" || submission["status"] != "approved" || submission["reviewer"] != "hub-admin" || submission["capability_id"] != seeded.ID {
 		t.Fatalf("submission metadata=%+v", submission)

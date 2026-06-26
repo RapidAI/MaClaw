@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	github.com/UserExistsError/conpty v0.1.4
-	github.com/VantageDataChat/GoExcel v0.0.0-20260217221828-9e17ca484c06
+	github.com/VantageDataChat/GoExcel v0.0.0-20260626231344-644ce957794e
 	github.com/VantageDataChat/GoPDF2 v0.0.0-20260405225922-b95b4bfad327
 	github.com/VantageDataChat/GoPPT v0.0.0-20260222023045-cf8c7d78702c
 	github.com/braheezy/shine-mp3 v0.1.0

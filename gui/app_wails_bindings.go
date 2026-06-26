@@ -1665,8 +1665,10 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	}
 	if executionProjectPath := a.recentTaskExecutionProjectPath(projectPath); executionProjectPath != projectPath {
 		log.Printf("[AI assistant] route recent task to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
-		projectPath = executionProjectPath
-		req.ProjectPath = projectPath
+		if err := a.ensureRecentTaskExecutionWorkingDir(projectPath, executionProjectPath); err != nil {
+			log.Printf("[AI assistant] reject recent task working directory request_id=%s task_path=%q working_dir=%q err=%v", requestID, projectPath, executionProjectPath, err)
+			return nil, err
+		}
 	}
 	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
 	if projectPath != "" && a.isProjectTaskClosed(projectPath) {

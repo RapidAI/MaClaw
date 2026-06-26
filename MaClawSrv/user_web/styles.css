@@ -298,6 +298,13 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
 .knowledge-search { grid-column: 1 / -1; display: grid; gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: var(--shadow-card); }
 .knowledge-section-head { display: grid; gap: 3px; min-width: 0; padding-bottom: 10px; border-bottom: 1px solid rgba(216, 226, 234, .78); }
 .knowledge-section-head strong { font-size: 15px; line-height: 1.25; }
+.knowledge-icon-title,
+.knowledge-subhead { display: inline-flex; align-items: center; gap: 8px; }
+.knowledge-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; color: var(--accent-strong); flex: 0 0 auto; }
+.knowledge-icon svg { width: 100%; height: 100%; }
+.knowledge-icon-button { gap: 9px; }
+.knowledge-icon-button .knowledge-icon { width: 16px; height: 16px; color: currentColor; }
+.knowledge-subhead .knowledge-icon { width: 17px; height: 17px; color: var(--accent); }
 .memory-manager { grid-column: 1 / -1; display: grid; gap: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: var(--shadow-soft); }
 .memory-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(160px, .35fr) auto auto; gap: 10px; align-items: end; }
 .memory-editor { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(160px, .35fr) minmax(180px, .5fr); gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
@@ -366,6 +373,8 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
 .knowledge-import-grid section { display: grid; grid-template-rows: auto 1fr; gap: 12px; min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
 .knowledge-import-grid section:nth-child(3) { grid-column: 1 / -1; }
 .knowledge-import-grid h3 { margin: 0; padding-bottom: 9px; border-bottom: 1px solid var(--line); font-size: 14px; line-height: 1.25; }
+.knowledge-import-grid section:nth-child(4) .knowledge-subhead .knowledge-icon,
+.knowledge-import-grid section:nth-child(6) .knowledge-subhead .knowledge-icon { color: var(--accent-strong); }
 .knowledge-import-grid textarea { min-height: 98px; }
 .knowledge-import-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; align-content: start; align-items: start; min-height: 100%; }
 .knowledge-field { display: grid; gap: 6px; min-width: 0; }

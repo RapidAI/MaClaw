@@ -211,6 +211,18 @@ result
 全部（有权限才显示）
 ```
 
+DataSrv 恢复出的审批实例进入 GUI 时，必须按当前用户恢复视图归属：
+
+```text
+显式 lane / approval_lane 优先
+attention 状态进入需关注
+submitted_by / created_by / applicant 命中当前用户 -> 我的申请
+pending 且 assigned_to / current_assignee 命中当前用户 -> 待我审批
+approved / rejected 且 reviewed_by 命中当前用户 -> 已处理
+```
+
+这样 `all` 视图不会把远端 RecordApproval 全部粗略归为待审批，也能支撑“我的申请”和“我审批的”两个入口。
+
 列表至少显示：
 
 ```text
@@ -482,6 +494,8 @@ MaClaw App Skill
 它自己可以承担入口、编排和 UI，也可以依赖其它 Skill 执行实际动作。
 这些依赖必须显式声明、安装时检查，并能从当前 Hub 或能力市场下载安装。
 
+App Studio 保存到 Skill 包时，工具型 App 可以继续使用 `binding.skill` 和 `maclaw.apps.json` 的轻量多入口格式；企业审批型/企业普通型 App 必须作为超级 Skill 的完整 `maclaw.app.json` 保存，使用 `binding.appSkill` 指向当前超级 Skill，并原样保留动态 UI layout、MIS/DataSrv 绑定、审批 workflow 绑定、dependencies.skills、workflow/result contract、governance/testEvidence。不能把企业 App 降级成只含 input/output 字段的工具型 manifest。
+
 ### 依赖类型
 
 MaClaw App 可声明多类依赖：
@@ -600,9 +614,10 @@ ListMaclawAppInstalls(limit)
 
 前端市场导入流程
   粘贴应用包后先预览依赖；点击安装时如有必需依赖缺失，先调用 InstallMaclawAppDependencies，再安装 MaClaw App 面板入口，并后台写安装记录。
+  对标准 maclaw.app.v1 / maclaw.app.pack.v1 包，安装按钮不能只信任前端预览缓存；即使依赖预览仍在 loading，也必须针对用户当前选中的 App 子包重新调用后端 PlanMaclawAppInstall / InstallMaclawAppDependencies，确认治理、workflow contract 和必需 Skill 依赖通过后，才允许写入本地面板。
 
 运行前健康检查
-  已安装的 market/local/skill App 如显式声明 appSkill 或 dependencies.skills，执行前先调用 PlanMaclawAppInstall 检查必需依赖；缺失时阻止运行并展示依赖错误。
+  已安装的 market/local/skill/datasrv App 如显式声明 appSkill 或 dependencies.skills，执行前先调用 PlanMaclawAppInstall 检查必需依赖；缺失时阻止运行并展示依赖错误。DataSrv 能力发现恢复出的企业应用如果带有 workflow_skill_ids、workflow_skill_versions、approval_binding_versions 或 dependencies，也必须纳入同一运行前健康检查。
 ```
 
 安装计划必须可视化展示：
@@ -717,10 +732,36 @@ App Studio 不以 JSON 编辑器为主入口。
 6. 本地测试
    工具型至少跑通一次 Skill
    企业普通至少跑通一次业务操作
+   企业普通应用直连 DataSrv 的测试证据必须结构化保存 mode、target、result_status/business_status、原始 response，以及可展示的 outputs（table / business_record / dashboard / text 等），不能只保存裸 response；发布门禁和能力市场安装证据要能据此判断业务操作确实完成。
    企业审批型至少发起一条测试实例并验证实例视图
+   企业审批型测试证据必须保存 approvalInstance / approval_instance：instanceId、status，以及 approvalInstanceViewVerified 或 approvalViews，证明 App Studio 已打开我的申请/待我审批/已处理/需关注之一并能看到该实例。
+   审批 workflow Skill 运行完成后，run history 中的 approvalInstance 必须来自最终审批实例（approved/rejected/attention、currentNode、resultPayload、outputs/artifacts 已回填并完成 DataSrv 同步尝试后的实例），不能只保存发起时的 pending 快照；否则后续发布、安装证据和复测都会误判。
+   App Studio 或后端写回 Skill 定义文件的 run evidence 时，只能刷新 runId、verifiedAt、definitionHash、artifactPresent/artifactName 等新鲜度字段；已有的 approvalInstance、resultPayload、outputs、artifacts、dependencyVerification、resultCoverage 等企业证据必须合并保留，不能被工具型的简化写回接口覆盖为空。
+   如果 DataSrv 同步返回 approval_id / record_approval_id、record_id 或 dataset_id，前端必须合并回最终 approvalInstance，并在 run history / 发布证据中保留 approvalID，确保审批实例管理、审计和二次安装恢复能定位远端 RecordApproval。
+   approvalInstance 子证据本身必须保存 datasetID、blueprintID、objectRole、approvalEvent、approvalWorkflowID、workflowSkillId/version、businessStatus、resultStatus、detailURL、resultPayload、outputs、artifacts 等字段；不能只依赖 run history 顶层 resultPayload/outputs/artifacts，否则 Hub/DataSrv 恢复后无法独立判断审批实例证据是否完整。
+   App Studio 前端发布检查和 GUI 后端 SubmitMaclawAppPackage 必须把企业审批型应用的 approvalInstance 完整性作为能力市场门禁；缺 currentNode、workflowSkillId、businessStatus/resultStatus，或 approvalInstance 自身没有 resultPayload / outputs / artifacts 结果包时，即使顶层 testEvidence 有 resultPayload，也必须在前端禁用提交并在后端返回 review issue，阻止空壳审批证据进入 Hub。
+   从 Hub 或 DataSrv 安装记录恢复审批证据时，如果 approval_instance 只有 approval_id / record_approval_id 而没有 instanceId / workflow_instance_id，也必须用远端审批 ID 作为实例定位兜底，不能丢弃整段 approvalInstance 证据。
+   App Studio 发布检查必须将“审批实例证据”作为企业审批型应用的独立门禁；缺少 instanceId、status 或实例视图校验证据时，提交审核按钮不可用。提交包的 governance.testEvidence 必须携带同一份 approvalInstance 证据。
+   App Studio、GUI 后端和 Hub 审核都必须把运行证据绑定到当前 App 定义：governance.testEvidence 必须携带 definitionHash / definitionFingerprint，且该值必须等于当前 app manifest、动态 UI、binding、version 与运行契约计算出的定义指纹。用户编辑应用名称、版本、binding、UI 布局、workflow/result contract 或依赖后，旧的 importedRunEvidence / run history 只能作为历史审计，不能再满足发布门禁，必须重新测试后才能上传能力市场。
+   从 DataSrv app_installations 恢复已安装应用时，也必须把 metadata.test_evidence.approvalInstance / approval_instance 恢复成 importedRunEvidence.approvalInstance，避免安装后再发布时丢失审批测试证据。
+   从 DataSrv app_installations 恢复已安装应用时，metadata.workspace_layout 必须是 App Studio 保存的完整动态布局契约；除 entry/template/density/navigation/list columns 外，还要保留 primaryRegion / outputRegion / regions。regions 是用户调整位置后的 canonical 布局，不允许在 DataSrv 往返、Hub 安装或二次发布时退化成只有模板名的摘要。
+   DataSrv 服务端 normalize app_installations.metadata.workspace_layout 时，必须保留完整 workspace_layout.regions，并暴露 workspace_layout_primary_region、workspace_layout_output_region、workspace_layout_region_count、workspace_layout_region_ids 等轻量摘要；审计日志可以只写这些摘要字段，但能力发现接口必须返回完整 workspace_layout，供 GUI 恢复传统软件式工作台。
+   DataSrv OpenAPI 的 app_installations.metadata schema 必须显式声明 workspace_layout_primary_region、workspace_layout_output_region、workspace_layout_region_count、workspace_layout_region_ids，确保 GUI、Hub 和自动化测试把动态布局位置当成稳定契约，而不是未文档化的临时 metadata。
+   DataSrv app_installations 恢复 test_evidence 时必须保留完整 outputs / artifacts / result_payload；只有没有 outputs 时才允许用 output_count 生成摘要，避免企业普通应用的 table/dashboard/business_record 证据在恢复后退化成不可验证的计数。
+   MaClaw App 安装注册到 DataSrv app_installations 时，也必须在 metadata.governance.test_evidence 和顶层 metadata.test_evidence 同时保留完整 outputs、artifacts、resultPayload / result_payload、approvalInstance / approval_instance（含 approvalID / approval_id、recordID / record_id 等远端定位字段）与 dependencyVerification；DataSrv 是安装后恢复、审计、二次发布的证据源，不能只写摘要字段。
+   GUI 后端 RecordMaclawAppInstall 生成 install_evidence、写本地安装审计、注册 DataSrv app_installations 时，必须同一份保留 approvalInstance 内部 resultPayload、outputs、artifacts、currentNode、workflowSkillId、businessStatus/resultStatus；安装证据、DataSrv metadata、本地审计三处任一处退化，都会破坏后续复测、运行恢复和再次发布。
+   DataSrv 服务端 normalize app_installations.metadata.test_evidence 时，也必须把 outputs、artifacts、approval_instance 原样保留在 canonical metadata.test_evidence 中；审计日志可以只写轻量摘要字段（如 test_evidence_approval_id、test_evidence_record_id、test_evidence_approval_status），但能力发现接口必须返回完整证据。
+   DataSrv OpenAPI 的 app_installations.metadata schema 必须显式声明 test_evidence_outputs、test_evidence_artifacts、test_evidence_result_payload、test_evidence_approval_instance 及审批/依赖/结果覆盖摘要字段，确保 GUI、Hub 和自动化测试把这些字段当成稳定契约，而不是未文档化的临时 metadata。
+   从 Hub/能力市场安装 MaClaw App 时，前端必须把后端 install_record.install_evidence 中的 test_evidence、dependency_verification、version_snapshot、workflow_contract 回灌到本地 AppEntry；企业审批型应用尤其要保留 importedRunEvidence.approvalInstance 及其内部 resultPayload、outputs、artifacts、workflowSkillId、businessStatus/resultStatus 等字段，避免安装后运行、复测或再次发布时丢失审批实例证据。
+   DataSrv 恢复出的应用在 GUI 内部可以使用 datasrv-installed-* 包装 ID 避免与本地/市场应用冲突，但 app.manifest.datasrv.appID 必须保存真实 DataSrv app_id；提交给 PlanMaclawAppInstall、发布包、依赖验证、workflow/governance issue 归属判断时必须使用真实 app_id，不能把包装 ID 写入 MaClaw App 契约。
 
 7. 上传 Hub 能力市场
    上传 Skill + App manifest + UI layout + 测试证据
+   Hub 接收 MaClaw App 包时，必须把原始 maclaw.app.v1 entry 作为 capability version manifest 完整保存；app.ui.layouts、workspace layout regions、workflowContract、resultContract、testEvidence.outputs、testEvidence.artifacts、testEvidence.approvalInstance 都属于安装包契约，不能只进入搜索摘要。
+   Hub 保存 metadata.maclaw_app_test_evidence / metadata.test_evidence 时，也必须保留 approvalInstance 内部的 resultPayload、outputs、artifacts、currentNode、workflowSkillId、businessStatus/resultStatus 等完整字段；搜索摘要可以另算，但不能覆盖或裁剪安装包证据。
+   Hub capability metadata 可以用于市场列表、审核和搜索，但它不能替代安装包本体。metadata 至少要能从 governance.workspaceLayout 或 app.ui.entry/layouts[entry] 恢复 workspace_layout，并暴露 primary/output region 与 region ids/count；审核页可以看摘要，下载/安装接口必须返回完整 package。
+   Hub 下载 `/api/capabilities/maclaw-apps/{id}/package` 时，只能给已 approved/published 的能力返回安装包；返回包要在原始 App entry 上追加 hub submission/review 信息，同时保留原始动态 UI、workflow contract、测试证据和依赖声明。
+   Hub / DataSrv 回灌的 testEvidence 可用于安装审计和运行回放，但用于再次发布前必须重新计算当前 App 定义指纹并与 evidence.definitionHash 比对；不匹配或缺失时，GUI 发布按钮和后端 SubmitMaclawAppPackage 都必须报错，提示“当前应用定义已变更，需要重新测试”。
 ```
 
 能力市场分发的不是单一脚本，而是完整 App 能力包：
@@ -1077,7 +1118,18 @@ App Studio 不再以 manifest JSON 编辑为核心。
     ],
     "dependency_count": 2,
     "has_missing_required_dependency": false,
-    "has_blocking_dependency": false
+    "has_blocking_dependency": false,
+    "dependency_verification": {
+      "schema": "maclaw.app.install_plan.v1",
+      "verified_at": "2026-06-18T10:00:00Z",
+      "dependency_count": 2,
+      "has_missing_required": false,
+      "has_blocking_dependency": false,
+      "dependencies": [
+        {"id": "mis-expense-claim", "kind": "runtime_skill", "installed": true, "health": "ready"},
+        {"id": "approval-expense", "kind": "workflow_skill", "installed": true, "health": "ready"}
+      ]
+    }
   }
 }
 ```

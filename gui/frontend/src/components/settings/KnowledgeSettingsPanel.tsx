@@ -1364,6 +1364,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [showHubShareDialog, setShowHubShareDialog] = useState(false);
     const hubShareButtonRef = useRef<HTMLButtonElement | null>(null);
     const hubShareDialogRef = useRef<HTMLElement | null>(null);
+    const hubShareDescriptionRef = useRef<HTMLTextAreaElement | null>(null);
     const busyRef = useRef(busy);
     const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
     const [searchForm, setSearchForm] = useState({ query: '', resultType: 'all', sourceKind: 'all', domain: '', sourceID: '', labels: '', limit: 20, includeDisabled: false });
@@ -1492,13 +1493,6 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         () => Object.keys(exportSelection).filter(id => exportSelection[id]),
         [exportSelection],
     );
-    const selectedExportSources = useMemo(() => {
-        if (!selectedExportSourceIDs.length) return [];
-        const byID = new Map((exportSources || [])
-            .map(source => [String(source.id || '').trim(), source] as const)
-            .filter(([id]) => !!id));
-        return selectedExportSourceIDs.map(id => byID.get(id) || { id });
-    }, [exportSources, selectedExportSourceIDs]);
     const selectedDisabledShareCount = useMemo(() => {
         if (hubShareForm.includeDisabled || !selectedExportSourceIDs.length) return 0;
         const disabledIDs = new Set((exportSources || [])
@@ -1700,9 +1694,11 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         const description = hubShareForm.description.trim();
         if (!description) {
             setError(t('Knowledge description is required before sharing.', '分享前必须填写知识描述。'));
+            hubShareDescriptionRef.current?.focus();
             return;
         }
         setHubShareResult(null);
+        setError('');
         await runTask('shareToHub', async () => {
             const result = await KnowledgeShareToHub({
                 hub_url: hubShareForm.hubURL.trim(),
@@ -1735,7 +1731,9 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             setError(t('Hub URL is required to open shared knowledge.', '需要 Hub 地址才能查看分享。'));
             return;
         }
-        await OpenSystemUrl(`${hubURL}/hub/knowledge/shares/mine`);
+        const token = hubShareForm.hubToken.trim();
+        const tokenHash = token ? `#token=${encodeURIComponent(token)}` : '';
+        await OpenSystemUrl(`${hubURL}/hub/knowledge/shares/mine${tokenHash}`);
     };
 
     const toggleExportSource = (sourceID?: string) => {
@@ -2227,7 +2225,6 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                         <div className="knowledge-share-modal__body">
                                             <div className="knowledge-compact-grid knowledge-hub-share-grid">
                                                 <input className="knowledge-input" value={hubShareForm.hubURL} onChange={event => setHubShareForm({ ...hubShareForm, hubURL: event.target.value })} placeholder={t('Hub URL (uses configured Hub if empty)', 'Hub 地址（为空则使用已配置 Hub）')} />
-                                                <input className="knowledge-input" type="password" value={hubShareForm.hubToken} onChange={event => setHubShareForm({ ...hubShareForm, hubToken: event.target.value })} placeholder={t('Hub token (uses configured token if empty)', 'Hub 令牌（为空则使用已配置令牌）')} />
                                                 <input className="knowledge-input" value={hubShareForm.title} onChange={event => setHubShareForm({ ...hubShareForm, title: event.target.value })} placeholder={t('Share title (optional)', '分享标题（可选）')} />
                                                 <select className="knowledge-input" value={hubShareForm.visibilityScope} onChange={event => setHubShareForm({ ...hubShareForm, visibilityScope: event.target.value })}>
                                                     <option value="hub">{t('This Hub public', '本 Hub 公开')}</option>
@@ -2244,11 +2241,20 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                                 </select>
                                                 <input className="knowledge-input" value={hubShareForm.visibilityUsers} onChange={event => setHubShareForm({ ...hubShareForm, visibilityUsers: event.target.value })} placeholder={t('Visible users, emails or IDs', '可见用户，邮箱或 ID')} disabled={hubShareForm.visibilityScope !== 'users'} />
                                             </div>
+                                            <details className="knowledge-advanced-details">
+                                                <summary className="knowledge-details-summary">{t('Advanced authentication', '高级认证')}</summary>
+                                                <input className="knowledge-input" type="password" value={hubShareForm.hubToken} onChange={event => setHubShareForm({ ...hubShareForm, hubToken: event.target.value })} placeholder={t('Hub token override (optional)', 'Hub 令牌覆盖（可选）')} />
+                                                <span className="knowledge-field-hint">{t('Usually not needed. Leave empty to use the configured Hub token.', '通常不需要填写；留空会使用已配置的 Hub 令牌。')}</span>
+                                            </details>
                                             <textarea
+                                                ref={hubShareDescriptionRef}
                                                 id="knowledge-hub-share-description"
                                                 className="knowledge-input knowledge-textarea knowledge-textarea--compact"
                                                 value={hubShareForm.description}
-                                                onChange={event => setHubShareForm({ ...hubShareForm, description: event.target.value })}
+                                                onChange={event => {
+                                                    setHubShareForm({ ...hubShareForm, description: event.target.value });
+                                                    if (error) setError('');
+                                                }}
                                                 placeholder={t('Required knowledge description for readers and Hub management', '必填：给读者和 Hub 管理后台看的知识描述')}
                                                 required
                                                 aria-invalid={hubShareDescriptionMissing}
@@ -2259,39 +2265,22 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                                     ? t('Required before Hub sharing; visible to readers and Hub knowledge managers.', '分享到 Hub 前必填；读者和 Hub 知识管理后台都会看到。')
                                                     : t('This description helps readers and agents identify the exported knowledge.', '该描述用于帮助读者和 Agent 识别这次导出的知识。')}
                                             </span>
+                                            {error ? <div className="knowledge-alert knowledge-alert--error knowledge-share-modal__alert" role="alert">{error}</div> : null}
                                             <div className="knowledge-checkbox-row">
                                                 <label className="knowledge-checkbox"><input type="checkbox" checked={hubShareForm.includeDisabled} onChange={event => setHubShareForm({ ...hubShareForm, includeDisabled: event.target.checked })} /> {t('Include disabled sources in Hub share', '分享到 Hub 时包含禁用来源')}</label>
                                                 {selectedDisabledShareCount > 0 ? (
                                                     <span className="knowledge-muted-line">{t(`${selectedDisabledShareCount} disabled selected source(s) will be skipped unless enabled here.`, `已选择的 ${selectedDisabledShareCount} 个禁用来源会被跳过，除非在此勾选包含禁用来源。`)}</span>
                                                 ) : null}
                                             </div>
-                                            <div className="knowledge-share-scope" aria-label={t('Hub share scope', 'Hub 分享范围')}>
-                                                <div className="knowledge-share-scope__head">
-                                                    <strong>{t('Selected items for sharing', '将分享的知识条目')}</strong>
-                                                    <span className="knowledge-chip knowledge-chip--badge">{exportSelectionLabel}</span>
-                                                </div>
-                                                {selectedExportSources.length ? (
-                                                    <div className="knowledge-share-scope__items">
-                                                        {selectedExportSources.slice(0, 6).map(source => (
-                                                            <span key={source.id || knowledgeExportSourceLabel(source)} className="knowledge-share-scope__item" title={knowledgeExportSourceMeta(source)}>
-                                                                {knowledgeExportSourceLabel(source)}
-                                                            </span>
-                                                        ))}
-                                                        {selectedExportSources.length > 6 ? (
-                                                            <span className="knowledge-muted-line">{t(`+${selectedExportSources.length - 6} more`, `另有 ${selectedExportSources.length - 6} 项`)}</span>
-                                                        ) : null}
-                                                    </div>
-                                                ) : (
-                                                    <span className="knowledge-muted-line">{t('No item is selected above, so Hub sharing will include the whole knowledge base.', '上方未选择条目，因此分享到 Hub 时会包含整库。')}</span>
-                                                )}
-                                            </div>
-                                            <span className="knowledge-muted-line">{t('Change the share scope by selecting items in the source list above.', '如需调整分享范围，请在上方来源列表中选择条目。')}</span>
+                                            <span className="knowledge-muted-line">{selectedExportSourceIDs.length
+                                                ? t(`Sharing ${selectedExportSourceIDs.length} selected item(s). Change the scope in the source list behind this dialog.`, `将分享已选择的 ${selectedExportSourceIDs.length} 项；如需调整范围，请关闭弹窗后在来源列表中修改。`)
+                                                : t('No item is selected, so sharing will include the whole knowledge base.', '未选择条目，因此将分享整库。')}</span>
                                         </div>
                                         <div className="knowledge-share-modal__footer">
                                             <button type="button" className="knowledge-button knowledge-button--secondary" disabled={busy === 'shareToHub'} onClick={() => setShowHubShareDialog(false)}>
                                                 {t('Cancel', '取消')}
                                             </button>
-                                            <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy || hubShareDescriptionMissing} aria-describedby={hubShareDescriptionMissing ? 'knowledge-hub-share-description-help' : undefined} onClick={shareKnowledgeToHub}>
+                                            <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} aria-describedby={hubShareDescriptionMissing ? 'knowledge-hub-share-description-help' : undefined} onClick={shareKnowledgeToHub}>
                                                 {busy === 'shareToHub'
                                                     ? t('Sharing...', '分享中...')
                                                     : selectedExportSourceIDs.length

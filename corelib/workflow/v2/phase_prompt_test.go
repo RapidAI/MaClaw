@@ -88,6 +88,73 @@ func TestBuildPhasePrompt_SkipsGuidanceWhenNoFilePath(t *testing.T) {
 	}
 }
 
+func TestBuildPhasePrompt_PPTGenerationRequiresPPTXArtifactSkill(t *testing.T) {
+	state := &WorkflowState{
+		Type:        string(WorkflowPresentationDesign),
+		Summary:     "制作北京庆祝主题 PPT",
+		ProjectPath: `D:\work\presentation`,
+		Phases: []Phase{
+			{ID: "audience_goal", Name: "受众与目标", Output: "受众：大众；页数：20"},
+			{ID: "outline", Name: "内容大纲", Output: "封面、历史、文化、未来"},
+			{ID: "slide_scripting", Name: "逐页脚本", Output: "第1页封面；第2页历史"},
+			{ID: "ppt_generation", Name: "PPT 生成"},
+		},
+		CurrentPhase: 3,
+	}
+
+	prompt := BuildPhasePrompt(state)
+	for _, want := range []string{
+		`manage_skill(action="run", name="pptx-generator"`,
+		"search_and_install_skill",
+		"craft_tool",
+		".pptx",
+		"send_file",
+		"禁止只调用 generate_pdf",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("ppt_generation prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildPhasePrompt_GenericArtifactPhaseUsesSemanticGuidance(t *testing.T) {
+	state := &WorkflowState{
+		Type:        "custom_report_workflow",
+		Summary:     "生成最终交付包",
+		ProjectPath: `D:\work\artifact`,
+		Phases: []Phase{
+			{ID: "planning", Name: "规划", Output: "交付一个 zip 包"},
+			{
+				ID:            "final_package",
+				Name:          "最终交付包",
+				Kind:          PhaseKindArtifactGeneration,
+				MutationScope: MutationScopeArtifact,
+			},
+		},
+		CurrentPhase: 1,
+	}
+
+	prompt := BuildPhasePrompt(state)
+	for _, want := range []string{
+		"通用产物生成阶段指令",
+		"manage_skill",
+		"search_and_install_skill",
+		"craft_tool",
+		"send_file",
+		"实际文件已生成并发送",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("generic artifact prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestIsArtifactGenerationPhaseDerivesLegacyPresentationSemantics(t *testing.T) {
+	if !isArtifactGenerationPhase(string(WorkflowPresentationDesign), &Phase{ID: "ppt_generation"}) {
+		t.Fatal("presentation ppt_generation should derive artifact semantics without explicit phase fields")
+	}
+}
+
 func TestBuildPhasePrompt_SkipsGuidanceForPaDisclosureParsing(t *testing.T) {
 	state := &WorkflowState{
 		Type:    "patent_application",

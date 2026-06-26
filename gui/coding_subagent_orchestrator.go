@@ -134,7 +134,9 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 
 	// Update orchestrator based on result.
 	resultSummary := compactSubAgentReportSummary(result.Summary)
+	resultSummary = appendSubAgentQualityReportSummary(resultSummary, result)
 	resultStatus, resultError := normalizeSubAgentResultStatus(result)
+	r.orchestrator.RecordTaskResultSummaryForRun(task, runID, resultSummary)
 	artifactsRecorded := r.orchestrator.RecordTaskActualArtifactsForRun(task, runID, result.FilesModified, result.FilesCreated)
 	if artifactsRecorded && r.handler != nil {
 		emitCodingSubAgentCodeFileEvents(r.handler.app, r.activeCodeSessionID(), r.orchestrator.ProjectPath, result.FilesModified, result.FilesCreated)
@@ -217,8 +219,12 @@ func normalizeSubAgentResultStatus(result *CodingSubAgentResult) (TaskExecStatus
 		return TaskExecFailed, "coding SubAgent returned no result"
 	}
 	errSummary := compactSubAgentErrorSummary(result.Error)
+	qualityFailure := subAgentQualityFailureError(result)
 	switch result.Status {
 	case TaskExecPassed:
+		if qualityFailure != "" {
+			return TaskExecFailed, qualityFailure
+		}
 		return TaskExecPassed, errSummary
 	case TaskExecFailed:
 		if errSummary == "" {
@@ -235,6 +241,61 @@ func normalizeSubAgentResultStatus(result *CodingSubAgentResult) (TaskExecStatus
 	}
 }
 
+func subAgentQualityFailureError(result *CodingSubAgentResult) string {
+	if result == nil || result.QualityStatus != codingSubAgentQualityFailed {
+		return ""
+	}
+	summary := strings.TrimSpace(result.QualitySummary)
+	if summary == "" {
+		summary = "coding SubAgent quality audit failed"
+	} else {
+		summary = "coding SubAgent quality audit failed: " + summary
+	}
+	return compactSubAgentErrorSummary(summary)
+}
+
+func appendSubAgentQualityReportSummary(summary string, result *CodingSubAgentResult) string {
+	if result == nil || result.QualityStatus == "" || strings.TrimSpace(result.QualitySummary) == "" {
+		return summary
+	}
+	section := subAgentQualityReportSection(result)
+	summary = strings.TrimSpace(summary)
+	if idx := strings.Index(summary, "## 质量审计"); idx >= 0 {
+		end := len(summary)
+		if next := strings.Index(summary[idx+len("## 质量审计"):], "\n\n## "); next >= 0 {
+			end = idx + len("## 质量审计") + next
+		}
+		return strings.TrimSpace(summary[:idx] + section + summary[end:])
+	}
+	if summary == "" {
+		return section
+	}
+	return summary + "\n\n" + section
+}
+
+func subAgentQualityReportSection(result *CodingSubAgentResult) string {
+	label := strings.ToUpper(result.QualityStatus.String())
+	qualitySummary := strings.TrimSpace(result.QualitySummary)
+	if result.QualityIssueCount > 0 {
+		qualitySummary = fmt.Sprintf("%s (%d issue(s))", qualitySummary, result.QualityIssueCount)
+	}
+	return fmt.Sprintf("## 质量审计\n\n%s: %s", label, qualitySummary)
+}
+
+func compactSubAgentQualityEvidence(result *CodingSubAgentResult) string {
+	if result == nil || result.QualityStatus == "" {
+		return ""
+	}
+	summary := strings.TrimSpace(result.QualitySummary)
+	if summary == "" {
+		return ""
+	}
+	label := strings.ToUpper(result.QualityStatus.String())
+	if result.QualityIssueCount > 0 {
+		return compactSubAgentErrorSummary(fmt.Sprintf("%s: %s (%d issue(s))", label, summary, result.QualityIssueCount))
+	}
+	return compactSubAgentErrorSummary(fmt.Sprintf("%s: %s", label, summary))
+}
 func enrichSubAgentFailureError(result *CodingSubAgentResult, errSummary string) string {
 	errSummary = strings.TrimSpace(errSummary)
 	if result == nil {
@@ -247,6 +308,9 @@ func enrichSubAgentFailureError(result *CodingSubAgentResult, errSummary string)
 	}
 	if failed := failedSubAgentDynamicTools(result.DynamicToolsRun); len(failed) > 0 && !strings.Contains(lower, "dynamic tool evidence") {
 		evidence = append(evidence, "dynamic tool evidence: "+compactFailedSubAgentDynamicToolResults(failed))
+	}
+	if quality := compactSubAgentQualityEvidence(result); quality != "" && !strings.Contains(lower, "quality audit evidence") {
+		evidence = append(evidence, "quality audit evidence: "+quality)
 	}
 	if len(evidence) == 0 {
 		return errSummary
@@ -653,7 +717,48 @@ func recentSubAgentOutputs(outputs []string, maxItems int) []string {
 	if maxItems <= 0 || len(outputs) <= maxItems {
 		return outputs
 	}
+
+	var summaries []string
+	var details []string
+	for _, output := range outputs {
+		if isSubAgentPreviousSummaryOutput(output) {
+			summaries = append(summaries, output)
+		} else {
+			details = append(details, output)
+		}
+	}
+	keep := map[string]bool{}
+	for _, output := range recentSubAgentOutputItems(summaries, maxItems) {
+		keep[output] = true
+	}
+	remaining := maxItems - len(keep)
+	if remaining > 0 {
+		for _, output := range recentSubAgentOutputItems(details, remaining) {
+			keep[output] = true
+		}
+	}
+	selected := make([]string, 0, maxItems)
+	for _, output := range outputs {
+		if keep[output] {
+			selected = append(selected, output)
+		}
+	}
+	return selected
+}
+
+func recentSubAgentOutputItems(outputs []string, maxItems int) []string {
+	if maxItems <= 0 || len(outputs) == 0 {
+		return nil
+	}
+	if len(outputs) <= maxItems {
+		return outputs
+	}
 	return outputs[len(outputs)-maxItems:]
+}
+
+func isSubAgentPreviousSummaryOutput(output string) bool {
+	output = strings.TrimSpace(output)
+	return strings.HasPrefix(output, "Previous passed task summary") || strings.HasPrefix(output, "Previous failed attempt summary")
 }
 
 func previousTaskFileOutputs(t *TaskItem) []string {
@@ -672,7 +777,7 @@ func previousTaskFileOutputs(t *TaskItem) []string {
 	for _, f := range uniqueSortedSubAgentStrings(t.ActualCreatedFiles) {
 		created[f] = true
 	}
-	outputs := make([]string, 0, len(files))
+	outputs := make([]string, 0, len(files)+1)
 	title := compactSubAgentTaskTitle(t.Title)
 	for _, f := range files {
 		kind := source
@@ -681,21 +786,30 @@ func previousTaskFileOutputs(t *TaskItem) []string {
 		}
 		outputs = append(outputs, fmt.Sprintf("%s (%s by T%d: %s passed)", compactSubAgentPathText(f), kind, taskDisplayNumber(t), title))
 	}
+	if summary := compactSubAgentPreviousResultSummary(t.ResultSummary); summary != "" {
+		outputs = append(outputs, fmt.Sprintf("Previous passed task summary for T%d (%s): %s", taskDisplayNumber(t), title, summary))
+	}
 	return outputs
 }
 
 func currentTaskRetryOutputs(t *TaskItem) []string {
-	if t == nil || t.RetryCount <= 0 || strings.TrimSpace(t.ErrorSummary) == "" {
+	if t == nil || t.RetryCount <= 0 {
 		return nil
 	}
 	title := compactSubAgentTaskTitle(t.Title)
 	errSummary := compactSubAgentErrorSummary(t.ErrorSummary)
-	message := fmt.Sprintf("Retry context for T%d (%s): previous attempt failed with: %s. Do not repeat the same failed approach; inspect the error, adjust the fix, and run verification again.",
+	if errSummary == "" {
+		errSummary = "previous attempt did not provide an error summary"
+	}
+	message := fmt.Sprintf("Retry context for T%d (%s): previous attempt failed with: %s. Do not repeat the same failed approach; inspect the previous summary/artifacts, adjust the fix, and run verification again.",
 		taskDisplayNumber(t), title, errSummary)
 	if hint := subAgentRetryRecoveryHint(errSummary); hint != "" {
 		message += " Recovery hint: " + hint
 	}
 	outputs := []string{message}
+	if summary := compactSubAgentPreviousResultSummary(t.ResultSummary); summary != "" {
+		outputs = append(outputs, fmt.Sprintf("Previous failed attempt summary for T%d (%s): %s", taskDisplayNumber(t), title, summary))
+	}
 	outputs = append(outputs, retryTaskArtifactOutputs(t)...)
 	return outputs
 }
@@ -739,17 +853,31 @@ func subAgentRetryRecoveryHint(errSummary string) string {
 		return ""
 	}
 	switch {
+	case strings.Contains(normalized, "example valid arguments:"):
+		return "Use the Example valid arguments snippet from the previous tool error as the JSON shape for the next call. Preserve the same tool intent, fill real task paths/content/query values, and do not retry malformed or empty arguments."
+	case strings.Contains(normalized, "连续返回空响应") ||
+		strings.Contains(normalized, "empty response") ||
+		strings.Contains(normalized, "hard exit"):
+		return "The previous attempt ended with empty model responses. Start the retry with a concise plan, then immediately make a concrete tool call for exploration or verification instead of replying with another empty/no-tool turn."
+	case strings.Contains(normalized, "quality audit evidence") &&
+		(strings.Contains(normalized, "verification not run") || strings.Contains(normalized, "no verification") || strings.Contains(normalized, "diff not checked") || strings.Contains(normalized, "git diff")):
+		return "Resolve the quality audit evidence in order: inspect/explore before editing when required, run a focused verification command after the final edit, then run git_diff as the final self-check."
 	case strings.Contains(normalized, "no exploration before existing-file edits") ||
 		strings.Contains(normalized, "no exploration before editing existing files") ||
 		strings.Contains(normalized, "first edit") ||
 		strings.Contains(normalized, "首次修改前"):
-		return "Before editing existing files, use Glob/ripgrep/read_file to inspect the relevant code. Then make the minimal edit and continue with verification."
+		return "Before editing existing files, use codegraph explore/codegraph node first when .codegraph/ exists; otherwise use Glob/ripgrep/read_file to inspect the relevant code. Then make the minimal edit and continue with verification."
 	case strings.Contains(normalized, "before the final edit") ||
 		strings.Contains(normalized, "rerun test/build/lint/typecheck after editing"):
 		return "Run verification after the final edit, not before it. Re-run the focused test/build/lint/typecheck command after making changes and use that fresh result."
 	case strings.Contains(normalized, "stale diff") ||
 		strings.Contains(normalized, "final diff"):
 		return "Run git_diff after the last edit so the self-check reflects the final workspace state."
+	case strings.Contains(normalized, "未实际执行测试或检查") ||
+		strings.Contains(normalized, "no tests collected") ||
+		strings.Contains(normalized, "no test files found") ||
+		strings.Contains(normalized, "0 tests found"):
+		return "The previous verification command succeeded without actually running tests or checks. Inspect the test selector/path/config, rerun a command that discovers real tests, or use a focused build/lint/typecheck fallback and explain why no tests exist."
 	case strings.Contains(normalized, "read_file") &&
 		(strings.Contains(normalized, "before") || strings.Contains(normalized, "snapshot") || strings.Contains(normalized, "快照") || strings.Contains(normalized, "已变化") || strings.Contains(normalized, "重新调用")):
 		return "Re-read the exact target file with read_file, then retry the edit using edit_file/edit_lines so the snapshot is fresh before modifying."
@@ -817,6 +945,25 @@ func subAgentRetryRecoveryHint(errSummary string) string {
 		strings.Contains(normalized, "git diff failed"):
 		return "Run git_diff after edits; if it fails, inspect the repository/working_dir state before finalizing."
 
+	case strings.Contains(normalized, "acceptance criteria") &&
+		(strings.Contains(normalized, "each listed criterion") || strings.Contains(normalized, "listed criterion")):
+		return "Update the final task summary to verify every listed acceptance criterion explicitly. Reference each item by its AC/标准 label, such as AC1/标准1 and AC2/标准2, and map each one to the verification command or explain why it cannot be automated."
+	case strings.Contains(normalized, "created files without inspection") ||
+		strings.Contains(normalized, "project-context evidence"):
+		return "Inspect existing project context before creating new files. Use codegraph explore/codegraph node when available, or read/search adjacent modules, then keep the created file consistent with the discovered patterns."
+	case strings.Contains(normalized, "no file changes and no inspection or verification evidence"):
+		return "Do not retry with another empty/no-evidence answer. If the task needs code changes, inspect the relevant code and make the minimal edit; if no change is needed, gather inspection or verification evidence and summarize why the existing behavior already satisfies the task."
+	case strings.Contains(normalized, "outside listed task scope") ||
+		strings.Contains(normalized, "scope rationale"):
+		return "Review the extra changed files against the task's listed scope. Revert unrelated edits when possible; if the extra files are required, keep them minimal and explicitly explain the scope rationale and file paths in the final summary."
+	case strings.Contains(normalized, "claimed verification command not found in audit log"):
+		return "Do not claim verification commands that were not actually run. Re-run the exact verification command after the final edit, or correct the final summary to list only commands present in the audit log."
+	case strings.Contains(normalized, "claimed verification command passed but audit log recorded failure"):
+		return "Do not claim a verification command passed when the audit log recorded failure. Inspect the failed command output, fix the root cause or correct the final summary, then rerun the focused verification command."
+	case strings.Contains(normalized, "changed files not referenced in final summary"):
+		return "Update the final summary to name the actual modified and created file paths from the audit evidence, then briefly state what changed in each important file."
+	case strings.Contains(normalized, "remaining risk not called out"):
+		return "Update the final summary to include a remaining-risk note. State either the concrete residual risk/blocker, or say that no known remaining risk was found after the listed verification."
 	case strings.Contains(normalized, "no verification") ||
 		strings.Contains(normalized, "verification not run") ||
 		strings.Contains(normalized, "验证命令") ||
@@ -826,6 +973,36 @@ func subAgentRetryRecoveryHint(errSummary string) string {
 		return "Address the blocked policy directly before retrying; choose the allowed tool path instead of repeating the blocked tool call."
 	}
 	return ""
+}
+
+func compactSubAgentPreviousResultSummary(summary string) string {
+	summary = compactSubAgentReportSummary(summary)
+	if summary == "" {
+		return ""
+	}
+	for _, header := range []string{"## 质量审计", "## 验证状态", "## Diff 自检", "## 探索状态"} {
+		if section := compactSubAgentReportSection(summary, header); section != "" {
+			return section
+		}
+	}
+	return strings.Join(strings.Fields(summary), " ")
+}
+
+func compactSubAgentReportSection(summary, header string) string {
+	summary = strings.TrimSpace(summary)
+	header = strings.TrimSpace(header)
+	if summary == "" || header == "" {
+		return ""
+	}
+	idx := strings.Index(summary, header)
+	if idx < 0 {
+		return ""
+	}
+	section := summary[idx:]
+	if next := strings.Index(section[len(header):], "\n\n## "); next >= 0 {
+		section = section[:len(header)+next]
+	}
+	return strings.Join(strings.Fields(section), " ")
 }
 
 func compactSubAgentTaskTitle(title string) string {

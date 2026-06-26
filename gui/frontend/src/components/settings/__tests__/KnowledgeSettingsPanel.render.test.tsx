@@ -11,6 +11,8 @@ import {
     KnowledgeShareToHub,
     KnowledgeSearchStructured,
     KnowledgeStructuredCatalog,
+    LoadConfig,
+    OpenSystemUrl,
     SelectKnowledgeSnapshotExportPath,
 } from '../../../../wailsjs/go/main/App';
 
@@ -222,6 +224,21 @@ describe('KnowledgeSettingsPanel component', () => {
         expect(screen.queryByRole('heading', { name: 'Deep Crawl' })).toBeNull();
     });
 
+    it('opens the Hub shares page with the configured viewer token in the URL hash', async () => {
+        vi.mocked(LoadConfig).mockResolvedValueOnce({
+            remote_hub_url: 'https://hub.example',
+            remote_viewer_token: 'viewer token/with spaces',
+        } as any);
+        render(<KnowledgeSettingsPanel lang="en" />);
+
+        fireEvent.click(screen.getByRole('tab', { name: 'Export' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'View Shares' }));
+
+        await waitFor(() => expect(OpenSystemUrl).toHaveBeenCalledWith(
+            'https://hub.example/hub/knowledge/shares/mine#token=viewer%20token%2Fwith%20spaces',
+        ));
+    });
+
     it('does not auto-retry forever when export source loading fails and allows manual recovery', async () => {
         vi.mocked(KnowledgeListSources)
             .mockRejectedValueOnce(new Error('source list unavailable'))
@@ -361,10 +378,17 @@ describe('KnowledgeSettingsPanel component', () => {
         const description = await screen.findByPlaceholderText('Required knowledge description for readers and Hub management') as HTMLTextAreaElement;
         expect(description.required).toBe(true);
         expect(description.getAttribute('aria-invalid')).toBe('true');
-        expect((screen.getByRole('button', { name: 'Publish Full to Hub' }) as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('Advanced authentication')).toBeTruthy();
+        expect(screen.queryByText('Selected items for sharing')).toBeNull();
+        expect((screen.getByRole('button', { name: 'Publish Full to Hub' }) as HTMLButtonElement).disabled).toBe(false);
         expect(screen.getByText('Required before Hub sharing; visible to readers and Hub knowledge managers.')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Publish Full to Hub' }));
+        expect((await screen.findByRole('alert')).textContent).toContain('Knowledge description is required before sharing.');
+        expect(document.activeElement).toBe(description);
+        expect(KnowledgeShareToHub).not.toHaveBeenCalled();
         fireEvent.change(description, { target: { value: 'Portable package' } });
         expect(description.getAttribute('aria-invalid')).toBe('false');
+        await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
         fireEvent.click(screen.getByRole('button', { name: 'Publish Full to Hub' }));
 
         await waitFor(() => expect(KnowledgeShareToHub).toHaveBeenCalledTimes(1));

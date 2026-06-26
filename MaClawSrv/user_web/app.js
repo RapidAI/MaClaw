@@ -1636,6 +1636,29 @@ function knowledgeURLExampleInput() {
 function knowledgeField(forID, label, control, extraClass = "") {
   return `<div class="knowledge-field ${esc(extraClass)}"><label for="${esc(forID)}">${esc(label)}</label>${control}</div>`;
 }
+function knowledgeGlyph(name) {
+  const icons = {
+    access: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5z"></path><path d="M8 9.5h8M8 13h8M8 16.5h5"></path></svg>`,
+    import: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 4v10"></path><path d="m8.5 10.5 3.5 3.5 3.5-3.5"></path><path d="M5 18.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5"></path></svg>`,
+    text: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M6 5.5h12"></path><path d="M9 5.5v13"></path><path d="M15 5.5v13"></path><path d="M6 18.5h12"></path></svg>`,
+    file: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M6 3.5h7l5 5V19a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5.5a2 2 0 0 1 2-2z"></path><path d="M13 3.5v5h5"></path></svg>`,
+    url: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M10 14 8 16a3 3 0 0 1-4.2-4.2l3-3A3 3 0 0 1 11 9"></path><path d="M14 10l2-2a3 3 0 1 1 4.2 4.2l-3 3A3 3 0 0 1 13 15"></path><path d="M9 15l6-6"></path></svg>`,
+    export: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 20V10"></path><path d="m15.5 13.5-3.5-3.5-3.5 3.5"></path><path d="M5 5.5A1.5 1.5 0 0 1 6.5 4h11A1.5 1.5 0 0 1 19 5.5"></path></svg>`,
+    package: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M4 7.5 12 4l8 3.5-8 3.5z"></path><path d="M4 7.5V16l8 4 8-4V7.5"></path><path d="M12 11v9"></path></svg>`,
+    share: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="6" cy="12" r="2"></circle><circle cx="18" cy="6" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="m7.7 11 8-4"></path><path d="m7.7 13 8 4"></path></svg>`,
+    batch: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="4" y="5" width="16" height="5" rx="1.5"></rect><rect x="4" y="14" width="16" height="5" rx="1.5"></rect></svg>`,
+    open: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M14 5h5v5"></path><path d="M10 14 19 5"></path><path d="M19 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"></path></svg>`,
+    upload: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 20V9"></path><path d="m8.5 12.5 3.5-3.5 3.5 3.5"></path><path d="M5 5.5A1.5 1.5 0 0 1 6.5 4h11A1.5 1.5 0 0 1 19 5.5"></path></svg>`
+  };
+  return `<span class="knowledge-icon knowledge-icon--${esc(name)}">${icons[name] || icons.import}</span>`;
+}
+function knowledgeHeading(icon, label) {
+  return `${knowledgeGlyph(icon)}<span>${esc(label)}</span>`;
+}
+function knowledgeButton(id, icon, label, extraClass = "", extraAttrs = "") {
+  const cls = ["secondary", "knowledge-icon-button", extraClass].filter(Boolean).join(" ");
+  return `<button id="${esc(id)}" type="button" class="${esc(cls)}" ${extraAttrs}>${knowledgeGlyph(icon)}<span>${esc(label)}</span></button>`;
+}
 function renderKnowledgeImporter() {
   const textFields = [
     knowledgeField("knowledgeTextTitle", t("title"), datalistTextInput("knowledgeTextTitle", KNOWLEDGE_TITLE_SUGGESTIONS)),
@@ -1643,13 +1666,13 @@ function renderKnowledgeImporter() {
     knowledgeField("knowledgeTextLabels", t("labels"), datalistTextInput("knowledgeTextLabels", KNOWLEDGE_LABEL_SUGGESTIONS)),
     knowledgeField("knowledgeTextTemplate", t("knowledgeTemplate"), knowledgeTemplateInput(), "knowledge-span-2"),
     knowledgeField("knowledgeTextBody", t("textToImport"), `<textarea id="knowledgeTextBody" placeholder="${esc(t("importTextPlaceholder"))}"></textarea>`, "knowledge-span-2"),
-    `<button id="knowledgeTextImportBtn" type="button" class="secondary knowledge-span-2">${esc(t("import"))}</button>`
+    `${knowledgeButton("knowledgeTextImportBtn", "upload", t("import"), "knowledge-span-2")}`
   ].join("");
   const fileFields = [
     knowledgeField("knowledgeFileTopic", t("topicHint"), datalistTextInput("knowledgeFileTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)),
     knowledgeField("knowledgeFileLabels", t("labels"), datalistTextInput("knowledgeFileLabels", KNOWLEDGE_LABEL_SUGGESTIONS)),
     knowledgeField("knowledgeFileInput", t("chooseFiles"), `<input id="knowledgeFileInput" type="file" multiple accept=".doc,.docx,.pdf,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar">`, "knowledge-span-2"),
-    `<button id="knowledgeFileImportBtn" type="button" class="secondary knowledge-span-2">${esc(t("import"))}</button>`
+    `${knowledgeButton("knowledgeFileImportBtn", "upload", t("import"), "knowledge-span-2")}`
   ].join("");
   const urlFields = [
     knowledgeField("knowledgeURLTopic", t("topicHint"), datalistTextInput("knowledgeURLTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)),
@@ -1658,27 +1681,27 @@ function renderKnowledgeImporter() {
     knowledgeField("knowledgeURLText", t("urlsToImport"), `<textarea id="knowledgeURLText" placeholder="${esc(t("importURLPlaceholder"))}"></textarea>`, "knowledge-span-2"),
     knowledgeField("knowledgeURLDepth", t("crawlDepth"), knowledgeDepthInput()),
     `<label class="inline-check knowledge-check"><input id="knowledgeSameDomain" type="checkbox" checked>${esc(t("sameDomainOnly"))}</label>`,
-    `<button id="knowledgeURLImportBtn" type="button" class="secondary knowledge-span-2">${esc(t("import"))}</button>`
+    `${knowledgeButton("knowledgeURLImportBtn", "upload", t("import"), "knowledge-span-2")}`
   ].join("");
   const exportFields = [
     knowledgeField("knowledgeExportTitle", t("exportTitle"), `<input id="knowledgeExportTitle" type="text" maxlength="160">`),
     knowledgeField("knowledgeExportDescription", t("exportDescription"), `<textarea id="knowledgeExportDescription" placeholder="${esc(t("exportDescriptionPlaceholder"))}" maxlength="2000"></textarea>`, "knowledge-span-2"),
     knowledgeField("knowledgeExportSourceIDs", t("exportSourceIDs"), `<textarea id="knowledgeExportSourceIDs" placeholder="${esc(t("exportSourceIDsPlaceholder"))}"></textarea>`, "knowledge-span-2"),
     `<label class="inline-check knowledge-check"><input id="knowledgeExportIncludeDisabled" type="checkbox">${esc(t("includeDisabledSources"))}</label>`,
-    `<div class="knowledge-action-row knowledge-span-2"><button id="knowledgeExportBtn" type="button" class="secondary">${esc(t("exportFile"))}</button><button id="knowledgeViewSharesBtn" type="button" class="secondary">${esc(t("viewShares"))}</button></div>`
+    `<div class="knowledge-action-row knowledge-span-2">${knowledgeButton("knowledgeExportBtn", "export", t("exportFile"))}${knowledgeButton("knowledgeViewSharesBtn", "open", t("viewShares"))}</div>`
   ].join("");
   const packageFields = [
     knowledgeField("knowledgePackageFile", t("choosePackage"), `<input id="knowledgePackageFile" type="file" accept=".json,application/json">`, "knowledge-span-2"),
-    `<button id="knowledgePackageImportBtn" type="button" class="secondary knowledge-span-2">${esc(t("importPackage"))}</button>`
+    `${knowledgeButton("knowledgePackageImportBtn", "package", t("importPackage"), "knowledge-span-2")}`
   ].join("");
   const shareFields = [
     knowledgeField("knowledgeShareID", t("knowledgeID"), `<input id="knowledgeShareID" type="text" autocomplete="off">`),
     knowledgeField("knowledgeHubURL", t("hubURL"), `<input id="knowledgeHubURL" type="url" placeholder="https://hub.example.com">`),
     knowledgeField("knowledgeShareLink", t("shareLink"), `<textarea id="knowledgeShareLink" placeholder="https://hub.example.com/knowledge/..."></textarea>`, "knowledge-span-2"),
     knowledgeField("knowledgeHubToken", t("hubToken"), `<input id="knowledgeHubToken" type="password" autocomplete="off" placeholder="${esc(t("hubTokenPlaceholder"))}">`, "knowledge-span-2"),
-    `<button id="knowledgeShareImportBtn" type="button" class="secondary knowledge-span-2">${esc(t("importShare"))}</button>`
+    `${knowledgeButton("knowledgeShareImportBtn", "share", t("importShare"), "knowledge-span-2")}`
   ].join("");
-  return `<div class="knowledge-access-summary" role="group" aria-label="${esc(t("connectedKnowledge"))}"><div class="knowledge-section-head"><strong>${esc(t("connectedKnowledge"))}</strong><span class="helper">${esc(t("connectedKnowledgeHint"))}</span></div><div class="knowledge-access-layout"><div id="knowledgeAccessSummary" class="knowledge-scope-list" aria-live="polite">${esc(t("loading"))}</div><section class="knowledge-batch-panel" aria-label="${esc(t("ownKnowledgeImports"))}"><div class="knowledge-batch-head"><div><strong>${esc(t("ownKnowledgeImports"))}</strong><span class="helper">${esc(t("ownKnowledgeImportsHint"))}</span></div><span id="knowledgeBatchCount" class="badge">0</span></div><div id="knowledgeBatchList" class="knowledge-batch-list" aria-live="polite">${esc(t("loading"))}</div><div id="knowledgeBatchPager" class="knowledge-batch-pager"></div></section></div></div><div class="knowledge-importer" role="group" aria-label="${esc(t("knowledgeImport"))}"><div class="knowledge-section-head"><strong>${esc(t("knowledgeImport"))}</strong><span class="helper">${esc(t("knowledgeImportHint"))}</span></div><div class="knowledge-import-grid"><section><h3>${esc(t("importText"))}</h3><div class="knowledge-import-fields">${textFields}</div></section><section><h3>${esc(t("importFile"))}</h3><div class="knowledge-import-fields">${fileFields}</div></section><section><h3>${esc(t("importURL"))}</h3><div class="knowledge-import-fields">${urlFields}</div></section><section><h3>${esc(t("knowledgeExport"))}</h3><p class="helper">${esc(t("knowledgeExportHint"))}</p><div class="knowledge-import-fields">${exportFields}</div></section><section><h3>${esc(t("knowledgePackageImport"))}</h3><p class="helper">${esc(t("knowledgePackageImportHint"))}</p><div class="knowledge-import-fields">${packageFields}</div></section><section><h3>${esc(t("knowledgeShareImport"))}</h3><p class="helper">${esc(t("knowledgeShareImportHint"))}</p><div class="knowledge-import-fields">${shareFields}</div></section></div><div id="knowledgeImportProgress" class="knowledge-progress" role="status" aria-live="polite"></div><pre id="knowledgeImportStatus" class="code" aria-live="polite"></pre></div>`;
+  return `<div class="knowledge-access-summary" role="group" aria-label="${esc(t("connectedKnowledge"))}"><div class="knowledge-section-head"><strong class="knowledge-icon-title">${knowledgeHeading("access", t("connectedKnowledge"))}</strong><span class="helper">${esc(t("connectedKnowledgeHint"))}</span></div><div class="knowledge-access-layout"><div id="knowledgeAccessSummary" class="knowledge-scope-list" aria-live="polite">${esc(t("loading"))}</div><section class="knowledge-batch-panel" aria-label="${esc(t("ownKnowledgeImports"))}"><div class="knowledge-batch-head"><div><strong class="knowledge-icon-title">${knowledgeHeading("batch", t("ownKnowledgeImports"))}</strong><span class="helper">${esc(t("ownKnowledgeImportsHint"))}</span></div><span id="knowledgeBatchCount" class="badge">0</span></div><div id="knowledgeBatchList" class="knowledge-batch-list" aria-live="polite">${esc(t("loading"))}</div><div id="knowledgeBatchPager" class="knowledge-batch-pager"></div></section></div></div><div class="knowledge-importer" role="group" aria-label="${esc(t("knowledgeImport"))}"><div class="knowledge-section-head"><strong class="knowledge-icon-title">${knowledgeHeading("import", t("knowledgeImport"))}</strong><span class="helper">${esc(t("knowledgeImportHint"))}</span></div><div class="knowledge-import-grid"><section><h3 class="knowledge-subhead">${knowledgeHeading("text", t("importText"))}</h3><div class="knowledge-import-fields">${textFields}</div></section><section><h3 class="knowledge-subhead">${knowledgeHeading("file", t("importFile"))}</h3><div class="knowledge-import-fields">${fileFields}</div></section><section><h3 class="knowledge-subhead">${knowledgeHeading("url", t("importURL"))}</h3><div class="knowledge-import-fields">${urlFields}</div></section><section><h3 class="knowledge-subhead">${knowledgeHeading("export", t("knowledgeExport"))}</h3><p class="helper">${esc(t("knowledgeExportHint"))}</p><div class="knowledge-import-fields">${exportFields}</div></section><section><h3 class="knowledge-subhead">${knowledgeHeading("package", t("knowledgePackageImport"))}</h3><p class="helper">${esc(t("knowledgePackageImportHint"))}</p><div class="knowledge-import-fields">${packageFields}</div></section><section><h3 class="knowledge-subhead">${knowledgeHeading("share", t("knowledgeShareImport"))}</h3><p class="helper">${esc(t("knowledgeShareImportHint"))}</p><div class="knowledge-import-fields">${shareFields}</div></section></div><div id="knowledgeImportProgress" class="knowledge-progress" role="status" aria-live="polite"></div><pre id="knowledgeImportStatus" class="code" aria-live="polite"></pre></div>`;
 }
 function bindKnowledgeImporter() {
   if (!$('knowledgeTextImportBtn')) return;
@@ -2066,7 +2089,10 @@ async function exportKnowledgePackage() {
   } catch (e) { if (!handleAPIError(e)) toast(e.message); }
 }
 function viewKnowledgeShares() {
-  const target = "/hub/knowledge/shares/mine";
+  const base = String(state.config?.remote_hub_url || "").trim().replace(/\/+$/, "");
+  const viewerToken = String(state.config?.remote_viewer_token || "").trim();
+  const tokenHash = viewerToken ? `#token=${encodeURIComponent(viewerToken)}` : "";
+  const target = `${base || ""}/hub/knowledge/shares/mine${tokenHash}`;
   window.open(target, "_blank", "noopener");
 }
 async function importKnowledgePackage() {

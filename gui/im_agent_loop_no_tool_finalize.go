@@ -339,6 +339,7 @@ func (h *IMMessageHandler) handleAgentLoopNoToolBranch(opts agentLoopNoToolBranc
 		return result
 	}
 
+	docNoToolRequiresExecution := workflowDocNoToolRequiresExecution(opts.Context, result.TrimmedVisibleContent)
 	noToolRecover := h.handleAgentLoopNoToolRecover(agentLoopNoToolRecoverOptions{
 		Context:                opts.Context,
 		UserID:                 opts.UserID,
@@ -351,7 +352,7 @@ func (h *IMMessageHandler) handleAgentLoopNoToolBranch(opts agentLoopNoToolBranc
 		History:                opts.History,
 		Iteration:              opts.Iteration,
 		TotalToolCallsInLoop:   opts.TotalToolCallsInLoop,
-		RequiresExecution:      noToolBranchRequiresExecution(opts.Context, phase) || (opts.TotalToolCallsInLoop == 0 && userRequestRequiresToolExecution(opts.UserText)),
+		RequiresExecution:      noToolBranchRequiresExecution(opts.Context, phase) || docNoToolRequiresExecution || (opts.TotalToolCallsInLoop == 0 && userRequestRequiresToolExecution(opts.UserText)),
 		RecordSystemMessages:   opts.RecordSystemMessages,
 		AttachLLMTelemetry:     opts.AttachLLMTelemetry,
 		AttachVisibleArtifacts: opts.AttachVisibleArtifacts,
@@ -534,6 +535,59 @@ func (h *IMMessageHandler) buildNoToolStallRecoverPromptForContext(codingWorkflo
 		return buildCodingWorkflowImplementationNoToolStallRecoverPrompt(consecutive)
 	}
 	return buildNoToolStallRecoverPrompt(consecutive, preferSkill, skillName, runID)
+}
+
+func workflowDocNoToolRequiresExecution(ctx *LoopContext, text string) bool {
+	if ctx == nil || !ctx.WorkflowAgentLoop || !ctx.WorkflowDocPhase {
+		return false
+	}
+	if len(ctx.WorkflowWrittenFiles) > 0 {
+		return false
+	}
+	return !workflowDocTextLooksComplete(ctx.WorkflowPhaseID, text)
+}
+
+func workflowDocTextLooksComplete(phaseID string, text string) bool {
+	cleaned := strings.TrimSpace(stripThinkingTags(text))
+	if cleaned == "" || len([]rune(cleaned)) < 200 {
+		return false
+	}
+	lower := strings.ToLower(cleaned)
+	docSignals := 0
+	for _, marker := range []string{
+		"# ", "## ", "### ", "\n# ", "\n## ", "\n### ",
+		"\n- ", "\n* ", "\n1. ", "\n2. ", "|",
+		"一、", "二、", "三、", "四、",
+		"第1页", "第 1 页", "第2页", "第 2 页",
+		"逐页", "脚本", "视觉", "版式", "大纲", "目标", "受众",
+		"slide", "speaker notes", "visual",
+	} {
+		if strings.Contains(lower, strings.ToLower(marker)) {
+			docSignals++
+		}
+	}
+	processSignals := 0
+	for _, marker := range []string{
+		"我现在", "我来", "让我", "先创建", "先生成", "再生成", "然后", "接下来",
+		"稍后", "正在", "不支持 &&", "powershell 不支持",
+		"i will", "i'll", "let me", "first", "then", "now create", "now generate",
+	} {
+		if strings.Contains(lower, marker) {
+			processSignals++
+		}
+	}
+	if processSignals >= 2 && docSignals < 3 {
+		return false
+	}
+	switch strings.TrimSpace(phaseID) {
+	case "outline", "content_outline":
+		return docSignals >= 2 && (strings.Contains(cleaned, "大纲") || strings.Contains(cleaned, "章节") || strings.Contains(cleaned, "结构") || strings.Contains(lower, "outline"))
+	case "slide_scripting":
+		return docSignals >= 2 && (strings.Contains(cleaned, "脚本") || strings.Contains(cleaned, "第1页") || strings.Contains(cleaned, "第 1 页") || strings.Contains(lower, "slide"))
+	case "ppt_generation":
+		return docSignals >= 2 && (strings.Contains(cleaned, "PPT") || strings.Contains(cleaned, "逐页") || strings.Contains(cleaned, "视觉") || strings.Contains(lower, "slide"))
+	}
+	return docSignals >= 2
 }
 
 func noToolBranchRequiresExecution(ctx *LoopContext, phase *agentLoopPhase) bool {

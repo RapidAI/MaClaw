@@ -5,7 +5,7 @@ import appIcon from './assets/images/maclaw-agent-mark.svg';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTaskWithWorkingDir, ForkRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, IsNativeRoundedCorners, IsWebviewTransparent } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, IsNativeRoundedCorners, IsWebviewTransparent } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised, WindowUnmaximise } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
@@ -2023,7 +2023,7 @@ function App() {
         [codingAgentTurnSnapshot, aiAssistant.sending, aiAssistant.progressMessages],
     );
     const refreshRecentProjects = useCallback(() => {
-        callBackend(() => SearchProjects("", 10)).then((r: any) => setRecentProjects(r || [])).catch(() => setRecentProjects([]));
+        callBackend(() => ListTasks(50)).then((r: any) => setRecentProjects(r || [])).catch(() => setRecentProjects([]));
     }, []);
 
     useEffect(() => {
@@ -2047,23 +2047,18 @@ function App() {
         try {
             switchTool('ai');
             const proj = recentProjectsRef.current.find(p => p.project_path === projectPath);
-            console.info("[recent_tasks] open requested", { sourcePath: projectPath });
-            const forked = await ForkRecentTask(projectPath);
-            const forkedPath = forked?.project_path || "";
-            if (!forkedPath) {
-                console.warn("[recent_tasks] open failed", { sourcePath: projectPath, elapsedMs: Math.round(performance.now() - startedAt) });
-                return;
-            }
-            const title = forked?.name || proj?.name || projectPath.split(/[\\/]/).pop() || projectPath;
-            console.info("[recent_tasks] fork ready", { sourcePath: projectPath, forkedPath, title, autoSend: false, elapsedMs: Math.round(performance.now() - startedAt) });
+            console.info("[task_management] open requested", { taskPath: projectPath });
+            await ResumeTask(projectPath);
+            const title = proj?.name || projectPath.split(/[\\/]/).pop() || projectPath;
+            console.info("[task_management] task ready", { taskPath: projectPath, title, autoSend: false, elapsedMs: Math.round(performance.now() - startedAt) });
             setPendingProjectTabOpen({
-                projectPath: forkedPath,
+                projectPath,
                 taskTitle: title,
                 autoSend: false,
             });
             refreshRecentProjects();
         } catch (error) {
-            console.error("resumeRecentProject failed:", error);
+            console.error("resumeTask failed:", error);
         }
     }, [refreshRecentProjects, switchTool]);
 
@@ -2088,7 +2083,7 @@ function App() {
         const taskName = name.trim();
         if (!taskName) return;
         try {
-            const created = await CreateRecentTaskWithWorkingDir(taskName, (workingDir || '').trim());
+            const created = await CreateTask(taskName, (workingDir || '').trim());
             if (created?.project_path) {
                 setRecentProjects(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, 10));
             } else {
@@ -2105,7 +2100,7 @@ function App() {
             });
             refreshRecentProjects();
         } catch (error) {
-            console.error("CreateRecentTask failed:", error);
+            console.error("CreateTask failed:", error);
         }
     }, [refreshRecentProjects, switchTool]);
 

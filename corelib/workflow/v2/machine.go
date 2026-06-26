@@ -85,18 +85,21 @@ func (m *StateMachine) Create(userID, workflowType, projectPath, summary string)
 	// Build phases from template
 	phases := make([]Phase, len(tmpl.Phases))
 	for i, pt := range tmpl.Phases {
+		kind, mutationScope, _ := phaseMetadataSemantics(WorkflowType(workflowType), CanonicalPhaseID(pt.ID))
 		status := PhasePending
 		if i == 0 {
 			status = PhaseRunning
 		}
 		phases[i] = Phase{
-			ID:           pt.ID,
-			Name:         pt.Name,
-			NeedsConfirm: pt.NeedsConfirm,
-			ToolPolicy:   pt.ToolPolicy,
-			ExecMode:     pt.ExecMode,
-			Status:       status,
-			InputSchema:  pt.InputSchema,
+			ID:            pt.ID,
+			Name:          pt.Name,
+			NeedsConfirm:  pt.NeedsConfirm,
+			ToolPolicy:    pt.ToolPolicy,
+			ExecMode:      pt.ExecMode,
+			Kind:          firstPhaseKind(pt.Kind, kind),
+			MutationScope: firstMutationScope(pt.MutationScope, mutationScope),
+			Status:        status,
+			InputSchema:   pt.InputSchema,
 		}
 	}
 

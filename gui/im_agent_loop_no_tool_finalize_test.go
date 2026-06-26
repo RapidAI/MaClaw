@@ -242,6 +242,78 @@ func TestNoToolBranchRequiresExecutionFromStructuredContext(t *testing.T) {
 	}
 }
 
+func TestWorkflowDocNoToolProcessNarrationRequiresRecovery(t *testing.T) {
+	h := &IMMessageHandler{}
+	phase := &agentLoopPhase{Stage: agentStageConverge}
+	processText := strings.Repeat("好的，我现在生成完整的「PPT生成」阶段文档。先创建 Markdown，再生成 PDF 发送给您。PowerShell 不支持 &&，我换一种方式。\n", 4)
+	conversation := []interface{}{
+		map[string]string{"role": "user", "content": "生成PPT生成阶段文档"},
+	}
+
+	result := h.handleAgentLoopNoToolBranch(agentLoopNoToolBranchOptions{
+		Context: &LoopContext{
+			WorkflowAgentLoop: true,
+			WorkflowDocPhase:  true,
+			WorkflowPhaseID:   "ppt_generation",
+		},
+		UserText:                 "生成PPT生成阶段文档",
+		MessageContent:           processText,
+		Choice:                   llm.Choice{Message: llm.Message{Role: "assistant", Content: processText}},
+		Phase:                    phase,
+		Conversation:             conversation,
+		TotalToolCallsInLoop:     3,
+		LengthContinuationBuffer: &strings.Builder{},
+	})
+
+	if !result.ContinueLoop {
+		t.Fatal("workflow doc process narration should recover instead of finalizing")
+	}
+	if result.ReadyToFinalize || result.Response != nil {
+		t.Fatalf("process narration finalized despite missing document: %+v", result)
+	}
+	if !phase.NoToolActionPrompted {
+		t.Fatal("expected no-tool action prompt for non-document workflow doc text")
+	}
+	last, ok := result.Conversation[len(result.Conversation)-1].(map[string]string)
+	if !ok || last["role"] != "system" || !strings.Contains(last["content"], "real tool") {
+		t.Fatalf("last message = %#v, want execution recovery prompt", result.Conversation[len(result.Conversation)-1])
+	}
+}
+
+func TestWorkflowDocNoToolFormalDocumentDoesNotRequireRecovery(t *testing.T) {
+	doc := `# PPT生成阶段文档
+
+## 一、演示文稿概览
+- 主题：北京庆祝PPT
+- 目标受众：大众
+- 演示目标：用清晰的城市叙事呈现北京庆祝氛围。
+
+## 二、逐页脚本
+### 第 1 页：封面
+- 标题：北京庆祝
+- 视觉：红金渐变、天安门剪影、礼花光束。
+
+### 第 2 页：城市序章
+- 内容：北京作为历史文化名城与现代都市的双重形象。
+- 讲稿：从古都底蕴切入，引出庆祝主题。
+
+## 三、视觉规范
+- 主色：故宫红、鎏金、夜空蓝。
+- 字体：标题厚重，正文清晰，留白充足。
+`
+
+	if !workflowDocTextLooksComplete("ppt_generation", doc) {
+		t.Fatal("formal PPT generation document should look complete")
+	}
+	if workflowDocNoToolRequiresExecution(&LoopContext{
+		WorkflowAgentLoop: true,
+		WorkflowDocPhase:  true,
+		WorkflowPhaseID:   "ppt_generation",
+	}, doc) {
+		t.Fatal("formal workflow document should not require no-tool recovery")
+	}
+}
+
 func TestUserRequestRequiresToolExecutionMatchesEnglishWordsOnly(t *testing.T) {
 	if !userRequestRequiresToolExecution("run failing tests") {
 		t.Fatal("run as a standalone word should require tool execution")

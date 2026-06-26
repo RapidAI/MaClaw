@@ -3,14 +3,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectSearchPanel } from "../ProjectSearchPanel";
 import { lightTheme } from "../aiAssistantPanelTheme";
-import { ForkRecentTask, GetArchivedExperience, GetProjectScene, OpenFileOrShowInFolder, ResumeProject } from "../../../../wailsjs/go/main/App";
+import { GetArchivedExperience, GetProjectScene, OpenFileOrShowInFolder, ResumeTask } from "../../../../wailsjs/go/main/App";
 
-const { forkRecentTaskMock, getArchivedExperienceMock, getProjectSceneMock, openFileOrShowInFolderMock, resumeProjectMock, renameTaskMock, pinTaskMock, hideTaskMock, archiveProjectMock } = vi.hoisted(() => ({
-    forkRecentTaskMock: vi.fn(),
+const { getArchivedExperienceMock, getProjectSceneMock, openFileOrShowInFolderMock, resumeTaskMock, renameTaskMock, pinTaskMock, hideTaskMock, archiveProjectMock } = vi.hoisted(() => ({
     getArchivedExperienceMock: vi.fn(),
     getProjectSceneMock: vi.fn(),
     openFileOrShowInFolderMock: vi.fn(),
-    resumeProjectMock: vi.fn(),
+    resumeTaskMock: vi.fn(),
     renameTaskMock: vi.fn(),
     pinTaskMock: vi.fn(),
     hideTaskMock: vi.fn(),
@@ -18,12 +17,11 @@ const { forkRecentTaskMock, getArchivedExperienceMock, getProjectSceneMock, open
 }));
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
-    SearchProjects: vi.fn().mockResolvedValue([]),
-    ForkRecentTask: forkRecentTaskMock,
+    SearchTasks: vi.fn().mockResolvedValue([]),
     GetArchivedExperience: getArchivedExperienceMock,
     GetProjectScene: getProjectSceneMock,
     OpenFileOrShowInFolder: openFileOrShowInFolderMock,
-    ResumeProject: resumeProjectMock,
+    ResumeTask: resumeTaskMock,
     RenameTask: renameTaskMock,
     PinTask: pinTaskMock,
     HideTask: hideTaskMock,
@@ -75,21 +73,19 @@ describe("ProjectSearchPanel", () => {
         expect(await screen.findByText("Saved decisions")).toBeTruthy();
         expect(screen.getByText("This task has been archived and cannot be continued.")).toBeTruthy();
         expect(GetArchivedExperience).toHaveBeenCalledWith("D:/p/a");
-        expect(ResumeProject).not.toHaveBeenCalled();
+        expect(ResumeTask).not.toHaveBeenCalled();
     });
 
-    it("forks active tasks into a project tab when tab creation is available", async () => {
+    it("opens active tasks into a project tab when tab creation is available", async () => {
         const search = makeSearch([{ id: "p1", name: "Active task", project_path: "D:/p/live" }]);
         const onCreateProjectTab = vi.fn();
-        forkRecentTaskMock.mockResolvedValue({ project_path: "D:/p/forked", name: "Active task" });
 
         renderPanel(search, { onCreateProjectTab });
         fireEvent.click(screen.getByText("Active task"));
 
         expect(search.close).toHaveBeenCalled();
-        await waitFor(() => expect(onCreateProjectTab).toHaveBeenCalledWith("D:/p/forked", "Active task", { autoSend: false }));
-        expect(ForkRecentTask).toHaveBeenCalledWith("D:/p/live");
-        expect(ResumeProject).not.toHaveBeenCalled();
+        await waitFor(() => expect(onCreateProjectTab).toHaveBeenCalledWith("D:/p/live", "Active task", { autoSend: false }));
+        expect(ResumeTask).not.toHaveBeenCalled();
     });
 
     it("loads scene evidence and opens artifact sources", async () => {
@@ -128,21 +124,19 @@ describe("ProjectSearchPanel", () => {
 
         renderPanel(search);
 
-        expect(screen.getByText("No recent tasks")).toBeTruthy();
+        expect(screen.getByText("No tasks")).toBeTruthy();
         expect(screen.queryByText("Chat only")).toBeNull();
     });
 
-    it("falls back to ResumeProject when project tabs are unavailable", async () => {
+    it("falls back to ResumeTask when project tabs are unavailable", async () => {
         const search = makeSearch([{ id: "p2", name: "Fallback task", project_path: "D:/p/fallback" }]);
         const onProjectSwitch = vi.fn();
-        forkRecentTaskMock.mockResolvedValue({ project_path: "D:/p/forked", name: "Fallback task" });
-        resumeProjectMock.mockResolvedValue("resumed");
+        resumeTaskMock.mockResolvedValue("resumed");
 
         renderPanel(search, { onProjectSwitch });
         fireEvent.click(screen.getByText("Fallback task"));
 
-        await waitFor(() => expect(ResumeProject).toHaveBeenCalledWith("D:/p/forked"));
-        expect(ForkRecentTask).toHaveBeenCalledWith("D:/p/fallback");
+        await waitFor(() => expect(ResumeTask).toHaveBeenCalledWith("D:/p/fallback"));
         expect(onProjectSwitch).toHaveBeenCalledWith("resumed");
     });
 

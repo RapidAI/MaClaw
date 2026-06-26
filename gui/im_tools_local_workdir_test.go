@@ -198,6 +198,24 @@ func TestResolveToolWorkDir_EmptyWorkDir_ProjectTab(t *testing.T) {
 	}
 }
 
+func TestResolveToolWorkDir_TaskOwnerUsesTaskWorkingDirectory(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	workingDir := t.TempDir()
+	task := app.CreateTask("Use isolated session with shared workdir", workingDir)
+	if task.ProjectPath == "" {
+		t.Fatalf("CreateTask returned empty project path: %+v", task)
+	}
+	h := &IMMessageHandler{app: app}
+
+	got := h.resolveToolWorkDirForOwner("", projectSessionOwnerID(task.ProjectPath))
+	if got != filepath.Clean(workingDir) {
+		t.Fatalf("resolveToolWorkDirForOwner() = %q, want task working dir %q", got, filepath.Clean(workingDir))
+	}
+	if ownerPath := projectPathFromUserID(projectSessionOwnerID(task.ProjectPath)); ownerPath != task.ProjectPath {
+		t.Fatalf("project owner path = %q, want isolated task path %q", ownerPath, task.ProjectPath)
+	}
+}
+
 func TestResolveToolWorkDir_ExplicitOwnerOverridesGlobalLoop(t *testing.T) {
 	desktopDir := t.TempDir()
 	mobileDir := t.TempDir()

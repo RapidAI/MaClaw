@@ -33,6 +33,7 @@ export interface WorkflowUIState {
     phases: PhaseInfo[];
     suggestMaximize: boolean;
     suggestMaximizeType: string;
+    awaitingForm: boolean;
     transientText: string;
     workingDir: string;
     workflowID: string;
@@ -192,6 +193,7 @@ export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath
     const [phases, setPhases] = useState<PhaseInfo[]>([]);
     const [suggestMaximize, setSuggestMaximize] = useState(false);
     const [suggestMaximizeType, setSuggestMaximizeType] = useState("");
+    const [awaitingForm, setAwaitingForm] = useState(false);
     const [transientText, setTransientText] = useState("");
     const [workingDir, setWorkingDir] = useState("");
     const userClosedRef = useRef(false);
@@ -228,6 +230,7 @@ export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath
                 setPhases([]);
                 setSuggestMaximize(false);
                 setSuggestMaximizeType("");
+                setAwaitingForm(false);
                 setTransientText("");
                 setWorkingDir("");
                 userClosedRef.current = false;
@@ -307,6 +310,7 @@ export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath
             // When the active phase is awaiting form input (awaiting_form=true from backend),
             // never auto-open the doc preview — the AgentView form takes priority.
             const isAwaitingForm = state.awaiting_form === true;
+            setAwaitingForm(isActive && isAwaitingForm);
             if (isActive && !userClosedRef.current && !isAwaitingForm) {
                 setWorkflowSplitMode(prev => {
                     if (!currentPhase) return false;
@@ -332,6 +336,7 @@ export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath
                     setPhases([]);
                     setCurrentPhaseID("");
                     setLatestDocumentPhaseID("");
+                    setAwaitingForm(false);
                     workflowIDRef.current = "";
                     workflowTypeRef.current = "";
                     docUpdatePhaseIDsRef.current = new Set();
@@ -532,6 +537,7 @@ export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath
         phases,
         suggestMaximize,
         suggestMaximizeType,
+        awaitingForm,
         transientText,
         workingDir,
         workflowID: workflowIDRef.current,
@@ -549,6 +555,7 @@ export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath
         phases,
         suggestMaximize,
         suggestMaximizeType,
+        awaitingForm,
         transientText,
         workingDir,
         workflowID: workflowIDRef.current,
@@ -569,6 +576,7 @@ export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath
         setPhases(snapshot.phases);
         setSuggestMaximize(snapshot.suggestMaximize);
         setSuggestMaximizeType(snapshot.suggestMaximizeType);
+        setAwaitingForm(snapshot.awaitingForm === true);
         setTransientText(snapshot.transientText);
         setWorkingDir(snapshot.workingDir);
         workflowActiveRef.current = snapshot.active;
@@ -592,6 +600,7 @@ export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath
         setPhases([]);
         setSuggestMaximize(false);
         setSuggestMaximizeType("");
+        setAwaitingForm(false);
         setTransientText("");
         setWorkingDir("");
         userClosedRef.current = false;
@@ -615,6 +624,7 @@ export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath
             phases,
             suggestMaximize,
             suggestMaximizeType,
+            awaitingForm,
             transientText,
             workingDir,
             workflowID: workflowIDRef.current,

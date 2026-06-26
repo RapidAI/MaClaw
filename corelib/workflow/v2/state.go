@@ -44,13 +44,15 @@ const (
 
 // Phase represents one stage of a workflow.
 type Phase struct {
-	ID           string        `json:"id"`
-	Name         string        `json:"name"`
-	NeedsConfirm bool          `json:"needs_confirm"`
-	ToolPolicy   ToolPolicy    `json:"tool_policy"`
-	ExecMode     PhaseExecMode `json:"exec_mode,omitempty"`
-	Status       PhaseStatus   `json:"status"`
-	Output       string        `json:"output,omitempty"`
+	ID            string        `json:"id"`
+	Name          string        `json:"name"`
+	NeedsConfirm  bool          `json:"needs_confirm"`
+	ToolPolicy    ToolPolicy    `json:"tool_policy"`
+	ExecMode      PhaseExecMode `json:"exec_mode,omitempty"`
+	Kind          PhaseKind     `json:"kind,omitempty"`
+	MutationScope MutationScope `json:"mutation_scope,omitempty"`
+	Status        PhaseStatus   `json:"status"`
+	Output        string        `json:"output,omitempty"`
 
 	// InputSchema is copied from the template at workflow creation time.
 	// When non-nil, the phase requires form input before the agent loop runs.

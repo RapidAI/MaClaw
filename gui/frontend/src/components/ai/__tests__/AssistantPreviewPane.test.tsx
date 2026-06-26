@@ -92,6 +92,7 @@ const workflowState = {
     phases: [],
     suggestMaximize: false,
     suggestMaximizeType: '',
+    awaitingForm: false,
     transientText: '',
     workingDir: '',
     workflowID: '',

@@ -272,6 +272,46 @@ func TestSearchProjectsFiltersNonOutputRecords(t *testing.T) {
 	}
 }
 
+func TestListTasksOnlyShowsExplicitTaskManagementRecords(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	now := time.Now()
+
+	if err := app.memoryStore.Save(memory.Entry{
+		Title:      "Automatic sediment",
+		Content:    "Task: automatic\nResult: generated",
+		Category:   memory.CategoryProjectKnowledge,
+		SourceType: "task_sediment",
+		Tags:       []string{"task_sediment", "tangible_output", "output_tool:edit_file", filepath.Join(app.GetDataDir(), "tasks", "auto")},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("Save automatic sediment: %v", err)
+	}
+
+	created := app.CreateTask("Explicit created task", "")
+	saved := app.createRecentTaskRecord("Explicit saved task", "# Explicit saved task\n", []string{taskManagementTag, taskUserSavedTag}, true)
+	forked := app.ForkRecentTask(created.ProjectPath)
+	if created.ProjectPath == "" || saved.ProjectPath == "" || forked.ProjectPath == "" {
+		t.Fatalf("setup task paths created=%q saved=%q forked=%q", created.ProjectPath, saved.ProjectPath, forked.ProjectPath)
+	}
+
+	results := app.ListTasks(20)
+	paths := map[string]bool{}
+	for _, result := range results {
+		paths[result.ProjectPath] = true
+	}
+	if !paths[created.ProjectPath] || !paths[saved.ProjectPath] {
+		t.Fatalf("ListTasks paths = %#v, want explicit created and saved tasks", paths)
+	}
+	if paths[forked.ProjectPath] {
+		t.Fatalf("ListTasks included forked task path %q", forked.ProjectPath)
+	}
+	if paths[filepath.Join(app.GetDataDir(), "tasks", "auto")] {
+		t.Fatalf("ListTasks included automatic sediment path")
+	}
+}
+
 func TestCreateRecentTaskUsesTaskNamePreview(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 
@@ -324,6 +364,39 @@ func TestCreateRecentTaskWithWorkingDirPersistsDirectory(t *testing.T) {
 	}
 }
 
+func TestEnsureRecentTaskExecutionWorkingDirCreatesMissingDirectory(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	workingDir := filepath.Join(t.TempDir(), "project", "presentation_design")
+	created := app.CreateRecentTaskWithWorkingDir("Generate presentation", workingDir)
+	if created.ProjectPath == "" {
+		t.Fatalf("ProjectPath is empty: %#v", created)
+	}
+	if _, err := os.Stat(workingDir); !os.IsNotExist(err) {
+		t.Fatalf("workingDir should start missing, stat err=%v", err)
+	}
+
+	executionPath := app.recentTaskExecutionProjectPath(created.ProjectPath)
+	if err := app.ensureRecentTaskExecutionWorkingDir(created.ProjectPath, executionPath); err != nil {
+		t.Fatalf("ensureRecentTaskExecutionWorkingDir failed: %v", err)
+	}
+	info, err := os.Stat(workingDir)
+	if err != nil {
+		t.Fatalf("workingDir was not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("workingDir is not a directory: %s", workingDir)
+	}
+}
+
+func TestEnsureRecentTaskExecutionWorkingDirRejectsRelativeDirectory(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+
+	err := app.ensureRecentTaskExecutionWorkingDir(filepath.Join(t.TempDir(), "task"), "relative-presentation-design")
+	if err == nil || !strings.Contains(err.Error(), "not absolute") {
+		t.Fatalf("ensureRecentTaskExecutionWorkingDir error = %v, want not-absolute error", err)
+	}
+}
+
 func TestCreateRecentTaskWithWorkingDirRejectsFilePath(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	filePath := filepath.Join(t.TempDir(), "not-a-directory.txt")
@@ -337,6 +410,24 @@ func TestCreateRecentTaskWithWorkingDirRejectsFilePath(t *testing.T) {
 	}
 	if created.WorkingDir != "" {
 		t.Fatalf("WorkingDir = %q, want empty for file path", created.WorkingDir)
+	}
+	if got := app.recentTaskWorkingDir(created.ProjectPath); got != "" {
+		t.Fatalf("recentTaskWorkingDir = %q, want empty", got)
+	}
+	if got := app.recentTaskExecutionProjectPath(created.ProjectPath); got != created.ProjectPath {
+		t.Fatalf("recentTaskExecutionProjectPath = %q, want task path %q", got, created.ProjectPath)
+	}
+}
+
+func TestCreateRecentTaskWithWorkingDirRejectsRelativePath(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+
+	created := app.CreateRecentTaskWithWorkingDir("Reject relative working dir", "relative-presentation-design")
+	if created.ProjectPath == "" {
+		t.Fatalf("ProjectPath is empty: %#v", created)
+	}
+	if created.WorkingDir != "" {
+		t.Fatalf("WorkingDir = %q, want empty for relative path", created.WorkingDir)
 	}
 	if got := app.recentTaskWorkingDir(created.ProjectPath); got != "" {
 		t.Fatalf("recentTaskWorkingDir = %q, want empty", got)
@@ -1031,15 +1122,18 @@ func TestSendAIAssistantMessageRoutesRecentTaskToWorkingDir(t *testing.T) {
 	if resp == nil || !resp.Deferred {
 		t.Fatalf("SendAIAssistantMessage resp = %#v, want deferred response", resp)
 	}
-
-	workingDirSession := desktopAIAssistantUserIDForProjectPath(filepath.Clean(workingDir))
-	scope, ok := app.sessionEventScopeIDs.Load(workingDirSession)
-	if !ok || scope != "tab-direct-working-dir" {
-		t.Fatalf("working dir session scope = %#v, %v; want tab-direct-working-dir", scope, ok)
+	if info, err := os.Stat(workingDir); err != nil || !info.IsDir() {
+		t.Fatalf("workingDir was not prepared, info=%v err=%v", info, err)
 	}
+
 	taskSession := desktopAIAssistantUserIDForProjectPath(source.ProjectPath)
-	if _, ok := app.sessionEventScopeIDs.Load(taskSession); ok {
-		t.Fatalf("task session %q unexpectedly received event scope", taskSession)
+	scope, ok := app.sessionEventScopeIDs.Load(taskSession)
+	if !ok || scope != "tab-direct-working-dir" {
+		t.Fatalf("task session scope = %#v, %v; want tab-direct-working-dir", scope, ok)
+	}
+	workingDirSession := desktopAIAssistantUserIDForProjectPath(filepath.Clean(workingDir))
+	if _, ok := app.sessionEventScopeIDs.Load(workingDirSession); ok {
+		t.Fatalf("working dir session %q unexpectedly received event scope", workingDirSession)
 	}
 }
 
@@ -1063,15 +1157,18 @@ func TestSendMessageForTabRoutesRecentTaskToWorkingDir(t *testing.T) {
 	if resp == nil || !resp.Deferred {
 		t.Fatalf("SendMessageForTab resp = %#v, want deferred response", resp)
 	}
-
-	workingDirSession := desktopAIAssistantUserIDForProjectPath(filepath.Clean(workingDir))
-	scope, ok := app.sessionEventScopeIDs.Load(workingDirSession)
-	if !ok || scope != tabID {
-		t.Fatalf("working dir session scope = %#v, %v; want %q", scope, ok, tabID)
+	if info, err := os.Stat(workingDir); err != nil || !info.IsDir() {
+		t.Fatalf("workingDir was not prepared, info=%v err=%v", info, err)
 	}
+
 	taskSession := desktopAIAssistantUserIDForProjectPath(source.ProjectPath)
-	if _, ok := app.sessionEventScopeIDs.Load(taskSession); ok {
-		t.Fatalf("task session %q unexpectedly received event scope", taskSession)
+	scope, ok := app.sessionEventScopeIDs.Load(taskSession)
+	if !ok || scope != tabID {
+		t.Fatalf("task session scope = %#v, %v; want %q", scope, ok, tabID)
+	}
+	workingDirSession := desktopAIAssistantUserIDForProjectPath(filepath.Clean(workingDir))
+	if _, ok := app.sessionEventScopeIDs.Load(workingDirSession); ok {
+		t.Fatalf("working dir session %q unexpectedly received event scope", workingDirSession)
 	}
 }
 

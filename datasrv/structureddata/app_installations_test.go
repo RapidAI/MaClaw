@@ -23,12 +23,18 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 		Version: "1.0.0",
 		Metadata: map[string]any{
 			"workspace_layout": map[string]any{
-				"schema":     "maclaw.app.ui.v1",
-				"entry":      "tool_workspace",
-				"template":   "document_workspace",
-				"density":    "compact",
-				"navigation": []any{"input", "output"},
-				"list":       map[string]any{"columns": []any{"title", "status"}},
+				"schema":        "maclaw.app.ui.v1",
+				"entry":         "tool_workspace",
+				"template":      "document_workspace",
+				"density":       "compact",
+				"primaryRegion": "left",
+				"output_region": "right",
+				"navigation":    []any{"input", "output"},
+				"list":          map[string]any{"columns": []any{"title", "status"}},
+				"regions": []any{
+					map[string]any{"id": "file_queue", "role": "input", "placement": "left"},
+					map[string]any{"id": "output_panel", "role": "output", "placement": "right"},
+				},
 			},
 			"governance": map[string]any{
 				"status":     "local_tested",
@@ -72,6 +78,17 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	if installed.Metadata["workspace_layout_entry"] != "tool_workspace" || installed.Metadata["workspace_layout_template"] != "document_workspace" || installed.Metadata["workspace_layout_density"] != "compact" {
 		t.Fatalf("expected workspace layout summaries: %#v", installed.Metadata)
 	}
+	if installed.Metadata["workspace_layout_primary_region"] != "left" || installed.Metadata["workspace_layout_output_region"] != "right" || !appInstallationNumberEquals(installed.Metadata["workspace_layout_region_count"], 2) {
+		t.Fatalf("expected workspace placement summaries: %#v", installed.Metadata)
+	}
+	if ids := appInstallationStringList(installed.Metadata["workspace_layout_region_ids"]); len(ids) != 2 || ids[0] != "file_queue" || ids[1] != "output_panel" {
+		t.Fatalf("expected workspace region ids: %#v", installed.Metadata)
+	}
+	if layout, ok := installed.Metadata["workspace_layout"].(map[string]any); !ok {
+		t.Fatalf("expected canonical workspace layout: %#v", installed.Metadata)
+	} else if regions, ok := layout["regions"].([]any); !ok || len(regions) != 2 {
+		t.Fatalf("expected canonical workspace regions: %#v", layout)
+	}
 	if navigation := appInstallationStringList(installed.Metadata["workspace_layout_navigation"]); len(navigation) != 2 || navigation[0] != "input" || navigation[1] != "output" {
 		t.Fatalf("expected workspace navigation summary: %#v", installed.Metadata)
 	}
@@ -109,6 +126,12 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	if navigation := appInstallationStringList(metadata["workspace_layout_navigation"]); len(navigation) != 2 || navigation[0] != "input" || navigation[1] != "output" {
 		t.Fatalf("expected audit workspace navigation summary: %#v", metadata)
 	}
+	if metadata["workspace_layout_primary_region"] != "left" || metadata["workspace_layout_output_region"] != "right" || metadata["workspace_layout_region_count"] != float64(2) {
+		t.Fatalf("expected audit workspace placement summaries: %#v", metadata)
+	}
+	if ids := appInstallationStringList(metadata["workspace_layout_region_ids"]); len(ids) != 2 || ids[0] != "file_queue" || ids[1] != "output_panel" {
+		t.Fatalf("expected audit workspace region ids: %#v", metadata)
+	}
 	if columns := appInstallationStringList(metadata["workspace_layout_list_columns"]); len(columns) != 2 || columns[0] != "title" || columns[1] != "status" {
 		t.Fatalf("expected audit workspace list column summary: %#v", metadata)
 	}
@@ -117,6 +140,19 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	}
 	if _, ok := metadata["test_evidence_result_payload"]; ok {
 		t.Fatalf("audit metadata should not include bulky test evidence result payload: %#v", metadata)
+	}
+}
+
+func appInstallationNumberEquals(value any, expected float64) bool {
+	switch typed := value.(type) {
+	case int:
+		return float64(typed) == expected
+	case int64:
+		return float64(typed) == expected
+	case float64:
+		return typed == expected
+	default:
+		return false
 	}
 }
 
@@ -201,5 +237,32 @@ func TestUpsertAppInstallationRejectsInvalidResultContractSchema(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected invalid result contract schema error")
+	}
+}
+
+func TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence(t *testing.T) {
+	metadata, ok := appInstallationMetadataOpenAPISchema()["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected app installation metadata schema properties")
+	}
+	for _, key := range []string{
+		"workspace_layout_primary_region",
+		"workspace_layout_output_region",
+		"workspace_layout_region_count",
+		"workspace_layout_region_ids",
+		"test_evidence_outputs",
+		"test_evidence_artifacts",
+		"test_evidence_result_payload",
+		"test_evidence_approval_instance",
+		"test_evidence_approval_id",
+		"test_evidence_record_id",
+		"test_evidence_approval_status",
+		"test_evidence_approval_view_verified",
+		"test_evidence_dependency_count",
+		"test_evidence_result_coverage_ok",
+	} {
+		if _, ok := metadata[key]; !ok {
+			t.Fatalf("expected OpenAPI app installation metadata schema to document %s: %#v", key, metadata)
+		}
 	}
 }

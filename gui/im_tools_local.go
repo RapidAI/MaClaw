@@ -220,6 +220,17 @@ func projectPathFromUserID(userID string) string {
 	return projectPathFromSessionOwnerID(userID)
 }
 
+func (h *IMMessageHandler) executionProjectPathForOwner(ownerID string) string {
+	projectPath := projectPathFromUserID(ownerID)
+	if projectPath == "" {
+		return ""
+	}
+	if h != nil && h.app != nil {
+		return h.app.recentTaskExecutionProjectPath(projectPath)
+	}
+	return projectPath
+}
+
 // projectTabWorkDir returns the validated projectPath from the current session's
 // synthesized userID. If the path doesn't exist as a directory, falls back to
 // the user's home directory. Returns empty string if not in a Project Tab context.
@@ -228,7 +239,7 @@ func (h *IMMessageHandler) projectTabWorkDir() string {
 }
 
 func (h *IMMessageHandler) projectTabWorkDirForOwner(ownerID string) string {
-	projectPath := projectPathFromUserID(ownerID)
+	projectPath := h.executionProjectPathForOwner(ownerID)
 	if projectPath == "" {
 		return ""
 	}

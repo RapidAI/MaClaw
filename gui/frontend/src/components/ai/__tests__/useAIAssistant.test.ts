@@ -4430,6 +4430,45 @@ describe('useAIAssistant property tests', () => {
         expect(messageContents(result.current.messages)).toContain('early token');
     });
 
+    it('does not wait for the previous workflow round to become idle before showing submit progress', async () => {
+        const openingRound = deferred<{ text: string; error: string; request_id: string }>();
+        const submitRound = deferred<{ text: string; error: string; request_id: string; deferred: boolean }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => openingRound.promise);
+        (SubmitAgentView as any).mockImplementationOnce((payload: { request_id?: string }) => submitRound.promise.then(response => ({
+            ...response,
+            request_id: response.request_id || payload.request_id || '',
+        })));
+
+        const { result } = renderAssistantHook({ activeSessionKey: 'desktop-user:C:/work' });
+
+        await act(async () => {
+            void result.current.sendMessage('__workflow_choice__ complex wf-new', { project_path: 'C:/work' });
+            await Promise.resolve();
+        });
+        await waitFor(() => expect(result.current.sending).toBe(true));
+
+        await act(async () => {
+            void result.current.submitAgentView('workflow:form:requirements', {
+                _workflow_phase: 'requirements',
+                _workflow_id: 'wf-new',
+                _workflow_user_id: 'desktop-user:C:/work',
+                project_name: 'snake',
+            });
+            await Promise.resolve();
+        });
+
+        await waitFor(() => expect(SubmitAgentView).toHaveBeenCalledTimes(1));
+        const submitPayload = (SubmitAgentView as any).mock.calls[0][0] as { request_id?: string };
+        expect(submitPayload.request_id).toMatch(/^desktop-ai-/);
+        expect(result.current.busySessionKeys).toContain('desktop-user:C:/work');
+
+        await act(async () => {
+            openingRound.resolve({ text: '', error: '', request_id: parseSentRequest().request_id || '' });
+            submitRound.resolve({ text: '', error: '', request_id: submitPayload.request_id || '', deferred: true });
+            await Promise.all([openingRound.promise, submitRound.promise]);
+        });
+    });
+
     it('closes workflow form when structured submit is accepted and deferred', async () => {
         (SubmitAgentView as any).mockImplementationOnce(async (payload: { request_id?: string }) => ({
             text: '',

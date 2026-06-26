@@ -1344,6 +1344,11 @@ export function WorkflowDocPreview({
     const content = phaseDocuments.get(activePhaseID) || "";
     const gateResult = gateResults.get(activePhaseID);
     const gateItems = Array.isArray(gateResult?.items) ? gateResult.items : [];
+    const currentPhaseMeta = useMemo(
+        () => (phases || []).find(phase => phase.id === normalizeWorkflowPhaseID(currentPhaseID)),
+        [currentPhaseID, phases],
+    );
+    const awaitingReview = currentPhaseMeta?.status === "waiting_confirm";
 
     return (
         <div style={{
@@ -1369,6 +1374,22 @@ export function WorkflowDocPreview({
                     theme={theme}
                     lang={lang}
                 />
+
+                {awaitingReview && (
+                    <div style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "flex-start",
+                        gap: "12px",
+                        padding: "10px 14px",
+                        borderBottom: `1px solid ${theme.border}`,
+                        background: theme.headerBg,
+                    }}>
+                        <div style={{ fontSize: "12px", color: theme.textMuted, lineHeight: 1.6 }}>
+                            {localizeText(lang || "zh-Hans", "This phase is waiting for review. Use the action bar above the input box to continue.", "当前阶段正在等待确认。请使用输入框上方的操作栏继续。", "當前階段正在等待確認。請使用輸入框上方的操作列繼續。")}
+                        </div>
+                    </div>
+                )}
 
                 {/* Quality gate banner */}
                 {gateResult && (

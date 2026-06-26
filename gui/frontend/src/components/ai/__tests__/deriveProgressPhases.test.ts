@@ -303,6 +303,23 @@ describe('WorkflowProgressBoard highlighting and progress', () => {
         expect(percent).toBeLessThan(100);
     });
 
+    it('renders workflow review guidance without duplicate actions in the document preview', () => {
+        render(React.createElement(WorkflowDocPreview, {
+            phaseDocuments: new Map([['requirements', '# Requirements']]),
+            currentPhaseID: 'requirements',
+            latestDocumentPhaseID: 'requirements',
+            phases: [{ id: 'requirements', name: '需求', index: 0, expectsDocument: true, status: 'waiting_confirm' }],
+            workflowType: 'coding',
+            gateResults: new Map(),
+            theme: testTheme,
+        }));
+
+        expect(screen.queryByRole('button', { name: '确认并推进' })).toBeNull();
+        expect(screen.queryByRole('button', { name: '输入补充/修改意见' })).toBeNull();
+        expect(screen.queryByRole('button', { name: '中止' })).toBeNull();
+        expect(screen.getByText('当前阶段正在等待确认。请使用输入框上方的操作栏继续。')).toBeTruthy();
+    });
+
     // afterEach cleanup is auto-registered by @testing-library/react under vitest globals;
     // the explicit unmount in the progress loop guards against cross-render query bleed.
     it('cleans up rendered output between cases', () => {

@@ -151,6 +151,14 @@ func BuildPhasePrompt(state *WorkflowState) string {
 		sb.WriteString("\n")
 	}
 
+	// Artifact generation guidance is driven by phase semantics, not by a
+	// workflow-specific phase ID. New templates can opt in by setting
+	// Kind=artifact_generation or MutationScope=artifact.
+	if isArtifactGenerationPhase(state.Type, phase) && !phaseInstructionHasOwnArtifactGuidance(phase.ID) {
+		sb.WriteString(genericArtifactGenerationGuidance(phase))
+		sb.WriteString("\n")
+	}
+
 	// Phase-specific instructions
 	sb.WriteString(phaseInstruction(phase.ID))
 
@@ -290,6 +298,49 @@ func phaseInstructionHasOwnParsingGuidance(phaseID string) bool {
 		return true
 	}
 	return false
+}
+
+func isArtifactGenerationPhase(workflowType string, phase *Phase) bool {
+	if phase == nil {
+		return false
+	}
+	if phase.Kind == PhaseKindArtifactGeneration || phase.MutationScope == MutationScopeArtifact {
+		return true
+	}
+	kind, mutationScope, _ := phaseMetadataSemantics(WorkflowType(workflowType), CanonicalPhaseID(phase.ID))
+	return kind == PhaseKindArtifactGeneration || mutationScope == MutationScopeArtifact
+}
+
+func phaseInstructionHasOwnArtifactGuidance(phaseID string) bool {
+	switch phaseID {
+	case "ppt_generation":
+		return true
+	}
+	return false
+}
+
+func genericArtifactGenerationGuidance(phase *Phase) string {
+	name := "当前"
+	if phase != nil && strings.TrimSpace(phase.Name) != "" {
+		name = strings.TrimSpace(phase.Name)
+	}
+	return fmt.Sprintf(`## 通用产物生成阶段指令
+
+「%s」是产物生成阶段，完成标准是实际生成并发送可下载文件，而不是只输出 Markdown 文案或生成计划。
+
+执行要求：
+- 基于前序阶段产出和用户输入生成最终文件，文件类型以本阶段名称、交付物描述和用户需求为准。
+- 优先复用已有产物生成 Skill：manage_skill(action="run", name="...", args={...})。
+- 如果合适的 Skill 不存在或不可用，先用 search_and_install_skill 搜索/安装。
+- 如果仍不可用，使用 craft_tool 创建本次任务所需的生成工具，再调用该工具生成文件。
+- 工具参数保持结构化和简洁，避免把超长全文塞进单个 JSON 字符串导致工具调用截断。
+- 成功后必须调用 send_file 发送最终文件；预览 PDF 或中间文件只能作为附加物，不能替代主交付物。
+- 只有在已有 Skill、安装 Skill、craft_tool 自建工具都明确失败时，才说明失败原因，并列出真实尝试结果。
+
+禁止事项：
+- 禁止只承诺“将生成文件”但不调用工具。
+- 禁止只输出内容草稿后停止；本阶段的完成标准是实际文件已生成并发送。
+`, name)
 }
 
 // textContainsFilePath checks if a plain text string contains a file path
@@ -466,7 +517,26 @@ Reference the task breakdown explicitly so CodingSubAgent knows which task to ex
 输出完毕后等待用户确认。
 `
 	case "ppt_generation":
-		return "" // Tool execution phase
+		return `## 阶段指令
+
+这是最终 PPT 产物生成阶段，必须实际生成可下载的 .pptx 文件，不要只输出 Markdown 文案，也不要把最终交付降级为 PDF。
+
+执行要求：
+- 基于前序阶段的「受众与目标」「内容大纲」「逐页脚本」生成完整演示文稿。
+- 优先复用已有产物生成能力，例如调用 manage_skill(action="run", name="pptx-generator", args={...})。
+- 如果现有 PPTX 生成 Skill 不存在或不可用，先尝试 search_and_install_skill 搜索/安装合适的 PPTX 生成 Skill。
+- 如果仍不可用，使用 craft_tool 创建一个本次可用的 PPTX 生成工具，再调用该工具生成 .pptx。工具可以基于本地可用的 Office/PowerPoint/Python/Node 能力实现，但输出必须是 .pptx。
+- 传给生成工具的 args 应保持结构化和简洁：包含逐页内容/脚本、主题/风格要求、输出路径；避免把超长全文塞进单个 JSON 字符串导致工具调用被截断。
+- 输出文件名使用清晰的 ASCII 或安全中文文件名，扩展名必须是 .pptx。
+- 如果工具返回 run_id，使用对应 status 动作轮询直到 completed/failed。
+- 成功后调用 send_file 发送生成的 .pptx 文件；如果同时生成预览 PDF，可作为附加文件发送，但 .pptx 必须是主交付物。
+- 只有在已有 Skill、安装 Skill、craft_tool 自建工具都明确失败时，才说明失败原因，并给出已尝试的真实工具调用结果。
+
+禁止事项：
+- 禁止只承诺“将生成 PPT”但不调用工具。
+- 禁止只调用 generate_pdf 生成 PDF 作为最终结果。
+- 禁止输出“完整 PPT 内容如下”后停止；本阶段的完成标准是实际 .pptx 文件已生成并发送。
+`
 
 	case "problem_discovery":
 		return `## 阶段指令

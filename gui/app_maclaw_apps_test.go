@@ -13,6 +13,47 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+func maclawAppPackageWithCurrentDefinitionHashes(t *testing.T, packageJSON string) string {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(packageJSON), &doc); err != nil {
+		t.Fatalf("decode maclaw app package fixture: %v", err)
+	}
+	var entries []parsedMaclawAppEntry
+	if stringMapValue(doc, "schema") == "maclaw.app.v1" {
+		entry, err := parseMaclawAppEntryFromMap(doc, "maclaw app", map[string]struct{}{})
+		if err != nil {
+			t.Fatalf("parse maclaw app fixture: %v", err)
+		}
+		entries = []parsedMaclawAppEntry{entry}
+	} else {
+		var err error
+		entries, err = parseMaclawAppPackageEntriesFromMap(doc, false)
+		if err != nil {
+			t.Fatalf("parse maclaw app package fixture: %v", err)
+		}
+	}
+	for _, entry := range entries {
+		governance := anyMap(entry.App["governance"])
+		if governance == nil {
+			continue
+		}
+		testEvidence := anyMap(governance["testEvidence"])
+		if testEvidence == nil {
+			testEvidence = anyMap(governance["test_evidence"])
+		}
+		if testEvidence == nil {
+			continue
+		}
+		testEvidence["definitionHash"] = maclawAppDefinitionFingerprintForEntry(entry)
+	}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("encode maclaw app package fixture: %v", err)
+	}
+	return string(data)
+}
+
 func TestSubmitMaclawAppPackageQueuesLocalSubmission(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	pkg := `{
@@ -32,6 +73,7 @@ func TestSubmitMaclawAppPackageQueuesLocalSubmission(t *testing.T) {
 		}]
 	}`
 
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
 	result, err := app.SubmitMaclawAppPackage(pkg)
 	if err != nil {
 		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
@@ -132,6 +174,7 @@ func TestSubmitMaclawAppPackagePersistsNormalizedWorkspaceLayout(t *testing.T) {
 		}]
 	}`
 
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
 	result, err := app.SubmitMaclawAppPackage(pkg)
 	if err != nil {
 		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
@@ -235,6 +278,7 @@ func TestSubmitMaclawAppPackageFlagsWorkspaceLayoutMissingRequiredRegionRole(t *
 	if maclawAppWorkspaceLayoutHasRequiredRoles(rawGovernance["workspaceLayout"].(map[string]any), "tool_app") {
 		t.Fatalf("expected raw workspace layout to miss required output role")
 	}
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
 	result, err := app.SubmitMaclawAppPackage(pkg)
 	if err != nil {
 		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
@@ -252,7 +296,7 @@ func TestSubmitMaclawAppPackageFlagsWorkspaceLayoutMissingRequiredRegionRole(t *
 }
 func TestPlanMaclawAppInstallReportsGovernanceReviewErrors(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-	plan, err := app.PlanMaclawAppInstall(`{
+	plan, err := app.PlanMaclawAppInstall(maclawAppPackageWithCurrentDefinitionHashes(t, `{
 		"schema": "maclaw.app.v1",
 		"privateMarker": "x_maclaw_apps",
 		"installUnit": "skill",
@@ -266,7 +310,7 @@ func TestPlanMaclawAppInstallReportsGovernanceReviewErrors(t *testing.T) {
 				"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-layout","sampleInput":{"sample":true},"expectedOutput":{"content":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-layout", "runId":"run-layout", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"content":"ok"}}
 			}
 		}
-	}`)
+	}`))
 	if err != nil {
 		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
 	}
@@ -296,9 +340,10 @@ func TestSubmitMaclawAppPackageAcceptsCompleteGovernanceEvidence(t *testing.T) {
 					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-basic","sampleInput":{"sample":true},"expectedOutput":{"status":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-basic", "runId":"run-1", "artifactPresent":true, "artifactCount":1, "verifiedAt":"2026-06-17T01:00:00Z"}
 				}
 			}
-		}]
+	}]
 	}`
 
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
 	result, err := app.SubmitMaclawAppPackage(pkg)
 	if err != nil {
 		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
@@ -364,9 +409,10 @@ func TestSubmitMaclawAppPackageFlagsMissingTestProtocol(t *testing.T) {
 					"testEvidence":{"runId":"run-without-protocol", "testProtocolFingerprint":"proto-missing", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"text":"ok"}}
 				}
 			}
-		}]
+	}]
 	}`
 
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
 	result, err := app.SubmitMaclawAppPackage(pkg)
 	if err != nil {
 		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
@@ -403,9 +449,10 @@ func TestSubmitMaclawAppPackageFlagsMissingDependencyVerification(t *testing.T) 
 					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-basic","sampleInput":{"sample":true},"expectedOutput":{"status":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-basic", "runId":"run-business", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"business_status":"ready"}}
 				}
 			}
-		}]
+	}]
 	}`
 
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
 	result, err := app.SubmitMaclawAppPackage(pkg)
 	if err != nil {
 		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
@@ -445,9 +492,10 @@ func TestSubmitMaclawAppPackageFlagsStaleDependencyVerification(t *testing.T) {
 					"dependencyVerification": {"schema":"maclaw.app.install_plan.v1", "dependencies":[{"id":"customer-renewal-skill", "kind":"runtime_skill", "required":true, "installed":true, "health":"ready", "action":"skip"}]}
 				}
 			}
-		}]
+	}]
 	}`
 
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
 	result, err := app.SubmitMaclawAppPackage(pkg)
 	if err != nil {
 		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
@@ -503,13 +551,14 @@ func TestSubmitMaclawAppPackageFlagsDependencyVerificationWorkflowIssueDetails(t
 					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "template":"dashboard", "regionCount":4},
 					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"approval_result", "types":["approval_result", "business_status", "content"]},
 					"workflowContract": {"schema":"maclaw.app.workflow_contract.v1", "workflowSkillId":"expense-flow", "workflowVersion":"2.1.0", "objectRole":"expense_report", "requiredInputs":["record_ref", "applicant", "business_payload"], "decisionOutputs":["approved", "rejected", "attention"], "statusMapping":{"pending":"pending", "approved":"approved", "rejected":"rejected", "attention":"attention"}},
-					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-approval","sampleInput":{"amount":10},"expectedOutput":{"decision":"approved"},"requiredRoles":["applicant"],"requiredScopes":["approval.submit"],"riskLevel":"medium"}, "testProtocolFingerprint":"proto-approval", "runId":"run-approval", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"decision":"approved", "business_status":"approved"}, "resultCoverage":{"ok":true, "primary":"approval_result", "coveredTypes":["approval_result", "business_status", "content"], "missingTypes":[]}},
+				"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-approval","sampleInput":{"amount":10},"expectedOutput":{"decision":"approved"},"requiredRoles":["applicant"],"requiredScopes":["approval.submit"],"riskLevel":"medium"}, "testProtocolFingerprint":"proto-approval", "runId":"run-approval", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"decision":"approved", "business_status":"approved"}, "approvalInstance":{"instanceId":"wf-test-1", "approvalID":"approval-remote-install-1", "recordID":"expense-1", "status":"approved", "currentNode":"expense.result", "workflowSkillId":"expense-flow", "workflowVersion":"2.1.0", "businessStatus":"approved", "resultStatus":"approved", "resultPayload":{"decision":"approved", "business_status":"approved"}, "outputs":[{"kind":"approval_result", "title":"Approval decision", "text":"approved", "status":"approved"}], "viewVerified":true}, "resultCoverage":{"ok":true, "primary":"approval_result", "coveredTypes":["approval_result", "business_status", "content"], "missingTypes":[]}},
 					"dependencyVerification": {"schema":"maclaw.app.install_plan.v1", "hasWorkflowContractIssue":true, "workflowContractIssueCount":1, "workflowContractIssues":[{"path":"apps[0].app.governance.workflowContract.workflowSkillId", "severity":"error", "message":"approval workflow contract does not match approval binding", "suggestion":"align workflowSkillId", "metadata":{"workflow_skill_id":"expense-flow", "required_version":"2.1.0", "installed_version":"2.0.0"}}], "dependencies":[{"id":"expense-flow", "kind":"workflow_skill", "version":"2.1.0", "required":true, "installed":true, "health":"ready", "action":"skip"}]}
 				}
 			}
 		}]
 	}`
 
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
 	result, err := app.SubmitMaclawAppPackage(pkg)
 	if err != nil {
 		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
@@ -569,7 +618,7 @@ func TestSubmitMaclawAppPackageValidatesApprovalWorkflowContract(t *testing.T) {
 						"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "template":"classic_split", "regionCount":4},
 						"resultContract": {"schema":"maclaw.app.result.v1", "primary":"approval_result", "types":["approval_result", "business_status", "content"]},
 						"dependencyVerification": {"schema":"maclaw.app.install_plan.v1", "dependencies":[{"id":"expense-flow", "kind":"workflow_skill", "installed":true, "health":"ready"}]},
-						"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-basic","sampleInput":{"sample":true},"expectedOutput":{"status":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-basic", "runId":"run-approval", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"approval_result":"approved"}}` + contract + `
+						"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-basic","sampleInput":{"sample":true},"expectedOutput":{"status":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-basic", "runId":"run-approval", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"approval_result":"approved"}, "approvalInstance":{"instanceId":"wf-test-1", "approvalID":"approval-remote-install-1", "recordID":"expense-1", "status":"approved", "currentNode":"expense.result", "workflowSkillId":"expense-flow", "workflowVersion":"1.0.0", "businessStatus":"approved", "resultStatus":"approved", "resultPayload":{"approval_result":"approved"}, "outputs":[{"kind":"approval_result", "title":"Approval decision", "text":"approved", "status":"approved"}], "viewVerified":true}}` + contract + `
 					}
 				}
 			}]
@@ -588,7 +637,7 @@ func TestSubmitMaclawAppPackageValidatesApprovalWorkflowContract(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := app.SubmitMaclawAppPackage(base(tc.contract))
+			result, err := app.SubmitMaclawAppPackage(maclawAppPackageWithCurrentDefinitionHashes(t, base(tc.contract)))
 			if err != nil {
 				t.Fatalf("SubmitMaclawAppPackage error: %v", err)
 			}
@@ -608,6 +657,128 @@ func TestSubmitMaclawAppPackageValidatesApprovalWorkflowContract(t *testing.T) {
 		})
 	}
 }
+func TestSubmitMaclawAppPackageRequiresApprovalInstanceTestEvidence(t *testing.T) {
+	tmpHome := t.TempDir()
+	workflowSkillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "expense-flow")
+	if err := os.MkdirAll(workflowSkillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll workflowSkillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowSkillDir, "skill.md"), []byte("# Expense workflow\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "expense-flow", SkillDir: workflowSkillDir, Status: "active", HubVersion: "1.0.0"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	pkg := `{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [{
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {
+				"id": "approval-instance-evidence",
+				"name": "Approval Instance Evidence",
+				"kind": "enterprise_approval_app",
+				"binding": {
+					"datasrv": {"domain":"finance", "datasetID":"finance.expenses", "objectRole":"expense_report"},
+					"workflow": {"submitNode":"expense.intake", "approvalNode":"manager_approval", "resultNode":"expense.result"},
+					"mis": {"approvalBindings": [{"event":"expense.submitted", "workflowSkillId":"expense-flow", "workflowVersion":"1.0.0", "objectRole":"expense_report"}]}
+				},
+				"governance": {
+					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "template":"classic_split", "regionCount":4, "regions":[{"role":"input"},{"role":"instance_list"},{"role":"output"}]},
+					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"approval_result", "types":["approval_result", "business_status", "content"]},
+					"dependencyVerification": {"schema":"maclaw.app.install_plan.v1", "hasMissingRequired":false, "hasBlockingDependency":false, "dependencies":[{"id":"expense-flow", "kind":"workflow_skill", "required":true, "installed":true, "health":"ready", "action":"skip"}]},
+					"workflowContract": {"schema":"maclaw.app.workflow_contract.v1", "workflowSkillId":"expense-flow", "workflowVersion":"1.0.0", "objectRole":"expense_report", "requiredInputs":["record_ref", "applicant", "business_payload"], "decisionOutputs":["approved", "rejected", "attention"], "statusMapping":{"pending":"pending", "approved":"approved", "rejected":"rejected", "attention":"attention"}},
+					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-approval-instance","sampleInput":{"amount":10},"expectedOutput":{"decision":"approved"},"requiredRoles":["applicant"],"requiredScopes":["approval.submit"],"riskLevel":"medium"}, "testProtocolFingerprint":"proto-approval-instance", "runId":"run-approval-instance", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"approval_result":"approved", "business_status":"approved"}, "resultCoverage":{"ok":true, "primary":"approval_result", "coveredTypes":["approval_result", "business_status", "content"], "missingTypes":[]}}
+				}
+			}
+		}]
+	}`
+
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
+	result, err := app.SubmitMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
+	}
+	if result["review_issue_count"] != 1 {
+		t.Fatalf("expected one approval instance evidence issue, got %#v", result)
+	}
+	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
+	if err != nil {
+		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
+	}
+	if len(detail.ReviewIssues) != 1 || detail.ReviewIssues[0].Path != "apps[0].app.governance.testEvidence.approvalInstance" || !strings.Contains(detail.ReviewIssues[0].Message, "approval instance") {
+		t.Fatalf("unexpected approval instance evidence issue: %#v", detail.ReviewIssues)
+	}
+}
+
+func TestSubmitMaclawAppPackageRequiresApprovalInstanceResultPackage(t *testing.T) {
+	tmpHome := t.TempDir()
+	workflowSkillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "expense-flow")
+	if err := os.MkdirAll(workflowSkillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll workflowSkillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowSkillDir, "skill.md"), []byte("# Expense workflow\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "expense-flow", SkillDir: workflowSkillDir, Status: "active", HubVersion: "1.0.0"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	pkg := `{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [{
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {
+				"id": "approval-instance-result-package",
+				"name": "Approval Instance Result Package",
+				"kind": "enterprise_approval_app",
+				"binding": {
+					"datasrv": {"domain":"finance", "datasetID":"finance.expenses", "objectRole":"expense_report"},
+					"workflow": {"submitNode":"expense.intake", "approvalNode":"manager_approval", "resultNode":"expense.result"},
+					"mis": {"approvalBindings": [{"event":"expense.submitted", "workflowSkillId":"expense-flow", "workflowVersion":"1.0.0", "objectRole":"expense_report"}]}
+				},
+				"governance": {
+					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "template":"classic_split", "regionCount":4, "regions":[{"role":"input"},{"role":"instance_list"},{"role":"output"}]},
+					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"approval_result", "types":["approval_result", "business_status", "content"]},
+					"dependencyVerification": {"schema":"maclaw.app.install_plan.v1", "hasMissingRequired":false, "hasBlockingDependency":false, "dependencies":[{"id":"expense-flow", "kind":"workflow_skill", "required":true, "installed":true, "health":"ready", "action":"skip"}]},
+					"workflowContract": {"schema":"maclaw.app.workflow_contract.v1", "workflowSkillId":"expense-flow", "workflowVersion":"1.0.0", "objectRole":"expense_report", "requiredInputs":["record_ref", "applicant", "business_payload"], "decisionOutputs":["approved", "rejected", "attention"], "statusMapping":{"pending":"pending", "approved":"approved", "rejected":"rejected", "attention":"attention"}},
+					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-approval-instance-result","sampleInput":{"amount":10},"expectedOutput":{"decision":"approved"},"requiredRoles":["applicant"],"requiredScopes":["approval.submit"],"riskLevel":"medium"}, "testProtocolFingerprint":"proto-approval-instance-result", "runId":"run-approval-instance-result", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"approval_result":"approved", "business_status":"approved"}, "approvalInstance":{"instanceId":"wf-test-1", "approvalID":"approval-remote-1", "recordID":"expense-1", "datasetID":"finance.expenses", "objectRole":"expense_report", "approvalEvent":"expense.submitted", "approvalWorkflowID":"expense-flow", "status":"approved", "currentNode":"expense.result", "workflowSkillId":"expense-flow", "workflowVersion":"1.0.0", "businessStatus":"approved", "resultStatus":"approved", "viewVerified":true}, "resultCoverage":{"ok":true, "primary":"approval_result", "coveredTypes":["approval_result", "business_status", "content"], "missingTypes":[]}}
+				}
+			}
+		}]
+	}`
+
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
+	result, err := app.SubmitMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
+	}
+	if result["review_issue_count"] != 1 {
+		t.Fatalf("expected one approval result package issue, got %#v", result)
+	}
+	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
+	if err != nil {
+		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
+	}
+	if len(detail.ReviewIssues) != 1 || detail.ReviewIssues[0].Path != "apps[0].app.governance.testEvidence.approvalInstance.resultPayload" || !strings.Contains(detail.ReviewIssues[0].Message, "result package") {
+		t.Fatalf("unexpected approval result package issue: %#v", detail.ReviewIssues)
+	}
+}
+
 func TestSubmitMaclawAppPackageFlagsStaleRunEvidenceDefinitionHash(t *testing.T) {
 	tmpHome := t.TempDir()
 	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "stale-run-tool")
@@ -670,6 +841,66 @@ func TestSubmitMaclawAppPackageFlagsStaleRunEvidenceDefinitionHash(t *testing.T)
 		t.Fatalf("unexpected stale definition hash issue: %#v", issue)
 	}
 }
+
+func TestSubmitMaclawAppPackageRequiresRunEvidenceDefinitionHash(t *testing.T) {
+	tmpHome := t.TempDir()
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "missing-hash-tool")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# Missing hash tool\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "missing-hash-tool", SkillDir: skillDir, Status: "active"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	pkg := `{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [{
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {
+				"id": "missing-run-evidence-hash",
+				"name": "Missing Run Evidence Hash",
+				"kind": "tool_app",
+				"binding": {"skill": {"id":"missing-hash-tool", "inputMode":"form", "outputModes":["json"]}},
+				"governance": {
+					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"tool_workspace", "template":"document_workspace", "regionCount":4},
+					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"content", "types":["content", "text"]},
+					"dependencyVerification": {"schema":"maclaw.app.install_plan.v1", "dependencies":[{"id":"missing-hash-tool", "kind":"runtime_skill", "required":true, "installed":true, "health":"ready", "action":"skip"}]},
+					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-basic","sampleInput":{"sample":true},"expectedOutput":{"status":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-basic", "runId":"run-missing-definition-hash", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"text":"ok"}, "outputs":[{"kind":"text", "text":"ok"}]}
+				}
+			}
+		}]
+	}`
+
+	result, err := app.SubmitMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
+	}
+	if result["review_issue_count"] != 1 {
+		t.Fatalf("expected one missing definition hash issue, got %#v", result)
+	}
+	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
+	if err != nil {
+		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
+	}
+	if len(detail.ReviewIssues) != 1 {
+		t.Fatalf("expected one durable review issue: %#v", detail.ReviewIssues)
+	}
+	issue := detail.ReviewIssues[0]
+	if issue.Path != "apps[0].app.governance.testEvidence.definitionHash" || issue.Severity != "error" || !strings.Contains(issue.Message, "missing") {
+		t.Fatalf("unexpected missing definition hash issue: %#v", issue)
+	}
+}
+
 func TestSubmitMaclawAppPackageFlagsResultCoverageMismatch(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	pkg := `{
@@ -688,9 +919,10 @@ func TestSubmitMaclawAppPackageFlagsResultCoverageMismatch(t *testing.T) {
 					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-basic","sampleInput":{"sample":true},"expectedOutput":{"status":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-basic", "runId":"run-text-only", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"text":"plain completion only"}, "outputs":[{"kind":"text", "text":"plain completion only"}]}
 				}
 			}
-		}]
+	}]
 	}`
 
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
 	result, err := app.SubmitMaclawAppPackage(pkg)
 	if err != nil {
 		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
@@ -2396,7 +2628,8 @@ func TestRecordMaclawAppInstallPersistsNewestInstallAudit(t *testing.T) {
 					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1", "fingerprint":"proto-doc-archive", "sampleInput":{"file":"demo.pdf"}, "expectedOutput":{"content":"archived"}, "requiredRoles":["tester"], "requiredScopes":["app.run"], "riskLevel":"low"}, "testProtocolFingerprint":"proto-doc-archive", "runId":"run-doc-archive", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"content":"archived"}}
 				}
 			}
-		}`
+			}`
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
 	result, err := app.RecordMaclawAppInstall(pkg, "market")
 	if err != nil {
 		t.Fatalf("RecordMaclawAppInstall() error = %v", err)
@@ -2545,7 +2778,7 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 					"statusMapping": {"pending":"finance_pending", "approved":"finance_approved", "rejected":"finance_rejected", "attention":"finance_attention", "requiresInput":"finance_more_input"}
 				},
 				"dependencyVerification": {"schema":"maclaw.app.install_plan.v1", "verifiedAt":"2026-06-17T00:59:00Z", "dependencyCount":2, "hasMissingRequired":false, "hasBlockingDependency":false, "hasWorkflowContractIssue":false, "workflowContractIssueCount":0, "hasGovernanceReviewIssue":false, "governanceReviewIssueCount":0, "dependencies":[{"id":"expense-super-skill", "installed":true, "health":"ready"}, {"id":"expense-workflow", "installed":true, "health":"ready"}]},
-				"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-basic","sampleInput":{"sample":true},"expectedOutput":{"status":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-basic", "runId":"run-expense-1", "artifactPresent":true, "verifiedAt":"2026-06-17T01:00:00Z", "resultCoverage":{"ok":true, "primary":"approval_result", "coveredTypes":["approval_result", "business_status", "business_record", "document"], "missingTypes":[]}, "dependencyVerification":{"schema":"maclaw.app.install_plan.v1", "verifiedAt":"2026-06-17T00:59:00Z", "dependencyCount":2, "hasMissingRequired":false, "hasBlockingDependency":false, "hasWorkflowContractIssue":false, "workflowContractIssueCount":0, "hasGovernanceReviewIssue":false, "governanceReviewIssueCount":0}}
+				"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-basic","sampleInput":{"sample":true},"expectedOutput":{"status":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-basic", "runId":"run-expense-1", "artifactPresent":true, "artifacts":[{"id":"artifact-expense-evidence", "uri":"artifact://expense/evidence.zip", "name":"expense-approval-evidence.zip", "status":"ready"}], "outputs":[{"kind":"table", "title":"Approval rows", "text":"expense approved", "status":"ready", "data":{"rows":[{"id":"expense-1", "status":"finance_approved"}]}}], "resultPayload":{"approval_result":"approved", "business_status":"finance_approved", "business_record":{"id":"expense-1"}}, "verifiedAt":"2026-06-17T01:00:00Z", "approvalInstance":{"instanceId":"wf-test-1", "approvalID":"approval-remote-install-1", "recordID":"expense-1", "datasetID":"finance.expenses", "objectRole":"expense_report", "approvalEvent":"expense.submitted", "approvalWorkflowID":"expense-workflow", "status":"approved", "currentNode":"expense.result", "workflowSkillId":"expense-workflow", "workflowVersion":"2.0.0", "businessStatus":"finance_approved", "resultStatus":"approved", "resultPayload":{"approval_result":"approved", "business_status":"finance_approved", "business_record":{"id":"expense-1"}}, "outputs":[{"kind":"table", "title":"Approval rows", "text":"expense approved", "status":"ready", "data":{"rows":[{"id":"expense-1", "status":"finance_approved"}]}}], "artifacts":[{"id":"artifact-expense-evidence", "uri":"artifact://expense/evidence.zip", "name":"expense-approval-evidence.zip", "status":"ready"}], "viewVerified":true}, "resultCoverage":{"ok":true, "primary":"approval_result", "coveredTypes":["approval_result", "business_status", "business_record", "document"], "missingTypes":[]}, "dependencyVerification":{"schema":"maclaw.app.install_plan.v1", "verifiedAt":"2026-06-17T00:59:00Z", "dependencyCount":2, "hasMissingRequired":false, "hasBlockingDependency":false, "hasWorkflowContractIssue":false, "workflowContractIssueCount":0, "hasGovernanceReviewIssue":false, "governanceReviewIssueCount":0}}
 			},
 			"binding": {
 				"appSkill": { "id": "expense-super-skill", "version": "1.0.0" },
@@ -2581,12 +2814,41 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 					}]
 				}
 			}
-		}
-	}`
+			}
+		}`
 
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
 	result, err := app.RecordMaclawAppInstall(pkg, "market")
 	if err != nil {
 		t.Fatalf("RecordMaclawAppInstall() error = %v", err)
+	}
+	installEvidence, ok := result["install_evidence"].(map[string]any)
+	if !ok {
+		t.Fatalf("install result should expose per-app evidence: %#v", result["install_evidence"])
+	}
+	expenseEvidence, ok := installEvidence["expense-approval"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("install evidence should include approval app id: %#v", installEvidence)
+	}
+	expenseTestEvidence, ok := expenseEvidence["test_evidence"].(map[string]interface{})
+	if !ok || expenseTestEvidence["runId"] != "run-expense-1" {
+		t.Fatalf("install evidence should preserve approval app test evidence: %#v", expenseEvidence)
+	}
+	expenseApprovalInstance, ok := expenseTestEvidence["approvalInstance"].(map[string]interface{})
+	if !ok || expenseApprovalInstance["approvalID"] != "approval-remote-install-1" || expenseApprovalInstance["currentNode"] != "expense.result" || expenseApprovalInstance["workflowSkillId"] != "expense-workflow" || expenseApprovalInstance["businessStatus"] != "finance_approved" || expenseApprovalInstance["resultStatus"] != "approved" {
+		t.Fatalf("install evidence should preserve approval instance core state: %#v", expenseTestEvidence)
+	}
+	expenseApprovalResultPayload, ok := expenseApprovalInstance["resultPayload"].(map[string]interface{})
+	if !ok || expenseApprovalResultPayload["approval_result"] != "approved" || expenseApprovalResultPayload["business_status"] != "finance_approved" {
+		t.Fatalf("install evidence should preserve approval instance result payload: %#v", expenseApprovalInstance)
+	}
+	expenseApprovalOutputs, ok := expenseApprovalInstance["outputs"].([]interface{})
+	if !ok || len(expenseApprovalOutputs) != 1 {
+		t.Fatalf("install evidence should preserve approval instance outputs: %#v", expenseApprovalInstance)
+	}
+	expenseApprovalArtifacts, ok := expenseApprovalInstance["artifacts"].([]interface{})
+	if !ok || len(expenseApprovalArtifacts) != 1 {
+		t.Fatalf("install evidence should preserve approval instance artifacts: %#v", expenseApprovalInstance)
 	}
 	registration, ok := result["datasrv_registration"].(map[string]any)
 	if !ok || registration["synced"] != true || registration["eligible_count"] != 1 || registration["synced_count"] != 1 {
@@ -2669,6 +2931,17 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	if metadata["workflow_mapping_schema"] != "maclaw.app.workflow.v1" || metadata["workflow_submit_node"] != "expense.intake" || metadata["workflow_approval_node"] != "finance.director_review" || metadata["workflow_result_node"] != "expense.result_pack" {
 		t.Fatalf("registration metadata missing workflow node summary: %#v", metadata)
 	}
+	dependencyVerification, ok := metadata["dependency_verification"].(map[string]interface{})
+	if !ok || dependencyVerification["schema"] != "maclaw.app.install_plan.v1" || dependencyVerification["verifiedAt"] != "2026-06-17T00:59:00Z" || dependencyVerification["dependencyCount"] != float64(2) || dependencyVerification["hasBlockingDependency"] != false {
+		t.Fatalf("registration metadata missing dependency verification evidence: %#v", metadata)
+	}
+	verifiedDependencies, ok := dependencyVerification["dependencies"].([]interface{})
+	if !ok || len(verifiedDependencies) != 2 {
+		t.Fatalf("registration dependency verification missing dependencies: %#v", dependencyVerification)
+	}
+	if metadata["test_evidence_dependency_verified_at"] != "2026-06-17T00:59:00Z" || metadata["test_evidence_dependency_count"] != float64(2) || metadata["test_evidence_dependency_missing_required"] != false || metadata["test_evidence_dependency_blocking"] != false {
+		t.Fatalf("registration metadata missing dependency verification summary: %#v", metadata)
+	}
 	workflowContract, ok := metadata["workflow_contract"].(map[string]interface{})
 	if !ok || workflowContract["schema"] != "maclaw.app.workflow_contract.v1" || workflowContract["workflowSkillId"] != "expense-workflow" || workflowContract["objectRole"] != "expense_report" {
 		t.Fatalf("registration metadata missing workflow contract: %#v", metadata)
@@ -2717,6 +2990,42 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	if !ok || len(coveredTypes) != 4 || coveredTypes[2] != "business_record" {
 		t.Fatalf("registration metadata missing covered result types: %#v", resultCoverage)
 	}
+	governanceOutputs, ok := governanceTestEvidence["outputs"].([]interface{})
+	if !ok || len(governanceOutputs) != 1 {
+		t.Fatalf("registration metadata missing governance outputs evidence: %#v", governanceTestEvidence)
+	}
+	governanceOutput, ok := governanceOutputs[0].(map[string]interface{})
+	if !ok || governanceOutput["kind"] != "table" || governanceOutput["title"] != "Approval rows" {
+		t.Fatalf("registration metadata missing governance table output evidence: %#v", governanceOutputs)
+	}
+	governanceArtifacts, ok := governanceTestEvidence["artifacts"].([]interface{})
+	if !ok || len(governanceArtifacts) != 1 {
+		t.Fatalf("registration metadata missing governance artifacts evidence: %#v", governanceTestEvidence)
+	}
+	governanceArtifact, ok := governanceArtifacts[0].(map[string]interface{})
+	if !ok || governanceArtifact["id"] != "artifact-expense-evidence" || governanceArtifact["name"] != "expense-approval-evidence.zip" {
+		t.Fatalf("registration metadata missing governance artifact evidence: %#v", governanceArtifacts)
+	}
+	governanceResultPayload, ok := governanceTestEvidence["resultPayload"].(map[string]interface{})
+	if !ok || governanceResultPayload["approval_result"] != "approved" || governanceResultPayload["business_status"] != "finance_approved" {
+		t.Fatalf("registration metadata missing governance result payload: %#v", governanceTestEvidence)
+	}
+	governanceApprovalInstance, ok := governanceTestEvidence["approvalInstance"].(map[string]interface{})
+	if !ok || governanceApprovalInstance["instanceId"] != "wf-test-1" || governanceApprovalInstance["approvalID"] != "approval-remote-install-1" || governanceApprovalInstance["recordID"] != "expense-1" {
+		t.Fatalf("registration metadata missing governance approval instance remote id: %#v", governanceTestEvidence)
+	}
+	governanceApprovalResultPayload, ok := governanceApprovalInstance["resultPayload"].(map[string]interface{})
+	if !ok || governanceApprovalInstance["currentNode"] != "expense.result" || governanceApprovalInstance["workflowSkillId"] != "expense-workflow" || governanceApprovalInstance["businessStatus"] != "finance_approved" || governanceApprovalInstance["resultStatus"] != "approved" || governanceApprovalResultPayload["approval_result"] != "approved" {
+		t.Fatalf("registration metadata missing governance approval instance result package: %#v", governanceApprovalInstance)
+	}
+	governanceApprovalOutputs, ok := governanceApprovalInstance["outputs"].([]interface{})
+	if !ok || len(governanceApprovalOutputs) != 1 {
+		t.Fatalf("registration metadata missing governance approval instance outputs: %#v", governanceApprovalInstance)
+	}
+	governanceApprovalArtifacts, ok := governanceApprovalInstance["artifacts"].([]interface{})
+	if !ok || len(governanceApprovalArtifacts) != 1 {
+		t.Fatalf("registration metadata missing governance approval instance artifacts: %#v", governanceApprovalInstance)
+	}
 	testDependencyVerification, ok := governanceTestEvidence["dependencyVerification"].(map[string]interface{})
 	if !ok || testDependencyVerification["verifiedAt"] != "2026-06-17T00:59:00Z" || testDependencyVerification["hasWorkflowContractIssue"] != false || testDependencyVerification["hasGovernanceReviewIssue"] != false || testDependencyVerification["governanceReviewIssueCount"] != float64(0) {
 		t.Fatalf("registration metadata missing test dependency verification: %#v", governanceTestEvidence)
@@ -2728,6 +3037,42 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	topLevelTestProtocol, ok := topLevelTestEvidence["testProtocol"].(map[string]interface{})
 	if !ok || topLevelTestProtocol["schema"] != "maclaw.app.test_protocol.v1" || topLevelTestProtocol["fingerprint"] != "proto-basic" {
 		t.Fatalf("registration metadata missing top-level test protocol for DataSrv: %#v", topLevelTestEvidence)
+	}
+	topLevelOutputs, ok := topLevelTestEvidence["outputs"].([]interface{})
+	if !ok || len(topLevelOutputs) != 1 {
+		t.Fatalf("registration metadata missing top-level outputs for DataSrv: %#v", topLevelTestEvidence)
+	}
+	topLevelOutput, ok := topLevelOutputs[0].(map[string]interface{})
+	if !ok || topLevelOutput["kind"] != "table" || topLevelOutput["text"] != "expense approved" {
+		t.Fatalf("registration metadata missing top-level table output for DataSrv: %#v", topLevelOutputs)
+	}
+	topLevelArtifacts, ok := topLevelTestEvidence["artifacts"].([]interface{})
+	if !ok || len(topLevelArtifacts) != 1 {
+		t.Fatalf("registration metadata missing top-level artifacts for DataSrv: %#v", topLevelTestEvidence)
+	}
+	topLevelArtifact, ok := topLevelArtifacts[0].(map[string]interface{})
+	if !ok || topLevelArtifact["uri"] != "artifact://expense/evidence.zip" {
+		t.Fatalf("registration metadata missing top-level artifact for DataSrv: %#v", topLevelArtifacts)
+	}
+	topLevelResultPayload, ok := topLevelTestEvidence["resultPayload"].(map[string]interface{})
+	if !ok || topLevelResultPayload["approval_result"] != "approved" || topLevelResultPayload["business_status"] != "finance_approved" {
+		t.Fatalf("registration metadata missing top-level result payload for DataSrv: %#v", topLevelTestEvidence)
+	}
+	topLevelApprovalInstance, ok := topLevelTestEvidence["approvalInstance"].(map[string]interface{})
+	if !ok || topLevelApprovalInstance["instanceId"] != "wf-test-1" || topLevelApprovalInstance["approvalID"] != "approval-remote-install-1" || topLevelApprovalInstance["recordID"] != "expense-1" {
+		t.Fatalf("registration metadata missing top-level approval instance remote id for DataSrv: %#v", topLevelTestEvidence)
+	}
+	topLevelApprovalResultPayload, ok := topLevelApprovalInstance["resultPayload"].(map[string]interface{})
+	if !ok || topLevelApprovalInstance["currentNode"] != "expense.result" || topLevelApprovalInstance["workflowSkillId"] != "expense-workflow" || topLevelApprovalInstance["businessStatus"] != "finance_approved" || topLevelApprovalInstance["resultStatus"] != "approved" || topLevelApprovalResultPayload["business_record"] == nil {
+		t.Fatalf("registration metadata missing top-level approval instance result package for DataSrv: %#v", topLevelApprovalInstance)
+	}
+	topLevelApprovalOutputs, ok := topLevelApprovalInstance["outputs"].([]interface{})
+	if !ok || len(topLevelApprovalOutputs) != 1 {
+		t.Fatalf("registration metadata missing top-level approval instance outputs for DataSrv: %#v", topLevelApprovalInstance)
+	}
+	topLevelApprovalArtifacts, ok := topLevelApprovalInstance["artifacts"].([]interface{})
+	if !ok || len(topLevelApprovalArtifacts) != 1 {
+		t.Fatalf("registration metadata missing top-level approval instance artifacts for DataSrv: %#v", topLevelApprovalInstance)
 	}
 	topLevelResultContract, ok := metadata["result_contract"].(map[string]interface{})
 	if !ok || topLevelResultContract["schema"] != "maclaw.app.result.v1" || topLevelResultContract["primary"] != "approval_result" || metadata["result_contract_schema"] != "maclaw.app.result.v1" || metadata["result_contract_primary"] != "approval_result" {
@@ -2771,6 +3116,22 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	}
 	if records[0].TestEvidence["runId"] != "run-expense-1" || records[0].TestEvidence["testProtocolFingerprint"] != "proto-basic" {
 		t.Fatalf("install audit should keep test evidence: %#v", records[0].TestEvidence)
+	}
+	auditApprovalInstance, ok := records[0].TestEvidence["approvalInstance"].(map[string]interface{})
+	if !ok || auditApprovalInstance["approvalID"] != "approval-remote-install-1" || auditApprovalInstance["recordID"] != "expense-1" {
+		t.Fatalf("install audit should keep approval instance remote id evidence: %#v", records[0].TestEvidence)
+	}
+	auditApprovalResultPayload, ok := auditApprovalInstance["resultPayload"].(map[string]interface{})
+	if !ok || auditApprovalInstance["currentNode"] != "expense.result" || auditApprovalInstance["workflowSkillId"] != "expense-workflow" || auditApprovalInstance["businessStatus"] != "finance_approved" || auditApprovalInstance["resultStatus"] != "approved" || auditApprovalResultPayload["approval_result"] != "approved" {
+		t.Fatalf("install audit should keep approval instance result package evidence: %#v", auditApprovalInstance)
+	}
+	auditApprovalOutputs, ok := auditApprovalInstance["outputs"].([]interface{})
+	if !ok || len(auditApprovalOutputs) != 1 {
+		t.Fatalf("install audit should keep approval instance outputs evidence: %#v", auditApprovalInstance)
+	}
+	auditApprovalArtifacts, ok := auditApprovalInstance["artifacts"].([]interface{})
+	if !ok || len(auditApprovalArtifacts) != 1 {
+		t.Fatalf("install audit should keep approval instance artifacts evidence: %#v", auditApprovalInstance)
 	}
 	auditProtocol, ok := records[0].TestEvidence["testProtocol"].(map[string]interface{})
 	if !ok || auditProtocol["schema"] != "maclaw.app.test_protocol.v1" || auditProtocol["fingerprint"] != "proto-basic" {
@@ -3068,6 +3429,42 @@ func TestListMaclawAppApprovalInstancesMapsDataSrvAttentionStatus(t *testing.T) 
 	}
 }
 
+func TestListMaclawAppApprovalInstancesAllInfersDataSrvLanesForCurrentUser(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	var capturedQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/data/approvals" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"approval-request-1","dataset_id":"finance.expenses","record_id":"exp-request-1","app_id":"expense","status":"pending","summary":"My request","request":{"approval_instance_id":"wf-request-1","applicant":"manager"},"workflow_instance_id":"wf-request-1","workflow_node_id":"director_approval","assigned_to":"director","submitted_by":"manager","created_by":"manager","created_at":"2026-06-21T01:00:00Z","updated_at":"2026-06-21T02:00:00Z"},{"id":"approval-pending-1","dataset_id":"finance.expenses","record_id":"exp-pending-1","app_id":"expense","status":"pending","summary":"Needs my approval","request":{"approval_instance_id":"wf-pending-1","applicant":"alice"},"workflow_instance_id":"wf-pending-1","workflow_node_id":"manager_approval","assigned_to":"manager","current_assignee":"manager","submitted_by":"alice","created_by":"alice","created_at":"2026-06-21T01:01:00Z","updated_at":"2026-06-21T02:01:00Z"},{"id":"approval-handled-1","dataset_id":"finance.expenses","record_id":"exp-handled-1","app_id":"expense","status":"approved","summary":"Handled by me","request":{"approval_instance_id":"wf-handled-1","applicant":"alice"},"workflow_instance_id":"wf-handled-1","workflow_node_id":"completed","assigned_to":"manager","reviewed_by":"manager","submitted_by":"alice","created_by":"alice","created_at":"2026-06-21T01:02:00Z","updated_at":"2026-06-21T02:02:00Z"}]}`))
+	}))
+	defer server.Close()
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "manager", Role: "approver"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	items, err := app.ListMaclawAppApprovalInstancesAll("all", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll all error = %v", err)
+	}
+	if strings.Contains(capturedQuery, "lane=") {
+		t.Fatalf("all lane should not send a lane filter, got %s", capturedQuery)
+	}
+	lanes := map[string]string{}
+	owners := map[string]string{}
+	for _, item := range items {
+		lanes[item.ApprovalID] = item.Lane
+		owners[item.ApprovalID] = item.Owner
+	}
+	if lanes["approval-request-1"] != "my_requests" || lanes["approval-pending-1"] != "pending_my_approval" || lanes["approval-handled-1"] != "handled" {
+		t.Fatalf("unexpected inferred lanes: %#v items=%#v", lanes, items)
+	}
+	if owners["approval-request-1"] != "manager" || owners["approval-pending-1"] != "alice" {
+		t.Fatalf("submitted_by should drive owner context: %#v", owners)
+	}
+}
 func TestListMaclawAppApprovalInstancesMergesDataSrvWithLocal(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	local, err := app.RecordMaclawAppApprovalInstance(maclawAppApprovalInstance{

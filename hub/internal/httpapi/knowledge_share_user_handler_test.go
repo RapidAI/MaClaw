@@ -201,6 +201,36 @@ func TestKnowledgeShareUserPackageFlow(t *testing.T) {
 	}
 }
 
+func TestListMyKnowledgeSharesMatchesOwnerByEmailWhenUserIDChanged(t *testing.T) {
+	st, identity, _ := newKnowledgeShareHandlerTestDeps(t)
+	viewerToken, enroll := issueViewerToken(t, identity, "owner-email-match@example.com")
+	now := time.Now().UTC()
+	share := &store.KnowledgeShare{
+		KnowledgeID:         "kn_email_owner_match",
+		TenantID:            enroll.TenantID,
+		OwnerUserID:         "legacy-user-id",
+		OwnerUserEmail:      "Owner-Email-Match@Example.com",
+		Title:               "Legacy owner record",
+		Description:         "Record created before user ID migration",
+		VisibilityScope:     "hub",
+		VisibilityUsersJSON: "[]",
+		SourceSummaryJSON:   "{}",
+		ShareURL:            "/hub/knowledge/shares/kn_email_owner_match",
+		Status:              "active",
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		PublishedAt:         now,
+	}
+	if err := st.KnowledgeShares.Create(context.Background(), share); err != nil {
+		t.Fatalf("create legacy share: %v", err)
+	}
+
+	listRec := doKnowledgeShareJSON(t, ListMyKnowledgeSharesHandler(st.KnowledgeShares, identity), http.MethodGet, "/api/knowledge/shares/mine", viewerToken, nil)
+	if listRec.Code != http.StatusOK || !strings.Contains(listRec.Body.String(), share.KnowledgeID) {
+		t.Fatalf("list mine should match owner by email when user id changed, status=%d body=%s", listRec.Code, listRec.Body.String())
+	}
+}
+
 func TestPrivateKnowledgeSharePackageRequiresVisibleViewer(t *testing.T) {
 	st, identity, packageDir := newKnowledgeShareHandlerTestDeps(t)
 	ownerToken, _ := issueViewerToken(t, identity, "private-owner@example.com")
@@ -479,6 +509,8 @@ func TestRenderKnowledgeSharePublicHTMLBilingualContract(t *testing.T) {
 		`data-copy="https://hub.example.test/hub/knowledge/shares/kn_public_html"`,
 		`/api/knowledge/shares/kn_public_html?intent=import`,
 		`rel="alternate" type="application/json" href="/api/knowledge/shares/kn_public_html?intent=import"`,
+		`data-manage-shares`,
+		`node.setAttribute('href', '/hub/knowledge/shares/mine' + tokenSuffix);`,
 		`localStorage.getItem('maclawKnowledgeShareLang')`,
 		`document.execCommand('copy')`,
 	}
@@ -514,5 +546,22 @@ func TestRenderKnowledgeSharePublicHTMLSanitizesLinksAndStats(t *testing.T) {
 	}
 	if strings.Contains(html, ">-") || strings.Contains(html, "NaN") {
 		t.Fatalf("public share html rendered unsafe stats:\n%s", html)
+	}
+}
+
+func TestRenderKnowledgeSharePublicHTMLDoesNotPromoteKnowledgeIDFallbackToTitle(t *testing.T) {
+	html := renderKnowledgeSharePublicHTML(KnowledgeShareUserView{
+		KnowledgeID:     "kn_b0942c48eeea66e09f1429255",
+		Description:     "Knowledge ID should stay in the share details panel only.",
+		VisibilityScope: "hub",
+	})
+	if strings.Contains(html, `<h1`) || strings.Contains(html, `class="hero-title`) {
+		t.Fatalf("public share html should not render a hero title when only knowledge ID is available:\n%s", html)
+	}
+	if !strings.Contains(html, `<code>kn_b0942c48eeea66e09f1429255</code>`) {
+		t.Fatalf("public share html should still show knowledge ID in share details:\n%s", html)
+	}
+	if !strings.Contains(html, `property="og:title" content="Knowledge Share"`) {
+		t.Fatalf("public share html should use a generic metadata title without leaking the ID:\n%s", html)
 	}
 }

@@ -34,6 +34,7 @@ export interface PhaseInfo {
     id: WorkflowPhaseID;
     name: string;
     index: number;
+    status?: string;
     expectsDocument?: boolean;
     canSkip?: boolean;
     needsConfirm?: boolean;
@@ -59,6 +60,7 @@ export function collectWorkflowPhases(phases: unknown): PhaseInfo[] {
         const id = normalizeWorkflowPhaseID(phase.id);
         const name = typeof phase.name === "string" ? phase.name.trim() : "";
         const index = typeof phase.index === "number" ? phase.index : collected.length;
+        const status = typeof phase.status === "string" ? phase.status.trim() : "";
         const expectsDocument = typeof phase.expects_document === "boolean" ? phase.expects_document : undefined;
         const canSkip = typeof phase.can_skip === "boolean" ? phase.can_skip : undefined;
         const needsConfirm = typeof phase.needs_confirm === "boolean" ? phase.needs_confirm : undefined;
@@ -69,6 +71,7 @@ export function collectWorkflowPhases(phases: unknown): PhaseInfo[] {
         if (!id || seen.has(id)) continue;
         seen.add(id);
         const item: PhaseInfo = { id, name, index };
+        if (status) item.status = status;
         if (typeof expectsDocument === "boolean") item.expectsDocument = expectsDocument;
         if (typeof canSkip === "boolean") item.canSkip = canSkip;
         if (typeof needsConfirm === "boolean") item.needsConfirm = needsConfirm;

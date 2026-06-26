@@ -5527,16 +5527,24 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 			"workspace_layout_entry":          "approval_workspace",
 			"workspace_layout_template":       "classic_split",
 			"workspace_layout_density":        "comfortable",
+			"workspace_layout_primary_region": "left",
+			"workspace_layout_output_region":  "bottom",
 			"workspace_layout_navigation":     []any{"my_requests", "pending_my_approval", "attention"},
 			"workspace_layout_list_columns":   []any{"title", "applicant", "current_node", "status"},
 			"workspace_layout": map[string]any{
-				"schema":       "maclaw.app.ui.v1",
-				"entry":        "approval_workspace",
-				"template":     "classic_split",
-				"density":      "comfortable",
-				"navigation":   []any{"my_requests", "pending_my_approval", "attention"},
-				"list":         map[string]any{"columns": []any{"title", "applicant", "current_node", "status"}},
-				"region_count": 4,
+				"schema":        "maclaw.app.ui.v1",
+				"entry":         "approval_workspace",
+				"template":      "classic_split",
+				"density":       "comfortable",
+				"primaryRegion": "left",
+				"outputRegion":  "bottom",
+				"navigation":    []any{"my_requests", "pending_my_approval", "attention"},
+				"list":          map[string]any{"columns": []any{"title", "applicant", "current_node", "status"}},
+				"regions": []any{
+					map[string]any{"id": "request_form", "role": "input", "placement": "left"},
+					map[string]any{"id": "approval_inbox", "role": "instance_list", "placement": "center"},
+					map[string]any{"id": "result_panel", "role": "output", "placement": "bottom"},
+				},
 			},
 			"governance_status":     "local_tested",
 			"governance_risk_level": "medium",
@@ -5567,6 +5575,16 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 					"artifact_count":            2,
 					"output_count":              3,
 					"primary_result":            "approval_result",
+					"outputs": []any{
+						map[string]any{"kind": "table", "title": "Approval rows", "text": "expense approved", "status": "ready", "data": map[string]any{"rows": []any{map[string]any{"id": "expense-1", "status": "finance_approved"}}}},
+						map[string]any{"kind": "business_record", "title": "Expense record", "text": "expense-1", "status": "ready"},
+						map[string]any{"kind": "document", "title": "Approval PDF", "text": "approval.pdf", "status": "ready", "artifact_id": "artifact-expense-pdf"},
+					},
+					"artifacts": []any{
+						map[string]any{"id": "artifact-expense-evidence", "uri": "artifact://expense/evidence.zip", "name": "expense-approval-evidence.zip", "status": "ready"},
+						map[string]any{"id": "artifact-expense-pdf", "uri": "artifact://expense/approval.pdf", "name": "approval.pdf", "status": "ready"},
+					},
+					"approval_instance": map[string]any{"approval_id": "approval-remote-datasrv-1", "record_id": "expense-1", "status": "approved", "current_node": "expense.result_pack", "approval_instance_view_verified": true},
 					"result_payload": map[string]any{
 						"decision":        "approved",
 						"business_status": "finance_approved",
@@ -5635,6 +5653,12 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if installed.Metadata["workspace_layout_entry"] != "approval_workspace" || installed.Metadata["workspace_layout_template"] != "classic_split" || installed.Metadata["governance_status"] != "local_tested" {
 		t.Fatalf("app installation should persist app layout and governance metadata: %#v", installed.Metadata)
 	}
+	if installed.Metadata["workspace_layout_primary_region"] != "left" || installed.Metadata["workspace_layout_output_region"] != "bottom" || installed.Metadata["workspace_layout_region_count"] != float64(3) {
+		t.Fatalf("app installation should expose workspace placement summaries: %#v", installed.Metadata)
+	}
+	if regionIDs := appInstallationStringList(installed.Metadata["workspace_layout_region_ids"]); len(regionIDs) != 3 || regionIDs[0] != "request_form" || regionIDs[2] != "result_panel" {
+		t.Fatalf("app installation should expose workspace region ids: %#v", installed.Metadata)
+	}
 	if navigation := appInstallationStringList(installed.Metadata["workspace_layout_navigation"]); len(navigation) != 3 || navigation[1] != "pending_my_approval" {
 		t.Fatalf("app installation should persist workspace navigation metadata: %#v", installed.Metadata)
 	}
@@ -5669,6 +5693,19 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if payload, ok := testEvidence["result_payload"].(map[string]any); !ok || payload["decision"] != "approved" || payload["business_status"] != "finance_approved" {
 		t.Fatalf("app installation should preserve structured test evidence payload: %#v", testEvidence)
+	}
+	if outputs, ok := testEvidence["outputs"].([]any); !ok || len(outputs) != 3 {
+		t.Fatalf("app installation should preserve full test evidence outputs: %#v", testEvidence)
+	}
+	if artifacts, ok := testEvidence["artifacts"].([]any); !ok || len(artifacts) != 2 {
+		t.Fatalf("app installation should preserve full test evidence artifacts: %#v", testEvidence)
+	}
+	approvalInstance, ok := testEvidence["approval_instance"].(map[string]any)
+	if !ok || approvalInstance["approval_id"] != "approval-remote-datasrv-1" || approvalInstance["record_id"] != "expense-1" || approvalInstance["status"] != "approved" {
+		t.Fatalf("app installation should preserve approval instance evidence: %#v", testEvidence)
+	}
+	if installed.Metadata["test_evidence_approval_id"] != "approval-remote-datasrv-1" || installed.Metadata["test_evidence_record_id"] != "expense-1" || installed.Metadata["test_evidence_approval_status"] != "approved" || installed.Metadata["test_evidence_approval_view_verified"] != true {
+		t.Fatalf("app installation should expose approval instance summaries: %#v", installed.Metadata)
 	}
 	workflowMapping, ok := installed.Metadata["workflow_mapping"].(map[string]any)
 	if !ok || workflowMapping["schema"] != "maclaw.app.workflow.v1" || workflowMapping["approvalNode"] != "finance.director_review" {
@@ -5798,6 +5835,12 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if columns := appInstallationStringList(caps.AppInstallations[0].Metadata["workspace_layout_list_columns"]); len(columns) != 4 || columns[2] != "current_node" {
 		t.Fatalf("capabilities should expose workspace list column metadata: %#v", caps.AppInstallations[0].Metadata)
 	}
+	if caps.AppInstallations[0].Metadata["workspace_layout_primary_region"] != "left" || caps.AppInstallations[0].Metadata["workspace_layout_output_region"] != "bottom" || caps.AppInstallations[0].Metadata["workspace_layout_region_count"] != float64(3) {
+		t.Fatalf("capabilities should expose workspace placement metadata: %#v", caps.AppInstallations[0].Metadata)
+	}
+	if regionIDs := appInstallationStringList(caps.AppInstallations[0].Metadata["workspace_layout_region_ids"]); len(regionIDs) != 3 || regionIDs[1] != "approval_inbox" {
+		t.Fatalf("capabilities should expose workspace region ids: %#v", caps.AppInstallations[0].Metadata)
+	}
 	if caps.AppInstallations[0].Metadata["app_entry_version"] != "1.2.3" || caps.AppInstallations[0].Metadata["app_skill_version"] != "1.0.0" {
 		t.Fatalf("capabilities should expose version snapshot summaries: %#v", caps.AppInstallations[0].Metadata)
 	}
@@ -5806,6 +5849,9 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if caps.AppInstallations[0].Metadata["test_evidence_result_coverage_ok"] != true || caps.AppInstallations[0].Metadata["test_evidence_dependency_count"] != float64(2) || caps.AppInstallations[0].Metadata["test_evidence_governance_review_issue"] != false {
 		t.Fatalf("capabilities should expose governance verification summaries: %#v", caps.AppInstallations[0].Metadata)
+	}
+	if caps.AppInstallations[0].Metadata["test_evidence_approval_id"] != "approval-remote-datasrv-1" || caps.AppInstallations[0].Metadata["test_evidence_record_id"] != "expense-1" || caps.AppInstallations[0].Metadata["test_evidence_approval_status"] != "approved" {
+		t.Fatalf("capabilities should expose approval instance summaries: %#v", caps.AppInstallations[0].Metadata)
 	}
 	if caps.AppInstallations[0].Metadata["workflow_contract_skill_id"] != "skill.expense.approval" || caps.AppInstallations[0].Metadata["workflow_contract_object_role"] != "expense_report" {
 		t.Fatalf("capabilities should expose workflow contract summaries: %#v", caps.AppInstallations[0].Metadata)
@@ -5830,6 +5876,12 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if metadata["workspace_layout_entry"] != "approval_workspace" || metadata["workspace_layout_template"] != "classic_split" || metadata["workspace_layout_density"] != "comfortable" || metadata["governance_status"] != "local_tested" || metadata["governance_risk_level"] != "medium" {
 		t.Fatalf("app installation audit should summarize layout and governance: %#v", metadata)
+	}
+	if metadata["workspace_layout_primary_region"] != "left" || metadata["workspace_layout_output_region"] != "bottom" || metadata["workspace_layout_region_count"] != float64(3) {
+		t.Fatalf("app installation audit should summarize layout placement: %#v", metadata)
+	}
+	if regionIDs := appInstallationStringList(metadata["workspace_layout_region_ids"]); len(regionIDs) != 3 || regionIDs[0] != "request_form" || regionIDs[2] != "result_panel" {
+		t.Fatalf("app installation audit should summarize layout region ids: %#v", metadata)
 	}
 	if metadata["app_entry_version"] != "1.2.3" || metadata["app_skill_version"] != "1.0.0" {
 		t.Fatalf("app installation audit should summarize version snapshot: %#v", metadata)
@@ -5865,6 +5917,9 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if metadata["test_evidence_result_coverage_ok"] != true || metadata["test_evidence_dependency_verified_at"] != "2026-06-21T10:59:00Z" || metadata["test_evidence_dependency_count"] != float64(2) || metadata["test_evidence_workflow_contract_issue"] != false || metadata["test_evidence_governance_review_issue"] != false || metadata["test_evidence_governance_review_issue_count"] != float64(0) {
 		t.Fatalf("app installation audit should summarize test coverage and dependency verification: %#v", metadata)
+	}
+	if metadata["test_evidence_approval_id"] != "approval-remote-datasrv-1" || metadata["test_evidence_record_id"] != "expense-1" || metadata["test_evidence_approval_status"] != "approved" || metadata["test_evidence_approval_view_verified"] != true {
+		t.Fatalf("app installation audit should summarize approval instance evidence: %#v", metadata)
 	}
 	if _, ok := metadata["test_evidence_result_payload"]; ok {
 		t.Fatalf("app installation audit should omit bulky test evidence payload: %#v", metadata)

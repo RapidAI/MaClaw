@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArchiveProject, ForkRecentTask, GetArchivedExperience, GetProjectScene, HideTask, OpenFileOrShowInFolder, PinTask, RenameTask, ResumeProject, SearchProjects } from "../../../wailsjs/go/main/App";
+import { ArchiveProject, GetArchivedExperience, GetProjectScene, HideTask, OpenFileOrShowInFolder, PinTask, RenameTask, ResumeTask, SearchTasks } from "../../../wailsjs/go/main/App";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { localizeText } from "./aiAssistantI18n";
 import { ProjectSearchArchivedPanel } from "./ProjectSearchArchivedPanel";
@@ -54,7 +54,7 @@ export function useProjectSearch(lang: string) {
 
     const doSearch = useCallback((q: string) => {
         setLoading(true);
-        SearchProjects(q, 10)
+        SearchTasks(q, 20)
             .then(r => setResults(((r || []) as ProjectSearchItem[]).filter(item => item.has_output !== false)))
             .catch(() => setResults([]))
             .finally(() => setLoading(false));
@@ -162,19 +162,13 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
         if (item.archived) { await openArchived(item); return; }
         search.close();
         try {
-            const forked = await ForkRecentTask(item.project_path);
-            const forkedPath = forked?.project_path || "";
-            if (!forkedPath) {
-                console.warn("[ProjectSearch] task fork returned empty path", { sourcePath: item.project_path });
-                return;
-            }
-            const title = forked?.name || item.name || item.project_path;
+            const title = item.name || item.project_path;
             const autoSend = false;
-            console.info("[ProjectSearch] opened task fork", { sourcePath: item.project_path, forkedPath, name: title, autoSend });
-            if (onCreateProjectTab) { onCreateProjectTab(forkedPath, title, { autoSend }); return; }
-            const msg = await ResumeProject(forkedPath);
+            console.info("[ProjectSearch] opened task", { taskPath: item.project_path, name: title, autoSend });
+            if (onCreateProjectTab) { onCreateProjectTab(item.project_path, title, { autoSend }); return; }
+            const msg = await ResumeTask(item.project_path);
             if (msg) await onProjectSwitch(msg);
-        } catch (error) { console.error("[ProjectSearch] open forked task failed:", error); }
+        } catch (error) { console.error("[ProjectSearch] open task failed:", error); }
     }, [renamingPath, openArchived, search, onCreateProjectTab, onProjectSwitch]);
 
     if (!search.open && !archivedExperience) return null;
@@ -200,7 +194,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
             <ProjectSearchForkForm open={forkNameOpen} lang={lang} theme={t} onCancel={() => setForkNameOpen(false)} onSubmit={name => { setForkNameOpen(false); search.close(); onForkCurrentChat?.(name); }} />
             <div style={{ maxHeight: "320px", overflowY: "auto", padding: "0 4px 4px" }}>
                 {search.loading && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{localizeText(lang, "Searching...", "\u641c\u7d22\u4e2d...")}</div>}
-                {!search.loading && visibleResults.length === 0 && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query ? localizeText(lang, "No tasks found", "\u672a\u627e\u5230\u4efb\u52a1") : localizeText(lang, "No recent tasks", "\u6682\u65e0\u6700\u8fd1\u4efb\u52a1")}</div>}
+                {!search.loading && visibleResults.length === 0 && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query ? localizeText(lang, "No tasks found", "\u672a\u627e\u5230\u4efb\u52a1") : localizeText(lang, "No tasks", "\u6682\u65e0\u4efb\u52a1")}</div>}
                 {!search.loading && visibleResults.map(item => <ProjectSearchRow key={item.id || item.project_path} item={item} lang={lang} theme={t} search={search} renamingPath={renamingPath} renameVal={renameVal} setRenameVal={setRenameVal} setRenamingPath={setRenamingPath} onSelect={onSelect} onShowSceneDetail={openSceneDetail} sceneLoading={sceneLoadingPath === item.project_path} refreshResults={refreshResults} setCtxMenu={setCtxMenu} />)}
             </div>
             {(sceneLoadingPath || sceneDetail) && <ProjectSceneDetailPanel detail={sceneDetail} loading={!!sceneLoadingPath} lang={lang} theme={t} formatTime={search.formatTime} onClose={() => setSceneDetail(null)} />}

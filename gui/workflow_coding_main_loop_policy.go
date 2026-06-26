@@ -77,6 +77,33 @@ func (h *IMMessageHandler) activeWorkflowPhaseFromEngine(policyUserID string) (*
 	if state == nil {
 		return nil, nil
 	}
+	// Use the engine registry as the canonical source for phase semantics.
+	// It preserves normalized metadata such as Kind and MutationScope, which
+	// some runtime policy checks depend on for artifact-generation phases.
+	if h.app.workflowEngine != nil {
+		if registry := h.app.workflowEngine.GetRegistry(); registry != nil {
+			if tmpl := registry.Match(v2.WorkflowType(v2State.Type)); tmpl != nil {
+				metaByID := make(map[string]v2.PhaseMeta, len(tmpl.Phases))
+				for _, meta := range v2.PhaseMetadata(tmpl) {
+					metaByID[meta.ID] = meta
+				}
+				for i := range tmpl.Phases {
+					if tmpl.Phases[i].ID == state.CurrentPhase {
+						ps := tmpl.Phases[i]
+						if meta, ok := metaByID[ps.ID]; ok {
+							if ps.Kind == "" {
+								ps.Kind = meta.Kind
+							}
+							if ps.MutationScope == "" {
+								ps.MutationScope = meta.MutationScope
+							}
+						}
+						return state, &ps
+					}
+				}
+			}
+		}
+	}
 	if wf.registry == nil {
 		return state, nil
 	}
@@ -87,10 +114,12 @@ func (h *IMMessageHandler) activeWorkflowPhaseFromEngine(policyUserID string) (*
 	for i := range tmpl.Phases {
 		if tmpl.Phases[i].ID == state.CurrentPhase {
 			ps := v2.PhaseSpec{
-				ID:           tmpl.Phases[i].ID,
-				Name:         tmpl.Phases[i].Name,
-				NeedsConfirm: tmpl.Phases[i].NeedsConfirm,
-				ToolPolicy:   v2.ToolFilterPolicy(tmpl.Phases[i].ToolPolicy),
+				ID:            tmpl.Phases[i].ID,
+				Name:          tmpl.Phases[i].Name,
+				NeedsConfirm:  tmpl.Phases[i].NeedsConfirm,
+				ToolPolicy:    v2.ToolFilterPolicy(tmpl.Phases[i].ToolPolicy),
+				Kind:          tmpl.Phases[i].Kind,
+				MutationScope: tmpl.Phases[i].MutationScope,
 			}
 			return state, &ps
 		}
@@ -131,13 +160,16 @@ func filterCodingWorkflowImplementationMainLoopTools(tools []map[string]interfac
 }
 
 var workflowArtifactPhaseAllowedTools = map[string]bool{
-	"generate_pdf": true,
-	"office":       true,
-	"read_file":    true,
-	"send_file":    true,
-	"web_fetch":    true,
-	"web_search":   true,
-	"write_file":   true,
+	"craft_tool":               true,
+	"generate_pdf":             true,
+	"manage_skill":             true,
+	"office":                   true,
+	"read_file":                true,
+	"search_and_install_skill": true,
+	"send_file":                true,
+	"web_fetch":                true,
+	"web_search":               true,
+	"write_file":               true,
 }
 
 func isWorkflowArtifactPhaseToolAllowed(name string) bool {
@@ -158,7 +190,15 @@ func filterWorkflowArtifactPhaseTools(tools []map[string]interface{}) []map[stri
 }
 
 func workflowArtifactPhaseRequiredTools() []string {
-	return []string{"write_file", "office", "generate_pdf", "send_file"}
+	return []string{
+		"write_file",
+		"manage_skill",
+		"search_and_install_skill",
+		"craft_tool",
+		"office",
+		"generate_pdf",
+		"send_file",
+	}
 }
 
 func (h *IMMessageHandler) isWorkflowArtifactPhase(policyUserID string) bool {
@@ -179,6 +219,10 @@ func validateWorkflowArtifactPhaseToolCall(name string, args map[string]interfac
 		path = firstNonEmptyStringValue(args, "file_path", "path", "output")
 	case "web_fetch":
 		path = firstNonEmptyStringValue(args, "save_path", "output")
+	case "craft_tool":
+		if text := firstNonEmptyStringValue(args, "task", "instructions", "description", "user_prompt"); text != "" && containsWorkflowProjectMutationReference(text) {
+			return "artifact workflow phase cannot craft tools that mutate source/project paths"
+		}
 	}
 	if path != "" && isWorkflowProjectMutationPath(path) {
 		return "artifact workflow phase cannot write into source/project paths"
@@ -209,6 +253,46 @@ func isWorkflowProjectMutationPath(path string) bool {
 		}
 	}
 	return false
+}
+
+func containsWorkflowProjectMutationReference(text string) bool {
+	if !workflowTextHasProjectMutationIntent(text) {
+		return false
+	}
+	for _, token := range workflowMutationReferenceTokens(text) {
+		if isWorkflowProjectMutationPath(token) {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowTextHasProjectMutationIntent(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	for _, marker := range []string{
+		"write", "modify", "update", "edit", "patch", "refactor", "overwrite", "save", "create",
+		"写", "写入", "修改", "更新", "编辑", "补丁", "重构", "覆盖", "保存", "创建", "新建",
+	} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowMutationReferenceTokens(text string) []string {
+	fields := strings.FieldsFunc(strings.ToLower(strings.ReplaceAll(text, "\\", "/")), func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' || r == '/')
+	})
+	tokens := make([]string, 0, len(fields))
+	for _, field := range fields {
+		token := strings.Trim(strings.TrimSpace(field), `"'“”‘’()[]{}<>，。！？；：、,;:`)
+		token = strings.TrimPrefix(token, "./")
+		if token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	return tokens
 }
 
 func specializeCodingWorkflowImplementationMainLoopTools(tools []map[string]interface{}) []map[string]interface{} {

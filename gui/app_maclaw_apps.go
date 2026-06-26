@@ -1643,7 +1643,7 @@ func (a *App) listMaclawAppApprovalInstancesFromDataSrv(appID string, lane strin
 	}
 	out := make([]maclawAppApprovalInstance, 0, len(body.Items))
 	for _, item := range body.Items {
-		instance := maclawAppApprovalInstanceFromRecordApproval(item, lane)
+		instance := maclawAppApprovalInstanceFromRecordApproval(item, lane, cfg.UserID)
 		if instance.AppID == "" && appID != "" {
 			instance.AppID = appID
 		}
@@ -1655,12 +1655,12 @@ func (a *App) listMaclawAppApprovalInstancesFromDataSrv(appID string, lane strin
 	return out, nil
 }
 
-func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, requestedLane string) maclawAppApprovalInstance {
+func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, requestedLane string, currentUserID string) maclawAppApprovalInstance {
 	request := cloneMapAny(item.Request)
 	resultPayload := cloneMapAny(item.ResultPayload)
 	instanceID := firstNonEmptyMaclawAppString(item.WorkflowInstanceID, stringMapValue(request, "approval_instance_id"), item.ID)
 	status := normalizeMaclawAppApprovalStatusForRecordApproval(item)
-	lane := normalizeMaclawAppApprovalLaneForRecordApproval(item, requestedLane, status)
+	lane := normalizeMaclawAppApprovalLaneForRecordApproval(item, requestedLane, status, currentUserID)
 	result := firstNonEmptyMaclawAppString(item.Reason, stringMapValue(resultPayload, "text"), stringMapValue(resultPayload, "summary"), item.ResultStatus, item.BusinessStatus, status)
 	instance := maclawAppApprovalInstance{
 		AppID:               firstNonEmptyMaclawAppString(item.AppID, stringMapValue(request, "app_id")),
@@ -1675,8 +1675,8 @@ func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, r
 		Status:              status,
 		CurrentNode:         item.WorkflowNodeID,
 		CurrentNodeIDs:      append([]string(nil), item.WorkflowNodeIDs...),
-		Owner:               firstNonEmptyMaclawAppString(item.CreatedBy, stringMapValue(request, "owner"), stringMapValue(request, "applicant")),
-		Applicant:           firstNonEmptyMaclawAppString(stringMapValue(request, "applicant"), item.CreatedBy),
+		Owner:               firstNonEmptyMaclawAppString(item.SubmittedBy, item.CreatedBy, stringMapValue(request, "owner"), stringMapValue(request, "applicant")),
+		Applicant:           firstNonEmptyMaclawAppString(stringMapValue(request, "applicant"), item.SubmittedBy, item.CreatedBy),
 		Approver:            firstNonEmptyMaclawAppString(item.AssignedTo, item.ReviewedBy),
 		CurrentAssignee:     item.CurrentAssignee,
 		CurrentAssigneeType: item.CurrentAssigneeType,
@@ -1708,12 +1708,29 @@ func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, r
 	return normalizeMaclawAppApprovalInstanceFields(instance)
 }
 
-func normalizeMaclawAppApprovalLaneForRecordApproval(item contract.RecordApproval, requestedLane string, status string) string {
+func normalizeMaclawAppApprovalLaneForRecordApproval(item contract.RecordApproval, requestedLane string, status string, currentUserID string) string {
 	if lane := normalizeMaclawAppApprovalLaneFilter(requestedLane); lane != "" && lane != "all" {
+		return lane
+	}
+	request := cloneMapAny(item.Request)
+	if lane := normalizeMaclawAppApprovalLaneFilter(firstNonEmptyMaclawAppString(stringMapValue(request, "lane"), stringMapValue(request, "approval_lane"), stringMapValue(request, "approvalLane"))); lane != "" && lane != "all" {
 		return lane
 	}
 	if strings.TrimSpace(item.Kind) == "attention" || strings.TrimSpace(item.BusinessStatus) == "attention" || strings.TrimSpace(item.ResultStatus) == "attention" || status == "attention" {
 		return "attention"
+	}
+	currentUserID = strings.TrimSpace(currentUserID)
+	if currentUserID != "" {
+		submitter := firstNonEmptyMaclawAppString(item.SubmittedBy, item.CreatedBy, stringMapValue(request, "submitted_by"), stringMapValue(request, "owner"), stringMapValue(request, "applicant"))
+		if maclawAppApprovalActorMatches(currentUserID, submitter) {
+			return "my_requests"
+		}
+		if status == "pending" && (maclawAppApprovalActorMatches(currentUserID, item.AssignedTo) || maclawAppApprovalActorMatches(currentUserID, item.CurrentAssignee)) {
+			return "pending_my_approval"
+		}
+		if maclawAppApprovalActorMatches(currentUserID, item.ReviewedBy) {
+			return "handled"
+		}
 	}
 	switch status {
 	case "approved", "rejected", "cancelled", "timeout":
@@ -1721,6 +1738,12 @@ func normalizeMaclawAppApprovalLaneForRecordApproval(item contract.RecordApprova
 	default:
 		return "pending_my_approval"
 	}
+}
+
+func maclawAppApprovalActorMatches(currentUserID string, actor string) bool {
+	currentUserID = strings.ToLower(strings.TrimSpace(currentUserID))
+	actor = strings.ToLower(strings.TrimSpace(actor))
+	return currentUserID != "" && actor != "" && currentUserID == actor
 }
 
 func maclawAppApprovalOutputsFromRecordApprovals(outputs []contract.RecordApprovalOutput) []maclawAppApprovalOutput {
@@ -2698,6 +2721,21 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 				}
 			}
 		}
+		if dependencyVerification := maclawAppDependencyVerificationMetadataForEntry(entry, dependencies); dependencyVerification != nil {
+			metadata["dependency_verification"] = dependencyVerification
+			if verifiedAt := maclawAppStringValue(dependencyVerification, "verifiedAt", "verified_at"); verifiedAt != "" {
+				metadata["test_evidence_dependency_verified_at"] = verifiedAt
+			}
+			if count, ok := maclawAppNumberFromAny(firstNonEmptyMaclawAppAny(dependencyVerification["dependencyCount"], dependencyVerification["dependency_count"])); ok {
+				metadata["test_evidence_dependency_count"] = int(math.Floor(count))
+			}
+			if missing, ok := firstNonEmptyMaclawAppAny(dependencyVerification["hasMissingRequired"], dependencyVerification["has_missing_required"]).(bool); ok {
+				metadata["test_evidence_dependency_missing_required"] = missing
+			}
+			if blocked, ok := firstNonEmptyMaclawAppAny(dependencyVerification["hasBlockingDependency"], dependencyVerification["has_blocking_dependency"]).(bool); ok {
+				metadata["test_evidence_dependency_blocking"] = blocked
+			}
+		}
 		appDependencies := cloneMaclawAppPlanDependenciesForApp(dependencies, entry.ID)
 		if len(appDependencies) > 0 {
 			metadata["dependencies"] = appDependencies
@@ -2721,6 +2759,25 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 	return payloads
 }
 
+func maclawAppDependencyVerificationMetadataForEntry(entry parsedMaclawAppEntry, dependencies []maclawAppInstallPlanDependency) map[string]interface{} {
+	if governance := maclawAppGovernanceMetadataForEntry(entry); governance != nil {
+		if verification := anyMap(governance["dependency_verification"]); verification != nil {
+			return compactPayload(verification)
+		}
+	}
+	appDependencies := cloneMaclawAppPlanDependenciesForApp(dependencies, entry.ID)
+	if len(appDependencies) == 0 {
+		return nil
+	}
+	return compactPayload(map[string]interface{}{
+		"schema":                  "maclaw.app.install_plan.v1",
+		"app_count":               1,
+		"dependency_count":        len(appDependencies),
+		"has_missing_required":    hasMissingMaclawAppRequiredDependencyForApp(dependencies, entry.ID),
+		"has_blocking_dependency": hasBlockingMaclawAppRequiredDependencyForApp(dependencies, entry.ID),
+		"dependencies":            appDependencies,
+	})
+}
 func maclawAppWorkspaceLayoutMetadataForEntry(entry parsedMaclawAppEntry) map[string]interface{} {
 	var ui map[string]any
 	for _, holder := range maclawAppBindingHolders(entry) {
@@ -3489,6 +3546,9 @@ func maclawAppGovernanceReviewIssuesFromPackage(pkg map[string]any) []maclawAppR
 		if issue := maclawAppTestProtocolReviewIssue(governance, path); issue != nil {
 			issues = append(issues, *issue)
 		}
+		if issue := maclawAppApprovalInstanceTestEvidenceReviewIssue(entry, governance, path); issue != nil {
+			issues = append(issues, *issue)
+		}
 		if issue := maclawAppDependencyVerificationReviewIssue(entry, governance, path); issue != nil {
 			issues = append(issues, *issue)
 		}
@@ -3829,6 +3889,81 @@ func maclawAppTestProtocolReviewIssue(governance map[string]any, appPath string)
 	return nil
 }
 
+func maclawAppApprovalInstanceTestEvidenceReviewIssue(entry parsedMaclawAppEntry, governance map[string]any, appPath string) *maclawAppReviewIssue {
+	if normalizeMaclawAppKind(entry.Kind) != "enterprise_approval_app" || governance == nil || !maclawAppHasPublishableTestEvidence(governance) {
+		return nil
+	}
+	testEvidence := maclawAppTestEvidenceMap(governance)
+	if testEvidence == nil {
+		return nil
+	}
+	instance := anyMap(firstNonEmptyMaclawAppAny(testEvidence["approvalInstance"], testEvidence["approval_instance"], testEvidence["approval"]))
+	instanceID := firstNonEmptyMaclawAppString(
+		maclawAppStringValue(instance, "instanceId", "instance_id", "approvalInstanceId", "approval_instance_id", "workflowInstanceId", "workflow_instance_id"),
+		maclawAppStringValue(testEvidence, "approvalInstanceId", "approval_instance_id", "workflowInstanceId", "workflow_instance_id"),
+	)
+	if instanceID == "" {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.approvalInstance", Severity: "error", Message: "approval app test evidence is missing a created approval instance", Suggestion: "run the approval app in App Studio, create a test approval instance, and save its approval_instance_id in test evidence"}
+	}
+	status := firstNonEmptyMaclawAppString(
+		maclawAppStringValue(instance, "status", "approvalStatus", "approval_status", "resultStatus", "result_status"),
+		maclawAppStringValue(testEvidence, "approvalStatus", "approval_status", "resultStatus", "result_status"),
+	)
+	if status == "" {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.approvalInstance.status", Severity: "error", Message: "approval app test evidence is missing approval instance status", Suggestion: "save the status observed from the approval instance view after the App Studio test run"}
+	}
+	if currentNode := maclawAppStringValue(instance, "currentNode", "current_node"); currentNode == "" {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.approvalInstance.currentNode", Severity: "error", Message: "approval app test evidence is missing the current workflow node", Suggestion: "save the final current_node observed from the approval workflow instance after the App Studio test run"}
+	}
+	if workflowSkillID := maclawAppStringValue(instance, "workflowSkillId", "workflow_skill_id", "workflowId", "workflow_id"); workflowSkillID == "" {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.approvalInstance.workflowSkillId", Severity: "error", Message: "approval app test evidence is missing the workflow Skill id", Suggestion: "save workflowSkillId/workflow_skill_id in approvalInstance evidence so the market can verify the approval workflow dependency"}
+	}
+	if resultStatus := firstNonEmptyMaclawAppString(maclawAppStringValue(instance, "resultStatus", "result_status"), maclawAppStringValue(instance, "businessStatus", "business_status")); resultStatus == "" {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.approvalInstance.resultStatus", Severity: "error", Message: "approval app test evidence is missing business/result status", Suggestion: "save businessStatus/resultStatus from the completed approval workflow instance"}
+	}
+	if !maclawAppApprovalInstanceHasResultPackage(instance) {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.approvalInstance.resultPayload", Severity: "error", Message: "approval app test evidence is missing the approval result package", Suggestion: "save resultPayload or outputs on approvalInstance after the approval workflow completes and DataSrv sync has been attempted"}
+	}
+	if !maclawAppApprovalInstanceViewVerified(testEvidence, instance) {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.approvalViews", Severity: "error", Message: "approval app test evidence has not verified the approval instance view", Suggestion: "open the generated approval app instance list and save view verification for my_requests, pending_my_approval, handled, or attention"}
+	}
+	return nil
+}
+
+func maclawAppApprovalInstanceHasResultPackage(instance map[string]any) bool {
+	if instance == nil {
+		return false
+	}
+	if payload := anyMap(firstNonEmptyMaclawAppAny(instance["resultPayload"], instance["result_payload"])); len(payload) > 0 {
+		return true
+	}
+	if outputs := anySlice(instance["outputs"]); len(outputs) > 0 {
+		return true
+	}
+	if artifacts := anySlice(instance["artifacts"]); len(artifacts) > 0 {
+		return true
+	}
+	return false
+}
+
+func maclawAppApprovalInstanceViewVerified(testEvidence map[string]any, instance map[string]any) bool {
+	if maclawAppBoolValue(testEvidence, "approvalInstanceViewVerified", "approval_instance_view_verified", "approvalViewVerified", "approval_view_verified") || maclawAppBoolValue(instance, "viewVerified", "view_verified") {
+		return true
+	}
+	views := anyMap(firstNonEmptyMaclawAppAny(testEvidence["approvalViews"], testEvidence["approval_views"], testEvidence["instanceViews"], testEvidence["instance_views"], instance["views"]))
+	if views == nil {
+		return false
+	}
+	if maclawAppBoolValue(views, "verified", "ok") {
+		return true
+	}
+	for _, lane := range []string{"my_requests", "pending_my_approval", "handled", "attention"} {
+		if value, ok := views[lane]; ok && value != nil {
+			return true
+		}
+	}
+	return false
+}
 func maclawAppTestEvidenceMap(governance map[string]any) map[string]any {
 	if governance == nil {
 		return nil
@@ -3988,7 +4123,7 @@ func maclawAppVerifiedDependencyBlocked(dep map[string]any) bool {
 }
 
 func maclawAppDefinitionHashReviewIssue(entry parsedMaclawAppEntry, governance map[string]any, appPath string) *maclawAppReviewIssue {
-	if governance == nil {
+	if governance == nil || !maclawAppHasPublishableTestEvidence(governance) {
 		return nil
 	}
 	testEvidence := anyMap(governance["testEvidence"])
@@ -4000,7 +4135,7 @@ func maclawAppDefinitionHashReviewIssue(entry parsedMaclawAppEntry, governance m
 	}
 	declared := strings.TrimSpace(maclawAppStringValue(testEvidence, "definitionHash", "definition_hash", "definitionFingerprint", "definition_fingerprint"))
 	if declared == "" {
-		return nil
+		return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.definitionHash", Severity: "error", Message: "run evidence is missing the current app definition hash", Suggestion: "run the current app definition again before submitting to the capability market"}
 	}
 	computed := maclawAppDefinitionFingerprintForEntry(entry)
 	if computed == "" || declared == computed {

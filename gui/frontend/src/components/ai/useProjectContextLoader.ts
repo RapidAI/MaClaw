@@ -39,7 +39,8 @@ function looksLikeTechnicalSource(value: string): boolean {
         || text.includes(".maclaw")
         || text.includes("read_file")
         || text.startsWith("Source task:")
-        || text === "Forked from recent task.";
+        || text === "Forked from recent task."
+        || text === "Opened from task management.";
 }
 
 function simplifyProjectProgress(value?: string): string {

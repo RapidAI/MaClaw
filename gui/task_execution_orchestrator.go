@@ -109,6 +109,7 @@ type TaskItem struct {
 	RetryCount         int
 	SessionID          string // session used for this task
 	ErrorSummary       string
+	ResultSummary      string       // compact passed SubAgent summary for downstream task context
 	ExecMode           TaskExecMode // resolved per-task at execution time
 }
 
@@ -447,6 +448,13 @@ func updateTaskActualArtifacts(task *TaskItem, filesModified, filesCreated []str
 	}
 }
 
+func updateTaskResultSummary(task *TaskItem, summary string) {
+	if task == nil {
+		return
+	}
+	task.ResultSummary = compactSubAgentReportSummary(summary)
+}
+
 // RecordTaskActualArtifactsForRun records files for a task if the run token is still current.
 func (o *TaskExecutionOrchestrator) RecordTaskActualArtifactsForRun(task *TaskItem, runID int, filesModified, filesCreated []string) bool {
 	o.mu.Lock()
@@ -519,6 +527,16 @@ func (o *TaskExecutionOrchestrator) IsTaskTerminalForRun(task *TaskItem, runID i
 func (o *TaskExecutionOrchestrator) IsTaskTerminal(task *TaskItem) bool {
 	status, ok := o.TaskStatus(task)
 	return ok && isTerminalTaskStatus(status)
+}
+
+func (o *TaskExecutionOrchestrator) RecordTaskResultSummaryForRun(task *TaskItem, runID int, summary string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return false
+	}
+	updateTaskResultSummary(task, summary)
+	return true
 }
 
 // MarkTaskStatusForRun updates a task only when the run token is still current.

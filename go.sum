@@ -2,6 +2,8 @@ github.com/UserExistsError/conpty v0.1.4 h1:+3FhJhiqhyEJa+K5qaK3/w6w+sN3Nh9O9VbJ
 github.com/UserExistsError/conpty v0.1.4/go.mod h1:PDglKIkX3O/2xVk0MV9a6bCWxRmPVfxqZoTG/5sSd9I=
 github.com/VantageDataChat/GoExcel v0.0.0-20260217221828-9e17ca484c06 h1:TijKfWVUM0qBuy+T6L7+WJPicLBasxgRYweEc83D7ss=
 github.com/VantageDataChat/GoExcel v0.0.0-20260217221828-9e17ca484c06/go.mod h1:7JSbDlEu3YX6CiGlNMWBgCYiK2xzvVIDPRKKeHwdezw=
+github.com/VantageDataChat/GoExcel v0.0.0-20260626231344-644ce957794e h1:fNkUxFEQblbzj0AtvG2Y/hQPKxYApZw09Io1evLto7E=
+github.com/VantageDataChat/GoExcel v0.0.0-20260626231344-644ce957794e/go.mod h1:7JSbDlEu3YX6CiGlNMWBgCYiK2xzvVIDPRKKeHwdezw=
 github.com/VantageDataChat/GoPDF2 v0.0.0-20260405225922-b95b4bfad327 h1:Hfs4wGc6QmvMBlBYKK6hmHNTAVNjTZuxmHsfxN/kxas=
 github.com/VantageDataChat/GoPDF2 v0.0.0-20260405225922-b95b4bfad327/go.mod h1:CeOlebFomt072IbNsPGa8Ys1WgNiag15q3q9McuKXB8=
 github.com/VantageDataChat/GoPPT v0.0.0-20260222023045-cf8c7d78702c h1:G0VZsxZgNIUm/f8hmGokKmgbF6SwilY6viTvhwi/azI=
