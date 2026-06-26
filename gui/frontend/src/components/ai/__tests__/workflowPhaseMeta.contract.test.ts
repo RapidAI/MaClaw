@@ -208,7 +208,7 @@ describe('Doc-expectation resolvers agree across board and auto-open in degraded
 });
 
 describe('Generated workflow phase contract metadata', () => {
-    it('marks coding implementation as project execution and artifact generation as non-orchestrated artifact work', () => {
+    it('marks coding implementation as project execution and PPT generation as non-orchestrated artifact work', () => {
         expect(generatedPhase('coding', 'implementation')).toMatchObject({
             kind: 'execution',
             toolPolicy: 'full',
@@ -217,13 +217,6 @@ describe('Generated workflow phase contract metadata', () => {
         });
 
         expect(generatedPhase('presentation_design', 'ppt_generation')).toMatchObject({
-            kind: 'artifact_generation',
-            toolPolicy: 'full',
-            mutationScope: 'artifact',
-            activatesOrchestrator: false,
-        });
-
-        expect(generatedPhase('business_plan', 'bp_doc_generation')).toMatchObject({
             kind: 'artifact_generation',
             toolPolicy: 'full',
             mutationScope: 'artifact',

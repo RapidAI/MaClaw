@@ -252,7 +252,7 @@ func (s *Service) Get(ctx context.Context, id string) (*CapabilitySummary, error
 	id = strings.TrimSpace(id)
 	tenantID := tenantIDFromContext(ctx)
 	var item CapabilitySummary
-	err := s.db.QueryRowContext(ctx, `SELECT tenant_id, id, capability_type, publisher, capability_id, display_name, description, source, managed_by, status, relation_to_origin, global_key, current_version_key, origin_key, metadata_json FROM capabilities WHERE tenant_id = ? AND (id = ? OR global_key = ?) LIMIT 1`, tenantID, id, id).Scan(&item.TenantID, &item.ID, &item.CapabilityType, &item.Publisher, &item.CapabilityID, &item.DisplayName, &item.Description, &item.Source, &item.ManagedBy, &item.Status, &item.RelationToOrigin, &item.GlobalKey, &item.CurrentVersionKey, &item.OriginKey, &item.MetadataJSON)
+	err := s.db.QueryRowContext(ctx, `SELECT tenant_id, id, capability_type, publisher, capability_id, display_name, description, source, managed_by, status, relation_to_origin, global_key, current_version_key, origin_key, metadata_json FROM capabilities WHERE tenant_id = ? AND (id = ? OR global_key = ? OR capability_id = ?) LIMIT 1`, tenantID, id, id, id).Scan(&item.TenantID, &item.ID, &item.CapabilityType, &item.Publisher, &item.CapabilityID, &item.DisplayName, &item.Description, &item.Source, &item.ManagedBy, &item.Status, &item.RelationToOrigin, &item.GlobalKey, &item.CurrentVersionKey, &item.OriginKey, &item.MetadataJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -367,7 +367,7 @@ func (s *Service) SetCapabilityStatus(ctx context.Context, id, status string) er
 		return errors.New("capability service is not configured")
 	}
 	tenantID := tenantIDFromContext(ctx)
-	res, err := s.db.ExecContext(ctx, `UPDATE capabilities SET status = ?, updated_at = ? WHERE tenant_id = ? AND (id = ? OR global_key = ?)`, strings.TrimSpace(status), time.Now().UTC().Format(time.RFC3339), tenantID, strings.TrimSpace(id), strings.TrimSpace(id))
+	res, err := s.db.ExecContext(ctx, `UPDATE capabilities SET status = ?, updated_at = ? WHERE tenant_id = ? AND (id = ? OR global_key = ? OR capability_id = ?)`, strings.TrimSpace(status), time.Now().UTC().Format(time.RFC3339), tenantID, strings.TrimSpace(id), strings.TrimSpace(id), strings.TrimSpace(id))
 	if err != nil {
 		return err
 	}
@@ -375,6 +375,50 @@ func (s *Service) SetCapabilityStatus(ctx context.Context, id, status string) er
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Service) ReviewCapabilityVersion(ctx context.Context, id, status, metadataJSON string) (*CapabilitySummary, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("capability service is not configured")
+	}
+	id = strings.TrimSpace(id)
+	status = strings.TrimSpace(status)
+	if id == "" || status == "" {
+		return nil, ErrNotFound
+	}
+	tenantID := tenantIDFromContext(ctx)
+	now := time.Now().UTC().Format(time.RFC3339)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var capabilityID, currentVersionKey string
+	err = tx.QueryRowContext(ctx, `SELECT id, current_version_key FROM capabilities WHERE tenant_id = ? AND (id = ? OR global_key = ? OR capability_id = ?) LIMIT 1`, tenantID, id, id, id).Scan(&capabilityID, &currentVersionKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(metadataJSON) == "" {
+		_, err = tx.ExecContext(ctx, `UPDATE capabilities SET status = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`, status, now, tenantID, capabilityID)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE capabilities SET status = ?, metadata_json = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`, status, metadataJSON, now, tenantID, capabilityID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if currentVersionKey != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE capability_versions SET status = ?, updated_at = ? WHERE tenant_id = ? AND version_key = ?`, status, now, tenantID, currentVersionKey); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, capabilityID)
 }
 
 func (s *Service) ListManagedDeployments(ctx context.Context) ([]Deployment, error) {

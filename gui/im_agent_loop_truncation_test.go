@@ -234,13 +234,13 @@ func TestTruncationFallbackCatalogUsesRuntimePolicyOwner(t *testing.T) {
 	for _, td := range got {
 		names[tool.ExtractToolName(td)] = true
 	}
-	if names["write_file"] || names["bash"] || !names["read_file"] {
+	if names["write_file"] || !names["bash"] || !names["read_file"] {
 		t.Fatalf("runtime owner workflow must drive truncation fallback catalog, got %v", names)
 	}
 }
 
 func TestBashTruncationKeepsBashAvailableAndAddsRecoveryHint(t *testing.T) {
-	if !classifyAgentToolKind("bash").IsTruncationBlockSafe() {
+	if !classifyAgentToolKind("bash").PreserveAfterTruncation() {
 		t.Fatal("bash should remain available; oversized payloads are handled by schema and pre-execution limits")
 	}
 
@@ -278,6 +278,49 @@ func TestBashTruncationKeepsBashAvailableAndAddsRecoveryHint(t *testing.T) {
 	hint, _ := result.Conversation[0].(map[string]string)
 	if !containsText(hint["content"], "bash only for short commands") {
 		t.Fatalf("expected bash recovery hint, got %#v", hint)
+	}
+}
+
+func TestWriteFileTruncationKeepsWriteFileAvailableAndAddsRecoveryHint(t *testing.T) {
+	if !classifyAgentToolKind("write_file").PreserveAfterTruncation() {
+		t.Fatal("write_file should remain available; completed large content is handled by the backend")
+	}
+
+	phase := &agentLoopPhase{}
+	tools := []map[string]interface{}{
+		toolDef("write_file", "write", nil, nil),
+		toolDef("read_file", "read", nil, nil),
+	}
+	recorded := false
+	result := (&IMMessageHandler{}).handleAgentLoopTruncatedToolCalls(
+		7,
+		llm.Choice{TruncatedToolNames: []string{"write_file"}},
+		phase,
+		nil,
+		tools,
+		tools,
+		func(int, []interface{}) { recorded = true },
+	)
+
+	if !result.ContinueLoop {
+		t.Fatal("expected loop to continue after write_file truncation hint")
+	}
+	if phase.TruncationBlockedTools["write_file"] {
+		t.Fatalf("write_file should not be marked blocked after truncation: %#v", phase.TruncationBlockedTools)
+	}
+	names := map[string]bool{}
+	for _, td := range result.Tools {
+		names[tool.ExtractToolName(td)] = true
+	}
+	if !names["write_file"] || !names["read_file"] {
+		t.Fatalf("write_file/read_file should remain available: %v", names)
+	}
+	if !recorded || len(result.Conversation) != 1 {
+		t.Fatalf("expected write_file recovery hint, recorded=%v conversation=%#v", recorded, result.Conversation)
+	}
+	hint, _ := result.Conversation[0].(map[string]string)
+	if !containsText(hint["content"], "complete JSON object") || !containsText(hint["content"], "overwrite/append") {
+		t.Fatalf("write_file hint should guide complete/chunked JSON, got %#v", hint)
 	}
 }
 
@@ -328,7 +371,7 @@ func TestHandleTruncatedToolCallsDoesNotBlockRepeatedBashTruncation(t *testing.T
 }
 
 func TestHandleTruncatedToolCallsDoesNotBlockDelegateTaskHandoff(t *testing.T) {
-	if !classifyAgentToolKind("delegate_task").IsTruncationBlockSafe() {
+	if !classifyAgentToolKind("delegate_task").PreserveAfterTruncation() {
 		t.Fatal("delegate_task should remain available; coding implementation depends on this handoff tool")
 	}
 
@@ -398,7 +441,7 @@ func TestRepeatedEssentialTruncationFallsThroughAfterOneHint(t *testing.T) {
 	}
 }
 
-func TestMixedEssentialAndBlockableTruncationBlocksOnlyBlockableTool(t *testing.T) {
+func TestMixedEssentialTruncationKeepsBashAndWriteFileAvailable(t *testing.T) {
 	phase := &agentLoopPhase{TruncationRetries: maxTruncationRetries}
 	tools := []map[string]interface{}{
 		toolDef("bash", "shell", nil, nil),
@@ -423,23 +466,20 @@ func TestMixedEssentialAndBlockableTruncationBlocksOnlyBlockableTool(t *testing.
 	)
 
 	if !result.ContinueLoop {
-		t.Fatal("expected loop to continue after blocking write_file")
+		t.Fatal("expected loop to continue after essential truncation hint")
 	}
 	if phase.TruncationBlockedTools["bash"] {
 		t.Fatalf("bash should remain unblocked: %#v", phase.TruncationBlockedTools)
 	}
-	if !phase.TruncationBlockedTools["write_file"] {
-		t.Fatalf("write_file should be blocked: %#v", phase.TruncationBlockedTools)
+	if phase.TruncationBlockedTools["write_file"] {
+		t.Fatalf("write_file should remain unblocked: %#v", phase.TruncationBlockedTools)
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
 		names[tool.ExtractToolName(td)] = true
 	}
-	if !names["bash"] || !names["read_file"] || !names["craft_tool"] {
-		t.Fatalf("expected bash/read_file/craft_tool to remain available: %v", names)
-	}
-	if names["write_file"] {
-		t.Fatalf("write_file should be removed after truncation block: %v", names)
+	if !names["bash"] || !names["write_file"] || !names["read_file"] {
+		t.Fatalf("expected bash/write_file/read_file to remain available: %v", names)
 	}
 }
 
@@ -480,7 +520,7 @@ func TestTruncationRetryHintStatesHardInlineLimits(t *testing.T) {
 		toolDef("write_file", "write", nil, nil),
 		toolDef("bash", "shell", nil, nil),
 	})
-	for _, want := range []string{"write_file.content <= 1800", "bash.command <= 4000", "mode=append", "do not embed generated file bodies"} {
+	for _, want := range []string{"write_file has no backend content limit", "complete", "bash.command <= 4000", "mode=append", "do not embed generated file bodies"} {
 		if !containsText(got, want) {
 			t.Fatalf("hint %q missing %q", got, want)
 		}

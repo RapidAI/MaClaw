@@ -550,6 +550,309 @@ func TestCapabilitySkillSubmitAndDownloadAreTenantScoped(t *testing.T) {
 	}
 }
 
+func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	body := []byte(`{
+		"package": {
+			"schema": "maclaw.app.pack.v1",
+			"privateMarker": "x_maclaw_apps",
+			"apps": [{
+				"schema": "maclaw.app.v1",
+				"privateMarker": "x_maclaw_apps",
+				"app": {
+					"id": "contract-archive-app",
+					"name": "Contract Archive",
+					"description": "Archive reviewed contracts",
+					"kind": "tool_app",
+					"version": "3",
+					"governance": {
+						"workspaceLayout": {"entry": "tool_workspace", "template": "document_workspace", "density": "compact"},
+						"resultContract": {"primary": "artifact", "types": ["artifact", "content"]},
+						"testEvidence": {"runId": "run-contract", "testProtocolFingerprint": "proto-contract"},
+						"dependencyVerification": {"schema": "maclaw.app.install_plan.v1", "dependencyCount": 1}
+					}
+				}
+			}]
+		},
+		"source_submission_id": "local-review-contract"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/maclaw-apps/submit", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	rec := httptest.NewRecorder()
+
+	CapabilityMaclawAppSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "author-a", email: "author@example.com"})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("submit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var submitResp struct {
+		Schema        string           `json:"schema"`
+		Status        string           `json:"status"`
+		PackageSHA256 string           `json:"package_sha256"`
+		AppCount      int              `json:"app_count"`
+		Submissions   []map[string]any `json:"submissions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &submitResp); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+	if submitResp.Schema != "maclaw.app.hub_submission.v1" || submitResp.Status != "pending_review" || submitResp.AppCount != 1 || submitResp.PackageSHA256 == "" || len(submitResp.Submissions) != 1 {
+		t.Fatalf("unexpected submit response: %+v", submitResp)
+	}
+	items, err := svc.List(capability.WithTenant(context.Background(), "tenant_a"), corelib.CapabilityTypeSkill)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("tenant_a capabilities=%+v err=%v", items, err)
+	}
+	item := items[0]
+	if item.CapabilityID != "contract-archive-app" || item.Status != "pending_review" || item.Source != corelib.CapabilitySourceEnterpriseHub || item.CurrentVersionKey == "" {
+		t.Fatalf("unexpected maclaw app capability: %+v", item)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(item.MetadataJSON), &metadata); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if metadata["is_maclaw_app"] != true || metadata["product_kind"] != "maclaw_app_skill" || metadata["maclaw_app_id"] != "contract-archive-app" || metadata["review_state"] != "pending_review" {
+		t.Fatalf("missing maclaw app metadata: %+v", metadata)
+	}
+	if metadata["source_submission_id"] != "local-review-contract" || metadata["uploaded_by"] != "author-a" || metadata["publisher_email"] != "author@example.com" {
+		t.Fatalf("missing submitter metadata: %+v", metadata)
+	}
+	layout := metadata["workspace_layout"].(map[string]any)
+	if layout["template"] != "document_workspace" {
+		t.Fatalf("workspace layout metadata=%+v", layout)
+	}
+	resultContract := metadata["result_contract"].(map[string]any)
+	if resultContract["primary"] != "artifact" {
+		t.Fatalf("result contract metadata=%+v", resultContract)
+	}
+	testEvidence := metadata["maclaw_app_test_evidence"].(map[string]any)
+	if testEvidence["runId"] != "run-contract" || testEvidence["testProtocolFingerprint"] != "proto-contract" {
+		t.Fatalf("test evidence metadata=%+v", testEvidence)
+	}
+	tenantBItems, err := svc.List(capability.WithTenant(context.Background(), "tenant_b"), corelib.CapabilityTypeSkill)
+	if err != nil || len(tenantBItems) != 0 {
+		t.Fatalf("tenant_b capabilities=%+v err=%v", tenantBItems, err)
+	}
+}
+
+func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	ctx := capability.WithTenant(context.Background(), "tenant_a")
+	manifest := map[string]any{
+		"schema":        "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": map[string]any{
+			"id":          "download-app",
+			"name":        "Download App",
+			"description": "Downloaded from Hub",
+			"kind":        "tool_app",
+			"governance": map[string]any{
+				"testEvidence": map[string]any{"runId": "run-download"},
+			},
+		},
+	}
+	seeded, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
+		CapabilityType: corelib.CapabilityTypeSkill,
+		Publisher:      "author@example.com",
+		CapabilityID:   "download-app",
+		GlobalKey:      corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":maclaw-app:download-app",
+		DisplayName:    "Download App",
+		Description:    "Downloaded from Hub",
+		Source:         corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:      "maclaw_app_upload",
+		Status:         "approved",
+		MetadataJSON: jsonObjectString(map[string]any{
+			"is_maclaw_app":    true,
+			"product_kind":     "maclaw_app_skill",
+			"maclaw_app_id":    "download-app",
+			"review_state":     "approved",
+			"reviewer":         "hub-admin",
+			"reviewed_at":      "2026-06-17T02:30:00Z",
+			"approved_at":      "2026-06-17T02:30:00Z",
+			"risk_level":       "low",
+			"approved_scopes":  []string{"app.run", "file.read"},
+			"package_sha256":   "pkg-sha",
+			"workspace_layout": map[string]any{"template": "document_workspace"},
+		}),
+		Version:           "1",
+		VersionKey:        "enterprise_hub:skill:maclaw-app:download-app@pkg",
+		PackageChecksum:   "pkg-sha",
+		ManifestJSON:      jsonObjectString(manifest),
+		TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw.app.pack.v1", "app_id": "download-app"}),
+		CompatibilityJSON: jsonObjectString(map[string]any{"requires_maclaw_app_runtime": true}),
+		VersionStatus:     "approved",
+		SetCurrentVersion: true,
+	})
+	if err != nil {
+		t.Fatalf("seed maclaw app: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/capabilities/maclaw-apps/"+seeded.ID+"/package", nil)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	req.SetPathValue("id", seeded.ID)
+	rec := httptest.NewRecorder()
+
+	CapabilityMaclawAppPackageHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "installer", email: "installer@example.com"})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var pkg map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &pkg); err != nil {
+		t.Fatalf("decode package: %v", err)
+	}
+	if pkg["schema"] != "maclaw.app.pack.v1" || pkg["privateMarker"] != "x_maclaw_apps" || pkg["package_sha256"] != "pkg-sha" {
+		t.Fatalf("unexpected package header: %+v", pkg)
+	}
+	apps, ok := pkg["apps"].([]any)
+	if !ok || len(apps) != 1 {
+		t.Fatalf("package apps=%+v", pkg["apps"])
+	}
+	entry, _ := apps[0].(map[string]any)
+	app, _ := entry["app"].(map[string]any)
+	if app["id"] != "download-app" || app["name"] != "Download App" {
+		t.Fatalf("unexpected app entry: %+v", app)
+	}
+	governance, _ := app["governance"].(map[string]any)
+	submission, _ := governance["submission"].(map[string]any)
+	if submission["channel"] != "hub" || submission["status"] != "approved" || submission["reviewer"] != "hub-admin" || submission["capability_id"] != seeded.ID {
+		t.Fatalf("submission metadata=%+v", submission)
+	}
+	scopes, ok := submission["approved_scopes"].([]any)
+	if !ok || len(scopes) != 2 || scopes[0] != "app.run" {
+		t.Fatalf("approved scopes=%+v", submission["approved_scopes"])
+	}
+}
+func TestAdminCapabilityMaclawAppReviewApprovesCurrentVersion(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	ctx := capability.WithTenant(context.Background(), "tenant_a")
+	seeded, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
+		CapabilityType: corelib.CapabilityTypeSkill,
+		Publisher:      "author@example.com",
+		CapabilityID:   "review-app",
+		GlobalKey:      corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":maclaw-app:review-app",
+		DisplayName:    "Review App",
+		Description:    "Review me",
+		Source:         corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:      "maclaw_app_upload",
+		Status:         "pending_review",
+		MetadataJSON: jsonObjectString(map[string]any{
+			"is_maclaw_app":    true,
+			"product_kind":     "maclaw_app_skill",
+			"maclaw_app_id":    "review-app",
+			"review_state":     "pending_review",
+			"workspace_layout": map[string]any{"template": "classic_split"},
+		}),
+		Version:           "1",
+		VersionKey:        "enterprise_hub:skill:maclaw-app:review-app@abc",
+		PackageChecksum:   "abc",
+		ManifestJSON:      jsonObjectString(map[string]any{"schema": "maclaw.app.v1"}),
+		TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw.app.pack.v1"}),
+		CompatibilityJSON: jsonObjectString(map[string]any{"requires_maclaw_app_runtime": true}),
+		VersionStatus:     "pending_review",
+		SetCurrentVersion: true,
+	})
+	if err != nil {
+		t.Fatalf("seed maclaw app: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/maclaw-apps/review-app/approve", bytes.NewReader([]byte(`{"reviewer":"admin-a","risk_level":"low","approved_scopes":["app.run","app.run"]}`)))
+	req.Header.Set("X-Tenant-ID", "tenant_a")
+	req.SetPathValue("id", seeded.ID)
+	rec := httptest.NewRecorder()
+
+	AdminCapabilityMaclawAppReviewHandler(svc, "approve")(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	item, err := svc.Get(ctx, "review-app")
+	if err != nil {
+		t.Fatalf("get approved app: %v", err)
+	}
+	if item.Status != "approved" {
+		t.Fatalf("capability status=%q", item.Status)
+	}
+	versions, err := svc.ListVersions(ctx, item.ID)
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("versions=%+v err=%v", versions, err)
+	}
+	if versions[0].Status != "approved" {
+		t.Fatalf("version status=%q", versions[0].Status)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(item.MetadataJSON), &metadata); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if metadata["review_state"] != "approved" || metadata["reviewer"] != "admin-a" || metadata["approved_at"] == "" || metadata["risk_level"] != "low" {
+		t.Fatalf("approval metadata=%+v", metadata)
+	}
+	scopes, ok := metadata["approved_scopes"].([]any)
+	if !ok || len(scopes) != 1 || scopes[0] != "app.run" {
+		t.Fatalf("approved scopes=%+v", metadata["approved_scopes"])
+	}
+}
+
+func TestAdminCapabilityMaclawAppReviewRejectsWithIssues(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	ctx := capability.WithTenant(context.Background(), "tenant_a")
+	seeded, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
+		CapabilityType:    corelib.CapabilityTypeSkill,
+		Publisher:         "author@example.com",
+		CapabilityID:      "reject-app",
+		GlobalKey:         corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":maclaw-app:reject-app",
+		DisplayName:       "Reject App",
+		Source:            corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:         "maclaw_app_upload",
+		Status:            "pending_review",
+		MetadataJSON:      jsonObjectString(map[string]any{"is_maclaw_app": true, "product_kind": "maclaw_app_skill", "maclaw_app_id": "reject-app", "review_state": "pending_review"}),
+		Version:           "1",
+		VersionKey:        "enterprise_hub:skill:maclaw-app:reject-app@abc",
+		ManifestJSON:      jsonObjectString(map[string]any{"schema": "maclaw.app.v1"}),
+		TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw.app.pack.v1"}),
+		CompatibilityJSON: jsonObjectString(map[string]any{"requires_maclaw_app_runtime": true}),
+		VersionStatus:     "pending_review",
+		SetCurrentVersion: true,
+	})
+	if err != nil {
+		t.Fatalf("seed maclaw app: %v", err)
+	}
+	body := []byte(`{"reason":"test evidence is missing from the submitted package","review_issues":[{"path":"app.governance.testEvidence","severity":"error","message":"missing test evidence","suggestion":"run the app test protocol"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/maclaw-apps/"+seeded.ID+"/reject", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant_a")
+	req.SetPathValue("id", seeded.ID)
+	rec := httptest.NewRecorder()
+
+	AdminCapabilityMaclawAppReviewHandler(svc, "reject")(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reject status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	item, err := svc.Get(ctx, "reject-app")
+	if err != nil {
+		t.Fatalf("get rejected app: %v", err)
+	}
+	if item.Status != "review_failed" {
+		t.Fatalf("capability status=%q", item.Status)
+	}
+	versions, err := svc.ListVersions(ctx, item.ID)
+	if err != nil || len(versions) != 1 || versions[0].Status != "review_failed" {
+		t.Fatalf("versions=%+v err=%v", versions, err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(item.MetadataJSON), &metadata); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if metadata["review_state"] != "review_failed" || metadata["review_reason"] == "" {
+		t.Fatalf("rejection metadata=%+v", metadata)
+	}
+	issues, ok := metadata["review_issues"].([]any)
+	if !ok || len(issues) != 1 {
+		t.Fatalf("review issues=%+v", metadata["review_issues"])
+	}
+}
+
 func TestCapabilitySkillSubmitUpsertsSameSkillAcrossUploaders(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)

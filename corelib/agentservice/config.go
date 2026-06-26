@@ -33,6 +33,7 @@ func DefaultParameterDefinitions() []ParameterDefinition {
 		{Key: "sandbox_mode", Title: "Sandbox Mode", Description: "Execution sandbox preference for this user.", Required: false, Type: "string", Example: "os"},
 		{Key: "network_level", Title: "Network Level", Description: "Network access level for user tools and agents.", Required: false, Type: "string", Example: "intranet"},
 		{Key: "yolo_mode_allowed", Title: "YOLO Mode Allowed", Description: "Allow this user to enable broad tool execution mode.", Required: false, Type: "bool", Example: "false"},
+		{Key: "skill_runner_timeout_sec", Title: "Skill Runner Timeout", Description: "Default SkillRunner job and bash step timeout in seconds. Range: 240-14400; default: 600. Per-skill global_timeout overrides this value.", Required: false, Type: "integer", Example: "3600"},
 	}
 	return appendMissingAppConfigDefinitions(defs)
 }
@@ -68,6 +69,7 @@ var sharedClientConfigKeys = map[string]bool{
 	"maclaw_llm_context_length":        true,
 	"maclaw_llm_timeout_sec":           true,
 	"agent_response_timeout_sec":       true,
+	"skill_runner_timeout_sec":         true,
 	"maclaw_llm_providers":             true,
 	"maclaw_llm_current_provider":      true,
 	"llm_prompt_cache":                 true,

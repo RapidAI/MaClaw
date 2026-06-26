@@ -41,7 +41,7 @@ type RecordStore interface {
 	CreateRecordApproval(ctx context.Context, approval RecordApproval) (*RecordApproval, error)
 	ListRecordApprovals(ctx context.Context, tenantID string, in QueryRecordApprovalsInput) ([]RecordApproval, error)
 	GetRecordApproval(ctx context.Context, tenantID, approvalID string) (*RecordApproval, error)
-	UpdateRecordApprovalStatus(ctx context.Context, tenantID, approvalID, status, decision, reason, reviewedBy, workflowInstanceID, workflowNodeID, workflowVersion, workflowDecisionID, detailURL, businessStatus, resultStatus, currentAssignee, currentAssigneeType, fromStatus, toStatus string, resultPayload map[string]any, outputs []RecordApprovalOutput, artifacts []RecordApprovalArtifact, now time.Time) (*RecordApproval, error)
+	UpdateRecordApprovalStatus(ctx context.Context, tenantID, approvalID, status, decision, reason, reviewedBy, workflowInstanceID, workflowNodeID string, workflowNodeIDs []string, workflowVersion, workflowDecisionID, detailURL, businessStatus, resultStatus, currentAssignee, currentAssigneeType, fromStatus, toStatus string, resultPayload map[string]any, outputs []RecordApprovalOutput, artifacts []RecordApprovalArtifact, now time.Time) (*RecordApproval, error)
 }
 
 // EventStore manages data event ingestion, logs, and dead letters.

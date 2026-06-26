@@ -63,13 +63,16 @@ func decodeDownloadedSkillJSONToDir(data []byte, targetDir string) (*corelib.NLS
 		}
 	}
 
+	installName := firstNonEmpty(full.Name, full.ID)
 	installSkillDir := ""
-	if len(full.Files) > 0 && full.Name != "" {
-		extractSkillFiles(full.Name, full.Files, targetDir)
+	if len(full.Files) > 0 && installName != "" {
+		if err := extractSkillFiles(installName, full.Files, targetDir); err != nil {
+			return nil, fmt.Errorf("extract bundled files for skill %q: %w", installName, err)
+		}
 		if strings.TrimSpace(targetDir) != "" {
 			installSkillDir = targetDir
 		} else if skillsRoot, err := cskill.PrimarySkillsDir(); err == nil {
-			installSkillDir = filepath.Join(skillsRoot, full.Name)
+			installSkillDir = filepath.Join(skillsRoot, installName)
 		}
 	}
 	if len(steps) == 0 {

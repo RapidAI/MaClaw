@@ -4504,6 +4504,7 @@ func mergeSharedClientAppConfig(userCfg, shared corelib.AppConfig) corelib.AppCo
 		out.MaclawLLMCurrentProvider = shared.MaclawLLMCurrentProvider
 	}
 	out.AgentResponseTimeoutSec = shared.AgentResponseTimeoutSec
+	out.SkillRunnerTimeoutSec = shared.SkillRunnerTimeoutSec
 	out.LLMPromptCache = shared.LLMPromptCache
 	out.MaclawAgentMaxIterations = shared.MaclawAgentMaxIterations
 	out.SubAgentConcurrency = shared.SubAgentConcurrency
@@ -4570,6 +4571,7 @@ func SharedClientAppConfigOnly(cfg corelib.AppConfig) corelib.AppConfig {
 		MaclawLLMContextLength:       cfg.MaclawLLMContextLength,
 		MaclawLLMTimeoutSec:          cfg.MaclawLLMTimeoutSec,
 		AgentResponseTimeoutSec:      cfg.AgentResponseTimeoutSec,
+		SkillRunnerTimeoutSec:        cfg.SkillRunnerTimeoutSec,
 		MaclawLLMProviders:           cfg.MaclawLLMProviders,
 		MaclawLLMCurrentProvider:     cfg.MaclawLLMCurrentProvider,
 		LLMPromptCache:               cfg.LLMPromptCache,

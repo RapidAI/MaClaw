@@ -62,6 +62,52 @@ func TestCreate_RejectsEmptyPath(t *testing.T) {
 	}
 }
 
+func TestSubmitForm_ValidatesGaokaoProvinceSelectOptions(t *testing.T) {
+	m := setupTestMachine()
+	if _, err := m.Create("user1", string(WorkflowGaokaoApplication), "d:\\project", "高考志愿"); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	validForm := map[string]interface{}{
+		"province":             "山东",
+		"exam_year":            "2026",
+		"subject_type":         "物化生",
+		"gender":               "女",
+		"rank":                 float64(32000),
+		"accept_joint_program": "可作为备选",
+	}
+	if err := m.SubmitForm("user1", validForm); err != nil {
+		t.Fatalf("SubmitForm valid province failed: %v", err)
+	}
+	state := m.GetActive("user1")
+	if got := state.ActivePhase().FormData["province"]; got != "山东" {
+		t.Fatalf("province FormData = %v, want 山东", got)
+	}
+
+	if _, err := m.Create("user2", string(WorkflowGaokaoApplication), "d:\\project", "高考志愿"); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	invalidForm := map[string]interface{}{
+		"province":             "山东省",
+		"exam_year":            "2026",
+		"subject_type":         "物化生",
+		"gender":               "女",
+		"rank":                 float64(32000),
+		"accept_joint_program": "可作为备选",
+	}
+	err := m.SubmitForm("user2", invalidForm)
+	if err == nil {
+		t.Fatal("expected invalid province to be rejected")
+	}
+	if !strings.Contains(err.Error(), "地区/省份") || !strings.Contains(err.Error(), "不在可选范围内") {
+		t.Fatalf("error = %v", err)
+	}
+	state = m.GetActive("user2")
+	if state.ActivePhase().FormData != nil {
+		t.Fatalf("invalid form should not be saved: %#v", state.ActivePhase().FormData)
+	}
+}
+
 func TestRecordOutput_TransitionsToWaitingConfirm(t *testing.T) {
 	m := setupTestMachine()
 	m.Create("user1", "coding", "d:\\project", "build app")
@@ -77,6 +123,148 @@ func TestRecordOutput_TransitionsToWaitingConfirm(t *testing.T) {
 	}
 	if state.ActivePhase().Output == "" {
 		t.Fatal("output not saved")
+	}
+}
+
+func TestRecordOutput_RejectsIncompleteGaokaoFinalPlan(t *testing.T) {
+	m := setupTestMachine()
+	if _, err := m.Create("user1", string(WorkflowGaokaoApplication), "d:\\project", "高考志愿"); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	state := m.GetActive("user1")
+	state.CurrentPhase = 3
+	for i := range state.Phases {
+		state.Phases[i].Status = PhaseCompleted
+	}
+	state.Phases[3].Status = PhaseRunning
+	if err := m.store.Save(state); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	err := m.RecordOutput("user1", "让我读取 evidence_doc.txt，然后运行 check_db2.py 看看数据库结构。")
+	if err == nil {
+		t.Fatal("expected incomplete final plan to be rejected")
+	}
+	if !strings.Contains(err.Error(), "gaokao final plan output is incomplete") {
+		t.Fatalf("error = %v", err)
+	}
+
+	state = m.GetActive("user1")
+	if state == nil {
+		t.Fatal("workflow should remain active")
+	}
+	if state.CurrentPhase != 3 {
+		t.Fatalf("CurrentPhase = %d, want 3", state.CurrentPhase)
+	}
+	if got := state.ActivePhase().Status; got != PhaseRunning {
+		t.Fatalf("phase status = %q, want running", got)
+	}
+	if state.ActivePhase().Output != "" {
+		t.Fatalf("output should not be saved: %q", state.ActivePhase().Output)
+	}
+}
+
+func TestRecordOutput_AcceptsCompleteGaokaoFinalPlan(t *testing.T) {
+	m := setupTestMachine()
+	if _, err := m.Create("user1", string(WorkflowGaokaoApplication), "d:\\project", "高考志愿"); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	state := m.GetActive("user1")
+	state.CurrentPhase = 3
+	for i := range state.Phases {
+		state.Phases[i].Status = PhaseCompleted
+	}
+	state.Phases[3].Status = PhaseRunning
+	if err := m.store.Save(state); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	output := completeGaokaoFinalPlanOutputForTest()
+
+	if err := m.RecordOutput("user1", output); err != nil {
+		t.Fatalf("RecordOutput failed: %v", err)
+	}
+	state = m.GetActive("user1")
+	if got := state.ActivePhase().Status; got != PhaseWaitingConfirm {
+		t.Fatalf("phase status = %q, want waiting_confirm", got)
+	}
+}
+
+func TestRecordOutput_RejectsGaokaoFinalPlanWithoutVerifiedSourceURLs(t *testing.T) {
+	m := setupTestMachine()
+	if _, err := m.Create("user1", string(WorkflowGaokaoApplication), "d:\\project", "高考志愿"); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	state := m.GetActive("user1")
+	state.CurrentPhase = 3
+	for i := range state.Phases {
+		state.Phases[i].Status = PhaseCompleted
+	}
+	state.Phases[3].Status = PhaseRunning
+	if err := m.store.Save(state); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	output := strings.Replace(completeGaokaoFinalPlanOutputForTest(), "https://example.edu/admission", "来源URL", 1)
+	err := m.RecordOutput("user1", output)
+	if err == nil {
+		t.Fatal("expected final plan without source URLs to be rejected")
+	}
+	if !strings.Contains(err.Error(), "missing verified source URLs") {
+		t.Fatalf("error = %v", err)
+	}
+
+	state = m.GetActive("user1")
+	if got := state.ActivePhase().Status; got != PhaseRunning {
+		t.Fatalf("phase status = %q, want running", got)
+	}
+	if got := state.ActivePhase().Output; got != "" {
+		t.Fatalf("output should not be saved: %q", got)
+	}
+}
+
+func TestRecordOutput_RejectsGaokaoFinalPlanWithoutRecommendationRows(t *testing.T) {
+	m := setupTestMachine()
+	if _, err := m.Create("user1", string(WorkflowGaokaoApplication), "d:\\project", "高考志愿"); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	state := m.GetActive("user1")
+	state.CurrentPhase = 3
+	for i := range state.Phases {
+		state.Phases[i].Status = PhaseCompleted
+	}
+	state.Phases[3].Status = PhaseRunning
+	if err := m.store.Save(state); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	output := `# 填报参考资料与建议
+
+## 总排清单
+学校、专业、办学地点、类型、往年最低位次、推荐理由、数据来源均需核验，参考 https://example.edu/admission。
+
+## 冲
+学校、专业、办学地点、类型、最低位次、推荐理由、依据来源。
+
+## 稳
+学校、专业、办学地点、类型、最低位次、推荐理由、依据来源。
+
+## 保
+学校、专业、办学地点、类型、最低位次、推荐理由、依据来源。`
+	err := m.RecordOutput("user1", output)
+	if err == nil {
+		t.Fatal("expected final plan without recommendation rows to be rejected")
+	}
+	if !strings.Contains(err.Error(), "missing recommendation rows") {
+		t.Fatalf("error = %v", err)
+	}
+
+	state = m.GetActive("user1")
+	if got := state.ActivePhase().Status; got != PhaseRunning {
+		t.Fatalf("phase status = %q, want running", got)
+	}
+	if got := state.ActivePhase().Output; got != "" {
+		t.Fatalf("output should not be saved: %q", got)
 	}
 }
 

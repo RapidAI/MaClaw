@@ -162,6 +162,17 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 			return fmt.Sprintf("T%d: %s - paused by transient provider error\nError: %s",
 				displayIndex, taskTitle, resultError), false
 		}
+		if isSubAgentNonRetryableFailure(resultError) {
+			if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecFailed, resultError) {
+				return staleSubAgentRunSummary(task, taskTitle), false
+			}
+			log.Printf("[subagent-runner] T%d failed permanently without retry: %s", displayIndex, resultError)
+			event := turnCtx.TaskEvent("failed", task, taskTitle)
+			event.Detail = "non_retryable"
+			turnCtx.Emit(onProgress, event)
+			return fmt.Sprintf("T%d: %s - failed permanently (non-retryable)\nError: %s",
+				displayIndex, taskTitle, resultError), false
+		}
 		retryCount, canRetry := r.orchestrator.IncrementTaskRetryForRun(task, runID)
 		if retryCount == 0 && !canRetry {
 			return staleSubAgentRunSummary(task, taskTitle), false
@@ -213,7 +224,7 @@ func normalizeSubAgentResultStatus(result *CodingSubAgentResult) (TaskExecStatus
 		if errSummary == "" {
 			errSummary = "coding SubAgent reported failure without an error summary"
 		}
-		return TaskExecFailed, errSummary
+		return TaskExecFailed, enrichSubAgentFailureError(result, errSummary)
 	case TaskExecSkipped:
 		if errSummary == "" {
 			errSummary = "coding SubAgent skipped the task without a reason"
@@ -222,6 +233,29 @@ func normalizeSubAgentResultStatus(result *CodingSubAgentResult) (TaskExecStatus
 	default:
 		return TaskExecFailed, compactSubAgentErrorSummary(fmt.Sprintf("coding SubAgent returned unknown status %q", result.Status))
 	}
+}
+
+func enrichSubAgentFailureError(result *CodingSubAgentResult, errSummary string) string {
+	errSummary = strings.TrimSpace(errSummary)
+	if result == nil {
+		return errSummary
+	}
+	lower := strings.ToLower(errSummary)
+	var evidence []string
+	if failed := failedSubAgentCommands(result.CommandsRun); len(failed) > 0 && !strings.Contains(lower, "failed command evidence") {
+		evidence = append(evidence, "failed command evidence: "+compactFailedVerificationCommandResults(failed))
+	}
+	if failed := failedSubAgentDynamicTools(result.DynamicToolsRun); len(failed) > 0 && !strings.Contains(lower, "dynamic tool evidence") {
+		evidence = append(evidence, "dynamic tool evidence: "+compactFailedSubAgentDynamicToolResults(failed))
+	}
+	if len(evidence) == 0 {
+		return errSummary
+	}
+	if errSummary != "" {
+		errSummary += "; "
+	}
+	errSummary += strings.Join(evidence, "; ")
+	return compactSubAgentErrorSummary(errSummary)
 }
 
 func (r *SubAgentTaskRunner) runTaskWithRecover(
@@ -499,16 +533,44 @@ func isSubAgentTransientProviderError(text string) bool {
 		strings.Contains(lower, "/v1/messages") ||
 		strings.Contains(lower, "openai") ||
 		strings.Contains(lower, "bigmodel")
-	return isSubAgentRateLimitError(lower) ||
+	if isSubAgentRateLimitError(lower) ||
 		strings.Contains(lower, "http 500") ||
 		strings.Contains(lower, "http 502") ||
 		strings.Contains(lower, "http 503") ||
 		strings.Contains(lower, "http 504") ||
 		strings.Contains(lower, "500 internal server error") ||
+		strings.Contains(lower, "502 bad gateway") ||
 		strings.Contains(lower, "503 service unavailable") ||
-		(providerContext && strings.Contains(lower, "context deadline exceeded")) ||
-		(providerContext && strings.Contains(lower, "connection reset")) ||
-		(providerContext && strings.Contains(lower, "temporarily unavailable"))
+		strings.Contains(lower, "504 gateway timeout") {
+		return true
+	}
+	if !providerContext {
+		return false
+	}
+	return strings.Contains(lower, "http 408") ||
+		strings.Contains(lower, "gateway timeout") ||
+		strings.Contains(lower, "upstream timeout") ||
+		strings.Contains(lower, "upstream request timeout") ||
+		strings.Contains(lower, "server overloaded") ||
+		strings.Contains(lower, "overloaded") ||
+		strings.Contains(lower, "context deadline exceeded") ||
+		strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "unexpected eof") ||
+		strings.Contains(lower, "tls handshake timeout") ||
+		strings.Contains(lower, "temporarily unavailable")
+}
+
+func isSubAgentNonRetryableFailure(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	if !strings.Contains(lower, "git diff unavailable") {
+		return false
+	}
+	return strings.Contains(lower, "not a git repository") ||
+		strings.Contains(lower, "is not a directory") ||
+		strings.Contains(lower, "cannot inspect")
 }
 
 func appendSubAgentExecutionStats(b *strings.Builder, tasks []*TaskItem) {
@@ -598,7 +660,9 @@ func previousTaskFileOutputs(t *TaskItem) []string {
 	if t == nil {
 		return nil
 	}
-	files := uniqueSortedSubAgentStrings(t.ActualFiles)
+	actualFiles := append([]string{}, t.ActualFiles...)
+	actualFiles = append(actualFiles, t.ActualCreatedFiles...)
+	files := uniqueSortedSubAgentStrings(actualFiles)
 	source := "modified"
 	if len(files) == 0 {
 		files = uniqueSortedSubAgentStrings(t.Files)
@@ -631,7 +695,42 @@ func currentTaskRetryOutputs(t *TaskItem) []string {
 	if hint := subAgentRetryRecoveryHint(errSummary); hint != "" {
 		message += " Recovery hint: " + hint
 	}
-	return []string{message}
+	outputs := []string{message}
+	outputs = append(outputs, retryTaskArtifactOutputs(t)...)
+	return outputs
+}
+
+func retryTaskArtifactOutputs(t *TaskItem) []string {
+	if t == nil {
+		return nil
+	}
+	actualFiles := append([]string{}, t.ActualFiles...)
+	actualFiles = append(actualFiles, t.ActualCreatedFiles...)
+	files := uniqueSortedSubAgentStrings(actualFiles)
+	if len(files) == 0 {
+		return nil
+	}
+	created := make(map[string]bool, len(t.ActualCreatedFiles))
+	for _, f := range uniqueSortedSubAgentStrings(t.ActualCreatedFiles) {
+		created[f] = true
+	}
+	shown := len(files)
+	if shown > codingSubAgentResultFilesMax {
+		shown = codingSubAgentResultFilesMax
+	}
+	title := compactSubAgentTaskTitle(t.Title)
+	outputs := make([]string, 0, shown+1)
+	for _, f := range files[:shown] {
+		kind := "modified"
+		if created[f] {
+			kind = "created"
+		}
+		outputs = append(outputs, fmt.Sprintf("Retry artifact from previous attempt: %s (%s by T%d: %s failed)", compactSubAgentPathText(f), kind, taskDisplayNumber(t), title))
+	}
+	if remaining := len(files) - shown; remaining > 0 {
+		outputs = append(outputs, fmt.Sprintf("Retry artifact from previous attempt: ... %d more touched file(s) omitted", remaining))
+	}
+	return outputs
 }
 
 func subAgentRetryRecoveryHint(errSummary string) string {
@@ -651,23 +750,73 @@ func subAgentRetryRecoveryHint(errSummary string) string {
 	case strings.Contains(normalized, "stale diff") ||
 		strings.Contains(normalized, "final diff"):
 		return "Run git_diff after the last edit so the self-check reflects the final workspace state."
+	case strings.Contains(normalized, "read_file") &&
+		(strings.Contains(normalized, "before") || strings.Contains(normalized, "snapshot") || strings.Contains(normalized, "快照") || strings.Contains(normalized, "已变化") || strings.Contains(normalized, "重新调用")):
+		return "Re-read the exact target file with read_file, then retry the edit using edit_file/edit_lines so the snapshot is fresh before modifying."
+	case strings.Contains(normalized, "缺少 read_file") ||
+		strings.Contains(normalized, "自上次 read_file") ||
+		strings.Contains(normalized, "请先调用 read_file"):
+		return "Call read_file on the target path again to refresh the snapshot, then make the minimal edit with edit_file/edit_lines."
+	case strings.Contains(normalized, "failure-suppressing shell syntax") ||
+		strings.Contains(normalized, "without || fallback") ||
+		strings.Contains(normalized, "pipe filters") ||
+		strings.Contains(normalized, "output redirection") ||
+		strings.Contains(normalized, "extra commands after the verifier"):
+		return "Re-run verification as a clean standalone command. Do not append `||` fallbacks, pipe filters, output redirection, or extra commands after the test/build/lint/typecheck command because they can hide failures."
 	case strings.Contains(normalized, "shell_write") ||
 		strings.Contains(normalized, "shell 直接改写文件") ||
 		strings.Contains(normalized, "set-content") ||
 		strings.Contains(normalized, "add-content") ||
 		strings.Contains(normalized, "out-file") ||
 		strings.Contains(normalized, "writefilesync") ||
+		strings.Contains(normalized, "promises.rm") ||
+		strings.Contains(normalized, "fs.rm") ||
+		strings.Contains(normalized, ".rename(") ||
+		strings.Contains(normalized, ".replace(") ||
+		strings.Contains(normalized, ".touch(") ||
+		strings.Contains(normalized, ".rmdir(") ||
+		strings.Contains(normalized, "shutil.") ||
 		strings.Contains(normalized, "redirection"):
-		return "Use read_file first, then edit_file/edit_lines for existing files; use write_file only for new files. Do not use shell redirection or file-writing shell helpers."
+		return "Use read_file first, then edit_file/edit_lines for existing files; use write_file only for new files. Do not use shell redirection, shell helpers, or inline Node/Python filesystem APIs to mutate files."
+	case strings.Contains(normalized, "missing required argument"):
+		return "Regenerate the failed tool call with every required argument populated. Do not retry with empty `{}`; include the needed path/pattern/query/command/action/tool/run_id fields for that tool."
+	case strings.Contains(normalized, "invalid argument type") ||
+		strings.Contains(normalized, "invalid argument value") ||
+		strings.Contains(normalized, "invalid tool argument"):
+		return "Regenerate the failed tool call with valid JSON scalar types and allowed values. Use strings for path/pattern/content/command fields, JSON integers for line/timeout fields, and JSON booleans for boolean fields."
+	case strings.Contains(normalized, "timed out") ||
+		strings.Contains(normalized, "timeout") ||
+		strings.Contains(normalized, "context deadline exceeded"):
+		return "The previous command timed out. Check whether the command hung or was too broad, narrow it to a focused package/test when possible, or set a reasonable timeout before rerunning verification after the final edit."
+	case strings.Contains(normalized, "failed command evidence") ||
+		strings.Contains(normalized, "verification failed") ||
+		strings.Contains(normalized, "command(s) failed") ||
+		strings.Contains(normalized, "命令失败") ||
+		strings.Contains(normalized, "验证命令失败"):
+		return "Inspect the failing command output first, fix the reported compile/test/lint/typecheck root cause, then rerun the same focused verification command after the final edit."
+	case strings.Contains(normalized, "missing required mcp argument"):
+		return "Regenerate call_mcp_tool with all required MCP arguments populated inside arguments. Use the matched tool's required fields exactly, such as arguments.parent_id, and do not retry with empty arguments."
+	case strings.Contains(normalized, "missing required skill argument"):
+		return "Regenerate manage_skill with all required skill arguments populated inside args. Use the matched skill's required fields exactly, such as args.input, and do not retry with empty args."
+	case strings.Contains(normalized, "dynamic tool failed") ||
+		strings.Contains(normalized, "manage_skill") ||
+		strings.Contains(normalized, "call_mcp_tool") ||
+		strings.Contains(normalized, "mcp call failed") ||
+		strings.Contains(normalized, "mcp tool error"):
+		return "Inspect the dynamic tool failure output before retrying. Reuse only tools matched for this task, fix server/tool/name/arguments, and fall back to built-in read/search/bash verification if the host-backed tool is unavailable."
 	case strings.Contains(normalized, "项目目录外") ||
 		strings.Contains(normalized, "outside project") ||
 		strings.Contains(normalized, "project path") ||
 		strings.Contains(normalized, "working_dir"):
 		return "Stay inside the assigned project path. Use project-relative paths and set bash working_dir to a directory under the project."
+	case strings.Contains(normalized, "not a git repository") ||
+		strings.Contains(normalized, "git diff unavailable"):
+		return "The project path is not a Git repository, so repeating git_diff will not help. Verify with focused commands, summarize the modified/created file list, and explicitly report that Git diff self-check is unavailable."
 	case strings.Contains(normalized, "git diff self-check") ||
 		strings.Contains(normalized, "diff not checked") ||
 		strings.Contains(normalized, "git diff failed"):
 		return "Run git_diff after edits; if it fails, inspect the repository/working_dir state before finalizing."
+
 	case strings.Contains(normalized, "no verification") ||
 		strings.Contains(normalized, "verification not run") ||
 		strings.Contains(normalized, "验证命令") ||

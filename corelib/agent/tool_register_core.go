@@ -465,6 +465,41 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 	})
 
 	r.Register(ToolEntry{
+		Name:        "knowledge_export",
+		Description: "Export all or selected current-user knowledge into an editable MaClaw knowledge JSON package for moving data between machines or sharing through Hub. A description is required.",
+		Properties: map[string]interface{}{
+			"title":            map[string]string{"type": "string", "description": "Optional export title"},
+			"description":      map[string]string{"type": "string", "description": "Required description for this knowledge export"},
+			"source_ids":       map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source IDs for partial export"},
+			"include_disabled": map[string]string{"type": "boolean", "description": "Include disabled own sources"},
+			"output_path":      map[string]string{"type": "string", "description": "Optional destination path when supported by the host"},
+		},
+		Required: []string{"description"},
+		Handler:  extraHandler(deps, "knowledge_export", "Error: knowledge export is not configured. Use the MaClawSrv knowledge export UI or configure a host handler."),
+	})
+
+	r.Register(ToolEntry{
+		Name:        "knowledge_import_package",
+		Description: "Import a MaClaw editable knowledge JSON package into the current user's knowledge base. URL entries may be rebuilt; text entries require package content.",
+		Properties: map[string]interface{}{
+			"package_path": map[string]string{"type": "string", "description": "Path to a MaClaw knowledge JSON package"},
+			"package_json": map[string]string{"type": "object", "description": "Inline package JSON when supplied by the host"},
+		},
+		Handler: extraHandler(deps, "knowledge_import_package", "Error: knowledge package import is not configured. Use the MaClawSrv knowledge import UI or configure a host handler."),
+	})
+
+	r.Register(ToolEntry{
+		Name:        "knowledge_import_share",
+		Description: "Import shared knowledge by knowledge ID or by a human-readable, agent-importable share link. The host resolves the Hub and enforces permissions.",
+		Properties: map[string]interface{}{
+			"knowledge_id": map[string]string{"type": "string", "description": "Unique shared knowledge ID"},
+			"share_link":   map[string]string{"type": "string", "description": "Human-readable share link that also carries import data"},
+			"hub_url":      map[string]string{"type": "string", "description": "Optional Hub URL hint"},
+		},
+		Handler: extraHandler(deps, "knowledge_import_share", "Error: knowledge share import is not configured. Use a configured MaClawSrv Hub resolver or host handler."),
+	})
+
+	r.Register(ToolEntry{
 		Name:        "knowledge_import_directory",
 		Description: "Scan or import a local directory/folder of documents into the local knowledge base. Only use after the user explicitly provides or approves the directory path.",
 		Properties: map[string]interface{}{

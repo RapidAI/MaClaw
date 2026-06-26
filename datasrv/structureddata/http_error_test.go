@@ -1,6 +1,7 @@
 package structureddata
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -21,10 +22,14 @@ func TestHTTPStatusForSentinelErrors(t *testing.T) {
 		{name: "invalid input", err: ErrInvalidInput, status: http.StatusBadRequest},
 		{name: "unknown", err: fmt.Errorf("other failure"), status: http.StatusBadRequest},
 		{name: "wrapped forbidden", err: fmt.Errorf("wrapped: %w", ErrForbidden), status: http.StatusForbidden},
+		{name: "business invalid input", err: newBusinessError(ErrInvalidInput, "approval_not_pending", "approval is not pending"), status: http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := httpStatusForError(tc.err); got != tc.status {
 				t.Fatalf("httpStatusForError(%v)=%d, want %d", tc.err, got, tc.status)
+			}
+			if businessErr, ok := tc.err.(*businessError); ok && !errors.Is(businessErr, ErrInvalidInput) {
+				t.Fatalf("business error should wrap ErrInvalidInput: %v", businessErr)
 			}
 		})
 	}

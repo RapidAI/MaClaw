@@ -43,6 +43,8 @@ const (
 	systemKeyInvitationCodeRequired   = "invitation_code_required"
 )
 
+const centerUserUsageBackfillSyncs = 2
+
 var tenantEmailDomainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type SystemSettingsRepository interface {
@@ -137,8 +139,11 @@ type syncUserLinkRequest struct {
 }
 
 type syncUserUsageRequest struct {
-	HubSecret string                 `json:"hub_secret"`
-	Items     []syncUserUsagePayload `json:"items"`
+	HubSecret    string                 `json:"hub_secret"`
+	SyncStartDay string                 `json:"sync_start_day,omitempty"`
+	SyncEndDay   string                 `json:"sync_end_day,omitempty"`
+	TenantIDs    []string               `json:"tenant_ids,omitempty"`
+	Items        []syncUserUsagePayload `json:"items"`
 }
 
 type syncUserUsagePayload struct {
@@ -199,6 +204,7 @@ type Service struct {
 	mu               sync.Mutex
 	heartbeatStarted bool
 	heartbeatCancel  context.CancelFunc
+	usageBackfills   int
 	recorder         *diagnostics.FailureEventRecorder
 }
 
@@ -209,6 +215,7 @@ func NewService(cfg *config.Config, settings SystemSettingsRepository) *Service 
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 		},
+		usageBackfills: centerUserUsageBackfillSyncs,
 	}
 }
 
@@ -959,7 +966,7 @@ func LoadDigitalEmployeeAuthorizationForTenant(ctx context.Context, settings Sys
 		return disabledDigitalEmployeeAuthorizationFrom(recordDigitalEmployeeAuthorizationForTenant(record, tenantID))
 	}
 	if !record.Registered || record.PendingConfirmation {
-		// Hub is not in a registered state — return an explicit "no authorization"
+		// Hub is not in a registered state - return an explicit "no authorization"
 		// object so the client can distinguish this from "Hub hasn't synced yet" (nil).
 		return &corelib.DigitalEmployeeAuthorization{Active: false, Reason: "not_registered"}
 	}
@@ -1910,10 +1917,18 @@ func (s *Service) syncUserUsage(ctx context.Context, baseURL string, record regi
 	}
 
 	now := time.Now().UTC()
-	startDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -6)
+	startDay, usedBackfill := s.reserveUserUsageSyncStartDay(now)
+	syncSucceeded := false
+	defer func() {
+		if usedBackfill && !syncSucceeded {
+			s.restoreUserUsageBackfill()
+		}
+	}()
 	items := []syncUserUsagePayload{}
+	endDayExclusive := userUsageSyncEndDayExclusive(now)
+	syncEndDay := endDayExclusive.AddDate(0, 0, -1).Format("2006-01-02")
 	for _, tenantID := range tenantIDs {
-		for dayStart := startDay; dayStart.Before(now.AddDate(0, 0, 1)); dayStart = dayStart.AddDate(0, 0, 1) {
+		for dayStart := startDay; dayStart.Before(endDayExclusive); dayStart = dayStart.AddDate(0, 0, 1) {
 			dayEnd := dayStart.AddDate(0, 0, 1)
 			ctxTenant := store.WithTenant(ctx, tenantID)
 			tokenRows, err := s.sessions.SummarizeUserTokenUsage(ctxTenant, tenantID, dayStart, dayEnd)
@@ -1927,7 +1942,7 @@ func (s *Service) syncUserUsage(ctx context.Context, baseURL string, record regi
 			byEmail := map[string]*syncUserUsagePayload{}
 			for _, row := range tokenRows {
 				email := strings.ToLower(strings.TrimSpace(row.UserEmail))
-				if email == "" {
+				if !isCenterUsageEmail(email) {
 					continue
 				}
 				item := byEmail[email]
@@ -1942,7 +1957,7 @@ func (s *Service) syncUserUsage(ctx context.Context, baseURL string, record regi
 			}
 			for _, row := range durationRows {
 				email := strings.ToLower(strings.TrimSpace(row.UserEmail))
-				if email == "" {
+				if !isCenterUsageEmail(email) {
 					continue
 				}
 				item := byEmail[email]
@@ -1959,10 +1974,13 @@ func (s *Service) syncUserUsage(ctx context.Context, baseURL string, record regi
 			}
 		}
 	}
-	if len(items) == 0 {
-		return nil
-	}
-	payload, err := json.Marshal(syncUserUsageRequest{HubSecret: record.HubSecret, Items: items})
+	payload, err := json.Marshal(syncUserUsageRequest{
+		HubSecret:    record.HubSecret,
+		SyncStartDay: startDay.Format("2006-01-02"),
+		SyncEndDay:   syncEndDay,
+		TenantIDs:    centerSyncTenantIDs(tenantIDs),
+		Items:        items,
+	})
 	if err != nil {
 		return err
 	}
@@ -1986,7 +2004,32 @@ func (s *Service) syncUserUsage(ctx context.Context, baseURL string, record regi
 		}
 		return errors.New(message)
 	}
+	syncSucceeded = true
 	return nil
+}
+
+func (s *Service) reserveUserUsageSyncStartDay(now time.Time) (time.Time, bool) {
+	now = now.UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.usageBackfills > 0 {
+		s.usageBackfills--
+		return time.Date(now.Year(), 1, 1, 0, 0, 0, 0, time.UTC), true
+	}
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -6), false
+}
+
+func userUsageSyncEndDayExclusive(now time.Time) time.Time {
+	now = now.UTC()
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
+}
+
+func (s *Service) restoreUserUsageBackfill() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.usageBackfills < centerUserUsageBackfillSyncs {
+		s.usageBackfills++
+	}
 }
 
 func centerSyncTenantID(tenantID string) string {
@@ -1997,8 +2040,28 @@ func centerSyncTenantID(tenantID string) string {
 	return tenantID
 }
 
+func centerSyncTenantIDs(tenantIDs []string) []string {
+	out := make([]string, 0, len(tenantIDs))
+	seen := map[string]struct{}{}
+	for _, tenantID := range tenantIDs {
+		tenantID = centerSyncTenantID(tenantID)
+		key := tenantID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, tenantID)
+	}
+	return out
+}
+
 func normalizeEmail(email string) string {
 	return strings.TrimSpace(strings.ToLower(email))
+}
+
+func isCenterUsageEmail(email string) bool {
+	email = normalizeEmail(email)
+	return strings.Count(email, "@") == 1 && !strings.ContainsAny(email, " \t\r\n") && !strings.HasPrefix(email, "@") && !strings.HasSuffix(email, "@")
 }
 
 // shouldAcceptAuthorizationUpdate decides whether a new authorization from

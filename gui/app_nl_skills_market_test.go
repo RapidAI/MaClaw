@@ -344,7 +344,35 @@ func TestSearchMixedSkillsIncludesEnterpriseHubCapabilitiesFirst(t *testing.T) {
 				t.Fatalf("unexpected auth header: %q", got)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"items":[{"id":"cap-skill-1","capability_type":"skill","capability_id":"paper_digest","display_name":"Paper Digest","description":"Enterprise paper digest","source":"enterprise_hub","status":"approved","current_version_key":"v2"}]}`))
+			metadata, _ := json.Marshal(map[string]any{
+				"product_kind":                   "maclaw_app_skill",
+				"is_maclaw_app":                  true,
+				"maclaw_app_id":                  "paper-approval-app",
+				"maclaw_app_name":                "Paper Approval",
+				"maclaw_app_description":         "Enterprise paper approval app",
+				"maclaw_app_kind":                "enterprise_approval_app",
+				"maclaw_app_category":            "approval",
+				"maclaw_app_icon":                "FileCheck2",
+				"maclaw_app_definition_sha256":   "sha256-paper-app",
+				"artifact_contract_presentation": "timeline",
+				"maclaw_app_test_evidence": map[string]any{
+					"run_id":         "run-paper-app",
+					"primary_result": "approved",
+					"verified_at":    "2026-06-26T06:00:00Z",
+					"output_count":   3,
+				},
+			})
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{{
+				"id":                  "cap-skill-1",
+				"capability_type":     "skill",
+				"capability_id":       "paper_digest",
+				"display_name":        "Paper Digest",
+				"description":         "Enterprise paper digest",
+				"source":              "enterprise_hub",
+				"status":              "approved",
+				"current_version_key": "v2",
+				"metadata_json":       string(metadata),
+			}}})
 		case "/api/v1/skillmarket/search":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"results":[{"id":"market-fast","name":"Market Fast","description":"External high score","score":999,"price":0}]}`))
@@ -361,12 +389,16 @@ func TestSearchMixedSkillsIncludesEnterpriseHubCapabilitiesFirst(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteHubURL = server.URL
-	cfg.RemoteViewerToken = "viewer-token"
 	cfg.RemoteHubCenterURL = server.URL
 	cfg.SkillSourcesAllowed = []string{corelib.CapabilitySourceEnterpriseHub, "skillhub"}
 	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "Paper Digest", Status: "disabled", Source: "manual"}}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteViewerToken = "viewer-token"
+	}); err != nil {
+		t.Fatalf("PatchConfig(RemoteViewerToken) error = %v", err)
 	}
 
 	results, err := app.SearchMixedSkills("paper")
@@ -380,8 +412,17 @@ func TestSearchMixedSkillsIncludesEnterpriseHubCapabilitiesFirst(t *testing.T) {
 	if got.Source != corelib.CapabilitySourceEnterpriseHub || got.ID != "cap-skill-1" || got.InstallRef != "cap-skill-1" || got.SourceLabel != "私有市场" {
 		t.Fatalf("unexpected enterprise result: %+v", got)
 	}
-	if got.Name != "Paper Digest" || got.TrustLevel != "enterprise" {
+	if got.Name != "Paper Approval" || got.Description != "Enterprise paper approval app" || got.TrustLevel != "enterprise" {
 		t.Fatalf("unexpected display fields: %+v", got)
+	}
+	if !got.IsMaclawApp || got.ProductKind != "maclaw_app_skill" || got.MaclawAppID != "paper-approval-app" || got.MaclawAppKind != "enterprise_approval_app" {
+		t.Fatalf("unexpected MaClaw App metadata: %+v", got)
+	}
+	if got.MaclawAppCategory != "approval" || got.MaclawAppIcon != "FileCheck2" || got.MaclawAppDefinitionSHA256 != "sha256-paper-app" || got.ArtifactContractPresentation != "timeline" {
+		t.Fatalf("unexpected MaClaw App presentation metadata: %+v", got)
+	}
+	if got.MaclawAppTestEvidence == nil || got.MaclawAppTestEvidence.RunID != "run-paper-app" || got.MaclawAppTestEvidence.PrimaryResult != "approved" || got.MaclawAppTestEvidence.OutputCount != 3 {
+		t.Fatalf("unexpected MaClaw App test evidence: %+v", got.MaclawAppTestEvidence)
 	}
 	market := results[1]
 	if market.SourceLabel != "公共市场" || market.Source != "skillmarket" {
@@ -486,13 +527,17 @@ func TestSearchMixedSkillsEnterpriseOnlyPolicySkipsExternalSources(t *testing.T)
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteHubURL = server.URL
-	cfg.RemoteViewerToken = "viewer-token"
 	cfg.RemoteHubCenterURL = server.URL
 	cfg.CapabilityMarketPolicy.EnterpriseOnlySearch = boolPtr(true)
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteViewerToken = "viewer-token"
+	}); err != nil {
+		t.Fatalf("PatchConfig(RemoteViewerToken) error = %v", err)
+	}
 	if _, err := app.SearchMixedSkills("browser"); err != nil {
 		t.Fatalf("SearchMixedSkills() error = %v", err)
 	}
@@ -538,7 +583,6 @@ func TestInstallMixedSkillBlocksExternalWhenEnterpriseOnlyInstall(t *testing.T) 
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteHubURL = "https://hub.example.com"
-	cfg.RemoteViewerToken = "viewer-token"
 	cfg.CapabilityMarketPolicy.EnterpriseOnlyInstall = boolPtr(true)
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -767,10 +811,14 @@ func TestSkillLoadCacheKeyNormalizesExternalDirs(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows path identity is case-insensitive")
 	}
-	left := skillLoadCacheKey(nil, []string{`C:\Users\Me\Skills\Demo`, " "})
-	right := skillLoadCacheKey(nil, []string{`c:\users\me\skills\demo`})
+	left := skillLoadCacheKey(nil, []string{`C:\Users\Me\Skills\Demo`, " "}, 7)
+	right := skillLoadCacheKey(nil, []string{`c:\users\me\skills\demo`}, 7)
 	if left != right {
 		t.Fatalf("cache keys differ: %q != %q", left, right)
+	}
+	changedScanner := skillLoadCacheKey(nil, []string{`c:\users\me\skills\demo`}, 8)
+	if left == changedScanner {
+		t.Fatalf("cache key did not include scanner version: %q", left)
 	}
 }
 

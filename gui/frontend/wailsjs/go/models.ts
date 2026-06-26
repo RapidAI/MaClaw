@@ -89,6 +89,7 @@ export namespace main {
 	    id: string;
 	    name: string;
 	    project_path: string;
+	    working_dir?: string;
 	    workflow_type: string;
 	    preview: string;
 	    tags: string[];
@@ -109,6 +110,7 @@ export namespace main {
 	        this.id = source["id"];
 	        this.name = source["name"];
 	        this.project_path = source["project_path"];
+	        this.working_dir = source["working_dir"];
 	        this.workflow_type = source["workflow_type"];
 	        this.preview = source["preview"];
 	        this.tags = source["tags"];
@@ -447,6 +449,7 @@ export namespace main {
 	    maclaw_llm_context_length: number;
 	    maclaw_llm_timeout_sec: number;
 	    agent_response_timeout_sec: number;
+	    skill_runner_timeout_sec: number;
 	    maclaw_llm_providers: any[];
 	    maclaw_llm_current_provider: string;
 	    llm_prompt_cache: LLMPromptCacheConfig;
@@ -617,6 +620,7 @@ export namespace main {
 	        this.maclaw_llm_context_length = source["maclaw_llm_context_length"];
 	        this.maclaw_llm_timeout_sec = source["maclaw_llm_timeout_sec"];
 	        this.agent_response_timeout_sec = source["agent_response_timeout_sec"];
+	        this.skill_runner_timeout_sec = source["skill_runner_timeout_sec"];
 	        this.maclaw_llm_providers = source["maclaw_llm_providers"];
 	        this.maclaw_llm_current_provider = source["maclaw_llm_current_provider"];
 	        this.llm_prompt_cache = this.convertValues(source["llm_prompt_cache"], LLMPromptCacheConfig);

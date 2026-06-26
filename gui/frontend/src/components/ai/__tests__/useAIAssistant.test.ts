@@ -987,6 +987,274 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.streaming).toBe(false);
     });
 
+    it('deduplicates cumulative stream snapshots for the active assistant message', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('stream cumulative snapshots');
+        });
+
+        const first = '第1步：修改 step2b_detect_nontext_pii 的 prompt，增加 bbox 坐标请求。';
+        const second = `${first}\n\n修改1：扩展 is_fa_fp 为更通用的非文字检测标识。`;
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent(first));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(second));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe(second);
+        await waitFor(() => {
+            const savedState = (SaveAIAssistantUIState as any).mock.calls
+                .map(([state]: [any]) => state)
+                .find((state: any) => state?.messages?.some((message: any) => message.role === 'assistant' && message.content === second));
+            expect(savedState).toBeTruthy();
+            expect(JSON.stringify(savedState)).not.toContain('streamSnapshotMode');
+            expect(JSON.stringify(savedState)).not.toContain('reasoningStreamSnapshotMode');
+        });
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+	it('drops repeated full snapshots after snapshot mode is detected', async () => {
+		const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+		(SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('stream repeated snapshots');
+        });
+
+        const first = 'Step 1: update the prompt to request bbox coordinates.';
+        const second = `${first}\nStep 2: run the detector and verify outputs.`;
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent(first));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(second));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(second));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe(second);
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+    it('keeps stream snapshot state aligned with role-prefix-stripped display text', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('stream role prefix snapshots');
+        });
+
+        const firstDisplay = 'Step 1: inspect the stream path.';
+        const secondDisplay = `${firstDisplay}\nStep 2: normalize snapshots before buffering.`;
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent(`Browser: ${firstDisplay}`));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(secondDisplay));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe(secondDisplay);
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+    it('keeps stream snapshot state aligned when role prefixes arrive split across tokens', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('stream split role prefix snapshots');
+        });
+
+        const firstDisplay = 'Step 1: inspect split role prefixes.';
+        const secondDisplay = `${firstDisplay}\nStep 2: keep state aligned with display text.`;
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent('Brow'));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(`ser: ${firstDisplay}`));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(secondDisplay));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe(secondDisplay);
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+    it('strips split role prefixes even without a following cumulative snapshot', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('stream split role prefix only');
+        });
+
+        const body = 'Step 1: render only the assistant-visible text.';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent('Brow'));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(`ser: ${body}`));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe(body);
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+    it('flushes pending stream buffer before resetting snapshot state on a new round', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('stream buffered snapshot across new round');
+        });
+
+        const first = 'A'.repeat(24);
+        const second = `${first}B`;
+        const third = `${second}C`;
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent(first));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(second));
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent(third));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe(third);
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+    it('appends normalized buffered deltas without re-running snapshot overlap detection', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('stream buffered non-snapshot overlap');
+        });
+
+        const overlap = 'ABCDEFGHIJKLMNOPQRSTUVWX';
+        const first = `Rendered prefix ${overlap}`;
+        const second = overlap.slice(0, 12);
+        const third = `${overlap.slice(12)} tail`;
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent(first));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(second));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(third));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe(`${first}${second}${third}`);
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+    it('preserves intentionally repeated long streamed deltas', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('repeat stream text');
+        });
+
+        const repeated = 'Repeat this exact substantial sentence intentionally.\n';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent(repeated));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(repeated));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe(repeated + repeated);
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+    it('deduplicates unicode snapshot overlap without splitting emoji characters', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('stream emoji overlap');
+        });
+
+        const repeatedEmoji = '🧪'.repeat(24);
+        const first = `Prefix ${repeatedEmoji}`;
+        const second = `${repeatedEmoji} suffix`;
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent(first));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(second));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe(`${first} suffix`);
+        expect(assistantMessages(result.current.messages)[0].content).not.toContain('\uFFFD');
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
     it('keeps streamed thinking and appends final response reasoning', async () => {
         const pending = deferred<{ text: string; reasoning: string; error: string; fields: null; actions: null }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
@@ -3640,6 +3908,90 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.agentView?.id).toBe('workflow:form:project');
     });
 
+    it('mirrors workflow forms to the active task tab when the workflow owner session differs', async () => {
+        const taskTabSession = 'desktop-user:C:/Users/ma139/.maclaw/data/tasks/word-123';
+        const workflowOwnerSession = 'desktop-user:D:/real-working-dir';
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook({ activeSessionKey: taskTabSession });
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        await act(async () => {
+            void result.current.sendMessage('高考志愿申请');
+            await Promise.resolve();
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                workflow_user_id: workflowOwnerSession,
+                view: {
+                    id: 'workflow:form:gaokao_profile',
+                    type: 'form',
+                    title: '高考志愿申请',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'gaokao_profile' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-gaokao' },
+                        { name: '_workflow_user_id', type: 'hidden', value: workflowOwnerSession },
+                        { name: 'region', label: '地区', type: 'text', value: '' },
+                    ],
+                },
+            });
+        });
+
+        expect(result.current.agentView?.id).toBe('workflow:form:gaokao_profile');
+
+        const sent = parseSentRequest();
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: sent.request_id || '' });
+            await pending.promise;
+        });
+    });
+
+    it('does not mirror non-workflow forms from a different owner session into the active task tab', async () => {
+        const taskTabSession = 'desktop-user:C:/Users/ma139/.maclaw/data/tasks/word-123';
+        const workflowOwnerSession = 'desktop-user:D:/real-working-dir';
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook({ activeSessionKey: taskTabSession });
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        await act(async () => {
+            void result.current.sendMessage('ordinary task');
+            await Promise.resolve();
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                workflow_user_id: workflowOwnerSession,
+                view: {
+                    id: 'expense-form',
+                    type: 'form',
+                    title: 'Expense',
+                    fields: [
+                        { name: '_workflow_user_id', type: 'hidden', value: workflowOwnerSession },
+                        { name: 'amount', label: 'Amount', type: 'number', value: 86 },
+                    ],
+                },
+            });
+        });
+
+        expect(result.current.agentView).toBeNull();
+
+        const sent = parseSentRequest();
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: sent.request_id || '' });
+            await pending.promise;
+        });
+    });
+
     it('keeps lifecycle complete result views visible', async () => {
         const { result } = renderAssistantHook();
 
@@ -4157,6 +4509,65 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(result.current.agentView).toBeNull();
+    });
+
+    it('clears mirrored workflow forms from the active task tab after submit is accepted', async () => {
+        const taskTabSession = 'desktop-user:C:/Users/ma139/.maclaw/data/tasks/word-123';
+        const workflowOwnerSession = 'desktop-user:D:/real-working-dir';
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        (SubmitAgentView as any).mockImplementationOnce(async (payload: { request_id?: string }) => ({
+            text: '',
+            error: '',
+            request_id: payload.request_id || '',
+            deferred: true,
+        }));
+        const { result } = renderAssistantHook({ activeSessionKey: taskTabSession });
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        await act(async () => {
+            void result.current.sendMessage('高考志愿申请');
+            await Promise.resolve();
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                workflow_user_id: workflowOwnerSession,
+                view: {
+                    id: 'workflow:form:gaokao_profile',
+                    type: 'form',
+                    title: '高考志愿申请',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'gaokao_profile' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-gaokao' },
+                        { name: '_workflow_user_id', type: 'hidden', value: workflowOwnerSession },
+                        { name: 'region', label: '地区', type: 'text', value: '' },
+                    ],
+                },
+            });
+        });
+        expect(result.current.agentView?.id).toBe('workflow:form:gaokao_profile');
+
+        await act(async () => {
+            await result.current.submitAgentView('workflow:form:gaokao_profile', {
+                _workflow_phase: 'gaokao_profile',
+                _workflow_id: 'wf-gaokao',
+                _workflow_user_id: workflowOwnerSession,
+                region: '福建',
+            });
+        });
+
+        expect(result.current.agentView).toBeNull();
+
+        const sent = parseSentRequest();
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: sent.request_id || '' });
+            await pending.promise;
+        });
     });
 
     it('uses workflow owner session for workflow form submit rounds', async () => {

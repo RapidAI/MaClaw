@@ -38,6 +38,31 @@ type CapabilityGapDetector struct {
 
 type capabilityGapRuntimeContextKey struct{}
 
+const (
+	maxCapabilityGapLocalPackagedFileSize      int64 = 32 << 20
+	maxTotalCapabilityGapLocalPackagedFileSize int64 = 256 << 20
+)
+
+var allowedLocalPackagedFileExts = map[string]bool{
+	".css":  true,
+	".go":   true,
+	".html": true,
+	".js":   true,
+	".json": true,
+	".jsx":  true,
+	".md":   true,
+	".mjs":  true,
+	".ps1":  true,
+	".py":   true,
+	".sh":   true,
+	".toml": true,
+	".ts":   true,
+	".tsx":  true,
+	".txt":  true,
+	".yaml": true,
+	".yml":  true,
+}
+
 type capabilityGapRuntimeContext struct {
 	Platform      string
 	PolicyOwnerID string
@@ -964,9 +989,10 @@ func (d *CapabilityGapDetector) localSkillDir(skillName string) string {
 }
 
 // packageLocalFiles reads files from ~/.maclaw/data/skills/<name>/ and returns
-// a map of relative path to base64 content, respecting size and extension
-// limits. Symlinks and non-regular files are deliberately skipped so export
-// cannot leak files outside the skill directory.
+// a map of relative path to base64 content, respecting extension limits and a
+// generous per-file guardrail for abnormal local content. Symlinks and
+// non-regular files are deliberately skipped so export cannot leak files
+// outside the skill directory.
 func (d *CapabilityGapDetector) packageLocalFiles(skillName string) map[string]string {
 	return d.packageLocalFilesFromDir(d.localSkillDir(skillName))
 }
@@ -995,14 +1021,13 @@ func (d *CapabilityGapDetector) packageLocalFilesFromDir(skillDir string) map[st
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(de.Name()))
-		if !allowedFileExts[ext] {
+		if !allowedLocalPackagedFileExts[ext] {
 			return nil
 		}
-		if info.Size() > maxSingleFileSize {
+		if info.Size() > maxCapabilityGapLocalPackagedFileSize {
 			return nil
 		}
-		totalSize += info.Size()
-		if totalSize > maxTotalFileSize {
+		if totalSize+info.Size() > maxTotalCapabilityGapLocalPackagedFileSize {
 			return filepath.SkipAll
 		}
 
@@ -1015,6 +1040,7 @@ func (d *CapabilityGapDetector) packageLocalFilesFromDir(skillDir string) map[st
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
+		totalSize += info.Size()
 		files[rel] = base64.StdEncoding.EncodeToString(data)
 		return nil
 	})

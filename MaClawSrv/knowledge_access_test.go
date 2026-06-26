@@ -187,6 +187,145 @@ func TestMultiKnowledgeStoreDefaultsToOwnScopeAndCanReadConfiguredSameTenantScop
 	}
 }
 
+func TestMultiKnowledgeStoreSearchStructuredUsesAuthorizedScopes(t *testing.T) {
+	ctx := context.Background()
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	root := t.TempDir()
+	ownCSV := filepath.Join(root, "own.csv")
+	teamCSV := filepath.Join(root, "team.csv")
+	privateCSV := filepath.Join(root, "private.csv")
+	if err := os.WriteFile(ownCSV, []byte("姓名,部门\n张三,法务\n"), 0o644); err != nil {
+		t.Fatalf("write own csv: %v", err)
+	}
+	if err := os.WriteFile(teamCSV, []byte("姓名,部门\n李四,财务\n"), 0o644); err != nil {
+		t.Fatalf("write team csv: %v", err)
+	}
+	if err := os.WriteFile(privateCSV, []byte("姓名,部门\n王五,审计\n"), 0o644); err != nil {
+		t.Fatalf("write private csv: %v", err)
+	}
+	importReq := knowledge.DirectoryImportRequest{TenantID: "tenant-a", SaveScope: knowledge.SaveScopePersonal, IncludeExts: []string{".csv"}, MaxFileBytes: 1024}
+	importReq.OwnerID = "user-a"
+	if _, err := store.ImportFiles(ctx, importReq, []string{ownCSV}); err != nil {
+		t.Fatalf("ImportFiles user-a: %v", err)
+	}
+	importReq.OwnerID = "user-b"
+	if _, err := store.ImportFiles(ctx, importReq, []string{teamCSV}); err != nil {
+		t.Fatalf("ImportFiles user-b: %v", err)
+	}
+	importReq.OwnerID = "user-c"
+	if _, err := store.ImportFiles(ctx, importReq, []string{privateCSV}); err != nil {
+		t.Fatalf("ImportFiles user-c: %v", err)
+	}
+
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
+	multi := newMultiKnowledgeStore(store, access)
+
+	ownOnly, err := multi.SearchStructured(ctx, knowledge.StructuredSearchOptions{
+		TenantID:       "tenant-a",
+		OwnerID:        "user-a",
+		ColumnContains: map[string]string{"部门": ""},
+		Query:          "张三",
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("SearchStructured ownOnly: %v", err)
+	}
+	if !hasKnowledgeResultOwner(ownOnly, "user-a") || hasKnowledgeResultOwner(ownOnly, "user-b") || hasKnowledgeResultOwner(ownOnly, "user-c") {
+		t.Fatalf("default structured search scope mismatch: %#v", ownOnly)
+	}
+
+	if err := access.SetUser(ctx, "tenant-a", "user-a", &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: "tenant-a", OwnerID: "user-b", Name: "team"}}}); err != nil {
+		t.Fatalf("SetUser: %v", err)
+	}
+	withTeam, err := multi.SearchStructured(ctx, knowledge.StructuredSearchOptions{
+		TenantID:       "tenant-a",
+		OwnerID:        "user-a",
+		ColumnEquals:   map[string]string{"部门": "财务"},
+		Limit:          10,
+		SearchScope:    knowledge.SaveScopePersonal,
+		SourceIDs:      nil,
+		SourceID:       "",
+		NumberRanges:   nil,
+		DateRanges:     nil,
+		ColumnContains: nil,
+	})
+	if err != nil {
+		t.Fatalf("SearchStructured withTeam: %v", err)
+	}
+	if !hasKnowledgeResultOwner(withTeam, "user-b") {
+		t.Fatalf("expected authorized user-b structured knowledge in results: %#v", withTeam)
+	}
+	if hasKnowledgeResultOwner(withTeam, "user-c") {
+		t.Fatalf("structured search leaked unauthorized owner: %#v", withTeam)
+	}
+}
+
+func TestMultiKnowledgeStoreStructuredCatalogUsesAuthorizedScopes(t *testing.T) {
+	ctx := context.Background()
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	root := t.TempDir()
+	ownCSV := filepath.Join(root, "own-catalog.csv")
+	teamCSV := filepath.Join(root, "team-catalog.csv")
+	privateCSV := filepath.Join(root, "private-catalog.csv")
+	if err := os.WriteFile(ownCSV, []byte("name,department\nAlice,Legal\n"), 0o644); err != nil {
+		t.Fatalf("write own csv: %v", err)
+	}
+	if err := os.WriteFile(teamCSV, []byte("name,budget\nBob,1200\n"), 0o644); err != nil {
+		t.Fatalf("write team csv: %v", err)
+	}
+	if err := os.WriteFile(privateCSV, []byte("name,audit\nCarol,restricted\n"), 0o644); err != nil {
+		t.Fatalf("write private csv: %v", err)
+	}
+	importReq := knowledge.DirectoryImportRequest{TenantID: "tenant-a", SaveScope: knowledge.SaveScopePersonal, IncludeExts: []string{".csv"}, MaxFileBytes: 1024}
+	importReq.OwnerID = "user-a"
+	if _, err := store.ImportFiles(ctx, importReq, []string{ownCSV}); err != nil {
+		t.Fatalf("ImportFiles user-a: %v", err)
+	}
+	importReq.OwnerID = "user-b"
+	if _, err := store.ImportFiles(ctx, importReq, []string{teamCSV}); err != nil {
+		t.Fatalf("ImportFiles user-b: %v", err)
+	}
+	importReq.OwnerID = "user-c"
+	if _, err := store.ImportFiles(ctx, importReq, []string{privateCSV}); err != nil {
+		t.Fatalf("ImportFiles user-c: %v", err)
+	}
+
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
+	multi := newMultiKnowledgeStore(store, access)
+
+	ownOnly, err := multi.StructuredCatalog(ctx, knowledge.StructuredCatalogOptions{TenantID: "tenant-a", OwnerID: "user-a", Limit: 10})
+	if err != nil {
+		t.Fatalf("StructuredCatalog ownOnly: %v", err)
+	}
+	if !hasStructuredCatalogSourceTitle(ownOnly, "own-catalog") || hasStructuredCatalogSourceTitle(ownOnly, "team-catalog") || hasStructuredCatalogSourceTitle(ownOnly, "private-catalog") {
+		t.Fatalf("default structured catalog scope mismatch: %#v", ownOnly)
+	}
+
+	if err := access.SetUser(ctx, "tenant-a", "user-a", &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: "tenant-a", OwnerID: "user-b", Name: "team"}}}); err != nil {
+		t.Fatalf("SetUser: %v", err)
+	}
+	withTeam, err := multi.StructuredCatalog(ctx, knowledge.StructuredCatalogOptions{TenantID: "tenant-a", OwnerID: "user-a", Limit: 10})
+	if err != nil {
+		t.Fatalf("StructuredCatalog withTeam: %v", err)
+	}
+	if !hasStructuredCatalogSourceTitle(withTeam, "own-catalog") || !hasStructuredCatalogSourceTitle(withTeam, "team-catalog") {
+		t.Fatalf("expected own and authorized team tables in catalog: %#v", withTeam)
+	}
+	if hasStructuredCatalogSourceTitle(withTeam, "private-catalog") {
+		t.Fatalf("structured catalog leaked unauthorized owner: %#v", withTeam)
+	}
+}
+
 func TestKnowledgeManagerAgentStoreLazilySearchesAuthorizedScopes(t *testing.T) {
 	ctx := context.Background()
 	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
@@ -550,6 +689,29 @@ func TestMultiKnowledgeStoreContextPackUsesEmbeddedQuery(t *testing.T) {
 	}
 	if teamPack.Count == 0 || !hasKnowledgeNote(teamPack.Notes, "cross_user_authorized") {
 		t.Fatalf("cross-user context pack should include authorization note, got %#v", teamPack)
+	}
+}
+
+func TestKnowledgeResultKeysDistinguishStructuredRows(t *testing.T) {
+	base := knowledge.SearchResult{
+		Source:     knowledge.Source{ID: "src_csv"},
+		ResultType: "table_row",
+		TableID:    "table_1",
+		SheetName:  "Sheet1",
+		Citation:   "employees.csv / Sheet1 / table row",
+	}
+	rowA := base
+	rowA.RowID = "row_1"
+	rowA.RowRange = "2:2"
+	rowB := base
+	rowB.RowID = "row_2"
+	rowB.RowRange = "3:3"
+
+	if knowledgeResultKey(rowA) == knowledgeResultKey(rowB) {
+		t.Fatalf("structured search result keys should distinguish table rows")
+	}
+	if knowledgeContextCitationKey(rowA) == knowledgeContextCitationKey(rowB) {
+		t.Fatalf("structured context citation keys should distinguish table rows")
 	}
 }
 
@@ -1577,6 +1739,15 @@ func hasKnowledgeSource(sources []knowledge.Source, sourceID string) bool {
 func hasKnowledgeResultOwner(results []knowledge.SearchResult, ownerID string) bool {
 	for _, result := range results {
 		if result.Source.OwnerID == ownerID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasStructuredCatalogSourceTitle(result knowledge.StructuredCatalogResult, title string) bool {
+	for _, table := range result.Tables {
+		if table.SourceTitle == title {
 			return true
 		}
 	}

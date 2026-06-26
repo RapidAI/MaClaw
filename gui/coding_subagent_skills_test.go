@@ -96,6 +96,24 @@ func TestBuildCodingSubAgentSkillSection_WithSkills(t *testing.T) {
 	}
 }
 
+func TestBuildCodingSubAgentSkillSectionCapsRequiredArgs(t *testing.T) {
+	section := buildCodingSubAgentSkillSection([]codingSubAgentSkillMatch{{
+		Name:         "schema-heavy-skill",
+		Description:  "runs a helper with many required args",
+		RequiredArgs: []string{"input", "output", "project", "mode", "timeout", "format", "locale", "theme"},
+	}})
+
+	if !strings.Contains(section, "input, output, project, mode, timeout, format") {
+		t.Fatalf("section should include first required args, got %q", section)
+	}
+	if strings.Contains(section, "locale") || strings.Contains(section, "theme") {
+		t.Fatalf("section should cap expanded required args, got %q", section)
+	}
+	if !strings.Contains(section, "还有 2 项未展开") {
+		t.Fatalf("section should report omitted required args, got %q", section)
+	}
+}
+
 func TestBuildManageSkillToolDefinition_Structure(t *testing.T) {
 	def := buildManageSkillToolDefinition()
 
@@ -158,6 +176,26 @@ func TestExecuteManageSkill_DisallowedAction(t *testing.T) {
 	}
 }
 
+func TestExecuteManageSkill_StatusRequiresRunID(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: &IMMessageHandler{}},
+		matchedSkills: []codingSubAgentSkillMatch{
+			{Name: "ui-ux-pro-max"},
+		},
+	}
+
+	result := cb.executeManageSkill(map[string]interface{}{"action": "status"})
+	if result.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("missing status run_id outcome = %q, want failed; result=%s", result.Outcome, result.Text)
+	}
+	if !strings.Contains(result.Text, "missing required argument") || !strings.Contains(result.Text, "run_id") {
+		t.Fatalf("missing status run_id should produce targeted required-argument error, got %q", result.Text)
+	}
+	if len(cb.getDynamicToolsRun()) != 0 {
+		t.Fatalf("manage_skill status without run_id should not execute or be tracked, got %#v", cb.getDynamicToolsRun())
+	}
+}
+
 func TestExecuteManageSkill_UnmatchedSkillName(t *testing.T) {
 	cb := &codingSubAgentCallbacks{
 		subagent: &CodingSubAgent{handler: &IMMessageHandler{}},
@@ -175,6 +213,107 @@ func TestExecuteManageSkill_UnmatchedSkillName(t *testing.T) {
 	}
 }
 
+func TestExecuteManageSkill_MissingRequiredArgs(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: &IMMessageHandler{}},
+		matchedSkills: []codingSubAgentSkillMatch{
+			{Name: "ui-ux-pro-max", RequiredArgs: []string{"input"}},
+		},
+	}
+
+	result := cb.executeManageSkill(map[string]interface{}{"action": "run", "name": "ui-ux-pro-max", "args": map[string]interface{}{}})
+	if result.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("missing skill arg outcome = %q, want failed; result=%s", result.Outcome, result.Text)
+	}
+	if !strings.Contains(result.Text, "missing required skill argument") || !strings.Contains(result.Text, "input") {
+		t.Fatalf("missing skill arg should produce targeted recovery error, got %q", result.Text)
+	}
+	if len(cb.getDynamicToolsRun()) != 0 {
+		t.Fatalf("manage_skill with missing args should not execute or be tracked, got %#v", cb.getDynamicToolsRun())
+	}
+}
+
+func TestExecuteManageSkill_RequiredArgsAllowTopLevelCompatibility(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		matchedSkills: []codingSubAgentSkillMatch{
+			{Name: "ui-ux-pro-max", RequiredArgs: []string{"input", "mode"}},
+		},
+	}
+	args := map[string]interface{}{
+		"input": "screen.png",
+		"mode":  "fast",
+		"args":  map[string]interface{}{"mode": "precise"},
+	}
+
+	if result, rejected := rejectMissingCodingSubAgentSkillRequiredArguments(cb.matchedSkills[0], args); rejected {
+		t.Fatalf("top-level input compatibility should satisfy required skill args, got %#v", result)
+	}
+	skillArgs, ok := args["args"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("args should remain a JSON object after normalization, got %#v", args["args"])
+	}
+	if skillArgs["input"] != "screen.png" {
+		t.Fatalf("top-level input should be copied into args, got %#v", skillArgs)
+	}
+	if skillArgs["mode"] != "precise" {
+		t.Fatalf("existing args.mode should not be overwritten by top-level mode, got %#v", skillArgs)
+	}
+}
+
+func TestExecuteManageSkill_RequiredArgsCreateArgsFromTopLevelCompatibility(t *testing.T) {
+	skill := codingSubAgentSkillMatch{Name: "ui-ux-pro-max", RequiredArgs: []string{"input"}}
+	args := map[string]interface{}{"input": "screen.png"}
+
+	if result, rejected := rejectMissingCodingSubAgentSkillRequiredArguments(skill, args); rejected {
+		t.Fatalf("top-level skill arg should create args object, got %#v", result)
+	}
+	skillArgs, ok := args["args"].(map[string]interface{})
+	if !ok || skillArgs["input"] != "screen.png" {
+		t.Fatalf("expected args.input to be normalized from top-level input, got %#v", args["args"])
+	}
+}
+
+func TestCodingSubAgentDynamicToolFailureClassification(t *testing.T) {
+	failures := []string{
+		"",
+		"[error] tool timed out",
+		"Error: schema validation failed",
+		"错误: 参数缺失",
+		"错误：参数缺失",
+		"失败: browser crashed",
+		"失败：browser crashed",
+		"❌ skill failed",
+		" failed: runner crashed",
+		"Failure: browser disconnected",
+		"Exception: timeout waiting for selector",
+		"Panic: nil pointer",
+		"Tool error: missing dependency",
+		"MCP call failed: runtime owner is missing",
+		"MCP tool error: validation failed",
+		"MCP 调用失败: unknown server",
+		"MCP 调用被拒绝: builtin tool",
+		"MCP Registry 未初始化",
+		"本地 MCP Manager 未初始化",
+		"Validation failed: missing url",
+		"arguments JSON parse failed: unexpected end",
+	}
+	for _, text := range failures {
+		if !isCodingSubAgentDynamicToolFailure(text) {
+			t.Fatalf("%q should be classified as failed", text)
+		}
+	}
+
+	successes := []string{
+		"fixed 3 errors and wrote report",
+		"No skills found for query: lint",
+		"MCP tool completed successfully",
+	}
+	for _, text := range successes {
+		if isCodingSubAgentDynamicToolFailure(text) {
+			t.Fatalf("%q should not be classified as failed", text)
+		}
+	}
+}
 func TestIsMatchedSkill_CaseInsensitive(t *testing.T) {
 	cb := &codingSubAgentCallbacks{
 		matchedSkills: []codingSubAgentSkillMatch{
@@ -207,7 +346,6 @@ func TestCodingSubAgentAllowedSkillActions(t *testing.T) {
 	}
 }
 
-
 func TestExecuteManageSkill_CaseInsensitiveToolName(t *testing.T) {
 	// LLM might output "Manage_Skill" or "MANAGE_SKILL" — should still route correctly.
 	// Simulate what executeToolWithOutcome does: canonicalize then check dynamic tools.
@@ -219,5 +357,43 @@ func TestExecuteManageSkill_CaseInsensitiveToolName(t *testing.T) {
 	canonical2 := canonicalCodingSubAgentToolName("MANAGE_SKILL")
 	if canonical2 != "manage_skill" {
 		t.Errorf("expected canonical name 'manage_skill', got %q", canonical2)
+	}
+}
+
+func TestCodingSubAgentDynamicToolBlocksAreAudited(t *testing.T) {
+	skillCB := &codingSubAgentCallbacks{
+		subagent:      &CodingSubAgent{handler: &IMMessageHandler{}},
+		matchedSkills: []codingSubAgentSkillMatch{{Name: "ui-ux-pro-max"}},
+	}
+	result := skillCB.executeManageSkill(map[string]interface{}{"action": "install", "name": "ui-ux-pro-max"})
+	if result.Outcome != codingToolOutcomeBlocked {
+		t.Fatalf("disallowed manage_skill outcome = %q, want blocked", result.Outcome)
+	}
+	violations := skillCB.getGuardrailViolations()
+	if len(violations) != 1 || violations[0].Tool != "manage_skill" || violations[0].Category != codingSubAgentGuardrailCategoryPolicy {
+		t.Fatalf("manage_skill block should be audited as policy guardrail, got %#v", violations)
+	}
+
+	missingSkillCB := &codingSubAgentCallbacks{
+		subagent:      &CodingSubAgent{handler: &IMMessageHandler{}},
+		matchedSkills: []codingSubAgentSkillMatch{{Name: "eslint-fixer"}},
+	}
+	result = missingSkillCB.executeManageSkill(map[string]interface{}{"action": "run", "name": "tts-to-mp3"})
+	if result.Outcome != codingToolOutcomeBlocked {
+		t.Fatalf("unmatched manage_skill outcome = %q, want blocked", result.Outcome)
+	}
+	violations = missingSkillCB.getGuardrailViolations()
+	if len(violations) != 1 || violations[0].Tool != "manage_skill" || !strings.Contains(violations[0].Summary, "not available") {
+		t.Fatalf("unmatched manage_skill should be audited, got %#v", violations)
+	}
+
+	mcpCB := &codingSubAgentCallbacks{}
+	result = mcpCB.executeCallMCPTool(map[string]interface{}{"server_id": "browser", "tool_name": "screenshot"})
+	if result.Outcome != codingToolOutcomeBlocked {
+		t.Fatalf("unavailable call_mcp_tool outcome = %q, want blocked", result.Outcome)
+	}
+	violations = mcpCB.getGuardrailViolations()
+	if len(violations) != 1 || violations[0].Tool != "call_mcp_tool" || violations[0].Category != codingSubAgentGuardrailCategoryPolicy {
+		t.Fatalf("call_mcp_tool block should be audited as policy guardrail, got %#v", violations)
 	}
 }

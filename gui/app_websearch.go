@@ -1,8 +1,12 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
+	"context"
 	"strings"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
 
 func defaultWebSearchProviders() []corelib.WebSearchProvider {
@@ -103,4 +107,11 @@ func (a *App) SaveWebSearchProviders(providers []corelib.WebSearchProvider, curr
 		cfg.WebSearchProviders = providers
 		cfg.WebSearchCurrentProvider = resolvedCurrent
 	})
+}
+
+func (a *App) TestWebSearchProvider(provider corelib.WebSearchProvider) error {
+	provider = normalizeWebSearchProvider(provider)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	return websearch.TestProvider(ctx, provider)
 }

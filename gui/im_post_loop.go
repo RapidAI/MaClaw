@@ -107,8 +107,17 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 			if wf := h.getWorkflowV2(); wf != nil {
 				if updatedState := wf.machine.GetActive(ownerID); updatedState != nil {
 					if nextPhase := updatedState.ActivePhase(); nextPhase != nil && nextPhase.ExecMode == v2.ExecModeAutoFromPrev {
+						if nextPhasePrompt := v2.BuildPhasePrompt(updatedState); nextPhasePrompt != "" {
+							h.stashedPhasePrompt.Store(ownerID, nextPhasePrompt)
+							h.workflowAgentLoopMarker.Store(ownerID, true)
+						}
 						log.Printf("[workflow-v2] post-loop auto-completing phase=%s (ExecMode=auto_from_prev)", nextPhase.ID)
 						wf.machine.RecordOutput(ownerID, docText)
+						if refreshedState := wf.machine.GetActive(ownerID); refreshedState != nil && h.app != nil && h.app.workflowEngine != nil {
+							h.app.workflowEngine.StoreActiveState(ownerID, mapV2StateToV1(refreshedState))
+						}
+					} else if h.app != nil && h.app.workflowEngine != nil {
+						h.app.workflowEngine.StoreActiveState(ownerID, mapV2StateToV1(updatedState))
 					}
 				}
 			}
@@ -293,8 +302,8 @@ func resolveWorkflowPhaseDocText(loopCtx *LoopContext, resp *IMAgentResponse) (s
 // .html, .css, etc.) are skipped — only document content files (.md, .txt, .markdown,
 // .rst, .adoc, .tex) are read as potential phase output for the preview panel.
 func readWorkflowWrittenFiles(paths []string) string {
-	const maxFileSize = 100 * 1024 // 100KB per file
-	const maxTotalRunes = 50000   // cap total output to avoid oversized phase output
+	const maxFileSize = 100 * 1024         // 100KB per file
+	const maxTotalRunes = 50000            // cap total output to avoid oversized phase output
 	const maxTotalRunesWithImages = 200000 // higher cap when images are inlined
 
 	var parts []string

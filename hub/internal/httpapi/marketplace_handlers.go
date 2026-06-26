@@ -34,6 +34,7 @@ var errCapabilityRefAmbiguous = errors.New("capability_ref matches multiple capa
 
 const enterpriseSkillUploadMaxBytes = 10 << 20
 const enterpriseSkillPackageExportMaxBytes = enterpriseSkillUploadMaxBytes
+const enterpriseMaclawAppPackageSubmitMaxBytes = 2 << 20
 
 func MarketplacePageHandler(product string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +210,23 @@ type enterpriseSkillPackageMeta struct {
 	Triggers    []string
 }
 
+type enterpriseMaclawAppPackageEntry struct {
+	Entry       map[string]any
+	App         map[string]any
+	Governance  map[string]any
+	ID          string
+	Name        string
+	Description string
+	Kind        string
+}
+
+type maclawAppReviewIssue struct {
+	Path       string `json:"path,omitempty"`
+	Severity   string `json:"severity,omitempty"`
+	Message    string `json:"message"`
+	Suggestion string `json:"suggestion,omitempty"`
+}
+
 func CapabilitySkillSubmitHandler(svc *capability.Service, identity viewerAuthenticator, dataDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, err := authenticateMarketplaceViewer(r, identity)
@@ -301,6 +319,463 @@ func CapabilitySkillSubmitHandler(svc *capability.Service, identity viewerAuthen
 	}
 }
 
+func CapabilityMaclawAppSubmitHandler(svc *capability.Service, identity viewerAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateMarketplaceViewer(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, enterpriseMaclawAppPackageSubmitMaxBytes+1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_MACLAW_APP_PACKAGE", "read maclaw app package failed")
+			return
+		}
+		if len(body) > enterpriseMaclawAppPackageSubmitMaxBytes {
+			writeError(w, http.StatusRequestEntityTooLarge, "MACLAW_APP_PACKAGE_TOO_LARGE", "maclaw app package is too large")
+			return
+		}
+		pkg, sourceSubmissionID, err := decodeMaclawAppSubmitPackage(body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_MACLAW_APP_PACKAGE", err.Error())
+			return
+		}
+		entries, err := parseEnterpriseMaclawAppPackageEntries(pkg)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_MACLAW_APP_PACKAGE", err.Error())
+			return
+		}
+		checksum, err := canonicalJSONSHA256(pkg)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_MACLAW_APP_PACKAGE", err.Error())
+			return
+		}
+		ctx := capability.WithTenant(r.Context(), principal.TenantID)
+		submissions := make([]map[string]any, 0, len(entries))
+		for _, entry := range entries {
+			version := firstNonEmpty(stringFromMap(entry.App, "version"), checksum[:12])
+			versionKey := corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":maclaw-app:" + entry.ID + "@" + checksum[:12]
+			metadata := enterpriseMaclawAppCapabilityMetadata(pkg, entry, checksum, principal, sourceSubmissionID)
+			item, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
+				CapabilityType:    corelib.CapabilityTypeSkill,
+				Publisher:         firstNonEmpty(principal.Email, principal.UserID, "enterprise"),
+				CapabilityID:      entry.ID,
+				GlobalKey:         corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":maclaw-app:" + entry.ID,
+				DisplayName:       entry.Name,
+				Description:       entry.Description,
+				Source:            corelib.CapabilitySourceEnterpriseHub,
+				ManagedBy:         "maclaw_app_upload",
+				Status:            "pending_review",
+				MetadataJSON:      jsonObjectString(metadata),
+				Version:           version,
+				VersionKey:        versionKey,
+				PackageChecksum:   checksum,
+				ManifestJSON:      jsonObjectString(entry.Entry),
+				TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw.app.pack.v1", "app_id": entry.ID, "app_kind": entry.Kind}),
+				CompatibilityJSON: jsonObjectString(map[string]any{"requires_maclaw_app_runtime": true}),
+				VersionStatus:     "pending_review",
+				SetCurrentVersion: true,
+			})
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "MACLAW_APP_SUBMIT_FAILED", err.Error())
+				return
+			}
+			submissions = append(submissions, map[string]any{
+				"submission_id": item.CurrentVersionKey,
+				"capability_id": item.ID,
+				"app_id":        entry.ID,
+				"app_name":      entry.Name,
+				"status":        item.Status,
+				"version_key":   item.CurrentVersionKey,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"schema":         "maclaw.app.hub_submission.v1",
+			"status":         "pending_review",
+			"package_sha256": checksum,
+			"app_count":      len(entries),
+			"submissions":    submissions,
+		})
+	}
+}
+
+func AdminCapabilityMaclawAppReviewHandler(svc *capability.Service, decision string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
+		capabilityID := strings.TrimSpace(r.PathValue("id"))
+		if capabilityID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_CAPABILITY_ID", "capability id is required")
+			return
+		}
+		var req struct {
+			Reason         string                 `json:"reason,omitempty"`
+			Reviewer       string                 `json:"reviewer,omitempty"`
+			RiskLevel      string                 `json:"risk_level,omitempty"`
+			ApprovedScopes []string               `json:"approved_scopes,omitempty"`
+			ReviewIssues   []maclawAppReviewIssue `json:"review_issues,omitempty"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		item, err := svc.Get(ctx, capabilityID)
+		if errors.Is(err, capability.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "CAPABILITY_NOT_FOUND", "capability not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CAPABILITY_GET_FAILED", err.Error())
+			return
+		}
+		metadata := mapFromRawJSON(json.RawMessage(item.MetadataJSON))
+		if !isEnterpriseMaclawAppCapability(*item, metadata) {
+			writeError(w, http.StatusBadRequest, "NOT_MACLAW_APP_CAPABILITY", "capability is not a MaClaw App submission")
+			return
+		}
+		currentStatus := strings.TrimSpace(item.Status)
+		if currentStatus == "approved" || currentStatus == "published" || currentStatus == "revoked" {
+			writeError(w, http.StatusConflict, "MACLAW_APP_REVIEW_TERMINAL", "reviewed MaClaw App capability cannot be changed here")
+			return
+		}
+		nextStatus := "approved"
+		reviewState := "approved"
+		if decision == "reject" {
+			nextStatus = "review_failed"
+			reviewState = "review_failed"
+			reason := strings.TrimSpace(req.Reason)
+			if reason == "" && len(req.ReviewIssues) == 0 {
+				writeError(w, http.StatusBadRequest, "REJECTION_REASON_REQUIRED", "rejection reason or review_issues is required")
+				return
+			}
+			if reason != "" && (len([]rune(reason)) < 10 || len([]rune(reason)) > 2000) {
+				writeError(w, http.StatusBadRequest, "INVALID_REJECTION_REASON", "rejection reason must be 10-2000 characters")
+				return
+			}
+		}
+		reviewer := firstNonEmpty(strings.TrimSpace(req.Reviewer), "hub-admin")
+		reviewedAt := time.Now().UTC().Format(time.RFC3339)
+		metadata["review_state"] = reviewState
+		metadata["reviewed_at"] = reviewedAt
+		metadata["reviewer"] = reviewer
+		if strings.TrimSpace(req.RiskLevel) != "" {
+			metadata["risk_level"] = strings.TrimSpace(req.RiskLevel)
+		}
+		if len(req.ApprovedScopes) > 0 {
+			metadata["approved_scopes"] = compactStringList(req.ApprovedScopes)
+		}
+		if decision == "reject" {
+			issues := req.ReviewIssues
+			if len(issues) == 0 {
+				issues = []maclawAppReviewIssue{{
+					Path:       "app.governance",
+					Severity:   "error",
+					Message:    strings.TrimSpace(req.Reason),
+					Suggestion: "revise the MaClaw App package and resubmit",
+				}}
+			}
+			metadata["review_issues"] = maclawAppReviewIssuesToMaps(issues)
+			metadata["review_reason"] = strings.TrimSpace(req.Reason)
+		} else {
+			metadata["approved_at"] = reviewedAt
+			delete(metadata, "review_issues")
+			delete(metadata, "review_reason")
+		}
+		updated, err := svc.ReviewCapabilityVersion(ctx, item.ID, nextStatus, jsonObjectString(compactMetadata(metadata)))
+		if errors.Is(err, capability.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "CAPABILITY_NOT_FOUND", "capability not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "MACLAW_APP_REVIEW_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         true,
+			"status":     nextStatus,
+			"capability": updated,
+			"review": map[string]any{
+				"state":       reviewState,
+				"reviewer":    reviewer,
+				"reviewed_at": reviewedAt,
+			},
+		})
+	}
+}
+
+func isEnterpriseMaclawAppCapability(item capability.CapabilitySummary, metadata map[string]any) bool {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	return metadata["is_maclaw_app"] == true ||
+		strings.EqualFold(stringFromAny(metadata["product_kind"]), "maclaw_app_skill") ||
+		strings.TrimSpace(stringFromAny(metadata["maclaw_app_id"])) != "" ||
+		strings.EqualFold(strings.TrimSpace(item.ManagedBy), "maclaw_app_upload")
+}
+
+func compactStringList(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func maclawAppReviewIssuesToMaps(issues []maclawAppReviewIssue) []map[string]any {
+	out := make([]map[string]any, 0, len(issues))
+	for _, issue := range issues {
+		message := strings.TrimSpace(issue.Message)
+		if message == "" {
+			continue
+		}
+		severity := strings.TrimSpace(issue.Severity)
+		if severity == "" {
+			severity = "error"
+		}
+		out = append(out, compactMetadata(map[string]any{
+			"path":       strings.TrimSpace(issue.Path),
+			"severity":   severity,
+			"message":    message,
+			"suggestion": strings.TrimSpace(issue.Suggestion),
+		}))
+	}
+	return out
+}
+
+func decodeMaclawAppSubmitPackage(body []byte) (map[string]any, string, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return nil, "", fmt.Errorf("decode maclaw app package: %w", err)
+	}
+	sourceSubmissionID := stringFromMap(doc, "source_submission_id")
+	if pkg, ok := doc["package"].(map[string]any); ok {
+		return pkg, sourceSubmissionID, nil
+	}
+	return doc, sourceSubmissionID, nil
+}
+
+func parseEnterpriseMaclawAppPackageEntries(pkg map[string]any) ([]enterpriseMaclawAppPackageEntry, error) {
+	switch stringFromMap(pkg, "schema") {
+	case "maclaw.app.pack.v1":
+		if stringFromMap(pkg, "privateMarker") != "x_maclaw_apps" {
+			return nil, fmt.Errorf("maclaw app package privateMarker must be x_maclaw_apps")
+		}
+		rawApps, ok := pkg["apps"].([]any)
+		if !ok || len(rawApps) == 0 {
+			return nil, fmt.Errorf("maclaw app package apps must be a non-empty array")
+		}
+		entries := make([]enterpriseMaclawAppPackageEntry, 0, len(rawApps))
+		seen := map[string]bool{}
+		for i, raw := range rawApps {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("maclaw app package apps[%d] must be an object", i)
+			}
+			parsed, err := parseEnterpriseMaclawAppEntry(entry, fmt.Sprintf("maclaw app package apps[%d]", i))
+			if err != nil {
+				return nil, err
+			}
+			if seen[strings.ToLower(parsed.ID)] {
+				return nil, fmt.Errorf("duplicate maclaw app id %q", parsed.ID)
+			}
+			seen[strings.ToLower(parsed.ID)] = true
+			entries = append(entries, parsed)
+		}
+		return entries, nil
+	case "maclaw.app.v1":
+		parsed, err := parseEnterpriseMaclawAppEntry(pkg, "maclaw app")
+		if err != nil {
+			return nil, err
+		}
+		return []enterpriseMaclawAppPackageEntry{parsed}, nil
+	default:
+		return nil, fmt.Errorf("maclaw app package schema must be maclaw.app.v1 or maclaw.app.pack.v1")
+	}
+}
+
+func parseEnterpriseMaclawAppEntry(entry map[string]any, path string) (enterpriseMaclawAppPackageEntry, error) {
+	if stringFromMap(entry, "schema") != "maclaw.app.v1" {
+		return enterpriseMaclawAppPackageEntry{}, fmt.Errorf("%s schema must be maclaw.app.v1", path)
+	}
+	if stringFromMap(entry, "privateMarker") != "x_maclaw_apps" {
+		return enterpriseMaclawAppPackageEntry{}, fmt.Errorf("%s privateMarker must be x_maclaw_apps", path)
+	}
+	app, ok := entry["app"].(map[string]any)
+	if !ok {
+		return enterpriseMaclawAppPackageEntry{}, fmt.Errorf("%s app must be an object", path)
+	}
+	id := stringFromMap(app, "id")
+	name := stringFromMap(app, "name")
+	if id == "" || name == "" {
+		return enterpriseMaclawAppPackageEntry{}, fmt.Errorf("%s app.id and app.name are required", path)
+	}
+	governance, _ := app["governance"].(map[string]any)
+	return enterpriseMaclawAppPackageEntry{
+		Entry:       entry,
+		App:         app,
+		Governance:  governance,
+		ID:          id,
+		Name:        name,
+		Description: stringFromMap(app, "description"),
+		Kind:        firstNonEmpty(stringFromMap(app, "kind"), stringFromMap(entry, "entryKind"), "tool_app"),
+	}, nil
+}
+
+func enterpriseMaclawAppCapabilityMetadata(pkg map[string]any, entry enterpriseMaclawAppPackageEntry, checksum string, principal *marketplaceViewerPrincipal, sourceSubmissionID string) map[string]any {
+	metadata := map[string]any{
+		"is_maclaw_app":                true,
+		"product_kind":                 "maclaw_app_skill",
+		"maclaw_app_id":                entry.ID,
+		"maclaw_app_name":              entry.Name,
+		"maclaw_app_description":       entry.Description,
+		"maclaw_app_kind":              entry.Kind,
+		"maclaw_app_definition_sha256": checksum,
+		"package_schema":               firstNonEmpty(stringFromMap(pkg, "schema"), "maclaw.app.pack.v1"),
+		"package_sha256":               checksum,
+		"source_submission_id":         sourceSubmissionID,
+		"publisher_email":              principal.Email,
+		"uploaded_by":                  principal.UserID,
+		"review_state":                 "pending_review",
+		"x_maclaw_apps_preview":        []map[string]any{{"id": entry.ID, "name": entry.Name, "kind": entry.Kind, "description": entry.Description}},
+		"submitted_package_app_count":  len(anySliceFromMap(pkg, "apps")),
+	}
+	if entry.Governance != nil {
+		if workspaceLayout := anyMapFromMap(entry.Governance, "workspaceLayout", "workspace_layout"); workspaceLayout != nil {
+			metadata["workspace_layout"] = workspaceLayout
+		}
+		if resultContract := anyMapFromMap(entry.Governance, "resultContract", "result_contract"); resultContract != nil {
+			metadata["result_contract"] = resultContract
+		}
+		if workflowContract := anyMapFromMap(entry.Governance, "workflowContract", "workflow_contract"); workflowContract != nil {
+			metadata["workflow_contract"] = workflowContract
+		}
+		if dependencyVerification := anyMapFromMap(entry.Governance, "dependencyVerification", "dependency_verification"); dependencyVerification != nil {
+			metadata["dependency_verification"] = dependencyVerification
+		}
+		if testEvidence := anyMapFromMap(entry.Governance, "testEvidence", "test_evidence"); testEvidence != nil {
+			metadata["test_evidence"] = testEvidence
+			metadata["maclaw_app_test_evidence"] = testEvidence
+		}
+	}
+	return compactMetadata(metadata)
+}
+
+func CapabilityMaclawAppPackageHandler(svc *capability.Service, identity viewerAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateMarketplaceViewer(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		capabilityID := strings.TrimSpace(r.PathValue("id"))
+		if capabilityID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_CAPABILITY_ID", "capability id is required")
+			return
+		}
+		ctx := capability.WithTenant(r.Context(), principal.TenantID)
+		item, err := svc.Get(ctx, capabilityID)
+		if errors.Is(err, capability.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "CAPABILITY_NOT_FOUND", "capability not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CAPABILITY_GET_FAILED", err.Error())
+			return
+		}
+		metadata := mapFromRawJSON(json.RawMessage(item.MetadataJSON))
+		if !isEnterpriseMaclawAppCapability(*item, metadata) {
+			writeError(w, http.StatusBadRequest, "NOT_MACLAW_APP_CAPABILITY", "capability is not a MaClaw App")
+			return
+		}
+		if !isInstallableMaclawAppStatus(item.Status) {
+			writeError(w, http.StatusForbidden, "MACLAW_APP_NOT_INSTALLABLE", "MaClaw App capability is not approved for install")
+			return
+		}
+		versions, err := svc.ListVersions(ctx, item.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CAPABILITY_VERSIONS_FAILED", err.Error())
+			return
+		}
+		version := currentCapabilityVersion(versions, item.CurrentVersionKey)
+		if version == nil || strings.TrimSpace(version.ManifestJSON) == "" {
+			writeError(w, http.StatusNotFound, "MACLAW_APP_PACKAGE_NOT_FOUND", "MaClaw App package manifest not found")
+			return
+		}
+		entry := mapFromRawJSON(json.RawMessage(version.ManifestJSON))
+		if stringFromMap(entry, "schema") != "maclaw.app.v1" {
+			writeError(w, http.StatusInternalServerError, "INVALID_MACLAW_APP_PACKAGE", "stored MaClaw App manifest is invalid")
+			return
+		}
+		applyMaclawAppReviewMetadataToEntry(entry, *item, *version, metadata)
+		pkg := map[string]any{
+			"schema":        "maclaw.app.pack.v1",
+			"privateMarker": "x_maclaw_apps",
+			"source":        "enterprise_hub",
+			"capability": map[string]any{
+				"id":                  item.ID,
+				"capability_id":       item.CapabilityID,
+				"display_name":        item.DisplayName,
+				"status":              item.Status,
+				"current_version_key": item.CurrentVersionKey,
+			},
+			"package_sha256": firstNonEmpty(version.PackageChecksum, stringFromAny(metadata["package_sha256"])),
+			"apps":           []any{entry},
+		}
+		writeJSON(w, http.StatusOK, pkg)
+	}
+}
+
+func currentCapabilityVersion(versions []capability.VersionSummary, currentVersionKey string) *capability.VersionSummary {
+	currentVersionKey = strings.TrimSpace(currentVersionKey)
+	for i := range versions {
+		if currentVersionKey != "" && strings.TrimSpace(versions[i].VersionKey) == currentVersionKey {
+			return &versions[i]
+		}
+	}
+	if len(versions) == 0 {
+		return nil
+	}
+	return &versions[0]
+}
+
+func isInstallableMaclawAppStatus(status string) bool {
+	status = strings.TrimSpace(strings.ToLower(status))
+	return status == "approved" || status == "published"
+}
+
+func applyMaclawAppReviewMetadataToEntry(entry map[string]any, item capability.CapabilitySummary, version capability.VersionSummary, metadata map[string]any) {
+	app := anyMapFromMap(entry, "app")
+	if app == nil {
+		return
+	}
+	governance := anyMapFromMap(app, "governance")
+	if governance == nil {
+		governance = map[string]any{}
+		app["governance"] = governance
+	}
+	submission := anyMapFromMap(governance, "submission")
+	if submission == nil {
+		submission = map[string]any{}
+		governance["submission"] = submission
+	}
+	submission["channel"] = "hub"
+	submission["capability_id"] = item.ID
+	submission["market_capability_id"] = item.CapabilityID
+	submission["submission_id"] = firstNonEmpty(item.CurrentVersionKey, version.VersionKey)
+	submission["version_key"] = firstNonEmpty(version.VersionKey, item.CurrentVersionKey)
+	submission["status"] = firstNonEmpty(stringFromAny(metadata["review_state"]), item.Status)
+	for _, key := range []string{"reviewer", "reviewed_at", "approved_at", "published_at", "risk_level", "approved_scopes", "review_issues", "review_reason"} {
+		if value, ok := metadata[key]; ok {
+			submission[key] = value
+		}
+	}
+	if checksum := firstNonEmpty(version.PackageChecksum, stringFromAny(metadata["package_sha256"])); checksum != "" {
+		submission["package_sha256"] = checksum
+	}
+}
 func CapabilitySkillDownloadHandler(svc *capability.Service, identity viewerAuthenticator, dataDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, err := authenticateMarketplaceViewer(r, identity)
@@ -655,7 +1130,7 @@ func installIntentMatchesEnterpriseCapability(req capabilityInstallIntentRequest
 	if capabilityID == "" {
 		return false
 	}
-	if strings.TrimSpace(item.Status) != "" && !strings.EqualFold(item.Status, "approved") {
+	if strings.TrimSpace(item.Status) != "" && !isInstallableMaclawAppStatus(item.Status) {
 		return false
 	}
 	if strings.TrimSpace(req.CapabilityType) != "" && !strings.EqualFold(strings.TrimSpace(item.CapabilityType), strings.TrimSpace(req.CapabilityType)) {
@@ -3295,7 +3770,7 @@ func marketplaceRequestContext(r *http.Request, identityOpt ...viewerAuthenticat
 }
 
 func capabilityAdminContext(r *http.Request) context.Context {
-	return capability.WithTenant(r.Context(), RequestTenantID(r))
+	return capability.WithTenant(r.Context(), capabilityTenantIDFromRequest(r))
 }
 
 func loadCapabilityMarketPolicy(r *http.Request, settings store.SystemSettingsRepository) (corelib.CapabilityMarketPolicy, error) {
@@ -3331,6 +3806,60 @@ func mapFromRawJSON(raw json.RawMessage) map[string]any {
 func stringFromAny(value any) string {
 	s, _ := value.(string)
 	return strings.TrimSpace(s)
+}
+
+func anyMapFromMap(values map[string]any, keys ...string) map[string]any {
+	for _, key := range keys {
+		if value, ok := values[key].(map[string]any); ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func anySliceFromMap(values map[string]any, key string) []any {
+	if values == nil {
+		return nil
+	}
+	out, _ := values[key].([]any)
+	return out
+}
+
+func canonicalJSONSHA256(value any) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("encode canonical json: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func compactMetadata(values map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range values {
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				out[key] = strings.TrimSpace(typed)
+			}
+		case nil:
+		case []map[string]any:
+			if len(typed) > 0 {
+				out[key] = typed
+			}
+		case []any:
+			if len(typed) > 0 {
+				out[key] = typed
+			}
+		case map[string]any:
+			if len(typed) > 0 {
+				out[key] = typed
+			}
+		default:
+			out[key] = value
+		}
+	}
+	return out
 }
 
 func rawJSONOrDefault(raw json.RawMessage) string {

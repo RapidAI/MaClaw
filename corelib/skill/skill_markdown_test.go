@@ -586,6 +586,35 @@ func TestCommandFromSkillMarkdown_BaseDirSubstitution(t *testing.T) {
 	}
 }
 
+func TestImportMarkdownSkillDir_AppendsScriptParamsForBashBlock(t *testing.T) {
+	skillDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "scripts", "run.js"), []byte(`const input = process.argv[2];`), 0o644); err != nil {
+		t.Fatalf("WriteFile(run.js) error = %v", err)
+	}
+	markdown := "# script-param\n\n```bash\nnode {baseDir}/scripts/run.js\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(markdown), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1", len(entry.Steps))
+	}
+	command, _ := entry.Steps[0].Params["command"].(string)
+	if !strings.Contains(command, "{{input}}") {
+		t.Fatalf("command = %q, want inferred input placeholder", command)
+	}
+	if len(entry.Params) != 1 || entry.Params[0].Name != "input" {
+		t.Fatalf("Params = %+v, want inferred input param", entry.Params)
+	}
+}
+
 // --- Bug #2: absolute path commands without {baseDir} should be bash steps ---
 
 func TestImportMarkdownSkillDir_AbsolutePathBashBlock(t *testing.T) {

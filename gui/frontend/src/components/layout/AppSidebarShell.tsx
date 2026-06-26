@@ -8,10 +8,12 @@ import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
 import type { HistoryDiscussionSummary } from './SidebarHistorySessions';
 import type { RecentProject, TaskContextMenu } from './SidebarRecentTasks';
 import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
+import type { AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
 interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     navTab: string;
     recentTasksPaneWidth: number;
     aiThemeMode: 'light' | 'dark';
+    aiDarkSchemeId: AssistantDarkSchemeId;
     brandInfo: { id: string } | null;
     currentIcon: string;
     brandSidebarName: string;
@@ -85,6 +87,7 @@ export const AppSidebarShell = ({
     navTab,
     recentTasksPaneWidth,
     aiThemeMode,
+    aiDarkSchemeId,
     brandInfo,
     currentIcon,
     brandSidebarName,
@@ -170,7 +173,7 @@ export const AppSidebarShell = ({
                 '--wails-draggable': 'drag'
             } as any}></div>
 
-            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + recentTasksPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px` } as any} data-ai-theme={aiThemeMode}>
+            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + recentTasksPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px` } as any} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined}>
                           <SidebarNavRail
                     navTab={navTab}
                     brandInfo={brandInfo}

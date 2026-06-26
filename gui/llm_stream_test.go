@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -58,6 +62,47 @@ func TestFilterTruncatedToolCallsTrimsToolNameForRequiredFieldDetection(t *testi
 	}
 	if len(msg.ToolCalls) != 0 {
 		t.Fatalf("truncated tool call should be removed: %#v", msg.ToolCalls)
+	}
+}
+
+func TestOpenAILLMRequestStreamSDKPreservesTruncatedToolNames(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"choices":[{"delta":{"content":"Let me write the complete class now."}}]}`,
+			`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_bad","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"pii_pipeline_v7.py\",\"content\":\"unterminated"}}]}}]}`,
+			`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+			`data: [DONE]`,
+			"",
+		}, "\n\n")))
+	}))
+	defer srv.Close()
+
+	h := &IMMessageHandler{}
+	resp, err := h.doOpenAILLMRequestStreamSDK(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model", Protocol: "openai"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "write code"}},
+		[]map[string]interface{}{toolDef("write_file", "write", nil, nil)},
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("doOpenAILLMRequestStreamSDK: %v", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("response = %#v, want one choice", resp)
+	}
+	choice := resp.Choices[0]
+	if len(choice.TruncatedToolNames) != 1 || choice.TruncatedToolNames[0] != "write_file" {
+		t.Fatalf("TruncatedToolNames = %#v, want write_file", choice.TruncatedToolNames)
+	}
+	if len(choice.Message.ToolCalls) != 0 {
+		t.Fatalf("truncated tool call should stay removed: %#v", choice.Message.ToolCalls)
 	}
 }
 

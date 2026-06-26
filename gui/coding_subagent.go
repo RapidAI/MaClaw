@@ -29,8 +29,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -100,6 +102,9 @@ type CodingSubAgentResult struct {
 	// GuardrailViolations records safety/scope rejections encountered during tool execution.
 	GuardrailViolations []CodingSubAgentGuardrailViolation
 
+	// DynamicToolsRun records manage_skill/call_mcp_tool host executions.
+	DynamicToolsRun []CodingSubAgentDynamicToolResult
+
 	// ExplorationStatus summarizes whether the agent explored before editing:
 	// explored, read_only, missing, or not_needed.
 	ExplorationStatus  codingSubAgentQualityStatus
@@ -127,6 +132,7 @@ type CodingSubAgentSearchResult struct {
 	Path      string
 	Succeeded bool
 	Summary   string
+	seq       uint64
 }
 
 // CodingSubAgentGuardrailViolation is a compact audit record for blocked tool use.
@@ -136,6 +142,16 @@ type CodingSubAgentGuardrailViolation struct {
 	Path     string
 	Command  string
 	Summary  string
+	seq      uint64
+}
+
+// CodingSubAgentDynamicToolResult is a compact audit record for host-backed dynamic tools.
+type CodingSubAgentDynamicToolResult struct {
+	Tool      string
+	Name      string
+	Succeeded bool
+	Summary   string
+	seq       uint64
 }
 
 type codingToolOutcome string
@@ -236,17 +252,19 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	allCommandsRun := audit.AllCommandsRun
 	allSearchesRun := audit.AllSearchesRun
 	allGuardrailViolations := audit.AllGuardrailViolations
+	allDynamicToolsRun := audit.AllDynamicToolsRun
 	filesModified := audit.FilesModified
 	filesCreated := audit.FilesCreated
 	filesRead := audit.FilesRead
 	commandsRun := audit.CommandsRun
 	searchesRun := audit.SearchesRun
 	guardrailViolations := audit.GuardrailViolations
+	dynamicToolsRun := audit.DynamicToolsRun
 	existingFilesModified := existingSubAgentModifiedFiles(allFilesModified, allFilesCreated)
 	explorationStatus, explorationSummary := summarizeSubAgentExploration(existingFilesModified, allFilesRead, allSearchesRun, audit.ExploredBeforeFirstEdit)
 	verificationStatus, verificationSummary := summarizeSubAgentVerification(allFilesModified, allCommandsRun, audit.LastEditSeq)
 	status, errMsg = applySubAgentExplorationOutcome(status, errMsg, explorationStatus, explorationSummary, len(existingFilesModified))
-	status, errMsg = applySubAgentVerificationOutcome(status, errMsg, subAgentVerificationOutcomeStatus(verificationStatus), verificationSummary)
+	status, errMsg = applySubAgentVerificationOutcome(status, errMsg, verificationStatus, verificationSummary)
 	status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, allGuardrailViolations)
 	summary = appendSubAgentFileChangeSummary(summary, filesModified, filesCreated)
 	cb.emitFileActivitySummaryEvent(filesRead, filesModified, filesCreated)
@@ -261,18 +279,21 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	if len(allCommandsRun) > 0 {
 		summary = appendSubAgentCommandSummary(summary, allCommandsRun)
 	}
+	if len(allDynamicToolsRun) > 0 {
+		summary = appendSubAgentDynamicToolSummary(summary, allDynamicToolsRun)
+	}
 	cb.emitCommandSummaryEvent(allCommandsRun)
 	if verificationSummary != "" {
 		summary = appendSubAgentVerificationSummary(summary, verificationStatus, verificationSummary)
 	}
-	cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, len(filterFreshSubAgentVerificationCommands(allCommandsRun, audit.LastEditSeq)))
+	cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, countFreshSubAgentVerificationAttempts(allCommandsRun, audit.LastEditSeq))
 	diffChecked, diffSummary := cb.ensureFinalGitDiff(allFilesModified)
 	status, errMsg = applySubAgentDiffOutcome(status, errMsg, diffChecked, diffSummary, len(allFilesModified))
 	if diffSummary != "" {
 		summary = appendSubAgentDiffSummary(summary, diffSummary)
 	}
 	cb.emitDiffCheckEvent(diffChecked, diffSummary, len(allFilesModified))
-	cb.emitQualitySummaryEvent(explorationStatus, verificationStatus, diffChecked, allFilesModified, allFilesCreated, allCommandsRun, audit.LastEditSeq, allGuardrailViolations)
+	cb.emitQualitySummaryEvent(explorationStatus, verificationStatus, diffChecked, allFilesModified, allFilesCreated, allCommandsRun, audit.LastEditSeq, allGuardrailViolations, allDynamicToolsRun)
 	cb.emitDiffSummaryEvent(filesModified, filesCreated, diffSummary)
 
 	log.Printf("[coding-subagent] task T%d finished: status=%s iterations=%d tools=%d err=%q",
@@ -297,6 +318,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		CommandsRun:         commandsRun,
 		SearchesRun:         searchesRun,
 		GuardrailViolations: guardrailViolations,
+		DynamicToolsRun:     dynamicToolsRun,
 		ExplorationStatus:   explorationStatus,
 		ExplorationSummary:  explorationSummary,
 		VerificationStatus:  verificationStatus,
@@ -316,6 +338,7 @@ type codingSubAgentAudit struct {
 	AllCommandsRun          []CodingSubAgentCommandResult
 	AllSearchesRun          []CodingSubAgentSearchResult
 	AllGuardrailViolations  []CodingSubAgentGuardrailViolation
+	AllDynamicToolsRun      []CodingSubAgentDynamicToolResult
 	LastEditSeq             uint64
 	FilesModified           []string
 	FilesCreated            []string
@@ -323,6 +346,7 @@ type codingSubAgentAudit struct {
 	CommandsRun             []CodingSubAgentCommandResult
 	SearchesRun             []CodingSubAgentSearchResult
 	GuardrailViolations     []CodingSubAgentGuardrailViolation
+	DynamicToolsRun         []CodingSubAgentDynamicToolResult
 	ExploredBeforeFirstEdit bool
 }
 
@@ -337,6 +361,7 @@ func collectSubAgentAudit(cb *codingSubAgentCallbacks) codingSubAgentAudit {
 		AllCommandsRun:          cb.getCommandsRun(),
 		AllSearchesRun:          cb.getSearchesRun(),
 		AllGuardrailViolations:  cb.getGuardrailViolations(),
+		AllDynamicToolsRun:      cb.getDynamicToolsRun(),
 		LastEditSeq:             cb.lastEditSequence(),
 		ExploredBeforeFirstEdit: cb.exploredBeforeFirstEdit(),
 	}
@@ -346,6 +371,7 @@ func collectSubAgentAudit(cb *codingSubAgentCallbacks) codingSubAgentAudit {
 	audit.CommandsRun = limitSubAgentCommandResults(audit.AllCommandsRun, codingSubAgentResultAuditMax)
 	audit.SearchesRun = limitSubAgentSearchResults(audit.AllSearchesRun, codingSubAgentResultAuditMax)
 	audit.GuardrailViolations = limitSubAgentGuardrailViolations(audit.AllGuardrailViolations, codingSubAgentResultAuditMax)
+	audit.DynamicToolsRun = limitSubAgentDynamicToolResults(audit.AllDynamicToolsRun, codingSubAgentResultAuditMax)
 	return audit
 }
 
@@ -356,14 +382,20 @@ type codingSubAgentCallbacks struct {
 	designCtx   string
 	prevOutputs []string
 
+	// cachedSystemPrompt is built once per task to avoid repeated knowledge and
+	// dynamic-tool prompt assembly on every LLM turn.
+	cachedSystemPrompt string
+
 	// cachedTools is built once on first call to BuildTools.
 	cachedTools []map[string]interface{}
 
 	// matchedSkills holds skills selected for this task via BM25 matching.
-	matchedSkills []codingSubAgentSkillMatch
+	matchedSkills         []codingSubAgentSkillMatch
+	matchedSkillsSelected bool
 
 	// matchedMCPTools holds MCP tools selected for this task.
-	matchedMCPTools []codingSubAgentMCPToolMatch
+	matchedMCPTools         []codingSubAgentMCPToolMatch
+	matchedMCPToolsSelected bool
 
 	// filesModified tracks files written/edited during execution.
 	mu             sync.Mutex
@@ -376,6 +408,7 @@ type codingSubAgentCallbacks struct {
 	commandsRun    []CodingSubAgentCommandResult
 	searchesRun    []CodingSubAgentSearchResult
 	guardrails     []CodingSubAgentGuardrailViolation
+	dynamicTools   []CodingSubAgentDynamicToolResult
 	eventSeq       uint64
 	firstEditSeq   uint64
 	lastEditSeq    uint64
@@ -447,6 +480,9 @@ func (c *codingSubAgentCallbacks) GetMaxIterations() int {
 }
 
 func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
+	if c.cachedSystemPrompt != "" {
+		return c.cachedSystemPrompt
+	}
 	prompt := buildCodingSubAgentSystemPrompt(c.task, c.subagent.projectPath, c.reqCtx, c.designCtx, c.prevOutputs)
 
 	// Inject knowledge from coding experience store + general knowledge store.
@@ -456,32 +492,45 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 
 	// Eagerly select relevant skills so both BuildSystemPrompt and BuildTools
 	// have access to the same matchedSkills list.
-	if c.matchedSkills == nil {
-		taskDesc := ""
-		if c.task != nil {
-			taskDesc = c.task.Title + " " + c.task.Description
-		}
-		c.matchedSkills = c.selectRelevantSkillsForTask(taskDesc)
-	}
+	c.ensureMatchedSkillsSelected()
 
 	if section := buildCodingSubAgentSkillSection(c.matchedSkills); section != "" {
 		prompt += section
 	}
 
 	// Select relevant MCP tools for this task.
-	if c.matchedMCPTools == nil {
-		taskDesc := ""
-		if c.task != nil {
-			taskDesc = c.task.Title + " " + c.task.Description
-		}
-		c.matchedMCPTools = c.selectRelevantMCPToolsForTask(taskDesc)
-	}
+	c.ensureMatchedMCPToolsSelected()
 
 	if section := buildCodingSubAgentMCPSection(c.matchedMCPTools); section != "" {
 		prompt += section
 	}
 
+	c.cachedSystemPrompt = prompt
 	return prompt
+}
+
+func (c *codingSubAgentCallbacks) ensureMatchedSkillsSelected() {
+	if c == nil || c.matchedSkillsSelected {
+		return
+	}
+	if len(c.matchedSkills) > 0 {
+		c.matchedSkillsSelected = true
+		return
+	}
+	c.matchedSkills = c.selectRelevantSkillsForTask(codingSubAgentDynamicSelectionText(c.task))
+	c.matchedSkillsSelected = true
+}
+
+func (c *codingSubAgentCallbacks) ensureMatchedMCPToolsSelected() {
+	if c == nil || c.matchedMCPToolsSelected {
+		return
+	}
+	if len(c.matchedMCPTools) > 0 {
+		c.matchedMCPToolsSelected = true
+		return
+	}
+	c.matchedMCPTools = c.selectRelevantMCPToolsForTask(codingSubAgentDynamicSelectionText(c.task))
+	c.matchedMCPToolsSelected = true
 }
 
 func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]interface{} {
@@ -490,25 +539,13 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 
 		// Append manage_skill if relevant skills were found for this task.
 		// matchedSkills may already be populated by BuildSystemPrompt.
-		if c.matchedSkills == nil {
-			taskDesc := ""
-			if c.task != nil {
-				taskDesc = c.task.Title + " " + c.task.Description
-			}
-			c.matchedSkills = c.selectRelevantSkillsForTask(taskDesc)
-		}
+		c.ensureMatchedSkillsSelected()
 		if len(c.matchedSkills) > 0 {
 			tools = append(tools, buildManageSkillToolDefinition())
 		}
 
 		// Append call_mcp_tool if relevant MCP tools were found for this task.
-		if c.matchedMCPTools == nil {
-			taskDesc := ""
-			if c.task != nil {
-				taskDesc = c.task.Title + " " + c.task.Description
-			}
-			c.matchedMCPTools = c.selectRelevantMCPToolsForTask(taskDesc)
-		}
+		c.ensureMatchedMCPToolsSelected()
 		if len(c.matchedMCPTools) > 0 {
 			tools = append(tools, buildCallMCPToolDefinition())
 		}
@@ -574,6 +611,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return invalidCodingSubAgentToolArgumentsResult(name, argsJSON, err)
 	}
+	if result, rejected := rejectInvalidCodingSubAgentToolArgumentTypes(name, args); rejected {
+		return result
+	}
 
 	if c == nil || c.subagent == nil {
 		return codingToolExecutionResult{Text: "coding subagent is unavailable", Outcome: codingToolOutcomeFailed}
@@ -591,7 +631,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		ctx, cancel := c.toolContext()
 		defer cancel()
 		result := agent.ToolGlobDetailedCtx(ctx, searchArgs)
-		c.trackSearchResult("Glob", searchArgs, result.Text, result.Outcome == agent.SearchToolOutcomeMatched)
+		c.trackSearchResult("Glob", searchArgs, result.Text, searchOutcomeCountsAsExploration(result.Outcome))
 		return codingToolExecutionResult{Text: result.Text, Outcome: codingOutcomeFromSearchOutcome(result.Outcome)}
 	case "ripgrep":
 		searchArgs := c.withDefaultProjectPath(args)
@@ -603,7 +643,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		ctx, cancel := c.toolContext()
 		defer cancel()
 		result := agent.ToolRipgrepDetailedCtx(ctx, searchArgs)
-		c.trackSearchResult("ripgrep", searchArgs, result.Text, result.Outcome == agent.SearchToolOutcomeMatched)
+		c.trackSearchResult("ripgrep", searchArgs, result.Text, searchOutcomeCountsAsExploration(result.Outcome))
 		return codingToolExecutionResult{Text: result.Text, Outcome: codingOutcomeFromSearchOutcome(result.Outcome)}
 	case "read_file":
 		if h == nil {
@@ -707,8 +747,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		ctx, cancel := c.toolContext()
 		defer cancel()
 		commandResult := executeCodingBashWithContext(ctx, bashArgs, nil)
-		c.trackCommandResult(bashArgs, commandResult.Text, commandResult.succeeded())
-		return commandResult.toolResult()
+		command, _ := bashArgs["command"].(string)
+		c.trackCommandResult(bashArgs, commandResult.Text, commandResult.succeededForCommand(command))
+		return commandResult.toolResultForCommand(command)
 	case "list_directory":
 		listArgs := c.withProjectRelativePath(args, true)
 		if p, _ := listArgs["path"].(string); p != "" {
@@ -742,6 +783,353 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	}
 }
 
+func rejectInvalidCodingSubAgentToolArgumentTypes(name string, args map[string]interface{}) (codingToolExecutionResult, bool) {
+	for _, field := range codingSubAgentRequiredArgumentFields(name) {
+		value, ok := args[field]
+		if !ok || value == nil {
+			return missingCodingSubAgentRequiredArgumentResult(name, field), true
+		}
+		if s, ok := value.(string); ok && strings.TrimSpace(s) == "" && !codingSubAgentRequiredArgumentAllowsEmptyString(name, field) {
+			return missingCodingSubAgentRequiredArgumentResult(name, field), true
+		}
+	}
+	for _, field := range codingSubAgentStringArgumentFields(name) {
+		value, ok := args[field]
+		if !ok || value == nil {
+			continue
+		}
+		if _, ok := value.(string); ok {
+			continue
+		}
+		return invalidCodingSubAgentArgumentTypeResult(name, field, "string", codingSubAgentArgumentTypeName(value), "a JSON string"), true
+	}
+	for _, field := range codingSubAgentNumberArgumentFields(name) {
+		value, ok := args[field]
+		if !ok || value == nil {
+			continue
+		}
+		if codingSubAgentArgumentIsIntegerNumber(value) {
+			if min, ok := codingSubAgentNumberArgumentMin(name, field); ok {
+				actual, _ := codingSubAgentArgumentIntegerValue(value)
+				if actual < min {
+					return invalidCodingSubAgentArgumentRangeResult(name, field, min, actual), true
+				}
+			}
+			continue
+		}
+		if codingSubAgentArgumentIsNumber(value) {
+			return invalidCodingSubAgentArgumentTypeResult(name, field, "integer", "fractional number", "a JSON integer"), true
+		}
+		return invalidCodingSubAgentArgumentTypeResult(name, field, "integer", codingSubAgentArgumentTypeName(value), "a JSON integer"), true
+	}
+	for _, field := range codingSubAgentBoolArgumentFields(name) {
+		value, ok := args[field]
+		if !ok || value == nil {
+			continue
+		}
+		if _, ok := value.(bool); ok {
+			continue
+		}
+		return invalidCodingSubAgentArgumentTypeResult(name, field, "boolean", codingSubAgentArgumentTypeName(value), "a JSON boolean"), true
+	}
+	for _, field := range codingSubAgentObjectArgumentFields(name) {
+		value, ok := args[field]
+		if !ok || value == nil {
+			continue
+		}
+		if _, ok := value.(map[string]interface{}); ok {
+			continue
+		}
+		return invalidCodingSubAgentArgumentTypeResult(name, field, "object", codingSubAgentArgumentTypeName(value), "a JSON object"), true
+	}
+	if result, rejected := rejectInvalidCodingSubAgentToolArgumentValues(name, args); rejected {
+		return result, true
+	}
+	return codingToolExecutionResult{}, false
+}
+
+func invalidCodingSubAgentArgumentTypeResult(name, field, expected, got, jsonType string) codingToolExecutionResult {
+	return codingToolExecutionResult{
+		Text:    fmt.Sprintf("Error: tool call %q has invalid argument type for %q: expected %s, got %s. The tool was not executed. Regenerate the same tool call with %q as %s.", name, field, expected, got, field, jsonType),
+		Outcome: codingToolOutcomeFailed,
+	}
+}
+
+func invalidCodingSubAgentArgumentRangeResult(name, field string, min, actual int64) codingToolExecutionResult {
+	return codingToolExecutionResult{
+		Text:    fmt.Sprintf("Error: tool call %q has invalid argument value for %q: expected integer >= %d, got %d. The tool was not executed. Regenerate the same tool call with %q in the allowed range.", name, field, min, actual, field),
+		Outcome: codingToolOutcomeFailed,
+	}
+}
+
+func invalidCodingSubAgentArgumentAllowedValuesResult(name, field, actual string, allowed []string) codingToolExecutionResult {
+	return codingToolExecutionResult{
+		Text:    fmt.Sprintf("Error: tool call %q has invalid argument value for %q: expected one of %s, got %q. The tool was not executed. Regenerate the same tool call with %q set to an allowed value.", name, field, strings.Join(allowed, "/"), actual, field),
+		Outcome: codingToolOutcomeFailed,
+	}
+}
+
+func invalidCodingSubAgentArgumentOrderResult(name, field, minField string, actual, min int64) codingToolExecutionResult {
+	return codingToolExecutionResult{
+		Text:    fmt.Sprintf("Error: tool call %q has invalid argument value for %q: expected integer >= %q (%d), got %d. The tool was not executed. Regenerate the same tool call with a valid line range.", name, field, minField, min, actual),
+		Outcome: codingToolOutcomeFailed,
+	}
+}
+
+func missingCodingSubAgentRequiredArgumentResult(name, field string) codingToolExecutionResult {
+	return codingToolExecutionResult{
+		Text:    fmt.Sprintf("Error: tool call %q is missing required argument %q. The tool was not executed. Regenerate the same tool call with %q set.", name, field, field),
+		Outcome: codingToolOutcomeFailed,
+	}
+}
+
+func codingSubAgentRequiredArgumentFields(name string) []string {
+	switch canonicalCodingSubAgentToolName(name) {
+	case "Glob", "ripgrep":
+		return []string{"pattern"}
+	case "read_file":
+		return []string{"path"}
+	case "write_file":
+		return []string{"path", "content"}
+	case "edit_file":
+		return []string{"path", "old_string", "new_string"}
+	case "edit_lines":
+		return []string{"path", "operation", "start_line"}
+	case "bash":
+		return []string{"command"}
+	case "manage_skill":
+		return []string{"action"}
+	case "call_mcp_tool":
+		return []string{"server_id", "tool_name"}
+	case "coding_knowledge_search", "knowledge_search":
+		return []string{"query"}
+	default:
+		return nil
+	}
+}
+
+func codingSubAgentRequiredArgumentAllowsEmptyString(name, field string) bool {
+	switch canonicalCodingSubAgentToolName(name) {
+	case "write_file":
+		return field == "content"
+	case "edit_file":
+		return field == "new_string"
+	case "edit_lines":
+		return field == "content"
+	}
+	return false
+}
+
+func rejectInvalidCodingSubAgentToolArgumentValues(name string, args map[string]interface{}) (codingToolExecutionResult, bool) {
+	switch canonicalCodingSubAgentToolName(name) {
+	case "write_file":
+		mode, _ := args["mode"].(string)
+		mode = strings.TrimSpace(mode)
+		switch mode {
+		case "", "overwrite", "append":
+			return codingToolExecutionResult{}, false
+		default:
+			return invalidCodingSubAgentArgumentAllowedValuesResult(name, "mode", mode, []string{"overwrite", "append"}), true
+		}
+	case "edit_lines":
+		return rejectInvalidCodingSubAgentEditLinesArgumentValues(name, args)
+	default:
+		return codingToolExecutionResult{}, false
+	}
+}
+
+func rejectInvalidCodingSubAgentEditLinesArgumentValues(name string, args map[string]interface{}) (codingToolExecutionResult, bool) {
+	operation, _ := args["operation"].(string)
+	switch operation {
+	case "replace":
+		if missingCodingSubAgentArgumentValue(args, "end_line") {
+			return missingCodingSubAgentRequiredArgumentResult(name, "end_line"), true
+		}
+		if missingCodingSubAgentArgumentValue(args, "content") {
+			return missingCodingSubAgentRequiredArgumentResult(name, "content"), true
+		}
+		if result, rejected := rejectInvalidCodingSubAgentEditLinesRange(name, args); rejected {
+			return result, true
+		}
+	case "insert":
+		if missingCodingSubAgentArgumentValue(args, "content") {
+			return missingCodingSubAgentRequiredArgumentResult(name, "content"), true
+		}
+	case "delete":
+		if missingCodingSubAgentArgumentValue(args, "end_line") {
+			return missingCodingSubAgentRequiredArgumentResult(name, "end_line"), true
+		}
+		if result, rejected := rejectInvalidCodingSubAgentEditLinesRange(name, args); rejected {
+			return result, true
+		}
+	default:
+		return invalidCodingSubAgentArgumentAllowedValuesResult(name, "operation", operation, []string{"replace", "insert", "delete"}), true
+	}
+	return codingToolExecutionResult{}, false
+}
+
+func rejectInvalidCodingSubAgentEditLinesRange(name string, args map[string]interface{}) (codingToolExecutionResult, bool) {
+	startLine, startOK := codingSubAgentArgumentIntegerValue(args["start_line"])
+	if startOK && startLine < 1 {
+		return invalidCodingSubAgentArgumentRangeResult(name, "start_line", 1, startLine), true
+	}
+	endLine, endOK := codingSubAgentArgumentIntegerValue(args["end_line"])
+	if endOK && endLine < 1 {
+		return invalidCodingSubAgentArgumentRangeResult(name, "end_line", 1, endLine), true
+	}
+	if startOK && endOK && endLine < startLine {
+		return invalidCodingSubAgentArgumentOrderResult(name, "end_line", "start_line", endLine, startLine), true
+	}
+	return codingToolExecutionResult{}, false
+}
+
+func missingCodingSubAgentArgumentValue(args map[string]interface{}, field string) bool {
+	value, ok := args[field]
+	return !ok || value == nil
+}
+
+func codingSubAgentStringArgumentFields(name string) []string {
+	switch canonicalCodingSubAgentToolName(name) {
+	case "Glob", "ripgrep":
+		return []string{"path", "pattern"}
+	case "read_file", "list_directory", "git_diff":
+		return []string{"path"}
+	case "write_file":
+		return []string{"path", "content", "mode"}
+	case "edit_file":
+		return []string{"path", "old_string", "new_string"}
+	case "edit_lines":
+		return []string{"path", "operation", "content"}
+	case "bash":
+		return []string{"command", "working_dir"}
+	case "manage_skill":
+		return []string{"action", "name"}
+	case "call_mcp_tool":
+		return []string{"server_id", "tool_name"}
+	case "coding_knowledge_search", "knowledge_search":
+		return []string{"query"}
+	default:
+		return nil
+	}
+}
+
+func codingSubAgentNumberArgumentFields(name string) []string {
+	switch canonicalCodingSubAgentToolName(name) {
+	case "read_file":
+		return []string{"lines", "start_line", "offset"}
+	case "edit_lines":
+		return []string{"start_line", "end_line"}
+	case "bash":
+		return []string{"timeout"}
+	default:
+		return nil
+	}
+}
+
+func codingSubAgentNumberArgumentMin(name, field string) (int64, bool) {
+	switch canonicalCodingSubAgentToolName(name) {
+	case "read_file":
+		switch field {
+		case "lines", "start_line", "offset":
+			return 1, true
+		}
+	case "edit_lines":
+		switch field {
+		case "start_line", "end_line":
+			return 0, true
+		}
+	case "bash":
+		if field == "timeout" {
+			return 1, true
+		}
+	}
+	return 0, false
+}
+func codingSubAgentBoolArgumentFields(name string) []string {
+	switch canonicalCodingSubAgentToolName(name) {
+	case "edit_file":
+		return []string{"replace_all"}
+	case "git_diff":
+		return []string{"staged"}
+	default:
+		return nil
+	}
+}
+
+func codingSubAgentObjectArgumentFields(name string) []string {
+	switch canonicalCodingSubAgentToolName(name) {
+	case "manage_skill":
+		return []string{"args"}
+	case "call_mcp_tool":
+		return []string{"arguments"}
+	default:
+		return nil
+	}
+}
+
+func codingSubAgentArgumentIsNumber(value interface{}) bool {
+	switch value.(type) {
+	case float64, float32, int, int64, json.Number:
+		return true
+	default:
+		return false
+	}
+}
+
+func codingSubAgentArgumentIsIntegerNumber(value interface{}) bool {
+	switch v := value.(type) {
+	case int, int64:
+		return true
+	case float64:
+		return math.Trunc(v) == v
+	case float32:
+		return math.Trunc(float64(v)) == float64(v)
+	case json.Number:
+		_, err := v.Int64()
+		return err == nil
+	default:
+		return false
+	}
+}
+
+func codingSubAgentArgumentIntegerValue(value interface{}) (int64, bool) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case float64:
+		if math.Trunc(v) == v {
+			return int64(v), true
+		}
+	case float32:
+		f := float64(v)
+		if math.Trunc(f) == f {
+			return int64(f), true
+		}
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return i, true
+		}
+	}
+	return 0, false
+}
+func codingSubAgentArgumentTypeName(value interface{}) string {
+	switch value.(type) {
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	case float64, float32, int, int64, json.Number:
+		return "number"
+	case []interface{}:
+		return "array"
+	case map[string]interface{}:
+		return "object"
+	default:
+		return fmt.Sprintf("%T", value)
+	}
+}
 func rejectInvalidCodingSubAgentToolArguments(name, argsJSON string) (codingToolExecutionResult, bool) {
 	args := strings.TrimSpace(argsJSON)
 	if args == "" || codingSubAgentToolArgumentsAreObject(args) {
@@ -953,6 +1341,15 @@ func redactCodingSubAgentFreeformLogText(text string) string {
 	return text
 }
 
+func searchOutcomeCountsAsExploration(outcome agent.SearchToolOutcome) bool {
+	switch outcome {
+	case agent.SearchToolOutcomeMatched, agent.SearchToolOutcomeNoMatch:
+		return true
+	default:
+		return false
+	}
+}
+
 func codingOutcomeFromSearchOutcome(outcome agent.SearchToolOutcome) codingToolOutcome {
 	switch outcome {
 	case agent.SearchToolOutcomeMatched:
@@ -1010,6 +1407,9 @@ func (c *codingSubAgentCallbacks) withDefaultWorkingDir(args map[string]interfac
 	for k, v := range args {
 		copied[k] = v
 	}
+	if command, ok := copied["command"].(string); ok {
+		copied["command"] = strings.TrimSpace(command)
+	}
 	copied["timeout"] = normalizeCodingBashTimeout(copied["timeout"])
 	wd, _ := copied["working_dir"].(string)
 	wd = strings.TrimSpace(wd)
@@ -1048,11 +1448,13 @@ func rejectDisallowedCodingBashCommand(command string) string {
 	if normalized == "" {
 		return ""
 	}
-	if msg := rejectWindowsShellCompatibilityCommand(command, normalized); msg != "" {
+	if msg := rejectWindowsShellCompatibilityCommand(command); msg != "" {
 		return msg
 	}
 	disallowed := false
 	switch {
+	case hasOpaqueShellWrapperCommand(normalized):
+		disallowed = true
 	case hasDisallowedGitCommand(normalized):
 		disallowed = true
 	case hasDisallowedRecursiveDeleteCommand(normalized):
@@ -1066,14 +1468,89 @@ func rejectDisallowedCodingBashCommand(command string) string {
 	return fmt.Sprintf("拒绝执行高风险命令：%s。编码 SubAgent 不允许自动执行 Git 工作区改写、递归删除或通过 shell 直接改写文件；请改用更小范围的操作或文件编辑工具。", command)
 }
 
-func rejectWindowsShellCompatibilityCommand(command, normalized string) string {
+func rejectWindowsShellCompatibilityCommand(command string) string {
 	if normalizedRemotePlatform() != "windows" {
 		return ""
 	}
-	if !strings.Contains(normalized, "&&") && !strings.Contains(normalized, "mkdir -p") {
+	if !hasWindowsShellCompatibilitySyntax(command) {
 		return ""
 	}
 	return fmt.Sprintf("PowerShell command compatibility: %s uses bash-only syntax such as `mkdir -p` or `&&`. Use PowerShell syntax with `;` separators and set working_dir to the command directory.", command)
+}
+
+func hasWindowsShellCompatibilitySyntax(command string) bool {
+	fields := shellCommandFields(command)
+	commandPosition := true
+	for i := 0; i < len(fields); i++ {
+		token := strings.ToLower(normalizeShellCommandToken(fields[i]))
+		if token == "" {
+			continue
+		}
+		if token == "&&" {
+			return true
+		}
+		if isShellCommandStartMarker(token) {
+			commandPosition = true
+			continue
+		}
+		if commandPosition {
+			if consumed, ok := shellCommandPrefixLength(fields[i:]); ok {
+				i += consumed - 1
+				commandPosition = true
+				continue
+			}
+			if commandNameBase(normalizeShellExecutableToken(token)) == "mkdir" && shellCommandSegmentHasArg(fields[i+1:], "-p") {
+				return true
+			}
+		}
+		commandPosition = false
+	}
+	return false
+}
+
+func shellCommandSegmentHasArg(fields []string, want string) bool {
+	want = strings.ToLower(want)
+	for _, field := range fields {
+		token := strings.ToLower(normalizeShellCommandToken(field))
+		if token == "" {
+			continue
+		}
+		if isShellCommandBoundary(token) {
+			return false
+		}
+		if token == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOpaqueShellWrapperCommand(normalizedCommand string) bool {
+	fields := shellCommandFields(normalizedCommand)
+	for i := 0; i < len(fields); i++ {
+		cmd := commandNameBase(normalizeShellCommandToken(fields[i]))
+		if cmd != "powershell" && cmd != "pwsh" {
+			continue
+		}
+		for j := i + 1; j < len(fields); j++ {
+			token := normalizeShellCommandToken(fields[j])
+			if isShellCommandBoundary(token) {
+				break
+			}
+			if isPowerShellEncodedCommandOption(token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isPowerShellEncodedCommandOption(token string) bool {
+	switch normalizeShellCommandToken(token) {
+	case "-encodedcommand", "/encodedcommand", "-enc", "/enc", "-encodedarguments", "/encodedarguments":
+		return true
+	}
+	return false
 }
 func hasDisallowedRecursiveDeleteCommand(normalizedCommand string) bool {
 	fields := shellCommandFields(normalizedCommand)
@@ -1106,7 +1583,6 @@ func hasDisallowedRecursiveDeleteCommand(normalizedCommand string) bool {
 }
 
 func hasDisallowedShellFileMutation(normalizedCommand string) bool {
-	redirectionCheck := strings.ReplaceAll(normalizedCommand, "2>&1", "")
 	if hasShellCommandToken(normalizedCommand, map[string]bool{
 		"set-content": true, "add-content": true, "out-file": true, "new-item": true,
 		"copy-item": true, "move-item": true, "rename-item": true, "tee-object": true,
@@ -1120,23 +1596,344 @@ func hasDisallowedShellFileMutation(normalizedCommand string) bool {
 	if strings.Contains(normalizedCommand, "sed -i") || strings.Contains(normalizedCommand, "perl -pi") {
 		return true
 	}
-	if strings.Contains(normalizedCommand, "writefilesync") || strings.Contains(normalizedCommand, "promises.writefile") || strings.Contains(normalizedCommand, ".writefile(") || strings.Contains(normalizedCommand, ".appendfile(") {
-		return true
-	}
-	if strings.Contains(normalizedCommand, ".write_text(") || strings.Contains(normalizedCommand, ".write_bytes(") {
-		return true
-	}
-	if strings.Contains(normalizedCommand, "open(") && (strings.Contains(normalizedCommand, "'w'") || strings.Contains(normalizedCommand, "\"w\"") || strings.Contains(normalizedCommand, "'a'") || strings.Contains(normalizedCommand, "\"a\"")) {
+	if hasDisallowedInlineFileMutationScript(normalizedCommand) {
 		return true
 	}
 	if strings.Contains(normalizedCommand, " of=") || strings.Contains(normalizedCommand, " of ") {
 		return true
 	}
-	if strings.Contains(redirectionCheck, " >") || strings.Contains(redirectionCheck, "> ") || strings.Contains(redirectionCheck, ">>") {
+	fields := shellCommandFields(normalizedCommand)
+	if hasShellOutputRedirection(fields) || hasShellPipeToTee(fields) {
 		return true
 	}
-	if strings.Contains(normalizedCommand, "| tee") || strings.Contains(normalizedCommand, "|tee") || strings.Contains(normalizedCommand, "| tee-object") || strings.Contains(normalizedCommand, "|tee-object") {
+	return false
+}
+
+func hasDisallowedInlineFileMutationScript(normalizedCommand string) bool {
+	fields := shellCommandFields(normalizedCommand)
+	for i := 0; i < len(fields); i++ {
+		cmd := commandNameBase(normalizeShellCommandToken(fields[i]))
+		switch cmd {
+		case "node", "nodejs":
+			if script, ok := nodeInlineScriptArgument(fields[i+1:]); ok && inlineJavaScriptWritesFile(script) {
+				return true
+			}
+		case "python", "python3", "py":
+			if script, ok := pythonInlineScriptArgument(fields[i+1:]); ok && inlinePythonWritesFile(script) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func nodeInlineScriptArgument(args []string) (string, bool) {
+	for i := 0; i < len(args); i++ {
+		arg := normalizeShellCommandToken(args[i])
+		switch {
+		case arg == "-e" || arg == "--eval" || arg == "--print":
+			if i+1 >= len(args) {
+				return "", false
+			}
+			return args[i+1], true
+		case strings.HasPrefix(arg, "--eval=") || strings.HasPrefix(arg, "--print="):
+			return nodeInlineScriptArgumentRemainder(args, i, strings.TrimPrefix(strings.TrimPrefix(arg, "--eval="), "--print=")), true
+		case nodeOptionConsumesValue(arg):
+			i++
+			continue
+		case strings.HasPrefix(arg, "-"):
+			continue
+		default:
+			return "", false
+		}
+	}
+	return "", false
+}
+
+func inlineScriptArgumentRemainder(args []string, index int, initial string) string {
+	parts := []string{initial}
+	for i := index + 1; i < len(args); i++ {
+		if token := normalizeShellCommandToken(args[i]); isShellCommandBoundary(token) {
+			break
+		}
+		parts = append(parts, args[i])
+	}
+	return strings.Join(parts, " ")
+}
+
+func nodeInlineScriptArgumentRemainder(args []string, index int, initial string) string {
+	compact := compactShellInlineCode(strings.ToLower(initial))
+	if strings.Contains(compact, "require") {
+		return inlineScriptArgumentRemainder(args, index, initial)
+	}
+	return initial
+}
+
+func pythonInlineScriptArgument(args []string) (string, bool) {
+	for i := 0; i < len(args); i++ {
+		arg := normalizeShellCommandToken(args[i])
+		switch {
+		case arg == "-c":
+			if i+1 >= len(args) {
+				return "", false
+			}
+			return args[i+1], true
+		case strings.HasPrefix(arg, "-c") && len(arg) > 2:
+			return inlineScriptArgumentRemainder(args, i, strings.TrimPrefix(arg, "-c")), true
+		case pythonOptionConsumesValue(arg):
+			i++
+			continue
+		case strings.HasPrefix(arg, "-"):
+			continue
+		default:
+			return "", false
+		}
+	}
+	return "", false
+}
+
+func nodeOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "--require", "-r", "--import", "--loader", "--experimental-loader", "--input-type":
 		return true
+	}
+	return false
+}
+
+func pythonOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "-m", "-W", "-X", "--check-hash-based-pycs":
+		return true
+	}
+	return false
+}
+
+func inlineJavaScriptWritesFile(script string) bool {
+	code := compactShellInlineCode(stripShellInlineQuotedLiterals(strings.ToLower(script)))
+	return strings.Contains(code, "writefilesync") ||
+		strings.Contains(code, "promises.writefile") ||
+		strings.Contains(code, ".writefile(") ||
+		strings.Contains(code, ".appendfile(") ||
+		strings.Contains(code, ".copyfile(") ||
+		strings.Contains(code, ".copyfilesync(") ||
+		strings.Contains(code, ".cpsync(") ||
+		strings.Contains(code, ".renamesync(") ||
+		strings.Contains(code, ".unlinksync(") ||
+		strings.Contains(code, ".rmsync(") ||
+		strings.Contains(code, ".mkdirsync(") ||
+		inlineJavaScriptUsesMutatingFSAPI(code)
+}
+
+func inlineJavaScriptUsesMutatingFSAPI(code string) bool {
+	for _, api := range []string{"copyfile", "cp", "rename", "unlink", "rm", "mkdir"} {
+		if strings.Contains(code, "promises."+api+"(") ||
+			strings.Contains(code, "fs."+api+"(") ||
+			strings.Contains(code, "require()."+api+"(") {
+			return true
+		}
+	}
+	return false
+}
+
+func inlinePythonWritesFile(script string) bool {
+	lower := strings.ToLower(script)
+	code := compactShellInlineCode(stripShellInlineQuotedLiterals(lower))
+	if strings.Contains(code, ".write_text(") || strings.Contains(code, ".write_bytes(") ||
+		strings.Contains(code, ".touch(") || strings.Contains(code, ".mkdir(") || strings.Contains(code, ".unlink(") ||
+		strings.Contains(code, ".rename(") || strings.Contains(code, ".replace(") || strings.Contains(code, ".rmdir(") ||
+		strings.Contains(code, "os.remove(") || strings.Contains(code, "os.unlink(") || strings.Contains(code, "os.rmdir(") ||
+		strings.Contains(code, "os.removedirs(") || strings.Contains(code, "os.rename(") || strings.Contains(code, "os.replace(") ||
+		strings.Contains(code, "os.makedirs(") || strings.Contains(code, "shutil.copy") || strings.Contains(code, "shutil.move(") ||
+		strings.Contains(code, "shutil.rmtree(") {
+		return true
+	}
+	if !strings.Contains(code, "open(") {
+		return false
+	}
+	return pythonInlineOpenUsesWriteMode(lower) ||
+		strings.Contains(code, ".write(") || strings.Contains(code, ".writelines(")
+}
+
+func pythonInlineOpenUsesWriteMode(lowerScript string) bool {
+	compact := compactShellInlineCode(lowerScript)
+	for start := 0; start < len(compact); {
+		idx := strings.Index(compact[start:], "open(")
+		if idx < 0 {
+			break
+		}
+		callStart := start + idx
+		args, ok := shellInlineCallArguments(compact, callStart+len("open"))
+		if ok && pythonOpenCallArgumentsUseWriteMode(args, callStart > 0 && compact[callStart-1] == '.') {
+			return true
+		}
+		start = callStart + len("open(")
+	}
+	return false
+}
+
+func shellInlineCallArguments(compact string, openParen int) (string, bool) {
+	if openParen < 0 || openParen >= len(compact) || compact[openParen] != '(' {
+		return "", false
+	}
+	depth := 0
+	quote := byte(0)
+	for i := openParen; i < len(compact); i++ {
+		ch := compact[i]
+		if quote != 0 {
+			if ch == '\\' && i+1 < len(compact) {
+				i++
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return compact[openParen+1 : i], true
+			}
+		}
+	}
+	return "", false
+}
+
+func pythonOpenCallArgumentsUseWriteMode(args string, methodOpen bool) bool {
+	for _, literal := range shellInlineStringLiterals(args) {
+		if !pythonFileModeMayWrite(literal.Value) {
+			continue
+		}
+		if pythonLiteralIsKeywordArgument(args, literal.Start, "mode") {
+			return true
+		}
+		if methodOpen || pythonLiteralFollowsArgumentSeparator(args, literal.Start) {
+			return true
+		}
+	}
+	return false
+}
+
+type shellInlineStringLiteral struct {
+	Value string
+	Start int
+}
+
+func shellInlineStringLiterals(text string) []shellInlineStringLiteral {
+	literals := make([]shellInlineStringLiteral, 0)
+	for start := 0; start < len(text); {
+		idxSingle := strings.IndexByte(text[start:], '\'')
+		idxDouble := strings.IndexByte(text[start:], '"')
+		idx := idxSingle
+		quote := byte('\'')
+		if idx < 0 || (idxDouble >= 0 && idxDouble < idx) {
+			idx = idxDouble
+			quote = '"'
+		}
+		if idx < 0 {
+			break
+		}
+		literalStart := start + idx
+		valueStart := literalStart + 1
+		valueEnd := valueStart
+		for valueEnd < len(text) {
+			if text[valueEnd] == '\\' && valueEnd+1 < len(text) {
+				valueEnd += 2
+				continue
+			}
+			if text[valueEnd] == quote {
+				break
+			}
+			valueEnd++
+		}
+		if valueEnd >= len(text) {
+			break
+		}
+		literals = append(literals, shellInlineStringLiteral{Value: text[valueStart:valueEnd], Start: literalStart})
+		start = valueEnd + 1
+	}
+	return literals
+}
+
+func pythonLiteralIsKeywordArgument(args string, literalStart int, keyword string) bool {
+	prefix := keyword + "="
+	return literalStart >= len(prefix) && args[literalStart-len(prefix):literalStart] == prefix
+}
+
+func pythonLiteralFollowsArgumentSeparator(args string, literalStart int) bool {
+	return literalStart > 0 && args[literalStart-1] == ','
+}
+
+func pythonFileModeMayWrite(mode string) bool {
+	if mode == "" {
+		return false
+	}
+	for _, ch := range mode {
+		if !strings.ContainsRune("rwaxbt+", ch) {
+			return false
+		}
+	}
+	if strings.ContainsAny(mode, "wax") {
+		return true
+	}
+	return strings.Contains(mode, "r") && strings.Contains(mode, "+")
+}
+
+func compactShellInlineCode(text string) string {
+	return strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(text)
+}
+
+func stripShellInlineQuotedLiterals(text string) string {
+	var out strings.Builder
+	var quote rune
+	for _, ch := range text {
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		out.WriteRune(ch)
+	}
+	return out.String()
+}
+
+func hasShellOutputRedirection(fields []string) bool {
+	for _, field := range fields {
+		token := normalizeShellCommandToken(field)
+		if token == "2>&1" {
+			continue
+		}
+		if isShellVerificationOutputRedirectionToken(token) {
+			return true
+		}
+		if !strings.Contains(token, " ") && strings.Contains(token, ">") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasShellPipeToTee(fields []string) bool {
+	for i := 0; i+1 < len(fields); i++ {
+		if normalizeShellCommandToken(fields[i]) != "|" {
+			continue
+		}
+		next := commandNameBase(normalizeShellCommandToken(fields[i+1]))
+		if next == "tee" || next == "tee-object" {
+			return true
+		}
 	}
 	return false
 }
@@ -1181,6 +1978,17 @@ func normalizeShellExecutableToken(token string) string {
 	return token
 }
 
+func isShellVerificationOutputRedirectionToken(token string) bool {
+	if token == "" || token == "2>&1" {
+		return false
+	}
+	return token == ">" || token == ">>" || token == "1>" || token == "1>>" ||
+		token == "2>" || token == "2>>" || token == "&>" || token == "&>>" ||
+		token == "*>" || token == "*>>" || strings.HasPrefix(token, ">") ||
+		strings.HasPrefix(token, "1>") || strings.HasPrefix(token, "2>") ||
+		strings.HasPrefix(token, "&>") || strings.HasPrefix(token, "*>")
+}
+
 func isShellCommandBoundary(token string) bool {
 	switch token {
 	case "|", ";", "&&", "||", "&", "(", ")":
@@ -1190,7 +1998,50 @@ func isShellCommandBoundary(token string) bool {
 }
 
 func isShellCommandStartMarker(token string) bool {
-	return isShellCommandBoundary(token) || token == "-command" || token == "/command" || token == "-c" || token == "/c"
+	return isShellCommandBoundary(token) || isShellCommandOptionStartMarker(token)
+}
+
+func isShellCommandOptionStartMarker(token string) bool {
+	token = strings.ToLower(token)
+	return token == "-command" || token == "/command" || token == "-c" || token == "/c"
+}
+
+func currentSegmentStartsWithShellWrapper(segment []string) bool {
+	return len(segment) > 0 && isShellWrapperCommand(commandNameBase(segment[0]))
+}
+
+func isShellWrapperCommand(cmd string) bool {
+	switch strings.ToLower(cmd) {
+	case "bash", "sh", "zsh", "fish", "cmd", "powershell", "pwsh":
+		return true
+	}
+	return false
+}
+
+func isShellWrapperCommandOptionForCommand(cmd, token string) bool {
+	cmd = strings.ToLower(cmd)
+	token = strings.ToLower(token)
+	if !isShellWrapperCommand(cmd) {
+		return false
+	}
+	if isShellCommandOptionStartMarker(token) {
+		return true
+	}
+	switch cmd {
+	case "bash", "sh", "zsh", "fish":
+		return strings.HasPrefix(token, "-") && !strings.HasPrefix(token, "--") && strings.Contains(token[1:], "c")
+	}
+	return false
+}
+
+func shellCommandStartsAfterToken(token string, segment []string) bool {
+	if isShellCommandBoundary(token) {
+		return true
+	}
+	if len(segment) == 0 {
+		return false
+	}
+	return isShellWrapperCommandOptionForCommand(commandNameBase(segment[0]), token)
 }
 
 func commandSegmentFields(fields []string) []string {
@@ -1206,15 +2057,125 @@ func commandSegmentFields(fields []string) []string {
 }
 
 func shellCommandFields(command string) []string {
-	spaced := strings.NewReplacer(
-		"&&", " && ",
-		"||", " || ",
-		";", " ; ",
-		"|", " | ",
-		"(", " ( ",
-		")", " ) ",
-	).Replace(command)
-	return strings.Fields(spaced)
+	var fields []string
+	var current strings.Builder
+	var quote rune
+	flush := func(fromQuote bool) {
+		field := strings.TrimSpace(current.String())
+		current.Reset()
+		if field == "" {
+			return
+		}
+		if fromQuote && shouldExpandQuotedShellCommand(field, fields) {
+			fields = append(fields, shellCommandFields(field)...)
+			return
+		}
+		fields = append(fields, field)
+	}
+	for i := 0; i < len(command); i++ {
+		ch := rune(command[i])
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+				flush(true)
+				continue
+			}
+			current.WriteRune(ch)
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			flush(false)
+			quote = ch
+		case ' ', '\t', '\r', '\n':
+			flush(false)
+		case ';', '(', ')':
+			flush(false)
+			fields = append(fields, string(ch))
+		case '&':
+			if current.Len() > 0 && strings.Contains(current.String(), ">") {
+				current.WriteRune(ch)
+				continue
+			}
+			flush(false)
+			if i+1 < len(command) && command[i+1] == '&' {
+				fields = append(fields, "&&")
+				i++
+			} else {
+				fields = append(fields, "&")
+			}
+		case '|':
+			flush(false)
+			if i+1 < len(command) && command[i+1] == '|' {
+				fields = append(fields, "||")
+				i++
+			} else {
+				fields = append(fields, "|")
+			}
+		default:
+			current.WriteRune(ch)
+		}
+	}
+	flush(quote != 0)
+	return fields
+}
+
+func shouldExpandQuotedShellCommand(field string, currentFields []string) bool {
+	if quotedFieldIsShellWrapperCommandArgument(currentFields) {
+		return true
+	}
+	raw := strings.Fields(strings.ToLower(strings.TrimSpace(field)))
+	if len(raw) == 0 {
+		return false
+	}
+	segment := make([]string, 0, len(raw))
+	for _, token := range raw {
+		if normalized := normalizeShellCommandToken(token); normalized != "" {
+			segment = append(segment, normalized)
+		}
+	}
+	return isSubAgentVerificationCommandSegment(segment) || currentSegmentStartsWithShellWrapper(segment)
+}
+
+func quotedFieldIsShellWrapperCommandArgument(fields []string) bool {
+	if len(fields) == 0 {
+		return false
+	}
+	for i := len(fields) - 1; i >= 0; i-- {
+		token := normalizeShellCommandToken(fields[i])
+		if isShellCommandBoundary(token) {
+			return false
+		}
+		if len(fields[:i+1]) > 0 && shellWrapperFieldsEndAtCommandOption(fields[:i+1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellWrapperFieldsEndAtCommandOption(fields []string) bool {
+	if len(fields) == 0 {
+		return false
+	}
+	cmd := commandNameBase(normalizeShellCommandToken(fields[0]))
+	if !isShellWrapperCommand(cmd) {
+		return false
+	}
+	for i := 1; i < len(fields); i++ {
+		token := normalizeShellCommandToken(fields[i])
+		if shellWrapperOptionConsumesValue(token) {
+			i++
+			continue
+		}
+		if isShellWrapperCommandOptionForCommand(cmd, token) {
+			return i == len(fields)-1
+		}
+		if strings.HasPrefix(token, "-") || strings.HasPrefix(token, "/") {
+			continue
+		}
+		return false
+	}
+	return false
 }
 
 func hasDisallowedGitCommand(normalizedCommand string) bool {
@@ -1260,7 +2221,7 @@ func hasDisallowedGitCommand(normalizedCommand string) bool {
 				continue
 			}
 			switch arg {
-			case "reset", "checkout", "restore", "switch", "merge", "rebase", "stash":
+			case "reset", "checkout", "restore", "switch", "merge", "rebase", "stash", "add", "commit", "apply", "am", "cherry-pick", "revert", "rm", "mv", "update-index", "read-tree":
 				return true
 			case "clean":
 				return hasGitCleanForceFlag(commandSegmentFields(fields[j+1:]))
@@ -1292,7 +2253,7 @@ func shellCommandPrefixLength(fields []string) (int, bool) {
 		return 0, false
 	}
 	token := normalizeShellCommandToken(fields[0])
-	cmd := normalizeShellExecutableToken(token)
+	cmd := strings.ToLower(normalizeShellExecutableToken(token))
 	switch {
 	case isShellEnvAssignment(cmd):
 		return 1, true
@@ -1320,8 +2281,47 @@ func shellCommandPrefixLength(fields []string) (int, bool) {
 			break
 		}
 		return consumed, true
+	case isShellWrapperCommand(cmd):
+		if consumed, ok := shellWrapperCommandPrefixLength(fields); ok {
+			return consumed, true
+		}
 	}
 	return 0, false
+}
+
+func shellWrapperCommandPrefixLength(fields []string) (int, bool) {
+	if len(fields) == 0 {
+		return 0, false
+	}
+	cmd := commandNameBase(fields[0])
+	consumed := 1
+	for consumed < len(fields) {
+		next := normalizeShellCommandToken(fields[consumed])
+		if shellWrapperOptionConsumesValue(next) {
+			consumed++
+			if consumed < len(fields) {
+				consumed++
+			}
+			continue
+		}
+		if isShellWrapperCommandOptionForCommand(cmd, next) {
+			return consumed + 1, true
+		}
+		if strings.HasPrefix(next, "-") || strings.HasPrefix(next, "/") {
+			consumed++
+			continue
+		}
+		break
+	}
+	return 0, false
+}
+
+func shellWrapperOptionConsumesValue(option string) bool {
+	switch option {
+	case "-executionpolicy", "/executionpolicy", "-inputformat", "/inputformat", "-outputformat", "/outputformat", "-configurationname", "/configurationname":
+		return true
+	}
+	return false
 }
 
 func envOptionConsumesValue(option string) bool {
@@ -1359,13 +2359,8 @@ func (c *codingSubAgentCallbacks) toolGitDiffResult(args map[string]interface{})
 		workDir = "."
 	}
 
-	// Skip if not a git repository — avoids noisy "Not a git repository" errors.
-	gitDir := filepath.Join(workDir, ".git")
-	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-		return codingToolExecutionResult{
-			Text:    "(not a git repository, skipping diff)",
-			Outcome: codingToolOutcomeSuccess,
-		}
+	if result := c.ensureGitWorkTree(workDir); result.Outcome != codingToolOutcomeSuccess {
+		return result
 	}
 
 	command := "git diff -- ."
@@ -1379,6 +2374,40 @@ func (c *codingSubAgentCallbacks) toolGitDiffResult(args map[string]interface{})
 		"working_dir": workDir,
 		"timeout":     float64(30),
 	}, nil).toolResult()
+}
+
+func (c *codingSubAgentCallbacks) ensureGitWorkTree(workDir string) codingToolExecutionResult {
+	info, err := os.Stat(workDir)
+	if err != nil {
+		return codingToolExecutionResult{
+			Text:    fmt.Sprintf("git diff unavailable: cannot inspect %s: %v", workDir, err),
+			Outcome: codingToolOutcomeFailed,
+		}
+	}
+	if !info.IsDir() {
+		return codingToolExecutionResult{
+			Text:    fmt.Sprintf("git diff unavailable: %s is not a directory", workDir),
+			Outcome: codingToolOutcomeFailed,
+		}
+	}
+
+	ctx, cancel := c.toolContext()
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "--is-inside-work-tree")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return codingToolExecutionResult{
+			Text:    fmt.Sprintf("git diff unavailable: %s is not a git repository (%s)", workDir, strings.TrimSpace(string(output))),
+			Outcome: codingToolOutcomeFailed,
+		}
+	}
+	if strings.TrimSpace(string(output)) != "true" {
+		return codingToolExecutionResult{
+			Text:    fmt.Sprintf("git diff unavailable: %s is not a git work tree", workDir),
+			Outcome: codingToolOutcomeFailed,
+		}
+	}
+	return codingToolExecutionResult{Text: "git work tree detected", Outcome: codingToolOutcomeSuccess}
 }
 
 func (c *codingSubAgentCallbacks) projectPath() string {
@@ -1522,6 +2551,10 @@ func (c *codingSubAgentCallbacks) getFilesRead() []string {
 }
 
 func (c *codingSubAgentCallbacks) displayProjectPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
 	if c.subagent == nil || strings.TrimSpace(c.subagent.projectPath) == "" {
 		return filepath.Clean(path)
 	}
@@ -1533,8 +2566,22 @@ func (c *codingSubAgentCallbacks) displayProjectPath(path string) string {
 	if err != nil {
 		return filepath.Clean(path)
 	}
-	if rel, err := filepath.Rel(absProject, absPath); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
-		return filepath.ToSlash(rel)
+	absProject = filepath.Clean(absProject)
+	realProject, err := filepath.EvalSymlinks(absProject)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	realPath, err := evalCodingScopePath(absPath)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	if ok, err := pathWithinCleanDir(realPath, realProject); err == nil && ok {
+		if rel, err := filepath.Rel(realProject, realPath); err == nil && rel != "." {
+			return filepath.ToSlash(rel)
+		}
+	}
+	if ok, err := pathWithinCleanDir(absPath, absProject); err == nil && ok {
+		return filepath.Clean(realPath)
 	}
 	return filepath.Clean(path)
 }
@@ -1546,6 +2593,12 @@ func (c *codingSubAgentCallbacks) trackGitDiff(result string) {
 	c.gitDiffChecked = true
 	c.lastGitDiff = compactSubAgentDiff(result)
 	c.lastDiffSeq = seq
+}
+
+func (c *codingSubAgentCallbacks) rejectEmptyFinalGitDiff() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.gitDiffChecked = false
 }
 
 func (c *codingSubAgentCallbacks) trackCommandResult(args map[string]interface{}, result string, succeeded bool) {
@@ -1579,15 +2632,45 @@ func (c *codingSubAgentCallbacks) trackGuardrailViolation(toolName string, args 
 	command, _ := args["command"].(string)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	seq := c.nextEventSeqLocked()
 	c.guardrails = append(c.guardrails, CodingSubAgentGuardrailViolation{
 		Tool:     toolName,
 		Category: classifyCodingGuardrailCategory(toolName, path, command, result),
 		Path:     c.displayProjectPath(path),
 		Command:  command,
 		Summary:  compactGuardrailSummary(result),
+		seq:      seq,
 	})
 }
 
+func (c *codingSubAgentCallbacks) trackDynamicToolResult(toolName, name, result string, succeeded bool) {
+	toolName = strings.TrimSpace(toolName)
+	name = strings.TrimSpace(name)
+	if toolName == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	seq := c.nextEventSeqLocked()
+	c.dynamicTools = append(c.dynamicTools, CodingSubAgentDynamicToolResult{
+		Tool:      toolName,
+		Name:      compactSubAgentSearchText(name),
+		Succeeded: succeeded,
+		Summary:   compactCommandResult(result),
+		seq:       seq,
+	})
+}
+
+func (c *codingSubAgentCallbacks) getDynamicToolsRun() []CodingSubAgentDynamicToolResult {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.dynamicTools) == 0 {
+		return nil
+	}
+	out := make([]CodingSubAgentDynamicToolResult, len(c.dynamicTools))
+	copy(out, c.dynamicTools)
+	return out
+}
 func (c *codingSubAgentCallbacks) getGuardrailViolations() []CodingSubAgentGuardrailViolation {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1612,17 +2695,21 @@ func (c *codingSubAgentCallbacks) getCommandsRun() []CodingSubAgentCommandResult
 
 func (c *codingSubAgentCallbacks) trackSearchResult(toolName string, args map[string]interface{}, result string, succeeded bool) {
 	query, _ := args["pattern"].(string)
+	if query == "" {
+		query, _ = args["query"].(string)
+	}
 	path, _ := args["path"].(string)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	seq := c.nextEventSeqLocked()
 	c.searchesRun = append(c.searchesRun, CodingSubAgentSearchResult{
 		Tool:      toolName,
 		Query:     compactSubAgentSearchText(query),
 		Path:      compactSubAgentPathText(c.displayProjectPath(path)),
 		Succeeded: succeeded,
 		Summary:   compactSearchResult(result),
+		seq:       seq,
 	})
-	seq := c.nextEventSeqLocked()
 	if succeeded && c.firstSearchSeq == 0 {
 		c.firstSearchSeq = seq
 	}
@@ -1649,30 +2736,36 @@ func limitSubAgentStringSlice(values []string, maxItems int) []string {
 }
 
 func limitSubAgentCommandResults(values []CodingSubAgentCommandResult, maxItems int) []CodingSubAgentCommandResult {
-	if maxItems <= 0 || len(values) <= maxItems {
-		return values
-	}
-	out := make([]CodingSubAgentCommandResult, maxItems)
-	copy(out, values[:maxItems])
-	return out
+	return selectSubAgentCommandSummaryEntries(values, maxItems)
 }
 
 func limitSubAgentSearchResults(values []CodingSubAgentSearchResult, maxItems int) []CodingSubAgentSearchResult {
+	return selectSubAgentSearchAuditEntries(values, maxItems)
+}
+
+func selectSubAgentSearchAuditEntries(values []CodingSubAgentSearchResult, maxItems int) []CodingSubAgentSearchResult {
 	if maxItems <= 0 || len(values) <= maxItems {
 		return values
 	}
-	out := make([]CodingSubAgentSearchResult, maxItems)
-	copy(out, values[:maxItems])
-	return out
+	out := append([]CodingSubAgentSearchResult(nil), values...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Succeeded != out[j].Succeeded {
+			return !out[i].Succeeded && out[j].Succeeded
+		}
+		if out[i].seq != 0 && out[j].seq != 0 && out[i].seq != out[j].seq {
+			return out[i].seq > out[j].seq
+		}
+		return false
+	})
+	return out[:maxItems]
 }
 
 func limitSubAgentGuardrailViolations(values []CodingSubAgentGuardrailViolation, maxItems int) []CodingSubAgentGuardrailViolation {
-	if maxItems <= 0 || len(values) <= maxItems {
-		return values
-	}
-	out := make([]CodingSubAgentGuardrailViolation, maxItems)
-	copy(out, values[:maxItems])
-	return out
+	return selectSubAgentGuardrailAuditEntries(values, maxItems)
+}
+
+func limitSubAgentDynamicToolResults(values []CodingSubAgentDynamicToolResult, maxItems int) []CodingSubAgentDynamicToolResult {
+	return selectSubAgentDynamicToolSummaryEntries(values, maxItems)
 }
 
 func (c *codingSubAgentCallbacks) ensureFinalGitDiff(filesModified []string) (bool, string) {
@@ -1681,7 +2774,7 @@ func (c *codingSubAgentCallbacks) ensureFinalGitDiff(filesModified []string) (bo
 	lastDiff := c.lastGitDiff
 	c.mu.Unlock()
 
-	if alreadyChecked {
+	if alreadyChecked && !isEmptySubAgentDiffOutput(lastDiff) {
 		return true, lastDiff
 	}
 	if len(filesModified) == 0 {
@@ -1692,7 +2785,12 @@ func (c *codingSubAgentCallbacks) ensureFinalGitDiff(filesModified []string) (bo
 	if result.Outcome != codingToolOutcomeSuccess {
 		return false, compactSubAgentDiff(result.Text)
 	}
-	return true, compactSubAgentDiff(result.Text)
+	diffSummary := compactSubAgentDiff(result.Text)
+	if isEmptySubAgentDiffOutput(diffSummary) {
+		c.rejectEmptyFinalGitDiff()
+		return false, "git diff 无输出：已记录文件修改，但最终 diff 为空。请重新检查改动是否被还原，必要时重新编辑并再次运行 git_diff。"
+	}
+	return true, diffSummary
 }
 
 func (c *codingSubAgentCallbacks) requireProjectWriteScope(path string) string {
@@ -1817,9 +2915,20 @@ func (c *codingSubAgentCallbacks) validateReadSnapshot(path string) (bool, strin
 		return false, fmt.Sprintf("无法确认文件 %s 是否仍与 read_file 时一致：%s。请重新 read_file 后再修改。", path, err.Error())
 	}
 	if current != snap {
-		return false, fmt.Sprintf("文件 %s 自上次 read_file 后已变化，请重新调用 read_file 获取最新内容后再修改。", path)
+		return false, fmt.Sprintf("文件 %s 自上次 read_file 后已变化（read_file 时 %s，当前 %s）。请先重新调用 read_file(path=%q) 获取最新内容，再重新应用最小编辑。", path, codingFileSnapshotSummary(snap), codingFileSnapshotSummary(current), path)
 	}
 	return true, ""
+}
+
+func codingFileSnapshotSummary(snap codingFileSnapshot) string {
+	hash := snap.Hash
+	if len(hash) > 12 {
+		hash = hash[:12]
+	}
+	if hash == "" {
+		hash = "unknown"
+	}
+	return fmt.Sprintf("size=%d sha256=%s", snap.Size, hash)
 }
 
 func (c *codingSubAgentCallbacks) refreshFileSnapshot(path string) {
@@ -1953,10 +3062,15 @@ func codingFileExists(path string) bool {
 
 func compactSubAgentDiff(diff string) string {
 	diff = strings.TrimSpace(diff)
-	if diff == "" || diff == "(命令执行完成，无输出)" {
+	if isEmptySubAgentDiffOutput(diff) {
 		return "git diff 无输出"
 	}
 	return truncateRunesForSubAgent(diff, 2000)
+}
+
+func isEmptySubAgentDiffOutput(diff string) bool {
+	diff = strings.TrimSpace(diff)
+	return diff == "" || diff == "(command completed with no output)" || diff == "(命令执行完成，无输出)" || diff == "git diff 无输出"
 }
 
 func appendSubAgentDiffSummary(summary, diffSummary string) string {
@@ -2141,6 +3255,25 @@ func aggregateGuardrailViolations(violations []CodingSubAgentGuardrailViolation)
 	return entries
 }
 
+func selectSubAgentGuardrailAuditEntries(values []CodingSubAgentGuardrailViolation, maxItems int) []CodingSubAgentGuardrailViolation {
+	if maxItems <= 0 || len(values) <= maxItems {
+		return values
+	}
+	out := append([]CodingSubAgentGuardrailViolation(nil), values...)
+	sort.SliceStable(out, func(i, j int) bool {
+		left := guardrailViolationSummaryPriority(out[i])
+		right := guardrailViolationSummaryPriority(out[j])
+		if left != right {
+			return left > right
+		}
+		if out[i].seq != 0 && out[j].seq != 0 && out[i].seq != out[j].seq {
+			return out[i].seq > out[j].seq
+		}
+		return false
+	})
+	return out[:maxItems]
+}
+
 func guardrailViolationSummaryPriority(v CodingSubAgentGuardrailViolation) int {
 	switch v.Category {
 	case codingSubAgentGuardrailCategoryGit, codingSubAgentGuardrailCategoryDelete, codingSubAgentGuardrailCategoryShellWrite:
@@ -2164,6 +3297,10 @@ func compactCommandResult(result string) string {
 		return "(无输出)"
 	}
 	return truncateRunesForSubAgent(result, 1000)
+}
+
+func commandResultDiagnosticLine(result string) string {
+	return strings.TrimSpace(firstDiagnosticCodingToolResultLine(result))
 }
 
 func compactGuardrailSummary(result string) string {
@@ -2215,11 +3352,8 @@ func appendSubAgentCommandSummary(summary string, commands []CodingSubAgentComma
 	var b strings.Builder
 	b.WriteString(strings.TrimSpace(summary))
 	b.WriteString("\n\n## 命令验证\n\n")
-	shown := len(commands)
-	if shown > codingSubAgentCommandSummaryMax {
-		shown = codingSubAgentCommandSummaryMax
-	}
-	for _, cmd := range commands[:shown] {
+	shownCommands := selectSubAgentCommandSummaryEntries(commands, codingSubAgentCommandSummaryMax)
+	for _, cmd := range shownCommands {
 		status := "PASS"
 		if !cmd.Succeeded {
 			status = "FAIL"
@@ -2235,27 +3369,132 @@ func appendSubAgentCommandSummary(summary string, commands []CodingSubAgentComma
 			b.WriteString("`)")
 		}
 		if cmd.Summary != "" {
-			b.WriteString("\n  ")
-			b.WriteString(truncateRunesForSubAgent(firstLine(cmd.Summary), codingSubAgentCommandOutputLineMaxRunes))
+			if summary := commandResultDiagnosticLine(cmd.Summary); summary != "" {
+				b.WriteString("\n  ")
+				b.WriteString(truncateRunesForSubAgent(summary, codingSubAgentCommandOutputLineMaxRunes))
+			}
 		}
 		b.WriteString("\n")
 	}
-	if remaining := len(commands) - shown; remaining > 0 {
+	if remaining := len(commands) - len(shownCommands); remaining > 0 {
 		b.WriteString(fmt.Sprintf("- ... 还有 %d 条命令记录未展开\n", remaining))
 	}
 	return b.String()
+}
+
+func selectSubAgentCommandSummaryEntries(commands []CodingSubAgentCommandResult, maxItems int) []CodingSubAgentCommandResult {
+	if maxItems <= 0 || len(commands) <= maxItems {
+		return commands
+	}
+	selected := make([]CodingSubAgentCommandResult, 0, maxItems)
+	used := make(map[int]bool, maxItems)
+	for i, cmd := range commands {
+		if cmd.Succeeded {
+			continue
+		}
+		selected = append(selected, cmd)
+		used[i] = true
+		if len(selected) == maxItems {
+			return selected
+		}
+	}
+	recent := make([]CodingSubAgentCommandResult, 0, maxItems-len(selected))
+	for i := len(commands) - 1; i >= 0; i-- {
+		if used[i] {
+			continue
+		}
+		recent = append(recent, commands[i])
+		if len(selected)+len(recent) == maxItems {
+			reverseSubAgentCommandResults(recent)
+			return append(selected, recent...)
+		}
+	}
+	reverseSubAgentCommandResults(recent)
+	return append(selected, recent...)
+}
+
+func reverseSubAgentCommandResults(values []CodingSubAgentCommandResult) {
+	for i, j := 0, len(values)-1; i < j; i, j = i+1, j-1 {
+		values[i], values[j] = values[j], values[i]
+	}
+}
+
+func appendSubAgentDynamicToolSummary(summary string, tools []CodingSubAgentDynamicToolResult) string {
+	if len(tools) == 0 {
+		return summary
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(summary))
+	b.WriteString("\n\n## 动态工具\n\n")
+	shownTools := selectSubAgentDynamicToolSummaryEntries(tools, codingSubAgentCommandSummaryMax)
+	for _, tool := range shownTools {
+		status := "PASS"
+		if !tool.Succeeded {
+			status = "FAIL"
+		}
+		b.WriteString("- ")
+		b.WriteString(status)
+		b.WriteString(": `")
+		b.WriteString(escapeSubAgentInlineCode(compactSubAgentSearchText(tool.Tool)))
+		b.WriteString("`")
+		if strings.TrimSpace(tool.Name) != "" {
+			b.WriteString(" `")
+			b.WriteString(escapeSubAgentInlineCode(compactSubAgentSearchText(tool.Name)))
+			b.WriteString("`")
+		}
+		if tool.Summary != "" {
+			b.WriteString("\n  ")
+			b.WriteString(truncateRunesForSubAgent(commandResultDiagnosticLine(tool.Summary), codingSubAgentCommandOutputLineMaxRunes))
+		}
+		b.WriteString("\n")
+	}
+	if remaining := len(tools) - len(shownTools); remaining > 0 {
+		b.WriteString(fmt.Sprintf("- ... 还有 %d 条动态工具记录未展开\n", remaining))
+	}
+	return b.String()
+}
+func selectSubAgentDynamicToolSummaryEntries(tools []CodingSubAgentDynamicToolResult, maxItems int) []CodingSubAgentDynamicToolResult {
+	if maxItems <= 0 || len(tools) <= maxItems {
+		return tools
+	}
+	selected := make([]CodingSubAgentDynamicToolResult, 0, maxItems)
+	used := make(map[int]bool, maxItems)
+	for i, tool := range tools {
+		if tool.Succeeded {
+			continue
+		}
+		selected = append(selected, tool)
+		used[i] = true
+		if len(selected) == maxItems {
+			return selected
+		}
+	}
+	recent := make([]CodingSubAgentDynamicToolResult, 0, maxItems-len(selected))
+	for i := len(tools) - 1; i >= 0; i-- {
+		if used[i] {
+			continue
+		}
+		recent = append(recent, tools[i])
+		if len(selected)+len(recent) == maxItems {
+			reverseSubAgentDynamicToolResults(recent)
+			return append(selected, recent...)
+		}
+	}
+	reverseSubAgentDynamicToolResults(recent)
+	return append(selected, recent...)
+}
+
+func reverseSubAgentDynamicToolResults(values []CodingSubAgentDynamicToolResult) {
+	for i, j := 0, len(values)-1; i < j; i, j = i+1, j-1 {
+		values[i], values[j] = values[j], values[i]
+	}
 }
 
 func summarizeSubAgentCommands(commands []CodingSubAgentCommandResult) (codingSubAgentQualityStatus, string) {
 	if len(commands) == 0 {
 		return codingSubAgentQualityNone, "no bash commands run"
 	}
-	var failed []string
-	for _, cmd := range commands {
-		if !cmd.Succeeded {
-			failed = append(failed, cmd.Command)
-		}
-	}
+	failed := failedSubAgentCommands(commands)
 	if len(failed) == 0 {
 		if len(commands) == 1 {
 			return codingSubAgentQualityPassed, "1 bash command run, no failures"
@@ -2263,21 +3502,25 @@ func summarizeSubAgentCommands(commands []CodingSubAgentCommandResult) (codingSu
 		return codingSubAgentQualityPassed, fmt.Sprintf("%d bash commands run, no failures", len(commands))
 	}
 	if len(failed) == 1 {
-		return codingSubAgentQualityFailed, fmt.Sprintf("%d bash commands run, 1 failed: %s", len(commands), compactFailedVerificationCommands(failed))
+		return codingSubAgentQualityFailed, fmt.Sprintf("%d bash commands run, 1 failed: %s", len(commands), compactFailedVerificationCommandResults(failed))
 	}
-	return codingSubAgentQualityFailed, fmt.Sprintf("%d bash commands run, %d failed: %s", len(commands), len(failed), compactFailedVerificationCommands(failed))
+	return codingSubAgentQualityFailed, fmt.Sprintf("%d bash commands run, %d failed: %s", len(commands), len(failed), compactFailedVerificationCommandResults(failed))
 }
 
-func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAgentQualityStatus, diffChecked bool, filesModified, filesCreated []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64, guardrails []CodingSubAgentGuardrailViolation) (codingSubAgentQualityStatus, string, int) {
+func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAgentQualityStatus, diffChecked bool, filesModified, filesCreated []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64, guardrails []CodingSubAgentGuardrailViolation, dynamicTools []CodingSubAgentDynamicToolResult) (codingSubAgentQualityStatus, string, int) {
 	filesModified = uniqueSortedSubAgentStrings(filesModified)
 	var failed []string
 	var warnings []string
 	if len(guardrails) > 0 {
 		failed = append(failed, fmt.Sprintf("%d guardrail block(s)", len(guardrails)))
 	}
-	failedCommands := countFailedSubAgentCommands(filterPostEditSubAgentCommands(commands, lastEditSeq))
-	if failedCommands > 0 && verificationStatus != codingSubAgentQualityFailed {
-		warnings = append(warnings, fmt.Sprintf("%d command(s) failed", failedCommands))
+	failedCommands := failedSubAgentCommands(filterGuardrailBlockedSubAgentCommands(filterPostEditSubAgentCommands(commands, lastEditSeq), guardrails))
+	if len(failedCommands) > 0 && verificationStatus != codingSubAgentQualityFailed {
+		warnings = append(warnings, summarizeFailedSubAgentCommandWarning(failedCommands))
+	}
+	failedDynamicTools := failedSubAgentDynamicTools(filterPostEditSubAgentDynamicTools(dynamicTools, lastEditSeq))
+	if len(failedDynamicTools) > 0 {
+		warnings = append(warnings, summarizeFailedSubAgentDynamicToolWarning(failedDynamicTools))
 	}
 	if len(filesModified) > 0 {
 		if explorationStatus == codingSubAgentQualityMissing && countExistingSubAgentModifiedFiles(filesModified, filesCreated) > 0 {
@@ -2305,6 +3548,69 @@ func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAge
 	return codingSubAgentQualityPassed, "exploration, verification, and diff check passed", 0
 }
 
+func filterPostEditSubAgentDynamicTools(tools []CodingSubAgentDynamicToolResult, lastEditSeq uint64) []CodingSubAgentDynamicToolResult {
+	if lastEditSeq == 0 || len(tools) == 0 {
+		return tools
+	}
+	filtered := make([]CodingSubAgentDynamicToolResult, 0, len(tools))
+	for _, tool := range tools {
+		if tool.seq == 0 || tool.seq >= lastEditSeq {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
+}
+
+func failedSubAgentDynamicTools(tools []CodingSubAgentDynamicToolResult) []CodingSubAgentDynamicToolResult {
+	if len(tools) == 0 {
+		return nil
+	}
+	failed := make([]CodingSubAgentDynamicToolResult, 0, len(tools))
+	for _, tool := range tools {
+		if !tool.Succeeded {
+			failed = append(failed, tool)
+		}
+	}
+	return failed
+}
+
+func summarizeFailedSubAgentDynamicToolWarning(tools []CodingSubAgentDynamicToolResult) string {
+	if len(tools) == 0 {
+		return "0 dynamic tool(s) failed"
+	}
+	detail := compactFailedSubAgentDynamicToolResults(tools)
+	if len(tools) == 1 {
+		return fmt.Sprintf("1 dynamic tool failed: %s", detail)
+	}
+	return fmt.Sprintf("%d dynamic tools failed: %s", len(tools), detail)
+}
+
+func compactFailedSubAgentDynamicToolResults(tools []CodingSubAgentDynamicToolResult) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	limit := codingSubAgentFailedVerificationSummaryMax
+	if len(tools) < limit {
+		limit = len(tools)
+	}
+	parts := make([]string, 0, limit+1)
+	for _, tool := range tools[:limit] {
+		label := strings.TrimSpace(tool.Tool)
+		if strings.TrimSpace(tool.Name) != "" {
+			label += " " + strings.TrimSpace(tool.Name)
+		}
+		summary := commandResultDiagnosticLine(tool.Summary)
+		if summary != "" {
+			label += " -> " + summary
+		}
+		parts = append(parts, truncateRunesForSubAgent(label, codingSubAgentCommandTextMaxRunes))
+	}
+	if remaining := len(tools) - limit; remaining > 0 {
+		parts = append(parts, fmt.Sprintf("... %d more", remaining))
+	}
+	return strings.Join(parts, "; ")
+}
+
 func filterPostEditSubAgentCommands(commands []CodingSubAgentCommandResult, lastEditSeq uint64) []CodingSubAgentCommandResult {
 	if lastEditSeq == 0 || len(commands) == 0 {
 		return commands
@@ -2317,6 +3623,75 @@ func filterPostEditSubAgentCommands(commands []CodingSubAgentCommandResult, last
 	}
 	return filtered
 }
+func filterGuardrailBlockedSubAgentCommands(commands []CodingSubAgentCommandResult, guardrails []CodingSubAgentGuardrailViolation) []CodingSubAgentCommandResult {
+	if len(commands) == 0 || len(guardrails) == 0 {
+		return commands
+	}
+	blocked := make(map[string]bool, len(guardrails))
+	for _, violation := range guardrails {
+		command := strings.TrimSpace(violation.Command)
+		if command != "" {
+			blocked[command] = true
+		}
+	}
+	if len(blocked) == 0 {
+		return commands
+	}
+	filtered := make([]CodingSubAgentCommandResult, 0, len(commands))
+	for _, command := range commands {
+		if !blocked[strings.TrimSpace(command.Command)] {
+			filtered = append(filtered, command)
+		}
+	}
+	return filtered
+}
+
+func failedSubAgentCommands(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
+	failed := make([]CodingSubAgentCommandResult, 0)
+	for _, cmd := range commands {
+		if !cmd.Succeeded {
+			failed = append(failed, cmd)
+		}
+	}
+	return failed
+}
+
+func summarizeFailedSubAgentCommandWarning(commands []CodingSubAgentCommandResult) string {
+	if len(commands) == 0 {
+		return ""
+	}
+	command := failedSubAgentCommandWithBestDiagnostic(commands)
+	text := fmt.Sprintf("%d command(s) failed", len(commands))
+	first := strings.TrimSpace(command.Command)
+	if first != "" {
+		text += ": " + truncateRunesForSubAgent(first, 160)
+	}
+	if summary := commandResultDiagnosticLine(command.Summary); summary != "" {
+		text += " -> " + truncateRunesForSubAgent(summary, codingSubAgentCommandOutputLineMaxRunes)
+	}
+	return text
+}
+
+func failedSubAgentCommandWithBestDiagnostic(commands []CodingSubAgentCommandResult) CodingSubAgentCommandResult {
+	if len(commands) == 0 {
+		return CodingSubAgentCommandResult{}
+	}
+	for _, command := range commands {
+		if isActionableCommandDiagnosticLine(commandResultDiagnosticLine(command.Summary)) {
+			return command
+		}
+	}
+	return commands[0]
+}
+
+func isActionableCommandDiagnosticLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" || isCodingToolCommandStatusLine(line) {
+		return false
+	}
+	return true
+}
+
 func countFailedSubAgentCommands(commands []CodingSubAgentCommandResult) int {
 	count := 0
 	for _, cmd := range commands {
@@ -2367,7 +3742,12 @@ func summarizeSubAgentVerification(filesModified []string, commands []CodingSubA
 		return codingSubAgentQualityNotNeeded, "未检测到文件修改，跳过命令验证要求。"
 	}
 	allVerificationCommands := filterSubAgentVerificationCommands(commands)
+	unsafeVerificationCommands := filterUnsafeSubAgentVerificationCommands(commands)
+	freshUnsafeVerificationCommands := filterFreshUnsafeSubAgentVerificationCommands(commands, lastEditSeq)
 	verificationCommands := filterFreshSubAgentVerificationCommands(commands, lastEditSeq)
+	if len(freshUnsafeVerificationCommands) > 0 {
+		return codingSubAgentQualityMissing, fmt.Sprintf("verification command used failure-suppressing shell syntax (%d command(s)); rerun test/build/lint/typecheck without || fallback, pipe filters, output redirection, or extra commands after the verifier", len(freshUnsafeVerificationCommands))
+	}
 	if len(verificationCommands) == 0 {
 		if len(commands) == 0 {
 			return codingSubAgentQualityMissing, "file changes detected but no bash verification command ran"
@@ -2375,21 +3755,52 @@ func summarizeSubAgentVerification(filesModified []string, commands []CodingSubA
 		if len(allVerificationCommands) > 0 {
 			return codingSubAgentQualityMissing, fmt.Sprintf("verification ran before the final edit (%d command(s)); rerun test/build/lint/typecheck after editing", len(allVerificationCommands))
 		}
+		if len(unsafeVerificationCommands) > 0 {
+			return codingSubAgentQualityMissing, fmt.Sprintf("verification command used failure-suppressing shell syntax (%d command(s)); rerun test/build/lint/typecheck without || fallback, pipe filters, output redirection, or extra commands after the verifier", len(unsafeVerificationCommands))
+		}
 		return codingSubAgentQualityMissing, fmt.Sprintf("file changes detected; ran %d bash command(s), but none were test/build/lint/typecheck verification", len(commands))
 	}
-	var failed []string
+	var failed []CodingSubAgentCommandResult
 	for _, cmd := range verificationCommands {
 		if !cmd.Succeeded {
-			failed = append(failed, cmd.Command)
+			failed = append(failed, cmd)
 		}
 	}
 	if len(failed) > 0 {
 		if len(failed) == 1 {
-			return codingSubAgentQualityFailed, fmt.Sprintf("有 1 条验证命令失败：%s", compactFailedVerificationCommands(failed))
+			return codingSubAgentQualityFailed, fmt.Sprintf("有 1 条验证命令失败：%s", compactFailedVerificationCommandResults(failed))
 		}
-		return codingSubAgentQualityFailed, fmt.Sprintf("有 %d 条验证命令失败：%s", len(failed), compactFailedVerificationCommands(failed))
+		return codingSubAgentQualityFailed, fmt.Sprintf("有 %d 条验证命令失败：%s", len(failed), compactFailedVerificationCommandResults(failed))
 	}
-	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条 bash 验证命令，未检测到失败。", len(verificationCommands))
+	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条 bash 验证命令，未检测到失败：%s", len(verificationCommands), compactSubAgentVerificationCommandList(verificationCommands))
+}
+
+func compactSubAgentVerificationCommandList(commands []CodingSubAgentCommandResult) string {
+	if len(commands) == 0 {
+		return ""
+	}
+	limit := codingSubAgentFailedVerificationSummaryMax
+	if len(commands) < limit {
+		limit = len(commands)
+	}
+	parts := make([]string, 0, limit+1)
+	for _, command := range commands[:limit] {
+		text := compactSubAgentCommandText(command.Command)
+		if text == "" {
+			text = "<empty command>"
+		}
+		parts = append(parts, "`"+escapeSubAgentInlineCode(text)+"`")
+	}
+	if remaining := len(commands) - limit; remaining > 0 {
+		parts = append(parts, fmt.Sprintf("还有 %d 条未展开", remaining))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func countFreshSubAgentVerificationAttempts(commands []CodingSubAgentCommandResult, lastEditSeq uint64) int {
+	freshClean := filterFreshSubAgentVerificationCommands(commands, lastEditSeq)
+	freshUnsafe := filterFreshUnsafeSubAgentVerificationCommands(commands, lastEditSeq)
+	return len(freshClean) + len(freshUnsafe)
 }
 
 func filterFreshSubAgentVerificationCommands(commands []CodingSubAgentCommandResult, lastEditSeq uint64) []CodingSubAgentCommandResult {
@@ -2422,6 +3833,40 @@ func filterSubAgentVerificationCommands(commands []CodingSubAgentCommandResult) 
 	return filtered
 }
 
+func filterFreshUnsafeSubAgentVerificationCommands(commands []CodingSubAgentCommandResult, lastEditSeq uint64) []CodingSubAgentCommandResult {
+	if len(commands) == 0 {
+		return nil
+	}
+	filtered := make([]CodingSubAgentCommandResult, 0, len(commands))
+	for _, cmd := range commands {
+		if !isUnsafeSubAgentVerificationCommand(cmd.Command) {
+			continue
+		}
+		if lastEditSeq > 0 && cmd.seq > 0 && cmd.seq < lastEditSeq {
+			continue
+		}
+		filtered = append(filtered, cmd)
+	}
+	return filtered
+}
+
+func filterUnsafeSubAgentVerificationCommands(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
+	if len(commands) == 0 {
+		return nil
+	}
+	filtered := make([]CodingSubAgentCommandResult, 0, len(commands))
+	for _, cmd := range commands {
+		if isUnsafeSubAgentVerificationCommand(cmd.Command) {
+			filtered = append(filtered, cmd)
+		}
+	}
+	return filtered
+}
+
+func isUnsafeSubAgentVerificationCommand(command string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	return normalized != "" && suppressesVerificationFailure(normalized)
+}
 func isSubAgentVerificationCommand(command string) bool {
 	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
 	if normalized == "" || suppressesVerificationFailure(normalized) {
@@ -2450,24 +3895,26 @@ func suppressesVerificationFailure(normalizedCommand string) bool {
 		if token == "" {
 			continue
 		}
-		if isShellCommandStartMarker(token) {
+		if shellCommandStartsAfterToken(token, segment) {
 			flushSegment()
 			if sawVerification && token == "||" && i+1 < len(fields) {
-				next := normalizeShellExecutableToken(normalizeShellCommandToken(fields[i+1]))
-				if next == "true" || next == ":" {
-					return true
-				}
-				if next == "exit" && i+2 < len(fields) && normalizeShellCommandToken(fields[i+2]) == "0" {
-					return true
-				}
+				return true
 			}
-			if sawVerification && token == ";" && i+2 < len(fields) {
-				next := normalizeShellExecutableToken(normalizeShellCommandToken(fields[i+1]))
-				if next == "exit" && normalizeShellCommandToken(fields[i+2]) == "0" {
-					return true
-				}
+			if sawVerification && token == "|" && i+1 < len(fields) {
+				return true
+			}
+			if sawVerification && (token == "&&" || token == "&") && i+1 < len(fields) {
+				return true
+			}
+			if sawVerification && token == ";" && i+1 < len(fields) {
+				return true
 			}
 			continue
+		}
+		if isShellVerificationOutputRedirectionToken(token) {
+			if sawVerification || isSubAgentVerificationCommandSegment(segment) {
+				return true
+			}
 		}
 		segment = append(segment, token)
 	}
@@ -2484,7 +3931,7 @@ func shellCommandSegments(command string) [][]string {
 		if token == "" {
 			continue
 		}
-		if isShellCommandStartMarker(token) {
+		if shellCommandStartsAfterToken(token, current) {
 			if len(current) > 0 {
 				segments = append(segments, current)
 				current = nil
@@ -2511,9 +3958,9 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 	args := segment[1:]
 	switch cmd {
 	case "go":
-		return firstArgIn(args, "test", "vet", "build", "fmt")
+		return goRunsVerification(args)
 	case "cargo":
-		return firstArgIn(args, "test", "check", "clippy", "build", "fmt")
+		return firstArgIn(args, "test", "check", "clippy", "build")
 	case "npm", "pnpm", "yarn":
 		return packageManagerRunsVerification(args)
 	case "npx", "pnpx", "yarnx":
@@ -2522,22 +3969,48 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 		return corepackRunsVerification(args)
 	case "node":
 		return hasArg(args, "--test")
-	case "bun", "deno":
-		return firstArgIn(args, "test")
+	case "bun":
+		return bunRunsVerification(args)
+	case "deno":
+		return denoRunsVerification(args)
+	case "dart":
+		return dartRunsVerification(args)
+	case "flutter":
+		return flutterRunsVerification(args)
+	case "mix":
+		return mixRunsVerification(args)
 	case "python", "python3", "py":
 		return len(args) >= 2 && args[0] == "-m" && isVerificationRunnerCommand(args[1], args[2:])
-	case "pytest", "phpunit", "rspec", "rubocop", "jest", "vitest", "eslint", "prettier", "biome", "tsc":
-		return true
-	case "make":
-		return firstArgIn(args, "test", "check", "build", "lint", "fmt", "format", "typecheck", "type-check")
+	case "pytest", "phpunit", "pest", "phpstan", "psalm", "rspec", "rubocop", "jest", "vitest", "eslint", "tsc":
+		return isVerificationRunnerCommand(cmd, args)
+	case "make", "mingw32-make", "gmake":
+		return makeRunsVerification(args)
+	case "just":
+		return justRunsVerification(args)
+	case "task", "go-task":
+		return taskRunnerRunsVerification(args)
+	case "mage":
+		return mageRunsVerification(args)
+	case "bazel", "bazelisk":
+		return bazelRunsVerification(args)
+	case "pants":
+		return pantsRunsVerification(args)
+	case "buck2":
+		return buckRunsVerification(args)
 	case "mvn", "mvnw":
-		return firstArgIn(args, "test", "verify")
+		return mavenRunsVerification(args)
 	case "gradle", "gradlew":
-		return hasArg(args, "test") || hasArg(args, "build") || hasArg(args, "check")
+		return gradleRunsVerification(args)
+	case "cmake":
+		return cmakeRunsVerification(args)
+	case "ctest":
+		return ctestRunsVerification(args)
+	case "ninja", "ninja-build":
+		return ninjaRunsVerification(args)
 	case "dotnet":
-		return firstArgIn(args, "test", "build")
+		return dotnetRunsVerification(args)
 	case "composer":
-		return firstArgIn(args, "test")
+		return composerRunsVerification(args)
 	case "uv", "uvx":
 		return uvRunsVerification(args)
 	case "poetry", "pipenv", "hatch", "pdm", "rye":
@@ -2618,22 +4091,108 @@ func isShellEnvAssignment(token string) bool {
 }
 
 func packageManagerRunsVerification(args []string) bool {
+	args = stripPackageManagerOptions(args)
 	if len(args) == 0 {
+		return false
+	}
+	if args[0] == "workspace" && len(args) > 2 {
+		args = args[2:]
+	}
+	if args[0] == "workspaces" && len(args) > 2 && args[1] == "foreach" {
+		return yarnWorkspacesForeachRunsVerification(args[2:])
+	}
+	if len(args) == 0 {
+		return false
+	}
+	if hasMutatingVerificationArg(args) {
 		return false
 	}
 	if isVerificationScriptName(args[0]) {
 		return true
 	}
 	if args[0] == "run" && len(args) > 1 {
-		return isVerificationScriptName(args[1])
+		scriptArgs := stripPackageManagerOptions(args[1:])
+		return len(scriptArgs) > 0 && isVerificationScriptName(scriptArgs[0])
 	}
 	if (args[0] == "exec" || args[0] == "dlx") && len(args) > 1 {
 		return verificationRunnerCommandFromArgs(args[1:])
+	}
+	if verificationRunnerCommandFromArgs(args) {
+		return true
+	}
+	return false
+}
+
+func yarnWorkspacesForeachRunsVerification(args []string) bool {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case yarnWorkspacesForeachOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	if len(args) == 0 {
+		return false
+	}
+	if args[0] == "run" && len(args) > 1 {
+		scriptArgs := stripPackageManagerOptions(args[1:])
+		return len(scriptArgs) > 0 && isVerificationScriptName(scriptArgs[0]) && !hasMutatingVerificationArg(scriptArgs)
+	}
+	return false
+}
+
+func yarnWorkspacesForeachOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "--from", "--include", "--exclude", "--since", "--jobs", "-j":
+		return true
+	}
+	return false
+}
+func stripPackageManagerOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case packageManagerOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func packageManagerOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "-w", "--workspace", "--filter", "-f", "-c", "--cwd", "--dir", "--prefix", "--registry", "--cache", "--config", "--userconfig":
+		return true
 	}
 	return false
 }
 
 func corepackRunsVerification(args []string) bool {
+	args = stripPackageManagerOptions(args)
 	if len(args) == 0 {
 		return false
 	}
@@ -2688,9 +4247,64 @@ func bundleRunsVerification(args []string) bool {
 	return false
 }
 
+func composerRunsVerification(args []string) bool {
+	args = stripComposerOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	if verificationRunnerCommandFromArgs(args) || isVerificationScriptName(args[0]) {
+		return true
+	}
+	switch normalizeShellExecutableToken(args[0]) {
+	case "run", "run-script":
+		if len(args) <= 1 {
+			return false
+		}
+		scriptArgs := stripComposerOptions(args[1:])
+		return len(scriptArgs) > 0 && (isVerificationScriptName(scriptArgs[0]) || verificationRunnerCommandFromArgs(scriptArgs))
+	case "exec":
+		return len(args) > 1 && verificationRunnerCommandFromArgs(args[1:])
+	}
+	return false
+}
+
+func stripComposerOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case composerOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "--working-dir="), strings.HasPrefix(arg, "--ignore-platform-req="):
+			args = args[1:]
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func composerOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "-d", "--working-dir", "--ignore-platform-req":
+		return true
+	}
+	return false
+}
+
 func isVerificationScriptName(name string) bool {
 	switch name {
-	case "test", "tests", "check", "checks", "build", "lint", "vet", "fmt", "format", "typecheck", "type-check":
+	case "test", "tests", "check", "checks", "build", "lint", "vet", "typecheck", "type-check":
 		return true
 	}
 	return strings.HasPrefix(name, "test:") ||
@@ -2739,26 +4353,814 @@ func verificationRunnerOptionConsumesValue(arg string) bool {
 	}
 	return false
 }
+
 func isVerificationRunnerCommand(name string, args []string) bool {
-	switch commandNameBase(name) {
+	cmd := commandNameBase(name)
+	if hasMutatingVerificationArg(args) || (cmd == "rubocop" && hasRubocopAutoCorrectArg(args)) {
+		return false
+	}
+	switch cmd {
 	case "ruff":
 		return firstArgIn(args, "check")
 	case "golangci-lint":
 		return len(args) == 0 || firstArgIn(args, "run")
 	case "pyre":
 		return len(args) == 0 || firstArgIn(args, "check")
+	case "prettier":
+		return prettierRunsVerification(args)
+	case "biome":
+		return biomeRunsVerification(args)
+	case "turbo", "turbo.exe":
+		return turboRunsVerification(args)
+	case "nx":
+		return nxRunsVerification(args)
 	case "mypy", "pyright", "basedpyright", "staticcheck", "revive":
 		return true
 	}
 	return isVerificationRunner(name)
 }
 
-func isVerificationRunner(name string) bool {
-	switch commandNameBase(name) {
-	case "pytest", "unittest", "tox", "nox", "jest", "vitest", "eslint", "prettier", "biome", "tsc", "phpunit", "rspec", "rubocop":
+func hasMutatingVerificationArg(args []string) bool {
+	return hasNormalizedArg(args,
+		"--fix", "--fix-dry-run",
+		"--write",
+		"--auto-correct", "--autocorrect", "--auto-correct-all", "--autocorrect-all",
+	)
+}
+
+func hasRubocopAutoCorrectArg(args []string) bool {
+	return hasNormalizedArg(args, "-a", "-A")
+}
+
+func turboRunsVerification(args []string) bool {
+	args = stripMonorepoRunnerOptions(args)
+	if len(args) == 0 || args[0] != "run" {
+		return false
+	}
+	args = stripMonorepoRunnerOptions(args[1:])
+	for _, arg := range args {
+		arg = normalizeShellExecutableToken(arg)
+		if arg == "--" {
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			break
+		}
+		if isVerificationScriptName(arg) {
+			return true
+		}
+	}
+	return false
+}
+
+func nxRunsVerification(args []string) bool {
+	args = stripMonorepoRunnerOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	subcommand := normalizeShellExecutableToken(args[0])
+	switch subcommand {
+	case "test", "build", "lint", "typecheck", "type-check":
+		return true
+	case "run":
+		return len(args) > 1 && nxTargetIsVerification(args[1])
+	case "affected", "run-many":
+		return nxArgsContainVerificationTarget(args[1:])
+	}
+	return false
+}
+
+func stripMonorepoRunnerOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case monorepoRunnerOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func monorepoRunnerOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "--filter", "--scope", "--since", "--only", "--project", "--configuration", "--parallel", "--output-style", "--runner", "--exclude", "-c", "-p":
 		return true
 	}
 	return false
+}
+
+func nxArgsContainVerificationTarget(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := normalizeShellExecutableToken(args[i])
+		switch {
+		case arg == "-t" || arg == "--target" || arg == "--targets":
+			if i+1 < len(args) && nxTargetListContainsVerification(args[i+1]) {
+				return true
+			}
+			i++
+		case strings.HasPrefix(arg, "-t="):
+			if nxTargetListContainsVerification(strings.TrimPrefix(arg, "-t=")) {
+				return true
+			}
+		case strings.HasPrefix(arg, "--target="):
+			if nxTargetListContainsVerification(strings.TrimPrefix(arg, "--target=")) {
+				return true
+			}
+		case strings.HasPrefix(arg, "--targets="):
+			if nxTargetListContainsVerification(strings.TrimPrefix(arg, "--targets=")) {
+				return true
+			}
+		case nxTargetIsVerification(arg):
+			return true
+		}
+	}
+	return false
+}
+
+func nxTargetListContainsVerification(value string) bool {
+	for _, part := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' }) {
+		if nxTargetIsVerification(part) {
+			return true
+		}
+	}
+	return false
+}
+
+func nxTargetIsVerification(value string) bool {
+	value = normalizeShellExecutableToken(strings.TrimSpace(value))
+	if value == "" {
+		return false
+	}
+	if isVerificationScriptName(value) {
+		return true
+	}
+	if idx := strings.LastIndex(value, ":"); idx >= 0 {
+		return isVerificationScriptName(value[idx+1:])
+	}
+	return false
+}
+func isVerificationRunner(name string) bool {
+	switch commandNameBase(name) {
+	case "pytest", "unittest", "tox", "nox", "jest", "vitest", "eslint", "tsc", "phpunit", "pest", "phpstan", "psalm", "rspec", "rubocop":
+		return true
+	}
+	return false
+}
+
+func prettierRunsVerification(args []string) bool {
+	return hasNormalizedArg(args, "--check", "-c", "--list-different", "-l") && !hasNormalizedArg(args, "--write", "-w")
+}
+
+func biomeRunsVerification(args []string) bool {
+	if len(args) == 0 || hasNormalizedArg(args, "--write", "--apply", "--apply-unsafe") {
+		return false
+	}
+	return firstArgIn(args, "check", "ci", "lint")
+}
+
+func hasNormalizedArg(args []string, targets ...string) bool {
+	for _, arg := range args {
+		normalized := normalizeShellExecutableToken(arg)
+		for _, target := range targets {
+			if normalized == target {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func cmakeRunsVerification(args []string) bool {
+	build := false
+	for i, arg := range args {
+		arg = normalizeShellExecutableToken(arg)
+		if arg == "--build" {
+			build = true
+			continue
+		}
+		if (arg == "--target" || arg == "-t") && i+1 < len(args) && isNonVerificationBuildTarget(args[i+1]) {
+			return false
+		}
+		if strings.HasPrefix(arg, "--target=") && isNonVerificationBuildTarget(strings.TrimPrefix(arg, "--target=")) {
+			return false
+		}
+	}
+	return build
+}
+
+func isNonVerificationBuildTarget(target string) bool {
+	switch normalizeShellExecutableToken(strings.TrimSpace(target)) {
+	case "clean", "install", "uninstall", "package":
+		return true
+	}
+	return false
+}
+
+func ctestRunsVerification(args []string) bool {
+	for _, arg := range args {
+		arg = normalizeShellExecutableToken(arg)
+		if arg == "-n" || arg == "--show-only" || strings.HasPrefix(arg, "--show-only=") || arg == "-h" || arg == "--help" {
+			return false
+		}
+	}
+	return true
+}
+
+func ninjaRunsVerification(args []string) bool {
+	for _, arg := range args {
+		arg = normalizeShellExecutableToken(arg)
+		if arg == "-t" || strings.HasPrefix(arg, "-t=") || (strings.HasPrefix(arg, "-t") && len(arg) > len("-t")) {
+			return false
+		}
+	}
+	args = stripNinjaOptions(args)
+	if len(args) == 0 {
+		return true
+	}
+	return firstArgIn(args, "test", "check", "build", "all")
+}
+
+func stripNinjaOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case ninjaOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func ninjaOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "-C", "-c", "-f", "-j", "-k", "-l", "-t", "-w":
+		return true
+	}
+	return false
+}
+
+func makeRunsVerification(args []string) bool {
+	args = stripMakeOptions(args)
+	if len(args) == 0 {
+		return true
+	}
+	return firstArgIn(args, "test", "check", "build", "all", "lint", "typecheck", "type-check")
+}
+
+func stripMakeOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case makeOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func makeOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "-C", "-c", "-f", "--file", "--makefile", "-i", "--include-dir", "-j", "--jobs", "-l", "--load-average", "-o", "--old-file", "--assume-old", "--directory":
+		return true
+	}
+	return false
+}
+
+func justRunsVerification(args []string) bool {
+	args = stripJustOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	return isVerificationScriptName(args[0])
+}
+
+func stripJustOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case justOptionConsumesTwoValues(arg):
+			if len(args) > 2 {
+				args = args[3:]
+			} else {
+				args = nil
+			}
+			continue
+		case justOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func justOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "-f", "--justfile", "-d", "--working-directory", "--shell", "--shell-arg", "--chooser", "--color", "--dotenv-path", "--command-color":
+		return true
+	}
+	return false
+}
+
+func justOptionConsumesTwoValues(arg string) bool {
+	return arg == "--set"
+}
+
+func taskRunnerRunsVerification(args []string) bool {
+	args = stripTaskRunnerOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	return isVerificationScriptName(args[0])
+}
+
+func stripTaskRunnerOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case taskRunnerOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func taskRunnerOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "-t", "--taskfile", "-d", "--dir", "-o", "--output", "--output-style", "-c", "--concurrency", "--sort", "--color":
+		return true
+	}
+	return false
+}
+
+func mageRunsVerification(args []string) bool {
+	args = stripMageOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	return isVerificationScriptName(args[0])
+}
+
+func stripMageOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case mageOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func mageOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "-d", "--dir", "-f", "--file", "-t", "--timeout":
+		return true
+	}
+	return false
+}
+
+func bazelRunsVerification(args []string) bool {
+	args = stripBazelStartupOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	switch normalizeShellExecutableToken(args[0]) {
+	case "test", "build":
+		return true
+	}
+	return false
+}
+
+func stripBazelStartupOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case bazelStartupOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "--host_jvm_args="), strings.HasPrefix(arg, "--output_base="), strings.HasPrefix(arg, "--output_user_root="), strings.HasPrefix(arg, "--bazelrc="), strings.HasPrefix(arg, "--max_idle_secs="):
+			args = args[1:]
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func bazelStartupOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "--host_jvm_args", "--output_base", "--output_user_root", "--bazelrc", "--max_idle_secs":
+		return true
+	}
+	return false
+}
+
+func pantsRunsVerification(args []string) bool {
+	args = stripPantsGlobalOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	return firstArgIn(args, "test", "check", "lint")
+}
+
+func stripPantsGlobalOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case pantsGlobalOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "--pants-config-files="), strings.HasPrefix(arg, "--pants-workdir="), strings.HasPrefix(arg, "--level="):
+			args = args[1:]
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func pantsGlobalOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "--pants-config-files", "--pants-workdir", "--level":
+		return true
+	}
+	return false
+}
+
+func buckRunsVerification(args []string) bool {
+	args = stripBuckGlobalOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	return firstArgIn(args, "test", "build")
+}
+
+func stripBuckGlobalOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case buckGlobalOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "--isolation-dir="), strings.HasPrefix(arg, "--config="):
+			args = args[1:]
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func buckGlobalOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "--isolation-dir", "--config":
+		return true
+	}
+	return false
+}
+
+func dotnetRunsVerification(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch normalizeShellExecutableToken(args[0]) {
+	case "test", "build", "vstest":
+		return true
+	case "format":
+		return hasArg(args[1:], "--verify-no-changes") || hasArg(args[1:], "--check")
+	case "msbuild":
+		return dotnetMSBuildRunsVerification(args[1:])
+	}
+	return false
+}
+
+func dotnetMSBuildRunsVerification(args []string) bool {
+	for _, arg := range args {
+		arg = normalizeShellExecutableToken(arg)
+		if arg == "test" || arg == "build" {
+			return true
+		}
+		if strings.HasPrefix(arg, "-t:") || strings.HasPrefix(arg, "/t:") || strings.HasPrefix(arg, "-target:") || strings.HasPrefix(arg, "/target:") {
+			_, targetText, _ := strings.Cut(arg, ":")
+			for _, target := range strings.FieldsFunc(targetText, func(r rune) bool { return r == ';' || r == ',' }) {
+				target = strings.ToLower(strings.TrimSpace(target))
+				if target == "test" || target == "build" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func mavenRunsVerification(args []string) bool {
+	args = stripMavenOptions(args)
+	return firstArgIn(args, "test", "verify")
+}
+
+func stripMavenOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case mavenOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func mavenOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "-f", "--file", "-pl", "--projects", "-rf", "--resume-from", "-gs", "--global-settings", "-s", "--settings", "-t", "--toolchains", "-p", "--activate-profiles":
+		return true
+	}
+	return false
+}
+
+func gradleRunsVerification(args []string) bool {
+	for _, arg := range args {
+		if isGradleVerificationTask(arg) {
+			return true
+		}
+	}
+	return false
+}
+
+func isGradleVerificationTask(arg string) bool {
+	arg = normalizeShellExecutableToken(arg)
+	if arg == "" || strings.HasPrefix(arg, "-") || isShellEnvAssignment(arg) {
+		return false
+	}
+	arg = strings.Trim(arg, ":")
+	if idx := strings.LastIndex(arg, ":"); idx >= 0 {
+		arg = arg[idx+1:]
+	}
+	switch arg {
+	case "test", "check", "build":
+		return true
+	}
+	return false
+}
+
+func bunRunsVerification(args []string) bool {
+	if firstArgIn(args, "test") {
+		return true
+	}
+	if len(args) > 1 && normalizeShellExecutableToken(args[0]) == "run" {
+		scriptArgs := stripPackageManagerOptions(args[1:])
+		return len(scriptArgs) > 0 && isVerificationScriptName(scriptArgs[0]) && !hasMutatingVerificationArg(scriptArgs)
+	}
+	return false
+}
+
+func denoRunsVerification(args []string) bool {
+	if firstArgIn(args, "test", "lint", "check") {
+		return true
+	}
+	if len(args) > 1 && normalizeShellExecutableToken(args[0]) == "task" {
+		taskArgs := stripPackageManagerOptions(args[1:])
+		return len(taskArgs) > 0 && isVerificationScriptName(taskArgs[0]) && !hasMutatingVerificationArg(taskArgs)
+	}
+	return false
+}
+
+func dartRunsVerification(args []string) bool {
+	args = stripDartOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	return firstArgIn(args, "test", "analyze", "compile")
+}
+
+func flutterRunsVerification(args []string) bool {
+	args = stripDartOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	return firstArgIn(args, "test", "analyze", "build")
+}
+
+func stripDartOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case dartOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "--define="), strings.HasPrefix(arg, "--device-id="):
+			args = args[1:]
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func dartOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "-d", "--device-id", "--define", "--dart-define", "--target", "-t", "--flavor":
+		return true
+	}
+	return false
+}
+
+func mixRunsVerification(args []string) bool {
+	args = stripMixOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	switch normalizeShellExecutableToken(args[0]) {
+	case "test", "compile":
+		return true
+	case "credo", "dialyzer":
+		return true
+	}
+	return false
+}
+
+func stripMixOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case mixOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "--profile="):
+			args = args[1:]
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func mixOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "--profile":
+		return true
+	}
+	return false
+}
+
+func goRunsVerification(args []string) bool {
+	args = stripGoGlobalOptions(args)
+	return firstArgIn(args, "test", "vet", "build")
+}
+
+func stripGoGlobalOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--" || isShellEnvAssignment(arg):
+			args = args[1:]
+			continue
+		case arg == "-c":
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "-c="):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
 }
 
 func firstArgIn(args []string, names ...string) bool {
@@ -2796,6 +5198,41 @@ func compactFailedVerificationCommands(commands []string) string {
 		parts = append(parts, fmt.Sprintf("还有 %d 条失败命令未展开", remaining))
 	}
 	return strings.Join(parts, "; ")
+}
+
+func compactFailedVerificationCommandResults(commands []CodingSubAgentCommandResult) string {
+	entries := selectFailedVerificationSummaryEntries(commands, codingSubAgentFailedVerificationSummaryMax)
+	parts := make([]string, 0, len(entries)+1)
+	for _, command := range entries {
+		text := truncateRunesForSubAgent(command.Command, 160)
+		if summary := commandResultDiagnosticLine(command.Summary); summary != "" {
+			text += ": " + truncateRunesForSubAgent(summary, codingSubAgentCommandOutputLineMaxRunes)
+		}
+		parts = append(parts, text)
+	}
+	if remaining := len(commands) - len(entries); remaining > 0 {
+		parts = append(parts, fmt.Sprintf("还有 %d 条失败命令未展开", remaining))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func selectFailedVerificationSummaryEntries(commands []CodingSubAgentCommandResult, maxItems int) []CodingSubAgentCommandResult {
+	if maxItems <= 0 || len(commands) <= maxItems {
+		return commands
+	}
+	out := append([]CodingSubAgentCommandResult(nil), commands...)
+	sort.SliceStable(out, func(i, j int) bool {
+		leftActionable := isActionableCommandDiagnosticLine(commandResultDiagnosticLine(out[i].Summary))
+		rightActionable := isActionableCommandDiagnosticLine(commandResultDiagnosticLine(out[j].Summary))
+		if leftActionable != rightActionable {
+			return leftActionable
+		}
+		if out[i].seq != 0 && out[j].seq != 0 && out[i].seq != out[j].seq {
+			return out[i].seq > out[j].seq
+		}
+		return false
+	})
+	return out[:maxItems]
 }
 
 func summarizeSubAgentExploration(filesModified, filesRead []string, searches []CodingSubAgentSearchResult, exploredBeforeFirstEdit bool) (codingSubAgentQualityStatus, string) {
@@ -2880,13 +5317,22 @@ func appendSubAgentVerificationSummary(summary string, status codingSubAgentQual
 }
 
 func applySubAgentVerificationOutcome(status TaskExecStatus, errMsg string, verificationStatus codingSubAgentQualityStatus, verificationSummary string) (TaskExecStatus, string) {
-	if status != TaskExecPassed || verificationStatus != codingSubAgentQualityFailed {
+	if status != TaskExecPassed {
 		return status, errMsg
 	}
-	if strings.TrimSpace(verificationSummary) == "" {
-		verificationSummary = "验证命令失败"
+	switch verificationStatus {
+	case codingSubAgentQualityFailed:
+		if strings.TrimSpace(verificationSummary) == "" {
+			verificationSummary = "验证命令失败"
+		}
+		return TaskExecFailed, compactSubAgentErrorSummary(verificationSummary)
+	case codingSubAgentQualityMissing:
+		if strings.TrimSpace(verificationSummary) == "" {
+			verificationSummary = "no verification command ran after file changes"
+		}
+		return TaskExecFailed, compactSubAgentErrorSummary(verificationSummary)
 	}
-	return TaskExecFailed, compactSubAgentErrorSummary(verificationSummary)
+	return status, errMsg
 }
 
 func applySubAgentExplorationOutcome(status TaskExecStatus, errMsg string, explorationStatus codingSubAgentQualityStatus, explorationSummary string, modifiedExistingCount int) (TaskExecStatus, string) {
@@ -3045,11 +5491,89 @@ func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, result string, out
 }
 
 func compactCodingToolResultSummary(result string) string {
-	result = firstLine(result)
+	result = firstDiagnosticCodingToolResultLine(result)
 	if result == "" {
 		return ""
 	}
 	return truncateRunesForSubAgent(result, 180)
+}
+
+func firstDiagnosticCodingToolResultLine(result string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return ""
+	}
+	lines := strings.Split(strings.ReplaceAll(result, "\r\n", "\n"), "\n")
+	firstStderr := ""
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if detail, ok := strings.CutPrefix(line, "[stderr]"); ok {
+			detail = strings.TrimSpace(detail)
+			if detail == "" {
+				continue
+			}
+			if firstStderr == "" {
+				firstStderr = detail
+			}
+			if isLikelyCodingToolFailureDiagnostic(detail) {
+				return detail
+			}
+		}
+	}
+	if firstStderr != "" {
+		return firstStderr
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || isCodingToolCommandStatusLine(line) {
+			continue
+		}
+		if isLikelyCodingToolFailureDiagnostic(line) {
+			return line
+		}
+	}
+	return firstLine(result)
+}
+
+func isCodingToolCommandStatusLine(line string) bool {
+	line = strings.ToLower(strings.TrimSpace(line))
+	return strings.HasPrefix(line, "command exited with code") ||
+		strings.HasPrefix(line, "command timed out") ||
+		strings.HasPrefix(line, "command cancelled")
+}
+
+func isLikelyCodingToolFailureDiagnostic(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	if lower == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"error:",
+		"fatal:",
+		"panic:",
+		"fail:",
+		"failed",
+		"failure",
+		"undefined:",
+		"cannot find",
+		"not found",
+		"does not exist",
+		"no such file",
+		"syntax error",
+		"type error",
+		"assertion",
+		"expected",
+		"received",
+		"exception",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *codingSubAgentCallbacks) emitDiffUpdatedEvent(path string, count int) {
@@ -3138,6 +5662,13 @@ func (c *codingSubAgentCallbacks) emitDiffCheckEvent(checked bool, diffSummary s
 	case checked:
 		event.Outcome = "checked"
 		event.Summary = "git diff checked"
+	case modifiedCount > 0:
+		event.Outcome = "failed"
+		if strings.TrimSpace(diffSummary) != "" {
+			event.Summary = truncateRunesForSubAgent(firstLine(diffSummary), 240)
+		} else {
+			event.Summary = "git diff self-check did not complete"
+		}
 	default:
 		event.Outcome = "skipped"
 		event.Summary = "no modified files"
@@ -3145,7 +5676,7 @@ func (c *codingSubAgentCallbacks) emitDiffCheckEvent(checked bool, diffSummary s
 	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
 
-func (c *codingSubAgentCallbacks) emitQualitySummaryEvent(explorationStatus, verificationStatus codingSubAgentQualityStatus, diffChecked bool, filesModified, filesCreated []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64, guardrails []CodingSubAgentGuardrailViolation) {
+func (c *codingSubAgentCallbacks) emitQualitySummaryEvent(explorationStatus, verificationStatus codingSubAgentQualityStatus, diffChecked bool, filesModified, filesCreated []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64, guardrails []CodingSubAgentGuardrailViolation, dynamicTools []CodingSubAgentDynamicToolResult) {
 	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
 		return
 	}
@@ -3153,7 +5684,7 @@ func (c *codingSubAgentCallbacks) emitQualitySummaryEvent(explorationStatus, ver
 	if c.task != nil {
 		title = compactSubAgentTaskTitle(c.task.Title)
 	}
-	outcome, summary, count := summarizeSubAgentQuality(explorationStatus, verificationStatus, diffChecked, filesModified, filesCreated, commands, lastEditSeq, guardrails)
+	outcome, summary, count := summarizeSubAgentQuality(explorationStatus, verificationStatus, diffChecked, filesModified, filesCreated, commands, lastEditSeq, guardrails, dynamicTools)
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
 	event.Event = codingAgentEventKindQualitySummary.String()
 	event.Outcome = outcome.String()
@@ -3299,6 +5830,30 @@ func compactSubAgentTaskDescription(description string) string {
 	return truncateRunesForSubAgent(description, codingSubAgentTaskDescriptionMaxRunes)
 }
 
+func codingSubAgentDynamicSelectionText(task *TaskItem) string {
+	if task == nil {
+		return ""
+	}
+	var b strings.Builder
+	if title := compactSubAgentTaskTitle(task.Title); title != "" {
+		b.WriteString(title)
+		b.WriteString("\n")
+	}
+	if description := compactSubAgentTaskDescription(task.Description); description != "" {
+		b.WriteString(description)
+		b.WriteString("\n")
+	}
+	if len(task.Files) > 0 {
+		b.WriteString("Files:\n")
+		appendSubAgentBulletList(&b, uniqueSubAgentStrings(task.Files), codingSubAgentTaskFilesMax, codingSubAgentPromptBulletMaxRunes)
+	}
+	if len(task.AcceptanceCriteria) > 0 {
+		b.WriteString("Acceptance criteria:\n")
+		appendSubAgentBulletList(&b, uniqueSubAgentStrings(task.AcceptanceCriteria), codingSubAgentAcceptanceCriteriaMax, codingSubAgentPromptBulletMaxRunes)
+	}
+	return truncateRunesForSubAgent(strings.TrimSpace(b.String()), codingSubAgentDynamicSelectionTextMaxRunes)
+}
+
 // ---------------------------------------------------------------------------
 // System prompt — minimal, coding-only. ~1500-2000 tokens.
 // ---------------------------------------------------------------------------
@@ -3322,7 +5877,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 4. 只在用户明确要求或仓库已有流程要求时，才追加 TEST_REPORT.md；不要默认制造报告文件。
 
 ## 禁止行为
-- 禁止执行破坏性删除、清理或 Git 回滚命令，例如 git reset --hard、git checkout --、git checkout .、git restore、git clean -f、rm -rf、Remove-Item -Recurse、rmdir /s、del /s。
+- 禁止执行破坏性删除、清理或 Git 工作区/索引/历史改写命令，例如 git reset --hard、git checkout --、git checkout .、git restore、git switch、git merge/rebase/stash、git add/commit/apply/cherry-pick/revert/rm/mv/update-index/read-tree、git clean -f、rm -rf、Remove-Item -Recurse、rmdir /s、del /s。
 - 禁止不读文件就直接修改；禁止无关重构、无关格式化、依赖 churn 或 speculative feature work。
 - 遇到无法解决的问题，说明具体原因，不要反复重试相同的失败操作。
 `)
@@ -3339,11 +5894,12 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - write_file has no per-call content limit. However, if content exceeds about 6000 characters, split it into chunks to avoid model output truncation: first call write_file(mode="overwrite"), then call write_file(mode="append") for following chunks.
 - Prefer edit_file or edit_lines for existing files. Use write_file only for new files, or TEST_REPORT.md append entries when the user or repo workflow explicitly asks for a report.
 - If a write_file call was rejected because arguments JSON was invalid or incomplete, retry with smaller chunks instead of repeating the same large call.
+- Treat tool error text as authoritative recovery guidance: fix the exact argument/range/path/guardrail issue it names, choose the proper file tool when bash is rejected, and do not repeat an identical failed tool call.
 
 ## Command guardrails
-- Do not run Git commands that rewrite or move worktree state: reset, checkout, restore, switch, merge, rebase, stash, or clean -f. Read-only Git commands such as status, diff, and log are allowed.
+- Do not run Git commands that rewrite or move worktree/index/history state: reset, checkout, restore, switch, merge, rebase, stash, add, commit, apply, am, cherry-pick, revert, rm, mv, update-index, read-tree, or clean -f. Read-only Git commands such as status, diff, and log are allowed.
 - Do not run recursive or forceful delete commands such as rm -r/-rf, Remove-Item -Recurse/-r/-rf, ri -r, rd/rmdir /s, del /s, or erase /s. Use edit_file/edit_lines/write_file for scoped file changes.
-- Do not mutate files through bash redirection or shell helpers: >, >>, tee/Tee-Object, Set-Content/Add-Content/Out-File, touch/mkdir, Copy-Item/Move-Item/Rename-Item, sed -i, perl -pi, node fs.writeFileSync/promises.writeFile, Python open(..., "w")/Path.write_text, or dd of=. Use the file editing tools instead.
+- Do not mutate files through bash redirection or shell helpers: >, >>, tee/Tee-Object, Set-Content/Add-Content/Out-File, touch/mkdir, Copy-Item/Move-Item/Rename-Item, sed -i, perl -pi, Node fs write/copy/rename/rm/mkdir APIs, Python open(..., "w")/Path write/touch/rename/remove APIs, or dd of=. Use the file editing tools instead.
 `))
 
 	b.WriteString(fmt.Sprintf("\n## 项目路径\n%s\n", projectPath))
@@ -3443,6 +5999,7 @@ const (
 	codingSubAgentRunReportMaxRunes            = 6000
 	codingSubAgentTaskTitleMaxRunes            = 160
 	codingSubAgentTaskDescriptionMaxRunes      = 2000
+	codingSubAgentDynamicSelectionTextMaxRunes = 4000
 	codingSubAgentTaskListSummaryMax           = 50
 	codingSubAgentTaskFilesMax                 = 30
 	codingSubAgentDependencySummaryMax         = 20
@@ -3657,6 +6214,10 @@ func applyCodingSubAgentToolHints(fn map[string]interface{}) {
 	params, _ := fn["parameters"].(map[string]interface{})
 	props, _ := params["properties"].(map[string]interface{})
 	switch name {
+	case "bash":
+		appendCodingSubAgentToolDescription(fn, "Coding SubAgent bash is for read-only diagnostics and verification commands (test/build/lint/typecheck). Do not use bash to edit files, create/delete/move files, rewrite Git state, stage/commit/apply patches, or hide verifier failures with pipes/redirection/extra shell commands; use read_file/edit_file/edit_lines/write_file/git_diff instead.")
+	case "read_file":
+		ensureCodingSubAgentToolIntegerProp(props, "offset", "Read the last N lines of the file. Use this after adaptive output says earlier content was skipped or when inspecting logs/tails.")
 	case "write_file":
 		setCodingSubAgentToolPropDescription(props, "content", "File content. No length limit; you can write complete scripts or documents in a single call. For very large files (>6000 chars), consider splitting into overwrite + append chunks.")
 		// Do NOT set maxLength for write_file — it causes models to avoid calling the tool for long content.
@@ -3670,6 +6231,32 @@ func applyCodingSubAgentToolHints(fn map[string]interface{}) {
 		setCodingSubAgentToolPropDescription(props, "content", fmt.Sprintf("New content for replace/insert. Keep under %d characters; split large edits into multiple small calls.", codingSubAgentInlineContentLimit))
 		setCodingSubAgentToolPropMaxLength(props, "content", codingSubAgentInlineContentLimit)
 	}
+}
+
+func appendCodingSubAgentToolDescription(fn map[string]interface{}, hint string) {
+	if fn == nil || strings.TrimSpace(hint) == "" {
+		return
+	}
+	desc, _ := fn["description"].(string)
+	desc = strings.TrimSpace(desc)
+	if strings.Contains(desc, hint) {
+		return
+	}
+	if desc == "" {
+		fn["description"] = hint
+		return
+	}
+	fn["description"] = desc + " " + hint
+}
+func ensureCodingSubAgentToolIntegerProp(props map[string]interface{}, propName, desc string) {
+	if props == nil {
+		return
+	}
+	if _, ok := props[propName]; ok {
+		setCodingSubAgentToolPropDescription(props, propName, desc)
+		return
+	}
+	props[propName] = map[string]string{"type": "integer", "description": desc}
 }
 
 func setCodingSubAgentToolPropDescription(props map[string]interface{}, propName, desc string) {

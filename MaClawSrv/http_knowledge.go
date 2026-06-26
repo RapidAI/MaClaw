@@ -10,6 +10,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -653,6 +654,426 @@ func (s *HTTPServer) handleKnowledgeImportDirectory(w http.ResponseWriter, r *ht
 	})
 }
 
+type knowledgeExportRequest struct {
+	Title           string   `json:"title"`
+	Description     string   `json:"description"`
+	SourceIDs       []string `json:"source_ids"`
+	IncludeDisabled bool     `json:"include_disabled"`
+}
+
+type knowledgePackageManifest struct {
+	Format      string `json:"format"`
+	Version     int    `json:"version"`
+	PackageID   string `json:"package_id"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description"`
+	CreatedAt   string `json:"created_at"`
+	TenantID    string `json:"tenant_id,omitempty"`
+	OwnerID     string `json:"owner_id,omitempty"`
+	SourceCount int    `json:"source_count"`
+	Editable    bool   `json:"editable"`
+	Notes       string `json:"notes,omitempty"`
+}
+
+type knowledgePackageSource struct {
+	ID           string   `json:"id,omitempty"`
+	Kind         string   `json:"kind,omitempty"`
+	URI          string   `json:"uri,omitempty"`
+	CanonicalURI string   `json:"canonical_uri,omitempty"`
+	Title        string   `json:"title,omitempty"`
+	Author       string   `json:"author,omitempty"`
+	SiteName     string   `json:"site_name,omitempty"`
+	TopicHint    string   `json:"topic_hint,omitempty"`
+	Labels       []string `json:"labels,omitempty"`
+	Status       string   `json:"status,omitempty"`
+	RelativePath string   `json:"relative_path,omitempty"`
+	BatchID      string   `json:"batch_id,omitempty"`
+	ContentHash  string   `json:"content_hash,omitempty"`
+	NodeCount    int      `json:"node_count,omitempty"`
+	CardCount    int      `json:"card_count,omitempty"`
+	FactCount    int      `json:"fact_count,omitempty"`
+	CreatedAt    string   `json:"created_at,omitempty"`
+	UpdatedAt    string   `json:"updated_at,omitempty"`
+	Content      string   `json:"content,omitempty"`
+}
+
+type knowledgePackage struct {
+	Manifest knowledgePackageManifest `json:"manifest"`
+	Sources  []knowledgePackageSource `json:"sources"`
+}
+
+func (s *HTTPServer) handleKnowledgeExport(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if !s.requireKnowledge(w) {
+		return
+	}
+	var req knowledgeExportRequest
+	if err := readJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	description := strings.TrimSpace(req.Description)
+	if description == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "description is required"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	opts := knowledge.ListSourcesOptions{
+		TenantID:  p.TenantID,
+		OwnerID:   p.UserID,
+		SourceIDs: compactStrings(req.SourceIDs),
+		Limit:     maxReadableKnowledgeSourcesPerScope,
+	}
+	if !req.IncludeDisabled {
+		opts.Status = "active"
+	}
+	sources, err := s.knowledgeMgr.Store().ListSources(ctx, opts)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("export knowledge failed: %v", err))})
+		return
+	}
+	pkg := buildKnowledgeExportPackage(s.svc.DataRoot(), p, strings.TrimSpace(req.Title), description, sources)
+	filename := fmt.Sprintf("maclaw-knowledge-%s.json", pkg.Manifest.PackageID)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	if err := json.NewEncoder(w).Encode(pkg); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *HTTPServer) handleKnowledgeImportPackage(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if !s.requireKnowledge(w) {
+		return
+	}
+	var pkg knowledgePackage
+	if err := readJSONBody(r, &pkg); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	if strings.TrimSpace(pkg.Manifest.Format) != "maclaw.knowledge.package" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported knowledge package format"})
+		return
+	}
+	if len(pkg.Sources) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "package has no sources"})
+		return
+	}
+	job := s.startKnowledgePackageImportJob("knowledge_import_package", p, pkg)
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{"job_id": job.ID, "status": string(job.Status), "package_id": pkg.Manifest.PackageID})
+}
+
+func (s *HTTPServer) handleKnowledgeImportShare(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if !s.requireKnowledge(w) {
+		return
+	}
+	var req struct {
+		KnowledgeID   string `json:"knowledge_id"`
+		ShareLink     string `json:"share_link"`
+		HubURL        string `json:"hub_url"`
+		HubToken      string `json:"hub_token"`
+		Authorization string `json:"authorization"`
+	}
+	if err := readJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	if strings.TrimSpace(req.KnowledgeID) == "" && strings.TrimSpace(req.ShareLink) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "knowledge_id or share_link is required"})
+		return
+	}
+	apiURL, knowledgeID, err := resolveKnowledgeShareAPIURL(req.ShareLink, req.KnowledgeID, req.HubURL)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	authHeader := knowledgeShareAuthorizationHeader(req.HubToken, req.Authorization)
+	share, err := fetchKnowledgeShareMetadata(ctx, apiURL, authHeader)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	packageURL := knowledgeSharePackageURL(apiURL, share)
+	if packageURL == "" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":       "resolved_metadata",
+			"knowledge_id": knowledgeID,
+			"api_url":      apiURL,
+			"share":        share,
+			"note":         "share metadata resolved; package_url is not available",
+		})
+		return
+	}
+	pkg, err := fetchKnowledgePackage(ctx, packageURL, authHeader)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	if err := validateKnowledgePackage(pkg); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	job := s.startKnowledgePackageImportJob("knowledge_import_share", p, pkg)
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{"job_id": job.ID, "status": string(job.Status), "knowledge_id": knowledgeID, "api_url": apiURL, "package_url": packageURL, "package_id": pkg.Manifest.PackageID, "share": share})
+}
+
+func validateKnowledgePackage(pkg knowledgePackage) error {
+	if strings.TrimSpace(pkg.Manifest.Format) != "maclaw.knowledge.package" {
+		return fmt.Errorf("unsupported knowledge package format")
+	}
+	if len(pkg.Sources) == 0 {
+		return fmt.Errorf("package has no sources")
+	}
+	return nil
+}
+
+func (s *HTTPServer) startKnowledgePackageImportJob(kind string, p agentservice.Principal, pkg knowledgePackage) *asyncJobRecord {
+	return s.jobs.createUserJob(kind, p, func(ctx context.Context) (any, error) {
+		store := s.knowledgeMgr.Store()
+		result := map[string]interface{}{
+			"package_id": pkg.Manifest.PackageID,
+			"title":      pkg.Manifest.Title,
+			"imported":   0,
+			"skipped":    0,
+			"warnings":   []string{},
+		}
+		warnings := []string{}
+		imported := 0
+		skipped := 0
+		for _, item := range pkg.Sources {
+			kind := strings.ToLower(strings.TrimSpace(item.Kind))
+			uri := strings.TrimSpace(knowledgePackageFirstNonEmpty(item.CanonicalURI, item.URI))
+			content := strings.TrimSpace(item.Content)
+			switch {
+			case content != "":
+				if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: content, Title: item.Title, OwnerID: p.UserID, TenantID: p.TenantID, TopicHint: item.TopicHint, Labels: item.Labels}); err != nil {
+					warnings = append(warnings, fmt.Sprintf("text source %s skipped: %v", knowledgePackageFirstNonEmpty(item.ID, item.Title), err))
+					skipped++
+					continue
+				}
+				imported++
+			case strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://"):
+				if _, err := store.SaveURL(ctx, knowledge.URLSaveRequest{URL: uri, OwnerID: p.UserID, TenantID: p.TenantID, TopicHint: item.TopicHint, Labels: item.Labels}); err != nil {
+					warnings = append(warnings, fmt.Sprintf("url source %s skipped: %v", uri, err))
+					skipped++
+					continue
+				}
+				imported++
+			default:
+				warnings = append(warnings, fmt.Sprintf("%s source %s is metadata-only in this package", kind, knowledgePackageFirstNonEmpty(item.ID, item.Title, uri)))
+				skipped++
+			}
+		}
+		result["imported"] = imported
+		result["skipped"] = skipped
+		result["warnings"] = warnings
+		return result, nil
+	})
+}
+
+func resolveKnowledgeShareAPIURL(shareLink, knowledgeID, hubURL string) (string, string, error) {
+	shareLink = strings.TrimSpace(shareLink)
+	knowledgeID = strings.TrimSpace(knowledgeID)
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	if shareLink != "" {
+		parsed, err := url.Parse(shareLink)
+		if err != nil {
+			return "", "", fmt.Errorf("invalid share_link: %w", err)
+		}
+		if parsed.Scheme == "" || parsed.Host == "" {
+			return "", "", fmt.Errorf("share_link must be an absolute URL")
+		}
+		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		if knowledgeID == "" && len(parts) > 0 {
+			knowledgeID = parts[len(parts)-1]
+		}
+		return parsed.Scheme + "://" + parsed.Host + "/api/knowledge/shares/" + url.PathEscape(knowledgeID) + "?intent=import", knowledgeID, nil
+	}
+	if hubURL == "" {
+		return "", "", fmt.Errorf("hub_url is required when share_link is not provided")
+	}
+	if knowledgeID == "" {
+		return "", "", fmt.Errorf("knowledge_id is required")
+	}
+	parsed, err := url.Parse(hubURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", "", fmt.Errorf("hub_url must be an absolute URL")
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/api/knowledge/shares/" + url.PathEscape(knowledgeID) + "?intent=import", knowledgeID, nil
+}
+
+func knowledgeShareAuthorizationHeader(hubToken, authorization string) string {
+	authorization = strings.TrimSpace(authorization)
+	if authorization != "" {
+		if strings.HasPrefix(strings.ToLower(authorization), "bearer ") {
+			return authorization
+		}
+		return "Bearer " + authorization
+	}
+	hubToken = strings.TrimSpace(hubToken)
+	if hubToken == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(hubToken), "bearer ") {
+		return hubToken
+	}
+	return "Bearer " + hubToken
+}
+
+func fetchKnowledgeShareMetadata(ctx context.Context, apiURL, authorization string) (map[string]interface{}, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if strings.TrimSpace(authorization) != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch knowledge share: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("knowledge share resolver returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode knowledge share metadata: %w", err)
+	}
+	return out, nil
+}
+
+func knowledgeSharePackageURL(apiURL string, share map[string]interface{}) string {
+	raw, _ := share["package_url"].(string)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if parsed.IsAbs() {
+		return parsed.String()
+	}
+	base, err := url.Parse(apiURL)
+	if err != nil {
+		return ""
+	}
+	return base.ResolveReference(parsed).String()
+}
+
+func fetchKnowledgePackage(ctx context.Context, packageURL, authorization string) (knowledgePackage, error) {
+	var pkg knowledgePackage
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, packageURL, nil)
+	if err != nil {
+		return pkg, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if strings.TrimSpace(authorization) != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return pkg, fmt.Errorf("fetch knowledge package: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+	if err != nil {
+		return pkg, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return pkg, fmt.Errorf("knowledge package download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if err := json.Unmarshal(body, &pkg); err != nil {
+		return pkg, fmt.Errorf("decode knowledge package: %w", err)
+	}
+	return pkg, nil
+}
+
+func buildKnowledgeExportPackage(dataRoot string, p agentservice.Principal, title, description string, sources []knowledge.Source) knowledgePackage {
+	now := time.Now().UTC()
+	packageID := fmt.Sprintf("kxp_%s_%d", now.Format("20060102T150405Z"), now.UnixNano())
+	items := make([]knowledgePackageSource, 0, len(sources))
+	for _, source := range sanitizeKnowledgeSourcesForAPI(dataRoot, sources) {
+		items = append(items, knowledgePackageSource{
+			ID:           source.ID,
+			Kind:         source.Kind,
+			URI:          source.URI,
+			CanonicalURI: source.CanonicalURI,
+			Title:        source.Title,
+			Author:       source.Author,
+			SiteName:     source.SiteName,
+			TopicHint:    source.TopicHint,
+			Labels:       append([]string(nil), source.Labels...),
+			Status:       source.Status,
+			RelativePath: source.RelativePath,
+			BatchID:      source.BatchID,
+			ContentHash:  source.ContentHash,
+			NodeCount:    source.NodeCount,
+			CardCount:    source.CardCount,
+			FactCount:    source.FactCount,
+			CreatedAt:    knowledgePackageTime(source.CreatedAt),
+			UpdatedAt:    knowledgePackageTime(source.UpdatedAt),
+		})
+	}
+	return knowledgePackage{
+		Manifest: knowledgePackageManifest{
+			Format:      "maclaw.knowledge.package",
+			Version:     1,
+			PackageID:   packageID,
+			Title:       title,
+			Description: description,
+			CreatedAt:   now.Format(time.RFC3339),
+			TenantID:    p.TenantID,
+			OwnerID:     p.UserID,
+			SourceCount: len(items),
+			Editable:    true,
+			Notes:       "This package is editable JSON. URL sources can be re-imported by refetching; text sources can be imported when a content field is present.",
+		},
+		Sources: items,
+	}
+}
+
+func compactStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func knowledgePackageTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
+func knowledgePackageFirstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (s *HTTPServer) handleKnowledgeImportJobStatus(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	jobID := r.PathValue("jobId")
 	if jobID == "" {
@@ -862,6 +1283,77 @@ func (s *HTTPServer) handleKnowledgeSearch(w http.ResponseWriter, r *http.Reques
 		"results": sanitizeKnowledgeSearchResultsForAPI(s.svc.DataRoot(), results),
 		"total":   len(results),
 	})
+}
+
+func (s *HTTPServer) handleKnowledgeSearchStructured(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if !s.requireKnowledge(w) {
+		return
+	}
+	var req knowledge.StructuredSearchOptions
+	if err := readJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	req.OwnerID = p.UserID
+	req.TenantID = p.TenantID
+	if req.Limit <= 0 {
+		req.Limit = 20
+	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+
+	store := s.knowledgeMgr.AgentStore()
+	if store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge store is not configured"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	results, err := store.SearchStructured(ctx, req)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("structured search failed: %v", err))})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"results": sanitizeKnowledgeSearchResultsForAPI(s.svc.DataRoot(), results),
+		"total":   len(results),
+	})
+}
+
+func (s *HTTPServer) handleKnowledgeStructuredCatalog(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if !s.requireKnowledge(w) {
+		return
+	}
+	var req knowledge.StructuredCatalogOptions
+	if err := readJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	req.OwnerID = p.UserID
+	req.TenantID = p.TenantID
+	if req.Limit <= 0 {
+		req.Limit = 100
+	}
+	if req.Limit > 1000 {
+		req.Limit = 1000
+	}
+
+	store := s.knowledgeMgr.AgentStore()
+	if store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge store is not configured"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	result, err := store.StructuredCatalog(ctx, req)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("structured catalog failed: %v", err))})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *HTTPServer) handleKnowledgeContextPack(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {

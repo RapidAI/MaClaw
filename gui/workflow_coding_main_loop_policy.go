@@ -47,6 +47,11 @@ func (h *IMMessageHandler) shouldConstrainCodingWorkflowImplementationMainLoop(p
 			}
 		}
 	}
+	if h != nil && h.app != nil && h.app.workflowEngine != nil {
+		if state := h.app.workflowEngine.GetActiveWorkflow(policyUserID); state != nil {
+			return state.Type == v2.WorkflowCoding && state.CurrentPhase == v2.PhaseCodingImplementation
+		}
+	}
 	if state, _ := h.activeWorkflowPhaseFromEngine(policyUserID); state != nil {
 		return state.Type == v2.WorkflowCoding && state.CurrentPhase == v2.PhaseCodingImplementation
 	}

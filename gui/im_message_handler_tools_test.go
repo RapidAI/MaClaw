@@ -1218,6 +1218,40 @@ func TestGetTools_CacheWithin5Seconds(t *testing.T) {
 	}
 }
 
+func TestGetTools_DoesNotReuseGeneratorCacheForDynamicBuilder(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	gen := NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        "generator_only_tool",
+				"description": "generator-only tool",
+				"parameters":  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			},
+		},
+	})
+	handler.SetToolDefGenerator(gen)
+	generatorTools := handler.getTools()
+	if !hasToolNamed(generatorTools, "generator_only_tool") {
+		t.Fatalf("expected generator tool before builder switch, got %#v", generatorTools)
+	}
+
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{Name: "builder_only_tool", Description: "builder-only tool", Category: ToolCategoryNonCode, Status: RegToolAvailable}); err != nil {
+		t.Fatalf("register builder tool: %v", err)
+	}
+	handler.registry = registry
+	handler.toolBuilder = NewDynamicToolBuilder(registry)
+
+	builderTools := handler.getTools()
+	if hasToolNamed(builderTools, "generator_only_tool") {
+		t.Fatalf("dynamic builder path reused stale generator cache: %#v", builderTools)
+	}
+	if !hasToolNamed(builderTools, "builder_only_tool") {
+		t.Fatalf("expected dynamic builder tool after builder switch, got %#v", builderTools)
+	}
+}
+
 // TestGetTools_CacheInvalidatedBySetGenerator verifies that calling
 // SetToolDefGenerator invalidates the cache.
 func TestGetTools_CacheInvalidatedBySetGenerator(t *testing.T) {
@@ -1239,6 +1273,7 @@ func TestGetTools_CacheInvalidatedBySetGenerator(t *testing.T) {
 	handler.toolsMu.RLock()
 	cached := handler.cachedTools
 	cacheTime := handler.toolsCacheTime
+	cacheGen := handler.cachedToolDefGen
 	handler.toolsMu.RUnlock()
 
 	if cached != nil {
@@ -1246,6 +1281,9 @@ func TestGetTools_CacheInvalidatedBySetGenerator(t *testing.T) {
 	}
 	if !cacheTime.IsZero() {
 		t.Error("expected toolsCacheTime to be zero after SetToolDefGenerator")
+	}
+	if cacheGen != nil {
+		t.Error("expected cachedToolDefGen to be nil after SetToolDefGenerator")
 	}
 }
 
@@ -1264,6 +1302,9 @@ func TestGetTools_CacheInvalidatedBySetRegistry(t *testing.T) {
 	}
 	if !handler.toolsCacheTime.IsZero() {
 		t.Fatal("expected toolsCacheTime to be zero after SetToolRegistry")
+	}
+	if handler.cachedToolDefGen != nil {
+		t.Fatal("expected cachedToolDefGen to be nil after SetToolRegistry")
 	}
 }
 

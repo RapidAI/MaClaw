@@ -136,7 +136,7 @@ func (c *loopCycleCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	sb.WriteString("## Available Tools\n\n")
 	sb.WriteString("- `read_file`: Read file contents\n")
 	sb.WriteString("- `write_file`: Create or overwrite a file; no content length limit. For very large content (>6000 chars), consider splitting into overwrite + append chunks\n")
-	sb.WriteString("- `edit_file`: Make targeted edits to an existing file\n")
+	sb.WriteString("- `edit_file`: Make targeted edits to an existing file; keep old/new inline content under 1800 characters and split larger edits\n")
 	sb.WriteString("- `bash`: Run shell commands (for exploration, NOT for running the verify command)\n")
 	sb.WriteString("- `list_directory`: List directory contents\n")
 	sb.WriteString("- `search_files`: Search for files by name pattern\n")
@@ -180,7 +180,7 @@ func (c *loopCycleCallbacks) BuildTools(userText string) []map[string]interface{
 			},
 			"required": []string{"path", "old_content", "new_content"},
 		}),
-		tooldef.BuildToolDef("bash", "Execute a shell command.", map[string]interface{}{
+		tooldef.BuildToolDef("bash", "Run read-only diagnostics and exploration commands. Do not use bash to edit files, create/delete/move files, rewrite Git state, stage/commit/apply patches, or run the verify command yourself.", map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"command":  map[string]interface{}{"type": "string", "description": "Shell command to execute"},

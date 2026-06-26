@@ -1051,6 +1051,11 @@ func redactSensitiveText(text string) string {
 	return result
 }
 
+// RedactSensitiveText applies the same text redaction used by snapshot export.
+func RedactSensitiveText(text string) string {
+	return redactSensitiveText(text)
+}
+
 func redactSensitiveStrings(values []string) []string {
 	if len(values) == 0 {
 		return values

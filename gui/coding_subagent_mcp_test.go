@@ -56,6 +56,23 @@ func TestBuildCodingSubAgentMCPSection_WithTools(t *testing.T) {
 	}
 }
 
+func TestBuildCodingSubAgentMCPSectionCapsRequiredArgs(t *testing.T) {
+	section := buildCodingSubAgentMCPSection([]codingSubAgentMCPToolMatch{{
+		ServerID: "browser-1", ServerName: "browser", ToolName: "screenshot", Description: "capture screen",
+		RequiredArgs: []string{"url", "selector", "viewport", "wait_until", "timeout", "format", "quality", "clip"},
+	}})
+
+	if !strings.Contains(section, "url, selector, viewport, wait_until, timeout, format") {
+		t.Fatalf("section should include first required args, got %q", section)
+	}
+	if strings.Contains(section, "quality") || strings.Contains(section, "clip") {
+		t.Fatalf("section should cap expanded required args, got %q", section)
+	}
+	if !strings.Contains(section, "还有 2 项未展开") {
+		t.Fatalf("section should report omitted required args, got %q", section)
+	}
+}
+
 func TestBuildCallMCPToolDefinition_Structure(t *testing.T) {
 	def := buildCallMCPToolDefinition()
 
@@ -141,11 +158,48 @@ func TestExecuteCallMCPTool_MissingParams(t *testing.T) {
 	}
 }
 
+func TestMCPRequiredArgsAllowTopLevelCompatibility(t *testing.T) {
+	tool := codingSubAgentMCPToolMatch{ServerName: "Wiki", ToolName: "get_page_children", RequiredArgs: []string{"parent_id", "limit"}}
+	args := map[string]interface{}{
+		"server_id":  "wiki",
+		"tool_name":  "get_page_children",
+		"parent_id":  "root",
+		"limit":      float64(25),
+		"arguments":  map[string]interface{}{"limit": float64(10)},
+		"irrelevant": "left alone",
+	}
 
+	if result, rejected := rejectMissingCodingSubAgentMCPRequiredArguments(tool, args); rejected {
+		t.Fatalf("top-level required MCP args should be normalized instead of rejected, got %#v", result)
+	}
+	arguments, ok := args["arguments"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("arguments should be a JSON object after normalization, got %#v", args["arguments"])
+	}
+	if arguments["parent_id"] != "root" {
+		t.Fatalf("top-level parent_id should be copied into arguments, got %#v", arguments)
+	}
+	if arguments["limit"] != float64(10) {
+		t.Fatalf("existing arguments.limit should not be overwritten by top-level value, got %#v", arguments)
+	}
+}
+
+func TestMCPRequiredArgsCreateArgumentsFromTopLevelCompatibility(t *testing.T) {
+	tool := codingSubAgentMCPToolMatch{ServerName: "Browser", ToolName: "navigate", RequiredArgs: []string{"url"}}
+	args := map[string]interface{}{"server_id": "browser", "tool_name": "navigate", "url": "https://example.test"}
+
+	if result, rejected := rejectMissingCodingSubAgentMCPRequiredArguments(tool, args); rejected {
+		t.Fatalf("top-level MCP arg should create arguments object, got %#v", result)
+	}
+	arguments, ok := args["arguments"].(map[string]interface{})
+	if !ok || arguments["url"] != "https://example.test" {
+		t.Fatalf("expected arguments.url to be normalized from top-level url, got %#v", args["arguments"])
+	}
+}
 func TestExtractMCPToolRequiredArgs(t *testing.T) {
 	// Normal case: []interface{} of strings
 	schema := map[string]interface{}{
-		"type": "object",
+		"type":     "object",
 		"required": []interface{}{"url", "timeout"},
 	}
 	args := extractMCPToolRequiredArgs(schema)

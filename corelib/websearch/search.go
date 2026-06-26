@@ -90,40 +90,79 @@ func SearchWithProviderCtx(parent context.Context, query string, maxResults int,
 	defer cancel()
 
 	provider = normalizeProvider(provider)
-	providerCtx, providerCancel := context.WithTimeout(ctx, providerSearchTimeout)
-	defer providerCancel()
-
-	var results []SearchResult
-	switch provider.Type {
-	case "brave":
-		if provider.Key == "" {
-			return searchDirectFallbackChain(ctx, query, maxResults, "")
-		}
-		results, err = searchBrave(providerCtx, provider, query, maxResults)
-	case "serper":
-		if provider.Key == "" {
-			return searchDirectFallbackChain(ctx, query, maxResults, "")
-		}
-		results, err = searchSerper(providerCtx, provider, query, maxResults)
-	case "tinyfish":
-		if provider.Key == "" {
-			return searchDirectFallbackChain(ctx, query, maxResults, "")
-		}
-		results, err = searchTinyFish(providerCtx, provider, query, maxResults)
-	case "tavily":
-		if provider.Key == "" {
-			return searchDirectFallbackChain(ctx, query, maxResults, "")
-		}
-		results, err = searchTavily(providerCtx, provider, query, maxResults)
-	case "duckduckgo":
-		results, err = searchDuckDuckGo(providerCtx, provider, query, maxResults)
-	default:
-		return searchDirectFallbackChain(ctx, query, maxResults, "")
-	}
+	results, err := runProviderSearch(ctx, query, maxResults, provider, false)
 	if err == nil && len(results) > 0 {
 		return results, nil
 	}
 	return fallbackDirectSearch(ctx, query, maxResults, provider, err, results)
+}
+
+// TestProvider performs a strict provider probe without falling back to direct
+// search. It is intended for configuration validation where provider-specific
+// failures must be surfaced instead of being hidden by the runtime fallback chain.
+func TestProvider(parent context.Context, provider corelib.WebSearchProvider) error {
+	query, maxResults, ctx, cancel, err := prepareSearch(parent, "MaClaw web search configuration test", 3)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+
+	provider = normalizeProvider(provider)
+	results, err := runProviderSearch(ctx, query, maxResults, provider, true)
+	if err != nil {
+		return err
+	}
+	if len(results) == 0 {
+		return fmt.Errorf("%s provider returned no results", providerNameForError(provider))
+	}
+	return nil
+}
+
+func runProviderSearch(parent context.Context, query string, maxResults int, provider corelib.WebSearchProvider, strict bool) ([]SearchResult, error) {
+	providerCtx, providerCancel := context.WithTimeout(parent, providerSearchTimeout)
+	defer providerCancel()
+
+	switch provider.Type {
+	case "brave":
+		if provider.Key == "" {
+			if strict {
+				return nil, fmt.Errorf("Brave API key is not configured")
+			}
+			return searchDirectFallbackChain(parent, query, maxResults, "")
+		}
+		return searchBrave(providerCtx, provider, query, maxResults)
+	case "serper":
+		if provider.Key == "" {
+			if strict {
+				return nil, fmt.Errorf("Serper API key is not configured")
+			}
+			return searchDirectFallbackChain(parent, query, maxResults, "")
+		}
+		return searchSerper(providerCtx, provider, query, maxResults)
+	case "tinyfish":
+		if provider.Key == "" {
+			if strict {
+				return nil, fmt.Errorf("TinyFish API key is not configured")
+			}
+			return searchDirectFallbackChain(parent, query, maxResults, "")
+		}
+		return searchTinyFish(providerCtx, provider, query, maxResults)
+	case "tavily":
+		if provider.Key == "" {
+			if strict {
+				return nil, fmt.Errorf("Tavily API key is not configured")
+			}
+			return searchDirectFallbackChain(parent, query, maxResults, "")
+		}
+		return searchTavily(providerCtx, provider, query, maxResults)
+	case "duckduckgo":
+		return searchDuckDuckGo(providerCtx, provider, query, maxResults)
+	default:
+		if strict {
+			return nil, fmt.Errorf("unsupported search provider %q", provider.Type)
+		}
+		return searchDirectFallbackChain(parent, query, maxResults, "")
+	}
 }
 
 func prepareSearch(parent context.Context, query string, maxResults int) (string, int, context.Context, context.CancelFunc, error) {
@@ -177,7 +216,8 @@ func searchDuckDuckGo(ctx context.Context, provider corelib.WebSearchProvider, q
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("DuckDuckGo returned HTTP %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
+		return nil, duckDuckGoHTTPError(resp.StatusCode, body)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 	if err != nil {
@@ -757,7 +797,8 @@ func searchDirectLegacy(ctx context.Context, query string, maxResults int) ([]Se
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("DuckDuckGo returned HTTP %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
+		return nil, duckDuckGoHTTPError(resp.StatusCode, body)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
@@ -766,6 +807,18 @@ func searchDirectLegacy(ctx context.Context, query string, maxResults int) ([]Se
 	}
 
 	return parseDDGResults(string(body), maxResults), nil
+}
+
+func duckDuckGoHTTPError(statusCode int, body []byte) error {
+	bodyText := strings.ToLower(string(body))
+	if statusCode == http.StatusAccepted {
+		if strings.Contains(bodyText, "anomaly-modal") ||
+			strings.Contains(bodyText, "bots use duckduckgo too") ||
+			strings.Contains(bodyText, "challenge-form") {
+			return fmt.Errorf("DuckDuckGo blocked this automated request with a human verification challenge (HTTP %d)", statusCode)
+		}
+	}
+	return fmt.Errorf("DuckDuckGo returned HTTP %d", statusCode)
 }
 
 // searchMojeekDirect scrapes Mojeek HTML as a provider-diverse direct fallback.

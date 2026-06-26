@@ -17,7 +17,7 @@ Supported targets:
 - Linux: downloads the matching AppImage for `amd64`/`arm64` and Ubuntu 22.04/24.04 WebKit ABI
 
 Default brand is `maclaw`, displayed as `MaClaw (原厂品牌)` in Chinese and `MaClaw (Original Brand)` in English.
-Optional OEM brand is `tigerclaw`, displayed as `TigerClaw (奇安信 OEM 版)` in Chinese and `TigerClaw (QiAnXin OEM Edition)` in English.
+Optional OEM brands are `tigerclaw`, displayed as `TigerClaw (奇安信 OEM 版)` / `TigerClaw (QiAnXin OEM Edition)`, and `metastaff`, displayed as `智员 MetaStaff (OEM 版)` / `MetaStaff (OEM Edition)`.
 
 ## Language
 
@@ -37,6 +37,7 @@ Ins-maclaw.exe -mode cli
 # Direct brand/check/download controls
 Ins-maclaw.exe -brand maclaw
 Ins-maclaw.exe -brand tigerclaw
+Ins-maclaw.exe -brand metastaff
 Ins-maclaw.exe -check
 Ins-maclaw.exe -no-launch
 Ins-maclaw.exe -lang zh

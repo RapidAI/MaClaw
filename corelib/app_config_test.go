@@ -283,6 +283,27 @@ func TestNormalizeAgentTimeoutSec(t *testing.T) {
 	}
 }
 
+func TestNormalizeSkillRunnerTimeoutSec(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{name: "missing", in: 0, want: DefaultSkillRunnerTimeoutSec},
+		{name: "below min", in: 120, want: MinSkillRunnerTimeoutSec},
+		{name: "long document", in: 3600, want: 3600},
+		{name: "above max", in: 20000, want: MaxSkillRunnerTimeoutSec},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeSkillRunnerTimeoutSec(tt.in); got != tt.want {
+				t.Fatalf("NormalizeSkillRunnerTimeoutSec(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestIsWorkflowEnabled verifies the three-state behavior of the workflow toggle:
 // nil (default) → true, explicit true → true, explicit false → false.
 // Also verifies JSON round-trip: *bool with omitempty serializes false correctly.

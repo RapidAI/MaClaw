@@ -207,6 +207,7 @@ type skillRun struct {
 	selectedSteps []string          // api_workflow mode: only run steps with these labels
 	extraEnv      map[string]string // env vars from run_skill caller, injected into subprocesses
 	workspaceDir  string            // isolated per-run copy of the skill directory
+	timeoutSec    int               // normalized system Skill Runner timeout captured when the run starts
 }
 
 // NewSkillRunner creates a SkillRunner.
@@ -215,6 +216,32 @@ func NewSkillRunner(executor *SkillExecutor) *SkillRunner {
 		executor: executor,
 		runs:     make(map[string]*skillRun),
 	}
+}
+
+func (r *SkillRunner) defaultTimeoutSec() int {
+	if r != nil && r.executor != nil && r.executor.app != nil {
+		if cfg, err := r.executor.app.LoadConfig(); err == nil {
+			return corelib.NormalizeSkillRunnerTimeoutSec(cfg.SkillRunnerTimeoutSec)
+		}
+	}
+	return corelib.DefaultSkillRunnerTimeoutSec
+}
+
+func (r *SkillRunner) runDefaultTimeoutSec(run *skillRun) int {
+	if run != nil && run.timeoutSec > 0 {
+		return corelib.NormalizeSkillRunnerTimeoutSec(run.timeoutSec)
+	}
+	return r.defaultTimeoutSec()
+}
+
+func (r *SkillRunner) runDefaultTimeoutSecForID(runID string) int {
+	if r == nil {
+		return corelib.DefaultSkillRunnerTimeoutSec
+	}
+	r.mu.RLock()
+	run := r.runs[runID]
+	r.mu.RUnlock()
+	return r.runDefaultTimeoutSec(run)
 }
 
 // StartRun starts a skill asynchronously and returns a run ID for polling.
@@ -299,6 +326,14 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 		return "", fmt.Errorf("skill %q not found. Use list_skills to see installed skills", skillName)
 	}
 
+	// BUG-005: Normalize skill directory path (resolve 8.3 short paths on Windows)
+	if runtime.GOOS == "windows" && target.SkillDir != "" {
+		target.SkillDir = normalizeWindowsShortPathGUI(target.SkillDir)
+	}
+	if err := refreshSkillRunDefinitionFromDir(target); err != nil {
+		return "", fmt.Errorf("reload skill %q from disk: %w", skillName, err)
+	}
+
 	// Bug #3: Distinguish needs_setup / disabled from active
 	switch normalizeSkillEntryStatus(target.Status) {
 	case skillEntryStatusNeedsSetup:
@@ -308,11 +343,6 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 	case skillEntryStatusActive, skillEntryStatusUnknown:
 	default:
 		return "", fmt.Errorf("skill %q status is %q, expected active", skillName, target.Status)
-	}
-
-	// BUG-005: Normalize skill directory path (resolve 8.3 short paths on Windows)
-	if runtime.GOOS == "windows" && target.SkillDir != "" {
-		target.SkillDir = normalizeWindowsShortPathGUI(target.SkillDir)
 	}
 
 	// Migrate legacy .cceasy paths to .maclaw ? crafted skills from older
@@ -414,6 +444,7 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 	for _, warning := range fileWarnings {
 		log.Printf("[skill-runner] file warning for %q: %s", skillName, warning)
 	}
+	defaultTimeoutSec := r.defaultTimeoutSec()
 
 	// 生成 runID
 	runnerLockWaitStart := time.Now()
@@ -443,6 +474,7 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 		runArgs:       cloneSkillRunArgs(runArgs),
 		selectedSteps: selectedSteps,
 		extraEnv:      extraEnv,
+		timeoutSec:    defaultTimeoutSec,
 	}
 	for i, step := range target.Steps {
 		run.status.Steps[i] = StepResult{
@@ -468,6 +500,47 @@ func (r *SkillRunner) defaultSkillRunPolicyOwnerID() string {
 	return r.executor.app.defaultManualPolicyOwnerID()
 }
 
+func refreshSkillRunDefinitionFromDir(target *corelib.NLSkillEntry) error {
+	if target == nil || strings.TrimSpace(target.SkillDir) == "" {
+		return nil
+	}
+	if !importedSkillDefinitionExists(target.SkillDir) {
+		return nil
+	}
+	overlayStatus := target.Status
+	lastError := target.LastError
+	reloaded, err := loadImportedSkillEntry(target.SkillDir)
+	if err != nil {
+		return err
+	}
+	mergeSkillPackagingRuntimeFields(reloaded, target)
+	if fileSkillStatusIsOverlay(overlayStatus) {
+		reloaded.Status = strings.TrimSpace(overlayStatus)
+	}
+	if strings.TrimSpace(lastError) != "" {
+		reloaded.LastError = lastError
+	}
+	reloaded.Source = firstNonEmptySkillString(target.Source, reloaded.Source)
+	reloaded.SourceProject = firstNonEmptySkillString(target.SourceProject, reloaded.SourceProject)
+	reloaded.HubSkillID = firstNonEmptySkillString(target.HubSkillID, reloaded.HubSkillID)
+	reloaded.HubVersion = firstNonEmptySkillString(target.HubVersion, reloaded.HubVersion)
+	reloaded.TrustLevel = firstNonEmptySkillString(target.TrustLevel, reloaded.TrustLevel)
+	reloaded.Publisher = firstNonEmptySkillString(target.Publisher, reloaded.Publisher)
+	reloaded.DirName = firstNonEmptySkillString(reloaded.DirName, target.DirName)
+	reloaded.CreatedAt = firstNonEmptySkillString(target.CreatedAt, reloaded.CreatedAt)
+	*target = *reloaded
+	return nil
+}
+
+func firstNonEmptySkillString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // startPipelineRun starts a pipeline skill asynchronously.
 func (r *SkillRunner) startPipelineRun(policyOwnerID, skillName string, target *corelib.NLSkillEntry, runArgs map[string]interface{}, templateVars map[string]string, extraEnv map[string]string) (string, error) {
 	if target == nil {
@@ -487,6 +560,7 @@ func (r *SkillRunner) startPipelineRun(policyOwnerID, skillName string, target *
 		log.Printf("[skill-runner] pipeline requirement warning for %q: %s", skillName, warning.Message)
 	}
 	warnings := prep.Warnings
+	defaultTimeoutSec := r.defaultTimeoutSec()
 
 	r.mu.Lock()
 	r.counter++
@@ -510,6 +584,7 @@ func (r *SkillRunner) startPipelineRun(policyOwnerID, skillName string, target *
 		templateVars: templateVars,
 		runArgs:      cloneSkillRunArgs(runArgs),
 		extraEnv:     extraEnv,
+		timeoutSec:   defaultTimeoutSec,
 	}
 	for i, step := range target.Pipeline {
 		run.status.Steps[i] = StepResult{
@@ -530,7 +605,7 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 	execStart, finishExecution := r.beginRunExecution(run, "pipeline")
 	finishStatus := "unknown"
 	defer func() { finishExecution(finishStatus) }()
-	globalTimeout := 5 * time.Minute
+	globalTimeout := time.Duration(r.runDefaultTimeoutSec(run)) * time.Second
 	if entry.GlobalTimeout > 0 {
 		globalTimeout = time.Duration(entry.GlobalTimeout) * time.Second
 	}
@@ -1239,8 +1314,7 @@ func isInstructionOnlySkillEntry(skill *corelib.NLSkillEntry) bool {
 	if len(params) == 0 {
 		return false
 	}
-	instructions, _ := params["instructions"].(string)
-	if strings.TrimSpace(instructions) == "" {
+	if craftInstructionText(params) == "" {
 		return false
 	}
 	if strings.TrimSpace(stringVal(params, "task")) != "" {
@@ -1702,8 +1776,8 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			cleanup()
 		}()
 	}
-	// Global timeout: use skill-level setting if available, otherwise 5 minutes.
-	globalTimeout := 5 * time.Minute
+	// Global timeout: use skill-level setting if available, otherwise the system Skill Runner default.
+	globalTimeout := time.Duration(r.runDefaultTimeoutSec(run)) * time.Second
 	if skill.GlobalTimeout > 0 {
 		globalTimeout = time.Duration(skill.GlobalTimeout) * time.Second
 		log.Printf("[skill-runner] using skill-level global timeout: %v", globalTimeout)
@@ -2181,6 +2255,7 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 	loadElapsed := time.Since(loadStart)
 	for i, s := range skills {
 		if s.Name == skill.Name {
+			mergeSkillRunIdentityForUsageStats(&skills[i], skill)
 			skills[i].UsageCount++
 			skills[i].LastUsedAt = time.Now().Format(time.RFC3339)
 			if execErr == nil {
@@ -2253,6 +2328,27 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 			go r.maybeRepairSkill(updatedEntry)
 		}
 	}
+}
+
+func mergeSkillRunIdentityForUsageStats(dst, runtimeEntry *corelib.NLSkillEntry) {
+	if dst == nil || runtimeEntry == nil {
+		return
+	}
+	if normalizeSkillEntrySource(runtimeEntry.Source) == skillEntrySourceUnknown {
+		return
+	}
+	if normalizeSkillEntrySource(dst.Source) == skillEntrySourceUnknown {
+		dst.Source = runtimeEntry.Source
+	}
+	if strings.TrimSpace(dst.SkillDir) == "" || skillDirIdentityKey(dst.SkillDir) == skillDirIdentityKey(runtimeEntry.SkillDir) {
+		dst.SkillDir = firstNonEmptySkillString(dst.SkillDir, runtimeEntry.SkillDir)
+	}
+	dst.DirName = firstNonEmptySkillString(dst.DirName, runtimeEntry.DirName)
+	dst.SourceProject = firstNonEmptySkillString(dst.SourceProject, runtimeEntry.SourceProject)
+	dst.HubSkillID = firstNonEmptySkillString(dst.HubSkillID, runtimeEntry.HubSkillID)
+	dst.HubVersion = firstNonEmptySkillString(dst.HubVersion, runtimeEntry.HubVersion)
+	dst.TrustLevel = firstNonEmptySkillString(dst.TrustLevel, runtimeEntry.TrustLevel)
+	dst.Publisher = firstNonEmptySkillString(dst.Publisher, runtimeEntry.Publisher)
 }
 
 func (r *SkillRunner) recordSkillUsageExperience(skill *corelib.NLSkillEntry, execErr error, runArgs map[string]interface{}) {
@@ -2886,7 +2982,7 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 		if command == "" {
 			return "", fmt.Errorf("missing command parameter")
 		}
-		return runBashStepWithContext(ctx, command, step.Params, skillDir, r.executor.app)
+		return runBashStepWithContextFull(ctx, command, step.Params, skillDir, r.executor.app, r.runDefaultTimeoutSecForID(runID))
 
 	case skillStepActionCraftTool:
 		if r.executor == nil || r.executor.app == nil {
@@ -2895,7 +2991,7 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 		return executeCraftToolCoreWithContext(ctx, r.executor.app, nil, step.Params, nil)
 
 	case skillStepActionPoll:
-		return r.executePollStep(ctx, step, skillDir)
+		return r.executePollStep(ctx, step, skillDir, r.runDefaultTimeoutSecForID(runID))
 
 	default:
 		return "", fmt.Errorf("unknown action: %s", step.Action)
@@ -2929,16 +3025,22 @@ func resolveSkillWorkingDir(workDir, skillDir string) string {
 	return filepath.Clean(workDir)
 }
 func runBashStepWithContext(ctx context.Context, command string, params map[string]interface{}, skillDir string, app *App) (string, error) {
-	return runBashStepWithContextFull(ctx, command, params, skillDir, app)
+	return runBashStepWithContextFull(ctx, command, params, skillDir, app, 0)
 }
 
-func runBashStepWithContextFull(ctx context.Context, command string, params map[string]interface{}, skillDir string, app *App) (string, error) {
+func runBashStepWithContextFull(ctx context.Context, command string, params map[string]interface{}, skillDir string, app *App, defaultTimeoutSec int) (string, error) {
 	// Strip UTF-8 BOM if present. SKILL.md files saved with BOM can leak
 	// the BOM bytes into the command string, causing cmd.exe to fail with
 	// "'@echo" is not recognized as an internal or external command.
 	command = strings.TrimPrefix(command, "\xef\xbb\xbf")
 
-	timeout := cskill.RunnerStepTimeoutSeconds(params, corelib.DefaultAgentTimeoutSec, corelib.MaxAgentTimeoutSec)
+	defaultTimeout := corelib.NormalizeSkillRunnerTimeoutSec(defaultTimeoutSec)
+	if defaultTimeoutSec <= 0 && app != nil {
+		if cfg, err := app.LoadConfig(); err == nil {
+			defaultTimeout = corelib.NormalizeSkillRunnerTimeoutSec(cfg.SkillRunnerTimeoutSec)
+		}
+	}
+	timeout := cskill.RunnerStepTimeoutSecondsWithMin(params, defaultTimeout, corelib.MinSkillRunnerTimeoutSec, corelib.MaxSkillRunnerTimeoutSec)
 
 	// Expand portable home placeholders before Windows shell dispatch.
 	// AutoFixPortability intentionally writes $HOME to keep skill.yaml portable,
@@ -3722,7 +3824,7 @@ func captureOutputVariables(output string, captures map[string]string) map[strin
 //
 // The step succeeds when success_pattern matches. The matched output is
 // returned so that capture rules can extract variables from it.
-func (r *SkillRunner) executePollStep(ctx context.Context, step corelib.NLSkillStep, skillDir string) (string, error) {
+func (r *SkillRunner) executePollStep(ctx context.Context, step corelib.NLSkillStep, skillDir string, defaultTimeoutSec int) (string, error) {
 	command, _ := step.Params["command"].(string)
 	if command == "" {
 		return "", fmt.Errorf("poll step: missing command parameter")
@@ -3766,7 +3868,7 @@ func (r *SkillRunner) executePollStep(ctx context.Context, step corelib.NLSkillS
 		}
 
 		attempt++
-		output, execErr := runBashStepWithContext(pollCtx, command, step.Params, skillDir, r.executor.app)
+		output, execErr := runBashStepWithContextFull(pollCtx, command, step.Params, skillDir, r.executor.app, defaultTimeoutSec)
 		lastOutput = output
 		lastErr = execErr
 

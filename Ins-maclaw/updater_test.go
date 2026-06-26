@@ -30,6 +30,13 @@ func TestResolveBrandLabels(t *testing.T) {
 	if tiger.ProductName != "TigerClaw" || brandLabel(tiger) != "TigerClaw (\u5947\u5b89\u4fe1 OEM \u7248)" {
 		t.Fatalf("tigerclaw brand = %+v label=%q", tiger, brandLabel(tiger))
 	}
+	meta, err := resolveBrand("\u667a\u5458")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ProductName != "MetaStaff" || brandLabel(meta) != "\u667a\u5458 MetaStaff (OEM \u7248)" {
+		t.Fatalf("metastaff brand = %+v label=%q", meta, brandLabel(meta))
+	}
 }
 
 func TestLanguageSwitchesBrandLabels(t *testing.T) {
@@ -41,6 +48,9 @@ func TestLanguageSwitchesBrandLabels(t *testing.T) {
 	}
 	if got := brandLabel(brandOptions[1]); got != "TigerClaw (QiAnXin OEM Edition)" {
 		t.Fatalf("english tiger label = %q", got)
+	}
+	if got := brandLabel(brandOptions[2]); got != "MetaStaff (OEM Edition)" {
+		t.Fatalf("english metastaff label = %q", got)
 	}
 	activeLanguage = langChinese
 	if got := tr("language"); got != "\u8bed\u8a00\uff1a\u7b80\u4f53\u4e2d\u6587" {
@@ -87,13 +97,13 @@ func TestTUISelectPromptUsesDefaultIndex(t *testing.T) {
 	defer func() { activeLanguage = old }()
 
 	activeLanguage = langEnglish
-	if got := fmt.Sprintf(tr("tui.select"), brandSelectionIndex(brandOptions[1])); got != "Select [2]: " {
-		t.Fatalf("english tiger default prompt = %q", got)
+	if got := fmt.Sprintf(tr("tui.select"), brandSelectionIndex(brandOptions[2])); got != "Select [3]: " {
+		t.Fatalf("english metastaff default prompt = %q", got)
 	}
 
 	activeLanguage = langChinese
-	if got := fmt.Sprintf(tr("tui.select"), brandSelectionIndex(brandOptions[1])); got != "\u8bf7\u9009\u62e9 [2]\uff1a" {
-		t.Fatalf("chinese tiger default prompt = %q", got)
+	if got := fmt.Sprintf(tr("tui.select"), brandSelectionIndex(brandOptions[2])); got != "\u8bf7\u9009\u62e9 [3]\uff1a" {
+		t.Fatalf("chinese metastaff default prompt = %q", got)
 	}
 }
 
@@ -103,6 +113,9 @@ func TestBrandSelectionIndex(t *testing.T) {
 	}
 	if got := brandSelectionIndex(brandOptions[1]); got != 2 {
 		t.Fatalf("tigerclaw default index = %d", got)
+	}
+	if got := brandSelectionIndex(brandOptions[2]); got != 3 {
+		t.Fatalf("metastaff default index = %d", got)
 	}
 }
 
@@ -138,8 +151,12 @@ func TestTargetAssetNameForPlatforms(t *testing.T) {
 	}{
 		{name: "windows", productName: "MaClaw", goos: "windows", goarch: "amd64", want: "MaClaw-Setup.exe"},
 		{name: "darwin", productName: "TigerClaw", goos: "darwin", goarch: "arm64", want: "TigerClaw-Universal.pkg"},
+		{name: "metastaff windows", productName: "MetaStaff", goos: "windows", goarch: "amd64", want: "MetaStaff-Setup.exe"},
+		{name: "metastaff darwin", productName: "MetaStaff", goos: "darwin", goarch: "arm64", want: "MetaStaff-Universal.pkg"},
 		{name: "linux amd64", productName: "MaClaw", goos: "linux", goarch: "amd64", ubuntuLabel: "u2404", want: "MaClaw-x86_64-u2404.AppImage"},
 		{name: "linux arm64", productName: "TigerClaw", goos: "linux", goarch: "arm64", ubuntuLabel: "u2204", want: "TigerClaw-aarch64-u2204.AppImage"},
+		{name: "metastaff linux amd64", productName: "MetaStaff", goos: "linux", goarch: "amd64", ubuntuLabel: "u2404", want: "MetaStaff-x86_64-u2404.AppImage"},
+		{name: "metastaff linux arm64", productName: "MetaStaff", goos: "linux", goarch: "arm64", ubuntuLabel: "u2204", want: "MetaStaff-aarch64-u2204.AppImage"},
 		{name: "linux unsupported arch", productName: "MaClaw", goos: "linux", goarch: "386", ubuntuLabel: "u2404", wantErr: true},
 		{name: "unsupported os", productName: "MaClaw", goos: "freebsd", goarch: "amd64", wantErr: true},
 	}

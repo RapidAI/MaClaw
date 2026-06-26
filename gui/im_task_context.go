@@ -33,7 +33,9 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 		if len(entries) >= 2 {
 			h.archiveCurrentTask(msg.UserID, entries, agent.ArchivedTaskStatusSwitched)
 		}
-		h.memory.ClearConversationAndDismissSlot(msg.UserID)
+		if h.memory != nil {
+			h.memory.ClearConversationAndDismissSlot(msg.UserID)
+		}
 		h.clearPerUserSessionState(msg.UserID)
 		log.Printf("[TaskContext] new task for user %s: %s", msg.UserID, tcDecision.Reason)
 		return "", true, len(entries) > 0
@@ -48,7 +50,9 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 			log.Printf("[TaskContext] recalled task %s for user %s", tcDecision.RecallTaskID, msg.UserID)
 			return "", false, true
 		}
-		h.memory.ClearConversationAndDismissSlot(msg.UserID)
+		if h.memory != nil {
+			h.memory.ClearConversationAndDismissSlot(msg.UserID)
+		}
 		h.clearPerUserSessionState(msg.UserID)
 		log.Printf("[TaskContext] recall failed for user %s, treating as new task", msg.UserID)
 		return askUserContext, true, len(entries) > 0

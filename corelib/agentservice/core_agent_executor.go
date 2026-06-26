@@ -577,6 +577,66 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 			},
 		},
 		{
+			Name:        "knowledge_export",
+			Description: "Export all or selected current-user knowledge into an editable MaClaw knowledge JSON package. Requires a human-readable description before sharing or moving data between machines.",
+			Enabled:     c.knowledgeStore != nil,
+			DisabledReason: func() string {
+				if c.knowledgeStore == nil {
+					return "knowledge base is not configured"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"title":            map[string]interface{}{"type": "string", "description": "Optional export title"},
+					"description":      map[string]interface{}{"type": "string", "description": "Required description of this knowledge export"},
+					"source_ids":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source IDs for partial export. Empty means all own active sources."},
+					"include_disabled": map[string]interface{}{"type": "boolean", "description": "Include disabled own sources"},
+					"output_path":      map[string]interface{}{"type": "string", "description": "Optional destination path when the host supports file output"},
+				},
+				"required": []string{"description"},
+			},
+		},
+		{
+			Name:        "knowledge_import_package",
+			Description: "Import a MaClaw editable knowledge JSON package into the current user's knowledge base. URL entries may be refetched; text entries require a content field.",
+			Enabled:     c.knowledgeStore != nil,
+			DisabledReason: func() string {
+				if c.knowledgeStore == nil {
+					return "knowledge base is not configured"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"package_path": map[string]interface{}{"type": "string", "description": "Path to a MaClaw knowledge JSON package"},
+					"package_json": map[string]interface{}{"type": "object", "description": "Inline package JSON when provided by the host"},
+				},
+			},
+		},
+		{
+			Name:        "knowledge_import_share",
+			Description: "Import shared knowledge by knowledge ID or by a human-readable, agent-importable share link. The host resolves the Hub and visibility permissions.",
+			Enabled:     c.knowledgeStore != nil,
+			DisabledReason: func() string {
+				if c.knowledgeStore == nil {
+					return "knowledge base is not configured"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"knowledge_id": map[string]interface{}{"type": "string", "description": "Unique shared knowledge ID"},
+					"share_link":   map[string]interface{}{"type": "string", "description": "Human-readable share link that also contains import metadata"},
+					"hub_url":      map[string]interface{}{"type": "string", "description": "Optional Hub URL hint"},
+					"hub_token":    map[string]interface{}{"type": "string", "description": "Optional Hub viewer token for private, tenant, or user-list shares"},
+				},
+			},
+		},
+		{
 			Name:        "knowledge_import_directory",
 			Description: "Scan or import a local directory/folder of documents into the knowledge base. Only use after the user explicitly provides or approves the directory path.",
 			Enabled:     c.knowledgeStore != nil,
@@ -958,6 +1018,8 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		return agent.ToolExecutionResult{Result: c.executeKnowledgeSearch(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "knowledge_context_pack":
 		return agent.ToolExecutionResult{Result: c.executeKnowledgeContextPack(args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "knowledge_export", "knowledge_import_package", "knowledge_import_share":
+		return agent.ToolExecutionResult{Result: "Error: this knowledge exchange tool must be handled by the MaClawSrv host API in this runtime", Outcome: agent.ToolExecutionOutcomeError}
 	case "knowledge_import_directory":
 		return knowledgeToolResult(c.executeKnowledgeImportDirectory(args))
 	case "knowledge_import_files":

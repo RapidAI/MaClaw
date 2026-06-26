@@ -11,6 +11,7 @@ package v2
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -157,9 +158,85 @@ type WorkflowRegistry struct {
 
 // NewWorkflowRegistry creates a WorkflowRegistry.
 func NewWorkflowRegistry() *WorkflowRegistry {
-	return &WorkflowRegistry{
+	registry := &WorkflowRegistry{
 		templates: make(map[WorkflowType]*TemplateSpec),
 	}
+	registry.registerBuiltinTemplates()
+	return registry
+}
+
+func (r *WorkflowRegistry) registerBuiltinTemplates() {
+	if r == nil {
+		return
+	}
+	v2Registry := NewTemplateRegistry()
+	RegisterBuiltinTemplates(v2Registry)
+	for _, tmplType := range v2Registry.AllTypes() {
+		v2Tmpl := v2Registry.Get(string(tmplType))
+		if v2Tmpl == nil {
+			continue
+		}
+		phases := make([]PhaseSpec, 0, len(v2Tmpl.Phases))
+		for _, phase := range v2Tmpl.Phases {
+			var schema *PhaseInputSchemaSpec
+			if phase.InputSchema != nil {
+				fields := make([]PhaseInputFieldSpec, 0, len(phase.InputSchema.Fields))
+				for _, field := range phase.InputSchema.Fields {
+					fields = append(fields, PhaseInputFieldSpec{
+						Name:        field.Name,
+						Label:       field.Label,
+						Type:        field.Type,
+						Required:    field.Required,
+						Description: field.Description,
+						Placeholder: field.Placeholder,
+						Options:     clonePhaseInputOptions(field.Options),
+						Default:     field.Default,
+					})
+				}
+				schema = &PhaseInputSchemaSpec{
+					Title:       phase.InputSchema.Title,
+					Description: phase.InputSchema.Description,
+					Fields:      fields,
+				}
+			}
+			phases = append(phases, PhaseSpec{
+				ID:           phase.ID,
+				Name:         phase.Name,
+				NeedsConfirm: phase.NeedsConfirm,
+				ToolPolicy:   ToolFilterPolicy(phase.ToolPolicy),
+				InputSchema:  schema,
+			})
+		}
+		var requiresInput *InputRequirement
+		if len(v2Tmpl.Phases) > 0 && v2Tmpl.Phases[0].InputSchema != nil && v2Tmpl.Phases[0].InputSchema.Title != "" {
+			requiresInput = &InputRequirement{
+				Description: v2Tmpl.Phases[0].InputSchema.Title,
+				AcceptText:  true,
+			}
+		}
+		r.templates[WorkflowType(v2Tmpl.Type)] = &TemplateSpec{
+			Type:          WorkflowType(v2Tmpl.Type),
+			Name:          v2Tmpl.Name,
+			Description:   v2Tmpl.Description,
+			Keywords:      append([]string(nil), v2Tmpl.Keywords...),
+			Phases:        phases,
+			RequiresInput: requiresInput,
+		}
+	}
+}
+
+func clonePhaseInputOptions(options []PhaseInputOption) []PhaseInputOptionSpec {
+	if len(options) == 0 {
+		return nil
+	}
+	out := make([]PhaseInputOptionSpec, 0, len(options))
+	for _, option := range options {
+		out = append(out, PhaseInputOptionSpec{
+			Label: option.Label,
+			Value: option.Value,
+		})
+	}
+	return out
 }
 
 func (r *WorkflowRegistry) Register(tmpl *TemplateSpec) error {
@@ -194,11 +271,11 @@ func (r *WorkflowRegistry) All() []*TemplateSpec {
 	return result
 }
 
-func (r *WorkflowRegistry) AllDescriptions() string                             { return "" }
-func (r *WorkflowRegistry) BestTemplateScore(text string) float64               { return 0 }
-func (r *WorkflowRegistry) BestTemplateType(text string) WorkflowType           { return "" }
-func (r *WorkflowRegistry) RankedTemplateScores(text string) []TemplateScore    { return nil }
-func (r *WorkflowRegistry) MatchesAnyTemplate(text string) bool                 { return false }
+func (r *WorkflowRegistry) AllDescriptions() string                          { return "" }
+func (r *WorkflowRegistry) BestTemplateScore(text string) float64            { return 0 }
+func (r *WorkflowRegistry) BestTemplateType(text string) WorkflowType        { return "" }
+func (r *WorkflowRegistry) RankedTemplateScores(text string) []TemplateScore { return nil }
+func (r *WorkflowRegistry) MatchesAnyTemplate(text string) bool              { return false }
 
 // ---------------------------------------------------------------------------
 // WorkflowEngine (stub)
@@ -244,8 +321,8 @@ func NewWorkflowEngine(
 }
 
 func (e *WorkflowEngine) SetArtifactSaver(s ArtifactSaver) { e.artifactSaver = s }
-func (e *WorkflowEngine) SetMachine(m *StateMachine)        { e.machine = m }
-func (e *WorkflowEngine) GetMachine() *StateMachine         { return e.machine }
+func (e *WorkflowEngine) SetMachine(m *StateMachine)       { e.machine = m }
+func (e *WorkflowEngine) GetMachine() *StateMachine        { return e.machine }
 func (e *WorkflowEngine) HasActiveWorkflow(userID string) bool {
 	return e.GetActiveWorkflow(userID) != nil
 }
@@ -319,7 +396,42 @@ func (e *WorkflowEngine) StartWorkflowWithOptions(userID string, intent Structur
 	}
 	return state, nil
 }
-func (e *WorkflowEngine) SetProjectPath(userID, projectPath string) error { return nil }
+func (e *WorkflowEngine) SetProjectPath(userID, projectPath string) error {
+	if e == nil {
+		return errors.New("workflow engine is nil")
+	}
+	userID = strings.TrimSpace(userID)
+	projectPath = strings.TrimSpace(projectPath)
+	if userID == "" {
+		return errors.New("userID is required")
+	}
+	if projectPath == "" {
+		return errors.New("project path is required")
+	}
+	e.mu.Lock()
+	ws, ok := e.workflows[userID]
+	if !ok || ws == nil || ws.Status != WorkflowActive {
+		e.mu.Unlock()
+		return errors.New("no active workflow for user")
+	}
+	ws.ProjectPath = projectPath
+	ws.UpdatedAt = time.Now()
+	snapshot := *ws
+	e.mu.Unlock()
+	if e.store != nil {
+		_ = e.store.SaveWorkflowState(&snapshot)
+	}
+	if e.machine != nil {
+		if state := e.machine.GetActive(userID); state != nil {
+			state.ProjectPath = projectPath
+			state.UpdatedAt = snapshot.UpdatedAt
+			if e.machine.store != nil {
+				_ = e.machine.store.Save(state)
+			}
+		}
+	}
+	return nil
+}
 
 // StoreActiveState stores a pre-built EngineState into the engine's active
 // workflows map. Used when the workflow is created via V2 machine and needs to
@@ -396,6 +508,10 @@ func (e *WorkflowEngine) SubmitPhaseForm(userID string, formData map[string]inte
 		return nil, errors.New("no active workflow for user")
 	}
 
+	originalProjectPath := ws.ProjectPath
+	originalFormData := ws.PhaseFormData
+	originalSubmitted := ws.PhaseFormSubmitted
+	originalUpdatedAt := ws.UpdatedAt
 	// Normalize project_path / output_dir → update workflow ProjectPath.
 	// Priority: project_path > output_dir. This ensures later phases see the
 	// output directory in their prompt header ("项目路径").
@@ -405,11 +521,24 @@ func (e *WorkflowEngine) SubmitPhaseForm(userID string, formData map[string]inte
 	} else if od := formDataString(formData, "output_dir"); od != "" {
 		ws.ProjectPath = od
 	}
-
 	ws.PhaseFormData = formData
 	ws.PhaseFormSubmitted = true
 	ws.UpdatedAt = time.Now()
+	snapshot := *ws
 	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.SaveWorkflowState(&snapshot); err != nil {
+			e.mu.Lock()
+			if current := e.workflows[userID]; current != nil {
+				current.ProjectPath = originalProjectPath
+				current.PhaseFormData = originalFormData
+				current.PhaseFormSubmitted = originalSubmitted
+				current.UpdatedAt = originalUpdatedAt
+			}
+			e.mu.Unlock()
+			return nil, err
+		}
+	}
 
 	tmpl := e.registry.Match(ws.Type)
 	if tmpl == nil {
@@ -478,13 +607,45 @@ func (e *WorkflowEngine) SkipPhaseForm(userID string) error {
 		return nil
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	ws, ok := e.workflows[userID]
 	if !ok || ws == nil || ws.Status != WorkflowActive {
+		e.mu.Unlock()
 		return nil
 	}
+	originalSkipped := ws.PhaseFormSkipped
+	originalUpdatedAt := ws.UpdatedAt
 	ws.PhaseFormSkipped = true
 	ws.UpdatedAt = time.Now()
+	snapshot := *ws
+	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.SaveWorkflowState(&snapshot); err != nil {
+			e.mu.Lock()
+			if current := e.workflows[userID]; current != nil {
+				current.PhaseFormSkipped = originalSkipped
+				current.UpdatedAt = originalUpdatedAt
+			}
+			e.mu.Unlock()
+			return err
+		}
+	}
+	if e.machine != nil && e.machine.GetActive(userID) != nil {
+		if err := e.machine.SkipPhaseForm(userID); err != nil {
+			e.mu.Lock()
+			if current := e.workflows[userID]; current != nil {
+				current.PhaseFormSkipped = originalSkipped
+				current.UpdatedAt = originalUpdatedAt
+			}
+			e.mu.Unlock()
+			if e.store != nil {
+				rollback := snapshot
+				rollback.PhaseFormSkipped = originalSkipped
+				rollback.UpdatedAt = originalUpdatedAt
+				_ = e.store.SaveWorkflowState(&rollback)
+			}
+			return err
+		}
+	}
 	return nil
 }
 func (e *WorkflowEngine) AdvancePhase(userID string) (*WorkflowResponse, error) {
@@ -513,12 +674,23 @@ func (e *WorkflowEngine) AdvancePhase(userID string) (*WorkflowResponse, error) 
 	ws.PhaseFormSubmitted = false
 	ws.PhaseFormSkipped = false
 	ws.UpdatedAt = time.Now()
+	nextPhase := tmpl.Phases[ws.PhaseIndex]
 	e.mu.Unlock()
 	// Sync to V2 machine.
 	if e.machine != nil {
 		e.machine.SetActivePhaseForTest(userID, ws.PhaseIndex)
 	}
-	return &WorkflowResponse{Advance: true, RunAgentLoop: true}, nil
+	if nextPhase.InputSchema != nil {
+		return &WorkflowResponse{
+			ShowForm:   true,
+			FormSchema: nextPhase.InputSchema.Clone(),
+		}, nil
+	}
+	return &WorkflowResponse{
+		Advance:      true,
+		RunAgentLoop: true,
+		PhasePrompt:  e.BuildPhasePrompt(userID),
+	}, nil
 }
 func (e *WorkflowEngine) CancelWorkflow(userID string) error {
 	e.mu.Lock()
@@ -545,6 +717,7 @@ func (e *WorkflowEngine) ApplyReviewIntent(userID string, intent ReviewIntent, f
 		if hr == nil {
 			return nil, nil
 		}
+		e.syncEngineStateFromHandleResult(userID, hr)
 		resp := &WorkflowResponse{}
 		switch hr.Action {
 		case ActionRunPhase, ActionModify:
@@ -609,6 +782,70 @@ func (e *WorkflowEngine) ApplyReviewIntent(userID string, intent ReviewIntent, f
 func (e *WorkflowEngine) ReopenPhaseForRevision(userID, phaseID, feedback string) (*WorkflowResponse, error) {
 	return nil, nil
 }
+
+func (e *WorkflowEngine) syncEngineStateFromHandleResult(userID string, hr *HandleResult) {
+	if e == nil || hr == nil || hr.State == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ws := e.workflows[userID]
+	if ws == nil {
+		return
+	}
+	switch hr.State.Status {
+	case StatusCompleted:
+		ws.Status = WorkflowCompleted
+		ws.PendingReviewPhaseID = ""
+		ws.UpdatedAt = time.Now()
+		return
+	case StatusCancelled:
+		ws.Status = WorkflowCancelled
+		delete(e.workflows, userID)
+		return
+	}
+	if hr.State.Status != StatusActive {
+		return
+	}
+	ws.Status = WorkflowActive
+	ws.PhaseIndex = hr.State.CurrentPhase
+	if hr.State.CurrentPhase >= 0 && hr.State.CurrentPhase < len(hr.State.Phases) {
+		ws.CurrentPhase = hr.State.Phases[hr.State.CurrentPhase].ID
+	}
+	ws.PendingReviewPhaseID = ""
+	ws.UpdatedAt = time.Now()
+	switch hr.Action {
+	case ActionModify:
+		ws.PendingReviewRevisionRequested = true
+		if ws.PhaseOutputs != nil && ws.CurrentPhase != "" {
+			delete(ws.PhaseOutputs, ws.CurrentPhase)
+		}
+	case ActionRunPhase, ActionConfirmed:
+		ws.PendingReviewRevisionRequested = false
+		ws.PhaseFormSubmitted = false
+		ws.PhaseFormSkipped = false
+	}
+}
+
+func (e *WorkflowEngine) SyncActiveStateFromHandleResult(userID string, hr *HandleResult) {
+	e.syncEngineStateFromHandleResult(userID, hr)
+}
+
+func (e *WorkflowEngine) MarkPhasePendingReview(userID, phaseID string, revisionRequested bool) {
+	if e == nil || strings.TrimSpace(userID) == "" || strings.TrimSpace(phaseID) == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ws := e.workflows[userID]
+	if ws == nil || ws.Status != WorkflowActive || ws.CurrentPhase != phaseID {
+		return
+	}
+	ws.PendingReviewPhaseID = phaseID
+	ws.PendingReviewRevisionRequested = revisionRequested
+	ws.UpdatedAt = time.Now()
+}
+
 func (e *WorkflowEngine) GetActiveWorkflow(userID string) *EngineState {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -628,9 +865,98 @@ func (e *WorkflowEngine) ActiveWorkflowUserIDForPhase(phaseID string) (string, b
 	}
 	return "", false
 }
-func (e *WorkflowEngine) SingleActiveWorkflowUserID() (string, bool)                  { return "", false }
-func (e *WorkflowEngine) BuildPhasePrompt(userID string) string                       { return "" }
-func (e *WorkflowEngine) GetPhaseToolFilter(userID string) ToolFilterPolicy            { return e.GetActivePhaseToolFilter(userID) }
+func (e *WorkflowEngine) SingleActiveWorkflowUserID() (string, bool) { return "", false }
+func (e *WorkflowEngine) BuildPhasePrompt(userID string) string {
+	if e == nil {
+		return ""
+	}
+	ws := e.GetActiveWorkflow(userID)
+	if ws == nil {
+		return ""
+	}
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil || ws.PhaseIndex < 0 || ws.PhaseIndex >= len(tmpl.Phases) {
+		return ""
+	}
+	state := &WorkflowState{
+		ID:           ws.ID,
+		UserID:       ws.UserID,
+		Type:         string(ws.Type),
+		ProjectPath:  ws.ProjectPath,
+		Summary:      ws.Intent.Summary,
+		CurrentPhase: ws.PhaseIndex,
+		Status:       ws.Status,
+		CreatedAt:    ws.CreatedAt,
+		UpdatedAt:    ws.UpdatedAt,
+		Phases:       make([]Phase, 0, len(tmpl.Phases)),
+	}
+	for i, spec := range tmpl.Phases {
+		phase := Phase{
+			ID:           spec.ID,
+			Name:         spec.Name,
+			NeedsConfirm: spec.NeedsConfirm,
+			ToolPolicy:   spec.ToolPolicy,
+			InputSchema:  phaseInputSchemaFromSpec(spec.InputSchema),
+			Output:       ws.PhaseOutputs[spec.ID],
+		}
+		switch {
+		case i < ws.PhaseIndex:
+			phase.Status = PhaseCompleted
+		case i == ws.PhaseIndex:
+			switch {
+			case ws.PendingReviewPhaseID == spec.ID:
+				phase.Status = PhaseWaitingConfirm
+			case spec.InputSchema != nil && !ws.PhaseFormSubmitted && !ws.PhaseFormSkipped:
+				phase.Status = PhaseRunning
+			default:
+				phase.Status = PhaseRunning
+			}
+			if spec.InputSchema != nil && ws.PhaseFormData != nil && ws.CurrentPhase == spec.ID {
+				phase.FormData = ws.PhaseFormData
+			}
+		default:
+			phase.Status = PhasePending
+		}
+		state.Phases = append(state.Phases, phase)
+	}
+	return BuildPhasePrompt(state)
+}
+
+func phaseInputSchemaFromSpec(spec *PhaseInputSchemaSpec) *PhaseInputSchema {
+	if spec == nil {
+		return nil
+	}
+	schema := &PhaseInputSchema{
+		Title:       spec.Title,
+		Description: spec.Description,
+		Fields:      make([]PhaseInputField, 0, len(spec.Fields)),
+	}
+	for _, field := range spec.Fields {
+		cloned := PhaseInputField{
+			Name:        field.Name,
+			Label:       field.Label,
+			Type:        field.Type,
+			Required:    field.Required,
+			Description: field.Description,
+			Placeholder: field.Placeholder,
+			Default:     field.Default,
+		}
+		if len(field.Options) > 0 {
+			cloned.Options = make([]PhaseInputOption, 0, len(field.Options))
+			for _, opt := range field.Options {
+				cloned.Options = append(cloned.Options, PhaseInputOption{
+					Label: opt.Label,
+					Value: opt.Value,
+				})
+			}
+		}
+		schema.Fields = append(schema.Fields, cloned)
+	}
+	return schema
+}
+func (e *WorkflowEngine) GetPhaseToolFilter(userID string) ToolFilterPolicy {
+	return e.GetActivePhaseToolFilter(userID)
+}
 func (e *WorkflowEngine) GetActivePhaseToolFilter(userID string) ToolFilterPolicy {
 	ws := e.GetActiveWorkflow(userID)
 	if ws == nil {
@@ -647,9 +973,9 @@ func (e *WorkflowEngine) GetActivePhaseToolFilter(userID string) ToolFilterPolic
 	}
 	return ToolFilterNone
 }
-func (e *WorkflowEngine) IsActivePhaseExecutionOrchestrator(userID string) bool        { return false }
-func (e *WorkflowEngine) IsPhaseExecutionBlocked(userID string) bool                   { return false }
-func (e *WorkflowEngine) GetOpsApprovedCommands(userID string) []OpsApprovedCommand    { return nil }
+func (e *WorkflowEngine) IsActivePhaseExecutionOrchestrator(userID string) bool     { return false }
+func (e *WorkflowEngine) IsPhaseExecutionBlocked(userID string) bool                { return false }
+func (e *WorkflowEngine) GetOpsApprovedCommands(userID string) []OpsApprovedCommand { return nil }
 func (e *WorkflowEngine) HasPhaseOutput(userID string) bool {
 	ws := e.GetActiveWorkflow(userID)
 	if ws == nil {
@@ -680,13 +1006,13 @@ func (e *WorkflowEngine) IsAwaitingReview(userID string) bool {
 	}
 	return ws.PendingReviewPhaseID != ""
 }
-func (e *WorkflowEngine) RestoreFromStore() error                                      { return nil }
-func (e *WorkflowEngine) CleanupExpired() error                                        { return nil }
-func (e *WorkflowEngine) SetCallbacks(cb EngineCallbacks)                              { e.callbacks = cb }
-func (e *WorkflowEngine) GetCallbacks() EngineCallbacks                                { return e.callbacks }
-func (e *WorkflowEngine) GetFilter() *QuickFilter                                      { return e.filter }
-func (e *WorkflowEngine) GetUnderstanding() *IntentUnderstandingManager                { return e.understanding }
-func (e *WorkflowEngine) GetRegistry() *WorkflowRegistry                               { return e.registry }
+func (e *WorkflowEngine) RestoreFromStore() error                       { return nil }
+func (e *WorkflowEngine) CleanupExpired() error                         { return nil }
+func (e *WorkflowEngine) SetCallbacks(cb EngineCallbacks)               { e.callbacks = cb }
+func (e *WorkflowEngine) GetCallbacks() EngineCallbacks                 { return e.callbacks }
+func (e *WorkflowEngine) GetFilter() *QuickFilter                       { return e.filter }
+func (e *WorkflowEngine) GetUnderstanding() *IntentUnderstandingManager { return e.understanding }
+func (e *WorkflowEngine) GetRegistry() *WorkflowRegistry                { return e.registry }
 func (e *WorkflowEngine) SavePhaseOutput(userID, content string) (string, error) {
 	if e == nil {
 		return "", nil
@@ -698,16 +1024,72 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) (string, error)
 		return "", nil
 	}
 	phaseID := ws.CurrentPhase
+	workflowType := ws.Type
+	e.mu.Unlock()
+
+	// Also record in V2 machine before mutating the legacy engine state. This
+	// keeps invalid phase outputs from becoming pending-confirm through the
+	// engine compatibility path.
+	if e.machine != nil {
+		state := e.machine.GetActive(userID)
+		if state != nil {
+			activePhase := state.ActivePhase()
+			if state.Type != string(workflowType) || activePhase == nil || activePhase.ID != phaseID {
+				machinePhaseID := ""
+				if activePhase != nil {
+					machinePhaseID = activePhase.ID
+				}
+				return phaseID, fmt.Errorf("workflow state mismatch: engine type=%s phase=%s, v2 type=%s phase=%s", workflowType, phaseID, state.Type, machinePhaseID)
+			}
+		}
+	}
+
+	sanitizedContent := SanitizePhaseOutput(phaseID, content)
+	if err := validatePhaseOutputForCompletion(string(workflowType), phaseID, sanitizedContent); err != nil {
+		return phaseID, err
+	}
+
+	if e.machine != nil && e.machine.GetActive(userID) != nil {
+		if err := e.machine.RecordOutput(userID, content); err != nil {
+			return phaseID, err
+		}
+		if state := e.machine.GetActive(userID); state != nil {
+			for i := range state.Phases {
+				if state.Phases[i].ID == phaseID && state.Phases[i].Output != "" {
+					sanitizedContent = state.Phases[i].Output
+					break
+				}
+			}
+		}
+	}
+
+	phaseNeedsConfirm := false
+	if tmpl := e.registry.Match(workflowType); tmpl != nil {
+		for _, phase := range tmpl.Phases {
+			if phase.ID == phaseID {
+				phaseNeedsConfirm = phase.NeedsConfirm
+				break
+			}
+		}
+	}
+
+	e.mu.Lock()
+	ws = e.workflows[userID]
+	if ws == nil || ws.Status != WorkflowActive {
+		e.mu.Unlock()
+		return phaseID, nil
+	}
 	if ws.PhaseOutputs == nil {
 		ws.PhaseOutputs = make(map[string]string)
 	}
-	ws.PhaseOutputs[phaseID] = content
+	ws.PhaseOutputs[phaseID] = sanitizedContent
+	if phaseNeedsConfirm {
+		ws.PendingReviewPhaseID = phaseID
+	} else {
+		ws.PendingReviewPhaseID = ""
+	}
 	ws.UpdatedAt = time.Now()
 	e.mu.Unlock()
-	// Also record in V2 machine.
-	if e.machine != nil {
-		_ = e.machine.RecordOutput(userID, content)
-	}
 	return phaseID, nil
 }
 func (e *WorkflowEngine) SavePhaseOutputAndMaybeAdvance(userID, content string) (string, *WorkflowResponse, error) {
@@ -737,7 +1119,20 @@ func (e *WorkflowEngine) SavePhaseOutputAndMaybeAdvance(userID, content string) 
 	resp, advErr := e.AdvancePhase(userID)
 	return phaseID, resp, advErr
 }
-func (e *WorkflowEngine) GetInputRequirement(userID string) *InputRequirement { return nil }
+func (e *WorkflowEngine) GetInputRequirement(userID string) *InputRequirement {
+	if e == nil || e.registry == nil {
+		return nil
+	}
+	ws := e.GetActiveWorkflow(userID)
+	if ws == nil {
+		return nil
+	}
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil {
+		return nil
+	}
+	return tmpl.RequiresInput
+}
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -771,21 +1166,58 @@ func PhaseMetadata(tmpl *TemplateSpec) []PhaseMeta {
 			continue
 		}
 		seen[id] = true
+		kind, mutationScope, activatesOrchestrator := phaseMetadataSemantics(tmpl.Type, id)
+		toolPolicy := phase.ToolPolicy
+		if id == "tasks" && tmpl.Type == WorkflowCoding && toolPolicy == "" {
+			toolPolicy = ToolPolicyPlanning
+		}
 		metas = append(metas, PhaseMeta{
-			ID:              id,
-			Name:            phase.Name,
-			Index:           len(metas),
-			ExpectsDocument: phase.NeedsConfirm,
-			NeedsConfirm:    phase.NeedsConfirm,
-			CanSkip:         phase.CanSkip,
-			ToolPolicy:      phase.ToolPolicy,
-			MutationScope:   phase.MutationScope,
+			ID:                    id,
+			Name:                  phase.Name,
+			Index:                 len(metas),
+			ExpectsDocument:       phase.NeedsConfirm,
+			NeedsConfirm:          phase.NeedsConfirm,
+			CanSkip:               phase.CanSkip,
+			Kind:                  kind,
+			ToolPolicy:            toolPolicy,
+			MutationScope:         firstMutationScope(phase.MutationScope, mutationScope),
+			ActivatesOrchestrator: activatesOrchestrator,
 		})
 	}
 	if len(metas) == 0 {
 		return nil
 	}
 	return metas
+}
+
+func phaseMetadataSemantics(workflowType WorkflowType, phaseID string) (PhaseKind, MutationScope, bool) {
+	switch workflowType {
+	case WorkflowCoding:
+		switch phaseID {
+		case "requirements", "design":
+			return PhaseKindDocumentPlanning, MutationScopeWorkflowDoc, false
+		case "tasks":
+			return PhaseKindCodePlanning, MutationScopeWorkflowDoc, false
+		case "implementation":
+			return PhaseKindExecution, MutationScopeProject, true
+		case "verification":
+			return PhaseKindReview, MutationScopeProject, false
+		}
+	case WorkflowPresentationDesign:
+		if phaseID == "ppt_generation" {
+			return PhaseKindArtifactGeneration, MutationScopeArtifact, false
+		}
+	}
+	return PhaseKindUnknown, MutationScopeUnknown, false
+}
+
+func firstMutationScope(values ...MutationScope) MutationScope {
+	for _, value := range values {
+		if value != MutationScopeUnknown {
+			return value
+		}
+	}
+	return MutationScopeUnknown
 }
 
 // ---------------------------------------------------------------------------

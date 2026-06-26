@@ -138,6 +138,18 @@ func TestRoute_PPTTask(t *testing.T) {
 	}
 }
 
+func TestRouteWithHint_PrefersConcreteWorkflowHintOverConflictingBM25Match(t *testing.T) {
+	r := setupTestRouter()
+
+	result := r.RouteWithHint("user1", "高考志愿填报参考", nil, "presentation_design")
+	if result.Target != RouteToWorkflow {
+		t.Fatalf("target = %q, want workflow", result.Target)
+	}
+	if result.WorkflowType != "presentation_design" {
+		t.Fatalf("type = %q, want presentation_design when concrete hint is present", result.WorkflowType)
+	}
+}
+
 func TestRoute_ActiveWorkflow_Confirm(t *testing.T) {
 	store := NewMemoryStore()
 	templates := NewTemplateRegistry()
@@ -253,6 +265,46 @@ func TestRoute_USPatentApplication(t *testing.T) {
 		}
 		if result.WorkflowType != tc.wantType {
 			t.Errorf("Route(%q): type = %q, want %q", tc.input, result.WorkflowType, tc.wantType)
+		}
+	}
+}
+
+func TestRoute_GaokaoApplication(t *testing.T) {
+	r := setupTestRouter()
+
+	cases := []struct {
+		input    string
+		wantType string
+	}{
+		{"帮我做高考志愿填报参考，山东物化生位次32850", "gaokao_application"},
+		{"这个位次能报哪些中外合办学校和专业", "gaokao_application"},
+		{"厦门大学马来西亚分校这类境外校区志愿怎么填", "gaokao_application"},
+		{"厦门大学马来西亚分校这个位次能报吗", "gaokao_application"},
+		{"河北工业大学芬兰校区能不能作为保底志愿", "gaokao_application"},
+	}
+	for _, tc := range cases {
+		result := r.Route("user1", tc.input, nil)
+		if result.Target != RouteToWorkflow {
+			t.Errorf("Route(%q): target = %q, want workflow", tc.input, result.Target)
+			continue
+		}
+		if result.WorkflowType != tc.wantType {
+			t.Errorf("Route(%q): type = %q, want %q", tc.input, result.WorkflowType, tc.wantType)
+		}
+	}
+}
+
+func TestRoute_GaokaoApplicationCampusIntroDoesNotStartWorkflow(t *testing.T) {
+	r := setupTestRouter()
+
+	for _, input := range []string{
+		"介绍一下厦门大学马来西亚分校",
+		"河北工业大学芬兰校区在哪里",
+		"这个基金项目能不能保底",
+	} {
+		result := r.Route("user1", input, nil)
+		if result.Target == RouteToWorkflow {
+			t.Errorf("Route(%q): target = %q, want agent_loop for non-application campus query", input, result.Target)
 		}
 	}
 }

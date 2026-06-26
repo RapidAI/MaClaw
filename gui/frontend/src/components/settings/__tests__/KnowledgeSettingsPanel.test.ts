@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyKnowledgeDomainFilterPayload, applyKnowledgeSearchFilterPayload, knowledgeCoverageAliasSummary, knowledgeCoverageFilterSummary, knowledgeExecutionActionSourceIDs, knowledgeExecutionFailureDetails, knowledgeExecutionResultSourceIDs, knowledgeExecutionSourceFilterLabel, knowledgeHealthActionConfirmMessage, knowledgeHealthActionExecutable, knowledgeHealthActionExecutionPayload, knowledgeHealthActionManualLabel, knowledgeHealthSummaryModel, knowledgeQualityExecutionContextLabel, knowledgeSourceCoverageOptions, knowledgeSourceCoverageStateValue, knowledgeSourceListPayload, normalizeKnowledgeCoverageOption, normalizeKnowledgeDomainFilter, normalizeKnowledgeFilterToken, normalizeKnowledgeSourceLimit, parseDomainList, parseLabelList, parseURLBatch, resolveKnowledgeCoverageOption } from '../KnowledgeSettingsPanel';
+import { applyKnowledgeDomainFilterPayload, applyKnowledgeSearchFilterPayload, applyKnowledgeStructuredSearchPayload, knowledgeCoverageAliasSummary, knowledgeCoverageFilterSummary, knowledgeExecutionActionSourceIDs, knowledgeExecutionFailureDetails, knowledgeExecutionResultSourceIDs, knowledgeExecutionSourceFilterLabel, knowledgeHealthActionConfirmMessage, knowledgeHealthActionExecutable, knowledgeHealthActionExecutionPayload, knowledgeHealthActionManualLabel, knowledgeHealthSummaryModel, knowledgeQualityExecutionContextLabel, knowledgeSourceCoverageOptions, knowledgeSourceCoverageStateValue, knowledgeSourceListPayload, normalizeKnowledgeCoverageOption, normalizeKnowledgeDomainFilter, normalizeKnowledgeFilterToken, normalizeKnowledgeSourceLimit, parseDomainList, parseLabelList, parseURLBatch, resolveKnowledgeCoverageOption } from '../KnowledgeSettingsPanel';
 
 describe('normalizeKnowledgeCoverageOption', () => {
     it('matches backend coverage filter key normalization style', () => {
@@ -516,6 +516,66 @@ describe('applyKnowledgeSearchFilterPayload', () => {
         });
 
         expect(payload).toEqual({ query: 'alpha' });
+    });
+});
+
+describe('applyKnowledgeStructuredSearchPayload', () => {
+    it('builds text column filters for structured table search', () => {
+        const payload: Record<string, unknown> = {};
+
+        applyKnowledgeStructuredSearchPayload(payload, {
+            query: ' 张三 ',
+            sourceID: ' src_1 ',
+            sheetName: ' Sheet1 ',
+            columnName: ' 部门 ',
+            matchMode: ' contains ',
+            columnValue: ' 法务 ',
+            limit: 20,
+            includeDisabled: true,
+        });
+
+        expect(payload).toEqual({
+            query: '张三',
+            source_ids: ['src_1'],
+            sheet_names: ['Sheet1'],
+            column_contains: { '部门': '法务' },
+            limit: 20,
+            include_disabled: true,
+        });
+    });
+
+    it('builds number and date ranges on the selected column', () => {
+        const payload: Record<string, unknown> = {};
+
+        applyKnowledgeStructuredSearchPayload(payload, {
+            columnName: '金额',
+            numberMin: '100',
+            numberMax: '200',
+            dateStart: '2024-01-01',
+            dateEnd: '2024-12-31',
+            limit: 500,
+        });
+
+        expect(payload).toEqual({
+            number_ranges: { '金额': { min: 100, max: 200 } },
+            date_ranges: { '金额': { start: '2024-01-01', end: '2024-12-31' } },
+            limit: 100,
+            include_disabled: false,
+        });
+    });
+
+    it('accepts comma-formatted number range inputs', () => {
+        const payload: Record<string, unknown> = {};
+
+        applyKnowledgeStructuredSearchPayload(payload, {
+            columnName: 'amount',
+            numberMin: '1,200.5',
+            numberMax: '9,999',
+        });
+
+        expect(payload).toMatchObject({
+            number_ranges: { amount: { min: 1200.5, max: 9999 } },
+        });
     });
 });
 

@@ -248,17 +248,17 @@ export function AssistantPreviewPane({
         textMuted: themeMode === "dark" ? theme.textMuted : "#6b7280",
         border: themeMode === "dark" ? theme.divider : "#e5e7eb",
         headerBg: themeMode === "dark" ? theme.titleBarBg : "#f7f8fa",
-        accentColor: themeMode === "dark" ? "#b7d3ef" : "#3f5872",
-        accentBg: themeMode === "dark" ? "rgba(91, 120, 152, 0.16)" : "#f5f7fa",
+        accentColor: themeMode === "dark" ? theme.btnColor : "#3f5872",
+        accentBg: themeMode === "dark" ? `color-mix(in srgb, ${theme.btnColor} 12%, ${theme.fieldBg})` : "#f5f7fa",
         codeBg: themeMode === "dark" ? theme.codeBg : "#f1f4f7",
         codeText: themeMode === "dark" ? theme.codeText : "#334155",
         codeBlockBg: themeMode === "dark" ? theme.codeBlockBg : "#f8fafc",
         codeBlockBorder: themeMode === "dark" ? theme.codeBlockBorder : "#e5e7eb",
-        headingColor: themeMode === "dark" ? "#d9e7f5" : "#1f2937",
-        linkColor: themeMode === "dark" ? "#9bc2ea" : "#2f5f98",
+        headingColor: themeMode === "dark" ? theme.headingColor : "#1f2937",
+        linkColor: themeMode === "dark" ? theme.linkColor : "#2f5f98",
         quoteBorder: themeMode === "dark" ? theme.quoteBorder : "#c7d1dc",
         quoteText: themeMode === "dark" ? theme.quoteText : "#4b5563",
-        quoteBg: themeMode === "dark" ? "rgba(91, 120, 152, 0.12)" : "#f8fafc",
+        quoteBg: themeMode === "dark" ? `color-mix(in srgb, ${theme.quoteBorder} 14%, ${theme.fieldBg})` : "#f8fafc",
     }), [theme, themeMode]);
 
     const codeTheme = useMemo(

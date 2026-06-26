@@ -111,6 +111,50 @@ type FailureEventLogFilter struct {
 	Limit        int
 }
 
+type KnowledgeShare struct {
+	KnowledgeID         string
+	TenantID            string
+	OwnerUserID         string
+	OwnerUserEmail      string
+	Title               string
+	Description         string
+	VisibilityScope     string
+	VisibilityUsersJSON string
+	SourceSummaryJSON   string
+	ShareURL            string
+	HubID               string
+	StorageRef          string
+	Status              string
+	ViewCount           int64
+	ImportCount         int64
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	PublishedAt         time.Time
+	ExpiresAt           *time.Time
+	ForcedDeletedBy     string
+	ForcedDeletedReason string
+	ForcedDeletedAt     *time.Time
+}
+
+type KnowledgeShareFilter struct {
+	TenantID       string
+	TenantScoped   bool
+	OwnerUserID    string
+	OwnerUserEmail string
+	User           string
+	Sort           string
+	Offset         int
+	Limit          int
+	IncludeDeleted bool
+}
+
+type KnowledgeShareForceDeleteRequest struct {
+	KnowledgeID string
+	AdminUserID string
+	Reason      string
+	DeletedAt   time.Time
+}
+
 type User struct {
 	ID               string
 	TenantID         string
@@ -146,16 +190,19 @@ type EmailBlockItem struct {
 }
 
 type InvitationCode struct {
-	ID           string
-	TenantID     string
-	Code         string
-	Status       string // "unused" | "used"
-	UsedByEmail  string
-	UsedAt       *time.Time
-	ValidityDays int // 0 = no expiry; >0 = validity days
-	Exported     bool
-	VIP          bool
-	CreatedAt    time.Time
+	ID                   string
+	TenantID             string
+	Code                 string
+	Status               string // "unused" | "used"
+	UsedByEmail          string
+	UsedAt               *time.Time
+	ValidityDays         int // 0 = no expiry; >0 = validity days
+	Exported             bool
+	VIP                  bool
+	LLMServiceGroupID    string
+	LLMGrantDurationDays int
+	LLMGrantCredits      float64
+	CreatedAt            time.Time
 }
 
 type EmailInvite struct {
@@ -291,6 +338,17 @@ type AdminAuditRepository interface {
 type FailureEventLogRepository interface {
 	Create(ctx context.Context, log *FailureEventLog) error
 	List(ctx context.Context, filter FailureEventLogFilter) ([]*FailureEventLog, int, error)
+}
+
+type KnowledgeShareRepository interface {
+	Create(ctx context.Context, share *KnowledgeShare) error
+	List(ctx context.Context, filter KnowledgeShareFilter) ([]*KnowledgeShare, int, error)
+	Get(ctx context.Context, knowledgeID string) (*KnowledgeShare, error)
+	UpdateOwner(ctx context.Context, share *KnowledgeShare) error
+	DeleteOwner(ctx context.Context, knowledgeID, tenantID, ownerUserID string, deletedAt time.Time) error
+	ForceDelete(ctx context.Context, req KnowledgeShareForceDeleteRequest) error
+	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
+	IncrementCounters(ctx context.Context, knowledgeID string, viewDelta, importDelta int64, at time.Time) error
 }
 
 type UserRepository interface {
@@ -511,4 +569,5 @@ type Store struct {
 	Sessions        SessionRepository
 	WorkflowRepo    WorkflowRepository
 	LLMPromptCache  LLMPromptCacheRepository
+	KnowledgeShares KnowledgeShareRepository
 }

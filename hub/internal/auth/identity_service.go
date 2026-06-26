@@ -42,6 +42,10 @@ type InvitationCodeValidator interface {
 	CheckExpiryForTenant(ctx context.Context, tenantID string, email string) (bool, *time.Time, error)
 }
 
+type invitationCodeGrantProvider interface {
+	GetCodeByTenantEmail(ctx context.Context, tenantID, email string) (*store.InvitationCode, error)
+}
+
 // LoginNotifier sends login confirmation links to bound IM channels.
 type LoginNotifier interface {
 	BroadcastLoginLink(ctx context.Context, email, confirmURL string) []string
@@ -335,6 +339,9 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 				// Expired user provided a new invitation code - rebind
 				if err := s.invitationSvc.ValidateAndConsumeForTenant(ctx, tenantID, invitationCode, email); err != nil {
 					return nil, ErrInvalidInvitationCode
+				}
+				if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, email); err != nil {
+					return nil, err
 				}
 				// Continue normal enrollment flow
 			} else {
@@ -1211,6 +1218,9 @@ func (s *IdentityService) createApprovedUserForTenant(ctx context.Context, tenan
 	if err := s.ensureDefaultLLMServiceForUser(ctx, email); err != nil {
 		return nil, err
 	}
+	if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, email); err != nil {
+		return nil, err
+	}
 	s.syncUserRoute(ctx, email)
 	return user, nil
 }
@@ -1227,6 +1237,21 @@ func (s *IdentityService) grantEmailConfirmedBenefitForUser(ctx context.Context,
 		return nil
 	}
 	return llmservice.GrantEmailConfirmedBenefitForUser(ctx, s.settings, email)
+}
+
+func (s *IdentityService) grantInvitationCodeLLMServiceForUser(ctx context.Context, tenantID, email string) error {
+	if s == nil || s.settings == nil || s.invitationSvc == nil {
+		return nil
+	}
+	provider, ok := s.invitationSvc.(invitationCodeGrantProvider)
+	if !ok {
+		return nil
+	}
+	code, err := provider.GetCodeByTenantEmail(ctx, tenantID, email)
+	if err != nil || code == nil {
+		return err
+	}
+	return llmservice.GrantInvitationCodeBenefitForUser(ctx, s.settings, email, code.ID, code.LLMServiceGroupID, code.LLMGrantDurationDays, code.LLMGrantCredits)
 }
 
 // ListPendingEnrollments returns all enrollment requests with status "pending".
@@ -1273,6 +1298,9 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 		existing.EnrollmentStatus = "approved"
 		existing.Status = "active"
 		if err := s.ensureDefaultLLMServiceForUser(ctx, target.Email); err != nil {
+			return nil, nil, err
+		}
+		if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, target.Email); err != nil {
 			return nil, nil, err
 		}
 		// Consume any pending login token so the PWA poll returns "confirmed".

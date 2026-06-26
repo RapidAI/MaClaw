@@ -284,10 +284,27 @@ func workflowHasPendingPhaseForm(engine *v2.WorkflowEngine, userID string) bool 
 	}
 	tmpl := engine.GetRegistry().Match(ws.Type)
 	if tmpl == nil || ws.PhaseIndex < 0 || ws.PhaseIndex >= len(tmpl.Phases) {
+		if machine := engine.GetMachine(); machine != nil {
+			if state := machine.GetActive(userID); state != nil {
+				if phase := state.ActivePhase(); phase != nil {
+					return phase.InputSchema != nil && phase.FormData == nil
+				}
+			}
+		}
 		return false
 	}
 	phase := tmpl.Phases[ws.PhaseIndex]
-	if phase.ID != ws.CurrentPhase || phase.InputSchema == nil {
+	if phase.ID != ws.CurrentPhase {
+		return false
+	}
+	if phase.InputSchema == nil {
+		if machine := engine.GetMachine(); machine != nil {
+			if state := machine.GetActive(userID); state != nil {
+				if active := state.ActivePhase(); active != nil && active.ID == ws.CurrentPhase {
+					return active.InputSchema != nil && active.FormData == nil
+				}
+			}
+		}
 		return false
 	}
 	return !ws.PhaseFormSubmitted && !ws.PhaseFormSkipped && len(ws.PhaseFormData) == 0
@@ -443,6 +460,10 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 	// In production engine is nil; this is a no-op.
 	if engine := h.app.workflowEngine; engine != nil {
 		engine.StoreActiveState(userID, mapV2StateToV1(v2State))
+		overview := i18n.Tf(i18n.MsgWorkflowStarted, lang, intent.Category, v2State.ActivePhase().ID)
+		if cb := engine.GetCallbacks(); cb != nil {
+			_ = cb.SendTextToUser(userID, overview)
+		}
 	}
 
 	// Run the first phase: emits progress, sets stashedPhasePrompt +
@@ -450,6 +471,12 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 	// Same as handleWorkflowV2Start.
 	phaseResult := h.runWorkflowV2Phase(userID, v2State, "")
 	if phaseResult.Response != nil {
+		if normalizeIMMessagePlatformKind(platform).IsIMChannel() {
+			if phasePrompt := v2.BuildPhasePrompt(v2State); strings.TrimSpace(phasePrompt) != "" {
+				h.stashedPhasePrompt.Store(userID, phasePrompt)
+				h.workflowAgentLoopMarker.Store(userID, true)
+			}
+		}
 		// Form-first phase or workflow completed — return response directly.
 		return pendingExecutionConfirmationResult{Handled: true, Response: phaseResult.Response}
 	}
@@ -769,12 +796,24 @@ func conversationEntryText(content any) string {
 // returns nil immediately (workflowEngine is nil). Production path is
 // routeWithWorkflowV2 → handleWorkflowV2Action. Retained for tests.
 func (h *IMMessageHandler) handleActiveWorkflow(engine *v2.WorkflowEngine, userID, text, platform string, attachments []MessageAttachment) *IMAgentResponse {
-	if workflowHasPendingPhaseForm(engine, userID) && isWorkflowFormDirectRunCommand(text) {
-		if err := engine.SkipPhaseForm(userID); err != nil {
-			log.Printf("[WorkflowEngine] SkipPhaseForm direct-run failed: user=%s err=%v", userID, err)
-			return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowFormSaveError, h.getWorkflowLang(), err)}
+	if workflowHasPendingPhaseForm(engine, userID) {
+		if isWorkflowCancelText(text) {
+			h.workflowAgentLoopMarker.Delete(userID)
+			h.cancelWorkflowForUser(userID)
+			return &IMAgentResponse{
+				Text: avTr("Workflow cancelled. Describe your task again to start a new workflow.", "工作流已取消。如需重新开始，请直接描述您的任务。"),
+			}
 		}
-		log.Printf("[WorkflowEngine] skipped pending workflow form by direct-run command: user=%s text_len=%d", userID, len([]rune(text)))
+		if isWorkflowFormDirectRunCommand(text) {
+			if err := engine.SkipPhaseForm(userID); err != nil {
+				log.Printf("[WorkflowEngine] SkipPhaseForm direct-run failed: user=%s err=%v", userID, err)
+				return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowFormSaveError, h.getWorkflowLang(), err)}
+			}
+			log.Printf("[WorkflowEngine] skipped pending workflow form by direct-run command: user=%s text_len=%d", userID, len([]rune(text)))
+		} else if h.shouldBypassWorkflowForIntent(userID, text, true) || workflowPendingFormAllowsChatBypass(text, attachments) {
+			h.workflowAgentLoopMarker.Delete(userID)
+			return nil
+		}
 	}
 
 	// Active workflow state owns the message. UIC workflow_type is only a
@@ -861,6 +900,23 @@ func (h *IMMessageHandler) handleActiveWorkflow(engine *v2.WorkflowEngine, userI
 	return nil
 }
 
+func workflowPendingFormAllowsChatBypass(text string, attachments []MessageAttachment) bool {
+	if len(attachments) > 0 {
+		return false
+	}
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	if utf8.RuneCountInString(trimmed) > 8 {
+		return false
+	}
+	if isWorkflowFormDirectRunCommand(trimmed) || isWorkflowCancelText(trimmed) {
+		return false
+	}
+	return true
+}
+
 func (h *IMMessageHandler) workflowFormResponse(engine *v2.WorkflowEngine, userID, platform string, resp *v2.WorkflowResponse) *IMAgentResponse {
 	if resp == nil || resp.FormSchema == nil {
 		return nil
@@ -885,7 +941,11 @@ func (h *IMMessageHandler) workflowFormResponse(engine *v2.WorkflowEngine, userI
 		}
 		return &IMAgentResponse{Text: strings.TrimSpace(guidance)}
 	}
-	h.emitWorkflowPhaseForm(userID, resp.FormSchema, phaseID)
+	workflowID := ""
+	if ws != nil {
+		workflowID = ws.ID
+	}
+	h.emitWorkflowPhaseForm(userID, workflowID, resp.FormSchema, phaseID)
 	text := i18n.T(i18n.MsgWorkflowFormPanelPrompt, h.getWorkflowLang())
 	if strings.TrimSpace(resp.Text) != "" {
 		text = strings.TrimSpace(resp.Text) + "\n\n" + text
@@ -1075,6 +1135,16 @@ func (h *IMMessageHandler) workflowReviewPending(userID string, background bool)
 	if h == nil || background {
 		return false
 	}
+	if h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.IsAwaitingReview(userID) {
+		return true
+	}
+	if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+		if state := wf.machine.GetActive(userID); state != nil {
+			if phase := state.ActivePhase(); phase != nil && phase.Status == v2.PhaseWaitingConfirm {
+				return true
+			}
+		}
+	}
 	return false
 }
 
@@ -1216,10 +1286,12 @@ func containsAnyWorkflowReviewMarker(text string, markers []string) bool {
 }
 
 func (h *IMMessageHandler) applyWorkflowReviewIntent(engine *v2.WorkflowEngine, userID string, intent v2.ReviewIntent, feedback, platform string) *IMAgentResponse {
+	invalidCodingTaskBreakdownRegeneration := false
 	if intent == v2.ReviewIntentConfirm && h.shouldRegenerateInvalidCodingTaskBreakdown(engine, userID) {
 		log.Printf("[workflow-review] blocking confirm for invalid coding task breakdown: user=%s", userID)
 		intent = v2.ReviewIntentSupplement
 		feedback = invalidCodingTaskBreakdownFeedbackText()
+		invalidCodingTaskBreakdownRegeneration = true
 	}
 
 	// Use V2 StateMachine directly for review intent processing.
@@ -1236,6 +1308,12 @@ func (h *IMMessageHandler) applyWorkflowReviewIntent(engine *v2.WorkflowEngine, 
 		}
 		if hr == nil {
 			return nil
+		}
+		if engine != nil {
+			engine.SyncActiveStateFromHandleResult(userID, hr)
+			if invalidCodingTaskBreakdownRegeneration {
+				engine.MarkPhasePendingReview(userID, v2.PhaseCodingTaskBreakdown, true)
+			}
 		}
 		// Handle cancellation directly — don't route through mapHandleResultToWorkflowResponse
 		// because it doesn't have lang context for i18n.
@@ -1285,9 +1363,14 @@ func mapHandleResultToWorkflowResponse(hr *v2.HandleResult) *v2.WorkflowResponse
 	resp := &v2.WorkflowResponse{}
 	switch hr.Action {
 	case v2.ActionRunPhase, v2.ActionModify:
-		resp.RunAgentLoop = true
-		if hr.Phase != nil {
-			resp.PhasePrompt = v2.BuildPhasePrompt(hr.State)
+		if hr.Phase != nil && hr.Phase.InputSchema != nil && hr.Phase.FormData == nil {
+			resp.ShowForm = true
+			resp.FormSchema = v2MapPhaseInputSchema(hr.Phase.InputSchema)
+		} else {
+			resp.RunAgentLoop = true
+			if hr.Phase != nil {
+				resp.PhasePrompt = v2.BuildPhasePrompt(hr.State)
+			}
 		}
 		if hr.ModifyHint != "" {
 			resp.PhasePrompt += "\n\nUser modification request: " + hr.ModifyHint
@@ -1296,6 +1379,9 @@ func mapHandleResultToWorkflowResponse(hr *v2.HandleResult) *v2.WorkflowResponse
 		// Phase advanced — check if next phase needs agent loop.
 		if hr.State != nil && hr.State.Status == v2.StatusCompleted {
 			resp.Complete = true
+		} else if hr.Phase != nil && hr.Phase.InputSchema != nil && hr.Phase.FormData == nil {
+			resp.ShowForm = true
+			resp.FormSchema = v2MapPhaseInputSchema(hr.Phase.InputSchema)
 		} else {
 			resp.Advance = true
 			resp.RunAgentLoop = true
@@ -1378,6 +1464,18 @@ func (h *IMMessageHandler) handleWorkflowEngineResponse(engine *v2.WorkflowEngin
 	if resp == nil {
 		return nil
 	}
+	if !resp.ShowForm && engine != nil {
+		if ws := engine.GetActiveWorkflow(userID); ws != nil {
+			if tmpl := engine.GetRegistry().Match(ws.Type); tmpl != nil && ws.PhaseIndex >= 0 && ws.PhaseIndex < len(tmpl.Phases) {
+				phase := tmpl.Phases[ws.PhaseIndex]
+				if phase.InputSchema != nil && !ws.PhaseFormSubmitted && !ws.PhaseFormSkipped {
+					resp.ShowForm = true
+					resp.FormSchema = phase.InputSchema.Clone()
+					resp.RunAgentLoop = false
+				}
+			}
+		}
+	}
 	if resp.ShowForm && resp.FormSchema != nil {
 		return h.workflowFormResponse(engine, userID, platform, resp)
 	}
@@ -1395,6 +1493,9 @@ func (h *IMMessageHandler) handleWorkflowEngineResponse(engine *v2.WorkflowEngin
 		if repairResp, repaired := h.repairInvalidCodingTaskBreakdownExecution(engine, userID, resp); repaired {
 			return repairResp
 		}
+	}
+	if resp.PhasePrompt == "" && engine != nil {
+		resp.PhasePrompt = engine.BuildPhasePrompt(userID)
 	}
 	if resp.PhasePrompt != "" {
 		h.stashedPhasePrompt.Store(userID, resp.PhasePrompt)
@@ -1667,6 +1768,9 @@ func (h *IMMessageHandler) getUnifiedClassifier() *intent.UnifiedIntentClassifie
 // cancelWorkflowForUser cancels any active workflow and understanding session
 // for the given user. Called from /new, /reset, /clear, and /cancel handlers.
 func (h *IMMessageHandler) cancelWorkflowForUser(userID string) {
+	if h != nil && h.app != nil && h.app.workflowEngine != nil {
+		_ = h.app.workflowEngine.CancelWorkflow(userID)
+	}
 	// Always cancel workflow regardless of engine adapter state.
 	h.cancelWorkflowV2(userID)
 	// Clear any pending ask_user state.
@@ -1684,6 +1788,15 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalog(userID string, too
 }
 
 func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalogV2Compat(userID string, tools, allTools []map[string]interface{}) []map[string]interface{} {
+	if len(allTools) == 0 && h != nil {
+		allTools = h.getTools()
+	}
+	if h != nil && h.shouldConstrainCodingWorkflowImplementationMainLoop(userID) {
+		tools = ensureWorkflowRequiredToolsForNames(codingWorkflowImplementationMainLoopRequiredTools(), tools, allTools)
+		tools = filterCodingWorkflowImplementationMainLoopTools(tools)
+		return specializeCodingWorkflowImplementationMainLoopTools(tools)
+	}
+
 	policy := v2.ToolFilterNone
 	if h != nil && h.isWorkflowV2Active(userID) {
 		if wf := h.getWorkflowV2(); wf != nil {
@@ -1709,19 +1822,14 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalogV2Compat(userID str
 			}
 		}
 	}
-	if len(allTools) == 0 && h != nil {
-		allTools = h.getTools()
+	if policy == v2.ToolFilterNone && h != nil && h.app != nil && h.app.workflowEngine != nil {
+		policy = h.app.workflowEngine.GetActivePhaseToolFilter(userID)
 	}
 	if h != nil && h.isWorkflowArtifactPhase(userID) {
 		tools = ensureWorkflowRequiredToolsForNames(workflowArtifactPhaseRequiredTools(), tools, allTools)
 		return filterWorkflowArtifactPhaseTools(tools)
 	}
 	if policy == v2.ToolFilterNone || policy == v2.ToolFilterFull {
-		if h != nil && h.shouldConstrainCodingWorkflowImplementationMainLoop(userID) {
-			tools = ensureWorkflowRequiredToolsForNames(codingWorkflowImplementationMainLoopRequiredTools(), tools, allTools)
-			tools = filterCodingWorkflowImplementationMainLoopTools(tools)
-			return specializeCodingWorkflowImplementationMainLoopTools(tools)
-		}
 		if policy == v2.ToolFilterFull {
 			return ensureWorkflowRequiredTools(policy, tools, allTools)
 		}

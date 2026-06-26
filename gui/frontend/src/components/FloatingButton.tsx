@@ -9,7 +9,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import type { AnimationEvent as ReactAnimationEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { EventsOff, EventsOn } from '../../wailsjs/runtime';
 import './FloatingButton.css';
-import logoSrc from '../assets/images/maclaw2.png';
+import logoSrc from '../assets/images/maclaw-agent-mark.svg';
 import { defaultPetSize, defaultPetSkinId, getPetSkinOption, normalizePetSkinId, type PetSkinId } from './petSkins';
 import { normalizeMotionSoundPreset, type MotionSoundPreset } from './petMotionSounds';
 
@@ -183,6 +183,7 @@ type MotionSoundProfile = {
     pitchDrift: number;
     filterDrift: number;
     accentDelay: number;
+    compressorRatio: number;
 };
 
 function disconnectAudioNode(node: AudioNode | undefined): void {
@@ -246,15 +247,16 @@ function getMotionSoundProfile(config: FloatingPetConfig, state: PetState, varia
             baseHz: base * pitch,
             glideHz: (base + 260) * pitch,
             accentHz: (base + 540) * pitch,
-            peakGain: (config.interactionMode === 'active' ? 0.026 : 0.018) * variantGain,
-            tailSeconds: (state === 'thinking' ? 0.13 : 0.105) * variantTail,
-            filterHz: 2600,
+            peakGain: (config.interactionMode === 'active' ? 0.018 : 0.013) * variantGain,
+            tailSeconds: (state === 'thinking' ? 0.18 : 0.15) * variantTail,
+            filterHz: 2100,
             delaySeconds: 0.035,
-            delayGain: 0.12,
-            noiseGain: 0.006 * variantGain,
-            pitchDrift: 0.03,
-            filterDrift: 0.08,
+            delayGain: 0.07,
+            noiseGain: 0.0025 * variantGain,
+            pitchDrift: 0.018,
+            filterDrift: 0.045,
             accentDelay: 0.04,
+            compressorRatio: 5,
         };
     } else if (config.petSkin === 'mini-claw') {
         profile = {
@@ -263,15 +265,16 @@ function getMotionSoundProfile(config: FloatingPetConfig, state: PetState, varia
             baseHz: base * pitch,
             glideHz: (base + 360) * pitch,
             accentHz: (base + 690) * pitch,
-            peakGain: (config.interactionMode === 'active' ? 0.03 : 0.022) * variantGain,
-            tailSeconds: (state === 'speaking' ? 0.11 : 0.088) * variantTail,
-            filterHz: 4200,
+            peakGain: (config.interactionMode === 'active' ? 0.02 : 0.015) * variantGain,
+            tailSeconds: (state === 'speaking' ? 0.15 : 0.13) * variantTail,
+            filterHz: 3400,
             delaySeconds: 0.028,
-            delayGain: 0.1,
-            noiseGain: 0.003 * variantGain,
-            pitchDrift: 0.03,
-            filterDrift: 0.08,
+            delayGain: 0.065,
+            noiseGain: 0.0014 * variantGain,
+            pitchDrift: 0.018,
+            filterDrift: 0.05,
             accentDelay: 0.034,
+            compressorRatio: 4,
         };
     } else if (config.petSkin === 'focus-claw') {
         profile = {
@@ -280,15 +283,16 @@ function getMotionSoundProfile(config: FloatingPetConfig, state: PetState, varia
             baseHz: base * pitch,
             glideHz: (base + 140) * pitch,
             accentHz: (base + 300) * pitch,
-            peakGain: 0.015 * variantGain,
-            tailSeconds: 0.14 * variantTail,
-            filterHz: 1800,
+            peakGain: 0.010 * variantGain,
+            tailSeconds: 0.22 * variantTail,
+            filterHz: 1300,
             delaySeconds: 0.045,
-            delayGain: 0.08,
-            noiseGain: 0.0015 * variantGain,
-            pitchDrift: 0.02,
-            filterDrift: 0.05,
+            delayGain: 0.045,
+            noiseGain: 0.0007 * variantGain,
+            pitchDrift: 0.012,
+            filterDrift: 0.03,
             accentDelay: 0.045,
+            compressorRatio: 3,
         };
     } else {
         profile = {
@@ -297,15 +301,16 @@ function getMotionSoundProfile(config: FloatingPetConfig, state: PetState, varia
             baseHz: base * pitch,
             glideHz: (base + 220) * pitch,
             accentHz: (base + 460) * pitch,
-            peakGain: (config.interactionMode === 'active' ? 0.028 : 0.02) * variantGain,
-            tailSeconds: (state === 'speaking' ? 0.12 : 0.095) * variantTail,
-            filterHz: 3200,
+            peakGain: (config.interactionMode === 'active' ? 0.019 : 0.014) * variantGain,
+            tailSeconds: (state === 'speaking' ? 0.17 : 0.14) * variantTail,
+            filterHz: 2600,
             delaySeconds: 0.032,
-            delayGain: 0.09,
-            noiseGain: 0.0025 * variantGain,
-            pitchDrift: 0.03,
-            filterDrift: 0.08,
+            delayGain: 0.055,
+            noiseGain: 0.0012 * variantGain,
+            pitchDrift: 0.018,
+            filterDrift: 0.045,
             accentDelay: 0.034,
+            compressorRatio: 4,
         };
     }
 
@@ -318,14 +323,14 @@ function getMotionSoundProfile(config: FloatingPetConfig, state: PetState, varia
                 baseHz: profile.baseHz * 0.82,
                 glideHz: profile.glideHz * 1.18,
                 accentHz: profile.accentHz * 1.12,
-                peakGain: profile.peakGain * 0.86,
+                peakGain: profile.peakGain * 0.78,
                 tailSeconds: profile.tailSeconds * 1.25,
-                filterHz: Math.min(5200, profile.filterHz * 1.35),
+                filterHz: Math.min(4200, profile.filterHz * 1.25),
                 delaySeconds: 0.052,
-                delayGain: profile.delayGain * 1.7,
+                delayGain: profile.delayGain * 1.25,
                 noiseGain: profile.noiseGain * 0.35,
-                pitchDrift: 0.045,
-                filterDrift: 0.12,
+                pitchDrift: 0.026,
+                filterDrift: 0.07,
                 accentDelay: 0.052,
             };
         case 'chime':
@@ -336,32 +341,32 @@ function getMotionSoundProfile(config: FloatingPetConfig, state: PetState, varia
                 baseHz: profile.baseHz * 1.26,
                 glideHz: profile.glideHz * 1.42,
                 accentHz: profile.accentHz * 1.72,
-                peakGain: profile.peakGain * 0.74,
-                tailSeconds: profile.tailSeconds * 1.55,
-                filterHz: Math.min(6200, profile.filterHz * 1.55),
+                peakGain: profile.peakGain * 0.62,
+                tailSeconds: profile.tailSeconds * 1.7,
+                filterHz: Math.min(5200, profile.filterHz * 1.42),
                 delaySeconds: 0.07,
-                delayGain: profile.delayGain * 1.95,
+                delayGain: profile.delayGain * 1.55,
                 noiseGain: profile.noiseGain * 0.18,
-                pitchDrift: 0.018,
-                filterDrift: 0.05,
+                pitchDrift: 0.01,
+                filterDrift: 0.03,
                 accentDelay: 0.065,
             };
         case 'synth':
             return {
                 ...profile,
                 firstType: 'square',
-                secondType: 'sawtooth',
+                secondType: 'triangle',
                 baseHz: profile.baseHz * 0.92,
                 glideHz: profile.glideHz * 1.06,
                 accentHz: profile.accentHz * 0.98,
-                peakGain: profile.peakGain * 0.9,
-                tailSeconds: profile.tailSeconds * 0.88,
-                filterHz: Math.max(1800, profile.filterHz * 0.78),
+                peakGain: profile.peakGain * 0.76,
+                tailSeconds: profile.tailSeconds * 1.02,
+                filterHz: Math.max(1500, profile.filterHz * 0.7),
                 delaySeconds: 0.026,
-                delayGain: profile.delayGain * 0.8,
-                noiseGain: profile.noiseGain * 1.45,
-                pitchDrift: 0.025,
-                filterDrift: 0.09,
+                delayGain: profile.delayGain * 0.65,
+                noiseGain: profile.noiseGain * 0.9,
+                pitchDrift: 0.014,
+                filterDrift: 0.05,
                 accentDelay: 0.026,
             };
         case 'soft':
@@ -372,14 +377,14 @@ function getMotionSoundProfile(config: FloatingPetConfig, state: PetState, varia
                 baseHz: profile.baseHz * 0.72,
                 glideHz: profile.glideHz * 0.78,
                 accentHz: profile.accentHz * 0.82,
-                peakGain: profile.peakGain * 0.58,
-                tailSeconds: profile.tailSeconds * 1.65,
+                peakGain: profile.peakGain * 0.48,
+                tailSeconds: profile.tailSeconds * 1.8,
                 filterHz: Math.max(1100, profile.filterHz * 0.62),
                 delaySeconds: 0.06,
-                delayGain: profile.delayGain * 1.15,
+                delayGain: profile.delayGain * 0.95,
                 noiseGain: profile.noiseGain * 0.12,
-                pitchDrift: 0.012,
-                filterDrift: 0.035,
+                pitchDrift: 0.008,
+                filterDrift: 0.02,
                 accentDelay: 0.052,
             };
         case 'classic':
@@ -588,9 +593,9 @@ export function FloatingButton() {
             const output = ctx.createDynamicsCompressor();
             output.threshold.setValueAtTime(-24, now);
             output.knee.setValueAtTime(18, now);
-            output.ratio.setValueAtTime(4, now);
-            output.attack.setValueAtTime(0.002, now);
-            output.release.setValueAtTime(0.08, now);
+            output.ratio.setValueAtTime(profile.compressorRatio, now);
+            output.attack.setValueAtTime(0.003, now);
+            output.release.setValueAtTime(0.12, now);
             output.connect(ctx.destination);
 
             const filter = ctx.createBiquadFilter();

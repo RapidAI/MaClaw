@@ -3,18 +3,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { SidebarRecentTasks } from '../SidebarRecentTasks';
 import type { ComponentProps } from 'react';
-import { GetProjectScene, OpenFileOrShowInFolder } from '../../../../wailsjs/go/main/App';
+import { GetProjectScene, OpenFileOrShowInFolder, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
 
-const { getProjectSceneMock, openFileOrShowInFolderMock, eventsEmitMock } = vi.hoisted(() => ({
+const { getProjectSceneMock, openFileOrShowInFolderMock, selectWorkingDirMock, eventsEmitMock } = vi.hoisted(() => ({
     getProjectSceneMock: vi.fn(),
     openFileOrShowInFolderMock: vi.fn(),
+    selectWorkingDirMock: vi.fn(),
     eventsEmitMock: vi.fn(),
 }));
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetProjectScene: getProjectSceneMock,
     OpenFileOrShowInFolder: openFileOrShowInFolderMock,
+    SelectWorkingDir: selectWorkingDirMock,
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -54,6 +56,7 @@ function renderRecentTasks(overrides: Partial<ComponentProps<typeof SidebarRecen
 afterEach(() => {
     vi.restoreAllMocks();
     eventsEmitMock.mockClear();
+    selectWorkingDirMock.mockReset();
     document.getElementById('App')?.remove();
 });
 
@@ -84,8 +87,35 @@ describe('SidebarRecentTasks', () => {
     it('shows the empty state when every recent project lacks output', () => {
         renderRecentTasks({ recentProjects: [{ ...baseProject, has_output: false }] });
 
-        expect(screen.getByText('No recent tasks')).toBeTruthy();
+        expect(screen.getByText('No tasks')).toBeTruthy();
+        expect(screen.queryByText('No recent tasks')).toBeNull();
         expect(screen.queryByText('Build dashboard')).toBeNull();
+    });
+
+    it('uses system-style SVG icons instead of text type labels', () => {
+        const { container } = renderRecentTasks({
+            recentProjects: [
+                baseProject,
+                { ...baseProject, id: 'task-2', name: 'Forked task', project_path: 'D:/work/tasks/forked-task', tags: ['forked_task'] },
+                { ...baseProject, id: 'task-3', name: 'Pinned task', project_path: 'D:/work/tasks/pinned-task', pinned: true },
+            ],
+        });
+
+        expect(screen.getByLabelText('Task').querySelector('svg')).toBeTruthy();
+        expect(screen.getByLabelText('Referenced task').querySelector('svg')).toBeTruthy();
+        expect(screen.getByLabelText('Pinned task').querySelector('svg')).toBeTruthy();
+        expect(container.textContent).not.toContain('TASK');
+        expect(container.textContent).not.toContain('REF');
+        expect(container.textContent).not.toContain('PIN');
+    });
+
+    it('uses a clear SVG create icon instead of a plain plus glyph', () => {
+        renderRecentTasks();
+
+        const createButton = screen.getByTitle('Create task');
+
+        expect(createButton.querySelector('svg')).toBeTruthy();
+        expect(createButton.textContent).not.toContain('+');
     });
 
     it('blocks task switching while the assistant is warming up', () => {
@@ -213,6 +243,23 @@ describe('SidebarRecentTasks', () => {
         expect(createRecentTask).toHaveBeenCalledWith('New research task');
     });
 
+    it('passes the selected working folder when creating a task', async () => {
+        selectWorkingDirMock.mockResolvedValue('D:/work/selected-folder');
+        const createRecentTask = vi.fn();
+        renderRecentTasks({ createRecentTask });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+        fireEvent.click(screen.getByRole('button', { name: 'Choose working folder' }));
+
+        expect(SelectWorkingDir).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect(screen.getByText('D:/work/selected-folder')).toBeTruthy());
+
+        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Run local task' } });
+        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+
+        expect(createRecentTask).toHaveBeenCalledWith('Run local task', 'D:/work/selected-folder');
+    });
+
     it('marks the create dialog with the current theme', () => {
         renderRecentTasks({ themeMode: 'dark' });
 
@@ -231,6 +278,19 @@ describe('SidebarRecentTasks', () => {
         fireEvent.click(screen.getByTitle('Create task'));
 
         expect(screen.getByLabelText('Task command').closest('.modal-backdrop')?.getAttribute('data-ai-theme')).toBe('dark');
+    });
+
+    it('carries the selected dark scheme into the portaled create dialog', () => {
+        const appRoot = document.createElement('div');
+        appRoot.id = 'App';
+        appRoot.setAttribute('data-ai-theme', 'dark');
+        appRoot.setAttribute('data-ai-dark-scheme', 'graphite');
+        document.body.appendChild(appRoot);
+        renderRecentTasks({ themeMode: 'dark' });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+
+        expect(screen.getByLabelText('Task command').closest('.modal-backdrop')?.getAttribute('data-ai-dark-scheme')).toBe('graphite');
     });
 
     it('portals the create dialog outside the sidebar container so the backdrop covers the window', () => {

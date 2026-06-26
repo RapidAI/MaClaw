@@ -124,6 +124,25 @@ func NormalizeAgentTimeoutSec(seconds int) int {
 	return seconds
 }
 
+const (
+	MinSkillRunnerTimeoutSec     = 240
+	DefaultSkillRunnerTimeoutSec = DefaultAgentTimeoutSec
+	MaxSkillRunnerTimeoutSec     = 14400
+)
+
+func NormalizeSkillRunnerTimeoutSec(seconds int) int {
+	if seconds <= 0 {
+		return DefaultSkillRunnerTimeoutSec
+	}
+	if seconds < MinSkillRunnerTimeoutSec {
+		return MinSkillRunnerTimeoutSec
+	}
+	if seconds > MaxSkillRunnerTimeoutSec {
+		return MaxSkillRunnerTimeoutSec
+	}
+	return seconds
+}
+
 // ModelConfig 描述一个 LLM 模型的配置。
 type ModelConfig struct {
 	ModelName       string `json:"model_name"`
@@ -340,7 +359,7 @@ type NLSkillEntry struct {
 	SkillDir           string              `json:"skill_dir,omitempty"`       // 自包含 skill 目录的绝对路径（运行时填充）
 	Mode               string              `json:"mode,omitempty"`            // "sequential" (default) | "interactive" | "api_workflow"
 	ExecMode           string              `json:"exec_mode,omitempty"`       // "all" (default) | "first" | "named"
-	GlobalTimeout      int                 `json:"global_timeout,omitempty"`  // per-skill global timeout in seconds (0 = use default 300s)
+	GlobalTimeout      int                 `json:"global_timeout,omitempty"`  // per-skill global timeout in seconds (0 = use configured Skill Runner default)
 	ProducesArtifact   bool                `json:"produces_artifact"`         // true = expects file output (default); false = diagnostic/instruction only
 	Operations         []NLSkillOperation  `json:"operations,omitempty"`      // named operations for api_workflow mode
 	RequiredArgs       []string            `json:"required_args,omitempty"`   // required template variables (e.g. "input", "output")

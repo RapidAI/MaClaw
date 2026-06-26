@@ -63,13 +63,19 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [portalTheme, setPortalTheme] = useState<'light' | 'dark'>(() => {
         return (document.getElementById("App") as HTMLElement)?.dataset?.aiTheme as 'light' | 'dark' || "light";
     });
+    const [portalDarkScheme, setPortalDarkScheme] = useState<string | undefined>(() => {
+        return (document.getElementById("App") as HTMLElement)?.dataset?.aiDarkScheme || undefined;
+    });
     useEffect(() => {
         const appEl = document.getElementById("App");
         if (!appEl) return;
-        const sync = () => setPortalTheme((appEl.dataset.aiTheme as 'light' | 'dark') || "light");
+        const sync = () => {
+            setPortalTheme((appEl.dataset.aiTheme as 'light' | 'dark') || "light");
+            setPortalDarkScheme(appEl.dataset.aiDarkScheme || undefined);
+        };
         sync();
         const observer = new MutationObserver(sync);
-        observer.observe(appEl, { attributes: true, attributeFilter: ["data-ai-theme"] });
+        observer.observe(appEl, { attributes: true, attributeFilter: ["data-ai-theme", "data-ai-dark-scheme"] });
         return () => observer.disconnect();
     }, []);
 
@@ -716,7 +722,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
             background: "rgba(0,0,0,0.3)", backdropFilter: "blur(3px)",
             display: "flex", alignItems: "center", justifyContent: "center", zIndex: 20000,
-        }} data-ai-theme={portalTheme}>
+        }} data-ai-theme={portalTheme} data-ai-dark-scheme={portalDarkScheme}>
             {showRegistrationToast && regResult && (
                 <div style={{ position: "absolute", top: 116, left: "50%", transform: "translateX(-50%)", zIndex: 20001, width: "min(420px, calc(100vw - 36px))", maxHeight: "calc(100vh - 148px)", overflowY: "auto", boxSizing: "border-box" }} role={regResult.ok ? "status" : "alert"} aria-live="polite">
                     <div style={{ ...wizardBannerStyle(regResultWarning ? "warning" : regResult.ok ? "success" : "error"), marginTop: 0, background: "var(--theme-surface)", border: `1px solid ${regResultWarning ? colors.primary : regResult.ok ? colors.success : colors.danger}`, boxShadow: "0 14px 36px rgba(15,23,42,0.24)" }}>

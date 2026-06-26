@@ -97,6 +97,49 @@ func TestAdminAndSystemRepositoriesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHubUserUsageReplaceDailyClearsWindowForSelectedTenants(t *testing.T) {
+	st := newCenterTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+
+	initial := []*store.HubUserUsageDaily{
+		{HubID: "hub_a", TenantID: "", UserEmail: "stale@example.com", Day: "2026-06-24", DurationSeconds: 3600, UpdatedAt: now},
+		{HubID: "hub_a", TenantID: "tenant_b", UserEmail: "keep-tenant@example.com", Day: "2026-06-24", DurationSeconds: 7200, UpdatedAt: now},
+		{HubID: "hub_a", TenantID: "", UserEmail: "keep-day@example.com", Day: "2026-06-23", DurationSeconds: 1800, UpdatedAt: now},
+	}
+	if err := st.HubUserUsage.UpsertDaily(ctx, initial); err != nil {
+		t.Fatalf("upsert initial usage: %v", err)
+	}
+
+	replacement := []*store.HubUserUsageDaily{
+		{HubID: "hub_a", TenantID: "", UserEmail: "fresh@example.com", Day: "2026-06-24", InputTokens: 10, OutputTokens: 5, DurationSeconds: 60, UpdatedAt: now},
+	}
+	if err := st.HubUserUsage.ReplaceDaily(ctx, "hub_a", []string{""}, "2026-06-24", "2026-06-24", replacement); err != nil {
+		t.Fatalf("replace daily usage: %v", err)
+	}
+
+	rows, err := st.HubUserUsage.Summarize(ctx, "hub_a", "", time.Date(2026, 6, 23, 0, 0, 0, 0, time.UTC), time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("summarize usage: %v", err)
+	}
+	byEmail := map[string]*store.HubUserUsageDaily{}
+	for _, row := range rows {
+		byEmail[row.UserEmail] = row
+	}
+	if _, ok := byEmail["stale@example.com"]; ok {
+		t.Fatalf("stale row was not cleared: %#v", rows)
+	}
+	if got := byEmail["fresh@example.com"]; got == nil || got.TotalTokens() != 15 || got.DurationSeconds != 60 {
+		t.Fatalf("fresh replacement missing or wrong: %#v", got)
+	}
+	if got := byEmail["keep-tenant@example.com"]; got == nil || got.DurationSeconds != 7200 {
+		t.Fatalf("other tenant row should be preserved, got %#v", got)
+	}
+	if got := byEmail["keep-day@example.com"]; got == nil || got.DurationSeconds != 1800 {
+		t.Fatalf("outside day row should be preserved, got %#v", got)
+	}
+}
+
 func TestReplaceConflictingHubInstanceMergesEndpointDuplicate(t *testing.T) {
 	st := newCenterTestStore(t)
 	ctx := context.Background()

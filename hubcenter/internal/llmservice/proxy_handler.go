@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -53,27 +54,14 @@ func ProxyHandler(cfg *ProxyConfig) http.HandlerFunc {
 			RawBody:        body,
 		}
 
+		if proxyRequestWantsStream(parsed) {
+			streamProxyRequest(w, r, cfg, proxyReq)
+			return
+		}
+
 		resp, err := HandleProxyRequest(r.Context(), cfg, proxyReq)
 		if err != nil {
-			errMsg := err.Error()
-			if strings.Contains(errMsg, "authorization denied") {
-				writeJSONError(w, http.StatusForbidden, errMsg)
-				return
-			}
-			if strings.Contains(errMsg, "bound to node") {
-				// HA: tenant is bound to a different HubCenter node
-				writeJSONError(w, http.StatusConflict, errMsg)
-				return
-			}
-			if strings.Contains(errMsg, "not available") || strings.Contains(errMsg, "not specified") {
-				writeJSONError(w, http.StatusBadRequest, errMsg)
-				return
-			}
-			if strings.Contains(errMsg, "all providers failed") {
-				writeJSONError(w, http.StatusServiceUnavailable, errMsg)
-				return
-			}
-			writeJSONError(w, http.StatusInternalServerError, errMsg)
+			writeProxyRequestError(w, err)
 			return
 		}
 
@@ -86,6 +74,137 @@ func ProxyHandler(cfg *ProxyConfig) http.HandlerFunc {
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(resp.Body)
 	}
+}
+
+type proxyStreamResult struct {
+	err error
+}
+
+var proxyStreamHeartbeatInterval = 15 * time.Second
+
+type proxyHTTPStreamWriter struct {
+	mu      sync.Mutex
+	w       http.ResponseWriter
+	flusher http.Flusher
+}
+
+func (w *proxyHTTPStreamWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.w.Write(p)
+}
+
+func (w *proxyHTTPStreamWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.flusher != nil {
+		w.flusher.Flush()
+	}
+}
+
+func proxyRequestWantsStream(body map[string]any) bool {
+	v, ok := body["stream"]
+	if !ok {
+		return false
+	}
+	switch value := v.(type) {
+	case bool:
+		return value
+	case string:
+		return strings.EqualFold(strings.TrimSpace(value), "true")
+	default:
+		return false
+	}
+}
+
+func streamProxyRequest(w http.ResponseWriter, r *http.Request, cfg *ProxyConfig, proxyReq *ProxyRequest) {
+	ctx := WithUsageContext(r.Context(), proxyReq.HubID, proxyReq.TenantID)
+	dispatches, err := prepareProxyStreamDispatches(ctx, cfg, proxyReq)
+	if err != nil {
+		writeProxyRequestError(w, err)
+		return
+	}
+
+	flusher, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	if flusher != nil {
+		flusher.Flush()
+	}
+
+	streamWriter := &proxyHTTPStreamWriter{w: w, flusher: flusher}
+	resultCh := make(chan proxyStreamResult, 1)
+	go func() {
+		resultCh <- proxyStreamResult{err: handleProxyStreamDispatches(ctx, cfg, proxyReq, streamWriter, dispatches)}
+	}()
+
+	ticker := time.NewTicker(proxyStreamHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			if _, err := io.WriteString(streamWriter, ": ping\n\n"); err != nil {
+				return
+			}
+			streamWriter.Flush()
+		case result := <-resultCh:
+			if result.err != nil {
+				writeProxyStreamError(streamWriter, http.StatusServiceUnavailable, result.err.Error())
+			}
+			streamWriter.Flush()
+			return
+		}
+	}
+}
+
+func writeProxyRequestError(w http.ResponseWriter, err error) {
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "authorization denied") {
+		writeJSONError(w, http.StatusForbidden, errMsg)
+		return
+	}
+	if strings.Contains(errMsg, "bound to node") {
+		writeJSONError(w, http.StatusConflict, errMsg)
+		return
+	}
+	if strings.Contains(errMsg, "not available") || strings.Contains(errMsg, "not specified") || strings.Contains(errMsg, "no stream-capable providers") {
+		writeJSONError(w, http.StatusBadRequest, errMsg)
+		return
+	}
+	if strings.Contains(errMsg, "all providers failed") {
+		writeJSONError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
+	writeJSONError(w, http.StatusInternalServerError, errMsg)
+}
+
+func writeProxyStreamError(w io.Writer, code int, message string) {
+	if strings.TrimSpace(message) == "" {
+		message = http.StatusText(code)
+	}
+	payload := map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"code":    code,
+		},
+	}
+	writeProxySSEData(w, payload)
+	_, _ = io.WriteString(w, "data: [DONE]\n\n")
+}
+
+func writeProxySSEData(w io.Writer, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_, _ = io.WriteString(w, "data: ")
+	_, _ = w.Write(data)
+	_, _ = io.WriteString(w, "\n\n")
 }
 
 type TenantAuthorizationStatus struct {

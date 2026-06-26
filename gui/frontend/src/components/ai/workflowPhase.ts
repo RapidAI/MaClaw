@@ -18,9 +18,15 @@ const PHASE_ID_ALIASES: Record<string, WorkflowPhaseID> = {
  */
 export const FALLBACK_NON_DOCUMENT_PHASE_IDS = new Set<WorkflowPhaseID>([
     "implementation",
+    "verification",
     "test_execution",
+    "defect_report",
     "ppt_generation",
-    "bp_doc_generation",
+    "env_and_data",
+    "baseline_reproduction",
+    "iterative_improvement",
+    "maint_execution",
+    "maint_verification",
     "controlled_execution",
 ]);
 

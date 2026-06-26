@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +16,14 @@ import (
 )
 
 func TestSkillHubClientInstallToDirAcceptsBundledJSONAboveOneMB(t *testing.T) {
+	largeFiles := make(map[string]string)
+	for i := 0; i < 5; i++ {
+		largeFiles[filepath.ToSlash(filepath.Join("data", "chunk-"+string(rune('a'+i))+".json"))] = base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", 300*1024)))
+	}
+	largeFiles["assets/logo.png"] = base64.StdEncoding.EncodeToString([]byte("png"))
+	largeFiles["bin/tool.cjs"] = base64.StdEncoding.EncodeToString([]byte("module.exports = {};"))
+	largeFiles["LICENSE"] = base64.StdEncoding.EncodeToString([]byte("MIT"))
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/skills/large-json/download" {
 			http.NotFound(w, r)
@@ -24,17 +35,112 @@ func TestSkillHubClientInstallToDirAcceptsBundledJSONAboveOneMB(t *testing.T) {
 			"description": strings.Repeat("x", 1100*1024),
 			"version":     "1.0.0",
 			"steps":       []map[string]any{{"action": "craft_tool", "params": map[string]any{"instructions": "ok"}}},
+			"files":       largeFiles,
 		})
 	}))
 	defer server.Close()
 
+	targetDir := t.TempDir()
 	client := NewSkillHubClient(&App{testHomeDir: t.TempDir()})
-	entry, err := client.InstallToDir(context.Background(), "large-json", server.URL, t.TempDir())
+	entry, err := client.InstallToDir(context.Background(), "large-json", server.URL, targetDir)
 	if err != nil {
 		t.Fatalf("InstallToDir: %v", err)
 	}
 	if entry.Name != "Large JSON Skill" || entry.HubSkillID != "large-json" {
 		t.Fatalf("entry = %+v", entry)
+	}
+	if entry.Status != "active" {
+		t.Fatalf("entry.Status = %q, want active", entry.Status)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "data", "chunk-e.json")); err != nil {
+		t.Fatalf("expected bundled files above 1MB to be extracted: %v", err)
+	}
+	for _, rel := range []string{"assets/logo.png", "bin/tool.cjs", "LICENSE"} {
+		if _, err := os.Stat(filepath.Join(targetDir, filepath.FromSlash(rel))); err != nil {
+			t.Fatalf("expected bundled file %s to be preserved without extension filtering: %v", rel, err)
+		}
+	}
+}
+
+func TestSkillHubClientInstallToDirRejectsUnsafeBundledPaths(t *testing.T) {
+	for _, relPath := range []string{"../escape.js", "C:/escape.js", "safe/name:stream.js"} {
+		t.Run(relPath, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/skills/unsafe/download" {
+					http.NotFound(w, r)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id":          "unsafe",
+					"name":        "Unsafe Skill",
+					"description": "unsafe",
+					"version":     "1.0.0",
+					"steps":       []map[string]any{{"action": "craft_tool", "params": map[string]any{"instructions": "ok"}}},
+					"files": map[string]string{
+						relPath: base64.StdEncoding.EncodeToString([]byte("bad")),
+					},
+				})
+			}))
+			defer server.Close()
+
+			client := NewSkillHubClient(&App{testHomeDir: t.TempDir()})
+			entry, err := client.InstallToDir(context.Background(), "unsafe", server.URL, t.TempDir())
+			if err == nil {
+				t.Fatalf("InstallToDir returned entry %+v, want unsafe path error", entry)
+			}
+			if !strings.Contains(err.Error(), "unsafe bundled file path") {
+				t.Fatalf("InstallToDir error = %v, want unsafe bundled file path", err)
+			}
+		})
+	}
+}
+
+func TestExtractBundledSkillFilesDoesNotPartiallyWriteInvalidPackage(t *testing.T) {
+	targetDir := filepath.Join(t.TempDir(), "partial")
+	err := extractBundledSkillFiles("partial", map[string]string{
+		"safe/ok.txt": base64.StdEncoding.EncodeToString([]byte("ok")),
+		"../bad.txt":  base64.StdEncoding.EncodeToString([]byte("bad")),
+	}, targetDir)
+	if err == nil {
+		t.Fatal("extractBundledSkillFiles returned nil, want unsafe path error")
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "safe", "ok.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("safe file was written before invalid package failed; stat error = %v", statErr)
+	}
+	if _, statErr := os.Stat(targetDir); !os.IsNotExist(statErr) {
+		t.Fatalf("target directory was created for invalid package; stat error = %v", statErr)
+	}
+}
+
+func TestExtractBundledSkillFilesCleansUpNewDirOnWriteConflict(t *testing.T) {
+	targetDir := filepath.Join(t.TempDir(), "conflict")
+	err := extractBundledSkillFiles("conflict", map[string]string{
+		"safe":            base64.StdEncoding.EncodeToString([]byte("file")),
+		"safe/nested.txt": base64.StdEncoding.EncodeToString([]byte("nested")),
+	}, targetDir)
+	if err == nil {
+		t.Fatal("extractBundledSkillFiles returned nil, want write conflict error")
+	}
+	if _, statErr := os.Stat(targetDir); !os.IsNotExist(statErr) {
+		t.Fatalf("target directory was not cleaned up after conflict; stat error = %v", statErr)
+	}
+}
+
+func TestExtractBundledSkillFilesDoesNotDeleteExistingDirOnConflict(t *testing.T) {
+	targetDir := t.TempDir()
+	keepPath := filepath.Join(targetDir, "keep.txt")
+	if err := os.WriteFile(keepPath, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+	err := extractBundledSkillFiles("existing", map[string]string{
+		"safe":            base64.StdEncoding.EncodeToString([]byte("file")),
+		"safe/nested.txt": base64.StdEncoding.EncodeToString([]byte("nested")),
+	}, targetDir)
+	if err == nil {
+		t.Fatal("extractBundledSkillFiles returned nil, want write conflict error")
+	}
+	if data, readErr := os.ReadFile(keepPath); readErr != nil || string(data) != "keep" {
+		t.Fatalf("existing target dir content was not preserved; data=%q err=%v", string(data), readErr)
 	}
 }
 

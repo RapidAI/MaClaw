@@ -455,7 +455,7 @@ func (a *App) SendVEMessage(sessionID, content string) error {
 	return a.sendVEA2AMessage(sessionID, a2a.GroupDiscussionMessage{
 		Kind:      a2a.MessageStatement,
 		Content:   content,
-		ToIDs:     a.groupDiscussionUnmentionedTargetIDs(sessionID),
+		ToIDs:     a.cachedGroupDiscussionUnmentionedTargetIDs(sessionID),
 		CreatedAt: time.Now(),
 	})
 }
@@ -743,6 +743,11 @@ func (a *App) groupDiscussionUnmentionedTargetIDs(sessionID string) []string {
 		return candidates
 	}
 	return singleGroupDiscussionTarget(preferredID)
+}
+
+func (a *App) cachedGroupDiscussionUnmentionedTargetIDs(sessionID string) []string {
+	sessionID = a.resolveRenewedVESession(sessionID)
+	return singleGroupDiscussionTarget(a.cachedVEGroupDefaultResponderID(sessionID))
 }
 
 func dedupeVEGroupParticipantIDs(values []string) []string {
@@ -1396,6 +1401,7 @@ func (a *App) CloseVESession(sessionID string) error {
 		}
 		return true
 	})
+	a.markGroupDiscussionSessionClosed(sessionID)
 
 	client, _, err := a.veA2AHubClient()
 	if err != nil {
@@ -2424,7 +2430,7 @@ func (a *App) findCachedVEDirectSession(veID string) *VESessionInfo {
 		return nil
 	}
 	defer store.Close()
-	summaries, err := store.CachedSummaries(ctx, false)
+	summaries, err := store.CachedSummaries(ctx, true)
 	if err != nil || len(summaries) == 0 {
 		return nil
 	}

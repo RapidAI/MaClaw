@@ -4,10 +4,12 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 
 const GetWebSearchProvidersMock = vi.fn();
 const SaveWebSearchProvidersMock = vi.fn();
+const TestWebSearchProviderMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetWebSearchProviders: (...args: unknown[]) => GetWebSearchProvidersMock(...args),
     SaveWebSearchProviders: (...args: unknown[]) => SaveWebSearchProvidersMock(...args),
+    TestWebSearchProvider: (...args: unknown[]) => TestWebSearchProviderMock(...args),
 }));
 
 import { WebSearchConfigPanel } from '../WebSearchConfigPanel';
@@ -23,6 +25,7 @@ describe('WebSearchConfigPanel', () => {
             ],
             current: 'brave',
         });
+        TestWebSearchProviderMock.mockResolvedValue(undefined);
         SaveWebSearchProvidersMock.mockResolvedValue(undefined);
     });
 
@@ -30,18 +33,21 @@ describe('WebSearchConfigPanel', () => {
         vi.useRealTimers();
     });
 
-    it('shows saved state briefly after saving and then resets', async () => {
-        render(<WebSearchConfigPanel lang="zh-Hans" />);
+    it('tests the selected provider before saving and then resets saved state', async () => {
+        vi.useFakeTimers();
+        render(<WebSearchConfigPanel lang="en" />);
 
         await waitFor(() => {
             expect(screen.getByDisplayValue('brave-key')).toBeTruthy();
         });
 
-        expect(screen.getByText(/选择 AI 助手网页搜索使用的搜索引擎/)).toBeTruthy();
-        expect(screen.queryByText(/Choose which search engine/)).toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-        fireEvent.click(screen.getByRole('button', { name: '保存' }));
-
+        await waitFor(() => {
+            expect(TestWebSearchProviderMock).toHaveBeenCalledWith(
+                expect.objectContaining({ type: 'brave', key: 'brave-key' }),
+            );
+        });
         await waitFor(() => {
             expect(SaveWebSearchProvidersMock).toHaveBeenCalledWith(
                 expect.arrayContaining([
@@ -54,15 +60,56 @@ describe('WebSearchConfigPanel', () => {
         });
 
         await waitFor(() => {
-            expect(screen.getByRole('button', { name: '已保存 ✓' })).toBeTruthy();
+            expect(screen.getByText('Test passed and configuration saved.')).toBeTruthy();
+            expect(screen.getByRole('button', { name: 'Saved OK' })).toBeTruthy();
         });
 
         await act(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 1600));
+            vi.advanceTimersByTime(1600);
         });
 
         await waitFor(() => {
-            expect(screen.getByRole('button', { name: '保存' })).toBeTruthy();
+            expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
         });
     }, 10000);
+
+    it('does not save when the provider test fails', async () => {
+        TestWebSearchProviderMock.mockRejectedValue(new Error('Brave returned HTTP 401'));
+
+        render(<WebSearchConfigPanel lang="en" />);
+
+        await waitFor(() => {
+            expect(screen.getByDisplayValue('brave-key')).toBeTruthy();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        await waitFor(() => {
+            expect(screen.getByText(/Search provider test failed:/)).toBeTruthy();
+        });
+        expect(SaveWebSearchProvidersMock).not.toHaveBeenCalled();
+    });
+
+    it('shows a helpful DuckDuckGo challenge error', async () => {
+        GetWebSearchProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'DuckDuckGo', type: 'duckduckgo' },
+            ],
+            current: 'duckduckgo',
+        });
+        TestWebSearchProviderMock.mockRejectedValue(new Error('DuckDuckGo blocked this automated request with a human verification challenge (HTTP 202)'));
+
+        render(<WebSearchConfigPanel lang="en" />);
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: /Save/i })).toBeTruthy();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        await waitFor(() => {
+            expect(screen.getByText(/DuckDuckGo blocked this request with a human verification challenge/)).toBeTruthy();
+        });
+        expect(SaveWebSearchProvidersMock).not.toHaveBeenCalled();
+    });
 });

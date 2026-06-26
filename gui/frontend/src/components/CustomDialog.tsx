@@ -10,6 +10,10 @@ function getCurrentTheme(): string | undefined {
     return document.getElementById('App')?.getAttribute('data-ai-theme') || undefined;
 }
 
+function getCurrentDarkScheme(): string | undefined {
+    return document.getElementById('App')?.getAttribute('data-ai-dark-scheme') || undefined;
+}
+
 // ── Types ──
 
 interface DialogState {
@@ -19,6 +23,7 @@ interface DialogState {
     mode: 'alert' | 'confirm';
     lang?: string;
     theme?: string;
+    darkScheme?: string;
     confirmText?: string;
     cancelText?: string;
 }
@@ -79,7 +84,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
             // is called while another dialog is already open (e.g. rapid backend events).
             resolveRef.current?.(false);
             resolveRef.current = () => resolve();
-            setState({ open: true, title: title || '', message, mode: 'alert', lang: document.documentElement.lang || 'en', theme: getCurrentTheme() });
+            setState({ open: true, title: title || '', message, mode: 'alert', lang: document.documentElement.lang || 'en', theme: getCurrentTheme(), darkScheme: getCurrentDarkScheme() });
         });
     }, []);
 
@@ -88,7 +93,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
             // Resolve any pending dialog (dismiss as "cancel") to prevent Promise leak.
             resolveRef.current?.(false);
             resolveRef.current = resolve;
-            setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en', theme: getCurrentTheme(), confirmText: options?.confirmText, cancelText: options?.cancelText });
+            setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en', theme: getCurrentTheme(), darkScheme: getCurrentDarkScheme(), confirmText: options?.confirmText, cancelText: options?.cancelText });
         });
     }, []);
 
@@ -116,7 +121,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         <DialogContext.Provider value={{ showAlert, showConfirm }}>
             {children}
             {state.open && (
-                <div className="modal-backdrop" data-ai-theme={state.theme}
+                <div className="modal-backdrop" data-ai-theme={state.theme} data-ai-dark-scheme={state.darkScheme}
                     onMouseDown={e => { backdropMouseDownRef.current = e.target === e.currentTarget; }}
                     onClick={e => { if (e.target === e.currentTarget && backdropMouseDownRef.current) close(state.mode === 'alert'); backdropMouseDownRef.current = false; }}
                 >

@@ -147,6 +147,19 @@ func invalidCodingTaskBreakdownFeedbackText() string {
 }
 
 func (h *IMMessageHandler) shouldRegenerateInvalidCodingTaskBreakdown(engine *workflow.WorkflowEngine, userID string) bool {
+	if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+		if state := wf.machine.GetActive(userID); state != nil {
+			phase := state.ActivePhase()
+			if phase == nil || state.Type != string(workflow.WorkflowCoding) || phase.ID != workflow.PhaseCodingTaskBreakdown {
+				return false
+			}
+			output := strings.TrimSpace(phase.Output)
+			if output == "" {
+				return false
+			}
+			return !isExecutableCodingTaskBreakdown(output, ParseTaskListFromText(output))
+		}
+	}
 	output, ok := currentCodingTaskBreakdownOutputBeforeExecution(engine, userID)
 	if !ok {
 		return false

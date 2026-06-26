@@ -284,6 +284,68 @@ func TestCreateRecentTaskUsesTaskNamePreview(t *testing.T) {
 	}
 }
 
+func TestCreateRecentTaskWithWorkingDirPersistsDirectory(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	workingDir := filepath.Join(t.TempDir(), "project")
+
+	created := app.CreateRecentTaskWithWorkingDir("Build local feature", "  "+workingDir+"  ")
+	if created.ProjectPath == "" {
+		t.Fatalf("ProjectPath is empty: %#v", created)
+	}
+	if created.WorkingDir != filepath.Clean(workingDir) {
+		t.Fatalf("WorkingDir = %q, want %q", created.WorkingDir, filepath.Clean(workingDir))
+	}
+	if got := app.recentTaskWorkingDir(created.ProjectPath); got != filepath.Clean(workingDir) {
+		t.Fatalf("recentTaskWorkingDir = %q, want %q", got, filepath.Clean(workingDir))
+	}
+	if got := app.recentTaskExecutionProjectPath(created.ProjectPath); got != filepath.Clean(workingDir) {
+		t.Fatalf("recentTaskExecutionProjectPath = %q, want %q", got, filepath.Clean(workingDir))
+	}
+	taskFile := filepath.Join(created.ProjectPath, "task.md")
+	content, err := os.ReadFile(taskFile)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", taskFile, err)
+	}
+	if !strings.Contains(string(content), "Working directory: "+filepath.Clean(workingDir)) {
+		t.Fatalf("task file content missing working directory: %q", content)
+	}
+
+	found := false
+	for _, result := range app.SearchProjects("Build local feature", 10) {
+		if result.ProjectPath == created.ProjectPath {
+			found = true
+			if result.WorkingDir != filepath.Clean(workingDir) {
+				t.Fatalf("search WorkingDir = %q, want %q", result.WorkingDir, filepath.Clean(workingDir))
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("created task was not returned by SearchProjects")
+	}
+}
+
+func TestCreateRecentTaskWithWorkingDirRejectsFilePath(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	filePath := filepath.Join(t.TempDir(), "not-a-directory.txt")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	created := app.CreateRecentTaskWithWorkingDir("Reject invalid working dir", filePath)
+	if created.ProjectPath == "" {
+		t.Fatalf("ProjectPath is empty: %#v", created)
+	}
+	if created.WorkingDir != "" {
+		t.Fatalf("WorkingDir = %q, want empty for file path", created.WorkingDir)
+	}
+	if got := app.recentTaskWorkingDir(created.ProjectPath); got != "" {
+		t.Fatalf("recentTaskWorkingDir = %q, want empty", got)
+	}
+	if got := app.recentTaskExecutionProjectPath(created.ProjectPath); got != created.ProjectPath {
+		t.Fatalf("recentTaskExecutionProjectPath = %q, want task path %q", got, created.ProjectPath)
+	}
+}
+
 func searchResultsContainProjectPath(results []ProjectSearchResult, projectPath string) bool {
 	for _, result := range results {
 		if result.ProjectPath == projectPath {
@@ -296,7 +358,8 @@ func searchResultsContainProjectPath(results []ProjectSearchResult, projectPath 
 func TestForkRecentTaskCreatesIndependentTaskPath(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 
-	source := app.CreateRecentTask("Draft recent task filtering implementation")
+	workingDir := filepath.Join(t.TempDir(), "worktree")
+	source := app.CreateRecentTaskWithWorkingDir("Draft recent task filtering implementation", workingDir)
 	forked := app.ForkRecentTask(source.ProjectPath)
 	if forked.ProjectPath == "" || forked.ProjectPath == source.ProjectPath {
 		t.Fatalf("ForkRecentTask ProjectPath = %q, source = %q", forked.ProjectPath, source.ProjectPath)
@@ -304,12 +367,21 @@ func TestForkRecentTaskCreatesIndependentTaskPath(t *testing.T) {
 	if forked.Name != source.Name {
 		t.Fatalf("ForkRecentTask Name = %q, want %q", forked.Name, source.Name)
 	}
+	if forked.WorkingDir != filepath.Clean(workingDir) {
+		t.Fatalf("ForkRecentTask WorkingDir = %q, want %q", forked.WorkingDir, filepath.Clean(workingDir))
+	}
+	if got := app.recentTaskExecutionProjectPath(forked.ProjectPath); got != filepath.Clean(workingDir) {
+		t.Fatalf("fork execution project path = %q, want %q", got, filepath.Clean(workingDir))
+	}
 	content, err := os.ReadFile(filepath.Join(forked.ProjectPath, "task.md"))
 	if err != nil {
 		t.Fatalf("ReadFile(fork task.md): %v", err)
 	}
 	if !strings.Contains(string(content), "Forked from recent task") || !strings.Contains(string(content), source.ProjectPath) {
 		t.Fatalf("fork task content = %q, want source metadata", content)
+	}
+	if !strings.Contains(string(content), "Working directory: "+filepath.Clean(workingDir)) {
+		t.Fatalf("fork task content missing working directory: %q", content)
 	}
 	recent := app.SearchProjects("", 10)
 	if len(recent) != 1 || !searchResultsContainProjectPath(recent, forked.ProjectPath) {
@@ -398,6 +470,54 @@ func TestForkedRecentTaskKeepsPointerToSourceWorkflow(t *testing.T) {
 	}
 	if scene.ActiveWorkflow == nil || scene.ActiveWorkflow.ProjectPath != source.ProjectPath {
 		t.Fatalf("scene ActiveWorkflow = %#v, want pointer to source %q", scene.ActiveWorkflow, source.ProjectPath)
+	}
+}
+
+func TestRecentTaskWithWorkingDirCarriesExecutionWorkflowState(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+
+	workingDir := filepath.Join(t.TempDir(), "workflow-workdir")
+	task := app.CreateRecentTaskWithWorkingDir("Working dir workflow state", workingDir)
+	if task.ProjectPath == "" {
+		t.Fatal("CreateRecentTaskWithWorkingDir returned empty project path")
+	}
+	now := time.Now()
+	state := &workflow.WorkflowState{
+		ID:          workflow.GenerateID(projectSessionOwnerID(filepath.Clean(workingDir))),
+		UserID:      projectSessionOwnerID(filepath.Clean(workingDir)),
+		Type:        string(workflow.WorkflowCoding),
+		ProjectPath: filepath.Clean(workingDir),
+		Summary:     "build app",
+		Phases: []workflow.Phase{{
+			ID:     workflow.PhaseCodingRequirements,
+			Name:   "Requirements",
+			Status: workflow.PhaseRunning,
+		}},
+		CurrentPhase: 0,
+		Status:       workflow.StatusActive,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := app.workflowV2.store.Save(state); err != nil {
+		t.Fatalf("workflowV2 Save failed: %v", err)
+	}
+
+	recent := app.SearchProjects("Working dir workflow state", 10)
+	if len(recent) != 1 {
+		t.Fatalf("SearchProjects returned %d results: %+v", len(recent), recent)
+	}
+	if recent[0].ActiveWorkflow == nil || recent[0].ActiveWorkflow.ProjectPath != filepath.Clean(workingDir) || recent[0].ActiveWorkflow.Type != string(workflow.WorkflowCoding) {
+		t.Fatalf("ActiveWorkflow = %#v, want execution-path coding workflow", recent[0].ActiveWorkflow)
+	}
+
+	scene, err := app.GetProjectScene(task.ProjectPath)
+	if err != nil {
+		t.Fatalf("GetProjectScene error = %v", err)
+	}
+	if scene.ActiveWorkflow == nil || scene.ActiveWorkflow.ProjectPath != filepath.Clean(workingDir) {
+		t.Fatalf("scene ActiveWorkflow = %#v, want execution-path workflow", scene.ActiveWorkflow)
 	}
 }
 
@@ -889,6 +1009,69 @@ func TestSendAIAssistantMessageRejectsHiddenProjectPath(t *testing.T) {
 
 	if _, err := app.SendAIAssistantMessage(AIAssistantSendRequest{Text: "continue", ProjectPath: source.ProjectPath}); err == nil || !strings.Contains(err.Error(), "project task is closed") {
 		t.Fatalf("SendAIAssistantMessage hidden project err = %v, want closed-task error", err)
+	}
+}
+
+func TestSendAIAssistantMessageRoutesRecentTaskToWorkingDir(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	workingDir := filepath.Join(t.TempDir(), "task-worktree")
+	source := app.CreateRecentTaskWithWorkingDir("Route direct project send", workingDir)
+	if source.ProjectPath == "" {
+		t.Fatal("CreateRecentTaskWithWorkingDir returned empty project path")
+	}
+
+	resp, err := app.SendAIAssistantMessage(AIAssistantSendRequest{
+		Text:         "continue",
+		ProjectPath:  source.ProjectPath,
+		EventScopeID: "tab-direct-working-dir",
+	})
+	if err != nil {
+		t.Fatalf("SendAIAssistantMessage err = %v", err)
+	}
+	if resp == nil || !resp.Deferred {
+		t.Fatalf("SendAIAssistantMessage resp = %#v, want deferred response", resp)
+	}
+
+	workingDirSession := desktopAIAssistantUserIDForProjectPath(filepath.Clean(workingDir))
+	scope, ok := app.sessionEventScopeIDs.Load(workingDirSession)
+	if !ok || scope != "tab-direct-working-dir" {
+		t.Fatalf("working dir session scope = %#v, %v; want tab-direct-working-dir", scope, ok)
+	}
+	taskSession := desktopAIAssistantUserIDForProjectPath(source.ProjectPath)
+	if _, ok := app.sessionEventScopeIDs.Load(taskSession); ok {
+		t.Fatalf("task session %q unexpectedly received event scope", taskSession)
+	}
+}
+
+func TestSendMessageForTabRoutesRecentTaskToWorkingDir(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	workingDir := filepath.Join(t.TempDir(), "task-worktree")
+	source := app.CreateRecentTaskWithWorkingDir("Route tab project send", workingDir)
+	if source.ProjectPath == "" {
+		t.Fatal("CreateRecentTaskWithWorkingDir returned empty project path")
+	}
+
+	tabID := "proj-working-dir-send"
+	if msg := app.CreateProjectTabSession(tabID, source.ProjectPath); strings.TrimSpace(msg) == "" {
+		t.Fatal("CreateProjectTabSession returned empty context message")
+	}
+
+	resp, err := app.SendMessageForTab(tabID, "continue", source.ProjectPath)
+	if err != nil {
+		t.Fatalf("SendMessageForTab err = %v", err)
+	}
+	if resp == nil || !resp.Deferred {
+		t.Fatalf("SendMessageForTab resp = %#v, want deferred response", resp)
+	}
+
+	workingDirSession := desktopAIAssistantUserIDForProjectPath(filepath.Clean(workingDir))
+	scope, ok := app.sessionEventScopeIDs.Load(workingDirSession)
+	if !ok || scope != tabID {
+		t.Fatalf("working dir session scope = %#v, %v; want %q", scope, ok, tabID)
+	}
+	taskSession := desktopAIAssistantUserIDForProjectPath(source.ProjectPath)
+	if _, ok := app.sessionEventScopeIDs.Load(taskSession); ok {
+		t.Fatalf("task session %q unexpectedly received event scope", taskSession)
 	}
 }
 

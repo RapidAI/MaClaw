@@ -39,6 +39,7 @@ func ResolveStep(
 	params []corelib.NLSkillParam,
 	quoteFunc func(string) string,
 ) (ResolveStepResult, error) {
+	originalAction := step.Action
 	step = NormalizeStepForRunner(step, skillDir)
 	result := ResolveStepResult{Step: step}
 
@@ -91,18 +92,26 @@ func ResolveStep(
 	} else if step.Params != nil {
 		resolved.Params = map[string]interface{}{}
 	}
+	if NormalizeStepActionName(resolved.Action) == "bash" {
+		resolved.Params = appendImplicitInputArgIfNeeded(originalAction, step.Params, resolved.Params, bindVars, result.BindResult.CLIArgs, quoteFunc)
+	}
 
 	// Phase 3: craft_tool input/output injection.
 	if resolved.Action == "craft_tool" && len(bindVars) != 0 {
 		if resolved.Params == nil {
 			resolved.Params = map[string]interface{}{}
 		}
-		for _, key := range []string{"input", "output", "topic"} {
+		for _, key := range []string{"input", "output", "topic", "user_prompt"} {
 			if v, _ := resolved.Params[key].(string); strings.TrimSpace(v) != "" {
 				continue
 			}
 			if value := strings.TrimSpace(resolveRunVarValueForKey(key, bindVars)); value != "" {
 				resolved.Params[key] = value
+			}
+		}
+		if v, _ := resolved.Params["user_prompt"].(string); strings.TrimSpace(v) == "" {
+			if value := strings.TrimSpace(firstRunVarValue(bindVars, "input", "query", "task")); value != "" {
+				resolved.Params["user_prompt"] = value
 			}
 		}
 	}
@@ -114,6 +123,15 @@ func ResolveStep(
 
 	result.Step = resolved
 	return result, nil
+}
+
+func firstRunVarValue(vars map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(resolveRunVarValueForKey(key, vars)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // FilterConsumedCLIArgs removes CLI flag+value pairs from cliArgs when the
@@ -184,6 +202,79 @@ func resolveStepParams(action string, params map[string]interface{}, vars map[st
 		resolved[key] = resolveValue(item, vars, quoteFuncForStepParam(action, key, quoteFunc))
 	}
 	return resolved
+}
+
+func appendImplicitInputArgIfNeeded(originalAction string, originalParams, resolvedParams map[string]interface{}, vars map[string]string, cliArgs []string, quoteFunc func(string) string) map[string]interface{} {
+	if len(cliArgs) > 0 || len(vars) == 0 || resolvedParams == nil {
+		return resolvedParams
+	}
+	if !actionAcceptsImplicitInputArg(originalAction) {
+		return resolvedParams
+	}
+	originalCmd, _ := originalParams["command"].(string)
+	resolvedCmd, _ := resolvedParams["command"].(string)
+	if strings.TrimSpace(originalCmd) == "" || strings.TrimSpace(resolvedCmd) == "" {
+		return resolvedParams
+	}
+	if len(ExtractPlaceholderKeys(originalCmd)) > 0 {
+		return resolvedParams
+	}
+	if !commandAcceptsImplicitInputArg(originalCmd) {
+		return resolvedParams
+	}
+	input := strings.TrimSpace(resolveRunVarValueForKey("input", vars))
+	if input == "" {
+		return resolvedParams
+	}
+	if quoteFunc != nil {
+		input = quoteFunc(input)
+	}
+	cp := copyParams(resolvedParams)
+	cp["command"] = strings.TrimRight(resolvedCmd, " \t\r\n") + " " + input
+	return cp
+}
+
+func actionAcceptsImplicitInputArg(action string) bool {
+	switch NormalizeStepActionName(action) {
+	case "", "command", "run", "exec", "execute", "cmd", "script", "node", "js", "javascript", "python", "python3":
+		return true
+	default:
+		return false
+	}
+}
+
+func commandAcceptsImplicitInputArg(command string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" || strings.ContainsAny(command, "\r\n;&|<>") {
+		return false
+	}
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return false
+	}
+	exe := strings.Trim(strings.ToLower(filepath.Base(fields[0])), `"'`)
+	exe = strings.TrimSuffix(exe, ".exe")
+	switch exe {
+	case "node", "python", "python3", "deno", "bun", "tsx", "ts-node":
+		for _, field := range fields[1:] {
+			if scriptPathAcceptsImplicitInput(field) {
+				return true
+			}
+		}
+		return false
+	default:
+		return scriptPathAcceptsImplicitInput(fields[0])
+	}
+}
+
+func scriptPathAcceptsImplicitInput(path string) bool {
+	path = strings.Trim(strings.ToLower(path), `"'`)
+	switch filepath.Ext(path) {
+	case ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".py":
+		return true
+	default:
+		return false
+	}
 }
 
 func quoteFuncForStepParam(action, key string, quoteFunc func(string) string) func(string) string {

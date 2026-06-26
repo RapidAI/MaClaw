@@ -73,14 +73,14 @@ func GetUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc {
 		byEmail := map[string]*userRankingRow{}
 		for _, t := range tokenRows {
 			email := strings.ToLower(strings.TrimSpace(t.UserEmail))
-			if email == "" {
+			if !isUserRankingEmail(email) {
 				continue
 			}
 			byEmail[email] = &userRankingRow{UserEmail: email, UserName: email, TotalTokens: t.Usage.TotalTokens()}
 		}
 		for _, d := range durationRows {
 			email := strings.ToLower(strings.TrimSpace(d.UserEmail))
-			if email == "" {
+			if !isUserRankingEmail(email) {
 				continue
 			}
 			row := byEmail[email]
@@ -170,6 +170,11 @@ func sortUserRankingRows(rows []userRankingRow, dimension string) {
 		}
 		return rows[i].TotalTokens > rows[j].TotalTokens
 	})
+}
+
+func isUserRankingEmail(email string) bool {
+	email = strings.TrimSpace(email)
+	return strings.Count(email, "@") == 1 && !strings.ContainsAny(email, " \t\r\n") && !strings.HasPrefix(email, "@") && !strings.HasSuffix(email, "@")
 }
 
 func normalizeUserRankingPeriod(v string) string {

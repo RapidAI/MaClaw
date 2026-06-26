@@ -1312,6 +1312,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 	msg.Content = content
 	msg.ReasoningContent = reasoning
 	finishReason := choice.FinishReason
+	truncatedTools := append([]string(nil), choice.TruncatedToolNames...)
 	if len(msg.ToolCalls) == 0 {
 		if xmlCalls, malformed := parseXMLContentToolCallsDetailed(rawContent); len(xmlCalls) > 0 {
 			msg.ToolCalls = append(msg.ToolCalls, xmlCalls...)
@@ -1325,7 +1326,9 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 	if finishReason == "" {
 		finishReason = llmFinishReasonStop.String()
 	}
-	finishReason, truncatedTools := filterTruncatedToolCalls(&msg, finishReason)
+	if len(truncatedTools) == 0 {
+		finishReason, truncatedTools = filterTruncatedToolCalls(&msg, finishReason)
+	}
 	return &llm.Response{
 		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools}},
 		Usage:   resp.Usage,

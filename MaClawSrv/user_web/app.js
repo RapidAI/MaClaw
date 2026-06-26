@@ -302,6 +302,7 @@ Object.assign(I18N.zh, {
   clearSelection: "\u6e05\u7a7a"
 });
 Object.assign(I18N.en, { loading: "Loading...", knowledgeImport: "Knowledge import", knowledgeImportHint: "Add text, documents, document archives, or crawled URLs to this user's knowledge base.", connectedKnowledge: "Accessible knowledge bases", connectedKnowledgeHint: "Knowledge bases this user can read. Import only writes to the user's own knowledge base.", noConnectedKnowledge: "No accessible knowledge bases", selfKnowledge: "Own knowledge base", publicKnowledge: "Public knowledge base", otherUserKnowledge: "Other user's knowledge base", knowledgeOwner: "Owner", knowledgeTenant: "Tenant", knowledgeScopeIDs: "Raw IDs", knowledgeCurrentUser: "current user", knowledgePublicOwner: "public", importText: "Text", importFile: "File or archive", importURL: "URL crawl", title: "Title", topicHint: "Topic hint", labels: "Labels", textToImport: "Text to import", chooseFiles: "Choose documents, ZIP, or RAR", urlsToImport: "URLs to import", crawlDepth: "Crawl depth", sameDomainOnly: "Same domain only", import: "Import", importing: "Importing...", importStarted: "Knowledge import started", importedKnowledge: "Knowledge import completed", importCompleted: "Knowledge import completed", importStillRunning: "Knowledge import still running", importTextPlaceholder: "Paste text...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "Template", insertTemplate: "Insert template", urlExample: "URL example", addURL: "Add URL", importJob: "Import job", importStatus: "Status", importSource: "Source", importTitle: "Title", importKind: "Kind", importFiles: "Files", importUrls: "URLs", importProcessed: "Processed", importImported: "Imported", importFailed: "Failed", importSkipped: "Skipped", importDuplicates: "Duplicates", importWarnings: "Warnings" });
+Object.assign(I18N.en, { knowledgeExport: "Knowledge export", knowledgeExportHint: "Export all or selected own knowledge as editable JSON for machine-to-machine exchange or later Hub sharing.", exportTitle: "Export title", exportDescription: "Knowledge description", exportDescriptionPlaceholder: "Describe this export, its use case, and any caveats.", exportSourceIDs: "Selected Source IDs", exportSourceIDsPlaceholder: "Leave empty for all sources. Separate IDs with commas or new lines.", includeDisabledSources: "Include disabled sources", exportFile: "Export file", viewShares: "View shares", exportDescriptionRequired: "Enter the knowledge description first.", exportStarted: "Preparing export file...", exportCompleted: "Knowledge export file is ready.", knowledgePackageImport: "Whole-library import", knowledgePackageImportHint: "Import a MaClaw knowledge JSON package. URL items can be rebuilt; text items import when content is present.", choosePackage: "Choose package", importPackage: "Import package", choosePackageFirst: "Choose a knowledge export JSON file first.", knowledgeShareImport: "Import by knowledge ID or share link", knowledgeShareImportHint: "Paste a human-readable, agent-importable share link, or enter the knowledge ID directly.", knowledgeID: "Knowledge ID", shareLink: "Share link", hubURL: "Hub URL", hubToken: "Hub Token", hubTokenPlaceholder: "Optional, for private/tenant/user-list shares", importShare: "Import share", shareInputRequired: "Enter a knowledge ID or share link." });
 Object.assign(I18N.en, { clearOwnKnowledge: "Clear", clearOwnKnowledgeConfirm: "All data in your own knowledge base will be cleared and cannot be recovered. Continue?", clearOwnKnowledgePasswordPrompt: "Enter administrator password or Admin Secret to clear this knowledge base:", clearOwnKnowledgeDone: "Knowledge base cleared. Deleted sources: {count}", clearOwnKnowledgeAuthRequired: "Administrator credential is required." });
 Object.assign(I18N.zh, {
   groupIM: "\u0049\u004d",
@@ -310,6 +311,7 @@ Object.assign(I18N.zh, {
   channelOverviewHint: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684 QQ\u3001\u5fae\u4fe1\u3001Telegram \u548c\u7b2c\u4e09\u65b9 IM \u63a5\u5165\u3002"
 });
 Object.assign(I18N.zh, { loading: "\u52a0\u8f7d\u4e2d...", knowledgeImport: "\u77e5\u8bc6\u5e93\u5bfc\u5165", knowledgeImportHint: "\u5c06\u6587\u672c\u3001\u5355\u6587\u6863\u3001\u6587\u6863\u538b\u7f29\u5305\u6216\u6307\u5b9a\u6df1\u5ea6\u7684 URL \u6293\u53d6\u7ed3\u679c\u5bfc\u5165\u5f53\u524d\u7528\u6237\u77e5\u8bc6\u5e93\u3002", connectedKnowledge: "\u53ef\u8bbf\u95ee\u77e5\u8bc6\u5e93", connectedKnowledgeHint: "\u5f53\u524d\u7528\u6237\u53ef\u8bfb\u7684\u77e5\u8bc6\u5e93\u5217\u8868\u3002\u5bfc\u5165\u53ea\u5199\u5165\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\u3002", noConnectedKnowledge: "\u6682\u65e0\u53ef\u8bbf\u95ee\u77e5\u8bc6\u5e93", selfKnowledge: "\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93", publicKnowledge: "\u516c\u5171\u77e5\u8bc6\u5e93", otherUserKnowledge: "\u5176\u5b83\u7528\u6237\u7684\u77e5\u8bc6\u5e93", knowledgeOwner: "\u5c5e\u4e3b", knowledgeTenant: "\u79df\u6237", knowledgeScopeIDs: "\u539f\u59cb ID", knowledgeCurrentUser: "\u5f53\u524d\u7528\u6237", knowledgePublicOwner: "\u516c\u5171", importText: "\u6587\u672c", importFile: "\u6587\u4ef6/\u538b\u7f29\u5305", importURL: "URL \u679a\u4e3e", title: "\u6807\u9898", topicHint: "\u4e3b\u9898\u63d0\u793a", labels: "\u6807\u7b7e", textToImport: "\u5bfc\u5165\u6587\u672c", chooseFiles: "\u9009\u62e9\u6587\u6863\u3001ZIP \u6216 RAR", urlsToImport: "\u5bfc\u5165 URL", crawlDepth: "\u679a\u4e3e\u6df1\u5ea6", sameDomainOnly: "\u4ec5\u540c\u57df\u540d", import: "\u5bfc\u5165", importing: "\u5bfc\u5165\u4e2d...", importStarted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5f00\u59cb", importedKnowledge: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importCompleted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importStillRunning: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u4ecd\u5728\u8fd0\u884c", importTextPlaceholder: "\u7c98\u8d34\u8981\u5bfc\u5165\u7684\u6587\u672c...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "\u6a21\u677f", insertTemplate: "\u63d2\u5165\u6a21\u677f", urlExample: "URL \u793a\u4f8b", addURL: "\u6dfb\u52a0 URL", importJob: "\u5bfc\u5165\u4efb\u52a1", importStatus: "\u72b6\u6001", importSource: "\u6765\u6e90", importTitle: "\u6807\u9898", importKind: "\u7c7b\u578b", importFiles: "\u6587\u4ef6", importUrls: "URL", importProcessed: "\u5df2\u5904\u7406", importImported: "\u5df2\u5bfc\u5165", importFailed: "\u5931\u8d25", importSkipped: "\u8df3\u8fc7", importDuplicates: "\u91cd\u590d", importWarnings: "\u8b66\u544a" });
+Object.assign(I18N.zh, { knowledgeExport: "知识库导出", knowledgeExportHint: "导出当前用户自己的全部或部分知识为可编辑 JSON 文件，可用于跨机器交换或后续上传 Hub。", exportTitle: "导出标题", exportDescription: "知识描述", exportDescriptionPlaceholder: "说明这次导出的内容、适用场景和注意事项。", exportSourceIDs: "部分导出 Source IDs", exportSourceIDsPlaceholder: "留空表示导出全部；多个 ID 用逗号或换行分隔。", includeDisabledSources: "包含禁用来源", exportFile: "导出文件", viewShares: "查看分享", exportDescriptionRequired: "请先填写知识描述。", exportStarted: "正在生成导出文件...", exportCompleted: "知识库导出文件已生成。", knowledgePackageImport: "整库导入", knowledgePackageImportHint: "导入 MaClaw 知识导出 JSON 包。当前可重建 URL 项；包含 content 字段的文本项也可导入。", choosePackage: "选择导出包", importPackage: "导入包", choosePackageFirst: "请先选择知识导出 JSON 文件。", knowledgeShareImport: "按知识 ID / 分享链接导入", knowledgeShareImportHint: "粘贴人可阅读、agent 可导入的分享链接，或直接输入知识 ID。", knowledgeID: "知识 ID", shareLink: "分享链接", hubURL: "Hub 地址", hubToken: "Hub Token", hubTokenPlaceholder: "私有/租户/用户列表可见时可填写", importShare: "导入分享", shareInputRequired: "请填写知识 ID 或分享链接。" });
 Object.assign(I18N.en, { ownKnowledgeImports: "Own import batches", ownKnowledgeImportsHint: "Batches imported into this user's own knowledge base.", knowledgeBatchName: "File or folder", knowledgeBatchFiles: "Files", knowledgeBatchUpdated: "Updated", knowledgeBatchEmpty: "No import batches", knowledgeBatchSamples: "Samples", knowledgeBatchMeta: "{imported} imported / {skipped} skipped / {failed} failed" });
 Object.assign(I18N.zh, { ownKnowledgeImports: "\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\u5217\u8868", ownKnowledgeImportsHint: "\u6309\u5bfc\u5165\u6279\u6b21\u5217\u51fa\u5f53\u524d\u7528\u6237\u81ea\u5df1\u7684\u77e5\u8bc6\u5e93\u5185\u5bb9\u3002", knowledgeBatchName: "\u6587\u4ef6\u540d/\u76ee\u5f55\u540d", knowledgeBatchFiles: "\u6587\u4ef6\u6570", knowledgeBatchUpdated: "\u66f4\u65b0\u65f6\u95f4", knowledgeBatchEmpty: "\u6682\u65e0\u5bfc\u5165\u6279\u6b21", knowledgeBatchSamples: "\u793a\u4f8b\u6587\u4ef6", knowledgeBatchMeta: "\u5df2\u5bfc\u5165 {imported} / \u8df3\u8fc7 {skipped} / \u5931\u8d25 {failed}" });
 Object.assign(I18N.en, { deleteKnowledgeBatch: "Delete", deleteKnowledgeBatchTitle: "Delete import batch", deleteKnowledgeBatchConfirm: "Delete import batch \"{name}\" and its imported knowledge? This cannot be undone.", deleteKnowledgeBatchDone: "Deleted import batch. Sources deleted: {count}" });
@@ -351,7 +353,7 @@ const HIDDEN_CONFIG_KEYS = new Set([
   "hub_security_centralized", "security_policy_mode", "network_level", "network_allowlist",
   "language", "ui_mode", "working_directory", "vector_search_enabled", "tts_enabled", "asr_enabled", "im_progress_nudge_enabled",
   "thirdparty_gateway_host", "thirdparty_gateway_port",
-  "maclaw_llm_protocol", "maclaw_llm_context_length", "maclaw_llm_timeout_sec", "maclaw_llm_current_provider", "maclaw_llm_providers", "llm_prompt_cache", "auxiliary_llm", "model_routes",
+  "maclaw_llm_protocol", "maclaw_llm_context_length", "maclaw_llm_timeout_sec", "skill_runner_timeout_sec", "maclaw_llm_current_provider", "maclaw_llm_providers", "llm_prompt_cache", "auxiliary_llm", "model_routes",
   "remote_user_id", "remote_tenant_id", "remote_tenant_name", "remote_machine_id", "remote_machine_name",
   "remote_machine_token", "remote_viewer_token", "skill_market_session_token", "remote_client_id", "remote_sn",
   "env_check_done", "last_env_check_time", "onboarding_done", "floating_btn_x", "floating_btn_y",
@@ -1658,7 +1660,25 @@ function renderKnowledgeImporter() {
     `<label class="inline-check knowledge-check"><input id="knowledgeSameDomain" type="checkbox" checked>${esc(t("sameDomainOnly"))}</label>`,
     `<button id="knowledgeURLImportBtn" type="button" class="secondary knowledge-span-2">${esc(t("import"))}</button>`
   ].join("");
-  return `<div class="knowledge-access-summary" role="group" aria-label="${esc(t("connectedKnowledge"))}"><div class="knowledge-section-head"><strong>${esc(t("connectedKnowledge"))}</strong><span class="helper">${esc(t("connectedKnowledgeHint"))}</span></div><div class="knowledge-access-layout"><div id="knowledgeAccessSummary" class="knowledge-scope-list" aria-live="polite">${esc(t("loading"))}</div><section class="knowledge-batch-panel" aria-label="${esc(t("ownKnowledgeImports"))}"><div class="knowledge-batch-head"><div><strong>${esc(t("ownKnowledgeImports"))}</strong><span class="helper">${esc(t("ownKnowledgeImportsHint"))}</span></div><span id="knowledgeBatchCount" class="badge">0</span></div><div id="knowledgeBatchList" class="knowledge-batch-list" aria-live="polite">${esc(t("loading"))}</div><div id="knowledgeBatchPager" class="knowledge-batch-pager"></div></section></div></div><div class="knowledge-importer" role="group" aria-label="${esc(t("knowledgeImport"))}"><div class="knowledge-section-head"><strong>${esc(t("knowledgeImport"))}</strong><span class="helper">${esc(t("knowledgeImportHint"))}</span></div><div class="knowledge-import-grid"><section><h3>${esc(t("importText"))}</h3><div class="knowledge-import-fields">${textFields}</div></section><section><h3>${esc(t("importFile"))}</h3><div class="knowledge-import-fields">${fileFields}</div></section><section><h3>${esc(t("importURL"))}</h3><div class="knowledge-import-fields">${urlFields}</div></section></div><div id="knowledgeImportProgress" class="knowledge-progress" role="status" aria-live="polite"></div><pre id="knowledgeImportStatus" class="code" aria-live="polite"></pre></div>`;
+  const exportFields = [
+    knowledgeField("knowledgeExportTitle", t("exportTitle"), `<input id="knowledgeExportTitle" type="text" maxlength="160">`),
+    knowledgeField("knowledgeExportDescription", t("exportDescription"), `<textarea id="knowledgeExportDescription" placeholder="${esc(t("exportDescriptionPlaceholder"))}" maxlength="2000"></textarea>`, "knowledge-span-2"),
+    knowledgeField("knowledgeExportSourceIDs", t("exportSourceIDs"), `<textarea id="knowledgeExportSourceIDs" placeholder="${esc(t("exportSourceIDsPlaceholder"))}"></textarea>`, "knowledge-span-2"),
+    `<label class="inline-check knowledge-check"><input id="knowledgeExportIncludeDisabled" type="checkbox">${esc(t("includeDisabledSources"))}</label>`,
+    `<div class="knowledge-action-row knowledge-span-2"><button id="knowledgeExportBtn" type="button" class="secondary">${esc(t("exportFile"))}</button><button id="knowledgeViewSharesBtn" type="button" class="secondary">${esc(t("viewShares"))}</button></div>`
+  ].join("");
+  const packageFields = [
+    knowledgeField("knowledgePackageFile", t("choosePackage"), `<input id="knowledgePackageFile" type="file" accept=".json,application/json">`, "knowledge-span-2"),
+    `<button id="knowledgePackageImportBtn" type="button" class="secondary knowledge-span-2">${esc(t("importPackage"))}</button>`
+  ].join("");
+  const shareFields = [
+    knowledgeField("knowledgeShareID", t("knowledgeID"), `<input id="knowledgeShareID" type="text" autocomplete="off">`),
+    knowledgeField("knowledgeHubURL", t("hubURL"), `<input id="knowledgeHubURL" type="url" placeholder="https://hub.example.com">`),
+    knowledgeField("knowledgeShareLink", t("shareLink"), `<textarea id="knowledgeShareLink" placeholder="https://hub.example.com/knowledge/..."></textarea>`, "knowledge-span-2"),
+    knowledgeField("knowledgeHubToken", t("hubToken"), `<input id="knowledgeHubToken" type="password" autocomplete="off" placeholder="${esc(t("hubTokenPlaceholder"))}">`, "knowledge-span-2"),
+    `<button id="knowledgeShareImportBtn" type="button" class="secondary knowledge-span-2">${esc(t("importShare"))}</button>`
+  ].join("");
+  return `<div class="knowledge-access-summary" role="group" aria-label="${esc(t("connectedKnowledge"))}"><div class="knowledge-section-head"><strong>${esc(t("connectedKnowledge"))}</strong><span class="helper">${esc(t("connectedKnowledgeHint"))}</span></div><div class="knowledge-access-layout"><div id="knowledgeAccessSummary" class="knowledge-scope-list" aria-live="polite">${esc(t("loading"))}</div><section class="knowledge-batch-panel" aria-label="${esc(t("ownKnowledgeImports"))}"><div class="knowledge-batch-head"><div><strong>${esc(t("ownKnowledgeImports"))}</strong><span class="helper">${esc(t("ownKnowledgeImportsHint"))}</span></div><span id="knowledgeBatchCount" class="badge">0</span></div><div id="knowledgeBatchList" class="knowledge-batch-list" aria-live="polite">${esc(t("loading"))}</div><div id="knowledgeBatchPager" class="knowledge-batch-pager"></div></section></div></div><div class="knowledge-importer" role="group" aria-label="${esc(t("knowledgeImport"))}"><div class="knowledge-section-head"><strong>${esc(t("knowledgeImport"))}</strong><span class="helper">${esc(t("knowledgeImportHint"))}</span></div><div class="knowledge-import-grid"><section><h3>${esc(t("importText"))}</h3><div class="knowledge-import-fields">${textFields}</div></section><section><h3>${esc(t("importFile"))}</h3><div class="knowledge-import-fields">${fileFields}</div></section><section><h3>${esc(t("importURL"))}</h3><div class="knowledge-import-fields">${urlFields}</div></section><section><h3>${esc(t("knowledgeExport"))}</h3><p class="helper">${esc(t("knowledgeExportHint"))}</p><div class="knowledge-import-fields">${exportFields}</div></section><section><h3>${esc(t("knowledgePackageImport"))}</h3><p class="helper">${esc(t("knowledgePackageImportHint"))}</p><div class="knowledge-import-fields">${packageFields}</div></section><section><h3>${esc(t("knowledgeShareImport"))}</h3><p class="helper">${esc(t("knowledgeShareImportHint"))}</p><div class="knowledge-import-fields">${shareFields}</div></section></div><div id="knowledgeImportProgress" class="knowledge-progress" role="status" aria-live="polite"></div><pre id="knowledgeImportStatus" class="code" aria-live="polite"></pre></div>`;
 }
 function bindKnowledgeImporter() {
   if (!$('knowledgeTextImportBtn')) return;
@@ -1672,6 +1692,10 @@ function bindKnowledgeImporter() {
   $('knowledgeTextImportBtn').onclick = importKnowledgeText;
   $('knowledgeFileImportBtn').onclick = importKnowledgeFiles;
   $('knowledgeURLImportBtn').onclick = importKnowledgeURLs;
+  $('knowledgeExportBtn').onclick = exportKnowledgePackage;
+  $('knowledgeViewSharesBtn').onclick = viewKnowledgeShares;
+  $('knowledgePackageImportBtn').onclick = importKnowledgePackage;
+  $('knowledgeShareImportBtn').onclick = importKnowledgeShare;
 }
 function insertKnowledgeTemplate() {
   const target = $('knowledgeTextBody');
@@ -2003,6 +2027,72 @@ async function finishKnowledgeImport(out) {
   toastKnowledgeImportResult(finalJob || out);
   await loadKnowledgeImportBatches();
   return finalJob || out;
+}
+function parseKnowledgeSourceIDs(value) {
+  return String(value || "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
+}
+function knowledgeExportFilename(resp) {
+  const header = resp.headers.get("Content-Disposition") || "";
+  const match = header.match(/filename="?([^";]+)"?/i);
+  return match?.[1] || `maclaw-knowledge-${Date.now()}.json`;
+}
+async function exportKnowledgePackage() {
+  const description = $('knowledgeExportDescription')?.value?.trim() || "";
+  if (!description) return showKnowledgeFieldError("knowledgeExportDescription", t("exportDescriptionRequired"));
+  try {
+    await runKnowledgeImport("knowledgeExportBtn", async () => {
+      setKnowledgeImportStatus(t("exportStarted"), true);
+      const payload = {
+        title: $('knowledgeExportTitle')?.value?.trim() || "",
+        description,
+        source_ids: parseKnowledgeSourceIDs($('knowledgeExportSourceIDs')?.value || ""),
+        include_disabled: $('knowledgeExportIncludeDisabled')?.checked === true
+      };
+      const resp = await fetch("/api/v1/knowledge/export", { method: "POST", headers: headers(true), body: JSON.stringify(payload) });
+      if (!resp.ok) {
+        const out = await resp.json().catch(() => ({}));
+        throw new Error(apiErrorMessage(out, `${resp.status} ${resp.statusText}`));
+      }
+      const blob = await resp.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = knowledgeExportFilename(resp);
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1200);
+      setKnowledgeImportStatus(t("exportCompleted"), true);
+      toast(t("exportCompleted"));
+    });
+  } catch (e) { if (!handleAPIError(e)) toast(e.message); }
+}
+function viewKnowledgeShares() {
+  const target = "/hub/knowledge/shares/mine";
+  window.open(target, "_blank", "noopener");
+}
+async function importKnowledgePackage() {
+  const file = $('knowledgePackageFile')?.files?.[0];
+  if (!file) return showKnowledgeFieldError("knowledgePackageFile", t("choosePackageFirst"));
+  try {
+    await runKnowledgeImport("knowledgePackageImportBtn", async () => {
+      setKnowledgeImportStatus(t("importing"), true);
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      const out = await api("/api/v1/knowledge/import/package", { method: "POST", body: JSON.stringify(payload) });
+      await finishKnowledgeImport(out);
+    });
+  } catch (e) { if (!handleAPIError(e)) toast(e.message); }
+}
+async function importKnowledgeShare() {
+  const knowledgeID = $('knowledgeShareID')?.value?.trim() || "";
+  const shareLink = $('knowledgeShareLink')?.value?.trim() || "";
+  if (!knowledgeID && !shareLink) return showKnowledgeFieldError("knowledgeShareID", t("shareInputRequired"));
+  try {
+    await runKnowledgeImport("knowledgeShareImportBtn", async () => {
+      setKnowledgeImportStatus(t("importing"), true);
+      const out = await api("/api/v1/knowledge/import/share", { method: "POST", body: JSON.stringify({ knowledge_id: knowledgeID, share_link: shareLink, hub_url: $('knowledgeHubURL')?.value?.trim() || "", hub_token: $('knowledgeHubToken')?.value?.trim() || "" }) });
+      await finishKnowledgeImport(out);
+    });
+  } catch (e) { if (!handleAPIError(e)) toast(e.message); }
 }
 async function importKnowledgeText() {
   clearKnowledgeImportErrors();

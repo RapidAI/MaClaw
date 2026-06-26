@@ -765,6 +765,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 		"screen_dim_timeout_min":     float64(9),
 		"remote_heartbeat_sec":       float64(3),
 		"agent_response_timeout_sec": float64(300),
+		"skill_runner_timeout_sec":   float64(3600),
 		"maclaw_llm_timeout_sec":     float64(480),
 		"audio_input_device_id":      " mic-1 ",
 		"audio_output_device_id":     " speaker-1 ",
@@ -816,7 +817,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if !patched.PetEnabled || patched.PetSkin != "mini-claw" || patched.PetSize != 92 || patched.PetMotionEnabled == nil || !*patched.PetMotionEnabled || patched.PetMotionSound == nil || *patched.PetMotionSound || patched.PetMotionSoundPreset != "soft" || patched.PetTextInteraction == nil || !*patched.PetTextInteraction || !patched.PetVoiceInput || !patched.PetVoiceReadback || patched.PetFileDropEnabled == nil || *patched.PetFileDropEnabled || patched.PetInteractionMode != "active" || patched.PetConversationMode != "continuous" || patched.PetReadbackMode != "summary" || !patched.PetAutoRetryOnNoHear || patched.PetContinuousTimeout != 45 || !patched.PetQuietMode {
 		t.Fatalf("pet fields not applied: %#v", patched)
 	}
-	if patched.ScreenDimTimeoutMin != 9 || patched.RemoteHeartbeatSec != 5 || patched.AgentResponseTimeoutSec != 300 || patched.MaclawLLMTimeoutSec != 480 {
+	if patched.ScreenDimTimeoutMin != 9 || patched.RemoteHeartbeatSec != 5 || patched.AgentResponseTimeoutSec != 300 || patched.SkillRunnerTimeoutSec != 3600 || patched.MaclawLLMTimeoutSec != 480 {
 		t.Fatalf("numeric patch fields not applied: %#v", patched)
 	}
 	if patched.AudioInputDeviceID != "mic-1" || patched.AudioOutputDeviceID != "speaker-1" {
@@ -1511,8 +1512,7 @@ func TestSaveConfigSanitizesAgentTimeouts(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.AgentResponseTimeoutSec = 120
-	cfg.MaclawLLMTimeoutSec = 900
-	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "slow", TimeoutSec: 120}}
+	cfg.SkillRunnerTimeoutSec = 20000
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -1524,11 +1524,8 @@ func TestSaveConfigSanitizesAgentTimeouts(t *testing.T) {
 	if reloaded.AgentResponseTimeoutSec != corelib.MinAgentTimeoutSec {
 		t.Fatalf("AgentResponseTimeoutSec = %d, want %d", reloaded.AgentResponseTimeoutSec, corelib.MinAgentTimeoutSec)
 	}
-	if reloaded.MaclawLLMTimeoutSec != corelib.MaxAgentTimeoutSec {
-		t.Fatalf("MaclawLLMTimeoutSec = %d, want %d", reloaded.MaclawLLMTimeoutSec, corelib.MaxAgentTimeoutSec)
-	}
-	if got := reloaded.MaclawLLMProviders[0].TimeoutSec; got != corelib.MinAgentTimeoutSec {
-		t.Fatalf("provider TimeoutSec = %d, want %d", got, corelib.MinAgentTimeoutSec)
+	if reloaded.SkillRunnerTimeoutSec != corelib.MaxSkillRunnerTimeoutSec {
+		t.Fatalf("SkillRunnerTimeoutSec = %d, want %d", reloaded.SkillRunnerTimeoutSec, corelib.MaxSkillRunnerTimeoutSec)
 	}
 }
 
@@ -1540,6 +1537,7 @@ func TestPatchConfigSanitizesAgentTimeouts(t *testing.T) {
 	app := &App{testHomeDir: tmpHome}
 	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.AgentResponseTimeoutSec = 120
+		cfg.SkillRunnerTimeoutSec = 20000
 		cfg.MaclawLLMTimeoutSec = 900
 		cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "slow", TimeoutSec: 120}}
 	}); err != nil {
@@ -1552,6 +1550,9 @@ func TestPatchConfigSanitizesAgentTimeouts(t *testing.T) {
 	}
 	if reloaded.AgentResponseTimeoutSec != corelib.MinAgentTimeoutSec {
 		t.Fatalf("AgentResponseTimeoutSec = %d, want %d", reloaded.AgentResponseTimeoutSec, corelib.MinAgentTimeoutSec)
+	}
+	if reloaded.SkillRunnerTimeoutSec != corelib.MaxSkillRunnerTimeoutSec {
+		t.Fatalf("SkillRunnerTimeoutSec = %d, want %d", reloaded.SkillRunnerTimeoutSec, corelib.MaxSkillRunnerTimeoutSec)
 	}
 	if reloaded.MaclawLLMTimeoutSec != corelib.MaxAgentTimeoutSec {
 		t.Fatalf("MaclawLLMTimeoutSec = %d, want %d", reloaded.MaclawLLMTimeoutSec, corelib.MaxAgentTimeoutSec)
@@ -1863,6 +1864,59 @@ func TestConfigManagerUpdatePatchesWithoutStaleOverwrite(t *testing.T) {
 	}
 	if saved.RemoteEmail != "owner@example.com" || !saved.LogDetailEnabled {
 		t.Fatalf("unrelated fields overwritten by ConfigManager update: %#v", saved)
+	}
+}
+
+func TestConfigManagerExposesAndAppliesSkillRunnerTimeout(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	mgr := NewConfigManager(app)
+
+	schemaJSON, err := mgr.SchemaJSON()
+	if err != nil {
+		t.Fatalf("SchemaJSON() error = %v", err)
+	}
+	if !strings.Contains(schemaJSON, "skill_runner_timeout_sec") {
+		t.Fatalf("schema does not expose skill_runner_timeout_sec:\n%s", schemaJSON)
+	}
+	var schema []struct {
+		Name string `json:"name"`
+		Keys []struct {
+			Key         string `json:"key"`
+			Description string `json:"description"`
+			Default     string `json:"default"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+		t.Fatalf("schema JSON did not parse: %v\n%s", err, schemaJSON)
+	}
+	found := false
+	for _, section := range schema {
+		for _, key := range section.Keys {
+			if key.Key != "skill_runner_timeout_sec" {
+				continue
+			}
+			found = true
+			if !strings.Contains(key.Description, "240-14400") || key.Default != "600" {
+				t.Fatalf("schema exposes stale skill runner timeout bounds/default: %#v", key)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("schema does not expose parsed skill_runner_timeout_sec:\n%s", schemaJSON)
+	}
+	if _, err := mgr.UpdateConfig("maclaw_llm", "skill_runner_timeout_sec", "20000"); err != nil {
+		t.Fatalf("UpdateConfig(skill_runner_timeout_sec) error = %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after update error = %v", err)
+	}
+	if saved.SkillRunnerTimeoutSec != corelib.MaxSkillRunnerTimeoutSec {
+		t.Fatalf("SkillRunnerTimeoutSec = %d, want %d", saved.SkillRunnerTimeoutSec, corelib.MaxSkillRunnerTimeoutSec)
 	}
 }
 

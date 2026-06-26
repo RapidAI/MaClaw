@@ -174,7 +174,17 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 	}
 
 	// Step 5: Structured template match.
+	//
+	// When semanticHint already points to a concrete registered workflow type,
+	// treat it as authoritative for the primary route. BM25 still participates
+	// in runner-up detection later, but it must not override a confident
+	// external hint with a different template due to short-text overlap noise.
 	matched := r.templates.MatchByText(text)
+	if semanticHint != "" {
+		if hinted := r.templates.Get(semanticHint); hinted != nil {
+			matched = hinted
+		}
+	}
 	if matched == nil && semanticHint != "" {
 		// BM25 text matching failed, but an external classifier (e.g. UIC)
 		// identified the intent. If a template with that type is registered,
@@ -328,6 +338,9 @@ func hasWorkflowStartSignal(text string) bool {
 			return true
 		}
 	}
+	if hasGaokaoApplicationStartSignal(lower) {
+		return true
+	}
 	// Check strong coding action first — these are sufficient on their own.
 	if hasStrongCodingActionInText(lower) && len([]rune(lower)) >= 6 {
 		return true
@@ -344,6 +357,25 @@ func hasWorkflowStartSignal(text string) bool {
 	}
 	for _, object := range workflowObjectSignals {
 		if strings.Contains(lower, object) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGaokaoApplicationStartSignal(lowerText string) bool {
+	hasObject := false
+	for _, object := range gaokaoApplicationObjectSignals {
+		if strings.Contains(lowerText, object) {
+			hasObject = true
+			break
+		}
+	}
+	if !hasObject {
+		return false
+	}
+	for _, action := range gaokaoApplicationActionSignals {
+		if strings.Contains(lowerText, action) {
 			return true
 		}
 	}
@@ -394,11 +426,20 @@ var explicitWorkflowObjectSignals = []string{
 	// Simplified Chinese
 	"工作流", "申请书", "申报书", "项目申请", "基金申请", "国自然", "国家自然科学基金",
 	"青年基金", "青年科学基金", "青基", "优青", "杰青", "长江学者",
+	"高考志愿", "志愿填报", "报志愿", "中外合办学校", "境外校区志愿", "位次能报",
 	// Traditional Chinese (only items that differ from simplified)
 	"工作流程", "申請書", "項目申請", "基金申請",
 	"傑青", "長江學者",
 	// English
 	"business plan", "slide deck", "grant proposal", "research proposal",
+}
+
+var gaokaoApplicationObjectSignals = []string{
+	"高考", "志愿", "位次", "中外合办", "境外校区", "马来西亚分校", "芬兰校区",
+}
+
+var gaokaoApplicationActionSignals = []string{
+	"填报", "报志愿", "能报", "可报", "冲稳保", "保底", "冲一冲", "稳一稳",
 }
 
 var workflowActionSignals = []string{

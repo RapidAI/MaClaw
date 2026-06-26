@@ -1846,3 +1846,52 @@ func TestKnowledgeSearchToolUsesLocalStore(t *testing.T) {
 		t.Fatalf("enabled source should return to default search: %s", enabledSearch)
 	}
 }
+
+func TestNormalizeKnowledgeSourceIDsPreservesCase(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+
+	searchOpts := app.normalizeKnowledgeSearchOptions(knowledge.SearchOptions{
+		SourceIDs:   []string{" Src_Mixed_001 ", "Src_Mixed_001", "src_mixed_001", " "},
+		SourceKinds: []string{" CSV "},
+	})
+	if got, want := searchOpts.SourceIDs, []string{"Src_Mixed_001", "src_mixed_001"}; !stringSlicesEqual(got, want) {
+		t.Fatalf("search source IDs = %#v, want %#v", got, want)
+	}
+	if got, want := searchOpts.SourceKinds, []string{"csv"}; !stringSlicesEqual(got, want) {
+		t.Fatalf("source kinds should still normalize case, got %#v want %#v", got, want)
+	}
+
+	structuredOpts := app.normalizeKnowledgeStructuredSearchOptions(knowledge.StructuredSearchOptions{
+		SourceID:  " Src_One ",
+		SourceIDs: []string{" Src_Mixed_001 ", "src_mixed_001"},
+	})
+	if structuredOpts.SourceID != "Src_One" {
+		t.Fatalf("structured source ID = %q, want Src_One", structuredOpts.SourceID)
+	}
+	if got, want := structuredOpts.SourceIDs, []string{"Src_Mixed_001", "src_mixed_001"}; !stringSlicesEqual(got, want) {
+		t.Fatalf("structured source IDs = %#v, want %#v", got, want)
+	}
+
+	catalogOpts := app.normalizeKnowledgeStructuredCatalogOptions(knowledge.StructuredCatalogOptions{
+		SourceID:  " Src_Catalog ",
+		SourceIDs: []string{" Src_Mixed_001 ", "src_mixed_001"},
+	})
+	if catalogOpts.SourceID != "Src_Catalog" {
+		t.Fatalf("catalog source ID = %q, want Src_Catalog", catalogOpts.SourceID)
+	}
+	if got, want := catalogOpts.SourceIDs, []string{"Src_Mixed_001", "src_mixed_001"}; !stringSlicesEqual(got, want) {
+		t.Fatalf("catalog source IDs = %#v, want %#v", got, want)
+	}
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

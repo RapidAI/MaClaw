@@ -120,10 +120,17 @@ export function AboutPanel({
     const remoteEmail = String(config?.remote_email || '').trim() || emptyValue;
     const machineID = String(config?.remote_machine_id || '').trim() || emptyValue;
 
-    // Override product name for TigerClaw brand on About panel
-    const productName = brandInfo?.id === 'qianxin'
-        ? '\u864e\u722a 6 \u7a0b\u542f'
-        : t("aboutProductName");
+    const productName = (() => {
+        if (!brandInfo?.id || brandInfo.id === 'maclaw') {
+            return t("aboutProductName");
+        }
+        if (brandInfo.id === 'qianxin') {
+            return '\u864e\u722a 6 \u7a0b\u542f';
+        }
+        const cnName = String(brandInfo.displayNameCN || '').trim();
+        const displayName = String(brandInfo.displayName || '').trim();
+        return [cnName, displayName].filter(Boolean).join(' ') || t("aboutProductName");
+    })();
 
     // Render product name with Monoton-styled "6"
     const renderProductName = () => {

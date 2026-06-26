@@ -173,8 +173,11 @@ func TestNoToolBranchRecoversTruncatedWriteFileBeforeFinalize(t *testing.T) {
 	if result.ReadyToFinalize || result.Response != nil {
 		t.Fatalf("result finalized despite truncated tool call: %+v", result)
 	}
-	if phase.TruncationRetries != 1 {
-		t.Fatalf("TruncationRetries = %d, want 1", phase.TruncationRetries)
+	if phase.TruncationRetries != 0 {
+		t.Fatalf("TruncationRetries = %d, want 0 for essential write_file recovery", phase.TruncationRetries)
+	}
+	if phase.EssentialTruncationHints != 1 {
+		t.Fatalf("EssentialTruncationHints = %d, want 1", phase.EssentialTruncationHints)
 	}
 	if !recorded {
 		t.Fatal("expected recovery system message to be recorded")

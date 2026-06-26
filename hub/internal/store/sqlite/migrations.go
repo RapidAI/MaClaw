@@ -229,12 +229,48 @@ func RunMigrations(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_failure_event_logs_category_created_at ON failure_event_logs(category, created_at DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_failure_event_logs_tenant_created_at ON failure_event_logs(tenant_id, created_at DESC);`,
 
+		`CREATE TABLE IF NOT EXISTS knowledge_shares (
+				knowledge_id TEXT PRIMARY KEY,
+				tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+				owner_user_id TEXT NOT NULL DEFAULT '',
+				owner_user_email TEXT NOT NULL DEFAULT '',
+				title TEXT NOT NULL DEFAULT '',
+				description TEXT NOT NULL DEFAULT '',
+				visibility_scope TEXT NOT NULL DEFAULT 'private',
+				visibility_users_json TEXT NOT NULL DEFAULT '[]',
+				source_summary_json TEXT NOT NULL DEFAULT '{}',
+				share_url TEXT NOT NULL DEFAULT '',
+				hub_id TEXT NOT NULL DEFAULT '',
+				storage_ref TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'active',
+				view_count INTEGER NOT NULL DEFAULT 0,
+				import_count INTEGER NOT NULL DEFAULT 0,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				published_at TEXT NOT NULL,
+				forced_deleted_by TEXT NOT NULL DEFAULT '',
+				forced_deleted_reason TEXT NOT NULL DEFAULT '',
+				forced_deleted_at TEXT
+			);`,
+		`CREATE INDEX IF NOT EXISTS idx_knowledge_shares_tenant_published ON knowledge_shares(tenant_id, published_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_knowledge_shares_owner_published ON knowledge_shares(owner_user_email, published_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_knowledge_shares_expires_at ON knowledge_shares(expires_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_knowledge_shares_view_count ON knowledge_shares(view_count DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_knowledge_shares_import_count ON knowledge_shares(import_count DESC);`,
+
 		`CREATE TABLE IF NOT EXISTS invitation_codes (
-			id TEXT PRIMARY KEY,
+				id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			code TEXT NOT NULL UNIQUE,
 			status TEXT NOT NULL DEFAULT 'unused',
 			used_by_email TEXT NOT NULL DEFAULT '',
 			used_at DATETIME,
+			validity_days INTEGER NOT NULL DEFAULT 0,
+			exported INTEGER NOT NULL DEFAULT 0,
+			vip INTEGER NOT NULL DEFAULT 0,
+			llm_service_group_id TEXT NOT NULL DEFAULT '',
+			llm_grant_duration_days INTEGER NOT NULL DEFAULT 0,
+			llm_grant_credits REAL NOT NULL DEFAULT 0,
 			created_at DATETIME NOT NULL
 		);`,
 
@@ -811,6 +847,9 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_content_audit_logs_tenant_timestamp ON content_audit_logs(tenant_id, timestamp)`)
 	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN smart_route INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN vip INTEGER NOT NULL DEFAULT 0`)
+	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN llm_service_group_id TEXT NOT NULL DEFAULT ''`)
+	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN llm_grant_duration_days INTEGER NOT NULL DEFAULT 0`)
+	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN llm_grant_credits REAL NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE node_executions ADD COLUMN node_type TEXT NOT NULL DEFAULT ''`)
 	alterStmts = append(alterStmts, `ALTER TABLE workflow_definitions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`)
 	alterStmts = append(alterStmts, `ALTER TABLE workflow_instances ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`)
@@ -827,6 +866,7 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_workflow_states_tenant_user ON workflow_states(tenant_id, user_id)`)
 	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN email_verified_at TEXT NOT NULL DEFAULT ''`)
+	alterStmts = append(alterStmts, `ALTER TABLE knowledge_shares ADD COLUMN expires_at TEXT`)
 
 	for _, stmt := range alterStmts {
 		if _, err := db.Exec(stmt); err != nil && !isIgnorableMigrationError(err) {

@@ -41,8 +41,13 @@ func AssessMemoryCandidate(entry Entry, contextHint string) MemoryGovernanceDeci
 	} else if runeLen >= 40 {
 		add(2, "self-contained length")
 	}
+	if containsExplicitCredentialValue(content) {
+		add(-10, "contains explicit credential or temporary secret")
+		return decision
+	}
 	if redactSecretsInMemory(content) != content {
-		add(-4, "contains sensitive material after redaction")
+		add(-10, "contains sensitive material after redaction")
+		return decision
 	}
 
 	canonical := MapToCanonical(entry.Category)
@@ -132,4 +137,41 @@ func hasDigitAndLetter(s string) bool {
 		}
 	}
 	return hasDigit && hasLetter
+}
+
+func containsExplicitCredentialValue(content string) bool {
+	lower := strings.ToLower(strings.TrimSpace(content))
+	if lower == "" {
+		return false
+	}
+	explicitPatterns := []string{
+		"password=", "password:", "password is",
+		"passwd=", "passwd:", "passwd is",
+		"passcode=", "passcode:", "passcode is",
+		"otp=", "otp:", "otp is",
+		"token=", "token:", "token is",
+		"secret=", "secret:", "secret is",
+		"api key=", "api key:", "api key is",
+		"密码=", "密码:", "密码：", "密码是",
+		"验证码=", "验证码:", "验证码：", "验证码是",
+		"口令=", "口令:", "口令：", "口令是",
+	}
+	for _, pattern := range explicitPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	if strings.Contains(lower, "private key") || strings.Contains(lower, "-----begin") {
+		return true
+	}
+	credentialKeywords := []string{
+		"password", "passwd", "passcode", "otp", "verification code", "token",
+		"access token", "refresh token", "api key", "secret", "private key",
+		"密码", "验证码", "动态口令", "口令",
+	}
+	expirySignals := []string{
+		"valid for", "expires", "expire", "one hour", "1 hour", "temporary",
+		"time-limited", "ttl", "临时", "有效期", "一小时", "1小时",
+	}
+	return containsAny(lower, credentialKeywords) && containsAny(lower, expirySignals)
 }

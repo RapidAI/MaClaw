@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -102,6 +104,9 @@ func TestDownloadSkillJSONFromHubCenter_FailsOver(t *testing.T) {
 				"description": "demo",
 				"version":     "1.0.0",
 				"steps":       []map[string]any{{"action": "craft_tool", "params": map[string]any{"instructions": "do it"}}},
+				"files": map[string]string{
+					"assets/logo.png": base64.StdEncoding.EncodeToString([]byte("png")),
+				},
 			})
 		default:
 			http.NotFound(w, r)
@@ -120,6 +125,82 @@ func TestDownloadSkillJSONFromHubCenter_FailsOver(t *testing.T) {
 	}
 	if skill.Name != "Demo Skill" || skill.HubSkillID != "demo" {
 		t.Fatalf("skill = %+v", skill)
+	}
+	if skill.SkillDir == "" {
+		t.Fatalf("SkillDir is empty for file-backed skill")
+	}
+	if _, err := os.Stat(filepath.Join(skill.SkillDir, "assets", "logo.png")); err != nil {
+		t.Fatalf("expected failover download to extract bundled file: %v", err)
+	}
+}
+
+func TestDownloadSkillJSONSetsSkillDirForBundledFiles(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/skill.json" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":          "direct-demo",
+			"name":        "Direct Demo",
+			"description": "demo",
+			"version":     "1.0.0",
+			"steps":       []map[string]any{{"action": "craft_tool", "params": map[string]any{"instructions": "do it"}}},
+			"files": map[string]string{
+				"assets/logo.png": base64.StdEncoding.EncodeToString([]byte("png")),
+			},
+		})
+	}))
+	defer server.Close()
+
+	skill, err := downloadSkillJSON(context.Background(), server.URL+"/skill.json")
+	if err != nil {
+		t.Fatalf("downloadSkillJSON: %v", err)
+	}
+	if skill.SkillDir == "" {
+		t.Fatal("SkillDir is empty for direct bundled skill download")
+	}
+	if _, err := os.Stat(filepath.Join(skill.SkillDir, "assets", "logo.png")); err != nil {
+		t.Fatalf("expected direct download to extract bundled file: %v", err)
+	}
+}
+
+func TestDownloadSkillJSONUsesIDForBundledDirWhenNameMissing(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/skill.json" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":          "id-only-demo",
+			"description": "demo",
+			"version":     "1.0.0",
+			"steps":       []map[string]any{{"action": "craft_tool", "params": map[string]any{"instructions": "do it"}}},
+			"files": map[string]string{
+				"assets/logo.png": base64.StdEncoding.EncodeToString([]byte("png")),
+			},
+		})
+	}))
+	defer server.Close()
+
+	skill, err := downloadSkillJSON(context.Background(), server.URL+"/skill.json")
+	if err != nil {
+		t.Fatalf("downloadSkillJSON: %v", err)
+	}
+	wantDir := filepath.Join(homeDir, ".maclaw", "data", "skills", "id-only-demo")
+	if skill.SkillDir != wantDir {
+		t.Fatalf("SkillDir = %q, want %q", skill.SkillDir, wantDir)
+	}
+	if _, err := os.Stat(filepath.Join(skill.SkillDir, "assets", "logo.png")); err != nil {
+		t.Fatalf("expected id-only direct download to extract bundled file: %v", err)
 	}
 }
 
@@ -326,6 +407,56 @@ func TestSubmitSkillToConfiguredTargetsEnterpriseOnlySkipsHubCenter(t *testing.T
 	}
 }
 
+func TestSubmitSkillToConfiguredTargetsEnterpriseUsesSessionTokenFallback(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var capturedAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/capabilities/skills/submit":
+			capturedAuth = r.Header.Get("Authorization")
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Errorf("ParseMultipartForm() error = %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "enterprise-session-ok"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL: server.URL,
+		CapabilityMarketPolicy: corelib.CapabilityMarketPolicy{
+			PreferredUploadTarget: corelib.CapabilitySourceEnterpriseHub,
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.SkillMarketSessionToken = "skillmarket-session"
+	}); err != nil {
+		t.Fatalf("PatchConfig(SkillMarketSessionToken) error = %v", err)
+	}
+	zipPath := tmpHome + "/skill.zip"
+	if err := os.WriteFile(zipPath, []byte("zip bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	id, err := NewSkillMarketClient(app).SubmitSkillToConfiguredTargets(context.Background(), zipPath, "uploader@example.com")
+	if err != nil {
+		t.Fatalf("SubmitSkillToConfiguredTargets() error = %v", err)
+	}
+	if id != "enterprise_hub=enterprise-session-ok" {
+		t.Fatalf("submission id = %q", id)
+	}
+	if capturedAuth != "Bearer skillmarket-session" {
+		t.Fatalf("Authorization = %q, want session token", capturedAuth)
+	}
+}
 func TestSubmitSkillToConfiguredTargetsDefaultUploadsBothTargets(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

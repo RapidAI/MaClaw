@@ -869,6 +869,21 @@ interface StreamTokenBuffer {
     hasRenderedFirstToken: boolean;
 }
 
+const STREAM_SNAPSHOT_DEDUP_MIN_CHARS = 16;
+const STREAM_SNAPSHOT_OVERLAP_MIN_CHARS = 24;
+
+interface StreamAppendResult {
+    delta: string;
+    snapshotMode: boolean;
+}
+
+interface StreamAppendState {
+    content: string;
+    reasoning: string;
+    contentSnapshotMode: boolean;
+    reasoningSnapshotMode: boolean;
+}
+
 interface ResponseTimeoutController {
     generation: number;
     requestId: string;
@@ -1040,18 +1055,66 @@ function appendTokenToMessage(message: ChatMessage, delta: string): ChatMessage 
         return { ...message, reasoning: nextReasoning || undefined };
     }
 
-    const rawNextContent = message.content ? message.content + delta : delta;
+    const contentDelta = delta;
+    if (!contentDelta) return message;
+    const rawNextContent = message.content ? message.content + contentDelta : contentDelta;
     const nextContent = stripRolePrefixFrontend(rawNextContent);
     logRolePrefixDiagnostic('append-token', rawNextContent, nextContent, {
         messageId: message.id,
         requestId: message.requestId,
-        deltaLen: delta.length,
+        deltaLen: contentDelta.length,
     });
     if (nextContent === message.content) return message;
     return {
         ...message,
         content: nextContent,
     };
+}
+
+function streamAppendDelta(existing: string, incoming: string, snapshotMode = false): StreamAppendResult {
+    if (!existing || !incoming) return { delta: incoming, snapshotMode: false };
+    const existingLen = Array.from(existing.trim()).length;
+    const incomingLen = Array.from(incoming.trim()).length;
+    if (incoming === existing && incomingLen >= STREAM_SNAPSHOT_DEDUP_MIN_CHARS) {
+        return snapshotMode ? { delta: '', snapshotMode: true } : { delta: incoming, snapshotMode: false };
+    }
+    if (incoming.startsWith(existing) && existingLen >= STREAM_SNAPSHOT_DEDUP_MIN_CHARS) {
+        return { delta: incoming.slice(existing.length), snapshotMode: true };
+    }
+    if (existing.endsWith(incoming) && incomingLen >= STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) {
+        return snapshotMode ? { delta: '', snapshotMode: true } : { delta: incoming, snapshotMode: false };
+    }
+    const existingChars = Array.from(existing);
+    const incomingChars = Array.from(incoming);
+    const maxOverlap = Math.min(existingChars.length, incomingChars.length);
+    for (let overlap = maxOverlap; overlap >= STREAM_SNAPSHOT_OVERLAP_MIN_CHARS; overlap--) {
+        const incomingPrefix = incomingChars.slice(0, overlap).join('');
+        if (existing.endsWith(incomingPrefix)) {
+            return { delta: incomingChars.slice(overlap).join(''), snapshotMode: true };
+        }
+    }
+    return { delta: incoming, snapshotMode: false };
+}
+
+function normalizeStreamDeltaWithState(streamState: StreamAppendState, incoming: string): string {
+    if (!incoming) return '';
+    if (incoming.startsWith('\x01')) {
+        const incomingReasoning = stripRolePrefixReasoning(incoming.slice(1));
+        const result = streamAppendDelta(streamState.reasoning, incomingReasoning, streamState.reasoningSnapshotMode);
+        if (result.snapshotMode) streamState.reasoningSnapshotMode = true;
+        if (!result.delta) return '';
+        streamState.reasoning = stripRolePrefixReasoning(streamState.reasoning + result.delta);
+        return `\x01${result.delta}`;
+    }
+    const incomingContent = stripRolePrefixFrontend(incoming);
+    const result = streamAppendDelta(streamState.content, incomingContent, streamState.contentSnapshotMode);
+    if (result.snapshotMode) streamState.contentSnapshotMode = true;
+    if (!result.delta) return '';
+    // Keep state aligned with display text, but return the raw delta. Split
+    // prefixes such as "Brow" + "ser: ..." need the second raw piece so the
+    // message write can strip the full reconstructed prefix from the UI text.
+    streamState.content = stripRolePrefixFrontend(streamState.content + result.delta);
+    return result.delta;
 }
 
 function appendTokenToRound(messages: ChatMessage[], assistantMessageId: string | null, delta: string): ChatMessage[] {
@@ -2159,6 +2222,10 @@ function normalizeRuntimeSessionKey(sessionKey?: string): string {
     return normalizeAssistantSessionKey(sessionKey) || 'desktop-user';
 }
 
+function isTaskManagedSessionKey(sessionKey: string): boolean {
+    return normalizeRuntimeSessionKey(sessionKey).replace(/\\/g, '/').toLowerCase().includes('/.maclaw/data/tasks/');
+}
+
 function agentViewSessionKey(view: AgentView | null | undefined, fallbackSessionKey = 'desktop-user'): string {
     return normalizeRuntimeSessionKey(agentViewFieldValue(view, '_workflow_user_id') || fallbackSessionKey);
 }
@@ -2453,6 +2520,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const selectedFilePathsBySessionRef = useRef<Map<string, string[]>>(new Map());
     const activeSelectedFilesSessionKeyRef = useRef(normalizeRuntimeSessionKey(options?.activeSessionKey || getActiveSessionKey()));
     const streamTokenBuffersByRequestRef = useRef<Map<string, StreamTokenBuffer>>(new Map());
+    const streamAppendStatesByMessageRef = useRef<Map<string, StreamAppendState>>(new Map());
     const responseTimeoutControllersByRequestRef = useRef<Map<string, ResponseTimeoutController>>(new Map());
     const agentViewLifecycleSeqBySessionRef = useRef<Map<string, number>>(new Map());
     const agentViewsBySessionRef = useRef<Map<string, AgentView>>(new Map());
@@ -2514,6 +2582,55 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             setAgentView(next || null);
         }
     }, []);
+
+    const workflowFormAliasSessionKey = useCallback((ownerSessionKey: string, view: AgentView | null | undefined): string => {
+        if (!view?.id?.startsWith('workflow:form:')) return '';
+        const normalizedOwnerSessionKey = normalizeRuntimeSessionKey(ownerSessionKey);
+        const activeSessionKey = activeAgentViewSessionKeyRef.current;
+        if (!activeSessionKey || activeSessionKey === normalizedOwnerSessionKey) return '';
+        if (isTaskManagedSessionKey(activeSessionKey)) return activeSessionKey;
+        const currentRound = activeRoundRef.current;
+        if (currentRound.phase !== 'idle' && normalizeRuntimeSessionKey(currentRound.sessionKey || 'desktop-user') === activeSessionKey) {
+            return activeSessionKey;
+        }
+        for (const round of inFlightRoundsByRequestRef.current.values()) {
+            if (round.phase !== 'idle' && normalizeRuntimeSessionKey(round.sessionKey || 'desktop-user') === activeSessionKey) {
+                return activeSessionKey;
+            }
+        }
+        for (const task of pendingTasksByRequestRef.current.values()) {
+            if (normalizeRuntimeSessionKey(task.sessionKey || 'desktop-user') === activeSessionKey) {
+                return activeSessionKey;
+            }
+        }
+        return '';
+    }, []);
+
+    const updateWorkflowFormViewForSession = useCallback((sessionKey: string, view: AgentView | null) => {
+        updateVisibleAgentViewForSession(sessionKey, view);
+        const aliasSessionKey = workflowFormAliasSessionKey(sessionKey, view);
+        if (aliasSessionKey) {
+            updateVisibleAgentViewForSession(aliasSessionKey, view);
+            logAIAssistantDiagnostic({
+                event: 'agentview_workflow_form_alias_bound',
+                ownerSessionKey: normalizeRuntimeSessionKey(sessionKey),
+                aliasSessionKey,
+                viewId: view?.id || '',
+            });
+        }
+    }, [updateVisibleAgentViewForSession, workflowFormAliasSessionKey]);
+
+    const clearWorkflowFormAliasForView = useCallback((viewId: string | undefined, ownerSessionKey: string) => {
+        const normalizedOwnerSessionKey = normalizeRuntimeSessionKey(ownerSessionKey);
+        for (const [sessionKey, view] of agentViewsBySessionRef.current) {
+            if (sessionKey === normalizedOwnerSessionKey) continue;
+            if (!view?.id?.startsWith('workflow:form:')) continue;
+            if (viewId && view.id !== viewId) continue;
+            const ownerFromView = agentViewFieldValue(view, '_workflow_user_id');
+            if (ownerFromView && normalizeRuntimeSessionKey(ownerFromView) !== normalizedOwnerSessionKey) continue;
+            updateVisibleAgentViewForSession(sessionKey, null);
+        }
+    }, [updateVisibleAgentViewForSession]);
 
     /** Force-reset agentView for the active session — used by session clear and /clear, /new, /reset.
      *  Advances lifecycle seq to reject in-flight stale events from before the reset. */
@@ -3025,6 +3142,19 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         resetResponseTimeoutForRound(activeRoundRef.current);
     }, [resetResponseTimeoutForRound]);
 
+    const streamAppendStateForMessage = useCallback((assistantMessageId: string): StreamAppendState => {
+        let state = streamAppendStatesByMessageRef.current.get(assistantMessageId);
+        if (!state) {
+            state = { content: '', reasoning: '', contentSnapshotMode: false, reasoningSnapshotMode: false };
+            streamAppendStatesByMessageRef.current.set(assistantMessageId, state);
+        }
+        return state;
+    }, []);
+
+    const resetStreamAppendStateForMessage = useCallback((assistantMessageId: string | null | undefined) => {
+        if (assistantMessageId) streamAppendStatesByMessageRef.current.delete(assistantMessageId);
+    }, []);
+
     const appendTokenToAssistantMessage = useCallback((assistantMessageId: string, text: string) => {
         if (!assistantMessageId || !text) return;
         setMessages(prev => updateTailMessage(prev, assistantMessageId, message => appendTokenToMessage(message, text))
@@ -3033,13 +3163,15 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
     const appendTokenToDetachedRound = useCallback((round: ActiveRound, text: string) => {
         if (!round.requestId || !round.assistantMessageId || !text) return;
+        const normalizedText = normalizeStreamDeltaWithState(streamAppendStateForMessage(round.assistantMessageId), text);
+        if (!normalizedText) return;
         updateInFlightRound(round.requestId, current => ({ ...current, phase: 'streaming' }));
         setMessages(prev => appendTokenToRound(
             appendAssistantPlaceholder(prev, round.assistantMessageId || '', round.requestId, round.sessionKey),
             round.assistantMessageId,
-            text,
+            normalizedText,
         ));
-    }, [updateInFlightRound]);
+    }, [streamAppendStateForMessage, updateInFlightRound]);
 
     const clearStreamTokenFlushTimer = useCallback((buffer: StreamTokenBuffer | null | undefined) => {
         if (!buffer?.flushTimer) return;
@@ -3064,14 +3196,19 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         if (!key) return;
         const buffer = streamTokenBuffersByRequestRef.current.get(key);
         clearStreamTokenFlushTimer(buffer);
+        const round = activeRoundRef.current.requestId === key
+            ? activeRoundRef.current
+            : inFlightRoundsByRequestRef.current.get(key);
+        resetStreamAppendStateForMessage(buffer?.assistantMessageId || round?.assistantMessageId);
         streamTokenBuffersByRequestRef.current.delete(key);
-    }, [clearStreamTokenFlushTimer]);
+    }, [clearStreamTokenFlushTimer, resetStreamAppendStateForMessage]);
 
     const resetAllStreamTokenBuffers = useCallback(() => {
         for (const buffer of streamTokenBuffersByRequestRef.current.values()) {
             clearStreamTokenFlushTimer(buffer);
         }
         streamTokenBuffersByRequestRef.current.clear();
+        streamAppendStatesByMessageRef.current.clear();
     }, [clearStreamTokenFlushTimer]);
 
     const forgetInFlightRoundsForSession = useCallback((sessionKey: string) => {
@@ -3123,14 +3260,16 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
     const queueStreamToken = useCallback((round: ActiveRound, text: string) => {
         if (!round.assistantMessageId || !text) return;
+        const normalizedText = normalizeStreamDeltaWithState(streamAppendStateForMessage(round.assistantMessageId), text);
+        if (!normalizedText) return;
 
         // Reasoning tokens (\x01 prefix) are rendered immediately without
         // buffering. They display in a collapsed "thinking" area - the DOM
         // update cost is minimal (hidden content), and immediate rendering
         // ensures the first reasoning token triggers the "thinking" UI state
         // without delay.
-        if (text.startsWith('\x01')) {
-            appendTokenToAssistantMessage(round.assistantMessageId, text);
+        if (normalizedText.startsWith('\x01')) {
+            appendTokenToAssistantMessage(round.assistantMessageId, normalizedText);
             return;
         }
 
@@ -3149,15 +3288,15 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
         if (!buffer.hasRenderedFirstToken) {
             buffer.hasRenderedFirstToken = true;
-            appendTokenToAssistantMessage(round.assistantMessageId, text);
+            appendTokenToAssistantMessage(round.assistantMessageId, normalizedText);
             return;
         }
 
-        buffer.text += text;
+        buffer.text += normalizedText;
         if (!buffer.flushTimer) {
             buffer.flushTimer = setTimeout(() => flushStreamTokenBuffer(round.requestId), STREAM_TOKEN_FLUSH_MS);
         }
-    }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer, flushStreamTokenBuffer]);
+    }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer, flushStreamTokenBuffer, streamAppendStateForMessage]);
 
     const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const latestMessagesRef = useRef(messages);
@@ -3421,6 +3560,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             if (detachedRound && !matchesActiveRequest(currentRound, event)) {
                 resetResponseTimeoutForRound(detachedRound);
                 updateInFlightRound(event.request_id || '', current => ({ ...current, phase: 'streaming' }));
+                resetStreamAppendStateForMessage(detachedRound.assistantMessageId);
                 if (detachedRound.assistantMessageId) {
                     setMessages(prev => appendAssistantPlaceholder(prev, detachedRound.assistantMessageId || '', detachedRound.requestId, detachedRound.sessionKey));
                 }
@@ -3430,6 +3570,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             if (!matchesActiveRequest(currentRound, event)) return;
             resetResponseTimeoutForActiveRound();
             emitPetStateForAssistant('thinking', 'ai:new-round', 10000);
+            flushStreamTokenBuffer(currentRound.requestId);
             ensureRoundPlaceholder(currentRound.generation);
         };
 
@@ -3447,6 +3588,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             resetResponseTimeoutForActiveRound();
             emitPetStateForAssistant('thinking', 'ai:stream-done', 2500);
             flushStreamTokenBuffer(currentRound.requestId);
+            resetStreamAppendStateForMessage(currentRound.assistantMessageId);
             transitionRound(current => {
                 if (current.phase !== 'streaming') return current;
                 return { ...current, phase: 'requesting' };
@@ -3462,7 +3604,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             offStreamDone();
             resetAllStreamTokenBuffers();
         };
-    }, [activeSessionKeyForEvents, appendTokenToDetachedRound, emitPetStateForAssistant, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, resetAllStreamTokenBuffers, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, transitionRound, updateInFlightRound]);
+    }, [activeSessionKeyForEvents, appendTokenToDetachedRound, emitPetStateForAssistant, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, resetAllStreamTokenBuffers, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, resetStreamAppendStateForMessage, transitionRound, updateInFlightRound]);
 
         // Listen for the async response event. When SendAIAssistantMessage returns
     // {deferred: true} (non-blocking mode), the actual response arrives here.
@@ -4260,7 +4402,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const sessionKey = agentViewSessionKey(nextView, activeSessionKeyForEvents());
             if (!acceptAgentViewSequence(sessionKey, payload)) return;
             adoptAgentViewSessionIfUnbound(sessionKey);
-            if (nextView) updateVisibleAgentViewForSession(sessionKey, nextView);
+            if (nextView) {
+                if (nextView.id?.startsWith('workflow:form:')) updateWorkflowFormViewForSession(sessionKey, nextView);
+                else updateVisibleAgentViewForSession(sessionKey, nextView);
+            }
         });
         const offClear = subscribeEvent(AGENT_VIEW_CLEAR_EVENT, (payload: unknown) => {
             if (lifecycleActive) return;
@@ -4276,6 +4421,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             if (!acceptAgentViewSequence(sessionKey, payload)) return;
             adoptAgentViewSessionIfUnbound(sessionKey);
             updateVisibleAgentViewForSession(sessionKey, current => agentViewMatchesLifecycle(current, event) ? null : current);
+            clearWorkflowFormAliasForView(event.view_id, sessionKey);
         });
         const offLifecycle = subscribeEvent(AGENT_VIEW_LIFECYCLE_EVENT, (payload: unknown) => {
             const event = normalizeAgentViewLifecycle(payload);
@@ -4287,14 +4433,23 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             switch (event.action) {
                 case "open":
                 case "update":
-                    if (event.view) updateVisibleAgentViewForSession(sessionKey, event.view);
+                    if (event.view) {
+                        if (event.view.id?.startsWith('workflow:form:')) updateWorkflowFormViewForSession(sessionKey, event.view);
+                        else updateVisibleAgentViewForSession(sessionKey, event.view);
+                    }
                     break;
                 case "dismiss":
                     updateVisibleAgentViewForSession(sessionKey, current => agentViewMatchesLifecycle(current, event) ? null : current);
+                    clearWorkflowFormAliasForView(event.view_id, sessionKey);
                     break;
                 case "complete":
-                    if (event.view) updateVisibleAgentViewForSession(sessionKey, event.view);
-                    else updateVisibleAgentViewForSession(sessionKey, current => agentViewMatchesLifecycle(current, event) ? null : current);
+                    if (event.view) {
+                        if (event.view.id?.startsWith('workflow:form:')) updateWorkflowFormViewForSession(sessionKey, event.view);
+                        else updateVisibleAgentViewForSession(sessionKey, event.view);
+                    } else {
+                        updateVisibleAgentViewForSession(sessionKey, current => agentViewMatchesLifecycle(current, event) ? null : current);
+                        clearWorkflowFormAliasForView(event.view_id, sessionKey);
+                    }
                     break;
                 case "error":
                     if (event.error) {
@@ -4310,7 +4465,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             offClear();
             offLifecycle();
         };
-    }, [activeSessionKeyForEvents, adoptAgentViewSessionIfUnbound, updateVisibleAgentViewForSession]);
+    }, [activeSessionKeyForEvents, adoptAgentViewSessionIfUnbound, clearWorkflowFormAliasForView, updateVisibleAgentViewForSession, updateWorkflowFormViewForSession]);
 
     // Listen for critical-risk skill installation confirmation events from the backend.
     useEffect(() => {
@@ -4503,6 +4658,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const workflowSubmitAccepted = isWorkflowFormSubmit && !response.error;
             if (workflowSubmitAccepted && !response.keep_panel) {
                 updateVisibleAgentViewForSession(workflowSubmitSessionKey, current => current?.id === viewId ? null : current);
+                clearWorkflowFormAliasForView(viewId, workflowSubmitSessionKey);
             }
             if (response?.deferred && !workflowSubmitRound) {
                 const requestId = resolveSendRequestID(response) || createForegroundRequestID();
@@ -4543,7 +4699,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 displayText: localizeText(uiLang, "Submit structured data", "\u63d0\u4ea4\u7ed3\u6784\u5316\u6570\u636e", "\u63d0\u4ea4\u7d50\u69cb\u5316\u8cc7\u6599"),
             });
         }
-    }, [activeSessionKeyForEvents, clearTransientProgress, emitPetStateForAssistant, flushStreamTokenBuffer, forgetInFlightRound, injectSupplementary, preferences, rememberInFlightRound, resetActiveRound, resetStreamTokenBuffer, sendMessage, setRoundState, startResponseTimeout, stopResponseTimeout, uiLang, updateVisibleAgentViewForSession, waitForForegroundIdle]);
+    }, [activeSessionKeyForEvents, clearTransientProgress, clearWorkflowFormAliasForView, emitPetStateForAssistant, flushStreamTokenBuffer, forgetInFlightRound, injectSupplementary, preferences, rememberInFlightRound, resetActiveRound, resetStreamTokenBuffer, sendMessage, setRoundState, startResponseTimeout, stopResponseTimeout, uiLang, updateVisibleAgentViewForSession, waitForForegroundIdle]);
 
     const dismissAgentView = useCallback(async (viewId: string | undefined, data?: Record<string, unknown>, options?: { force?: boolean }) => {
         // force: unconditionally clear frontend UI (even for workflow forms that
@@ -4551,7 +4707,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         // and skip the legacy sendMessage fallback. Used by session clear / /new / /reset.
         const isWorkflowFormDismiss = typeof viewId === 'string' && viewId.startsWith('workflow:form:');
         const isCancelWorkflow = !!(data && data.__cancel_workflow);
-        if (!isWorkflowFormDismiss || options?.force || isCancelWorkflow) updateVisibleAgentViewForSession(activeSessionKeyForEvents() || 'desktop-user', null);
+        if (!isWorkflowFormDismiss || options?.force || isCancelWorkflow) {
+            updateVisibleAgentViewForSession(activeSessionKeyForEvents() || 'desktop-user', null);
+        }
         const payload = JSON.stringify({ view_id: viewId || "", data: data || {} });
         try {
             const result = await DismissAgentView({ view_id: viewId || "", data: data || {} });

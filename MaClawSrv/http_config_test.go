@@ -1593,6 +1593,7 @@ func TestUserConfigSchemaFiltersComplexLLMFields(t *testing.T) {
 		{Key: "maclaw_llm_protocol"},
 		{Key: "maclaw_llm_context_length"},
 		{Key: "maclaw_llm_timeout_sec"},
+		{Key: "skill_runner_timeout_sec"},
 		{Key: "maclaw_llm_current_provider"},
 		{Key: "maclaw_llm_providers"},
 		{Key: "llm_prompt_cache"},

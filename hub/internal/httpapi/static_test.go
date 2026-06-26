@@ -242,9 +242,13 @@ func TestHubAdminPageIncludesFailureLogsUI(t *testing.T) {
 	content := string(body)
 	for _, want := range []string{
 		`data-tab="failurelogs"`,
+		`data-tab="knowledge"`,
 		`id="tab-failurelogs"`,
+		`id="tab-knowledge"`,
 		`/admin/failure-logs-tab.js`,
+		`/admin/knowledge-management-tab.js`,
 		`loadFailureLogs()`,
+		`loadKnowledgeShares()`,
 		`id="centerCorporateEmailDomains"`,
 		`id="centerAcceptPublicSignup"`,
 		`id="centerCorporateEmailDomainsHero"`,
@@ -443,6 +447,15 @@ func TestAdminMarketplaceWorkflowReviewContracts(t *testing.T) {
 		`function metadataOf(item)`,
 		`JSON.parse(item.metadata_json)`,
 		`metadata.workflow_id || item.capability_id`,
+		`function isMaclawAppCapability(item, metadata)`,
+		`function maclawAppEvidenceSummary(item, metadata)`,
+		`metadata.product_kind === 'maclaw_app_skill'`,
+		`metadata.x_maclaw_apps_preview`,
+		`maclaw_app_test_evidence`,
+		`class="item-meta maclaw-app-evidence"`,
+		`approveMaclawAppCapability`,
+		`rejectMaclawAppCapability`,
+		`/api/admin/capabilities/maclaw-apps/`,
 		`href="/approval_workflow/?review_version_id=' + encodeURIComponent(ver.id) + '"`,
 		`href="/approval_workflow/?review_version_id=' + encodeURIComponent(detail.version.id) + '"`,
 		`item.capability_type === 'approval_workflow'`,
@@ -460,6 +473,28 @@ func TestAdminMarketplaceWorkflowReviewContracts(t *testing.T) {
 	}
 	if strings.Contains(marketplace, `global.prompt(mp('workflowReviewRejectPrompt'))`) {
 		t.Fatal("workflow review reject should use inline dialog instead of browser prompt")
+	}
+}
+
+func TestMarketplaceMaclawAppSubmitRouteContract(t *testing.T) {
+	body, err := os.ReadFile("router.go")
+	if err != nil {
+		t.Fatalf("read router: %v", err)
+	}
+	router := string(body)
+	for _, want := range []string{
+		`POST /api/capabilities/maclaw-apps/submit`,
+		`GET /api/capabilities/maclaw-apps/{id}/package`,
+		`CapabilityMaclawAppSubmitHandler(capabilitySvc, identity)`,
+		`CapabilityMaclawAppPackageHandler(capabilitySvc, identity)`,
+		`POST /api/admin/capabilities/maclaw-apps/{id}/approve`,
+		`AdminCapabilityMaclawAppReviewHandler(capabilitySvc, "approve")`,
+		`POST /api/admin/capabilities/maclaw-apps/{id}/reject`,
+		`AdminCapabilityMaclawAppReviewHandler(capabilitySvc, "reject")`,
+	} {
+		if !strings.Contains(router, want) {
+			t.Fatalf("maclaw app submit route contract missing %q", want)
+		}
 	}
 }
 

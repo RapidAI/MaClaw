@@ -3009,6 +3009,12 @@ describe("VEConversationView", () => {
 
         it("shows the local intro again after local VE history is cleared and a fresh session starts", async () => {
             const close = vi.fn().mockResolvedValue(undefined);
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValue({
+                discussion: { id: "test-session-2", local_relation: "initiated_by_me" },
+                messages: [
+                    { id: "history-msg", from_id: "ve-1", from_name: "Test VE", kind: "statement", content: "remote old answer", created_at: "2026-05-01T00:00:00Z" },
+                ],
+            });
             const { rerender } = renderConversation({
                 existingSessionId: "test-session-1",
                 closeSession: close,
@@ -3036,6 +3042,8 @@ describe("VEConversationView", () => {
 
             await act(async () => { await vi.runAllTimersAsync(); });
             expect(screen.queryByText("old answer")).toBeNull();
+            expect(screen.queryByText("remote old answer")).toBeNull();
+            expect(GroupDiscussionGetConsultationDetail).not.toHaveBeenCalled();
             expect(screen.getByTestId("ve-local-intro-badge-local-intro:ve_1").textContent).toBe("Local intro");
             expect(screen.getByText("Hi, I am Test VE.")).toBeTruthy();
         });

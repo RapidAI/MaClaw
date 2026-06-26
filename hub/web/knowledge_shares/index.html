@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MaClaw Knowledge Shares</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --panel: #fff;
+      --soft: #f8fafc;
+      --ink: #243142;
+      --muted: #687789;
+      --line: #dfe6ee;
+      --accent: #4f647c;
+      --accent-strong: #40546a;
+      --danger: #b43b43;
+      --danger-soft: #fff7f7;
+      --success: #3f7b62;
+      --shadow: 0 22px 64px rgba(40, 52, 68, .11);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 0, rgba(255,255,255,.96), transparent 360px),
+        linear-gradient(180deg, #f9fafb, #edf1f5);
+    }
+    .shell { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 34px 0 56px; }
+    header { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; margin-bottom: 20px; }
+    h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.01em; }
+    h2 { margin: 0; font-size: 20px; }
+    p { margin: 0; color: var(--muted); line-height: 1.65; }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,.92);
+      box-shadow: var(--shadow);
+      padding: 18px;
+      margin-top: 16px;
+    }
+    .top-actions, .actions { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
+    .top-actions { justify-content: flex-end; }
+    .toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 12px; align-items: end; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 800; }
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 10px 11px;
+      color: var(--ink);
+      background: #fff;
+      font: inherit;
+    }
+    textarea { min-height: 74px; resize: vertical; }
+    button, .button-link {
+      min-height: 38px;
+      border: 1px solid #cfd8e3;
+      border-radius: 9px;
+      padding: 8px 13px;
+      background: #fff;
+      color: var(--ink);
+      font-weight: 850;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    button.primary { background: var(--accent); border-color: var(--accent-strong); color: #fff; }
+    button.danger { color: var(--danger); border-color: #e4b9bd; background: var(--danger-soft); }
+    button.ghost { background: var(--soft); }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .hint { color: var(--muted); font-size: 13px; }
+    .status { min-height: 22px; margin-top: 10px; font-weight: 800; color: var(--accent); }
+    .list { display: grid; gap: 12px; margin-top: 14px; }
+    .item { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 15px; display: grid; gap: 12px; }
+    .item-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .title { font-weight: 900; font-size: 16px; overflow-wrap: anywhere; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; }
+    .pill { border: 1px solid var(--line); border-radius: 999px; background: var(--soft); padding: 3px 8px; }
+    .desc { color: #465467; line-height: 1.65; white-space: pre-wrap; }
+    .edit-grid { display: grid; grid-template-columns: minmax(220px, 1fr) 180px 180px; gap: 10px; align-items: end; }
+    code { background: #f1f4f8; border: 1px solid #e2e8f0; border-radius: 6px; padding: 2px 5px; }
+    a { color: #315f91; font-weight: 800; text-decoration: none; }
+    .empty { border: 1px dashed var(--line); border-radius: 12px; padding: 18px; color: var(--muted); background: var(--soft); }
+    @media (max-width: 820px) {
+      header, .toolbar, .item-head, .edit-grid { display: grid; grid-template-columns: 1fr; }
+      .top-actions { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <h1 data-i18n="title">Knowledge Shares</h1>
+        <p data-i18n="subtitle">View and manage knowledge exports shared from Maclaw GUI.</p>
+      </div>
+      <div class="top-actions" aria-label="Language">
+        <button id="langEn" class="ghost" type="button">English</button>
+        <button id="langZh" class="ghost" type="button">中文</button>
+      </div>
+    </header>
+
+    <section class="panel" aria-labelledby="accessTitle">
+      <div class="toolbar">
+        <label><span data-i18n="viewerToken">Viewer Token</span>
+          <input id="token" type="password" autocomplete="off" data-i18n-placeholder="viewerTokenPlaceholder" placeholder="Paste Hub viewer token">
+        </label>
+        <div class="actions">
+          <button id="saveToken" class="primary" type="button" data-i18n="saveToken">Save Token</button>
+          <button id="reload" type="button" data-i18n="reloadShares">Reload My Shares</button>
+        </div>
+      </div>
+      <div class="hint" data-i18n="tokenHint">The token is stored only in this browser localStorage.</div>
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="listTitle">
+      <div class="item-head">
+        <div>
+          <h2 id="listTitle" data-i18n="myShares">My Shares</h2>
+          <p data-i18n="mySharesHint">Each item is one export record. Create new shares from Maclaw GUI; manage visibility and descriptions here.</p>
+        </div>
+      </div>
+      <div id="list" class="list"></div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const dictionaries = {
+      en: {
+        title: 'Knowledge Shares',
+        subtitle: 'View and manage knowledge exports shared from Maclaw GUI.',
+        viewerToken: 'Viewer Token',
+        viewerTokenPlaceholder: 'Paste Hub viewer token',
+        saveToken: 'Save Token',
+        reloadShares: 'Reload My Shares',
+        tokenHint: 'The token is stored only in this browser localStorage.',
+        myShares: 'My Shares',
+        mySharesHint: 'Each item is one export record. Create new shares from Maclaw GUI; manage visibility and descriptions here.',
+        pasteToken: 'Paste a viewer token first.',
+        loading: 'Loading...',
+        loaded: (count) => `Loaded ${count} share(s).`,
+        tokenSaved: 'Token saved.',
+        noShares: 'No share records yet.',
+        noDescription: 'No description',
+        id: 'ID',
+        visibility: 'Visibility',
+        expires: 'Expires',
+        never: 'never',
+        views: 'Views',
+        imports: 'Imports',
+        description: 'Description',
+        saveDescription: 'Save',
+        visibilityPrivate: 'Private',
+        visibilityUsers: 'Selected users',
+        visibilityTenant: 'Tenant public',
+        visibilityHub: 'Hub public',
+        visibilityPublic: 'Internet public',
+        visibleUsers: 'Visible Users',
+        visibleUsersPlaceholder: 'Only for selected users. Separate emails or user IDs with commas.',
+        copyLink: 'Copy Link',
+        openReader: 'Open Reader',
+        downloadPackage: 'Download JSON',
+        agentImport: 'Agent JSON',
+        cancelSharing: 'Cancel Sharing',
+        deleteRecord: 'Delete',
+        descriptionRequired: 'Knowledge description is required.',
+        usersRequired: 'Visible users are required when visibility is Selected users.',
+        updated: 'Share updated.',
+        copied: 'Share link copied.',
+        cancelConfirm: 'Cancel external sharing? The record remains visible only to you.',
+        cancelled: 'Sharing cancelled. The record is now private to you.',
+        deleteConfirm: 'Delete this knowledge share record? This removes it from your share list.',
+        deleted: 'Share record deleted.',
+      },
+      zh: {
+        title: '知识分享',
+        subtitle: '查看并管理从 Maclaw GUI 分享到 Hub 的知识导出记录。',
+        viewerToken: '查看令牌',
+        viewerTokenPlaceholder: '粘贴 Hub 查看令牌',
+        saveToken: '保存令牌',
+        reloadShares: '刷新我的分享',
+        tokenHint: '令牌只保存在当前浏览器的 localStorage 中。',
+        myShares: '我的分享',
+        mySharesHint: '每一项代表一次导出。新的分享请在 Maclaw GUI 中创建；这里用于管理可见范围和说明。',
+        pasteToken: '请先粘贴查看令牌。',
+        loading: '加载中...',
+        loaded: (count) => `已加载 ${count} 条分享。`,
+        tokenSaved: '令牌已保存。',
+        noShares: '还没有分享记录。',
+        noDescription: '暂无说明',
+        id: 'ID',
+        visibility: '可见范围',
+        expires: '过期时间',
+        never: '永久',
+        views: '访问',
+        imports: '导入',
+        description: '知识说明',
+        saveDescription: '保存',
+        visibilityPrivate: '仅自己',
+        visibilityUsers: '用户列表可见',
+        visibilityTenant: '本租户公开',
+        visibilityHub: '本 Hub 公开',
+        visibilityPublic: '全网公开',
+        visibleUsers: '可见用户',
+        visibleUsersPlaceholder: '仅用户列表可见时需要，邮箱或用户 ID 用逗号分隔。',
+        copyLink: '复制链接',
+        openReader: '打开阅读页',
+        downloadPackage: '下载 JSON',
+        agentImport: 'Agent JSON',
+        cancelSharing: '取消分享',
+        deleteRecord: '删除',
+        descriptionRequired: '必须填写知识说明。',
+        usersRequired: '用户列表可见时必须填写可见用户。',
+        updated: '分享已更新。',
+        copied: '分享链接已复制。',
+        cancelConfirm: '确定取消对外分享吗？记录仍会仅自己可见。',
+        cancelled: '已取消分享，记录现在仅自己可见。',
+        deleteConfirm: '确定删除这条知识分享记录吗？它会从你的分享列表中移除。',
+        deleted: '分享记录已删除。',
+      }
+    };
+    let lang = localStorage.getItem('hubKnowledgeSharesLang') || ((navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en');
+    const t = (key, ...args) => {
+      const value = (dictionaries[lang] || dictionaries.en)[key] ?? dictionaries.en[key] ?? key;
+      return typeof value === 'function' ? value(...args) : value;
+    };
+    const token = () => $('token').value.trim();
+    const status = (msg, ok = true) => {
+      $('status').textContent = msg || '';
+      $('status').style.color = ok ? 'var(--accent)' : 'var(--danger)';
+    };
+    function setLanguage(next) {
+      lang = next === 'zh' ? 'zh' : 'en';
+      localStorage.setItem('hubKnowledgeSharesLang', lang);
+      document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+      document.querySelectorAll('[data-i18n]').forEach((node) => { node.textContent = t(node.dataset.i18n); });
+      document.querySelectorAll('[data-i18n-placeholder]').forEach((node) => { node.placeholder = t(node.dataset.i18nPlaceholder); });
+      $('langEn').classList.toggle('primary', lang === 'en');
+      $('langZh').classList.toggle('primary', lang === 'zh');
+      if (window.lastShares) render(window.lastShares);
+    }
+    async function api(path, opt = {}) {
+      const resp = await fetch(path, { ...opt, headers: { Authorization: 'Bearer ' + token(), 'Content-Type': 'application/json', ...(opt.headers || {}) } });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.message || data.error || resp.statusText);
+      return data;
+    }
+    function parseUsersField(input) {
+      return String(input?.value || '').split(',').map((x) => x.trim()).filter(Boolean);
+    }
+    function visibilityLabel(scope) {
+      return ({
+        private: t('visibilityPrivate'),
+        users: t('visibilityUsers'),
+        tenant: t('visibilityTenant'),
+        hub: t('visibilityHub'),
+        public: t('visibilityPublic'),
+      })[String(scope || 'private')] || scope || t('visibilityPrivate');
+    }
+    function visibilityOptions(selected) {
+      const items = [
+        ['private', t('visibilityPrivate')],
+        ['users', t('visibilityUsers')],
+        ['tenant', t('visibilityTenant')],
+        ['hub', t('visibilityHub')],
+        ['public', t('visibilityPublic')],
+      ];
+      const current = String(selected || 'private');
+      return items.map(([value, label]) => `<option value="${esc(value)}" ${value === current ? 'selected' : ''}>${esc(label)}</option>`).join('');
+    }
+    async function loadShares() {
+      if (!token()) { status(t('pasteToken'), false); return; }
+      status(t('loading'));
+      try {
+        const data = await api('/api/knowledge/shares/mine?limit=50');
+        window.lastShares = data.items || [];
+        render(window.lastShares);
+        status(t('loaded', data.total || 0));
+      } catch (e) {
+        status(e.message, false);
+      }
+    }
+    function render(items) {
+      const root = $('list');
+      if (!items.length) {
+        root.innerHTML = `<div class="empty">${esc(t('noShares'))}</div>`;
+        return;
+      }
+      root.innerHTML = items.map((item) => {
+        const id = esc(item.knowledge_id);
+        const shareURL = esc(item.share_url || '#');
+        const packageURL = esc(item.package_url || '#');
+        const agentURL = esc(item.agent_import || '');
+        const title = esc(item.title || item.knowledge_id);
+        const expires = item.expires_at ? esc(item.expires_at) : esc(t('never'));
+        return `
+        <article class="item" data-id="${id}">
+          <div class="item-head">
+            <div>
+              <div class="title">${title}</div>
+              <div class="meta">
+                <span>${esc(t('id'))}: <code>${id}</code></span>
+                <span class="pill">${esc(visibilityLabel(item.visibility_scope))}</span>
+                <span>${esc(t('expires'))}: ${expires}</span>
+                <span>${esc(t('views'))}: ${esc(item.view_count || 0)}</span>
+                <span>${esc(t('imports'))}: ${esc(item.import_count || 0)}</span>
+              </div>
+            </div>
+            <div class="actions" style="margin-top:0">
+              <button type="button" onclick="copyShare('${shareURL}')">${esc(t('copyLink'))}</button>
+              <a class="button-link" href="${shareURL}" target="_blank" rel="noopener">${esc(t('openReader'))}</a>
+            </div>
+          </div>
+          <div class="desc">${esc(item.description || t('noDescription'))}</div>
+          <label>${esc(t('description'))}
+            <textarea data-desc maxlength="2000">${esc(item.description || '')}</textarea>
+          </label>
+          <div class="edit-grid">
+            <label>${esc(t('visibility'))}
+              <select data-visibility>${visibilityOptions(item.visibility_scope)}</select>
+            </label>
+            <label>${esc(t('visibleUsers'))}
+              <input data-users value="${esc((item.visibility_users || []).join(', '))}" placeholder="${esc(t('visibleUsersPlaceholder'))}">
+            </label>
+            <div class="actions">
+              <button type="button" onclick="saveShare('${id}')">${esc(t('saveDescription'))}</button>
+            </div>
+          </div>
+          <div class="actions">
+            ${item.package_url ? `<a class="button-link" href="${packageURL}" target="_blank" rel="noopener">${esc(t('downloadPackage'))}</a>` : ''}
+            ${agentURL ? `<a class="button-link" href="${agentURL}" target="_blank" rel="noopener">${esc(t('agentImport'))}</a>` : ''}
+            <button type="button" onclick="cancelShare('${id}')">${esc(t('cancelSharing'))}</button>
+            <button class="danger" type="button" onclick="deleteShare('${id}')">${esc(t('deleteRecord'))}</button>
+          </div>
+        </article>`;
+      }).join('');
+    }
+    function shareRow(id) {
+      return document.querySelector(`[data-id="${CSS.escape(id)}"]`);
+    }
+    async function saveShare(id) {
+      const row = shareRow(id);
+      const desc = row?.querySelector('[data-desc]')?.value.trim() || '';
+      const visibility = row?.querySelector('[data-visibility]')?.value || 'private';
+      const users = parseUsersField(row?.querySelector('[data-users]'));
+      if (!desc) { status(t('descriptionRequired'), false); return; }
+      if (visibility === 'users' && !users.length) { status(t('usersRequired'), false); return; }
+      try {
+        await api('/api/knowledge/shares/' + encodeURIComponent(id), {
+          method: 'PATCH',
+          body: JSON.stringify({ description: desc, visibility_scope: visibility, visibility_users: users })
+        });
+        status(t('updated'));
+        await loadShares();
+      } catch (e) {
+        status(e.message, false);
+      }
+    }
+    async function cancelShare(id) {
+      if (!confirm(t('cancelConfirm'))) return;
+      const row = shareRow(id);
+      const desc = row?.querySelector('[data-desc]')?.value.trim() || row?.querySelector('.desc')?.textContent?.trim() || id;
+      try {
+        await api('/api/knowledge/shares/' + encodeURIComponent(id), {
+          method: 'PATCH',
+          body: JSON.stringify({ description: desc, visibility_scope: 'private', visibility_users: [], ttl: 'permanent' })
+        });
+        status(t('cancelled'));
+        await loadShares();
+      } catch (e) {
+        status(e.message, false);
+      }
+    }
+    async function deleteShare(id) {
+      if (!confirm(t('deleteConfirm'))) return;
+      try {
+        await api('/api/knowledge/shares/' + encodeURIComponent(id), { method: 'DELETE' });
+        status(t('deleted'));
+        await loadShares();
+      } catch (e) {
+        status(e.message, false);
+      }
+    }
+    async function copyShare(link) {
+      if (!link || link === '#') return;
+      await navigator.clipboard.writeText(link);
+      status(t('copied'));
+    }
+    $('saveToken').onclick = () => { localStorage.setItem('hubKnowledgeViewerToken', token()); status(t('tokenSaved')); };
+    $('reload').onclick = loadShares;
+    $('langEn').onclick = () => setLanguage('en');
+    $('langZh').onclick = () => setLanguage('zh');
+    $('token').value = localStorage.getItem('hubKnowledgeViewerToken') || '';
+    setLanguage(lang);
+    if ($('token').value) loadShares();
+  </script>
+</body>
+</html>

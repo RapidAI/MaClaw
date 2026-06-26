@@ -63,7 +63,7 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
     onRecentTaskSwitchBlocked?: () => void;
-    createRecentTask: (name: string) => Promise<void> | void;
+    createRecentTask: (name: string, workingDir?: string) => Promise<void> | void;
     refreshRecentProjects: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
@@ -175,7 +175,7 @@ export const SidebarAiPane = ({
 
     // Favorite employees - use authoritative IDs from parent (includes optimistic updates)
     const tabLabels: Record<MiddleTab, string> = {
-        tasks: lang === 'en' ? 'Tasks' : lang === 'zh-Hant' ? '最近任務' : '最近任务',
+        tasks: lang === 'en' ? 'Task Management' : lang === 'zh-Hant' ? '任務管理' : '任务管理',
         employees: lang === 'en' ? 'Digital Employees' : lang === 'zh-Hant' ? '數字員工' : '数字员工',
         history: lang === 'en' ? 'History' : lang === 'zh-Hant' ? '歷史會話' : '历史会话',
     };

@@ -45,6 +45,18 @@ func (f fakeCenterTenants) List(context.Context) ([]*store.Tenant, error) {
 	return f.items, nil
 }
 
+type fakeCenterUsage struct {
+	tokenRows    []store.UserTokenSummary
+	durationRows []store.UserDurationSummary
+}
+
+func (f fakeCenterUsage) SummarizeUserTokenUsage(context.Context, string, time.Time, time.Time) ([]store.UserTokenSummary, error) {
+	return append([]store.UserTokenSummary(nil), f.tokenRows...), nil
+}
+
+func (f fakeCenterUsage) SummarizeUserDurations(context.Context, string, time.Time, time.Time, time.Time) ([]store.UserDurationSummary, error) {
+	return append([]store.UserDurationSummary(nil), f.durationRows...), nil
+}
 func newFakeSettingsRepo() *fakeSettingsRepo {
 	return &fakeSettingsRepo{values: map[string]string{}}
 }
@@ -114,6 +126,91 @@ func TestSyncUserRouteUsesStoredRegistration(t *testing.T) {
 	}
 	if gotEmail != "user@example.com" {
 		t.Fatalf("email = %q, want %q", gotEmail, "user@example.com")
+	}
+}
+
+func TestUserUsageSyncStartDayUsesLimitedBackfill(t *testing.T) {
+	svc := NewService(config.Default(), newFakeSettingsRepo())
+	now := time.Date(2026, 6, 24, 15, 30, 0, 0, time.UTC)
+
+	start, backfill := svc.reserveUserUsageSyncStartDay(now)
+	if !backfill || !start.Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("first start = %s backfill=%v, want 2026-01-01 backfill", start, backfill)
+	}
+	svc.restoreUserUsageBackfill()
+	start, backfill = svc.reserveUserUsageSyncStartDay(now)
+	if !backfill || !start.Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("failed sync should not consume backfill, start = %s backfill=%v", start, backfill)
+	}
+	start, backfill = svc.reserveUserUsageSyncStartDay(now)
+	if !backfill || !start.Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("second success start = %s backfill=%v, want 2026-01-01 backfill", start, backfill)
+	}
+
+	start, backfill = svc.reserveUserUsageSyncStartDay(now)
+	wantRecent := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)
+	if backfill || !start.Equal(wantRecent) {
+		t.Fatalf("recent start = %s backfill=%v, want %s without backfill", start, backfill, wantRecent)
+	}
+
+	end := userUsageSyncEndDayExclusive(now)
+	wantEnd := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	if !end.Equal(wantEnd) {
+		t.Fatalf("end day exclusive = %s, want %s", end, wantEnd)
+	}
+
+	tenantIDs := centerSyncTenantIDs([]string{"tenant_default", "", "tenant_a", "tenant_a"})
+	if len(tenantIDs) != 2 || tenantIDs[0] != "" || tenantIDs[1] != "tenant_a" {
+		t.Fatalf("tenant ids = %#v, want default marker and tenant_a", tenantIDs)
+	}
+}
+
+func TestSyncUserUsageFiltersNonEmailPayloadRows(t *testing.T) {
+	var got syncUserUsageRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/hubs/hub_sync/user-usage/sync" {
+			t.Fatalf("path = %q, want user usage sync path", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	svc := NewService(config.Default(), newFakeSettingsRepo())
+	svc.usageBackfills = 0
+	svc.SetStatsProviders(nil, nil, fakeCenterUsage{
+		tokenRows: []store.UserTokenSummary{
+			{UserEmail: "u_1774182684297100200", Usage: store.UserTokenUsage{InputTokens: 99}},
+			{UserEmail: "User@Example.com", Usage: store.UserTokenUsage{InputTokens: 10, OutputTokens: 5}},
+		},
+		durationRows: []store.UserDurationSummary{
+			{UserEmail: "u_1774182684297100200", DurationSeconds: 999},
+			{UserEmail: "User@Example.com", DurationSeconds: 120},
+		},
+	})
+
+	if err := svc.syncUserUsage(context.Background(), server.URL, registrationRecord{HubID: "hub_sync", HubSecret: "secret_sync"}); err != nil {
+		t.Fatalf("syncUserUsage() error = %v", err)
+	}
+	if got.HubSecret != "secret_sync" {
+		t.Fatalf("hub_secret = %q, want secret_sync", got.HubSecret)
+	}
+	if got.SyncStartDay == "" || got.SyncEndDay == "" || len(got.TenantIDs) != 1 || got.TenantIDs[0] != "" {
+		t.Fatalf("unexpected sync window or tenants: start=%q end=%q tenants=%#v", got.SyncStartDay, got.SyncEndDay, got.TenantIDs)
+	}
+	if len(got.Items) == 0 {
+		t.Fatal("expected email usage items")
+	}
+	for _, item := range got.Items {
+		if item.UserEmail != "user@example.com" {
+			t.Fatalf("payload user_email = %q, want only user@example.com", item.UserEmail)
+		}
+		if item.InputTokens != 10 || item.OutputTokens != 5 || item.DurationSeconds != 120 {
+			t.Fatalf("unexpected usage item: %#v", item)
+		}
 	}
 }
 

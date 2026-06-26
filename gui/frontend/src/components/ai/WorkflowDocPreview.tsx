@@ -192,10 +192,10 @@ interface WorkflowDocPreviewProps {
 // To change a label, edit corelib/workflow/templates.go and regenerate.
 export const phaseLabels: Record<string, string> = {
     // Coding workflow
-    requirements: "需求分析",
+    requirements: "需求文档",
     tech_design: "技术设计",
-    task_breakdown: "任务拆分",
-    implementation: "编码实现",
+    task_breakdown: "任务分解",
+    implementation: "编码执行",
     review: "代码审查",
     // Maintenance workflow (lightweight coding)
     maint_analysis: "影响分析与方案",
@@ -221,9 +221,9 @@ export const phaseLabels: Record<string, string> = {
     // Testing workflow
     test_strategy: "测试策略",
     test_design: "测试用例设计",
-    test_environment: "测试环境规划",
-    test_execution: "测试执行",
-    defect_report: "缺陷跟踪与报告",
+    test_environment: "环境准备",
+    test_execution: "执行测试",
+    defect_report: "缺陷报告",
     // Literature review workflow
     topic_definition: "选题与范围界定",
     literature_search: "文献检索与收集",
@@ -273,7 +273,7 @@ export const phaseLabels: Record<string, string> = {
     gap_analysis: "差异分析与洞察提炼",
     strategy_recommendation: "策略建议",
     // Presentation design workflow
-    audience_goal: "受众与目标定义",
+    audience_goal: "受众与目标",
     content_outline: "内容大纲与逻辑线",
     style_specification: "风格与视觉规范",
     slide_scripting: "逐页脚本",
@@ -362,18 +362,26 @@ export const phaseLabels: Record<string, string> = {
     pa_prior_art_search: "查新检索与新颖性分析",
     pa_claims_drafting: "权利要求书撰写",
     pa_description_writing: "说明书撰写",
-    pa_figures_organization: "附图整理与说明",
+    pa_figures_organization: "附图生成与整理",
     pa_document_assembly: "申请文件组装与检查",
     // US Patent application workflow
-    us_disclosure_analysis: "Disclosure Analysis",
-    us_prior_art_search: "Prior Art Search",
-    us_claims_drafting: "Claims Drafting",
-    us_drawings: "Drawings",
-    us_specification_writing: "Specification Writing",
-    us_application_assembly: "Application Assembly",
+    us_disclosure_analysis: "Disclosure Analysis / 交底书解析",
+    us_prior_art_search: "Prior Art Search / 查新检索",
+    us_claims_drafting: "Claims Drafting / 权利要求撰写",
+    us_drawings: "Drawings / 附图生成与整理",
+    us_specification_writing: "Specification Writing / 说明书撰写",
+    us_application_assembly: "Application Assembly / 申请文件组装",
+    // Gaokao application workflow
+    gaokao_profile: "考生信息采集",
+    gaokao_data_search: "录取数据检索与证据整理",
+    gaokao_candidate_ranking: "候选院校专业排序",
+    gaokao_final_plan: "填报参考资料与建议",
+    verification: "验收确认",
+    test_cases: "用例设计",
+    outline: "内容大纲",
     // Legacy aliases (canonical ids -> generated names, kept consistent with the above)
     design: "技术设计",
-    tasks: "任务拆分",
+    tasks: "任务分解",
 };
 
 // CORE_PHASE_ENGLISH_LABELS holds the English display labels for the three
@@ -405,28 +413,13 @@ function workflowPhaseLabel(lang: string | undefined, phaseID: string, phaseLabe
 }
 
 export const workflowPhaseOrders: Record<string, string[]> = {
-    coding: ["requirements", "design", "tasks", "implementation", "review"],
-    product_design: ["problem_discovery", "solution_design", "prd", "prototype"],
-    innovation: ["opportunity", "ideation", "validation", "roadmap", "action_plan"],
-    business_plan: ["bp_requirement", "bp_content", "bp_structure", "bp_visual_design", "bp_doc_generation"],
-    testing: ["test_strategy", "test_design", "test_environment", "test_execution", "defect_report"],
-    literature_review: ["topic_definition", "literature_search", "screening_classification", "content_extraction", "review_writing"],
-    research_report: ["requirement_scoping", "source_mapping", "report_collection", "insight_extraction", "synthesis_report"],
-    experiment_design: ["hypothesis_formulation", "experiment_design", "variable_control", "data_collection", "analysis_plan"],
-    grant_proposal: ["topic_justification", "research_status", "research_plan", "expected_outcomes", "budget_plan"],
-    paper_writing: ["outline_design", "methodology", "results_presentation", "discussion_analysis", "submission_prep"],
-    project_proposal: ["background_analysis", "goal_definition", "solution_design", "resource_assessment", "risk_contingency"],
-    event_planning: ["requirement_confirm", "scheme_planning", "process_design", "material_checklist", "execution_manual"],
-    competitive_analysis: ["target_definition", "competitor_identification", "dimension_comparison", "gap_analysis", "strategy_recommendation"],
-    presentation_design: ["audience_goal", "content_outline", "style_specification", "slide_scripting", "ppt_generation"],
-    bid_response: ["tender_analysis", "qualification_response", "technical_proposal", "commercial_proposal", "bid_document_assembly"],
-    contract_review: ["contract_parsing", "clause_risk_analysis", "compliance_check", "modification_suggestions", "review_summary"],
-    due_diligence: ["target_profiling", "business_dd", "financial_dd", "legal_dd", "dd_conclusion"],
-    compliance_audit: ["audit_scope", "compliance_assessment", "risk_rating", "remediation_plan", "audit_report"],
-    patent_analysis: ["tech_disclosure", "prior_art_search", "infringement_assessment", "strategy_recommendation", "patent_report"],
+    coding: ["requirements", "design", "tasks", "implementation", "verification"],
+    testing: ["test_strategy", "test_cases", "test_environment", "test_execution", "defect_report"],
+    presentation_design: ["audience_goal", "outline", "slide_scripting", "ppt_generation"],
     paper_reproduction: ["paper_analysis", "reproduction_plan", "env_and_data", "baseline_reproduction", "iterative_improvement", "experiment_report"],
     patent_application: ["pa_disclosure_parsing", "pa_prior_art_search", "pa_claims_drafting", "pa_figures_organization", "pa_description_writing", "pa_document_assembly"],
     us_patent_application: ["us_disclosure_analysis", "us_prior_art_search", "us_claims_drafting", "us_drawings", "us_specification_writing", "us_application_assembly"],
+    gaokao_application: ["gaokao_profile", "gaokao_data_search", "gaokao_candidate_ranking", "gaokao_final_plan"],
 };
 
 // fallbackNonDocumentPhaseIDs is re-exported from workflowPhase.ts (the single

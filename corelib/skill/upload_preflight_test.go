@@ -328,6 +328,21 @@ func TestPrepareSkillForUpload_AllowsBundledInputDirParam(t *testing.T) {
 	}
 }
 
+func TestPrepareSkillForUpload_AllowsWorkingDirAtSkillRoot(t *testing.T) {
+	dir := t.TempDir()
+	writePreflightSkill(t, dir, "python {baseDir}/scripts/run.py")
+	appendPreflightSkillYAML(t, dir, "  - action: bash\n    params:\n      command: python {baseDir}/scripts/run.py\n      working_dir: \""+filepath.ToSlash(dir)+"\"\n")
+
+	result, err := PrepareSkillForUpload(dir)
+	if err != nil {
+		t.Fatalf("PrepareSkillForUpload() error = %v", err)
+	}
+	if !result.Portable() {
+		t.Fatalf("expected working_dir pointing at the skill root to be allowed, got missing=%v blocking=%v",
+			result.MissingFiles, result.BlockingPaths)
+	}
+}
+
 func TestPrepareSkillForUpload_AllowsMissingOutputDirParam(t *testing.T) {
 	dir := t.TempDir()
 	writePreflightSkill(t, dir, "python {baseDir}/scripts/run.py")

@@ -174,7 +174,7 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 	if err != nil {
 		return nil
 	}
-	cacheKey := skillLoadCacheKey(cfg.NLSkills, cfg.ExternalSkillDirs)
+	cacheKey := skillLoadCacheKey(cfg.NLSkills, cfg.ExternalSkillDirs, e.cachedSkillScannerVersion())
 	e.skillCacheMu.Lock()
 	if e.skillCache != nil && e.skillCacheKey == cacheKey && time.Since(e.skillCacheAt) < skillLoadCacheTTL {
 		cached := cloneSkillEntries(e.skillCache)
@@ -325,13 +325,22 @@ func (e *SkillExecutor) scanFileSkills(externalDirs []string) ([]corelib.NLSkill
 	return skill.ScanAllSkillDirsWithExternal(externalDirs), true
 }
 
-func skillLoadCacheKey(skills []corelib.NLSkillEntry, externalDirs []string) string {
+func (e *SkillExecutor) cachedSkillScannerVersion() uint64 {
+	if e == nil || e.app == nil || e.app.cachedSkillScanner == nil {
+		return 0
+	}
+	return e.app.cachedSkillScanner.Version()
+}
+
+func skillLoadCacheKey(skills []corelib.NLSkillEntry, externalDirs []string, scannerVersion uint64) string {
 	payload := struct {
-		Skills       []corelib.NLSkillEntry `json:"skills"`
-		ExternalDirs []string               `json:"external_dirs"`
+		Skills         []corelib.NLSkillEntry `json:"skills"`
+		ExternalDirs   []string               `json:"external_dirs"`
+		ScannerVersion uint64                 `json:"scanner_version,omitempty"`
 	}{
-		Skills:       skills,
-		ExternalDirs: skillDirIdentityKeys(externalDirs),
+		Skills:         skills,
+		ExternalDirs:   skillDirIdentityKeys(externalDirs),
+		ScannerVersion: scannerVersion,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -1174,6 +1183,9 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 	if isShellBrowserAutomationSkillEntry(preparedEntry) {
 		return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: browserAutomationSkillRejectedError(preparedEntry.Name)}
 	}
+	if skill.IsContractlessSkill(&preparedEntry) {
+		skill.FoldUnconsumedArgsToInput(vars, preparedEntry.Params)
+	}
 	sourceSkillDir := preparedEntry.SkillDir
 	if workspace, cleanup, err := prepareSkillRunWorkspace("sync", preparedEntry.Name, preparedEntry.SkillDir); err != nil {
 		log.Printf("[skill-executor] owner=%q skill=%q workspace isolation unavailable dir=%q err=%v; using installed dir", ownerID, preparedEntry.Name, preparedEntry.SkillDir, err)
@@ -1292,6 +1304,16 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 			}
 			skill.MergeExtraEnvParam(stepCopy.Params, extraEnv)
 		}
+		if classifySkillStepAction(stepCopy.Action).IsCraftTool() {
+			if stepCopy.Params == nil {
+				stepCopy.Params = map[string]interface{}{}
+			}
+			if _, exists := stepCopy.Params["user_prompt"]; !exists {
+				if prompt := firstNonEmptySkillRunVar(vars, "user_prompt", "input", "query"); prompt != "" {
+					stepCopy.Params["user_prompt"] = prompt
+				}
+			}
+		}
 		stepCopy = skill.PrepareResolvedStepEnv(stepCopy, preparedEntry.RequiredEnv, extraEnv)
 		stepCopy = remapSkillRunStepToWorkspace(stepCopy, sourceSkillDir, preparedEntry.SkillDir)
 		if stepCopy.Params == nil {
@@ -1345,6 +1367,15 @@ func cloneStringMapGUI(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func firstNonEmptySkillRunVar(vars map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(vars[key]); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func parseCreatedSessionID(result string) string {
@@ -4412,7 +4443,7 @@ func mergeSkillPackagingRuntimeFields(dst, src *corelib.NLSkillEntry) {
 // executeBashStep runs a shell command as a skill step.
 // Keep this synchronous path on the same shell/runtime mechanics as SkillRunner.
 func executeBashStep(command string, params map[string]interface{}, app *App) (string, error) {
-	return runBashStepWithContextFull(context.Background(), command, params, "", app)
+	return runBashStepWithContextFull(context.Background(), command, params, "", app, 0)
 }
 
 // File system helpers.

@@ -582,16 +582,32 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 	log.Printf("[perf] stage=proactive_recall user=%q elapsed=%s project=%q strict_project=%v recalled=%d prompt_context_len=%d", userID, totalRecallElapsed.Round(time.Millisecond), projectPath, strictProject, len(relevant), len(promptContext))
 }
 
-const imProactiveRecallBudget = 2500 * time.Millisecond
+var imProactiveRecallBudget = 2500 * time.Millisecond
+var imProactiveRecallStaleAfter = 30 * time.Second
 
 type imProactiveRecallResult struct {
 	promptContext string
 	relevant      []corememory.Entry
 }
 
+type proactiveRecallState struct {
+	startedAt time.Time
+}
+
 func (h *IMMessageHandler) proactiveContextForPromptWithBudget(msg string, opts corememory.ProactivePromptOptions, userID string, projectPath string, strictProject bool) (string, []corememory.Entry, bool) {
 	if h == nil || h.memoryStore == nil {
 		return "", nil, true
+	}
+	recallKey := userID
+	if recallKey == "" {
+		recallKey = projectPath
+	}
+	if recallKey == "" {
+		recallKey = "__default__"
+	}
+	state, ok := h.beginProactiveRecall(recallKey, userID, projectPath, strictProject)
+	if !ok {
+		return "", nil, false
 	}
 	startedAt := time.Now()
 	resultC := make(chan imProactiveRecallResult, 1)
@@ -601,14 +617,37 @@ func (h *IMMessageHandler) proactiveContextForPromptWithBudget(msg string, opts 
 	}()
 	select {
 	case result := <-resultC:
+		h.endProactiveRecall(recallKey, state)
 		return result.promptContext, result.relevant, true
 	case <-time.After(imProactiveRecallBudget):
 		go func() {
 			result := <-resultC
+			h.endProactiveRecall(recallKey, state)
 			log.Printf("[proactive_recall] late result user=%q projectPath=%q strictProject=%v recalled=%d elapsed=%v", userID, projectPath, strictProject, len(result.relevant), time.Since(startedAt).Round(time.Millisecond))
 		}()
 		return "", nil, false
 	}
+}
+
+func (h *IMMessageHandler) beginProactiveRecall(recallKey string, userID string, projectPath string, strictProject bool) (proactiveRecallState, bool) {
+	state := proactiveRecallState{startedAt: time.Now()}
+	actual, loaded := h.proactiveRecallInFlight.LoadOrStore(recallKey, state)
+	if !loaded {
+		return state, true
+	}
+	existing, ok := actual.(proactiveRecallState)
+	if ok && time.Since(existing.startedAt) > imProactiveRecallStaleAfter {
+		if h.proactiveRecallInFlight.CompareAndSwap(recallKey, actual, state) {
+			log.Printf("[proactive_recall] replacing stale in-flight recall user=%q projectPath=%q strictProject=%v age=%v", userID, projectPath, strictProject, time.Since(existing.startedAt).Round(time.Millisecond))
+			return state, true
+		}
+	}
+	log.Printf("[proactive_recall] skip duplicate in-flight recall user=%q projectPath=%q strictProject=%v", userID, projectPath, strictProject)
+	return proactiveRecallState{}, false
+}
+
+func (h *IMMessageHandler) endProactiveRecall(recallKey string, state proactiveRecallState) {
+	h.proactiveRecallInFlight.CompareAndDelete(recallKey, state)
 }
 
 func (h *IMMessageHandler) proactiveExperienceProvider() lifecycle.Provider {

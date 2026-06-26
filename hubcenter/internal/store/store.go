@@ -358,6 +358,7 @@ type HAHeartbeatSyncStateRepository interface {
 
 type HubUserUsageRepository interface {
 	UpsertDaily(ctx context.Context, items []*HubUserUsageDaily) error
+	ReplaceDaily(ctx context.Context, hubID string, tenantIDs []string, startDay, endDay string, items []*HubUserUsageDaily) error
 	Summarize(ctx context.Context, hubID, tenantID string, start, end time.Time) ([]*HubUserUsageDaily, error)
 }
 

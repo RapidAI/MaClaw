@@ -1552,6 +1552,79 @@ type AIAssistantStreamEvent struct {
 	SessionKey string `json:"session_key,omitempty"` // userID for per-tab event routing
 }
 
+const (
+	aiAssistantSnapshotDedupMinRunes   = 16
+	aiAssistantSnapshotOverlapMinRunes = 24
+)
+
+type aiAssistantStreamDeltaNormalizer struct {
+	content               string
+	reasoning             string
+	contentSnapshotMode   bool
+	reasoningSnapshotMode bool
+}
+
+func (n *aiAssistantStreamDeltaNormalizer) Reset() {
+	n.content = ""
+	n.reasoning = ""
+	n.contentSnapshotMode = false
+	n.reasoningSnapshotMode = false
+}
+
+func (n *aiAssistantStreamDeltaNormalizer) Normalize(delta string) string {
+	if delta == "" {
+		return ""
+	}
+	if strings.HasPrefix(delta, "\x01") {
+		next, snapshotMode := normalizeAIAssistantStreamDelta(n.reasoning, strings.TrimPrefix(delta, "\x01"), n.reasoningSnapshotMode)
+		if next == "" {
+			return ""
+		}
+		n.reasoning += next
+		n.reasoningSnapshotMode = n.reasoningSnapshotMode || snapshotMode
+		return "\x01" + next
+	}
+	next, snapshotMode := normalizeAIAssistantStreamDelta(n.content, delta, n.contentSnapshotMode)
+	if next == "" {
+		return ""
+	}
+	n.content += next
+	n.contentSnapshotMode = n.contentSnapshotMode || snapshotMode
+	return next
+}
+
+func normalizeAIAssistantStreamDelta(existing, incoming string, snapshotMode bool) (string, bool) {
+	if existing == "" || incoming == "" {
+		return incoming, false
+	}
+	existingLen := len([]rune(strings.TrimSpace(existing)))
+	incomingLen := len([]rune(strings.TrimSpace(incoming)))
+	if incoming == existing && incomingLen >= aiAssistantSnapshotDedupMinRunes {
+		if snapshotMode {
+			return "", true
+		}
+		return incoming, false
+	}
+	if strings.HasPrefix(incoming, existing) && existingLen >= aiAssistantSnapshotDedupMinRunes {
+		return incoming[len(existing):], true
+	}
+	if strings.HasSuffix(existing, incoming) && incomingLen >= aiAssistantSnapshotOverlapMinRunes {
+		if snapshotMode {
+			return "", true
+		}
+		return incoming, false
+	}
+	existingRunes := []rune(existing)
+	incomingRunes := []rune(incoming)
+	maxOverlap := min(len(existingRunes), len(incomingRunes))
+	for overlap := maxOverlap; overlap >= aiAssistantSnapshotOverlapMinRunes; overlap-- {
+		if string(existingRunes[len(existingRunes)-overlap:]) == string(incomingRunes[:overlap]) {
+			return string(incomingRunes[overlap:]), true
+		}
+	}
+	return incoming, false
+}
+
 // SendAIAssistantMessage handles a desktop AI assistant message (Wails binding).
 func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentResponse, error) {
 	a.ensureInteractionInfra()
@@ -1583,6 +1656,17 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	}
 	if rawProjectPath != "" && rawProjectPath != projectPath {
 		log.Printf("[AI assistant] normalized project path request_id=%s raw=%q normalized=%q", requestID, rawProjectPath, projectPath)
+	}
+	if projectPath != "" && a.isProjectTaskClosed(projectPath) {
+		userID := desktopAIAssistantUserIDForProjectPath(projectPath)
+		log.Printf("[AI assistant] reject closed project request request_id=%s session_key=%q project_path=%q", requestID, userID, projectPath)
+		a.cancelProjectTaskLoop(projectPath)
+		return nil, fmt.Errorf("project task is closed: %s", projectPath)
+	}
+	if executionProjectPath := a.recentTaskExecutionProjectPath(projectPath); executionProjectPath != projectPath {
+		log.Printf("[AI assistant] route recent task to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
+		projectPath = executionProjectPath
+		req.ProjectPath = projectPath
 	}
 	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
 	if projectPath != "" && a.isProjectTaskClosed(projectPath) {
@@ -1798,7 +1882,12 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		}
 		emitEvent("ai-assistant-progress", progressText)
 	}
+	streamDeltaNormalizer := &aiAssistantStreamDeltaNormalizer{}
 	onToken := func(delta string) {
+		delta = streamDeltaNormalizer.Normalize(delta)
+		if delta == "" {
+			return
+		}
 		if firstTokenAt.IsZero() {
 			firstTokenAt = time.Now()
 			firstTokenElapsed = firstTokenAt.Sub(sendStartedAt)
@@ -1806,6 +1895,7 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		emitEvent("ai-assistant-token", delta)
 	}
 	onNewRound := func() {
+		streamDeltaNormalizer.Reset()
 		emitEvent("ai-assistant-new-round", "")
 	}
 	onStreamDone := func() {

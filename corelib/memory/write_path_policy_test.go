@@ -126,6 +126,7 @@ func TestCoreMemoryDirectEntryWritesStayInAllowedBoundaries(t *testing.T) {
 			"(*Store).replaceEntriesAndRebuildLocked": true,
 			"(*Store).replaceEntriesAndRebuildAsync":  true,
 			"(*Store).insertPreparedEntryLocked":      true,
+			"(*Store).applyEntryEmbeddingIfReady":     true,
 		},
 	}
 

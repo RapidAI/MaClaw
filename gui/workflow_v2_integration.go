@@ -205,6 +205,33 @@ func intentLabelToTemplateType(label string) string {
 	}
 }
 
+var explicitPresentationObjectSignals = []string{"ppt", "pptx", "powerpoint", "幻灯片", "演示文稿", "slide deck", "slides"}
+
+var explicitPresentationActionSignals = []string{"生成", "制作", "设计", "创建", "做一份", "做个", "写一份", "准备", "build", "create", "make", "design", "prepare", "generate"}
+
+func inferExplicitWorkflowHint(text string) string {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return ""
+	}
+	hasPresentationObject := false
+	for _, token := range explicitPresentationObjectSignals {
+		if strings.Contains(lower, token) {
+			hasPresentationObject = true
+			break
+		}
+	}
+	if !hasPresentationObject {
+		return ""
+	}
+	for _, action := range explicitPresentationActionSignals {
+		if strings.Contains(lower, action) {
+			return "presentation_design"
+		}
+	}
+	return ""
+}
+
 // routeWithWorkflowV2 is the V2 replacement for routeWorkflowIMMessage.
 // Returns a workflowIMRouteResult compatible with the existing entry context.
 func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string) workflowIMRouteResult {
@@ -212,6 +239,31 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 	if wf == nil {
 		log.Printf("[workflow-v2] routeWithWorkflowV2: wf is nil, app=%v app.workflowV2=%v", h.app != nil, h.app != nil && h.app.workflowV2 != nil)
 		return workflowIMRouteResult{}
+	}
+
+	// Review replies must be handled before generic router matching. Otherwise
+	// short confirms like "继续推进" or implementation requests at the coding
+	// task-breakdown gate can be misrouted as a fresh task or a new workflow.
+	if h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.IsAwaitingReview(msg.UserID) {
+		if resp := h.handleWorkflowReview(h.app.workflowEngine, msg.UserID, trimmed, msg.Platform); resp != nil {
+			return workflowIMRouteResult{Response: resp}
+		}
+		if marker, ok := h.workflowAgentLoopMarker.Load(msg.UserID); ok {
+			if enabled, _ := marker.(bool); enabled {
+				if _, promptOK := h.stashedPhasePrompt.Load(msg.UserID); !promptOK {
+					if phasePrompt := h.app.workflowEngine.BuildPhasePrompt(msg.UserID); strings.TrimSpace(phasePrompt) != "" {
+						h.stashedPhasePrompt.Store(msg.UserID, phasePrompt)
+					} else if wf.machine != nil {
+						if state := wf.machine.GetActive(msg.UserID); state != nil {
+							if phasePrompt := v2.BuildPhasePrompt(state); strings.TrimSpace(phasePrompt) != "" {
+								h.stashedPhasePrompt.Store(msg.UserID, phasePrompt)
+							}
+						}
+					}
+				}
+				return workflowIMRouteResult{WorkflowAgentLoop: true}
+			}
+		}
 	}
 
 	// --- Handle pending coding complexity choice ---
@@ -256,46 +308,53 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 	// 2. Fallback (Step 5): when BM25 fails but hint matches a template type →
 	//    activate that template (handles path/framework name dilution).
 	var semanticHint string
+	if wf.router != nil {
+		if explicitHint := inferExplicitWorkflowHint(trimmed); explicitHint != "" && wf.router.HasTemplate(explicitHint) {
+			semanticHint = explicitHint
+		}
+	}
 	hasActiveWorkflow := wf.machine != nil && wf.machine.GetActive(msg.UserID) != nil
-	if uic := h.getUnifiedClassifier(); uic != nil {
-		if hasActiveWorkflow {
-			// Active workflow: use fast embedding-only (~30ms) to avoid 7s LLM latency.
-			// Step 1 in the router handles most cases directly. The hint is only needed
-			// for ActionPassThrough fall-through (user starting a different workflow).
-			embResult := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: trimmed, UserID: msg.UserID})
-			if embResult.Confidence >= 0.70 {
-				label := string(embResult.Primary)
-				if !uic.IsWorkflowCandidate(embResult.Primary) {
-					semanticHint = label
-				} else if wf.router != nil && wf.router.HasTemplate(label) {
-					semanticHint = label
-				} else if mapped := intentLabelToTemplateType(label); mapped != "" && wf.router != nil && wf.router.HasTemplate(mapped) {
-					semanticHint = mapped
+	if semanticHint == "" {
+		if uic := h.getUnifiedClassifier(); uic != nil {
+			if hasActiveWorkflow {
+				// Active workflow: use fast embedding-only (~30ms) to avoid 7s LLM latency.
+				// Step 1 in the router handles most cases directly. The hint is only needed
+				// for ActionPassThrough fall-through (user starting a different workflow).
+				embResult := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: trimmed, UserID: msg.UserID})
+				if embResult.Confidence >= 0.70 {
+					label := string(embResult.Primary)
+					if !uic.IsWorkflowCandidate(embResult.Primary) {
+						semanticHint = label
+					} else if wf.router != nil && wf.router.HasTemplate(label) {
+						semanticHint = label
+					} else if mapped := intentLabelToTemplateType(label); mapped != "" && wf.router != nil && wf.router.HasTemplate(mapped) {
+						semanticHint = mapped
+					}
 				}
-			}
-		} else {
-			// No active workflow: use full fusion classification (embedding + tree LLM).
-			// The tree LLM adds ~7s latency but produces high-quality intent signals.
-			// This cost is NOT additional — the same Classify() would be called later
-			// in the confirmation gate. UIC's built-in cache makes the second call free.
-			fullResult := uic.Classify(intent.MessageContext{Text: trimmed, UserID: msg.UserID})
-			// Confidence threshold depends on classification quality:
-			// - Full fusion (Layer >= 23): 0.60 — high reliability
-			// - Embedding-only fallback (Layer == 2): 0.70 — lower reliability for short text
-			minConf := 0.60
-			if fullResult.Layer == 2 {
-				minConf = 0.70
-			}
-			if fullResult.Confidence >= minConf {
-				label := string(fullResult.Primary)
-				if !uic.IsWorkflowCandidate(fullResult.Primary) {
-					semanticHint = label
-				} else if fullResult.WorkflowType != "" && wf.router != nil && wf.router.HasTemplate(fullResult.WorkflowType) {
-					semanticHint = fullResult.WorkflowType
-				} else if wf.router != nil && wf.router.HasTemplate(label) {
-					semanticHint = label
-				} else if mapped := intentLabelToTemplateType(label); mapped != "" && wf.router != nil && wf.router.HasTemplate(mapped) {
-					semanticHint = mapped
+			} else {
+				// No active workflow: use full fusion classification (embedding + tree LLM).
+				// The tree LLM adds ~7s latency but produces high-quality intent signals.
+				// This cost is NOT additional — the same Classify() would be called later
+				// in the confirmation gate. UIC's built-in cache makes the second call free.
+				fullResult := uic.Classify(intent.MessageContext{Text: trimmed, UserID: msg.UserID})
+				// Confidence threshold depends on classification quality:
+				// - Full fusion (Layer >= 23): 0.60 — high reliability
+				// - Embedding-only fallback (Layer == 2): 0.70 — lower reliability for short text
+				minConf := 0.60
+				if fullResult.Layer == 2 {
+					minConf = 0.70
+				}
+				if fullResult.Confidence >= minConf {
+					label := string(fullResult.Primary)
+					if !uic.IsWorkflowCandidate(fullResult.Primary) {
+						semanticHint = label
+					} else if fullResult.WorkflowType != "" && wf.router != nil && wf.router.HasTemplate(fullResult.WorkflowType) {
+						semanticHint = fullResult.WorkflowType
+					} else if wf.router != nil && wf.router.HasTemplate(label) {
+						semanticHint = label
+					} else if mapped := intentLabelToTemplateType(label); mapped != "" && wf.router != nil && wf.router.HasTemplate(mapped) {
+						semanticHint = mapped
+					}
 				}
 			}
 		}
@@ -543,7 +602,7 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 		h.emitWorkflowV2PhaseForm(userID, state, phase, prefilled)
 		h.emitWorkflowV2Progress(userID, state)
 		return workflowIMRouteResult{Response: &IMAgentResponse{
-			Text: "📋 请在右侧任务面板填写信息后提交。",
+			Text: "📋 请在右侧面板填写信息后提交。",
 		}}
 	}
 
@@ -773,6 +832,9 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 	fields = append(fields, map[string]interface{}{"name": "_workflow_phase", "type": "hidden", "value": phase.ID})
 	fields = append(fields, map[string]interface{}{"name": "_workflow_user_id", "type": "hidden", "value": userID})
 	fields = append(fields, map[string]interface{}{"name": "_workflow_id", "type": "hidden", "value": workflowID})
+	if scopeID := strings.TrimSpace(h.app.getEventScopeID(userID)); scopeID != "" {
+		fields = append(fields, map[string]interface{}{"name": workflowFormEventScopeField, "type": "hidden", "value": scopeID})
+	}
 
 	viewID := "workflow:form:" + phase.ID
 	view := map[string]interface{}{
@@ -935,6 +997,9 @@ func (h *IMMessageHandler) emitWorkflowV2FormWithPrefill(userID, phaseID string,
 	fields = append(fields, map[string]interface{}{"name": "_workflow_phase", "type": "hidden", "value": phaseID})
 	fields = append(fields, map[string]interface{}{"name": "_workflow_user_id", "type": "hidden", "value": userID})
 	fields = append(fields, map[string]interface{}{"name": "_workflow_id", "type": "hidden", "value": workflowID})
+	if scopeID := strings.TrimSpace(h.app.getEventScopeID(userID)); scopeID != "" {
+		fields = append(fields, map[string]interface{}{"name": workflowFormEventScopeField, "type": "hidden", "value": scopeID})
+	}
 	fields = append(fields, map[string]interface{}{"name": "_agent_view_variant", "type": "hidden", "value": "manual_mode"})
 
 	viewID := "workflow:form:" + phaseID
@@ -948,9 +1013,9 @@ func (h *IMMessageHandler) emitWorkflowV2FormWithPrefill(userID, phaseID string,
 		"fields":      fields,
 		"submitLabel": "确认提交",
 		"meta": map[string]interface{}{
-			"source":       "workflow_v2.resume_prefill",
-			"phase_id":     phaseID,
-			"resume_mode":  true,
+			"source":        "workflow_v2.resume_prefill",
+			"phase_id":      phaseID,
+			"resume_mode":   true,
 			"prefill_count": len(prefilled),
 		},
 	}
@@ -1079,9 +1144,9 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 	// Dismiss the AG UI form panel after successful submission.
 	if h.app != nil {
 		h.app.emitAgentViewLifecycle("dismiss", map[string]interface{}{
-			"view_id":            "workflow:form:" + phaseID,
-			"workflow_phase":     phaseID,
-			"workflow_user_id":   userID,
+			"view_id":          "workflow:form:" + phaseID,
+			"workflow_phase":   phaseID,
+			"workflow_user_id": userID,
 		})
 	}
 
@@ -1152,6 +1217,9 @@ func (h *IMMessageHandler) recordWorkflowV2Output(userID, output string) {
 	state, _ := wf.store.Load(userID)
 	if state == nil {
 		return
+	}
+	if h.app != nil && h.app.workflowEngine != nil {
+		h.app.workflowEngine.StoreActiveState(userID, mapV2StateToV1(state))
 	}
 	// Emit phase_update so the progress board reflects the new state.
 	h.emitWorkflowV2Progress(userID, state)

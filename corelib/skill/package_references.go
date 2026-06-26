@@ -85,7 +85,7 @@ func collectMissingPackageCredentialRefs(skillDir string, refs []string, add fun
 }
 
 func collectMissingPackageStepParams(skillDir string, step corelib.NLSkillStep, add func(string), seenFallbacks map[*corelib.NLSkillStep]struct{}) {
-	workingDir, invalidWorkingDir := packageStepWorkingDir(step)
+	workingDir, invalidWorkingDir := packageStepWorkingDir(skillDir, step)
 	if invalidWorkingDir != "" {
 		add(invalidWorkingDir)
 	}
@@ -112,6 +112,9 @@ func missingPackageLocalRef(skillDir, ref, workingDir string) (string, bool) {
 	if cleanRef == "" {
 		return "", false
 	}
+	if packageRefIsSkillDir(skillDir, ref) {
+		return "", false
+	}
 	if missingRef, invalid := invalidPackageLocalRef(ref); invalid {
 		return missingRef, true
 	}
@@ -127,6 +130,25 @@ func missingPackageLocalRef(skillDir, ref, workingDir string) (string, bool) {
 	return candidates[len(candidates)-1], true
 }
 
+func packageRefIsSkillDir(skillDir, ref string) bool {
+	skillDir = strings.TrimSpace(skillDir)
+	ref = trimPackageRefDecorations(strings.TrimSpace(ref))
+	if skillDir == "" || ref == "" || !packagePathIsAbs(ref) {
+		return false
+	}
+	skillAbs, err := filepath.Abs(skillDir)
+	if err != nil {
+		return false
+	}
+	refAbs, err := filepath.Abs(ref)
+	if err != nil {
+		refAbs = ref
+	}
+	skillClean := filepath.Clean(skillAbs)
+	refClean := filepath.Clean(refAbs)
+	return skillClean == refClean || strings.EqualFold(skillClean, refClean)
+}
+
 func invalidPackageLocalRef(ref string) (string, bool) {
 	cleanRef := normalizePackageRelativePath(ref)
 	if cleanRef == "" {
@@ -138,8 +160,12 @@ func invalidPackageLocalRef(ref string) (string, bool) {
 	return "", false
 }
 
-func packageStepWorkingDir(step corelib.NLSkillStep) (string, string) {
-	wd := normalizePackageRelativePath(firstPackageString(step.Params, "working_dir", "cwd", "workdir", "dir"))
+func packageStepWorkingDir(skillDir string, step corelib.NLSkillStep) (string, string) {
+	rawWD := firstPackageString(step.Params, "working_dir", "cwd", "workdir", "dir")
+	if packageRefIsSkillDir(skillDir, rawWD) {
+		return "", ""
+	}
+	wd := normalizePackageRelativePath(rawWD)
 	if wd == "" {
 		return "", ""
 	}

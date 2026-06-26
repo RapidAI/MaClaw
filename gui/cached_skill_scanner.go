@@ -31,6 +31,7 @@ type CachedSkillScanner struct {
 	roots    []string
 	cache    atomic.Pointer[skillCacheEntry]
 	scanning atomic.Bool
+	version  atomic.Uint64
 	mu       sync.Mutex // guards scan execution to prevent concurrent scans
 }
 
@@ -80,7 +81,15 @@ func (s *CachedSkillScanner) Invalidate() {
 		}
 		s.cache.Store(staleEntry)
 	}
+	s.version.Add(1)
 	s.triggerBackgroundScan()
+}
+
+func (s *CachedSkillScanner) Version() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.version.Load()
 }
 
 // triggerBackgroundScan starts a background scan if one is not already running.
@@ -134,6 +143,7 @@ func (s *CachedSkillScanner) scan() {
 		stale:     false,
 	}
 	s.cache.Store(entry)
+	s.version.Add(1)
 }
 
 // scanRoot scans a single root directory for skills.

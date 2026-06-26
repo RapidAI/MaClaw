@@ -60,6 +60,40 @@ func TestSearchWithProvider_Brave(t *testing.T) {
 	}
 }
 
+func TestTestProvider_BraveRejectsBadKeyWithoutFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Subscription-Token"); got != "bad-key" {
+			t.Fatalf("X-Subscription-Token = %q, want bad-key", got)
+		}
+		http.Error(w, "invalid subscription token", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	err := TestProvider(context.Background(), corelib.WebSearchProvider{Type: "brave", Key: "bad-key", BaseURL: server.URL})
+	if err == nil {
+		t.Fatal("TestProvider() error = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "Brave returned HTTP 401") {
+		t.Fatalf("TestProvider() error = %v, want Brave HTTP 401", err)
+	}
+}
+
+func TestTestProvider_DuckDuckGoHTTP202ChallengeFailsClearly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`<html><body><div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div><form id="challenge-form"></form></body></html>`))
+	}))
+	defer server.Close()
+
+	err := TestProvider(context.Background(), corelib.WebSearchProvider{Type: "duckduckgo", BaseURL: server.URL})
+	if err == nil {
+		t.Fatal("TestProvider() error = nil, want challenge failure")
+	}
+	if !strings.Contains(err.Error(), "human verification challenge") {
+		t.Fatalf("TestProvider() error = %v, want challenge error", err)
+	}
+}
+
 func TestSearchWithProvider_Serper(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-API-KEY"); got != "serper-key" {

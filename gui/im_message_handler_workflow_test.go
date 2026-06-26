@@ -473,6 +473,61 @@ func TestSetWorkflowWorkingDirUsesProjectScopedWorkflowOwner(t *testing.T) {
 	}
 }
 
+func TestSetWorkflowWorkingDirUpdatesWorkflowV2ProjectPath(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	handler.app.workflowEngine = nil
+	handler.app.workflowV2 = buildWorkflowV2State(v2.NewMemoryStore())
+
+	workingDir := filepath.Join(t.TempDir(), "selected-project")
+	if _, err := handler.app.workflowV2.machine.Create(desktopUserID, "coding", ".", "build a desktop game"); err != nil {
+		t.Fatalf("Create v2 workflow failed: %v", err)
+	}
+
+	handler.app.SetWorkflowWorkingDir("  " + workingDir + "  ")
+
+	if _, err := os.Stat(workingDir); !os.IsNotExist(err) {
+		t.Fatalf("SetWorkflowWorkingDir must not create project directory, stat err=%v path=%s", err, workingDir)
+	}
+	state := handler.app.workflowV2.machine.GetActive(desktopUserID)
+	if state == nil || state.ProjectPath != workingDir {
+		t.Fatalf("workflowV2 ProjectPath = %#v, want %q", state, workingDir)
+	}
+	if got := handler.app.GetWorkflowWorkingDir(); got != workingDir {
+		t.Fatalf("GetWorkflowWorkingDir() = %q, want %q", got, workingDir)
+	}
+}
+
+func TestSetWorkflowWorkingDirRejectsFilePathForWorkflowV2(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	handler.app.workflowEngine = nil
+	handler.app.workflowV2 = buildWorkflowV2State(v2.NewMemoryStore())
+
+	filePath := filepath.Join(t.TempDir(), "not-a-directory.txt")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if _, err := handler.app.workflowV2.machine.Create(desktopUserID, "coding", ".", "build a desktop game"); err != nil {
+		t.Fatalf("Create v2 workflow failed: %v", err)
+	}
+
+	handler.app.SetWorkflowWorkingDir(filePath)
+
+	state := handler.app.workflowV2.machine.GetActive(desktopUserID)
+	if state == nil || state.ProjectPath != "." {
+		t.Fatalf("workflowV2 ProjectPath = %#v, want unchanged '.'", state)
+	}
+}
+
+func TestGetWorkflowWorkingDirHandlesWorkflowV2WithoutMachine(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	handler.app.workflowEngine = nil
+	handler.app.workflowV2 = &workflowV2State{}
+
+	if got := handler.app.GetWorkflowWorkingDir(); got != "" {
+		t.Fatalf("GetWorkflowWorkingDir() = %q, want empty string", got)
+	}
+}
+
 func TestWorkflowStartProjectPathPrefersProjectScopedOwner(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	ownerProject := filepath.Join(t.TempDir(), "owner-project")
@@ -1556,7 +1611,7 @@ func TestBuildWorkflowPhaseFormAgentViewPreservesCodingDirectoryField(t *testing
 		t.Fatal("coding requirements phase missing input schema")
 	}
 
-	view := buildWorkflowPhaseFormAgentView("desktop-user:C:/Users/ma139", "wf-1", v2.PhaseCodingRequirements, schema)
+	view := buildWorkflowPhaseFormAgentView("desktop-user:C:/Users/ma139", "wf-1", "proj-scope-1", v2.PhaseCodingRequirements, schema)
 	fields, ok := view["fields"].([]map[string]interface{})
 	if !ok {
 		t.Fatalf("workflow AG UI form fields have unexpected type: %#v", view["fields"])
@@ -1573,6 +1628,42 @@ func TestBuildWorkflowPhaseFormAgentViewPreservesCodingDirectoryField(t *testing
 	}
 	if byName[workflowFormWorkflowIDField]["value"] != "wf-1" {
 		t.Fatalf("workflow hidden id field not preserved: %#v", byName[workflowFormWorkflowIDField])
+	}
+	if byName[workflowFormEventScopeField]["value"] != "proj-scope-1" {
+		t.Fatalf("workflow hidden event scope field not preserved: %#v", byName[workflowFormEventScopeField])
+	}
+}
+
+func TestWorkflowFormSubmitCachesEventScopeForWorkflowUser(t *testing.T) {
+	userID := "desktop-user:C:/Users/ma139"
+	registry := newPopulatedWorkflowRegistry()
+	understanding := v2.NewIntentUnderstandingManager(v2.NullStore{}, &mockLLMCallerGUI{}, registry)
+	engine := v2.NewWorkflowEngine(registry, understanding, v2.NullStore{}, &mockEngineCallbacksGUI{})
+	state, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	handler := NewIMMessageHandlerStandalone(StandaloneConfig{WorkflowEngine: engine})
+	defer handler.memory.Stop()
+	app := &App{workflowEngine: engine, remoteSessions: NewRemoteSessionManager(nil)}
+	client := NewRemoteHubClient(app, app.remoteSessions)
+	client.imHandler = handler
+	app.remoteSessions.SetHubClient(client)
+	handler.app = app
+
+	resp := app.handleWorkflowFormAgentViewSubmit(v2.PhaseCodingRequirements, map[string]interface{}{
+		workflowFormPhaseField:      v2.PhaseCodingRequirements,
+		workflowFormUserIDField:     userID,
+		workflowFormWorkflowIDField: state.ID,
+		workflowFormEventScopeField: "proj-scope-2",
+		"project_name":              "snake",
+	}, "req-workflow-form")
+	if resp == nil {
+		t.Fatal("expected workflow form submit response")
+	}
+	if scope, ok := app.sessionEventScopeIDs.Load(userID); !ok || scope != "proj-scope-2" {
+		t.Fatalf("workflow form submit should cache event scope for workflow user, got ok=%v scope=%#v", ok, scope)
 	}
 }
 
@@ -2083,6 +2174,151 @@ func TestWorkflowFormGateCancelCancelsWorkflow(t *testing.T) {
 	}
 	if ws := engine.GetActiveWorkflow(userID); ws != nil {
 		t.Fatalf("cancel should clear active workflow, got %#v", ws)
+	}
+}
+
+func TestDismissAgentViewCancelWorkflowCancelsForegroundLoop(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	app := handler.app
+	app.remoteSessions = NewRemoteSessionManager(nil)
+	client := NewRemoteHubClient(app, app.remoteSessions)
+	client.imHandler = handler
+	app.remoteSessions.SetHubClient(client)
+	userID := desktopUserID
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	loopCtx := NewLoopContext("chat", 3, nil)
+	handler.setSessionLoopCtx(userID, loopCtx)
+	handler.globalLoopMu.Lock()
+	handler.currentLoopCtx = loopCtx
+	handler.lastUserID = userID
+	handler.lastUserText = "workflow task"
+	handler.globalLoopMu.Unlock()
+	go func() {
+		<-loopCtx.CancelC
+		loopCtx.Done()
+	}()
+
+	resp, err := handler.app.DismissAgentView(AgentViewDismissPayload{
+		ViewID: "workflow:form:" + v2.PhaseCodingRequirements,
+		Data: map[string]interface{}{
+			"__cancel_workflow": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("DismissAgentView failed: %v", err)
+	}
+	if resp == nil || resp.Text == "" {
+		t.Fatalf("cancel workflow should return confirmation text, got %#v", resp)
+	}
+	if ws := engine.GetActiveWorkflow(userID); ws != nil {
+		t.Fatalf("cancel workflow should clear active workflow, got %#v", ws)
+	}
+	if !loopCtx.IsCancelled() {
+		t.Fatal("cancel workflow should also cancel the active foreground loop")
+	}
+	if !handler.hasCancelledTaskBoundary(userID) {
+		t.Fatal("cancel workflow should mark a fresh-task boundary for the next message")
+	}
+}
+
+func TestDismissAgentViewCancelWorkflowWithoutHandlerClearsWorkflowState(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := desktopUserID
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if state := handler.app.workflowV2.machine.GetActive(userID); state == nil {
+		t.Fatal("expected workflowV2 state to be active before dismissal")
+	}
+
+	resp, err := handler.app.DismissAgentView(AgentViewDismissPayload{
+		ViewID: "workflow:form:" + v2.PhaseCodingRequirements,
+		Data: map[string]interface{}{
+			"__cancel_workflow": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("DismissAgentView failed: %v", err)
+	}
+	if resp == nil || resp.Text == "" {
+		t.Fatalf("cancel workflow should return confirmation text, got %#v", resp)
+	}
+	if ws := engine.GetActiveWorkflow(userID); ws != nil {
+		t.Fatalf("cancel workflow should clear active workflow without handler, got %#v", ws)
+	}
+	if state := handler.app.workflowV2.machine.GetActive(userID); state != nil {
+		t.Fatalf("cancel workflow should clear workflowV2 state without handler, got %#v", state)
+	}
+}
+
+func TestDismissAgentViewCancelWorkflowPrefersPayloadUserID(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "desktop-user:C:/right-project"
+	state, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if state := handler.app.workflowV2.machine.GetActive(userID); state == nil {
+		t.Fatal("expected workflowV2 state to be active before dismissal")
+	}
+
+	resp, err := handler.app.DismissAgentView(AgentViewDismissPayload{
+		ViewID: "workflow:form:" + v2.PhaseCodingRequirements,
+		Data: map[string]interface{}{
+			"__cancel_workflow":         true,
+			workflowFormUserIDField:     userID,
+			workflowFormWorkflowIDField: state.ID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("DismissAgentView failed: %v", err)
+	}
+	if resp == nil || resp.Text == "" {
+		t.Fatalf("cancel workflow should return confirmation text, got %#v", resp)
+	}
+	if ws := engine.GetActiveWorkflow(userID); ws != nil {
+		t.Fatalf("cancel workflow should target payload user id, got %#v", ws)
+	}
+	if state := handler.app.workflowV2.machine.GetActive(userID); state != nil {
+		t.Fatalf("cancel workflow should clear workflowV2 state for payload user id, got %#v", state)
+	}
+}
+
+func TestDismissAgentViewCancelWorkflowRejectsStalePayload(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "desktop-user:C:/right-project"
+	state, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	resp, err := handler.app.DismissAgentView(AgentViewDismissPayload{
+		ViewID: "workflow:form:" + v2.PhaseCodingRequirements,
+		Data: map[string]interface{}{
+			"__cancel_workflow":         true,
+			workflowFormUserIDField:     userID,
+			workflowFormWorkflowIDField: "stale-workflow-id",
+			workflowFormPhaseField:      state.CurrentPhase,
+		},
+	})
+	if err != nil {
+		t.Fatalf("DismissAgentView failed: %v", err)
+	}
+	if resp == nil || resp.Text == "" {
+		t.Fatalf("stale cancel should return explanatory text, got %#v", resp)
+	}
+	if ws := engine.GetActiveWorkflow(userID); ws == nil || ws.ID != state.ID {
+		t.Fatalf("stale cancel must not cancel active workflow, got %#v", ws)
+	}
+	if v2State := handler.app.workflowV2.machine.GetActive(userID); v2State == nil || v2State.UserID != userID {
+		t.Fatalf("stale cancel must preserve workflowV2 state, got %#v", v2State)
 	}
 }
 

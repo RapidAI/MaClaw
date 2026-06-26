@@ -131,6 +131,49 @@ func (r *hubUserUsageRepo) UpsertDaily(ctx context.Context, items []*store.HubUs
 		return err
 	}
 	defer tx.Rollback()
+	if err := insertHubUserUsageDailyTx(ctx, tx, items); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *hubUserUsageRepo) ReplaceDaily(ctx context.Context, hubID string, tenantIDs []string, startDay, endDay string, items []*store.HubUserUsageDaily) error {
+	hubID = strings.TrimSpace(hubID)
+	startDay = strings.TrimSpace(startDay)
+	endDay = strings.TrimSpace(endDay)
+	if hubID == "" || startDay == "" || endDay == "" {
+		return r.UpsertDaily(ctx, items)
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	seenTenants := map[string]struct{}{}
+	for _, tenantID := range tenantIDs {
+		seenTenants[normalizeStoreTenantID(tenantID)] = struct{}{}
+	}
+	if len(seenTenants) == 0 {
+		for _, item := range items {
+			if item != nil {
+				seenTenants[normalizeStoreTenantID(item.TenantID)] = struct{}{}
+			}
+		}
+	}
+	for tenantID := range seenTenants {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM hub_user_usage_daily WHERE hub_id = ? AND tenant_id = ? AND day >= ? AND day <= ?`, hubID, tenantID, startDay, endDay); err != nil {
+			return err
+		}
+	}
+
+	if err := insertHubUserUsageDailyTx(ctx, tx, items); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func insertHubUserUsageDailyTx(ctx context.Context, tx *sql.Tx, items []*store.HubUserUsageDaily) error {
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO hub_user_usage_daily (hub_id, tenant_id, user_email, day, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, duration_seconds, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -163,7 +206,7 @@ func (r *hubUserUsageRepo) UpsertDaily(ctx context.Context, items []*store.HubUs
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (r *hubUserUsageRepo) Summarize(ctx context.Context, hubID, tenantID string, start, end time.Time) ([]*store.HubUserUsageDaily, error) {

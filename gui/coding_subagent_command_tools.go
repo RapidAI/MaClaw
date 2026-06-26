@@ -35,8 +35,28 @@ func (r codingCommandExecutionResult) toolResult() codingToolExecutionResult {
 	return codingToolExecutionResult{Text: r.Text, Outcome: r.toolOutcome()}
 }
 
+func (r codingCommandExecutionResult) toolResultForCommand(command string) codingToolExecutionResult {
+	return codingToolExecutionResult{Text: r.Text, Outcome: r.toolOutcomeForCommand(command)}
+}
+
 func (r codingCommandExecutionResult) succeeded() bool {
 	return r.toolOutcome() == codingToolOutcomeSuccess
+}
+
+func (r codingCommandExecutionResult) succeededForCommand(command string) bool {
+	return r.toolOutcomeForCommand(command) == codingToolOutcomeSuccess
+}
+
+func (r codingCommandExecutionResult) toolOutcomeForCommand(command string) codingToolOutcome {
+	switch r.Kind {
+	case codingCommandResultExitError:
+		if commandAllowsInformationalExitOne(command) && commandResultExitOneHasNoErrorOutput(r) {
+			return codingToolOutcomeSuccess
+		}
+		return codingToolOutcomeFailed
+	default:
+		return r.toolOutcome()
+	}
 }
 
 func (r codingCommandExecutionResult) toolOutcome() codingToolOutcome {
@@ -49,23 +69,90 @@ func (r codingCommandExecutionResult) toolOutcome() codingToolOutcome {
 	case codingCommandResultCancelled:
 		outcome = codingToolOutcomeFailed
 	case codingCommandResultExitError:
-		// Exit code 1 with meaningful stdout is informational (not a real error).
-		// The "command exited with code N" suffix doesn't count as meaningful output.
-		cleanText := r.Text
-		if idx := strings.Index(cleanText, "\ncommand exited with code"); idx >= 0 {
-			cleanText = cleanText[:idx]
-		} else if strings.HasPrefix(cleanText, "command exited with code") {
-			cleanText = ""
-		}
-		if r.ExitCode == 1 && !strings.HasPrefix(cleanText, "[stderr]") && len(strings.TrimSpace(cleanText)) > 10 {
-			outcome = codingToolOutcomeSuccess
-		} else {
-			outcome = codingToolOutcomeFailed
-		}
+		outcome = codingToolOutcomeFailed
 	default:
 		outcome = codingToolOutcomeFailed
 	}
 	return outcome
+}
+
+func commandResultExitOneHasNoErrorOutput(r codingCommandExecutionResult) bool {
+	if r.ExitCode != 1 {
+		return false
+	}
+	cleanText := strings.TrimSpace(stripCodingCommandExitStatus(r.Text))
+	return !codingCommandOutputHasStderr(cleanText)
+}
+
+func codingCommandOutputHasStderr(text string) bool {
+	text = strings.TrimSpace(text)
+	return strings.HasPrefix(text, "[stderr]") || strings.Contains(text, "\n[stderr]")
+}
+
+func stripCodingCommandExitStatus(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	for _, marker := range []string{"\ncommand exited with code", "\r\ncommand exited with code"} {
+		if idx := strings.Index(text, marker); idx >= 0 {
+			return strings.TrimSpace(text[:idx])
+		}
+	}
+	if strings.HasPrefix(text, "command exited with code") {
+		return ""
+	}
+	return text
+}
+
+func commandAllowsInformationalExitOne(command string) bool {
+	sawCommand := false
+	for _, segment := range shellCommandSegments(strings.ToLower(strings.Join(strings.Fields(command), " "))) {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		sawCommand = true
+		if !commandSegmentAllowsInformationalExitOne(segment) {
+			return false
+		}
+	}
+	return sawCommand
+}
+
+func commandSegmentAllowsInformationalExitOne(segment []string) bool {
+	if len(segment) == 0 {
+		return false
+	}
+	cmd := commandNameBase(segment[0])
+	switch cmd {
+	case "rg", "ripgrep", "grep", "findstr", "select-string":
+		return true
+	case "git":
+		return gitCommandSubcommand(segment[1:]) == "grep"
+	}
+	return false
+}
+
+func gitCommandSubcommand(args []string) string {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "" {
+			continue
+		}
+		if arg == "-c" || arg == "-C" || arg == "--git-dir" || arg == "--work-tree" || arg == "--namespace" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--git-dir=") || strings.HasPrefix(arg, "--work-tree=") || strings.HasPrefix(arg, "--namespace=") || strings.HasPrefix(arg, "-c=") || strings.HasPrefix(arg, "-C=") {
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return arg
+	}
+	return ""
 }
 
 func executeCodingBash(args map[string]interface{}, onProgress coretool.ProgressCallback) codingCommandExecutionResult {
@@ -74,6 +161,7 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 
 func executeCodingBashWithContext(parent context.Context, args map[string]interface{}, onProgress coretool.ProgressCallback) codingCommandExecutionResult {
 	command, _ := args["command"].(string)
+	command = strings.TrimSpace(command)
 	if command == "" {
 		return codingCommandExecutionResult{Text: "missing command parameter", Kind: codingCommandResultStartError, ExitCode: -1}
 	}
@@ -92,10 +180,11 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		// Auto-convert bash-style && to PowerShell-compatible ; (sequential execution).
+		// Auto-convert unquoted bash-style && to PowerShell-compatible ;.
 		// LLMs frequently generate && despite being told to use PowerShell syntax.
-		// PowerShell 5.1 doesn't support && (only 7+ does).
-		psCommand := strings.ReplaceAll(command, " && ", " ; ")
+		// PowerShell 5.1 doesn't support && (only 7+ does), but quoted text must
+		// remain untouched because it can be data passed to tests or scripts.
+		psCommand := convertUnquotedAndAndForPowerShell(command)
 		shellName = "powershell"
 		// Wrap the command so Go observes the real command result. Native
 		// tools often write progress to stderr even when they exit 0, while
@@ -174,6 +263,41 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 	return codingCommandExecutionResult{Text: output, Kind: codingCommandResultExitError, ExitCode: exitCode}
 }
 
+func convertUnquotedAndAndForPowerShell(command string) string {
+	if !strings.Contains(command, "&&") {
+		return command
+	}
+	runes := []rune(command)
+	var b strings.Builder
+	var quote rune
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+		if quote != 0 {
+			b.WriteRune(ch)
+			if ch == '`' && i+1 < len(runes) {
+				i++
+				b.WriteRune(runes[i])
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			b.WriteRune(ch)
+			continue
+		}
+		if ch == '&' && i+1 < len(runes) && runes[i+1] == '&' {
+			b.WriteByte(';')
+			i++
+			continue
+		}
+		b.WriteRune(ch)
+	}
+	return b.String()
+}
 func wrapCodingPowerShellCommand(psCommand string) string {
 	return fmt.Sprintf(`$Error.Clear()
 $ErrorActionPreference='Continue'

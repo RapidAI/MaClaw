@@ -155,6 +155,7 @@ func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 		"/app",
 		"",
 		nil,
+		st.KnowledgeShares,
 		st.Tenants,
 	)
 	return &hubAdminRouterTestServices{

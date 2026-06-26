@@ -177,6 +177,10 @@ function fmtDuration(seconds) {
   if (hours > 0) return hours + 'h ' + minutes + 'm';
   return minutes + 'm';
 }
+function isRankingEmail(value) {
+  const email = String(value || '').trim();
+  return email.split('@').length === 2 && !/\s/.test(email) && !email.startsWith('@') && !email.endsWith('@');
+}
 function usageMetricCard(label, value, hint) {
   return '<div class="metric" style="padding:12px 13px"><label>' + escapeHtml(label) + '</label><strong>' + escapeHtml(value) + '</strong>' + (hint ? ('<span>' + escapeHtml(hint) + '</span>') : '') + '</div>';
 }
@@ -187,14 +191,14 @@ function ensureUsageStatsUI() {
   if (!document.getElementById('userRankingStyles')) {
     const style = document.createElement('style');
     style.id = 'userRankingStyles';
-    style.textContent = '#userRankingCards{align-items:stretch}.user-ranking-card{min-width:0;height:100%;padding:12px 13px!important;gap:8px!important;display:grid!important;grid-template-rows:22px 1fr}.user-ranking-card-title{display:flex;align-items:center;min-width:0;height:22px;font-size:13px;line-height:22px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-ranking-card-metrics{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;grid-auto-rows:44px;gap:6px!important;align-items:stretch}.user-ranking-card-metrics .usage-rank-chip{min-height:44px;display:flex;flex-direction:column;justify-content:center}.user-ranking-card-metrics .usage-rank-label,.user-ranking-card-metrics .usage-rank-value{line-height:1.15}@media(max-width:1180px){#userRankingCards{grid-template-columns:repeat(2,minmax(0,1fr))!important}}@media(max-width:760px){#userRankingCards{grid-template-columns:1fr!important}}';
+    style.textContent = '#userRankingCards{align-items:stretch}.usage-stats-subtabs{display:inline-flex!important;gap:4px!important;padding:3px!important;border:1px solid #d7e2f2!important;border-radius:10px!important;background:#f5f8fd!important}.usage-stats-subtab{position:relative!important;height:34px!important;padding:0 15px!important;border:0!important;border-radius:7px!important;background:transparent!important;color:#5f7088!important;font-weight:700!important;box-shadow:none!important;cursor:pointer!important;transition:background .16s ease,color .16s ease,box-shadow .16s ease!important}.usage-stats-subtab:hover{background:#edf4ff!important;color:#263b59!important}.usage-stats-subtab:focus-visible{outline:2px solid rgba(31,111,235,.35)!important;outline-offset:2px!important}.usage-stats-subtab.is-active{background:#1f6feb!important;color:#fff!important;box-shadow:0 1px 2px rgba(23,70,130,.18)!important}.user-ranking-card{min-width:0;height:100%;padding:12px 13px!important;gap:8px!important;display:grid!important;grid-template-rows:22px 1fr}.user-ranking-card-title{display:flex;align-items:center;min-width:0;height:22px;font-size:13px;line-height:22px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-ranking-card-metrics{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;grid-auto-rows:44px;gap:6px!important;align-items:stretch}.user-ranking-card-metrics .usage-rank-chip{min-height:44px;display:flex;flex-direction:column;justify-content:center}.user-ranking-card-metrics .usage-rank-label,.user-ranking-card-metrics .usage-rank-value{line-height:1.15}@media(max-width:1180px){#userRankingCards{grid-template-columns:repeat(2,minmax(0,1fr))!important}}@media(max-width:760px){#userRankingCards{grid-template-columns:1fr!important}.usage-stats-subtabs{display:flex!important;width:100%!important}.usage-stats-subtab{flex:1 1 0!important}}';
     document.head.appendChild(style);
   }
   const host = document.createElement('div');
   host.id = 'usageStatsRoot';
   host.innerHTML = '' +
-    '<div class="filter-group usage-stats-subtabs" style="margin-bottom:12px"><button id="usageStatsSubtabUsage" class="btn-secondary" type="button" onclick="switchUsageStatsSubtab(\'usage\')"></button><button id="usageStatsSubtabRanking" class="btn-ghost" type="button" onclick="switchUsageStatsSubtab(\'ranking\')"></button></div>' +
-    '<div id="usageStatsUsagePane">' +
+    '<div class="filter-group usage-stats-subtabs" style="margin-bottom:12px" role="tablist"><button id="usageStatsSubtabUsage" class="usage-stats-subtab" type="button" role="tab" aria-controls="usageStatsUsagePane" onclick="switchUsageStatsSubtab(\'usage\')" onkeydown="onUsageStatsSubtabKeydown(event)"></button><button id="usageStatsSubtabRanking" class="usage-stats-subtab" type="button" role="tab" aria-controls="usageStatsRankingPane" onclick="switchUsageStatsSubtab(\'ranking\')" onkeydown="onUsageStatsSubtabKeydown(event)"></button></div>' +
+    '<div id="usageStatsUsagePane" role="tabpanel" aria-labelledby="usageStatsSubtabUsage">' +
     '<div class="item" style="padding:12px 14px"><div class="grid2" style="gap:8px">' +
     '<div><label id="usageStatsScopeLabel"></label><select id="usageStatsScope" style="height:36px" onchange="onUsageStatsFilterChange()"><option value="user" id="usageStatsScopeUser"></option><option value="group" id="usageStatsScopeGroup"></option><option value="provider" id="usageStatsScopeProvider"></option></select></div>' +
     '<div><label id="usageStatsPeriodLabel"></label><select id="usageStatsPeriod" style="height:36px" onchange="onUsageStatsFilterChange()"><option value="daily" id="usageStatsPeriodDaily"></option><option value="monthly" id="usageStatsPeriodMonthly"></option></select></div>' +
@@ -207,7 +211,7 @@ function ensureUsageStatsUI() {
     '<div class="item" style="padding:12px 14px"><div class="item-title" style="font-size:14px" id="usageStatsTrendTitle"></div><div id="usageStatsTrend" style="margin-top:8px"></div></div>' +
     '<div class="item" style="padding:12px 14px"><div class="item-title" style="font-size:14px" id="usageStatsRowsTitle"></div><div id="usageStatsRows" style="margin-top:8px"></div></div>' +
     '</div></div>' +
-    '<div id="usageStatsRankingPane" class="hidden">' +
+    '<div id="usageStatsRankingPane" class="hidden" role="tabpanel" aria-labelledby="usageStatsSubtabRanking">' +
     '<div class="item" style="padding:12px 14px"><div class="grid3" style="gap:8px">' +
     '<div><label id="userRankingPeriodLabel"></label><select id="userRankingPeriod" style="height:36px" onchange="onUserRankingFilterChange()"><option value="daily" id="userRankingPeriodDaily"></option><option value="monthly" id="userRankingPeriodMonthly"></option><option value="yearly" id="userRankingPeriodYearly"></option></select></div>' +
     '<div id="userRankingDateWrap"><label id="userRankingDateLabel"></label><input id="userRankingDate" style="height:36px" type="date" onchange="onUserRankingFilterChange()"></div>' +
@@ -297,6 +301,15 @@ function switchUsageStatsSubtab(tab) {
   renderUsageStats();
   if (usageStatsState.subtab === 'ranking') loadUserRankings();
   else loadUsageStats();
+}
+function onUsageStatsSubtabKeydown(event) {
+  const key = event && event.key;
+  if (key !== 'ArrowLeft' && key !== 'ArrowRight' && key !== 'Home' && key !== 'End') return;
+  event.preventDefault();
+  const next = key === 'ArrowLeft' || key === 'Home' ? 'usage' : 'ranking';
+  switchUsageStatsSubtab(next);
+  const btn = document.getElementById(next === 'usage' ? 'usageStatsSubtabUsage' : 'usageStatsSubtabRanking');
+  if (btn) btn.focus();
 }
 function buildUsageStatsEntityOptions() {
   const root = document.getElementById('usageStatsEntity');
@@ -392,10 +405,28 @@ function renderUsageStats() {
   const rankingPane = document.getElementById('usageStatsRankingPane');
   const usageBtn = document.getElementById('usageStatsSubtabUsage');
   const rankingBtn = document.getElementById('usageStatsSubtabRanking');
-  if (usagePane) usagePane.classList.toggle('hidden', usageStatsState.subtab !== 'usage');
-  if (rankingPane) rankingPane.classList.toggle('hidden', usageStatsState.subtab !== 'ranking');
-  if (usageBtn) usageBtn.className = usageStatsState.subtab === 'usage' ? 'btn-secondary' : 'btn-ghost';
-  if (rankingBtn) rankingBtn.className = usageStatsState.subtab === 'ranking' ? 'btn-secondary' : 'btn-ghost';
+  if (usagePane) {
+    const active = usageStatsState.subtab === 'usage';
+    usagePane.classList.toggle('hidden', !active);
+    usagePane.setAttribute('aria-hidden', active ? 'false' : 'true');
+  }
+  if (rankingPane) {
+    const active = usageStatsState.subtab === 'ranking';
+    rankingPane.classList.toggle('hidden', !active);
+    rankingPane.setAttribute('aria-hidden', active ? 'false' : 'true');
+  }
+  if (usageBtn) {
+    const active = usageStatsState.subtab === 'usage';
+    usageBtn.className = active ? 'usage-stats-subtab is-active' : 'usage-stats-subtab';
+    usageBtn.setAttribute('aria-selected', active ? 'true' : 'false');
+    usageBtn.setAttribute('tabindex', active ? '0' : '-1');
+  }
+  if (rankingBtn) {
+    const active = usageStatsState.subtab === 'ranking';
+    rankingBtn.className = active ? 'usage-stats-subtab is-active' : 'usage-stats-subtab';
+    rankingBtn.setAttribute('aria-selected', active ? 'true' : 'false');
+    rankingBtn.setAttribute('tabindex', active ? '0' : '-1');
+  }
   syncUsageStatsFiltersFromState();
   syncUserRankingFiltersFromState();
   buildUsageStatsEntityOptions();
@@ -416,12 +447,14 @@ function renderUsageStats() {
 function renderUserRankings() {
   const root = document.getElementById('userRankingCards');
   if (!root) return;
-  const rows = userRankingCache && userRankingCache.rows || [];
+  const rows = (userRankingCache && userRankingCache.rows || []).filter(function(row) {
+    return row && isRankingEmail(row.user_email);
+  });
   if (!rows.length) {
     root.innerHTML = '<div class="hint" style="grid-column:1/-1">' + ust('rankingEmpty') + '</div>';
   } else {
     root.innerHTML = rows.map(function(row) {
-      const email = row.user_email || row.user_name || '-';
+      const email = String(row.user_email || '').trim();
       return '<div class="item user-ranking-card">' +
         '<div class="item-title mono user-ranking-card-title" title="' + escapeHtml(email) + '">' + escapeHtml(email) + '</div>' +
         '<div class="usage-rank-sub user-ranking-card-metrics">' +

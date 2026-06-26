@@ -16,7 +16,8 @@
 <script>
   try {
     var d = localStorage.getItem('ai_assistant_theme_mode') === 'dark';
-    var c = d ? '#0b1220' : '#f4f5f7';
+    var s = localStorage.getItem('maclaw.ai.darkScheme');
+    var c = d ? (s === 'aurora' ? '#071018' : (s === 'classic' ? '#0b1220' : '#111111')) : '#f4f5f7';
     document.documentElement.style.backgroundColor = c;
     document.body.style.backgroundColor = c;
   } catch(e) {}
@@ -25,4 +26,3 @@
 <script src="./src/main.tsx" type="module"></script>
 </body>
 </html>
-

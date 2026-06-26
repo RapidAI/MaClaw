@@ -259,6 +259,132 @@ func TestResolveStep_DefaultValue(t *testing.T) {
 	}
 }
 
+func TestResolveStep_AppendsInputForCommandWithoutParamContract(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "command",
+		Params: map[string]interface{}{
+			"command": "node run.js",
+		},
+	}
+	quoteFunc := func(s string) string { return `"` + s + `"` }
+
+	result, err := ResolveStep(step, map[string]string{"input": "翻译 thesis.pdf"}, "", nil, quoteFunc)
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if cmd != `node run.js "翻译 thesis.pdf"` {
+		t.Fatalf("command = %q, want input appended as shell arg", cmd)
+	}
+}
+
+func TestResolveStep_AppendsInputForEmptyActionCommandStep(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Params: map[string]interface{}{
+			"command": "python scripts/run.py",
+		},
+	}
+
+	result, err := ResolveStep(step, map[string]string{"input": "thesis.pdf"}, "", nil, nil)
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if cmd != "python scripts/run.py thesis.pdf" {
+		t.Fatalf("command = %q, want input appended for empty-action command step", cmd)
+	}
+}
+
+func TestResolveStep_DoesNotAppendInputWhenCommandConsumesPlaceholder(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "command",
+		Params: map[string]interface{}{
+			"command": "node run.js {input}",
+		},
+	}
+
+	result, err := ResolveStep(step, map[string]string{"input": "thesis.pdf"}, "", nil, nil)
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if cmd != "node run.js thesis.pdf" {
+		t.Fatalf("command = %q, want placeholder substitution without duplicate arg", cmd)
+	}
+}
+
+func TestResolveStep_DoesNotAppendInputToNonScriptSetupCommand(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "command",
+		Params: map[string]interface{}{
+			"command": "npm install",
+		},
+	}
+
+	result, err := ResolveStep(step, map[string]string{"input": "thesis.pdf"}, "", nil, nil)
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if cmd != "npm install" {
+		t.Fatalf("command = %q, want setup command unchanged", cmd)
+	}
+}
+
+func TestResolveStep_DoesNotAppendInputToCompoundShellCommand(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "command",
+		Params: map[string]interface{}{
+			"command": "node run.js && echo done",
+		},
+	}
+
+	result, err := ResolveStep(step, map[string]string{"input": "thesis.pdf"}, "", nil, nil)
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if cmd != "node run.js && echo done" {
+		t.Fatalf("command = %q, want compound command unchanged", cmd)
+	}
+}
+
+func TestResolveStep_DoesNotAppendInputToExplicitBashStep(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "node run.js",
+		},
+	}
+
+	result, err := ResolveStep(step, map[string]string{"input": "thesis.pdf"}, "", nil, nil)
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if cmd != "node run.js" {
+		t.Fatalf("command = %q, want explicit bash command unchanged", cmd)
+	}
+}
+
+func TestResolveStep_DoesNotAppendInputToExplicitShellStep(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "shell",
+		Params: map[string]interface{}{
+			"command": "node run.js",
+		},
+	}
+
+	result, err := ResolveStep(step, map[string]string{"input": "thesis.pdf"}, "", nil, nil)
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if cmd != "node run.js" {
+		t.Fatalf("command = %q, want explicit shell command unchanged", cmd)
+	}
+}
+
 func TestResolveStep_CraftToolInjection(t *testing.T) {
 	step := corelib.NLSkillStep{
 		Action: "craft_tool",
@@ -277,6 +403,21 @@ func TestResolveStep_CraftToolInjection(t *testing.T) {
 	}
 	if v, _ := result.Step.Params["output"].(string); v != "/tmp/out.txt" {
 		t.Errorf("expected craft_tool output injection, got %q", v)
+	}
+}
+
+func TestResolveStep_CraftToolInjectsUserPromptFromInput(t *testing.T) {
+	result, err := ResolveStep(corelib.NLSkillStep{
+		Action: "craft_tool",
+		Params: map[string]interface{}{
+			"instructions": "Use python-docx for Word files.",
+		},
+	}, map[string]string{"input": "create a test docx"}, "", nil, nil)
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	if got := result.Step.Params["user_prompt"]; got != "create a test docx" {
+		t.Fatalf("user_prompt = %#v, want input value", got)
 	}
 }
 

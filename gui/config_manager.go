@@ -671,6 +671,14 @@ func (m *ConfigManager) applyMaclawLLMChange(cfg *corelib.AppConfig, key, value 
 		// Use the single source of truth for value normalization.
 		cfg.MaclawAgentMaxIterations = config.EffectiveMaxIterations(n)
 		return old, nil
+	case "skill_runner_timeout_sec":
+		old := fmt.Sprintf("%d", cfg.SkillRunnerTimeoutSec)
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return "", fmt.Errorf("invalid integer value for skill_runner_timeout_sec: %q", value)
+		}
+		cfg.SkillRunnerTimeoutSec = corelib.NormalizeSkillRunnerTimeoutSec(n)
+		return old, nil
 	}
 	return "", fmt.Errorf("unsupported maclaw_llm key %q", key)
 }
@@ -857,6 +865,7 @@ func (m *ConfigManager) initSchema() {
 				{Key: "maclaw_llm_context_length", Description: "LLM 上下文长度 (tokens)，0=默认110000", Type: "int", Default: "0"},
 				{Key: "maclaw_llm_current_provider", Description: "当前 LLM 提供商", Type: "string"},
 				{Key: "maclaw_agent_max_iterations", Description: "Agent 最大推理轮次（30-300，默认300）", Type: "int", Default: "300"},
+				{Key: "skill_runner_timeout_sec", Description: "Skill Runner 单步/全局默认超时时间（秒，240-14400，默认600）", Type: "int", Default: "600"},
 			},
 		},
 

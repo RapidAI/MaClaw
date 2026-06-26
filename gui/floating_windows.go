@@ -641,8 +641,30 @@ func renderClawMatePetRaster(sz int, skin string, pose petFacePose) *image.NRGBA
 	}
 
 	outline := math.Max(2, float64(sz)*0.012)
+	tail := color.NRGBA{R: 226, G: 232, B: 240, A: 228}
+	tailLine := color.NRGBA{R: 148, G: 163, B: 184, A: 220}
+	if skin == "mini-claw" {
+		tail = color.NRGBA{R: 219, G: 234, B: 254, A: 232}
+		tailLine = color.NRGBA{R: 147, G: 197, B: 253, A: 225}
+	} else if skin == "dev-claw" {
+		tail = color.NRGBA{R: 30, G: 41, B: 59, A: 236}
+		tailLine = color.NRGBA{R: 96, G: 165, B: 250, A: 230}
+	} else if skin == "focus-claw" {
+		tail = color.NRGBA{R: 226, G: 236, B: 228, A: 226}
+		tailLine = color.NRGBA{R: 155, G: 184, B: 161, A: 220}
+	}
 	for y := 0; y < sz; y++ {
 		for x := 0; x < sz; x++ {
+			tailDx := math.Abs(float64(x)-(bodyCx-float64(sz)*0.35)) / (float64(sz) * 0.18)
+			tailDy := math.Abs(float64(y)-(bodyY+float64(sz)*0.07)) / (float64(sz) * 0.095)
+			tailD := tailDx*tailDx + tailDy*tailDy
+			if tailD <= 1.18 {
+				out.SetNRGBA(x, y, tailLine)
+			}
+			if tailD <= 1 {
+				out.SetNRGBA(x, y, tail)
+			}
+
 			bodyDx := math.Abs(float64(x)-bodyCx) / (float64(sz) * 0.32)
 			bodyDy := math.Abs(float64(y)-bodyY) / (float64(sz) * 0.18)
 			bodyD := bodyDx*bodyDx + bodyDy*bodyDy
@@ -704,6 +726,14 @@ func renderClawMatePetRaster(sz int, skin string, pose petFacePose) *image.NRGBA
 	armWave := pose.ArmWave * float64(sz) * 0.045
 	drawLine(out, int(bodyCx-float64(sz)*0.31), int(bodyY+float64(sz)*0.075-armWave), int(bodyCx-float64(sz)*0.13), int(bodyY+float64(sz)*0.13+armWave*0.35), bodyLine, int(math.Max(3, float64(sz)*0.047)))
 	drawLine(out, int(bodyCx+float64(sz)*0.31), int(bodyY+float64(sz)*0.075+armWave), int(bodyCx+float64(sz)*0.13), int(bodyY+float64(sz)*0.13-armWave*0.35), bodyLine, int(math.Max(3, float64(sz)*0.047)))
+	badgeW := int(float64(sz) * 0.26)
+	badgeH := int(float64(sz) * 0.14)
+	badgeX := int(bodyCx) - badgeW/2
+	badgeY := int(bodyY - float64(sz)*0.015)
+	drawRoundRect(out, badgeX-2, badgeY-2, badgeW+4, badgeH+4, int(float64(sz)*0.045), bodyLine)
+	drawRoundRect(out, badgeX, badgeY, badgeW, badgeH, int(float64(sz)*0.04), color.NRGBA{R: 248, G: 250, B: 252, A: 232})
+	drawLine(out, badgeX+int(float64(sz)*0.055), badgeY+badgeH/2, badgeX+badgeW-int(float64(sz)*0.08), badgeY+badgeH/2, accent, int(math.Max(2, float64(sz)*0.022)))
+	drawCircle(out, badgeX+badgeW-int(float64(sz)*0.045), badgeY+badgeH/2, int(math.Max(2, float64(sz)*0.02)), accent)
 	antBaseX, antBaseY := rotatePetPoint(headCx, headCy, headCx, headCy-headR+float64(sz)*0.02, pose.HeadTilt)
 	antTipX, antTipY := rotatePetPoint(headCx, headCy, headCx, headCy-headR-float64(sz)*0.11, pose.HeadTilt)
 	barLeftX, barLeftY := rotatePetPoint(headCx, headCy, headCx-float64(sz)*0.1, headCy-headR-float64(sz)*0.06, pose.HeadTilt)
@@ -714,12 +744,16 @@ func renderClawMatePetRaster(sz int, skin string, pose petFacePose) *image.NRGBA
 	switch skin {
 	case "mini-claw":
 		drawLine(out, int(bodyCx-float64(sz)*0.22), int(bodyY+float64(sz)*0.18), int(bodyCx+float64(sz)*0.22), int(bodyY+float64(sz)*0.18), accent, int(math.Max(3, float64(sz)*0.05)))
+		drawLine(out, int(bodyCx-float64(sz)*0.25), int(bodyY+float64(sz)*0.23), int(bodyCx-float64(sz)*0.06), int(bodyY+float64(sz)*0.23), headLine, int(math.Max(2, float64(sz)*0.035)))
+		drawLine(out, int(bodyCx+float64(sz)*0.06), int(bodyY+float64(sz)*0.23), int(bodyCx+float64(sz)*0.25), int(bodyY+float64(sz)*0.23), headLine, int(math.Max(2, float64(sz)*0.035)))
 	case "dev-claw":
 		visorLeftX, visorLeftY := rotatePetPoint(headCx, headCy, headCx-float64(sz)*0.28, headCy-float64(sz)*0.03, pose.HeadTilt)
 		visorRightX, visorRightY := rotatePetPoint(headCx, headCy, headCx+float64(sz)*0.28, headCy-float64(sz)*0.03, pose.HeadTilt)
 		drawLine(out, int(visorLeftX), int(visorLeftY), int(visorRightX), int(visorRightY), color.NRGBA{R: 15, G: 23, B: 42, A: 245}, int(math.Max(4, float64(sz)*0.08)))
 		drawLine(out, int(bodyCx-float64(sz)*0.12), int(bodyY), int(bodyCx-float64(sz)*0.03), int(bodyY+float64(sz)*0.07), accent, int(math.Max(2, float64(sz)*0.03)))
 		drawLine(out, int(bodyCx+float64(sz)*0.12), int(bodyY), int(bodyCx+float64(sz)*0.03), int(bodyY+float64(sz)*0.07), accent, int(math.Max(2, float64(sz)*0.03)))
+		drawLine(out, int(bodyCx-float64(sz)*0.24), int(bodyY+float64(sz)*0.23), int(bodyCx-float64(sz)*0.04), int(bodyY+float64(sz)*0.23), color.NRGBA{R: 148, G: 163, B: 184, A: 235}, int(math.Max(2, float64(sz)*0.035)))
+		drawLine(out, int(bodyCx+float64(sz)*0.04), int(bodyY+float64(sz)*0.23), int(bodyCx+float64(sz)*0.24), int(bodyY+float64(sz)*0.23), color.NRGBA{R: 148, G: 163, B: 184, A: 235}, int(math.Max(2, float64(sz)*0.035)))
 	case "focus-claw":
 		browLeftAX, browLeftAY := rotatePetPoint(headCx, headCy, headCx-float64(sz)*0.17, headCy-float64(sz)*0.02, pose.HeadTilt)
 		browLeftBX, browLeftBY := rotatePetPoint(headCx, headCy, headCx-float64(sz)*0.07, headCy-float64(sz)*0.02, pose.HeadTilt)
@@ -727,8 +761,45 @@ func renderClawMatePetRaster(sz int, skin string, pose petFacePose) *image.NRGBA
 		browRightBX, browRightBY := rotatePetPoint(headCx, headCy, headCx+float64(sz)*0.17, headCy-float64(sz)*0.02, pose.HeadTilt)
 		drawLine(out, int(browLeftAX), int(browLeftAY), int(browLeftBX), int(browLeftBY), eye, int(math.Max(3, float64(sz)*0.04)))
 		drawLine(out, int(browRightAX), int(browRightAY), int(browRightBX), int(browRightBY), eye, int(math.Max(3, float64(sz)*0.04)))
+		drawLine(out, int(bodyCx-float64(sz)*0.23), int(bodyY+float64(sz)*0.22), int(bodyCx-float64(sz)*0.05), int(bodyY+float64(sz)*0.22), headLine, int(math.Max(2, float64(sz)*0.032)))
+		drawLine(out, int(bodyCx+float64(sz)*0.05), int(bodyY+float64(sz)*0.22), int(bodyCx+float64(sz)*0.23), int(bodyY+float64(sz)*0.22), headLine, int(math.Max(2, float64(sz)*0.032)))
 	}
 	return out
+}
+
+func drawRoundRect(img *image.NRGBA, x, y, w, h, r int, c color.NRGBA) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	b := img.Bounds()
+	if r < 0 {
+		r = 0
+	}
+	for py := y; py < y+h; py++ {
+		if py < b.Min.Y || py >= b.Max.Y {
+			continue
+		}
+		for px := x; px < x+w; px++ {
+			if px < b.Min.X || px >= b.Max.X {
+				continue
+			}
+			dx := 0
+			if px < x+r {
+				dx = x + r - px
+			} else if px >= x+w-r {
+				dx = px - (x + w - r - 1)
+			}
+			dy := 0
+			if py < y+r {
+				dy = y + r - py
+			} else if py >= y+h-r {
+				dy = py - (y + h - r - 1)
+			}
+			if dx == 0 || dy == 0 || dx*dx+dy*dy <= r*r {
+				img.SetNRGBA(px, py, c)
+			}
+		}
+	}
 }
 
 func drawCircle(img *image.NRGBA, cx, cy, r int, c color.NRGBA) {
@@ -902,24 +973,24 @@ func playPetMotionSound(interactionMode, skin, preset string) {
 			hz uintptr
 			ms uintptr
 		}
-		toneSet := []petTone{{880, 16}, {1175, 20}}
+		toneSet := []petTone{{620, 28}, {930, 34}}
 		switch skin {
 		case "mini-claw":
-			toneSet = []petTone{{1175, 12}, {1568, 16}, {1760, 12}}
+			toneSet = []petTone{{560, 22}, {860, 26}, {1040, 18}}
 		case "dev-claw":
-			toneSet = []petTone{{988, 12}, {740, 14}, {1175, 16}}
+			toneSet = []petTone{{640, 22}, {480, 28}, {760, 20}}
 		case "focus-claw":
-			toneSet = []petTone{{659, 14}, {880, 16}}
+			toneSet = []petTone{{392, 32}, {588, 38}}
 		}
 		switch preset {
 		case "bubble":
-			toneSet = []petTone{{784, 12}, {1175, 18}, {1568, 14}}
+			toneSet = []petTone{{560, 22}, {860, 28}, {1040, 18}}
 		case "chime":
-			toneSet = []petTone{{1047, 24}, {1568, 34}}
+			toneSet = []petTone{{880, 40}, {1320, 52}}
 		case "synth":
-			toneSet = []petTone{{740, 14}, {988, 14}, {622, 20}}
+			toneSet = []petTone{{640, 22}, {480, 26}, {760, 18}}
 		case "soft":
-			toneSet = []petTone{{523, 24}, {659, 28}}
+			toneSet = []petTone{{392, 42}, {588, 48}}
 		}
 		pitch := 1.0
 		if interactionMode == "active" {

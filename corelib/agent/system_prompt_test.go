@@ -116,6 +116,23 @@ func TestBuildPromptBundleIncludesEvidenceBoundFactualRules(t *testing.T) {
 	}
 }
 
+func TestBuildPromptBundleIncludesTimeSensitiveCredentialRules(t *testing.T) {
+	prompt := BuildSystemPrompt(SystemPromptDeps{
+		Config: SystemPromptConfig{RoleName: "MaClaw", RoleDescription: "test agent"},
+	}, "这是 GPU84 的最新密码，继续通过跳板机登录", true)
+
+	for _, want := range []string{
+		"时效性凭据优先执行",
+		"不要先调用 memory(action=\"save\")",
+		"敏感凭据默认不入长期记忆",
+		"1 小时有效的 SSH/跳板机密码",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing time-sensitive credential rule %q: %s", want, prompt)
+		}
+	}
+}
+
 func TestBuildPromptBundleSplitsDynamicSections(t *testing.T) {
 	bundle := BuildPromptBundle(SystemPromptDeps{
 		Config: SystemPromptConfig{RoleName: "MaClaw", RoleDescription: "test agent"},

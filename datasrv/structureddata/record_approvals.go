@@ -43,6 +43,7 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 	if currentAssignee == "" {
 		currentAssignee = strings.TrimSpace(in.AssignedTo)
 	}
+	workflowNodeID, workflowNodeIDs := normalizeRecordApprovalWorkflowNodes(in.WorkflowNodeID, in.WorkflowNodeIDs)
 	if existing, err := s.store.ListRecordApprovals(ctx, p.TenantID, QueryRecordApprovalsInput{
 		DatasetID:   datasetID,
 		RecordID:    recordID,
@@ -84,7 +85,8 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 		WorkflowSkillID:     strings.TrimSpace(in.WorkflowSkillID),
 		WorkflowVersion:     strings.TrimSpace(in.WorkflowVersion),
 		WorkflowInstanceID:  strings.TrimSpace(in.WorkflowInstanceID),
-		WorkflowNodeID:      strings.TrimSpace(in.WorkflowNodeID),
+		WorkflowNodeID:      workflowNodeID,
+		WorkflowNodeIDs:     workflowNodeIDs,
 		WorkflowDecisionID:  strings.TrimSpace(in.WorkflowDecisionID),
 		DetailURL:           strings.TrimSpace(in.DetailURL),
 		BusinessStatus:      strings.TrimSpace(in.BusinessStatus),
@@ -168,6 +170,36 @@ func validRecordApprovalLane(value string) bool {
 	}
 }
 
+func normalizeRecordApprovalWorkflowNodes(workflowNodeID string, workflowNodeIDs []string) (string, []string) {
+	primary := strings.TrimSpace(workflowNodeID)
+	seen := map[string]struct{}{}
+	nodes := make([]string, 0, len(workflowNodeIDs)+1)
+	for _, node := range workflowNodeIDs {
+		node = strings.TrimSpace(node)
+		if node == "" {
+			continue
+		}
+		key := strings.ToLower(node)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		nodes = append(nodes, node)
+	}
+	if primary != "" {
+		key := strings.ToLower(primary)
+		if _, ok := seen[key]; !ok {
+			nodes = append([]string{primary}, nodes...)
+		}
+	}
+	if primary == "" && len(nodes) > 0 {
+		primary = nodes[0]
+	}
+	if len(nodes) == 0 && primary != "" {
+		nodes = []string{primary}
+	}
+	return primary, nodes
+}
 func recordApprovalMetadata(approval RecordApproval) map[string]any {
 	return map[string]any{
 		"approval_id":           approval.ID,
@@ -189,6 +221,7 @@ func recordApprovalMetadata(approval RecordApproval) map[string]any {
 		"workflow_version":      approval.WorkflowVersion,
 		"workflow_instance_id":  approval.WorkflowInstanceID,
 		"workflow_node_id":      approval.WorkflowNodeID,
+		"workflow_node_ids":     append([]string(nil), approval.WorkflowNodeIDs...),
 		"workflow_decision_id":  approval.WorkflowDecisionID,
 		"detail_url":            approval.DetailURL,
 		"business_status":       approval.BusinessStatus,
@@ -209,6 +242,12 @@ func recordApprovalAuditMetadata(approval RecordApproval, extra map[string]any) 
 	metadata["status"] = approval.Status
 	metadata["output_count"] = len(approval.Outputs)
 	metadata["artifact_count"] = len(approval.Artifacts)
+	if summary := recordApprovalResultSummary(approval); summary != "" {
+		metadata["result_summary"] = summary
+	}
+	if artifact := recordApprovalPrimaryArtifactName(approval); artifact != "" {
+		metadata["primary_artifact"] = artifact
+	}
 	if len(approval.Outputs) == 0 {
 		delete(metadata, "outputs")
 	}
@@ -235,7 +274,7 @@ func (s *Service) ReviewRecordApproval(ctx context.Context, p Principal, approva
 		return nil, err
 	}
 	if current.Status != recordApprovalStatusPending {
-		return nil, fmt.Errorf("%w: approval is not pending", ErrInvalidInput)
+		return nil, recordApprovalNotPendingError(*current)
 	}
 	decision := strings.ToLower(strings.TrimSpace(in.Decision))
 	status := ""
@@ -260,7 +299,8 @@ func (s *Service) ReviewRecordApproval(ctx context.Context, p Principal, approva
 	if toStatus == "" {
 		toStatus = status
 	}
-	out, err := s.store.UpdateRecordApprovalStatus(ctx, p.TenantID, approvalID, status, decision, strings.TrimSpace(in.Reason), p.UserID, in.WorkflowInstanceID, in.WorkflowNodeID, in.WorkflowVersion, in.WorkflowDecisionID, in.DetailURL, in.BusinessStatus, in.ResultStatus, in.CurrentAssignee, in.CurrentAssigneeType, fromStatus, toStatus, in.ResultPayload, in.Outputs, in.Artifacts, s.now().UTC())
+	workflowNodeID, workflowNodeIDs := normalizeRecordApprovalWorkflowNodes(in.WorkflowNodeID, in.WorkflowNodeIDs)
+	out, err := s.store.UpdateRecordApprovalStatus(ctx, p.TenantID, approvalID, status, decision, strings.TrimSpace(in.Reason), p.UserID, in.WorkflowInstanceID, workflowNodeID, workflowNodeIDs, in.WorkflowVersion, in.WorkflowDecisionID, in.DetailURL, in.BusinessStatus, in.ResultStatus, in.CurrentAssignee, in.CurrentAssigneeType, fromStatus, toStatus, in.ResultPayload, in.Outputs, in.Artifacts, s.now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -270,6 +310,30 @@ func (s *Service) ReviewRecordApproval(ctx context.Context, p Principal, approva
 	}
 	s.audit(ctx, p, "approval."+decision, out.DatasetID, "record", out.RecordID, "Reviewed approval "+approvalID, recordApprovalAuditMetadata(*out, map[string]any{"decision": decision, "reason": strings.TrimSpace(in.Reason), "business_record_updated": businessRecordUpdated}))
 	return out, nil
+}
+
+func recordApprovalNotPendingError(approval RecordApproval) error {
+	status := strings.TrimSpace(approval.Status)
+	message := "Approval " + approval.ID + " cannot be reviewed because it is already " + status + "."
+	if status == "" {
+		message = "Approval " + approval.ID + " cannot be reviewed because it is not pending."
+	}
+	err := newBusinessError(ErrInvalidInput, "approval_not_pending", message)
+	err.Target = firstNonEmptyStructuredDataString(approval.Summary, approval.RecordID, approval.ID)
+	err.Required = "approval_status = pending"
+	err.Actual = "approval_status = " + firstNonEmptyStructuredDataString(status, "unknown")
+	err.NextActions = []BusinessErrorAction{
+		{Label: "View approval detail", Action: "get_record_approval", Args: map[string]any{"approval_id": approval.ID}},
+		{Label: "Refresh approval list", Action: "list_record_approvals", Args: map[string]any{"record_id": approval.RecordID, "status": status}},
+	}
+	err.Metadata = map[string]any{
+		"approval_id":          approval.ID,
+		"dataset_id":           approval.DatasetID,
+		"record_id":            approval.RecordID,
+		"workflow_instance_id": approval.WorkflowInstanceID,
+		"status":               status,
+	}
+	return err
 }
 
 func (s *Service) syncBusinessRecordFromApprovalReview(ctx context.Context, p Principal, approval RecordApproval) (bool, error) {
@@ -323,7 +387,22 @@ func (s *Service) syncBusinessRecordFromApproval(ctx context.Context, p Principa
 	setString("approval_workflow_version", approval.WorkflowVersion)
 	setString("approval_workflow_node_id", approval.WorkflowNodeID)
 	setString("approval_current_node", approval.WorkflowNodeID)
+	if len(approval.WorkflowNodeIDs) > 0 {
+		nextData["approval_workflow_node_ids"] = append([]string(nil), approval.WorkflowNodeIDs...)
+		nextData["approval_current_nodes"] = append([]string(nil), approval.WorkflowNodeIDs...)
+		changed = true
+	}
 	setString("approval_detail_url", approval.DetailURL)
+	setString("approval_result_summary", recordApprovalResultSummary(approval))
+	setString("approval_primary_artifact", recordApprovalPrimaryArtifactName(approval))
+	if len(approval.Outputs) > 0 {
+		nextData["approval_output_count"] = len(approval.Outputs)
+		changed = true
+	}
+	if len(approval.Artifacts) > 0 {
+		nextData["approval_artifact_count"] = len(approval.Artifacts)
+		changed = true
+	}
 	if approval.CurrentAssignee != "" {
 		setString("approval_current_assignee", approval.CurrentAssignee)
 	} else {
@@ -365,6 +444,81 @@ func approvalBusinessRecordStatus(approval RecordApproval) string {
 		return strings.TrimSpace(approval.BusinessStatus)
 	}
 	return strings.TrimSpace(approval.Status)
+}
+
+func recordApprovalResultSummary(approval RecordApproval) string {
+	for _, key := range []string{"summary", "text", "content", "message", "result"} {
+		if value, ok := approval.ResultPayload[key].(string); ok && strings.TrimSpace(value) != "" {
+			return truncateRecordApprovalSummary(value)
+		}
+	}
+	businessRecordSummary := ""
+	if businessRecord, ok := approval.ResultPayload["business_record"].(map[string]any); ok {
+		for _, key := range []string{"summary", "title", "name", "status"} {
+			if value, ok := businessRecord[key].(string); ok && strings.TrimSpace(value) != "" {
+				businessRecordSummary = value
+				break
+			}
+		}
+	}
+	if (approval.Status == recordApprovalStatusApproved || approval.Status == recordApprovalStatusRejected) && businessRecordSummary != "" {
+		return truncateRecordApprovalSummary(businessRecordSummary)
+	}
+	for _, output := range approval.Outputs {
+		for _, value := range []string{output.Text, output.Title, output.Status, output.Kind, output.Type} {
+			if strings.TrimSpace(value) != "" {
+				return truncateRecordApprovalSummary(value)
+			}
+		}
+	}
+	if businessRecordSummary != "" {
+		return truncateRecordApprovalSummary(businessRecordSummary)
+	}
+	for _, value := range []string{approval.Reason, approval.Summary, approval.ResultStatus, approval.BusinessStatus, approval.Status} {
+		if strings.TrimSpace(value) != "" {
+			return truncateRecordApprovalSummary(value)
+		}
+	}
+	return ""
+}
+
+func recordApprovalPrimaryArtifactName(approval RecordApproval) string {
+	for _, artifact := range approval.Artifacts {
+		for _, value := range []string{artifact.Name, artifact.URI, artifact.ID, artifact.Path, artifact.RemoteURL} {
+			if strings.TrimSpace(value) != "" {
+				return truncateRecordApprovalSummary(value)
+			}
+		}
+	}
+	for _, output := range approval.Outputs {
+		if output.Artifact != nil {
+			for _, value := range []string{output.Artifact.Name, output.Artifact.URI, output.Artifact.ID, output.Artifact.Path, output.Artifact.RemoteURL} {
+				if strings.TrimSpace(value) != "" {
+					return truncateRecordApprovalSummary(value)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func truncateRecordApprovalSummary(value string) string {
+	value = strings.TrimSpace(value)
+	const maxRunes = 240
+	if len([]rune(value)) <= maxRunes {
+		return value
+	}
+	runes := []rune(value)
+	return strings.TrimSpace(string(runes[:maxRunes]))
+}
+
+func firstNonEmptyStructuredDataString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func normalizeApprovalKind(value string) string {

@@ -62,10 +62,10 @@ type Store struct {
 	inferenceEngine *InferenceEngine // rule-based multi-hop fact reasoning
 
 	// --- Multi-page recall components ---
-	cursorPaginator  *CursorPaginator      // cursor-based pagination state
-	scrollSessions   *ScrollSessionManager  // per-loop scroll-through recall sessions
-	pageIndex        *PageIndex             // cross-page context retrieval index
-	aliasIndex       *AliasIndex            // bidirectional alias mappings for query expansion
+	cursorPaginator *CursorPaginator      // cursor-based pagination state
+	scrollSessions  *ScrollSessionManager // per-loop scroll-through recall sessions
+	pageIndex       *PageIndex            // cross-page context retrieval index
+	aliasIndex      *AliasIndex           // bidirectional alias mappings for query expansion
 
 	// lastRebuildDone is closed when the most recent background index rebuild
 	// (from replaceEntriesAndRebuildAsync) completes. Used by WaitRebuild and
@@ -86,6 +86,8 @@ type Store struct {
 	queryEmbMu     sync.Mutex
 	queryEmbCache  map[string]queryEmbeddingCacheEntry
 	queryEmbFlight map[string]*queryEmbeddingFlight
+
+	saveEmbeddingSem chan struct{}
 }
 
 // SetExperienceEventSink connects memory recall to the shared experience
@@ -132,8 +134,17 @@ type queryEmbeddingFlight struct {
 	err        error
 }
 
+type embeddingResult struct {
+	vec []float32
+	err error
+}
+
 const maxQueryEmbeddingCacheEntries = 256
 const queryEmbeddingCacheTTL = 10 * time.Minute
+const maxConcurrentSaveEmbeddings = 2
+
+var queryEmbeddingWaitBudget = 1200 * time.Millisecond
+var saveEmbeddingBudget = 1500 * time.Millisecond
 
 // NewStore creates a Store that persists to the given path.
 func NewStore(path string) (*Store, error) {
@@ -143,26 +154,27 @@ func NewStore(path string) (*Store, error) {
 	}
 
 	s := &Store{
-		entries:        make([]Entry, 0),
-		path:           absPath,
-		saveCh:         make(chan struct{}, 1),
-		stopCh:         make(chan struct{}),
-		maxItems:       2000,
-		bm25:           newBM25Index(),
-		vecIndex:       newVectorIndex(),
-		graph:          newMemoryGraph(),
-		tmt:            NewTemporalTree(),
-		partMgr:        newPartitionManager(filepath.Dir(absPath)),
-		projIndex:      NewProjectIndex(filepath.Dir(absPath)),
-		semanticGraph:  NewSemanticGraph(),
-		entityIndex:    NewEntityIndex(),
-		themeManager:   NewThemeManager(),
-		cursorPaginator: NewCursorPaginator(),
-		scrollSessions:  NewScrollSessionManager(),
-		pageIndex:       NewPageIndex(),
-		aliasIndex:      NewAliasIndex(),
-		queryEmbCache:  make(map[string]queryEmbeddingCacheEntry),
-		queryEmbFlight: make(map[string]*queryEmbeddingFlight),
+		entries:          make([]Entry, 0),
+		path:             absPath,
+		saveCh:           make(chan struct{}, 1),
+		stopCh:           make(chan struct{}),
+		maxItems:         2000,
+		bm25:             newBM25Index(),
+		vecIndex:         newVectorIndex(),
+		graph:            newMemoryGraph(),
+		tmt:              NewTemporalTree(),
+		partMgr:          newPartitionManager(filepath.Dir(absPath)),
+		projIndex:        NewProjectIndex(filepath.Dir(absPath)),
+		semanticGraph:    NewSemanticGraph(),
+		entityIndex:      NewEntityIndex(),
+		themeManager:     NewThemeManager(),
+		cursorPaginator:  NewCursorPaginator(),
+		scrollSessions:   NewScrollSessionManager(),
+		pageIndex:        NewPageIndex(),
+		aliasIndex:       NewAliasIndex(),
+		queryEmbCache:    make(map[string]queryEmbeddingCacheEntry),
+		queryEmbFlight:   make(map[string]*queryEmbeddingFlight),
+		saveEmbeddingSem: make(chan struct{}, maxConcurrentSaveEmbeddings),
 	}
 
 	if err := s.load(); err != nil {
@@ -262,6 +274,9 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	}
 
 	hash := computeContentHash(entry.Content)
+	if entry.ID == "" {
+		entry.ID = generateID()
+	}
 
 	// --- Embedding computation (outside lock) ---
 	// Compute embedding before acquiring the write lock. The embedder takes
@@ -270,14 +285,26 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	//
 	// Read s.embedder under RLock to avoid a data race with SetEmbedder.
 	// Then use the local copy for the actual Embed() call (no lock held).
+	var pendingEmbedding <-chan embeddingResult
+	embeddingGen := uint64(0)
 	if len(entry.Embedding) == 0 {
 		s.mu.RLock()
 		emb := s.embedder
+		embeddingGen = s.embedderGen
 		s.mu.RUnlock()
-		if emb != nil {
-			vec, err := emb.Embed(entry.Content)
-			if err == nil && len(vec) > 0 {
-				entry.Embedding = vec
+		if emb != nil && !embedding.IsNoop(emb) {
+			resultC, started := s.startSaveEmbedText(emb, entry.Content)
+			if !started {
+				log.Printf("[memory_store] save embedding skipped because concurrency limit is saturated content_len=%d", len(entry.Content))
+			} else {
+				vec, err, timedOut := waitEmbeddingResult(resultC, saveEmbeddingBudget)
+				if timedOut {
+					log.Printf("[memory_store] save embedding timed out after %s; continuing without vector content_len=%d", saveEmbeddingBudget, len(entry.Content))
+					pendingEmbedding = resultC
+				}
+				if err == nil && len(vec) > 0 {
+					entry.Embedding = vec
+				}
 			}
 		}
 	}
@@ -347,14 +374,16 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	}
 	s.mu.RUnlock()
 
-	// Assign ID early so it's available for pending dedup tracking.
-	if entry.ID == "" {
-		entry.ID = generateID()
-	}
-
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.insertPreparedEntryLocked(entry, hash, now, true)
+	err := s.insertPreparedEntryLocked(entry, hash, now, true)
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if pendingEmbedding != nil {
+		s.updateEntryEmbeddingWhenReady(entry.ID, hash, embeddingGen, pendingEmbedding)
+	}
+	return nil
 }
 
 // Update modifies an existing entry identified by ID.
@@ -3824,7 +3853,10 @@ func (s *Store) queryEmbeddingCached(query string) []float32 {
 	}
 	if flight, ok := s.queryEmbFlight[key]; ok && flight.generation == gen {
 		s.queryEmbMu.Unlock()
-		<-flight.done
+		if !waitForQueryEmbeddingFlight(flight, queryEmbeddingWaitBudget) {
+			log.Printf("[memory_store] query embedding waiter timed out after %s query_len=%d", queryEmbeddingWaitBudget, len(query))
+			return nil
+		}
 		if flight.err != nil || len(flight.vec) == 0 || s.currentEmbedderGeneration() != gen {
 			return nil
 		}
@@ -3837,31 +3869,15 @@ func (s *Store) queryEmbeddingCached(query string) []float32 {
 	s.queryEmbFlight[key] = flight
 	s.queryEmbMu.Unlock()
 
-	embVec, err := emb.Embed(query)
-	vec := append([]float32(nil), embVec...)
-	currentGen := s.currentEmbedderGeneration()
-
-	s.queryEmbMu.Lock()
-	flight.err = err
-	if err == nil && len(vec) > 0 {
-		flight.vec = append([]float32(nil), vec...)
-		if currentGen == gen {
-			if s.queryEmbCache == nil {
-				s.queryEmbCache = make(map[string]queryEmbeddingCacheEntry)
-			}
-			s.queryEmbCache[key] = queryEmbeddingCacheEntry{vec: append([]float32(nil), vec...), generation: gen, createdAt: now, lastUsed: now}
-			s.evictQueryEmbeddingCacheLocked(now)
-		}
-	}
-	if s.queryEmbFlight[key] == flight {
-		delete(s.queryEmbFlight, key)
-	}
-	close(flight.done)
-	s.queryEmbMu.Unlock()
-	if err != nil || len(vec) == 0 || currentGen != gen {
+	go s.populateQueryEmbeddingFlight(key, query, emb, gen, now, flight)
+	if !waitForQueryEmbeddingFlight(flight, queryEmbeddingWaitBudget) {
+		log.Printf("[memory_store] query embedding timed out after %s query_len=%d", queryEmbeddingWaitBudget, len(query))
 		return nil
 	}
-	return append([]float32(nil), vec...)
+	if flight.err != nil || len(flight.vec) == 0 || s.currentEmbedderGeneration() != gen {
+		return nil
+	}
+	return append([]float32(nil), flight.vec...)
 }
 
 // WarmQueryEmbedding asynchronously pre-computes and caches the embedding for
@@ -3879,6 +3895,142 @@ func (s *Store) WarmQueryEmbedding(query string) {
 		return
 	}
 	go s.queryEmbeddingCached(query)
+}
+
+func embedTextWithBudget(emb embedding.Embedder, text string, budget time.Duration) ([]float32, error, bool) {
+	if emb == nil || embedding.IsNoop(emb) {
+		return nil, nil, false
+	}
+	return waitEmbeddingResult(startEmbedText(emb, text), budget)
+}
+
+func startEmbedText(emb embedding.Embedder, text string) <-chan embeddingResult {
+	resultC := make(chan embeddingResult, 1)
+	go func() {
+		vec, err := emb.Embed(text)
+		resultC <- embeddingResult{vec: append([]float32(nil), vec...), err: err}
+	}()
+	return resultC
+}
+
+func (s *Store) startSaveEmbedText(emb embedding.Embedder, text string) (<-chan embeddingResult, bool) {
+	if emb == nil || embedding.IsNoop(emb) {
+		return nil, false
+	}
+	if s == nil || s.saveEmbeddingSem == nil {
+		return startEmbedText(emb, text), true
+	}
+	select {
+	case s.saveEmbeddingSem <- struct{}{}:
+	default:
+		return nil, false
+	}
+	resultC := make(chan embeddingResult, 1)
+	go func() {
+		defer func() { <-s.saveEmbeddingSem }()
+		vec, err := emb.Embed(text)
+		resultC <- embeddingResult{vec: append([]float32(nil), vec...), err: err}
+	}()
+	return resultC, true
+}
+
+func waitEmbeddingResult(resultC <-chan embeddingResult, budget time.Duration) ([]float32, error, bool) {
+	if resultC == nil {
+		return nil, nil, false
+	}
+	if budget <= 0 {
+		res := <-resultC
+		return res.vec, res.err, false
+	}
+	select {
+	case res := <-resultC:
+		return res.vec, res.err, false
+	case <-time.After(budget):
+		return nil, nil, true
+	}
+}
+
+func (s *Store) updateEntryEmbeddingWhenReady(entryID string, contentHash string, gen uint64, resultC <-chan embeddingResult) {
+	go func() {
+		res := <-resultC
+		if res.err != nil || len(res.vec) == 0 || s.currentEmbedderGeneration() != gen {
+			return
+		}
+		if err := s.applyEntryEmbeddingIfReady(entryID, contentHash, res.vec); err != nil {
+			log.Printf("[memory_store] async save embedding update failed entry=%q: %v", entryID, err)
+		}
+	}()
+}
+
+func (s *Store) applyEntryEmbeddingIfReady(entryID string, contentHash string, vec []float32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	idx := s.findEntryIndexByIDLocked(entryID)
+	if idx < 0 {
+		return nil
+	}
+	entry := s.entries[idx]
+	if entry.ContentHash != contentHash || len(entry.Embedding) > 0 {
+		return nil
+	}
+	entry.Embedding = append([]float32(nil), vec...)
+	if s.backend != nil {
+		if err := s.backend.UpdateEntry(&entry); err != nil {
+			return err
+		}
+	}
+	s.entries[idx] = entry
+	s.rebuildDerivedIndexesLocked(false)
+	if s.backend == nil {
+		s.markDirtyLocked()
+	}
+	return nil
+}
+
+func waitForQueryEmbeddingFlight(flight *queryEmbeddingFlight, budget time.Duration) bool {
+	if flight == nil {
+		return false
+	}
+	if budget <= 0 {
+		<-flight.done
+		return true
+	}
+	select {
+	case <-flight.done:
+		return true
+	case <-time.After(budget):
+		return false
+	}
+}
+
+func (s *Store) populateQueryEmbeddingFlight(key string, query string, emb embedding.Embedder, gen uint64, startedAt time.Time, flight *queryEmbeddingFlight) {
+	embVec, err := emb.Embed(query)
+	vec := append([]float32(nil), embVec...)
+	currentGen := s.currentEmbedderGeneration()
+
+	s.queryEmbMu.Lock()
+	flight.err = err
+	if err == nil && len(vec) > 0 {
+		flight.vec = append([]float32(nil), vec...)
+		if currentGen == gen {
+			if s.queryEmbCache == nil {
+				s.queryEmbCache = make(map[string]queryEmbeddingCacheEntry)
+			}
+			s.queryEmbCache[key] = queryEmbeddingCacheEntry{
+				vec:        append([]float32(nil), vec...),
+				generation: gen,
+				createdAt:  startedAt,
+				lastUsed:   startedAt,
+			}
+			s.evictQueryEmbeddingCacheLocked(startedAt)
+		}
+	}
+	if s.queryEmbFlight[key] == flight {
+		delete(s.queryEmbFlight, key)
+	}
+	close(flight.done)
+	s.queryEmbMu.Unlock()
 }
 
 func (s *Store) evictQueryEmbeddingCacheLocked(now time.Time) {

@@ -113,6 +113,27 @@ describe('AboutPanel', () => {
         expect(baseProps.onOpenGithub).toHaveBeenCalledTimes(1);
     });
 
+    it('renders OEM brand product name from Chinese and English display names', () => {
+        render(
+            <AboutPanel
+                {...baseProps}
+                brandInfo={{
+                    id: 'metastaff',
+                    displayName: 'MetaStaff',
+                    displayNameCN: '智员',
+                    slogan: 'Master your code, seize the machine.',
+                    author: 'Dr. Daniel',
+                    businessContact: 'Contact: WeChat znsoft',
+                    websiteURL: 'https://maclaw.top',
+                    githubURL: 'https://github.com/nicedoc/maclaw',
+                    iconPath: 'build/appicon.png',
+                }}
+            />,
+        );
+
+        expect(screen.getByText('智员 MetaStaff')).toBeTruthy();
+    });
+
     it('renders current tenant and registered hub instance name', () => {
         render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'dev@example.com', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
 

@@ -226,7 +226,8 @@ func (m *StateMachine) HandleInput(userID, text string) (*HandleResult, error) {
 // SubmitForm stores the user's AG UI form submission for the current phase.
 // After submission, the next HandleInput call will return ActionRunPhase
 // (since FormData is now populated, the InputSchema check passes through).
-// Validates that all required fields have non-empty values.
+// Validates that all required fields have non-empty values and submitted
+// select/multiselect values match the schema options.
 func (m *StateMachine) SubmitForm(userID string, formData map[string]interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -257,11 +258,8 @@ func (m *StateMachine) SubmitForm(userID string, formData map[string]interface{}
 		}
 	}
 	for _, f := range fieldsToValidate {
-		if !f.Required {
-			continue
-		}
 		val, exists := formData[f.Name]
-		if !exists || val == nil {
+		if f.Required && (!exists || val == nil) {
 			label := f.Label
 			if label == "" {
 				label = f.Name
@@ -269,12 +267,18 @@ func (m *StateMachine) SubmitForm(userID string, formData map[string]interface{}
 			return fmt.Errorf("必填字段「%s」未填写", label)
 		}
 		// Check for empty string values
-		if s, ok := val.(string); ok && strings.TrimSpace(s) == "" {
+		if f.Required && isEmptyFormValue(val) {
 			label := f.Label
 			if label == "" {
 				label = f.Name
 			}
 			return fmt.Errorf("必填字段「%s」不能为空", label)
+		}
+		if !exists || val == nil || isEmptyFormValue(val) {
+			continue
+		}
+		if err := validateFormFieldOptions(f, val); err != nil {
+			return err
 		}
 	}
 
@@ -303,6 +307,96 @@ func formDataString(data map[string]interface{}, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(s)
+}
+
+func validateFormFieldOptions(field PhaseInputField, value interface{}) error {
+	if field.Type != "select" && field.Type != "multiselect" {
+		return nil
+	}
+	if len(field.Options) == 0 {
+		return nil
+	}
+
+	allowed := phaseInputOptionSet(field.Options)
+	label := field.Label
+	if label == "" {
+		label = field.Name
+	}
+
+	switch field.Type {
+	case "select":
+		selected, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("字段「%s」必须从下拉选项中选择", label)
+		}
+		selected = strings.TrimSpace(selected)
+		if !allowed[selected] {
+			return fmt.Errorf("字段「%s」的值「%s」不在可选范围内", label, selected)
+		}
+	case "multiselect":
+		selected, ok := formValueStringSlice(value)
+		if !ok {
+			return fmt.Errorf("字段「%s」必须从多选选项中选择", label)
+		}
+		for _, item := range selected {
+			if !allowed[item] {
+				return fmt.Errorf("字段「%s」的值「%s」不在可选范围内", label, item)
+			}
+		}
+	}
+	return nil
+}
+
+func phaseInputOptionSet(options []PhaseInputOption) map[string]bool {
+	allowed := make(map[string]bool, len(options))
+	for _, option := range options {
+		allowed[option.Value] = true
+	}
+	return allowed
+}
+
+func formValueStringSlice(value interface{}) ([]string, bool) {
+	switch v := value.(type) {
+	case []string:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				result = append(result, item)
+			}
+		}
+		return result, true
+	case []interface{}:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			s = strings.TrimSpace(s)
+			if s != "" {
+				result = append(result, s)
+			}
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+func isEmptyFormValue(value interface{}) bool {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v) == ""
+	case []string:
+		selected, _ := formValueStringSlice(v)
+		return len(selected) == 0
+	case []interface{}:
+		selected, ok := formValueStringSlice(v)
+		return ok && len(selected) == 0
+	default:
+		return false
+	}
 }
 
 // resolveOutputDirFromState scans all phases' FormData for an output_dir or
@@ -346,7 +440,11 @@ func (m *StateMachine) RecordOutput(userID, output string) error {
 	if phase == nil {
 		return fmt.Errorf("no active phase")
 	}
-	phase.Output = SanitizePhaseOutput(phase.ID, output)
+	sanitizedOutput := SanitizePhaseOutput(phase.ID, output)
+	if err := validatePhaseOutputForCompletion(state.Type, phase.ID, sanitizedOutput); err != nil {
+		return err
+	}
+	phase.Output = sanitizedOutput
 	if phase.NeedsConfirm {
 		phase.Status = PhaseWaitingConfirm
 	} else {
@@ -361,6 +459,190 @@ func (m *StateMachine) RecordOutput(userID, output string) error {
 	}
 	state.UpdatedAt = time.Now()
 	return m.store.Save(state)
+}
+
+func validatePhaseOutputForCompletion(workflowType, phaseID, output string) error {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return fmt.Errorf("phase %s produced empty output", phaseID)
+	}
+	if workflowType != string(WorkflowGaokaoApplication) || phaseID != GaokaoPhaseFinalPlan {
+		return nil
+	}
+	requiredGroups := [][]string{
+		{"总排清单"},
+		{"冲"},
+		{"稳"},
+		{"保"},
+		{"学校"},
+		{"专业"},
+		{"办学地点"},
+		{"类型"},
+		{"往年最低位次", "最低位次"},
+		{"推荐理由"},
+		{"数据来源", "依据来源"},
+	}
+	var missing []string
+	for _, group := range requiredGroups {
+		found := false
+		for _, marker := range group {
+			if strings.Contains(output, marker) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missing = append(missing, strings.Join(group, "/"))
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("gaokao final plan output is incomplete; missing required markers: %s", strings.Join(missing, ", "))
+	}
+	if err := validateGaokaoFinalPlanSourceEvidence(output); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateGaokaoFinalPlanSourceEvidence(output string) error {
+	if !containsHTTPURL(output) {
+		return fmt.Errorf("gaokao final plan output is incomplete; missing source URLs")
+	}
+	var badRows []string
+	for _, line := range strings.Split(output, "\n") {
+		row := strings.TrimSpace(line)
+		if !strings.HasPrefix(row, "|") || !strings.HasSuffix(row, "|") {
+			continue
+		}
+		cells := markdownTableCells(row)
+		if len(cells) < 6 || isMarkdownSeparatorCells(cells) || isGaokaoFinalPlanHeaderRow(cells) {
+			continue
+		}
+		rowText := strings.Join(cells, " ")
+		if strings.Contains(rowText, "待核验") ||
+			strings.Contains(rowText, "无法核验") ||
+			strings.Contains(rowText, "来源URL") ||
+			strings.Contains(rowText, "无来源") ||
+			!containsHTTPURL(rowText) {
+			badRows = append(badRows, summarizeGaokaoRecommendationRow(cells))
+		}
+	}
+	if len(badRows) > 0 {
+		return fmt.Errorf("gaokao final plan output is incomplete; recommendation rows missing verified source URLs: %s", strings.Join(badRows, ", "))
+	}
+	if err := validateGaokaoFinalPlanSectionRows(output); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateGaokaoFinalPlanSectionRows(output string) error {
+	counts := map[string]int{
+		"总排清单": 0,
+		"冲":    0,
+		"稳":    0,
+		"保":    0,
+	}
+	currentSection := ""
+	for _, line := range strings.Split(output, "\n") {
+		row := strings.TrimSpace(line)
+		if row == "" {
+			continue
+		}
+		if !strings.HasPrefix(row, "|") {
+			if section := gaokaoFinalPlanSectionName(row); section != "" {
+				currentSection = section
+			}
+			continue
+		}
+		if currentSection == "" || !strings.HasSuffix(row, "|") {
+			continue
+		}
+		cells := markdownTableCells(row)
+		if len(cells) < 6 || isMarkdownSeparatorCells(cells) || isGaokaoFinalPlanHeaderRow(cells) {
+			continue
+		}
+		if _, ok := counts[currentSection]; ok {
+			counts[currentSection]++
+		}
+	}
+	var missing []string
+	for _, section := range []string{"总排清单", "冲", "稳", "保"} {
+		if counts[section] == 0 {
+			missing = append(missing, section)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("gaokao final plan output is incomplete; missing recommendation rows in sections: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func gaokaoFinalPlanSectionName(line string) string {
+	heading := strings.TrimSpace(strings.TrimLeft(line, "# "))
+	heading = strings.Trim(heading, " ：:、-")
+	if strings.Contains(heading, "总排清单") {
+		return "总排清单"
+	}
+	if strings.HasPrefix(heading, "冲") {
+		return "冲"
+	}
+	if strings.HasPrefix(heading, "稳") {
+		return "稳"
+	}
+	if strings.HasPrefix(heading, "保") {
+		return "保"
+	}
+	return ""
+}
+
+func markdownTableCells(row string) []string {
+	parts := strings.Split(strings.Trim(row, "|"), "|")
+	cells := make([]string, 0, len(parts))
+	for _, part := range parts {
+		cells = append(cells, strings.TrimSpace(part))
+	}
+	return cells
+}
+
+func isMarkdownSeparatorCells(cells []string) bool {
+	if len(cells) == 0 {
+		return false
+	}
+	for _, cell := range cells {
+		trimmed := strings.TrimSpace(cell)
+		if trimmed == "" {
+			return false
+		}
+		for _, r := range trimmed {
+			if r != '-' && r != ':' && r != ' ' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isGaokaoFinalPlanHeaderRow(cells []string) bool {
+	rowText := strings.Join(cells, " ")
+	return strings.Contains(rowText, "学校") &&
+		strings.Contains(rowText, "专业") &&
+		strings.Contains(rowText, "推荐理由")
+}
+
+func summarizeGaokaoRecommendationRow(cells []string) string {
+	if len(cells) >= 2 {
+		return strings.TrimSpace(cells[0] + "/" + cells[1])
+	}
+	if len(cells) == 1 {
+		return cells[0]
+	}
+	return "unknown row"
+}
+
+func containsHTTPURL(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "http://") || strings.Contains(lower, "https://")
 }
 
 func SanitizePhaseOutput(phaseID, output string) string {

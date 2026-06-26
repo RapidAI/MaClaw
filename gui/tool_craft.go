@@ -35,6 +35,7 @@ type craftRuntimeAvailability struct {
 type craftToolRequest struct {
 	Task               string
 	OriginalTask       string
+	UserPrompt         string
 	Instructions       string
 	Language           string
 	RuntimeLanguage    string
@@ -97,9 +98,17 @@ func normalizeCraftToolArgs(args map[string]interface{}) (map[string]interface{}
 		normalized[k] = v
 	}
 	task := strings.TrimSpace(stringVal(normalized, "task"))
-	instructions := strings.TrimSpace(stringVal(normalized, "instructions"))
+	instructions := craftInstructionText(normalized)
+	if instructions != "" {
+		normalized["instructions"] = instructions
+	}
+	userPrompt := strings.TrimSpace(stringVal(normalized, "user_prompt"))
 	if task == "" {
-		task = instructions
+		task = composeCraftTask(userPrompt, instructions)
+	} else if userPrompt != "" && instructions != "" && task == instructions {
+		task = composeCraftTask(userPrompt, instructions)
+	} else if instructions != "" && !strings.Contains(task, instructions) {
+		task = composeCraftTask(task, instructions)
 	}
 	if task == "" {
 		return nil, fmt.Errorf("missing task parameter")
@@ -114,6 +123,28 @@ func normalizeCraftToolArgs(args map[string]interface{}) (map[string]interface{}
 	}
 	normalized["task"] = task
 	return normalized, nil
+}
+
+func craftInstructionText(params map[string]interface{}) string {
+	for _, key := range []string{"instructions", "instruction", "skill_instructions"} {
+		if value := strings.TrimSpace(stringVal(params, key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func composeCraftTask(userPrompt, instructions string) string {
+	userPrompt = strings.TrimSpace(userPrompt)
+	instructions = strings.TrimSpace(instructions)
+	switch {
+	case userPrompt != "" && instructions != "":
+		return "User request:\n" + userPrompt + "\n\nSkill instructions:\n" + instructions
+	case userPrompt != "":
+		return userPrompt
+	default:
+		return instructions
+	}
 }
 
 func normalizeCraftArtifactList(raw interface{}) []string {
@@ -333,10 +364,12 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 }
 
 func buildCraftToolRequest(args map[string]interface{}, runtimes craftRuntimeAvailability) craftToolRequest {
-	originalTask := strings.TrimSpace(firstNonEmptyCraftText(stringVal(args, "task"), stringVal(args, "instructions")))
+	userPrompt := strings.TrimSpace(stringVal(args, "user_prompt"))
+	originalTask := strings.TrimSpace(firstNonEmptyCraftText(userPrompt, stringVal(args, "task"), stringVal(args, "instructions")))
 	request := craftToolRequest{
 		Task:              strings.TrimSpace(stringVal(args, "task")),
 		OriginalTask:      originalTask,
+		UserPrompt:        userPrompt,
 		Instructions:      strings.TrimSpace(stringVal(args, "instructions")),
 		Language:          strings.TrimSpace(stringVal(args, "language")),
 		WorkingDir:        strings.TrimSpace(stringVal(args, "working_dir")),

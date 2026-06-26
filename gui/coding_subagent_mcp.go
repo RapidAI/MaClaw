@@ -137,7 +137,7 @@ func buildCodingSubAgentMCPSection(tools []codingSubAgentMCPToolMatch) string {
 	b.WriteString("以下 MCP 工具可通过 call_mcp_tool(server_id=\"...\", tool_name=\"...\", arguments={...}) 调用：\n")
 	for _, t := range tools {
 		if len(t.RequiredArgs) > 0 {
-			b.WriteString(fmt.Sprintf("- **%s** (server: %s): %s（必需参数: %s）\n", t.ToolName, t.ServerName, t.Description, strings.Join(t.RequiredArgs, ", ")))
+			b.WriteString(fmt.Sprintf("- **%s** (server: %s): %s（必需参数: %s）\n", t.ToolName, t.ServerName, t.Description, compactCodingSubAgentRequiredArgs(t.RequiredArgs)))
 		} else {
 			b.WriteString(fmt.Sprintf("- **%s** (server: %s): %s\n", t.ToolName, t.ServerName, t.Description))
 		}
@@ -182,8 +182,9 @@ func buildCallMCPToolDefinition() map[string]interface{} {
 // validation against matched MCP tools.
 func (c *codingSubAgentCallbacks) executeCallMCPTool(args map[string]interface{}) codingToolExecutionResult {
 	if len(c.matchedMCPTools) == 0 {
+		msg := "call_mcp_tool is not available for this task (no relevant MCP tools found)"
 		return codingToolExecutionResult{
-			Text:    "call_mcp_tool is not available for this task (no relevant MCP tools found)",
+			Text:    c.rejectToolCall("call_mcp_tool", args, msg),
 			Outcome: codingToolOutcomeBlocked,
 		}
 	}
@@ -201,23 +202,29 @@ func (c *codingSubAgentCallbacks) executeCallMCPTool(args map[string]interface{}
 	}
 
 	// Validate tool is in the matched set.
-	if !c.isMatchedMCPTool(serverID, toolName) {
+	matchedTool, matched := c.matchedMCPTool(serverID, toolName)
+	if !matched {
 		allowed := make([]string, len(c.matchedMCPTools))
 		for i, t := range c.matchedMCPTools {
 			allowed[i] = t.ServerName + "/" + t.ToolName
 		}
 		log.Printf("[coding-subagent] call_mcp_tool blocked: %s/%s not in matched set %v", serverID, toolName, allowed)
+		msg := fmt.Sprintf("MCP tool %s/%s is not available for this task (available: %s)", serverID, toolName, strings.Join(allowed, ", "))
 		return codingToolExecutionResult{
-			Text:    fmt.Sprintf("MCP tool %s/%s is not available for this task (available: %s)", serverID, toolName, strings.Join(allowed, ", ")),
+			Text:    c.rejectToolCall("call_mcp_tool", args, msg),
 			Outcome: codingToolOutcomeBlocked,
 		}
+	}
+	if result, rejected := rejectMissingCodingSubAgentMCPRequiredArguments(matchedTool, args); rejected {
+		return result
 	}
 
 	// Delegate to host handler's call_mcp_tool execution.
 	h := c.subagent.handler
 	if h == nil {
+		msg := "call_mcp_tool: host handler unavailable"
 		return codingToolExecutionResult{
-			Text:    "call_mcp_tool: host handler unavailable",
+			Text:    c.rejectToolCall("call_mcp_tool", args, msg),
 			Outcome: codingToolOutcomeFailed,
 		}
 	}
@@ -226,27 +233,67 @@ func (c *codingSubAgentCallbacks) executeCallMCPTool(args map[string]interface{}
 	result := h.toolCallMCPTool(args)
 
 	outcome := codingToolOutcomeSuccess
-	if result == "" {
-		outcome = codingToolOutcomeFailed
-	} else if strings.HasPrefix(result, "❌") ||
+	if isCodingSubAgentDynamicToolFailure(result) ||
+		strings.HasPrefix(result, "\u274c") ||
 		strings.HasPrefix(result, "MCP tool error") ||
 		strings.HasPrefix(result, "local MCP server") {
 		outcome = codingToolOutcomeFailed
 	}
+	c.trackDynamicToolResult("call_mcp_tool", serverID+"/"+toolName, result, outcome == codingToolOutcomeSuccess)
 	return codingToolExecutionResult{Text: result, Outcome: outcome}
 }
 
 // isMatchedMCPTool checks if a server/tool combination was selected for this task.
 func (c *codingSubAgentCallbacks) isMatchedMCPTool(serverRef, toolName string) bool {
+	_, ok := c.matchedMCPTool(serverRef, toolName)
+	return ok
+}
+
+func (c *codingSubAgentCallbacks) matchedMCPTool(serverRef, toolName string) (codingSubAgentMCPToolMatch, bool) {
 	lowerServer := strings.ToLower(serverRef)
 	lowerTool := strings.ToLower(toolName)
 	for _, t := range c.matchedMCPTools {
 		if (strings.ToLower(t.ServerID) == lowerServer || strings.ToLower(t.ServerName) == lowerServer) &&
 			strings.ToLower(t.ToolName) == lowerTool {
-			return true
+			return t, true
 		}
 	}
-	return false
+	return codingSubAgentMCPToolMatch{}, false
+}
+
+func rejectMissingCodingSubAgentMCPRequiredArguments(tool codingSubAgentMCPToolMatch, args map[string]interface{}) (codingToolExecutionResult, bool) {
+	if len(tool.RequiredArgs) == 0 {
+		return codingToolExecutionResult{}, false
+	}
+	arguments, _ := args["arguments"].(map[string]interface{})
+	if arguments == nil {
+		arguments = make(map[string]interface{})
+		args["arguments"] = arguments
+	}
+	for _, field := range tool.RequiredArgs {
+		value, ok := arguments[field]
+		if !ok {
+			if topLevelValue, topLevelOK := args[field]; topLevelOK {
+				value = topLevelValue
+				ok = true
+				arguments[field] = topLevelValue
+			}
+		}
+		if !ok || value == nil {
+			return missingCodingSubAgentMCPRequiredArgumentResult(tool, field), true
+		}
+		if s, ok := value.(string); ok && strings.TrimSpace(s) == "" {
+			return missingCodingSubAgentMCPRequiredArgumentResult(tool, field), true
+		}
+	}
+	return codingToolExecutionResult{}, false
+}
+
+func missingCodingSubAgentMCPRequiredArgumentResult(tool codingSubAgentMCPToolMatch, field string) codingToolExecutionResult {
+	return codingToolExecutionResult{
+		Text:    fmt.Sprintf("Error: call_mcp_tool target %q is missing required MCP argument %q in arguments. The MCP tool was not executed. Regenerate call_mcp_tool with arguments.%s set.", tool.ServerName+"/"+tool.ToolName, field, field),
+		Outcome: codingToolOutcomeFailed,
+	}
 }
 
 // getSubAgentEmbedderSafe is a nil-safe wrapper (avoids import cycle issues

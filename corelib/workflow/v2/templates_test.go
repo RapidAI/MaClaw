@@ -122,7 +122,6 @@ func TestTemplateRegistryAmbiguousTopScoreDoesNotSelectByTieBreak(t *testing.T) 
 	}
 }
 
-
 // TestAllTypes_ReturnsAllRegisteredTemplates verifies that AllTypes() dynamically
 // reflects all templates registered via RegisterBuiltinTemplates. This test will
 // FAIL if a new template is added to RegisterBuiltinTemplates but something goes
@@ -154,7 +153,7 @@ func TestAllTypes_ReturnsAllRegisteredTemplates(t *testing.T) {
 	}
 
 	// Sanity check: known templates must be present
-	mustHave := []string{"coding", "patent_application", "us_patent_application"}
+	mustHave := []string{"coding", "patent_application", "us_patent_application", "gaokao_application"}
 	typeSet := make(map[string]bool, len(types))
 	for _, typ := range types {
 		typeSet[typ] = true

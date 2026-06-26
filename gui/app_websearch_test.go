@@ -70,6 +70,15 @@ func TestSaveWebSearchProviders_NormalizesAndPersistsCurrent(t *testing.T) {
 	}
 }
 
+func TestTestWebSearchProvider_RequiresAPIKey(t *testing.T) {
+	app := &App{}
+
+	err := app.TestWebSearchProvider(corelib.WebSearchProvider{Type: " brave ", Key: "   "})
+	if err == nil {
+		t.Fatal("TestWebSearchProvider() error = nil, want missing key failure")
+	}
+}
+
 func TestGetWebSearchProviders_BackfillsMissingDefaults(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

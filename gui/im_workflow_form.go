@@ -12,34 +12,29 @@ const (
 	workflowFormPhaseField       = "_workflow_phase"
 	workflowFormUserIDField      = "_workflow_user_id"
 	workflowFormWorkflowIDField  = "_workflow_id"
+	workflowFormEventScopeField  = "_workflow_event_scope_id"
 	workflowFormProjectPathField = "project_path"
 )
 
 // emitWorkflowPhaseForm builds an AgentView form from the phase's InputSchema
 // and emits it to the frontend via the standard AG UI lifecycle protocol.
 // The form appears in the right-side task panel (AgentTaskPanel).
-func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *v2.PhaseInputSchemaSpec, phaseID string) {
+func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, workflowID string, schema *v2.PhaseInputSchemaSpec, phaseID string) {
 	if h == nil || h.app == nil || schema == nil || len(schema.Fields) == 0 {
 		return
 	}
 	schema = localizeWorkflowPhaseInputSchema(schema, h.getWorkflowLang())
 
-	var ws *v2.EngineState
-	workflowID := ""
-	if ws != nil {
-		workflowID = ws.ID
-	}
-
-	view := buildWorkflowPhaseFormAgentView(userID, workflowID, phaseID, schema)
+	view := buildWorkflowPhaseFormAgentView(userID, workflowID, h.app.getEventScopeID(userID), phaseID, schema)
 	h.app.emitAgentView(view)
 	log.Printf("[workflow-form] emitted AG UI form: phase=%s fields=%d", phaseID, len(schema.Fields))
 }
 
-func buildWorkflowPhaseFormAgentView(userID, workflowID, phaseID string, schema *v2.PhaseInputSchemaSpec) map[string]interface{} {
+func buildWorkflowPhaseFormAgentView(userID, workflowID, eventScopeID, phaseID string, schema *v2.PhaseInputSchemaSpec) map[string]interface{} {
 	if schema == nil {
 		return nil
 	}
-	fields := make([]map[string]interface{}, 0, len(schema.Fields)+3)
+	fields := make([]map[string]interface{}, 0, len(schema.Fields)+4)
 	for _, f := range schema.Fields {
 		field := map[string]interface{}{
 			"name":  f.Name,
@@ -101,6 +96,13 @@ func buildWorkflowPhaseFormAgentView(userID, workflowID, phaseID string, schema 
 		"type":  "hidden",
 		"value": workflowID,
 	})
+	if strings.TrimSpace(eventScopeID) != "" {
+		fields = append(fields, map[string]interface{}{
+			"name":  workflowFormEventScopeField,
+			"type":  "hidden",
+			"value": eventScopeID,
+		})
+	}
 
 	viewID := "workflow:form:" + phaseID
 	view := map[string]interface{}{
@@ -137,6 +139,9 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 	userID := workflowFormStringField(data, workflowFormUserIDField)
 	if userID == "" && handler != nil {
 		userID = handler.lastUserID
+	}
+	if scopeID := workflowFormStringField(data, workflowFormEventScopeField); scopeID != "" && userID != "" {
+		a.sessionEventScopeIDs.Store(userID, scopeID)
 	}
 
 	// Route to v2 workflow engine
@@ -191,8 +196,8 @@ func (a *App) handleWorkflowFormV1EngineSubmit(userID, phaseID string, data map[
 	if submittedPhase := workflowFormStringField(data, workflowFormPhaseField); submittedPhase != "" {
 		if submittedPhase != ws.CurrentPhase {
 			return &IMAgentResponse{
-				Text:  fmt.Sprintf("表单阶段不匹配 (submitted=%s, current=%s)", submittedPhase, ws.CurrentPhase),
-				Error: "phase mismatch: submitted " + submittedPhase + " != current " + ws.CurrentPhase,
+				Text:           fmt.Sprintf("表单阶段不匹配 (submitted=%s, current=%s)", submittedPhase, ws.CurrentPhase),
+				Error:          "phase mismatch: submitted " + submittedPhase + " != current " + ws.CurrentPhase,
 				ResponseSource: imResponseSourceAgentViewSubmit.String(),
 			}
 		}
@@ -327,6 +332,27 @@ func workflowFormMatchesActiveWorkflow(engine *v2.WorkflowEngine, userID, phaseI
 		return false
 	}
 	if submittedWorkflowID := workflowFormStringField(data, workflowFormWorkflowIDField); submittedWorkflowID != "" && ws.ID != submittedWorkflowID {
+		return false
+	}
+	return true
+}
+
+func workflowFormMatchesActiveWorkflowV2(machine *v2.StateMachine, userID, phaseID string, data map[string]interface{}) bool {
+	if machine == nil || strings.TrimSpace(userID) == "" || strings.TrimSpace(phaseID) == "" {
+		return false
+	}
+	phaseID = strings.TrimSpace(phaseID)
+	if submittedPhaseID := workflowFormStringField(data, workflowFormPhaseField); submittedPhaseID != "" && submittedPhaseID != phaseID {
+		return false
+	}
+	state := machine.GetActive(userID)
+	if state == nil || state.UserID != userID {
+		return false
+	}
+	if current := state.ActivePhase(); current == nil || current.ID != phaseID {
+		return false
+	}
+	if submittedWorkflowID := workflowFormStringField(data, workflowFormWorkflowIDField); submittedWorkflowID != "" && state.ID != submittedWorkflowID {
 		return false
 	}
 	return true

@@ -88,6 +88,7 @@ func NewRouter(
 	routePrefix string,
 	bridgeDir string,
 	tenantIMRuntimeReloader TenantIMRuntimeReloader,
+	knowledgeShares store.KnowledgeShareRepository,
 	tenantRepoOpt ...store.TenantRepository,
 ) http.Handler {
 	var tenantRepo store.TenantRepository
@@ -138,6 +139,7 @@ func NewRouter(
 	groupDiscussionSender := platformAwareMachineSender{fallback: deviceSvc, system: system, tenants: tenantRepo, groupSvc: groupDiscussionSvc}
 	groupDiscussionHandler := NewGroupDiscussionHandler(groupDiscussionSvc, groupDiscussionSender)
 	runtimeDataDir := resolveHubRuntimeDataDir(hubCfg, configPath)
+	knowledgeSharePackageDir := filepath.Join(runtimeDataDir, "knowledge-packages")
 	if hubDB != nil && identity != nil {
 		NewMigrationAPI(hubDB, runtimeDataDir, identity, identity.MachinesRepo(), system).RegisterRoutes(mux, requireTenantAdmin)
 	}
@@ -251,6 +253,15 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/debug/sessions", requireAdmin(DebugListSessionsHandler(sessionSvc, userLookup)))
 	mux.HandleFunc("GET /api/admin/debug/session", requireAdmin(DebugGetSessionHandler(sessionSvc, userLookup)))
 	mux.HandleFunc("GET /api/admin/failure-logs", requireAdmin(ListFailureLogsHandler(failureLogs)))
+	mux.HandleFunc("GET /api/admin/knowledge/shares", requireAdmin(ListKnowledgeSharesAdminHandler(knowledgeShares)))
+	mux.HandleFunc("DELETE /api/admin/knowledge/shares/{knowledgeID}", requireAdmin(ForceDeleteKnowledgeShareAdminHandler(knowledgeShares, adminAudit)))
+	mux.HandleFunc("GET /api/knowledge/shares/mine", ListMyKnowledgeSharesHandler(knowledgeShares, identity))
+	mux.HandleFunc("POST /api/knowledge/shares", CreateKnowledgeShareHandler(knowledgeShares, identity, knowledgeSharePackageDir))
+	mux.HandleFunc("GET /api/knowledge/shares/{knowledgeID}", GetKnowledgeSharePublicHandler(knowledgeShares, identity))
+	mux.HandleFunc("PATCH /api/knowledge/shares/{knowledgeID}", UpdateMyKnowledgeShareHandler(knowledgeShares, identity, knowledgeSharePackageDir))
+	mux.HandleFunc("DELETE /api/knowledge/shares/{knowledgeID}", DeleteMyKnowledgeShareHandler(knowledgeShares, identity))
+	mux.HandleFunc("GET /api/knowledge/shares/{knowledgeID}/package", DownloadKnowledgeSharePackageHandler(knowledgeShares, identity, knowledgeSharePackageDir))
+	mux.HandleFunc("GET /hub/knowledge/shares/{knowledgeID}", KnowledgeSharePublicPageHandler(knowledgeShares, identity))
 	mux.HandleFunc("GET /api/admin/sessions/all", requireAdmin(AdminListAllSessionsHandler(sessionSvc, userLookup)))
 	mux.HandleFunc("POST /api/admin/users/manual-bind", requireAdmin(ManualBindHandler(identity)))
 	mux.HandleFunc("GET /api/admin/users", requireAdmin(ListUsersHandler(identity, system, securitySvc)))
@@ -509,8 +520,12 @@ func NewRouter(
 	mux.HandleFunc("GET /api/capabilities", CapabilityListHandler(capabilitySvc, identity))
 	mux.HandleFunc("GET /api/admin/capabilities", requireTenantAdmin(AdminCapabilityListHandler(capabilitySvc)))
 	mux.HandleFunc("POST /api/admin/capabilities", requireTenantAdmin(AdminCapabilityUpsertHandler(capabilitySvc)))
+	mux.HandleFunc("POST /api/admin/capabilities/maclaw-apps/{id}/approve", requireTenantAdmin(AdminCapabilityMaclawAppReviewHandler(capabilitySvc, "approve")))
+	mux.HandleFunc("POST /api/admin/capabilities/maclaw-apps/{id}/reject", requireTenantAdmin(AdminCapabilityMaclawAppReviewHandler(capabilitySvc, "reject")))
 	mux.HandleFunc("GET /api/capabilities/{id}", CapabilityDetailHandler(capabilitySvc, identity))
 	mux.HandleFunc("POST /api/capabilities/skills/submit", CapabilitySkillSubmitHandler(capabilitySvc, identity, runtimeDataDir))
+	mux.HandleFunc("POST /api/capabilities/maclaw-apps/submit", CapabilityMaclawAppSubmitHandler(capabilitySvc, identity))
+	mux.HandleFunc("GET /api/capabilities/maclaw-apps/{id}/package", CapabilityMaclawAppPackageHandler(capabilitySvc, identity))
 	mux.HandleFunc("GET /api/v1/skills/{id}/download", CapabilitySkillDownloadHandler(capabilitySvc, identity, runtimeDataDir))
 	mux.HandleFunc("GET /api/capabilities/{id}/versions", CapabilityVersionsHandler(capabilitySvc, identity))
 	mux.HandleFunc("GET /api/capabilities/{id}/mcp-secret-requirements", MCPSecretRequirementsHandler(capabilitySvc, identity))
@@ -574,8 +589,8 @@ func NewRouter(
 			// header (read by InstanceAPI / DecisionAPI / WorkflowAPI) and
 			// context (read by RuntimeAPI's handleInitiateWorkflow / handleConfirm
 			// / directory views via getUserIDFromContext). Populating the context
-			// is purely additive and lets the RuntimeAPI routes — registered in the
-			// runtime wiring below — see the caller instead of returning 401.
+			// is purely additive and lets the RuntimeAPI routes registered in the
+			// runtime wiring below see the caller instead of returning 401.
 			ctx := workflow.WithUserID(r.Context(), principal.MachineID)
 			ctx = store.WithTenant(ctx, principal.TenantID)
 			ctx = WithRequestTenant(ctx, principal.TenantID)
@@ -610,15 +625,15 @@ func NewRouter(
 		// The NotificationDispatcher is now wired with a real HubInAppNotifier
 		// (HubNotifier, below) in place of the former first nil, so reminder and
 		// completion *delivery* actually reaches recipient machines.
-		// StartTracking and ReconcileOrphanedInstances — which touch only
-		// confirmStore + auditStore — continue to work fully. SetWorkflowStore
+		// StartTracking and ReconcileOrphanedInstances, which touch only
+		// confirmStore + auditStore, continue to work fully. SetWorkflowStore
 		// injects the WorkflowStore so ReconcileOrphanedInstances can re-derive a
 		// completed instance's terminal-node TerminalNodeConfig from its
 		// published version graph. The NotificationDispatcher and
 		// ConfirmationTracker public APIs are unchanged.
 		// Real HubInAppNotifier backed by the Hub machine sender
 		// (device.Service.SendToMachine), with presence sourced from
-		// device.Service.IsMachineOnline — the same sources HubApprovalDispatcher
+		// device.Service.IsMachineOnline, the same sources HubApprovalDispatcher
 		// and HubAvailabilityChecker use. Replaces the first nil notifier so
 		// terminal-node completion notifications and confirmation reminders are
 		// actually delivered to recipient machines. imPusher (arg 2) and
@@ -632,13 +647,13 @@ func NewRouter(
 			SetWorkflowStore(wfStore)
 
 		// Real ApprovalDispatcher backed by the Hub machine sender
-		// (device.Service.SendToMachine) — the same mechanism VE/group messaging
+		// (device.Service.SendToMachine), the same mechanism VE/group messaging
 		// uses. Replaces the noop dispatcher so approval requests are actually
-		// delivered to approver machines (Finding 1.2 → 2.2). The
+		// delivered to approver machines (Finding 1.2 / 2.2). The
 		// ApprovalDispatcher interface and the executor call sites are unchanged.
 		dispatcher := NewHubApprovalDispatcher(deviceSvc)
 		// Pass the tracker into the executor so a terminal node creates
-		// confirmation records at runtime (executeTerminalNode → StartTracking).
+		// confirmation records at runtime (executeTerminalNode -> StartTracking).
 		// Without WithConfirmationTracker the executor's tracker is nil and
 		// StartTracking is skipped, so no confirmation records are ever created
 		// in production (Finding 1.5 / design Fix Implementation item 5).
@@ -655,7 +670,7 @@ func NewRouter(
 		decisionAPI.RegisterRoutes(mux, workflowUserAuth)
 
 		// Runtime API: validated initiation (/initiate), withdrawal, confirmation,
-		// and directory routes (Finding 1.3 → 2.3). The 5-arg RuntimeExecutor
+		// and directory routes (Finding 1.3 / 2.3). The 5-arg RuntimeExecutor
 		// signature is bridged to the executor's 2-arg StartInstance via
 		// hubRuntimeExecutorAdapter, which marshals {form_data, initiator_id,
 		// channel, submission_timestamp} into trigger data. handleInitiateWorkflow
@@ -672,7 +687,7 @@ func NewRouter(
 		// Start background services for approval workflow.
 		// Real HumanApproverChecker backed by device.Service.IsMachineOnline so
 		// availability mirrors real approver presence and unavailable/queue-full/
-		// timeout conditions can route to fallback/escalation (Finding 1.4 → 2.4).
+		// timeout conditions can route to fallback/escalation (Finding 1.4 / 2.4).
 		// EscalationManager and HandleUnavailable/HandleTimeout/HandleQueueFull are
 		// unchanged; only the availability source changes (Preservation 3.6).
 		escalationMgr := workflow.NewEscalationManager(dispatcher, auditStore, NewHubAvailabilityChecker(deviceSvc))
@@ -683,7 +698,7 @@ func NewRouter(
 
 		// Confirmation reconciliation + reminder loops. These complete the
 		// runtime-half wiring: RunReconcileLoop repairs orphaned completed
-		// instances (those marked completed before StartTracking ran — the
+		// instances (those marked completed before StartTracking ran in the
 		// crash window in executeTerminalNode), and RunReminderLoop drives
 		// pending-confirmation reminders/escalation. Both take a context and
 		// stop when it is cancelled.
@@ -769,6 +784,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/public/model_download/status", PublicModelDownloadStatusHandler(configPath))
 
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)
+	registerStaticRoutes(mux, "./web/knowledge_shares", "/hub/knowledge/shares/mine")
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")
 	registerBindStaticRoutes(mux, "./web/bind", "/bind")
 	registerGetCreditsStaticRoutes(mux, "./web/get-credits", "/get-credits")

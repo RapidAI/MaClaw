@@ -67,3 +67,25 @@ func TestSaveGovernedWithContextRejectsEmptyCandidate(t *testing.T) {
 		t.Fatalf("expected rejected error, got %v", err)
 	}
 }
+
+func TestSaveGovernedWithContextRejectsSensitiveCredential(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	decision, err := store.SaveGovernedWithContext(Entry{
+		Content:  "GPU84 password is SuperSecret123 and only valid for one hour",
+		Category: CategoryUserFact,
+	}, "")
+	if !errors.Is(err, ErrMemoryCandidateRejected) {
+		t.Fatalf("expected sensitive credential to be rejected, got err=%v decision=%+v", err, decision)
+	}
+	if decision.Action != MemoryGovernanceReject {
+		t.Fatalf("expected reject, got %+v", decision)
+	}
+	if entries := store.List("", ""); len(entries) != 0 {
+		t.Fatalf("expected no persisted entries for sensitive credential, got %+v", entries)
+	}
+}

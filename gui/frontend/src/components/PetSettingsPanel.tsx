@@ -7,6 +7,14 @@ type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
 type PetPreviewState = 'idle' | 'listening' | 'thinking' | 'speaking';
 type DebouncedFieldKey = 'pet-size' | 'continuous-timeout';
 type SaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+type PetToggleKey =
+    | 'pet_motion_enabled'
+    | 'pet_motion_sound_enabled'
+    | 'pet_text_interaction_enabled'
+    | 'pet_voice_input_enabled'
+    | 'pet_voice_readback_enabled'
+    | 'pet_file_drop_enabled'
+    | 'pet_quiet_mode';
 
 interface PetSettingsPanelProps {
     config: main.AppConfig;
@@ -19,7 +27,7 @@ const modeOptionIds = ['quiet', 'balanced', 'active'] as const;
 const conversationModeOptionIds = ['text-first', 'voice-turn', 'continuous'] as const;
 const readbackModeOptionIds = ['off', 'summary', 'full', 'done-only'] as const;
 const previewStateOptionIds: PetPreviewState[] = ['idle', 'listening', 'thinking', 'speaking'];
-const defaultEnabledToggleKeys = new Set(['pet_motion_enabled', 'pet_motion_sound_enabled', 'pet_text_interaction_enabled', 'pet_file_drop_enabled']);
+const defaultEnabledToggleKeys = new Set<PetToggleKey>(['pet_motion_enabled', 'pet_motion_sound_enabled', 'pet_text_interaction_enabled', 'pet_file_drop_enabled']);
 
 function text(lang: Lang, zhHans: string, zhHant: string, en: string): string {
     if (lang === 'zh-Hans') return zhHans;
@@ -84,16 +92,16 @@ function motionSoundPresetLabel(lang: Lang, id: string): string {
 function motionSoundPresetDescription(lang: Lang, id: string): string {
     switch (id) {
         case 'bubble':
-            return text(lang, '轻快弹跳，适合 mini 形象。', '輕快彈跳，適合 mini 形象。', 'Bouncy and playful.');
+            return text(lang, '短促、圆润，适合 mini 形象。', '短促、圓潤，適合 mini 形象。', 'Short, rounded, and good for small sizes.');
         case 'chime':
-            return text(lang, '清脆、有尾音，像提示铃。', '清脆、有尾音，像提示鈴。', 'Bright with a small ring tail.');
+            return text(lang, '清晰、有轻尾音，适合提醒。', '清晰、有輕尾音，適合提醒。', 'Clear with a light notification tail.');
         case 'synth':
-            return text(lang, '更电子、更利落，适合开发者风格。', '更電子、更俐落，適合開發者風格。', 'Sharper electronic texture.');
+            return text(lang, '干净电子质感，适合开发者风格。', '乾淨電子質感，適合開發者風格。', 'Clean electronic texture for the developer skin.');
         case 'soft':
-            return text(lang, '低存在感，适合专注或夜间。', '低存在感，適合專注或夜間。', 'Gentle and low-distraction.');
+            return text(lang, '更低音量和更长淡出，适合专注。', '更低音量和更長淡出，適合專注。', 'Lower gain with a longer fade for focus.');
         case 'classic':
         default:
-            return text(lang, '当前默认漫画动作音效。', '目前預設漫畫動作音效。', 'The current comic motion sound.');
+            return text(lang, '克制的默认动作提示音。', '克制的預設動作提示音。', 'A restrained default motion cue.');
     }
 }
 
@@ -107,42 +115,61 @@ function playMotionSoundPresetPreview(preset: MotionSoundPreset): void {
         if (!AudioContextCtor) return;
         const ctx = new AudioContextCtor();
         const now = ctx.currentTime;
-        const output = ctx.createGain();
-        output.gain.setValueAtTime(0.0001, now);
-        output.gain.exponentialRampToValueAtTime(preset === 'soft' ? 0.016 : 0.024, now + 0.012);
-        output.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
-        output.connect(ctx.destination);
+        const compressor = ctx.createDynamicsCompressor();
+        compressor.threshold.setValueAtTime(-26, now);
+        compressor.knee.setValueAtTime(18, now);
+        compressor.ratio.setValueAtTime(5, now);
+        compressor.attack.setValueAtTime(0.003, now);
+        compressor.release.setValueAtTime(0.12, now);
+        compressor.connect(ctx.destination);
 
         const filter = ctx.createBiquadFilter();
         filter.type = preset === 'soft' ? 'lowpass' : 'bandpass';
-        filter.frequency.setValueAtTime(preset === 'chime' ? 4200 : preset === 'synth' ? 1800 : preset === 'soft' ? 1400 : 3200, now);
-        filter.Q.setValueAtTime(preset === 'bubble' ? 0.55 : 0.9, now);
-        filter.connect(output);
+        filter.frequency.setValueAtTime(preset === 'chime' ? 3600 : preset === 'synth' ? 1600 : preset === 'soft' ? 1200 : 2600, now);
+        filter.Q.setValueAtTime(preset === 'bubble' ? 0.45 : 0.72, now);
+        filter.connect(compressor);
+
+        const output = ctx.createGain();
+        output.gain.setValueAtTime(0.0001, now);
+        output.gain.exponentialRampToValueAtTime(preset === 'soft' ? 0.012 : preset === 'chime' ? 0.016 : 0.018, now + 0.018);
+        output.gain.exponentialRampToValueAtTime(0.0001, now + (preset === 'soft' || preset === 'chime' ? 0.28 : 0.2));
+        output.connect(filter);
+
+        const delay = ctx.createDelay(0.12);
+        const delayGain = ctx.createGain();
+        delay.delayTime.setValueAtTime(preset === 'chime' ? 0.058 : preset === 'soft' ? 0.048 : 0.032, now);
+        delayGain.gain.setValueAtTime(preset === 'chime' ? 0.12 : preset === 'soft' ? 0.06 : 0.04, now);
+        output.connect(delay);
+        delay.connect(delayGain);
+        delayGain.connect(filter);
 
         const tones: Array<[number, number, OscillatorType]> = preset === 'bubble'
-            ? [[620, 0, 'sine'], [980, 0.045, 'triangle']]
+            ? [[560, 0, 'sine'], [860, 0.048, 'triangle']]
             : preset === 'chime'
-                ? [[1047, 0, 'sine'], [1568, 0.065, 'sine']]
+                ? [[880, 0, 'sine'], [1320, 0.07, 'sine']]
                 : preset === 'synth'
-                    ? [[740, 0, 'square'], [520, 0.04, 'sawtooth']]
+                    ? [[640, 0, 'square'], [480, 0.042, 'triangle']]
                     : preset === 'soft'
-                        ? [[440, 0, 'sine'], [660, 0.07, 'triangle']]
-                        : [[760, 0, 'sine'], [1120, 0.045, 'triangle']];
+                        ? [[392, 0, 'sine'], [588, 0.082, 'triangle']]
+                        : [[620, 0, 'sine'], [930, 0.052, 'triangle']];
 
         tones.forEach(([hz, delay, type]) => {
             const osc = ctx.createOscillator();
             osc.type = type;
             osc.frequency.setValueAtTime(hz, now + delay);
-            osc.connect(filter);
+            osc.connect(output);
             osc.start(now + delay);
-            osc.stop(now + delay + (preset === 'chime' || preset === 'soft' ? 0.18 : 0.11));
+            osc.stop(now + delay + (preset === 'chime' || preset === 'soft' ? 0.22 : 0.13));
         });
 
         window.setTimeout(() => {
             output.disconnect();
+            delay.disconnect();
+            delayGain.disconnect();
             filter.disconnect();
+            compressor.disconnect();
             void ctx.close().catch(() => undefined);
-        }, 320);
+        }, 420);
     } catch {
         // Preview sound is best-effort and should not block saving settings.
     }
@@ -179,14 +206,14 @@ function skinToneLabel(lang: Lang, tone: string): string {
 function skinDescription(lang: Lang, id: string): string {
     switch (id) {
         case 'mini-claw':
-            return text(lang, '桌面宠物的轻量小伙伴形象', '桌面寵物的輕量小夥伴形象', 'Minimal desktop pet companion');
+            return text(lang, '小巧外壳、短耳和小靴子的贴边助手', '小巧外殼、短耳和小靴子的貼邊助手', 'Compact shell, short ears, and tiny boots');
         case 'dev-claw':
-            return text(lang, '面向开发场景的伙伴形象', '面向開發場景的夥伴形象', 'Developer-focused companion style');
+            return text(lang, '带护目镜和终端胸牌的编码助手', '帶護目鏡和終端胸牌的編碼助手', 'Coding helper with a visor and terminal badge');
         case 'focus-claw':
-            return text(lang, '低打扰的安静桌面陪伴', '低打擾的安靜桌面陪伴', 'Quiet low-distraction desktop presence');
+            return text(lang, '低动作、柔和表情的专注陪伴', '低動作、柔和表情的專注陪伴', 'Low-motion companion with a softer expression');
         case 'clawmate':
         default:
-            return text(lang, '默认 MaClaw 爪爪伙伴', '預設 MaClaw 爪爪夥伴', 'Default MaClaw claw companion');
+            return text(lang, '带耳朵、爪子和信号标记的默认助手', '帶耳朵、爪子和訊號標記的預設助手', 'Default helper with ears, paws, and a signal tag');
     }
 }
 
@@ -223,22 +250,22 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
     const mountedRef = useRef(true);
     const saveSeqRef = useRef(0);
     const pendingPatchRef = useRef<Record<string, unknown>>({});
-    const petSize = clampPetSize((config as any).pet_size || defaultPetSize);
-    const selectedSkin = (config as any).pet_skin || 'clawmate';
-    const interactionMode = (config as any).pet_interaction_mode || 'balanced';
-    const motionSoundPreset = normalizeMotionSoundPreset((config as any).pet_motion_sound_preset);
-    const conversationMode = (config as any).pet_conversation_mode || 'text-first';
-    const readbackMode = (config as any).pet_readback_mode || ((config as any).pet_voice_readback_enabled ? 'summary' : 'off');
-    const continuousTimeout = Math.min(120, Math.max(5, Number((config as any).pet_continuous_timeout_sec || 30)));
-    const asrReady = !!(config as any).asr_enabled;
-    const ttsReady = !!(config as any).tts_enabled;
-    const petEnabled = !!(config as any).pet_enabled;
-    const quietMode = !!(config as any).pet_quiet_mode;
+    const petSize = clampPetSize(config.pet_size || defaultPetSize);
+    const selectedSkin = config.pet_skin || 'clawmate';
+    const interactionMode = config.pet_interaction_mode || 'balanced';
+    const motionSoundPreset = normalizeMotionSoundPreset(config.pet_motion_sound_preset);
+    const conversationMode = config.pet_conversation_mode || 'text-first';
+    const readbackMode = config.pet_readback_mode || (config.pet_voice_readback_enabled ? 'summary' : 'off');
+    const continuousTimeout = Math.min(120, Math.max(5, Number(config.pet_continuous_timeout_sec || 30)));
+    const asrReady = !!config.asr_enabled;
+    const ttsReady = !!config.tts_enabled;
+    const petEnabled = !!config.pet_enabled;
+    const quietMode = !!config.pet_quiet_mode;
     const voiceReady = asrReady && ttsReady;
     const selectedSkinOption = getPetSkinOption(selectedSkin);
-    const motionEnabled = (config as any).pet_motion_enabled !== false;
-    const motionSoundPreviewEnabled = (config as any).pet_motion_sound_enabled !== false && !(config as any).pet_quiet_mode;
-    const toggleOptions = [
+    const motionEnabled = config.pet_motion_enabled !== false;
+    const motionSoundPreviewEnabled = config.pet_motion_sound_enabled !== false && !config.pet_quiet_mode;
+    const toggleOptions: ReadonlyArray<readonly [PetToggleKey, string]> = [
         ['pet_motion_enabled', text(lang, '\u52a8\u4f5c\u52a8\u753b', '\u52d5\u4f5c\u52d5\u756b', 'Motion')],
         ['pet_motion_sound_enabled', text(lang, '\u52a8\u4f5c\u97f3\u6548', '\u52d5\u4f5c\u97f3\u6548', 'Motion SFX')],
         ['pet_text_interaction_enabled', text(lang, '\u6587\u5b57\u4ea4\u6d41', '\u6587\u5b57\u4ea4\u6d41', 'Text Chat')],
@@ -246,7 +273,11 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         ['pet_voice_readback_enabled', text(lang, '\u8bed\u97f3\u64ad\u62a5', '\u8a9e\u97f3\u64ad\u5831', 'Voice Readback')],
         ['pet_file_drop_enabled', text(lang, '\u6587\u4ef6\u62d6\u62fd', '\u6587\u4ef6\u62d6\u66f3', 'File Drop')],
         ['pet_quiet_mode', text(lang, '\u52ff\u6270\u6a21\u5f0f', '\u52ff\u64fe\u6a21\u5f0f', 'Do Not Disturb')],
-    ] as const;
+    ];
+    const isToggleChecked = (key: PetToggleKey) => {
+        const value = config[key];
+        return defaultEnabledToggleKeys.has(key) ? value !== false : !!value;
+    };
     const saveStateLabel = saveState === 'pending'
         ? text(lang, '\u5f85\u4fdd\u5b58', '\u5f85\u5132\u5b58', 'Pending')
         : saveState === 'saving'
@@ -344,9 +375,9 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                     <p className="settings-panel-desc">
                         {text(
                             lang,
-                            '\u5728 MaClaw \u684c\u9762\u5ba0\u7269\u4e2d\u7edf\u4e00\u7ba1\u7406\u5165\u53e3\u3001\u5f62\u8c61\u3001\u52a8\u4f5c\u3001\u6587\u5b57/\u8bed\u97f3\u4ea4\u6d41\u548c\u97f3\u6548\u3002',
-                            '\u5728 MaClaw \u684c\u9762\u5bf5\u7269\u4e2d\u7d71\u4e00\u7ba1\u7406\u5165\u53e3\u3001\u5f62\u8c61\u3001\u52d5\u4f5c\u3001\u6587\u5b57/\u8a9e\u97f3\u4ea4\u6d41\u548c\u97f3\u6548\u3002',
-                            'Manage the MaClaw desktop pet entry, skins, motion, chat, voice, and SFX in one place.'
+                            '先设置形象、尺寸、动作和音效；语音与高级能力可按需展开。',
+                            '先設定形象、尺寸、動作和音效；語音與進階能力可按需展開。',
+                            'Start with look, size, motion, and sound. Voice and advanced abilities stay tucked away until needed.'
                         )}
                     </p>
                 </div>
@@ -394,7 +425,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                 <section className="pet-preview-card" aria-label={text(lang, 'MaClaw 宠物预览', 'MaClaw 寵物預覽', 'MaClaw pet preview')}>
                     <div className="pet-section-heading">
                         <strong>{text(lang, '实时预览', '即時預覽', 'Live Preview')}</strong>
-                        <span>{text(lang, '切换状态可检查动作节奏与尺寸。', '切換狀態可檢查動作節奏與尺寸。', 'Switch states to check motion and size.')}</span>
+                        <span>{text(lang, '检查形象、动作节奏与桌面尺寸。', '檢查形象、動作節奏與桌面尺寸。', 'Check character, motion rhythm, and desktop size.')}</span>
                     </div>
                     <div
                         className="pet-preview-stage"
@@ -435,7 +466,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                     <div className="pet-form-section">
                         <div className="pet-section-heading">
                             <strong>{text(lang, '\u5f62\u8c61', '\u5f62\u8c61', 'Skin')}</strong>
-                            <span>{text(lang, '选择宠物外观与默认行为气质。', '選擇寵物外觀與預設行為氣質。', 'Choose the pet look and baseline behavior.')}</span>
+                            <span>{text(lang, '每个形象都有明确身份，不只是抽象图标。', '每個形象都有明確身份，不只是抽象圖示。', 'Each skin has a clear role, not just an abstract icon.')}</span>
                         </div>
                         <div className="pet-skin-grid">
                             {petSkinOptions.map((skin) => (
@@ -524,6 +555,14 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         </div>
                     </div>
 
+                    <details className="pet-advanced-card">
+                        <summary>
+                            <span>
+                                <strong>{text(lang, '高级交互', '進階互動', 'Advanced Interaction')}</strong>
+                                <small>{text(lang, '语音模式、播报策略和能力开关', '語音模式、播報策略和能力開關', 'Voice modes, readback, and capability toggles')}</small>
+                            </span>
+                        </summary>
+
                     <div className="pet-voice-card">
                         <div className="pet-voice-card-header">
                             <div>
@@ -591,7 +630,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         <label className="pet-toggle-item">
                             <input
                                 type="checkbox"
-                                checked={!!(config as any).pet_auto_retry_on_no_hear}
+                                checked={!!config.pet_auto_retry_on_no_hear}
                                 onChange={(event) => updatePetConfig({ pet_auto_retry_on_no_hear: event.target.checked })}
                             />
                             <span>{text(lang, '\u6ca1\u542c\u6e05\u65f6\u81ea\u52a8\u8ffd\u95ee', '\u6c92\u807d\u6e05\u6642\u81ea\u52d5\u8ffd\u554f', 'Ask again when speech is unclear')}</span>
@@ -603,9 +642,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                             <label key={key} className="pet-toggle-item">
                                 <input
                                     type="checkbox"
-                                    checked={defaultEnabledToggleKeys.has(key)
-                                        ? (config as any)[key] !== false
-                                        : !!(config as any)[key]}
+                                    checked={isToggleChecked(key)}
                                     onChange={(event) => {
                                         if (key === 'pet_voice_readback_enabled') {
                                             updatePetConfig({
@@ -621,6 +658,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                             </label>
                         ))}
                     </div>
+                    </details>
                 </section>
             </div>
         </div>

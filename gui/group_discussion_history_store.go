@@ -904,6 +904,17 @@ func (s *GroupDiscussionHistoryStore) UpdateSessionStatus(discussionID, status s
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	var raw string
+	if err := s.db.QueryRowContext(ctx, `SELECT summary_json FROM group_discussion_summaries WHERE discussion_id = ?`, discussionID).Scan(&raw); err == nil {
+		var summary a2a.HubDiscussionSummary
+		if json.Unmarshal([]byte(raw), &summary) == nil {
+			summary.Status = status
+			if updated, err := json.Marshal(summary); err == nil {
+				_, _ = s.db.ExecContext(ctx, `UPDATE group_discussion_summaries SET status = ?, summary_json = ? WHERE discussion_id = ?`, status, string(updated), discussionID)
+				return
+			}
+		}
+	}
 	_, _ = s.db.ExecContext(ctx, `UPDATE group_discussion_summaries SET status = ? WHERE discussion_id = ?`, status, discussionID)
 }
 

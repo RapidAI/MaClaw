@@ -25,9 +25,10 @@ var translations = map[appLanguage]map[string]string{
 		"choose.brand":        "\u9009\u62e9\u4ea7\u54c1\u54c1\u724c",
 		"brand.maclaw.desc":   "\u9ed8\u8ba4\u539f\u5382\u53d1\u5e03\u901a\u9053\uff0c\u9002\u5408\u5927\u591a\u6570\u7528\u6237\u3002",
 		"brand.tiger.desc":    "\u5947\u5b89\u4fe1 OEM \u7248\u672c\uff0c\u4f7f\u7528\u5bf9\u5e94\u54c1\u724c\u5b89\u88c5\u5305\u3002",
+		"brand.meta.desc":     "\u667a\u5458 MetaStaff OEM \u7248\u672c\uff0c\u4f7f\u7528\u5bf9\u5e94\u54c1\u724c\u5b89\u88c5\u5305\u3002",
 		"welcome.title":       "\u6b22\u8fce\u4f7f\u7528 Ins-maclaw",
 		"welcome.body":        "\u6b64\u5411\u5bfc\u5c06\u6309\u5728\u7ebf\u66f4\u65b0\u76f8\u540c\u903b\u8f91\u68c0\u6d4b\u6700\u65b0\u7248\uff0c\u5e76\u4ece GitHub / R2 / COS \u955c\u50cf\u4e0b\u8f7d\u5b98\u65b9\u5b89\u88c5\u5305\u3002",
-		"hint.tui":            "\u4e5f\u53ef\u8fd0\u884c\uff1aIns-maclaw.exe -mode tui \u6216 -brand tigerclaw",
+		"hint.tui":            "\u4e5f\u53ef\u8fd0\u884c\uff1aIns-maclaw.exe -mode tui \u6216 -brand metastaff",
 		"next":                "\u4e0b\u4e00\u6b65",
 		"cancel":              "\u53d6\u6d88",
 		"cancelling":          "\u6b63\u5728\u53d6\u6d88...",
@@ -65,7 +66,7 @@ var translations = map[appLanguage]map[string]string{
 		"cli.downloading":     "\u6b63\u5728\u4e0b\u8f7d\u5b89\u88c5\u5305...",
 		"cli.downloaded":      "\u5df2\u4e0b\u8f7d\uff1a%s",
 		"cli.launching":       "\u6b63\u5728\u542f\u52a8\u5b89\u88c5\u5668...",
-		"invalid.brand":       "\u672a\u77e5\u54c1\u724c %q\uff1b\u652f\u6301\uff1amaclaw, tigerclaw",
+		"invalid.brand":       "\u672a\u77e5\u54c1\u724c %q\uff1b\u652f\u6301\uff1amaclaw, tigerclaw, metastaff",
 		"invalid.selection":   "\u65e0\u6548\u54c1\u724c\u9009\u62e9\uff1a%s",
 	},
 	langEnglish: {
@@ -76,9 +77,10 @@ var translations = map[appLanguage]map[string]string{
 		"choose.brand":        "Choose product brand",
 		"brand.maclaw.desc":   "Default official release channel for most users.",
 		"brand.tiger.desc":    "QiAnXin OEM edition with the matching branded package.",
+		"brand.meta.desc":     "MetaStaff OEM edition with the matching branded package.",
 		"welcome.title":       "Welcome to Ins-maclaw",
 		"welcome.body":        "This wizard checks the latest release with the same online update logic and downloads the official installer from GitHub / R2 / COS mirrors.",
-		"hint.tui":            "You can also run: Ins-maclaw.exe -mode tui or -brand tigerclaw",
+		"hint.tui":            "You can also run: Ins-maclaw.exe -mode tui or -brand metastaff",
 		"next":                "Next",
 		"cancel":              "Cancel",
 		"cancelling":          "Cancelling...",
@@ -116,7 +118,7 @@ var translations = map[appLanguage]map[string]string{
 		"cli.downloading":     "Downloading installer...",
 		"cli.downloaded":      "Downloaded: %s",
 		"cli.launching":       "Launching installer...",
-		"invalid.brand":       "unknown brand %q; supported: maclaw, tigerclaw",
+		"invalid.brand":       "unknown brand %q; supported: maclaw, tigerclaw, metastaff",
 		"invalid.selection":   "invalid brand selection: %s",
 	},
 }
@@ -168,6 +170,12 @@ func brandLabel(brand brandOption) string {
 			return "TigerClaw (\u5947\u5b89\u4fe1 OEM \u7248)"
 		}
 		return "TigerClaw (QiAnXin OEM Edition)"
+	}
+	if brand.ID == "metastaff" {
+		if activeLanguage == langChinese {
+			return "\u667a\u5458 MetaStaff (OEM \u7248)"
+		}
+		return "MetaStaff (OEM Edition)"
 	}
 	if activeLanguage == langChinese {
 		return "MaClaw (\u539f\u5382\u54c1\u724c)"

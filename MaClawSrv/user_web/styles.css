@@ -374,6 +374,8 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
 .knowledge-import-fields select,
 .knowledge-import-fields textarea { width: 100%; min-width: 0; }
 .knowledge-import-fields > button { align-self: end; justify-self: end; min-width: 132px; }
+.knowledge-action-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.knowledge-action-row button { min-width: 118px; }
 .knowledge-import-fields .choice-custom,
 .knowledge-import-fields .knowledge-picker-row { min-width: 0; }
 .knowledge-import-fields .choice-custom { grid-template-columns: 1fr; gap: 6px; }

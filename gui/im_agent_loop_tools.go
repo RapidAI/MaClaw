@@ -96,6 +96,9 @@ func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID strin
 	if policyOwnerID == "" {
 		return policyOwnerID, v2.ToolFilterNone, false
 	}
+	if h.shouldConstrainCodingWorkflowImplementationMainLoop(policyOwnerID) {
+		return policyOwnerID, v2.ToolFilterFull, true
+	}
 	if h.isWorkflowV2Active(policyOwnerID) {
 		wf := h.getWorkflowV2()
 		if wf != nil {
@@ -121,6 +124,11 @@ func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID strin
 					return policyOwnerID, v2.ToolFilterNone, true
 				}
 			}
+		}
+	}
+	if h != nil && h.app != nil && h.app.workflowEngine != nil {
+		if policy := h.app.workflowEngine.GetActivePhaseToolFilter(policyOwnerID); policy != v2.ToolFilterNone {
+			return policyOwnerID, policy, true
 		}
 	}
 	return policyOwnerID, v2.ToolFilterNone, false

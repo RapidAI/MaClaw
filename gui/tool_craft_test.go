@@ -247,8 +247,12 @@ func TestNormalizeCraftToolArgs(t *testing.T) {
 		wantInstruction bool
 		wantError       bool
 	}{
-		{name: "prefer task", args: map[string]interface{}{"task": "run report", "instructions": "ignored"}, wantTask: "run report"},
+		{name: "prefer task", args: map[string]interface{}{"task": "run report"}, wantTask: "run report"},
+		{name: "combine explicit task with instructions", args: map[string]interface{}{"task": "create a test docx", "instructions": "Use python-docx for Word files."}, wantTask: "User request:\ncreate a test docx\n\nSkill instructions:\nUse python-docx for Word files.", wantInstruction: true},
 		{name: "fallback to instructions", args: map[string]interface{}{"instructions": "legacy task"}, wantTask: "legacy task", wantInstruction: true},
+		{name: "fallback to instruction alias", args: map[string]interface{}{"instruction": "legacy task"}, wantTask: "legacy task", wantInstruction: true},
+		{name: "combine user prompt with instructions", args: map[string]interface{}{"user_prompt": "create a test docx", "instructions": "Use python-docx for Word files."}, wantTask: "User request:\ncreate a test docx\n\nSkill instructions:\nUse python-docx for Word files.", wantInstruction: true},
+		{name: "fallback to user prompt", args: map[string]interface{}{"user_prompt": "create a test docx"}, wantTask: "create a test docx"},
 		{name: "trim task", args: map[string]interface{}{"task": "  trimmed task  "}, wantTask: "trimmed task"},
 		{name: "merge output into expected artifacts", args: map[string]interface{}{"task": "generate pdf", "output": "/tmp/demo.pdf"}, wantTask: "generate pdf\n\n必须把最终生成文件写到这个精确路径：/tmp/demo.pdf\n不要写到其他默认目录。", wantArtifacts: []string{"/tmp/demo.pdf"}},
 		{name: "keep expected artifacts", args: map[string]interface{}{"task": "generate report", "expected_artifacts": []interface{}{"/tmp/a.txt", "/tmp/b.txt"}}, wantTask: "generate report", wantArtifacts: []string{"/tmp/a.txt", "/tmp/b.txt"}},

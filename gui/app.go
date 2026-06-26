@@ -2846,26 +2846,77 @@ func (a *App) SelectWorkingDir() string {
 }
 
 // SetWorkflowWorkingDir sets the working directory for the current coding
-// SetWorkflowWorkingDir is a frontend binding — no-op.
-// V2 workflow project path is set at workflow creation time and is immutable.
+// workflow. This updates the project-scoped workflow when a current project is
+// selected; otherwise it falls back to the desktop workflow owner.
 func (a *App) SetWorkflowWorkingDir(dir string) {
-	// V2 project path is set at creation and stored in WorkflowState.ProjectPath.
-	// No runtime change is needed.
+	trimmed, _, err := normalizeWorkflowProjectPath(dir)
+	if trimmed == "" || a == nil {
+		return
+	}
+	if err != nil {
+		log.Printf("[workflow-v2] invalid workflow working directory %s: %v", strings.TrimSpace(dir), err)
+		return
+	}
+	ownerID := a.workflowOwnerIDForCurrentProject()
+	if a.workflowV2 != nil && a.workflowV2.machine != nil {
+		if state := a.workflowV2.machine.GetActive(ownerID); state != nil {
+			state.ProjectPath = trimmed
+			state.UpdatedAt = time.Now()
+			if a.workflowV2.store != nil {
+				if err := a.workflowV2.store.Save(state); err != nil {
+					log.Printf("[workflow-v2] failed to persist workflow project path: %v", err)
+				}
+			}
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "workflow:workdir_set", map[string]string{
+					"user_id": ownerID,
+					"path":    trimmed,
+				})
+			}
+			return
+		}
+	}
+	if a.workflowEngine != nil {
+		adapter, ok := a.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter)
+		if ok && adapter != nil {
+			adapter.SetWorkingDir(ownerID, trimmed)
+		}
+	}
 }
 
 func (a *App) workflowOwnerIDForCurrentProject() string {
 	if a == nil {
 		return desktopUserID
 	}
-	return projectSessionOwnerID(a.GetCurrentProjectPath())
+	projectOwnerID := projectSessionOwnerID(a.GetCurrentProjectPath())
+	if projectOwnerID != desktopUserID {
+		if a.workflowEngine != nil {
+			if state := a.workflowEngine.GetActiveWorkflow(projectOwnerID); state != nil {
+				return projectOwnerID
+			}
+		}
+		if a.workflowV2 != nil && a.workflowV2.machine != nil && a.workflowV2.machine.GetActive(projectOwnerID) != nil {
+			return projectOwnerID
+		}
+	}
+	return desktopUserID
 }
 
 // GetWorkflowWorkingDir returns the current workflow working directory.
 func (a *App) GetWorkflowWorkingDir() string {
+	if a == nil {
+		return ""
+	}
+	ownerID := a.workflowOwnerIDForCurrentProject()
 	// V2: return the active workflow's project path if available.
-	if a.workflowV2 != nil {
-		if state := a.workflowV2.machine.GetActive(desktopUserID); state != nil {
+	if a.workflowV2 != nil && a.workflowV2.machine != nil {
+		if state := a.workflowV2.machine.GetActive(ownerID); state != nil {
 			return state.ProjectPath
+		}
+	}
+	if a.workflowEngine != nil {
+		if state := a.workflowEngine.GetActiveWorkflow(ownerID); state != nil {
+			return strings.TrimSpace(state.ProjectPath)
 		}
 	}
 	return ""
@@ -5114,6 +5165,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 func normalizeConfigTimeouts(config *corelib.AppConfig) {
 	config.MaclawLLMTimeoutSec = corelib.NormalizeAgentTimeoutSec(config.MaclawLLMTimeoutSec)
 	config.AgentResponseTimeoutSec = corelib.NormalizeAgentTimeoutSec(config.AgentResponseTimeoutSec)
+	config.SkillRunnerTimeoutSec = corelib.NormalizeSkillRunnerTimeoutSec(config.SkillRunnerTimeoutSec)
 	for i := range config.MaclawLLMProviders {
 		config.MaclawLLMProviders[i].TimeoutSec = corelib.NormalizeAgentTimeoutSec(config.MaclawLLMProviders[i].TimeoutSec)
 	}
@@ -6190,6 +6242,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.AgentResponseTimeoutSec = v
+		case "skill_runner_timeout_sec":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.SkillRunnerTimeoutSec = v
 		case "maclaw_llm_timeout_sec":
 			v, err := intField(key, value)
 			if err != nil {
@@ -6875,8 +6934,8 @@ type UpdateResult struct {
 	TagName             string `json:"tag_name"`
 	DownloadUrl         string `json:"download_url"`
 	DownloadUnavailable bool   `json:"download_unavailable"` // true when new version exists but installer package is not yet available
-	SHA256              string `json:"sha256,omitempty"`      // expected sha256 hash of the installer (from manifest)
-	Channel             string `json:"channel,omitempty"`     // "stable" or "beta" — which channel this result came from
+	SHA256              string `json:"sha256,omitempty"`     // expected sha256 hash of the installer (from manifest)
+	Channel             string `json:"channel,omitempty"`    // "stable" or "beta" — which channel this result came from
 }
 
 const (
@@ -6922,8 +6981,14 @@ func updateHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
 }
 
 func updateTargetFileName() string {
-	brandName := brand.Current().DisplayName
-	if goruntime.GOOS == "darwin" {
+	return updateTargetFileNameFor(brand.Current().DisplayName, goruntime.GOOS)
+}
+
+func updateTargetFileNameFor(brandName, goos string) string {
+	if strings.TrimSpace(brandName) == "" {
+		brandName = "MaClaw"
+	}
+	if goos == "darwin" {
 		return brandName + "-Universal.pkg"
 	}
 	return brandName + "-Setup.exe"
@@ -8708,7 +8773,15 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(metadataPath, data, 0644)
+	if err := os.WriteFile(metadataPath, data, 0644); err != nil {
+		return err
+	}
+	if a.skillExecutor != nil {
+		a.skillExecutor.invalidateSkillCache()
+	} else if a.cachedSkillScanner != nil {
+		a.cachedSkillScanner.Invalidate()
+	}
+	return nil
 }
 func (a *App) InstallDefaultMarketplace() error {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "source": "default_marketplace"}); err != nil {

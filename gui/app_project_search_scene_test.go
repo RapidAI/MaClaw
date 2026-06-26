@@ -130,3 +130,93 @@ func TestGetProjectSceneReturnsSourceBackedArtifacts(t *testing.T) {
 		t.Fatalf("artifact = %#v, want source-backed artifact with read_file hint", artifact)
 	}
 }
+
+func TestRecentTaskSearchAndSceneUseWorkingDirArtifacts(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	if app.memoryStore == nil {
+		t.Fatal("memory store was not initialized")
+	}
+
+	workingDir := filepath.Join(t.TempDir(), "task-workdir")
+	task := app.CreateRecentTaskWithWorkingDir("Working dir scene task", workingDir)
+	if task.ProjectPath == "" {
+		t.Fatalf("CreateRecentTaskWithWorkingDir returned empty task: %#v", task)
+	}
+	refPath := filepath.Join(app.GetDataDir(), "memory_refs", "workflow_output", "desktop-user", "2026-05", "working-dir-output.md")
+	entry := memory.Entry{
+		Title:      "Working Dir Output",
+		Content:    "# Working Dir Output\nUse execution directory scene artifacts.",
+		Category:   memory.CategoryTaskArtifact,
+		Tags:       []string{"workflow", "workflow:coding", filepath.Clean(workingDir)},
+		SourceType: "workflow_output_ref",
+		SourceURL:  refPath,
+	}
+	if err := app.memoryStore.Save(entry); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	results := app.SearchProjects("Working dir scene task", 10)
+	if len(results) == 0 {
+		t.Fatal("SearchProjects returned no results")
+	}
+	foundSearchArtifact := false
+	for _, artifact := range results[0].RecentArtifacts {
+		if artifact.SourceURL == refPath {
+			foundSearchArtifact = true
+			break
+		}
+	}
+	if !foundSearchArtifact {
+		t.Fatalf("SearchProjects artifacts = %#v, want working dir artifact %q", results[0].RecentArtifacts, refPath)
+	}
+
+	detail, err := app.GetProjectScene(task.ProjectPath)
+	if err != nil {
+		t.Fatalf("GetProjectScene: %v", err)
+	}
+	if detail.ProjectPath != task.ProjectPath {
+		t.Fatalf("detail.ProjectPath = %q, want task path %q", detail.ProjectPath, task.ProjectPath)
+	}
+	foundSceneArtifact := false
+	for _, artifact := range detail.RecentArtifacts {
+		if artifact.SourceURL == refPath {
+			foundSceneArtifact = true
+			break
+		}
+	}
+	if !foundSceneArtifact {
+		t.Fatalf("GetProjectScene artifacts = %#v, want working dir artifact %q", detail.RecentArtifacts, refPath)
+	}
+}
+
+func TestBuildProjectTabContextMessageUsesWorkingDirContext(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	if app.memoryStore == nil {
+		t.Fatal("memory store was not initialized")
+	}
+
+	workingDir := filepath.Join(t.TempDir(), "task-context-workdir")
+	task := app.CreateRecentTaskWithWorkingDir("Working dir context task", workingDir)
+	if task.ProjectPath == "" {
+		t.Fatalf("CreateRecentTaskWithWorkingDir returned empty task: %#v", task)
+	}
+	refPath := filepath.Join(app.GetDataDir(), "memory_refs", "workflow_output", "desktop-user", "2026-05", "working-dir-context.md")
+	entry := memory.Entry{
+		Title:      "Working Dir Context",
+		Content:    "# Working Dir Context\nUse execution directory for tab bootstrap context.",
+		Category:   memory.CategoryTaskArtifact,
+		Tags:       []string{"workflow", "workflow:coding", filepath.Clean(workingDir)},
+		SourceType: "workflow_output_ref",
+		SourceURL:  refPath,
+	}
+	if err := app.memoryStore.Save(entry); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	message := app.buildProjectTabContextMessage(task.ProjectPath)
+	if !strings.Contains(message, "Working Dir Context") || !strings.Contains(message, refPath) {
+		t.Fatalf("context message = %q, want working dir artifact title and source ref %q", message, refPath)
+	}
+}

@@ -1979,6 +1979,34 @@ func writeError(w http.ResponseWriter, err error) {
 		writeUnauthorized(w)
 		return
 	}
+	var businessErr *businessError
+	if errors.As(err, &businessErr) && businessErr != nil {
+		out := map[string]any{
+			"error":   err.Error(),
+			"code":    businessErr.Code,
+			"message": businessErr.Message,
+		}
+		if businessErr.Actor != "" {
+			out["actor"] = businessErr.Actor
+		}
+		if businessErr.Target != "" {
+			out["target"] = businessErr.Target
+		}
+		if businessErr.Required != "" {
+			out["required"] = businessErr.Required
+		}
+		if businessErr.Actual != "" {
+			out["actual"] = businessErr.Actual
+		}
+		if len(businessErr.NextActions) > 0 {
+			out["next_actions"] = businessErr.NextActions
+		}
+		if len(businessErr.Metadata) > 0 {
+			out["metadata"] = businessErr.Metadata
+		}
+		writeJSON(w, status, out)
+		return
+	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 

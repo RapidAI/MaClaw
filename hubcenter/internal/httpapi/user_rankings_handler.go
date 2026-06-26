@@ -14,12 +14,16 @@ import (
 
 type centerUserUsageRepo interface {
 	UpsertDaily(ctx context.Context, items []*store.HubUserUsageDaily) error
+	ReplaceDaily(ctx context.Context, hubID string, tenantIDs []string, startDay, endDay string, items []*store.HubUserUsageDaily) error
 	Summarize(ctx context.Context, hubID, tenantID string, start, end time.Time) ([]*store.HubUserUsageDaily, error)
 }
 
 type hubUserUsageSyncRequest struct {
-	HubSecret string                    `json:"hub_secret"`
-	Items     []hubUserUsageSyncPayload `json:"items"`
+	HubSecret    string                    `json:"hub_secret"`
+	SyncStartDay string                    `json:"sync_start_day,omitempty"`
+	SyncEndDay   string                    `json:"sync_end_day,omitempty"`
+	TenantIDs    []string                  `json:"tenant_ids,omitempty"`
+	Items        []hubUserUsageSyncPayload `json:"items"`
 }
 
 type hubUserUsageSyncPayload struct {
@@ -80,7 +84,7 @@ func HubUserUsageSyncHandler(hubService *hubs.Service, repo centerUserUsageRepo)
 		for _, raw := range req.Items {
 			email := strings.ToLower(strings.TrimSpace(raw.UserEmail))
 			day := strings.TrimSpace(raw.Day)
-			if email == "" || day == "" {
+			if !isCenterRankingEmail(email) || day == "" {
 				continue
 			}
 			items = append(items, &store.HubUserUsageDaily{
@@ -88,15 +92,21 @@ func HubUserUsageSyncHandler(hubService *hubs.Service, repo centerUserUsageRepo)
 				TenantID:          normalizeHubSyncTenantID(raw.TenantID),
 				UserEmail:         email,
 				Day:               day,
-				InputTokens:       raw.InputTokens,
-				OutputTokens:      raw.OutputTokens,
-				CachedInputTokens: raw.CachedInputTokens,
-				CacheWriteTokens:  raw.CacheWriteTokens,
-				DurationSeconds:   raw.DurationSeconds,
+				InputTokens:       nonNegativeCenterUsageValue(raw.InputTokens),
+				OutputTokens:      nonNegativeCenterUsageValue(raw.OutputTokens),
+				CachedInputTokens: nonNegativeCenterUsageValue(raw.CachedInputTokens),
+				CacheWriteTokens:  nonNegativeCenterUsageValue(raw.CacheWriteTokens),
+				DurationSeconds:   normalizeCenterDailyDurationSeconds(raw.DurationSeconds),
 				UpdatedAt:         now,
 			})
 		}
-		if err := repo.UpsertDaily(r.Context(), items); err != nil {
+		var err error
+		if validCenterSyncDayRange(req.SyncStartDay, req.SyncEndDay) {
+			err = repo.ReplaceDaily(r.Context(), hubID, normalizeCenterSyncTenantIDs(req.TenantIDs, items), req.SyncStartDay, req.SyncEndDay, items)
+		} else {
+			err = repo.UpsertDaily(r.Context(), items)
+		}
+		if err != nil {
 			writeError(w, http.StatusInternalServerError, "USER_USAGE_SYNC_FAILED", err.Error())
 			return
 		}
@@ -128,8 +138,9 @@ func CenterUserRankingsHandler(repo centerUserUsageRepo) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "USER_RANKINGS_LOAD_FAILED", err.Error())
 			return
 		}
-		global := buildCenterRankingRows(globalRows, dimension, limit)
-		filtered := buildCenterRankingRows(filteredRows, dimension, limit)
+		maxDurationSeconds := centerRankingMaxDurationSeconds(start, end, now)
+		global := buildCenterRankingRows(globalRows, dimension, limit, maxDurationSeconds)
+		filtered := buildCenterRankingRows(filteredRows, dimension, limit, maxDurationSeconds)
 		resp := centerUserRankingResponse{Period: period, Dimension: dimension, GlobalTop: global, FilteredTop: filtered, GeneratedAt: now}
 		switch period {
 		case "monthly":
@@ -143,19 +154,30 @@ func CenterUserRankingsHandler(repo centerUserUsageRepo) http.HandlerFunc {
 	}
 }
 
-func buildCenterRankingRows(items []*store.HubUserUsageDaily, dimension string, limit int) []centerUserRankingRow {
+func buildCenterRankingRows(items []*store.HubUserUsageDaily, dimension string, limit int, maxDurationSeconds int64) []centerUserRankingRow {
 	rows := make([]centerUserRankingRow, 0, len(items))
 	for _, item := range items {
-		if item == nil || strings.TrimSpace(item.UserEmail) == "" {
+		if item == nil || !isCenterRankingEmail(item.UserEmail) {
 			continue
+		}
+		durationSeconds := item.DurationSeconds
+		if durationSeconds < 0 {
+			durationSeconds = 0
+		}
+		if maxDurationSeconds > 0 && durationSeconds > maxDurationSeconds {
+			durationSeconds = maxDurationSeconds
+		}
+		totalTokens := item.TotalTokens()
+		if totalTokens < 0 {
+			totalTokens = 0
 		}
 		rows = append(rows, centerUserRankingRow{
 			HubID:           item.HubID,
 			HubName:         item.HubName,
 			TenantID:        item.TenantID,
 			UserEmail:       strings.ToLower(strings.TrimSpace(item.UserEmail)),
-			TotalTokens:     item.TotalTokens(),
-			DurationSeconds: item.DurationSeconds,
+			TotalTokens:     totalTokens,
+			DurationSeconds: durationSeconds,
 		})
 	}
 	assignCenterRankingRanks(rows)
@@ -216,6 +238,73 @@ func sortCenterRankingRows(rows []centerUserRankingRow, dimension string) {
 		}
 		return rows[i].TotalTokens > rows[j].TotalTokens
 	})
+}
+
+func isCenterRankingEmail(email string) bool {
+	email = strings.TrimSpace(email)
+	return strings.Count(email, "@") == 1 && !strings.ContainsAny(email, " \t\r\n") && !strings.HasPrefix(email, "@") && !strings.HasSuffix(email, "@")
+}
+
+func centerRankingMaxDurationSeconds(start, end, now time.Time) int64 {
+	if now.Before(end) {
+		end = now
+	}
+	if !end.After(start) {
+		return 0
+	}
+	return int64(end.Sub(start).Seconds())
+}
+
+func nonNegativeCenterUsageValue(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+func normalizeCenterDailyDurationSeconds(v int64) int64 {
+	v = nonNegativeCenterUsageValue(v)
+	const maxDailyDurationSeconds = int64(24 * 60 * 60)
+	if v > maxDailyDurationSeconds {
+		return maxDailyDurationSeconds
+	}
+	return v
+}
+
+func validCenterSyncDayRange(startDay, endDay string) bool {
+	start, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(startDay), time.UTC)
+	if err != nil {
+		return false
+	}
+	end, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(endDay), time.UTC)
+	if err != nil {
+		return false
+	}
+	return !end.Before(start)
+}
+
+func normalizeCenterSyncTenantIDs(raw []string, items []*store.HubUserUsageDaily) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	add := func(tenantID string) {
+		tenantID = normalizeHubSyncTenantID(tenantID)
+		if _, ok := seen[tenantID]; ok {
+			return
+		}
+		seen[tenantID] = struct{}{}
+		out = append(out, tenantID)
+	}
+	for _, tenantID := range raw {
+		add(tenantID)
+	}
+	if len(out) == 0 {
+		for _, item := range items {
+			if item != nil {
+				add(item.TenantID)
+			}
+		}
+	}
+	return out
 }
 
 func normalizeCenterRankingPeriod(v string) string {

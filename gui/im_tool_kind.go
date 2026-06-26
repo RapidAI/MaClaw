@@ -118,9 +118,9 @@ func (k agentToolKind) IsCodingIterationTool() bool {
 	}
 }
 
-func (k agentToolKind) IsTruncationBlockSafe() bool {
+func (k agentToolKind) PreserveAfterTruncation() bool {
 	switch k {
-	case agentToolKindBash, agentToolKindReadFile, agentToolKindListDirectory, agentToolKindDelegateTask:
+	case agentToolKindBash, agentToolKindReadFile, agentToolKindListDirectory, agentToolKindWriteFile, agentToolKindDelegateTask:
 		return true
 	default:
 		return false

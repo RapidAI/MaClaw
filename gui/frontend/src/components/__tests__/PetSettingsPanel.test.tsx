@@ -41,11 +41,10 @@ describe('PetSettingsPanel localization', () => {
             '聆听',
             '思考',
             '说话',
-            '默认 MaClaw 爪爪伙伴',
-            '抓住问题，把有效信号拎出来。',
             '安静',
             '平衡',
             '活跃',
+            '高级交互',
             '文字优先',
             '语音轮次',
             '连续对话',
@@ -82,9 +81,10 @@ describe('PetSettingsPanel localization', () => {
         expect(screen.getByText('Text First')).toBeTruthy();
         expect(screen.getByText('Done Only')).toBeTruthy();
         expect(screen.getByText('Desktop Entry')).toBeTruthy();
+        expect(screen.getByText('Advanced Interaction')).toBeTruthy();
         expect(screen.getByLabelText('ASR not enabled')).toBeTruthy();
         expect(screen.getByRole('button', { name: 'Balanced' }).getAttribute('aria-pressed')).toBe('true');
-        expect(screen.getByRole('button', { name: 'Classic: The current comic motion sound.' }).getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByRole('button', { name: 'Classic: A restrained default motion cue.' }).getAttribute('aria-pressed')).toBe('true');
         expect(screen.getByLabelText('Size').getAttribute('aria-valuetext')).toBe('88px');
         expect(screen.getByLabelText('Continuous Timeout').getAttribute('aria-valuetext')).toBe('30s');
     });

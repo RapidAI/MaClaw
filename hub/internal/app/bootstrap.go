@@ -503,6 +503,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		cfg.PWA.RoutePrefix,
 		cfg.Bridge.Dir,
 		tenantNativeIMRuntimes,
+		st.KnowledgeShares,
 		st.Tenants,
 	)
 	return &App{
@@ -517,6 +518,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		Mailer:          mailer,
 		WSGateway:       gateway,
 		HTTPHandler:     router,
+		KnowledgeShares: st.KnowledgeShares,
 
 		// Agent Passthrough IM modules
 		MessageRouter:    messageRouter,

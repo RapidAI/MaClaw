@@ -79,6 +79,7 @@ type AppConfig struct {
 	MaclawLLMContextLength   int                  `json:"maclaw_llm_context_length,omitempty"`
 	MaclawLLMTimeoutSec      int                  `json:"maclaw_llm_timeout_sec,omitempty"`
 	AgentResponseTimeoutSec  int                  `json:"agent_response_timeout_sec,omitempty"`
+	SkillRunnerTimeoutSec    int                  `json:"skill_runner_timeout_sec,omitempty"`
 	MaclawLLMProviders       []MaclawLLMProvider  `json:"maclaw_llm_providers,omitempty"`
 	MaclawLLMCurrentProvider string               `json:"maclaw_llm_current_provider,omitempty"`
 	LLMPromptCache           LLMPromptCacheConfig `json:"llm_prompt_cache,omitempty"`

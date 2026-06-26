@@ -42,6 +42,12 @@ const zhHant = {
     settings: '\u8a2d\u5b9a',
 };
 
+const sharedHeaderStyle = { justifyContent: 'flex-start', width: '100%', flexDirection: 'column' } as const;
+const maclawHeaderStyle = { ...sharedHeaderStyle, height: '64px', padding: '0 0 2px 0', gap: '0' } as const;
+const tigerClawHeaderStyle = { ...sharedHeaderStyle, height: '56px', padding: '4px 0 2px 0', gap: '1px' } as const;
+const maclawLogoSlotStyle = { width: '54px', height: '48px', display: 'flex', justifyContent: 'center', alignItems: 'center' } as const;
+const maclawLogoImageStyle = { width: '50px', height: '50px', objectFit: 'contain' } as const;
+
 export const SidebarNavRail = ({
     navTab,
     brandInfo,
@@ -87,15 +93,15 @@ export const SidebarNavRail = ({
             flexShrink: 0,
             position: 'relative',
         }}>
-            <div className="sidebar-header" style={{ height: '56px', padding: '4px 0 2px 0', justifyContent: 'flex-start', width: '100%', flexDirection: 'column', gap: '1px' }}>
+            <div className="sidebar-header" style={isTigerClaw ? tigerClawHeaderStyle : maclawHeaderStyle}>
                 {brandInfo?.id === 'qianxin' ? (
                     <img src={currentIcon} alt="Logo" className="sidebar-logo" style={{ width: '30px', height: '30px', objectFit: 'contain' }} />
                 ) : (
-                    <div style={{ width: '38px', height: '28px', overflow: 'hidden', display: 'flex', justifyContent: 'center', alignItems: 'flex-start' }}>
-                        <img src={currentIcon} alt="Logo" style={{ width: '64px', height: '48px', objectFit: 'contain', transform: 'translateY(-2px)' }} />
+                    <div style={maclawLogoSlotStyle}>
+                        <img src={currentIcon} alt="Logo" style={maclawLogoImageStyle} />
                     </div>
                 )}
-                <div style={{ color: isTigerClaw ? 'var(--theme-primary-strong)' : 'var(--theme-primary)', fontSize: isTigerClaw ? '0.64rem' : '0.72rem', fontWeight: 800, lineHeight: 1, fontFamily: 'Georgia, serif' }}>{brandSidebarName}</div>
+                <div style={{ color: isTigerClaw ? 'var(--theme-primary-strong)' : 'var(--theme-primary)', fontSize: isTigerClaw ? '0.64rem' : '0.74rem', fontWeight: 800, lineHeight: 1, fontFamily: 'Georgia, serif', transform: isTigerClaw ? undefined : 'translateY(-2px)' }}>{brandSidebarName}</div>
             </div>
 
             <div

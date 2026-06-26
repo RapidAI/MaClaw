@@ -9,15 +9,15 @@ import (
 	"time"
 )
 
-const recordApprovalSelectColumns = `id, tenant_id, dataset_id, record_id, app_id, blueprint_id, object_role, approval_workflow_id, trigger_event, submitted_by, current_assignee, current_assignee_type, from_status, to_status, status, kind, summary, request_json, workflow_skill_id, workflow_version, workflow_instance_id, workflow_node_id, workflow_decision_id, detail_url, business_status, result_status, decision, reason, created_by, reviewed_by, created_at, reviewed_at, updated_at, assigned_to, due_at, priority, result_payload_json, outputs_json, artifacts_json`
+const recordApprovalSelectColumns = `id, tenant_id, dataset_id, record_id, app_id, blueprint_id, object_role, approval_workflow_id, trigger_event, submitted_by, current_assignee, current_assignee_type, from_status, to_status, status, kind, summary, request_json, workflow_skill_id, workflow_version, workflow_instance_id, workflow_node_id, workflow_node_ids_json, workflow_decision_id, detail_url, business_status, result_status, decision, reason, created_by, reviewed_by, created_at, reviewed_at, updated_at, assigned_to, due_at, priority, result_payload_json, outputs_json, artifacts_json`
 
 func (s *SQLiteStore) CreateRecordApproval(ctx context.Context, approval RecordApproval) (*RecordApproval, error) {
 	approval.Request = cloneJSONMap(approval.Request)
 	approval.ResultPayload = cloneJSONMap(approval.ResultPayload)
 	approval.Outputs = cloneJSONValue(approval.Outputs)
 	approval.Artifacts = cloneJSONValue(approval.Artifacts)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO record_approvals(id, tenant_id, dataset_id, record_id, app_id, blueprint_id, object_role, approval_workflow_id, trigger_event, submitted_by, current_assignee, current_assignee_type, from_status, to_status, status, kind, summary, request_json, workflow_skill_id, workflow_version, workflow_instance_id, workflow_node_id, workflow_decision_id, detail_url, business_status, result_status, decision, reason, created_by, reviewed_by, created_at, reviewed_at, updated_at, assigned_to, due_at, priority, result_payload_json, outputs_json, artifacts_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		approval.ID, approval.TenantID, approval.DatasetID, approval.RecordID, approval.AppID, approval.BlueprintID, approval.ObjectRole, approval.ApprovalWorkflowID, approval.TriggerEvent, approval.SubmittedBy, approval.CurrentAssignee, approval.CurrentAssigneeType, approval.FromStatus, approval.ToStatus, approval.Status, approval.Kind, approval.Summary, jsonString(approval.Request), approval.WorkflowSkillID, approval.WorkflowVersion, approval.WorkflowInstanceID, approval.WorkflowNodeID, approval.WorkflowDecisionID, approval.DetailURL, approval.BusinessStatus, approval.ResultStatus, approval.Decision, approval.Reason, approval.CreatedBy, approval.ReviewedBy, formatTime(approval.CreatedAt), formatOptionalPlanTime(approval.ReviewedAt), formatTime(approval.UpdatedAt), approval.AssignedTo, formatOptionalPlanTime(approval.DueAt), approval.Priority, jsonObjectString(approval.ResultPayload), jsonArrayString(approval.Outputs), jsonArrayString(approval.Artifacts))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO record_approvals(id, tenant_id, dataset_id, record_id, app_id, blueprint_id, object_role, approval_workflow_id, trigger_event, submitted_by, current_assignee, current_assignee_type, from_status, to_status, status, kind, summary, request_json, workflow_skill_id, workflow_version, workflow_instance_id, workflow_node_id, workflow_node_ids_json, workflow_decision_id, detail_url, business_status, result_status, decision, reason, created_by, reviewed_by, created_at, reviewed_at, updated_at, assigned_to, due_at, priority, result_payload_json, outputs_json, artifacts_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		approval.ID, approval.TenantID, approval.DatasetID, approval.RecordID, approval.AppID, approval.BlueprintID, approval.ObjectRole, approval.ApprovalWorkflowID, approval.TriggerEvent, approval.SubmittedBy, approval.CurrentAssignee, approval.CurrentAssigneeType, approval.FromStatus, approval.ToStatus, approval.Status, approval.Kind, approval.Summary, jsonString(approval.Request), approval.WorkflowSkillID, approval.WorkflowVersion, approval.WorkflowInstanceID, approval.WorkflowNodeID, jsonArrayString(approval.WorkflowNodeIDs), approval.WorkflowDecisionID, approval.DetailURL, approval.BusinessStatus, approval.ResultStatus, approval.Decision, approval.Reason, approval.CreatedBy, approval.ReviewedBy, formatTime(approval.CreatedAt), formatOptionalPlanTime(approval.ReviewedAt), formatTime(approval.UpdatedAt), approval.AssignedTo, formatOptionalPlanTime(approval.DueAt), approval.Priority, jsonObjectString(approval.ResultPayload), jsonArrayString(approval.Outputs), jsonArrayString(approval.Artifacts))
 	if err != nil {
 		return nil, err
 	}
@@ -100,8 +100,8 @@ func (s *SQLiteStore) ListRecordApprovals(ctx context.Context, tenantID string, 
 		args = append(args, workflowInstanceID)
 	}
 	if workflowNodeID := strings.TrimSpace(in.WorkflowNodeID); workflowNodeID != "" {
-		clauses = append(clauses, "workflow_node_id = ?")
-		args = append(args, workflowNodeID)
+		clauses = append(clauses, "(workflow_node_id = ? OR EXISTS (SELECT 1 FROM json_each(workflow_node_ids_json) WHERE value = ?))")
+		args = append(args, workflowNodeID, workflowNodeID)
 	}
 	if businessStatus := strings.TrimSpace(in.BusinessStatus); businessStatus != "" {
 		clauses = append(clauses, "business_status = ?")
@@ -184,7 +184,7 @@ func (s *SQLiteStore) GetRecordApproval(ctx context.Context, tenantID, approvalI
 	return &approval, nil
 }
 
-func (s *SQLiteStore) UpdateRecordApprovalStatus(ctx context.Context, tenantID, approvalID, status, decision, reason, reviewedBy, workflowInstanceID, workflowNodeID, workflowVersion, workflowDecisionID, detailURL, businessStatus, resultStatus, currentAssignee, currentAssigneeType, fromStatus, toStatus string, resultPayload map[string]any, outputs []RecordApprovalOutput, artifacts []RecordApprovalArtifact, now time.Time) (*RecordApproval, error) {
+func (s *SQLiteStore) UpdateRecordApprovalStatus(ctx context.Context, tenantID, approvalID, status, decision, reason, reviewedBy, workflowInstanceID, workflowNodeID string, workflowNodeIDs []string, workflowVersion, workflowDecisionID, detailURL, businessStatus, resultStatus, currentAssignee, currentAssigneeType, fromStatus, toStatus string, resultPayload map[string]any, outputs []RecordApprovalOutput, artifacts []RecordApprovalArtifact, now time.Time) (*RecordApproval, error) {
 	approval, err := s.GetRecordApproval(ctx, tenantID, approvalID)
 	if err != nil {
 		return nil, err
@@ -196,8 +196,12 @@ func (s *SQLiteStore) UpdateRecordApprovalStatus(ctx context.Context, tenantID, 
 	if workflowInstanceID = strings.TrimSpace(workflowInstanceID); workflowInstanceID != "" {
 		approval.WorkflowInstanceID = workflowInstanceID
 	}
-	if workflowNodeID = strings.TrimSpace(workflowNodeID); workflowNodeID != "" {
+	workflowNodeID, workflowNodeIDs = normalizeRecordApprovalWorkflowNodes(workflowNodeID, workflowNodeIDs)
+	if workflowNodeID != "" {
 		approval.WorkflowNodeID = workflowNodeID
+	}
+	if len(workflowNodeIDs) > 0 {
+		approval.WorkflowNodeIDs = workflowNodeIDs
 	}
 	if workflowVersion = strings.TrimSpace(workflowVersion); workflowVersion != "" {
 		approval.WorkflowVersion = workflowVersion
@@ -237,8 +241,8 @@ func (s *SQLiteStore) UpdateRecordApprovalStatus(ctx context.Context, tenantID, 
 	}
 	approval.ReviewedAt = now
 	approval.UpdatedAt = now
-	res, err := s.db.ExecContext(ctx, `UPDATE record_approvals SET status = ?, decision = ?, reason = ?, reviewed_by = ?, reviewed_at = ?, updated_at = ?, workflow_instance_id = ?, workflow_node_id = ?, workflow_version = ?, workflow_decision_id = ?, detail_url = ?, business_status = ?, result_status = ?, current_assignee = ?, current_assignee_type = ?, from_status = ?, to_status = ?, result_payload_json = ?, outputs_json = ?, artifacts_json = ? WHERE tenant_id = ? AND id = ?`,
-		approval.Status, approval.Decision, approval.Reason, approval.ReviewedBy, formatOptionalPlanTime(approval.ReviewedAt), formatTime(approval.UpdatedAt), approval.WorkflowInstanceID, approval.WorkflowNodeID, approval.WorkflowVersion, approval.WorkflowDecisionID, approval.DetailURL, approval.BusinessStatus, approval.ResultStatus, approval.CurrentAssignee, approval.CurrentAssigneeType, approval.FromStatus, approval.ToStatus, jsonObjectString(approval.ResultPayload), jsonArrayString(approval.Outputs), jsonArrayString(approval.Artifacts), tenantID, approvalID)
+	res, err := s.db.ExecContext(ctx, `UPDATE record_approvals SET status = ?, decision = ?, reason = ?, reviewed_by = ?, reviewed_at = ?, updated_at = ?, workflow_instance_id = ?, workflow_node_id = ?, workflow_node_ids_json = ?, workflow_version = ?, workflow_decision_id = ?, detail_url = ?, business_status = ?, result_status = ?, current_assignee = ?, current_assignee_type = ?, from_status = ?, to_status = ?, result_payload_json = ?, outputs_json = ?, artifacts_json = ? WHERE tenant_id = ? AND id = ?`,
+		approval.Status, approval.Decision, approval.Reason, approval.ReviewedBy, formatOptionalPlanTime(approval.ReviewedAt), formatTime(approval.UpdatedAt), approval.WorkflowInstanceID, approval.WorkflowNodeID, jsonArrayString(approval.WorkflowNodeIDs), approval.WorkflowVersion, approval.WorkflowDecisionID, approval.DetailURL, approval.BusinessStatus, approval.ResultStatus, approval.CurrentAssignee, approval.CurrentAssigneeType, approval.FromStatus, approval.ToStatus, jsonObjectString(approval.ResultPayload), jsonArrayString(approval.Outputs), jsonArrayString(approval.Artifacts), tenantID, approvalID)
 	if err != nil {
 		return nil, err
 	}
@@ -254,13 +258,17 @@ func (s *SQLiteStore) UpdateRecordApprovalStatus(ctx context.Context, tenantID, 
 
 func scanRecordApproval(scanner interface{ Scan(dest ...any) error }) (RecordApproval, error) {
 	var approval RecordApproval
-	var requestJSON, resultPayloadJSON, outputsJSON, artifactsJSON, createdAt, reviewedAt, updatedAt, dueAt string
-	if err := scanner.Scan(&approval.ID, &approval.TenantID, &approval.DatasetID, &approval.RecordID, &approval.AppID, &approval.BlueprintID, &approval.ObjectRole, &approval.ApprovalWorkflowID, &approval.TriggerEvent, &approval.SubmittedBy, &approval.CurrentAssignee, &approval.CurrentAssigneeType, &approval.FromStatus, &approval.ToStatus, &approval.Status, &approval.Kind, &approval.Summary, &requestJSON, &approval.WorkflowSkillID, &approval.WorkflowVersion, &approval.WorkflowInstanceID, &approval.WorkflowNodeID, &approval.WorkflowDecisionID, &approval.DetailURL, &approval.BusinessStatus, &approval.ResultStatus, &approval.Decision, &approval.Reason, &approval.CreatedBy, &approval.ReviewedBy, &createdAt, &reviewedAt, &updatedAt, &approval.AssignedTo, &dueAt, &approval.Priority, &resultPayloadJSON, &outputsJSON, &artifactsJSON); err != nil {
+	var requestJSON, workflowNodeIDsJSON, resultPayloadJSON, outputsJSON, artifactsJSON, createdAt, reviewedAt, updatedAt, dueAt string
+	if err := scanner.Scan(&approval.ID, &approval.TenantID, &approval.DatasetID, &approval.RecordID, &approval.AppID, &approval.BlueprintID, &approval.ObjectRole, &approval.ApprovalWorkflowID, &approval.TriggerEvent, &approval.SubmittedBy, &approval.CurrentAssignee, &approval.CurrentAssigneeType, &approval.FromStatus, &approval.ToStatus, &approval.Status, &approval.Kind, &approval.Summary, &requestJSON, &approval.WorkflowSkillID, &approval.WorkflowVersion, &approval.WorkflowInstanceID, &approval.WorkflowNodeID, &workflowNodeIDsJSON, &approval.WorkflowDecisionID, &approval.DetailURL, &approval.BusinessStatus, &approval.ResultStatus, &approval.Decision, &approval.Reason, &approval.CreatedBy, &approval.ReviewedBy, &createdAt, &reviewedAt, &updatedAt, &approval.AssignedTo, &dueAt, &approval.Priority, &resultPayloadJSON, &outputsJSON, &artifactsJSON); err != nil {
 		return RecordApproval{}, err
 	}
 	approval.Request = map[string]any{}
 	_ = json.Unmarshal([]byte(defaultJSONString(requestJSON, "{}")), &approval.Request)
 	approval.ResultPayload = map[string]any{}
+	_ = json.Unmarshal([]byte(defaultJSONString(workflowNodeIDsJSON, "[]")), &approval.WorkflowNodeIDs)
+	if len(approval.WorkflowNodeIDs) == 0 && strings.TrimSpace(approval.WorkflowNodeID) != "" {
+		approval.WorkflowNodeIDs = []string{strings.TrimSpace(approval.WorkflowNodeID)}
+	}
 	_ = json.Unmarshal([]byte(defaultJSONString(resultPayloadJSON, "{}")), &approval.ResultPayload)
 	_ = json.Unmarshal([]byte(defaultJSONString(outputsJSON, "[]")), &approval.Outputs)
 	_ = json.Unmarshal([]byte(defaultJSONString(artifactsJSON, "[]")), &approval.Artifacts)

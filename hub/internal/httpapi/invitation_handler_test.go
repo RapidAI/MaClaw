@@ -1,14 +1,19 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
 
 // stubEmailInviteRepo is a minimal in-memory implementation of store.EmailInviteRepository
@@ -67,7 +72,7 @@ func (r *stubEmailInviteRepo) DeleteByID(_ context.Context, id string) error {
 //   - Each invite object should have lowercase field names (email, role, status)
 //   - DELETE /api/admin/invites/{id} should exist and return 200
 //
-// After the fix, this test PASSES — confirming the bug is resolved.
+// After the fix, this test PASSES - confirming the bug is resolved.
 func TestBugCondition_InviteListAPI(t *testing.T) {
 	now := time.Now()
 	repo := &stubEmailInviteRepo{
@@ -153,6 +158,76 @@ func TestBugCondition_InviteListAPI(t *testing.T) {
 				rr.Code, rr.Body.String())
 		}
 	})
+}
+
+func TestGenerateInvitationCodesHandlerIncludesLLMGrantFields(t *testing.T) {
+	provider, err := sqlite.NewProvider(sqlite.Config{DSN: filepath.Join(t.TempDir(), "hub-test.db")})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations: %v", err)
+	}
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	if err := llmservice.SaveRegistry(ctx, st.System, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "invite-pro", Name: "Invite Pro"}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+	svc := invitation.NewService(st.InvitationCodes, st.System)
+	body := []byte(`{"count":1,"llm_service_group_id":"invite-pro","llm_grant_duration_days":15,"llm_grant_credits":321.123}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/invitation-codes/generate", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+
+	GenerateInvitationCodesHandler(svc)(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GenerateInvitationCodesHandler status = %d; body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Codes []invitationCodeResponse `json:"codes"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Codes) != 1 {
+		t.Fatalf("len(codes) = %d, want 1", len(resp.Codes))
+	}
+	code := resp.Codes[0]
+	if code.LLMServiceGroupID != "invite-pro" || code.LLMGrantDurationDays != 15 || code.LLMGrantCredits != 321.123 {
+		t.Fatalf("unexpected LLM grant fields: %#v", code)
+	}
+}
+
+func TestGenerateInvitationCodesHandlerRejectsIncompleteLLMGrant(t *testing.T) {
+	provider, err := sqlite.NewProvider(sqlite.Config{DSN: filepath.Join(t.TempDir(), "hub-test.db")})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations: %v", err)
+	}
+	st := sqlite.NewStore(provider)
+	svc := invitation.NewService(st.InvitationCodes, st.System)
+	body := []byte(`{"count":1,"llm_service_group_id":"invite-pro","llm_grant_duration_days":15}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/invitation-codes/generate", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+
+	GenerateInvitationCodesHandler(svc)(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "INVALID_INPUT" {
+		t.Fatalf("error code = %v, want INVALID_INPUT", resp["code"])
+	}
 }
 
 // keys returns the keys of a map for diagnostic output.

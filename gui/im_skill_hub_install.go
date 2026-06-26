@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -220,11 +219,14 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 	}
 
 	// Extract all bundled files to ~/.maclaw/data/skills/<name>/.
+	installName := firstNonEmpty(full.Name, full.ID)
 	installSkillDir := ""
-	if len(full.Files) > 0 && full.Name != "" {
-		extractSkillFiles(full.Name, full.Files, "")
+	if len(full.Files) > 0 && installName != "" {
+		if err := extractSkillFiles(installName, full.Files, ""); err != nil {
+			return nil, fmt.Errorf("extract bundled files for skill %q: %w", installName, err)
+		}
 		if skillsRoot, err := cskill.PrimarySkillsDir(); err == nil {
-			installSkillDir = filepath.Join(skillsRoot, full.Name)
+			installSkillDir = filepath.Join(skillsRoot, installName)
 		}
 	}
 
@@ -253,6 +255,7 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 		HubSkillID:  full.ID,
 		HubVersion:  full.Version,
 		TrustLevel:  trustLevel,
+		SkillDir:    installSkillDir,
 	}, nil
 }
 
@@ -282,47 +285,12 @@ func skillStagingDir(skillDir string) string {
 // extractSkillFiles decodes base64-encoded files and writes them to the
 // specified targetDir, preserving subdirectory structure.
 // When targetDir is empty, falls back to ~/.maclaw/data/skills/<skillName>/.
-func extractSkillFiles(skillName string, files map[string]string, targetDir string) {
-	skillDir := targetDir
-	if skillDir == "" {
-		skillsRoot, err := cskill.PrimarySkillsDir()
-		if err != nil {
-			log.Printf("[skill-install] cannot determine skills dir: %v", err)
-			return
-		}
-		skillDir = filepath.Join(skillsRoot, skillName)
+func extractSkillFiles(skillName string, files map[string]string, targetDir string) error {
+	if err := extractBundledSkillFiles(skillName, files, targetDir); err != nil {
+		return err
 	}
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		log.Printf("[skill-install] cannot create %s: %v", skillDir, err)
-		return
-	}
-
-	for relPath, b64Content := range files {
-		data, err := base64.StdEncoding.DecodeString(b64Content)
-		if err != nil {
-			log.Printf("[skill-install] decode %s: %v", relPath, err)
-			continue
-		}
-
-		// Sanitize path 鈥?prevent directory traversal.
-		clean := filepath.ToSlash(filepath.Clean(relPath))
-		if strings.Contains(clean, "..") || filepath.IsAbs(relPath) || strings.HasPrefix(clean, "/") {
-			log.Printf("[skill-install] skipping unsafe path: %s", relPath)
-			continue
-		}
-
-		dest := filepath.Join(skillDir, filepath.FromSlash(clean))
-		if !strings.HasPrefix(dest, skillDir+string(filepath.Separator)) && dest != skillDir {
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			continue
-		}
-		if err := os.WriteFile(dest, data, 0o644); err != nil {
-			log.Printf("[skill-install] write %s: %v", dest, err)
-		}
-	}
-	log.Printf("[skill-install] extracted %d files to %s", len(files), skillDir)
+	log.Printf("[skill-install] extracted %d files for %s", len(files), skillName)
+	return nil
 }
 
 // registerAndExecuteSkill registers a skill locally, runs security review,

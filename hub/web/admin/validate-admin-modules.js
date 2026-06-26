@@ -30,6 +30,7 @@ const expectedScripts = [
   'card-store-tab.js',
   'usage-stats-tab.js',
   'failure-logs-tab.js',
+  'knowledge-management-tab.js',
   'admin-module-health.js',
   'overview-tenant-info.js',
   'admin-bootstrap.js'
@@ -47,7 +48,8 @@ const expectedExports = {
   'security-tab.js': ['loadSecurityTab', 'loadApprovalRolesTab', 'saveSecApprovalRoles', 'selectSecGroup', 'confirmAssignUsers'],
   'llm-provider-tab.js': ['loadLlmProviders', 'openLlmProviderTab', 'saveLLMProviders'],
   'llm-service-tabs.js': ['loadLlmServiceGroups', 'openLlmServiceGroupTab', 'saveLLMServiceAdmin'],
-  'usage-stats-tab.js': ['loadUsageStats']
+  'usage-stats-tab.js': ['loadUsageStats'],
+  'knowledge-management-tab.js': ['loadKnowledgeShares', 'forceDeleteKnowledgeShare']
 };
 
 function fail(message) {
@@ -494,6 +496,42 @@ function assertScopedRefreshHooks() {
   }
 }
 
+function assertUsageRankingEmailFilter() {
+  const fnSource = extractNamedFunction(read('usage-stats-tab.js'), 'isRankingEmail');
+  const sandbox = {};
+  vm.runInNewContext(fnSource + '\nthis.isRankingEmail = isRankingEmail;', sandbox, { filename: 'usage-stats-tab.js:isRankingEmail' });
+  [
+    ['user@example.com', true],
+    [' User@Example.com ', true],
+    ['u_1774182684297100200', false],
+    ['foo@', false],
+    ['@example.com', false],
+    ['foo @example.com', false],
+    ['foo@@example.com', false],
+    ['', false]
+  ].forEach(function(entry) {
+    const got = sandbox.isRankingEmail(entry[0]);
+    if (got !== entry[1]) {
+      fail('usage-stats-tab.js isRankingEmail(' + JSON.stringify(entry[0]) + ') = ' + got + ', want ' + entry[1]);
+    }
+  });
+}
+
+function assertUsageStatsSubtabState() {
+  const content = read('usage-stats-tab.js');
+  [
+    'usage-stats-subtab is-active',
+    "setAttribute('aria-selected'",
+    "setAttribute('aria-hidden'",
+    'onUsageStatsSubtabKeydown(event)',
+    'role="tablist"',
+    'role="tab"'
+  ].forEach(function(marker) {
+    if (!content.includes(marker)) {
+      fail('usage-stats-tab.js is missing active subtab state marker: ' + marker);
+    }
+  });
+}
 function assertAdminApiRoutesRegistered() {
   const routerPath = path.join(root, '..', '..', 'internal', 'httpapi', 'router.go');
   const router = fs.readFileSync(routerPath, 'utf8');
@@ -510,6 +548,7 @@ function assertAdminApiRoutesRegistered() {
   });
   const routeSet = new Set(routes);
   const allowedDynamicPrefixes = [
+    '/api/admin/capabilities/maclaw-apps/',
     '/api/admin/capability-market/groups/',
     '/api/admin/capability-market/users/',
     '/api/admin/security/users/',
@@ -808,6 +847,8 @@ assertDataI18nKeysHaveTranslations();
 assertAdminApiRoutesRegistered();
 assertGlobalAdminRuntimeHooks();
 assertScopedRefreshHooks();
+assertUsageRankingEmailFilter();
+assertUsageStatsSubtabState();
 assertLegacyMirrorRemoved();
 assertRemovedLegacyFilesDocumented();
 assertLLMProviderPricingHooks();

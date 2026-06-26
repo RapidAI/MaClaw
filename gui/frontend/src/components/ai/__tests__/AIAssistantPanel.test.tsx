@@ -7,10 +7,11 @@ import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } f
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock, createProjectTabSessionMock, cancelSessionForSessionMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock, loadProjectConversationHistoryMock, createProjectTabSessionMock, cancelSessionForSessionMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
     showItemInFolderMock: vi.fn().mockResolvedValue(undefined),
     loadProjectContextMock: vi.fn().mockResolvedValue({ project_name: '', recent_progress: '', key_artifacts: [] }),
+    loadProjectConversationHistoryMock: vi.fn().mockResolvedValue([]),
     createProjectTabSessionMock: vi.fn().mockResolvedValue(undefined),
     cancelSessionForSessionMock: vi.fn().mockResolvedValue(''),
     listVirtualEmployeesMock: vi.fn().mockResolvedValue([
@@ -52,6 +53,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SelectProjectDir: vi.fn(),
     SetWorkflowWorkingDir: vi.fn(),
     LoadProjectContext: loadProjectContextMock,
+    LoadProjectConversationHistory: loadProjectConversationHistoryMock,
     SearchProjects: vi.fn().mockResolvedValue([]),
     ResumeProject: vi.fn(),
     CreateProjectTabSession: createProjectTabSessionMock,
@@ -169,6 +171,8 @@ describe('AIAssistantPanel property tests', () => {
         showItemInFolderMock.mockResolvedValue(undefined);
         loadProjectContextMock.mockReset();
         loadProjectContextMock.mockResolvedValue({ project_name: '', recent_progress: '', key_artifacts: [] });
+        loadProjectConversationHistoryMock.mockReset();
+        loadProjectConversationHistoryMock.mockResolvedValue([]);
         createProjectTabSessionMock.mockReset();
         createProjectTabSessionMock.mockResolvedValue(undefined);
         listVirtualEmployeesMock.mockReset();
@@ -1029,6 +1033,106 @@ describe('AIAssistantPanel property tests', () => {
         expect(bodyText).not.toContain('最近产物来源');
         expect(bodyText).not.toContain('.maclaw');
         expect(queryByText(/read_file/)).toBeNull();
+    });
+
+    it('restores project tab chat history after closing and reopening the recent task', async () => {
+        const projectPath = 'D:/tasks/reopen-closed-history';
+        loadProjectContextMock.mockResolvedValue({
+            project_name: 'Reopen closed history',
+            recent_progress: '',
+            key_artifacts: [],
+            recent_artifacts: [],
+            active_workflow: '',
+        });
+        const onHandled = vi.fn();
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Reopen closed history',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+        };
+        const { rerender, getByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(document.body.textContent || '').toContain('已恢复任务上下文'));
+
+        const projectUser = makeMsg({
+            id: 'project-user-before-close',
+            role: 'user',
+            content: 'question before closing project tab',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        const projectAssistant = makeMsg({
+            id: 'project-assistant-before-close',
+            role: 'assistant',
+            content: 'answer before closing project tab',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={null}
+            state={{ ...props.state, messages: [projectUser, projectAssistant] }}
+        />);
+
+        await waitFor(() => expect(document.body.textContent || '').toContain('question before closing project tab'));
+        expect(document.body.textContent || '').toContain('answer before closing project tab');
+
+        const closeButton = document.querySelector('[data-testid^="ai-tab-close-proj-"]') as HTMLButtonElement | null;
+        expect(closeButton).toBeTruthy();
+        fireEvent.click(closeButton!);
+        await waitFor(() => expect(document.body.textContent || '').not.toContain('question before closing project tab'));
+
+        onHandled.mockClear();
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={{
+                projectPath,
+                taskTitle: 'Reopen closed history',
+                autoSend: false,
+            }}
+            state={{ ...props.state, messages: [] }}
+        />);
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(document.body.textContent || '').toContain('question before closing project tab'));
+        expect(document.body.textContent || '').toContain('answer before closing project tab');
+        expect(getByTestId('ai-tab-local')).toBeTruthy();
+    });
+
+    it('restores backend-copied conversation when opening a forked recent task with a fresh project path', async () => {
+        const projectPath = 'D:/tasks/forked-recent-task';
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: 'what can biomedical engineering graduates do?' },
+            { role: 'assistant', content: 'They can work in medical devices, hospitals, R&D, or further study.' },
+        ]);
+        loadProjectContextMock.mockResolvedValue({
+            project_name: 'Biomedical engineering',
+            recent_progress: '',
+            key_artifacts: [],
+            recent_artifacts: [],
+            active_workflow: '',
+        });
+
+        const onHandled = vi.fn();
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Biomedical engineering',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(loadProjectConversationHistoryMock).toHaveBeenCalledWith(projectPath));
+        await waitFor(() => expect(document.body.textContent || '').toContain('what can biomedical engineering graduates do?'));
+        expect(document.body.textContent || '').toContain('They can work in medical devices, hospitals, R&D, or further study.');
     });
 
     it('locks a newly opened project tab until context restore finishes and queues typed input', async () => {
@@ -2902,6 +3006,148 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.click(getByTitle('New conversation'));
 
         expect(clearHistory).not.toHaveBeenCalled();
+    });
+
+    it('does not resurrect cleared project tab history after closing and reopening', async () => {
+        const projectPath = 'D:/tasks/project-clear-close-reopen';
+        const onHandled = vi.fn();
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Project clear close reopen',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+        };
+        const { rerender, getByTitle } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const projectUser = makeMsg({
+            id: 'project-user-before-clear',
+            role: 'user',
+            content: 'history that should stay cleared',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        const projectAssistant = makeMsg({
+            id: 'project-assistant-before-clear',
+            role: 'assistant',
+            content: 'answer that should stay cleared',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={null}
+            state={{ ...props.state, messages: [projectUser, projectAssistant] }}
+        />);
+
+        await waitFor(() => expect(document.body.textContent || '').toContain('history that should stay cleared'));
+        fireEvent.click(getByTitle('New conversation'));
+        const closeButton = document.querySelector('[data-testid^="ai-tab-close-proj-"]') as HTMLButtonElement | null;
+        expect(closeButton).toBeTruthy();
+        fireEvent.click(closeButton!);
+
+        onHandled.mockClear();
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={{
+                projectPath,
+                taskTitle: 'Project clear close reopen',
+                autoSend: false,
+            }}
+            state={{ ...props.state, messages: [] }}
+        />);
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect(document.body.textContent || '').not.toContain('history that should stay cleared');
+        expect(document.body.textContent || '').not.toContain('answer that should stay cleared');
+    });
+
+    it('persists new project tab chat after clearing old history', async () => {
+        const projectPath = 'D:/tasks/project-clear-then-new-chat';
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Project clear then new chat',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender, getByTestId, getByTitle } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const oldUser = makeMsg({
+            id: 'project-old-user-before-clear',
+            role: 'user',
+            content: 'old history before clear',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={null}
+            state={{ ...props.state, messages: [oldUser] }}
+        />);
+        await waitFor(() => expect(document.body.textContent || '').toContain('old history before clear'));
+
+        fireEvent.click(getByTitle('New conversation'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'new question after clear' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('new question after clear', expect.objectContaining({ project_path: projectPath })));
+
+        const newUser = makeMsg({
+            id: 'project-new-user-after-clear',
+            role: 'user',
+            content: 'new question after clear',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        const newAssistant = makeMsg({
+            id: 'project-new-assistant-after-clear',
+            role: 'assistant',
+            content: 'new answer after clear',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={null}
+            state={{ ...props.state, messages: [newUser, newAssistant], sending: true, streaming: true }}
+        />);
+        await waitFor(() => expect(document.body.textContent || '').toContain('new answer after clear'));
+        expect(document.body.textContent || '').not.toContain('old history before clear');
+
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={null}
+            state={{ ...props.state, messages: [newUser, newAssistant], sending: false, streaming: false }}
+        />);
+
+        const closeButton = document.querySelector('[data-testid^="ai-tab-close-proj-"]') as HTMLButtonElement | null;
+        expect(closeButton).toBeTruthy();
+        fireEvent.click(closeButton!);
+
+        onHandled.mockClear();
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={{
+                projectPath,
+                taskTitle: 'Project clear then new chat',
+                autoSend: false,
+            }}
+            state={{ ...props.state, messages: [] }}
+        />);
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(document.body.textContent || '').toContain('new question after clear'));
+        expect(document.body.textContent || '').toContain('new answer after clear');
+        expect(document.body.textContent || '').not.toContain('old history before clear');
     });
 
     it('keeps a project tab input unlocked while the local assistant session is busy', async () => {

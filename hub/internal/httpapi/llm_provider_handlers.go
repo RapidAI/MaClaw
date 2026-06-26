@@ -2296,17 +2296,28 @@ func writeOpenAIStreamResponse(w http.ResponseWriter, resp *http.Response, provi
 		if len(event) == 0 {
 			return nil
 		}
+		if !sseEventHasNonEmptyData(event) {
+			event = event[:0]
+			return nil
+		}
+		wrote := false
 		for _, line := range event {
+			if isSSECommentLine(line) {
+				continue
+			}
 			out := rewriteOpenAIStreamLine(line, externalModel, &usage)
 			out = append(out, '\n')
 			if _, err := w.Write(out); err != nil {
 				return err
 			}
+			wrote = true
 		}
-		if _, err := w.Write([]byte("\n")); err != nil {
-			return err
+		if wrote {
+			if _, err := w.Write([]byte("\n")); err != nil {
+				return err
+			}
+			flusher.Flush()
 		}
-		flusher.Flush()
 		event = event[:0]
 		return nil
 	}
@@ -2359,19 +2370,49 @@ func writeRawResponsesStreamResponse(w http.ResponseWriter, resp *http.Response,
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	usage := corelib.TokenUsageStat{}
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if _, err := w.Write(append(append([]byte(nil), line...), '\n')); err != nil {
-			return applyProviderUsageCost(usage, provider), true, err
+	event := make([][]byte, 0, 4)
+	flushEvent := func() error {
+		if len(event) == 0 {
+			return nil
 		}
-		if strings.HasPrefix(strings.TrimSpace(string(line)), "data:") {
-			if chunkUsage := responsesStreamUsageFromLine(line); chunkUsage.TotalTokens > 0 || chunkUsage.InputTokens > 0 || chunkUsage.OutputTokens > 0 {
-				usage = chunkUsage
+		if !sseEventHasNonEmptyData(event) {
+			event = event[:0]
+			return nil
+		}
+		for _, line := range event {
+			if isSSECommentLine(line) {
+				continue
+			}
+			trimmed := strings.TrimSpace(string(line))
+			if _, err := w.Write(append(append([]byte(nil), line...), '\n')); err != nil {
+				return err
+			}
+			if strings.HasPrefix(trimmed, "data:") {
+				if chunkUsage := responsesStreamUsageFromLine(line); chunkUsage.TotalTokens > 0 || chunkUsage.InputTokens > 0 || chunkUsage.OutputTokens > 0 {
+					usage = chunkUsage
+				}
 			}
 		}
-		if len(strings.TrimSpace(string(line))) == 0 {
-			flusher.Flush()
+		if _, err := w.Write([]byte("\n")); err != nil {
+			return err
 		}
+		flusher.Flush()
+		event = event[:0]
+		return nil
+	}
+	for scanner.Scan() {
+		line := append([]byte(nil), scanner.Bytes()...)
+		trimmed := strings.TrimSpace(string(line))
+		if trimmed == "" {
+			if err := flushEvent(); err != nil {
+				return applyProviderUsageCost(usage, provider), true, err
+			}
+			continue
+		}
+		event = append(event, line)
+	}
+	if err := flushEvent(); err != nil {
+		return applyProviderUsageCost(usage, provider), true, err
 	}
 	if err := scanner.Err(); err != nil {
 		return applyProviderUsageCost(usage, provider), true, err
@@ -3071,6 +3112,20 @@ func looksLikeOpenAIStream(resp *http.Response, reader *bufio.Reader) bool {
 	return strings.HasPrefix(trimmed, "data:") || strings.HasPrefix(trimmed, "event:") || strings.HasPrefix(trimmed, ":")
 }
 
+func isSSECommentLine(line []byte) bool {
+	return strings.HasPrefix(strings.TrimSpace(string(line)), ":")
+}
+
+func sseEventHasNonEmptyData(event [][]byte) bool {
+	for _, line := range event {
+		trimmed := strings.TrimSpace(string(line))
+		if strings.HasPrefix(trimmed, "data:") && strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func writeOpenAINonStreamAsStreamResponse(w http.ResponseWriter, flusher http.Flusher, reader io.Reader, statusCode int, provider *im.LLMProvider, model *llmservice.AuthorizedModel, externalModel string, selectedModelDebug *llmservice.ModelSelectionDebug) (corelib.TokenUsageStat, bool, error) {
 	body, err := io.ReadAll(io.LimitReader(reader, 32<<20))
 	if err != nil {
@@ -3097,7 +3152,7 @@ func writeOpenAINonStreamAsStreamResponse(w http.ResponseWriter, flusher http.Fl
 
 func setOpenAIStreamResponseHeaders(w http.ResponseWriter, provider *im.LLMProvider, model *llmservice.AuthorizedModel, selectedModelDebug *llmservice.ModelSelectionDebug) {
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	if model != nil {

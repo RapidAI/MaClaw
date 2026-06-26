@@ -534,7 +534,7 @@ func nextGrantStart(reg *Registry, email, serviceGroupID string, now time.Time) 
 		}
 		if !hasActiveWithCredits {
 			if g.CreditsTotal <= 0 {
-				// Unlimited grant — still active.
+				// Unlimited grant: still active.
 				hasActiveWithCredits = true
 			} else if remainingGrantCredits(g) > 0 {
 				hasActiveWithCredits = true
@@ -542,7 +542,7 @@ func nextGrantStart(reg *Registry, email, serviceGroupID string, now time.Time) 
 		}
 	}
 	if !hasActiveWithCredits {
-		// All current grants are exhausted (or none exist) — start immediately.
+		// All current grants are exhausted (or none exist): start immediately.
 		return now
 	}
 	// There's still an active grant with remaining credits. Queue the new grant
@@ -970,6 +970,47 @@ func GrantDefaultServiceForNewUser(ctx context.Context, system SystemSettingsRep
 
 func GrantEmailConfirmedBenefitForUser(ctx context.Context, system SystemSettingsRepository, email string) error {
 	return grantNewUserBenefit(ctx, system, email, "new_user_email_confirmed", 0.70, true)
+}
+
+func GrantInvitationCodeBenefitForUser(ctx context.Context, system SystemSettingsRepository, email, invitationCodeID, serviceGroupID string, durationDays int, credits float64) error {
+	email = normalizeEmail(email)
+	invitationCodeID = strings.TrimSpace(invitationCodeID)
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	if email == "" {
+		return fmt.Errorf("email is required")
+	}
+	if invitationCodeID == "" || serviceGroupID == "" || durationDays <= 0 || credits <= 0 || math.IsNaN(credits) || math.IsInf(credits, 0) {
+		return nil
+	}
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return err
+	}
+	if reg.FindModelServiceGroup(serviceGroupID) == nil {
+		return nil
+	}
+	for _, grant := range reg.Grants {
+		if normalizeEmail(grant.Email) == email &&
+			strings.TrimSpace(grant.ServiceGroupID) == serviceGroupID &&
+			strings.TrimSpace(grant.Source) == "invitation_code" &&
+			strings.TrimSpace(grant.CardID) == invitationCodeID {
+			return nil
+		}
+	}
+	now := time.Now().UTC()
+	startsAt := nextGrantStart(reg, email, serviceGroupID, now)
+	reg.Grants = append(reg.Grants, Grant{
+		ID:             NewID("grant"),
+		Email:          email,
+		ServiceGroupID: serviceGroupID,
+		Source:         "invitation_code",
+		CardID:         invitationCodeID,
+		StartsAt:       startsAt,
+		ExpiresAt:      startsAt.Add(time.Duration(durationDays) * 24 * time.Hour),
+		CreatedAt:      now,
+		CreditsTotal:   roundCredits(credits),
+	})
+	return SaveRegistry(ctx, system, reg)
 }
 
 func grantNewUserBenefit(ctx context.Context, system SystemSettingsRepository, email, source string, ratio float64, useRegistrationWindow bool) error {

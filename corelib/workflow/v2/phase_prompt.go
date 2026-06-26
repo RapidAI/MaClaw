@@ -330,6 +330,11 @@ func phaseInstruction(phaseID string) string {
 			return instruction
 		}
 	}
+	if IsGaokaoApplicationPhase(phaseID) {
+		if instruction := GaokaoPhaseInstruction(phaseID); instruction != "" {
+			return instruction
+		}
+	}
 
 	switch phaseID {
 	case "requirements":
@@ -387,7 +392,26 @@ func phaseInstruction(phaseID string) string {
 - 你只负责任务拆分这一步，后续编码由系统自动调度。
 `
 	case "implementation":
-		return "" // TaskRunner/SubAgent handles this
+		return `## Coding Implementation Handoff Contract
+
+You are the workflow coordinator for the coding implementation phase.
+The main workflow loop must not mutate the project directly. All code writing,
+project bootstrapping, file edits, and build-fix work must be delegated to the
+internal CodingSubAgent.
+
+Required execution path:
+1. Read the confirmed requirements, design, and task breakdown context.
+2. Select the next concrete implementation task to execute.
+3. Delegate the implementation through delegate_task(agent="coding_workflow", request="...").
+4. Use the main loop only for coordination, inspection, and summarizing progress.
+
+Hard rules:
+- Do not write code directly in the main workflow loop.
+- Do not use local project-mutation tools from the main workflow loop.
+- Every project-changing action must go through delegate_task(agent="coding_workflow").
+- The delegation request should mention the concrete task, touched files, and acceptance target when possible.
+
+Reference the task breakdown explicitly so CodingSubAgent knows which task to execute next.`
 
 	case "verification":
 		return `## 阶段指令

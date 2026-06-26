@@ -60,13 +60,14 @@ type IMMessageHandler struct {
 	firewall *SecurityFirewall
 
 	// Dynamic tool generation and routing (lazily initialized via setters).
-	toolDefGen     *ToolDefinitionGenerator
-	toolRouter     *ToolRouter
-	usageTracker   *tool.UsageTracker
-	taskStore      *task.Store
-	cachedTools    []map[string]interface{}
-	toolsCacheTime time.Time
-	toolsMu        sync.RWMutex
+	toolDefGen       *ToolDefinitionGenerator
+	toolRouter       *ToolRouter
+	usageTracker     *tool.UsageTracker
+	taskStore        *task.Store
+	cachedTools      []map[string]interface{}
+	cachedToolDefGen *ToolDefinitionGenerator
+	toolsCacheTime   time.Time
+	toolsMu          sync.RWMutex
 
 	// Capability gap detection (lazily initialized via setter).
 	capabilityGapDetector *CapabilityGapDetector
@@ -131,6 +132,10 @@ type IMMessageHandler struct {
 
 	sshMirrorWatchMu sync.Mutex
 	sshMirrorWatch   map[string]struct{}
+
+	// proactiveRecallInFlight prevents repeated prompt-build recalls for the
+	// same user from piling up after the front-end budget has already expired.
+	proactiveRecallInFlight sync.Map // map[string]proactiveRecallState
 
 	// Local background task manager for long-running local processes.
 	// Mirrors the SSH BackgroundTaskManager pattern: Submit/Check/Wait/Kill.
@@ -525,6 +530,7 @@ func (h *IMMessageHandler) SetToolRegistry(r *ToolRegistry) {
 	h.registry = r
 	h.toolBuilder = NewDynamicToolBuilder(r)
 	h.cachedTools = nil
+	h.cachedToolDefGen = nil
 	h.toolsCacheTime = time.Time{}
 }
 
@@ -547,6 +553,7 @@ func (h *IMMessageHandler) SetToolDefGenerator(gen *ToolDefinitionGenerator) {
 	h.toolDefGen = gen
 	// Invalidate cache so next call regenerates.
 	h.cachedTools = nil
+	h.cachedToolDefGen = nil
 	h.toolsCacheTime = time.Time{}
 }
 
@@ -717,10 +724,11 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 	if h.toolBuilder != nil && h.registry != nil {
 		h.toolsMu.RLock()
 		cached := h.cachedTools
+		cachedGen := h.cachedToolDefGen
 		cacheTime := h.toolsCacheTime
 		h.toolsMu.RUnlock()
 
-		if cached != nil && time.Since(cacheTime) < toolsCacheTTL {
+		if cached != nil && cachedGen == nil && time.Since(cacheTime) < toolsCacheTTL {
 			tools = cached
 		} else {
 			// Sync dynamic tools (SkillHub) only on cache rebuild, not every call.
@@ -731,6 +739,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 
 			h.toolsMu.Lock()
 			h.cachedTools = tools
+			h.cachedToolDefGen = nil
 			h.toolsCacheTime = time.Now()
 			h.toolsMu.Unlock()
 		}
@@ -739,13 +748,14 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 		h.toolsMu.RLock()
 		gen := h.toolDefGen
 		cached := h.cachedTools
+		cachedGen := h.cachedToolDefGen
 		cacheTime := h.toolsCacheTime
 		h.toolsMu.RUnlock()
 
 		// Fallback: no generator configured 鈥?use hardcoded definitions.
 		if gen == nil {
 			tools = h.buildToolDefinitions()
-		} else if cached != nil && time.Since(cacheTime) < toolsCacheTTL {
+		} else if cached != nil && cachedGen == gen && time.Since(cacheTime) < toolsCacheTTL {
 			// Return cached tools if still fresh (within 5 seconds).
 			tools = cached
 		} else {
@@ -754,6 +764,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 
 			h.toolsMu.Lock()
 			h.cachedTools = tools
+			h.cachedToolDefGen = gen
 			h.toolsCacheTime = time.Now()
 			h.toolsMu.Unlock()
 		}

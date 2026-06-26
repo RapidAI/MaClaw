@@ -58,15 +58,16 @@ const (
 	WorkflowPaperReproduction       WorkflowType = "paper_reproduction"
 	WorkflowPatentApplication       WorkflowType = "patent_application"
 	WorkflowUSPatentApplication     WorkflowType = "us_patent_application"
+	WorkflowGaokaoApplication       WorkflowType = "gaokao_application"
 )
 
 // Phase IDs for the coding workflow.
 const (
 	PhaseCodingRequirements   = "requirements"
-	PhaseCodingTechDesign     = "tech_design"
-	PhaseCodingTaskBreakdown  = "task_breakdown"
+	PhaseCodingTechDesign     = "design"
+	PhaseCodingTaskBreakdown  = "tasks"
 	PhaseCodingImplementation = "implementation"
-	PhaseCodingReview         = "review"
+	PhaseCodingReview         = "verification"
 )
 
 // ---------------------------------------------------------------------------
@@ -575,14 +576,16 @@ type NullPersistenceStore struct{}
 
 var _ PersistenceStore = (*NullPersistenceStore)(nil)
 
-func (NullPersistenceStore) SaveUnderstandingSession(_ *UnderstandingSession) error           { return nil }
-func (NullPersistenceStore) LoadUnderstandingSession(_ string) (*UnderstandingSession, error) { return nil, nil }
-func (NullPersistenceStore) DeleteUnderstandingSession(_ string) error                        { return nil }
-func (NullPersistenceStore) SaveWorkflowState(_ *EngineState) error                      { return nil }
-func (NullPersistenceStore) LoadWorkflowState(_ string) (*EngineState, error)             { return nil, nil }
-func (NullPersistenceStore) DeleteWorkflowState(_ string) error                               { return nil }
-func (NullPersistenceStore) ListActiveWorkflows() ([]*EngineState, error)                 { return nil, nil }
-func (NullPersistenceStore) CleanupExpired(_ time.Duration) error                             { return nil }
+func (NullPersistenceStore) SaveUnderstandingSession(_ *UnderstandingSession) error { return nil }
+func (NullPersistenceStore) LoadUnderstandingSession(_ string) (*UnderstandingSession, error) {
+	return nil, nil
+}
+func (NullPersistenceStore) DeleteUnderstandingSession(_ string) error        { return nil }
+func (NullPersistenceStore) SaveWorkflowState(_ *EngineState) error           { return nil }
+func (NullPersistenceStore) LoadWorkflowState(_ string) (*EngineState, error) { return nil, nil }
+func (NullPersistenceStore) DeleteWorkflowState(_ string) error               { return nil }
+func (NullPersistenceStore) ListActiveWorkflows() ([]*EngineState, error)     { return nil, nil }
+func (NullPersistenceStore) CleanupExpired(_ time.Duration) error             { return nil }
 
 // ---------------------------------------------------------------------------
 // EngineState — GUI runtime state (distinct from WorkflowState in state.go)
@@ -627,19 +630,19 @@ func (ws *EngineState) IsWaitingForInput(tmpl *TemplateSpec) bool {
 
 // PhaseSpec defines a single phase within a TemplateSpec.
 type PhaseSpec struct {
-	ID                  string           `json:"id"`
-	Name                string           `json:"name"`
-	Description         string           `json:"description"`
-	Prompt              string           `json:"prompt"`
-	Deliverable         string           `json:"deliverable"`
-	Checklist           []string         `json:"checklist"`
-	NeedsConfirm        bool             `json:"needs_confirm"`
-	CanSkip             bool             `json:"can_skip"`
-	ToolPolicy          ToolFilterPolicy `json:"tool_policy"`
-	Kind                PhaseKind        `json:"kind,omitempty"`
-	MutationScope       MutationScope    `json:"mutation_scope,omitempty"`
+	ID                  string                `json:"id"`
+	Name                string                `json:"name"`
+	Description         string                `json:"description"`
+	Prompt              string                `json:"prompt"`
+	Deliverable         string                `json:"deliverable"`
+	Checklist           []string              `json:"checklist"`
+	NeedsConfirm        bool                  `json:"needs_confirm"`
+	CanSkip             bool                  `json:"can_skip"`
+	ToolPolicy          ToolFilterPolicy      `json:"tool_policy"`
+	Kind                PhaseKind             `json:"kind,omitempty"`
+	MutationScope       MutationScope         `json:"mutation_scope,omitempty"`
 	InputSchema         *PhaseInputSchemaSpec `json:"input_schema,omitempty"`
-	DisableOrchestrator bool             `json:"disable_orchestrator,omitempty"`
+	DisableOrchestrator bool                  `json:"disable_orchestrator,omitempty"`
 }
 
 // PhaseInputSchemaSpec declares a structured form for a phase.
@@ -648,7 +651,7 @@ type PhaseInputSchemaSpec struct {
 	Description     string                `json:"description,omitempty"`
 	TitleI18N       map[string]string     `json:"title_i18n,omitempty"`
 	DescriptionI18N map[string]string     `json:"description_i18n,omitempty"`
-	Fields          []PhaseInputFieldSpec   `json:"fields"`
+	Fields          []PhaseInputFieldSpec `json:"fields"`
 }
 
 // Clone returns a deep copy of the PhaseInputSchemaSpec.
@@ -683,22 +686,22 @@ func cloneStringMap(src map[string]string) map[string]string {
 
 // PhaseInputFieldSpec defines a single form field.
 type PhaseInputFieldSpec struct {
-	Name            string               `json:"name"`
-	Label           string               `json:"label"`
-	Type            string               `json:"type"`
-	Required        bool                 `json:"required,omitempty"`
-	Description     string               `json:"description,omitempty"`
-	Placeholder     string               `json:"placeholder,omitempty"`
-	LabelI18N       map[string]string    `json:"label_i18n,omitempty"`
-	DescriptionI18N map[string]string    `json:"description_i18n,omitempty"`
-	PlaceholderI18N map[string]string    `json:"placeholder_i18n,omitempty"`
+	Name            string                 `json:"name"`
+	Label           string                 `json:"label"`
+	Type            string                 `json:"type"`
+	Required        bool                   `json:"required,omitempty"`
+	Description     string                 `json:"description,omitempty"`
+	Placeholder     string                 `json:"placeholder,omitempty"`
+	LabelI18N       map[string]string      `json:"label_i18n,omitempty"`
+	DescriptionI18N map[string]string      `json:"description_i18n,omitempty"`
+	PlaceholderI18N map[string]string      `json:"placeholder_i18n,omitempty"`
 	Options         []PhaseInputOptionSpec `json:"options,omitempty"`
-	Default         interface{}          `json:"default,omitempty"`
-	Min             *float64             `json:"min,omitempty"`
-	Max             *float64             `json:"max,omitempty"`
-	MinLength       *int                 `json:"min_length,omitempty"`
-	MaxLength       *int                 `json:"max_length,omitempty"`
-	Pattern         string               `json:"pattern,omitempty"`
+	Default         interface{}            `json:"default,omitempty"`
+	Min             *float64               `json:"min,omitempty"`
+	Max             *float64               `json:"max,omitempty"`
+	MinLength       *int                   `json:"min_length,omitempty"`
+	MaxLength       *int                   `json:"max_length,omitempty"`
+	Pattern         string                 `json:"pattern,omitempty"`
 }
 
 // PhaseInputOptionSpec defines a selectable option.
@@ -714,7 +717,7 @@ type TemplateSpec struct {
 	Name          string            `json:"name"`
 	Description   string            `json:"description"`
 	Keywords      []string          `json:"keywords"`
-	Phases        []PhaseSpec `json:"phases"`
+	Phases        []PhaseSpec       `json:"phases"`
 	RequiresInput *InputRequirement `json:"requires_input,omitempty"`
 }
 
@@ -729,23 +732,23 @@ func (t *TemplateSpec) NeedsInputDocument() bool {
 
 // WorkflowResponse is the engine's response to a user input during a workflow.
 type WorkflowResponse struct {
-	Text                 string             `json:"text,omitempty"`
-	PhasePrompt          string             `json:"phase_prompt,omitempty"`
-	ToolFilter           ToolFilterPolicy   `json:"tool_filter,omitempty"`
-	RunAgentLoop         bool               `json:"run_agent_loop,omitempty"`
-	Advance              bool               `json:"advance,omitempty"`
-	Complete             bool               `json:"complete,omitempty"`
-	DocContent           string             `json:"doc_content,omitempty"`
-	GateResult           *QualityGateResult `json:"gate_result,omitempty"`
-	ShowForm             bool               `json:"show_form,omitempty"`
+	Text                 string                `json:"text,omitempty"`
+	PhasePrompt          string                `json:"phase_prompt,omitempty"`
+	ToolFilter           ToolFilterPolicy      `json:"tool_filter,omitempty"`
+	RunAgentLoop         bool                  `json:"run_agent_loop,omitempty"`
+	Advance              bool                  `json:"advance,omitempty"`
+	Complete             bool                  `json:"complete,omitempty"`
+	DocContent           string                `json:"doc_content,omitempty"`
+	GateResult           *QualityGateResult    `json:"gate_result,omitempty"`
+	ShowForm             bool                  `json:"show_form,omitempty"`
 	FormSchema           *PhaseInputSchemaSpec `json:"form_schema,omitempty"`
-	DefaultInput         bool               `json:"default_input,omitempty"`
-	PendingReview        bool               `json:"pending_review,omitempty"`
-	PendingConfirm       bool               `json:"pending_confirm,omitempty"`
-	ActivateOrchestrator bool               `json:"activate_orchestrator,omitempty"`
-	TaskBreakdownText    string             `json:"task_breakdown_text,omitempty"`
-	RequirementsContext  string             `json:"requirements_context,omitempty"`
-	DesignContext        string             `json:"design_context,omitempty"`
+	DefaultInput         bool                  `json:"default_input,omitempty"`
+	PendingReview        bool                  `json:"pending_review,omitempty"`
+	PendingConfirm       bool                  `json:"pending_confirm,omitempty"`
+	ActivateOrchestrator bool                  `json:"activate_orchestrator,omitempty"`
+	TaskBreakdownText    string                `json:"task_breakdown_text,omitempty"`
+	RequirementsContext  string                `json:"requirements_context,omitempty"`
+	DesignContext        string                `json:"design_context,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -797,7 +800,7 @@ const (
 
 // Stub functions for ops assessment — only ExtractOpsRiskDecision,
 // ExtractOpsApprovalRequirement, and OpsApprovalDigest have production consumers.
-func ExtractOpsRiskDecision(_ string) OpsRiskDecision             { return OpsRiskDecisionUnknown }
+func ExtractOpsRiskDecision(_ string) OpsRiskDecision { return OpsRiskDecisionUnknown }
 func ExtractOpsApprovalRequirement(_ string) OpsApprovalRequirement {
 	return OpsApprovalRequirementUnknown
 }

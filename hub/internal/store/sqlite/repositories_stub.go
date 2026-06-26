@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -71,6 +72,10 @@ type llmPromptCacheRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
+type knowledgeShareRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
 
 func NewStore(p *Provider) *store.Store {
 	return &store.Store{
@@ -90,6 +95,7 @@ func NewStore(p *Provider) *store.Store {
 		EmailInvites:    &emailInviteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		WorkflowRepo:    &workflowRepo{db: p.Write, readDB: p.Read},
 		LLMPromptCache:  &llmPromptCacheRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		KnowledgeShares: &knowledgeShareRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 	}
 }
 
@@ -113,6 +119,13 @@ func normalizeAdminRole(scope string, role string) string {
 
 func normalizeTenantID(tenantID string) string {
 	return store.NormalizeTenantID(tenantID)
+}
+
+func nullableTimeString(value *time.Time) any {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+	return value.UTC().Format(time.RFC3339)
 }
 
 func execWrite(ctx context.Context, batch *writeBatcher, db *sql.DB, query string, args ...any) error {
@@ -1755,26 +1768,36 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 		effectiveNow = end
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT COALESCE(NULLIF(LOWER(u.email), ''), LOWER(s.user_id)) AS user_email,
-		       s.started_at, s.updated_at, s.ended_at
-		  FROM sessions s
-		  LEFT JOIN users u ON u.id = s.user_id AND u.tenant_id = s.tenant_id
-		 WHERE s.tenant_id = ?
-		   AND s.started_at < ?
-		   AND COALESCE(NULLIF(s.ended_at, ''), s.updated_at, s.started_at) >= ?`,
+			SELECT LOWER(COALESCE(NULLIF(TRIM(u.email), ''), CASE WHEN s.user_id LIKE '%@%' THEN TRIM(s.user_id) ELSE '' END)) AS user_email,
+			       s.started_at, s.updated_at, s.ended_at, s.status, s.host_online
+			  FROM sessions s
+			  LEFT JOIN users u ON u.id = s.user_id AND u.tenant_id = s.tenant_id
+			 WHERE s.tenant_id = ?
+			   AND s.started_at < ?
+			   AND COALESCE(NULLIF(TRIM(u.email), ''), CASE WHEN s.user_id LIKE '%@%' THEN TRIM(s.user_id) ELSE '' END) <> ''
+			   AND (
+			       COALESCE(NULLIF(s.ended_at, ''), NULLIF(s.updated_at, ''), s.started_at) >= ?
+			       OR (
+			           COALESCE(NULLIF(s.ended_at, ''), '') = ''
+			           AND s.host_online = 1
+			           AND COALESCE(LOWER(s.status), '') NOT IN ('stopped', 'finished', 'failed', 'killed', 'exited', 'closed', 'done', 'error', 'completed', 'terminated')
+			       )
+			   )`,
 		tenantID, end.Format(time.RFC3339), start.Format(time.RFC3339))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	totals := map[string]int64{}
+	intervalsByEmail := map[string][]usageDurationInterval{}
 	for rows.Next() {
 		var email string
 		var startedRaw string
 		var updatedRaw string
 		var endedRaw sql.NullString
-		if err := rows.Scan(&email, &startedRaw, &updatedRaw, &endedRaw); err != nil {
+		var statusRaw string
+		var hostOnline int
+		if err := rows.Scan(&email, &startedRaw, &updatedRaw, &endedRaw, &statusRaw, &hostOnline); err != nil {
 			return nil, err
 		}
 		email = strings.ToLower(strings.TrimSpace(email))
@@ -1790,6 +1813,8 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 			if endedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(endedRaw.String)); err == nil {
 				activityEnd = endedAt
 			}
+		} else if isActiveUsageDurationSession(statusRaw, hostOnline != 0) {
+			activityEnd = effectiveNow
 		} else if strings.TrimSpace(updatedRaw) != "" {
 			if updatedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(updatedRaw)); err == nil {
 				activityEnd = updatedAt
@@ -1805,24 +1830,81 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 			startedAt = start
 		}
 		if activityEnd.After(startedAt) {
-			totals[email] += int64(activityEnd.Sub(startedAt).Seconds())
+			intervalsByEmail[email] = append(intervalsByEmail[email], usageDurationInterval{start: startedAt, end: activityEnd})
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	out := make([]store.UserDurationSummary, 0, len(totals))
-	for email, seconds := range totals {
+	out := make([]store.UserDurationSummary, 0, len(intervalsByEmail))
+	for email, intervals := range intervalsByEmail {
+		seconds := mergedUsageDurationSeconds(intervals)
+		if seconds <= 0 {
+			continue
+		}
 		out = append(out, store.UserDurationSummary{UserEmail: email, DurationSeconds: seconds})
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UserEmail < out[j].UserEmail
+	})
 	return out, nil
+}
+
+type usageDurationInterval struct {
+	start time.Time
+	end   time.Time
+}
+
+func isActiveUsageDurationSession(status string, hostOnline bool) bool {
+	if !hostOnline {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "stopped", "finished", "failed", "killed", "exited", "closed", "done", "error", "completed", "terminated":
+		return false
+	default:
+		return true
+	}
+}
+
+func mergedUsageDurationSeconds(intervals []usageDurationInterval) int64 {
+	if len(intervals) == 0 {
+		return 0
+	}
+	sort.Slice(intervals, func(i, j int) bool {
+		if intervals[i].start.Equal(intervals[j].start) {
+			return intervals[i].end.Before(intervals[j].end)
+		}
+		return intervals[i].start.Before(intervals[j].start)
+	})
+	var total int64
+	currentStart := intervals[0].start
+	currentEnd := intervals[0].end
+	for _, interval := range intervals[1:] {
+		if interval.end.Before(interval.start) || interval.end.Equal(interval.start) {
+			continue
+		}
+		if interval.start.After(currentEnd) {
+			total += int64(currentEnd.Sub(currentStart).Seconds())
+			currentStart = interval.start
+			currentEnd = interval.end
+			continue
+		}
+		if interval.end.After(currentEnd) {
+			currentEnd = interval.end
+		}
+	}
+	if currentEnd.After(currentStart) {
+		total += int64(currentEnd.Sub(currentStart).Seconds())
+	}
+	return total
 }
 
 func (r *invitationCodeRepo) Create(ctx context.Context, item *store.InvitationCode) error {
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO invitation_codes (id, tenant_id, code, status, used_by_email, used_at, validity_days, vip, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO invitation_codes (id, tenant_id, code, status, used_by_email, used_at, validity_days, vip, llm_service_group_id, llm_grant_duration_days, llm_grant_credits, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID,
 		normalizeTenantID(item.TenantID),
 		item.Code,
@@ -1831,15 +1913,20 @@ func (r *invitationCodeRepo) Create(ctx context.Context, item *store.InvitationC
 		nil,
 		item.ValidityDays,
 		boolToInt(item.VIP),
+		item.LLMServiceGroupID,
+		item.LLMGrantDurationDays,
+		item.LLMGrantCredits,
 		item.CreatedAt.Format(time.RFC3339),
 	)
 	return err
 }
 
+const invitationCodeSelectColumns = `id, tenant_id, code, status, used_by_email, used_at, validity_days, exported, vip, llm_service_group_id, llm_grant_duration_days, llm_grant_credits, created_at`
+
 func (r *invitationCodeRepo) GetByID(ctx context.Context, id string) (*store.InvitationCode, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, tenant_id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at
+		`SELECT `+invitationCodeSelectColumns+`
 		 FROM invitation_codes WHERE id = ?`,
 		id,
 	)
@@ -1847,7 +1934,7 @@ func (r *invitationCodeRepo) GetByID(ctx context.Context, id string) (*store.Inv
 	var usedAt sql.NullString
 	var createdAt string
 	var exported, vip int
-	if err := row.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
+	if err := row.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &item.LLMServiceGroupID, &item.LLMGrantDurationDays, &item.LLMGrantCredits, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -1880,7 +1967,7 @@ func (r *invitationCodeRepo) getByCode(ctx context.Context, tenantID, code strin
 	}
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, tenant_id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at
+		`SELECT `+invitationCodeSelectColumns+`
 		 FROM invitation_codes WHERE `+where,
 		args...,
 	)
@@ -1888,7 +1975,7 @@ func (r *invitationCodeRepo) getByCode(ctx context.Context, tenantID, code strin
 	var usedAt sql.NullString
 	var createdAt string
 	var exported, vip int
-	if err := row.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
+	if err := row.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &item.LLMServiceGroupID, &item.LLMGrantDurationDays, &item.LLMGrantCredits, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -1905,7 +1992,7 @@ func (r *invitationCodeRepo) getByCode(ctx context.Context, tenantID, code strin
 }
 
 func (r *invitationCodeRepo) List(ctx context.Context, status string, search string) ([]*store.InvitationCode, error) {
-	query := `SELECT id, tenant_id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at FROM invitation_codes`
+	query := `SELECT ` + invitationCodeSelectColumns + ` FROM invitation_codes`
 	var conditions []string
 	var args []any
 
@@ -1938,7 +2025,7 @@ func (r *invitationCodeRepo) List(ctx context.Context, status string, search str
 		var usedAt sql.NullString
 		var createdAt string
 		var exported, vip int
-		if err := rows.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &item.LLMServiceGroupID, &item.LLMGrantDurationDays, &item.LLMGrantCredits, &createdAt); err != nil {
 			return nil, err
 		}
 		if usedAt.Valid {
@@ -1993,7 +2080,7 @@ func (r *invitationCodeRepo) listPaged(ctx context.Context, tenantID string, sta
 	}
 
 	// Fetch page
-	query := `SELECT id, tenant_id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at FROM invitation_codes` + baseWhere + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	query := `SELECT ` + invitationCodeSelectColumns + ` FROM invitation_codes` + baseWhere + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	pageArgs := append(append([]any{}, args...), limit, offset)
 	rows, err := r.readDB.QueryContext(ctx, query, pageArgs...)
 	if err != nil {
@@ -2007,7 +2094,7 @@ func (r *invitationCodeRepo) listPaged(ctx context.Context, tenantID string, sta
 		var usedAt sql.NullString
 		var createdAt string
 		var exported, vip int
-		if err := rows.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &item.LLMServiceGroupID, &item.LLMGrantDurationDays, &item.LLMGrantCredits, &createdAt); err != nil {
 			return nil, 0, err
 		}
 		if usedAt.Valid {
@@ -2023,14 +2110,24 @@ func (r *invitationCodeRepo) listPaged(ctx context.Context, tenantID string, sta
 }
 
 func (r *invitationCodeRepo) MarkUsed(ctx context.Context, id string, email string, usedAt time.Time) error {
-	_, err := r.db.ExecContext(
+	res, err := r.db.ExecContext(
 		ctx,
-		`UPDATE invitation_codes SET status = 'used', used_by_email = ?, used_at = ? WHERE id = ?`,
+		`UPDATE invitation_codes SET status = 'used', used_by_email = ?, used_at = ? WHERE id = ? AND status = 'unused'`,
 		email,
 		usedAt.Format(time.RFC3339),
 		id,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (r *invitationCodeRepo) Unbind(ctx context.Context, id string) error {
@@ -2081,7 +2178,7 @@ func (r *invitationCodeRepo) ListUnusedByTenant(ctx context.Context, tenantID, e
 }
 
 func (r *invitationCodeRepo) listUnused(ctx context.Context, tenantID, exportedFilter string, vipOnly ...bool) ([]*store.InvitationCode, error) {
-	query := `SELECT id, tenant_id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at FROM invitation_codes WHERE status = 'unused'`
+	query := `SELECT ` + invitationCodeSelectColumns + ` FROM invitation_codes WHERE status = 'unused'`
 	args := []any{}
 	if tenantID != "" {
 		query += ` AND tenant_id = ?`
@@ -2113,7 +2210,7 @@ func (r *invitationCodeRepo) listUnused(ctx context.Context, tenantID, exportedF
 		var usedAt sql.NullString
 		var createdAt string
 		var exported, vip int
-		if err := rows.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &item.LLMServiceGroupID, &item.LLMGrantDurationDays, &item.LLMGrantCredits, &createdAt); err != nil {
 			return nil, err
 		}
 		if usedAt.Valid {
@@ -2160,7 +2257,7 @@ func (r *invitationCodeRepo) getByEmail(ctx context.Context, tenantID, email str
 	}
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, tenant_id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at
+		`SELECT `+invitationCodeSelectColumns+`
 		 FROM invitation_codes WHERE `+where+`
 		 ORDER BY used_at DESC LIMIT 1`,
 		args...,
@@ -2169,7 +2266,7 @@ func (r *invitationCodeRepo) getByEmail(ctx context.Context, tenantID, email str
 	var usedAt sql.NullString
 	var createdAt string
 	var exported, vip int
-	if err := row.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
+	if err := row.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &item.LLMServiceGroupID, &item.LLMGrantDurationDays, &item.LLMGrantCredits, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -2269,4 +2366,226 @@ func (r *failureEventLogRepo) List(ctx context.Context, filter store.FailureEven
 		items = append(items, &item)
 	}
 	return items, total, rows.Err()
+}
+
+func (r *knowledgeShareRepo) List(ctx context.Context, filter store.KnowledgeShareFilter) ([]*store.KnowledgeShare, int, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 50
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	where := make([]string, 0, 4)
+	args := make([]any, 0, 8)
+	if filter.TenantScoped {
+		where = append(where, "tenant_id = ?")
+		args = append(args, normalizeTenantID(filter.TenantID))
+	} else if tenantID := strings.TrimSpace(filter.TenantID); tenantID != "" {
+		where = append(where, "tenant_id = ?")
+		args = append(args, normalizeTenantID(tenantID))
+	}
+	if !filter.IncludeDeleted {
+		where = append(where, "status <> 'deleted'")
+	}
+	if ownerUserID := strings.TrimSpace(filter.OwnerUserID); ownerUserID != "" {
+		where = append(where, "owner_user_id = ?")
+		args = append(args, ownerUserID)
+	}
+	if ownerUserEmail := strings.TrimSpace(filter.OwnerUserEmail); ownerUserEmail != "" {
+		where = append(where, "owner_user_email = ?")
+		args = append(args, ownerUserEmail)
+	}
+	if user := strings.TrimSpace(filter.User); user != "" {
+		like := "%" + user + "%"
+		where = append(where, "(owner_user_id = ? OR owner_user_email LIKE ?)")
+		args = append(args, user, like)
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = " WHERE " + strings.Join(where, " AND ")
+	}
+	orderBy := "published_at DESC, created_at DESC"
+	switch strings.TrimSpace(filter.Sort) {
+	case "updated_at_desc":
+		orderBy = "updated_at DESC, published_at DESC"
+	case "view_count_desc":
+		orderBy = "view_count DESC, published_at DESC"
+	case "import_count_desc":
+		orderBy = "import_count DESC, published_at DESC"
+	case "published_at_asc":
+		orderBy = "published_at ASC, created_at ASC"
+	}
+	var total int
+	if err := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_shares`+whereSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.readDB.QueryContext(ctx, `SELECT knowledge_id, tenant_id, owner_user_id, owner_user_email, title, description, visibility_scope, visibility_users_json, source_summary_json, share_url, hub_id, storage_ref, status, view_count, import_count, created_at, updated_at, published_at, expires_at, forced_deleted_by, forced_deleted_reason, forced_deleted_at FROM knowledge_shares`+whereSQL+` ORDER BY `+orderBy+` LIMIT ? OFFSET ?`, append(append([]any{}, args...), limit, offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]*store.KnowledgeShare, 0, limit)
+	for rows.Next() {
+		item, err := scanKnowledgeShare(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	return items, total, rows.Err()
+}
+
+func (r *knowledgeShareRepo) Create(ctx context.Context, share *store.KnowledgeShare) error {
+	if share == nil {
+		return errors.New("knowledge share is nil")
+	}
+	return execWrite(ctx, r.batch, r.db, `INSERT INTO knowledge_shares (knowledge_id, tenant_id, owner_user_id, owner_user_email, title, description, visibility_scope, visibility_users_json, source_summary_json, share_url, hub_id, storage_ref, status, view_count, import_count, created_at, updated_at, published_at, expires_at, forced_deleted_by, forced_deleted_reason, forced_deleted_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', NULL)`,
+		strings.TrimSpace(share.KnowledgeID),
+		normalizeTenantID(share.TenantID),
+		strings.TrimSpace(share.OwnerUserID),
+		strings.TrimSpace(share.OwnerUserEmail),
+		strings.TrimSpace(share.Title),
+		strings.TrimSpace(share.Description),
+		strings.TrimSpace(share.VisibilityScope),
+		strings.TrimSpace(share.VisibilityUsersJSON),
+		strings.TrimSpace(share.SourceSummaryJSON),
+		strings.TrimSpace(share.ShareURL),
+		strings.TrimSpace(share.HubID),
+		strings.TrimSpace(share.StorageRef),
+		strings.TrimSpace(share.Status),
+		share.ViewCount,
+		share.ImportCount,
+		share.CreatedAt.Format(time.RFC3339),
+		share.UpdatedAt.Format(time.RFC3339),
+		share.PublishedAt.Format(time.RFC3339),
+		nullableTimeString(share.ExpiresAt),
+	)
+}
+
+func (r *knowledgeShareRepo) Get(ctx context.Context, knowledgeID string) (*store.KnowledgeShare, error) {
+	row := r.readDB.QueryRowContext(ctx, `SELECT knowledge_id, tenant_id, owner_user_id, owner_user_email, title, description, visibility_scope, visibility_users_json, source_summary_json, share_url, hub_id, storage_ref, status, view_count, import_count, created_at, updated_at, published_at, expires_at, forced_deleted_by, forced_deleted_reason, forced_deleted_at FROM knowledge_shares WHERE knowledge_id = ?`, strings.TrimSpace(knowledgeID))
+	item, err := scanKnowledgeShare(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return item, nil
+}
+
+func (r *knowledgeShareRepo) UpdateOwner(ctx context.Context, share *store.KnowledgeShare) error {
+	if share == nil {
+		return errors.New("knowledge share is nil")
+	}
+	return execWrite(ctx, r.batch, r.db, `UPDATE knowledge_shares SET title = ?, description = ?, visibility_scope = ?, visibility_users_json = ?, source_summary_json = ?, share_url = ?, hub_id = ?, storage_ref = ?, expires_at = ?, updated_at = ? WHERE knowledge_id = ? AND tenant_id = ? AND owner_user_id = ? AND status <> 'deleted'`,
+		strings.TrimSpace(share.Title),
+		strings.TrimSpace(share.Description),
+		strings.TrimSpace(share.VisibilityScope),
+		strings.TrimSpace(share.VisibilityUsersJSON),
+		strings.TrimSpace(share.SourceSummaryJSON),
+		strings.TrimSpace(share.ShareURL),
+		strings.TrimSpace(share.HubID),
+		strings.TrimSpace(share.StorageRef),
+		nullableTimeString(share.ExpiresAt),
+		share.UpdatedAt.Format(time.RFC3339),
+		strings.TrimSpace(share.KnowledgeID),
+		normalizeTenantID(share.TenantID),
+		strings.TrimSpace(share.OwnerUserID),
+	)
+}
+
+func (r *knowledgeShareRepo) DeleteExpired(ctx context.Context, now time.Time) (int64, error) {
+	query := `UPDATE knowledge_shares SET status = 'deleted', updated_at = ? WHERE status <> 'deleted' AND expires_at IS NOT NULL AND expires_at <> '' AND expires_at <= ?`
+	args := []any{
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	}
+	res, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (r *knowledgeShareRepo) DeleteOwner(ctx context.Context, knowledgeID, tenantID, ownerUserID string, deletedAt time.Time) error {
+	return execWrite(ctx, r.batch, r.db, `UPDATE knowledge_shares SET status = 'deleted', updated_at = ? WHERE knowledge_id = ? AND tenant_id = ? AND owner_user_id = ? AND status <> 'deleted'`,
+		deletedAt.Format(time.RFC3339),
+		strings.TrimSpace(knowledgeID),
+		normalizeTenantID(tenantID),
+		strings.TrimSpace(ownerUserID),
+	)
+}
+
+func (r *knowledgeShareRepo) ForceDelete(ctx context.Context, req store.KnowledgeShareForceDeleteRequest) error {
+	return execWrite(ctx, r.batch, r.db, `UPDATE knowledge_shares SET status = 'deleted', forced_deleted_by = ?, forced_deleted_reason = ?, forced_deleted_at = ?, updated_at = ? WHERE knowledge_id = ?`,
+		strings.TrimSpace(req.AdminUserID),
+		strings.TrimSpace(req.Reason),
+		req.DeletedAt.Format(time.RFC3339),
+		req.DeletedAt.Format(time.RFC3339),
+		strings.TrimSpace(req.KnowledgeID),
+	)
+}
+
+func (r *knowledgeShareRepo) IncrementCounters(ctx context.Context, knowledgeID string, viewDelta, importDelta int64, at time.Time) error {
+	if viewDelta == 0 && importDelta == 0 {
+		return nil
+	}
+	return execWrite(ctx, r.batch, r.db, `UPDATE knowledge_shares SET view_count = view_count + ?, import_count = import_count + ?, updated_at = ? WHERE knowledge_id = ? AND status <> 'deleted'`,
+		viewDelta,
+		importDelta,
+		at.Format(time.RFC3339),
+		strings.TrimSpace(knowledgeID),
+	)
+}
+
+type knowledgeShareScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanKnowledgeShare(row knowledgeShareScanner) (*store.KnowledgeShare, error) {
+	var item store.KnowledgeShare
+	var createdAt, updatedAt, publishedAt string
+	var expiresAt, forcedDeletedAt sql.NullString
+	if err := row.Scan(
+		&item.KnowledgeID,
+		&item.TenantID,
+		&item.OwnerUserID,
+		&item.OwnerUserEmail,
+		&item.Title,
+		&item.Description,
+		&item.VisibilityScope,
+		&item.VisibilityUsersJSON,
+		&item.SourceSummaryJSON,
+		&item.ShareURL,
+		&item.HubID,
+		&item.StorageRef,
+		&item.Status,
+		&item.ViewCount,
+		&item.ImportCount,
+		&createdAt,
+		&updatedAt,
+		&publishedAt,
+		&expiresAt,
+		&item.ForcedDeletedBy,
+		&item.ForcedDeletedReason,
+		&forcedDeletedAt,
+	); err != nil {
+		return nil, err
+	}
+	item.CreatedAt = mustParseTime(createdAt)
+	item.UpdatedAt = mustParseTime(updatedAt)
+	item.PublishedAt = mustParseTime(publishedAt)
+	if expiresAt.Valid && strings.TrimSpace(expiresAt.String) != "" {
+		t := mustParseTime(expiresAt.String)
+		item.ExpiresAt = &t
+	}
+	if forcedDeletedAt.Valid && strings.TrimSpace(forcedDeletedAt.String) != "" {
+		t := mustParseTime(forcedDeletedAt.String)
+		item.ForcedDeletedAt = &t
+	}
+	return &item, nil
 }

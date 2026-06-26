@@ -334,9 +334,19 @@ func CodingTemplate() *WorkflowTemplate {
 		Description: "需求 → 设计 → 任务分解 → 逐任务编码 → 验收。适用于开发应用、游戏、工具、系统、追踪系统。Software coding workflow for building applications, games, tools, systems, C++, backend, frontend, implementation, refactoring, and issue tracking systems.",
 		Keywords:    []string{"开发", "编写", "实现", "写代码", "游戏", "应用", "工具", "系统", "重构"},
 		Phases: []PhaseTemplate{
-			{ID: "requirements", Name: "需求文档", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "requirements", Name: "需求文档", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title: "项目基本信息",
+					Fields: []PhaseInputField{
+						{Name: "project_name", Label: "项目名称", Type: "text", Required: true, Placeholder: "例如：贪吃蛇游戏"},
+						{Name: "tech_stack", Label: "技术栈", Type: "text", Placeholder: "例如：Go + React / C++ / Python"},
+						{Name: "description", Label: "项目描述", Type: "textarea", Required: true, Placeholder: "简要描述你想实现的功能与目标"},
+						{Name: "project_path", Label: "项目目录", Type: "directory", Placeholder: "选择项目目录（可新建但不会自动创建）"},
+					},
+				},
+			},
 			{ID: "design", Name: "技术设计", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
-			{ID: "tasks", Name: "任务分解", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "tasks", Name: "任务分解", NeedsConfirm: true, ToolPolicy: ToolPolicyPlanning},
 			{ID: "implementation", Name: "编码执行", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, ExecMode: ExecModeSubAgent},
 			{ID: "verification", Name: "验收确认", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, ExecMode: ExecModeAutoFromPrev},
 		},
@@ -1183,4 +1193,5 @@ func RegisterBuiltinTemplates(r *TemplateRegistry) {
 
 	r.Register(PatentApplicationTemplate())
 	r.Register(USPatentApplicationTemplate())
+	r.Register(GaokaoApplicationTemplate())
 }

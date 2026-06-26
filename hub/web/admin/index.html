@@ -248,6 +248,7 @@
         <button data-tab="overview" class="active" onclick="openTab('overview')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"></path><path d="M5 10.5V20h14v-9.5"></path><path d="M10 20v-5h4v5"></path></svg></span><div class="nav-copy"><span data-i18n="navOverview"></span><small data-i18n="navOverviewDesc"></small></div></div></button>
         <button data-tab="center" onclick="openTab('center')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><path d="M4 12h16"></path><path d="M12 4a12 12 0 0 1 0 16"></path><path d="M12 4a12 12 0 0 0 0 16"></path></svg></span><div class="nav-copy"><span data-i18n="navCenter"></span><small data-i18n="navCenterDesc"></small></div></div></button>
         <button data-tab="tenants" onclick="openTab('tenants')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"></rect><path d="M8 9h8"></path><path d="M8 13h5"></path><path d="M8 17h3"></path></svg></span><div class="nav-copy"><span id="navTenants"></span><small id="navTenantsDesc"></small></div></div></button>
+        <button data-tab="knowledge" onclick="openTab('knowledge')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5h9l5 5v9H5z"></path><path d="M14 5v5h5"></path><path d="M8 13h8"></path><path d="M8 16h5"></path></svg></span><div class="nav-copy"><span data-i18n="knowledgeTabTitle"></span><small data-i18n="knowledgeNavDesc"></small></div></div></button>
         <button data-tab="governance" onclick="openTab('governance')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6h14"></path><path d="M7 12h10"></path><path d="M9 18h6"></path><path d="M12 6v12"></path></svg></span><div class="nav-copy"><span data-i18n="navGovernance"></span><small data-i18n="navGovernanceDesc"></small></div></div></button>
         <button data-tab="marketplace" onclick="openTab('marketplace')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M6 7l1 13h10l1-13"></path><path d="M9 7a3 3 0 0 1 6 0"></path><path d="M9 12h6"></path></svg></span><div class="nav-copy"><span data-i18n="navMarketplace"></span><small data-i18n="navMarketplaceDesc"></small></div></div></button>
         <button data-tab="im" onclick="openTab('im')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 7h14v9H9l-4 3V7Z"></path><path d="M9 11h6"></path></svg></span><div class="nav-copy"><span id="navIM"></span><small id="navIMDesc"></small></div></div></button>
@@ -988,6 +989,9 @@
             <div class="item-meta" id="invCodeGenDesc" style="margin-bottom:10px"></div>
             <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
               <div><label for="invCodeCount" id="invCodeCountLabel"></label><input id="invCodeCount" type="number" min="1" max="50" value="5" style="max-width:120px;height:36px"></div>
+              <div><label for="invCodeLLMServiceGroupID" id="invCodeLLMServiceGroupLabel">LLM service group</label><input id="invCodeLLMServiceGroupID" type="text" placeholder="service-group-id" style="max-width:180px;height:36px"></div>
+              <div><label for="invCodeLLMGrantDays" id="invCodeLLMGrantDaysLabel">LLM grant days</label><input id="invCodeLLMGrantDays" type="number" min="1" value="" placeholder="30" style="max-width:120px;height:36px"></div>
+              <div><label for="invCodeLLMGrantCredits" id="invCodeLLMGrantCreditsLabel">LLM credits</label><input id="invCodeLLMGrantCredits" type="number" min="0" step="0.001" value="" placeholder="1000" style="max-width:120px;height:36px"></div>
               <div style="padding-bottom:6px"><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="invCodePermanent" checked onchange="toggleValidityInputs()"> <span id="invCodePermanentLabel"></span></label></div>
               <div id="invCodeValidityRow" style="display:none">
                 <label for="invCodeValidityValue" id="invCodeValidityLabel"></label>
@@ -1326,6 +1330,27 @@
           </div>
         </div>
       </section>
+      <!-- Tab: Knowledge Management -->
+      <section id="tab-knowledge" class="panel card">
+        <div class="head"><div><h3 data-i18n="knowledgeTabTitle"></h3><div class="desc" data-i18n="knowledgeTabSubtitle"></div></div><button class="btn-ghost" type="button" onclick="loadKnowledgeShares()" data-i18n="knowledgeReload"></button></div>
+        <div class="item">
+          <div class="grid4">
+            <div><label for="knowledgeTenantFilter" data-i18n="knowledgeTenantLabel"></label><input id="knowledgeTenantFilter" type="text" placeholder="tenant_default"></div>
+            <div><label for="knowledgeUserFilter" data-i18n="knowledgeUserLabel"></label><input id="knowledgeUserFilter" type="text" placeholder="user@example.com"></div>
+            <div><label for="knowledgeSortFilter" data-i18n="knowledgeSortLabel"></label><select id="knowledgeSortFilter"><option value="published_at_desc" data-i18n="knowledgeSortNewest"></option><option value="updated_at_desc" data-i18n="knowledgeSortUpdated"></option><option value="view_count_desc" data-i18n="knowledgeSortViews"></option><option value="import_count_desc" data-i18n="knowledgeSortImports"></option></select></div>
+            <div class="actions" style="align-items:end"><button class="btn-primary" type="button" onclick="searchKnowledgeShares()" data-i18n="knowledgeSearch"></button><button class="btn-ghost" type="button" onclick="resetKnowledgeShareFilters()" data-i18n="clear"></button></div>
+          </div>
+          <div class="hint" style="margin-top:10px" data-i18n="knowledgePrivacyHint"></div>
+        </div>
+        <div id="knowledgeSharesList"></div>
+        <div id="knowledgeSharesPager" class="pager hidden">
+          <div id="knowledgeSharesPagerMeta" class="pager-meta"></div>
+          <div class="pager-actions">
+            <button id="knowledgeSharesPrevButton" class="btn-ghost" type="button" onclick="changeKnowledgeSharesPage(-1)"></button>
+            <button id="knowledgeSharesNextButton" class="btn-ghost" type="button" onclick="changeKnowledgeSharesPage(1)"></button>
+          </div>
+        </div>
+      </section>
       <!-- Tab: Console -->
       <section id="tab-console" class="panel card">
         <div class="head"><div><h3 data-i18n="consoleTitle"></h3><div class="desc" data-i18n="consoleDesc"></div></div><button class="btn-ghost" style="height:34px;padding:0 12px;font-size:12px" onclick="clearConsole()" data-i18n="clear"></button></div>
@@ -1356,6 +1381,7 @@
 <script src="/admin/card-store-tab.js"></script>
 <script src="/admin/usage-stats-tab.js"></script>
 <script src="/admin/failure-logs-tab.js"></script>
+<script src="/admin/knowledge-management-tab.js"></script>
 <script src="/admin/admin-module-health.js"></script>
 <script src="/admin/overview-tenant-info.js"></script>
 <script src="/admin/admin-bootstrap.js"></script>

@@ -166,10 +166,12 @@ func (b *SkillToolBridge) RunSkill(ctx context.Context, p Principal, name string
 	// Resolve selected steps for api_workflow mode.
 	selectedSteps, _ := skill.ResolveSelectedStepLabels(entry, args)
 
+	timeoutSec := b.runSkillTimeoutSec(p, entry)
+
 	// Execute using the shared synchronous runner.
 	result, err := skill.ExecuteStepsSync(ctx, entry, vars, skill.ExecConfig{
 		SkillDir:      entry.SkillDir,
-		Timeout:       time.Duration(corelib.DefaultAgentTimeoutSec) * time.Second,
+		Timeout:       time.Duration(timeoutSec) * time.Second,
 		Params:        entry.Params,
 		SelectedSteps: selectedSteps,
 	}, &srvExecDeps{})
@@ -180,6 +182,19 @@ func (b *SkillToolBridge) RunSkill(ctx context.Context, p Principal, name string
 		return "", err
 	}
 	return result.Output, nil
+}
+
+func (b *SkillToolBridge) runSkillTimeoutSec(p Principal, entry *corelib.NLSkillEntry) int {
+	timeoutSec := corelib.DefaultSkillRunnerTimeoutSec
+	if b != nil && b.svc != nil {
+		if cfg, cfgErr := b.svc.getOrLoadUserConfig(p.TenantID, p.UserID); cfgErr == nil {
+			timeoutSec = corelib.NormalizeSkillRunnerTimeoutSec(cfg.AppConfig.SkillRunnerTimeoutSec)
+		}
+	}
+	if entry != nil && entry.GlobalTimeout > 0 {
+		return entry.GlobalTimeout
+	}
+	return timeoutSec
 }
 
 // SearchSkills searches for skills across configured sources.

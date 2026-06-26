@@ -35,6 +35,7 @@ type SkillSearchResult struct {
 	MaclawAppID                  string                   `json:"maclaw_app_id,omitempty"`
 	MaclawAppName                string                   `json:"maclaw_app_name,omitempty"`
 	MaclawAppDescription         string                   `json:"maclaw_app_description,omitempty"`
+	MaclawAppKind                string                   `json:"maclaw_app_kind,omitempty"`
 	MaclawAppCategory            string                   `json:"maclaw_app_category,omitempty"`
 	MaclawAppIcon                string                   `json:"maclaw_app_icon,omitempty"`
 	MaclawAppInputMode           string                   `json:"maclaw_app_input_mode,omitempty"`
@@ -90,6 +91,7 @@ type MixedSkillSearchResult struct {
 	MaclawAppID                  string                   `json:"maclaw_app_id,omitempty"`
 	MaclawAppName                string                   `json:"maclaw_app_name,omitempty"`
 	MaclawAppDescription         string                   `json:"maclaw_app_description,omitempty"`
+	MaclawAppKind                string                   `json:"maclaw_app_kind,omitempty"`
 	MaclawAppCategory            string                   `json:"maclaw_app_category,omitempty"`
 	MaclawAppIcon                string                   `json:"maclaw_app_icon,omitempty"`
 	MaclawAppInputMode           string                   `json:"maclaw_app_input_mode,omitempty"`
@@ -154,12 +156,18 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 	var allowedSources []string
 	if s.app != nil {
 		allowedSources = s.app.GetAllowedSkillSources()
-		if cfg, err := s.app.LoadConfig(); err == nil && skillMarketplaceEnterpriseOnlySearch(cfg) {
+		cfg, cfgErr := s.app.LoadConfig()
+		if cfgErr == nil && len(cfg.SkillSourcesAllowed) > 0 {
+			if p := s.app.hubSecurityCache.get(); p == nil || (!p.CentralizedSecurity && !p.SkillSourcesRestricted && len(p.SkillSourcesAllowed) == 0) {
+				allowedSources = mergeAllowedSkillSources(allowedSources, cfg.SkillSourcesAllowed)
+			}
+		}
+		if cfgErr == nil && skillMarketplaceEnterpriseOnlySearch(cfg) {
 			allowedSources = []string{corelib.CapabilitySourceEnterpriseHub}
 		}
 	}
 
-	if isAllowedSkillSourceList(corelib.CapabilitySourceEnterpriseHub, allowedSources) {
+	if isAllowedSkillSourceList(corelib.CapabilitySourceEnterpriseHub, allowedSources) || s.enterpriseHubSearchConfigured() {
 		if ok, reason := s.allowSearchSource(corelib.CapabilitySourceEnterpriseHub, s.enterpriseHubURL(), query); !ok {
 			errs = append(errs, fmt.Sprintf("enterprise_hub: %s", reason))
 		} else {
@@ -255,11 +263,11 @@ func (s *SkillSearcher) allowSearchSource(source, endpoint, query string) (bool,
 	if s == nil || s.app == nil {
 		return true, ""
 	}
-	args := map[string]interface{}{"query": query, "source": source}
+	args := map[string]interface{}{"action": "search", "query": query, "source": source}
 	if strings.TrimSpace(endpoint) != "" {
 		args["url"] = endpoint
 	}
-	return s.app.enforceHubSecurityAppPolicy("search_and_install_skill", args)
+	return s.app.enforceHubSecurityAppPolicy("manage_skill", args)
 }
 
 func (s *SkillSearcher) skillHubSearchURL() string {
@@ -269,6 +277,16 @@ func (s *SkillSearcher) skillHubSearchURL() string {
 	return s.client.baseURL()
 }
 
+func (s *SkillSearcher) enterpriseHubSearchConfigured() bool {
+	if s == nil || s.app == nil {
+		return false
+	}
+	cfg, err := s.app.LoadConfig()
+	if err != nil {
+		return false
+	}
+	return firstNonEmpty(cfg.RemoteHubURL, cfg.RemoteHubCenterURL, s.skillHubSearchURL()) != ""
+}
 func (s *SkillSearcher) enterpriseHubURL() string {
 	if s == nil || s.app == nil {
 		return ""
@@ -277,7 +295,7 @@ func (s *SkillSearcher) enterpriseHubURL() string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(cfg.RemoteHubURL)
+	return firstNonEmpty(cfg.RemoteHubURL, cfg.RemoteHubCenterURL, s.skillHubSearchURL())
 }
 
 // localSearchPenalty returns a penalty for a search result based on local
@@ -295,6 +313,25 @@ func localSearchPenalty(name, installedName string, skillMap map[string]*corelib
 	return 0
 }
 
+func mergeAllowedSkillSources(primary []string, extra []string) []string {
+	if primary == nil && len(extra) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	merged := make([]string, 0, len(primary)+len(extra))
+	for _, source := range append(append([]string(nil), primary...), extra...) {
+		normalized := normalizeHubSkillSource(source)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		merged = append(merged, normalized)
+	}
+	return merged
+}
 func sourcePriority(source string) int {
 	switch skillSearchSourceFromStatus(source) {
 	case skillSearchSourceEnterpriseHub:
@@ -327,7 +364,7 @@ func mixedSourceLabel(source string) string {
 
 func skillMarketplaceEnterpriseOnlySearch(cfg corelib.AppConfig) bool {
 	policy := cfg.CapabilityMarketPolicy.WithDefaults()
-	return strings.TrimSpace(cfg.RemoteHubURL) != "" && policy.EffectiveEnterpriseOnlySearch()
+	return firstNonEmpty(cfg.RemoteHubURL, cfg.RemoteHubCenterURL) != "" && policy.EffectiveEnterpriseOnlySearch()
 }
 func (s *SkillSearcher) searchEnterpriseHubSkills(ctx context.Context, query string) ([]MixedSkillSearchResult, error) {
 	if s.app == nil {
@@ -337,12 +374,18 @@ func (s *SkillSearcher) searchEnterpriseHubSkills(ctx context.Context, query str
 	if err != nil {
 		return nil, err
 	}
+
 	client, err := newCapabilityMarketClient(cfg)
 	if err != nil {
-		if skillMarketplaceEnterpriseOnlySearch(cfg) {
+		fallbackBaseURL := strings.TrimRight(strings.TrimSpace(firstNonEmpty(cfg.RemoteHubCenterURL, s.skillHubSearchURL())), "/")
+		fallbackToken := capabilityMarketAuthToken(cfg)
+		if fallbackBaseURL != "" && fallbackToken != "" {
+			client = &capabilityMarketClient{baseURL: fallbackBaseURL, token: fallbackToken, http: &http.Client{Timeout: 20 * time.Second}}
+		} else if skillMarketplaceEnterpriseOnlySearch(cfg) {
 			return nil, err
+		} else {
+			return nil, nil
 		}
-		return nil, nil
 	}
 	items, err := client.listCapabilities(ctx, corelib.CapabilityTypeSkill, query)
 	if err != nil {
@@ -357,16 +400,30 @@ func (s *SkillSearcher) searchEnterpriseHubSkills(ctx context.Context, query str
 		if id == "" {
 			continue
 		}
+		metadata := capabilityMetadataMap(item.MetadataJSON)
+		productKind := stringFromMap(metadata, "product_kind")
+		isMaclawApp := boolFromMap(metadata, "is_maclaw_app") || strings.EqualFold(productKind, "maclaw_app_skill") || stringFromMap(metadata, "maclaw_app_id") != ""
 		results = append(results, MixedSkillSearchResult{
-			ID:          id,
-			Name:        firstNonEmpty(item.DisplayName, item.CapabilityID, item.ID),
-			Description: item.Description,
-			Source:      corelib.CapabilitySourceEnterpriseHub,
-			SourceLabel: mixedSourceLabel(corelib.CapabilitySourceEnterpriseHub),
-			InstallRef:  id,
-			Version:     item.CurrentVersionKey,
-			TrustLevel:  "enterprise",
-			Score:       100,
+			ID:                           id,
+			Name:                         firstNonEmpty(stringFromMap(metadata, "maclaw_app_name"), item.DisplayName, item.CapabilityID, item.ID),
+			Description:                  firstNonEmpty(stringFromMap(metadata, "maclaw_app_description"), item.Description),
+			Source:                       corelib.CapabilitySourceEnterpriseHub,
+			SourceLabel:                  mixedSourceLabel(corelib.CapabilitySourceEnterpriseHub),
+			InstallRef:                   id,
+			Version:                      item.CurrentVersionKey,
+			TrustLevel:                   "enterprise",
+			Score:                        100,
+			ProductKind:                  productKind,
+			IsMaclawApp:                  isMaclawApp,
+			MaclawAppID:                  stringFromMap(metadata, "maclaw_app_id"),
+			MaclawAppName:                stringFromMap(metadata, "maclaw_app_name"),
+			MaclawAppDescription:         stringFromMap(metadata, "maclaw_app_description"),
+			MaclawAppKind:                stringFromMap(metadata, "maclaw_app_kind"),
+			MaclawAppCategory:            stringFromMap(metadata, "maclaw_app_category"),
+			MaclawAppIcon:                stringFromMap(metadata, "maclaw_app_icon"),
+			MaclawAppDefinitionSHA256:    stringFromMap(metadata, "maclaw_app_definition_sha256"),
+			MaclawAppTestEvidence:        maclawAppSearchEvidenceFromMap(metadata["maclaw_app_test_evidence"]),
+			ArtifactContractPresentation: stringFromMap(metadata, "artifact_contract_presentation"),
 		})
 	}
 	return results, nil
@@ -439,6 +496,7 @@ func hubSearchResultToMixed(r cskill.HubSearchResult) MixedSkillSearchResult {
 		MaclawAppID:                  r.MaclawAppID,
 		MaclawAppName:                r.MaclawAppName,
 		MaclawAppDescription:         r.MaclawAppDescription,
+		MaclawAppKind:                r.ProductKind,
 		MaclawAppCategory:            r.MaclawAppCategory,
 		MaclawAppIcon:                r.MaclawAppIcon,
 		MaclawAppInputMode:           r.MaclawAppInputMode,
@@ -475,6 +533,60 @@ func cloneCoreMaclawAppSearchEvidence(e *cskill.MaclawAppTestEvidence) *MaclawAp
 	}
 }
 
+func boolFromMap(m map[string]any, key string) bool {
+	value, ok := m[key]
+	if !ok {
+		return false
+	}
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true") || strings.EqualFold(strings.TrimSpace(v), "yes") || strings.TrimSpace(v) == "1"
+	default:
+		return false
+	}
+}
+
+func maclawAppSearchEvidenceFromMap(value any) *MaclawAppSearchEvidence {
+	raw, ok := value.(map[string]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	return &MaclawAppSearchEvidence{
+		RunID:                 firstNonEmpty(stringFromMap(raw, "run_id"), stringFromMap(raw, "runId")),
+		VerifiedAt:            firstNonEmpty(stringFromMap(raw, "verified_at"), stringFromMap(raw, "verifiedAt")),
+		DefinitionFingerprint: firstNonEmpty(stringFromMap(raw, "definition_fingerprint"), stringFromMap(raw, "definitionFingerprint")),
+		ArtifactPresent:       boolFromMap(raw, "artifact_present") || boolFromMap(raw, "artifactPresent"),
+		ArtifactName:          firstNonEmpty(stringFromMap(raw, "artifact_name"), stringFromMap(raw, "artifactName")),
+		OutputCount:           intFromMap(raw, "output_count", "outputCount"),
+		PrimaryResult:         firstNonEmpty(stringFromMap(raw, "primary_result"), stringFromMap(raw, "primaryResult")),
+		ResultPayload:         mapAnyFromMap(raw, "result_payload", "resultPayload"),
+	}
+}
+
+func intFromMap(m map[string]any, keys ...string) int {
+	for _, key := range keys {
+		switch v := m[key].(type) {
+		case int:
+			return v
+		case int64:
+			return int(v)
+		case float64:
+			return int(v)
+		}
+	}
+	return 0
+}
+
+func mapAnyFromMap(m map[string]any, keys ...string) map[string]any {
+	for _, key := range keys {
+		if raw, ok := m[key].(map[string]any); ok {
+			return cloneMapAny(raw)
+		}
+	}
+	return nil
+}
 func (s *SkillSearcher) enrichInstalledState(results []MixedSkillSearchResult) {
 	if s.app == nil || s.app.skillExecutor == nil {
 		return

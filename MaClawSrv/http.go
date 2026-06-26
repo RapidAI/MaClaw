@@ -808,10 +808,15 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("POST /api/v1/knowledge/import/urls", s.withPrincipal(s.handleKnowledgeImportURLs))
 	s.mux.HandleFunc("POST /api/v1/knowledge/import/text", s.withPrincipal(s.handleKnowledgeImportText))
 	s.mux.HandleFunc("POST /api/v1/knowledge/import/directory", s.withPrincipal(s.handleKnowledgeImportDirectory))
+	s.mux.HandleFunc("POST /api/v1/knowledge/import/package", s.withPrincipal(s.handleKnowledgeImportPackage))
+	s.mux.HandleFunc("POST /api/v1/knowledge/import/share", s.withPrincipal(s.handleKnowledgeImportShare))
+	s.mux.HandleFunc("POST /api/v1/knowledge/export", s.withPrincipal(s.handleKnowledgeExport))
 	s.mux.HandleFunc("GET /api/v1/knowledge/import/batches", s.withPrincipal(s.handleKnowledgeImportBatches))
 	s.mux.HandleFunc("DELETE /api/v1/knowledge/import/batches/{batchId}", s.withPrincipal(s.handleKnowledgeDeleteImportBatch))
 	s.mux.HandleFunc("GET /api/v1/knowledge/import/jobs/{jobId}", s.withPrincipal(s.handleKnowledgeImportJobStatus))
 	s.mux.HandleFunc("POST /api/v1/knowledge/search", s.withPrincipal(s.handleKnowledgeSearch))
+	s.mux.HandleFunc("POST /api/v1/knowledge/search/structured", s.withPrincipal(s.handleKnowledgeSearchStructured))
+	s.mux.HandleFunc("POST /api/v1/knowledge/structured/catalog", s.withPrincipal(s.handleKnowledgeStructuredCatalog))
 	s.mux.HandleFunc("POST /api/v1/knowledge/context-pack", s.withPrincipal(s.handleKnowledgeContextPack))
 	s.mux.HandleFunc("GET /api/v1/knowledge/sources", s.withPrincipal(s.handleKnowledgeListSources))
 	s.mux.HandleFunc("GET /api/v1/knowledge/sources/{sourceId}", s.withPrincipal(s.handleKnowledgeGetSource))
@@ -3848,6 +3853,7 @@ var userComplexConfigKeys = map[string]struct{}{
 	"maclaw_llm_protocol":         {},
 	"maclaw_llm_context_length":   {},
 	"maclaw_llm_timeout_sec":      {},
+	"skill_runner_timeout_sec":    {},
 	"maclaw_llm_current_provider": {},
 	"maclaw_llm_providers":        {},
 	"llm_prompt_cache":            {},

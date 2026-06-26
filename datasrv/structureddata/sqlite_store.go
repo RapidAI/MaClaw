@@ -16,7 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 28
+const currentSchemaVersion = 29
 
 type SQLiteStore struct {
 	db        *sql.DB
@@ -202,6 +202,11 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 	}
 	if version < 28 {
 		if err := s.applyMigrationV28(ctx); err != nil {
+			return err
+		}
+	}
+	if version < 29 {
+		if err := s.applyMigrationV29(ctx); err != nil {
 			return err
 		}
 	}
@@ -1650,6 +1655,35 @@ func (s *SQLiteStore) applyMigrationV28(ctx context.Context) error {
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 28, formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+func (s *SQLiteStore) applyMigrationV29(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	exists, err := sqliteColumnExists(ctx, tx, "record_approvals", "workflow_node_ids_json")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE record_approvals ADD COLUMN workflow_node_ids_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 29, formatTime(time.Now().UTC())); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +32,101 @@ type KnowledgeImportJob struct {
 	CreatedAt time.Time                       `json:"created_at"`
 	UpdatedAt time.Time                       `json:"updated_at"`
 }
+
+type KnowledgeHubShareRequest struct {
+	HubURL          string   `json:"hub_url"`
+	HubToken        string   `json:"hub_token"`
+	Title           string   `json:"title"`
+	Description     string   `json:"description"`
+	VisibilityScope string   `json:"visibility_scope"`
+	VisibilityUsers []string `json:"visibility_users"`
+	TTL             string   `json:"ttl"`
+	SourceIDs       []string `json:"source_ids"`
+	RedactSensitive bool     `json:"redact_sensitive"`
+	IncludeDisabled bool     `json:"include_disabled"`
+}
+
+type KnowledgeHubShareResult struct {
+	KnowledgeID    string         `json:"knowledge_id"`
+	ShareURL       string         `json:"share_url"`
+	AgentImport    string         `json:"agent_import"`
+	PackageURL     string         `json:"package_url,omitempty"`
+	ExpiresAt      string         `json:"expires_at,omitempty"`
+	HubURL         string         `json:"hub_url"`
+	SourceCount    int            `json:"source_count"`
+	ContentSources int            `json:"content_sources,omitempty"`
+	Warnings       []string       `json:"warnings,omitempty"`
+	SourceSummary  map[string]any `json:"source_summary,omitempty"`
+	Raw            map[string]any `json:"raw,omitempty"`
+}
+
+type KnowledgeHubShareImportRequest struct {
+	HubURL      string `json:"hub_url"`
+	HubToken    string `json:"hub_token"`
+	KnowledgeID string `json:"knowledge_id"`
+	ShareLink   string `json:"share_link"`
+	DryRun      bool   `json:"dry_run"`
+}
+
+type KnowledgeHubShareImportResult struct {
+	KnowledgeID string         `json:"knowledge_id"`
+	PackageID   string         `json:"package_id,omitempty"`
+	Title       string         `json:"title,omitempty"`
+	DryRun      bool           `json:"dry_run"`
+	Imported    int            `json:"imported"`
+	Skipped     int            `json:"skipped"`
+	Warnings    []string       `json:"warnings,omitempty"`
+	Share       map[string]any `json:"share,omitempty"`
+}
+
+type guiKnowledgePackageManifest struct {
+	Format      string `json:"format"`
+	Version     int    `json:"version"`
+	PackageID   string `json:"package_id"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description"`
+	CreatedAt   string `json:"created_at"`
+	TenantID    string `json:"tenant_id,omitempty"`
+	OwnerID     string `json:"owner_id,omitempty"`
+	SourceCount int    `json:"source_count"`
+	Editable    bool   `json:"editable"`
+	Notes       string `json:"notes,omitempty"`
+}
+
+type guiKnowledgePackageSource struct {
+	ID           string   `json:"id,omitempty"`
+	Kind         string   `json:"kind,omitempty"`
+	URI          string   `json:"uri,omitempty"`
+	CanonicalURI string   `json:"canonical_uri,omitempty"`
+	Title        string   `json:"title,omitempty"`
+	Author       string   `json:"author,omitempty"`
+	SiteName     string   `json:"site_name,omitempty"`
+	TopicHint    string   `json:"topic_hint,omitempty"`
+	Labels       []string `json:"labels,omitempty"`
+	Status       string   `json:"status,omitempty"`
+	RelativePath string   `json:"relative_path,omitempty"`
+	BatchID      string   `json:"batch_id,omitempty"`
+	ContentHash  string   `json:"content_hash,omitempty"`
+	NodeCount    int      `json:"node_count,omitempty"`
+	CardCount    int      `json:"card_count,omitempty"`
+	FactCount    int      `json:"fact_count,omitempty"`
+	CreatedAt    string   `json:"created_at,omitempty"`
+	UpdatedAt    string   `json:"updated_at,omitempty"`
+	Content      string   `json:"content,omitempty"`
+	ContentBytes int      `json:"content_bytes,omitempty"`
+	Truncated    bool     `json:"content_truncated,omitempty"`
+}
+
+type guiKnowledgePackage struct {
+	Manifest guiKnowledgePackageManifest `json:"manifest"`
+	Sources  []guiKnowledgePackageSource `json:"sources"`
+}
+
+const (
+	maxGUIKnowledgePackageSourceContentBytes = 8 << 20
+	maxGUIKnowledgePackageTotalContentBytes  = 32 << 20
+	maxGUIKnowledgePackageSourceNodes        = 1000
+)
 
 var knowledgeImportJobs sync.Map
 
@@ -213,6 +312,36 @@ func (a *App) SelectKnowledgeFiles() []string {
 	return selections
 }
 
+func (a *App) SelectKnowledgeSnapshotFile() string {
+	selection, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Select Knowledge Snapshot",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Knowledge Snapshot (*.jsonl)", Pattern: "*.jsonl"},
+			{DisplayName: "JSON (*.json)", Pattern: "*.json"},
+			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return ""
+	}
+	return selection
+}
+
+func (a *App) SelectKnowledgeSnapshotExportPath() string {
+	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Export Knowledge Snapshot",
+		DefaultFilename: fmt.Sprintf("maclaw-knowledge-%s.jsonl", time.Now().UTC().Format("20060102-150405")),
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Knowledge Snapshot (*.jsonl)", Pattern: "*.jsonl"},
+			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return ""
+	}
+	return savePath
+}
+
 // ExportTextFile shows a save dialog and writes the given text content to the chosen file.
 // Returns the saved file path, or empty string if the user cancelled.
 func (a *App) ExportTextFile(content string, defaultFilename string) (string, error) {
@@ -355,6 +484,236 @@ func (a *App) KnowledgeImportSnapshot(req knowledge.SnapshotImportOptions) (know
 	return store.ImportSnapshot(a.knowledgeContext(), req)
 }
 
+func (a *App) KnowledgeShareToHub(req KnowledgeHubShareRequest) (KnowledgeHubShareResult, error) {
+	description := strings.TrimSpace(req.Description)
+	if description == "" {
+		return KnowledgeHubShareResult{}, fmt.Errorf("knowledge description is required")
+	}
+	cfg, _ := a.LoadConfig()
+	hubURL := strings.TrimRight(strings.TrimSpace(req.HubURL), "/")
+	if hubURL == "" {
+		hubURL = strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	}
+	if hubURL == "" {
+		return KnowledgeHubShareResult{}, fmt.Errorf("hub_url is required")
+	}
+	if parsed, err := url.Parse(hubURL); err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return KnowledgeHubShareResult{}, fmt.Errorf("hub_url must be an absolute URL")
+	}
+	token := strings.TrimSpace(req.HubToken)
+	if token == "" {
+		token = strings.TrimSpace(cfg.RemoteViewerToken)
+	}
+	if token == "" {
+		return KnowledgeHubShareResult{}, fmt.Errorf("hub token is required")
+	}
+	ttl := strings.TrimSpace(req.TTL)
+	if ttl == "" {
+		ttl = "7d"
+	}
+
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return KnowledgeHubShareResult{}, err
+	}
+	defer store.Close()
+
+	opts := knowledge.ListSourcesOptions{
+		SourceIDs: compactKnowledgeSourceIDStrings(req.SourceIDs),
+		Limit:     5000,
+	}
+	if !req.IncludeDisabled {
+		opts.Status = "active"
+	}
+	sources, err := store.ListSources(a.knowledgeContext(), opts)
+	if err != nil {
+		return KnowledgeHubShareResult{}, err
+	}
+	if len(sources) == 0 {
+		return KnowledgeHubShareResult{}, fmt.Errorf("no knowledge sources match the share request")
+	}
+	exportedSourceIDs := knowledgeSourceIDs(sources)
+	pkg, packageWarnings, err := buildGUIKnowledgePackage(a.knowledgeContext(), store, cfg, strings.TrimSpace(req.Title), description, sources, req.RedactSensitive)
+	if err != nil {
+		return KnowledgeHubShareResult{}, err
+	}
+	rawPackage, err := json.Marshal(pkg)
+	if err != nil {
+		return KnowledgeHubShareResult{}, err
+	}
+	sourceSummary := map[string]any{
+		"source_count":     len(sources),
+		"source_ids":       exportedSourceIDs,
+		"redact_sensitive": req.RedactSensitive,
+		"include_disabled": req.IncludeDisabled,
+		"package_format":   pkg.Manifest.Format,
+		"package_id":       pkg.Manifest.PackageID,
+		"generated_by":     "maclaw-gui",
+		"generated_at":     pkg.Manifest.CreatedAt,
+		"editable":         true,
+		"content_sources":  countGUIKnowledgePackageContentSources(pkg),
+		"warnings":         packageWarnings,
+	}
+	payload := map[string]any{
+		"title":            strings.TrimSpace(req.Title),
+		"description":      description,
+		"visibility_scope": strings.TrimSpace(req.VisibilityScope),
+		"visibility_users": compactKnowledgeShareStrings(req.VisibilityUsers),
+		"ttl":              ttl,
+		"package_json":     json.RawMessage(rawPackage),
+		"source_summary":   sourceSummary,
+	}
+	if payload["visibility_scope"] == "" {
+		payload["visibility_scope"] = "hub"
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return KnowledgeHubShareResult{}, err
+	}
+	ctx, cancel := context.WithTimeout(a.knowledgeContext(), 30*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, hubURL+"/api/knowledge/shares", bytes.NewReader(body))
+	if err != nil {
+		return KnowledgeHubShareResult{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Authorization", knowledgeShareBearerToken(token))
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return KnowledgeHubShareResult{}, fmt.Errorf("share knowledge to hub: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return KnowledgeHubShareResult{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return KnowledgeHubShareResult{}, fmt.Errorf("hub returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	var view map[string]any
+	if err := json.Unmarshal(respBody, &view); err != nil {
+		return KnowledgeHubShareResult{}, fmt.Errorf("decode hub share response: %w", err)
+	}
+	resultSourceSummary := sourceSummary
+	if responseSummary, ok := view["source_summary"].(map[string]any); ok && len(responseSummary) > 0 {
+		resultSourceSummary = mergeKnowledgeShareSummary(sourceSummary, responseSummary)
+	}
+	result := KnowledgeHubShareResult{
+		KnowledgeID:    stringFromAny(view["knowledge_id"]),
+		ShareURL:       absoluteHubShareField(hubURL, stringFromAny(view["share_url"])),
+		AgentImport:    absoluteHubShareField(hubURL, stringFromAny(view["agent_import"])),
+		PackageURL:     absoluteHubShareField(hubURL, stringFromAny(view["package_url"])),
+		ExpiresAt:      stringFromAny(view["expires_at"]),
+		HubURL:         hubURL,
+		SourceCount:    len(sources),
+		ContentSources: intFromAny(resultSourceSummary["content_sources"]),
+		Warnings:       knowledgeShareStringSliceFromAny(resultSourceSummary["warnings"]),
+		SourceSummary:  resultSourceSummary,
+		Raw:            view,
+	}
+	if result.AgentImport == "" && result.KnowledgeID != "" {
+		result.AgentImport = hubURL + "/api/knowledge/shares/" + url.PathEscape(result.KnowledgeID) + "?intent=import"
+	}
+	if result.ShareURL == "" && result.KnowledgeID != "" {
+		result.ShareURL = hubURL + "/hub/knowledge/shares/" + url.PathEscape(result.KnowledgeID)
+	}
+	return result, nil
+}
+
+func (a *App) KnowledgeImportHubShare(req KnowledgeHubShareImportRequest) (KnowledgeHubShareImportResult, error) {
+	cfg, _ := a.LoadConfig()
+	hubURL := strings.TrimRight(strings.TrimSpace(req.HubURL), "/")
+	token := strings.TrimSpace(req.HubToken)
+	apiURL, knowledgeID, err := resolveGUIKnowledgeShareAPIURL(req.ShareLink, req.KnowledgeID, hubURL)
+	if err != nil {
+		if hubURL == "" {
+			hubURL = strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+		}
+		apiURL, knowledgeID, err = resolveGUIKnowledgeShareAPIURL(req.ShareLink, req.KnowledgeID, hubURL)
+		if err != nil {
+			return KnowledgeHubShareImportResult{}, err
+		}
+	}
+	if token == "" {
+		token = strings.TrimSpace(cfg.RemoteViewerToken)
+	}
+	authHeader := knowledgeShareBearerToken(token)
+	ctx, cancel := context.WithTimeout(a.knowledgeContext(), 45*time.Second)
+	defer cancel()
+	share, err := fetchGUIKnowledgeShareJSON(ctx, apiURL, authHeader)
+	if err != nil {
+		return KnowledgeHubShareImportResult{}, err
+	}
+	packageURL := resolveGUIKnowledgePackageURL(apiURL, stringFromAny(share["package_url"]))
+	if packageURL == "" {
+		return KnowledgeHubShareImportResult{}, fmt.Errorf("knowledge share does not expose a package_url")
+	}
+	pkg, err := fetchGUIKnowledgePackage(ctx, packageURL, authHeader)
+	if err != nil {
+		return KnowledgeHubShareImportResult{}, err
+	}
+	if strings.TrimSpace(pkg.Manifest.Format) != "maclaw.knowledge.package" {
+		return KnowledgeHubShareImportResult{}, fmt.Errorf("unsupported knowledge package format")
+	}
+	if len(pkg.Sources) == 0 {
+		return KnowledgeHubShareImportResult{}, fmt.Errorf("knowledge package has no sources")
+	}
+	result := KnowledgeHubShareImportResult{
+		KnowledgeID: knowledgeID,
+		PackageID:   pkg.Manifest.PackageID,
+		Title:       firstNonEmptyKnowledgeValue(pkg.Manifest.Title, stringFromAny(share["title"])),
+		DryRun:      req.DryRun,
+		Share:       share,
+	}
+	if req.DryRun {
+		for _, item := range pkg.Sources {
+			if item.Truncated {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("source %s content is truncated", firstNonEmptyKnowledgeValue(item.ID, item.Title, item.URI)))
+			}
+			if strings.TrimSpace(item.Content) != "" || strings.HasPrefix(strings.TrimSpace(item.URI), "http://") || strings.HasPrefix(strings.TrimSpace(item.URI), "https://") || strings.HasPrefix(strings.TrimSpace(item.CanonicalURI), "http://") || strings.HasPrefix(strings.TrimSpace(item.CanonicalURI), "https://") {
+				result.Imported++
+			} else {
+				result.Skipped++
+				result.Warnings = append(result.Warnings, fmt.Sprintf("%s source %s is metadata-only", strings.TrimSpace(item.Kind), firstNonEmptyKnowledgeValue(item.ID, item.Title, item.URI)))
+			}
+		}
+		return result, nil
+	}
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return result, err
+	}
+	defer store.Close()
+	for _, item := range pkg.Sources {
+		if item.Truncated {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("source %s content is truncated", firstNonEmptyKnowledgeValue(item.ID, item.Title, item.URI)))
+		}
+		content := strings.TrimSpace(item.Content)
+		uri := firstNonEmptyKnowledgeValue(item.CanonicalURI, item.URI)
+		switch {
+		case content != "":
+			if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: content, Title: item.Title, TopicHint: item.TopicHint, Labels: item.Labels, SaveScope: knowledge.SaveScopePersonal}); err != nil {
+				result.Skipped++
+				result.Warnings = append(result.Warnings, fmt.Sprintf("text source %s skipped: %v", firstNonEmptyKnowledgeValue(item.ID, item.Title), err))
+				continue
+			}
+			result.Imported++
+		case strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://"):
+			if _, err := store.SaveURL(ctx, knowledge.URLSaveRequest{URL: uri, TopicHint: item.TopicHint, Labels: item.Labels, SaveScope: knowledge.SaveScopePersonal}); err != nil {
+				result.Skipped++
+				result.Warnings = append(result.Warnings, fmt.Sprintf("url source %s skipped: %v", uri, err))
+				continue
+			}
+			result.Imported++
+		default:
+			result.Skipped++
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s source %s is metadata-only", strings.TrimSpace(item.Kind), firstNonEmptyKnowledgeValue(item.ID, item.Title, uri)))
+		}
+	}
+	return result, nil
+}
+
 func (a *App) KnowledgeListSources(opts knowledge.ListSourcesOptions) ([]knowledge.Source, error) {
 	store, err := a.openKnowledgeStore()
 	if err != nil {
@@ -363,6 +722,513 @@ func (a *App) KnowledgeListSources(opts knowledge.ListSourcesOptions) ([]knowled
 	defer store.Close()
 	opts = a.normalizeKnowledgeListOptions(opts)
 	return store.ListSources(a.knowledgeContext(), opts)
+}
+
+func buildGUIKnowledgePackage(ctx context.Context, store *knowledge.SQLiteStore, cfg corelib.AppConfig, title, description string, sources []knowledge.Source, redactSensitive bool) (guiKnowledgePackage, []string, error) {
+	now := time.Now().UTC()
+	packageID := fmt.Sprintf("kxp_%s_%d", now.Format("20060102T150405Z"), now.UnixNano())
+	items := make([]guiKnowledgePackageSource, 0, len(sources))
+	warnings := make([]string, 0)
+	remainingContentBytes := maxGUIKnowledgePackageTotalContentBytes
+	for _, source := range sources {
+		item := guiKnowledgePackageSource{
+			ID:           source.ID,
+			Kind:         source.Kind,
+			URI:          knowledgeShareExportURI(source.URI, redactSensitive),
+			CanonicalURI: knowledgeShareExportURI(source.CanonicalURI, redactSensitive),
+			Title:        source.Title,
+			Author:       source.Author,
+			SiteName:     source.SiteName,
+			TopicHint:    source.TopicHint,
+			Labels:       append([]string(nil), source.Labels...),
+			Status:       source.Status,
+			RelativePath: knowledgeShareExportPath(source.RelativePath, redactSensitive),
+			BatchID:      source.BatchID,
+			ContentHash:  source.ContentHash,
+			NodeCount:    source.NodeCount,
+			CardCount:    source.CardCount,
+			FactCount:    source.FactCount,
+			CreatedAt:    knowledgeShareTime(source.CreatedAt),
+			UpdatedAt:    knowledgeShareTime(source.UpdatedAt),
+		}
+		content, truncated, contentWarnings, err := guiKnowledgePackageSourceContent(ctx, store, source, redactSensitive, remainingContentBytes)
+		warnings = append(warnings, contentWarnings...)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("source %s content unavailable: %v", firstNonEmptyKnowledgeValue(source.ID, source.Title, source.URI), err))
+		} else if content != "" {
+			item.Content = content
+			item.ContentBytes = len([]byte(content))
+			item.Truncated = truncated
+			remainingContentBytes -= item.ContentBytes
+			if remainingContentBytes < 0 {
+				remainingContentBytes = 0
+			}
+		}
+		items = append(items, item)
+	}
+	return guiKnowledgePackage{
+		Manifest: guiKnowledgePackageManifest{
+			Format:      "maclaw.knowledge.package",
+			Version:     1,
+			PackageID:   packageID,
+			Title:       title,
+			Description: description,
+			CreatedAt:   now.Format(time.RFC3339),
+			TenantID:    cfg.RemoteTenantID,
+			OwnerID:     firstNonEmptyKnowledgeValue(cfg.RemoteUserID, cfg.RemoteEmail),
+			SourceCount: len(items),
+			Editable:    true,
+			Notes:       "Editable JSON package created by Maclaw GUI. Source content is included when available so share links can be imported by agents on another machine; sensitive text is redacted when requested.",
+		},
+		Sources: items,
+	}, warnings, nil
+}
+
+func guiKnowledgePackageSourceContent(ctx context.Context, store *knowledge.SQLiteStore, source knowledge.Source, redactSensitive bool, remainingBudget int) (string, bool, []string, error) {
+	sourceLabel := firstNonEmptyKnowledgeValue(source.ID, source.Title, source.URI)
+	warnings := []string{}
+	if store == nil || strings.TrimSpace(source.ID) == "" || remainingBudget <= 0 {
+		if remainingBudget <= 0 {
+			warnings = append(warnings, fmt.Sprintf("source %s content skipped: package content budget exhausted", sourceLabel))
+		}
+		return "", remainingBudget <= 0, warnings, nil
+	}
+	nodes, err := store.ListNodesBySource(ctx, source.ID, maxGUIKnowledgePackageSourceNodes)
+	if err != nil {
+		return "", false, warnings, err
+	}
+	truncated := source.NodeCount > len(nodes) && len(nodes) >= maxGUIKnowledgePackageSourceNodes
+	if truncated {
+		warnings = append(warnings, fmt.Sprintf("source %s content truncated: exported %d of %d nodes", sourceLabel, len(nodes), source.NodeCount))
+	}
+	limit := maxGUIKnowledgePackageSourceContentBytes
+	if remainingBudget < limit {
+		limit = remainingBudget
+	}
+	parts := make([]string, 0, len(nodes))
+	used := 0
+	for _, node := range nodes {
+		text := strings.TrimSpace(node.Text)
+		if text == "" {
+			continue
+		}
+		if redactSensitive {
+			text = knowledge.RedactSensitiveText(text)
+		}
+		if text == "" {
+			continue
+		}
+		separatorBytes := 0
+		if len(parts) > 0 {
+			separatorBytes = 2
+		}
+		available := limit - used - separatorBytes
+		if available <= 0 {
+			truncated = true
+			warnings = append(warnings, fmt.Sprintf("source %s content truncated: package content byte limit reached", sourceLabel))
+			break
+		}
+		if len([]byte(text)) > available {
+			text = truncateStringToUTF8Bytes(text, available)
+			truncated = true
+			warnings = append(warnings, fmt.Sprintf("source %s content truncated: package content byte limit reached", sourceLabel))
+		}
+		if text == "" {
+			break
+		}
+		parts = append(parts, text)
+		used += separatorBytes + len([]byte(text))
+		if truncated {
+			break
+		}
+	}
+	return strings.Join(parts, "\n\n"), truncated, warnings, nil
+}
+
+func truncateStringToUTF8Bytes(value string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len([]byte(value)) <= maxBytes {
+		return value
+	}
+	used := 0
+	var builder strings.Builder
+	builder.Grow(maxBytes)
+	for _, r := range value {
+		next := len(string(r))
+		if used+next > maxBytes {
+			break
+		}
+		builder.WriteRune(r)
+		used += next
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func knowledgeSourceIDs(sources []knowledge.Source) []string {
+	out := make([]string, 0, len(sources))
+	for _, source := range sources {
+		if id := strings.TrimSpace(source.ID); id != "" {
+			out = append(out, id)
+		}
+	}
+	return compactKnowledgeSourceIDStrings(out)
+}
+
+func countGUIKnowledgePackageContentSources(pkg guiKnowledgePackage) int {
+	count := 0
+	for _, source := range pkg.Sources {
+		if strings.TrimSpace(source.Content) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func mergeKnowledgeShareSummary(base, overlay map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range overlay {
+		if shouldKeepBaseKnowledgeShareSummaryValue(key, out[key], value) {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func shouldKeepBaseKnowledgeShareSummaryValue(key string, base, overlay any) bool {
+	if isEmptyKnowledgeShareSummaryValue(overlay) {
+		return true
+	}
+	if knowledgeShareContentMetricKey(key) && intFromAny(base) > 0 && intFromAny(overlay) == 0 {
+		return true
+	}
+	return false
+}
+
+func knowledgeShareContentMetricKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "content_sources", "content_source_count":
+		return true
+	default:
+		return false
+	}
+}
+
+func isEmptyKnowledgeShareSummaryValue(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(typed) == ""
+	case []string:
+		return len(typed) == 0
+	case []any:
+		return len(typed) == 0
+	case map[string]any:
+		return len(typed) == 0
+	}
+	return false
+}
+
+func knowledgeShareExportURI(value string, redact bool) string {
+	value = strings.TrimSpace(value)
+	if !redact {
+		return value
+	}
+	parsed, err := url.Parse(value)
+	if err == nil && parsed.Scheme != "" {
+		if parsed.Scheme == "http" || parsed.Scheme == "https" {
+			return value
+		}
+	}
+	if strings.Contains(value, `:\`) || strings.HasPrefix(value, `/`) || strings.HasPrefix(value, `\\`) || strings.HasPrefix(strings.ToLower(value), "file:") {
+		return ""
+	}
+	return value
+}
+
+func knowledgeShareExportPath(value string, redact bool) string {
+	if redact {
+		return filepath.Base(strings.TrimSpace(value))
+	}
+	return strings.TrimSpace(value)
+}
+
+func knowledgeShareTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
+func compactKnowledgeShareStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func compactKnowledgeSourceIDStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func knowledgeShareBearerToken(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(token), "bearer ") {
+		return token
+	}
+	return "Bearer " + token
+}
+
+func stringFromAny(value any) string {
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return ""
+}
+
+func intFromAny(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		if n, err := typed.Int64(); err == nil {
+			return int(n)
+		}
+	}
+	return 0
+}
+
+func knowledgeShareStringSliceFromAny(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return compactKnowledgeShareStrings(typed)
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := stringFromAny(item); text != "" {
+				out = append(out, text)
+			}
+		}
+		return compactKnowledgeShareStrings(out)
+	}
+	return nil
+}
+
+func absoluteHubShareField(hubURL, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err == nil && parsed.IsAbs() {
+		return parsed.String()
+	}
+	base, err := url.Parse(strings.TrimRight(hubURL, "/") + "/")
+	if err != nil {
+		return value
+	}
+	ref, err := url.Parse(value)
+	if err != nil {
+		return value
+	}
+	return base.ResolveReference(ref).String()
+}
+
+func resolveGUIKnowledgePackageURL(apiURL, packageURL string) string {
+	packageURL = strings.TrimSpace(packageURL)
+	if packageURL == "" {
+		return ""
+	}
+	parsedPackage, err := url.Parse(packageURL)
+	if err == nil && parsedPackage.IsAbs() {
+		return parsedPackage.String()
+	}
+	base, err := url.Parse(strings.TrimSpace(apiURL))
+	if err != nil {
+		return packageURL
+	}
+	base.RawQuery = ""
+	base.Fragment = ""
+	if !strings.HasSuffix(base.Path, "/") {
+		base.Path += "/"
+	}
+	ref, err := url.Parse(packageURL)
+	if err != nil {
+		return packageURL
+	}
+	return base.ResolveReference(ref).String()
+}
+
+func resolveGUIKnowledgeShareAPIURL(shareLink, knowledgeID, hubURL string) (string, string, error) {
+	shareLink = strings.TrimSpace(shareLink)
+	knowledgeID = strings.TrimSpace(knowledgeID)
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	if shareLink != "" {
+		parsed, err := url.Parse(shareLink)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return "", "", fmt.Errorf("share_link must be an absolute URL")
+		}
+		if knowledgeID == "" {
+			knowledgeID = knowledgeIDFromGUIKnowledgeShareURL(parsed)
+		}
+		if knowledgeID == "" {
+			return "", "", fmt.Errorf("knowledge_id could not be determined from share_link")
+		}
+		return knowledgeShareAPIURLFromBase(parsed, knowledgeID), knowledgeID, nil
+	}
+	if hubURL == "" {
+		return "", "", fmt.Errorf("hub_url is required when share_link is not provided")
+	}
+	if knowledgeID == "" {
+		return "", "", fmt.Errorf("knowledge_id is required")
+	}
+	parsed, err := url.Parse(hubURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", "", fmt.Errorf("hub_url must be an absolute URL")
+	}
+	return knowledgeShareAPIURLFromBase(parsed, knowledgeID), knowledgeID, nil
+}
+
+func knowledgeIDFromGUIKnowledgeShareURL(parsed *url.URL) string {
+	if parsed == nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	for i, part := range parts {
+		decoded, err := url.PathUnescape(part)
+		if err != nil {
+			decoded = part
+		}
+		if decoded == "shares" && i+1 < len(parts) {
+			next, err := url.PathUnescape(parts[i+1])
+			if err != nil {
+				next = parts[i+1]
+			}
+			return strings.TrimSpace(next)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	last := parts[len(parts)-1]
+	if last == "package" && len(parts) >= 2 {
+		last = parts[len(parts)-2]
+	}
+	decoded, err := url.PathUnescape(last)
+	if err != nil {
+		decoded = last
+	}
+	return strings.TrimSpace(decoded)
+}
+
+func knowledgeShareAPIURLFromBase(parsed *url.URL, knowledgeID string) string {
+	base := *parsed
+	base.RawQuery = ""
+	base.Fragment = ""
+	base.Path = "/api/knowledge/shares/" + strings.TrimSpace(knowledgeID)
+	return base.String() + "?intent=import"
+}
+
+func fetchGUIKnowledgeShareJSON(ctx context.Context, apiURL, authorization string) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if strings.TrimSpace(authorization) != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch knowledge share: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("knowledge share returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode knowledge share metadata: %w", err)
+	}
+	return out, nil
+}
+
+func fetchGUIKnowledgePackage(ctx context.Context, packageURL, authorization string) (guiKnowledgePackage, error) {
+	var pkg guiKnowledgePackage
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, packageURL, nil)
+	if err != nil {
+		return pkg, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if strings.TrimSpace(authorization) != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return pkg, fmt.Errorf("fetch knowledge package: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+	if err != nil {
+		return pkg, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return pkg, fmt.Errorf("knowledge package returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if err := json.Unmarshal(body, &pkg); err != nil {
+		return pkg, fmt.Errorf("decode knowledge package: %w", err)
+	}
+	return pkg, nil
+}
+
+func firstNonEmptyKnowledgeValue(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (a *App) KnowledgeListSourceLabels(opts knowledge.ListSourcesOptions) ([]knowledge.SourceLabelSummary, error) {
@@ -421,6 +1287,26 @@ func (a *App) KnowledgeSearch(opts knowledge.SearchOptions) ([]knowledge.SearchR
 	defer store.Close()
 	opts = a.normalizeKnowledgeSearchOptions(opts)
 	return store.Search(a.knowledgeContext(), opts)
+}
+
+func (a *App) KnowledgeSearchStructured(opts knowledge.StructuredSearchOptions) ([]knowledge.SearchResult, error) {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	opts = a.normalizeKnowledgeStructuredSearchOptions(opts)
+	return store.SearchStructured(a.knowledgeContext(), opts)
+}
+
+func (a *App) KnowledgeStructuredCatalog(opts knowledge.StructuredCatalogOptions) (knowledge.StructuredCatalogResult, error) {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return knowledge.StructuredCatalogResult{}, err
+	}
+	defer store.Close()
+	opts = a.normalizeKnowledgeStructuredCatalogOptions(opts)
+	return store.StructuredCatalog(a.knowledgeContext(), opts)
 }
 
 func (a *App) KnowledgeExplain(opts knowledge.SearchOptions) (knowledge.ExplainResult, error) {
@@ -1235,8 +2121,55 @@ func (a *App) normalizeKnowledgeSearchOptions(opts knowledge.SearchOptions) know
 	opts.ContextTerms = normalizeKnowledgeOptionStrings(opts.ContextTerms)
 	opts.ResultTypes = normalizeKnowledgeOptionStrings(opts.ResultTypes)
 	opts.SourceKinds = normalizeKnowledgeOptionStrings(opts.SourceKinds)
-	opts.SourceIDs = normalizeKnowledgeOptionStrings(opts.SourceIDs)
+	opts.SourceIDs = normalizeKnowledgeIDStrings(opts.SourceIDs)
 	opts.Labels = normalizeKnowledgeOptionStrings(opts.Labels)
+	switch scope := normalizeKnowledgeSearchScopeKind(opts.SearchScope); {
+	case scope == knowledgeSearchScopeProject:
+		if strings.TrimSpace(opts.ProjectPath) == "" {
+			opts.ProjectPath = a.GetCurrentProjectPath()
+		}
+	case scope.ClearsProjectPath():
+		opts.ProjectPath = ""
+	default:
+		opts.ProjectPath = a.normalizeKnowledgeScopePath(opts.ProjectPath)
+	}
+	return opts
+}
+
+func (a *App) normalizeKnowledgeStructuredSearchOptions(opts knowledge.StructuredSearchOptions) knowledge.StructuredSearchOptions {
+	opts.OwnerID = strings.TrimSpace(opts.OwnerID)
+	opts.TenantID = strings.TrimSpace(opts.TenantID)
+	opts.ProjectPath = strings.TrimSpace(opts.ProjectPath)
+	opts.Query = strings.TrimSpace(opts.Query)
+	opts.SearchScope = strings.TrimSpace(opts.SearchScope)
+	opts.SourceID = strings.TrimSpace(opts.SourceID)
+	opts.SourceIDs = normalizeKnowledgeIDStrings(opts.SourceIDs)
+	opts.SheetNames = normalizeKnowledgeStructuredOptionStrings(opts.SheetNames)
+	opts.ColumnEquals = normalizeKnowledgeStructuredStringMap(opts.ColumnEquals)
+	opts.ColumnContains = normalizeKnowledgeStructuredStringMap(opts.ColumnContains)
+	opts.NumberRanges = normalizeKnowledgeNumberRanges(opts.NumberRanges)
+	opts.DateRanges = normalizeKnowledgeDateRanges(opts.DateRanges)
+	switch scope := normalizeKnowledgeSearchScopeKind(opts.SearchScope); {
+	case scope == knowledgeSearchScopeProject:
+		if strings.TrimSpace(opts.ProjectPath) == "" {
+			opts.ProjectPath = a.GetCurrentProjectPath()
+		}
+	case scope.ClearsProjectPath():
+		opts.ProjectPath = ""
+	default:
+		opts.ProjectPath = a.normalizeKnowledgeScopePath(opts.ProjectPath)
+	}
+	return opts
+}
+
+func (a *App) normalizeKnowledgeStructuredCatalogOptions(opts knowledge.StructuredCatalogOptions) knowledge.StructuredCatalogOptions {
+	opts.OwnerID = strings.TrimSpace(opts.OwnerID)
+	opts.TenantID = strings.TrimSpace(opts.TenantID)
+	opts.ProjectPath = strings.TrimSpace(opts.ProjectPath)
+	opts.SearchScope = strings.TrimSpace(opts.SearchScope)
+	opts.SourceID = strings.TrimSpace(opts.SourceID)
+	opts.SourceIDs = normalizeKnowledgeIDStrings(opts.SourceIDs)
+	opts.SheetNames = normalizeKnowledgeStructuredOptionStrings(opts.SheetNames)
 	switch scope := normalizeKnowledgeSearchScopeKind(opts.SearchScope); {
 	case scope == knowledgeSearchScopeProject:
 		if strings.TrimSpace(opts.ProjectPath) == "" {
@@ -1270,6 +2203,102 @@ func normalizeKnowledgeOptionStrings(values []string) []string {
 	return out
 }
 
+func normalizeKnowledgeIDStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+func normalizeKnowledgeStructuredOptionStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func normalizeKnowledgeStructuredStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeKnowledgeNumberRanges(values map[string]knowledge.NumberRange) map[string]knowledge.NumberRange {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]knowledge.NumberRange, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		if key == "" || (value.Min == nil && value.Max == nil) {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeKnowledgeDateRanges(values map[string]knowledge.DateRange) map[string]knowledge.DateRange {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]knowledge.DateRange, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value.Start = strings.TrimSpace(value.Start)
+		value.End = strings.TrimSpace(value.End)
+		if key == "" || (value.Start == "" && value.End == "") {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func (a *App) normalizeKnowledgeListOptions(opts knowledge.ListSourcesOptions) knowledge.ListSourcesOptions {
 	opts.OwnerID = strings.TrimSpace(opts.OwnerID)
 	opts.TenantID = strings.TrimSpace(opts.TenantID)
@@ -1282,7 +2311,7 @@ func (a *App) normalizeKnowledgeListOptions(opts knowledge.ListSourcesOptions) k
 	opts.Query = strings.TrimSpace(opts.Query)
 	opts.CoverageFilter = strings.TrimSpace(opts.CoverageFilter)
 	opts.QualityGrade = strings.ToLower(strings.TrimSpace(opts.QualityGrade))
-	opts.SourceIDs = normalizeKnowledgeOptionStrings(opts.SourceIDs)
+	opts.SourceIDs = normalizeKnowledgeIDStrings(opts.SourceIDs)
 	opts.SourceKinds = normalizeKnowledgeOptionStrings(opts.SourceKinds)
 	opts.Labels = normalizeKnowledgeOptionStrings(opts.Labels)
 	opts.QualityGrades = normalizeKnowledgeOptionStrings(opts.QualityGrades)
@@ -1347,7 +2376,7 @@ func firstNonEmptyKnowledgeString(values ...string) string {
 
 // ---------------------------------------------------------------------------
 
-// KnowledgeDeepCrawl 启动深度检索（完整抓取模式）
+// KnowledgeDeepCrawl starts a full deep crawl.
 func (a *App) KnowledgeDeepCrawl(req knowledge.DeepCrawlRequest) (knowledge.DeepCrawlResult, error) {
 	ctx, cancel, err := a.beginKnowledgeDeepCrawl("crawl")
 	if err != nil {
@@ -1377,7 +2406,7 @@ func (a *App) KnowledgeDeepCrawl(req knowledge.DeepCrawlRequest) (knowledge.Deep
 	return result, err
 }
 
-// KnowledgeDeepCrawlPreview 预览模式（仅发现链接，不保存内容）
+// KnowledgeDeepCrawl starts a full deep crawl.
 func (a *App) KnowledgeDeepCrawlPreview(req knowledge.DeepCrawlRequest) (knowledge.DeepCrawlResult, error) {
 	ctx, cancel, err := a.beginKnowledgeDeepCrawl("preview")
 	if err != nil {
@@ -1407,7 +2436,7 @@ func (a *App) KnowledgeDeepCrawlPreview(req knowledge.DeepCrawlRequest) (knowled
 	return result, err
 }
 
-// KnowledgeDeepCrawlCancel 取消正在进行的深度检索
+// KnowledgeDeepCrawl starts a full deep crawl.
 func (a *App) KnowledgeDeepCrawlCancel() error {
 	a.deepCrawlMu.Lock()
 	cancel := a.deepCrawlCancel

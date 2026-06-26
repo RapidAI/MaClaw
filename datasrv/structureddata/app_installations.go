@@ -100,7 +100,7 @@ func appInstallationAuditMetadata(app AppInstallation) map[string]any {
 	if app.Source != "" {
 		metadata["source"] = app.Source
 	}
-	for _, key := range []string{"schema", "package_sha256", "package_bytes", "app_entry_version", "app_skill_id", "app_skill_version", "workflow_skill_ids", "workflow_skill_versions", "approval_binding_versions", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "workflow_contract_schema", "workflow_contract_skill_id", "workflow_contract_version", "workflow_contract_object_role", "workflow_contract_required_inputs", "workflow_contract_decision_outputs", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "test_evidence_result_coverage_ok", "test_evidence_result_coverage_primary", "test_evidence_covered_types", "test_evidence_missing_types", "test_evidence_dependency_verified_at", "test_evidence_dependency_count", "test_evidence_dependency_missing_required", "test_evidence_dependency_blocking", "test_evidence_workflow_contract_issue", "test_evidence_workflow_contract_issue_count", "governance_status", "governance_risk_level"} {
+	for _, key := range []string{"schema", "package_sha256", "package_bytes", "app_entry_version", "app_skill_id", "app_skill_version", "workflow_skill_ids", "workflow_skill_versions", "approval_binding_versions", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "workflow_contract_schema", "workflow_contract_skill_id", "workflow_contract_version", "workflow_contract_object_role", "workflow_contract_required_inputs", "workflow_contract_decision_outputs", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_test_protocol_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "test_evidence_result_coverage_ok", "test_evidence_result_coverage_primary", "test_evidence_covered_types", "test_evidence_missing_types", "test_evidence_dependency_verified_at", "test_evidence_dependency_count", "test_evidence_dependency_missing_required", "test_evidence_dependency_blocking", "test_evidence_workflow_contract_issue", "test_evidence_workflow_contract_issue_count", "test_evidence_governance_review_issue", "test_evidence_governance_review_issue_count", "governance_status", "governance_risk_level"} {
 		if value, ok := app.Metadata[key]; ok {
 			metadata[key] = value
 		}
@@ -496,6 +496,23 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 		normalized["definition_fingerprint"] = fingerprint
 		out["test_evidence_definition_fingerprint"] = fingerprint
 	}
+	if protocolValue, ok := firstAppInstallationPresent(evidence["testProtocol"], evidence["test_protocol"], out["test_evidence_test_protocol"]); ok {
+		if protocol := appInstallationMap(protocolValue); protocol != nil {
+			if schema := firstNonEmptyAppInstallationString(appInstallationString(protocol, "schema"), "maclaw.app.test_protocol.v1"); schema == "maclaw.app.test_protocol.v1" {
+				normalized["test_protocol"] = cloneJSONValue(protocol)
+				out["test_evidence_test_protocol"] = cloneJSONValue(protocol)
+			}
+		}
+	}
+	if fingerprint := firstNonEmptyAppInstallationString(appInstallationString(evidence, "testProtocolFingerprint"), appInstallationString(evidence, "test_protocol_fingerprint"), appInstallationString(evidence, "testProtocolHash"), appInstallationString(evidence, "test_protocol_hash"), appInstallationString(out, "test_evidence_test_protocol_fingerprint")); fingerprint != "" {
+		normalized["test_protocol_fingerprint"] = fingerprint
+		out["test_evidence_test_protocol_fingerprint"] = fingerprint
+	} else if protocol := appInstallationMap(normalized["test_protocol"]); protocol != nil {
+		if fingerprint := firstNonEmptyAppInstallationString(appInstallationString(protocol, "fingerprint"), appInstallationString(protocol, "hash")); fingerprint != "" {
+			normalized["test_protocol_fingerprint"] = fingerprint
+			out["test_evidence_test_protocol_fingerprint"] = fingerprint
+		}
+	}
 	if value, ok := firstAppInstallationBool(evidence["artifactPresent"], evidence["artifact_present"], out["test_evidence_artifact_present"]); ok {
 		normalized["artifact_present"] = value
 		out["test_evidence_artifact_present"] = value
@@ -586,6 +603,7 @@ func normalizeAppInstallationDependencyVerification(evidence, governance, out ma
 	for _, pair := range []struct{ camel, snake, summary string }{
 		{"dependencyCount", "dependency_count", "test_evidence_dependency_count"},
 		{"workflowContractIssueCount", "workflow_contract_issue_count", "test_evidence_workflow_contract_issue_count"},
+		{"governanceReviewIssueCount", "governance_review_issue_count", "test_evidence_governance_review_issue_count"},
 	} {
 		if value, ok := firstAppInstallationNumber(verification[pair.camel], verification[pair.snake], out[pair.summary]); ok {
 			normalized[pair.snake] = value
@@ -596,6 +614,7 @@ func normalizeAppInstallationDependencyVerification(evidence, governance, out ma
 		{"hasMissingRequired", "has_missing_required", "test_evidence_dependency_missing_required"},
 		{"hasBlockingDependency", "has_blocking_dependency", "test_evidence_dependency_blocking"},
 		{"hasWorkflowContractIssue", "has_workflow_contract_issue", "test_evidence_workflow_contract_issue"},
+		{"hasGovernanceReviewIssue", "has_governance_review_issue", "test_evidence_governance_review_issue"},
 	} {
 		if value, ok := firstAppInstallationBool(verification[pair.camel], verification[pair.snake], out[pair.summary]); ok {
 			normalized[pair.snake] = value

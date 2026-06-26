@@ -100,7 +100,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"operation":    map[string]string{"type": "string", "description": "执行指定的 operation（run 时可选，api_workflow 模式 Skill 的操作名称，如 generate/query）"},
 				"input":        map[string]string{"type": "string", "description": "兼容旧调用的输入参数（run 时可选）"},
 				"output":       map[string]string{"type": "string", "description": "兼容旧调用的输出参数（run 时可选）"},
-				"user_prompt":  map[string]string{"type": "string", "description": "用户的原始请求文本（run 时可选，供 craft_tool 类型 Skill 生成脚本时使用）"},
+				"user_prompt":  map[string]string{"type": "string", "description": "用户的原始请求文本（run 或 install+auto_run 时可选，供 craft_tool 类型 Skill 生成脚本时使用）"},
 				"wait_seconds": map[string]string{"type": "number", "description": "等待状态快照的秒数（install/run/status 时可选，默认 2，最大 30）"},
 				"run_id":       map[string]string{"type": "string", "description": "运行 ID（status 时必填，从 run 返回值中获取）"},
 				"auto_fix":     map[string]string{"type": "boolean", "description": "与 action=validate 配合使用，为 true 时自动修复检测到的可移植性问题（可选，默认 false）"},

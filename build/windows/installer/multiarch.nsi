@@ -20,6 +20,9 @@
 !ifndef PRODUCT_EXECUTABLE
 !define PRODUCT_EXECUTABLE "MaClaw.exe"
 !endif
+!ifndef CLI_EXECUTABLE
+!define CLI_EXECUTABLE "maclaw-cli.exe"
+!endif
 !ifndef REQUEST_EXECUTION_LEVEL
     !define REQUEST_EXECUTION_LEVEL "admin"
 !endif
@@ -354,7 +357,7 @@ Function .onInit
 
     appNotRunning:
     # Stop helper CLI if a long-running watch/poll is active before upgrade.
-    ExecWait 'taskkill /F /IM maclaw-cli.exe'
+    ExecWait 'taskkill /F /IM ${CLI_EXECUTABLE}'
 
     # Check if already installed
     ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "UninstallString"
@@ -382,11 +385,11 @@ Section
     ${If} ${IsNativeARM64}
         DetailPrint "Detected ARM64 Architecture"
         File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_ARM64_BINARY}"
-        File "/oname=maclaw-cli.exe" "${ARG_MACLAWCLI_ARM64_BINARY}"
+        File "/oname=${CLI_EXECUTABLE}" "${ARG_MACLAWCLI_ARM64_BINARY}"
     ${ElseIf} ${IsNativeAMD64}
         DetailPrint "Detected AMD64 Architecture"
         File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_AMD64_BINARY}"
-        File "/oname=maclaw-cli.exe" "${ARG_MACLAWCLI_AMD64_BINARY}"
+        File "/oname=${CLI_EXECUTABLE}" "${ARG_MACLAWCLI_AMD64_BINARY}"
     ${Else}
         MessageBox MB_OK|MB_ICONSTOP "Unsupported architecture."
         Abort
@@ -400,7 +403,7 @@ Section
     WriteRegDWORD HKLM "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
 
     # Make bundled CLI discoverable by subprocess-based agents.
-    DetailPrint "Adding install directory to machine PATH for maclaw-cli..."
+    DetailPrint "Adding install directory to machine PATH for ${CLI_EXECUTABLE}..."
     Call AddInstallDirToMachinePath
 
     # Create Shortcuts
@@ -435,13 +438,13 @@ Section "uninstall"
     
     # Kill app if running
     ExecWait "taskkill /F /IM ${PRODUCT_EXECUTABLE}"
-    ExecWait "taskkill /F /IM maclaw-cli.exe"
+    ExecWait "taskkill /F /IM ${CLI_EXECUTABLE}"
 
     # Remove WebView2 user data directory (Wails stores it in %APPDATA%\<exe_name>)
     RMDir /r "$APPDATA\${PRODUCT_EXECUTABLE}"
 
     Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
-    Delete "$INSTDIR\maclaw-cli.exe"
+    Delete "$INSTDIR\${CLI_EXECUTABLE}"
     Delete "$INSTDIR\uninstall.exe"
     # Remove install dir — use /r to handle any leftover files (logs, crash dumps, etc.)
     RMDir /r "$INSTDIR"

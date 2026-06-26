@@ -15,7 +15,7 @@ interface AssistantWorkflowMaximizeSuggestionProps {
 export function AssistantWorkflowMaximizeSuggestion({ inline, lang, maximized, onDismiss, onToggleMaximize, suggestMaximize, theme: t, themeMode }: AssistantWorkflowMaximizeSuggestionProps) {
     if (!suggestMaximize || maximized || !inline || !onToggleMaximize) return null;
     return (
-        <div data-testid="ai-workflow-maximize-suggestion" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", padding: "8px 14px", background: themeMode === "dark" ? "rgba(91, 120, 152, 0.16)" : t.fieldBg, borderBottom: `1px solid ${t.titleBarBorder}`, fontSize: "13px", flexShrink: 0 }}>
+        <div data-testid="ai-workflow-maximize-suggestion" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", padding: "8px 14px", background: themeMode === "dark" ? `color-mix(in srgb, ${t.btnColor} 12%, ${t.fieldBg})` : t.fieldBg, borderBottom: `1px solid ${t.titleBarBorder}`, fontSize: "13px", flexShrink: 0 }}>
             <span style={{ color: t.text }}>{localizeText(lang, "Workflow is starting. Maximized view is recommended.", "\u6d41\u7a0b\u5373\u5c06\u5f00\u59cb\uff0c\u6700\u5927\u5316\u89c6\u56fe\u4f53\u9a8c\u66f4\u597d")}</span>
             <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
                 <button type="button" onClick={() => { onToggleMaximize(); onDismiss(); }} style={{ padding: "4px 12px", fontSize: "12px", border: `1px solid ${t.inputBarBorder}`, borderRadius: "4px", background: t.fieldBg, color: t.headingColor, cursor: "pointer", fontWeight: 500 }}>{localizeText(lang, "Maximize", "\u6700\u5927\u5316")}</button>

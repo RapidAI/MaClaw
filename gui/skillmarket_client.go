@@ -86,10 +86,10 @@ func (c *SkillMarketClient) SubmitSkillToConfiguredTargetsWithCompleted(ctx cont
 	if err != nil {
 		return "", err
 	}
-	hasEnterpriseHub := strings.TrimSpace(cfg.RemoteHubURL) != "" && strings.TrimSpace(cfg.RemoteViewerToken) != ""
+	hasEnterpriseHub := capabilityMarketBaseURL(cfg) != "" && capabilityMarketAuthToken(cfg) != ""
 	targets := cfg.CapabilityMarketPolicy.UploadTargets(hasEnterpriseHub)
 	if len(targets) == 0 {
-		return "", fmt.Errorf("enterprise Hub upload is selected but remote_hub_url or remote_viewer_token is not configured")
+		return "", fmt.Errorf("enterprise Hub upload is selected but marketplace URL or auth token is not configured")
 	}
 	targetSet := make(map[string]bool, len(targets))
 	for _, target := range targets {
@@ -283,10 +283,10 @@ func (c *SkillMarketClient) submitSkillToHubCenter(ctx context.Context, bases []
 }
 
 func (c *SkillMarketClient) submitSkillToEnterpriseHub(ctx context.Context, cfg corelib.AppConfig, bodyBytes []byte, contentType string) (string, error) {
-	base := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
-	token := strings.TrimSpace(cfg.RemoteViewerToken)
+	base := capabilityMarketBaseURL(cfg)
+	token := capabilityMarketAuthToken(cfg)
 	if base == "" || token == "" {
-		return "", fmt.Errorf("remote_hub_url or remote_viewer_token is not configured")
+		return "", fmt.Errorf("enterprise Hub marketplace URL or auth token is not configured")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/capabilities/skills/submit", bytes.NewReader(bodyBytes))
 	if err != nil {

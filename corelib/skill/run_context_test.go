@@ -1294,6 +1294,13 @@ func TestRunnerStepTimeoutSecondsCapsGlobalTimeout(t *testing.T) {
 	}
 }
 
+func TestRunnerStepTimeoutSecondsWithMinKeepsExplicitTimeoutBelowDefault(t *testing.T) {
+	got := RunnerStepTimeoutSecondsWithMin(map[string]interface{}{"timeout": "700"}, 3600, corelib.MinSkillRunnerTimeoutSec, corelib.MaxSkillRunnerTimeoutSec)
+	if got != 700 {
+		t.Fatalf("RunnerStepTimeoutSecondsWithMin() = %d, want explicit timeout 700", got)
+	}
+}
+
 func containsEnv(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

@@ -142,6 +142,69 @@ func TestToolRunSkill_BuildsRunArgs(t *testing.T) {
 	}
 }
 
+func TestInstallSkillHub_SkipsInstructionOnlyAutoRunWithoutUserPrompt(t *testing.T) {
+	entry := &corelib.NLSkillEntry{
+		Name: "word-docx",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{
+				"instructions": "Use python-docx for Word files.",
+			},
+		}},
+	}
+	if !shouldSkipInstructionOnlyInstallAutoRun(entry, nil) {
+		t.Fatal("instruction-only install auto-run should be skipped without run args")
+	}
+	if !shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"operation": "create", "output": "out.docx"}) {
+		t.Fatal("instruction-only install auto-run should still be skipped with selectors but no user task context")
+	}
+	if !shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"args": map[string]interface{}{"operation": "create", "title": ""}}) {
+		t.Fatal("instruction-only install auto-run should be skipped with empty nested args")
+	}
+	if !shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"args": map[string]interface{}{"source": "clawhub", "skill-id": "word-docx"}}) {
+		t.Fatal("instruction-only install auto-run should be skipped with nested install metadata")
+	}
+	if !shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"source": "clawhub", "skill-id": "word-docx"}) {
+		t.Fatal("instruction-only install auto-run should be skipped with top-level install metadata")
+	}
+	if !shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"env": map[string]interface{}{"TOKEN": "secret"}, "language": "node"}) {
+		t.Fatal("instruction-only install auto-run should be skipped with runtime controls but no user task context")
+	}
+	if !shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"args": map[string]interface{}{"working_dir": "C:/tmp", "max_attempts": 3}}) {
+		t.Fatal("instruction-only install auto-run should be skipped with nested runtime controls")
+	}
+	if !shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"args": `{"working_dir":"C:/tmp","max_attempts":3}`}) {
+		t.Fatal("instruction-only install auto-run should be skipped with JSON runtime controls")
+	}
+	if !shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"args": `{"title":`}) {
+		t.Fatal("instruction-only install auto-run should be skipped with invalid JSON object args because the runner cannot consume them as input")
+	}
+	if !shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"args": `["create a test docx"]`}) {
+		t.Fatal("instruction-only install auto-run should be skipped with JSON array args because the runner cannot consume them as input")
+	}
+	if !shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"args": []interface{}{"create a test docx"}}) {
+		t.Fatal("instruction-only install auto-run should be skipped with array args because the runner cannot consume them as input")
+	}
+	if !shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"args": []string{"create a test docx"}}) {
+		t.Fatal("instruction-only install auto-run should be skipped with string array args because the runner cannot consume them as input")
+	}
+	if shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"user_prompt": "create a test docx"}) {
+		t.Fatal("instruction-only install auto-run should proceed when user_prompt is present")
+	}
+	if shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"city": "Beijing"}) {
+		t.Fatal("instruction-only install auto-run should proceed when arbitrary business args are present")
+	}
+	if shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"args": map[string]interface{}{"title": "Quarterly report"}}) {
+		t.Fatal("instruction-only install auto-run should proceed when nested args are present")
+	}
+	if shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"args": `{"title":"Quarterly report"}`}) {
+		t.Fatal("instruction-only install auto-run should proceed when JSON args contain business context")
+	}
+	if shouldSkipInstructionOnlyInstallAutoRun(entry, map[string]interface{}{"payload": `{"language":"en"}`}) {
+		t.Fatal("instruction-only install auto-run should proceed when arbitrary JSON business payload is present")
+	}
+}
+
 func TestToolRunSkill_OpensAgentViewForMissingRequiredParams(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

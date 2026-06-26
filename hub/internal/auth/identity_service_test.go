@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -583,6 +584,158 @@ func TestIdentityServiceApprovalModeCreatesPendingEnrollment(t *testing.T) {
 	}
 	if pending == nil {
 		t.Fatal("expected pending enrollment record")
+	}
+}
+
+func TestStartEnrollmentGrantsInvitationLLMBenefitForNewSelfEnrollUser(t *testing.T) {
+	deps := newTestStore(t)
+	ctx := context.Background()
+	if err := llmservice.SaveRegistry(ctx, deps.store.System, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "invite-pro", Name: "Invite Pro"}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+	invitationSvc := invitation.NewService(deps.store.InvitationCodes, deps.store.System)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		invitationSvc,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	codes, err := invitationSvc.GenerateCodesForTenantWithOptions(ctx, store.DefaultTenantID, invitation.GenerateCodeOptions{
+		Count:                1,
+		LLMServiceGroupID:    "invite-pro",
+		LLMGrantDurationDays: 5,
+		LLMGrantCredits:      88.125,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodesForTenantWithOptions: %v", err)
+	}
+
+	result, err := svc.StartEnrollment(ctx, "new-invite@example.com", "office-pc", "windows", "", codes[0].Code)
+	if err != nil {
+		t.Fatalf("StartEnrollment: %v", err)
+	}
+	if result == nil || result.Status != "approved" {
+		t.Fatalf("unexpected enrollment result: %+v", result)
+	}
+
+	reg, err := llmservice.LoadRegistry(ctx, deps.store.System)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	count := 0
+	for _, grant := range reg.Grants {
+		if grant.Email == "new-invite@example.com" && grant.ServiceGroupID == "invite-pro" && grant.Source == "invitation_code" {
+			count++
+			if grant.CardID != codes[0].ID {
+				t.Fatalf("CardID = %q, want %q", grant.CardID, codes[0].ID)
+			}
+			if grant.CreditsTotal != 88.125 {
+				t.Fatalf("CreditsTotal = %v, want 88.125", grant.CreditsTotal)
+			}
+			if got := grant.ExpiresAt.Sub(grant.StartsAt); got != 5*24*time.Hour {
+				t.Fatalf("duration = %v, want 5 days", got)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 invitation LLM grant, got %d", count)
+	}
+}
+
+func TestApproveEnrollmentGrantsInvitationLLMBenefitForExistingUser(t *testing.T) {
+	deps := newTestStore(t)
+	ctx := context.Background()
+	if err := llmservice.SaveRegistry(ctx, deps.store.System, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "invite-pro", Name: "Invite Pro"}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+	invitationSvc := invitation.NewService(deps.store.InvitationCodes, deps.store.System)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		invitationSvc,
+		"approval",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	now := time.Now().UTC()
+	if err := deps.store.Users.Create(ctx, &store.User{
+		ID:               "u_existing_invite",
+		TenantID:         store.DefaultTenantID,
+		Email:            "existing-invite@example.com",
+		SN:               "SN-EXISTING",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	codes, err := invitationSvc.GenerateCodesForTenantWithOptions(ctx, store.DefaultTenantID, invitation.GenerateCodeOptions{
+		Count:                1,
+		LLMServiceGroupID:    "invite-pro",
+		LLMGrantDurationDays: 9,
+		LLMGrantCredits:      456.789,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodesForTenantWithOptions: %v", err)
+	}
+	if err := invitationSvc.ValidateAndConsumeForTenant(ctx, store.DefaultTenantID, codes[0].Code, "existing-invite@example.com"); err != nil {
+		t.Fatalf("ValidateAndConsumeForTenant: %v", err)
+	}
+	if err := deps.store.Enrollments.Create(ctx, &store.UserEnrollment{
+		ID:        "enroll_existing_invite",
+		TenantID:  store.DefaultTenantID,
+		Email:     "existing-invite@example.com",
+		Status:    "pending",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed enrollment: %v", err)
+	}
+
+	if _, _, err := svc.ApproveEnrollment(ctx, "enroll_existing_invite"); err != nil {
+		t.Fatalf("ApproveEnrollment: %v", err)
+	}
+
+	reg, err := llmservice.LoadRegistry(ctx, deps.store.System)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	count := 0
+	for _, grant := range reg.Grants {
+		if grant.Email == "existing-invite@example.com" && grant.ServiceGroupID == "invite-pro" && grant.Source == "invitation_code" {
+			count++
+			if grant.CardID != codes[0].ID {
+				t.Fatalf("CardID = %q, want %q", grant.CardID, codes[0].ID)
+			}
+			if grant.CreditsTotal != 456.789 {
+				t.Fatalf("CreditsTotal = %v, want 456.789", grant.CreditsTotal)
+			}
+			if got := grant.ExpiresAt.Sub(grant.StartsAt); got != 9*24*time.Hour {
+				t.Fatalf("duration = %v, want 9 days", got)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 invitation LLM grant, got %d", count)
 	}
 }
 

@@ -1,6 +1,9 @@
 package structureddata
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 var (
 	ErrUnauthorized    = errors.New("unauthorized")
@@ -13,3 +16,39 @@ var (
 	ErrAlreadyExists   = errors.New("resource already exists")
 	ErrInvalidInput    = errors.New("invalid input")
 )
+
+type businessError struct {
+	BusinessError
+	cause error
+}
+
+func (e *businessError) Error() string {
+	if e == nil {
+		return ""
+	}
+	message := strings.TrimSpace(e.Message)
+	if message == "" {
+		message = strings.TrimSpace(e.Code)
+	}
+	if e.cause == nil {
+		return message
+	}
+	if message == "" {
+		return e.cause.Error()
+	}
+	return e.cause.Error() + ": " + message
+}
+
+func (e *businessError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func newBusinessError(cause error, code, message string) *businessError {
+	return &businessError{
+		BusinessError: BusinessError{Code: strings.TrimSpace(code), Message: strings.TrimSpace(message)},
+		cause:         cause,
+	}
+}

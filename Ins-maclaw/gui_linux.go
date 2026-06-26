@@ -10,24 +10,27 @@ import (
 
 func guiChooseBrand(defaultBrand brandOption) (brandOption, bool) {
 	if _, err := exec.LookPath("zenity"); err == nil {
-		maclawDefault, tigerDefault := "FALSE", "FALSE"
-		if defaultBrand.ID == brandOptions[1].ID {
-			tigerDefault = "TRUE"
-		} else {
-			maclawDefault = "TRUE"
-		}
-		out, err := exec.Command(
-			"zenity", "--list", "--radiolist",
-			"--title="+tr("app.title"), "--text="+tr("choose.brand"),
+		args := []string{
+			"--list", "--radiolist",
+			"--title=" + tr("app.title"), "--text=" + tr("choose.brand"),
 			"--column=", "--column=Brand",
-			maclawDefault, brandLabel(brandOptions[0]),
-			tigerDefault, brandLabel(brandOptions[1]),
-		).Output()
+		}
+		for _, brand := range brandOptions {
+			selected := "FALSE"
+			if brand.ID == defaultBrand.ID {
+				selected = "TRUE"
+			}
+			args = append(args, selected, brandLabel(brand))
+		}
+		out, err := exec.Command("zenity", args...).Output()
 		if err != nil {
 			return brandOption{}, false
 		}
-		if strings.Contains(string(out), "TigerClaw") {
-			return brandOptions[1], true
+		selected := strings.TrimSpace(string(out))
+		for _, brand := range brandOptions {
+			if selected == brandLabel(brand) || strings.Contains(selected, brand.ProductName) {
+				return brand, true
+			}
 		}
 		return brandOptions[0], true
 	}

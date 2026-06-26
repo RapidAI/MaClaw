@@ -105,12 +105,16 @@ func (h *IMMessageHandler) resolveTaskContext(
 		ctx = context.Background()
 	}
 	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "task-context", OwnerID: userID})
+	lastAccess := time.Time{}
+	if h.memory != nil {
+		lastAccess = h.memory.LastAccessTime(userID)
+	}
 	input := agent.ResolveInput{
 		Context:                       ctx,
 		OwnerID:                       userID,
 		UserMessage:                   trimmedMsg,
 		History:                       history,
-		LastAccess:                    h.memory.LastAccessTime(userID),
+		LastAccess:                    lastAccess,
 		ArchivedTasks:                 archived,
 		HasPendingAskUser:             hasPendingAskUser,
 		IsConfirmedResume:             isConfirmedResume,

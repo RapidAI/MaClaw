@@ -215,7 +215,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"operation":                 map[string]string{"type": "string", "description": "Optional operation name for api_workflow skills."},
 			"input":                     map[string]string{"type": "string", "description": "兼容旧调用的输入参数（run 时可选）"},
 			"output":                    map[string]string{"type": "string", "description": "兼容旧调用的输出参数（run 时可选）"},
-			"user_prompt":               map[string]string{"type": "string", "description": "用户的原始请求文本（run 时可选，供 craft_tool 类型 Skill 生成脚本时使用）"},
+			"user_prompt":               map[string]string{"type": "string", "description": "用户的原始请求文本（run 或 install+auto_run 时可选，供 craft_tool 类型 Skill 生成脚本时使用）"},
 			"wait_seconds":              map[string]string{"type": "number", "description": "Seconds to wait for a status snapshot."},
 			"run_id":                    map[string]string{"type": "string", "description": "Run ID returned by a previous run action."},
 			"max_actions":               map[string]string{"type": "integer", "description": "maintenance_plan max action count."},

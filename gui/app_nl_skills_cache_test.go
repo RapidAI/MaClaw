@@ -92,6 +92,77 @@ func TestSkillExecutorDoesNotForegroundScanWhileAppScannerWarms(t *testing.T) {
 	}
 }
 
+func TestSkillExecutorCacheFollowsScannerVersion(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	skillDir := filepath.Join(tmpHome, "skills", "demo")
+	scanner := &CachedSkillScanner{}
+	scanner.cache.Store(&skillCacheEntry{
+		skills: []corelib.NLSkillEntry{{
+			Name:     "demo",
+			Status:   "active",
+			SkillDir: skillDir,
+			Steps:    []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "node old.js"}}},
+		}},
+		createdAt: time.Now(),
+	})
+	scanner.version.Store(1)
+	app := &App{testHomeDir: tmpHome, cachedSkillScanner: scanner}
+	exec := NewSkillExecutor(app, nil, nil)
+
+	got := exec.List()
+	if len(got) != 1 {
+		t.Fatalf("initial List() = %+v, want one skill", got)
+	}
+	cmd, _ := got[0].Steps[0].Params["command"].(string)
+	if cmd != "node old.js" {
+		t.Fatalf("initial command = %q, want old command", cmd)
+	}
+
+	scanner.cache.Store(&skillCacheEntry{
+		skills: []corelib.NLSkillEntry{{
+			Name:     "demo",
+			Status:   "active",
+			SkillDir: skillDir,
+			Steps:    []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "node new.js"}}},
+		}},
+		createdAt: time.Now(),
+	})
+	scanner.version.Add(1)
+
+	got = exec.List()
+	if len(got) != 1 {
+		t.Fatalf("List() after scanner refresh = %+v, want one skill", got)
+	}
+	cmd, _ = got[0].Steps[0].Params["command"].(string)
+	if cmd != "node new.js" {
+		t.Fatalf("command after scanner refresh = %q, want new command", cmd)
+	}
+}
+
+func TestAddSkillInvalidatesCachedSkillScanner(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	scanner := &CachedSkillScanner{}
+	scanner.cache.Store(&skillCacheEntry{
+		skills:    []corelib.NLSkillEntry{{Name: "old", Description: "old skill", Status: "active"}},
+		createdAt: time.Now(),
+	})
+	scanner.scanning.Store(true)
+	app := &App{testHomeDir: tmpHome, cachedSkillScanner: scanner}
+
+	if err := app.AddSkill("new", "new skill", "address", "local-new", "claude"); err != nil {
+		t.Fatalf("AddSkill() error = %v", err)
+	}
+
+	entry := scanner.cache.Load()
+	if entry == nil || !entry.stale {
+		t.Fatalf("cached scanner entry = %#v, want stale after AddSkill", entry)
+	}
+}
+
 func TestCloneSkillEntriesDeepCopiesMutableFields(t *testing.T) {
 	fallback := corelib.NLSkillStep{Action: "bash", Params: map[string]interface{}{"command": "echo fallback"}}
 	original := []corelib.NLSkillEntry{{

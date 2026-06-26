@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
@@ -21,6 +23,41 @@ type proxyRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f proxyRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+type lockedResponseRecorder struct {
+	mu     sync.Mutex
+	header http.Header
+	code   int
+	body   bytes.Buffer
+}
+
+func newLockedResponseRecorder() *lockedResponseRecorder {
+	return &lockedResponseRecorder{header: http.Header{}, code: http.StatusOK}
+}
+
+func (r *lockedResponseRecorder) Header() http.Header {
+	return r.header
+}
+
+func (r *lockedResponseRecorder) WriteHeader(code int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.code = code
+}
+
+func (r *lockedResponseRecorder) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.body.Write(p)
+}
+
+func (r *lockedResponseRecorder) Flush() {}
+
+func (r *lockedResponseRecorder) BodyString() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.body.String()
 }
 
 type recordingUsageRecorder struct {
@@ -820,6 +857,676 @@ func TestForwardToProviderUsesSharedCorelibCompatibility(t *testing.T) {
 	}
 	if seen["stream"] != false {
 		t.Fatalf("stream = %#v, want false for HubCenter non-stream proxy", seen["stream"])
+	}
+}
+
+func TestProxyHandlerStreamsKeepAliveCompatibleResponse(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var seen map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if seen["stream"] != true {
+			t.Fatalf("upstream stream = %#v, want true", seen["stream"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-test\",\"model\":\"gpt-4\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"index\":0}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-test\",\"model\":\"gpt-4\",\"choices\":[{\"delta\":{},\"index\":0,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyFree,
+			Models:       []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: upstream.Client()}
+	body := bytes.NewBufferString(`{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", body)
+	req.Header.Set("X-Hub-ID", "hub1")
+	req.Header.Set("X-Tenant-ID", "t1")
+	rr := httptest.NewRecorder()
+
+	ProxyHandler(cfg).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", got)
+	}
+	out := rr.Body.String()
+	for _, want := range []string{
+		`"delta":{"content":"ok","role":"assistant"}`,
+		`"usage":{"completion_tokens":1,"prompt_tokens":1,"total_tokens":2}`,
+		"data: [DONE]\n\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stream body missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestProxyHandlerStreamsHeartbeatWhileWaiting(t *testing.T) {
+	origInterval := proxyStreamHeartbeatInterval
+	proxyStreamHeartbeatInterval = 10 * time.Millisecond
+	defer func() { proxyStreamHeartbeatInterval = origInterval }()
+
+	upstreamDone := make(chan struct{})
+	var closeUpstreamDone sync.Once
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-upstreamDone
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"index\":0}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	defer closeUpstreamDone.Do(func() { close(upstreamDone) })
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyFree,
+			Models:       []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: upstream.Client()}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewBufferString(`{"model":"gpt-4","stream":true}`))
+	req.Header.Set("X-Hub-ID", "hub1")
+	req.Header.Set("X-Tenant-ID", "t1")
+	rr := newLockedResponseRecorder()
+	done := make(chan struct{})
+	go func() {
+		ProxyHandler(cfg).ServeHTTP(rr, req)
+		close(done)
+	}()
+
+	deadline := time.After(250 * time.Millisecond)
+	for !strings.Contains(rr.BodyString(), ": ping\n\n") {
+		select {
+		case <-deadline:
+			t.Fatalf("stream body did not receive heartbeat; body=%q", rr.BodyString())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	closeUpstreamDone.Do(func() { close(upstreamDone) })
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stream handler did not finish after upstream completed")
+	}
+}
+
+func TestProxyHandlerStreamPreflightReturnsAuthorizationErrorBeforeSSE(t *testing.T) {
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: "http://127.0.0.1:1"}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models:       []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{})}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewBufferString(`{"model":"gpt-4","stream":true}`))
+	req.Header.Set("X-Hub-ID", "hub1")
+	req.Header.Set("X-Tenant-ID", "t1")
+	rr := httptest.NewRecorder()
+
+	ProxyHandler(cfg).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want JSON error before SSE starts", rr.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(rr.Body.String(), "authorization denied") {
+		t.Fatalf("body = %s, want authorization denied", rr.Body.String())
+	}
+}
+
+func TestHandleProxyStreamRequestFailsOverBeforeStreaming(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	}))
+	defer bad.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"index\":0}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer good.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "bad", Name: "Bad", APIURL: bad.URL},
+			{ID: "good", Name: "Good", APIURL: good.URL},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "bad"},
+				{ProviderID: "good"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{})}
+	writer := newLockedResponseRecorder()
+	err := HandleProxyStreamRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "gpt-4", "stream": true},
+	}, writer)
+	if err != nil {
+		t.Fatalf("HandleProxyStreamRequest() error = %v", err)
+	}
+	if got := writer.BodyString(); !strings.Contains(got, `"content":"ok"`) || !strings.Contains(got, "data: [DONE]") {
+		t.Fatalf("stream output = %q, want good provider SSE", got)
+	}
+}
+
+func TestHandleProxyStreamRequestDoesNotFailOverAfterStreamingStarts(t *testing.T) {
+	var goodHits int
+	client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "bad.example":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: &errorAfterReader{
+					r: strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"index\":0}]}\n\n"),
+				},
+			}, nil
+		case "good.example":
+			goodHits++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"fallback\"},\"index\":0}]}\n\ndata: [DONE]\n\n")),
+			}, nil
+		default:
+			t.Fatalf("unexpected upstream host: %s", req.URL.Host)
+			return nil, nil
+		}
+	})}
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "bad", Name: "Bad", APIURL: "https://bad.example"},
+			{ID: "good", Name: "Good", APIURL: "https://good.example"},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "bad"},
+				{ProviderID: "good"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	usage := &recordingUsageRecorder{}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: client, Usage: usage}
+	writer := newLockedResponseRecorder()
+	err := HandleProxyStreamRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "gpt-4", "stream": true},
+	}, writer)
+	if err == nil {
+		t.Fatal("HandleProxyStreamRequest() error = nil, want upstream interruption")
+	}
+	if goodHits != 0 {
+		t.Fatalf("fallback provider hits = %d, want 0 after stream already started", goodHits)
+	}
+	out := writer.BodyString()
+	if !strings.Contains(out, `"content":"partial"`) {
+		t.Fatalf("stream output = %q, want partial first provider chunk", out)
+	}
+	if strings.Contains(out, "fallback") {
+		t.Fatalf("stream output contains fallback provider chunk after partial stream: %q", out)
+	}
+	if len(usage.records) != 1 {
+		t.Fatalf("usage records = %d, want 1 for partial streamed output", len(usage.records))
+	}
+	if usage.records[0].ProviderID != "bad" {
+		t.Fatalf("usage provider = %q, want bad", usage.records[0].ProviderID)
+	}
+	if usage.records[0].OutputTokens <= 0 {
+		t.Fatalf("usage output tokens = %d, want > 0", usage.records[0].OutputTokens)
+	}
+}
+
+func TestHandleProxyStreamRequestCanFailOverAfterHeartbeatOnly(t *testing.T) {
+	var goodHits int
+	client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "bad.example":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: &errorAfterReader{
+					r: strings.NewReader(": keepalive\n\nevent: ping\n\ndata:\n\n"),
+				},
+			}, nil
+		case "good.example":
+			goodHits++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"fallback\"},\"index\":0}]}\n\ndata: [DONE]\n\n")),
+			}, nil
+		default:
+			t.Fatalf("unexpected upstream host: %s", req.URL.Host)
+			return nil, nil
+		}
+	})}
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "bad", Name: "Bad", APIURL: "https://bad.example"},
+			{ID: "good", Name: "Good", APIURL: "https://good.example"},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "bad"},
+				{ProviderID: "good"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: client}
+	writer := newLockedResponseRecorder()
+	err := HandleProxyStreamRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "gpt-4", "stream": true},
+	}, writer)
+	if err != nil {
+		t.Fatalf("HandleProxyStreamRequest() error = %v", err)
+	}
+	if goodHits != 1 {
+		t.Fatalf("fallback provider hits = %d, want 1 after heartbeat-only interruption", goodHits)
+	}
+	out := writer.BodyString()
+	if strings.Contains(out, ": keepalive") || strings.Contains(out, "event: ping") || strings.Contains(out, "data:\n\n") {
+		t.Fatalf("stream output leaked upstream heartbeat before fallback: %q", out)
+	}
+	if !strings.Contains(out, `"content":"fallback"`) {
+		t.Fatalf("stream output = %q, want fallback provider chunk", out)
+	}
+}
+
+func TestHandleProxyStreamRequestCanFailOverAfterUpstreamErrorEventBeforeBusinessStream(t *testing.T) {
+	var goodHits int
+	client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "bad.example":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader("event: error\ndata: {\"message\":\"provider overloaded\",\"type\":\"server_error\",\"code\":503}\n\n")),
+			}, nil
+		case "good.example":
+			goodHits++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"fallback\"},\"index\":0}]}\n\ndata: [DONE]\n\n")),
+			}, nil
+		default:
+			t.Fatalf("unexpected upstream host: %s", req.URL.Host)
+			return nil, nil
+		}
+	})}
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "bad", Name: "Bad", APIURL: "https://bad.example"},
+			{ID: "good", Name: "Good", APIURL: "https://good.example"},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "bad"},
+				{ProviderID: "good"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	usage := &recordingUsageRecorder{}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: client, Usage: usage}
+	writer := newLockedResponseRecorder()
+	err := HandleProxyStreamRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "gpt-4", "stream": true},
+	}, writer)
+	if err != nil {
+		t.Fatalf("HandleProxyStreamRequest() error = %v", err)
+	}
+	if goodHits != 1 {
+		t.Fatalf("fallback provider hits = %d, want 1 after upstream error event before business stream", goodHits)
+	}
+	out := writer.BodyString()
+	if strings.Contains(out, "provider overloaded") {
+		t.Fatalf("stream output leaked failed provider error before fallback: %q", out)
+	}
+	if !strings.Contains(out, `"content":"fallback"`) || !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("stream output = %q, want fallback provider chunk", out)
+	}
+	if strings.Count(out, "data: [DONE]") != 1 {
+		t.Fatalf("stream output = %q, want exactly one DONE from fallback provider", out)
+	}
+	if len(usage.records) != 1 || usage.records[0].ProviderID != "good" {
+		t.Fatalf("usage records = %+v, want only good provider usage", usage.records)
+	}
+}
+
+func TestProxyStreamErrorFromDataRecognizesErrorShapes(t *testing.T) {
+	cases := []struct {
+		name      string
+		eventType string
+		data      string
+		wantErr   bool
+		wantText  string
+	}{
+		{
+			name:     "openai error object",
+			data:     `{"error":{"message":"provider failed","type":"server_error"}}`,
+			wantErr:  true,
+			wantText: "provider failed",
+		},
+		{
+			name:      "sse error event message",
+			eventType: "error",
+			data:      `{"message":"provider overloaded","type":"server_error"}`,
+			wantErr:   true,
+			wantText:  "provider overloaded",
+		},
+		{
+			name:     "top level code message",
+			data:     `{"code":"content_filter","message":"content filtered by upstream"}`,
+			wantErr:  true,
+			wantText: "content filtered by upstream",
+		},
+		{
+			name:    "normal chat chunk",
+			data:    `{"choices":[{"delta":{"content":"ok"},"index":0}]}`,
+			wantErr: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := proxyStreamErrorFromData(tc.eventType, []byte(tc.data))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("proxyStreamErrorFromData() error = nil, want error")
+				}
+				if !strings.Contains(err.Error(), tc.wantText) {
+					t.Fatalf("proxyStreamErrorFromData() error = %q, want %q", err.Error(), tc.wantText)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("proxyStreamErrorFromData() error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestProxyProviderSSEMergesMultilineDataEvent(t *testing.T) {
+	var dst lockedResponseRecorder
+	result := &providerStreamResult{}
+	stream := "event: message\n" +
+		"data: {\"id\":\"chunk-1\",\"model\":\"upstream\",\"choices\":[\n" +
+		"data: {\"index\":0,\"delta\":{\"content\":\"hello\"}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n" +
+		"data: [DONE]\n\n"
+
+	if err := proxyProviderSSE(strings.NewReader(stream), &dst, "logical-model", result); err != nil {
+		t.Fatalf("proxyProviderSSE() error = %v", err)
+	}
+
+	out := dst.BodyString()
+	if strings.Count(out, "data: ") != 2 {
+		t.Fatalf("stream output = %q, want one chunk and one DONE", out)
+	}
+	if !strings.Contains(out, `"model":"logical-model"`) || !strings.Contains(out, `"content":"hello"`) {
+		t.Fatalf("stream output = %q, want patched logical model and content", out)
+	}
+	if !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("stream output = %q, want DONE", out)
+	}
+	if !result.wroteBusinessStream || result.outputText != "hello" || result.inputTokens != 3 || result.outputTokens != 2 {
+		t.Fatalf("stream result = %+v, want measured multiline business chunk", result)
+	}
+}
+func TestHandleProxyStreamRequestCanFailOverAfterEmptyStreamEnds(t *testing.T) {
+	var goodHits int
+	client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "bad.example":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(": keepalive\n\ndata:\n\ndata: [DONE]\n\n")),
+			}, nil
+		case "good.example":
+			goodHits++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"fallback\"},\"index\":0}]}\n\ndata: [DONE]\n\n")),
+			}, nil
+		default:
+			t.Fatalf("unexpected upstream host: %s", req.URL.Host)
+			return nil, nil
+		}
+	})}
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "bad", Name: "Bad", APIURL: "https://bad.example"},
+			{ID: "good", Name: "Good", APIURL: "https://good.example"},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "bad"},
+				{ProviderID: "good"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	usage := &recordingUsageRecorder{}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: client, Usage: usage}
+	writer := newLockedResponseRecorder()
+	err := HandleProxyStreamRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "gpt-4", "stream": true},
+	}, writer)
+	if err != nil {
+		t.Fatalf("HandleProxyStreamRequest() error = %v", err)
+	}
+	if goodHits != 1 {
+		t.Fatalf("fallback provider hits = %d, want 1 after empty stream", goodHits)
+	}
+	out := writer.BodyString()
+	if strings.Contains(out, ": keepalive") || strings.Contains(out, "data:\n\n") {
+		t.Fatalf("stream output leaked empty first provider stream: %q", out)
+	}
+	if !strings.Contains(out, `"content":"fallback"`) || !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("stream output = %q, want fallback provider chunk", out)
+	}
+	if strings.Count(out, "data: [DONE]") != 1 {
+		t.Fatalf("stream output = %q, want exactly one DONE from fallback provider", out)
+	}
+	if len(usage.records) != 1 || usage.records[0].ProviderID != "good" {
+		t.Fatalf("usage records = %+v, want only good provider usage", usage.records)
+	}
+}
+
+func TestHandleProxyStreamRequestSetsCodeGenClientNameHeader(t *testing.T) {
+	var seenClientName string
+	client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		seenClientName = req.Header.Get(corelib.CodeGenClientNameHeader)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"index\":0}]}\n\ndata: [DONE]\n\n")),
+		}, nil
+	})}
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{
+			ID:     "codegen",
+			Name:   "CodeGen",
+			APIURL: "https://codegen.qianxin-inc.cn/api/llm/v1",
+		}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyFree,
+			Models:       []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "codegen"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: client}
+	writer := newLockedResponseRecorder()
+	err := HandleProxyStreamRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:    "hub1",
+		TenantID: "t1",
+		Body:     map[string]any{"model": "gpt-4", "stream": true},
+	}, writer)
+	if err != nil {
+		t.Fatalf("HandleProxyStreamRequest() error = %v", err)
+	}
+	if seenClientName != corelib.CodeGenClientName {
+		t.Fatalf("%s = %q, want %q", corelib.CodeGenClientNameHeader, seenClientName, corelib.CodeGenClientName)
+	}
+}
+
+type errorAfterReader struct {
+	r      *strings.Reader
+	failed bool
+}
+
+func (r *errorAfterReader) Read(p []byte) (int, error) {
+	if r.r != nil && r.r.Len() > 0 {
+		return r.r.Read(p)
+	}
+	if !r.failed {
+		r.failed = true
+		return 0, errors.New("upstream stream interrupted")
+	}
+	return 0, io.EOF
+}
+
+func (r *errorAfterReader) Close() error {
+	return nil
+}
+
+func TestProxyStreamingHTTPClientClearsTotalTimeout(t *testing.T) {
+	base := &http.Client{
+		Timeout: 180 * time.Second,
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: 10 * time.Minute,
+		},
+	}
+	client := proxyStreamingHTTPClient(base, corelib.MaclawLLMConfig{TimeoutSec: 240})
+	if client == base {
+		t.Fatal("proxyStreamingHTTPClient returned shared base client")
+	}
+	if client.Timeout != 0 {
+		t.Fatalf("Timeout = %s, want no total body timeout for streams", client.Timeout)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport == base.Transport {
+		t.Fatal("streaming transport should be cloned before mutation")
+	}
+	if got, want := transport.ResponseHeaderTimeout, 240*time.Second; got != want {
+		t.Fatalf("ResponseHeaderTimeout = %s, want %s", got, want)
+	}
+}
+
+func TestProxyStreamingHTTPClientAddsHeaderTimeoutWhenBaseUsesDefaultTransport(t *testing.T) {
+	base := &http.Client{Timeout: 180 * time.Second}
+	cfg := corelib.MaclawLLMConfig{TimeoutSec: 90}
+	client := proxyStreamingHTTPClient(base, cfg)
+	if client == base {
+		t.Fatal("proxyStreamingHTTPClient returned shared base client")
+	}
+	if client.Timeout != 0 {
+		t.Fatalf("Timeout = %s, want no total body timeout for streams", client.Timeout)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		t.Fatalf("Transport = %T, want cloned *http.Transport", client.Transport)
+	}
+	if got, want := transport.ResponseHeaderTimeout, time.Duration(cfg.EffectiveTimeoutSec())*time.Second; got != want {
+		t.Fatalf("ResponseHeaderTimeout = %s, want %s", got, want)
 	}
 }
 

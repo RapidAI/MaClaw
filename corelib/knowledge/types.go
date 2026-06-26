@@ -217,6 +217,66 @@ type DocumentNode struct {
 	TokenCount int               `json:"token_count,omitempty"`
 }
 
+// KnowledgeTable represents one structured sheet/table imported from a source.
+type KnowledgeTable struct {
+	ID             string    `json:"id"`
+	SourceID       string    `json:"source_id"`
+	SheetName      string    `json:"sheet_name"`
+	TableTitle     string    `json:"table_title,omitempty"`
+	HeaderRowIndex int       `json:"header_row_index,omitempty"`
+	RowCount       int       `json:"row_count,omitempty"`
+	ColumnCount    int       `json:"column_count,omitempty"`
+	SchemaJSON     string    `json:"schema_json,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// KnowledgeTableColumn stores a normalized spreadsheet column definition.
+type KnowledgeTableColumn struct {
+	ID             string    `json:"id"`
+	TableID        string    `json:"table_id"`
+	ColumnIndex    int       `json:"column_index"`
+	ColumnName     string    `json:"column_name"`
+	NormalizedName string    `json:"normalized_name"`
+	ValueType      string    `json:"value_type"`
+	AliasesJSON    string    `json:"aliases_json,omitempty"`
+	StatsJSON      string    `json:"stats_json,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// KnowledgeTableRow is the primary recall unit for structured spreadsheet data.
+type KnowledgeTableRow struct {
+	ID             string    `json:"id"`
+	TableID        string    `json:"table_id"`
+	SourceID       string    `json:"source_id"`
+	RowIndex       int       `json:"row_index"`
+	PrimaryKeyText string    `json:"primary_key_text,omitempty"`
+	RowText        string    `json:"row_text,omitempty"`
+	RowJSON        string    `json:"row_json,omitempty"`
+	Embedding      []float32 `json:"embedding,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// KnowledgeTableCell stores typed values for exact and range filtering.
+type KnowledgeTableCell struct {
+	ID                   string    `json:"id"`
+	RowID                string    `json:"row_id"`
+	TableID              string    `json:"table_id"`
+	ColumnID             string    `json:"column_id"`
+	ColumnName           string    `json:"column_name"`
+	NormalizedColumnName string    `json:"normalized_column_name"`
+	RawValue             string    `json:"raw_value,omitempty"`
+	NormalizedValue      string    `json:"normalized_value,omitempty"`
+	ValueType            string    `json:"value_type"`
+	NumberValue          *float64  `json:"number_value,omitempty"`
+	DateValue            string    `json:"date_value,omitempty"`
+	BoolValue            *bool     `json:"bool_value,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
 // Card is the primary recall unit distilled from one or more nodes.
 type Card struct {
 	ID          string    `json:"id"`
@@ -824,6 +884,62 @@ type SearchOptions struct {
 	IncludeDisabled bool     `json:"include_disabled,omitempty"`
 }
 
+type NumberRange struct {
+	Min *float64 `json:"min,omitempty"`
+	Max *float64 `json:"max,omitempty"`
+}
+
+type DateRange struct {
+	Start string `json:"start,omitempty"`
+	End   string `json:"end,omitempty"`
+}
+
+type StructuredSearchOptions struct {
+	Query           string                 `json:"query,omitempty"`
+	OwnerID         string                 `json:"owner_id,omitempty"`
+	TenantID        string                 `json:"tenant_id,omitempty"`
+	ProjectPath     string                 `json:"project_path,omitempty"`
+	SearchScope     string                 `json:"search_scope,omitempty"`
+	SourceIDs       []string               `json:"source_ids,omitempty"`
+	SourceID        string                 `json:"source_id,omitempty"`
+	SheetNames      []string               `json:"sheet_names,omitempty"`
+	ColumnEquals    map[string]string      `json:"column_equals,omitempty"`
+	ColumnContains  map[string]string      `json:"column_contains,omitempty"`
+	NumberRanges    map[string]NumberRange `json:"number_ranges,omitempty"`
+	DateRanges      map[string]DateRange   `json:"date_ranges,omitempty"`
+	Limit           int                    `json:"limit,omitempty"`
+	IncludeDisabled bool                   `json:"include_disabled,omitempty"`
+}
+
+type StructuredCatalogOptions struct {
+	OwnerID         string   `json:"owner_id,omitempty"`
+	TenantID        string   `json:"tenant_id,omitempty"`
+	ProjectPath     string   `json:"project_path,omitempty"`
+	SearchScope     string   `json:"search_scope,omitempty"`
+	SourceIDs       []string `json:"source_ids,omitempty"`
+	SourceID        string   `json:"source_id,omitempty"`
+	SheetNames      []string `json:"sheet_names,omitempty"`
+	Limit           int      `json:"limit,omitempty"`
+	IncludeDisabled bool     `json:"include_disabled,omitempty"`
+}
+
+type StructuredTableCatalog struct {
+	ID          string                 `json:"id"`
+	SourceID    string                 `json:"source_id"`
+	SourceTitle string                 `json:"source_title,omitempty"`
+	SourceKind  string                 `json:"source_kind,omitempty"`
+	SheetName   string                 `json:"sheet_name"`
+	TableTitle  string                 `json:"table_title,omitempty"`
+	RowCount    int                    `json:"row_count"`
+	ColumnCount int                    `json:"column_count"`
+	Columns     []KnowledgeTableColumn `json:"columns,omitempty"`
+}
+
+type StructuredCatalogResult struct {
+	Count  int                      `json:"count"`
+	Tables []StructuredTableCatalog `json:"tables,omitempty"`
+}
+
 type SearchResult struct {
 	Source     Source  `json:"source"`
 	ResultType string  `json:"result_type,omitempty"`
@@ -838,6 +954,11 @@ type SearchResult struct {
 	CardID     string  `json:"card_id,omitempty"`
 	CardTitle  string  `json:"card_title,omitempty"`
 	FactID     string  `json:"fact_id,omitempty"`
+	TableID    string  `json:"table_id,omitempty"`
+	RowID      string  `json:"row_id,omitempty"`
+	CellID     string  `json:"cell_id,omitempty"`
+	RowIndex   int     `json:"row_index,omitempty"`
+	ColumnName string  `json:"column_name,omitempty"`
 	Subject    string  `json:"subject,omitempty"`
 	Predicate  string  `json:"predicate,omitempty"`
 	Object     string  `json:"object,omitempty"`

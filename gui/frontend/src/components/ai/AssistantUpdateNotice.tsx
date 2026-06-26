@@ -84,9 +84,9 @@ export function AssistantUpdateNotice({ inline, lang, onDismissAppUpdate, onOpen
             },
         }
         : { onClick: toggleMenu };
-    const menuBackground = themeMode === "dark" ? "#0f172a" : t.bg;
+    const menuBackground = themeMode === "dark" ? t.inputBarBg : t.bg;
     const menuShadow = themeMode === "dark" ? "0 18px 45px rgba(0, 0, 0, 0.65)" : "0 16px 38px rgba(15, 23, 42, 0.18)";
-    const triggerColor = themeMode === "dark" ? "#b7d3ef" : "#2f5f98";
+    const triggerColor = themeMode === "dark" ? t.btnColor : "#2f5f98";
     const handleOnlineUpdate = (event: MouseEvent<HTMLButtonElement>) => {
         event.preventDefault();
         event.stopPropagation();
@@ -100,7 +100,7 @@ export function AssistantUpdateNotice({ inline, lang, onDismissAppUpdate, onOpen
         onDismissAppUpdate?.(latestVersion);
     };
     return <div ref={menuRef} style={{ position: "relative", display: "inline-flex" }}>
-        <button className="ai-titlebar-tool ai-update-notice-button" {...toggleProps} aria-haspopup="menu" aria-expanded={open} aria-label={title} title={title} style={{ ...getTitleBarToolButtonStyle(t, "active"), color: triggerColor, background: themeMode === "dark" ? "rgba(91, 120, 152, 0.16)" : "rgba(47, 95, 152, 0.10)", boxShadow: "inset 0 0 0 1px rgba(79, 127, 111, 0.34), 0 0 0 0 rgba(79, 127, 111, 0.28)", position: "relative" }}><UpdateIcon /></button>
+        <button className="ai-titlebar-tool ai-update-notice-button" {...toggleProps} aria-haspopup="menu" aria-expanded={open} aria-label={title} title={title} style={{ ...getTitleBarToolButtonStyle(t, "active"), color: triggerColor, background: themeMode === "dark" ? `color-mix(in srgb, ${t.btnColor} 14%, ${t.fieldBg})` : "rgba(47, 95, 152, 0.10)", boxShadow: "inset 0 0 0 1px rgba(79, 127, 111, 0.34), 0 0 0 0 rgba(79, 127, 111, 0.28)", position: "relative" }}><UpdateIcon /></button>
         {open && <div role="menu" aria-label={title} style={{ position: "absolute", top: "32px", right: 0, minWidth: "156px", padding: "6px", borderRadius: "8px", border: `1px solid ${t.titleBarBorder}`, background: menuBackground, boxShadow: menuShadow, zIndex: 30040, color: t.text, "--wails-draggable": "no-drag" } as WailsDragStyle}>
             <button ref={firstMenuItemRef} role="menuitem" className="ai-update-menu-item" onClick={handleOnlineUpdate} style={menuItemStyle(t.text)}><UpdateIcon /><span>{onlineText}</span></button>
             <button role="menuitem" className="ai-update-menu-item" onClick={handleDismiss} style={menuItemStyle(t.textMuted)}><DismissIcon /><span>{skipText}</span></button>

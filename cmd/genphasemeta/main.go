@@ -88,6 +88,8 @@ func mapToolPolicyToFilterPolicy(policy v2.ToolPolicy) v2.ToolFilterPolicy {
 	switch policy {
 	case v2.ToolPolicyFull:
 		return v2.ToolFilterFull
+	case v2.ToolPolicyPlanning:
+		return v2.ToolFilterPlanning
 	default:
 		return v2.ToolFilterDocOnly
 	}

@@ -40,6 +40,10 @@ const (
 	// similarity even when semantically unrelated (Gemma 300M baseline ~0.2).
 	// Without calibration, unrelated skills would exceed the score threshold.
 	codingSubAgentEmbeddingBaseline = 0.2
+
+	// codingSubAgentDynamicRequiredArgsMax bounds dynamic skill/MCP prompt
+	// metadata so schemas with many required fields do not dominate context.
+	codingSubAgentDynamicRequiredArgsMax = 6
 )
 
 // codingSubAgentSkillMatch is a skill that matched the current task.
@@ -183,7 +187,7 @@ func buildCodingSubAgentSkillSection(skills []codingSubAgentSkillMatch) string {
 	b.WriteString("以下 Skill 可通过 manage_skill(action=\"run\", name=\"...\", args={...}) 调用：\n")
 	for _, s := range skills {
 		if len(s.RequiredArgs) > 0 {
-			b.WriteString(fmt.Sprintf("- **%s**: %s（参数: %s）\n", s.Name, s.Description, strings.Join(s.RequiredArgs, ", ")))
+			b.WriteString(fmt.Sprintf("- **%s**: %s（参数: %s）\n", s.Name, s.Description, compactCodingSubAgentRequiredArgs(s.RequiredArgs)))
 		} else {
 			b.WriteString(fmt.Sprintf("- **%s**: %s\n", s.Name, s.Description))
 		}
@@ -193,6 +197,27 @@ func buildCodingSubAgentSkillSection(skills []codingSubAgentSkillMatch) string {
 	b.WriteString("- 如果 Skill 需要输入文件，先用 write_file 准备好文件，再传路径给 Skill\n")
 	b.WriteString("- Skill 执行失败时不要反复重试，改用 bash + 手动命令完成任务\n")
 	return b.String()
+}
+
+func compactCodingSubAgentRequiredArgs(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	shown := len(args)
+	if shown > codingSubAgentDynamicRequiredArgsMax {
+		shown = codingSubAgentDynamicRequiredArgsMax
+	}
+	parts := make([]string, 0, shown+1)
+	for _, arg := range args[:shown] {
+		arg = strings.TrimSpace(arg)
+		if arg != "" {
+			parts = append(parts, arg)
+		}
+	}
+	if remaining := len(args) - shown; remaining > 0 {
+		parts = append(parts, fmt.Sprintf("还有 %d 项未展开", remaining))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // buildManageSkillToolDefinition returns the manage_skill tool definition
@@ -245,15 +270,15 @@ var codingSubAgentAllowedSkillActions = map[string]bool{
 	"status": true,
 }
 
-
 // executeManageSkill handles manage_skill calls from the SubAgent with
 // action restriction (only run/status allowed) and skill name validation.
 func (c *codingSubAgentCallbacks) executeManageSkill(args map[string]interface{}) codingToolExecutionResult {
 	// Guard: manage_skill is only available when skills were matched for this task.
 	if len(c.matchedSkills) == 0 {
 		log.Printf("[coding-subagent] manage_skill blocked: no matched skills for this task")
+		msg := "manage_skill is not available for this task (no relevant skills found)"
 		return codingToolExecutionResult{
-			Text:    "manage_skill is not available for this task (no relevant skills found)",
+			Text:    c.rejectToolCall("manage_skill", args, msg),
 			Outcome: codingToolOutcomeBlocked,
 		}
 	}
@@ -264,9 +289,17 @@ func (c *codingSubAgentCallbacks) executeManageSkill(args map[string]interface{}
 	// Restrict to allowed actions.
 	if !codingSubAgentAllowedSkillActions[action] {
 		log.Printf("[coding-subagent] manage_skill blocked: action=%q not allowed", action)
+		msg := fmt.Sprintf("manage_skill action=%q is not allowed in coding SubAgent (allowed: run, status)", action)
 		return codingToolExecutionResult{
-			Text:    fmt.Sprintf("manage_skill action=%q is not allowed in coding SubAgent (allowed: run, status)", action),
+			Text:    c.rejectToolCall("manage_skill", args, msg),
 			Outcome: codingToolOutcomeBlocked,
+		}
+	}
+
+	if action == "status" {
+		runID, _ := args["run_id"].(string)
+		if strings.TrimSpace(runID) == "" {
+			return missingCodingSubAgentRequiredArgumentResult("manage_skill", "run_id")
 		}
 	}
 
@@ -280,24 +313,30 @@ func (c *codingSubAgentCallbacks) executeManageSkill(args map[string]interface{}
 				Outcome: codingToolOutcomeFailed,
 			}
 		}
-		if !c.isMatchedSkill(name) {
+		matchedSkill, matched := c.matchedSkill(name)
+		if !matched {
 			allowed := make([]string, len(c.matchedSkills))
 			for i, s := range c.matchedSkills {
 				allowed[i] = s.Name
 			}
 			log.Printf("[coding-subagent] manage_skill blocked: skill=%q not in matched set %v", name, allowed)
+			msg := fmt.Sprintf("skill %q is not available for this task (available: %s)", name, strings.Join(allowed, ", "))
 			return codingToolExecutionResult{
-				Text:    fmt.Sprintf("skill %q is not available for this task (available: %s)", name, strings.Join(allowed, ", ")),
+				Text:    c.rejectToolCall("manage_skill", args, msg),
 				Outcome: codingToolOutcomeBlocked,
 			}
+		}
+		if result, rejected := rejectMissingCodingSubAgentSkillRequiredArguments(matchedSkill, args); rejected {
+			return result
 		}
 	}
 
 	// Delegate to the host handler's toolManageSkill.
 	h := c.subagent.handler
 	if h == nil {
+		msg := "manage_skill: host handler unavailable"
 		return codingToolExecutionResult{
-			Text:    "manage_skill: host handler unavailable",
+			Text:    c.rejectToolCall("manage_skill", args, msg),
 			Outcome: codingToolOutcomeFailed,
 		}
 	}
@@ -320,28 +359,102 @@ func (c *codingSubAgentCallbacks) executeManageSkill(args map[string]interface{}
 	// legitimately contain words like "error" (e.g. "fixed 3 errors").
 	// toolManageSkill returns specific prefix patterns for failures.
 	outcome := codingToolOutcomeSuccess
-	if result == "" {
-		outcome = codingToolOutcomeFailed
-	} else if strings.HasPrefix(result, "manage_skill failed:") ||
+	if isCodingSubAgentDynamicToolFailure(result) ||
+		strings.HasPrefix(result, "manage_skill failed:") ||
 		strings.HasPrefix(result, "Skill Executor") ||
-		strings.HasPrefix(result, "❌") ||
+		strings.HasPrefix(result, "\u274c") ||
 		strings.HasPrefix(result, "skill not found") ||
-		strings.HasPrefix(result, "Skill 未找到") ||
-		strings.HasPrefix(result, "参数解析失败") {
+		strings.HasPrefix(result, "Skill \u672a\u627e\u5230") ||
+		strings.HasPrefix(result, "\u53c2\u6570\u89e3\u6790\u5931\u8d25") {
 		outcome = codingToolOutcomeFailed
 	}
+	c.trackDynamicToolResult("manage_skill", skillName, result, outcome == codingToolOutcomeSuccess)
 	return codingToolExecutionResult{Text: result, Outcome: outcome}
 }
-
-// isMatchedSkill checks if a skill name was selected for this task.
-func (c *codingSubAgentCallbacks) isMatchedSkill(name string) bool {
-	lower := strings.ToLower(name)
-	for _, s := range c.matchedSkills {
-		if strings.ToLower(s.Name) == lower {
+func isCodingSubAgentDynamicToolFailure(result string) bool {
+	trimmed := strings.TrimSpace(result)
+	if trimmed == "" {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	for _, prefix := range []string{
+		"[error]",
+		"error:",
+		"错误:",
+		"错误：",
+		"失败:",
+		"失败：",
+		"❌",
+		"failed:",
+		"failure:",
+		"exception:",
+		"panic:",
+		"tool error:",
+		"mcp call failed:",
+		"mcp tool error",
+		"mcp 调用失败",
+		"mcp 调用被拒绝",
+		"mcp registry 未初始化",
+		"本地 mcp manager 未初始化",
+		"validation failed:",
+		"arguments json ",
+	} {
+		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
 	}
 	return false
+}
+
+// isMatchedSkill checks if a skill name was selected for this task.
+func (c *codingSubAgentCallbacks) isMatchedSkill(name string) bool {
+	_, ok := c.matchedSkill(name)
+	return ok
+}
+
+func (c *codingSubAgentCallbacks) matchedSkill(name string) (codingSubAgentSkillMatch, bool) {
+	lower := strings.ToLower(name)
+	for _, s := range c.matchedSkills {
+		if strings.ToLower(s.Name) == lower {
+			return s, true
+		}
+	}
+	return codingSubAgentSkillMatch{}, false
+}
+
+func rejectMissingCodingSubAgentSkillRequiredArguments(skill codingSubAgentSkillMatch, args map[string]interface{}) (codingToolExecutionResult, bool) {
+	if len(skill.RequiredArgs) == 0 {
+		return codingToolExecutionResult{}, false
+	}
+	skillArgs, _ := args["args"].(map[string]interface{})
+	if skillArgs == nil {
+		skillArgs = make(map[string]interface{})
+		args["args"] = skillArgs
+	}
+	for _, field := range skill.RequiredArgs {
+		value, ok := skillArgs[field]
+		if !ok {
+			if topLevelValue, topLevelOK := args[field]; topLevelOK {
+				value = topLevelValue
+				ok = true
+				skillArgs[field] = topLevelValue
+			}
+		}
+		if !ok || value == nil {
+			return missingCodingSubAgentSkillRequiredArgumentResult(skill, field), true
+		}
+		if s, ok := value.(string); ok && strings.TrimSpace(s) == "" {
+			return missingCodingSubAgentSkillRequiredArgumentResult(skill, field), true
+		}
+	}
+	return codingToolExecutionResult{}, false
+}
+
+func missingCodingSubAgentSkillRequiredArgumentResult(skill codingSubAgentSkillMatch, field string) codingToolExecutionResult {
+	return codingToolExecutionResult{
+		Text:    fmt.Sprintf("Error: manage_skill target %q is missing required skill argument %q in args. The skill was not executed. Regenerate manage_skill with args.%s set.", skill.Name, field, field),
+		Outcome: codingToolOutcomeFailed,
+	}
 }
 
 // truncateLogText truncates text for log output, appending "..." if truncated.

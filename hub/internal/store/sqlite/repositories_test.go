@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -82,6 +84,35 @@ func TestAdminUserRepositoryRoundTrip(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("count after delete = %d, want 0", count)
+	}
+}
+
+func TestInvitationCodeMarkUsedOnlyConsumesUnusedCode(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	item := &store.InvitationCode{
+		ID:        "ic_atomic",
+		TenantID:  store.DefaultTenantID,
+		Code:      "ATOMIC1234",
+		Status:    "unused",
+		CreatedAt: now,
+	}
+	if err := st.InvitationCodes.Create(ctx, item); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := st.InvitationCodes.MarkUsed(ctx, item.ID, "first@example.com", now); err != nil {
+		t.Fatalf("first MarkUsed: %v", err)
+	}
+	if err := st.InvitationCodes.MarkUsed(ctx, item.ID, "second@example.com", now.Add(time.Minute)); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("second MarkUsed error = %v, want sql.ErrNoRows", err)
+	}
+	got, err := st.InvitationCodes.GetByID(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got == nil || got.UsedByEmail != "first@example.com" {
+		t.Fatalf("used email was overwritten: %#v", got)
 	}
 }
 
@@ -425,6 +456,86 @@ func TestSessionRepositoryUserTokenUsageSnapshotDeltasAndReset(t *testing.T) {
 		t.Fatalf("total tokens = %d, want input + output only", got.Usage.TotalTokens())
 	}
 }
+
+func TestSessionRepositorySummarizeUserDurationsMergesOverlapsAndRequiresEmail(t *testing.T) {
+	st := newTestStore(t)
+	ctx := store.WithTenant(context.Background(), "tenant_acme")
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	user := &store.User{ID: "u_duration", TenantID: "tenant_acme", Email: "duration@example.com", SN: "SN-DURATION", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	alpha := &store.User{ID: "u_alpha_duration", TenantID: "tenant_acme", Email: "alpha@example.com", SN: "SN-DURATION-ALPHA", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, alpha); err != nil {
+		t.Fatalf("create alpha user: %v", err)
+	}
+
+	endedA := now.Add(30 * time.Minute)
+	endedB := now.Add(60 * time.Minute)
+	endedAlpha := now.Add(10 * time.Minute)
+	endedDirectEmail := now.Add(20 * time.Minute)
+	sessions := []*store.Session{
+		{ID: "s_duration_a", TenantID: user.TenantID, MachineID: "m_a", UserID: user.ID, Tool: "codex", Title: "a", ProjectPath: "D:/work/a", Status: "exited", SummaryJSON: `{}`, HostOnline: false, StartedAt: now, UpdatedAt: endedA, EndedAt: &endedA},
+		{ID: "s_duration_b", TenantID: user.TenantID, MachineID: "m_b", UserID: user.ID, Tool: "codex", Title: "b", ProjectPath: "D:/work/b", Status: "exited", SummaryJSON: `{}`, HostOnline: false, StartedAt: now.Add(15 * time.Minute), UpdatedAt: endedB, EndedAt: &endedB},
+		{ID: "s_duration_c", TenantID: user.TenantID, MachineID: "m_c", UserID: user.ID, Tool: "codex", Title: "c", ProjectPath: "D:/work/c", Status: "running", SummaryJSON: `{}`, HostOnline: true, StartedAt: now.Add(2 * time.Hour), UpdatedAt: now.Add(2*time.Hour + 30*time.Minute)},
+		{ID: "s_duration_alpha", TenantID: alpha.TenantID, MachineID: "m_alpha", UserID: alpha.ID, Tool: "codex", Title: "alpha", ProjectPath: "D:/work/alpha", Status: "exited", SummaryJSON: `{}`, HostOnline: false, StartedAt: now, UpdatedAt: endedAlpha, EndedAt: &endedAlpha},
+		{ID: "s_duration_direct_email", TenantID: user.TenantID, MachineID: "m_direct_email", UserID: "direct@example.com", Tool: "codex", Title: "direct", ProjectPath: "D:/work/direct", Status: "exited", SummaryJSON: `{}`, HostOnline: false, StartedAt: now, UpdatedAt: endedDirectEmail, EndedAt: &endedDirectEmail},
+		{ID: "s_duration_uid_only", TenantID: user.TenantID, MachineID: "m_uid", UserID: "u_missing_email", Tool: "codex", Title: "uid", ProjectPath: "D:/work/uid", Status: "running", SummaryJSON: `{}`, HostOnline: true, StartedAt: now, UpdatedAt: now.Add(6 * time.Hour)},
+	}
+	for _, session := range sessions {
+		if err := st.Sessions.Create(ctx, session); err != nil {
+			t.Fatalf("create session %s: %v", session.ID, err)
+		}
+	}
+
+	rows, err := st.Sessions.SummarizeUserDurations(ctx, user.TenantID, now, now.Add(24*time.Hour), now.Add(3*time.Hour))
+	if err != nil {
+		t.Fatalf("summarize user durations: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3: %#v", len(rows), rows)
+	}
+	if rows[0].UserEmail != "alpha@example.com" || rows[0].DurationSeconds != int64(10*time.Minute/time.Second) {
+		t.Fatalf("first row = %#v, want alpha@example.com with 10m", rows[0])
+	}
+	if rows[1].UserEmail != "direct@example.com" || rows[1].DurationSeconds != int64(20*time.Minute/time.Second) {
+		t.Fatalf("second row = %#v, want direct@example.com with 20m", rows[1])
+	}
+	if rows[2].UserEmail != "duration@example.com" || rows[2].DurationSeconds != int64(120*time.Minute/time.Second) {
+		t.Fatalf("third row = %#v, want duration@example.com with 120m", rows[2])
+	}
+}
+
+func TestSessionRepositorySummarizeUserDurationsIncludesLegacyBlankUpdatedAt(t *testing.T) {
+	st := newTestStore(t)
+	ctx := store.WithTenant(context.Background(), "tenant_acme")
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	user := &store.User{ID: "u_legacy_duration", TenantID: "tenant_acme", Email: "legacy@example.com", SN: "SN-LEGACY-DURATION", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	repo, ok := st.Sessions.(*sessionRepo)
+	if !ok {
+		t.Fatalf("sessions repo = %T, want *sessionRepo", st.Sessions)
+	}
+	_, err := repo.db.ExecContext(ctx, `INSERT INTO sessions (id, tenant_id, machine_id, user_id, tool, title, project_path, status, summary_json, preview_text, output_seq, host_online, started_at, updated_at, ended_at, exit_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"s_legacy_blank_updated", user.TenantID, "m_legacy", user.ID, "codex", "legacy", "D:/work/legacy", "running", `{}`, "", 0, 1, now.Format(time.RFC3339), "", nil, nil)
+	if err != nil {
+		t.Fatalf("insert legacy session: %v", err)
+	}
+
+	rows, err := st.Sessions.SummarizeUserDurations(ctx, user.TenantID, now, now.Add(24*time.Hour), now.Add(45*time.Minute))
+	if err != nil {
+		t.Fatalf("summarize user durations: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1: %#v", len(rows), rows)
+	}
+	if rows[0].UserEmail != "legacy@example.com" || rows[0].DurationSeconds != int64(45*time.Minute/time.Second) {
+		t.Fatalf("row = %#v, want legacy@example.com with 45m", rows[0])
+	}
+}
+
 func TestUsersAllowSameEmailAcrossTenants(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

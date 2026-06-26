@@ -20,7 +20,6 @@ import {
     KnowledgeEntityProfile,
     KnowledgeExecuteSourceQualityMaintenancePlan,
     KnowledgeExplain,
-    KnowledgeExportSnapshot,
     KnowledgeFactGraph,
     KnowledgeFactIndex,
     KnowledgeExportSnapshotWithOptions,
@@ -28,6 +27,7 @@ import {
     KnowledgeClearAll,
     KnowledgeImportDirectory,
     KnowledgeImportFiles,
+    KnowledgeImportHubShare,
     KnowledgeImportSnapshot,
     KnowledgeImportJobStatus,
     KnowledgeListURLDomainPolicies,
@@ -68,10 +68,13 @@ import {
     KnowledgeScanFiles,
     KnowledgeSearch,
     KnowledgeSearchFacets,
+    KnowledgeSearchStructured,
+    KnowledgeStructuredCatalog,
     KnowledgeSourceGraph,
     KnowledgeSourceNeighborhood,
     KnowledgeSourcePath,
     KnowledgeSourceDigest,
+    KnowledgeShareToHub,
     KnowledgeSourceTimeline,
     KnowledgeTopicRelevance,
     KnowledgeQualityMaintenancePolicies,
@@ -88,8 +91,12 @@ import {
     KnowledgeDeepCrawlPreview,
     KnowledgeGetImageAssetPaths,
     KnowledgeOpenImageFile,
+    LoadConfig,
+    OpenSystemUrl,
     SelectKnowledgeDirectory,
     SelectKnowledgeFiles,
+    SelectKnowledgeSnapshotExportPath,
+    SelectKnowledgeSnapshotFile,
 } from '../../../wailsjs/go/main/App';
 
 type Props = {
@@ -99,6 +106,7 @@ type Props = {
 
 type Source = {
     id?: string;
+    batch_id?: string;
     kind?: string;
     uri?: string;
     canonical_uri?: string;
@@ -578,6 +586,11 @@ type SearchResult = {
     card_id?: string;
     card_title?: string;
     fact_id?: string;
+    table_id?: string;
+    row_id?: string;
+    cell_id?: string;
+    row_index?: number;
+    column_name?: string;
     subject?: string;
     predicate?: string;
     object?: string;
@@ -626,6 +639,29 @@ type SearchFacetsResult = {
     entities?: SearchFacetBucket[];
     predicates?: SearchFacetBucket[];
     notes?: string[];
+};
+
+type StructuredCatalogColumn = {
+    column_name?: string;
+    normalized_name?: string;
+    value_type?: string;
+};
+
+type StructuredCatalogTable = {
+    id?: string;
+    source_id?: string;
+    source_title?: string;
+    source_kind?: string;
+    sheet_name?: string;
+    table_title?: string;
+    row_count?: number;
+    column_count?: number;
+    columns?: StructuredCatalogColumn[];
+};
+
+type StructuredCatalogResult = {
+    count?: number;
+    tables?: StructuredCatalogTable[];
 };
 
 type TopicRelevanceSource = {
@@ -912,6 +948,56 @@ export function applyKnowledgeSearchFilterPayload(payload: any, filters: {
     if (labels.length) payload.labels = labels;
 }
 
+export function applyKnowledgeStructuredSearchPayload(payload: any, filters: {
+    query?: string;
+    sourceID?: string;
+    sheetName?: string;
+    columnName?: string;
+    matchMode?: string;
+    columnValue?: string;
+    numberMin?: string;
+    numberMax?: string;
+    dateStart?: string;
+    dateEnd?: string;
+    limit?: number;
+    includeDisabled?: boolean;
+} = {}) {
+    const query = (filters.query || '').trim();
+    if (query) payload.query = query;
+    const sourceID = (filters.sourceID || '').trim();
+    if (sourceID) payload.source_ids = [sourceID];
+    const sheetName = (filters.sheetName || '').trim();
+    if (sheetName) payload.sheet_names = [sheetName];
+    const columnName = (filters.columnName || '').trim();
+    const matchMode = normalizeKnowledgeFilterToken(filters.matchMode) || 'equals';
+    const columnValue = (filters.columnValue || '').trim();
+    if (columnName && columnValue && matchMode === 'contains') {
+        payload.column_contains = { [columnName]: columnValue };
+    } else if (columnName && columnValue && matchMode === 'equals') {
+        payload.column_equals = { [columnName]: columnValue };
+    }
+    const numberRange: Record<string, number> = {};
+    const numberMin = (filters.numberMin || '').trim();
+    const numberMax = (filters.numberMax || '').trim();
+    const min = parseKnowledgeStructuredNumber(numberMin);
+    const max = parseKnowledgeStructuredNumber(numberMax);
+    if (numberMin && Number.isFinite(min)) numberRange.min = min;
+    if (numberMax && Number.isFinite(max)) numberRange.max = max;
+    if (columnName && Object.keys(numberRange).length) payload.number_ranges = { [columnName]: numberRange };
+    const dateRange: Record<string, string> = {};
+    const dateStart = (filters.dateStart || '').trim();
+    const dateEnd = (filters.dateEnd || '').trim();
+    if (dateStart) dateRange.start = dateStart;
+    if (dateEnd) dateRange.end = dateEnd;
+    if (columnName && Object.keys(dateRange).length) payload.date_ranges = { [columnName]: dateRange };
+    payload.limit = normalizeKnowledgeSourceLimit(filters.limit, 20, 100);
+    payload.include_disabled = !!filters.includeDisabled;
+}
+
+function parseKnowledgeStructuredNumber(value: string) {
+    return Number(value.replace(/,/g, ''));
+}
+
 export function knowledgeSourceListPayload(capabilities: KnowledgeCapabilitiesResult | null | undefined, filter: {
     query?: string;
     kind?: string;
@@ -1143,7 +1229,104 @@ export function knowledgeHealthActionManualLabel(action: any) {
     return reason ? `Manual: ${reason}` : 'Manual';
 }
 
-type KnowledgeSubTab = 'overview' | 'ingest' | 'search' | 'sources' | 'quality';
+type KnowledgeSubTab = 'overview' | 'ingest' | 'export' | 'search' | 'sources' | 'quality';
+
+type ExportSourceGroup = {
+    id: string;
+    label: string;
+    meta: string;
+    sources: Source[];
+};
+
+function basenameFromPath(value?: string) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    const parts = text.split(/[\\/]+/).filter(Boolean);
+    return parts[parts.length - 1] || text;
+}
+
+function hostnameFromURL(value?: string) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    try {
+        return new URL(text).hostname;
+    } catch {
+        return '';
+    }
+}
+
+function knowledgeExportSourceLabel(source: Source) {
+    const kind = String(source.kind || '').toLowerCase();
+    if (kind.includes('url') || /^https?:\/\//i.test(source.uri || '')) {
+        return source.title || hostnameFromURL(source.uri) || source.uri || source.id || 'URL';
+    }
+    if (source.relative_path) return basenameFromPath(source.relative_path);
+    if (source.title) return source.title;
+    if (source.uri) return basenameFromPath(source.uri) || source.uri;
+    return source.id || 'source';
+}
+
+function knowledgeExportSourceMeta(source: Source) {
+    const location = source.relative_path || source.uri || source.canonical_uri || '';
+    return [
+        source.kind,
+        source.status,
+        location,
+        source.labels?.length ? source.labels.join(', ') : '',
+        `nodes ${source.node_count || 0}`,
+    ].filter(Boolean).join(' · ');
+}
+
+function knowledgeExportGroups(sources: Source[], batches: ImportBatch[], t: (en: string, zhHans: string, zhHant?: string) => string): ExportSourceGroup[] {
+    const batchMap = new Map<string, ImportBatch>();
+    for (const batch of batches || []) {
+        const id = String(batch.id || '').trim();
+        if (id) batchMap.set(id, batch);
+    }
+
+    const grouped = new Map<string, Source[]>();
+    const unassigned: Source[] = [];
+    for (const source of sources || []) {
+        const batchID = String(source.batch_id || '').trim();
+        if (batchID && batchMap.has(batchID)) {
+            const items = grouped.get(batchID);
+            if (items) {
+                items.push(source);
+            } else {
+                grouped.set(batchID, [source]);
+            }
+        } else {
+            unassigned.push(source);
+        }
+    }
+
+    const groups = Array.from(grouped.entries()).map(([batchID, items]) => {
+        const batch = batchMap.get(batchID) || {};
+        return {
+            id: `batch:${batchID}`,
+            label: batch.root_path || batchID,
+            meta: [
+                t('Import batch', '导入批次'),
+                batch.status,
+                batch.imported_files !== undefined ? `${batch.imported_files}/${batch.total_files || items.length} ${t('imported', '已导入')}` : '',
+                batch.failed_files ? `${batch.failed_files} ${t('failed', '失败')}` : '',
+                batch.updated_at,
+            ].filter(Boolean).join(' · '),
+            sources: items,
+        };
+    });
+
+    groups.sort((left, right) => left.label.localeCompare(right.label));
+    if (unassigned.length) {
+        groups.push({
+            id: 'unassigned',
+            label: t('Ungrouped sources', '未归属来源'),
+            meta: t('Manual text, URLs, Hub imports, or older records without an import batch', '手工文本、URL、Hub 导入或没有导入批次的历史记录'),
+            sources: unassigned,
+        });
+    }
+    return groups;
+}
 
 
 export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
@@ -1156,6 +1339,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [sources, setSources] = useState<Source[] | null>(null);
     const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
     const [facets, setFacets] = useState<SearchFacetsResult | null>(null);
+    const [structuredCatalog, setStructuredCatalog] = useState<StructuredCatalogResult | null>(null);
     const [qualityReport, setQualityReport] = useState<SourceQualityReport | null>(null);
     const [qualityPlan, setQualityPlan] = useState<SourceQualityMaintenancePlan | null>(null);
     const [executionResult, setExecutionResult] = useState<SourceQualityMaintenanceExecuteResult | null>(null);
@@ -1168,8 +1352,23 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [textForm, setTextForm] = useState({ title: '', text: '', labels: '', topicHint: '', saveScope: 'project', distillMode: '' });
     const [urlForm, setURLForm] = useState({ urls: '', labels: '', topicHint: '', saveScope: 'project', distillMode: '', autoLabels: true });
     const [fileForm, setFileForm] = useState({ directory: '', labels: '', topicHint: '', saveScope: 'project', distillMode: '', includeExts: '', excludeGlobs: '', recursive: true, autoLabels: true, dryRun: false, maxFileBytes: 10485760 });
+    const [exchangeForm, setExchangeForm] = useState({ redactSensitive: true, importPath: '', dryRun: true, overwrite: false, replaceAll: false });
+    const [hubShareForm, setHubShareForm] = useState({ hubURL: '', hubToken: '', title: '', description: '', visibilityScope: 'hub', visibilityUsers: '', ttl: '7d', includeDisabled: false });
+    const [hubImportForm, setHubImportForm] = useState({ hubURL: '', hubToken: '', knowledgeID: '', shareLink: '', dryRun: true });
+    const [hubShareResult, setHubShareResult] = useState<any>(null);
+    const [exportSources, setExportSources] = useState<Source[] | null>(null);
+    const [exportBatches, setExportBatches] = useState<ImportBatch[] | null>(null);
+    const [exportSelection, setExportSelection] = useState<Record<string, boolean>>({});
+    const [exportListLoading, setExportListLoading] = useState(false);
+    const [exportListAttempted, setExportListAttempted] = useState(false);
+    const [showHubShareDialog, setShowHubShareDialog] = useState(false);
+    const hubShareButtonRef = useRef<HTMLButtonElement | null>(null);
+    const hubShareDialogRef = useRef<HTMLElement | null>(null);
+    const busyRef = useRef(busy);
     const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
     const [searchForm, setSearchForm] = useState({ query: '', resultType: 'all', sourceKind: 'all', domain: '', sourceID: '', labels: '', limit: 20, includeDisabled: false });
+    const [searchMode, setSearchMode] = useState<'semantic' | 'structured'>('semantic');
+    const [structuredSearchForm, setStructuredSearchForm] = useState({ sheetName: '', columnName: '', matchMode: 'equals', columnValue: '', numberMin: '', numberMax: '', dateStart: '', dateEnd: '' });
     const [sourceFilter, setSourceFilter] = useState({ query: '', kind: 'all', status: 'all', coverage: 'all', domain: '', labels: '', limit: 100 });
     const [qualityFilter, setQualityFilter] = useState({ query: '', kind: 'all', status: 'all', coverage: 'all', domain: '', labels: '', limit: 100 });
     const [qualityOptions, setQualityOptions] = useState({ policy: 'balanced', dryRun: true, distillMode: '', maxSourcesPerAction: 100, allowSensitiveDisable: false, allowDuplicateSuppression: true });
@@ -1247,11 +1446,32 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         void refresh();
     }, []);
 
+    useEffect(() => {
+        let cancelled = false;
+        void LoadConfig()
+            .then((cfg: any) => {
+                if (cancelled || !cfg) return;
+                setHubShareForm(prev => ({
+                    ...prev,
+                    hubURL: prev.hubURL || cfg.remote_hub_url || '',
+                    hubToken: prev.hubToken || cfg.remote_viewer_token || '',
+                }));
+                setHubImportForm(prev => ({
+                    ...prev,
+                    hubURL: prev.hubURL || cfg.remote_hub_url || '',
+                    hubToken: prev.hubToken || cfg.remote_viewer_token || '',
+                }));
+            })
+            .catch(() => {});
+        return () => { cancelled = true; };
+    }, []);
+
     const summary = knowledgeHealthSummaryModel(health);
     const sourcePayload = useMemo(() => knowledgeSourceListPayload(capabilities, sourceFilter), [capabilities, sourceFilter]);
     const knowledgeTabs = useMemo(() => ([
         { id: 'overview' as const, label: t('Overview', '总览'), desc: t('Health, score, and capabilities', '健康、评分与能力') },
         { id: 'ingest' as const, label: t('Ingest', '导入'), desc: t('Text, URL, files, and crawl', '文本、URL、文件与抓取') },
+        { id: 'export' as const, label: t('Export', '导出'), desc: t('Snapshots, Hub sharing, and share links', '快照、Hub 分享与分享链接') },
         { id: 'search' as const, label: t('Search', '检索'), desc: t('Query and facets', '查询与分面') },
         { id: 'sources' as const, label: t('Sources', '来源'), desc: t('Inspect and manage source records', '查看并管理来源') },
         { id: 'quality' as const, label: t('Quality', '质量'), desc: t('Reports and maintenance plans', '报告与维护计划') },
@@ -1264,9 +1484,57 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const qualityPayload = useMemo(() => knowledgeSourceListPayload(capabilities, qualityFilter), [capabilities, qualityFilter]);
     const coverageOptions = useMemo(() => knowledgeSourceCoverageOptions(capabilities, sourceFilter.coverage), [capabilities, sourceFilter.coverage]);
     const qualityCoverageOptions = useMemo(() => knowledgeSourceCoverageOptions(capabilities, qualityFilter.coverage), [capabilities, qualityFilter.coverage]);
+    const exportSourceGroups = useMemo(
+        () => knowledgeExportGroups(exportSources || [], exportBatches || [], t),
+        [exportSources, exportBatches, t],
+    );
+    const selectedExportSourceIDs = useMemo(
+        () => Object.keys(exportSelection).filter(id => exportSelection[id]),
+        [exportSelection],
+    );
+    const selectedExportSources = useMemo(() => {
+        if (!selectedExportSourceIDs.length) return [];
+        const byID = new Map((exportSources || [])
+            .map(source => [String(source.id || '').trim(), source] as const)
+            .filter(([id]) => !!id));
+        return selectedExportSourceIDs.map(id => byID.get(id) || { id });
+    }, [exportSources, selectedExportSourceIDs]);
+    const selectedDisabledShareCount = useMemo(() => {
+        if (hubShareForm.includeDisabled || !selectedExportSourceIDs.length) return 0;
+        const disabledIDs = new Set((exportSources || [])
+            .filter(source => String(source.status || '').toLowerCase() === 'disabled')
+            .map(source => String(source.id || '').trim())
+            .filter(Boolean));
+        return selectedExportSourceIDs.filter(id => disabledIDs.has(id)).length;
+    }, [exportSources, hubShareForm.includeDisabled, selectedExportSourceIDs]);
+    const exportSourceCount = exportSources?.length || 0;
+    const exportSelectionLabel = selectedExportSourceIDs.length
+        ? t(`${selectedExportSourceIDs.length} selected`, `已选择 ${selectedExportSourceIDs.length} 项`)
+        : t('All sources', '全部来源');
+    const hubShareDescriptionMissing = !hubShareForm.description.trim();
     const distillModes = capabilities?.distill_modes?.length ? capabilities.distill_modes : ['rules_only', 'llm_optional'];
     const formatSummary = (capabilities?.formats || []).slice(0, 6).map(format => `${format.kind || 'format'}${format.extensions?.length ? ` (${format.extensions.join(', ')})` : ''}`);
     const aliasSummary = knowledgeCoverageAliasSummary(capabilities, 4);
+    const structuredColumnSuggestions = useMemo(() => {
+        const seen = new Map<string, StructuredCatalogColumn>();
+        for (const table of structuredCatalog?.tables || []) {
+            for (const column of table.columns || []) {
+                const name = String(column.column_name || '').trim();
+                if (!name) continue;
+                const key = name.toLowerCase();
+                if (!seen.has(key)) seen.set(key, column);
+            }
+        }
+        return Array.from(seen.values()).sort((a, b) => String(a.column_name || '').localeCompare(String(b.column_name || '')));
+    }, [structuredCatalog]);
+    const structuredSheetSuggestions = useMemo(() => {
+        const values = new Set<string>();
+        for (const table of structuredCatalog?.tables || []) {
+            const name = String(table.sheet_name || '').trim();
+            if (name) values.add(name);
+        }
+        return Array.from(values).sort((a, b) => a.localeCompare(b));
+    }, [structuredCatalog]);
 
     const refreshSourceList = async () => {
         const requestPayload = sourcePayload;
@@ -1277,6 +1545,58 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         setSources(nextSources);
         return nextSources;
     };
+
+    const loadExportSelectionData = useCallback(async () => {
+        setExportListAttempted(true);
+        setExportListLoading(true);
+        setError('');
+        try {
+            const [nextSources, nextBatches] = await Promise.all([
+                KnowledgeListSources({ limit: 5000, include_disabled: true }),
+                KnowledgeListImportBatches(200),
+            ]);
+            const normalizedSources = Array.isArray(nextSources) ? nextSources : [];
+            setExportSources(normalizedSources);
+            setExportBatches(Array.isArray(nextBatches) ? nextBatches : []);
+            const availableIDs = new Set(normalizedSources.map(source => String(source.id || '').trim()).filter(Boolean));
+            setExportSelection(prev => Object.fromEntries(
+                Object.entries(prev).filter(([id, selected]) => selected && availableIDs.has(id)),
+            ));
+        } catch (err: any) {
+            setError(err?.message || String(err));
+        } finally {
+            setExportListLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (activeTab !== 'export' || exportSources !== null || exportListLoading || exportListAttempted) return;
+        void loadExportSelectionData();
+    }, [activeTab, exportSources, exportListLoading, exportListAttempted, loadExportSelectionData]);
+
+    useEffect(() => {
+        busyRef.current = busy;
+    }, [busy]);
+
+    useEffect(() => {
+        if (!showHubShareDialog) return;
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        hubShareDialogRef.current?.focus();
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape' && busyRef.current !== 'shareToHub') {
+                setShowHubShareDialog(false);
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => {
+            document.body.style.overflow = previousOverflow;
+            window.removeEventListener('keydown', handleKeyDown);
+            if (hubShareButtonRef.current && document.contains(hubShareButtonRef.current)) {
+                hubShareButtonRef.current.focus();
+            }
+        };
+    }, [showHubShareDialog]);
 
     const runTask = async (name: string, task: () => Promise<any>, options: { refreshSources?: boolean; refreshHealth?: boolean; successMessage?: string | false } = {}) => {
         setBusy(name);
@@ -1316,11 +1636,157 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         dry_run: fileForm.dryRun,
     });
 
+    const exportKnowledgeSnapshot = async () => {
+        const outputPath = await SelectKnowledgeSnapshotExportPath();
+        if (!outputPath) return;
+        await runTask('exportSnapshot', () => KnowledgeExportSnapshotWithOptions({
+            output_path: outputPath,
+            redact_sensitive: exchangeForm.redactSensitive,
+            source_ids: selectedExportSourceIDs,
+        }), {
+            successMessage: t('Knowledge snapshot exported.', '知识库快照已导出。'),
+        });
+    };
+
+    const chooseKnowledgeSnapshotImport = async () => {
+        const inputPath = await SelectKnowledgeSnapshotFile();
+        if (!inputPath) return;
+        setExchangeForm(prev => ({ ...prev, importPath: inputPath }));
+    };
+
+    const importKnowledgeSnapshot = async (dryRun = exchangeForm.dryRun) => {
+        const inputPath = exchangeForm.importPath.trim();
+        if (!inputPath) {
+            setError(t('Choose a knowledge snapshot before importing.', '请先选择知识库快照文件。'));
+            return;
+        }
+        await runTask(dryRun ? 'importSnapshotDryRun' : 'importSnapshot', () => KnowledgeImportSnapshot({
+            input_path: inputPath,
+            dry_run: dryRun,
+            overwrite: exchangeForm.overwrite,
+            replace_all: exchangeForm.replaceAll,
+            abort_on_error: true,
+            safety_backup_redact: true,
+        }), {
+            refreshSources: !dryRun,
+            refreshHealth: !dryRun,
+            successMessage: dryRun
+                ? t('Knowledge snapshot checked. Review the result before importing.', '知识库快照已检查，请确认结果后再导入。')
+                : t('Knowledge snapshot imported.', '知识库快照已导入。'),
+        });
+    };
+
+    const importHubShare = async (dryRun = hubImportForm.dryRun) => {
+        if (!hubImportForm.shareLink.trim() && !hubImportForm.knowledgeID.trim()) {
+            setError(t('Paste a share link or knowledge ID before importing.', '请先粘贴分享链接或知识 ID。'));
+            return;
+        }
+        await runTask(dryRun ? 'importHubShareDryRun' : 'importHubShare', () => KnowledgeImportHubShare({
+            hub_url: hubImportForm.hubURL.trim(),
+            hub_token: hubImportForm.hubToken.trim(),
+            knowledge_id: hubImportForm.knowledgeID.trim(),
+            share_link: hubImportForm.shareLink.trim(),
+            dry_run: dryRun,
+        }), {
+            refreshSources: !dryRun,
+            refreshHealth: !dryRun,
+            successMessage: dryRun
+                ? t('Hub knowledge share checked. Review the result before importing.', 'Hub 知识分享已检查，请确认结果后再导入。')
+                : t('Hub knowledge share imported.', 'Hub 知识分享已导入。'),
+        });
+    };
+
+    const shareKnowledgeToHub = async () => {
+        const description = hubShareForm.description.trim();
+        if (!description) {
+            setError(t('Knowledge description is required before sharing.', '分享前必须填写知识描述。'));
+            return;
+        }
+        setHubShareResult(null);
+        await runTask('shareToHub', async () => {
+            const result = await KnowledgeShareToHub({
+                hub_url: hubShareForm.hubURL.trim(),
+                hub_token: hubShareForm.hubToken.trim(),
+                title: hubShareForm.title.trim(),
+                description,
+                visibility_scope: hubShareForm.visibilityScope,
+                visibility_users: parseLabelList(hubShareForm.visibilityUsers),
+                ttl: hubShareForm.ttl,
+                source_ids: selectedExportSourceIDs,
+                redact_sensitive: exchangeForm.redactSensitive,
+                include_disabled: hubShareForm.includeDisabled,
+            });
+            setHubShareResult(result || null);
+            setShowHubShareDialog(false);
+            return result;
+        }, {
+            successMessage: t('Knowledge shared to Hub.', '知识已分享到 Hub。'),
+        });
+    };
+
+    const openHubShareDialog = () => {
+        setError('');
+        setShowHubShareDialog(true);
+    };
+
+    const openHubKnowledgeShares = async () => {
+        const hubURL = (hubShareForm.hubURL || hubShareResult?.hub_url || '').trim().replace(/\/+$/, '');
+        if (!hubURL) {
+            setError(t('Hub URL is required to open shared knowledge.', '需要 Hub 地址才能查看分享。'));
+            return;
+        }
+        await OpenSystemUrl(`${hubURL}/hub/knowledge/shares/mine`);
+    };
+
+    const toggleExportSource = (sourceID?: string) => {
+        const id = String(sourceID || '').trim();
+        if (!id) return;
+        setExportSelection(prev => ({ ...prev, [id]: !prev[id] }));
+    };
+
+    const setExportGroupSelection = (group: ExportSourceGroup, selected: boolean) => {
+        setExportSelection(prev => {
+            const next = { ...prev };
+            for (const source of group.sources) {
+                const id = String(source.id || '').trim();
+                if (id) next[id] = selected;
+            }
+            return next;
+        });
+    };
+
+    const clearExportSelection = () => setExportSelection({});
+
+    const copyText = async (value: string) => {
+        const text = String(value || '').trim();
+        if (!text) return;
+        try {
+            await navigator.clipboard.writeText(text);
+            notifySuccess(t('Copied.', '已复制。'));
+        } catch {
+            setError(t('Copy failed. Select and copy the link manually.', '复制失败，请手动选择并复制链接。'));
+        }
+    };
+
     const loadSources = async () => {
         await runTask('sources', async () => {
             const nextSources = await refreshSourceList();
             return { count: nextSources.length };
         });
+    };
+
+    const loadStructuredCatalog = async () => {
+        await runTask('structuredCatalog', async () => {
+            const payload: any = {
+                limit: 500,
+                include_disabled: searchForm.includeDisabled,
+            };
+            if (searchForm.sourceID.trim()) payload.source_ids = [searchForm.sourceID.trim()];
+            if (structuredSearchForm.sheetName.trim()) payload.sheet_names = [structuredSearchForm.sheetName.trim()];
+            const result = await KnowledgeStructuredCatalog(payload);
+            setStructuredCatalog(result || null);
+            return { tables: result?.count || 0 };
+        }, { successMessage: false });
     };
 
     const saveText = async () => {
@@ -1426,21 +1892,40 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     };
 
     const runSearch = async () => {
-        if (!searchForm.query.trim()) {
+        const structuredHasColumnFilter = !!structuredSearchForm.columnName.trim() && (
+            !!structuredSearchForm.columnValue.trim() ||
+            !!structuredSearchForm.numberMin.trim() ||
+            !!structuredSearchForm.numberMax.trim() ||
+            !!structuredSearchForm.dateStart.trim() ||
+            !!structuredSearchForm.dateEnd.trim()
+        );
+        if (searchMode === 'semantic' && !searchForm.query.trim()) {
             setError(t('Search query is required.', '请输入搜索问题。'));
+            return;
+        }
+        if (searchMode === 'structured' && !searchForm.query.trim() && !structuredHasColumnFilter) {
+            setError(t('Enter a query or at least one table column filter.', '请输入问题，或至少填写一个表格列筛选条件。'));
             return;
         }
         await runTask('search', async () => {
             const payload: any = {
-                query: searchForm.query.trim(),
                 limit: normalizeKnowledgeSourceLimit(searchForm.limit, 20, 200),
                 include_disabled: searchForm.includeDisabled,
             };
-            applyKnowledgeSearchFilterPayload(payload, searchForm);
-            const [results, facetResult] = await Promise.all([
-                KnowledgeSearch(payload),
-                KnowledgeSearchFacets(payload),
-            ]);
+            let results: any[] = [];
+            let facetResult: any = null;
+            if (searchMode === 'structured') {
+                applyKnowledgeStructuredSearchPayload(payload, { ...searchForm, ...structuredSearchForm });
+                results = await KnowledgeSearchStructured(payload);
+                facetResult = null;
+            } else {
+                payload.query = searchForm.query.trim();
+                applyKnowledgeSearchFilterPayload(payload, searchForm);
+                [results, facetResult] = await Promise.all([
+                    KnowledgeSearch(payload),
+                    KnowledgeSearchFacets(payload),
+                ]);
+            }
             setSearchResults(Array.isArray(results) ? results : []);
             setFacets(facetResult || null);
             return { count: Array.isArray(results) ? results.length : 0 };
@@ -1542,6 +2027,17 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         return () => window.clearInterval(handle);
     }, [importJob?.id, importJob?.status, sourcePayload]);
 
+    useEffect(() => {
+        if (searchMode !== 'structured' || structuredCatalog) return;
+        void loadStructuredCatalog();
+    }, [searchMode, structuredCatalog]);
+
+    const hubShareSourceSummary = (hubShareResult?.source_summary || hubShareResult?.raw?.source_summary || {}) as Record<string, any>;
+    const hubShareWarnings = Array.isArray(hubShareSourceSummary.warnings)
+        ? hubShareSourceSummary.warnings.map((item: any) => String(item || '').trim()).filter(Boolean)
+        : [];
+    const hubShareContentSources = Number(hubShareResult?.content_sources || hubShareSourceSummary.content_sources || 0);
+
     return (
         <>
         <section className="knowledge-panel">
@@ -1572,10 +2068,10 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                         aria-selected={activeTab === tab.id}
                         aria-controls={`knowledge-panel-${tab.id}`}
                         aria-label={tab.label}
+                        title={tab.desc}
                         onClick={() => setActiveTab(tab.id)}
                     >
                         <span className="settings-subtab-button__label">{tab.label}</span>
-                        <span className="settings-subtab-button__desc">{tab.desc}</span>
                     </button>
                 ))}
             </div>
@@ -1621,8 +2117,253 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 </div>
             )}
 
-            {activeTab === 'ingest' && (
-                <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-ingest" aria-labelledby="knowledge-tab-ingest">
+            {(activeTab === 'ingest' || activeTab === 'export') && (
+                <div className="knowledge-stack" role="tabpanel" id={`knowledge-panel-${activeTab}`} aria-labelledby={`knowledge-tab-${activeTab}`}>
+                <PanelBlock title={activeTab === 'export' ? t('Export / Share Knowledge Base', '知识库导出 / 分享') : t('Import Knowledge Base', '知识库导入')}>
+                    {activeTab === 'export' && (
+                    <>
+                        <div className="knowledge-exchange-box knowledge-export-share-box">
+                            <div className="knowledge-export-head">
+                                <div>
+                                    <strong>{t('Choose knowledge items', '选择知识条目')}</strong>
+                                    <span className="knowledge-muted-line">{t('Select readable knowledge sources once, then export them to a file or share them to Hub. No selection means the whole knowledge base.', '先统一选择知识条目，然后导出为文件或分享到 Hub；不选择则表示整库。')}</span>
+                                </div>
+                                <div className="knowledge-inline-actions">
+                                    <span className="knowledge-chip knowledge-chip--badge">{exportSelectionLabel}</span>
+                                    <button type="button" className="knowledge-button knowledge-button--secondary" disabled={exportListLoading || !!busy} onClick={loadExportSelectionData}>
+                                        {exportListLoading ? t('Loading...', '加载中...') : t('Refresh List', '刷新列表')}
+                                    </button>
+                                    <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!selectedExportSourceIDs.length || !!busy} onClick={clearExportSelection}>
+                                        {t('Clear Selection', '清空选择')}
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="knowledge-export-source-list" aria-label={t('Knowledge item selection for export and sharing', '用于导出和分享的知识条目选择')}>
+                                {exportListLoading ? (
+                                    <div className="knowledge-empty">{t('Loading existing knowledge sources...', '正在加载现有知识来源...')}</div>
+                                ) : exportSources === null && exportListAttempted ? (
+                                    <div className="knowledge-empty">{t('Source list could not be loaded. Use Refresh List to try again.', '来源列表未能加载，请点击刷新列表重试。')}</div>
+                                ) : exportSources === null ? (
+                                    <div className="knowledge-empty">{t('Open the export tab to load existing knowledge sources.', '打开导出页后加载现有知识来源。')}</div>
+                                ) : exportSourceCount ? exportSourceGroups.map(group => {
+                                    const selectable = group.sources.filter(source => source.id);
+                                    const selectedCount = selectable.filter(source => !!exportSelection[String(source.id)]).length;
+                                    const allSelected = selectable.length > 0 && selectedCount === selectable.length;
+                                    const someSelected = selectedCount > 0 && !allSelected;
+                                    return (
+                                        <div key={group.id} className="knowledge-export-group">
+                                            <div className="knowledge-export-group__head">
+                                                <label className="knowledge-checkbox knowledge-export-group__title">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={allSelected}
+                                                        disabled={!selectable.length}
+                                                        ref={input => { if (input) input.indeterminate = someSelected; }}
+                                                        onChange={event => setExportGroupSelection(group, event.target.checked)}
+                                                    />
+                                                    <span>{group.label}</span>
+                                                </label>
+                                                <span className="knowledge-muted-line">{selectedCount}/{selectable.length} {t('selected', '已选')}</span>
+                                            </div>
+                                            <span className="knowledge-muted-line">{group.meta}</span>
+                                            <div className="knowledge-export-source-items">
+                                                {group.sources.map(source => {
+                                                    const id = String(source.id || '').trim();
+                                                    return (
+                                                        <label key={id || source.uri || source.title} className="knowledge-export-source-row">
+                                                            <input type="checkbox" checked={!!id && !!exportSelection[id]} disabled={!id} onChange={() => toggleExportSource(id)} />
+                                                            <span className="knowledge-export-source-row__main">
+                                                                <strong>{knowledgeExportSourceLabel(source)}</strong>
+                                                                <span className="knowledge-muted-line">{knowledgeExportSourceMeta(source)}</span>
+                                                            </span>
+                                                        </label>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    );
+                                }) : (
+                                    <div className="knowledge-empty">{t('No knowledge sources are available to export yet.', '当前还没有可导出的知识来源。')}</div>
+                                )}
+                            </div>
+                            <div className="knowledge-export-action-panel">
+                                <div className="knowledge-hub-share-head">
+                                    <div>
+                                        <strong>{t('Choose an action', '选择操作')}</strong>
+                                        <span className="knowledge-muted-line">{t('Both actions use the same selected items above.', '两个操作都会使用上方同一份已选条目。')}</span>
+                                    </div>
+                                    <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={openHubKnowledgeShares}>
+                                        {t('View Shares', '查看分享')}
+                                    </button>
+                                </div>
+                                <div className="knowledge-checkbox-row">
+                                    <label className="knowledge-checkbox"><input type="checkbox" checked={exchangeForm.redactSensitive} onChange={event => setExchangeForm({ ...exchangeForm, redactSensitive: event.target.checked })} /> {t('Redact sensitive fields', '脱敏敏感字段')}</label>
+                                </div>
+                                <div className="knowledge-action-buttons">
+                                    <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={exportKnowledgeSnapshot}>
+                                        {busy === 'exportSnapshot'
+                                            ? t('Exporting...', '导出中...')
+                                            : selectedExportSourceIDs.length
+                                                ? t('Export Selected to File', '导出已选到文件')
+                                                : t('Export Full to File', '导出整库到文件')}
+                                    </button>
+                                    <button type="button" ref={hubShareButtonRef} className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={openHubShareDialog}>
+                                        {selectedExportSourceIDs.length
+                                            ? t('Share Selected to Hub', '分享已选到 Hub')
+                                            : t('Share Full to Hub', '分享整库到 Hub')}
+                                    </button>
+                                </div>
+                            </div>
+                            {showHubShareDialog ? (
+                                <div className="knowledge-share-modal-overlay" role="presentation">
+                                    <section ref={hubShareDialogRef} className="knowledge-share-modal" role="dialog" aria-modal="true" aria-labelledby="knowledge-share-dialog-title" tabIndex={-1}>
+                                        <div className="knowledge-share-modal__header">
+                                            <div>
+                                                <strong id="knowledge-share-dialog-title">{t('Hub share settings', 'Hub 分享设置')}</strong>
+                                                <span className="knowledge-muted-line">{t('Set visibility, expiry, and description before publishing the Hub share.', '发布 Hub 分享前设置可见范围、有效期和描述。')}</span>
+                                            </div>
+                                            <button type="button" className="knowledge-modal-close" aria-label={t('Close Hub share settings', '关闭 Hub 分享设置')} disabled={busy === 'shareToHub'} onClick={() => setShowHubShareDialog(false)}>×</button>
+                                        </div>
+                                        <div className="knowledge-share-modal__body">
+                                            <div className="knowledge-compact-grid knowledge-hub-share-grid">
+                                                <input className="knowledge-input" value={hubShareForm.hubURL} onChange={event => setHubShareForm({ ...hubShareForm, hubURL: event.target.value })} placeholder={t('Hub URL (uses configured Hub if empty)', 'Hub 地址（为空则使用已配置 Hub）')} />
+                                                <input className="knowledge-input" type="password" value={hubShareForm.hubToken} onChange={event => setHubShareForm({ ...hubShareForm, hubToken: event.target.value })} placeholder={t('Hub token (uses configured token if empty)', 'Hub 令牌（为空则使用已配置令牌）')} />
+                                                <input className="knowledge-input" value={hubShareForm.title} onChange={event => setHubShareForm({ ...hubShareForm, title: event.target.value })} placeholder={t('Share title (optional)', '分享标题（可选）')} />
+                                                <select className="knowledge-input" value={hubShareForm.visibilityScope} onChange={event => setHubShareForm({ ...hubShareForm, visibilityScope: event.target.value })}>
+                                                    <option value="hub">{t('This Hub public', '本 Hub 公开')}</option>
+                                                    <option value="public">{t('Public internet', '全网公开')}</option>
+                                                    <option value="tenant">{t('Tenant public', '本租户公开')}</option>
+                                                    <option value="private">{t('Only me', '仅自己')}</option>
+                                                    <option value="users">{t('User list', '用户列表可见')}</option>
+                                                </select>
+                                                <select className="knowledge-input" value={hubShareForm.ttl} onChange={event => setHubShareForm({ ...hubShareForm, ttl: event.target.value })}>
+                                                    <option value="7d">{t('7 days (default)', '7 天（默认）')}</option>
+                                                    <option value="month">{t('1 month', '1 个月')}</option>
+                                                    <option value="year">{t('1 year', '1 年')}</option>
+                                                    <option value="permanent">{t('Permanent', '永久')}</option>
+                                                </select>
+                                                <input className="knowledge-input" value={hubShareForm.visibilityUsers} onChange={event => setHubShareForm({ ...hubShareForm, visibilityUsers: event.target.value })} placeholder={t('Visible users, emails or IDs', '可见用户，邮箱或 ID')} disabled={hubShareForm.visibilityScope !== 'users'} />
+                                            </div>
+                                            <textarea
+                                                id="knowledge-hub-share-description"
+                                                className="knowledge-input knowledge-textarea knowledge-textarea--compact"
+                                                value={hubShareForm.description}
+                                                onChange={event => setHubShareForm({ ...hubShareForm, description: event.target.value })}
+                                                placeholder={t('Required knowledge description for readers and Hub management', '必填：给读者和 Hub 管理后台看的知识描述')}
+                                                required
+                                                aria-invalid={hubShareDescriptionMissing}
+                                                aria-describedby="knowledge-hub-share-description-help"
+                                            />
+                                            <span id="knowledge-hub-share-description-help" className="knowledge-field-hint" data-state={hubShareDescriptionMissing ? 'warning' : 'default'}>
+                                                {hubShareDescriptionMissing
+                                                    ? t('Required before Hub sharing; visible to readers and Hub knowledge managers.', '分享到 Hub 前必填；读者和 Hub 知识管理后台都会看到。')
+                                                    : t('This description helps readers and agents identify the exported knowledge.', '该描述用于帮助读者和 Agent 识别这次导出的知识。')}
+                                            </span>
+                                            <div className="knowledge-checkbox-row">
+                                                <label className="knowledge-checkbox"><input type="checkbox" checked={hubShareForm.includeDisabled} onChange={event => setHubShareForm({ ...hubShareForm, includeDisabled: event.target.checked })} /> {t('Include disabled sources in Hub share', '分享到 Hub 时包含禁用来源')}</label>
+                                                {selectedDisabledShareCount > 0 ? (
+                                                    <span className="knowledge-muted-line">{t(`${selectedDisabledShareCount} disabled selected source(s) will be skipped unless enabled here.`, `已选择的 ${selectedDisabledShareCount} 个禁用来源会被跳过，除非在此勾选包含禁用来源。`)}</span>
+                                                ) : null}
+                                            </div>
+                                            <div className="knowledge-share-scope" aria-label={t('Hub share scope', 'Hub 分享范围')}>
+                                                <div className="knowledge-share-scope__head">
+                                                    <strong>{t('Selected items for sharing', '将分享的知识条目')}</strong>
+                                                    <span className="knowledge-chip knowledge-chip--badge">{exportSelectionLabel}</span>
+                                                </div>
+                                                {selectedExportSources.length ? (
+                                                    <div className="knowledge-share-scope__items">
+                                                        {selectedExportSources.slice(0, 6).map(source => (
+                                                            <span key={source.id || knowledgeExportSourceLabel(source)} className="knowledge-share-scope__item" title={knowledgeExportSourceMeta(source)}>
+                                                                {knowledgeExportSourceLabel(source)}
+                                                            </span>
+                                                        ))}
+                                                        {selectedExportSources.length > 6 ? (
+                                                            <span className="knowledge-muted-line">{t(`+${selectedExportSources.length - 6} more`, `另有 ${selectedExportSources.length - 6} 项`)}</span>
+                                                        ) : null}
+                                                    </div>
+                                                ) : (
+                                                    <span className="knowledge-muted-line">{t('No item is selected above, so Hub sharing will include the whole knowledge base.', '上方未选择条目，因此分享到 Hub 时会包含整库。')}</span>
+                                                )}
+                                            </div>
+                                            <span className="knowledge-muted-line">{t('Change the share scope by selecting items in the source list above.', '如需调整分享范围，请在上方来源列表中选择条目。')}</span>
+                                        </div>
+                                        <div className="knowledge-share-modal__footer">
+                                            <button type="button" className="knowledge-button knowledge-button--secondary" disabled={busy === 'shareToHub'} onClick={() => setShowHubShareDialog(false)}>
+                                                {t('Cancel', '取消')}
+                                            </button>
+                                            <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy || hubShareDescriptionMissing} aria-describedby={hubShareDescriptionMissing ? 'knowledge-hub-share-description-help' : undefined} onClick={shareKnowledgeToHub}>
+                                                {busy === 'shareToHub'
+                                                    ? t('Sharing...', '分享中...')
+                                                    : selectedExportSourceIDs.length
+                                                        ? t('Publish Selected to Hub', '确认分享已选到 Hub')
+                                                        : t('Publish Full to Hub', '确认分享整库到 Hub')}
+                                            </button>
+                                        </div>
+                                    </section>
+                                </div>
+                            ) : null}
+                            {hubShareResult ? (
+                                <div className="knowledge-share-result">
+                                    <div><strong>{t('Knowledge ID', '知识 ID')}</strong><code>{hubShareResult.knowledge_id || '-'}</code></div>
+                                    <div><strong>{t('Share link', '分享链接')}</strong><button type="button" className="knowledge-inline-link-button" onClick={() => copyText(hubShareResult.share_url)}>{hubShareResult.share_url || '-'}</button></div>
+                                    <div><strong>{t('Agent import', 'Agent 导入')}</strong><button type="button" className="knowledge-inline-link-button" onClick={() => copyText(hubShareResult.agent_import)}>{hubShareResult.agent_import || '-'}</button></div>
+                                    <span className="knowledge-muted-line">{[hubShareResult.source_count ? `${hubShareResult.source_count} sources` : '', hubShareContentSources ? `${hubShareContentSources} importable content sources` : '', hubShareResult.expires_at ? `expires ${hubShareResult.expires_at}` : t('No expiry', '无过期时间')].filter(Boolean).join(' · ')}</span>
+                                    {hubShareWarnings.length ? (
+                                        <div className="knowledge-alert knowledge-alert--warning">
+                                            <strong>{t('Share warnings', '分享警告')}</strong>
+                                            <ul>{hubShareWarnings.slice(0, 5).map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}</ul>
+                                        </div>
+                                    ) : null}
+                                </div>
+                            ) : null}
+                        </div>
+                    </>
+                    )}
+                    {activeTab === 'ingest' && (
+                    <>
+                        <div className="knowledge-exchange-box">
+                            <strong>{t('Import whole knowledge base', '整库导入')}</strong>
+                            <span className="knowledge-muted-line">{t('Choose a JSONL snapshot exported from Maclaw GUI. Dry run is enabled by default.', '选择从 Maclaw GUI 导出的 JSONL 快照。默认先预检查。')}</span>
+                            <div className="knowledge-file-picker-row">
+                                <input className="knowledge-input" value={exchangeForm.importPath} readOnly placeholder={t('No snapshot selected', '未选择快照文件')} />
+                                <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={chooseKnowledgeSnapshotImport}>{t('Choose', '选择')}</button>
+                            </div>
+                            <div className="knowledge-checkbox-row">
+                                <label className="knowledge-checkbox"><input type="checkbox" checked={exchangeForm.dryRun} onChange={event => setExchangeForm({ ...exchangeForm, dryRun: event.target.checked })} /> {t('Dry run first', '先预检查')}</label>
+                                <label className="knowledge-checkbox"><input type="checkbox" checked={exchangeForm.overwrite} onChange={event => setExchangeForm({ ...exchangeForm, overwrite: event.target.checked })} /> {t('Overwrite conflicts', '覆盖冲突')}</label>
+                                <label className="knowledge-checkbox"><input type="checkbox" checked={exchangeForm.replaceAll} onChange={event => setExchangeForm({ ...exchangeForm, replaceAll: event.target.checked })} /> {t('Replace all', '替换整库')}</label>
+                            </div>
+                            <div className="knowledge-panel-actions">
+                                <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy || !exchangeForm.importPath.trim()} onClick={() => importKnowledgeSnapshot(true)}>{t('Check Import', '检查导入')}</button>
+                                <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy || !exchangeForm.importPath.trim()} onClick={() => importKnowledgeSnapshot(false)}>
+                                    {busy === 'importSnapshot' ? t('Importing...', '导入中...') : t('Import Snapshot', '导入快照')}
+                                </button>
+                            </div>
+                        </div>
+                        <div className="knowledge-exchange-box knowledge-hub-import-box">
+                            <strong>{t('Import from Hub share', '从 Hub 分享导入')}</strong>
+                            <span className="knowledge-muted-line">{t('Paste a readable share link or a knowledge ID. Dry run checks what can be imported before writing to the local knowledge base.', '粘贴可阅读分享链接或知识 ID。默认先预检查可导入内容，再写入本机知识库。')}</span>
+                            <div className="knowledge-compact-grid knowledge-hub-share-grid">
+                                <input className="knowledge-input" value={hubImportForm.shareLink} onChange={event => setHubImportForm({ ...hubImportForm, shareLink: event.target.value })} placeholder={t('Share link, e.g. https://hub/hub/knowledge/shares/kn_xxx', '分享链接，例如 https://hub/hub/knowledge/shares/kn_xxx')} />
+                                <input className="knowledge-input" value={hubImportForm.knowledgeID} onChange={event => setHubImportForm({ ...hubImportForm, knowledgeID: event.target.value })} placeholder={t('Knowledge ID (when share link is not provided)', '知识 ID（未提供分享链接时使用）')} />
+                                <input className="knowledge-input" value={hubImportForm.hubURL} onChange={event => setHubImportForm({ ...hubImportForm, hubURL: event.target.value })} placeholder={t('Hub URL (uses configured Hub if empty)', 'Hub 地址（为空则使用已配置 Hub）')} />
+                                <input className="knowledge-input" type="password" value={hubImportForm.hubToken} onChange={event => setHubImportForm({ ...hubImportForm, hubToken: event.target.value })} placeholder={t('Hub token for private/tenant shares', '私有/租户分享所需 Hub 令牌')} />
+                            </div>
+                            <div className="knowledge-checkbox-row">
+                                <label className="knowledge-checkbox"><input type="checkbox" checked={hubImportForm.dryRun} onChange={event => setHubImportForm({ ...hubImportForm, dryRun: event.target.checked })} /> {t('Dry run first', '先预检查')}</label>
+                            </div>
+                            <div className="knowledge-panel-actions">
+                                <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy || (!hubImportForm.shareLink.trim() && !hubImportForm.knowledgeID.trim())} onClick={() => importHubShare(true)}>{t('Check Hub Share', '检查 Hub 分享')}</button>
+                                <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy || (!hubImportForm.shareLink.trim() && !hubImportForm.knowledgeID.trim())} onClick={() => importHubShare(false)}>
+                                    {busy === 'importHubShare' ? t('Importing...', '导入中...') : t('Import Hub Share', '导入 Hub 分享')}
+                                </button>
+                            </div>
+                        </div>
+                    </>
+                    )}
+                </PanelBlock>
+                {activeTab === 'ingest' && (
+                <>
                 <PanelBlock title={t('Import Documents', '导入文档')}>
                     <div className="knowledge-import-card-row">
                         <div className="knowledge-import-card-copy">
@@ -1657,20 +2398,33 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                     onStartCrawl={handleDeepCrawlStart}
                     busy={deepCrawlBusy}
                 />
+                </>
+                )}
                 </div>
             )}
 
             {activeTab === 'search' && (
                 <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-search" aria-labelledby="knowledge-tab-search">
                     <div className="knowledge-search-hero">
+                            <div className="knowledge-search-mode-toggle" role="radiogroup" aria-label={t('Search mode', '检索模式')}>
+                                <button type="button" className="knowledge-mode-button" data-active={searchMode === 'semantic' ? 'true' : undefined} onClick={() => setSearchMode('semantic')}>
+                                    {t('Semantic Search', '语义检索')}
+                                </button>
+                                <button type="button" className="knowledge-mode-button" data-active={searchMode === 'structured' ? 'true' : undefined} onClick={() => setSearchMode('structured')}>
+                                    {t('Table Filters', '表格筛选')}
+                                </button>
+                                <span className="knowledge-muted-line">{searchMode === 'structured'
+                                    ? t('Filter Excel/CSV rows by column values, ranges, and optional keywords.', '按列值、范围和可选关键词筛选 Excel/CSV 行。')
+                                    : t('Search cards, facts, documents, and table rows with natural language.', '用自然语言检索卡片、事实、文档和表格行。')}</span>
+                            </div>
                             <div className="knowledge-search-input-wrapper">
-                                <span className="knowledge-search-icon">SEARCH</span>
+                                <span className="knowledge-search-icon">{searchMode === 'structured' ? 'TABLE' : 'SEARCH'}</span>
                                 <input
                                     className="knowledge-input knowledge-search-input--hero"
                                     value={searchForm.query}
                                     onChange={event => setSearchForm({ ...searchForm, query: event.target.value })}
-                                    onKeyDown={event => { if (event.key === 'Enter' && searchForm.query.trim()) { event.preventDefault(); void runSearch(); } }}
-                                    placeholder={t('Search knowledge base...', '搜索知识库...')}
+                                    onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void runSearch(); } }}
+                                    placeholder={searchMode === 'structured' ? t('Optional keywords inside matched rows...', '可选：在匹配行内继续按关键词筛选...') : t('Search knowledge base...', '搜索知识库...')}
                                     autoFocus
                                 />
                                 <button type="button" className="knowledge-button knowledge-button--primary knowledge-search-button" disabled={!!busy} onClick={runSearch}>
@@ -1685,18 +2439,53 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                 <input className="knowledge-input knowledge-input--compact" type="number" value={searchForm.limit} onChange={event => setSearchForm({ ...searchForm, limit: Number(event.target.value) })} title={t('Max results', '最大结果数')} style={{ width: 60 }} />
                                 <label className="knowledge-checkbox"><input type="checkbox" checked={searchForm.includeDisabled} onChange={event => setSearchForm({ ...searchForm, includeDisabled: event.target.checked })} /> {t('Disabled', '含禁用')}</label>
                             </div>
+                            {searchMode === 'structured' && (
+                                <div className="knowledge-structured-filter-panel" aria-label={t('Structured table filters', '结构化表格筛选')}>
+                                    <div className="knowledge-structured-filter-grid">
+                                        <input className="knowledge-input" list="knowledge-structured-column-options" value={structuredSearchForm.columnName} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, columnName: event.target.value })} placeholder={t('Column name, e.g. Department', '列名，例如：部门')} />
+                                        <datalist id="knowledge-structured-column-options">
+                                            {structuredColumnSuggestions.map(column => <option key={`${column.column_name}-${column.value_type || ''}`} value={column.column_name || ''}>{column.value_type || ''}</option>)}
+                                        </datalist>
+                                        <select className="knowledge-input" value={structuredSearchForm.matchMode} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, matchMode: event.target.value })}>
+                                            <option value="equals">{t('Equals', '等于')}</option>
+                                            <option value="contains">{t('Contains', '包含')}</option>
+                                        </select>
+                                        <input className="knowledge-input" value={structuredSearchForm.columnValue} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, columnValue: event.target.value })} placeholder={t('Text value', '文本值')} />
+                                        <input className="knowledge-input" list="knowledge-structured-sheet-options" value={structuredSearchForm.sheetName} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, sheetName: event.target.value })} placeholder={t('Sheet name (optional)', 'Sheet 名（可选）')} />
+                                        <datalist id="knowledge-structured-sheet-options">
+                                            {structuredSheetSuggestions.map(sheet => <option key={sheet} value={sheet} />)}
+                                        </datalist>
+                                    </div>
+                                    <div className="knowledge-structured-filter-grid knowledge-structured-filter-grid--ranges">
+                                        <input className="knowledge-input" type="number" value={structuredSearchForm.numberMin} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, numberMin: event.target.value })} placeholder={t('Number min', '数字下限')} />
+                                        <input className="knowledge-input" type="number" value={structuredSearchForm.numberMax} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, numberMax: event.target.value })} placeholder={t('Number max', '数字上限')} />
+                                        <input className="knowledge-input" type="date" value={structuredSearchForm.dateStart} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, dateStart: event.target.value })} title={t('Date start', '日期起始')} />
+                                        <input className="knowledge-input" type="date" value={structuredSearchForm.dateEnd} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, dateEnd: event.target.value })} title={t('Date end', '日期结束')} />
+                                    </div>
+                                    <div className="knowledge-structured-filter-help">
+                                        {t('Tip: use one column at a time for precise row evidence. Text and range filters can be combined on the same column.', '提示：一次使用一个列名以获得精准行证据；同一列可以组合文本值和范围条件。')}
+                                        {' '}
+                                        {structuredCatalog?.count ? t(`${structuredCatalog.count} table(s) indexed.`, `已索引 ${structuredCatalog.count} 张表。`) : t('No table catalog loaded yet.', '尚未加载表格目录。')}
+                                        <button type="button" className="knowledge-inline-link-button" disabled={!!busy} onClick={loadStructuredCatalog}>
+                                            {busy === 'structuredCatalog' ? t('Loading catalog...', '加载目录中...') : t('Refresh catalog', '刷新目录')}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                     </div>
                     <div className="knowledge-two-column">
                         <PanelBlock title={`${t('Results', '结果')} (${searchResults.length})`}>
                             <ResultList results={searchResults} empty={t('No results yet.', '暂无检索结果。')} query={searchForm.query} />
                         </PanelBlock>
                         <PanelBlock title={t('Facets', '分面')}>
-                            <KeyValueList values={[
+                            {searchMode === 'structured' ? (
+                                <div className="knowledge-empty">{t('Facets are available for semantic search. Structured table filters return row evidence directly.', '分面用于语义检索；表格筛选会直接返回行级证据。')}</div>
+                            ) : <KeyValueList values={[
                                 ...(facets?.result_types || []).map(item => `${item.label || item.kind} ${item.count || 0}`),
                                 ...(facets?.source_kinds || []).map(item => `${item.label || item.kind} ${item.count || 0}`),
                                 ...(facets?.domains || []).map(item => `${item.domain || item.label} ${item.count || 0}`),
                                 ...(facets?.labels || []).map(item => `${item.label} ${item.count || 0}`),
-                            ]} empty={t('Run a search to see facets.', '执行检索后显示分面。')} />
+                            ]} empty={t('Run a search to see facets.', '执行检索后显示分面。')} />}
                         </PanelBlock>
                     </div>
                 </div>
@@ -1884,18 +2673,31 @@ function ResultList({ results, empty, query }: { results: SearchResult[]; empty:
     const regex = buildHighlightRegex((query || '').trim());
     return <div className="knowledge-list">{results.map((result, index) => {
         const isImage = result.node_type === 'image' || result.source?.kind === 'image';
-        const sourceLabel = result.card_title || result.node_title || result.subject || result.source?.title || result.source?.relative_path || 'Result';
+        const isTableRow = result.result_type === 'table_row';
+        const sourceLabel = isTableRow
+            ? (result.claim || result.source?.title || result.source?.relative_path || 'Table row')
+            : (result.card_title || result.node_title || result.subject || result.source?.title || result.source?.relative_path || 'Result');
+        const meta = [
+            result.result_type,
+            result.source?.kind,
+            isTableRow && result.sheet_name ? `sheet ${result.sheet_name}` : '',
+            isTableRow && result.row_index ? `row ${result.row_index}` : '',
+            result.column_name ? `column ${result.column_name}` : '',
+            result.source?.relative_path || result.source?.uri,
+            result.score ? `score ${result.score.toFixed(3)}` : '',
+        ].filter(Boolean).join(' · ');
         return (
-            <div key={`${result.result_type || 'result'}-${result.node_id || result.card_id || result.fact_id || index}`} className={`knowledge-row ${isImage ? 'knowledge-row--image' : ''}`}>
+            <div key={`${result.result_type || 'result'}-${result.node_id || result.card_id || result.fact_id || result.row_id || index}`} className={`knowledge-row ${isImage ? 'knowledge-row--image' : ''}`}>
                 {isImage && (
                     <ImageResultThumbnail sourceID={result.source?.id || ''} nodeID={result.node_id || ''} title={sourceLabel} />
                 )}
                 <div className="knowledge-row-main">
                     <strong>
                         {isImage && <span className="knowledge-chip knowledge-chip--image">IMG</span>}
+                        {isTableRow && <span className="knowledge-chip knowledge-chip--badge">ROW</span>}
                         {highlightText(sourceLabel, regex)}
                     </strong>
-                    <span className="knowledge-muted-line">{[result.result_type, result.source?.kind, result.source?.relative_path || result.source?.uri, result.score ? `score ${result.score.toFixed(3)}` : ''].filter(Boolean).join(' · ')}</span>
+                    <span className="knowledge-muted-line">{meta}</span>
                     <span>{highlightText(result.summary || result.claim || result.snippet || [result.subject, result.predicate, result.object].filter(Boolean).join(' '), regex)}</span>
                 </div>
             </div>

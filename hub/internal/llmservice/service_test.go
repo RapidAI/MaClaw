@@ -2,6 +2,7 @@ package llmservice
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +123,68 @@ func TestGrantDefaultServiceForNewUser(t *testing.T) {
 	}
 	if grant.CreditsTotal != 300 {
 		t.Fatalf("expected initial 30%% credits grant 300, got %v", grant.CreditsTotal)
+	}
+}
+
+func TestGrantInvitationCodeBenefitForUser(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	if err := SaveRegistry(ctx, system, &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "invite-pro", Name: "Invite Pro"}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+
+	if err := GrantInvitationCodeBenefitForUser(ctx, system, "user@example.com", "ic_invite_1", "invite-pro", 7, 1234.5678); err != nil {
+		t.Fatalf("GrantInvitationCodeBenefitForUser: %v", err)
+	}
+	if err := GrantInvitationCodeBenefitForUser(ctx, system, "user@example.com", "ic_invite_1", "invite-pro", 7, 1234.5678); err != nil {
+		t.Fatalf("GrantInvitationCodeBenefitForUser second call: %v", err)
+	}
+
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	if len(saved.Grants) != 1 {
+		t.Fatalf("len(Grants) = %d, want 1", len(saved.Grants))
+	}
+	grant := saved.Grants[0]
+	if grant.Email != "user@example.com" || grant.ServiceGroupID != "invite-pro" || grant.Source != "invitation_code" {
+		t.Fatalf("unexpected grant identity: %#v", grant)
+	}
+	if grant.CardID != "ic_invite_1" {
+		t.Fatalf("CardID = %q, want ic_invite_1", grant.CardID)
+	}
+	if grant.CreditsTotal != 1234.568 {
+		t.Fatalf("CreditsTotal = %v, want rounded 1234.568", grant.CreditsTotal)
+	}
+	if got := grant.ExpiresAt.Sub(grant.StartsAt); got != 7*24*time.Hour {
+		t.Fatalf("grant duration = %v, want 7 days", got)
+	}
+}
+
+func TestGrantInvitationCodeBenefitForUserRequiresCompleteGrant(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	if err := SaveRegistry(ctx, system, &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "invite-pro", Name: "Invite Pro"}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+
+	if err := GrantInvitationCodeBenefitForUser(ctx, system, "user@example.com", "ic_invite_1", "invite-pro", 0, 1234); err != nil {
+		t.Fatalf("GrantInvitationCodeBenefitForUser: %v", err)
+	}
+	if err := GrantInvitationCodeBenefitForUser(ctx, system, "user@example.com", "ic_invite_2", "invite-pro", 7, math.NaN()); err != nil {
+		t.Fatalf("GrantInvitationCodeBenefitForUser with NaN credits: %v", err)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	if len(saved.Grants) != 0 {
+		t.Fatalf("len(Grants) = %d, want 0", len(saved.Grants))
 	}
 }
 

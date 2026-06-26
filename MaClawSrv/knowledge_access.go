@@ -365,6 +365,100 @@ func (s *multiKnowledgeStore) Search(ctx context.Context, opts knowledge.SearchO
 	return merged, nil
 }
 
+func (s *multiKnowledgeStore) SearchStructured(ctx context.Context, opts knowledge.StructuredSearchOptions) ([]knowledge.SearchResult, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("knowledge store is not configured")
+	}
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	requestTenantID := strings.TrimSpace(opts.TenantID)
+	requestOwnerID := strings.TrimSpace(opts.OwnerID)
+	scopes := s.resolveScopes(ctx, requestTenantID, requestOwnerID)
+	merged := make([]knowledge.SearchResult, 0, limit)
+	seen := make(map[string]struct{})
+	for _, scope := range scopes {
+		queryOpts := opts
+		queryOpts.TenantID = scope.TenantID
+		queryOpts.OwnerID = scope.OwnerID
+		queryOpts.Limit = limit
+		if scope.TenantID != requestTenantID || scope.OwnerID != requestOwnerID {
+			queryOpts.IncludeDisabled = false
+		}
+		results, err := s.store.SearchStructured(ctx, queryOpts)
+		if err != nil {
+			return nil, err
+		}
+		for _, result := range results {
+			key := knowledgeResultKey(result)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, result)
+		}
+	}
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].Score > merged[j].Score })
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
+}
+
+func (s *multiKnowledgeStore) StructuredCatalog(ctx context.Context, opts knowledge.StructuredCatalogOptions) (knowledge.StructuredCatalogResult, error) {
+	if s == nil || s.store == nil {
+		return knowledge.StructuredCatalogResult{}, fmt.Errorf("knowledge store is not configured")
+	}
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	requestTenantID := strings.TrimSpace(opts.TenantID)
+	requestOwnerID := strings.TrimSpace(opts.OwnerID)
+	scopes := s.resolveScopes(ctx, requestTenantID, requestOwnerID)
+	merged := knowledge.StructuredCatalogResult{Tables: make([]knowledge.StructuredTableCatalog, 0, limit)}
+	seen := make(map[string]struct{})
+	for _, scope := range scopes {
+		queryOpts := opts
+		queryOpts.TenantID = scope.TenantID
+		queryOpts.OwnerID = scope.OwnerID
+		queryOpts.Limit = limit
+		if scope.TenantID != requestTenantID || scope.OwnerID != requestOwnerID {
+			queryOpts.IncludeDisabled = false
+		}
+		result, err := s.store.StructuredCatalog(ctx, queryOpts)
+		if err != nil {
+			return knowledge.StructuredCatalogResult{}, err
+		}
+		for _, table := range result.Tables {
+			key := table.ID
+			if key == "" {
+				key = strings.Join([]string{table.SourceID, table.SheetName, table.TableTitle}, "\x00")
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged.Tables = append(merged.Tables, table)
+			if len(merged.Tables) >= limit {
+				break
+			}
+		}
+		if len(merged.Tables) >= limit {
+			break
+		}
+	}
+	merged.Count = len(merged.Tables)
+	return merged, nil
+}
+
 func (s *multiKnowledgeStore) ContextPack(ctx context.Context, opts knowledge.ContextPackOptions) (knowledge.ContextPackResult, error) {
 	if s == nil || s.store == nil {
 		return knowledge.ContextPackResult{}, fmt.Errorf("knowledge store is not configured")
@@ -427,7 +521,7 @@ func (s *multiKnowledgeStore) ContextPack(ctx context.Context, opts knowledge.Co
 		pack.Items = append(pack.Items, knowledge.ContextPackItem{Label: label, ResultType: result.ResultType, Title: multiContextPackTitle(result), Text: text, SourceID: result.Source.ID, Citation: result.Citation, Score: result.Score})
 		pack.CharacterCount += len([]rune(text))
 		citation := multiCitationFromResult(result)
-		key := citation.SourceID + "\x00" + citation.NodeID + "\x00" + citation.CardID + "\x00" + citation.FactID
+		key := knowledgeContextCitationKey(result)
 		if _, ok := seenCitations[key]; !ok {
 			seenCitations[key] = struct{}{}
 			citation.Label = label
@@ -464,7 +558,11 @@ func (s *multiKnowledgeStore) ImportFiles(ctx context.Context, req knowledge.Dir
 }
 
 func knowledgeResultKey(r knowledge.SearchResult) string {
-	return strings.Join([]string{r.Source.ID, r.ResultType, r.NodeID, r.CardID, r.FactID, r.Citation}, "\x00")
+	return strings.Join([]string{r.Source.ID, r.ResultType, r.NodeID, r.CardID, r.FactID, r.TableID, r.RowID, r.SheetName, r.RowRange, r.ColRange, r.Citation}, "\x00")
+}
+
+func knowledgeContextCitationKey(r knowledge.SearchResult) string {
+	return strings.Join([]string{r.Source.ID, r.ResultType, r.NodeID, r.CardID, r.FactID, r.TableID, r.RowID, r.SheetName, r.RowRange, r.ColRange, r.Citation}, "\x00")
 }
 
 func multiContextPackTitle(result knowledge.SearchResult) string {

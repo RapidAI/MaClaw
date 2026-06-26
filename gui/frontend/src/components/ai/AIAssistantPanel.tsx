@@ -7,7 +7,8 @@ import { useCodePreviewState, type CodePreviewUIState } from "./useCodePreviewSt
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { renderMessage } from "./aiAssistantMarkdown";
-import { darkTheme, lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme } from "./aiAssistantPanelTheme";
+import { lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme } from "./aiAssistantPanelTheme";
+import { getAssistantDarkScheme } from "./assistantDarkSchemes";
 import "./ensureAIAssistantPanelStyles";
 import { localizeText } from "./aiAssistantI18n";
 import { ProjectSearchPanel, useProjectSearch } from "./ProjectSearchPanel";
@@ -56,8 +57,54 @@ export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
 export function canShowAssistantCodingPreviewForTab(tab: Pick<AITab, "type"> | null | undefined): boolean { return tab?.type === "local" || tab?.type === "project"; }
 
+function hasRestorableProjectConversation(history: unknown[] | undefined): boolean {
+    if (!Array.isArray(history)) return false;
+    return history.some((message) => {
+        if (!message || typeof message !== "object") return false;
+        const role = typeof (message as ChatMessage).role === "string" ? (message as ChatMessage).role : "";
+        return role === "user" || role === "assistant";
+    });
+}
+
+function normalizeRestoredProjectHistoryContent(value: unknown): string {
+    if (typeof value === "string") return value.trim();
+    if (value == null) return "";
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+}
+
+async function loadRestoredProjectConversationHistory(projectPath: string): Promise<ChatMessage[]> {
+    const { LoadProjectConversationHistory } = await getWailsAppModule();
+    if (typeof LoadProjectConversationHistory !== "function") return [];
+    const sessionKey = projectSessionKey(projectPath);
+    const restored = await LoadProjectConversationHistory(projectPath);
+    if (!Array.isArray(restored) || restored.length === 0) return [];
+    const baseTimestamp = Date.now();
+    const pathToken = projectPath.replace(/[^a-zA-Z0-9]+/g, "-").slice(-24) || "project";
+    return restored
+        .map((entry: any, index: number): ChatMessage | null => {
+            const role = typeof entry?.role === "string" ? entry.role.trim() : "";
+            if (role !== "user" && role !== "assistant" && role !== "system" && role !== "error") return null;
+            const content = normalizeRestoredProjectHistoryContent(entry?.content);
+            const reasoning = normalizeRestoredProjectHistoryContent(entry?.reasoning_content ?? entry?.reasoningContent);
+            if (!content && !reasoning) return null;
+            return {
+                id: `restored-${pathToken}-${index}`,
+                role,
+                content,
+                reasoning: reasoning || undefined,
+                sessionKey,
+                timestamp: baseTimestamp + index,
+            };
+        })
+        .filter((message): message is ChatMessage => message !== null);
+}
+
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
-    const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppUpdate, onDismissAppUpdate } = props;
+    const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppUpdate, onDismissAppUpdate } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
@@ -83,7 +130,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const skillRecResolvedRef = useRef(false);
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
     const { ttsEnabled, setTtsEnabled, ttsPlaying } = useTTSReadback(audioOutputDeviceId);
-    const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
+    const t = themeMode === 'dark' ? getAssistantDarkScheme(darkSchemeId).assistantTheme : (inline ? lightTheme : overlayTheme);
     const showMaximizeToggle = inline && !!onToggleMaximize;
     // Workflow toggle: load initial state from config, sync on config-changed event
     useEffect(() => {
@@ -296,6 +343,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // Clear frontend state first so the welcome view appears immediately.
             clearTabConversation(activeTab.id);
             setProjectTabMessages([]);
+            clearedProjectTabIdsRef.current.add(activeTab.id);
+            latestProjectCloseSnapshotRef.current = {
+                tabId: activeTab.id,
+                projectPath: activeTab.projectPath,
+                messages: [],
+                inputText: "",
+                scrollTop: 0,
+            };
             // Clear preparing state if tab was in context-restore phase.
             preparingProjectTabIdsRef.current.delete(activeTab.id);
             setPreparingProjectTabIds(prev => {
@@ -383,6 +438,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const sendMessageForTabRef = useRef<((text: string, options?: Record<string, unknown>) => Promise<boolean>) | null>(null);
     const activeTabIdRef = useRef<string>(activeTab.id);
     const activeTabRef = useRef(activeTab);
+    const latestDisplayMessagesRef = useRef<ChatMessage[]>([]);
+    const clearedProjectTabIdsRef = useRef<Set<string>>(new Set());
+    const latestProjectCloseSnapshotRef = useRef<{
+        tabId: string;
+        projectPath?: string;
+        messages: ChatMessage[];
+        inputText: string;
+        scrollTop: number;
+    } | null>(null);
     activeTabIdRef.current = activeTab.id;
     activeTabRef.current = activeTab;
     useEffect(() => () => {
@@ -624,6 +688,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (roundMessages.length === 0) return mergedProjectMessages;
         return mergeChatMessages(mergedProjectMessages, roundMessages);
     }, [activeSessionKey, activeTab.id, activeTab.projectPath, findProjectRoundForTab, isProjectTabActive, messages, projectTabMessages, projectTabRouteVersion, sending]);
+    latestDisplayMessagesRef.current = displayMessages;
     const prevSendingRef = useRef(sending);
     useEffect(() => {
         const wasSending = prevSendingRef.current;
@@ -747,26 +812,48 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             },
         } : undefined);
         if (tab && tab.projectPath && !tabExisted) {
+            const projectPathForTab = tab.projectPath;
             setProjectTabPreparing(tab.id, true, prepareMode || "restore-context");
-            console.info("[AIAssistantPanel] project tab preparing", { tabId: tab.id, projectPath: tab.projectPath, prepareMode: prepareMode || "restore-context" });
+            console.info("[AIAssistantPanel] project tab preparing", { tabId: tab.id, projectPath: projectPathForTab, prepareMode: prepareMode || "restore-context" });
             if (prepareMode === "new-agent") {
                 scheduleNewAgentReady(tab, 5000, "session-ready-timeout", { skipInitialOpenCheck: true });
                 return tab;
             }
-            loadProjectContext(tab.projectPath, (msg) => {
-                const existing = getTabState(tab.id);
-                const nextHistory = [msg, ...withoutProjectContextMessages(existing?.history)];
-                saveTabState(tab.id, {
-                    ...existing,
-                    history: nextHistory,
-                });
-                if (activeTabIdRef.current === tab.id) {
-                    setProjectTabMessages(nextHistory);
+            void (async () => {
+                const initialState = getTabState(tab.id);
+                if (!hasRestorableProjectConversation(withoutProjectContextMessages(initialState?.history))) {
+                    try {
+                        const restoredHistory = await loadRestoredProjectConversationHistory(projectPathForTab);
+                        if (restoredHistory.length > 0) {
+                            const existing = getTabState(tab.id);
+                            const nextHistory = mergeChatMessages(withoutProjectContextMessages(existing?.history), restoredHistory);
+                            saveTabState(tab.id, {
+                                ...existing,
+                                history: nextHistory,
+                            });
+                            if (activeTabIdRef.current === tab.id) {
+                                setProjectTabMessages(nextHistory);
+                            }
+                        }
+                    } catch (error) {
+                        console.warn("[AIAssistantPanel] failed to restore backend project history", { projectPath: projectPathForTab, error });
+                    }
                 }
-            }, () => {
-                finishProjectTabPreparing(tab.id, tab.projectPath);
-                console.info("[AIAssistantPanel] project tab prepared", { tabId: tab.id, projectPath: tab.projectPath, elapsedMs: Math.round(performance.now() - startedAt) });
-            });
+                loadProjectContext(projectPathForTab, (msg) => {
+                    const existing = getTabState(tab.id);
+                    const nextHistory = [msg, ...withoutProjectContextMessages(existing?.history)];
+                    saveTabState(tab.id, {
+                        ...existing,
+                        history: nextHistory,
+                    });
+                    if (activeTabIdRef.current === tab.id) {
+                        setProjectTabMessages(nextHistory);
+                    }
+                }, () => {
+                    finishProjectTabPreparing(tab.id, projectPathForTab);
+                    console.info("[AIAssistantPanel] project tab prepared", { tabId: tab.id, projectPath: projectPathForTab, elapsedMs: Math.round(performance.now() - startedAt) });
+                });
+            })();
         }
         return tab;
     }, [createProjectTab, finishProjectTabPreparing, getTabs, hasProjectTab, loadProjectContext, getTabState, saveTabState, setProjectTabPreparing]);
@@ -787,6 +874,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const resolvedTabId = optionTabId || resolvedTab?.id || (liveActiveTab.type === "project" ? liveActiveTab.id : undefined);
         const isProjectSend = !!resolvedProjectPath;
         if (isProjectSend && resolvedProjectPath) {
+            if (resolvedTabId) clearedProjectTabIdsRef.current.delete(resolvedTabId);
             const mergedOptions = {
                 ...options,
                 tabId: resolvedTabId,
@@ -925,6 +1013,29 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [getTabs, messages, persistProjectTabMsgIds, setProjectTabPreparing]);
     const closeTabWithProjectCleanup = useCallback((tabId: string) => {
+        const tab = getTabs().find(t => t.id === tabId);
+        if (tab?.type === "project") {
+            const snapshot = latestProjectCloseSnapshotRef.current;
+            const existingState = getTabState(tabId);
+            if (snapshot?.tabId === tabId) {
+                const wasCleared = clearedProjectTabIdsRef.current.has(tabId);
+                const snapshotMessages = !wasCleared && activeTabIdRef.current === tabId ? latestDisplayMessagesRef.current : snapshot.messages;
+                const nextHistory = wasCleared
+                    ? withoutProjectContextMessages(snapshotMessages)
+                    : mergeChatMessages(
+                        withoutProjectContextMessages(existingState?.history),
+                        withoutProjectContextMessages(snapshotMessages),
+                    );
+                saveTabState(tabId, {
+                    ...existingState,
+                    history: nextHistory,
+                    scrollTop: snapshot.scrollTop,
+                    inputText: snapshot.inputText,
+                    projectPath: snapshot.projectPath || tab.projectPath,
+                    lastActiveAt: Date.now(),
+                });
+            }
+        }
         clearProjectRoundTrackingForTab(tabId);
         previewStateMapRef.current.delete(tabId);
         if (previewOwnerTabRef.current === tabId) { previewOwnerTabRef.current = "local"; previewOwnerResetPendingRef.current = true; }
@@ -934,7 +1045,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             (window as any).go?.main?.App?.StopSkillRecording?.().catch(() => {});
         }
         closeTab(tabId);
-    }, [clearProjectRoundTrackingForTab, closeTab, skillRecordingTabId]);
+    }, [clearProjectRoundTrackingForTab, closeTab, getTabState, getTabs, saveTabState, skillRecordingTabId]);
     const createProjectTabFromSearch = useCallback((projectPath: string, taskTitle: string, options?: { autoSend?: boolean }) => {
         const tabExistedInList = hasProjectTab(projectPath);
         const tab = createProjectTabWithContext(projectPath, taskTitle);
@@ -1249,6 +1360,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || isProjectTabActive);
     const hasConversation = otherMessages.length + displayProgressMessages.length > 0;
     const { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ hasConversation, messages: displayMessages, ready, scrollToTopSeq });
+    useEffect(() => {
+        if (activeTab.type !== "project") return;
+        latestProjectCloseSnapshotRef.current = {
+            tabId: activeTab.id,
+            projectPath: activeTab.projectPath,
+            messages: displayMessages,
+            inputText: localDraftInputValue,
+            scrollTop: outputContainerRef.current?.scrollTop || 0,
+        };
+    }, [activeTab.id, activeTab.projectPath, activeTab.type, displayMessages, localDraftInputValue, outputContainerRef]);
     const handleInputResizeEnd = useCallback(() => {
         scrollToBottom("auto", true, 2);
     }, [scrollToBottom]);

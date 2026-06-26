@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1756,8 +1757,11 @@ func TestLLMV1ChatCompletionsHandlerStreamsOpenAICompatResponse(t *testing.T) {
 	if upstreamHits.Load() != 1 {
 		t.Fatalf("expected upstream to be called once, hits = %d", upstreamHits.Load())
 	}
-	if !strings.Contains(rr.Body.String(), `"model":"auto"`) || !strings.Contains(rr.Body.String(), "data: [DONE]") || !strings.Contains(rr.Body.String(), "event: message") || !strings.Contains(rr.Body.String(), ": keepalive") {
+	if !strings.Contains(rr.Body.String(), `"model":"auto"`) || !strings.Contains(rr.Body.String(), "data: [DONE]") || !strings.Contains(rr.Body.String(), "event: message") {
 		t.Fatalf("unexpected stream body: %s", rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), ": keepalive") {
+		t.Fatalf("stream body leaked upstream heartbeat comment: %s", rr.Body.String())
 	}
 
 	globalLLMUsageAccumulator.flush(ctx)
@@ -1768,6 +1772,174 @@ func TestLLMV1ChatCompletionsHandlerStreamsOpenAICompatResponse(t *testing.T) {
 	stat := providerReg.TokenUsage["provider-a"]
 	if stat == nil || stat.InputTokens != 10 || stat.OutputTokens != 5 || stat.TotalTokens != 15 || stat.Requests != 1 {
 		t.Fatalf("unexpected stream usage: %#v", stat)
+	}
+}
+
+func TestWriteOpenAIStreamResponseFiltersCommentOnlyHeartbeats(t *testing.T) {
+	body := ": ping\n\n" +
+		"event: ping\n\n" +
+		"data:\n\n" +
+		"data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	rec := httptest.NewRecorder()
+	_, wroteStream, err := writeOpenAIStreamResponse(rec, resp, &im.LLMProvider{ID: "provider-a"}, &llmservice.AuthorizedModel{Name: "auto"}, "auto", nil)
+	if err != nil {
+		t.Fatalf("writeOpenAIStreamResponse() error = %v", err)
+	}
+	if !wroteStream {
+		t.Fatal("wroteStream = false")
+	}
+	out := rec.Body.String()
+	if strings.Contains(out, ": ping") {
+		t.Fatalf("stream output leaked heartbeat comment: %q", out)
+	}
+	if strings.Contains(out, "event: ping") {
+		t.Fatalf("stream output leaked heartbeat event: %q", out)
+	}
+	if strings.Contains(out, "data:\n\n") {
+		t.Fatalf("stream output leaked empty data heartbeat: %q", out)
+	}
+	if !strings.Contains(out, `"content":"ok"`) || !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("stream output = %q, want data chunk and DONE", out)
+	}
+}
+
+func TestWriteRawResponsesStreamResponseFiltersCommentOnlyHeartbeats(t *testing.T) {
+	body := ": ping\n\n" +
+		"event: ping\n\n" +
+		"data:\n\n" +
+		"event: response.output_text.delta\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
+		": keepalive\n\n" +
+		"event: response.completed\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"total_tokens\":5}}}\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	rec := httptest.NewRecorder()
+	usage, wroteStream, err := writeRawResponsesStreamResponse(rec, resp, &im.LLMProvider{ID: "provider-a"}, &llmservice.AuthorizedModel{Name: "auto"}, nil)
+	if err != nil {
+		t.Fatalf("writeRawResponsesStreamResponse() error = %v", err)
+	}
+	if !wroteStream {
+		t.Fatal("wroteStream = false")
+	}
+	out := rec.Body.String()
+	if strings.Contains(out, ": ping") || strings.Contains(out, ": keepalive") {
+		t.Fatalf("responses stream output leaked heartbeat comment: %q", out)
+	}
+	if strings.Contains(out, "event: ping") {
+		t.Fatalf("responses stream output leaked heartbeat event: %q", out)
+	}
+	if strings.Contains(out, "data:\n\n") {
+		t.Fatalf("responses stream output leaked empty data heartbeat: %q", out)
+	}
+	if !strings.Contains(out, "event: response.output_text.delta") || !strings.Contains(out, `"delta":"ok"`) || !strings.Contains(out, "event: response.completed") {
+		t.Fatalf("responses stream output = %q, want real SSE events", out)
+	}
+	if usage.InputTokens != 2 || usage.OutputTokens != 3 || usage.TotalTokens != 5 {
+		t.Fatalf("usage = %#v, want 2/3/5 tokens", usage)
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerFlushesStreamHeadersBeforeFirstToken(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "stream-header@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "stream-header@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	releaseFirstToken := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-releaseFirstToken:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+	defer close(releaseFirstToken)
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: upstream.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	hub := httptest.NewServer(LLMV1ChatCompletionsHandler(identity, system, nil))
+	defer hub.Close()
+
+	bodyBytes, err := json.Marshal(map[string]any{
+		"model":    "auto",
+		"stream":   true,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, hub.URL+"/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	respCh := make(chan *http.Response, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := hub.Client().Do(req)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		respCh <- resp
+	}()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("stream request failed before first token: %v", err)
+	case resp := <-respCh:
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d", resp.StatusCode)
+		}
+		if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+			t.Fatalf("content-type = %q, want text/event-stream", resp.Header.Get("Content-Type"))
+		}
+		if !strings.Contains(resp.Header.Get("Cache-Control"), "no-transform") {
+			t.Fatalf("cache-control = %q, want no-transform", resp.Header.Get("Cache-Control"))
+		}
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("hub did not flush stream headers before the first upstream token")
 	}
 }
 
@@ -2185,6 +2357,197 @@ func TestOpenAISDKClientCanStreamHubChatCompletionsEndpoint(t *testing.T) {
 	}
 	if text.String() != "hub stream" {
 		t.Fatalf("stream text = %q, want hub stream", text.String())
+	}
+}
+
+func TestOpenAISDKClientCanStreamHubChatCompletionsViaMaClawOfficial(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "chat-sdk-official-stream@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           llmservice.MaClawOfficialServiceGroupID,
+			Name:         "MaClaw Official",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{llmservice.MaClawOfficialProviderID},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "chat-sdk-official-stream@example.com",
+			ServiceGroupIDs: []string{llmservice.MaClawOfficialServiceGroupID},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var hubCenterHits atomic.Int32
+	hubCenter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hubCenterHits.Add(1)
+		if r.URL.Path != "/api/llm/v1/chat/completions" {
+			t.Fatalf("hubcenter path = %q, want /api/llm/v1/chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("X-Hub-ID"); got != "hub-1" {
+			t.Fatalf("X-Hub-ID = %q, want hub-1", got)
+		}
+		if got := r.Header.Get("X-Tenant-ID"); got == "" {
+			t.Fatal("X-Tenant-ID is empty")
+		}
+		var upstreamBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode hubcenter body: %v", err)
+		}
+		if upstreamBody["stream"] != true {
+			t.Fatalf("hubcenter stream = %#v, want true", upstreamBody["stream"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache, no-transform")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			_, _ = w.Write([]byte(": ping\n\n"))
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte("data: {\"id\":\"official-1\",\"object\":\"chat.completion.chunk\",\"model\":\"auto\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"official \"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"official-2\",\"object\":\"chat.completion.chunk\",\"model\":\"auto\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"stream\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer hubCenter.Close()
+
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: hubCenter.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	stream := client.Chat.Completions.NewStreaming(context.Background(), openai.ChatCompletionNewParams{
+		Model: shared.ChatModel("auto"),
+		Messages: []openai.ChatCompletionMessageParamUnion{{
+			OfUser: &openai.ChatCompletionUserMessageParam{
+				Content: openai.ChatCompletionUserMessageParamContentUnion{
+					OfString: openai.String("hi"),
+				},
+			},
+		}},
+	})
+	var text strings.Builder
+	for stream.Next() {
+		chunk := stream.Current()
+		if len(chunk.Choices) > 0 {
+			text.WriteString(chunk.Choices[0].Delta.Content)
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("openai SDK official streaming failed: %v", err)
+	}
+	if text.String() != "official stream" {
+		t.Fatalf("stream text = %q, want official stream", text.String())
+	}
+	if hubCenterHits.Load() != 1 {
+		t.Fatalf("hubcenter hits = %d, want 1", hubCenterHits.Load())
+	}
+}
+
+func TestOpenAISDKClientReceivesMaClawOfficialStreamError(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "chat-sdk-official-stream-error@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           llmservice.MaClawOfficialServiceGroupID,
+			Name:         "MaClaw Official",
+			AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{llmservice.MaClawOfficialProviderID},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "chat-sdk-official-stream-error@example.com",
+			ServiceGroupIDs: []string{llmservice.MaClawOfficialServiceGroupID},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	hubCenter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache, no-transform")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(": ping\n\n"))
+		_, _ = w.Write([]byte("event: ping\n\n"))
+		_, _ = w.Write([]byte("data: {\"error\":{\"message\":\"upstream provider exhausted\",\"type\":\"server_error\",\"code\":503}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer hubCenter.Close()
+
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: hubCenter.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, nil))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := openai.NewClient(
+		openaioption.WithBaseURL(server.URL+"/api/llm/v1"),
+		openaioption.WithAPIKey(viewerToken),
+	)
+	stream := client.Chat.Completions.NewStreaming(context.Background(), openai.ChatCompletionNewParams{
+		Model: shared.ChatModel("auto"),
+		Messages: []openai.ChatCompletionMessageParamUnion{{
+			OfUser: &openai.ChatCompletionUserMessageParam{
+				Content: openai.ChatCompletionUserMessageParamContentUnion{
+					OfString: openai.String("hi"),
+				},
+			},
+		}},
+	})
+	for stream.Next() {
+		t.Fatalf("unexpected stream chunk before error: %#v", stream.Current())
+	}
+	err := stream.Err()
+	if err == nil {
+		t.Fatal("stream.Err() = nil, want upstream provider error")
+	}
+	errText := err.Error()
+	if !strings.Contains(errText, "upstream provider exhausted") {
+		t.Fatalf("stream.Err() = %q, want upstream provider exhausted", errText)
+	}
+	if strings.Contains(errText, "unexpected end of JSON input") {
+		t.Fatalf("stream.Err() exposed JSON parser failure instead of provider error: %q", errText)
 	}
 }
 

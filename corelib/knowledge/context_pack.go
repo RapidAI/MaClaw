@@ -87,6 +87,15 @@ func (s *SQLiteStore) ContextPack(ctx context.Context, opts ContextPackOptions) 
 }
 
 func contextPackTitle(result SearchResult) string {
+	if result.ResultType == "table_row" {
+		parts := nonEmptyStrings(result.Source.Title, result.SheetName)
+		if result.RowIndex > 0 {
+			parts = append(parts, fmt.Sprintf("row %d", result.RowIndex))
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, " / ")
+		}
+	}
 	for _, candidate := range []string{result.CardTitle, result.NodeTitle, result.Source.Title, result.Source.RelativePath, result.Source.CanonicalURI, result.Source.URI} {
 		if candidate = strings.TrimSpace(candidate); candidate != "" {
 			return candidate
@@ -97,6 +106,8 @@ func contextPackTitle(result SearchResult) string {
 
 func contextPackText(result SearchResult) string {
 	switch result.ResultType {
+	case "table_row":
+		return strings.TrimSpace(strings.Join(nonEmptyStrings(result.Summary, result.Snippet, result.Claim), "\n"))
 	case "card":
 		return strings.TrimSpace(strings.Join(nonEmptyStrings(result.Claim, result.Summary, result.Snippet), "\n"))
 	case "fact":

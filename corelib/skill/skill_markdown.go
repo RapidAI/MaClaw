@@ -1002,6 +1002,7 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 				if strings.TrimSpace(command) == "" {
 					continue
 				}
+				command = AppendRunParamPlaceholders(command, scriptParams)
 				inferredParams = mergeUniqueSkillParams(inferredParams, scriptParams)
 				log.Printf("[skill-parser] %s: step from script ref: %s", parsed.name, filepath.Base(localScriptPath))
 			} else if parameterized, ok := parameterizeMarkdownUsageCommand(resolved, blockContexts[currentBlockIdx]); ok {

@@ -767,10 +767,14 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 	if strings.Contains(body, `keys: ["maclaw_llm_url", "maclaw_llm_key", "maclaw_llm_model", "maclaw_llm_protocol", "maclaw_llm_context_length", "maclaw_llm_timeout_sec"]`) {
 		t.Fatalf("LLM settings tab should not render advanced protocol/context/timeout fields")
 	}
+	if !strings.Contains(body, `"skill_runner_timeout_sec"`) {
+		t.Fatalf("user app hidden config keys should include skill_runner_timeout_sec")
+	}
 	for _, stale := range []string{
 		`maclaw_llm_protocol: ["openai", "anthropic"]`,
 		`maclaw_llm_context_length: [32000, 64000, 110000, 200000]`,
 		`maclaw_llm_timeout_sec: [60, 120, 300, 480, 900]`,
+		`skill_runner_timeout_sec: [`,
 		"maclaw_llm_providers: {",
 		"llm_prompt_cache: {",
 		"auxiliary_llm: {",

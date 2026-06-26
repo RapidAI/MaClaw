@@ -9,17 +9,31 @@ import (
 )
 
 func guiChooseBrand(defaultBrand brandOption) (brandOption, bool) {
-	defaultButton := brandLabel(brandOptions[0])
-	if defaultBrand.ID == brandOptions[1].ID {
-		defaultButton = brandLabel(brandOptions[1])
+	labels := make([]string, 0, len(brandOptions))
+	defaultLabel := brandLabel(brandOptions[0])
+	for _, brand := range brandOptions {
+		label := brandLabel(brand)
+		labels = append(labels, fmt.Sprintf("%q", label))
+		if brand.ID == defaultBrand.ID {
+			defaultLabel = label
+		}
 	}
-	script := fmt.Sprintf(`display dialog %q buttons {"%s", "%s", "%s"} default button "%s" with title %q`, tr("choose.brand"), tr("cancel"), brandLabel(brandOptions[1]), brandLabel(brandOptions[0]), defaultButton, tr("app.title"))
+	script := fmt.Sprintf(
+		`choose from list {%s} with prompt %q default items {%q} with title %q`,
+		strings.Join(labels, ", "), tr("choose.brand"), defaultLabel, tr("app.title"),
+	)
 	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
 	if err != nil {
 		return brandOption{}, false
 	}
-	if strings.Contains(string(out), "TigerClaw") {
-		return brandOptions[1], true
+	selected := strings.TrimSpace(string(out))
+	if selected == "" || selected == "false" {
+		return brandOption{}, false
+	}
+	for _, brand := range brandOptions {
+		if selected == brandLabel(brand) || strings.Contains(selected, brand.ProductName) {
+			return brand, true
+		}
 	}
 	return brandOptions[0], true
 }

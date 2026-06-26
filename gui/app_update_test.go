@@ -84,9 +84,9 @@ func TestCompareVersions_WithVPrefix(t *testing.T) {
 
 func TestSplitVersionPreRelease(t *testing.T) {
 	cases := []struct {
-		input      string
-		wantNum    string
-		wantPre    string
+		input   string
+		wantNum string
+		wantPre string
 	}{
 		{"1.3.0", "1.3.0", ""},
 		{"1.3.0-beta.1", "1.3.0", "beta.1"},
@@ -206,5 +206,27 @@ func TestVerifySHA256File_UppercaseExpected(t *testing.T) {
 	// Should still pass — function lowercases the expected hash internally
 	if err := verifySHA256File(tmpFile, expected); err != nil {
 		t.Errorf("verifySHA256File with uppercase expected should pass, got: %v", err)
+	}
+}
+
+func TestUpdateTargetFileNameFor_BrandPackages(t *testing.T) {
+	cases := []struct {
+		name      string
+		brandName string
+		goos      string
+		want      string
+	}{
+		{name: "windows default", brandName: "MaClaw", goos: "windows", want: "MaClaw-Setup.exe"},
+		{name: "darwin default", brandName: "MaClaw", goos: "darwin", want: "MaClaw-Universal.pkg"},
+		{name: "windows metastaff", brandName: "MetaStaff", goos: "windows", want: "MetaStaff-Setup.exe"},
+		{name: "darwin metastaff", brandName: "MetaStaff", goos: "darwin", want: "MetaStaff-Universal.pkg"},
+		{name: "fallback", brandName: "", goos: "linux", want: "MaClaw-Setup.exe"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := updateTargetFileNameFor(tc.brandName, tc.goos); got != tc.want {
+				t.Fatalf("updateTargetFileNameFor(%q, %q) = %q, want %q", tc.brandName, tc.goos, got, tc.want)
+			}
+		})
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -14,8 +15,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 var recentTaskForkMu sync.Mutex
@@ -57,9 +58,10 @@ func projectPathFromSessionOwnerID(ownerID string) string {
 // ProjectSearchResult is the frontend-facing search result type.
 // Exported as a Wails binding return type.
 type ProjectSearchResult struct {
-	ID              string                  `json:"id"`            // ProjectPath as stable ID
-	Name            string                  `json:"name"`          // Human-readable project name
-	ProjectPath     string                  `json:"project_path"`  // Canonical absolute path
+	ID              string                  `json:"id"`           // ProjectPath as stable ID
+	Name            string                  `json:"name"`         // Human-readable project name
+	ProjectPath     string                  `json:"project_path"` // Canonical absolute path
+	WorkingDir      string                  `json:"working_dir,omitempty"`
 	WorkflowType    string                  `json:"workflow_type"` // e.g. "coding", "product_design"
 	ActiveWorkflow  *ProjectWorkflowState   `json:"active_workflow,omitempty"`
 	Preview         string                  `json:"preview"`       // Short content preview (~150 chars)
@@ -71,6 +73,12 @@ type ProjectSearchResult struct {
 	Archived        bool                    `json:"archived"`      // Whether the task is archived
 	SourceURLs      []string                `json:"source_urls,omitempty"`
 	RecentArtifacts []ProjectSearchArtifact `json:"recent_artifacts,omitempty"`
+}
+
+type ProjectConversationHistoryItem struct {
+	Role             string `json:"role"`
+	Content          string `json:"content"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // ProjectWorkflowState is a compact pointer to an unfinished workflow attached
@@ -123,7 +131,7 @@ func (a *App) GetProjectScene(projectPath string) (*ProjectSceneDetail, error) {
 		return nil, fmt.Errorf("memory store not initialized")
 	}
 
-	scene, ok := projectSceneMap(a.memoryStore.SceneIndex(100))[projectPath]
+	scene, ok := a.sceneRecordForProjectPath(projectPath, projectSceneMap(a.memoryStore.SceneIndex(100)))
 	if !ok {
 		return &ProjectSceneDetail{ProjectPath: projectPath, Name: lastPathComponent(projectPath), ActiveWorkflow: a.activeWorkflowForRecentTaskPath(projectPath)}, nil
 	}
@@ -163,7 +171,9 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
 		result := projectRecordToSearchResult(pi, rec)
-		enrichProjectSearchResultWithScene(&result, scenesByPath[rec.ProjectPath])
+		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
+			enrichProjectSearchResultWithScene(&result, scene)
+		}
 		result.ActiveWorkflow = a.activeWorkflowForProject(projectWorkflowProjectPathForRecord(rec))
 		results = append(results, result)
 	}
@@ -228,6 +238,7 @@ func projectRecordToSearchResult(pi *memory.ProjectIndex, rec memory.ProjectReco
 		ID:           rec.ProjectPath,
 		Name:         rec.Name,
 		ProjectPath:  rec.ProjectPath,
+		WorkingDir:   recentTaskWorkingDirFromTags(rec.Tags),
 		WorkflowType: rec.WorkflowType,
 		Preview:      rec.Preview,
 		Tags:         rec.Tags,
@@ -260,6 +271,94 @@ func projectSceneMap(scenes []memory.SceneRecord) map[string]memory.SceneRecord 
 		byPath[scene.ProjectPath] = scene
 	}
 	return byPath
+}
+
+func mergeProjectSceneRecords(targetPath string, primary, secondary memory.SceneRecord) memory.SceneRecord {
+	merged := primary
+	merged.ProjectPath = targetPath
+	if strings.TrimSpace(merged.Name) == "" {
+		merged.Name = secondary.Name
+	}
+	if merged.EntryCount < secondary.EntryCount {
+		merged.EntryCount = secondary.EntryCount
+	}
+	if merged.LastActivity.Before(secondary.LastActivity) {
+		merged.LastActivity = secondary.LastActivity
+	}
+	if strings.TrimSpace(merged.Preview) == "" {
+		merged.Preview = secondary.Preview
+	}
+
+	appendUniqueStrings := func(dst []string, src []string) []string {
+		seen := make(map[string]struct{}, len(dst))
+		for _, item := range dst {
+			seen[item] = struct{}{}
+		}
+		for _, item := range src {
+			if _, ok := seen[item]; ok {
+				continue
+			}
+			seen[item] = struct{}{}
+			dst = append(dst, item)
+		}
+		return dst
+	}
+	merged.WorkflowTypes = appendUniqueStrings(append([]string(nil), merged.WorkflowTypes...), secondary.WorkflowTypes)
+	merged.Tags = appendUniqueStrings(append([]string(nil), merged.Tags...), secondary.Tags)
+	merged.SourceURLs = appendUniqueStrings(append([]string(nil), merged.SourceURLs...), secondary.SourceURLs)
+
+	seenArtifacts := make(map[string]struct{}, len(merged.RecentArtifacts))
+	artifactKey := func(artifact memory.SceneArtifact) string {
+		return strings.TrimSpace(artifact.SourceURL) + "\x00" + strings.TrimSpace(artifact.Title)
+	}
+	artifacts := append([]memory.SceneArtifact(nil), merged.RecentArtifacts...)
+	for _, artifact := range artifacts {
+		seenArtifacts[artifactKey(artifact)] = struct{}{}
+	}
+	for _, artifact := range secondary.RecentArtifacts {
+		key := artifactKey(artifact)
+		if _, ok := seenArtifacts[key]; ok {
+			continue
+		}
+		seenArtifacts[key] = struct{}{}
+		artifacts = append(artifacts, artifact)
+	}
+	sort.SliceStable(artifacts, func(i, j int) bool {
+		return artifacts[i].UpdatedAt.After(artifacts[j].UpdatedAt)
+	})
+	if len(artifacts) > 5 {
+		artifacts = artifacts[:5]
+	}
+	merged.RecentArtifacts = artifacts
+	return merged
+}
+
+func (a *App) sceneRecordForProjectPath(projectPath string, scenesByPath map[string]memory.SceneRecord) (memory.SceneRecord, bool) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" || len(scenesByPath) == 0 {
+		return memory.SceneRecord{}, false
+	}
+	taskScene, hasTaskScene := scenesByPath[projectPath]
+	executionProjectPath := a.recentTaskExecutionProjectPath(projectPath)
+	if executionProjectPath == "" || executionProjectPath == projectPath {
+		if hasTaskScene {
+			return taskScene, true
+		}
+		return memory.SceneRecord{}, false
+	}
+	executionScene, hasExecutionScene := scenesByPath[executionProjectPath]
+	switch {
+	case hasExecutionScene && hasTaskScene:
+		return mergeProjectSceneRecords(projectPath, executionScene, taskScene), true
+	case hasExecutionScene:
+		executionScene.ProjectPath = projectPath
+		return executionScene, true
+	case hasTaskScene:
+		taskScene.ProjectPath = projectPath
+		return taskScene, true
+	default:
+		return memory.SceneRecord{}, false
+	}
 }
 
 func projectSceneDetailFromRecord(scene memory.SceneRecord) *ProjectSceneDetail {
@@ -314,11 +413,17 @@ func enrichProjectSearchResultWithScene(result *ProjectSearchResult, scene memor
 // CreateRecentTask creates a lightweight standalone task record so it appears
 // in the recent task list immediately and after restart.
 func (a *App) CreateRecentTask(name string) ProjectSearchResult {
+	return a.CreateRecentTaskWithWorkingDir(name, "")
+}
+
+// CreateRecentTaskWithWorkingDir creates a standalone task record with an
+// optional execution working directory.
+func (a *App) CreateRecentTaskWithWorkingDir(name, workingDir string) ProjectSearchResult {
 	taskName := normalizeRecentTaskName(name)
 	if taskName == "" {
 		return ProjectSearchResult{}
 	}
-	return a.createRecentTaskRecord(taskName, "", nil, false)
+	return a.createRecentTaskRecordWithWorkingDir(taskName, "", nil, normalizeRecentTaskWorkingDir(workingDir), false)
 }
 
 // ForkRecentTask returns the independent task/session for a recent task. The
@@ -331,8 +436,6 @@ func (a *App) ForkRecentTask(sourceProjectPath string) ProjectSearchResult {
 		return ProjectSearchResult{}
 	}
 
-	var copySourcePath string
-	var copyTargetPath string
 	result := func() ProjectSearchResult {
 		recentTaskForkMu.Lock()
 		defer recentTaskForkMu.Unlock()
@@ -379,32 +482,28 @@ func (a *App) ForkRecentTask(sourceProjectPath string) ProjectSearchResult {
 			taskName = "Forked task"
 		}
 
+		workingDir := a.recentTaskWorkingDir(sourceProjectPath)
 		content := fmt.Sprintf("# %s\n\nForked from recent task.\nSource task: %s\nFork ID: %d", taskName, sourceProjectPath, time.Now().UnixNano())
-		created := a.createRecentTaskRecord(taskName, content, []string{"forked_task", "source:" + sourceProjectPath}, false)
+		created := a.createRecentTaskRecordWithWorkingDir(taskName, content, []string{"forked_task", "source:" + sourceProjectPath}, workingDir, false)
 		if created.ProjectPath == "" {
 			log.Printf("[project_search] ForkRecentTask create failed source=%q elapsed=%s", sourceProjectPath, time.Since(started).Round(time.Millisecond))
 			return created
 		}
-		copySourcePath = sourceProjectPath
-		copyTargetPath = created.ProjectPath
+		copyStarted := time.Now()
+		func(source, target string) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[project_search] ForkRecentTask sync copy panic source=%q fork=%q panic=%v elapsed=%s", source, target, r, time.Since(copyStarted).Round(time.Millisecond))
+				}
+			}()
+			a.copyProjectConversation(source, target)
+			log.Printf("[project_search] ForkRecentTask sync copy complete source=%q fork=%q elapsed=%s", source, target, time.Since(copyStarted).Round(time.Millisecond))
+		}(sourceProjectPath, created.ProjectPath)
 		a.emitProjectIndexChanged(sourceProjectPath)
 		a.emitProjectIndexChanged(created.ProjectPath)
 		log.Printf("[project_search] ForkRecentTask created independent fork source=%q fork=%q critical_elapsed=%s lock_elapsed=%s", sourceProjectPath, created.ProjectPath, time.Since(started).Round(time.Millisecond), time.Since(lockStarted).Round(time.Millisecond))
 		return created
 	}()
-
-	if copySourcePath != "" && copyTargetPath != "" {
-		go func(source, target string) {
-			copyStarted := time.Now()
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("[project_search] ForkRecentTask async copy panic source=%q fork=%q panic=%v elapsed=%s", source, target, r, time.Since(copyStarted).Round(time.Millisecond))
-				}
-			}()
-			a.copyProjectConversation(source, target)
-			log.Printf("[project_search] ForkRecentTask async copy complete source=%q fork=%q elapsed=%s", source, target, time.Since(copyStarted).Round(time.Millisecond))
-		}(copySourcePath, copyTargetPath)
-	}
 	return result
 }
 
@@ -431,6 +530,66 @@ func findVisibleForkForSource(pi *memory.ProjectIndex, sourceProjectPath string)
 		}
 	}
 	return nil
+}
+
+const recentTaskWorkingDirTagPrefix = "working_dir:"
+
+func normalizeRecentTaskWorkingDir(workingDir string) string {
+	workingDir = strings.TrimSpace(workingDir)
+	if workingDir == "" {
+		return ""
+	}
+	normalized, _, err := normalizeWorkflowProjectPath(workingDir)
+	if err != nil {
+		log.Printf("[project_search] invalid recent task working directory %q: %v", workingDir, err)
+		return ""
+	}
+	return normalizeProjectSessionPath(normalized)
+}
+
+func recentTaskWorkingDirTag(workingDir string) string {
+	workingDir = normalizeRecentTaskWorkingDir(workingDir)
+	if workingDir == "" {
+		return ""
+	}
+	return recentTaskWorkingDirTagPrefix + workingDir
+}
+
+func recentTaskWorkingDirFromTags(tags []string) string {
+	for _, tag := range tags {
+		if value := strings.TrimSpace(strings.TrimPrefix(tag, recentTaskWorkingDirTagPrefix)); value != tag {
+			return normalizeRecentTaskWorkingDir(value)
+		}
+	}
+	return ""
+}
+
+func (a *App) recentTaskWorkingDir(projectPath string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return ""
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ""
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ""
+	}
+	rec := pi.Get(projectPath)
+	if rec == nil {
+		return ""
+	}
+	return recentTaskWorkingDirFromTags(rec.Tags)
+}
+
+func (a *App) recentTaskExecutionProjectPath(projectPath string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if workingDir := a.recentTaskWorkingDir(projectPath); workingDir != "" {
+		return workingDir
+	}
+	return projectPath
 }
 
 func projectRecordHasTag(rec memory.ProjectRecord, target string) bool {
@@ -479,16 +638,44 @@ func (a *App) activeWorkflowForProject(projectPath string) *ProjectWorkflowState
 	if a == nil || projectPath == "" || a.workflowDisabled.Load() {
 		return nil
 	}
-	// V2 workflow: check if there's an active V2 workflow for this project.
-	if a.workflowV2 != nil {
-		ownerID := projectSessionOwnerID(projectPath)
-		if state := a.workflowV2.machine.GetActive(ownerID); state != nil {
-			return &ProjectWorkflowState{
-				Type:        state.Type,
-				ProjectPath: state.ProjectPath,
-				Phase:       state.ActivePhase().ID,
+	lookup := func(path string) *ProjectWorkflowState {
+		path = normalizeProjectSessionPath(path)
+		if path == "" {
+			return nil
+		}
+		ownerID := projectSessionOwnerID(path)
+		if a.workflowV2 != nil && a.workflowV2.machine != nil {
+			if state := a.workflowV2.machine.GetActive(ownerID); state != nil {
+				phaseID := ""
+				if phase := state.ActivePhase(); phase != nil {
+					phaseID = phase.ID
+				}
+				return &ProjectWorkflowState{
+					Type:        state.Type,
+					ProjectPath: state.ProjectPath,
+					Phase:       phaseID,
+				}
 			}
 		}
+		if a.workflowEngine != nil {
+			if state := a.workflowEngine.GetActiveWorkflow(ownerID); state != nil {
+				return &ProjectWorkflowState{
+					ID:            state.ID,
+					Type:          string(state.Type),
+					Phase:         state.CurrentPhase,
+					Status:        string(state.Status),
+					ProjectPath:   strings.TrimSpace(state.ProjectPath),
+					PendingReview: strings.TrimSpace(state.PendingReviewPhaseID) != "",
+				}
+			}
+		}
+		return nil
+	}
+	if state := lookup(projectPath); state != nil {
+		return state
+	}
+	if executionProjectPath := a.recentTaskExecutionProjectPath(projectPath); executionProjectPath != "" && executionProjectPath != projectPath {
+		return lookup(executionProjectPath)
 	}
 	return nil
 }
@@ -546,6 +733,10 @@ func (a *App) ensureRecentTaskWorkspace(projectPath, taskName string) bool {
 }
 
 func (a *App) createRecentTaskRecord(taskName, taskContent string, extraTags []string, flushSync ...bool) ProjectSearchResult {
+	return a.createRecentTaskRecordWithWorkingDir(taskName, taskContent, extraTags, "", flushSync...)
+}
+
+func (a *App) createRecentTaskRecordWithWorkingDir(taskName, taskContent string, extraTags []string, workingDir string, flushSync ...bool) ProjectSearchResult {
 	a.ensureMemoryStore()
 	if a.memoryStore == nil {
 		return ProjectSearchResult{}
@@ -562,11 +753,17 @@ func (a *App) createRecentTaskRecord(taskName, taskContent string, extraTags []s
 	if strings.TrimSpace(taskContent) == "" {
 		taskContent = fmt.Sprintf("# %s\n\n%s\n\nCreated from recent tasks.\nTask ID: %d", displayTitle, taskName, now.UnixNano())
 	}
+	if workingDir != "" && !strings.Contains(taskContent, "\nWorking directory:") {
+		taskContent += "\nWorking directory: " + workingDir
+	}
 	if err := os.WriteFile(taskFile, []byte(taskContent), 0o644); err != nil {
 		log.Printf("[project_search] CreateRecentTask write task file failed: %v", err)
 		return ProjectSearchResult{}
 	}
 	tags := append([]string{"manual_task", "recent_task", taskDir}, extraTags...)
+	if workingDir != "" {
+		tags = append(tags, recentTaskWorkingDirTag(workingDir))
+	}
 
 	_, err := a.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
 		Title:            displayTitle,
@@ -604,12 +801,12 @@ func (a *App) createRecentTaskRecord(taskName, taskContent string, extraTags []s
 
 	pi := a.memoryStore.ProjectIndex()
 	if pi == nil {
-		return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
+		return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, WorkingDir: workingDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
 	}
 	if rec := pi.Get(taskDir); rec != nil {
 		return projectRecordToSearchResult(pi, *rec)
 	}
-	return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
+	return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, WorkingDir: workingDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
 }
 
 func (a *App) copyProjectConversation(sourceProjectPath, targetProjectPath string) {
@@ -634,6 +831,67 @@ func (a *App) copyProjectConversation(sourceProjectPath, targetProjectPath strin
 	}
 	handler.memory.Save(targetUserID, sourceEntries)
 	log.Printf("[project_search] ForkRecentTask copied entries=%d source_user=%q target_user=%q elapsed=%s", len(sourceEntries), sourceUserID, targetUserID, time.Since(started).Round(time.Millisecond))
+}
+
+func stringifyProjectConversationContent(value interface{}) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case []byte:
+		return strings.TrimSpace(string(v))
+	default:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return strings.TrimSpace(fmt.Sprint(v))
+		}
+		return strings.TrimSpace(string(data))
+	}
+}
+
+// LoadProjectConversationHistory returns the visible conversation history for a
+// project-scoped task session. This is used by the frontend when reopening a
+// recent task fork so the chat transcript can be restored from the backend
+// conversation memory that ForkRecentTask already copied.
+func (a *App) LoadProjectConversationHistory(projectPath string) []ProjectConversationHistoryItem {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return []ProjectConversationHistoryItem{}
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return []ProjectConversationHistoryItem{}
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil || handler.memory == nil {
+		return []ProjectConversationHistoryItem{}
+	}
+	entries := handler.memory.Load(projectSessionOwnerID(projectPath))
+	if len(entries) == 0 {
+		return []ProjectConversationHistoryItem{}
+	}
+	items := make([]ProjectConversationHistoryItem, 0, len(entries))
+	for _, entry := range entries {
+		role := strings.TrimSpace(strings.ToLower(entry.Role))
+		switch role {
+		case "user", "assistant", "system", "error":
+		default:
+			continue
+		}
+		content := stringifyProjectConversationContent(entry.Content)
+		reasoning := strings.TrimSpace(entry.ReasoningContent)
+		if content == "" && reasoning == "" {
+			continue
+		}
+		items = append(items, ProjectConversationHistoryItem{
+			Role:             role,
+			Content:          content,
+			ReasoningContent: reasoning,
+		})
+	}
+	return items
 }
 
 func (a *App) emitProjectIndexChanged(projectPath string) {
@@ -1259,7 +1517,11 @@ func (a *App) buildProjectTabContextMessage(projectPath string) string {
 
 	projectName := lastPathComponent(projectPath)
 
-	contextData := a.memoryStore.ProjectContextForHost(projectPath, 1)
+	contextPath := a.recentTaskExecutionProjectPath(projectPath)
+	if contextPath == "" {
+		contextPath = projectPath
+	}
+	contextData := a.memoryStore.ProjectContextForHost(contextPath, 1)
 	artifacts := contextData.TaskArtifacts
 	knowledge := contextData.ProjectKnowledge
 
@@ -1493,6 +1755,9 @@ func (a *App) CloseProjectTabSession(tabID string) {
 	a.tabProjectPaths.Delete(tabID)
 	if strings.TrimSpace(projectPath) != "" {
 		a.cancelProjectTaskLoop(projectPath)
+		if workingDir := a.recentTaskWorkingDir(projectPath); workingDir != "" && !strings.EqualFold(workingDir, projectPath) {
+			a.cancelProjectTaskLoop(workingDir)
+		}
 	}
 	log.Printf("[CloseProjectTabSession] tab=%s closed project=%q", tabID, projectPath)
 }
@@ -1572,14 +1837,16 @@ func (a *App) SendMessageForTab(tabID, text, projectPathHint string) (*IMAgentRe
 		a.cancelProjectTaskLoop(projectPath)
 		return nil, fmt.Errorf("project task is closed: %s", projectPath)
 	}
-	log.Printf("[SendMessageForTab] route tab=%q project=%q text_len=%d", tabID, projectPath, len(trimmedText))
+	executionProjectPath := a.recentTaskExecutionProjectPath(projectPath)
+	log.Printf("[SendMessageForTab] route tab=%q project=%q execution_project=%q text_len=%d", tabID, projectPath, executionProjectPath, len(trimmedText))
 
 	// Delegate to the existing SendAIAssistantMessage with project_path set.
 	// This auto-synthesizes per-project userID (desktop-user:{projectPath})
 	// and all downstream components isolate by userID.
 	return a.SendAIAssistantMessage(AIAssistantSendRequest{
-		Text:        text,
-		ProjectPath: projectPath,
+		Text:         text,
+		ProjectPath:  executionProjectPath,
+		EventScopeID: tabID,
 	})
 }
 
@@ -1742,6 +2009,8 @@ func workflowTypeLabel(wfType string) string {
 		return "中国专利申请"
 	case v2.WorkflowUSPatentApplication:
 		return "美国专利申请"
+	case v2.WorkflowGaokaoApplication:
+		return "高考志愿填报"
 	case v2.WorkflowPaperReproduction:
 		return "论文复现"
 	case v2.WorkflowMaintenance:

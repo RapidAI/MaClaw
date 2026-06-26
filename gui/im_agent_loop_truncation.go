@@ -63,7 +63,7 @@ func (h *IMMessageHandler) handleAgentLoopTruncatedToolCalls(
 		return result
 	}
 	result.ContinueLoop = true
-	if allTruncatedToolsBlockSafe(choice.TruncatedToolNames) {
+	if allTruncatedToolsPreservedAfterTruncation(choice.TruncatedToolNames) {
 		return h.handleAgentLoopEssentialTruncatedToolCalls(iteration, choice, phase, conversation, tools, recordSystemMessages)
 	}
 	if phase.TruncationRetries < maxTruncationRetries {
@@ -88,7 +88,7 @@ func (h *IMMessageHandler) handleAgentLoopTruncatedToolCalls(
 	}
 	var newlyBlocked []string
 	for _, tn := range choice.TruncatedToolNames {
-		if classifyAgentToolKind(tn).IsTruncationBlockSafe() {
+		if classifyAgentToolKind(tn).PreserveAfterTruncation() {
 			log.Printf("[agent-loop] skipping truncation block for essential tool %q (iter=%d)", tn, iteration)
 			continue
 		}
@@ -129,12 +129,12 @@ func (h *IMMessageHandler) handleAgentLoopTruncatedToolCalls(
 	return result
 }
 
-func allTruncatedToolsBlockSafe(names []string) bool {
+func allTruncatedToolsPreservedAfterTruncation(names []string) bool {
 	if len(names) == 0 {
 		return false
 	}
 	for _, name := range names {
-		if !classifyAgentToolKind(name).IsTruncationBlockSafe() {
+		if !classifyAgentToolKind(name).PreserveAfterTruncation() {
 			return false
 		}
 	}
@@ -183,6 +183,9 @@ func buildEssentialTruncationRecoveryHint(toolNames []string) string {
 	if containsToolName(toolNames, "bash") {
 		parts = append(parts, "Use bash only for short commands.")
 	}
+	if containsToolName(toolNames, "write_file") {
+		parts = append(parts, "For write_file, keep the tool available and regenerate a complete JSON object; if the content is very large, split it across overwrite/append calls so the model can finish each argument.")
+	}
 	return strings.Join(parts, " ")
 }
 
@@ -210,7 +213,7 @@ func (h *IMMessageHandler) truncationFallbackToolCatalog(ctx *LoopContext, userI
 		}
 	}
 	if policyOwnerID, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx); applyFilter {
-		catalog = h.applyWorkflowToolFilter(policyOwnerID, catalog)
+		catalog = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, catalog, h.getTools())
 	}
 	return catalog
 }
@@ -287,7 +290,7 @@ func buildTruncationRetryHint(truncatedList string, tools []map[string]interface
 }
 
 func agentLoopInlinePayloadLimitInstruction() string {
-	return fmt.Sprintf("Respect inline payload limits: edit_file/edit_lines text fields <= %d runes per call, and bash.command <= %d runes per call. write_file has no per-call limit.", maxAgentLoopInlineEditContentRunes, maxAgentLoopInlineBashCommandRunes)
+	return fmt.Sprintf("Respect inline payload limits: edit_file/edit_lines text fields <= %d runes per call, and bash.command <= %d runes per call. write_file has no backend content limit, but its JSON arguments must still be complete; split very large file bodies across overwrite/append calls if the model cannot finish one JSON object.", maxAgentLoopInlineEditContentRunes, maxAgentLoopInlineBashCommandRunes)
 }
 
 func buildTruncationBlockAlternativeInstructions(blocked []string, availableTools []map[string]interface{}) string {

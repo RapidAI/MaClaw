@@ -1,11 +1,11 @@
 import { Suspense, useCallback, useEffect, useState, useRef, useMemo } from 'react';
 import './App.css';
 import { appVersion, buildNumber } from './version';
-import appIcon from './assets/images/maclaw2.png';
+import appIcon from './assets/images/maclaw-agent-mark.svg';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ForkRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, IsNativeRoundedCorners, IsWebviewTransparent } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTaskWithWorkingDir, ForkRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, IsNativeRoundedCorners, IsWebviewTransparent } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised, WindowUnmaximise } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
@@ -22,6 +22,7 @@ import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureT
 import type { HistoryDiscussionSummary } from './components/layout/SidebarHistorySessions';
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
 import { readStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
+import { readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
 import { PetSettingsPanel } from './components/PetSettingsPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { useDialog } from './components/CustomDialog';
@@ -792,6 +793,13 @@ function App() {
     const [aiThemeMode, setAIThemeMode] = useState<'light' | 'dark'>(() => {
         return readStoredAssistantThemeMode();
     });
+    const [aiDarkSchemeId, setAIDarkSchemeId] = useState<AssistantDarkSchemeId>(() => {
+        return readStoredAssistantDarkSchemeId();
+    });
+    const handleAIDarkSchemeChange = useCallback((schemeId: AssistantDarkSchemeId) => {
+        setAIDarkSchemeId(schemeId);
+        writeStoredAssistantDarkSchemeId(schemeId);
+    }, []);
     // macOS / Windows 11: OS provides native rounded corners for the window.
     // When true, CSS border-radius/border/box-shadow on #App are removed.
     const [nativeRounded, setNativeRounded] = useState(() => {
@@ -2076,11 +2084,11 @@ function App() {
         }
     }, [switchTool]);
 
-    const createRecentTask = useCallback(async (name: string) => {
+    const createRecentTask = useCallback(async (name: string, workingDir?: string) => {
         const taskName = name.trim();
         if (!taskName) return;
         try {
-            const created = await CreateRecentTask(taskName);
+            const created = await CreateRecentTaskWithWorkingDir(taskName, (workingDir || '').trim());
             if (created?.project_path) {
                 setRecentProjects(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, 10));
             } else {
@@ -3004,7 +3012,7 @@ ${instruction}`;
     if (isLoading) {
         logStartupTrace('render-gate-isLoading', { envLogsCount: envLogs.length, isManualCheck });
         return (
-            <div data-ai-theme={aiThemeMode} data-native-rounded={nativeRounded ? "true" : undefined} className="app-loading-shell">
+            <div data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} className="app-loading-shell">
                 <div className="app-loading-drag-zone" />
                 <h2 className="app-loading-title">{t("envCheckTitle")}</h2>
                 <div className="app-loading-progress" aria-hidden="true">
@@ -3102,11 +3110,12 @@ ${instruction}`;
         >
             <DataMigrationOverlay />
             <div className="app-scale-layer">
-                <div id="App" data-ai-theme={aiThemeMode} data-native-rounded={nativeRounded ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
+                <div id="App" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
             <AppSidebarShell
                 navTab={navTab}
                 recentTasksPaneWidth={recentTasksPaneWidth}
                 aiThemeMode={aiThemeMode}
+                aiDarkSchemeId={aiDarkSchemeId}
                 brandInfo={brandInfo}
                 currentIcon={currentIcon}
                 brandSidebarName={brandSidebarName}
@@ -3180,7 +3189,7 @@ ${instruction}`;
                 availableProviders={availableProvidersForSwitch}
                 onSwitchProvider={handleQuickSwitchProvider}
             />
-            <div className="main-container" data-ai-theme={aiThemeMode}>
+            <div className="main-container" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined}>
                 <Suspense fallback={null}>
                 {/* AI assistant as main content (both lite and pro modes) */}
                 {navTab === 'ai' ? (
@@ -3190,6 +3199,7 @@ ${instruction}`;
                             lang={lang}
                             chatFontSize={chatFontSize}
                             themeMode={aiThemeMode}
+                            darkSchemeId={aiDarkSchemeId}
                             onThemeModeChange={setAIThemeMode}
                             audioInputDeviceId={(config as any)?.audio_input_device_id || ''}
                             audioOutputDeviceId={(config as any)?.audio_output_device_id || ''}
@@ -3495,6 +3505,8 @@ ${instruction}`;
                                     setUiZoom={setUiZoom}
                                     chatFontSize={chatFontSize}
                                     setChatFontSize={setChatFontSize}
+                                    darkSchemeId={aiDarkSchemeId}
+                                    setDarkSchemeId={handleAIDarkSchemeChange}
                                 />
                             </div>
 
@@ -3558,7 +3570,7 @@ ${instruction}`;
 
                 {/* Global Action Bar (Footer) */}
                 {config && isToolTab(navTab) && (
-                    <div className="global-action-bar" data-ai-theme={aiThemeMode}>
+                    <div className="global-action-bar" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined}>
                         <div className="coding-launch-panel wails-no-drag">
                             <div className="coding-launch-meta-row">
                                 <div className="coding-launch-summary">

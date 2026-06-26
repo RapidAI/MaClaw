@@ -941,17 +941,24 @@ func SkillParamSeconds(params map[string]interface{}, key string) (int, bool) {
 }
 
 func RunnerStepTimeoutSeconds(params map[string]interface{}, defaultSeconds, maxSeconds int) int {
+	return RunnerStepTimeoutSecondsWithMin(params, defaultSeconds, defaultSeconds, maxSeconds)
+}
+
+func RunnerStepTimeoutSecondsWithMin(params map[string]interface{}, defaultSeconds, minSeconds, maxSeconds int) int {
 	timeout := defaultSeconds
 	if timeout <= 0 {
 		timeout = corelib.DefaultAgentTimeoutSec
+	}
+	if minSeconds <= 0 {
+		minSeconds = timeout
 	}
 	if maxSeconds <= 0 {
 		maxSeconds = timeout
 	}
 	if t, ok := SkillParamSeconds(params, "timeout"); ok && t > 0 {
 		timeout = t
-		if timeout < defaultSeconds {
-			timeout = defaultSeconds
+		if timeout < minSeconds {
+			timeout = minSeconds
 		}
 		if timeout > maxSeconds {
 			timeout = maxSeconds

@@ -166,6 +166,21 @@ func TestCollectPreviousOutputsCapsToRecentItems(t *testing.T) {
 	}
 }
 
+func TestPreviousTaskFileOutputsIncludesCreatedFilesWithoutModifiedList(t *testing.T) {
+	task := &TaskItem{
+		Index:              1,
+		Title:              "Create helper",
+		ActualCreatedFiles: []string{"src/helper.go"},
+	}
+
+	outputs := previousTaskFileOutputs(task)
+	if len(outputs) != 1 {
+		t.Fatalf("expected created file output, got %d: %#v", len(outputs), outputs)
+	}
+	if !strings.Contains(outputs[0], "src/helper.go") || !strings.Contains(outputs[0], "created by T1") {
+		t.Fatalf("created-only actual artifact should be visible downstream, got %#v", outputs)
+	}
+}
 func TestPreviousTaskFileOutputsFallbackToPlannedFiles(t *testing.T) {
 	task := &TaskItem{
 		Index: 2,
@@ -587,6 +602,129 @@ func TestRunCurrentTaskRetainsPartialArtifactsDuringRetry(t *testing.T) {
 	}
 }
 
+func TestRunCurrentTaskDoesNotRetryNonRetryableGitDiffFailure(t *testing.T) {
+	orch := NewTaskExecutionOrchestrator()
+	orch.MaxRetries = 3
+	orch.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{orchestrator: orch}
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+
+	calls := 0
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		calls++
+		return &CodingSubAgentResult{Status: TaskExecFailed, Error: "git diff unavailable: D:\\work is not a git repository"}
+	}
+
+	var progress []string
+	summary, passed := runner.RunCurrentTask(nil, func(text string) {
+		progress = append(progress, text)
+	})
+	if passed {
+		t.Fatal("non-retryable failure must not pass")
+	}
+	if calls != 1 {
+		t.Fatalf("non-retryable failure should call subagent once, got %d", calls)
+	}
+	if strings.Contains(summary, "will retry") || !strings.Contains(summary, "non-retryable") {
+		t.Fatalf("expected non-retryable failure summary without retry, got %q", summary)
+	}
+	got := orch.Tasks[0]
+	if got.Status != TaskExecFailed || got.RetryCount != 0 || !strings.Contains(got.ErrorSummary, "not a git repository") {
+		t.Fatalf("non-retryable failure should fail without incrementing retry count, got %#v", got)
+	}
+	joined := strings.Join(progress, "\n")
+	if !strings.Contains(joined, `"phase":"failed"`) || !strings.Contains(joined, `"detail":"non_retryable"`) {
+		t.Fatalf("expected non-retryable failed progress event, got %#v", progress)
+	}
+}
+
+func TestRunCurrentTaskRetryContextIncludesPartialArtifacts(t *testing.T) {
+	orch := NewTaskExecutionOrchestrator()
+	orch.MaxRetries = 2
+	orch.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{orchestrator: orch}
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+
+	calls := 0
+	var retryPrevOutputs []string
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		calls++
+		if calls == 1 {
+			return &CodingSubAgentResult{
+				Status:        TaskExecFailed,
+				Error:         "tests failed",
+				FilesModified: []string{"src/a.go"},
+				FilesCreated:  []string{"src/new.go"},
+			}
+		}
+		retryPrevOutputs = append([]string(nil), prevOutputs...)
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "fixed after retry"}
+	}
+
+	if summary, passed := runner.RunCurrentTask(nil, nil); passed || !strings.Contains(summary, "will retry") {
+		t.Fatalf("first run should be retryable failure, passed=%v summary=%q", passed, summary)
+	}
+	if summary, passed := runner.RunCurrentTask(nil, nil); !passed || !strings.Contains(summary, "fixed after retry") {
+		t.Fatalf("second run should pass, passed=%v summary=%q", passed, summary)
+	}
+	joined := strings.Join(retryPrevOutputs, "\n")
+	if !strings.Contains(joined, "Retry artifact from previous attempt") ||
+		!strings.Contains(joined, "src/a.go") ||
+		!strings.Contains(joined, "modified by T1") ||
+		!strings.Contains(joined, "src/new.go") ||
+		!strings.Contains(joined, "created by T1") {
+		t.Fatalf("retry prevOutputs missing partial artifact context: %#v", retryPrevOutputs)
+	}
+}
+func TestRunCurrentTaskRetryContextIncludesFailedToolEvidence(t *testing.T) {
+	orch := NewTaskExecutionOrchestrator()
+	orch.MaxRetries = 2
+	orch.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{orchestrator: orch}
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+
+	calls := 0
+	var retryPrevOutputs []string
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		calls++
+		if calls == 1 {
+			return &CodingSubAgentResult{
+				Status: TaskExecFailed,
+				Error:  "quality gate failed",
+				CommandsRun: []CodingSubAgentCommandResult{
+					{Command: "go test ./gui", Succeeded: false, Summary: "compile failed"},
+				},
+				DynamicToolsRun: []CodingSubAgentDynamicToolResult{
+					{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: false, Summary: "MCP call failed: browser closed"},
+				},
+			}
+		}
+		retryPrevOutputs = append([]string(nil), prevOutputs...)
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "fixed after retry"}
+	}
+
+	if summary, passed := runner.RunCurrentTask(nil, nil); passed || !strings.Contains(summary, "will retry") {
+		t.Fatalf("first run should be retryable failure, passed=%v summary=%q", passed, summary)
+	}
+	if summary, passed := runner.RunCurrentTask(nil, nil); !passed || !strings.Contains(summary, "fixed after retry") {
+		t.Fatalf("second run should pass, passed=%v summary=%q", passed, summary)
+	}
+	joined := strings.Join(retryPrevOutputs, "\n")
+	if !strings.Contains(joined, "failed command evidence") ||
+		!strings.Contains(joined, "go test ./gui") ||
+		!strings.Contains(joined, "compile failed") ||
+		!strings.Contains(joined, "dynamic tool evidence") ||
+		!strings.Contains(joined, "call_mcp_tool browser/screenshot") ||
+		!strings.Contains(joined, "MCP call failed") {
+		t.Fatalf("retry prevOutputs missing failed tool evidence: %#v", retryPrevOutputs)
+	}
+}
 func TestRunCurrentTaskInjectsRetryFailureContext(t *testing.T) {
 	orch := NewTaskExecutionOrchestrator()
 	orch.MaxRetries = 2
@@ -624,30 +762,95 @@ func TestRunCurrentTaskInjectsRetryFailureContext(t *testing.T) {
 }
 
 func TestCurrentTaskRetryOutputsAddsRecoveryHint(t *testing.T) {
+	cases := []string{
+		"1 guardrail block(s): Set-Content src\\a.go x",
+		"1 guardrail block(s): python -c \"from pathlib import Path; Path('src/a.go').rename('src/b.go')\"",
+		"1 guardrail block(s): node -e \"const fs = require('fs'); fs.rm('src/a.go', () => {})\"",
+	}
+	for _, errSummary := range cases {
+		task := &TaskItem{
+			Index:        0,
+			Title:        "Fix generated file",
+			RetryCount:   1,
+			ErrorSummary: errSummary,
+		}
+
+		outputs := currentTaskRetryOutputs(task)
+		joined := strings.Join(outputs, "\n")
+		if !strings.Contains(joined, "Recovery hint") ||
+			!strings.Contains(joined, "edit_file/edit_lines") ||
+			!strings.Contains(joined, "inline Node/Python filesystem APIs") {
+			t.Fatalf("retry output should include shell-write recovery hint for %q, got %#v", errSummary, outputs)
+		}
+	}
+}
+
+func TestCurrentTaskRetryOutputsIncludesPartialArtifacts(t *testing.T) {
 	task := &TaskItem{
-		Index:        0,
-		Title:        "Fix generated file",
-		RetryCount:   1,
-		ErrorSummary: "1 guardrail block(s): Set-Content src\\a.go x",
+		Index:              0,
+		Title:              "Fix generated file",
+		RetryCount:         1,
+		ErrorSummary:       "tests failed",
+		ActualFiles:        []string{"src/a.go"},
+		ActualCreatedFiles: []string{"src/new.go"},
 	}
 
 	outputs := currentTaskRetryOutputs(task)
 	joined := strings.Join(outputs, "\n")
-	if !strings.Contains(joined, "Recovery hint") ||
-		!strings.Contains(joined, "edit_file/edit_lines") ||
-		!strings.Contains(joined, "shell redirection") {
-		t.Fatalf("retry output should include shell-write recovery hint, got %#v", outputs)
+	if !strings.Contains(joined, "Retry context for T1") ||
+		!strings.Contains(joined, "Retry artifact from previous attempt") ||
+		!strings.Contains(joined, "src/a.go") ||
+		!strings.Contains(joined, "modified by T1") ||
+		!strings.Contains(joined, "src/new.go") ||
+		!strings.Contains(joined, "created by T1") {
+		t.Fatalf("retry outputs should include partial artifacts, got %#v", outputs)
 	}
 }
+func TestCurrentTaskRetryOutputsCapsPartialArtifacts(t *testing.T) {
+	var files []string
+	for i := 0; i < codingSubAgentResultFilesMax+3; i++ {
+		files = append(files, fmt.Sprintf("src/file-%03d.go", i))
+	}
+	task := &TaskItem{
+		Index:        0,
+		Title:        "Many files",
+		RetryCount:   1,
+		ErrorSummary: "tests failed",
+		ActualFiles:  files,
+	}
 
+	outputs := currentTaskRetryOutputs(task)
+	joined := strings.Join(outputs, "\n")
+	if got := strings.Count(joined, "Retry artifact from previous attempt:"); got != codingSubAgentResultFilesMax+1 {
+		t.Fatalf("retry artifact output count = %d, want %d; outputs=%#v", got, codingSubAgentResultFilesMax+1, outputs)
+	}
+	if !strings.Contains(joined, "3 more touched file(s) omitted") {
+		t.Fatalf("retry artifact output should report omitted count, got %#v", outputs)
+	}
+	if strings.Contains(joined, "src/file-082.go") {
+		t.Fatalf("retry artifact output should be capped, got %#v", outputs)
+	}
+}
 func TestSubAgentRetryRecoveryHintCoversQualityGateTiming(t *testing.T) {
 	cases := []struct {
 		err  string
 		want string
 	}{
 		{err: "no exploration before existing-file edits", want: "Before editing existing files"},
+		{err: "请先调用 read_file(path=\"src/a.go\") 查看当前内容，再使用 edit_file 修改。", want: "refresh the snapshot"},
+		{err: "文件 src/a.go 自上次 read_file 后已变化，请重新调用 read_file 获取最新内容后再修改。", want: "snapshot is fresh"},
 		{err: "verification ran before the final edit (1 command); rerun test/build/lint/typecheck after editing", want: "after the final edit"},
+		{err: "verification command used failure-suppressing shell syntax (1 command); rerun test/build/lint/typecheck without || fallback, pipe filters, output redirection, or extra commands after the verifier", want: "output redirection"},
 		{err: "stale diff was not final diff", want: "after the last edit"},
+		{err: "git diff unavailable: D:\\work is not a git repository", want: "repeating git_diff will not help"},
+		{err: `Error: tool call "read_file" is missing required argument "path".`, want: "every required argument"},
+		{err: `Error: tool call "bash" has invalid argument type for "working_dir": expected string, got number.`, want: "valid JSON scalar types"},
+		{err: `Error: tool call "read_file" has invalid argument value for "lines": expected integer >= 1, got 0.`, want: "allowed values"},
+		{err: "failed command evidence: go test ./... -> context deadline exceeded", want: "command timed out"},
+		{err: "quality gate failed; failed command evidence: go test ./gui -> compile failed", want: "failing command output"},
+		{err: `Error: call_mcp_tool target "Wiki/get_page_children" is missing required MCP argument "parent_id" in arguments.`, want: "arguments.parent_id"},
+		{err: `Error: manage_skill target "ui-ux-pro-max" is missing required skill argument "input" in args.`, want: "args.input"},
+		{err: "1 dynamic tool failed: call_mcp_tool browser/screenshot -> MCP call failed: browser closed", want: "dynamic tool failure output"},
 	}
 	for _, tc := range cases {
 		got := subAgentRetryRecoveryHint(tc.err)
@@ -656,6 +859,7 @@ func TestSubAgentRetryRecoveryHintCoversQualityGateTiming(t *testing.T) {
 		}
 	}
 }
+
 func TestRunAllTasksPausesOnRateLimitWithoutRetryStorm(t *testing.T) {
 	orch := NewTaskExecutionOrchestrator()
 	orch.MaxRetries = 3
@@ -720,6 +924,33 @@ func TestRunAllTasksPausesOnTransientProviderErrorWithoutRetryStorm(t *testing.T
 	}
 }
 
+func TestSubAgentNonRetryableFailureClassification(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "not git repo", text: "git diff unavailable: D:\\work is not a git repository", want: true},
+		{name: "missing directory", text: "git diff unavailable: D:\\missing is not a directory", want: true},
+		{name: "cannot inspect", text: "git diff unavailable: cannot inspect project path D:\\work", want: true},
+		{name: "missing verification", text: "verification not run after final edit", want: false},
+		{name: "exploration", text: "no exploration before existing-file edits", want: false},
+		{name: "guardrail", text: "1 guardrail block(s): Set-Content src\\a.go", want: false},
+		{name: "test failure", text: "go test failed: expected 200 got 500", want: false},
+		{name: "dynamic tool", text: "1 dynamic tool failed: call_mcp_tool browser/screenshot", want: false},
+		{name: "provider transient", text: "LLM call failed: HTTP 503: service unavailable", want: false},
+		{name: "generic git diff", text: "git diff failed: exit status 1", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSubAgentNonRetryableFailure(tc.text); got != tc.want {
+				t.Fatalf("isSubAgentNonRetryableFailure(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsSubAgentTransientProviderErrorRequiresProviderContextForGenericTimeouts(t *testing.T) {
 	cases := []struct {
 		name string
@@ -729,9 +960,14 @@ func TestIsSubAgentTransientProviderErrorRequiresProviderContextForGenericTimeou
 		{name: "http 503", text: `LLM call failed: HTTP 503: service unavailable`, want: true},
 		{name: "provider deadline", text: `LLM call failed: Post "https://example.test/api/anthropic/v1/messages": context deadline exceeded`, want: true},
 		{name: "provider connection reset", text: `provider request failed: connection reset by peer`, want: true},
+		{name: "provider overloaded", text: `LLM provider overloaded, retry later`, want: true},
+		{name: "provider gateway timeout", text: `openai upstream request timeout`, want: true},
+		{name: "provider unexpected eof", text: `anthropic request failed: unexpected EOF`, want: true},
+		{name: "provider http 408", text: `LLM call failed: HTTP 408 request timeout`, want: true},
 		{name: "local command deadline", text: `bash command failed: context deadline exceeded`, want: false},
 		{name: "local http deadline", text: `integration test failed: Post "http://127.0.0.1:3000/health": context deadline exceeded`, want: false},
 		{name: "local connection reset", text: `integration test failed: connection reset by peer`, want: false},
+		{name: "local http 408", text: `integration test failed: HTTP 408 request timeout`, want: false},
 	}
 
 	for _, tc := range cases {

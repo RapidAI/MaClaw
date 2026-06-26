@@ -775,6 +775,57 @@ A portable markdown package used to verify generated package-view YAML.
 	}
 }
 
+func TestPackageSkillForMarketBlocksMissingBundledFile(t *testing.T) {
+	home := t.TempDir()
+	skillDir := filepath.Join(home, "skills", "missing-package-file")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(skillDir) error = %v", err)
+	}
+	data := []byte("name: missing-package-file\n" +
+		"description: A skill that references a missing script.\n" +
+		"triggers:\n  - missing package file\n" +
+		"platforms:\n  - universal\n" +
+		"steps:\n  - action: bash\n    params:\n      command: python scripts/missing.py\n")
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Missing package file\n\nReferences a script that has not been bundled.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+
+	app := &App{testHomeDir: home}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
+		Name:        "missing-package-file",
+		Description: "A skill that references a missing script.",
+		Triggers:    []string{"missing package file"},
+		Status:      "active",
+		SkillDir:    skillDir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "python scripts/missing.py",
+			},
+		}},
+	}}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	zipPath, tmpDir, err := app.packageSkillForMarketWithDir("missing-package-file")
+	if zipPath != "" {
+		defer os.Remove(zipPath)
+	}
+	if tmpDir != "" {
+		defer os.RemoveAll(tmpDir)
+	}
+	if err == nil {
+		t.Fatalf("packageSkillForMarketWithDir() error = nil, want missing bundled file block")
+	}
+	if got := err.Error(); !strings.Contains(got, "Missing bundled files") || !strings.Contains(got, "missing.py") {
+		t.Fatalf("packageSkillForMarketWithDir() error = %q, want Missing bundled files with script path", got)
+	}
+}
+
 func TestSkillLifecycleUploadNowUsesPackageViewForQuality(t *testing.T) {
 	originalDefaultCenter := defaultRemoteHubCenterURL
 	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
@@ -1892,7 +1943,7 @@ func TestSkillLifecycleRetryBlockedKeepsUnreadySkillBlocked(t *testing.T) {
 	if len(items) != 1 || items[0].Status != skillUploadStatusBlocked {
 		t.Fatalf("queue after retry = %+v", items)
 	}
-	if !strings.Contains(items[0].LastError, "missing referenced local file") {
+	if !strings.Contains(items[0].LastError, "Upload blocked") || !strings.Contains(items[0].LastError, "Missing bundled files") {
 		t.Fatalf("LastError = %q", items[0].LastError)
 	}
 }

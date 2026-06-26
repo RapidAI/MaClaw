@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -41,10 +42,11 @@ type installResult struct {
 var brandOptions = []brandOption{
 	{ID: "maclaw", ProductName: "MaClaw", Label: "MaClaw (\u539f\u5382\u54c1\u724c)", Aliases: []string{"", "maclaw", "ma", "default"}},
 	{ID: "qianxin", ProductName: "TigerClaw", Label: "TigerClaw (\u5947\u5b89\u4fe1 OEM \u7248)", Aliases: []string{"qianxin", "tigerclaw", "tiger", "\u5947\u5b89\u4fe1"}},
+	{ID: "metastaff", ProductName: "MetaStaff", Label: "\u667a\u5458 MetaStaff (OEM \u7248)", Aliases: []string{"metastaff", "meta", "staff", "\u667a\u5458"}},
 }
 
 func main() {
-	brandFlag := flag.String("brand", "maclaw", "product brand: maclaw or tigerclaw")
+	brandFlag := flag.String("brand", "maclaw", "product brand: maclaw, tigerclaw, or metastaff")
 	currentFlag := flag.String("current-version", "", "optional current version; skips install if latest is not newer")
 	checkOnly := flag.Bool("check", false, "check latest version and exit")
 	noLaunch := flag.Bool("no-launch", false, "download only, do not launch installer")
@@ -142,10 +144,8 @@ func runTUI(defaultBrand brandOption, currentVersion string, checkOnly, noLaunch
 	brand := defaultBrand
 	if line == "" {
 		brand = defaultBrand
-	} else if line == "1" {
-		brand = brandOptions[0]
-	} else if line == "2" {
-		brand = brandOptions[1]
+	} else if index, err := strconv.Atoi(line); err == nil && index >= 1 && index <= len(brandOptions) {
+		brand = brandOptions[index-1]
 	} else if resolved, err := resolveBrand(line); err == nil {
 		brand = resolved
 	} else {

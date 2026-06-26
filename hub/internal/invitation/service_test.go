@@ -3,11 +3,13 @@ package invitation
 import (
 	"context"
 	"errors"
+	"math"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -121,6 +123,9 @@ func (m *memInvitationCodeRepo) ListPagedByTenant(ctx context.Context, tenantID 
 func (m *memInvitationCodeRepo) MarkUsed(_ context.Context, id string, email string, usedAt time.Time) error {
 	for _, c := range m.codes {
 		if c.ID == id {
+			if c.Status != "unused" {
+				return errors.New("not found")
+			}
 			c.Status = "used"
 			c.UsedByEmail = email
 			c.UsedAt = &usedAt
@@ -307,6 +312,64 @@ func TestGenerateCodes_ValidCount(t *testing.T) {
 			t.Errorf("duplicate code: %s", c.Code)
 		}
 		seen[c.Code] = true
+	}
+}
+
+func TestGenerateCodesWithLLMGrantOptions(t *testing.T) {
+	settings := newMemSettingsRepo()
+	if err := llmservice.SaveRegistry(context.Background(), settings, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-pro", Name: "Coding Pro"}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+	repo := &memInvitationCodeRepo{}
+	svc := NewService(repo, settings)
+
+	codes, err := svc.GenerateCodesForTenantWithOptions(context.Background(), "tenant_a", GenerateCodeOptions{
+		Count:                1,
+		LLMServiceGroupID:    "coding-pro",
+		LLMGrantDurationDays: 14,
+		LLMGrantCredits:      2500,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodesForTenantWithOptions: %v", err)
+	}
+	if len(codes) != 1 {
+		t.Fatalf("len(codes) = %d, want 1", len(codes))
+	}
+	code := codes[0]
+	if code.LLMServiceGroupID != "coding-pro" || code.LLMGrantDurationDays != 14 || code.LLMGrantCredits != 2500 {
+		t.Fatalf("unexpected grant options: %#v", code)
+	}
+}
+
+func TestGenerateCodesWithInvalidLLMGrantOptions(t *testing.T) {
+	settings := newMemSettingsRepo()
+	if err := llmservice.SaveRegistry(context.Background(), settings, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-pro", Name: "Coding Pro"}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+	svc := NewService(&memInvitationCodeRepo{}, settings)
+
+	_, err := svc.GenerateCodesForTenantWithOptions(context.Background(), "tenant_a", GenerateCodeOptions{
+		Count:                1,
+		LLMServiceGroupID:    "missing",
+		LLMGrantDurationDays: 14,
+		LLMGrantCredits:      2500,
+	})
+	if !errors.Is(err, ErrInvalidLLMGrant) {
+		t.Fatalf("err = %v, want ErrInvalidLLMGrant", err)
+	}
+
+	_, err = svc.GenerateCodesForTenantWithOptions(context.Background(), "tenant_a", GenerateCodeOptions{
+		Count:                1,
+		LLMServiceGroupID:    "coding-pro",
+		LLMGrantDurationDays: 14,
+		LLMGrantCredits:      math.NaN(),
+	})
+	if !errors.Is(err, ErrInvalidLLMGrant) {
+		t.Fatalf("NaN err = %v, want ErrInvalidLLMGrant", err)
 	}
 }
 
@@ -507,6 +570,64 @@ func TestGetCodeByTenantEmailCacheIsTenantScoped(t *testing.T) {
 	}
 	if second == nil || second.Code != "BBBBBBBBBB" || second.VIP {
 		t.Fatalf("unexpected tenant b code: %#v", second)
+	}
+}
+
+func TestCodeRemovalInvalidatesCachedTenantEmailLookup(t *testing.T) {
+	ctx := context.Background()
+	usedAt := time.Now()
+	for _, tt := range []struct {
+		name string
+		run  func(*Service) error
+	}{
+		{
+			name: "unbind",
+			run: func(svc *Service) error {
+				return svc.UnbindCode(ctx, "ic_cached")
+			},
+		},
+		{
+			name: "delete",
+			run: func(svc *Service) error {
+				return svc.DeleteCode(ctx, "ic_cached")
+			},
+		},
+		{
+			name: "delete_by_email",
+			run: func(svc *Service) error {
+				_, err := svc.DeleteCodeByTenantEmail(ctx, store.DefaultTenantID, "cached@example.com")
+				return err
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &memInvitationCodeRepo{codes: []*store.InvitationCode{{
+				ID:                   "ic_cached",
+				TenantID:             store.DefaultTenantID,
+				Code:                 "CACHED",
+				Status:               "used",
+				UsedByEmail:          "cached@example.com",
+				UsedAt:               &usedAt,
+				LLMServiceGroupID:    "invite-pro",
+				LLMGrantDurationDays: 7,
+				LLMGrantCredits:      10,
+				CreatedAt:            usedAt,
+			}}}
+			svc := NewService(repo, newMemSettingsRepo())
+			if got, err := svc.GetCodeByTenantEmail(ctx, store.DefaultTenantID, "cached@example.com"); err != nil || got == nil {
+				t.Fatalf("prime cached lookup: code=%+v err=%v", got, err)
+			}
+			if err := tt.run(svc); err != nil {
+				t.Fatalf("%s: %v", tt.name, err)
+			}
+			got, err := svc.GetCodeByTenantEmail(ctx, store.DefaultTenantID, "cached@example.com")
+			if err != nil {
+				t.Fatalf("lookup after %s: %v", tt.name, err)
+			}
+			if got != nil {
+				t.Fatalf("expected no cached code after %s, got %+v", tt.name, got)
+			}
+		})
 	}
 }
 

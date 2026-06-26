@@ -720,6 +720,64 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 		},
 	})
 	registry.Register(RegisteredTool{
+		Name:        "knowledge_share_to_hub",
+		Description: "Share selected local Maclaw GUI knowledge sources to Hub as an editable knowledge package. Returns share_url, agent_import, content_sources, and warnings so agents can copy the link and verify import completeness. Requires a user-provided description; ttl defaults to 7d.",
+		Category:    ToolCategoryBuiltin,
+		Tags:        []string{"knowledge", "hub", "share", "export", "link", "agent-import", "知识库", "分享", "导出"},
+		Priority:    5,
+		Status:      RegToolAvailable,
+		Required:    []string{"description"},
+		InputSchema: map[string]interface{}{
+			"hub_url":          map[string]string{"type": "string", "description": "Optional Hub base URL. Defaults to configured RemoteHubURL."},
+			"hub_token":        map[string]string{"type": "string", "description": "Optional Hub token. Defaults to configured RemoteViewerToken."},
+			"title":            map[string]string{"type": "string", "description": "Optional knowledge share title."},
+			"description":      map[string]string{"type": "string", "description": "Required user-facing knowledge description shown in Hub browsing/management pages."},
+			"visibility_scope": map[string]string{"type": "string", "description": "Visibility scope: public, tenant, hub, private, or users. Default hub."},
+			"visibility_users": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "User IDs/emails allowed when visibility_scope=users."},
+			"ttl":              map[string]string{"type": "string", "description": "Share lifetime: 7d, month, year, permanent. Default 7d."},
+			"source_ids":       knowledgeSourceIDsSchema("Optional exact source IDs to share. If omitted, shares all active sources selected by filters."),
+			"ids":              knowledgeSourceIDsAliasSchema(),
+			"query":            map[string]string{"type": "string", "description": "Optional source filter query used to select source IDs before sharing."},
+			"kind":             map[string]string{"type": "string", "description": "Optional source kind filter used to select source IDs before sharing."},
+			"source_kinds":     map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional source kind list used to select source IDs before sharing."},
+			"status":           map[string]string{"type": "string", "description": "Optional source status filter used to select source IDs before sharing."},
+			"domain":           map[string]string{"type": "string", "description": "Optional URL domain filter used to select source IDs before sharing."},
+			"coverage_filter":  map[string]string{"type": "string", "description": "Optional coverage filter used to select source IDs before sharing."},
+			"project_path":     map[string]string{"type": "string", "description": "Optional project path filter used to select source IDs before sharing."},
+			"owner_id":         map[string]string{"type": "string", "description": "Optional owner/user filter used to select source IDs before sharing."},
+			"tenant_id":        map[string]string{"type": "string", "description": "Optional tenant filter used to select source IDs before sharing."},
+			"limit":            map[string]string{"type": "integer", "description": "Max filtered sources to share, default 500, max 500."},
+			"redact_sensitive": map[string]string{"type": "boolean", "description": "Redact sensitive URI/path fields and sensitive text snippets in the shared package. Default true."},
+			"include_disabled": map[string]string{"type": "boolean", "description": "Include disabled sources when explicit source IDs or filters match. Default false."},
+		},
+		Source: "builtin:knowledge",
+		Handler: func(args map[string]interface{}) string {
+			return app.toolKnowledgeShareToHub(args)
+		},
+	})
+	registry.Register(RegisteredTool{
+		Name:        "knowledge_import_hub_share",
+		Description: "Dry-run or import a Hub knowledge share by human share link, package link, agent import link, or knowledge_id. Defaults to dry_run=true so agents can inspect imported/skipped counts and warnings before writing local knowledge.",
+		Category:    ToolCategoryBuiltin,
+		Tags:        []string{"knowledge", "hub", "share", "import", "restore", "link", "知识库", "导入", "分享"},
+		Priority:    5,
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{
+			"share_link":   map[string]string{"type": "string", "description": "Human share URL, package URL, or agent import URL."},
+			"link":         knowledgeStringAliasSchema("Alias for share_link."),
+			"url":          knowledgeStringAliasSchema("Alias for share_link."),
+			"knowledge_id": map[string]string{"type": "string", "description": "Knowledge ID to resolve on the configured or supplied Hub."},
+			"id":           knowledgeStringAliasSchema("Alias for knowledge_id."),
+			"hub_url":      map[string]string{"type": "string", "description": "Optional Hub base URL. Required when only knowledge_id is provided and no default Hub is configured."},
+			"hub_token":    map[string]string{"type": "string", "description": "Optional Hub token. Defaults to configured RemoteViewerToken."},
+			"dry_run":      map[string]string{"type": "boolean", "description": "Preview importable/skipped items without writing. Default true."},
+		},
+		Source: "builtin:knowledge",
+		Handler: func(args map[string]interface{}) string {
+			return app.toolKnowledgeImportHubShare(args)
+		},
+	})
+	registry.Register(RegisteredTool{
 		Name:        "knowledge_list_sources",
 		Description: "List saved MaClaw knowledge sources from the local store without calling an LLM. Use when the user asks what has been saved, imported, indexed, failed, grouped by label, or recently updated. Returns per-source node/card/fact counts and supports query, kind/source_kinds, status, domain, label/labels, coverage_filter, project_path, owner_id, tenant_id, and limit filters.",
 		Category:    ToolCategoryBuiltin,
@@ -1740,22 +1798,22 @@ func (a *App) enrichKnowledgeImageResults(results []knowledge.SearchResult) []in
 			if embed != nil {
 				// Create enriched map with all original fields + image data
 				enriched = append(enriched, map[string]interface{}{
-					"source":          r.Source,
-					"result_type":     r.ResultType,
-					"node_id":         r.NodeID,
-					"node_title":      r.NodeTitle,
-					"node_type":       r.NodeType,
-					"page":            r.Page,
-					"card_id":         r.CardID,
-					"card_title":      r.CardTitle,
-					"claim":           r.Claim,
-					"summary":         r.Summary,
-					"snippet":         r.Snippet,
-					"citation":        r.Citation,
-					"score":           r.Score,
-					"kb_image_thumb":  embed.DataURL,
-					"kb_image_path":   embed.OriginalPath,
-					"kb_image_id":     embed.AssetID,
+					"source":         r.Source,
+					"result_type":    r.ResultType,
+					"node_id":        r.NodeID,
+					"node_title":     r.NodeTitle,
+					"node_type":      r.NodeType,
+					"page":           r.Page,
+					"card_id":        r.CardID,
+					"card_title":     r.CardTitle,
+					"claim":          r.Claim,
+					"summary":        r.Summary,
+					"snippet":        r.Snippet,
+					"citation":       r.Citation,
+					"score":          r.Score,
+					"kb_image_thumb": embed.DataURL,
+					"kb_image_path":  embed.OriginalPath,
+					"kb_image_id":    embed.AssetID,
 				})
 				continue
 			}
@@ -2357,6 +2415,49 @@ func (a *App) toolKnowledgeImportSnapshot(args map[string]interface{}) string {
 	return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
 }
 
+func (a *App) toolKnowledgeShareToHub(args map[string]interface{}) string {
+	sourceIDs := knowledgeToolSourceIDs(args)
+	if len(sourceIDs) == 0 && hasKnowledgeSourceFilterArgs(args) {
+		limit := knowledgeToolIntArg(args, "limit", 500)
+		if limit <= 0 || limit > 500 {
+			limit = 500
+		}
+		sources, err := a.KnowledgeListSources(knowledgeToolListSourcesOptions(args, limit))
+		if err != nil {
+			return knowledgeToolJSON(nil, err)
+		}
+		sourceIDs = make([]string, 0, len(sources))
+		for _, source := range sources {
+			if strings.TrimSpace(source.ID) != "" {
+				sourceIDs = append(sourceIDs, source.ID)
+			}
+		}
+	}
+	result, err := a.KnowledgeShareToHub(KnowledgeHubShareRequest{
+		HubURL:          knowledgeToolStringArg(args, "hub_url"),
+		HubToken:        knowledgeToolStringArg(args, "hub_token"),
+		Title:           knowledgeToolStringArg(args, "title"),
+		Description:     knowledgeToolStringArg(args, "description"),
+		VisibilityScope: knowledgeToolStringArg(args, "visibility_scope"),
+		VisibilityUsers: knowledgeToolStringSlice(args["visibility_users"]),
+		TTL:             knowledgeToolStringArg(args, "ttl"),
+		SourceIDs:       sourceIDs,
+		RedactSensitive: knowledgeToolBoolArg(args, "redact_sensitive", true),
+		IncludeDisabled: knowledgeToolBoolArg(args, "include_disabled", false),
+	})
+	return knowledgeToolJSON(map[string]interface{}{"share": result}, err)
+}
+
+func (a *App) toolKnowledgeImportHubShare(args map[string]interface{}) string {
+	result, err := a.KnowledgeImportHubShare(KnowledgeHubShareImportRequest{
+		HubURL:      knowledgeToolStringArg(args, "hub_url"),
+		HubToken:    knowledgeToolStringArg(args, "hub_token"),
+		KnowledgeID: knowledgeToolFirstString(args, "knowledge_id", "id"),
+		ShareLink:   knowledgeToolFirstString(args, "share_link", "link", "url"),
+		DryRun:      knowledgeToolBoolArg(args, "dry_run", true),
+	})
+	return knowledgeToolJSON(map[string]interface{}{"import": result}, err)
+}
 func (a *App) toolKnowledgeListSources(args map[string]interface{}) string {
 	limit := knowledgeToolIntArg(args, "limit", 50)
 	if limit <= 0 {

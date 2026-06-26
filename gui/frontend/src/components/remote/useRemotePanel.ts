@@ -71,6 +71,7 @@ const atomicPatchFields = new Set([
     'remote_heartbeat_sec',
     'screen_dim_timeout_min',
     'agent_response_timeout_sec',
+    'skill_runner_timeout_sec',
     'maclaw_llm_timeout_sec',
     'audio_input_device_id',
     'audio_output_device_id',

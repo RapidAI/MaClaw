@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newCtxTestStore(t *testing.T) *Store {
@@ -88,6 +89,148 @@ func TestSave_DelegatesToSaveWithContext(t *testing.T) {
 	entries := ms.List(CategoryProjectKnowledge, "")
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+}
+
+func TestSaveWithContext_EmbeddingTimeoutStillPersistsEntry(t *testing.T) {
+	ms := newCtxTestStore(t)
+
+	prevBudget := saveEmbeddingBudget
+	saveEmbeddingBudget = 30 * time.Millisecond
+	t.Cleanup(func() { saveEmbeddingBudget = prevBudget })
+
+	emb := &blockingQueryEmbedder{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		vec:     []float32{1, 2, 3, 4},
+	}
+	ms.SetEmbedder(emb)
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		done <- ms.SaveWithContext(Entry{
+			Content:  "remember that the server uses tmux for long jobs",
+			Category: CategoryProjectKnowledge,
+		}, "ssh maintenance habits")
+	}()
+
+	<-emb.started
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("SaveWithContext failed: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("SaveWithContext blocked on embedding timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("SaveWithContext timeout fallback took too long: %v", elapsed)
+	}
+
+	entries := ms.List(CategoryProjectKnowledge, "")
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry after timeout fallback, got %d", len(entries))
+	}
+	if len(entries[0].Embedding) != 0 {
+		t.Fatalf("expected entry to persist without embedding on timeout, got %v", entries[0].Embedding)
+	}
+
+	close(emb.release)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		entries = ms.List(CategoryProjectKnowledge, "")
+		if len(entries) == 1 && len(entries[0].Embedding) == 4 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed-out save embedding was not applied after background completion")
+}
+
+func TestSaveWithContext_AsyncEmbeddingDoesNotOverwriteLaterUpdate(t *testing.T) {
+	ms := newCtxTestStore(t)
+
+	prevBudget := saveEmbeddingBudget
+	saveEmbeddingBudget = 30 * time.Millisecond
+	t.Cleanup(func() { saveEmbeddingBudget = prevBudget })
+
+	emb := &blockingQueryEmbedder{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		vec:     []float32{9, 8, 7, 6},
+	}
+	ms.SetEmbedder(emb)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ms.SaveWithContext(Entry{
+			Content:  "original ssh maintenance note",
+			Category: CategoryProjectKnowledge,
+		}, "")
+	}()
+
+	<-emb.started
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("SaveWithContext failed: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("SaveWithContext blocked on embedding timeout")
+	}
+
+	entries := ms.List(CategoryProjectKnowledge, "")
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry after timeout fallback, got %d", len(entries))
+	}
+	updated := entries[0]
+	updated.Content = "updated ssh maintenance note"
+	if err := ms.UpdateEntriesByID([]Entry{updated}); err != nil {
+		t.Fatalf("UpdateEntriesByID failed: %v", err)
+	}
+
+	close(emb.release)
+	time.Sleep(100 * time.Millisecond)
+
+	entries = ms.List(CategoryProjectKnowledge, "")
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry after async embedding completion, got %d", len(entries))
+	}
+	if entries[0].Content != "updated ssh maintenance note" {
+		t.Fatalf("async embedding overwrote later content update: %q", entries[0].Content)
+	}
+	if len(entries[0].Embedding) != 0 {
+		t.Fatalf("async embedding should not apply after content hash changed, got %v", entries[0].Embedding)
+	}
+}
+
+func TestSaveWithContext_SkipsEmbeddingWhenConcurrencySaturated(t *testing.T) {
+	ms := newCtxTestStore(t)
+	emb := &countingQueryEmbedder{dim: 4}
+	ms.SetEmbedder(emb)
+	ms.saveEmbeddingSem = make(chan struct{}, 1)
+	ms.saveEmbeddingSem <- struct{}{}
+
+	start := time.Now()
+	if err := ms.SaveWithContext(Entry{
+		Content:  "save should not wait for a saturated embedding queue",
+		Category: CategoryProjectKnowledge,
+	}, ""); err != nil {
+		t.Fatalf("SaveWithContext failed: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("SaveWithContext took too long with saturated embedding queue: %v", elapsed)
+	}
+	if emb.calls != 0 {
+		t.Fatalf("expected saturated save embedding queue to skip embed call, got %d", emb.calls)
+	}
+	entries := ms.List(CategoryProjectKnowledge, "")
+	if len(entries) != 1 {
+		t.Fatalf("expected saved entry, got %d", len(entries))
+	}
+	if len(entries[0].Embedding) != 0 {
+		t.Fatalf("expected entry to save without embedding, got %v", entries[0].Embedding)
 	}
 }
 

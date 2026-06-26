@@ -466,6 +466,131 @@ func TestSkillRunnerUsesIsolatedWorkspaceForSkillDir(t *testing.T) {
 	}
 }
 
+func TestSkillRunnerReloadsFileSkillDefinitionBeforeRun(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	skillDir := filepath.Join(tempHome, "skill-src")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	diskYAML := []byte("name: reload-before-run\n" +
+		"description: reloads current disk definition before each run\n" +
+		"steps:\n" +
+		"  - action: bash\n" +
+		"    params:\n" +
+		"      command: echo new-from-disk\n" +
+		"status: active\n")
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), diskYAML, 0o644); err != nil {
+		t.Fatalf("WriteFile skill.yaml: %v", err)
+	}
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	app.testHomeDir = tempHome
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:     "reload-before-run",
+		Status:   "active",
+		SkillDir: skillDir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "echo old-from-cache",
+			},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRunForOwner("desktop-user:project-a", "reload-before-run", nil)
+	if err != nil {
+		t.Fatalf("StartRunForOwner() error = %v", err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
+	if status.Status != skillRunStatusSuccess {
+		t.Fatalf("run status = %s error=%s", status.Status, status.Error)
+	}
+	if len(status.Steps) != 1 || !strings.Contains(status.Steps[0].Output, "new-from-disk") {
+		t.Fatalf("step output = %+v, want disk definition output", status.Steps)
+	}
+	if strings.Contains(status.Steps[0].Output, "old-from-cache") {
+		t.Fatalf("step output used stale cached definition: %+v", status.Steps[0])
+	}
+	var reloadedCfg corelib.AppConfig
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		reloadedCfg, err = app.LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig() after run error = %v", err)
+		}
+		if len(reloadedCfg.NLSkills) == 1 && reloadedCfg.NLSkills[0].Source == string(skillEntrySourceFile) {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(reloadedCfg.NLSkills) != 1 || reloadedCfg.NLSkills[0].Source != string(skillEntrySourceFile) {
+		t.Fatalf("persisted skill overlay = %+v, want file-source runtime overlay", reloadedCfg.NLSkills)
+	}
+	if len(reloadedCfg.NLSkills[0].Steps) != 0 {
+		t.Fatalf("persisted file skill overlay kept definition steps: %+v", reloadedCfg.NLSkills[0].Steps)
+	}
+}
+
+func TestSkillRunnerReloadPreservesDisabledFileSkillOverlay(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	skillDir := filepath.Join(tempHome, "skill-src")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	diskYAML := []byte("name: disabled-overlay\n" +
+		"description: disk definition is active but config overlay is disabled\n" +
+		"steps:\n" +
+		"  - action: bash\n" +
+		"    params:\n" +
+		"      command: echo should-not-run\n" +
+		"status: active\n")
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), diskYAML, 0o644); err != nil {
+		t.Fatalf("WriteFile skill.yaml: %v", err)
+	}
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	app.testHomeDir = tempHome
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:     "disabled-overlay",
+		Source:   string(skillEntrySourceFile),
+		Status:   "disabled",
+		SkillDir: skillDir,
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	if _, err := runner.StartRunForOwner("desktop-user:project-a", "disabled-overlay", nil); err == nil || !strings.Contains(err.Error(), "is disabled") {
+		t.Fatalf("StartRunForOwner() error = %v, want disabled status error", err)
+	}
+}
+
 func TestSkillExecutorUsesIsolatedWorkspaceForSkillDir(t *testing.T) {
 	skillDir := filepath.Join(t.TempDir(), "skill-src")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -586,6 +711,56 @@ func TestRemapSkillRunStepToWorkspaceRemapsNestedParams(t *testing.T) {
 	originalCommand, _ := step.Params["command"].(string)
 	if !strings.Contains(originalCommand, source) {
 		t.Fatalf("original params mutated: %q", originalCommand)
+	}
+}
+
+func TestRemapSkillRunStepToWorkspaceRemapsWorkingDirAndCommand(t *testing.T) {
+	source := filepath.Clean(filepath.Join(t.TempDir(), "skill-src"))
+	workspace := filepath.Clean(filepath.Join(t.TempDir(), "skill-workspace"))
+	step := corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"working_dir": source,
+			"command":     "node " + filepath.Join(source, "scripts", "run.js"),
+		},
+	}
+
+	remapped := remapSkillRunStepToWorkspace(step, source, workspace)
+	workingDir, _ := remapped.Params["working_dir"].(string)
+	if workingDir != workspace {
+		t.Fatalf("working_dir = %q, want workspace %q", workingDir, workspace)
+	}
+	command, _ := remapped.Params["command"].(string)
+	if strings.Contains(command, source) || !strings.Contains(command, filepath.Join(workspace, "scripts", "run.js")) {
+		t.Fatalf("command = %q, want script path under workspace %q", command, workspace)
+	}
+}
+
+func TestRunBashStepEnvReachesWindowsStartChild(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows start command inheritance test")
+	}
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "env.txt")
+	command := fmt.Sprintf(`start "" /wait cmd /c "echo %%SKILL_ENV_TEST%%> %s"`, outPath)
+
+	output, err := runBashStepWithContextFull(context.Background(), command, map[string]interface{}{
+		"working_dir":     dir,
+		"preferred_shell": "cmd",
+		"timeout":         240,
+		"extra_env":       map[string]interface{}{"SKILL_ENV_TEST": "from-runner"},
+		"_skill_run_id":   "test-env-child",
+		"_skill_owner_id": "test-owner",
+	}, "", &App{}, corelib.MinSkillRunnerTimeoutSec)
+	if err != nil {
+		t.Fatalf("runBashStepWithContextFull() error = %v output=%s", err, output)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("ReadFile child env output: %v\nrunner output=%s", err, output)
+	}
+	if got := strings.TrimSpace(string(data)); got != "from-runner" {
+		t.Fatalf("child env = %q, want %q\nrunner output=%s", got, "from-runner", output)
 	}
 }
 
@@ -2545,6 +2720,12 @@ func TestIsInstructionOnlySkillEntry(t *testing.T) {
 		Params: map[string]interface{}{"instructions": "# PPTX Generator\n\nGenerate slides."},
 	}}}) {
 		t.Fatal("expected craft_tool with instructions to require artifact verification")
+	}
+	if !isInstructionOnlySkillEntry(&corelib.NLSkillEntry{Steps: []corelib.NLSkillStep{{
+		Action: "craft_tool",
+		Params: map[string]interface{}{"skill_instructions": "# PPTX Generator\n\nGenerate slides."},
+	}}}) {
+		t.Fatal("expected craft_tool with instruction alias to require artifact verification")
 	}
 	if isInstructionOnlySkillEntry(&corelib.NLSkillEntry{Steps: []corelib.NLSkillStep{{
 		Action: "craft_tool",

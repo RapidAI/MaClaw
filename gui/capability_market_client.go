@@ -121,12 +121,20 @@ type capabilityMarketClient struct {
 }
 
 func newCapabilityMarketClient(cfg corelib.AppConfig) (*capabilityMarketClient, error) {
-	baseURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
-	token := strings.TrimSpace(cfg.RemoteViewerToken)
+	baseURL := capabilityMarketBaseURL(cfg)
+	token := capabilityMarketAuthToken(cfg)
 	if baseURL == "" || token == "" {
 		return nil, fmt.Errorf("hub marketplace client is not configured")
 	}
 	return &capabilityMarketClient{baseURL: baseURL, token: token, http: &http.Client{Timeout: 20 * time.Second}}, nil
+}
+
+func capabilityMarketBaseURL(cfg corelib.AppConfig) string {
+	return strings.TrimRight(strings.TrimSpace(firstNonEmpty(cfg.RemoteHubURL, cfg.RemoteHubCenterURL)), "/")
+}
+
+func capabilityMarketAuthToken(cfg corelib.AppConfig) string {
+	return strings.TrimSpace(firstNonEmpty(cfg.RemoteViewerToken, cfg.SkillMarketSessionToken, cfg.RemoteMachineToken))
 }
 
 func (c *capabilityMarketClient) listCapabilities(ctx context.Context, capabilityType, query string) ([]HubCapabilitySummary, error) {

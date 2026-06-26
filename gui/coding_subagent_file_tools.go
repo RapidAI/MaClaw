@@ -29,14 +29,14 @@ func executeCodingReadFile(args map[string]interface{}) codingToolExecutionResul
 
 	maxLines := readFileMaxLines
 	explicitLines := false
-	if n, ok := args["lines"].(float64); ok && n > 0 {
+	if n, ok := codingSubAgentArgumentIntegerValue(args["lines"]); ok && n > 0 {
 		maxLines = int(n)
 		explicitLines = true
 	}
 
 	startLine := 1
 	explicitStart := false
-	if n, ok := args["start_line"].(float64); ok && n > 1 {
+	if n, ok := codingSubAgentArgumentIntegerValue(args["start_line"]); ok && n >= 1 {
 		startLine = int(n)
 		explicitStart = true
 	}
@@ -48,7 +48,7 @@ func executeCodingReadFile(args map[string]interface{}) codingToolExecutionResul
 
 	lines := strings.SplitAfter(string(data), "\n")
 	totalLines := len(lines)
-	if offset, ok := args["offset"].(float64); ok && offset > 0 {
+	if offset, ok := codingSubAgentArgumentIntegerValue(args["offset"]); ok && offset > 0 {
 		tailN := int(offset)
 		if tailN >= totalLines {
 			return codingToolExecutionResult{Text: string(data), Outcome: codingToolOutcomeSuccess}
@@ -220,16 +220,12 @@ func executeCodingEditLines(args map[string]interface{}) codingToolExecutionResu
 		return codingToolExecutionResult{Text: "missing operation parameter (replace/insert/delete)", Outcome: codingToolOutcomeFailed}
 	}
 	startLine := 0
-	if v, ok := args["start_line"].(float64); ok {
+	if v, ok := codingSubAgentArgumentIntegerValue(args["start_line"]); ok {
 		startLine = int(v)
-	} else if v, ok := args["start_line"].(int); ok {
-		startLine = v
 	}
 	endLine := startLine
-	if v, ok := args["end_line"].(float64); ok {
+	if v, ok := codingSubAgentArgumentIntegerValue(args["end_line"]); ok {
 		endLine = int(v)
-	} else if v, ok := args["end_line"].(int); ok {
-		endLine = v
 	}
 	content, _ := args["content"].(string)
 	res, err := coretool.EditFileByLine(absPath, coretool.EditLineOperation(opStr), startLine, endLine, content)

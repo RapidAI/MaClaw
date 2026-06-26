@@ -24,6 +24,7 @@ func TestDefaultParameterDefinitionsIncludeSharedUserConfig(t *testing.T) {
 		"skill_sources_allowed",
 		"memory_auto_compress",
 		"knowledge_skill_token_budget",
+		"skill_runner_timeout_sec",
 		"security_policy_mode",
 		"sandbox_mode",
 		"network_level",
@@ -41,6 +42,9 @@ func TestDefaultParameterDefinitionsIncludeSharedUserConfig(t *testing.T) {
 		if byKey[key].Type != "bool" {
 			t.Fatalf("%s type = %q, want bool", key, byKey[key].Type)
 		}
+	}
+	if def := byKey["skill_runner_timeout_sec"]; def.Type != "integer" || !strings.Contains(def.Description, "240-14400") || !strings.Contains(def.Description, "global_timeout") {
+		t.Fatalf("skill_runner_timeout_sec schema should describe bounds and override behavior, got %#v", def)
 	}
 }
 

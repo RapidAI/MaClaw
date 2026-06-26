@@ -1334,7 +1334,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                                         const msg = isZh ? "放弃后当前进度将被清除，只能重新发起工作流。" : "All progress will be lost and you'll need to start a new workflow.";
                                         const confirmed = await showConfirm(msg, title);
                                         if (!confirmed) return;
-                                        onDismiss(view.id, { __cancel_workflow: true });
+                                        onDismiss(view.id, { ...dismissPayload(), __cancel_workflow: true });
                                     } finally {
                                         setDismissing(false);
                                     }

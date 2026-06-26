@@ -19,9 +19,12 @@ import (
 )
 
 type generateCodesRequest struct {
-	Count        int  `json:"count"`
-	ValidityDays int  `json:"validity_days"`
-	VIP          bool `json:"vip"`
+	Count                int     `json:"count"`
+	ValidityDays         int     `json:"validity_days"`
+	VIP                  bool    `json:"vip"`
+	LLMServiceGroupID    string  `json:"llm_service_group_id"`
+	LLMGrantDurationDays int     `json:"llm_grant_duration_days"`
+	LLMGrantCredits      float64 `json:"llm_grant_credits"`
 }
 
 type toggleInvitationCodeRequest struct {
@@ -29,17 +32,20 @@ type toggleInvitationCodeRequest struct {
 }
 
 type invitationCodeResponse struct {
-	ID           string  `json:"id"`
-	Code         string  `json:"code"`
-	Status       string  `json:"status"`
-	UsedByEmail  string  `json:"used_by_email"`
-	UsedAt       *string `json:"used_at"`
-	ValidityDays int     `json:"validity_days"`
-	BoundAt      *string `json:"bound_at"`
-	Exported     bool    `json:"exported"`
-	VIP          bool    `json:"vip"`
-	TenantID     string  `json:"tenant_id"`
-	CreatedAt    string  `json:"created_at"`
+	ID                   string  `json:"id"`
+	Code                 string  `json:"code"`
+	Status               string  `json:"status"`
+	UsedByEmail          string  `json:"used_by_email"`
+	UsedAt               *string `json:"used_at"`
+	ValidityDays         int     `json:"validity_days"`
+	BoundAt              *string `json:"bound_at"`
+	Exported             bool    `json:"exported"`
+	VIP                  bool    `json:"vip"`
+	LLMServiceGroupID    string  `json:"llm_service_group_id,omitempty"`
+	LLMGrantDurationDays int     `json:"llm_grant_duration_days,omitempty"`
+	LLMGrantCredits      float64 `json:"llm_grant_credits,omitempty"`
+	TenantID             string  `json:"tenant_id"`
+	CreatedAt            string  `json:"created_at"`
 }
 
 func GenerateInvitationCodesHandler(svc *invitation.Service) http.HandlerFunc {
@@ -50,9 +56,16 @@ func GenerateInvitationCodesHandler(svc *invitation.Service) http.HandlerFunc {
 			return
 		}
 
-		codes, err := svc.GenerateCodesForTenant(r.Context(), RequestTenantID(r), req.Count, req.ValidityDays, req.VIP)
+		codes, err := svc.GenerateCodesForTenantWithOptions(r.Context(), RequestTenantID(r), invitation.GenerateCodeOptions{
+			Count:                req.Count,
+			ValidityDays:         req.ValidityDays,
+			VIP:                  req.VIP,
+			LLMServiceGroupID:    req.LLMServiceGroupID,
+			LLMGrantDurationDays: req.LLMGrantDurationDays,
+			LLMGrantCredits:      req.LLMGrantCredits,
+		})
 		if err != nil {
-			if errors.Is(err, invitation.ErrInvalidCount) {
+			if errors.Is(err, invitation.ErrInvalidCount) || errors.Is(err, invitation.ErrInvalidLLMGrant) {
 				writeError(w, http.StatusBadRequest, "INVALID_INPUT", err.Error())
 				return
 			}
@@ -251,15 +264,18 @@ func UnbindInvitationCodeHandlerWithPurger(svc *invitation.Service, identity *au
 
 func toInvitationCodeResponse(c *store.InvitationCode) invitationCodeResponse {
 	resp := invitationCodeResponse{
-		ID:           c.ID,
-		TenantID:     c.TenantID,
-		Code:         c.Code,
-		Status:       c.Status,
-		UsedByEmail:  c.UsedByEmail,
-		ValidityDays: c.ValidityDays,
-		Exported:     c.Exported,
-		VIP:          c.VIP,
-		CreatedAt:    c.CreatedAt.Format(time.RFC3339),
+		ID:                   c.ID,
+		TenantID:             c.TenantID,
+		Code:                 c.Code,
+		Status:               c.Status,
+		UsedByEmail:          c.UsedByEmail,
+		ValidityDays:         c.ValidityDays,
+		Exported:             c.Exported,
+		VIP:                  c.VIP,
+		LLMServiceGroupID:    c.LLMServiceGroupID,
+		LLMGrantDurationDays: c.LLMGrantDurationDays,
+		LLMGrantCredits:      c.LLMGrantCredits,
+		CreatedAt:            c.CreatedAt.Format(time.RFC3339),
 	}
 	if c.UsedAt != nil {
 		t := c.UsedAt.Format(time.RFC3339)

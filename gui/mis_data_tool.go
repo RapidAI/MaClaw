@@ -75,10 +75,43 @@ func (a *App) DismissAgentView(payload AgentViewDismissPayload) (*IMAgentRespons
 		// If the user clicked "Cancel Workflow" button, cancel the entire workflow
 		// instead of just skipping the form.
 		if cancelWF, _ := payload.Data["__cancel_workflow"].(bool); cancelWF {
+			workflowID := workflowFormStringField(payload.Data, workflowFormWorkflowIDField)
+			userID := workflowFormStringField(payload.Data, workflowFormUserIDField)
+			if userID == "" {
+				userID = a.workflowOwnerIDForCurrentProject()
+			}
+			if workflowID != "" {
+				matchesActive := true
+				switch {
+				case a.workflowEngine != nil:
+					matchesActive = workflowFormMatchesActiveWorkflow(a.workflowEngine, userID, phaseID, payload.Data)
+				case a.workflowV2 != nil && a.workflowV2.machine != nil:
+					matchesActive = workflowFormMatchesActiveWorkflowV2(a.workflowV2.machine, userID, phaseID, payload.Data)
+				}
+				if !matchesActive {
+					resp := &IMAgentResponse{
+						Text:           avTr("This workflow is no longer active.", "当前工作流已失效或已切换，未执行取消。"),
+						ResponseSource: imResponseSourceAgentViewDismiss.String(),
+					}
+					normalizeArtifactResponseSource(resp)
+					return resp, nil
+				}
+			}
 			a.clearAgentView(payload.ViewID)
 			if h := a.ensureLocalIMHandler(); h != nil {
-				userID := a.workflowOwnerIDForCurrentProject()
 				h.cancelWorkflowForUser(userID)
+				if _, err := h.CancelSessionForUser(userID); err != nil {
+					// Workflow cancellation should still establish a fresh-task boundary
+					// even when there is no active foreground loop to stop.
+					h.markTaskCancelledByUser(userID)
+				}
+			} else {
+				if a.workflowEngine != nil {
+					_ = a.workflowEngine.CancelWorkflow(userID)
+				}
+				if a.workflowV2 != nil && a.workflowV2.machine != nil {
+					a.workflowV2.machine.Cancel(userID)
+				}
 			}
 			resp := &IMAgentResponse{
 				Text:           avTr("Workflow cancelled. Describe your task again to start a new workflow.", "工作流已取消。如需重新开始，请直接描述您的任务。"),
@@ -86,6 +119,20 @@ func (a *App) DismissAgentView(payload AgentViewDismissPayload) (*IMAgentRespons
 			}
 			normalizeArtifactResponseSource(resp)
 			return resp, nil
+		}
+
+		if userID := workflowFormStringField(payload.Data, workflowFormUserIDField); userID != "" && a.workflowEngine != nil {
+			if workflowFormMatchesActiveWorkflow(a.workflowEngine, userID, phaseID, payload.Data) {
+				if err := a.workflowEngine.SkipPhaseForm(userID); err != nil {
+					resp := &IMAgentResponse{
+						Text:           avTr("Failed to close the task panel.", "关闭任务面板失败。"),
+						Error:          err.Error(),
+						ResponseSource: imResponseSourceAgentViewDismiss.String(),
+					}
+					normalizeArtifactResponseSource(resp)
+					return resp, err
+				}
+			}
 		}
 
 		workflowLifecyclePayload := workflowFormLifecyclePayloadFor("", phaseID, "", payload.Data)
@@ -1115,6 +1162,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			"workflow_version":      firstNonEmptyMISAgentView(stringArg(args, "workflow_version"), stringArg(args, "approval_workflow_version"), stringArg(args, "workflowVersion")),
 			"workflow_instance_id":  firstNonEmptyMISAgentView(stringArg(args, "workflow_instance_id"), stringArg(args, "approval_instance_id")),
 			"workflow_node_id":      stringArg(args, "workflow_node_id"),
+			"workflow_node_ids":     args["workflow_node_ids"],
 			"workflow_decision_id":  stringArg(args, "workflow_decision_id"),
 			"detail_url":            firstNonEmptyMISAgentView(stringArg(args, "detail_url"), stringArg(args, "detailUrl")),
 			"business_status":       stringArg(args, "business_status"),
@@ -1214,6 +1262,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			"from_status":           stringArg(args, "from_status"),
 			"to_status":             stringArg(args, "to_status"),
 			"workflow_node_id":      stringArg(args, "workflow_node_id"),
+			"workflow_node_ids":     args["workflow_node_ids"],
 			"workflow_version":      firstNonEmptyMISAgentView(stringArg(args, "workflow_version"), stringArg(args, "approval_workflow_version"), stringArg(args, "workflowVersion")),
 			"workflow_decision_id":  stringArg(args, "workflow_decision_id"),
 			"detail_url":            firstNonEmptyMISAgentView(stringArg(args, "detail_url"), stringArg(args, "detailUrl")),

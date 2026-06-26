@@ -60,6 +60,7 @@ func TestSharedClientConfigAppliesToAllUsers(t *testing.T) {
 		MaclawLLMContextLength:   32000,
 		MaclawLLMTimeoutSec:      90,
 		AgentResponseTimeoutSec:  120,
+		SkillRunnerTimeoutSec:    3600,
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
 			Name:     "shared-main",
 			URL:      "https://shared-llm.example/v1",
@@ -136,6 +137,34 @@ func TestSharedClientConfigAppliesToAllUsers(t *testing.T) {
 		t.Fatalf("getOrLoadUserConfig new: %v", err)
 	}
 	assertSharedClientConfigApplied(t, gotNew.AppConfig)
+}
+
+func TestSkillToolBridgeRunSkillTimeoutUsesSharedDefaultAndSkillOverride(t *testing.T) {
+	ctx := context.Background()
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, NewMemoryStore(), EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := svc.UpdateDefaultClientConfig(ctx, corelib.AppConfig{SkillRunnerTimeoutSec: 20000}); err != nil {
+		t.Fatalf("UpdateDefaultClientConfig: %v", err)
+	}
+
+	bridge := NewSkillToolBridge(svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	if got := bridge.runSkillTimeoutSec(principal, &corelib.NLSkillEntry{}); got != corelib.MaxSkillRunnerTimeoutSec {
+		t.Fatalf("runSkillTimeoutSec shared default = %d, want %d", got, corelib.MaxSkillRunnerTimeoutSec)
+	}
+	if got := bridge.runSkillTimeoutSec(principal, &corelib.NLSkillEntry{GlobalTimeout: 30}); got != 30 {
+		t.Fatalf("runSkillTimeoutSec global_timeout = %d, want skill override 30", got)
+	}
 }
 
 func TestDefaultClientConfigPersistsOnlySharedFields(t *testing.T) {
@@ -227,7 +256,7 @@ func assertSharedClientConfigApplied(t *testing.T, got corelib.AppConfig) {
 	if got.MaclawLLMUrl != "https://shared-llm.example/v1" || got.MaclawLLMKey != "shared-llm-key" || got.MaclawLLMModel != "shared-model" || got.MaclawLLMCurrentProvider != "shared-main" {
 		t.Fatalf("shared primary LLM defaults not applied: %#v", got)
 	}
-	if got.MaclawLLMProtocol != "openai" || got.MaclawLLMContextLength != 32000 || got.MaclawLLMTimeoutSec != 90 || got.AgentResponseTimeoutSec != 120 {
+	if got.MaclawLLMProtocol != "openai" || got.MaclawLLMContextLength != 32000 || got.MaclawLLMTimeoutSec != 90 || got.AgentResponseTimeoutSec != 120 || got.SkillRunnerTimeoutSec != 3600 {
 		t.Fatalf("shared LLM runtime defaults not applied: %#v", got)
 	}
 	if len(got.MaclawLLMProviders) != 1 || got.MaclawLLMProviders[0].Name != "shared-main" || got.MaclawAgentMaxIterations != 7 || got.SubAgentConcurrency != 3 {
@@ -251,6 +280,9 @@ func assertSharedNonLLMConfigApplied(t *testing.T, got corelib.AppConfig) {
 	}
 	if got.AgentResponseTimeoutSec != 120 {
 		t.Fatalf("shared agent response timeout not applied: %v", got.AgentResponseTimeoutSec)
+	}
+	if got.SkillRunnerTimeoutSec != 3600 {
+		t.Fatalf("shared skill runner timeout not applied: %v", got.SkillRunnerTimeoutSec)
 	}
 	if got.MaclawAgentMaxIterations != 7 || got.SubAgentConcurrency != 3 {
 		t.Fatalf("shared iteration defaults not applied: iterations=%v concurrency=%v", got.MaclawAgentMaxIterations, got.SubAgentConcurrency)

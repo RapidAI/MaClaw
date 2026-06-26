@@ -242,3 +242,81 @@ func TestSetEmbedderDoesNotStrandInFlightQueryWaiter(t *testing.T) {
 		t.Fatal("second in-flight query waiter was stranded")
 	}
 }
+
+func TestQueryEmbeddingCachedTimesOutButWarmsCacheLater(t *testing.T) {
+	store, err := NewStore(t.TempDir() + "/memory.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	prevBudget := queryEmbeddingWaitBudget
+	queryEmbeddingWaitBudget = 30 * time.Millisecond
+	t.Cleanup(func() { queryEmbeddingWaitBudget = prevBudget })
+
+	emb := &blockingQueryEmbedder{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		vec:     []float32{7, 0, 0, 0},
+	}
+	store.SetEmbedder(emb)
+
+	start := time.Now()
+	got := store.queryEmbeddingCached("slow query")
+	if got != nil {
+		t.Fatalf("expected timeout fallback, got %v", got)
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("timeout fallback took too long: %v", elapsed)
+	}
+
+	<-emb.started
+	close(emb.release)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got = store.queryEmbeddingCached("slow query")
+		if len(got) == 4 && got[0] == 7 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("query embedding cache was not warmed after background completion")
+}
+
+func TestQueryEmbeddingCachedWaiterTimesOutOnExistingFlight(t *testing.T) {
+	store, err := NewStore(t.TempDir() + "/memory.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	prevBudget := queryEmbeddingWaitBudget
+	queryEmbeddingWaitBudget = 30 * time.Millisecond
+	t.Cleanup(func() { queryEmbeddingWaitBudget = prevBudget })
+
+	emb := &blockingQueryEmbedder{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		vec:     []float32{3, 0, 0, 0},
+	}
+	store.SetEmbedder(emb)
+
+	firstDone := make(chan []float32, 1)
+	go func() {
+		firstDone <- store.queryEmbeddingCached("shared slow query")
+	}()
+	<-emb.started
+
+	start := time.Now()
+	second := store.queryEmbeddingCached("shared slow query")
+	if second != nil {
+		t.Fatalf("expected second waiter to time out, got %v", second)
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("second waiter took too long: %v", elapsed)
+	}
+
+	close(emb.release)
+	<-firstDone
+}

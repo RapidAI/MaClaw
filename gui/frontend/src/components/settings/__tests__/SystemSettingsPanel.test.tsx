@@ -21,6 +21,7 @@ function renderPanel(configPatch: Record<string, unknown> = {}) {
         remote_heartbeat_sec: 30,
         screen_dim_timeout_min: 3,
         agent_response_timeout_sec: 600,
+        skill_runner_timeout_sec: 600,
         maclaw_llm_timeout_sec: 600,
         ...configPatch,
       })}
@@ -41,12 +42,14 @@ describe("SystemSettingsPanel", () => {
     expect(screen.getByDisplayValue("30")).toBeTruthy();
   });
 
-  it("renders agent and LLM timeout settings", () => {
-    renderPanel({ agent_response_timeout_sec: 300, maclaw_llm_timeout_sec: 480 });
+  it("renders agent, skill runner, and LLM timeout settings", () => {
+    renderPanel({ agent_response_timeout_sec: 300, skill_runner_timeout_sec: 3600, maclaw_llm_timeout_sec: 480 });
 
     expect(screen.getByDisplayValue("300")).toBeTruthy();
+    expect(screen.getByDisplayValue("3600")).toBeTruthy();
     expect(screen.getByDisplayValue("480")).toBeTruthy();
     expect(screen.getByTitle("How long the AI assistant may stay silent before the foreground request is marked timed out. Default: 600 seconds. Range: 240-600 seconds.")).toBeTruthy();
+    expect(screen.getByTitle("Maximum runtime for local SkillRunner jobs and default bash step timeout. Long document translation can raise this up to 14400 seconds. Per-skill global_timeout still takes priority.")).toBeTruthy();
     expect(screen.getByTitle("HTTP timeout for MaClaw LLM calls. Default: 600 seconds. Range: 240-600 seconds.")).toBeTruthy();
   });
 
@@ -66,7 +69,18 @@ describe("SystemSettingsPanel", () => {
     renderPanel({ agent_response_timeout_sec: 120, maclaw_llm_timeout_sec: 900 });
 
     expect(screen.getByDisplayValue("240")).toBeTruthy();
-    expect(screen.getByDisplayValue("600")).toBeTruthy();
+    expect(screen.getByTitle("HTTP timeout for MaClaw LLM calls. Default: 600 seconds. Range: 240-600 seconds.")).toHaveProperty("value", "600");
+  });
+
+  it("allows skill runner timeout up to 14400 seconds", () => {
+    const { saveRemoteConfigField } = renderPanel({ skill_runner_timeout_sec: 3600 });
+    const skillRunnerInput = screen.getByTitle("Maximum runtime for local SkillRunner jobs and default bash step timeout. Long document translation can raise this up to 14400 seconds. Per-skill global_timeout still takes priority.");
+
+    expect(screen.getByDisplayValue("3600")).toBeTruthy();
+
+    fireEvent.change(skillRunnerInput, { target: { value: "20000" } });
+
+    expect(saveRemoteConfigField).toHaveBeenCalledWith({ skill_runner_timeout_sec: 14400 });
   });
 
   it("saves workstation mode through config patch flow", () => {

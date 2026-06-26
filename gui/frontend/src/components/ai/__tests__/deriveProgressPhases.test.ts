@@ -54,18 +54,18 @@ describe('deriveProgressPhases', () => {
             'design',
             'tasks',
             'implementation',
-            'review',
+            'verification',
         ]);
         // Labels resolve from the hardcoded phaseLabels map, which is reconciled
         // character-for-character with the generated artifact (the single source of truth).
-        expect(result.find(p => p.id === 'requirements')!.label).toBe('需求分析');
+        expect(result.find(p => p.id === 'requirements')!.label).toBe('需求文档');
         expect(result.find(p => p.id === 'design')!.label).toBe('技术设计');
-        expect(result.find(p => p.id === 'implementation')!.label).toBe('编码实现');
+        expect(result.find(p => p.id === 'implementation')!.label).toBe('编码执行');
         // implementation is in fallbackNonDocumentPhaseIDs -> execution phase.
         expect(result.find(p => p.id === 'implementation')!.expectsDocument).toBe(false);
         // Document phases default to producing a document.
         expect(result.find(p => p.id === 'requirements')!.expectsDocument).toBe(true);
-        expect(result.find(p => p.id === 'review')!.expectsDocument).toBe(true);
+        expect(result.find(p => p.id === 'verification')!.expectsDocument).toBe(false);
     });
 
     it('falls back to the hardcoded maps when phases is an empty array', () => {
@@ -74,7 +74,7 @@ describe('deriveProgressPhases', () => {
             'design',
             'tasks',
             'implementation',
-            'review',
+            'verification',
         ]);
     });
 
@@ -115,14 +115,14 @@ describe('deriveProgressPhases', () => {
     it('falls back per-field only when the metadata omits that field', () => {
         const phases: PhaseInfo[] = [
             { id: 'implementation', name: '', index: 0 },   // no name, no expectsDocument
-            { id: 'review', name: 'Review!', index: 1 },     // name present, no expectsDocument
+            { id: 'verification', name: 'Verification!', index: 1 },     // name present, no expectsDocument
         ];
 
         const result = deriveProgressPhases('coding', phases, new Map(), '');
-        // implementation: empty name -> fallback label '编码实现'; missing flag -> fallback false.
-        expect(result[0]).toEqual({ id: 'implementation', label: '编码实现', expectsDocument: false });
-        // review: metadata label kept; missing flag -> fallback true (document phase).
-        expect(result[1]).toEqual({ id: 'review', label: 'Review!', expectsDocument: true });
+        // implementation: empty name -> fallback label '编码执行'; missing flag -> fallback false.
+        expect(result[0]).toEqual({ id: 'implementation', label: '编码执行', expectsDocument: false });
+        // verification: metadata label kept; missing flag -> fallback false (execution/review phase).
+        expect(result[1]).toEqual({ id: 'verification', label: 'Verification!', expectsDocument: false });
     });
 
     // Requirement 3.4: ids seen only in phaseDocuments or as currentPhaseID are appended
@@ -256,7 +256,7 @@ describe('WorkflowProgressBoard highlighting and progress', () => {
     // index, reaching its maximum (100%) only at the final phase.
     it('produces monotonic progress that reaches 100% only at the final phase', () => {
         // Use the coding fallback order (5 phases) so each current id maps to a known index.
-        const order = ['requirements', 'design', 'tasks', 'implementation', 'review'];
+        const order = ['requirements', 'design', 'tasks', 'implementation', 'verification'];
         const percents: number[] = [];
 
         for (const phaseID of order) {
@@ -290,7 +290,7 @@ describe('WorkflowProgressBoard highlighting and progress', () => {
     it('does not reach 100% from a document collected ahead of the active node', () => {
         const { container } = render(React.createElement(WorkflowDocPreview, {
             // A document exists for the final phase, but the active node is earlier.
-            phaseDocuments: new Map([['review', '# Review']]),
+            phaseDocuments: new Map([['verification', '# Verification']]),
             currentPhaseID: 'design', // index 1 of 5
             latestDocumentPhaseID: '',
             workflowType: 'coding',

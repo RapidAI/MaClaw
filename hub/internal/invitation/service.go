@@ -3,14 +3,17 @@ package invitation
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -29,6 +32,7 @@ var (
 	ErrCodeConflict          = errors.New("failed to generate unique invitation code after retries")
 	ErrInvalidInvitationCode = errors.New("invalid or used invitation code")
 	ErrCodeNotFound          = errors.New("invitation code not found")
+	ErrInvalidLLMGrant       = errors.New("invalid invitation LLM grant")
 )
 
 // CenterSyncer is an optional callback invoked when invitation codes are
@@ -60,18 +64,61 @@ func (s *Service) SetCenterSyncer(syncer CenterSyncer) {
 	s.syncer = syncer
 }
 
+type GenerateCodeOptions struct {
+	Count                int
+	ValidityDays         int
+	VIP                  bool
+	LLMServiceGroupID    string
+	LLMGrantDurationDays int
+	LLMGrantCredits      float64
+}
+
 // GenerateCodes generates count invitation codes (1-50) and stores them.
-// validityDays specifies the validity period in days; values < 0 are treated as 0 (永久有效).
+// validityDays specifies the validity period in days; values < 0 are treated as 0 (permanent).
 func (s *Service) GenerateCodes(ctx context.Context, count int, validityDays int, vip bool) ([]*store.InvitationCode, error) {
 	return s.GenerateCodesForTenant(ctx, store.DefaultTenantID, count, validityDays, vip)
 }
 
 func (s *Service) GenerateCodesForTenant(ctx context.Context, tenantID string, count int, validityDays int, vip bool) ([]*store.InvitationCode, error) {
+	return s.GenerateCodesForTenantWithOptions(ctx, tenantID, GenerateCodeOptions{Count: count, ValidityDays: validityDays, VIP: vip})
+}
+
+func (s *Service) GenerateCodesForTenantWithOptions(ctx context.Context, tenantID string, opts GenerateCodeOptions) ([]*store.InvitationCode, error) {
+	count := opts.Count
+	validityDays := opts.ValidityDays
 	if count < 1 || count > maxCount {
 		return nil, ErrInvalidCount
 	}
 	if validityDays < 0 {
 		validityDays = 0
+	}
+	llmServiceGroupID := strings.TrimSpace(opts.LLMServiceGroupID)
+	llmGrantDurationDays := opts.LLMGrantDurationDays
+	if llmGrantDurationDays < 0 {
+		llmGrantDurationDays = 0
+	}
+	llmGrantCredits := opts.LLMGrantCredits
+	if math.IsNaN(llmGrantCredits) || math.IsInf(llmGrantCredits, 0) {
+		return nil, ErrInvalidLLMGrant
+	}
+	if llmGrantCredits < 0 {
+		llmGrantCredits = 0
+	}
+	hasLLMGrantInput := llmServiceGroupID != "" || llmGrantDurationDays > 0 || llmGrantCredits > 0
+	if hasLLMGrantInput {
+		if llmServiceGroupID == "" || llmGrantDurationDays <= 0 || llmGrantCredits <= 0 {
+			return nil, ErrInvalidLLMGrant
+		}
+		if s == nil || s.settings == nil {
+			return nil, ErrInvalidLLMGrant
+		}
+		reg, err := llmservice.LoadRegistry(ctx, s.settings)
+		if err != nil {
+			return nil, err
+		}
+		if reg.FindModelServiceGroup(llmServiceGroupID) == nil {
+			return nil, ErrInvalidLLMGrant
+		}
 	}
 
 	codes := make([]*store.InvitationCode, 0, count)
@@ -92,13 +139,16 @@ func (s *Service) GenerateCodesForTenant(ctx context.Context, tenantID string, c
 
 			now := time.Now()
 			item := &store.InvitationCode{
-				ID:           fmt.Sprintf("ic_%s", randomShortID()),
-				TenantID:     tenantID,
-				Code:         code,
-				Status:       "unused",
-				ValidityDays: validityDays,
-				VIP:          vip,
-				CreatedAt:    now,
+				ID:                   fmt.Sprintf("ic_%s", randomShortID()),
+				TenantID:             tenantID,
+				Code:                 code,
+				Status:               "unused",
+				ValidityDays:         validityDays,
+				VIP:                  opts.VIP,
+				LLMServiceGroupID:    llmServiceGroupID,
+				LLMGrantDurationDays: llmGrantDurationDays,
+				LLMGrantCredits:      llmGrantCredits,
+				CreatedAt:            now,
 			}
 			if createErr := s.repo.Create(ctx, item); createErr != nil {
 				// Could be a race condition conflict
@@ -153,8 +203,12 @@ func (s *Service) ValidateAndConsumeForTenant(ctx context.Context, tenantID stri
 	}
 
 	if err := s.repo.MarkUsed(ctx, item.ID, email, time.Now()); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrInvalidInvitationCode
+		}
 		return err
 	}
+	s.invalidateVIPLookup(tenantID, email)
 
 	// Remove consumed code from HubCenter routing table (fire-and-forget).
 	if s.syncer != nil {
@@ -169,7 +223,22 @@ func (s *Service) UnbindCode(ctx context.Context, id string) error {
 	if id == "" {
 		return ErrCodeNotFound
 	}
-	return s.repo.Unbind(ctx, id)
+	item, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	invalidateTenantID, invalidateEmail := "", ""
+	if item != nil && item.UsedByEmail != "" {
+		invalidateTenantID = item.TenantID
+		invalidateEmail = item.UsedByEmail
+	}
+	if err := s.repo.Unbind(ctx, id); err != nil {
+		return err
+	}
+	if invalidateEmail != "" {
+		s.invalidateVIPLookup(invalidateTenantID, invalidateEmail)
+	}
+	return nil
 }
 
 // GetCodeByID returns the invitation code with the given ID.
@@ -192,7 +261,17 @@ func (s *Service) DeleteCode(ctx context.Context, id string) error {
 	if id == "" {
 		return ErrCodeNotFound
 	}
-	return s.repo.DeleteByID(ctx, id)
+	item, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.DeleteByID(ctx, id); err != nil {
+		return err
+	}
+	if item != nil && item.UsedByEmail != "" {
+		s.invalidateVIPLookup(item.TenantID, item.UsedByEmail)
+	}
+	return nil
 }
 
 // DeleteCodeByEmail permanently deletes all invitation codes bound to the given email.
@@ -206,7 +285,14 @@ func (s *Service) DeleteCodeByTenantEmail(ctx context.Context, tenantID, email s
 	if email == "" {
 		return 0, nil
 	}
-	return s.repo.DeleteByTenantEmail(ctx, tenantID, email)
+	count, err := s.repo.DeleteByTenantEmail(ctx, tenantID, email)
+	if err != nil {
+		return count, err
+	}
+	if count > 0 {
+		s.invalidateVIPLookup(tenantID, email)
+	}
+	return count, nil
 }
 
 // GetCodeByEmail returns the invitation code bound to the given email.
@@ -245,6 +331,12 @@ func (s *Service) cacheVIPLookup(tenantID, email string, item *store.InvitationC
 		code:      cloneInvitationCode(item),
 		expiresAt: time.Now().Add(vipLookupCacheTTL),
 	}
+}
+
+func (s *Service) invalidateVIPLookup(tenantID, email string) {
+	s.vipLookupMu.Lock()
+	defer s.vipLookupMu.Unlock()
+	delete(s.vipLookupCache, vipLookupCacheKey(tenantID, email))
 }
 
 func vipLookupCacheKey(tenantID, email string) string {

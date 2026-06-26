@@ -5,6 +5,7 @@ import (
 	pathpkg "path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
@@ -213,5 +214,56 @@ func TestSystemPrompt_ProactiveRecallIncludesSceneIndex(t *testing.T) {
 	out := b.String()
 	if !strings.Contains(out, "[Scene Index]") || !strings.Contains(out, "Requirements") || !strings.Contains(out, "full: read_file") {
 		t.Fatalf("expected scene index in prompt, got:\n%s", out)
+	}
+}
+
+func TestProactiveContextForPromptWithBudget_SkipsDuplicateInFlightRecall(t *testing.T) {
+	h := newTestIMHandlerWithMemoryStore(t)
+	h.proactiveRecallInFlight.Store("desktop-user", proactiveRecallState{startedAt: time.Now()})
+
+	prompt, relevant, ok := h.proactiveContextForPromptWithBudget(
+		"repeat query",
+		corememory.IMProactivePromptOptions("", false),
+		"desktop-user",
+		"",
+		false,
+	)
+	if ok {
+		t.Fatal("expected duplicate in-flight proactive recall to be skipped")
+	}
+	if prompt != "" {
+		t.Fatalf("expected empty prompt context, got %q", prompt)
+	}
+	if len(relevant) != 0 {
+		t.Fatalf("expected no recalled entries, got %d", len(relevant))
+	}
+}
+
+func TestBeginProactiveRecall_ReplacesStaleInFlightRecall(t *testing.T) {
+	h := newTestIMHandlerWithMemoryStore(t)
+
+	prevStaleAfter := imProactiveRecallStaleAfter
+	imProactiveRecallStaleAfter = 20 * time.Millisecond
+	t.Cleanup(func() { imProactiveRecallStaleAfter = prevStaleAfter })
+
+	oldState := proactiveRecallState{startedAt: time.Now().Add(-time.Second)}
+	h.proactiveRecallInFlight.Store("desktop-user", oldState)
+
+	newState, ok := h.beginProactiveRecall("desktop-user", "desktop-user", "", false)
+	if !ok {
+		t.Fatal("expected stale in-flight proactive recall to be replaced")
+	}
+	if newState.startedAt.Equal(oldState.startedAt) {
+		t.Fatal("expected a fresh proactive recall state")
+	}
+
+	h.endProactiveRecall("desktop-user", oldState)
+	if got, exists := h.proactiveRecallInFlight.Load("desktop-user"); !exists || got != newState {
+		t.Fatalf("old recall completion should not clear replacement state, got=%v exists=%v", got, exists)
+	}
+
+	h.endProactiveRecall("desktop-user", newState)
+	if _, exists := h.proactiveRecallInFlight.Load("desktop-user"); exists {
+		t.Fatal("expected fresh proactive recall state to be cleared")
 	}
 }

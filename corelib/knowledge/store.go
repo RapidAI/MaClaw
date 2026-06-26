@@ -66,7 +66,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := createTables(db); err != nil {
+	if err := ensureSchema(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -519,7 +519,7 @@ func (s *SQLiteStore) ListSources(ctx context.Context, opts ListSourcesOptions) 
 			args = append(args, opts.ProjectPath)
 		}
 	}
-	sourceIDs := normalizeSearchStrings(append(append([]string{}, opts.SourceIDs...), opts.SourceID))
+	sourceIDs := normalizeSearchIDs(append(append([]string{}, opts.SourceIDs...), opts.SourceID))
 	if len(sourceIDs) == 1 {
 		where = append(where, "id = ?")
 		args = append(args, sourceIDs[0])
@@ -1518,6 +1518,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 
 	results := make([]SearchResult, 0, opts.Limit)
 	seenCards := make(map[string]struct{})
+	seenFacts := make(map[string]struct{})
 	seenNodes := make(map[string]struct{})
 
 	if wantsSearchType(resultTypes, "card") {
@@ -1574,6 +1575,17 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		if err := cardRows.Err(); err != nil {
 			return nil, err
 		}
+		kbCardResults, err := s.searchKBTableCardsFTS(ctx, opts, candidateLimit)
+		if err != nil {
+			return nil, err
+		}
+		for _, result := range kbCardResults {
+			if _, ok := seenCards[result.CardID]; ok {
+				continue
+			}
+			seenCards[result.CardID] = struct{}{}
+			results = append(results, result)
+		}
 	}
 
 	if wantsSearchType(resultTypes, "fact") {
@@ -1618,6 +1630,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 			result.Snippet = strings.TrimSpace(result.Subject + " " + result.Predicate + " " + result.Object)
 			result.Score = scoreSearchResult(result, opts, -rank)
 			result.Citation = formatResultCitation(result)
+			seenFacts[result.FactID] = struct{}{}
 			seenCards[result.CardID] = struct{}{}
 			if result.NodeID != "" {
 				seenNodes[source.ID+"\x00"+result.NodeID] = struct{}{}
@@ -1629,6 +1642,17 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		}
 		if err := factRows.Err(); err != nil {
 			return nil, err
+		}
+		kbFactResults, err := s.searchKBTableFactsFTS(ctx, opts, candidateLimit)
+		if err != nil {
+			return nil, err
+		}
+		for _, result := range kbFactResults {
+			if _, ok := seenFacts[result.FactID]; ok {
+				continue
+			}
+			seenFacts[result.FactID] = struct{}{}
+			results = append(results, result)
 		}
 	}
 
@@ -1678,6 +1702,25 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		}
 		if err := nodeRows.Err(); err != nil {
 			return nil, err
+		}
+	}
+
+	if wantsSearchType(resultTypes, "table_row") {
+		rowResults, rowErr := s.searchTableRowsFTS(ctx, opts)
+		if rowErr == nil && len(rowResults) > 0 {
+			seenRows := make(map[string]struct{})
+			for _, result := range results {
+				if result.ResultType == "table_row" && result.RowID != "" {
+					seenRows[result.RowID] = struct{}{}
+				}
+			}
+			for _, result := range rowResults {
+				if _, ok := seenRows[result.RowID]; ok {
+					continue
+				}
+				seenRows[result.RowID] = struct{}{}
+				results = append(results, result)
+			}
 		}
 	}
 
@@ -2311,6 +2354,19 @@ func (s *SQLiteStore) FactGraph(ctx context.Context, opts SearchOptions) (FactGr
 	if err := rows.Err(); err != nil {
 		return FactGraphResult{}, err
 	}
+	kbEdges, err := s.kbFactGraphEdges(ctx, opts)
+	if err != nil {
+		return FactGraphResult{}, err
+	}
+	for _, edge := range kbEdges {
+		result.Edges = append(result.Edges, edge)
+		addNode(edge.Subject, "entity")
+		addNode(edge.Object, "entity")
+		addNode(edge.Predicate, "predicate")
+		addCount(entityCounts, edge.Subject)
+		addCount(entityCounts, edge.Object)
+		addCount(predicateCounts, edge.Predicate)
+	}
 	result.Count = len(result.Edges)
 	result.TopEntities = factGraphTopCounts(entityCounts, "entity", 12)
 	result.TopPredicates = factGraphTopCounts(predicateCounts, "predicate", 12)
@@ -2347,27 +2403,52 @@ func (s *SQLiteStore) FactIndex(ctx context.Context, opts FactIndexOptions) (Fac
 	where, args = appendSearchFilters(where, args, "s", opts.SearchOptions)
 	valuesSQL := factIndexValuesSQL(kind)
 	valueWhere := []string{"label <> ''"}
+	valueArgs := make([]interface{}, 0)
 	query := cleanFactPart(opts.Query)
 	if query != "" {
 		pattern := "%" + strings.ToLower(query) + "%"
 		valueWhere = append(valueWhere, "(LOWER(label) LIKE ? OR LOWER(predicate) LIKE ? OR LOWER(related) LIKE ?)")
-		args = append(args, pattern, pattern, pattern)
+		valueArgs = append(valueArgs, pattern, pattern, pattern)
 	}
-	args = append(args, opts.Limit)
+	kbWhere := []string{"f.row_id IS NOT NULL", "c.origin_type = 'table_row'"}
+	kbArgs := make([]interface{}, 0)
+	kbWhere, kbArgs = appendKBSourceFilters(kbWhere, kbArgs, "s", opts.OwnerID, opts.TenantID, opts.ProjectPath, opts.SearchScope, opts.SourceKinds, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	kbValueWhere := []string{"label <> ''"}
+	kbValueArgs := make([]interface{}, 0)
+	if query != "" {
+		pattern := "%" + strings.ToLower(query) + "%"
+		kbValueWhere = append(kbValueWhere, "(LOWER(label) LIKE ? OR LOWER(predicate) LIKE ? OR LOWER(related) LIKE ?)")
+		kbValueArgs = append(kbValueArgs, pattern, pattern, pattern)
+	}
 	q := `WITH filtered_facts AS (
-		SELECT f.id AS fact_id, f.card_id, f.source_id, f.subject, f.predicate, f.object
-		FROM knowledge_facts f
-		JOIN knowledge_cards c ON c.id = f.card_id
-		JOIN knowledge_sources s ON s.id = f.source_id
-		WHERE ` + strings.Join(where, " AND ") + `
-	), fact_values AS (` + valuesSQL + `)
-	SELECT label, kind, COUNT(*) AS count, COUNT(DISTINCT source_id) AS source_count, COUNT(DISTINCT card_id) AS card_count,
-		COALESCE(GROUP_CONCAT(DISTINCT predicate), ''), COALESCE(GROUP_CONCAT(DISTINCT related), '')
-	FROM fact_values
-	WHERE ` + strings.Join(valueWhere, " AND ") + `
-	GROUP BY LOWER(label), kind
-	ORDER BY count DESC, LOWER(label)
-	LIMIT ?`
+			SELECT f.id AS fact_id, f.card_id, f.source_id, f.subject, f.predicate, f.object
+			FROM knowledge_facts f
+			JOIN knowledge_cards c ON c.id = f.card_id
+			JOIN knowledge_sources s ON s.id = f.source_id
+			WHERE ` + strings.Join(where, " AND ") + `
+		), fact_values AS (` + valuesSQL + `),
+		kb_filtered_facts AS (
+			SELECT f.id AS fact_id, f.card_id, f.source_id, f.subject, f.predicate, f.object
+			FROM kb_facts f
+			JOIN kb_cards c ON c.id = f.card_id
+			JOIN kb_sources s ON s.id = f.source_id
+			WHERE ` + strings.Join(kbWhere, " AND ") + `
+		), kb_fact_values AS (` + strings.ReplaceAll(valuesSQL, "filtered_facts", "kb_filtered_facts") + `),
+		combined_values AS (
+			SELECT * FROM fact_values WHERE ` + strings.Join(valueWhere, " AND ") + `
+			UNION ALL
+			SELECT * FROM kb_fact_values WHERE ` + strings.Join(kbValueWhere, " AND ") + `
+		)
+		SELECT label, kind, COUNT(*) AS count, COUNT(DISTINCT source_id) AS source_count, COUNT(DISTINCT card_id) AS card_count,
+			COALESCE(GROUP_CONCAT(DISTINCT predicate), ''), COALESCE(GROUP_CONCAT(DISTINCT related), '')
+		FROM combined_values
+		GROUP BY LOWER(label), kind
+		ORDER BY count DESC, LOWER(label)
+		LIMIT ?`
+	args = append(args, kbArgs...)
+	args = append(args, valueArgs...)
+	args = append(args, kbValueArgs...)
+	args = append(args, opts.Limit)
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return FactIndexResult{}, err
@@ -2943,7 +3024,7 @@ func searchContextTerms(opts SearchOptions) []string {
 }
 
 func sortSearchResults(results []SearchResult) {
-	typePriority := map[string]int{"card": 0, "fact": 1, "node": 2}
+	typePriority := map[string]int{"table_row": 0, "card": 1, "fact": 2, "node": 3}
 	sort.SliceStable(results, func(i, j int) bool {
 		pi, ok := typePriority[results[i].ResultType]
 		if !ok {
@@ -3002,6 +3083,9 @@ func formatResultCitation(result SearchResult) string {
 	if result.RowRange != "" {
 		parts = append(parts, "rows "+result.RowRange)
 	}
+	if result.RowIndex > 0 && result.RowRange == "" {
+		parts = append(parts, fmt.Sprintf("row %d", result.RowIndex))
+	}
 	if result.ColRange != "" {
 		parts = append(parts, "cols "+result.ColRange)
 	}
@@ -3009,6 +3093,10 @@ func formatResultCitation(result SearchResult) string {
 		parts = append(parts, result.NodeTitle)
 	}
 	switch result.ResultType {
+	case "table_row":
+		if result.TableID != "" {
+			parts = append(parts, "table row")
+		}
 	case "fact":
 		fact := strings.TrimSpace(strings.Join(nonEmptyStrings(result.Subject, result.Predicate, result.Object), " "))
 		if fact != "" {
@@ -3073,7 +3161,7 @@ func appendSearchFilters(where []string, args []interface{}, sourceAlias string,
 			args = append(args, kind)
 		}
 	}
-	sourceIDs := normalizeSearchStrings(append(append([]string{}, opts.SourceIDs...), opts.SourceID))
+	sourceIDs := normalizeSearchIDs(append(append([]string{}, opts.SourceIDs...), opts.SourceID))
 	if len(sourceIDs) == 1 {
 		where = append(where, prefix+"id = ?")
 		args = append(args, sourceIDs[0])
@@ -3135,6 +3223,8 @@ func normalizeSearchResultTypes(input []string) map[string]struct{} {
 			result["fact"] = struct{}{}
 		case "node", "nodes", "document_node", "source_node":
 			result["node"] = struct{}{}
+		case "table_row", "table_rows", "row", "rows", "spreadsheet_row":
+			result["table_row"] = struct{}{}
 		}
 	}
 	return result
@@ -3167,6 +3257,24 @@ func normalizeSearchStrings(input []string) []string {
 	return result
 }
 
+func normalizeSearchIDs(input []string) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0, len(input))
+	for _, value := range input {
+		for _, part := range strings.FieldsFunc(value, isKnowledgeListSeparator) {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if _, ok := seen[part]; ok {
+				continue
+			}
+			seen[part] = struct{}{}
+			result = append(result, part)
+		}
+	}
+	return result
+}
 func isKnowledgeListSeparator(r rune) bool {
 	return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == '\uFF0C' || r == '\uFF1B' || r == '\u3001'
 }
@@ -3714,6 +3822,25 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					}
 					markImportItemProcessed(i, item)
 					continue
+				}
+				if isSpreadsheetKind(item.Kind) {
+					if nextSource, err := importSpreadsheetSourceV2(ctx, tx, source, item.FilePath, item.Kind); err != nil {
+						source.Status = StatusFailed
+						source.ErrorMessage = err.Error()
+						if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+							return result, saveErr
+						}
+						item.Status = ItemStatusFailed
+						item.ErrorMessage = err.Error()
+						failed++
+						if err := insertImportItem(ctx, tx, item); err != nil {
+							return result, err
+						}
+						markImportItemProcessed(i, item)
+						continue
+					} else {
+						source = nextSource
+					}
 				}
 				emitStepProgress(item, "distilling", 5, 5)
 				nextSource, err := s.DistillAndSaveCardsWithMode(ctx, tx, source, nodes, req.DistillMode)

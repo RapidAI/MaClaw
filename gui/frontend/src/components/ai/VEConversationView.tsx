@@ -503,6 +503,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const authPendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const loadedHistorySessionRef = useRef<string>("");
+    const skipHistoryLoadSessionIdsRef = useRef<Set<string>>(new Set());
+    const showLocalIntroAfterClearRef = useRef(false);
     const sessionInitInFlightRef = useRef<Promise<boolean> | null>(null);
     const sessionInitGenerationRef = useRef(0);
     const lastVEIdRef = useRef(veId);
@@ -770,6 +772,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         const sessionId = String(state.sessionId || "").trim();
         const resumedExistingSessionId = String(existingSessionId || "").trim();
         if (!resumedExistingSessionId && (participants?.length || 0) === 0) return;
+        if (skipHistoryLoadSessionIdsRef.current.has(sessionId)) return;
         if (!sessionId || loadedHistorySessionRef.current === sessionId || state.messages.length > 0) return;
         loadedHistorySessionRef.current = sessionId;
         setHistoryLoadSettledSessionId("");
@@ -914,10 +917,19 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     sessionIdRef.current = sessionId;
                     clearAuthPendingTimer();
                 }
+                let localIntroAfterClear: VEMessage | null = null;
+                if (showLocalIntroAfterClearRef.current) {
+                    showLocalIntroAfterClearRef.current = false;
+                    if ((participants?.length || 0) === 0 && sessionId) {
+                        skipHistoryLoadSessionIdsRef.current.add(sessionId);
+                        localIntroAfterClear = buildLocalEmployeeIntroMessage(veId, veName, veSkillDescription, isZh);
+                    }
+                }
                 if (mountedRef.current) {
                     setState((prev) => ({
                         ...prev,
                         sessionId,
+                        messages: localIntroAfterClear && prev.messages.length === 0 ? [localIntroAfterClear] : prev.messages,
                         error: localRegistrationError,
                         connectionState: "connected",
                         reconnectAttempt: 0,
@@ -947,7 +959,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         } finally {
             if (sessionInitInFlightRef.current === run) sessionInitInFlightRef.current = null;
         }
-    }, [clearAuthPendingTimer, initiateConversation, initiateGroupConversation, participants, registerLocalExecutorInGroup, scheduleAuthPendingTimeout, veId]);
+    }, [clearAuthPendingTimer, initiateConversation, initiateGroupConversation, isZh, participants, registerLocalExecutorInGroup, scheduleAuthPendingTimeout, veId, veName, veSkillDescription]);
 
     useEffect(() => {
         const nextSessionId = existingSessionId || null;
@@ -1063,6 +1075,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         loadedHistorySessionRef.current = "";
         setHistoryLoadSettledSessionId("");
         setHistoryLoadSucceededSessionId("");
+        showLocalIntroAfterClearRef.current = true;
         sessionIdRef.current = null;
         setState((prev) => ({
             ...prev,

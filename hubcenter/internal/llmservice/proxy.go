@@ -1,10 +1,13 @@
 package llmservice
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	corellm "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
 
@@ -59,6 +63,11 @@ type ProxyResponse struct {
 	InputTokens  int64
 	OutputTokens int64
 	CacheHit     bool
+}
+
+type ProxyStreamWriter interface {
+	io.Writer
+	Flush()
 }
 
 // HandleProxyRequest processes an incoming LLM proxy request from a Hub.
@@ -286,6 +295,620 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		return nil, fmt.Errorf("all providers failed, last error: %w", lastErr)
 	}
 	return nil, fmt.Errorf("no available providers for model %q", model)
+}
+
+func HandleProxyStreamRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, dst ProxyStreamWriter) error {
+	if dst == nil {
+		return fmt.Errorf("stream writer is required")
+	}
+	ctx = WithUsageContext(ctx, req.HubID, req.TenantID)
+	dispatches, err := prepareProxyStreamDispatches(ctx, cfg, req)
+	if err != nil {
+		return err
+	}
+	return handleProxyStreamDispatches(ctx, cfg, req, dst, dispatches)
+}
+
+func handleProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, dst ProxyStreamWriter, dispatches []*proxyDispatch) error {
+	var lastErr error
+	for _, dispatch := range dispatches {
+		if dispatch == nil || dispatch.provider == nil {
+			continue
+		}
+		providerID := dispatch.provider.ID
+		if cfg.Resilience != nil {
+			if err := cfg.Resilience.BeforeAttempt(providerID, dispatch.provider.CircuitBreakerThreshold, dispatch.provider.CircuitBreakerCooldownMS); err != nil {
+				lastErr = err
+				continue
+			}
+		}
+
+		release := func() {}
+		if cfg.Concurrency != nil {
+			var acqErr error
+			release, acqErr = cfg.Concurrency.Acquire(ctx, providerID, dispatch.provider.MaxConcurrency, dispatch.provider.MaxQueueWaiters, dispatch.provider.QueueTimeoutMS)
+			if acqErr != nil {
+				lastErr = acqErr
+				continue
+			}
+		}
+
+		upstreamModel := proxyUpstreamModelForRoute(dispatch.route, dispatch.provider, dispatch.model)
+		result, err := streamProviderToWriter(ctx, cfg.HTTPClient, dispatch.provider, req.Body, upstreamModel, dispatch.model, dst)
+		release()
+		if err != nil {
+			if cfg.Resilience != nil {
+				cfg.Resilience.RecordFailure(providerID, dispatch.provider.CircuitBreakerThreshold, dispatch.provider.CircuitBreakerCooldownMS)
+			}
+			lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: %w", providerID, dispatch.model, upstreamModel, err)
+			if result != nil && result.wroteBusinessStream {
+				recordProxyStreamUsage(ctx, cfg, req, dispatch, providerID, result)
+				return lastErr
+			}
+			continue
+		}
+		if result.statusCode >= http.StatusBadRequest {
+			if cfg.Resilience != nil {
+				cfg.Resilience.RecordFailure(providerID, dispatch.provider.CircuitBreakerThreshold, dispatch.provider.CircuitBreakerCooldownMS)
+			}
+			lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: HTTP %d%s", providerID, dispatch.model, upstreamModel, result.statusCode, proxyProviderErrorSnippet(result.errorBody))
+			if shouldRetryProxyProviderStatus(result.statusCode) {
+				continue
+			}
+			return lastErr
+		}
+		if cfg.Resilience != nil {
+			cfg.Resilience.RecordSuccess(providerID)
+		}
+
+		recordProxyStreamUsage(ctx, cfg, req, dispatch, providerID, result)
+		return nil
+	}
+	if lastErr != nil {
+		return fmt.Errorf("all stream providers failed, last error: %w", lastErr)
+	}
+	return fmt.Errorf("no stream-capable providers available")
+}
+
+func recordProxyStreamUsage(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, dispatch *proxyDispatch, providerID string, result *providerStreamResult) {
+	if cfg == nil || req == nil || dispatch == nil || result == nil {
+		return
+	}
+	inputTokens, outputTokens := result.inputTokens, result.outputTokens
+	if inputTokens == 0 || outputTokens == 0 {
+		estimatedInput, estimatedOutput := estimateProxyTokenUsage(req.Body, []byte(result.outputText))
+		if inputTokens == 0 {
+			inputTokens = estimatedInput
+		}
+		if outputTokens == 0 {
+			outputTokens = estimatedOutput
+		}
+	}
+	multiplier := proxyCreditMultiplierForRoute(dispatch.dispatchModel, dispatch.route)
+	if multiplier <= 0 {
+		multiplier = 1
+	}
+	credits := estimateProxyCreditsWithFloor(inputTokens+outputTokens, multiplier)
+
+	var deductions []CreditDeduction
+	if dispatch.requiresGrant && dispatch.auth != nil && cfg.AuthChecker != nil {
+		var deductErr error
+		deductions, deductErr = cfg.AuthChecker.DeductCreditsForServiceGroup(ctx, req.HubID, req.TenantID, dispatch.matchedGroup.ID, credits)
+		if deductErr != nil {
+			log.Printf("[llm-proxy] WARN: stream credits deduction failed auth=%s group=%s credits=%.2f: %v", dispatch.auth.ID, dispatch.matchedGroup.ID, credits, deductErr)
+		}
+	}
+	recordCredits := credits
+	if dispatch.requiresGrant {
+		recordCredits = totalDeductionCredits(deductions)
+	}
+	if cfg.Usage != nil {
+		_ = cfg.Usage.RecordUsage(ctx, &llmpool.UsageRecord{
+			ProviderID:   providerID,
+			Model:        dispatch.model,
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			Credits:      recordCredits,
+			CacheHit:     false,
+			AuthID:       deductionAuthIDs(deductions),
+			Timestamp:    time.Now().UTC(),
+		})
+	}
+}
+
+func prepareProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest) ([]*proxyDispatch, error) {
+	dispatches, err := prepareProxyDispatches(ctx, cfg, req)
+	if err != nil {
+		return nil, err
+	}
+	streamDispatches := make([]*proxyDispatch, 0, len(dispatches))
+	for _, dispatch := range dispatches {
+		if dispatch != nil && providerSupportsProxyStreaming(dispatch.provider) {
+			streamDispatches = append(streamDispatches, dispatch)
+		}
+	}
+	if len(streamDispatches) == 0 {
+		return nil, fmt.Errorf("no stream-capable providers available")
+	}
+	return streamDispatches, nil
+}
+
+type proxyDispatch struct {
+	model         string
+	matchedGroup  *llmpool.ServiceGroup
+	dispatchModel *llmpool.DispatchModel
+	route         llmpool.DispatchProviderRoute
+	provider      *llmpool.ProviderConfig
+	auth          *TenantAuthorization
+	requiresGrant bool
+}
+
+func prepareProxyDispatch(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest) (*proxyDispatch, error) {
+	dispatches, err := prepareProxyDispatches(ctx, cfg, req)
+	if err != nil {
+		return nil, err
+	}
+	if len(dispatches) == 0 {
+		return nil, fmt.Errorf("no available providers for model %q", strings.TrimSpace(req.Model))
+	}
+	return dispatches[0], nil
+}
+
+func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest) ([]*proxyDispatch, error) {
+	if cfg == nil || cfg.Service == nil || cfg.AuthChecker == nil {
+		return nil, fmt.Errorf("proxy not configured")
+	}
+	if req == nil {
+		return nil, fmt.Errorf("proxy request is required")
+	}
+	if req.Body == nil {
+		return nil, fmt.Errorf("proxy request body is required")
+	}
+	ctx = WithUsageContext(ctx, req.HubID, req.TenantID)
+
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		if m, ok := req.Body["model"].(string); ok {
+			model = strings.TrimSpace(m)
+		}
+	}
+	if model == "" {
+		return nil, fmt.Errorf("model not specified in request")
+	}
+
+	reg, err := cfg.Service.LoadRegistry(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load registry: %w", err)
+	}
+	matchedGroup, dispatchModel := matchProxyServiceGroupModel(reg, strings.TrimSpace(req.ServiceGroupID), model)
+	if matchedGroup == nil {
+		return nil, fmt.Errorf("model %q not available on this HubCenter", model)
+	}
+	if requestedGroupID := strings.TrimSpace(req.ServiceGroupID); requestedGroupID != "" && !strings.EqualFold(requestedGroupID, strings.TrimSpace(matchedGroup.ID)) {
+		log.Printf("[llm-proxy] resolved service_group alias requested=%s matched=%s model=%s hub=%s tenant=%s", requestedGroupID, matchedGroup.ID, model, req.HubID, req.TenantID)
+	}
+
+	var auth *TenantAuthorization
+	requiresGrant := matchedGroup.AccessPolicy == AccessPolicyGrantRequired
+	if requiresGrant {
+		auth, err = cfg.AuthChecker.CheckAccess(ctx, req.HubID, req.TenantID, matchedGroup.ID)
+		if err != nil {
+			return nil, fmt.Errorf("authorization denied: %w", err)
+		}
+	}
+	if cfg.CheckBinding != nil {
+		allowed, redirectNode := cfg.CheckBinding(ctx, req.HubID, req.TenantID)
+		if !allowed {
+			return nil, fmt.Errorf("tenant bound to node %s, please redirect", redirectNode)
+		}
+	}
+
+	orderedRoutes := llmpool.OrderProviderRoutes(req.Body, dispatchModel)
+	if len(orderedRoutes) == 0 {
+		return nil, fmt.Errorf("no providers configured for model %q", model)
+	}
+	dispatches := make([]*proxyDispatch, 0, len(orderedRoutes))
+	for _, route := range orderedRoutes {
+		provider := findProvider(reg, route.ProviderID)
+		if provider == nil {
+			continue
+		}
+		dispatches = append(dispatches, &proxyDispatch{
+			model:         model,
+			matchedGroup:  matchedGroup,
+			dispatchModel: dispatchModel,
+			route:         route,
+			provider:      provider,
+			auth:          auth,
+			requiresGrant: requiresGrant,
+		})
+	}
+	if len(dispatches) == 0 {
+		return nil, fmt.Errorf("no available providers for model %q", model)
+	}
+	return dispatches, nil
+}
+
+type providerStreamResult struct {
+	statusCode          int
+	errorBody           []byte
+	inputTokens         int64
+	outputTokens        int64
+	outputText          string
+	wroteStream         bool
+	wroteBusinessStream bool
+}
+
+func streamProviderToWriter(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string, dst ProxyStreamWriter) (*providerStreamResult, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("provider is required")
+	}
+	if !providerSupportsProxyStreaming(provider) {
+		return nil, fmt.Errorf("provider %s does not support direct stream proxy", provider.ID)
+	}
+	reqBody := make(map[string]any, len(body)+2)
+	for k, v := range body {
+		reqBody[k] = v
+	}
+	reqBody["model"] = upstreamModel
+	reqBody["stream"] = true
+	delete(reqBody, "provider")
+	delete(reqBody, "model_provider")
+	sanitizeProxyStreamOptions(reqBody)
+
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal stream request: %w", err)
+	}
+	cfg := corelib.LLMEndpointProvider{
+		APIURL:             provider.APIURL,
+		APIKey:             provider.APIKey,
+		Model:              upstreamModel,
+		Protocol:           provider.Protocol,
+		WireAPI:            provider.WireAPI,
+		UpstreamTimeoutSec: provider.UpstreamTimeoutSec,
+	}.MaclawLLMConfig()
+	client = proxyStreamingHTTPClient(client, cfg)
+	endpoint := corellm.BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(provider.APIURL, cfg.UserAgent()))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("build stream request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	if strings.TrimSpace(provider.APIKey) != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(provider.APIKey))
+	}
+	if ua := cfg.UserAgent(); strings.TrimSpace(ua) != "" {
+		httpReq.Header.Set("User-Agent", ua)
+	}
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(httpReq, cfg.UserAgent())
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	result := &providerStreamResult{statusCode: resp.StatusCode}
+	if resp.StatusCode >= http.StatusBadRequest {
+		result.errorBody, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		return result, nil
+	}
+	if err := proxyProviderSSE(resp.Body, dst, responseModel, result); err != nil {
+		return result, err
+	}
+	if !result.wroteBusinessStream {
+		return result, fmt.Errorf("upstream stream ended before business data")
+	}
+	return result, nil
+}
+
+func proxyStreamingHTTPClient(base *http.Client, cfg corelib.MaclawLLMConfig) *http.Client {
+	if base == nil {
+		base = corelib.NewLLMEndpointHTTPClient(cfg)
+	}
+	streamClient := *base
+	streamClient.Timeout = 0
+	headerTimeout := time.Duration(cfg.EffectiveTimeoutSec()) * time.Second
+	if headerTimeout <= 0 {
+		headerTimeout = time.Duration(corelib.DefaultLLMTimeoutSec) * time.Second
+	}
+	if transport, ok := base.Transport.(*http.Transport); ok && transport != nil {
+		clone := transport.Clone()
+		if clone.ResponseHeaderTimeout <= 0 || clone.ResponseHeaderTimeout > headerTimeout {
+			clone.ResponseHeaderTimeout = headerTimeout
+		}
+		streamClient.Transport = clone
+	} else if base.Transport == nil {
+		if transport, ok := http.DefaultTransport.(*http.Transport); ok && transport != nil {
+			clone := transport.Clone()
+			clone.ResponseHeaderTimeout = headerTimeout
+			streamClient.Transport = clone
+		}
+	}
+	return &streamClient
+}
+
+func providerSupportsProxyStreaming(provider *llmpool.ProviderConfig) bool {
+	if provider == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(provider.Protocol), "") && !strings.EqualFold(strings.TrimSpace(provider.Protocol), "openai") {
+		return false
+	}
+	wire := corelib.NormalizeLLMProviderWireAPI(provider.WireAPI)
+	return wire == "chat"
+}
+
+func sanitizeProxyStreamOptions(body map[string]any) {
+	if body == nil {
+		return
+	}
+	if raw, ok := body["stream_options"]; ok {
+		if options, ok := raw.(map[string]any); ok {
+			options["include_usage"] = true
+			return
+		}
+	}
+	body["stream_options"] = map[string]any{"include_usage": true}
+}
+
+func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string, result *providerStreamResult) error {
+	scanner := bufio.NewScanner(src)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	event := make([]string, 0, 4)
+	flushEvent := func() error {
+		if len(event) == 0 {
+			return nil
+		}
+		if !proxySSEEventHasNonEmptyData(event) {
+			event = event[:0]
+			return nil
+		}
+		eventType := proxySSEEventType(event)
+		dataLines := proxySSEDataLines(event)
+		combinedData := proxySSECombinedData(dataLines)
+		if combinedData == "[DONE]" {
+			if !result.wroteBusinessStream {
+				event = event[:0]
+				return nil
+			}
+			if _, err := io.WriteString(dst, "data: [DONE]\n\n"); err != nil {
+				return err
+			}
+			result.wroteStream = true
+			dst.Flush()
+			event = event[:0]
+			return nil
+		}
+		if streamErr := proxyStreamErrorFromData(eventType, []byte(combinedData)); streamErr != nil {
+			event = event[:0]
+			return streamErr
+		}
+		if len(dataLines) > 1 {
+			for _, line := range event {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "data:") || strings.HasPrefix(trimmed, ":") {
+					continue
+				}
+				if _, err := io.WriteString(dst, line+"\n"); err != nil {
+					return err
+				}
+			}
+			forwardData := combinedData
+			if patched, err := proxyStreamPatchAndMeasureData([]byte(combinedData), responseModel, result); err == nil && patched != nil {
+				forwardData = string(patched)
+			}
+			if _, err := io.WriteString(dst, "data: "+forwardData+"\n\n"); err != nil {
+				return err
+			}
+			result.wroteStream = true
+			result.wroteBusinessStream = true
+			dst.Flush()
+			event = event[:0]
+			return nil
+		}
+		for _, line := range event {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "data:") {
+				data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+				if data == "[DONE]" {
+					if !result.wroteBusinessStream {
+						continue
+					}
+					if _, err := io.WriteString(dst, line+"\n"); err != nil {
+						return err
+					}
+					result.wroteStream = true
+					continue
+				}
+				streamErr := proxyStreamErrorFromData(eventType, []byte(data))
+				if streamErr != nil {
+					event = event[:0]
+					return streamErr
+				}
+				forwardLine := line
+				if data != "" {
+					patched, err := proxyStreamPatchAndMeasureData([]byte(data), responseModel, result)
+					if err == nil && patched != nil {
+						forwardLine = "data: " + string(patched)
+					}
+				}
+				if _, err := io.WriteString(dst, forwardLine+"\n"); err != nil {
+					return err
+				}
+				result.wroteStream = true
+				result.wroteBusinessStream = true
+				continue
+			}
+			if strings.HasPrefix(trimmed, ":") {
+				continue
+			}
+			if _, err := io.WriteString(dst, line+"\n"); err != nil {
+				return err
+			}
+		}
+		if _, err := io.WriteString(dst, "\n"); err != nil {
+			return err
+		}
+		dst.Flush()
+		event = event[:0]
+		return nil
+	}
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			if err := flushEvent(); err != nil {
+				return err
+			}
+			continue
+		}
+		event = append(event, line)
+	}
+	if err := flushEvent(); err != nil {
+		return err
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	dst.Flush()
+	return nil
+}
+
+func proxySSEEventHasNonEmptyData(event []string) bool {
+	for _, line := range event {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "data:") && strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func proxySSEEventType(event []string) string {
+	for _, line := range event {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "event:") {
+			return strings.ToLower(strings.TrimSpace(strings.TrimPrefix(trimmed, "event:")))
+		}
+	}
+	return ""
+}
+
+func proxySSEDataLines(event []string) []string {
+	dataLines := make([]string, 0, len(event))
+	for _, line := range event {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")))
+		}
+	}
+	return dataLines
+}
+
+func proxySSECombinedData(dataLines []string) string {
+	if len(dataLines) == 0 {
+		return ""
+	}
+	if len(dataLines) == 1 {
+		return dataLines[0]
+	}
+	return strings.Join(dataLines, "\n")
+}
+
+func proxyStreamErrorFromData(eventType string, data []byte) error {
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		if strings.EqualFold(eventType, "error") && strings.TrimSpace(string(data)) != "" {
+			return fmt.Errorf("upstream stream error: %s", strings.TrimSpace(string(data)))
+		}
+		return nil
+	}
+	rawErr, ok := payload["error"]
+	if (!ok || rawErr == nil) && proxyStreamPayloadLooksLikeTopLevelError(payload) {
+		return fmt.Errorf("upstream stream error: %s", strings.TrimSpace(payload["message"].(string)))
+	}
+	if (!ok || rawErr == nil) && !strings.EqualFold(eventType, "error") {
+		return nil
+	}
+	if message, ok := rawErr.(string); ok && strings.TrimSpace(message) != "" {
+		return fmt.Errorf("upstream stream error: %s", strings.TrimSpace(message))
+	}
+	if errObj, ok := rawErr.(map[string]any); ok {
+		if message, ok := errObj["message"].(string); ok && strings.TrimSpace(message) != "" {
+			return fmt.Errorf("upstream stream error: %s", strings.TrimSpace(message))
+		}
+	}
+	if message, ok := payload["message"].(string); ok && strings.TrimSpace(message) != "" {
+		if strings.EqualFold(eventType, "error") || proxyStreamPayloadLooksLikeTopLevelError(payload) {
+			return fmt.Errorf("upstream stream error: %s", strings.TrimSpace(message))
+		}
+	}
+	return fmt.Errorf("upstream stream error")
+}
+
+func proxyStreamPayloadLooksLikeTopLevelError(payload map[string]any) bool {
+	if payload == nil {
+		return false
+	}
+	if _, ok := payload["choices"]; ok {
+		return false
+	}
+	if _, ok := payload["object"]; ok {
+		return false
+	}
+	code, hasCode := payload["code"].(string)
+	if !hasCode || strings.TrimSpace(code) == "" {
+		return false
+	}
+	message, hasMessage := payload["message"].(string)
+	return hasMessage && strings.TrimSpace(message) != ""
+}
+
+func proxyStreamPatchAndMeasureData(data []byte, responseModel string, result *providerStreamResult) ([]byte, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(responseModel) != "" {
+		payload["model"] = responseModel
+	}
+	if usage, _ := payload["usage"].(map[string]any); usage != nil {
+		input, output := extractTokenUsageFromMap(usage)
+		if input > 0 {
+			result.inputTokens = input
+		}
+		if output > 0 {
+			result.outputTokens = output
+		}
+	}
+	result.outputText += proxyStreamChunkText(payload)
+	patched, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return patched, nil
+}
+
+func proxyStreamChunkText(payload map[string]any) string {
+	var text strings.Builder
+	choices, _ := payload["choices"].([]any)
+	for _, item := range choices {
+		choice, _ := item.(map[string]any)
+		if choice == nil {
+			continue
+		}
+		delta, _ := choice["delta"].(map[string]any)
+		if delta != nil {
+			text.WriteString(flattenProxyText(delta["content"]))
+			text.WriteString(flattenProxyText(delta["reasoning_content"]))
+			text.WriteString(flattenProxyText(delta["tool_calls"]))
+			text.WriteString(flattenProxyText(delta["function_call"]))
+		}
+		text.WriteString(flattenProxyText(choice["text"]))
+	}
+	return text.String()
 }
 
 func proxyProviderErrorSnippet(body []byte) string {

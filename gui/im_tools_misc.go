@@ -517,6 +517,12 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	b.WriteString(localizedSkillInstallSuccessSummary(lang, entry.Name, entry.Description, hubURL, entry.TrustLevel))
 
 	if autoRun {
+		runArgs := buildRunSkillArgs(args)
+		if shouldSkipInstructionOnlyInstallAutoRun(entry, runArgs) {
+			b.WriteString("\n\nAuto-run skipped: this Skill is instruction-only and no concrete user task context was provided, so running it now would generate a script from the documentation alone.\n")
+			b.WriteString(fmt.Sprintf("Run it with the original request, for example: manage_skill(action=\"run\", name=\"%s\", user_prompt=\"<original user request>\")", entry.Name))
+			return b.String()
+		}
 		b.WriteString(localizedSkillInstallAutoRunStarting(lang, entry.Name))
 		// Pass user-supplied run arguments (input, output, args, etc.) to the
 		// skill runner so the auto-run after install actually has the parameters
@@ -529,7 +535,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			return b.String()
 		}
 		consumeRuntimePolicyOwnerIDFromToolArgs(args)
-		runID, err := runner.StartRunForOwner(installPolicyOwnerID, entry.Name, buildRunSkillArgs(args))
+		runID, err := runner.StartRunForOwner(installPolicyOwnerID, entry.Name, runArgs)
 		if err != nil {
 			b.WriteString(fmt.Sprintf("执行启动失败: %s", err.Error()))
 		} else {
@@ -546,6 +552,100 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	}
 
 	return b.String()
+}
+
+func shouldSkipInstructionOnlyInstallAutoRun(entry *corelib.NLSkillEntry, runArgs map[string]interface{}) bool {
+	return isInstructionOnlySkillEntry(entry) && !hasInstallAutoRunUserContext(runArgs)
+}
+
+func hasInstallAutoRunUserContext(runArgs map[string]interface{}) bool {
+	return runArgMapHasContent(runArgs)
+}
+
+func runArgHasContent(value interface{}) bool {
+	return runArgValueHasContent("", value)
+}
+
+func runArgValueHasContent(key string, value interface{}) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return false
+		}
+		if cskill.CanonicalRunVarKey(key) == "args" {
+			if strings.HasPrefix(trimmed, "[") {
+				return false
+			}
+			var parsed map[string]interface{}
+			if json.Unmarshal([]byte(trimmed), &parsed) == nil {
+				return runArgMapHasContent(parsed)
+			}
+			if strings.HasPrefix(trimmed, "{") {
+				return false
+			}
+		}
+		return true
+	case map[string]interface{}:
+		return runArgMapHasContent(typed)
+	case map[string]string:
+		converted := make(map[string]interface{}, len(typed))
+		for key, value := range typed {
+			converted[key] = value
+		}
+		return runArgMapHasContent(converted)
+	case []interface{}:
+		if cskill.CanonicalRunVarKey(key) == "args" {
+			return false
+		}
+		for _, item := range typed {
+			if runArgHasContent(item) {
+				return true
+			}
+		}
+		return false
+	case []string:
+		if cskill.CanonicalRunVarKey(key) == "args" {
+			return false
+		}
+		for _, item := range typed {
+			if strings.TrimSpace(item) != "" {
+				return true
+			}
+		}
+		return false
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", typed)) != ""
+	}
+}
+
+func runArgMapHasContent(values map[string]interface{}) bool {
+	for key, value := range values {
+		if installAutoRunContextSelectorKey(key) {
+			continue
+		}
+		if runArgValueHasContent(key, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func installAutoRunContextSelectorKey(key string) bool {
+	key = cskill.CanonicalRunVarKey(key)
+	if cskill.IsManageSkillRunnerControlKey(key) {
+		return true
+	}
+	switch key {
+	case "operation", "mode", "step", "steps", "output", "output_path", "output_file", "format", "source",
+		"env", "extra_env", "environment", "working_dir", "language", "runtime_language", "timeout",
+		"max_attempts", "verification_mode", "register_policy", "expected_artifacts", "save_as_skill":
+		return true
+	default:
+		return false
+	}
 }
 
 // stringVal extracts a string value from a map, returning "" if the key is

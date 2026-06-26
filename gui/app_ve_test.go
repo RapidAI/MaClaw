@@ -608,6 +608,16 @@ func TestCloseVESessionClearsGroupReturnAndRefreshCaches(t *testing.T) {
 	app.cacheGroupSessionReturnVEIDs("session-1", []string{"ve-a", "ve-b"})
 	app.cacheVEGroupDefaultResponder("session-1", "machine-a")
 	app.veDetailRefreshCache.Store("session-1", &veDetailRefreshState{})
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{{ID: "session-1", LocalRelation: "initiated_by_me", Status: "open", Topic: "VE session", ParticipantIDs: []string{"machine-1", "ve-a"}, UpdatedAt: time.Now().UTC()}}, nil); err != nil {
+		t.Fatalf("CacheSummaries: %v", err)
+	}
 
 	if err := app.CloseVESession("session-1"); err != nil {
 		t.Fatalf("CloseVESession: %v", err)
@@ -629,6 +639,13 @@ func TestCloseVESessionClearsGroupReturnAndRefreshCaches(t *testing.T) {
 	}
 	if _, ok := app.veDetailRefreshCache.Load("session-1"); ok {
 		t.Fatal("detail refresh cache should be removed")
+	}
+	summaries, err := store.CachedSummaries(ctx, true)
+	if err != nil {
+		t.Fatalf("CachedSummaries: %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].Status != "closed" {
+		t.Fatalf("cached session status = %+v, want closed", summaries)
 	}
 }
 
@@ -853,6 +870,54 @@ func TestInitiateVEConversationReusesCachedDirectSession(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&hubCalls); got != 0 {
 		t.Fatalf("Hub calls = %d, want cached direct lookup only", got)
+	}
+}
+
+func TestInitiateVEConversationReusesHiddenCachedDirectSession(t *testing.T) {
+	hubCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hubCalls, 1)
+		if r.URL.Path == "/api/ve/discoverable" {
+			http.Error(w, "offline", http.StatusServiceUnavailable)
+			return
+		}
+		t.Errorf("unexpected Hub request: %s", r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{{ID: "session-hidden", LocalRelation: "initiated_by_me", Status: "open", Topic: "VE session", ParticipantIDs: []string{"machine-1", "ve-machine-2"}, UpdatedAt: time.Now().UTC()}}, nil); err != nil {
+		t.Fatalf("CacheSummaries: %v", err)
+	}
+	if err := store.SetHidden(ctx, "session-hidden", true); err != nil {
+		t.Fatalf("SetHidden: %v", err)
+	}
+
+	info, err := app.InitiateVEConversation("ve-machine-2")
+	if err != nil {
+		t.Fatalf("InitiateVEConversation: %v", err)
+	}
+	if info.SessionID != "session-hidden" {
+		t.Fatalf("session id = %q, want session-hidden", info.SessionID)
+	}
+	if got := atomic.LoadInt32(&hubCalls); got != 0 {
+		t.Fatalf("Hub calls = %d, want hidden cached direct lookup only", got)
 	}
 }
 
