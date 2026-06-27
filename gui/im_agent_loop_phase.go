@@ -57,6 +57,9 @@ func (h *IMMessageHandler) initialAgentLoopPhase(userText string, ctx *LoopConte
 	if ctx != nil && ctx.WorkflowAgentLoop {
 		return phase
 	}
+	if ctx != nil && ctx.Platform == "ve_group_executor" {
+		return phase
+	}
 	if !shouldPreferSkillForTask(userText) {
 		return phase
 	}

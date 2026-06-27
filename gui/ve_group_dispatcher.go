@@ -210,7 +210,20 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 		}
 	}
 
-	resp := handler.HandleIMMessageWithProgressAndStream(imMsg, nil, onToken, nil, nil)
+	loopCtx := NewLoopContext("ve-group-executor:"+sess.SessionID, handler.getMaclawAgentMaxIterations(), nil)
+	loopCtx.Platform = imMsg.Platform
+	loopCtx.UserID = imMsg.UserID
+	loopCtx.Lang = imMsg.Lang
+	defer loopCtx.Cancel()
+	go func() {
+		select {
+		case <-sess.ctx.Done():
+			loopCtx.Cancel()
+		case <-loopCtx.DoneC:
+		}
+	}()
+
+	resp := handler.HandleIMMessageWithExistingLoop(imMsg, loopCtx, nil, onToken, nil, nil)
 	if resp != nil {
 		chunk := strings.TrimSpace(resp.Text)
 		if chunk != "" {

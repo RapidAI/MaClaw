@@ -12,6 +12,8 @@ import (
 )
 
 func TestHandleIMMessageWithProgressAndStream_ReturnsConfirmationBeforeExecution(t *testing.T) {
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"intent\":\"coding\",\"confidence\":0.96,\"reason\":\"code change request\",\"evidence\":[\"bug fix\"]}"}}]}`)
@@ -27,7 +29,7 @@ func TestHandleIMMessageWithProgressAndStream_ReturnsConfirmationBeforeExecution
 	cfg.MaclawLLMUrl = server.URL
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
-	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
+	providers := []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -36,12 +38,16 @@ func TestHandleIMMessageWithProgressAndStream_ReturnsConfirmationBeforeExecution
 		AuthType:      "none",
 		ContextLength: 16000,
 	}}
+	cfg.MaclawLLMProviders = providers
 	cfg.MaclawLLMCurrentProvider = "Custom1"
 	cfg.UIMode = "pro"
 	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
 	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	if err := app.SaveMaclawLLMProviders(providers, "Custom1"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})

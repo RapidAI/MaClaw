@@ -753,7 +753,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	if result, rejected := rejectInvalidCodingSubAgentToolArguments(name, argsJSON); rejected {
 		return result
 	}
-	argsJSON = normalizeCodingSubAgentToolArguments(argsJSON)
+	argsJSON = normalizeCodingSubAgentToolArgumentsForTool(name, argsJSON)
 
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
@@ -1105,6 +1105,9 @@ func rejectInvalidCodingSubAgentEditLinesArgumentValues(name string, args map[st
 		if missingCodingSubAgentArgumentValue(args, "content") {
 			return missingCodingSubAgentRequiredArgumentResult(name, "content"), true
 		}
+		if content, _ := args["content"].(string); strings.TrimSpace(content) == "" {
+			return missingCodingSubAgentRequiredArgumentResult(name, "content"), true
+		}
 	case "delete":
 		if missingCodingSubAgentArgumentValue(args, "end_line") {
 			return missingCodingSubAgentRequiredArgumentResult(name, "end_line"), true
@@ -1363,6 +1366,50 @@ func normalizeCodingSubAgentToolArguments(argsJSON string) string {
 		return "{}"
 	}
 	return argsJSON
+}
+
+func normalizeCodingSubAgentToolArgumentsForTool(name, argsJSON string) string {
+	normalized := normalizeCodingSubAgentToolArguments(argsJSON)
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &args); err != nil || args == nil {
+		return normalized
+	}
+	if !applyCodingSubAgentToolArgumentAliases(name, args) {
+		return normalized
+	}
+	data, err := json.Marshal(args)
+	if err != nil {
+		return normalized
+	}
+	return string(data)
+}
+
+func applyCodingSubAgentToolArgumentAliases(name string, args map[string]interface{}) bool {
+	if len(args) == 0 {
+		return false
+	}
+	changed := false
+	switch canonicalCodingSubAgentToolName(name) {
+	case "bash":
+		changed = applyCodingSubAgentToolArgumentAlias(args, "work_dir", "working_dir") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "cwd", "working_dir") || changed
+	case "edit_file":
+		changed = applyCodingSubAgentToolArgumentAlias(args, "old_content", "old_string") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "new_content", "new_string") || changed
+	}
+	return changed
+}
+
+func applyCodingSubAgentToolArgumentAlias(args map[string]interface{}, alias, canonical string) bool {
+	value, ok := args[alias]
+	if !ok {
+		return false
+	}
+	if _, exists := args[canonical]; !exists {
+		args[canonical] = value
+	}
+	delete(args, alias)
+	return true
 }
 
 func codingOutcomeFromSuccess(success bool) codingToolOutcome {

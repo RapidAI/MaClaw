@@ -745,6 +745,57 @@ func TestCodingSubAgentEmptyToolArgumentsNormalizeToObject(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentToolArgumentAliasesNormalizeCommonModelFields(t *testing.T) {
+	normalized := normalizeCodingSubAgentToolArgumentsForTool("bash", `{"command":"go test ./gui","work_dir":"gui","cwd":"ignored"}`)
+	var bashArgs map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &bashArgs); err != nil {
+		t.Fatalf("normalized bash args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := bashArgs["working_dir"].(string); got != "gui" {
+		t.Fatalf("bash work_dir alias should populate working_dir, got %#v from %s", bashArgs, normalized)
+	}
+	if _, ok := bashArgs["work_dir"]; ok {
+		t.Fatalf("bash work_dir alias should be removed after normalization: %#v", bashArgs)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("edit_file", `{"path":"main.go","old_content":"old","new_content":"new"}`)
+	var editArgs map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &editArgs); err != nil {
+		t.Fatalf("normalized edit_file args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := editArgs["old_string"].(string); got != "old" {
+		t.Fatalf("edit_file old_content alias should populate old_string, got %#v from %s", editArgs, normalized)
+	}
+	if got, _ := editArgs["new_string"].(string); got != "new" {
+		t.Fatalf("edit_file new_content alias should populate new_string, got %#v from %s", editArgs, normalized)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("edit_file", `{"path":"main.go","old_string":"canonical","old_content":"alias","new_string":"done"}`)
+	editArgs = nil
+	if err := json.Unmarshal([]byte(normalized), &editArgs); err != nil {
+		t.Fatalf("normalized edit_file canonical args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := editArgs["old_string"].(string); got != "canonical" {
+		t.Fatalf("canonical old_string should not be overwritten by alias, got %#v", editArgs)
+	}
+	if _, ok := editArgs["old_content"]; ok {
+		t.Fatalf("edit_file old_content alias should be removed when canonical is present: %#v", editArgs)
+	}
+}
+
+func TestCodingSubAgentEditFileAliasesPassArgumentValidation(t *testing.T) {
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: t.TempDir()}}
+
+	result := cb.executeToolWithOutcome("edit_file", `{"path":"main.go","old_content":"old","new_content":"new"}`)
+
+	if result.Outcome != codingToolOutcomeBlocked {
+		t.Fatalf("edit_file aliases should pass argument validation and reach host guard, outcome=%q result=%s", result.Outcome, result.Text)
+	}
+	if strings.Contains(result.Text, "missing required argument") || strings.Contains(result.Text, "old_string") || strings.Contains(result.Text, "new_string") {
+		t.Fatalf("edit_file aliases should not fail required-argument validation, got %q", result.Text)
+	}
+}
+
 func TestCodingSubAgentManageSkillRunMissingNameUsesStandardArgumentError(t *testing.T) {
 	cb := &codingSubAgentCallbacks{
 		subagent: &CodingSubAgent{},
@@ -1259,8 +1310,24 @@ func TestCodingSubAgentRejectsMissingRequiredToolArguments(t *testing.T) {
 	if result, rejected := rejectInvalidCodingSubAgentToolArgumentTypes("write_file", map[string]interface{}{"path": "out.txt", "content": ""}); rejected {
 		t.Fatalf("write_file empty content should be allowed by argument validation, got %#v", result)
 	}
-	if result, rejected := rejectInvalidCodingSubAgentToolArgumentTypes("edit_lines", map[string]interface{}{"path": "main.go", "operation": "insert", "start_line": 1, "content": ""}); rejected {
-		t.Fatalf("edit_lines empty content should be allowed by argument validation, got %#v", result)
+	if result, rejected := rejectInvalidCodingSubAgentToolArgumentTypes("edit_lines", map[string]interface{}{"path": "main.go", "operation": "replace", "start_line": 1, "end_line": 1, "content": ""}); rejected {
+		t.Fatalf("edit_lines replace empty content should be allowed by argument validation, got %#v", result)
+	}
+}
+
+func TestCodingSubAgentRejectsEmptyEditLinesInsertContent(t *testing.T) {
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: t.TempDir()}}
+
+	result := cb.executeToolWithOutcome("edit_lines", `{"path":"main.go","operation":"insert","start_line":1,"content":"  "}`)
+
+	if result.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("empty insert content outcome = %q, want failed; result=%s", result.Outcome, result.Text)
+	}
+	if !strings.Contains(result.Text, "missing required argument") || !strings.Contains(result.Text, `"content"`) {
+		t.Fatalf("empty insert content should produce targeted required-argument error, got %q", result.Text)
+	}
+	if len(cb.getCommandsRun()) != 0 {
+		t.Fatalf("edit_lines with empty insert content should not execute commands, commands=%#v", cb.getCommandsRun())
 	}
 }
 

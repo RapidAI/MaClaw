@@ -319,6 +319,15 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 	if loopCtx.HTTPClient == nil {
 		loopCtx.HTTPClient = httpClient
 	}
+	if strings.TrimSpace(loopCtx.Platform) == "" {
+		loopCtx.Platform = msg.Platform
+	}
+	if strings.TrimSpace(loopCtx.UserID) == "" {
+		loopCtx.UserID = msg.UserID
+	}
+	if strings.TrimSpace(loopCtx.Lang) == "" {
+		loopCtx.Lang = msg.Lang
+	}
 	if h.traceService != nil && loopCtx.RunID == "" {
 		job, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, msg.Text, msg.Platform, msg.UserID, h.traceProjectPath())
 		loopCtx.JobID = job.JobID
