@@ -221,9 +221,9 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 		}
 		if projectPath != "" {
 			if strings.HasPrefix(strings.ToLower(lang), "en") {
-				summary += fmt.Sprintf("\nDefault workspace: %s", projectPath)
+				summary += fmt.Sprintf("\nProject directory: %s", projectPath)
 			} else {
-				summary += fmt.Sprintf("\n默认工作目录：%s", projectPath)
+				summary += fmt.Sprintf("\n项目目录：%s", projectPath)
 			}
 		}
 		if label := strings.TrimSpace(confirmationTaskLabel(result.Intent)); label != "" {

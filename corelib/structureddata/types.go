@@ -1038,11 +1038,17 @@ type DashboardDefinition struct {
 }
 
 type DashboardResult struct {
-	Dashboard    DashboardDefinition `json:"dashboard"`
-	Stats        *SystemStats        `json:"stats,omitempty"`
-	InboxSummary *MISInboxSummary    `json:"inbox_summary,omitempty"`
-	Reports      []DashboardReport   `json:"reports"`
-	GeneratedAt  time.Time           `json:"generated_at"`
+	Dashboard      DashboardDefinition `json:"dashboard"`
+	Stats          *SystemStats        `json:"stats,omitempty"`
+	InboxSummary   *MISInboxSummary    `json:"inbox_summary,omitempty"`
+	Reports        []DashboardReport   `json:"reports"`
+	GeneratedAt    time.Time           `json:"generated_at"`
+	PrimaryResult  string              `json:"primary_result,omitempty"`
+	BusinessStatus string              `json:"business_status,omitempty"`
+	ResultStatus   string              `json:"result_status,omitempty"`
+	ResultPayload  map[string]any      `json:"result_payload,omitempty"`
+	Outputs        []map[string]any    `json:"outputs,omitempty"`
+	Artifacts      []map[string]any    `json:"artifacts,omitempty"`
 }
 
 type DashboardReport struct {

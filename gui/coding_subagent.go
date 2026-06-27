@@ -40,6 +40,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -602,7 +603,7 @@ func (c *codingSubAgentCallbacks) dynamicSelectionText() string {
 	if c.dynamicSelectionTextBuilt {
 		return c.cachedDynamicSelectionText
 	}
-	c.cachedDynamicSelectionText = codingSubAgentDynamicSelectionText(c.task)
+	c.cachedDynamicSelectionText = codingSubAgentDynamicSelectionTextWithContext(c.task, c.reqCtx, c.designCtx, c.prevOutputs)
 	c.dynamicSelectionTextBuilt = true
 	return c.cachedDynamicSelectionText
 }
@@ -1377,19 +1378,23 @@ func codingSubAgentToolArgumentExample(name string) string {
 func codingSubAgentToolArgumentAliasHint(name string) string {
 	switch canonicalCodingSubAgentToolName(name) {
 	case "Glob":
-		return `Accepted aliases: glob/query -> pattern; file/file_path/filepath -> path.`
+		return `Accepted aliases: glob/query -> pattern; file/file_path/filepath/filename/target_path and dir/directory/root -> path.`
 	case "ripgrep":
-		return `Accepted aliases: regex/query -> pattern; file/file_path/filepath -> path.`
-	case "read_file", "write_file", "list_directory", "git_diff":
-		return `Accepted aliases: file/file_path/filepath -> path.`
+		return `Accepted aliases: regex/query -> pattern; file/file_path/filepath/filename/target_path and dir/directory/root -> path.`
+	case "list_directory", "git_diff":
+		return `Accepted aliases: file/file_path/filepath/filename/target_path and dir/directory/root -> path.`
+	case "read_file", "write_file":
+		return `Accepted aliases: file/file_path/filepath/filename/target_path -> path.`
 	case "edit_file":
-		return `Accepted aliases: file/file_path/filepath -> path; old_content -> old_string; new_content -> new_string.`
+		return `Accepted aliases: file/file_path/filepath/filename/target_path -> path; old_content/find/search -> old_string; new_content/replace/replacement -> new_string.`
 	case "edit_lines":
-		return `Accepted aliases: file/file_path/filepath -> path; action/op -> operation; start/startLine -> start_line; end/endLine -> end_line; add/update/remove-style operations are normalized.`
+		return `Accepted aliases: file/file_path/filepath/filename/target_path -> path; action/op -> operation; start/startLine -> start_line; end/endLine -> end_line; add/update/remove-style operations are normalized.`
 	case "bash":
 		return `Accepted aliases: work_dir/cwd -> working_dir.`
 	case "call_mcp_tool":
 		return `Accepted aliases: server/server_name -> server_id; tool/name -> tool_name; args/params/input -> arguments.`
+	case "coding_knowledge_search", "knowledge_search":
+		return `Accepted aliases: text/question/keyword/keywords/term/terms/search_terms/q -> query.`
 	default:
 		return ""
 	}
@@ -1436,12 +1441,24 @@ func applyCodingSubAgentToolArgumentAliases(name string, args map[string]interfa
 		changed = applyCodingSubAgentToolArgumentAlias(args, "glob", "pattern") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "query", "pattern") || changed
 		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
+		changed = applyCodingSubAgentDirectoryArgumentAliases(args) || changed
 	case "ripgrep":
 		changed = applyCodingSubAgentToolArgumentAlias(args, "regex", "pattern") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "query", "pattern") || changed
 		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
-	case "read_file", "write_file", "list_directory", "git_diff":
+		changed = applyCodingSubAgentDirectoryArgumentAliases(args) || changed
+	case "read_file", "write_file":
 		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
+		if canonicalCodingSubAgentToolName(name) == "read_file" {
+			changed = applyCodingSubAgentToolArgumentAlias(args, "limit", "lines") || changed
+			changed = applyCodingSubAgentToolArgumentAlias(args, "num_lines", "lines") || changed
+			changed = applyCodingSubAgentToolArgumentAlias(args, "line_count", "lines") || changed
+			changed = applyCodingSubAgentToolArgumentAlias(args, "start", "start_line") || changed
+			changed = applyCodingSubAgentToolArgumentAlias(args, "startLine", "start_line") || changed
+		}
+	case "list_directory", "git_diff":
+		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
+		changed = applyCodingSubAgentDirectoryArgumentAliases(args) || changed
 	case "edit_lines":
 		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "action", "operation") || changed
@@ -1457,7 +1474,11 @@ func applyCodingSubAgentToolArgumentAliases(name string, args map[string]interfa
 	case "edit_file":
 		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "old_content", "old_string") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "find", "old_string") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "search", "old_string") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "new_content", "new_string") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "replace", "new_string") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "replacement", "new_string") || changed
 	case "call_mcp_tool":
 		changed = applyCodingSubAgentToolArgumentAlias(args, "server", "server_id") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "server_name", "server_id") || changed
@@ -1466,6 +1487,16 @@ func applyCodingSubAgentToolArgumentAliases(name string, args map[string]interfa
 		changed = applyCodingSubAgentToolArgumentAlias(args, "args", "arguments") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "params", "arguments") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "input", "arguments") || changed
+	case "coding_knowledge_search", "knowledge_search":
+		changed = applyCodingSubAgentQueryArgumentAliases(args) || changed
+	}
+	return changed
+}
+
+func applyCodingSubAgentQueryArgumentAliases(args map[string]interface{}) bool {
+	changed := false
+	for _, alias := range []string{"text", "question", "keyword", "keywords", "term", "terms", "search_terms", "q"} {
+		changed = applyCodingSubAgentToolArgumentAlias(args, alias, "query") || changed
 	}
 	return changed
 }
@@ -1499,6 +1530,16 @@ func applyCodingSubAgentPathArgumentAliases(args map[string]interface{}) bool {
 	changed = applyCodingSubAgentToolArgumentAlias(args, "file", "path") || changed
 	changed = applyCodingSubAgentToolArgumentAlias(args, "file_path", "path") || changed
 	changed = applyCodingSubAgentToolArgumentAlias(args, "filepath", "path") || changed
+	changed = applyCodingSubAgentToolArgumentAlias(args, "filename", "path") || changed
+	changed = applyCodingSubAgentToolArgumentAlias(args, "target_path", "path") || changed
+	return changed
+}
+
+func applyCodingSubAgentDirectoryArgumentAliases(args map[string]interface{}) bool {
+	changed := false
+	changed = applyCodingSubAgentToolArgumentAlias(args, "dir", "path") || changed
+	changed = applyCodingSubAgentToolArgumentAlias(args, "directory", "path") || changed
+	changed = applyCodingSubAgentToolArgumentAlias(args, "root", "path") || changed
 	return changed
 }
 
@@ -3065,15 +3106,16 @@ func (c *codingSubAgentCallbacks) trackCommandResult(args map[string]interface{}
 		seq:        seq,
 	})
 	if succeeded && isCodeGraphExplorationCommand(command) {
-		c.searchesRun = append(c.searchesRun, CodingSubAgentSearchResult{
+		search := CodingSubAgentSearchResult{
 			Tool:      "codegraph",
 			Query:     compactSubAgentSearchText(codeGraphExplorationQuery(command)),
 			Path:      compactSubAgentPathText(c.displayProjectPath(workDir)),
 			Succeeded: true,
 			Summary:   compactSearchResult(result),
 			seq:       seq,
-		})
-		if c.firstSearchSeq == 0 {
+		}
+		c.searchesRun = append(c.searchesRun, search)
+		if c.firstSearchSeq == 0 && !subAgentSearchSuccessLooksEmpty(search) {
 			c.firstSearchSeq = seq
 		}
 	}
@@ -3233,7 +3275,7 @@ func (c *codingSubAgentCallbacks) trackSearchResult(toolName string, args map[st
 		Summary:   compactSearchResult(result),
 		seq:       seq,
 	})
-	if succeeded && c.firstSearchSeq == 0 {
+	if succeeded && c.firstSearchSeq == 0 && !subAgentSearchSuccessLooksEmpty(c.searchesRun[len(c.searchesRun)-1]) {
 		c.firstSearchSeq = seq
 	}
 }
@@ -3259,7 +3301,7 @@ func limitSubAgentStringSlice(values []string, maxItems int) []string {
 }
 
 func limitSubAgentCommandResults(values []CodingSubAgentCommandResult, maxItems int) []CodingSubAgentCommandResult {
-	return selectSubAgentCommandSummaryEntries(values, maxItems)
+	return selectSubAgentCommandAuditEntries(values, maxItems)
 }
 
 func limitSubAgentSearchResults(values []CodingSubAgentSearchResult, maxItems int) []CodingSubAgentSearchResult {
@@ -3288,7 +3330,7 @@ func limitSubAgentGuardrailViolations(values []CodingSubAgentGuardrailViolation,
 }
 
 func limitSubAgentDynamicToolResults(values []CodingSubAgentDynamicToolResult, maxItems int) []CodingSubAgentDynamicToolResult {
-	return selectSubAgentDynamicToolSummaryEntries(values, maxItems)
+	return selectSubAgentDynamicToolAuditEntries(values, maxItems)
 }
 
 func (c *codingSubAgentCallbacks) ensureFinalGitDiff(filesModified, filesCreated []string) (bool, string) {
@@ -3509,7 +3551,15 @@ func canonicalCodingPath(path string) string {
 	if realPath, err := evalCodingScopePath(path); err == nil {
 		path = realPath
 	}
-	return filepath.Clean(path)
+	return canonicalCodingPathKey(path)
+}
+
+func canonicalCodingPathKey(path string) string {
+	clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+	if subAgentWorkingDirLooksWindowsAbsolute(clean) {
+		return strings.ToLower(clean)
+	}
+	return clean
 }
 
 func isPathWithinDir(path, dir string) (bool, error) {
@@ -4034,6 +4084,43 @@ func selectSubAgentCommandSummaryEntries(commands []CodingSubAgentCommandResult,
 	return subAgentCommandResultsAtIndexes(commands, selectedIndexes)
 }
 
+func selectSubAgentCommandAuditEntries(commands []CodingSubAgentCommandResult, maxItems int) []CodingSubAgentCommandResult {
+	if maxItems <= 0 || len(commands) <= maxItems {
+		return commands
+	}
+	hasProblem := false
+	for _, cmd := range commands {
+		if subAgentCommandSummaryHasProblem(cmd) {
+			hasProblem = true
+			break
+		}
+	}
+	if !hasProblem {
+		out := make([]CodingSubAgentCommandResult, maxItems)
+		copy(out, commands[len(commands)-maxItems:])
+		return out
+	}
+	indexes := make([]int, len(commands))
+	for i := range commands {
+		indexes[i] = i
+	}
+	sort.SliceStable(indexes, func(i, j int) bool {
+		left := commands[indexes[i]]
+		right := commands[indexes[j]]
+		leftProblem := subAgentCommandSummaryHasProblem(left)
+		rightProblem := subAgentCommandSummaryHasProblem(right)
+		if leftProblem != rightProblem {
+			return leftProblem
+		}
+		return subAgentAuditSeq(left.seq, indexes[i]) > subAgentAuditSeq(right.seq, indexes[j])
+	})
+	out := make([]CodingSubAgentCommandResult, 0, maxItems)
+	for _, idx := range indexes[:maxItems] {
+		out = append(out, commands[idx])
+	}
+	return out
+}
+
 func subAgentCommandResultsAtIndexes(commands []CodingSubAgentCommandResult, indexes []int) []CodingSubAgentCommandResult {
 	sort.Ints(indexes)
 	selected := make([]CodingSubAgentCommandResult, 0, len(indexes))
@@ -4049,10 +4136,11 @@ func subAgentCommandSummaryHasProblem(cmd CodingSubAgentCommandResult) bool {
 	return !cmd.Succeeded || subAgentCommandSuccessLooksEmpty(cmd)
 }
 
-func reverseSubAgentCommandResults(values []CodingSubAgentCommandResult) {
-	for i, j := 0, len(values)-1; i < j; i, j = i+1, j-1 {
-		values[i], values[j] = values[j], values[i]
+func subAgentAuditSeq(seq uint64, index int) uint64 {
+	if seq != 0 {
+		return seq
 	}
+	return uint64(index + 1)
 }
 
 func appendSubAgentDynamicToolSummary(summary string, tools []CodingSubAgentDynamicToolResult) string {
@@ -4067,6 +4155,8 @@ func appendSubAgentDynamicToolSummary(summary string, tools []CodingSubAgentDyna
 		status := "PASS"
 		if !tool.Succeeded {
 			status = "FAIL"
+		} else if subAgentDynamicToolSuccessLooksEmpty(tool) {
+			status = "EMPTY"
 		}
 		b.WriteString("- ")
 		b.WriteString(status)
@@ -4093,37 +4183,81 @@ func selectSubAgentDynamicToolSummaryEntries(tools []CodingSubAgentDynamicToolRe
 	if maxItems <= 0 || len(tools) <= maxItems {
 		return tools
 	}
-	selected := make([]CodingSubAgentDynamicToolResult, 0, maxItems)
+	selectedIndexes := make([]int, 0, maxItems)
 	used := make(map[int]bool, maxItems)
-	for i, tool := range tools {
-		if tool.Succeeded {
+	for i := len(tools) - 1; i >= 0; i-- {
+		tool := tools[i]
+		if !subAgentDynamicToolSummaryHasProblem(tool) {
 			continue
 		}
-		selected = append(selected, tool)
+		selectedIndexes = append(selectedIndexes, i)
 		used[i] = true
-		if len(selected) == maxItems {
-			return selected
+		if len(selectedIndexes) == maxItems {
+			return subAgentDynamicToolResultsAtIndexes(tools, selectedIndexes)
 		}
 	}
-	recent := make([]CodingSubAgentDynamicToolResult, 0, maxItems-len(selected))
 	for i := len(tools) - 1; i >= 0; i-- {
 		if used[i] {
 			continue
 		}
-		recent = append(recent, tools[i])
-		if len(selected)+len(recent) == maxItems {
-			reverseSubAgentDynamicToolResults(recent)
-			return append(selected, recent...)
+		selectedIndexes = append(selectedIndexes, i)
+		if len(selectedIndexes) == maxItems {
+			return subAgentDynamicToolResultsAtIndexes(tools, selectedIndexes)
 		}
 	}
-	reverseSubAgentDynamicToolResults(recent)
-	return append(selected, recent...)
+	return subAgentDynamicToolResultsAtIndexes(tools, selectedIndexes)
 }
 
-func reverseSubAgentDynamicToolResults(values []CodingSubAgentDynamicToolResult) {
-	for i, j := 0, len(values)-1; i < j; i, j = i+1, j-1 {
-		values[i], values[j] = values[j], values[i]
+func selectSubAgentDynamicToolAuditEntries(tools []CodingSubAgentDynamicToolResult, maxItems int) []CodingSubAgentDynamicToolResult {
+	if maxItems <= 0 || len(tools) <= maxItems {
+		return tools
 	}
+	hasProblem := false
+	for _, tool := range tools {
+		if subAgentDynamicToolSummaryHasProblem(tool) {
+			hasProblem = true
+			break
+		}
+	}
+	if !hasProblem {
+		out := make([]CodingSubAgentDynamicToolResult, maxItems)
+		copy(out, tools[len(tools)-maxItems:])
+		return out
+	}
+	indexes := make([]int, len(tools))
+	for i := range tools {
+		indexes[i] = i
+	}
+	sort.SliceStable(indexes, func(i, j int) bool {
+		left := tools[indexes[i]]
+		right := tools[indexes[j]]
+		leftProblem := subAgentDynamicToolSummaryHasProblem(left)
+		rightProblem := subAgentDynamicToolSummaryHasProblem(right)
+		if leftProblem != rightProblem {
+			return leftProblem
+		}
+		return subAgentAuditSeq(left.seq, indexes[i]) > subAgentAuditSeq(right.seq, indexes[j])
+	})
+	out := make([]CodingSubAgentDynamicToolResult, 0, maxItems)
+	for _, idx := range indexes[:maxItems] {
+		out = append(out, tools[idx])
+	}
+	return out
+}
+
+func subAgentDynamicToolSummaryHasProblem(tool CodingSubAgentDynamicToolResult) bool {
+	return !tool.Succeeded || subAgentDynamicToolSuccessLooksEmpty(tool)
+}
+
+func subAgentDynamicToolResultsAtIndexes(tools []CodingSubAgentDynamicToolResult, indexes []int) []CodingSubAgentDynamicToolResult {
+	sort.Ints(indexes)
+	selected := make([]CodingSubAgentDynamicToolResult, 0, len(indexes))
+	for _, i := range indexes {
+		if i >= 0 && i < len(tools) {
+			selected = append(selected, tools[i])
+		}
+	}
+	return selected
 }
 
 func summarizeSubAgentCommands(commands []CodingSubAgentCommandResult) (codingSubAgentQualityStatus, string) {
@@ -4253,13 +4387,45 @@ func countSuccessfulSubAgentInspectionDynamicTools(tools []CodingSubAgentDynamic
 
 func subAgentDynamicToolInspectionOutputLooksEmpty(tool CodingSubAgentDynamicToolResult) bool {
 	summary := strings.TrimSpace(tool.Summary)
-	return summary == "" || summary == "(无输出)"
+	if summary == "" || summary == "(无输出)" {
+		return true
+	}
+	if subAgentDynamicToolIsKnowledgeSearch(tool) {
+		normalized := strings.ToLower(strings.Join(strings.Fields(summary), " "))
+		for _, phrase := range []string{
+			"no results",
+			"no results found",
+			"0 results",
+			"found 0 results",
+			"no matches",
+			"0 matches",
+			"found 0 matches",
+			"no documents found",
+			"no memories found",
+			"no records found",
+		} {
+			if subAgentSummaryContainsEmptyVerificationPhrase(normalized, phrase) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
-func subAgentDynamicToolProvidesInspectionEvidence(tool CodingSubAgentDynamicToolResult) bool {
+func subAgentDynamicToolIsKnowledgeSearch(tool CodingSubAgentDynamicToolResult) bool {
 	switch strings.ToLower(strings.TrimSpace(tool.Tool)) {
 	case "coding_knowledge_search", "knowledge_search":
 		return true
+	default:
+		return false
+	}
+}
+
+func subAgentDynamicToolProvidesInspectionEvidence(tool CodingSubAgentDynamicToolResult) bool {
+	if subAgentDynamicToolIsKnowledgeSearch(tool) {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(tool.Tool)) {
 	case "call_mcp_tool":
 		return subAgentMCPToolCallProvidesInspectionEvidence(tool.Name)
 	default:
@@ -4268,7 +4434,7 @@ func subAgentDynamicToolProvidesInspectionEvidence(tool CodingSubAgentDynamicToo
 }
 
 func subAgentMCPToolCallProvidesInspectionEvidence(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.TrimSpace(name)
 	if name == "" {
 		return false
 	}
@@ -4283,16 +4449,33 @@ func subAgentMCPToolCallProvidesInspectionEvidence(name string) bool {
 }
 
 func subAgentMCPToolNamePartLooksMutating(part string) bool {
-	switch part {
-	case "write", "create", "update", "delete", "remove", "send", "post", "put", "patch", "upload", "apply", "edit", "set", "run", "execute", "exec", "install":
+	part = strings.TrimSpace(part)
+	if part == "" {
+		return false
+	}
+	lower := strings.ToLower(part)
+	switch lower {
+	case "write", "create", "add", "insert", "upsert", "update", "delete", "remove", "replace", "rename", "move", "save", "merge", "archive", "restore", "approve", "reject", "enable", "disable", "send", "submit", "publish", "post", "put", "patch", "upload", "apply", "edit", "set", "run", "execute", "exec", "install", "deploy", "start", "stop", "restart":
 		return true
 	}
-	for _, prefix := range []string{"write", "create", "update", "delete", "remove", "send", "post", "put", "patch", "upload", "apply", "edit", "execute", "exec", "install"} {
-		if strings.HasPrefix(part, prefix) && len(part) > len(prefix) {
+	for _, prefix := range []string{"write", "create", "add", "insert", "upsert", "update", "delete", "remove", "replace", "rename", "move", "save", "merge", "archive", "restore", "approve", "reject", "enable", "disable", "send", "submit", "publish", "post", "put", "patch", "upload", "apply", "edit", "execute", "exec", "install", "deploy", "start", "stop", "restart"} {
+		if subAgentMCPToolNamePartHasMutatingPrefix(part, lower, prefix) {
 			return true
 		}
 	}
 	return false
+}
+
+func subAgentMCPToolNamePartHasMutatingPrefix(part, lower, prefix string) bool {
+	if !strings.HasPrefix(lower, prefix) || len(lower) <= len(prefix) {
+		return false
+	}
+	suffix := part[len(prefix):]
+	if suffix == "" {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(suffix)
+	return unicode.IsUpper(first) || unicode.IsDigit(first)
 }
 
 func countSuccessfulSubAgentVerificationCommands(commands []CodingSubAgentCommandResult) int {
@@ -4362,9 +4545,18 @@ func subAgentVerificationOutputLooksEmpty(cmd CodingSubAgentCommandResult) bool 
 		"0 files processed",
 		"analyzed 0 files",
 		"0 files analyzed",
+		"matched 0 files",
+		"found 0 files",
+		"0 files found",
+		"0 source files",
+		"no source files",
 		"no tests executed",
 		"no specs found",
 		"no files matching",
+		"no files matched",
+		"no matching files",
+		"no files to check",
+		"no files to lint",
 	}
 	for _, phrase := range emptyPhrases {
 		if subAgentSummaryContainsEmptyVerificationPhrase(summary, phrase) {
@@ -4640,7 +4832,7 @@ func subAgentSummaryMentionsRisk(summary string) bool {
 		"blocker", "blockers", "blocked by",
 		"not covered", "not automatically verified", "manual verification", "manual test", "manual testing",
 	} {
-		if strings.Contains(lower, token) {
+		if subAgentSummaryContainsRiskPhrase(lower, token) {
 			return true
 		}
 	}
@@ -4653,6 +4845,29 @@ func subAgentSummaryMentionsRisk(summary string) bool {
 		}
 	}
 	return false
+}
+
+func subAgentSummaryContainsRiskPhrase(lowerSummary, phrase string) bool {
+	lowerSummary = strings.ToLower(strings.TrimSpace(lowerSummary))
+	phrase = strings.ToLower(strings.TrimSpace(phrase))
+	if lowerSummary == "" || phrase == "" {
+		return false
+	}
+	start := 0
+	for {
+		idx := strings.Index(lowerSummary[start:], phrase)
+		if idx < 0 {
+			return false
+		}
+		absolute := start + idx
+		if subAgentSummaryPhraseHasBoundary(lowerSummary, phrase, absolute) {
+			return true
+		}
+		start = absolute + len(phrase)
+		if start >= len(lowerSummary) {
+			return false
+		}
+	}
 }
 
 func summarizeSubAgentVerificationCommandSummaryEvidence(modelSummary string, filesModified, filesCreated []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64) string {
@@ -4713,6 +4928,12 @@ func subAgentClaimedVerificationIncludesFreshCommandOutcome(claimed []subAgentCl
 	for _, cmd := range fresh {
 		freshCommands[normalizeSubAgentCommandForEvidence(cmd.Command)] = true
 	}
+	claimedCommands := make(map[string]subAgentClaimedVerificationCommand, len(claimed))
+	for _, command := range claimed {
+		if key := normalizeSubAgentCommandForEvidence(command.Command); key != "" {
+			claimedCommands[key] = command
+		}
+	}
 	includesFresh := false
 	for _, command := range claimed {
 		if freshCommands[normalizeSubAgentCommandForEvidence(command.Command)] {
@@ -4722,7 +4943,43 @@ func subAgentClaimedVerificationIncludesFreshCommandOutcome(claimed []subAgentCl
 			}
 		}
 	}
+	for _, cmd := range fresh {
+		covered, includesOutcome := subAgentFreshCompoundVerificationCoveredByClaimed(cmd.Command, claimedCommands)
+		if !covered {
+			continue
+		}
+		includesFresh = true
+		if includesOutcome {
+			return true, true
+		}
+	}
 	return includesFresh, false
+}
+
+func subAgentFreshCompoundVerificationCoveredByClaimed(command string, claimed map[string]subAgentClaimedVerificationCommand) (bool, bool) {
+	if len(claimed) == 0 || !subAgentCommandContainsReliableVerificationChainBoundary(command) {
+		return false, false
+	}
+	segments := shellCommandSegments(command)
+	if len(segments) < 2 {
+		return false, false
+	}
+	verificationSegments := 0
+	coveredSegments := 0
+	includesOutcome := false
+	for _, segment := range segments {
+		if !isSubAgentVerificationCommandSegment(segment) {
+			continue
+		}
+		verificationSegments++
+		claimedCommand, ok := claimed[normalizeSubAgentCommandFieldsForEvidence(segment)]
+		if !ok {
+			continue
+		}
+		coveredSegments++
+		includesOutcome = includesOutcome || claimedCommand.ClaimedPassed || claimedCommand.ClaimedFailed
+	}
+	return verificationSegments > 1 && coveredSegments == verificationSegments, includesOutcome
 }
 
 func summarizeSubAgentClaimedVerificationEvidence(modelSummary string, commands []CodingSubAgentCommandResult) string {
@@ -4748,6 +5005,9 @@ func collectSubAgentClaimedVerificationEvidence(modelSummary string, commands []
 	}
 	ran := make(map[string][]CodingSubAgentCommandResult, len(commands))
 	for _, cmd := range commands {
+		if !isSubAgentVerificationCommand(cmd.Command) {
+			continue
+		}
 		key := normalizeSubAgentCommandForEvidence(cmd.Command)
 		if key == "" {
 			continue
@@ -4759,6 +5019,9 @@ func collectSubAgentClaimedVerificationEvidence(modelSummary string, commands []
 	for _, command := range claimed {
 		audited := ran[normalizeSubAgentCommandForEvidence(command.Command)]
 		if len(audited) == 0 {
+			audited = subAgentClaimedVerificationCoveredByAuditedCompound(command.Command, commands)
+		}
+		if len(audited) == 0 {
 			missing = append(missing, command.Command)
 			continue
 		}
@@ -4767,6 +5030,48 @@ func collectSubAgentClaimedVerificationEvidence(modelSummary string, commands []
 		}
 	}
 	return missing, claimedPassedButFailed
+}
+
+func subAgentClaimedVerificationCoveredByAuditedCompound(claimed string, audited []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
+	claimedKey := normalizeSubAgentCommandForEvidence(claimed)
+	if claimedKey == "" {
+		return nil
+	}
+	var covered []CodingSubAgentCommandResult
+	for _, cmd := range audited {
+		if !subAgentCommandContainsReliableVerificationChainBoundary(cmd.Command) {
+			continue
+		}
+		segments := shellCommandSegments(cmd.Command)
+		if len(segments) < 2 {
+			continue
+		}
+		for _, segment := range segments {
+			if normalizeSubAgentCommandFieldsForEvidence(segment) == claimedKey {
+				covered = append(covered, cmd)
+				break
+			}
+		}
+	}
+	return covered
+}
+
+func subAgentCommandContainsReliableVerificationChainBoundary(command string) bool {
+	for _, field := range shellCommandFields(command) {
+		if normalizeShellCommandToken(field) == "&&" {
+			return true
+		}
+	}
+	return false
+}
+
+func subAgentCommandContainsShellBoundary(command string) bool {
+	for _, field := range shellCommandFields(command) {
+		if isShellCommandBoundary(normalizeShellCommandToken(field)) {
+			return true
+		}
+	}
+	return false
 }
 
 type subAgentClaimedVerificationCommand struct {
@@ -4816,13 +5121,23 @@ func subAgentVerificationLineCommandCandidates(line string) []subAgentClaimedVer
 		return nil
 	}
 	_, rawClaimedPassed, rawClaimedFailed := trimSubAgentClaimedCommandTail(candidate)
+	compoundCandidate, compoundClaimedPassed, compoundClaimedFailed := trimSubAgentClaimedCompoundCommandTail(candidate)
 	parts := splitSubAgentVerificationCommandCandidates(candidate)
 	if len(parts) == 0 {
 		parts = []string{candidate}
 	}
-	commands := make([]subAgentClaimedVerificationCommand, 0, len(parts))
+	commands := make([]subAgentClaimedVerificationCommand, 0, len(parts)+1)
 	lineClaimsPassed := claimedPassed || rawClaimedPassed
 	lineClaimsFailed := claimedFailed || rawClaimedFailed
+	compoundClaimsPassed := lineClaimsPassed || compoundClaimedPassed
+	compoundClaimsFailed := lineClaimsFailed || compoundClaimedFailed
+	if subAgentClaimedVerificationCandidateHasMultipleVerificationSegments(compoundCandidate) {
+		commands = append(commands, subAgentClaimedVerificationCommand{
+			Command:       compoundCandidate,
+			ClaimedPassed: compoundClaimsPassed,
+			ClaimedFailed: compoundClaimsFailed,
+		})
+	}
 	for _, part := range parts {
 		part, partClaimedPassed, partClaimedFailed := trimSubAgentClaimedCommandTail(part)
 		if !isSubAgentVerificationCommand(part) {
@@ -4845,6 +5160,38 @@ func subAgentVerificationLineCommandCandidates(line string) []subAgentClaimedVer
 		}
 	}
 	return commands
+}
+
+func subAgentClaimedVerificationCandidateHasMultipleVerificationSegments(candidate string) bool {
+	verificationSegments := 0
+	for _, segment := range shellCommandSegments(candidate) {
+		if isSubAgentVerificationCommandSegment(segment) {
+			verificationSegments++
+			if verificationSegments > 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func trimSubAgentClaimedCompoundCommandTail(candidate string) (string, bool, bool) {
+	candidate = strings.TrimSpace(candidate)
+	claimedPassed := false
+	claimedFailed := false
+	for _, sep := range []string{"。", "，", ",", " - ", " — ", " -> ", " => "} {
+		if idx := strings.Index(candidate, sep); idx >= 0 {
+			tail := candidate[idx+len(sep):]
+			if subAgentClaimTailClaimsPassed(tail) {
+				claimedPassed = true
+			}
+			if subAgentClaimTailClaimsFailed(tail) {
+				claimedFailed = true
+			}
+			candidate = candidate[:idx]
+		}
+	}
+	return trimSubAgentClaimedCommandOutcomeSuffix(candidate, claimedPassed, claimedFailed)
 }
 
 func subAgentVerificationLineCommandCandidate(line string) (string, bool, bool, bool) {
@@ -4958,6 +5305,10 @@ func trimSubAgentClaimedCommandTail(candidate string) (string, bool, bool) {
 			candidate = candidate[:idx]
 		}
 	}
+	return trimSubAgentClaimedCommandOutcomeSuffix(candidate, claimedPassed, claimedFailed)
+}
+
+func trimSubAgentClaimedCommandOutcomeSuffix(candidate string, claimedPassed, claimedFailed bool) (string, bool, bool) {
 	candidate = strings.TrimSpace(candidate)
 	lower := strings.ToLower(candidate)
 	for _, suffix := range []string{
@@ -5086,6 +5437,61 @@ func compactSubAgentClaimedCommandList(commands []string, maxItems int) string {
 
 func normalizeSubAgentCommandForEvidence(command string) string {
 	fields := shellCommandFields(strings.TrimSpace(command))
+	return normalizeSubAgentCommandFieldsForEvidence(fields)
+}
+
+func normalizeSubAgentCommandForFailureResolution(command string) string {
+	command = strings.TrimSpace(command)
+	segments := shellCommandSegments(command)
+	for i, segment := range segments {
+		if len(segments) > 1 && !subAgentPriorSegmentsAreShellWrappers(segments, i) {
+			continue
+		}
+		stripped := stripVerificationCommandPrefixes(segment)
+		if len(stripped) == 0 || !isSubAgentVerificationCommandSegment(stripped) {
+			continue
+		}
+		if fields := normalizeSubAgentCommandFieldsForEvidence(stripped); fields != "" {
+			return fields
+		}
+	}
+	fields := shellCommandFields(command)
+	return normalizeSubAgentCommandFieldsForEvidence(fields)
+}
+
+func subAgentPriorSegmentsAreShellWrappers(segments [][]string, index int) bool {
+	if index <= 0 {
+		return true
+	}
+	for _, segment := range segments[:index] {
+		if !subAgentSegmentIsShellWrapperPrefix(segment) {
+			return false
+		}
+	}
+	return true
+}
+
+func subAgentSegmentIsShellWrapperPrefix(segment []string) bool {
+	if len(segment) == 0 {
+		return true
+	}
+	if !isShellWrapperCommand(commandNameBase(segment[0])) {
+		return false
+	}
+	for _, arg := range segment[1:] {
+		arg = strings.ToLower(normalizeShellCommandToken(arg))
+		if arg == "" {
+			continue
+		}
+		if strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "/") {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func normalizeSubAgentCommandFieldsForEvidence(fields []string) string {
 	if len(fields) == 0 {
 		return ""
 	}
@@ -5137,7 +5543,7 @@ func subAgentSummaryReferencesOneAcceptanceCriterion(lowerSummary, criterion str
 	}
 	matches := 0
 	for _, token := range tokens {
-		if strings.Contains(lowerSummary, token) {
+		if subAgentSummaryContainsAcceptanceToken(lowerSummary, token) {
 			matches++
 		}
 	}
@@ -5146,6 +5552,42 @@ func subAgentSummaryReferencesOneAcceptanceCriterion(lowerSummary, criterion str
 		needed = len(tokens)
 	}
 	return matches >= needed
+}
+
+func subAgentSummaryContainsAcceptanceToken(lowerSummary, token string) bool {
+	lowerSummary = strings.ToLower(strings.TrimSpace(lowerSummary))
+	token = strings.ToLower(strings.TrimSpace(token))
+	if lowerSummary == "" || token == "" {
+		return false
+	}
+	if !subAgentAcceptanceTokenNeedsBoundary(token) {
+		return strings.Contains(lowerSummary, token)
+	}
+	start := 0
+	for {
+		idx := strings.Index(lowerSummary[start:], token)
+		if idx < 0 {
+			return false
+		}
+		absolute := start + idx
+		if subAgentSummaryPhraseHasBoundary(lowerSummary, token, absolute) {
+			return true
+		}
+		start = absolute + len(token)
+		if start >= len(lowerSummary) {
+			return false
+		}
+	}
+}
+
+func subAgentAcceptanceTokenNeedsBoundary(token string) bool {
+	for _, r := range token {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func subAgentSummaryReferencesAcceptanceIndex(lowerSummary string, index int) bool {
@@ -5172,11 +5614,36 @@ func subAgentSummaryReferencesAcceptanceIndex(lowerSummary string, index int) bo
 		)
 	}
 	for _, marker := range markers {
-		if strings.Contains(lowerSummary, marker) {
+		if subAgentSummaryContainsAcceptanceIndexMarker(lowerSummary, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+func subAgentSummaryContainsAcceptanceIndexMarker(lowerSummary, marker string) bool {
+	lowerSummary = strings.ToLower(strings.TrimSpace(lowerSummary))
+	marker = strings.ToLower(strings.TrimSpace(marker))
+	if lowerSummary == "" || marker == "" {
+		return false
+	}
+	start := 0
+	for {
+		idx := strings.Index(lowerSummary[start:], marker)
+		if idx < 0 {
+			return false
+		}
+		absolute := start + idx
+		after := absolute + len(marker)
+		if (absolute == 0 || !isASCIIAlphaNumeric(lowerSummary[absolute-1])) &&
+			(after >= len(lowerSummary) || !isASCIIAlphaNumeric(lowerSummary[after])) {
+			return true
+		}
+		start = after
+		if start >= len(lowerSummary) {
+			return false
+		}
+	}
 }
 
 func subAgentChineseIndex(index int) string {
@@ -5287,7 +5754,7 @@ func unresolvedFailedSubAgentDynamicTools(tools []CodingSubAgentDynamicToolResul
 			}
 			continue
 		}
-		if tool.Succeeded {
+		if tool.Succeeded && !subAgentDynamicToolSuccessLooksEmpty(tool) {
 			laterSucceeded[key] = true
 			continue
 		}
@@ -5304,6 +5771,10 @@ func unresolvedFailedSubAgentDynamicTools(tools []CodingSubAgentDynamicToolResul
 
 func normalizeSubAgentDynamicToolForEvidence(tool CodingSubAgentDynamicToolResult) string {
 	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(tool.Tool+" "+tool.Name)), " "))
+}
+
+func subAgentDynamicToolSuccessLooksEmpty(tool CodingSubAgentDynamicToolResult) bool {
+	return tool.Succeeded && subAgentDynamicToolInspectionOutputLooksEmpty(tool)
 }
 
 func summarizeFailedSubAgentDynamicToolWarning(tools []CodingSubAgentDynamicToolResult) string {
@@ -5426,9 +5897,9 @@ func filterGuardrailBlockedSubAgentCommands(commands []CodingSubAgentCommandResu
 	}
 	blocked := make(map[string]bool, len(guardrails))
 	for _, violation := range guardrails {
-		command := strings.TrimSpace(violation.Command)
-		if command != "" {
-			blocked[command] = true
+		key := subAgentGuardrailBlockedCommandKey(violation.Command)
+		if key != "" {
+			blocked[key] = true
 		}
 	}
 	if len(blocked) == 0 {
@@ -5436,11 +5907,22 @@ func filterGuardrailBlockedSubAgentCommands(commands []CodingSubAgentCommandResu
 	}
 	filtered := make([]CodingSubAgentCommandResult, 0, len(commands))
 	for _, command := range commands {
-		if !blocked[strings.TrimSpace(command.Command)] {
+		if !blocked[subAgentGuardrailBlockedCommandKey(command.Command)] {
 			filtered = append(filtered, command)
 		}
 	}
 	return filtered
+}
+
+func subAgentGuardrailBlockedCommandKey(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return ""
+	}
+	if key := normalizeSubAgentCommandForFailureResolution(command); key != "" {
+		return key
+	}
+	return command
 }
 
 func failedSubAgentCommands(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
@@ -5484,7 +5966,7 @@ func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []
 }
 
 func subAgentCommandFailureResolutionKey(cmd CodingSubAgentCommandResult) string {
-	key := normalizeSubAgentCommandForEvidence(cmd.Command)
+	key := normalizeSubAgentCommandForFailureResolution(cmd.Command)
 	if key == "" {
 		return ""
 	}
@@ -5500,7 +5982,18 @@ func normalizeSubAgentWorkingDirForEvidence(workingDir string) string {
 	if workingDir == "" {
 		return ""
 	}
-	return filepath.ToSlash(filepath.Clean(workingDir))
+	normalized := filepath.ToSlash(filepath.Clean(workingDir))
+	if subAgentWorkingDirLooksWindowsAbsolute(normalized) {
+		return strings.ToLower(normalized)
+	}
+	return normalized
+}
+
+func subAgentWorkingDirLooksWindowsAbsolute(path string) bool {
+	if strings.HasPrefix(path, "//") {
+		return true
+	}
+	return len(path) >= 3 && path[1] == ':' && path[2] == '/' && ((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z'))
 }
 
 func subAgentCommandSuccessLooksEmpty(cmd CodingSubAgentCommandResult) bool {
@@ -5786,7 +6279,13 @@ func suppressesVerificationFailure(normalizedCommand string) bool {
 			if sawVerification && token == "|" && i+1 < len(fields) {
 				return true
 			}
-			if sawVerification && (token == "&&" || token == "&") && i+1 < len(fields) {
+			if sawVerification && token == "&&" && i+1 < len(fields) {
+				nextSegment := commandSegmentFields(fields[i+1:])
+				if !isSubAgentVerificationCommandSegment(nextSegment) {
+					return true
+				}
+			}
+			if sawVerification && token == "&" && i+1 < len(fields) {
 				return true
 			}
 			if sawVerification && token == ";" && i+1 < len(fields) {
@@ -6052,7 +6551,7 @@ func isShellEnvAssignment(token string) bool {
 		return false
 	}
 	for i, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9' && i > 0) || r == '_' {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9' && i > 0) || r == '_' {
 			continue
 		}
 		return false
@@ -6186,7 +6685,8 @@ func uvRunsVerification(args []string) bool {
 		return true
 	}
 	if args[0] == "run" && len(args) > 1 {
-		return verificationRunnerCommandFromArgs(args[1:])
+		runArgs := args[1:]
+		return verificationRunnerCommandFromArgs(runArgs) || verificationScriptInvocationRunsVerification(runArgs)
 	}
 	return false
 }
@@ -6209,12 +6709,13 @@ func pythonProjectToolRunsVerification(cmd string, args []string) bool {
 			return true
 		}
 	case "rye":
-		if isVerificationScriptName(args[0]) {
+		if verificationScriptInvocationRunsVerification(args) {
 			return true
 		}
 	}
 	if args[0] == "run" && len(args) > 1 {
-		return verificationRunnerCommandFromArgs(args[1:]) || isVerificationScriptName(args[1])
+		runArgs := args[1:]
+		return verificationRunnerCommandFromArgs(runArgs) || verificationScriptInvocationRunsVerification(runArgs)
 	}
 	return false
 }
@@ -6223,11 +6724,12 @@ func bundleRunsVerification(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	if verificationRunnerCommandFromArgs(args) || isVerificationScriptName(args[0]) {
+	if verificationRunnerCommandFromArgs(args) || verificationScriptInvocationRunsVerification(args) {
 		return true
 	}
 	if args[0] == "exec" && len(args) > 1 {
-		return verificationRunnerCommandFromArgs(args[1:]) || isVerificationScriptName(args[1])
+		execArgs := args[1:]
+		return verificationRunnerCommandFromArgs(execArgs) || verificationScriptInvocationRunsVerification(execArgs)
 	}
 	return false
 }
@@ -6237,7 +6739,7 @@ func composerRunsVerification(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	if verificationRunnerCommandFromArgs(args) || isVerificationScriptName(args[0]) {
+	if verificationRunnerCommandFromArgs(args) || verificationScriptInvocationRunsVerification(args) {
 		return true
 	}
 	switch normalizeShellExecutableToken(args[0]) {
@@ -6246,7 +6748,7 @@ func composerRunsVerification(args []string) bool {
 			return false
 		}
 		scriptArgs := stripComposerOptions(args[1:])
-		return len(scriptArgs) > 0 && (isVerificationScriptName(scriptArgs[0]) || verificationRunnerCommandFromArgs(scriptArgs))
+		return verificationRunnerCommandFromArgs(scriptArgs) || verificationScriptInvocationRunsVerification(scriptArgs)
 	case "exec":
 		return len(args) > 1 && verificationRunnerCommandFromArgs(args[1:])
 	}
@@ -6308,6 +6810,10 @@ func isVerificationScriptName(name string) bool {
 		strings.HasPrefix(name, "lint:") ||
 		strings.HasPrefix(name, "typecheck:") ||
 		strings.HasPrefix(name, "type-check:")
+}
+
+func verificationScriptInvocationRunsVerification(args []string) bool {
+	return len(args) > 0 && isVerificationScriptName(args[0]) && !hasMutatingVerificationArg(args)
 }
 
 func isWatchVerificationScriptName(name string) bool {
@@ -8020,11 +8526,41 @@ func countExistingSubAgentModifiedFiles(filesModified, filesCreated []string) in
 func countSuccessfulSubAgentSearches(searches []CodingSubAgentSearchResult) int {
 	successfulSearches := 0
 	for _, s := range searches {
-		if s.Succeeded {
+		if s.Succeeded && !subAgentSearchSuccessLooksEmpty(s) {
 			successfulSearches++
 		}
 	}
 	return successfulSearches
+}
+
+func subAgentSearchSuccessLooksEmpty(search CodingSubAgentSearchResult) bool {
+	if !search.Succeeded {
+		return false
+	}
+	summary := strings.TrimSpace(search.Summary)
+	if summary == "" || summary == "(无输出)" {
+		return true
+	}
+	normalized := strings.ToLower(strings.Join(strings.Fields(summary), " "))
+	for _, phrase := range []string{
+		"no results",
+		"no results found",
+		"0 results",
+		"found 0 results",
+		"no matches",
+		"0 matches",
+		"found 0 matches",
+		"no files matched",
+		"no files found",
+		"matched 0 files",
+		"found 0 files",
+		"0 files found",
+	} {
+		if subAgentSummaryContainsEmptyVerificationPhrase(normalized, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func appendSubAgentExplorationSummary(summary string, status codingSubAgentQualityStatus, explorationSummary string) string {
@@ -8093,7 +8629,7 @@ func applySubAgentExplorationOutcome(status TaskExecStatus, errMsg string, explo
 }
 
 func applySubAgentGuardrailOutcome(status TaskExecStatus, errMsg string, violations []CodingSubAgentGuardrailViolation) (TaskExecStatus, string) {
-	if status != TaskExecPassed || len(violations) == 0 {
+	if len(violations) == 0 {
 		return status, errMsg
 	}
 	summary := fmt.Sprintf("%d guardrail block(s)", len(violations))
@@ -8104,7 +8640,23 @@ func applySubAgentGuardrailOutcome(status TaskExecStatus, errMsg string, violati
 			summary = fmt.Sprintf("%s: %s", summary, detail)
 		}
 	}
-	return TaskExecFailed, compactSubAgentErrorSummary(summary)
+	summary = compactSubAgentErrorSummary(summary)
+	if status != TaskExecPassed {
+		return status, appendSubAgentFailureDiagnostic(errMsg, summary)
+	}
+	return TaskExecFailed, summary
+}
+
+func appendSubAgentFailureDiagnostic(existing, addition string) string {
+	existing = strings.TrimSpace(existing)
+	addition = strings.TrimSpace(addition)
+	if existing == "" {
+		return compactSubAgentErrorSummary(addition)
+	}
+	if addition == "" || strings.Contains(existing, addition) {
+		return compactSubAgentErrorSummary(existing)
+	}
+	return compactSubAgentErrorSummary(existing + "; " + addition)
 }
 
 func firstNonEmptySubAgentString(values ...string) string {
@@ -8127,9 +8679,17 @@ func applySubAgentDiffOutcome(status TaskExecStatus, errMsg string, diffChecked 
 }
 
 func applySubAgentQualityOutcome(status TaskExecStatus, errMsg string, qualityStatus codingSubAgentQualityStatus, qualitySummary string, qualityIssueCount int) (TaskExecStatus, string) {
-	if status != TaskExecPassed || qualityStatus != codingSubAgentQualityFailed {
+	if qualityStatus != codingSubAgentQualityFailed {
 		return status, errMsg
 	}
+	qualitySummary = subAgentQualityFailureDiagnostic(qualitySummary, qualityIssueCount)
+	if status != TaskExecPassed {
+		return status, appendSubAgentFailureDiagnostic(errMsg, qualitySummary)
+	}
+	return TaskExecFailed, compactSubAgentErrorSummary(qualitySummary)
+}
+
+func subAgentQualityFailureDiagnostic(qualitySummary string, qualityIssueCount int) string {
 	qualitySummary = strings.TrimSpace(qualitySummary)
 	if qualitySummary == "" {
 		qualitySummary = "coding SubAgent quality audit failed"
@@ -8138,7 +8698,7 @@ func applySubAgentQualityOutcome(status TaskExecStatus, errMsg string, qualitySt
 	} else {
 		qualitySummary = "coding SubAgent quality audit failed: " + qualitySummary
 	}
-	return TaskExecFailed, compactSubAgentErrorSummary(qualitySummary)
+	return compactSubAgentErrorSummary(qualitySummary)
 }
 
 func firstLine(s string) string {
@@ -8147,6 +8707,41 @@ func firstLine(s string) string {
 		return strings.TrimSpace(s[:idx])
 	}
 	return s
+}
+
+func subAgentEventSummaryLine(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return ""
+	}
+	fallback := firstLine(summary)
+	for _, line := range strings.Split(summary, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || subAgentEventSummaryLineLooksLikeHeader(line) {
+			continue
+		}
+		return line
+	}
+	return fallback
+}
+
+func subAgentEventSummaryLineLooksLikeHeader(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return true
+	}
+	if strings.HasPrefix(line, "#") {
+		return true
+	}
+	trimmed := strings.TrimSpace(strings.TrimRight(line, ":："))
+	normalized := strings.ToLower(trimmed)
+	switch normalized {
+	case "summary", "audit", "quality audit", "quality summary", "verification summary", "exploration summary", "command summary", "guardrail summary",
+		"质量审计", "质量摘要", "验证摘要", "探索摘要", "命令摘要", "护栏摘要":
+		return true
+	default:
+		return false
+	}
 }
 
 func subAgentVerificationOutcomeStatus(status codingSubAgentQualityStatus) codingSubAgentQualityStatus {
@@ -8306,7 +8901,59 @@ func isCodingToolCommandStatusLine(line string) bool {
 		strings.HasPrefix(line, "command timed out") ||
 		strings.HasPrefix(line, "command cancelled") ||
 		line == "fail" ||
-		strings.HasPrefix(line, "fail\t")
+		strings.HasPrefix(line, "fail\t") ||
+		isCodingToolExitStatusOnlyLine(line)
+}
+
+func isCodingToolExitStatusOnlyLine(line string) bool {
+	line = strings.Trim(strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(line))), " "), ".")
+	for _, prefix := range []string{"error:", "error "} {
+		if strings.HasPrefix(line, prefix) {
+			line = strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			break
+		}
+	}
+	for _, prefix := range []string{"command failed:", "process failed:", "script failed:", "task failed:"} {
+		if strings.HasPrefix(line, prefix) {
+			line = strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			break
+		}
+	}
+	for _, exact := range []string{"command failed", "process failed", "script failed", "task failed"} {
+		if line == exact {
+			return true
+		}
+	}
+	for _, prefix := range []string{
+		"exit status ",
+		"exit code ",
+		"exited with code ",
+		"process exited with code ",
+		"process completed with exit code ",
+		"command exited with code ",
+		"command failed with exit code ",
+		"command failed with code ",
+		"script failed with exit code ",
+		"task failed with exit code ",
+	} {
+		if strings.HasPrefix(line, prefix) && codingToolExitStatusSuffixIsCode(strings.TrimSpace(strings.TrimPrefix(line, prefix))) {
+			return true
+		}
+	}
+	return false
+}
+
+func codingToolExitStatusSuffixIsCode(suffix string) bool {
+	suffix = strings.Trim(suffix, " .:()[]")
+	if suffix == "" {
+		return false
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func isLikelyCodingToolFailureDiagnostic(line string) bool {
@@ -8321,6 +8968,7 @@ func isLikelyCodingToolFailureDiagnostic(line string) bool {
 		"error:",
 		"error ",
 		"error[",
+		"errors",
 		"fatal:",
 		"panic:",
 		"fail:",
@@ -8367,15 +9015,17 @@ func isLikelyCodingToolFailureDiagnostic(line string) bool {
 func isNonFailureDiagnosticNoise(lower string) bool {
 	for _, marker := range []string{
 		"0 error",
+		"0 errors",
 		"no error",
 		"no errors",
 		"0 assertion",
+		"0 assertions",
 		"no assertion",
 		"no assertions",
 		"without error",
 		"without errors",
 	} {
-		if strings.Contains(lower, marker) {
+		if subAgentSummaryContainsEmptyVerificationPhrase(lower, marker) {
 			return true
 		}
 	}
@@ -8498,7 +9148,7 @@ func (c *codingSubAgentCallbacks) emitQualitySummaryEventWithAudit(outcome codin
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
 	event.Event = codingAgentEventKindQualitySummary.String()
 	event.Outcome = outcome.String()
-	event.Summary = truncateRunesForSubAgent(firstLine(summary), 240)
+	event.Summary = truncateRunesForSubAgent(subAgentEventSummaryLine(summary), 240)
 	event.Count = count
 	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
@@ -8519,7 +9169,7 @@ func (c *codingSubAgentCallbacks) emitExplorationSummaryEvent(status codingSubAg
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
 	event.Event = codingAgentEventKindExplorationSummary.String()
 	event.Outcome = statusText
-	event.Summary = truncateRunesForSubAgent(firstLine(summary), 240)
+	event.Summary = truncateRunesForSubAgent(subAgentEventSummaryLine(summary), 240)
 	event.Count = count
 	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
@@ -8541,7 +9191,7 @@ func (c *codingSubAgentCallbacks) emitGuardrailSummaryEvent(violations []CodingS
 			parts = append(parts, "category:"+strings.TrimSpace(v.Category.String()))
 		}
 		if strings.TrimSpace(v.Summary) != "" {
-			parts = append(parts, firstLine(v.Summary))
+			parts = append(parts, subAgentEventSummaryLine(v.Summary))
 		}
 		summary = strings.Join(nonEmptySubAgentStrings(parts), " | ")
 	}
@@ -8565,7 +9215,7 @@ func (c *codingSubAgentCallbacks) emitCommandSummaryEvent(commands []CodingSubAg
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
 	event.Event = codingAgentEventKindCommandSummary.String()
 	event.Outcome = outcome.String()
-	event.Summary = truncateRunesForSubAgent(firstLine(summary), 240)
+	event.Summary = truncateRunesForSubAgent(subAgentEventSummaryLine(summary), 240)
 	event.Count = len(commands)
 	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
@@ -8586,7 +9236,7 @@ func (c *codingSubAgentCallbacks) emitVerificationSummaryEvent(status codingSubA
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
 	event.Event = codingAgentEventKindVerificationSummary.String()
 	event.Outcome = statusText
-	event.Summary = truncateRunesForSubAgent(firstLine(summary), 240)
+	event.Summary = truncateRunesForSubAgent(subAgentEventSummaryLine(summary), 240)
 	event.Count = count
 	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
@@ -8634,9 +9284,10 @@ func appendCodingSubAgentPreflightChecklist(b *strings.Builder) {
 	b.WriteString("1. If project root has .codegraph/, locate relevant code with `codegraph explore` / `codegraph node`; otherwise use Glob/ripgrep/read_file.\n")
 	b.WriteString("2. State likely files and risk/impact.\n")
 	b.WriteString("3. Choose the minimal edit approach.\n")
-	b.WriteString("4. Run matching verification command(s): test/build/lint/typecheck.\n")
-	b.WriteString("5. If this is a retry, use retry context and avoid repeating the failed approach.\n")
-	b.WriteString("6. Before finalizing, make the final summary match audit evidence: name actual modified/created file paths, list only verification commands you really ran, map acceptance criteria when present, explain any scope expansion, and include remaining risk or say no known remaining risk.\n\n")
+	b.WriteString("4. If this is a retry, use retry context and avoid repeating the failed approach.\n")
+	b.WriteString("\n**Before finalizing**:\n")
+	b.WriteString("1. After the last edit, run matching verification command(s): test/build/lint/typecheck. Do not present pre-edit verification as final verification.\n")
+	b.WriteString("2. Make the final summary match audit evidence: name actual modified/created file paths, list only verification commands you really ran after editing, map acceptance criteria when present, explain any scope expansion, and include remaining risk or say no known remaining risk.\n\n")
 }
 
 func compactSubAgentTaskDescription(description string) string {
@@ -8663,6 +9314,10 @@ func compactSubAgentDynamicSelectionDescription(task *TaskItem) string {
 }
 
 func codingSubAgentDynamicSelectionText(task *TaskItem) string {
+	return codingSubAgentDynamicSelectionTextWithContext(task, "", "", nil)
+}
+
+func codingSubAgentDynamicSelectionTextWithContext(task *TaskItem, reqCtx, designCtx string, prevOutputs []string) string {
 	if task == nil {
 		return ""
 	}
@@ -8682,6 +9337,20 @@ func codingSubAgentDynamicSelectionText(task *TaskItem) string {
 	if len(task.AcceptanceCriteria) > 0 {
 		b.WriteString("Acceptance criteria:\n")
 		appendSubAgentBulletList(&b, uniqueSubAgentStrings(task.AcceptanceCriteria), codingSubAgentAcceptanceCriteriaMax, codingSubAgentPromptBulletMaxRunes)
+	}
+	if reqCtx = strings.TrimSpace(reqCtx); reqCtx != "" {
+		b.WriteString("Requirement context:\n")
+		b.WriteString(truncateRunesForSubAgent(reqCtx, codingSubAgentDynamicSelectionContextMaxRunes))
+		b.WriteString("\n")
+	}
+	if designCtx = strings.TrimSpace(designCtx); designCtx != "" {
+		b.WriteString("Design context:\n")
+		b.WriteString(truncateRunesForSubAgent(designCtx, codingSubAgentDynamicSelectionContextMaxRunes))
+		b.WriteString("\n")
+	}
+	if len(prevOutputs) > 0 {
+		b.WriteString("Previous task outputs:\n")
+		appendSubAgentBulletList(&b, prevOutputs, codingSubAgentDynamicSelectionPrevOutputsMax, codingSubAgentPromptBulletMaxRunes)
 	}
 	return truncateRunesForSubAgent(strings.TrimSpace(b.String()), codingSubAgentDynamicSelectionTextMaxRunes)
 }
@@ -8856,6 +9525,8 @@ const (
 	codingSubAgentDependencySummaryMax                = 20
 	codingSubAgentAcceptanceCriteriaMax               = 20
 	codingSubAgentPrevOutputsMax                      = 20
+	codingSubAgentDynamicSelectionPrevOutputsMax      = 5
+	codingSubAgentDynamicSelectionContextMaxRunes     = 240
 	codingSubAgentPromptBulletMaxRunes                = 160
 
 	// codingSubAgentPerTaskMaxIterations is the hard iteration cap for a
@@ -9086,6 +9757,8 @@ func applyCodingSubAgentToolHints(fn map[string]interface{}) {
 	case "bash":
 		appendCodingSubAgentToolDescription(fn, "Coding SubAgent bash is for read-only diagnostics and verification commands (test/build/lint/typecheck). Do not use bash to edit files, create/delete/move files, rewrite Git state, stage/commit/apply patches, or hide verifier failures with pipes/redirection/extra shell commands; use read_file/edit_file/edit_lines/write_file/git_diff instead.")
 	case "read_file":
+		setCodingSubAgentToolPropDescription(props, "lines", "Max lines to read (optional, default 200). Also accepts limit/num_lines/line_count.")
+		setCodingSubAgentToolPropDescription(props, "start_line", "Starting line number, 1-based (optional). Also accepts start/startLine.")
 		ensureCodingSubAgentToolIntegerProp(props, "offset", "Read the last N lines of the file. Use this after adaptive output says earlier content was skipped or when inspecting logs/tails.")
 	case "write_file":
 		setCodingSubAgentToolPropDescription(props, "content", "File content. No length limit; you can write complete scripts or documents in a single call. For very large files (>6000 chars), consider splitting into overwrite + append chunks.")

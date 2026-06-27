@@ -771,7 +771,12 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     useEffect(() => {
         const sessionId = String(state.sessionId || "").trim();
         const resumedExistingSessionId = String(existingSessionId || "").trim();
-        if (!resumedExistingSessionId && (participants?.length || 0) === 0) return;
+        // Allow history loading when:
+        // 1. We have an existingSessionId (tab reopened with cached session), OR
+        // 2. We have participants (group chat), OR
+        // 3. We have a sessionId from initSession() that was NOT explicitly skipped
+        //    (initSession may reuse a sticky session that already has history)
+        if (!resumedExistingSessionId && (participants?.length || 0) === 0 && !sessionId) return;
         if (skipHistoryLoadSessionIdsRef.current.has(sessionId)) return;
         if (!sessionId || loadedHistorySessionRef.current === sessionId || state.messages.length > 0) return;
         loadedHistorySessionRef.current = sessionId;
@@ -782,10 +787,16 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             .then((mod) => (mod as any).GroupDiscussionGetConsultationDetail?.(sessionId))
             .then((detail: VEHistoryDetail | undefined) => {
                 if (cancelled) return;
-                setHistoryLoadSucceededSessionId(sessionId);
-                if (!detail) return;
+                if (!detail) {
+                    setHistoryLoadSucceededSessionId("");
+                    return;
+                }
                 const history = veMessagesFromHistoryDetail(detail, veId, assistantDisplayName, localSpeakerName);
-                if (!history.length) return;
+                if (!history.length) {
+                    setHistoryLoadSucceededSessionId("");
+                    return;
+                }
+                setHistoryLoadSucceededSessionId(sessionId);
                 setState((prev) => {
                     if (prev.sessionId !== sessionId || prev.messages.length > 0) return prev;
                     return { ...prev, messages: history };
@@ -808,12 +819,19 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         if (resumedExistingSessionId && resumedExistingSessionId === sessionId) return;
         if ((initialMessages?.length || 0) > 0) return;
         if (state.messages.length > 0) return;
+        // If history loading has been initiated for this session (loadedHistorySessionRef
+        // is set synchronously before async fetch), wait for it to settle before showing
+        // the intro message. This prevents the intro from racing with history load.
+        if (loadedHistorySessionRef.current === sessionId && historyLoadSettledSessionId !== sessionId) return;
+        // If history was successfully loaded (even if messages were set by the history
+        // effect's setState), don't show the intro.
+        if (historyLoadSucceededSessionId === sessionId) return;
         const introMessage = buildLocalEmployeeIntroMessage(veId, veName, veSkillDescription, isZh);
         setState((prev) => {
             if (String(prev.sessionId || "").trim() !== sessionId || prev.messages.length > 0) return prev;
             return { ...prev, messages: [introMessage] };
         });
-    }, [existingSessionId, initialMessages, isZh, participants?.length, state.messages.length, state.sessionId, veId, veName, veSkillDescription]);
+    }, [existingSessionId, historyLoadSettledSessionId, historyLoadSucceededSessionId, initialMessages, isZh, participants?.length, state.messages.length, state.sessionId, veId, veName, veSkillDescription]);
 
 
     // Keep reconnectAttemptRef in sync with state resets (e.g. successful session init)

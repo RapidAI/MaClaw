@@ -3,6 +3,7 @@ package structureddata
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -145,6 +146,65 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	}
 }
 
+func TestUpsertAppInstallationNormalizesResultContractDeliveryObject(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	installed, err := svc.UpsertAppInstallation(context.Background(), principal, "sales.customer.console", UpsertAppInstallationInput{
+		AppID:  "sales.customer.console",
+		Name:   "Customer Console",
+		Kind:   "enterprise_normal_app",
+		Source: "hub",
+		Metadata: map[string]any{
+			"result_contract": map[string]any{
+				"schema":  "maclaw.app.result.v1",
+				"primary": "business_status",
+				"types":   []any{"business_status", "business_record", "content", "notification"},
+				"delivery": map[string]any{
+					"inline_content":  true,
+					"artifacts":       false,
+					"business_record": true,
+					"notifications":   true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation: %v", err)
+	}
+	contract, ok := installed.Metadata["result_contract"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected normalized result contract: %#v", installed.Metadata)
+	}
+	delivery, ok := contract["delivery"].(map[string]any)
+	if !ok || delivery["inlineContent"] != true || delivery["artifacts"] != false || delivery["businessRecord"] != true || delivery["notifications"] != true {
+		t.Fatalf("expected canonical delivery object: %#v", contract["delivery"])
+	}
+	if installed.Metadata["result_contract_delivery_inline_content"] != true || installed.Metadata["result_contract_delivery_artifacts"] != false || installed.Metadata["result_contract_delivery_business_record"] != true || installed.Metadata["result_contract_delivery_notifications"] != true {
+		t.Fatalf("expected delivery boolean summaries: %#v", installed.Metadata)
+	}
+	if modes := appInstallationStringList(installed.Metadata["result_contract_delivery_modes"]); len(modes) != 3 || modes[0] != "inline_content" || modes[1] != "business_record" || modes[2] != "notifications" {
+		t.Fatalf("expected enabled delivery modes summary: %#v", installed.Metadata["result_contract_delivery_modes"])
+	}
+
+	audit, err := svc.QueryAuditLogs(context.Background(), principal, QueryAuditLogsInput{Action: "app.installation_upsert", TargetType: "app_installation", TargetID: "sales.customer.console", Limit: 1})
+	if err != nil {
+		t.Fatalf("QueryAuditLogs: %v", err)
+	}
+	if len(audit) != 1 {
+		t.Fatalf("expected app installation audit log: %#v", audit)
+	}
+	metadata := audit[0].Metadata
+	if metadata["result_contract_delivery_inline_content"] != true || metadata["result_contract_delivery_business_record"] != true || metadata["result_contract_delivery_notifications"] != true {
+		t.Fatalf("expected audit delivery summaries: %#v", metadata)
+	}
+}
+
 func TestUpsertAppInstallationSynthesizesTestEvidenceFromSummaryMetadata(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -255,6 +315,198 @@ func TestUpsertAppInstallationSynthesizesTestEvidenceFromSummaryMetadata(t *test
 	capEvidence, ok := caps.AppInstallations[0].Metadata["test_evidence"].(map[string]any)
 	if !ok || capEvidence["run_id"] != "run-customer-summary" || caps.AppInstallations[0].Metadata["test_evidence_artifact_count"] != float64(1) {
 		t.Fatalf("expected capabilities to expose synthesized evidence and summaries: %#v", caps.AppInstallations[0].Metadata)
+	}
+}
+
+func TestUpsertAppInstallationPreservesFullEnterpriseApprovalTestEvidence(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	installed, err := svc.UpsertAppInstallation(context.Background(), principal, "expense.approval.full", UpsertAppInstallationInput{
+		AppID: "expense.approval.full",
+		Name:  "Expense Approval Full Evidence",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"governance": map[string]any{
+				"testEvidence": map[string]any{
+					"runId":                 "run-expense-full",
+					"verifiedAt":            "2026-06-27T10:30:00Z",
+					"definitionFingerprint": "sha256:expense-full",
+					"primaryResult":         "approval_result",
+					"resultPayload": map[string]any{
+						"approval_result": "approved",
+						"business_status": "finance_ready",
+					},
+					"outputs": []any{
+						map[string]any{"kind": "text", "title": "Decision", "text": "Approved by finance", "status": "ready"},
+						map[string]any{"kind": "business_record", "title": "Expense record", "data": map[string]any{"record_id": "expense-1001"}},
+					},
+					"artifacts": []any{
+						map[string]any{"id": "artifact-expense-1001", "name": "expense-approval.pdf", "uri": "artifact://expense/1001.pdf", "status": "ready"},
+					},
+					"approvalInstance": map[string]any{
+						"instanceId":                   "wf-expense-1001",
+						"approvalID":                   "approval-expense-1001",
+						"recordID":                     "expense-1001",
+						"datasetID":                    "expense_reports",
+						"objectRole":                   "expense_report",
+						"currentNode":                  "finance.archive",
+						"workflowSkillId":              "expense-approval-flow",
+						"workflowVersion":              "2.1.0",
+						"businessStatus":               "finance_ready",
+						"resultStatus":                 "approved",
+						"approvalInstanceViewVerified": true,
+						"resultPayload":                map[string]any{"approval_result": "approved", "amount": 1280},
+						"outputs":                      []any{map[string]any{"kind": "text", "title": "Approval note", "text": "Ready for payment"}},
+						"artifacts":                    []any{map[string]any{"id": "artifact-expense-1001", "name": "expense-approval.pdf", "status": "ready"}},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation full approval evidence: %v", err)
+	}
+	evidence, ok := installed.Metadata["test_evidence"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected normalized test evidence: %#v", installed.Metadata)
+	}
+	if evidence["run_id"] != "run-expense-full" || evidence["definition_fingerprint"] != "sha256:expense-full" || evidence["primary_result"] != "approval_result" {
+		t.Fatalf("expected normalized test evidence identity: %#v", evidence)
+	}
+	if outputs, ok := evidence["outputs"].([]any); !ok || len(outputs) != 2 {
+		t.Fatalf("expected full outputs to be preserved: %#v", evidence)
+	}
+	if artifacts, ok := evidence["artifacts"].([]any); !ok || len(artifacts) != 1 {
+		t.Fatalf("expected full artifacts to be preserved: %#v", evidence)
+	}
+	approval, ok := evidence["approval_instance"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected full approval instance to be preserved: %#v", evidence)
+	}
+	if approval["instanceId"] != "wf-expense-1001" || approval["approvalID"] != "approval-expense-1001" || approval["workflowSkillId"] != "expense-approval-flow" || approval["businessStatus"] != "finance_ready" || approval["resultStatus"] != "approved" {
+		t.Fatalf("expected approval instance identity and statuses to roundtrip: %#v", approval)
+	}
+	if payload, ok := approval["resultPayload"].(map[string]any); !ok || payload["approval_result"] != "approved" || payload["amount"] != float64(1280) {
+		t.Fatalf("expected approval instance result payload to roundtrip: %#v", approval)
+	}
+	if outputs, ok := approval["outputs"].([]any); !ok || len(outputs) != 1 {
+		t.Fatalf("expected approval instance outputs to roundtrip: %#v", approval)
+	}
+	if artifacts, ok := approval["artifacts"].([]any); !ok || len(artifacts) != 1 {
+		t.Fatalf("expected approval instance artifacts to roundtrip: %#v", approval)
+	}
+	if !appInstallationNumberEquals(installed.Metadata["test_evidence_output_count"], 2) || !appInstallationNumberEquals(installed.Metadata["test_evidence_artifact_count"], 1) || installed.Metadata["test_evidence_approval_id"] != "approval-expense-1001" || installed.Metadata["test_evidence_record_id"] != "expense-1001" || installed.Metadata["test_evidence_approval_status"] != "approved" {
+		t.Fatalf("expected summaries to be derived from full evidence: %#v", installed.Metadata)
+	}
+	caps, err := svc.Capabilities(context.Background(), principal)
+	if err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+	if len(caps.AppInstallations) != 1 {
+		t.Fatalf("expected capabilities app installation: %#v", caps.AppInstallations)
+	}
+	capEvidence, ok := caps.AppInstallations[0].Metadata["test_evidence"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected capabilities to expose full test evidence: %#v", caps.AppInstallations[0].Metadata)
+	}
+	capApproval, ok := capEvidence["approval_instance"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected capabilities approval instance: %#v", capEvidence)
+	}
+	if _, ok := capApproval["resultPayload"].(map[string]any); !ok {
+		t.Fatalf("expected capabilities approval instance result payload to remain nested: %#v", capApproval)
+	}
+	if outputs, ok := capEvidence["outputs"].([]any); !ok || len(outputs) != 2 {
+		t.Fatalf("expected capabilities full outputs to remain available: %#v", capEvidence)
+	}
+	for _, tc := range []struct {
+		name  string
+		query QueryAppInstallationsInput
+	}{
+		{name: "workflow skill", query: QueryAppInstallationsInput{WorkflowSkillID: "expense-approval-flow"}},
+		{name: "workflow node", query: QueryAppInstallationsInput{WorkflowNode: "finance.archive"}},
+		{name: "approval status", query: QueryAppInstallationsInput{ApprovalStatus: "approved"}},
+		{name: "approval decision", query: QueryAppInstallationsInput{ApprovalDecision: "approved"}},
+		{name: "dataset", query: QueryAppInstallationsInput{DatasetID: "expense_reports"}},
+		{name: "object role", query: QueryAppInstallationsInput{ObjectRole: "expense_report"}},
+		{name: "record", query: QueryAppInstallationsInput{RecordID: "expense-1001"}},
+		{name: "approval id", query: QueryAppInstallationsInput{ApprovalID: "approval-expense-1001"}},
+		{name: "workflow instance", query: QueryAppInstallationsInput{WorkflowInstanceID: "wf-expense-1001"}},
+		{name: "result type", query: QueryAppInstallationsInput{ResultType: "approval_result"}},
+	} {
+		matches, err := svc.ListAppInstallations(context.Background(), principal, tc.query)
+		if err != nil {
+			t.Fatalf("ListAppInstallations by %s: %v", tc.name, err)
+		}
+		if len(matches) != 1 || matches[0].AppID != "expense.approval.full" {
+			t.Fatalf("expected %s filter to locate full approval evidence app: %#v", tc.name, matches)
+		}
+	}
+}
+
+func TestUpsertAppInstallationNormalizesTopLevelDependencyVerification(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	installed, err := svc.UpsertAppInstallation(context.Background(), principal, "expense.ready", UpsertAppInstallationInput{
+		AppID: "expense.ready",
+		Name:  "Ready Expense Approval",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"dependencyVerification": map[string]any{
+				"schema":                "maclaw.app.install_plan.v1",
+				"verifiedAt":            "2026-06-27T09:00:00Z",
+				"dependencyCount":       1,
+				"hasMissingRequired":    false,
+				"hasBlockingDependency": false,
+				"dependencies": []any{
+					map[string]any{"id": "expense-workflow", "kind": "workflow_skill", "required": true, "installed": true, "health": "ready", "action": "skip", "app_ids": []any{"expense.ready"}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation dependency verification: %v", err)
+	}
+	verification, ok := installed.Metadata["dependency_verification"].(map[string]any)
+	if !ok || verification["schema"] != "maclaw.app.install_plan.v1" || verification["verified_at"] != "2026-06-27T09:00:00Z" || verification["has_blocking_dependency"] != false {
+		t.Fatalf("expected normalized top-level dependency verification: %#v", installed.Metadata)
+	}
+	if _, ok := installed.Metadata["dependencyVerification"]; ok {
+		t.Fatalf("camelCase dependencyVerification should be normalized away: %#v", installed.Metadata)
+	}
+	dependencies, ok := verification["dependencies"].([]any)
+	if !ok || len(dependencies) != 1 {
+		t.Fatalf("expected dependency verification dependencies to roundtrip: %#v", verification)
+	}
+	dependency, ok := dependencies[0].(map[string]any)
+	if !ok || dependency["id"] != "expense-workflow" || dependency["health"] != "ready" {
+		t.Fatalf("expected dependency verification dependencies to roundtrip: %#v", verification)
+	}
+	if installed.Metadata["test_evidence_dependency_verified_at"] != "2026-06-27T09:00:00Z" || installed.Metadata["test_evidence_dependency_count"] != float64(1) || installed.Metadata["test_evidence_dependency_blocking"] != false {
+		t.Fatalf("expected dependency verification summaries: %#v", installed.Metadata)
+	}
+	caps, err := svc.Capabilities(context.Background(), principal)
+	if err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+	if len(caps.AppInstallations) != 1 {
+		t.Fatalf("expected capabilities app installation: %#v", caps.AppInstallations)
+	}
+	capVerification, ok := caps.AppInstallations[0].Metadata["dependency_verification"].(map[string]any)
+	if !ok || capVerification["verified_at"] != "2026-06-27T09:00:00Z" {
+		t.Fatalf("expected capabilities to expose normalized dependency verification: %#v", caps.AppInstallations[0].Metadata)
 	}
 }
 
@@ -570,6 +822,137 @@ func TestListAppInstallationsFiltersByApprovalResultMetadata(t *testing.T) {
 	}
 }
 
+func TestUpsertAppInstallationPromotesNestedApprovalInstanceResultPackage(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	app, err := svc.UpsertAppInstallation(context.Background(), principal, "expense.attention", UpsertAppInstallationInput{
+		AppID: "expense.attention",
+		Name:  "Expense Attention",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"test_evidence": map[string]any{
+				"run_id": "run-attention-1",
+				"approval_instance": map[string]any{
+					"workflow_instance_id":            "wf-attention-1",
+					"approval_id":                     "approval-attention-1",
+					"record_id":                       "expense-attention-1",
+					"status":                          "attention",
+					"current_node":                    "expense.attention",
+					"workflow_skill_id":               "expense-workflow",
+					"approval_instance_view_verified": true,
+					"result_payload": map[string]any{
+						"approval_result":    "attention",
+						"business_status":    "workflow_error",
+						"result_status":      "workflow_error",
+						"text":               "policy engine failed",
+						"workflow_lifecycle": "error",
+					},
+					"outputs": []any{
+						map[string]any{"kind": "document", "title": "Attention report", "status": "ready"},
+					},
+					"artifacts": []any{
+						map[string]any{"id": "attention-log", "name": "attention-log.txt", "uri": "artifact://attention-log"},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation: %v", err)
+	}
+	evidence, ok := app.Metadata["test_evidence"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata missing normalized test evidence: %#v", app.Metadata)
+	}
+	payload, ok := evidence["result_payload"].(map[string]any)
+	if !ok || payload["approval_result"] != "attention" || payload["workflow_lifecycle"] != "error" {
+		t.Fatalf("nested approval result payload was not promoted: %#v", evidence)
+	}
+	if app.Metadata["test_evidence_result_payload"] == nil || !appInstallationNumberEquals(app.Metadata["test_evidence_output_count"], 1) || !appInstallationNumberEquals(app.Metadata["test_evidence_artifact_count"], 1) {
+		t.Fatalf("metadata missing promoted result package summary: %#v", app.Metadata)
+	}
+	outputs, ok := evidence["outputs"].([]any)
+	if !ok || len(outputs) != 1 {
+		t.Fatalf("nested approval outputs were not promoted: %#v", evidence)
+	}
+	artifacts, ok := evidence["artifacts"].([]any)
+	if !ok || len(artifacts) != 1 {
+		t.Fatalf("nested approval artifacts were not promoted: %#v", evidence)
+	}
+
+	byResultType, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{ResultType: "document"})
+	if err != nil {
+		t.Fatalf("ListAppInstallations by result type: %v", err)
+	}
+	if len(byResultType) != 1 || byResultType[0].AppID != "expense.attention" {
+		t.Fatalf("expected promoted nested outputs to support result_type=document, got %#v", byResultType)
+	}
+}
+
+func TestListAppInstallationsFiltersLegacyNestedApprovalResultPackage(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "legacy.attention", UpsertAppInstallationInput{
+		AppID: "legacy.attention",
+		Name:  "Legacy Attention",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"test_evidence_approval_instance": map[string]any{
+				"workflow_instance_id": "legacy-wf-1",
+				"approval_id":          "legacy-approval-1",
+				"record_id":            "legacy-record-1",
+				"status":               "attention",
+				"result_payload": map[string]any{
+					"approval_result":    "attention",
+					"business_status":    "workflow_error",
+					"workflow_lifecycle": "error",
+				},
+				"outputs": []any{
+					map[string]any{"kind": "legacy_attention_document", "title": "Legacy attention report"},
+				},
+				"artifacts": []any{
+					map[string]any{"kind": "legacy_log", "name": "legacy-attention.log"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation legacy: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		in   QueryAppInstallationsInput
+	}{
+		{name: "nested output result type", in: QueryAppInstallationsInput{ResultType: "legacy_attention_document"}},
+		{name: "nested artifact result type", in: QueryAppInstallationsInput{ResultType: "legacy_log"}},
+		{name: "nested approval decision", in: QueryAppInstallationsInput{ApprovalDecision: "attention"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			items, err := svc.ListAppInstallations(context.Background(), principal, tc.in)
+			if err != nil {
+				t.Fatalf("ListAppInstallations: %v", err)
+			}
+			if len(items) != 1 || items[0].AppID != "legacy.attention" {
+				t.Fatalf("expected legacy.attention for %s, got %#v", tc.name, items)
+			}
+		})
+	}
+}
+
 func appInstallationNumberEquals(value any, expected float64) bool {
 	switch typed := value.(type) {
 	case int:
@@ -619,6 +1002,10 @@ func TestUpsertAppInstallationNormalizesApprovalWorkflowContract(t *testing.T) {
 	statusMapping, ok := contract["statusMapping"].(map[string]any)
 	if !ok || statusMapping["requiresInput"] != "requires_input" {
 		t.Fatalf("expected normalized workflow contract status mapping: %#v", contract)
+	}
+	summaryStatusMapping, ok := installed.Metadata["workflow_contract_status_mapping"].(map[string]any)
+	if !ok || summaryStatusMapping["pending"] != "approval_pending" || summaryStatusMapping["requiresInput"] != "requires_input" {
+		t.Fatalf("expected workflow contract status mapping summary: %#v", installed.Metadata)
 	}
 	if installed.Metadata["workflow_contract_schema"] != "maclaw.app.workflow_contract.v1" || installed.Metadata["workflow_contract_skill_id"] != "expense-flow" || installed.Metadata["workflow_contract_version"] != "2.0.0" || installed.Metadata["workflow_contract_object_role"] != "expense_report" {
 		t.Fatalf("expected workflow contract summaries: %#v", installed.Metadata)
@@ -686,11 +1073,237 @@ func TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence(t *testing.T) {
 		"test_evidence_record_id",
 		"test_evidence_approval_status",
 		"test_evidence_approval_view_verified",
+		"dependency_verification",
+		"test_evidence_test_protocol",
 		"test_evidence_dependency_count",
 		"test_evidence_result_coverage_ok",
+		"result_contract_delivery",
+		"result_contract_delivery_modes",
+		"result_contract_delivery_inline_content",
+		"result_contract_delivery_artifacts",
+		"result_contract_delivery_business_record",
+		"result_contract_delivery_notifications",
+		"version_snapshot",
+		"workflow_contract",
+		"workflow_contract_required_inputs",
+		"workflow_contract_decision_outputs",
+		"workflow_contract_status_mapping",
 	} {
 		if _, ok := metadata[key]; !ok {
 			t.Fatalf("expected OpenAPI app installation metadata schema to document %s: %#v", key, metadata)
+		}
+	}
+	for _, key := range []string{"test_evidence_outputs", "test_evidence_artifacts", "test_evidence_result_payload"} {
+		field, ok := metadata[key].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected OpenAPI schema object for %s: %#v", key, metadata[key])
+		}
+		description, _ := field["description"].(string)
+		if !strings.Contains(description, "promoted from approval_instance") {
+			t.Fatalf("expected %s description to document approval_instance promotion, got %q", key, description)
+		}
+	}
+	testProtocol, ok := metadata["test_evidence_test_protocol"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected test_evidence_test_protocol schema object: %#v", metadata["test_evidence_test_protocol"])
+	}
+	if description, _ := testProtocol["description"].(string); !strings.Contains(description, "App Studio test protocol") {
+		t.Fatalf("expected test_evidence_test_protocol description to document App Studio protocol, got %q", description)
+	}
+	testProtocolProperties, ok := testProtocol["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected test_evidence_test_protocol schema properties: %#v", testProtocol)
+	}
+	for _, key := range []string{"schema", "fingerprint", "sample_input", "expected_output", "required_roles", "required_scopes", "risk_level"} {
+		if _, ok := testProtocolProperties[key]; !ok {
+			t.Fatalf("expected test_evidence_test_protocol schema to document %s: %#v", key, testProtocolProperties)
+		}
+	}
+	resultContract, ok := metadata["result_contract"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected result_contract schema object: %#v", metadata["result_contract"])
+	}
+	if description, _ := resultContract["description"].(string); !strings.Contains(description, "output/result contract") {
+		t.Fatalf("expected result_contract description to document output/result contract, got %q", description)
+	}
+	resultContractProperties, ok := resultContract["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected result_contract schema properties: %#v", resultContract)
+	}
+	for _, key := range []string{"schema", "primary", "types", "output_modes", "approval_decisions", "delivery"} {
+		if _, ok := resultContractProperties[key]; !ok {
+			t.Fatalf("expected result_contract schema to document %s: %#v", key, resultContractProperties)
+		}
+	}
+	resultDelivery, ok := resultContractProperties["delivery"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected result_contract.delivery schema object: %#v", resultContractProperties["delivery"])
+	}
+	resultDeliveryProperties, ok := resultDelivery["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected result_contract.delivery properties: %#v", resultDelivery)
+	}
+	for _, key := range []string{"inlineContent", "artifacts", "businessRecord", "notifications"} {
+		if _, ok := resultDeliveryProperties[key]; !ok {
+			t.Fatalf("expected result_contract.delivery schema to document %s: %#v", key, resultDeliveryProperties)
+		}
+	}
+	versionSnapshot, ok := metadata["version_snapshot"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected version_snapshot schema object: %#v", metadata["version_snapshot"])
+	}
+	if description, _ := versionSnapshot["description"].(string); !strings.Contains(description, "dependency version snapshot") {
+		t.Fatalf("expected version_snapshot description to document dependency version snapshot, got %q", description)
+	}
+	versionSnapshotProperties, ok := versionSnapshot["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected version_snapshot schema properties: %#v", versionSnapshot)
+	}
+	for _, key := range []string{"app_entry_version", "app_skill", "workflow_skills", "approval_bindings"} {
+		if _, ok := versionSnapshotProperties[key]; !ok {
+			t.Fatalf("expected version_snapshot schema to document %s: %#v", key, versionSnapshotProperties)
+		}
+	}
+	appSkill, ok := versionSnapshotProperties["app_skill"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected version_snapshot.app_skill schema object: %#v", versionSnapshotProperties["app_skill"])
+	}
+	appSkillProperties, ok := appSkill["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected version_snapshot.app_skill properties: %#v", appSkill)
+	}
+	for _, key := range []string{"id", "version", "kind", "source"} {
+		if _, ok := appSkillProperties[key]; !ok {
+			t.Fatalf("expected version_snapshot app skill schema to document %s: %#v", key, appSkillProperties)
+		}
+	}
+	approvalBindings, ok := versionSnapshotProperties["approval_bindings"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected version_snapshot.approval_bindings schema object: %#v", versionSnapshotProperties["approval_bindings"])
+	}
+	approvalBindingItems, ok := approvalBindings["items"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected version_snapshot.approval_bindings item schema: %#v", approvalBindings)
+	}
+	approvalBindingProperties, ok := approvalBindingItems["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected version_snapshot approval binding item properties: %#v", approvalBindingItems)
+	}
+	for _, key := range []string{"event", "object_role", "workflow_skill_id", "workflow_version"} {
+		if _, ok := approvalBindingProperties[key]; !ok {
+			t.Fatalf("expected version_snapshot approval binding schema to document %s: %#v", key, approvalBindingProperties)
+		}
+	}
+	workflowContract, ok := metadata["workflow_contract"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected workflow_contract schema object: %#v", metadata["workflow_contract"])
+	}
+	if description, _ := workflowContract["description"].(string); !strings.Contains(description, "Approval workflow Skill contract") {
+		t.Fatalf("expected workflow_contract description to document approval workflow Skill contract, got %q", description)
+	}
+	workflowContractProperties, ok := workflowContract["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected workflow_contract schema properties: %#v", workflowContract)
+	}
+	for _, key := range []string{"schema", "workflowSkillId", "workflowVersion", "objectRole", "requiredInputs", "decisionOutputs", "statusMapping"} {
+		if _, ok := workflowContractProperties[key]; !ok {
+			t.Fatalf("expected workflow_contract schema to document %s: %#v", key, workflowContractProperties)
+		}
+	}
+	workflowContractStatusMapping, ok := workflowContractProperties["statusMapping"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected workflow_contract.statusMapping schema object: %#v", workflowContractProperties["statusMapping"])
+	}
+	workflowContractStatusMappingProperties, ok := workflowContractStatusMapping["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected workflow_contract.statusMapping properties: %#v", workflowContractStatusMapping)
+	}
+	for _, key := range []string{"pending", "approved", "rejected", "attention", "requiresInput"} {
+		if _, ok := workflowContractStatusMappingProperties[key]; !ok {
+			t.Fatalf("expected workflow_contract.statusMapping schema to document %s: %#v", key, workflowContractStatusMappingProperties)
+		}
+	}
+	workspaceLayout, ok := metadata["workspace_layout"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected workspace_layout schema object: %#v", metadata["workspace_layout"])
+	}
+	if description, _ := workspaceLayout["description"].(string); !strings.Contains(description, "workspace_layout.regions") {
+		t.Fatalf("expected workspace_layout description to document preserved regions, got %q", description)
+	}
+	workspaceRegionIDs, ok := metadata["workspace_layout_region_ids"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected workspace_layout_region_ids schema object: %#v", metadata["workspace_layout_region_ids"])
+	}
+	if description, _ := workspaceRegionIDs["description"].(string); !strings.Contains(description, "workspace_layout.regions") {
+		t.Fatalf("expected workspace_layout_region_ids description to document preserved regions, got %q", description)
+	}
+	workflowMapping, ok := metadata["workflow_mapping"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected workflow_mapping schema object: %#v", metadata["workflow_mapping"])
+	}
+	if description, _ := workflowMapping["description"].(string); !strings.Contains(description, "App Studio workflow_mapping") {
+		t.Fatalf("expected workflow_mapping description to document App Studio mapping, got %q", description)
+	}
+	workflowMappingProperties, ok := workflowMapping["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected workflow_mapping schema properties: %#v", workflowMapping)
+	}
+	for _, key := range []string{"schema", "submitNode", "approvalNode", "resultNode", "attentionNode", "statusMapping"} {
+		if _, ok := workflowMappingProperties[key]; !ok {
+			t.Fatalf("expected workflow_mapping schema to document %s: %#v", key, workflowMappingProperties)
+		}
+	}
+	statusMapping, ok := workflowMappingProperties["statusMapping"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected workflow_mapping.statusMapping schema object: %#v", workflowMappingProperties["statusMapping"])
+	}
+	statusMappingProperties, ok := statusMapping["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected workflow_mapping.statusMapping properties: %#v", statusMapping)
+	}
+	for _, key := range []string{"pending", "approved", "rejected", "attention", "requiresInput"} {
+		if _, ok := statusMappingProperties[key]; !ok {
+			t.Fatalf("expected workflow_mapping.statusMapping schema to document %s: %#v", key, statusMappingProperties)
+		}
+	}
+	dependencyVerification, ok := metadata["dependency_verification"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected dependency_verification schema object: %#v", metadata["dependency_verification"])
+	}
+	dependencyVerificationProperties, ok := dependencyVerification["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected dependency_verification schema properties: %#v", dependencyVerification)
+	}
+	for _, key := range []string{
+		"verified_at",
+		"dependencies",
+		"dependency_count",
+		"has_missing_required",
+		"has_blocking_dependency",
+		"has_governance_review_issue",
+		"governance_review_issue_count",
+		"has_workflow_contract_issue",
+		"workflow_contract_issue_count",
+	} {
+		if _, ok := dependencyVerificationProperties[key]; !ok {
+			t.Fatalf("expected dependency_verification schema to document %s: %#v", key, dependencyVerificationProperties)
+		}
+	}
+	dependencies, ok := dependencyVerificationProperties["dependencies"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected dependency_verification.dependencies schema object: %#v", dependencyVerificationProperties["dependencies"])
+	}
+	dependencyItems, ok := dependencies["items"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected dependency_verification.dependencies item schema: %#v", dependencies)
+	}
+	dependencyProperties, ok := dependencyItems["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected dependency_verification dependency item properties: %#v", dependencyItems)
+	}
+	for _, key := range []string{"id", "version", "kind", "source", "required", "installed", "health", "action", "app_ids", "installed_status", "message"} {
+		if _, ok := dependencyProperties[key]; !ok {
+			t.Fatalf("expected dependency item schema to document %s: %#v", key, dependencyProperties)
 		}
 	}
 }

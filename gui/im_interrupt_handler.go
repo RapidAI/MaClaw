@@ -122,17 +122,91 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 		}
 	}
 
+	// Correction detection: if the new message is a near-identical restatement
+	// of the original message that started the active loop (high character overlap
+	// but not identical), the user is correcting/replacing their previous input,
+	// not supplementing it. Override to Replace.
+	//
+	// This uses character-level edit distance ratio, NOT embedding cosine.
+	// Embedding measures semantic similarity (high for both corrections AND
+	// legitimate supplements on the same topic). Edit distance measures
+	// structural identity — a correction shares 80%+ of the same characters
+	// with only a few words changed. A legitimate supplement about the same
+	// topic has entirely different character content despite high semantic overlap.
+	//
+	// Guards against false positives:
+	//   - Identical messages are skipped (no correction needed)
+	//   - Length ratio > 2:1 is skipped (likely supplement/expansion, not correction)
+	//   - Very short messages (< 6 runes) are skipped (insufficient signal)
+	var correctionDetected bool
+	if tracker != nil {
+		originalText := tracker.Buffer().TaskDesc()
+		origRunes := []rune(strings.TrimSpace(originalText))
+		msgRunes := []rune(messageText)
+		if len(origRunes) >= 6 && len(msgRunes) >= 6 && originalText != messageText {
+			// Length ratio guard: if one message is more than 2x the other,
+			// it's an expansion/supplement, not a correction.
+			lenRatio := float64(len(origRunes)) / float64(len(msgRunes))
+			if lenRatio < 1.0 {
+				lenRatio = 1.0 / lenRatio
+			}
+			if lenRatio <= 2.0 {
+				ratio := progress.CharOverlapRatio(originalText, messageText)
+				// A correction has high overlap but is NOT identical.
+				// ratio == 1.0 means the messages are the same after whitespace
+				// normalization — not a correction, likely a duplicate send.
+				if ratio >= 0.70 && ratio < 1.0 {
+					correctionDetected = true
+					log.Printf("[interrupt] correction detected: user=%s overlap=%.2f orig_len=%d new_len=%d",
+						userID, ratio, len(origRunes), len(msgRunes))
+				}
+			}
+		}
+	}
+
 	decision := progress.Schedule(progress.ScheduleInput{
 		Relevance:   relevance,
 		DomainMatch: domainMatch,
 		Structure:   structure,
 	})
 
+	// Correction override: when the scheduler would merge but we detected a
+	// correction, cancel the old loop and let the message through as a new
+	// request. Unlike a normal Replace (which consumes the message as a cancel
+	// command), correction Replace must NOT consume the message — the corrected
+	// text IS the new task.
+	if correctionDetected && decision.Action == progress.ActionMerge {
+		decision = progress.ScheduleDecision{
+			Action:     progress.ActionReplace,
+			Confidence: 0.85,
+			Reason:     "correction override: near-identical restatement of original message",
+		}
+	}
+
 	log.Printf("[interrupt] user=%s msg_len=%d action=%s conf=%.2f domain=%v reason=%s",
 		userID, len([]rune(messageText)), decision.Action, decision.Confidence, domainMatch, decision.Reason)
 
 	switch decision.Action {
 	case progress.ActionReplace:
+		// Correction-triggered Replace: cancel the old loop, but do NOT
+		// consume the message. Return Handled=false so the message re-enters
+		// normal processing as a fresh request (waits for session mutex,
+		// starts a new loop with the corrected text).
+		if correctionDetected {
+			_, err := ih.handler.CancelSessionForUser(userID)
+			if err != nil {
+				log.Printf("[interrupt] correction CancelSessionForUser error: %v", err)
+				return progress.InterruptResult{}
+			}
+			return progress.InterruptResult{
+				Handled: false, // message NOT consumed — it becomes the new task
+				Queued:  false, // not explicitly queued, just falls through
+				Action:  progress.ActionReplace,
+				// No Reply — the corrected message will be processed as a new
+				// request; user sees its response, not a cancel notification.
+			}
+		}
+
 		// Low-confidence Replace (e.g. negation detected but could be a
 		// modification like "帮我把那个订单取消了") — don't execute immediately.
 		// Return PendingConfirm so the gateway holds the message and asks

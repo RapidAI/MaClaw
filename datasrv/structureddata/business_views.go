@@ -321,6 +321,7 @@ func (s *Service) QueryBusinessView(ctx context.Context, p Principal, viewID str
 			result.NextBeforeID = records[len(records)-1].ID
 		}
 	}
+	applyBusinessViewResultPackage(result)
 	return result, nil
 }
 

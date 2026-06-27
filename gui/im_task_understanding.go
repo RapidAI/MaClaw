@@ -92,8 +92,7 @@ func (h *IMMessageHandler) understandTaskWithLLM(userID, text string, intent tas
 
 	// Build user message with context.
 	// Use the current project path (if any) to give the LLM context about
-	// the user's working environment. This is different from the confirmation
-	// panel's "默认工作目录" which uses corelib.EffectiveWorkspaceDir().
+	// the user's working environment.
 	projectPath := ""
 	if h.app != nil {
 		projectPath = strings.TrimSpace(h.getCurrentProjectPath())
@@ -234,7 +233,7 @@ func formatTaskUnderstandingSummary(r *taskUnderstandingResult, projectPath stri
 
 	// Project path
 	if projectPath != "" {
-		fmt.Fprintf(&b, "默认工作目录：%s", projectPath)
+		fmt.Fprintf(&b, "项目目录：%s", projectPath)
 	}
 
 	return strings.TrimSpace(b.String())

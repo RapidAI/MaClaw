@@ -72,6 +72,18 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 	}
 	result.EntriesBeforeClear = h.memory.Load(msg.UserID)
 	result.UnfinishedSlot = h.memory.GetUnfinishedSlot(msg.UserID)
+
+	// In-flight marker recovery: now that state.mu is held, we are guaranteed
+	// that any previous loop's inFlightLifecycle.Cleanup() has completed (since
+	// Cleanup runs inside runAgentLoop which executes under state.mu). This
+	// eliminates the TOCTOU race where ConsumeInFlightTask reads a stale marker
+	// that the previous loop's Cleanup hasn't cleared yet.
+	if shouldRecoverInFlightMarker(msg, result.UnfinishedSlot, h.getSessionLoopCtx(msg.UserID)) {
+		if slot := h.recoverInterruptedTaskSlot(msg.UserID, result.EntriesBeforeClear); slot != nil {
+			result.UnfinishedSlot = slot
+		}
+	}
+
 	result.Decision = resolveExplicitTaskSlotDecision(msg, result.UnfinishedSlot)
 	return result
 }

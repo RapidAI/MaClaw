@@ -110,7 +110,7 @@ func appInstallationAuditMetadata(app AppInstallation) map[string]any {
 	if app.Source != "" {
 		metadata["source"] = app.Source
 	}
-	for _, key := range []string{"schema", "package_sha256", "package_bytes", "app_entry_version", "app_skill_id", "app_skill_version", "app_skill_source", "workflow_skill_ids", "workflow_skill_versions", "approval_binding_versions", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "workflow_contract_schema", "workflow_contract_skill_id", "workflow_contract_version", "workflow_contract_object_role", "workflow_contract_required_inputs", "workflow_contract_decision_outputs", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_primary_region", "workspace_layout_output_region", "workspace_layout_region_count", "workspace_layout_region_ids", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_test_protocol_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "test_evidence_result_coverage_ok", "test_evidence_result_coverage_primary", "test_evidence_covered_types", "test_evidence_missing_types", "test_evidence_approval_instance_id", "test_evidence_approval_id", "test_evidence_record_id", "test_evidence_approval_status", "test_evidence_approval_view_verified", "test_evidence_dependency_verified_at", "test_evidence_dependency_count", "test_evidence_dependency_missing_required", "test_evidence_dependency_blocking", "test_evidence_workflow_contract_issue", "test_evidence_workflow_contract_issue_count", "test_evidence_governance_review_issue", "test_evidence_governance_review_issue_count", "governance_status", "governance_risk_level"} {
+	for _, key := range []string{"schema", "package_sha256", "package_bytes", "app_entry_version", "app_skill_id", "app_skill_version", "app_skill_source", "workflow_skill_ids", "workflow_skill_versions", "approval_binding_versions", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "workflow_contract_schema", "workflow_contract_skill_id", "workflow_contract_version", "workflow_contract_object_role", "workflow_contract_required_inputs", "workflow_contract_decision_outputs", "workflow_contract_status_mapping", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_primary_region", "workspace_layout_output_region", "workspace_layout_region_count", "workspace_layout_region_ids", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "result_contract_delivery_modes", "result_contract_delivery_inline_content", "result_contract_delivery_artifacts", "result_contract_delivery_business_record", "result_contract_delivery_notifications", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_test_protocol_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "test_evidence_result_coverage_ok", "test_evidence_result_coverage_primary", "test_evidence_covered_types", "test_evidence_missing_types", "test_evidence_approval_instance_id", "test_evidence_approval_id", "test_evidence_record_id", "test_evidence_approval_status", "test_evidence_approval_view_verified", "test_evidence_dependency_verified_at", "test_evidence_dependency_count", "test_evidence_dependency_missing_required", "test_evidence_dependency_blocking", "test_evidence_workflow_contract_issue", "test_evidence_workflow_contract_issue_count", "test_evidence_governance_review_issue", "test_evidence_governance_review_issue_count", "governance_status", "governance_risk_level"} {
 		if value, ok := app.Metadata[key]; ok {
 			metadata[key] = value
 		}
@@ -152,6 +152,9 @@ func normalizeAppInstallationMetadata(metadata map[string]any, kind string) (map
 		return nil, err
 	}
 	if err := normalizeAppInstallationVersionSnapshotMetadata(out); err != nil {
+		return nil, err
+	}
+	if err := normalizeAppInstallationDependencyVerificationMetadata(out); err != nil {
 		return nil, err
 	}
 	if err := normalizeAppInstallationTestEvidenceMetadata(out); err != nil {
@@ -327,13 +330,51 @@ func normalizeAppInstallationResultContractMetadata(out map[string]any) error {
 		contract["types"] = types
 		out["result_contract_types"] = types
 	}
-	if delivery := firstNonEmptyAppInstallationString(appInstallationString(contract, "delivery"), appInstallationString(out, "result_contract_delivery")); delivery != "" {
-		contract["delivery"] = delivery
-		out["result_contract_delivery"] = delivery
-	}
+	normalizeAppInstallationResultContractDelivery(contract, out)
 	out["result_contract"] = contract
 	out["result_contract_schema"] = "maclaw.app.result.v1"
 	return nil
+}
+
+func normalizeAppInstallationResultContractDelivery(contract map[string]any, out map[string]any) {
+	delivery := appInstallationMap(contract["delivery"])
+	if delivery != nil {
+		normalized := map[string]any{}
+		modes := []string{}
+		for _, item := range []struct {
+			camel   string
+			snake   string
+			summary string
+			mode    string
+		}{
+			{"inlineContent", "inline_content", "result_contract_delivery_inline_content", "inline_content"},
+			{"artifacts", "artifacts", "result_contract_delivery_artifacts", "artifacts"},
+			{"businessRecord", "business_record", "result_contract_delivery_business_record", "business_record"},
+			{"notifications", "notifications", "result_contract_delivery_notifications", "notifications"},
+		} {
+			if value, ok := firstAppInstallationBool(delivery[item.camel], delivery[item.snake], out[item.summary]); ok {
+				normalized[item.camel] = value
+				out[item.summary] = value
+				if value {
+					modes = append(modes, item.mode)
+				}
+			}
+		}
+		for key, value := range delivery {
+			if _, exists := normalized[key]; !exists && key != "inline_content" && key != "business_record" {
+				normalized[key] = value
+			}
+		}
+		if len(modes) > 0 {
+			out["result_contract_delivery_modes"] = modes
+		}
+		contract["delivery"] = normalized
+		return
+	}
+	if deliveryText := firstNonEmptyAppInstallationString(appInstallationString(contract, "delivery"), appInstallationString(out, "result_contract_delivery")); deliveryText != "" {
+		contract["delivery"] = deliveryText
+		out["result_contract_delivery"] = deliveryText
+	}
 }
 
 func normalizeAppInstallationWorkflowContractMetadata(out map[string]any, kind string) error {
@@ -398,12 +439,16 @@ func normalizeAppInstallationWorkflowContractMetadata(out map[string]any, kind s
 	if statusMapping == nil {
 		statusMapping = appInstallationMap(contract["status_mapping"])
 	}
+	if statusMapping == nil {
+		statusMapping = appInstallationMap(out["workflow_contract_status_mapping"])
+	}
 	if statusMapping != nil {
 		if value := firstNonEmptyAppInstallationString(appInstallationString(statusMapping, "requiresInput"), appInstallationString(statusMapping, "requires_input")); value != "" {
 			statusMapping["requiresInput"] = value
 		}
 		delete(statusMapping, "requires_input")
 		contract["statusMapping"] = statusMapping
+		out["workflow_contract_status_mapping"] = cloneJSONValue(statusMapping)
 		delete(contract, "status_mapping")
 	}
 	out["workflow_contract"] = contract
@@ -455,6 +500,30 @@ func normalizeAppInstallationVersionSnapshotMetadata(out map[string]any) error {
 	}
 	out["version_snapshot"] = normalized
 	delete(out, "versionSnapshot")
+	return nil
+}
+
+func normalizeAppInstallationDependencyVerificationMetadata(out map[string]any) error {
+	verificationValue := out["dependency_verification"]
+	if verificationValue == nil {
+		verificationValue = out["dependencyVerification"]
+	}
+	governance := appInstallationMap(out["governance"])
+	if verificationValue == nil && governance != nil {
+		verificationValue = governance["dependency_verification"]
+		if verificationValue == nil {
+			verificationValue = governance["dependencyVerification"]
+		}
+	}
+	if verificationValue == nil {
+		return nil
+	}
+	verification := normalizeAppInstallationDependencyVerification(map[string]any{"dependency_verification": verificationValue}, governance, out)
+	if verification == nil {
+		return nil
+	}
+	out["dependency_verification"] = verification
+	delete(out, "dependencyVerification")
 	return nil
 }
 
@@ -612,11 +681,13 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 			out[pair.summary] = value
 		}
 	}
-	if payload, ok := firstAppInstallationPresent(evidence["resultPayload"], evidence["result_payload"], out["test_evidence_result_payload"]); ok {
+	approvalValue, _ := firstAppInstallationPresent(evidence["approvalInstance"], evidence["approval_instance"], evidence["approval"], out["test_evidence_approval_instance"])
+	approval := appInstallationMap(approvalValue)
+	if payload, ok := firstAppInstallationPresent(evidence["resultPayload"], evidence["result_payload"], out["test_evidence_result_payload"], appInstallationMapValue(approval, "resultPayload", "result_payload")); ok {
 		normalized["result_payload"] = cloneJSONValue(payload)
 		out["test_evidence_result_payload"] = cloneJSONValue(payload)
 	}
-	if outputs, ok := firstAppInstallationPresent(evidence["outputs"], evidence["output_blocks"], evidence["outputBlocks"], out["test_evidence_outputs"]); ok {
+	if outputs, ok := firstAppInstallationPresent(evidence["outputs"], evidence["output_blocks"], evidence["outputBlocks"], out["test_evidence_outputs"], appInstallationMapValue(approval, "outputs", "output_blocks", "outputBlocks")); ok {
 		normalized["outputs"] = cloneJSONValue(outputs)
 		out["test_evidence_outputs"] = cloneJSONValue(outputs)
 		if _, hasCount := out["test_evidence_output_count"]; !hasCount {
@@ -626,7 +697,7 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 			}
 		}
 	}
-	if artifacts, ok := firstAppInstallationPresent(evidence["artifacts"], out["test_evidence_artifacts"]); ok {
+	if artifacts, ok := firstAppInstallationPresent(evidence["artifacts"], out["test_evidence_artifacts"], appInstallationMapValue(approval, "artifacts")); ok {
 		normalized["artifacts"] = cloneJSONValue(artifacts)
 		out["test_evidence_artifacts"] = cloneJSONValue(artifacts)
 		if _, hasCount := out["test_evidence_artifact_count"]; !hasCount {
@@ -636,7 +707,7 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 			}
 		}
 	}
-	if approvalValue, ok := firstAppInstallationPresent(evidence["approvalInstance"], evidence["approval_instance"], evidence["approval"], out["test_evidence_approval_instance"]); ok {
+	if approvalValue, ok := firstAppInstallationPresent(approval, evidence["approvalInstance"], evidence["approval_instance"], evidence["approval"], out["test_evidence_approval_instance"]); ok {
 		if approval := appInstallationMap(approvalValue); approval != nil {
 			normalized["approval_instance"] = cloneJSONValue(approval)
 			out["test_evidence_approval_instance"] = cloneJSONValue(approval)
@@ -806,6 +877,18 @@ func appInstallationMap(value any) map[string]any {
 	}
 	if item, ok := value.(map[string]interface{}); ok {
 		return map[string]any(item)
+	}
+	return nil
+}
+
+func appInstallationMapValue(values map[string]any, keys ...string) any {
+	if values == nil {
+		return nil
+	}
+	for _, key := range keys {
+		if value, ok := values[key]; ok && value != nil {
+			return value
+		}
 	}
 	return nil
 }

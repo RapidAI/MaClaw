@@ -116,6 +116,13 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 						if refreshedState := wf.machine.GetActive(ownerID); refreshedState != nil && h.app != nil && h.app.workflowEngine != nil {
 							h.app.workflowEngine.StoreActiveState(ownerID, mapV2StateToV1(refreshedState))
 						}
+					} else if nextPhase != nil && nextPhase.ExecMode == v2.ExecModeRemoteSubAgent {
+						// Next phase uses RemoteExperimentOrchestrator — append a hint to
+						// the response so the user knows to send a message to trigger it.
+						if resp != nil && resp.Text != "" {
+							resp.Text += "\n\n---\n🔬 基线复现已完成。回复「开始迭代」启动自动迭代改进循环。"
+						}
+						log.Printf("[workflow-v2] post-loop: next phase %s has ExecMode=remote_subagent, appended trigger hint", nextPhase.ID)
 					} else if h.app != nil && h.app.workflowEngine != nil {
 						h.app.workflowEngine.StoreActiveState(ownerID, mapV2StateToV1(updatedState))
 					}
@@ -157,11 +164,22 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 		if phase != nil && !phase.NeedsConfirm {
 			updatedState := wf.machine.GetActive(ownerID)
 			if updatedState != nil {
-				// Workflow advanced to next phase — set up for next phase agent loop
-				nextPhasePrompt := v2.BuildPhasePrompt(updatedState)
-				if nextPhasePrompt != "" {
-					h.stashedPhasePrompt.Store(ownerID, nextPhasePrompt)
-					h.workflowAgentLoopMarker.Store(ownerID, true)
+				nextPhase := updatedState.ActivePhase()
+				// If the next phase has a special ExecMode (remote_subagent, subagent,
+				// auto_from_prev), do NOT set up a standard agent loop. These modes
+				// require routing through handleWorkflowV2Action's ExecMode switch on
+				// the next user message. Setting stashedPhasePrompt here would bypass
+				// that switch and run the phase as a plain agent loop.
+				if nextPhase != nil && nextPhase.ExecMode != "" {
+					log.Printf("[workflow-v2] post-loop: next phase %s has ExecMode=%s, skipping auto agent loop setup (will route through ExecMode switch on next message)",
+						nextPhase.ID, nextPhase.ExecMode)
+				} else {
+					// Default: set up for immediate next phase agent loop
+					nextPhasePrompt := v2.BuildPhasePrompt(updatedState)
+					if nextPhasePrompt != "" {
+						h.stashedPhasePrompt.Store(ownerID, nextPhasePrompt)
+						h.workflowAgentLoopMarker.Store(ownerID, true)
+					}
 				}
 			}
 		}

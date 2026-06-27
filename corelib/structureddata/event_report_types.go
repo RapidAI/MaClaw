@@ -107,6 +107,12 @@ type AggregateResult struct {
 }
 
 type ReportResult struct {
-	Report ReportDefinition `json:"report"`
-	Result AggregateResult  `json:"result"`
+	Report         ReportDefinition `json:"report"`
+	Result         AggregateResult  `json:"result"`
+	PrimaryResult  string           `json:"primary_result,omitempty"`
+	BusinessStatus string           `json:"business_status,omitempty"`
+	ResultStatus   string           `json:"result_status,omitempty"`
+	ResultPayload  map[string]any   `json:"result_payload,omitempty"`
+	Outputs        []map[string]any `json:"outputs,omitempty"`
+	Artifacts      []map[string]any `json:"artifacts,omitempty"`
 }

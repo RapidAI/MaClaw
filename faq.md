@@ -56,5 +56,104 @@ Codex 目前仅支持 **Zip 包**格式的技能。如果您尝试安装 Skill I
 ## 17. 技能是所有工具共享的吗？
 是的。通过 **Zip 包**添加的技能会存储在全局仓库中，**Claude**, **Codex** 等所有支持技能的工具均可自动识别并使用。您只需添加一次，即可在任意工具中调用。
 
+## 18. AI 助手/工作流生成 PPT 或长代码时中途停止（tool call 被截断）
+
+### 现象
+
+在 PPT 设计工作流的生成阶段，或任何需要 AI 生成大量代码/内容的场景中，AI 助手反复尝试调用 `write_file`/`bash` 等工具但参数被截断（日志中出现 `truncated tool call (invalid JSON)` + `finish_reason=`），最终 agent loop 停止。
+
+### 根因
+
+使用 Thinking/Reasoning 模型（如 DeepSeek V4 Flash）时，模型在复杂请求（大 context）下的 reasoning 阶段会有 **60-90 秒的静默期**（不产出任何 SSE 数据）。如果 HubCenter 前面的 Nginx 反向代理的 `proxy_read_timeout` 设置不够大（默认 60 秒），Nginx 会在 reasoning 静默期内认为上游无响应，主动切断 SSE 连接，导致 tool call JSON 不完整。
+
+### 解决方案
+
+**1. Hub 的 Nginx 配置**（已在 hub_manual.md 第 12 节示例中正确设置 3600s）：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:9399;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+}
+```
+
+**2. HubCenter 的 Nginx 配置（关键！容易遗漏）**：
+
+HubCenter 需要转发 LLM 请求到后端 API（DeepSeek/GLM 等），其中 `/api/llm/` 路径必须有足够大的超时：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name hubs.example.com;
+
+    # ... SSL 配置 ...
+
+    # LLM 代理路径 - 必须设置大超时
+    location /api/llm/ {
+        proxy_pass http://127.0.0.1:9499;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # ⚠️ 关键：Thinking 模型 reasoning 阶段可能静默 60-180 秒
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_connect_timeout 30s;
+
+        # ⚠️ 关键：SSE 流式响应必须禁用缓冲
+        proxy_buffering off;
+    }
+
+    # 其他 API 路径
+    location / {
+        proxy_pass http://127.0.0.1:9499;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}
+```
+
+**3. 各层超时要求汇总**：
+
+| 层级 | 配置项 | 最低要求 | 说明 |
+|------|--------|---------|------|
+| Hub Nginx | proxy_read_timeout | 600s | Hub → 客户端的 SSE 流 |
+| HubCenter Nginx | proxy_read_timeout | 600s | HubCenter → 后端 LLM API 的 SSE 流 |
+| HubCenter Nginx | proxy_buffering | off | SSE 流必须禁用缓冲 |
+| Hub Go 代码 | MaClawProviderClient.TimeoutSec | 600（默认） | Hub → HubCenter 的 HTTP 超时 |
+| HubCenter Go 代码 | proxyStreamingHTTPClient | ResponseHeaderTimeout=600s | HubCenter → 后端 API 首字节超时 |
+
+**4. 验证方法**：
+
+在 HubCenter 服务器上直接测试后端 API 是否正常响应长输出请求：
+
+```bash
+curl -X POST https://api.deepseek.com/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Write a 500-line Python script"}],"tools":[{"type":"function","function":{"name":"write_file","description":"Write to file","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}}],"max_tokens":65536,"stream":true}' \
+  --max-time 600 -o /dev/null -w "HTTP %{http_code} Time %{time_total}s Size %{size_download}\n"
+```
+
+如果直连后端正常但通过 HubCenter Nginx 失败，问题就在 Nginx 超时配置。
+
+## 19. 不同模型对长内容生成的影响
+
+| 模型类型 | 是否有 reasoning 静默期 | 长 tool call 风险 | 建议 |
+|---------|----------------------|-----------------|------|
+| GLM-5.1/5.2 | ❌ 无 | 低（65K output 全给内容） | 直接使用，无需特殊配置 |
+| DeepSeek V4 Flash (thinking) | ✅ 有（60-180s） | 高（reasoning 消耗 output 预算） | 确保 Nginx 超时 ≥ 600s |
+| DeepSeek V4 (非 thinking) | ❌ 无 | 低 | 同 GLM |
+| Kimi K2 / Qwen thinking | ✅ 可能有 | 中 | 确保 Nginx 超时 ≥ 600s |
+
 ---
 *更多问题请访问 GitHub Issues：[RapidAI/cceasy/issues](https://github.com/RapidAI/cceasy/issues)*

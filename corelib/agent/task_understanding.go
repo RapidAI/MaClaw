@@ -137,7 +137,7 @@ func FormatTaskUnderstandingSummary(r *TaskUnderstandingResult, projectPath stri
 	}
 
 	if projectPath != "" {
-		fmt.Fprintf(&b, "默认工作目录：%s", projectPath)
+		fmt.Fprintf(&b, "项目目录：%s", projectPath)
 	}
 
 	return strings.TrimSpace(b.String())

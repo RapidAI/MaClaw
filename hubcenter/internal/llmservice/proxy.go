@@ -555,6 +555,47 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	delete(reqBody, "provider")
 	delete(reqBody, "model_provider")
 	sanitizeProxyStreamOptions(reqBody)
+	// Ensure max_tokens is present for the upstream provider. The client may
+	// have set it, but if not (or if it was stripped), enforce a generous default
+	// so the backend model doesn't use a low internal default that truncates
+	// tool call arguments. This is the authoritative "last chance" enforcement
+	// before the request hits the actual LLM API.
+	if _, hasMax := reqBody["max_tokens"]; !hasMax {
+		if _, hasMaxComp := reqBody["max_completion_tokens"]; !hasMaxComp {
+			reqBody["max_tokens"] = 65536
+		}
+	}
+	// DeepSeek V4+ thinking mode: ensure thinking is enabled and budget is capped
+	// when tools are present. The maclaw client normally sets these, but older
+	// clients or third-party integrations may omit them. This is the authoritative
+	// "last chance" enforcement on the stream path (mirrors the non-stream path
+	// in corelib/openai_compat_forward.go sanitizeOpenAICompatForwardBody).
+	if corelib.IsDeepSeekThinkingModeModel(corelib.MaclawLLMConfig{Model: upstreamModel}) {
+		if _, hasThinking := reqBody["thinking"]; !hasThinking {
+			reqBody["thinking"] = map[string]any{"type": "enabled"}
+		}
+		if hasToolsInStreamBody(reqBody) {
+			if thinking, ok := reqBody["thinking"].(map[string]any); ok {
+				if _, hasBudget := thinking["budget_tokens"]; !hasBudget {
+					maxOut := 65536
+					if mt, ok := reqBody["max_tokens"].(float64); ok && int(mt) > 0 {
+						maxOut = int(mt)
+					} else if mt, ok := reqBody["max_tokens"].(int); ok && mt > 0 {
+						maxOut = mt
+					} else if mt, ok := reqBody["max_completion_tokens"].(float64); ok && int(mt) > 0 {
+						maxOut = int(mt)
+					} else if mt, ok := reqBody["max_completion_tokens"].(int); ok && mt > 0 {
+						maxOut = mt
+					}
+					reasoningBudget := maxOut / 4
+					if reasoningBudget < 1024 {
+						reasoningBudget = 1024
+					}
+					thinking["budget_tokens"] = reasoningBudget
+				}
+			}
+		}
+	}
 
 	data, err := json.Marshal(reqBody)
 	if err != nil {
@@ -651,6 +692,23 @@ func sanitizeProxyStreamOptions(body map[string]any) {
 		}
 	}
 	body["stream_options"] = map[string]any{"include_usage": true}
+}
+
+// hasToolsInStreamBody checks if the request body contains a non-empty tools array.
+// Same logic as corelib's hasToolsInBody but local to avoid export dependency.
+func hasToolsInStreamBody(body map[string]any) bool {
+	tools, ok := body["tools"]
+	if !ok || tools == nil {
+		return false
+	}
+	switch t := tools.(type) {
+	case []any:
+		return len(t) > 0
+	case []map[string]any:
+		return len(t) > 0
+	default:
+		return false
+	}
 }
 
 func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string, result *providerStreamResult) error {

@@ -31,6 +31,23 @@ type SystemPromptDeps struct {
 	MemoryStore      *memory.Store
 	SkipMemoryRecall bool
 
+	// EffectiveProjectDir returns the project directory that tools actually
+	// use as their default cwd / relative-path base. This is the SINGLE SOURCE
+	// OF TRUTH for "where am I working" — system prompt, tool definitions, and
+	// tool execution all reference the same resolved value.
+	//
+	// The resolved value depends on the active tab:
+	//   - Project Tab with workingDir tag → that directory
+	//   - Project Tab without workingDir → taskDir/workspace/
+	//   - Local Tab → config.WorkingDirectory or ~/.maclaw/workspace
+	//
+	// When nil, falls back to corelib.EffectiveWorkspaceDir().
+	EffectiveProjectDir func() string
+
+	// ScratchDir returns the temp directory for intermediate/scratch files
+	// that should NOT pollute the project directory. Defaults to os.TempDir().
+	ScratchDir func() string
+
 	SkillLister      func() []SkillInfo
 	MCPServerLister  func() []MCPServerInfo
 	SteeringResolver func(userMessage string, contextTokens int) []steering.File

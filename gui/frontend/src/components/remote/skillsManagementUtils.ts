@@ -66,6 +66,16 @@ export function formatDate(dateStr: string): string {
     }
 }
 
+const HUB_VERSION_PATTERN = /^[vV0-9][A-Za-z0-9._+-]*$/;
+
+export function displayHubVersion(version?: string): string {
+    const value = String(version || "").trim();
+    if (!value || value.length > 32 || !HUB_VERSION_PATTERN.test(value)) {
+        return "";
+    }
+    return value;
+}
+
 export function renderStars(avg: number): string {
     if (!Number.isFinite(avg) || avg <= 0) return "Rating -";
     return `Rating ${avg.toFixed(1)}`;

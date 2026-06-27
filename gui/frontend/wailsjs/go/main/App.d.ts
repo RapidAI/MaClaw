@@ -1169,6 +1169,10 @@ export function LoadProjectTabConversation(arg1:string):Promise<Array<any>>;
 
 export function SendMessageForTab(arg1:string, arg2:string, arg3:string):Promise<any>;
 
+// Tab working directory bindings
+export function SetTabWorkingDir(arg1:string, arg2:string):Promise<void>;
+export function GetTabWorkingDir(arg1:string):Promise<{path: string; is_default: boolean}>;
+export function OpenProjectDirectory(arg1:string):Promise<void>;
 
 // Workflow Directory bindings
 export function GetWorkflowDirectory(arg1:string, arg2:string):Promise<any>;

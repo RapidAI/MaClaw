@@ -93,8 +93,23 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 	}
 
 	home, _ := os.UserHomeDir()
-	workspaceDir := corelib.EffectiveWorkspaceDir()
-	fmt.Fprintf(&session, "\nCurrent system: %s/%s\nUser home: %s\nDefault workspace: %s\n", runtime.GOOS, runtime.GOARCH, home, workspaceDir)
+	// Resolve the effective project directory — the single source of truth
+	// matching what resolveToolWorkDir("") and resolveFileToolPath() actually
+	// use at tool execution time.
+	projectDir := corelib.EffectiveWorkspaceDir()
+	if deps.EffectiveProjectDir != nil {
+		if dir := deps.EffectiveProjectDir(); dir != "" {
+			projectDir = dir
+		}
+	}
+	scratchDir := os.TempDir()
+	if deps.ScratchDir != nil {
+		if dir := deps.ScratchDir(); dir != "" {
+			scratchDir = dir
+		}
+	}
+	fmt.Fprintf(&session, "\nCurrent system: %s/%s\nUser home: %s\nProject directory: %s\nTemp directory: %s\n", runtime.GOOS, runtime.GOARCH, home, projectDir, scratchDir)
+	session.WriteString("All relative paths in tools (read_file, write_file, edit_file, ripgrep, Glob) resolve against Project directory. bash cwd = Project directory unless working_dir is specified. Use Temp directory for scratch files.\n")
 	if deps.SSHHostLister != nil {
 		if hosts := deps.SSHHostLister(); len(hosts) > 0 {
 			session.WriteString("\nConfigured SSH hosts:\n")

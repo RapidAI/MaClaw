@@ -38,11 +38,15 @@ func (h *IMMessageHandler) prepareIMMessagePreflight(msg *IMUserMessage, trimmed
 
 	h.extractSessionStartMemoryAsync(msg.UserID, result.EntriesBeforeClear)
 
-	if shouldRecoverInFlightMarker(*msg, result.UnfinishedSlot, h.getSessionLoopCtx(msg.UserID)) {
-		if slot := h.recoverInterruptedTaskSlot(msg.UserID, result.EntriesBeforeClear); slot != nil {
-			result.UnfinishedSlot = slot
-		}
-	}
+	// NOTE: In-flight marker recovery is intentionally NOT done here.
+	// It is performed AFTER acquiring state.mu in enterIMMessageSerializationBoundary.
+	// Reason: shouldRecoverInFlightMarker reads loopCtx (under stateMu) to check
+	// if a loop is active, but the in-flight marker lifecycle is protected by
+	// state.mu (the serialization lock). Without state.mu held, there is a TOCTOU
+	// race: loopCtx may already be nil (cleanup func ran) while the in-flight
+	// marker hasn't been cleared yet (Cleanup defer hasn't executed or FlushNow
+	// is blocked). Moving recovery to post-lock ensures ConsumeInFlightTask only
+	// runs after the owning loop's Cleanup() has completed.
 
 	result.Decision = resolveExplicitTaskSlotDecision(*msg, result.UnfinishedSlot)
 	if pendingResult := h.handlePendingExecutionConfirmation(msg, trimmed); pendingResult.Handled {

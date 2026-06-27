@@ -22,8 +22,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -123,11 +125,45 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	}
 
 	result := agent.RunLoop(cb, taskDescription, nil, r.httpClient)
+	return remoteCodingSubAgentResultFromLoopResult(result)
+}
 
+func remoteCodingSubAgentResultFromLoopResult(result agent.LoopResult) *RemoteCodingSubAgentResult {
 	if result.Error != "" {
+		status := "failed"
+		if remoteCodingSubAgentLoopErrorIsCancelled(result.Error) {
+			status = "cancelled"
+		}
+		return &RemoteCodingSubAgentResult{
+			Status:     status,
+			Error:      result.Error,
+			Summary:    result.Text,
+			Iterations: result.Iterations,
+			ToolCalls:  result.ToolCalls,
+		}
+	}
+	if result.HardExit {
 		return &RemoteCodingSubAgentResult{
 			Status:     "failed",
-			Error:      result.Error,
+			Error:      "remote coding subagent hard exit",
+			Summary:    result.Text,
+			Iterations: result.Iterations,
+			ToolCalls:  result.ToolCalls,
+		}
+	}
+	if result.AskUser != nil {
+		return &RemoteCodingSubAgentResult{
+			Status:     "failed",
+			Error:      "remote coding subagent requires user input",
+			Summary:    result.Text,
+			Iterations: result.Iterations,
+			ToolCalls:  result.ToolCalls,
+		}
+	}
+	if strings.TrimSpace(result.Text) == "" {
+		return &RemoteCodingSubAgentResult{
+			Status:     "failed",
+			Error:      "remote coding subagent returned empty summary",
 			Summary:    result.Text,
 			Iterations: result.Iterations,
 			ToolCalls:  result.ToolCalls,
@@ -142,6 +178,11 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	}
 }
 
+func remoteCodingSubAgentLoopErrorIsCancelled(errText string) bool {
+	lower := strings.ToLower(strings.TrimSpace(errText))
+	return lower == "cancelled" || strings.HasPrefix(lower, "cancelled ")
+}
+
 // --- LoopCallbacks Implementation ---
 
 type remoteCodingCallbacks struct {
@@ -151,6 +192,9 @@ type remoteCodingCallbacks struct {
 }
 
 func (c *remoteCodingCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
+	if c == nil || c.agent == nil {
+		return corelib.MaclawLLMConfig{}
+	}
 	return c.agent.cfg
 }
 
@@ -159,7 +203,15 @@ func (c *remoteCodingCallbacks) GetMaxIterations() int {
 }
 
 func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
-	prompt := buildRemoteCodingSystemPrompt(c.agent.projectDir, c.agent.workDir, c.taskContext)
+	projectDir, workDir, taskContext := "", "", ""
+	if c != nil {
+		taskContext = c.taskContext
+		if c.agent != nil {
+			projectDir = c.agent.projectDir
+			workDir = c.agent.workDir
+		}
+	}
+	prompt := buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext)
 
 	// Inject knowledge from coding experience store + general knowledge store.
 	if sections := c.buildRemoteKnowledgePromptSections(); sections != "" {
@@ -172,10 +224,10 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 	tools := remoteCodingToolDefinitions()
 
 	// Append knowledge search tools when stores are available.
-	if c.agent.codingKB != nil {
+	if c != nil && c.agent != nil && c.agent.codingKB != nil {
 		tools = append(tools, codingKnowledgeSearchToolDef())
 	}
-	if c.agent.generalKB != nil {
+	if c != nil && c.agent != nil && c.agent.generalKB != nil {
 		tools = append(tools, knowledgeSearchToolDef())
 	}
 	return tools
@@ -186,19 +238,19 @@ func (c *remoteCodingCallbacks) ExecuteTool(name, argsJSON string) string {
 }
 
 func (c *remoteCodingCallbacks) OnToken(delta string) {
-	if c.agent.onToken != nil {
+	if c != nil && c.agent != nil && c.agent.onToken != nil {
 		c.agent.onToken(delta)
 	}
 }
 
 func (c *remoteCodingCallbacks) OnProgress(text string) {
-	if c.agent.onProgress != nil {
+	if c != nil && c.agent != nil && c.agent.onProgress != nil {
 		c.agent.onProgress(text)
 	}
 }
 
 func (c *remoteCodingCallbacks) OnToolCall(name string) {
-	if c.agent.onProgress != nil {
+	if c != nil && c.agent != nil && c.agent.onProgress != nil {
 		// Emit a structured CodingAgentEvent so the frontend renders the same
 		// tool activity panel as the local CodingSubAgent.
 		event := CodingAgentEvent{
@@ -216,7 +268,7 @@ func (c *remoteCodingCallbacks) OnToolCall(name string) {
 func (c *remoteCodingCallbacks) OnToolResult(name string) {}
 
 func (c *remoteCodingCallbacks) ShouldStop() bool {
-	if c.agent.loopCtx != nil {
+	if c != nil && c.agent != nil && c.agent.loopCtx != nil {
 		return c.agent.loopCtx.IsCancelled()
 	}
 	return false
@@ -224,7 +276,7 @@ func (c *remoteCodingCallbacks) ShouldStop() bool {
 
 // LLMRequestContext implements LLMRequestContextProvider for cancellation support.
 func (c *remoteCodingCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
-	if c.agent.loopCtx != nil && c.agent.loopCtx.IsCancelled() {
+	if c != nil && c.agent != nil && c.agent.loopCtx != nil && c.agent.loopCtx.IsCancelled() {
 		return nil, nil, fmt.Errorf("cancelled")
 	}
 	return context.Background(), func(error) {}, nil
@@ -240,14 +292,9 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 	// regardless of early returns (parse errors, nil handler, etc.)
 	var result string
 	defer func() {
-		if c.agent.onProgress != nil {
+		if c != nil && c.agent != nil && c.agent.onProgress != nil {
 			duration := time.Since(startedAt)
-			outcome := "success"
-			if strings.HasPrefix(result, "错误") || strings.Contains(result, "ERROR") ||
-				strings.Contains(result, "失败") || strings.Contains(result, "参数解析失败") ||
-				strings.Contains(result, "unavailable") || strings.Contains(result, "unknown tool") {
-				outcome = "failed"
-			}
+			outcome := remoteCodingToolOutcome(result)
 			event := CodingAgentEvent{
 				Version:    1,
 				Agent:      codingAgentNameCoding.String(),
@@ -269,14 +316,37 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 		}
 	}()
 
+	normalizedArgsJSON := normalizeCodingSubAgentToolArguments(argsJSON)
 	var args map[string]interface{}
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+	if err := json.Unmarshal([]byte(normalizedArgsJSON), &args); err != nil {
 		result = fmt.Sprintf("参数解析失败: %v", err)
 		return result
 	}
+	if applyRemoteCodingSubAgentToolArgumentAliases(canonicalName, args) {
+		if data, err := json.Marshal(args); err == nil {
+			normalizedArgsJSON = string(data)
+		}
+	}
 
-	h := c.agent.handler
-	if h == nil {
+	if c == nil || c.agent == nil {
+		result = "remote coding subagent: agent unavailable"
+		return result
+	}
+
+	switch canonicalName {
+	case "coding_knowledge_search":
+		result = c.executeRemoteCodingKnowledgeSearch(normalizedArgsJSON)
+		return result
+	case "knowledge_search":
+		result = c.executeRemoteKnowledgeSearch(normalizedArgsJSON)
+		return result
+	}
+
+	if !remoteCodingToolRequiresSSHHandler(canonicalName) {
+		result = fmt.Sprintf("unknown tool: %s (supports: ssh_read_file, ssh_write_file, ssh_edit_file, ssh_bash, ssh_list_dir, ssh_check_task, coding_knowledge_search, knowledge_search)", name)
+		return result
+	}
+	if c.agent.handler == nil {
 		result = "remote coding subagent: handler unavailable"
 		return result
 	}
@@ -294,15 +364,55 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 		result = c.sshListDir(args)
 	case "ssh_check_task":
 		result = c.sshCheckTask(args)
-	case "coding_knowledge_search":
-		result = c.executeRemoteCodingKnowledgeSearch(argsJSON)
-	case "knowledge_search":
-		result = c.executeRemoteKnowledgeSearch(argsJSON)
-	default:
-		result = fmt.Sprintf("unknown tool: %s (supports: ssh_read_file, ssh_write_file, ssh_edit_file, ssh_bash, ssh_list_dir, ssh_check_task, coding_knowledge_search, knowledge_search)", name)
 	}
 
 	return result
+}
+
+func remoteCodingToolRequiresSSHHandler(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ssh_read_file", "ssh_write_file", "ssh_edit_file", "ssh_bash", "ssh_list_dir", "ssh_check_task":
+		return true
+	default:
+		return false
+	}
+}
+
+func remoteCodingToolOutcome(result string) string {
+	if remoteCodingToolResultLooksFailed(result) {
+		return "failed"
+	}
+	return "success"
+}
+
+func remoteCodingToolResultLooksFailed(result string) bool {
+	text := strings.TrimSpace(result)
+	if text == "" {
+		return false
+	}
+	lower := strings.ToLower(text)
+	if strings.HasPrefix(text, "错误") || strings.Contains(text, "失败") || strings.Contains(text, "参数解析失败") {
+		return true
+	}
+	for _, pattern := range []string{
+		"error:",
+		"traceback",
+		"exception",
+		"panic:",
+		"exit status",
+		"command exited with code",
+		"no such file or directory",
+		"command not found",
+		"file not found",
+		"permission denied",
+		"unavailable",
+		"unknown tool",
+	} {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *remoteCodingCallbacks) sshReadFile(args map[string]interface{}) string {
@@ -311,13 +421,56 @@ func (c *remoteCodingCallbacks) sshReadFile(args map[string]interface{}) string 
 		return "错误: 需要 path 参数"
 	}
 	path = c.resolvePath(path)
-	return c.execSSH(fmt.Sprintf("cat %s", remoteShellQuote(path)), 10)
+	offset := remoteArgInt(args, 0, 0, 1000000, "offset", "start_line", "start")
+	limit := remoteArgInt(args, 0, 0, 2000, "limit", "num_lines", "line_count")
+	return c.execSSH(remoteReadFileRangePythonCommand(path, offset, limit), 10)
+}
+
+func remotePythonCommand(script string) string {
+	return "python3 -c " + remoteShellQuote(script)
+}
+
+func remoteReadFileRangePythonCommand(path string, offset, limit int) string {
+	pathB64 := base64EncodeString(path)
+	if offset <= 0 {
+		offset = 1
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 2000 {
+		limit = 2000
+	}
+	script := fmt.Sprintf(strings.Join([]string{
+		"import pathlib, base64, sys",
+		"p = pathlib.Path(base64.b64decode('%s').decode('utf-8'))",
+		"start = %d",
+		"limit = %d",
+		"try:",
+		"    lines = p.read_text(encoding='utf-8').splitlines(True)",
+		"except UnicodeDecodeError:",
+		"    size = p.stat().st_size",
+		"    sys.stdout.write('[remote read_file binary/non-UTF8: %%d bytes; text line range unavailable for offset=%%d limit=%%d]\\n' %% (size, start, limit))",
+		"    sys.exit(0)",
+		"if start < 1:",
+		"    start = 1",
+		"begin = start - 1",
+		"if begin >= len(lines):",
+		"    sys.stdout.write('[remote read_file EOF: offset %%d is beyond file length %%d]\\n' %% (start, len(lines)))",
+		"    sys.exit(0)",
+		"end = min(len(lines), begin + limit)",
+		"for lineno, line in enumerate(lines[begin:end], start=start):",
+		"    sys.stdout.write(f'{lineno}\\t{line}')",
+		"if end < len(lines):",
+		"    sys.stdout.write('\\n[remote read_file truncated: showing lines %%d-%%d of %%d; call again with offset=%%d]\\n' %% (start, end, len(lines), end + 1))",
+	}, "\n"), pathB64, offset, limit)
+	return remotePythonCommand(script)
 }
 
 func (c *remoteCodingCallbacks) sshWriteFile(args map[string]interface{}) string {
 	path := remoteArgStr(args, "path")
-	content := remoteArgStr(args, "content")
-	if path == "" || content == "" {
+	content, hasContent := remoteArgRawStr(args, "content")
+	if path == "" || !hasContent {
 		return "错误: 需要 path 和 content 参数"
 	}
 	path = c.resolvePath(path)
@@ -329,20 +482,33 @@ func (c *remoteCodingCallbacks) sshWriteFile(args map[string]interface{}) string
 
 	// Use base64 encoding embedded directly in Python code — no pipes needed.
 	// This is PTY-safe since the entire command is a single python3 -c invocation.
-	b64 := base64EncodeString(content)
-	pyScript := fmt.Sprintf(`python3 -c "
-import pathlib, base64
-p = pathlib.Path('%s')
-p.parent.mkdir(parents=True, exist_ok=True)
-p.write_bytes(base64.b64decode('%s'))
-print('OK')
-"`, strings.ReplaceAll(path, "'", "'\\''"), b64)
+	pyScript := remoteWriteFilePythonCommand(path, content)
 
 	result := c.execSSH(pyScript, 15)
-	if strings.Contains(result, "Traceback") || strings.Contains(result, "Error") {
-		return fmt.Sprintf("写入失败: %s", result)
+	return remoteWriteFileResult(path, len(content), result, false)
+}
+
+func remoteWriteFileResult(path string, contentLen int, commandResult string, chunked bool) string {
+	if remoteCodingToolResultLooksFailed(commandResult) || !strings.Contains(commandResult, "OK") {
+		return fmt.Sprintf("写入失败: %s", commandResult)
 	}
-	return fmt.Sprintf("✅ 已写入 %s (%d bytes)", path, len(content))
+	if chunked {
+		return fmt.Sprintf("✅ 已写入 %s (%d bytes, chunked)", path, contentLen)
+	}
+	return fmt.Sprintf("✅ 已写入 %s (%d bytes)", path, contentLen)
+}
+
+func remoteWriteFilePythonCommand(path, content string) string {
+	pathB64 := base64EncodeString(path)
+	contentB64 := base64EncodeString(content)
+	script := fmt.Sprintf(strings.Join([]string{
+		"import pathlib, base64",
+		"p = pathlib.Path(base64.b64decode('%s').decode('utf-8'))",
+		"p.parent.mkdir(parents=True, exist_ok=True)",
+		"p.write_bytes(base64.b64decode('%s'))",
+		"print('OK')",
+	}, "\n"), pathB64, contentB64)
+	return remotePythonCommand(script)
 }
 
 // sshWriteFileLarge handles files >32KB by writing in base64 chunks.
@@ -365,66 +531,78 @@ func (c *remoteCodingCallbacks) sshWriteFileLarge(path, content string) string {
 		}
 		cmd := fmt.Sprintf("echo -n '%s' %s %s", chunk, op, tmpPath)
 		result := c.execSSH(cmd, 10)
-		if strings.Contains(result, "Error") {
+		if remoteCodingToolResultLooksFailed(result) {
 			return fmt.Sprintf("写入失败（分块传输）: %s", result)
 		}
 	}
 
 	// Decode and move to target path.
-	decodeCmd := fmt.Sprintf(`python3 -c "
-import pathlib, base64
-p = pathlib.Path('%s')
-p.parent.mkdir(parents=True, exist_ok=True)
-data = base64.b64decode(open('%s').read())
-p.write_bytes(data)
-print('OK')
-" && rm -f %s`, strings.ReplaceAll(path, "'", "'\\''"), tmpPath, tmpPath)
+	decodeCmd := remoteWriteFileLargeDecodeCommand(path, tmpPath)
 
 	result := c.execSSH(decodeCmd, 15)
-	if strings.Contains(result, "OK") {
-		return fmt.Sprintf("✅ 已写入 %s (%d bytes, chunked)", path, len(content))
-	}
-	return fmt.Sprintf("写入失败: %s", result)
+	return remoteWriteFileResult(path, len(content), result, true)
+}
+
+func remoteWriteFileLargeDecodeCommand(path, tmpPath string) string {
+	pathB64 := base64EncodeString(path)
+	tmpPathB64 := base64EncodeString(tmpPath)
+	script := fmt.Sprintf(strings.Join([]string{
+		"import pathlib, base64",
+		"p = pathlib.Path(base64.b64decode('%s').decode('utf-8'))",
+		"p.parent.mkdir(parents=True, exist_ok=True)",
+		"tmp = base64.b64decode('%s').decode('utf-8')",
+		"data = base64.b64decode(open(tmp).read())",
+		"p.write_bytes(data)",
+		"print('OK')",
+	}, "\n"), pathB64, tmpPathB64)
+	return fmt.Sprintf("%s && rm -f %s", remotePythonCommand(script), remoteShellQuote(tmpPath))
 }
 
 func (c *remoteCodingCallbacks) sshEditFile(args map[string]interface{}) string {
 	path := remoteArgStr(args, "path")
-	oldStr := remoteArgStr(args, "old_str")
-	newStr := remoteArgStr(args, "new_str")
-	if path == "" || oldStr == "" {
-		return "错误: 需要 path 和 old_str 参数"
+	oldStr, hasOldStr := remoteArgRawStr(args, "old_str")
+	newStr, hasNewStr := remoteArgRawStr(args, "new_str")
+	if path == "" || !hasOldStr || oldStr == "" || !hasNewStr {
+		return "错误: 需要 path、old_str 和 new_str 参数"
 	}
 	path = c.resolvePath(path)
 
 	// Use base64 to safely transfer old/new strings without heredoc terminator conflicts.
-	oldB64 := base64EncodeString(oldStr)
-	newB64 := base64EncodeString(newStr)
-	pyScript := fmt.Sprintf(`python3 -c "
-import pathlib, base64, sys
-p = pathlib.Path('%s')
-if not p.exists():
-    print('ERROR: file not found: ' + str(p))
-    sys.exit(0)
-text = p.read_text(encoding='utf-8')
-old = base64.b64decode('%s').decode('utf-8')
-new = base64.b64decode('%s').decode('utf-8')
-if old not in text:
-    print('ERROR: old_str not found in file')
-elif text.count(old) > 1:
-    print('ERROR: old_str matches ' + str(text.count(old)) + ' locations (must be unique)')
-else:
-    p.write_text(text.replace(old, new, 1), encoding='utf-8')
-    print('OK: replaced 1 occurrence')
-"`, strings.ReplaceAll(path, "'", "'\\''"), oldB64, newB64)
+	pyScript := remoteEditFilePythonCommand(path, oldStr, newStr)
 
 	result := c.execSSH(pyScript, 15)
-	if strings.Contains(result, "ERROR:") {
-		return result
+	return remoteEditFileResult(path, result)
+}
+
+func remoteEditFileResult(path string, commandResult string) string {
+	if remoteCodingToolResultLooksFailed(commandResult) || !strings.Contains(commandResult, "OK:") {
+		return fmt.Sprintf("编辑失败: %s", commandResult)
 	}
-	if strings.Contains(result, "OK:") {
-		return fmt.Sprintf("✅ 已编辑 %s", path)
-	}
-	return fmt.Sprintf("编辑结果: %s", result)
+	return fmt.Sprintf("✅ 已编辑 %s", path)
+}
+
+func remoteEditFilePythonCommand(path, oldStr, newStr string) string {
+	pathB64 := base64EncodeString(path)
+	oldB64 := base64EncodeString(oldStr)
+	newB64 := base64EncodeString(newStr)
+	script := fmt.Sprintf(strings.Join([]string{
+		"import pathlib, base64, sys",
+		"p = pathlib.Path(base64.b64decode('%s').decode('utf-8'))",
+		"if not p.exists():",
+		"    print('ERROR: file not found: ' + str(p))",
+		"    sys.exit(0)",
+		"text = p.read_text(encoding='utf-8')",
+		"old = base64.b64decode('%s').decode('utf-8')",
+		"new = base64.b64decode('%s').decode('utf-8')",
+		"if old not in text:",
+		"    print('ERROR: old_str not found in file')",
+		"elif text.count(old) > 1:",
+		"    print('ERROR: old_str matches ' + str(text.count(old)) + ' locations (must be unique)')",
+		"else:",
+		"    p.write_text(text.replace(old, new, 1), encoding='utf-8')",
+		"    print('OK: replaced 1 occurrence')",
+	}, "\n"), pathB64, oldB64, newB64)
+	return remotePythonCommand(script)
 }
 
 func (c *remoteCodingCallbacks) sshBash(args map[string]interface{}) string {
@@ -466,6 +644,9 @@ func (c *remoteCodingCallbacks) sshCheckTask(args map[string]interface{}) string
 	if taskID == "" {
 		return "错误: 需要 task_id 参数"
 	}
+	if c == nil || c.agent == nil || c.agent.handler == nil {
+		return "remote coding subagent: handler unavailable"
+	}
 	// Delegate to the main SSH tool's check_task action.
 	h := c.agent.handler
 	return h.toolSSH(map[string]interface{}{
@@ -478,6 +659,9 @@ func (c *remoteCodingCallbacks) sshCheckTask(args map[string]interface{}) string
 // --- SSH Execution Helpers ---
 
 func (c *remoteCodingCallbacks) execSSH(command string, waitSec int) string {
+	if c == nil || c.agent == nil || c.agent.handler == nil {
+		return "remote coding subagent: handler unavailable"
+	}
 	h := c.agent.handler
 	return h.sshExec(map[string]interface{}{
 		"session_id":   c.agent.sessionID,
@@ -487,6 +671,9 @@ func (c *remoteCodingCallbacks) execSSH(command string, waitSec int) string {
 }
 
 func (c *remoteCodingCallbacks) execSSHBackground(command string) string {
+	if c == nil || c.agent == nil || c.agent.handler == nil {
+		return "remote coding subagent: handler unavailable"
+	}
 	h := c.agent.handler
 	return h.toolSSH(map[string]interface{}{
 		"action":     "exec_background",
@@ -500,7 +687,10 @@ func (c *remoteCodingCallbacks) resolvePath(path string) string {
 	if strings.HasPrefix(path, "/") {
 		return path
 	}
-	return c.agent.projectDir + "/" + path
+	if c == nil || c.agent == nil || strings.TrimSpace(c.agent.projectDir) == "" {
+		return path
+	}
+	return strings.TrimRight(c.agent.projectDir, "/") + "/" + path
 }
 
 // --- System Prompt ---
@@ -512,20 +702,25 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 	sb.WriteString(fmt.Sprintf("## 环境信息\n- 远程项目目录: %s\n- 工作目录: %s\n\n", projectDir, workDir))
 	sb.WriteString(`## 可用工具
 
-- ssh_read_file(path): 读取远程文件内容
+- ssh_read_file(path, offset?, limit?): 读取远程文件内容；默认读取前 200 行，大文件用 offset/limit 分片读取
 - ssh_write_file(path, content): 写入/创建远程文件（自动创建父目录）
 - ssh_edit_file(path, old_str, new_str): 精确替换远程文件中的文本（old_str 必须唯一匹配）
 - ssh_bash(command, working_dir?): 在远程服务器执行命令（长时间命令自动转后台任务，返回 task_id）
 - ssh_check_task(task_id): 查询后台任务状态和日志（训练完成后返回 EXIT: 0）
 - ssh_list_dir(path?): 列出远程目录内容
 
+参数兼容: 路径可用 file/file_path/filename/target_path 代替 path；ssh_edit_file 也接受 old_string/old_content/find/search -> old_str 和 new_string/new_content/replace/replacement -> new_str；ssh_bash 接受 cwd/work_dir -> working_dir；ssh_check_task 接受 id/task -> task_id。
+
 ## 工作规范
 
 1. 修改文件前先 ssh_read_file 确认当前内容
 2. 使用 ssh_edit_file 做精确修改（小改动）或 ssh_write_file 重写文件（大改动）
-3. 修改后用 ssh_bash 验证语法（如 "python3 -c 'import module'"）
-4. 路径可以是相对路径（相对于项目目录）或绝对路径
-5. 长时间训练命令会自动作为后台任务运行，返回 task_id
+3. 修改后再次 ssh_read_file 读取关键片段，确认远程文件确实变成预期内容
+4. 修改后用 ssh_bash 运行匹配任务的验证命令（如 "python3 -c 'import module'"、pytest/go test/npm test 等）
+5. 路径可以是相对路径（相对于项目目录）或绝对路径
+6. ssh_read_file 默认只返回前 200 行；继续读取时用返回提示里的 offset 分片查看
+7. 长时间训练命令会自动作为后台任务运行，返回 task_id
+8. 最终回复必须说明：修改/创建的文件、实际运行的验证命令及结果、剩余风险或未验证项
 
 ## 严禁行为
 - 不要删除项目根目录或关键系统文件
@@ -546,31 +741,33 @@ func remoteCodingToolDefinitions() []map[string]interface{} {
 	return []map[string]interface{}{
 		buildRemoteToolDef("ssh_read_file", "读取远程服务器上的文件内容",
 			map[string]interface{}{
-				"path": map[string]interface{}{"type": "string", "description": "文件路径（相对于项目目录或绝对路径）"},
+				"path":   map[string]interface{}{"type": "string", "description": "文件路径（相对于项目目录或绝对路径；也接受 file/file_path/filename/target_path）"},
+				"offset": map[string]interface{}{"type": "number", "description": "可选，1-based 起始行；也接受 start/start_line"},
+				"limit":  map[string]interface{}{"type": "number", "description": "可选，最多读取的行数；默认 200，也接受 num_lines/line_count，最大 2000"},
 			}, []string{"path"}),
 		buildRemoteToolDef("ssh_write_file", "写入内容到远程文件（自动创建父目录）",
 			map[string]interface{}{
-				"path":    map[string]interface{}{"type": "string", "description": "文件路径"},
+				"path":    map[string]interface{}{"type": "string", "description": "文件路径（也接受 file/file_path/filename/target_path）"},
 				"content": map[string]interface{}{"type": "string", "description": "文件内容"},
 			}, []string{"path", "content"}),
-		buildRemoteToolDef("ssh_edit_file", "精确替换远程文件中的文本（old_str 必须在文件中唯一匹配）",
+		buildRemoteToolDef("ssh_edit_file", "精确替换远程文件中的文本（old_str 必须在文件中唯一匹配；也接受 old_string/old_content/find/search 和 new_string/new_content/replace/replacement）",
 			map[string]interface{}{
-				"path":    map[string]interface{}{"type": "string", "description": "文件路径"},
-				"old_str": map[string]interface{}{"type": "string", "description": "要被替换的原始文本"},
-				"new_str": map[string]interface{}{"type": "string", "description": "替换后的新文本"},
+				"path":    map[string]interface{}{"type": "string", "description": "文件路径（也接受 file/file_path/filename/target_path）"},
+				"old_str": map[string]interface{}{"type": "string", "description": "要被替换的原始文本（也接受 old_string/old_content/find/search）"},
+				"new_str": map[string]interface{}{"type": "string", "description": "替换后的新文本（也接受 new_string/new_content/replace/replacement）"},
 			}, []string{"path", "old_str", "new_str"}),
 		buildRemoteToolDef("ssh_bash", "在远程服务器上执行 shell 命令（长时间命令自动转后台任务）",
 			map[string]interface{}{
 				"command":     map[string]interface{}{"type": "string", "description": "要执行的命令"},
-				"working_dir": map[string]interface{}{"type": "string", "description": "工作目录（默认项目目录）"},
+				"working_dir": map[string]interface{}{"type": "string", "description": "工作目录（默认项目目录；也接受 cwd/work_dir）"},
 			}, []string{"command"}),
 		buildRemoteToolDef("ssh_list_dir", "列出远程目录内容",
 			map[string]interface{}{
-				"path": map[string]interface{}{"type": "string", "description": "目录路径（默认项目目录）"},
+				"path": map[string]interface{}{"type": "string", "description": "目录路径（默认项目目录；也接受 dir/directory/root/file/file_path/filename/target_path）"},
 			}, nil),
 		buildRemoteToolDef("ssh_check_task", "查询后台任务状态（训练/下载等长时间任务）。返回运行状态和日志尾部",
 			map[string]interface{}{
-				"task_id": map[string]interface{}{"type": "string", "description": "后台任务 ID（由 ssh_bash 长命令自动返回）"},
+				"task_id": map[string]interface{}{"type": "string", "description": "后台任务 ID（由 ssh_bash 长命令自动返回；也接受 id/task）"},
 			}, []string{"task_id"}),
 	}
 }
@@ -600,6 +797,78 @@ func remoteArgStr(args map[string]interface{}, key string) string {
 	return strings.TrimSpace(v)
 }
 
+func remoteArgRawStr(args map[string]interface{}, key string) (string, bool) {
+	v, ok := args[key].(string)
+	return v, ok
+}
+
+func remoteArgInt(args map[string]interface{}, defaultValue, minValue, maxValue int, keys ...string) int {
+	value := defaultValue
+	for _, key := range keys {
+		raw, ok := args[key]
+		if !ok {
+			continue
+		}
+		switch v := raw.(type) {
+		case int:
+			value = v
+		case int64:
+			value = int(v)
+		case float64:
+			value = int(v)
+		case json.Number:
+			if n, err := v.Int64(); err == nil {
+				value = int(n)
+			}
+		case string:
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+				value = n
+			}
+		}
+		break
+	}
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func applyRemoteCodingSubAgentToolArgumentAliases(name string, args map[string]interface{}) bool {
+	if len(args) == 0 {
+		return false
+	}
+	changed := false
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ssh_read_file", "ssh_write_file":
+		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
+	case "ssh_edit_file":
+		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "old_string", "old_str") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "old_content", "old_str") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "find", "old_str") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "search", "old_str") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "new_string", "new_str") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "new_content", "new_str") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "replace", "new_str") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "replacement", "new_str") || changed
+	case "ssh_bash":
+		changed = applyCodingSubAgentToolArgumentAlias(args, "work_dir", "working_dir") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "cwd", "working_dir") || changed
+	case "ssh_list_dir":
+		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
+		changed = applyCodingSubAgentDirectoryArgumentAliases(args) || changed
+	case "ssh_check_task":
+		changed = applyCodingSubAgentToolArgumentAlias(args, "task", "task_id") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "id", "task_id") || changed
+	case "coding_knowledge_search", "knowledge_search":
+		changed = applyCodingSubAgentQueryArgumentAliases(args) || changed
+	}
+	return changed
+}
+
 func remoteShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
@@ -609,38 +878,96 @@ func base64EncodeString(s string) string {
 }
 
 func isLongRemoteCommand(command string) bool {
-	lower := strings.ToLower(command)
-	// Only match commands that are clearly long-running.
-	// Exclude short Python one-liners (python3 -c "...")
-	longPatterns := []string{
-		"train", "fit", "epoch",
-		"nohup ", "screen ", "tmux ",
-		"pip install", "conda install",
-		"git clone ", "git pull",
-		"wget ", "curl -o", "curl -L",
-		"docker build", "docker pull",
-		"make ", "cmake ",
-		"apt install", "apt-get install",
+	lower := strings.ToLower(strings.TrimSpace(command))
+	if lower == "" || remoteCommandIsPythonOneLiner(lower) {
+		return false
 	}
-	for _, p := range longPatterns {
-		if strings.Contains(lower, p) {
-			// Exclude false positives: "python3 -c" one-liners that mention train/fit
-			if strings.Contains(lower, "python3 -c") || strings.Contains(lower, "python -c") {
-				return false
-			}
+	for _, pattern := range []string{
+		"nohup ",
+		"screen ",
+		"tmux ",
+		"pip install",
+		"conda install",
+		"apt install",
+		"apt-get install",
+		"git clone ",
+		"wget ",
+		"curl -o",
+		"curl -l",
+		"docker build",
+		"docker pull",
+	} {
+		if strings.Contains(lower, pattern) {
 			return true
 		}
 	}
-	// Python/shell scripts that run training (not one-liners)
-	if (strings.Contains(lower, "python") || strings.Contains(lower, "bash ")) &&
-		!strings.Contains(lower, " -c ") &&
-		!strings.Contains(lower, " -c\"") {
-		// Only if it looks like running a script file
-		if strings.Contains(lower, ".py") || strings.Contains(lower, ".sh") {
-			return true
+	if strings.Contains(lower, "git pull") {
+		return true
+	}
+	if strings.HasPrefix(lower, "make ") || strings.Contains(lower, " make ") {
+		return remoteCommandHasLongTrainingIntent(lower) || strings.Contains(lower, " build") || strings.Contains(lower, " install")
+	}
+	if strings.Contains(lower, "cmake ") {
+		return strings.Contains(lower, "--build") || strings.Contains(lower, " --install")
+	}
+	if (strings.Contains(lower, "python") || strings.Contains(lower, "bash ") || strings.Contains(lower, "sh ")) &&
+		(strings.Contains(lower, ".py") || strings.Contains(lower, ".sh")) {
+		return remoteCommandHasLongTrainingIntent(lower)
+	}
+	return remoteCommandHasLongTrainingIntent(lower) && remoteCommandLooksExplicitlyLongRunning(lower)
+}
+
+func remoteCommandIsPythonOneLiner(lower string) bool {
+	return strings.Contains(lower, "python3 -c") ||
+		strings.Contains(lower, "python -c") ||
+		strings.Contains(lower, "python3 - <<") ||
+		strings.Contains(lower, "python - <<")
+}
+
+func remoteCommandLooksExplicitlyLongRunning(lower string) bool {
+	return strings.Contains(lower, "train ") ||
+		strings.Contains(lower, " train") ||
+		strings.Contains(lower, "epoch") ||
+		strings.Contains(lower, "--epochs") ||
+		strings.Contains(lower, "--max-steps")
+}
+
+func remoteCommandHasLongTrainingIntent(lower string) bool {
+	tokens := remoteCommandTokens(lower)
+	for i, token := range tokens {
+		if !remoteCommandTokenIsTrainingIntent(token) {
+			continue
 		}
+		if i > 0 && remoteCommandTokenSuppressesTrainingIntent(tokens[i-1]) {
+			continue
+		}
+		return true
 	}
 	return false
+}
+
+func remoteCommandTokenIsTrainingIntent(token string) bool {
+	switch token {
+	case "train", "training", "fit", "epoch", "epochs", "finetune", "finetuning":
+		return true
+	default:
+		return false
+	}
+}
+
+func remoteCommandTokenSuppressesTrainingIntent(token string) bool {
+	switch token {
+	case "check", "test", "tests", "validate", "validation", "lint", "verify":
+		return true
+	default:
+		return false
+	}
+}
+
+func remoteCommandTokens(command string) []string {
+	return strings.FieldsFunc(command, func(r rune) bool {
+		return !(unicode.IsLetter(r) || unicode.IsDigit(r))
+	})
 }
 
 // --- Knowledge Store Integration ---

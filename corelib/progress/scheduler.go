@@ -2,6 +2,7 @@ package progress
 
 import (
 	"math"
+	"strings"
 )
 
 // ScheduleAction is the dispatch decision for a message arriving during an active agent loop.
@@ -217,4 +218,86 @@ func CosineSimilarity(a, b []float32) float64 {
 	}
 
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// CharOverlapRatio computes the ratio of shared content between two strings
+// using bigram overlap (Sørensen–Dice coefficient). This measures structural
+// similarity at the character level — how much of the text is literally the same.
+//
+// Returns a value in [0, 1]:
+//   - 1.0 = identical strings (after normalization)
+//   - 0.7+ = near-identical with minor edits (typo fix, number change)
+//   - 0.3–0.6 = some shared phrases but substantially different content
+//   - 0.0 = completely different
+//
+// This is deliberately NOT semantic similarity (which embeddings measure).
+// Two messages about the same topic with different wording have low CharOverlapRatio
+// but high embedding cosine. A corrected restatement (same sentence with one
+// number changed) has high CharOverlapRatio AND high embedding cosine.
+//
+// The distinction matters for interrupt scheduling: high embedding cosine alone
+// could be either "supplement" or "correction". High CharOverlapRatio specifically
+// indicates "correction" — the user re-sent the same message with minor edits.
+func CharOverlapRatio(a, b string) float64 {
+	// Normalize: trim whitespace, collapse internal spaces.
+	a = normalizeForOverlap(a)
+	b = normalizeForOverlap(b)
+
+	if a == b {
+		return 1.0
+	}
+	if len(a) == 0 && len(b) == 0 {
+		return 1.0
+	}
+	if len(a) == 0 || len(b) == 0 {
+		return 0.0
+	}
+
+	// Convert to rune slices for CJK-correct bigram extraction.
+	ra := []rune(a)
+	rb := []rune(b)
+
+	if len(ra) < 2 || len(rb) < 2 {
+		// Too short for meaningful bigram comparison — cannot reliably
+		// distinguish correction from different content.
+		return 0.0
+	}
+
+	// Build bigram multisets.
+	bigramsA := bigramMultiset(ra)
+	bigramsB := bigramMultiset(rb)
+
+	// Dice coefficient = 2 * |intersection| / (|A| + |B|)
+	intersection := 0
+	for bg, countA := range bigramsA {
+		if countB, ok := bigramsB[bg]; ok {
+			if countA < countB {
+				intersection += countA
+			} else {
+				intersection += countB
+			}
+		}
+	}
+
+	total := len(ra) - 1 + len(rb) - 1 // number of bigrams in A + B
+	if total == 0 {
+		return 0.0
+	}
+	return float64(2*intersection) / float64(total)
+}
+
+// bigramMultiset extracts character bigrams from a rune slice and returns
+// their frequency counts.
+func bigramMultiset(runes []rune) map[[2]rune]int {
+	m := make(map[[2]rune]int, len(runes)-1)
+	for i := 0; i < len(runes)-1; i++ {
+		m[[2]rune{runes[i], runes[i+1]}]++
+	}
+	return m
+}
+
+// normalizeForOverlap trims and collapses internal whitespace for fair comparison.
+func normalizeForOverlap(s string) string {
+	fields := strings.Fields(s)
+	return strings.Join(fields, " ")
 }

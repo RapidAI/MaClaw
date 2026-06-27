@@ -305,6 +305,11 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			t.Fatalf("openapi execute business action body missing %s: %#v", name, paths["/api/v1/data/business-actions/{actionId}/execute"])
 		}
 	}
+	for _, name := range []string{"primary_result", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
+		if !openAPIOperationResponseHasProperty(paths, "/api/v1/data/business-actions/{actionId}/execute", "post", "200", name) {
+			t.Fatalf("openapi execute business action response missing %s: %#v", name, paths["/api/v1/data/business-actions/{actionId}/execute"])
+		}
+	}
 	for _, name := range []string{"domain", "dataset_id", "business_action_id", "record_id", "dry_run", "data"} {
 		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/business-rules/evaluate", name) {
 			t.Fatalf("openapi business rule evaluate body missing %s: %#v", name, paths["/api/v1/data/business-rules/evaluate"])
@@ -521,7 +526,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"workflow_node_id", "workflow_version", "workflow_decision_id", "detail_url", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
+	for _, name := range []string{"workflow_node_id", "workflow_node_ids", "workflow_version", "workflow_decision_id", "detail_url", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
 		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/approvals/{approvalId}/review", name) {
 			t.Fatalf("openapi approval review body missing %s: %#v", name, paths["/api/v1/data/approvals/{approvalId}/review"])
 		}
@@ -531,13 +536,41 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			t.Fatalf("openapi apply operation plan body missing %s: %#v", name, paths["/api/v1/data/operation-plans/{planId}/apply"])
 		}
 	}
-	for _, name := range []string{"app_id", "blueprint_id", "object_role", "kind", "priority", "summary", "request", "assigned_to", "due_at", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "workflow_decision_id", "detail_url", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
+	for _, name := range []string{"app_id", "blueprint_id", "object_role", "kind", "priority", "summary", "request", "assigned_to", "due_at", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "workflow_node_ids", "workflow_decision_id", "detail_url", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
 		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals", name) {
 			t.Fatalf("openapi create approval body missing %s: %#v", name, paths["/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals"])
 		}
 	}
+	for _, name := range []string{"approval_instance_id", "approvalInstanceId", "app_id", "appID", "objectRole", "approvalEvent", "businessEntity", "businessAction", "businessNote", "currentAssignee", "currentAssigneeType", "workflowNodeIDs", "detailURL"} {
+		if !openAPIRequestBodyNestedPropertyHasProperty(paths, "/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals", "post", "request", name) {
+			t.Fatalf("openapi create approval request body missing request.%s: %#v", name, openAPIRequestBodyProperty(paths, "/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals", "post", "request"))
+		}
+	}
+	for _, name := range []string{"app_id", "blueprint_id", "object_role", "approval_workflow_id", "trigger_event", "submitted_by", "current_assignee", "current_assignee_type", "from_status", "to_status", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "workflow_node_ids", "workflow_decision_id", "detail_url", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
+		if !openAPIListResponseItemHasProperty(paths, "/api/v1/data/approvals", name) {
+			t.Fatalf("openapi approvals list item missing %s: %#v", name, paths["/api/v1/data/approvals"])
+		}
+		if !openAPIOperationResponseHasProperty(paths, "/api/v1/data/approvals/{approvalId}", "get", "200", name) {
+			t.Fatalf("openapi approval detail response missing %s: %#v", name, paths["/api/v1/data/approvals/{approvalId}"])
+		}
+	}
+	for _, name := range []string{"approval_instance_id", "approvalInstanceId", "objectRole", "approvalEvent", "businessEntity", "businessAction", "businessNote", "currentAssignee", "currentAssigneeType", "workflowNodeIDs", "detailURL"} {
+		if !openAPIListResponseItemNestedPropertyHasProperty(paths, "/api/v1/data/approvals", "request", name) {
+			t.Fatalf("openapi approvals list item missing request.%s: %#v", name, paths["/api/v1/data/approvals"])
+		}
+		if !openAPIOperationResponseNestedPropertyHasProperty(paths, "/api/v1/data/approvals/{approvalId}", "get", "200", "request", name) {
+			t.Fatalf("openapi approval detail response missing request.%s: %#v", name, paths["/api/v1/data/approvals/{approvalId}"])
+		}
+	}
 	if !openAPIPostHasBusinessViewResponseSchema(paths, "/api/v1/data/views/{viewId}/query") {
 		t.Fatalf("openapi business view query path missing cursor response schema: %#v", paths["/api/v1/data/views/{viewId}/query"])
+	}
+	for _, path := range []string{"/api/v1/data/views/{viewId}/query", "/api/v1/data/reports/{reportId}/run", "/api/v1/data/dashboards/{dashboardId}/run"} {
+		for _, name := range []string{"primary_result", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
+			if !openAPIOperationResponseHasProperty(paths, path, "post", "200", name) {
+				t.Fatalf("openapi %s response missing %s: %#v", path, name, paths[path])
+			}
+		}
 	}
 	for _, name := range []string{"q", "tag", "filter", "sort", "limit", "before", "before_id"} {
 		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/views/{viewId}/query", name) {
@@ -573,7 +606,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/import-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/export-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/operation-plans":                       {"dataset_id", "operation", "status"},
-		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node", "approval_status", "approval_decision", "applicant_id", "approver_id", "approval_id", "workflow_instance_id", "dataset_id", "object_role", "record_id", "result_type", "definition_fingerprint", "has_blocking_dependency", "has_missing_required_dependency"},
+		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node", "approval_status", "approval_result_status", "approval_decision", "decision", "applicant_id", "submitted_by", "created_by", "approver_id", "assigned_to", "current_assignee", "approval_id", "record_approval_id", "workflow_instance_id", "approval_instance_id", "instance_id", "dataset_id", "dataset", "object_role", "object", "record_id", "business_record_id", "result_type", "output_type", "definition_fingerprint", "definition_hash", "app_definition_hash", "app_definition_fingerprint", "has_blocking_dependency", "has_missing_required_dependency", "has_missing_required"},
 		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "app_id", "blueprint_id", "object_role", "approval_workflow_id", "trigger_event", "submitted_by", "current_assignee", "current_assignee_type", "from_status", "to_status", "status", "kind", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "current_node_id", "current_node", "workflow_node", "business_status", "result_status", "assigned_to", "created_by", "reviewed_by", "lane", "overdue", "before", "before_id"},
 		"/api/v1/data/datasets/{datasetId}/schema-proposals": {"status"},
 		"/api/v1/data/datasets/{datasetId}/records":          {"q", "tag"},
@@ -2089,6 +2122,18 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	if dryRunAction.Rules == nil || dryRunAction.Rules.GovernanceStatus != "clear" {
 		t.Fatalf("expected dry-run business action governance rules: %#v", dryRunAction.Rules)
 	}
+	if dryRunAction.PrimaryResult != "business_record" || dryRunAction.BusinessStatus != "dry_run_valid" || dryRunAction.ResultStatus != "preview" {
+		t.Fatalf("dry-run business action should expose MaClaw result identity: %#v", dryRunAction)
+	}
+	if dryRunAction.ResultPayload["record_id"] != "SO-DRY-0001" || dryRunAction.ResultPayload["business_status"] != "dry_run_valid" || dryRunAction.ResultPayload["dry_run"] != true {
+		t.Fatalf("dry-run business action should expose MaClaw result payload: %#v", dryRunAction.ResultPayload)
+	}
+	if record, ok := dryRunAction.ResultPayload["business_record"].(map[string]any); !ok || record["customer"] != "DryRunCo" {
+		t.Fatalf("dry-run business action should expose preview business record: %#v", dryRunAction.ResultPayload)
+	}
+	if len(dryRunAction.Outputs) != 1 || dryRunAction.Outputs[0]["kind"] != "business_record" || dryRunAction.Outputs[0]["status"] != "preview" || len(dryRunAction.Artifacts) != 0 {
+		t.Fatalf("dry-run business action should expose output/artifact package: outputs=%#v artifacts=%#v", dryRunAction.Outputs, dryRunAction.Artifacts)
+	}
 	body = bytes.NewBufferString(`{"record_id":"SO-HIGH-0001","dry_run":true,"data":{"order_no":"SO-HIGH-0001","customer":"HighValueCo","amount":150000}}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/business-actions/sales.order_upsert/execute", body)
 	auth(req)
@@ -2255,6 +2300,18 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	if actionResult.Rules == nil || actionResult.Rules.GovernanceStatus != "clear" {
 		t.Fatalf("expected business action governance rules: %#v", actionResult.Rules)
 	}
+	if actionResult.PrimaryResult != "business_record" || actionResult.BusinessStatus != actionResult.Event.Status || actionResult.ResultStatus != actionResult.Event.Status {
+		t.Fatalf("business action should expose MaClaw result identity: %#v", actionResult)
+	}
+	if actionResult.ResultPayload["record_id"] != "SO-2026-0002" || actionResult.ResultPayload["business_status"] != actionResult.Event.Status || actionResult.ResultPayload["dataset_id"] != "sales.orders" {
+		t.Fatalf("business action should expose MaClaw result payload: %#v", actionResult.ResultPayload)
+	}
+	if record, ok := actionResult.ResultPayload["business_record"].(map[string]any); !ok || record["customer"] != "Initech" || record["id"] != "SO-2026-0002" {
+		t.Fatalf("business action should expose committed business record: %#v", actionResult.ResultPayload)
+	}
+	if len(actionResult.Outputs) != 1 || actionResult.Outputs[0]["kind"] != "business_record" || actionResult.Outputs[0]["status"] != actionResult.Event.Status || len(actionResult.Artifacts) != 0 {
+		t.Fatalf("business action should expose output/artifact package: outputs=%#v artifacts=%#v", actionResult.Outputs, actionResult.Artifacts)
+	}
 
 	body = bytes.NewBufferString(`{"record_id":"SO-2026-0002","idempotency_key":"business:sales.orders:SO-2026-0002:stage1","data":{"stage":"won","payment_status":"paid"}}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/business-actions/sales.order_status_update/execute", body)
@@ -2306,6 +2363,18 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	}
 	if _, ok := viewResult.Records[0].Data["gross_margin"]; ok {
 		t.Fatalf("business view should project only declared fields: %#v", viewResult.Records[0].Data)
+	}
+	if viewResult.PrimaryResult != "records" || viewResult.BusinessStatus != "done" || viewResult.ResultStatus != "done" {
+		t.Fatalf("business view should expose MaClaw result identity: %#v", viewResult)
+	}
+	if count, ok := numberFromAny(viewResult.ResultPayload["record_count"]); viewResult.ResultPayload["view_id"] != "sales.order_overview" || viewResult.ResultPayload["dataset_id"] != "sales.orders" || !ok || int(count) != len(viewResult.Records) {
+		t.Fatalf("business view should expose MaClaw result payload: %#v", viewResult.ResultPayload)
+	}
+	if rows, ok := viewResult.ResultPayload["records"].([]any); !ok || len(rows) == 0 || rows[0].(map[string]any)["dataset_id"] != "sales.orders" {
+		t.Fatalf("business view should expose result rows: %#v", viewResult.ResultPayload)
+	}
+	if len(viewResult.Outputs) != 1 || viewResult.Outputs[0]["kind"] != "table" || viewResult.Outputs[0]["status"] != "done" || len(viewResult.Artifacts) != 0 {
+		t.Fatalf("business view should expose output/artifact package: outputs=%#v artifacts=%#v", viewResult.Outputs, viewResult.Artifacts)
 	}
 	body = bytes.NewBufferString(`{"q":"Initech","limit":501}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/data/views/sales.order_overview/query", body)
@@ -4014,6 +4083,18 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	if report.Report.ID != "sales.order_summary_by_stage" || len(report.Result.Rows) == 0 {
 		t.Fatalf("unexpected report: %#v", report)
 	}
+	if report.PrimaryResult != "report" || report.BusinessStatus != "ready" || report.ResultStatus != "ready" {
+		t.Fatalf("report should expose MaClaw result identity: %#v", report)
+	}
+	if count, ok := numberFromAny(report.ResultPayload["row_count"]); report.ResultPayload["report_id"] != "sales.order_summary_by_stage" || report.ResultPayload["dataset_id"] != "sales.orders" || !ok || int(count) != len(report.Result.Rows) {
+		t.Fatalf("report should expose MaClaw result payload: %#v", report.ResultPayload)
+	}
+	if rows, ok := report.ResultPayload["rows"].([]any); !ok || len(rows) == 0 {
+		t.Fatalf("report should expose result rows: %#v", report.ResultPayload)
+	}
+	if len(report.Outputs) != 1 || report.Outputs[0]["kind"] != "report" || report.Outputs[0]["status"] != "ready" || len(report.Artifacts) != 0 {
+		t.Fatalf("report should expose output/artifact package: outputs=%#v artifacts=%#v", report.Outputs, report.Artifacts)
+	}
 	for _, tc := range []struct {
 		name string
 		body string
@@ -4062,6 +4143,18 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	}
 	if dashboard.Dashboard.ID != "sales.overview" || dashboard.Stats == nil || dashboard.InboxSummary == nil || len(dashboard.Reports) == 0 || dashboard.Reports[0].Result == nil {
 		t.Fatalf("unexpected dashboard: %#v", dashboard)
+	}
+	if dashboard.PrimaryResult != "dashboard" || dashboard.BusinessStatus != "ready" || dashboard.ResultStatus != "ready" {
+		t.Fatalf("dashboard should expose MaClaw result identity: %#v", dashboard)
+	}
+	if count, ok := numberFromAny(dashboard.ResultPayload["card_count"]); dashboard.ResultPayload["dashboard_id"] != "sales.overview" || dashboard.ResultPayload["domain"] != "sales" || !ok || int(count) != len(dashboard.Reports) {
+		t.Fatalf("dashboard should expose MaClaw result payload: %#v", dashboard.ResultPayload)
+	}
+	if cards, ok := dashboard.ResultPayload["cards"].([]any); !ok || len(cards) == 0 {
+		t.Fatalf("dashboard should expose cards in result payload: %#v", dashboard.ResultPayload)
+	}
+	if len(dashboard.Outputs) != 1 || dashboard.Outputs[0]["kind"] != "dashboard" || dashboard.Outputs[0]["status"] != "ready" || len(dashboard.Artifacts) != 0 {
+		t.Fatalf("dashboard should expose output/artifact package: outputs=%#v artifacts=%#v", dashboard.Outputs, dashboard.Artifacts)
 	}
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/dashboards?limit=1", nil)
 	auth(req)
@@ -5737,6 +5830,64 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 		t.Fatalf("app installation should expose workflow contract decision outputs: %#v", installed.Metadata)
 	}
 
+	nestedOnlyInstallBody := map[string]any{
+		"app_id": "mis.attention",
+		"name":   "Attention Approval App",
+		"kind":   "enterprise_approval_app",
+		"status": "installed",
+		"source": "hub",
+		"metadata": map[string]any{
+			"test_evidence": map[string]any{
+				"run_id": "run-attention-http-1",
+				"approval_instance": map[string]any{
+					"approval_id":                     "approval-attention-http-1",
+					"workflow_instance_id":            "workflow-attention-http-1",
+					"dataset_id":                      "finance.expense_forms",
+					"record_id":                       "expense-attention-http-1",
+					"status":                          "attention",
+					"current_node":                    "expense.attention",
+					"workflow_skill_id":               "skill.expense.approval",
+					"approval_instance_view_verified": true,
+					"result_payload": map[string]any{
+						"approval_result":    "attention",
+						"business_status":    "workflow_error",
+						"result_status":      "workflow_error",
+						"text":               "policy engine failed",
+						"workflow_lifecycle": "error",
+					},
+					"outputs": []any{
+						map[string]any{"kind": "attention_document", "title": "Attention report", "status": "ready"},
+					},
+					"artifacts": []any{
+						map[string]any{"id": "attention-log", "name": "attention-log.txt", "uri": "artifact://attention-log"},
+					},
+				},
+			},
+		},
+	}
+	req = jsonRequest(http.MethodPost, "/api/v1/data/app-installations", nestedOnlyInstallBody)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create nested-only app installation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var nestedInstalled AppInstallation
+	if err := json.NewDecoder(w.Body).Decode(&nestedInstalled); err != nil {
+		t.Fatalf("decode nested-only app installation: %v", err)
+	}
+	nestedEvidence, ok := nestedInstalled.Metadata["test_evidence"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested-only app installation should normalize test evidence: %#v", nestedInstalled.Metadata)
+	}
+	nestedPayload, ok := nestedEvidence["result_payload"].(map[string]any)
+	if !ok || nestedPayload["workflow_lifecycle"] != "error" || nestedPayload["approval_result"] != "attention" {
+		t.Fatalf("nested-only app installation should promote approval result payload: %#v", nestedEvidence)
+	}
+	if nestedInstalled.Metadata["test_evidence_result_payload"] == nil || nestedInstalled.Metadata["test_evidence_output_count"] != float64(1) || nestedInstalled.Metadata["test_evidence_artifact_count"] != float64(1) {
+		t.Fatalf("nested-only app installation should expose promoted result summaries: %#v", nestedInstalled.Metadata)
+	}
+
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?app_id=mis.expense", nil)
 	auth(req)
 	w = httptest.NewRecorder()
@@ -5785,6 +5936,21 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 		t.Fatalf("expected approval-result-filtered app installation: %#v", approvalResultListed)
 	}
 
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?result_type=attention_document", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations by nested approval result type status=%d body=%s", w.Code, w.Body.String())
+	}
+	var nestedResultListed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&nestedResultListed); err != nil {
+		t.Fatalf("decode nested-result-filtered app installations: %v", err)
+	}
+	if len(nestedResultListed.Items) != 1 || nestedResultListed.Items[0].AppID != "mis.attention" {
+		t.Fatalf("expected nested-result-filtered app installation: %#v", nestedResultListed)
+	}
+
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?definition_hash=sha256:expense-app", nil)
 	auth(req)
 	w = httptest.NewRecorder()
@@ -5813,6 +5979,21 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if len(approvalIdentifierListed.Items) != 1 || approvalIdentifierListed.Items[0].AppID != "mis.expense" {
 		t.Fatalf("expected approval-identifier-filtered app installation: %#v", approvalIdentifierListed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?approval_result_status=approved&decision=approved&record_approval_id=approval-remote-datasrv-1&approval_instance_id=workflow-expense-datasrv-1&dataset=finance.expense_forms&object=expense_report&business_record_id=expense-1&output_type=document&app_definition_hash=sha256:expense-app&has_missing_required=false", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations by alias filters status=%d body=%s", w.Code, w.Body.String())
+	}
+	var aliasFilteredListed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&aliasFilteredListed); err != nil {
+		t.Fatalf("decode alias-filtered app installations: %v", err)
+	}
+	if len(aliasFilteredListed.Items) != 1 || aliasFilteredListed.Items[0].AppID != "mis.expense" {
+		t.Fatalf("expected alias-filtered app installation: %#v", aliasFilteredListed)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?workflow_node=finance.cfo_review", nil)
@@ -5902,38 +6083,55 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&caps); err != nil {
 		t.Fatalf("decode app install capabilities: %v", err)
 	}
-	if len(caps.AppInstallations) != 1 || caps.AppInstallations[0].AppID != "mis.expense" {
+	capsExpense := findAppInstallation(caps.AppInstallations, "mis.expense")
+	if capsExpense == nil {
 		t.Fatalf("expected app installation in capabilities: %#v", caps.AppInstallations)
 	}
-	if navigation := appInstallationStringList(caps.AppInstallations[0].Metadata["workspace_layout_navigation"]); len(navigation) != 3 || navigation[1] != "pending_my_approval" {
-		t.Fatalf("capabilities should expose workspace navigation metadata: %#v", caps.AppInstallations[0].Metadata)
+	if navigation := appInstallationStringList(capsExpense.Metadata["workspace_layout_navigation"]); len(navigation) != 3 || navigation[1] != "pending_my_approval" {
+		t.Fatalf("capabilities should expose workspace navigation metadata: %#v", capsExpense.Metadata)
 	}
-	if columns := appInstallationStringList(caps.AppInstallations[0].Metadata["workspace_layout_list_columns"]); len(columns) != 4 || columns[2] != "current_node" {
-		t.Fatalf("capabilities should expose workspace list column metadata: %#v", caps.AppInstallations[0].Metadata)
+	if columns := appInstallationStringList(capsExpense.Metadata["workspace_layout_list_columns"]); len(columns) != 4 || columns[2] != "current_node" {
+		t.Fatalf("capabilities should expose workspace list column metadata: %#v", capsExpense.Metadata)
 	}
-	if caps.AppInstallations[0].Metadata["workspace_layout_primary_region"] != "left" || caps.AppInstallations[0].Metadata["workspace_layout_output_region"] != "bottom" || caps.AppInstallations[0].Metadata["workspace_layout_region_count"] != float64(3) {
-		t.Fatalf("capabilities should expose workspace placement metadata: %#v", caps.AppInstallations[0].Metadata)
+	if capsExpense.Metadata["workspace_layout_primary_region"] != "left" || capsExpense.Metadata["workspace_layout_output_region"] != "bottom" || capsExpense.Metadata["workspace_layout_region_count"] != float64(3) {
+		t.Fatalf("capabilities should expose workspace placement metadata: %#v", capsExpense.Metadata)
 	}
-	if regionIDs := appInstallationStringList(caps.AppInstallations[0].Metadata["workspace_layout_region_ids"]); len(regionIDs) != 3 || regionIDs[1] != "approval_inbox" {
-		t.Fatalf("capabilities should expose workspace region ids: %#v", caps.AppInstallations[0].Metadata)
+	if regionIDs := appInstallationStringList(capsExpense.Metadata["workspace_layout_region_ids"]); len(regionIDs) != 3 || regionIDs[1] != "approval_inbox" {
+		t.Fatalf("capabilities should expose workspace region ids: %#v", capsExpense.Metadata)
 	}
-	if caps.AppInstallations[0].Metadata["app_entry_version"] != "1.2.3" || caps.AppInstallations[0].Metadata["app_skill_version"] != "1.0.0" || caps.AppInstallations[0].Metadata["app_skill_source"] != "hub" {
-		t.Fatalf("capabilities should expose version snapshot summaries: %#v", caps.AppInstallations[0].Metadata)
+	if capsExpense.Metadata["app_entry_version"] != "1.2.3" || capsExpense.Metadata["app_skill_version"] != "1.0.0" || capsExpense.Metadata["app_skill_source"] != "hub" {
+		t.Fatalf("capabilities should expose version snapshot summaries: %#v", capsExpense.Metadata)
 	}
-	if caps.AppInstallations[0].Metadata["test_evidence_run_id"] != "run-expense-1" || caps.AppInstallations[0].Metadata["test_evidence_primary_result"] != "approval_result" || caps.AppInstallations[0].Metadata["test_evidence_output_count"] != float64(3) {
-		t.Fatalf("capabilities should expose test evidence summaries: %#v", caps.AppInstallations[0].Metadata)
+	if capsExpense.Metadata["test_evidence_run_id"] != "run-expense-1" || capsExpense.Metadata["test_evidence_primary_result"] != "approval_result" || capsExpense.Metadata["test_evidence_output_count"] != float64(3) {
+		t.Fatalf("capabilities should expose test evidence summaries: %#v", capsExpense.Metadata)
 	}
-	if caps.AppInstallations[0].Metadata["test_evidence_result_coverage_ok"] != true || caps.AppInstallations[0].Metadata["test_evidence_dependency_count"] != float64(2) || caps.AppInstallations[0].Metadata["test_evidence_governance_review_issue"] != false {
-		t.Fatalf("capabilities should expose governance verification summaries: %#v", caps.AppInstallations[0].Metadata)
+	if capsExpense.Metadata["test_evidence_result_coverage_ok"] != true || capsExpense.Metadata["test_evidence_dependency_count"] != float64(2) || capsExpense.Metadata["test_evidence_governance_review_issue"] != false {
+		t.Fatalf("capabilities should expose governance verification summaries: %#v", capsExpense.Metadata)
 	}
-	if caps.AppInstallations[0].Metadata["test_evidence_approval_id"] != "approval-remote-datasrv-1" || caps.AppInstallations[0].Metadata["test_evidence_record_id"] != "expense-1" || caps.AppInstallations[0].Metadata["test_evidence_approval_status"] != "approved" {
-		t.Fatalf("capabilities should expose approval instance summaries: %#v", caps.AppInstallations[0].Metadata)
+	if capsExpense.Metadata["test_evidence_approval_id"] != "approval-remote-datasrv-1" || capsExpense.Metadata["test_evidence_record_id"] != "expense-1" || capsExpense.Metadata["test_evidence_approval_status"] != "approved" {
+		t.Fatalf("capabilities should expose approval instance summaries: %#v", capsExpense.Metadata)
 	}
-	if caps.AppInstallations[0].Metadata["workflow_contract_skill_id"] != "skill.expense.approval" || caps.AppInstallations[0].Metadata["workflow_contract_object_role"] != "expense_report" {
-		t.Fatalf("capabilities should expose workflow contract summaries: %#v", caps.AppInstallations[0].Metadata)
+	capsEvidence, ok := capsExpense.Metadata["test_evidence"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities should preserve full test evidence: %#v", capsExpense.Metadata)
 	}
-	if caps.AppInstallations[0].Metadata["schema"] != "maclaw.app.v1" || caps.AppInstallations[0].Metadata["package_sha256"] != "sha256:expense-package" || caps.AppInstallations[0].Metadata["package_bytes"] != float64(4096) {
-		t.Fatalf("capabilities should expose package evidence summaries: %#v", caps.AppInstallations[0].Metadata)
+	if payload, ok := capsEvidence["result_payload"].(map[string]any); !ok || payload["business_status"] != "finance_approved" {
+		t.Fatalf("capabilities should preserve full test evidence payload: %#v", capsEvidence)
+	}
+	if outputs, ok := capsEvidence["outputs"].([]any); !ok || len(outputs) != 3 {
+		t.Fatalf("capabilities should preserve full test evidence outputs: %#v", capsEvidence)
+	}
+	if artifacts, ok := capsEvidence["artifacts"].([]any); !ok || len(artifacts) != 2 {
+		t.Fatalf("capabilities should preserve full test evidence artifacts: %#v", capsEvidence)
+	}
+	if approvalInstance, ok := capsEvidence["approval_instance"].(map[string]any); !ok || approvalInstance["approval_id"] != "approval-remote-datasrv-1" || approvalInstance["workflow_instance_id"] != "workflow-expense-datasrv-1" {
+		t.Fatalf("capabilities should preserve full approval instance evidence: %#v", capsEvidence)
+	}
+	if capsExpense.Metadata["workflow_contract_skill_id"] != "skill.expense.approval" || capsExpense.Metadata["workflow_contract_object_role"] != "expense_report" {
+		t.Fatalf("capabilities should expose workflow contract summaries: %#v", capsExpense.Metadata)
+	}
+	if capsExpense.Metadata["schema"] != "maclaw.app.v1" || capsExpense.Metadata["package_sha256"] != "sha256:expense-package" || capsExpense.Metadata["package_bytes"] != float64(4096) {
+		t.Fatalf("capabilities should expose package evidence summaries: %#v", capsExpense.Metadata)
 	}
 
 	audit, err := svc.QueryAuditLogs(context.Background(), Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}, QueryAuditLogsInput{Action: "app.installation_upsert", TargetType: "app_installation", TargetID: "mis.expense", Limit: 1})
@@ -6028,9 +6226,7 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 		t.Fatalf("CreateRecord: %v", err)
 	}
 
-	createApproval := func(body CreateRecordApprovalInput) RecordApproval {
-		req := jsonRequest(http.MethodPost, "/api/v1/data/datasets/"+ds.ID+"/records/exp-100/approvals", body)
-		auth(req)
+	createApprovalWithRequest := func(req *http.Request) RecordApproval {
 		w := httptest.NewRecorder()
 		server.Handler().ServeHTTP(w, req)
 		if w.Code != http.StatusCreated {
@@ -6041,6 +6237,17 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 			t.Fatalf("decode semantic approval: %v", err)
 		}
 		return approval
+	}
+	createApproval := func(body CreateRecordApprovalInput) RecordApproval {
+		req := jsonRequest(http.MethodPost, "/api/v1/data/datasets/"+ds.ID+"/records/exp-100/approvals", body)
+		auth(req)
+		return createApprovalWithRequest(req)
+	}
+	createApprovalAs := func(userID string, body CreateRecordApprovalInput) RecordApproval {
+		req := jsonRequest(http.MethodPost, "/api/v1/data/datasets/"+ds.ID+"/records/exp-100/approvals", body)
+		auth(req)
+		req.Header.Set("X-MaClaw-User-ID", userID)
+		return createApprovalWithRequest(req)
 	}
 
 	expenseApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.expense", BlueprintID: "mis.expense.approval", ObjectRole: "expense_report", ApprovalWorkflowID: "expense_approval", TriggerEvent: "expense.submitted", SubmittedBy: "employee_1", CurrentAssignee: "user_1", CurrentAssigneeType: "user", FromStatus: "submitted", ToStatus: "pending_manager", Kind: "approval", Summary: "Expense approval", WorkflowSkillID: "skill.expense.approval", WorkflowInstanceID: "wf-exp-100", WorkflowNodeID: "manager_review", WorkflowNodeIDs: []string{"manager_review", "finance_review"}, AssignedTo: "user_1"})
@@ -6160,6 +6367,36 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 		t.Fatalf("pending_my_approval lane should include current_assignee-owned approvals: %#v", pendingLane)
 	}
 
+	requestAssigneeApproval := createApprovalAs("workflow_bot", CreateRecordApprovalInput{AppID: "mis.request-assignee", BlueprintID: "mis.request-assignee.approval", ObjectRole: "request_assignee_case", Kind: "approval", Summary: "Request assignee approval", Request: map[string]any{"currentAssignee": "user_1", "assignedTo": "user_1", "businessEntity": "expense:exp-100"}, WorkflowSkillID: "skill.request.approval", WorkflowInstanceID: "wf-request-assignee-100", WorkflowNodeID: "manager_review"})
+	laneReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=pending_my_approval&app_id=mis.request-assignee", nil)
+	auth(laneReq)
+	laneW = httptest.NewRecorder()
+	server.Handler().ServeHTTP(laneW, laneReq)
+	if laneW.Code != http.StatusOK {
+		t.Fatalf("pending request assignee lane status=%d body=%s", laneW.Code, laneW.Body.String())
+	}
+	pendingLane = ListResponse[RecordApproval]{}
+	if err := json.NewDecoder(laneW.Body).Decode(&pendingLane); err != nil {
+		t.Fatalf("decode pending request assignee lane: %v", err)
+	}
+	if len(pendingLane.Items) != 1 || pendingLane.Items[0].ID != requestAssigneeApproval.ID || pendingLane.Items[0].AssignedTo != "" || pendingLane.Items[0].CurrentAssignee != "" {
+		t.Fatalf("pending_my_approval lane should include request-only assignee aliases: %#v", pendingLane)
+	}
+	laneReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?current_assignee=user_1&app_id=mis.request-assignee", nil)
+	auth(laneReq)
+	laneW = httptest.NewRecorder()
+	server.Handler().ServeHTTP(laneW, laneReq)
+	if laneW.Code != http.StatusOK {
+		t.Fatalf("request current_assignee filter status=%d body=%s", laneW.Code, laneW.Body.String())
+	}
+	pendingLane = ListResponse[RecordApproval]{}
+	if err := json.NewDecoder(laneW.Body).Decode(&pendingLane); err != nil {
+		t.Fatalf("decode request current_assignee filter: %v", err)
+	}
+	if len(pendingLane.Items) != 1 || pendingLane.Items[0].ID != requestAssigneeApproval.ID {
+		t.Fatalf("current_assignee filter should include request-only assignee aliases: %#v", pendingLane)
+	}
+
 	laneReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=my_requests&app_id=mis.travel", nil)
 	auth(laneReq)
 	laneW = httptest.NewRecorder()
@@ -6173,6 +6410,36 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	}
 	if len(myRequestsLane.Items) != 1 || myRequestsLane.Items[0].ID != travelApproval.ID || myRequestsLane.Items[0].CreatedBy != "user_1" {
 		t.Fatalf("my_requests lane should use authenticated requester: %#v", myRequestsLane)
+	}
+
+	requestRequesterApproval := createApprovalAs("workflow_bot", CreateRecordApprovalInput{AppID: "mis.request-requester", BlueprintID: "mis.request-requester.approval", ObjectRole: "request_requester_case", Kind: "approval", Summary: "Request requester approval", Request: map[string]any{"submittedBy": "user_1", "applicant": "user_1", "businessAction": "submit"}})
+	laneReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=my_requests&app_id=mis.request-requester", nil)
+	auth(laneReq)
+	laneW = httptest.NewRecorder()
+	server.Handler().ServeHTTP(laneW, laneReq)
+	if laneW.Code != http.StatusOK {
+		t.Fatalf("my request alias lane status=%d body=%s", laneW.Code, laneW.Body.String())
+	}
+	myRequestsLane = ListResponse[RecordApproval]{}
+	if err := json.NewDecoder(laneW.Body).Decode(&myRequestsLane); err != nil {
+		t.Fatalf("decode my request alias lane: %v", err)
+	}
+	if len(myRequestsLane.Items) != 1 || myRequestsLane.Items[0].ID != requestRequesterApproval.ID || myRequestsLane.Items[0].CreatedBy != "workflow_bot" || myRequestsLane.Items[0].SubmittedBy != "workflow_bot" {
+		t.Fatalf("my_requests lane should include request-only requester aliases: %#v", myRequestsLane)
+	}
+	laneReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?submitted_by=user_1&app_id=mis.request-requester", nil)
+	auth(laneReq)
+	laneW = httptest.NewRecorder()
+	server.Handler().ServeHTTP(laneW, laneReq)
+	if laneW.Code != http.StatusOK {
+		t.Fatalf("request submitted_by filter status=%d body=%s", laneW.Code, laneW.Body.String())
+	}
+	myRequestsLane = ListResponse[RecordApproval]{}
+	if err := json.NewDecoder(laneW.Body).Decode(&myRequestsLane); err != nil {
+		t.Fatalf("decode request submitted_by filter: %v", err)
+	}
+	if len(myRequestsLane.Items) != 1 || myRequestsLane.Items[0].ID != requestRequesterApproval.ID {
+		t.Fatalf("submitted_by filter should include request-only requester aliases: %#v", myRequestsLane)
 	}
 
 	laneReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=attention", nil)
@@ -7112,6 +7379,64 @@ func openAPIOperationResponseHasProperty(paths map[string]any, path string, meth
 	return ok
 }
 
+func openAPIOperationResponseNestedPropertyHasProperty(paths map[string]any, path string, method string, status string, parent string, child string) bool {
+	properties := openAPIOperationStatusResponseProperties(paths, path, method, status)
+	parentProp, ok := properties[parent].(map[string]any)
+	if !ok {
+		return false
+	}
+	childProperties, ok := parentProp["properties"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = childProperties[child]
+	return ok
+}
+
+func openAPIListResponseItemHasProperty(paths map[string]any, path string, name string) bool {
+	properties := openAPIGetResponseProperties(paths, path)
+	items, ok := properties["items"].(map[string]any)
+	if !ok {
+		return false
+	}
+	itemSchema, ok := items["items"].(map[string]any)
+	if !ok {
+		return false
+	}
+	itemProperties, ok := itemSchema["properties"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = itemProperties[name]
+	return ok
+}
+
+func openAPIListResponseItemNestedPropertyHasProperty(paths map[string]any, path string, parent string, child string) bool {
+	properties := openAPIGetResponseProperties(paths, path)
+	items, ok := properties["items"].(map[string]any)
+	if !ok {
+		return false
+	}
+	itemSchema, ok := items["items"].(map[string]any)
+	if !ok {
+		return false
+	}
+	itemProperties, ok := itemSchema["properties"].(map[string]any)
+	if !ok {
+		return false
+	}
+	parentProp, ok := itemProperties[parent].(map[string]any)
+	if !ok {
+		return false
+	}
+	childProperties, ok := parentProp["properties"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = childProperties[child]
+	return ok
+}
+
 func openAPIGetResponseProperties(paths map[string]any, path string) map[string]any {
 	return openAPIOperationResponseProperties(paths, path, "get")
 }
@@ -7566,6 +7891,15 @@ func containsDomainCatalog(items []BusinessDomainCatalog, domain string) bool {
 func findBusinessObject(items []BusinessObjectCatalog, objectRole string) *BusinessObjectCatalog {
 	for i := range items {
 		if items[i].ObjectRole == objectRole {
+			return &items[i]
+		}
+	}
+	return nil
+}
+
+func findAppInstallation(items []AppInstallation, appID string) *AppInstallation {
+	for i := range items {
+		if items[i].AppID == appID {
 			return &items[i]
 		}
 	}

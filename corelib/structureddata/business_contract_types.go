@@ -29,13 +29,19 @@ type ExecuteBusinessActionInput struct {
 }
 
 type ExecuteBusinessActionResult struct {
-	Action     BusinessAction          `json:"action"`
-	DryRun     bool                    `json:"dry_run,omitempty"`
-	Valid      bool                    `json:"valid"`
-	Validation *ValidateRecordResult   `json:"validation,omitempty"`
-	Preview    map[string]interface{}  `json:"preview,omitempty"`
-	Event      *DataEventResult        `json:"event,omitempty"`
-	Rules      *BusinessRuleEvaluation `json:"rules,omitempty"`
+	Action         BusinessAction          `json:"action"`
+	DryRun         bool                    `json:"dry_run,omitempty"`
+	Valid          bool                    `json:"valid"`
+	Validation     *ValidateRecordResult   `json:"validation,omitempty"`
+	Preview        map[string]interface{}  `json:"preview,omitempty"`
+	Event          *DataEventResult        `json:"event,omitempty"`
+	Rules          *BusinessRuleEvaluation `json:"rules,omitempty"`
+	PrimaryResult  string                  `json:"primary_result,omitempty"`
+	BusinessStatus string                  `json:"business_status,omitempty"`
+	ResultStatus   string                  `json:"result_status,omitempty"`
+	ResultPayload  map[string]any          `json:"result_payload,omitempty"`
+	Outputs        []map[string]any        `json:"outputs,omitempty"`
+	Artifacts      []map[string]any        `json:"artifacts,omitempty"`
 }
 
 type BusinessViewDefinition struct {
@@ -56,12 +62,18 @@ type QueryBusinessViewsInput struct {
 }
 
 type BusinessViewResult struct {
-	View         BusinessViewDefinition `json:"view"`
-	Records      []Record               `json:"records"`
-	Limit        int                    `json:"limit"`
-	HasMore      bool                   `json:"has_more"`
-	NextBefore   string                 `json:"next_before,omitempty"`
-	NextBeforeID string                 `json:"next_before_id,omitempty"`
+	View           BusinessViewDefinition `json:"view"`
+	Records        []Record               `json:"records"`
+	Limit          int                    `json:"limit"`
+	HasMore        bool                   `json:"has_more"`
+	NextBefore     string                 `json:"next_before,omitempty"`
+	NextBeforeID   string                 `json:"next_before_id,omitempty"`
+	PrimaryResult  string                 `json:"primary_result,omitempty"`
+	BusinessStatus string                 `json:"business_status,omitempty"`
+	ResultStatus   string                 `json:"result_status,omitempty"`
+	ResultPayload  map[string]any         `json:"result_payload,omitempty"`
+	Outputs        []map[string]any       `json:"outputs,omitempty"`
+	Artifacts      []map[string]any       `json:"artifacts,omitempty"`
 }
 
 type BusinessDomainCatalog struct {

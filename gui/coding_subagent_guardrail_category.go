@@ -31,7 +31,13 @@ func classifyCodingGuardrailResultMarker(result string) codingGuardrailResultMar
 	switch {
 	case strings.Contains(lower, "host tool handler is unavailable"):
 		return codingGuardrailResultMarkerHostUnavailable
-	case strings.Contains(lower, "outside project") || strings.Contains(lower, "project"):
+	case strings.Contains(lower, "outside project") ||
+		strings.Contains(lower, "outside the project") ||
+		strings.Contains(lower, "outside listed project") ||
+		strings.Contains(lower, "outside project scope") ||
+		strings.Contains(lower, "outside the project scope") ||
+		strings.Contains(lower, "out of project scope") ||
+		strings.Contains(lower, "out of scope"):
 		return codingGuardrailResultMarkerProjectScope
 	default:
 		return codingGuardrailResultMarkerNone

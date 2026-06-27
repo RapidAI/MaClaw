@@ -420,6 +420,17 @@ type IMMessageHandler struct {
 	// activeLoopCallbacks holds the most recent /loop callbacks for legacy callers.
 	// New cancellation paths must use activeLoopCallbacksByOwner.
 	activeLoopCallbacks atomic.Pointer[guiLoopCommandCallbacks]
+
+	// activeExperimentOrchestrator holds a running RemoteExperimentOrchestrator
+	// for the paper_reproduction workflow's iterative_improvement phase.
+	// Keyed by userID, value is *RemoteExperimentOrchestrator.
+	activeExperimentOrchestrator sync.Map
+
+	// pendingExperimentNotification stores notifications from a background
+	// experiment orchestrator that should be delivered to the user on their
+	// next interaction.
+	// Keyed by userID, value is string.
+	pendingExperimentNotification sync.Map
 }
 
 // NewIMMessageHandler creates a new handler.

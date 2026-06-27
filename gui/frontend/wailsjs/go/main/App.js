@@ -2331,6 +2331,17 @@ export function SendMessageForTab(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendMessageForTab'](arg1, arg2, arg3);
 }
 
+export function SetTabWorkingDir(arg1, arg2) {
+  return window['go']['main']['App']['SetTabWorkingDir'](arg1, arg2);
+}
+
+export function GetTabWorkingDir(arg1) {
+  return window['go']['main']['App']['GetTabWorkingDir'](arg1);
+}
+
+export function OpenProjectDirectory(arg1) {
+  return window['go']['main']['App']['OpenProjectDirectory'](arg1);
+}
 
 export function GetWorkflowDirectory(arg1, arg2) {
   return window['go']['main']['App']['GetWorkflowDirectory'](arg1, arg2);

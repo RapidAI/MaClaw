@@ -153,6 +153,23 @@ func buildOpenAIChatRequestBody(
 		if _, hasThinking := reqBody["thinking"]; !hasThinking {
 			reqBody["thinking"] = map[string]interface{}{"type": "enabled"}
 		}
+		// When tools are present, cap reasoning budget so tool call arguments
+		// have room to complete. DeepSeek V4 supports thinking.budget_tokens.
+		// This prevents reasoning from consuming the entire output budget.
+		if len(opts.Tools) > 0 {
+			thinking, _ := reqBody["thinking"].(map[string]interface{})
+			if thinking != nil {
+				if _, hasBudget := thinking["budget_tokens"]; !hasBudget {
+					// Reserve at most 25% of output for reasoning, min 1024.
+					maxOut := cfg.EffectiveMaxOutputTokens()
+					reasoningBudget := maxOut / 4
+					if reasoningBudget < 1024 {
+						reasoningBudget = 1024
+					}
+					thinking["budget_tokens"] = reasoningBudget
+				}
+			}
+		}
 	}
 	if corelib.IsDeepSeekFlashOpenAICompat(cfg) {
 		normalizeDeepSeekFlashUnsupportedOptions(reqBody)

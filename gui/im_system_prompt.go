@@ -176,6 +176,15 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 		MemoryStore:      h.memoryStore,
 		SkipMemoryRecall: true, // GUI handles memory recall in appendGUIEpilogue (with memory index, derived facts, knowledge auto-recall, frozen snapshot caching)
 		HasKnowledgeBase: true,
+		// EffectiveProjectDir: uses the SAME resolution function as tool execution,
+		// ensuring the LLM's understanding of "project directory" matches the actual
+		// cwd used by bash/write_file/read_file at runtime.
+		EffectiveProjectDir: func() string {
+			return h.resolveToolWorkDirForOwner("", promptUserID)
+		},
+		ScratchDir: func() string {
+			return os.TempDir()
+		},
 	}
 
 	// SSH hosts

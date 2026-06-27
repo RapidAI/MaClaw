@@ -244,6 +244,13 @@ type App struct {
 	// unnecessary disk reads in SendMessageForTab. Populated in CreateProjectTabSession.
 	tabProjectPaths sync.Map
 
+	// tabWorkingDirOverrides caches projectPath -> user-specified working directory.
+	// Written immediately when user clicks the directory switcher (SetTabWorkingDir).
+	// Read by recentTaskExecutionProjectPath() BEFORE checking the persistent
+	// workingDir tag in memory, ensuring the new directory takes effect on the
+	// very next agent loop without waiting for memory flush + index rebuild.
+	tabWorkingDirOverrides sync.Map
+
 	// sessionEventScopeIDs caches userID -> event_scope_id (tab ID) mappings.
 	// Populated when SendAIAssistantMessage receives a request with event_scope_id.
 	// Used by workflow event emission to include the scope ID in all events.
@@ -3156,21 +3163,12 @@ func (a *App) GetCurrentProjectPath() string {
 	if len(config.Projects) > 0 {
 		return config.Projects[0].Path
 	}
-	// Fallback: prefer cwd over home, but only if cwd is NOT the home dir
-	// and NOT a filesystem root. User home and drive roots contain hundreds of
-	// thousands of files which causes search tools to scan for minutes.
-	home, _ := os.UserHomeDir()
-	if cwd, err := os.Getwd(); err == nil && cwd != "" {
-		cleanCwd := filepath.Clean(cwd)
-		isRoot := len(cleanCwd) <= 3 // "C:\" or "/"
-		isHome := home != "" && strings.EqualFold(cleanCwd, filepath.Clean(home))
-		if !isRoot && !isHome {
-			return cwd
-		}
-	}
-	// Last resort: return home. Callers (setupDirectCodingExecution) have
-	// additional guards that reject home and allocate a task-specific dir.
-	return home
+	// No configured project. Do NOT use os.Getwd() — on Windows that is the
+	// maclaw installation directory (e.g. C:\Program Files\MaClaw\), which is
+	// not a valid project directory and causes search tools to scan system files.
+	// Return empty and let the caller handle the fallback (EffectiveWorkspaceDir
+	// or taskDir/workspace/).
+	return ""
 }
 func (a *App) getClaudeConfigPaths(projectDir string, instanceID string) (string, string, string) {
 	// Use project-specific config directory with instance ID to avoid cross-contamination
@@ -8190,6 +8188,40 @@ func (a *App) OpenFileOrShowInFolder(path string) error {
 
 func (a *App) OpenSkillRunArtifact(runID string, artifactID string) error {
 	return a.openSkillRunArtifactByID("", runID, artifactID, false)
+}
+
+// OpenProjectDirectory opens a directory in the system file explorer.
+// This is a Wails binding method called from the ProjectDirBar component.
+func (a *App) OpenProjectDirectory(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("empty path")
+	}
+	path = filepath.Clean(path)
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("not a directory: %s", path)
+	}
+	switch goruntime.GOOS {
+	case "windows":
+		cmd := exec.Command("explorer", filepath.FromSlash(path))
+		hideCommandWindow(cmd)
+		_ = cmd.Start()
+		go cmd.Wait()
+	case "darwin":
+		cmd := exec.Command("open", path)
+		_ = cmd.Start()
+		go cmd.Wait()
+	case "linux":
+		cmd := exec.Command("xdg-open", path)
+		_ = cmd.Start()
+		go cmd.Wait()
+	default:
+		log.Printf("[OpenProjectDirectory] unsupported platform: %s", goruntime.GOOS)
+	}
+	return nil
 }
 
 func (a *App) RevealSkillRunArtifact(runID string, artifactID string) error {

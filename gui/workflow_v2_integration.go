@@ -457,6 +457,20 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 		return workflowIMRouteResult{}
 	}
 
+	// --- Handle experiment orchestrator control commands ---
+	if resp := h.handleExperimentOrchestratorCommand(msg.UserID, trimmed); resp != nil {
+		return workflowIMRouteResult{Response: resp}
+	}
+
+	// --- Deliver pending experiment notifications ---
+	if notif, ok := h.pendingExperimentNotification.LoadAndDelete(msg.UserID); ok {
+		if notifStr, ok := notif.(string); ok && notifStr != "" {
+			// Prepend the notification to whatever response will be generated
+			// For now, deliver it immediately as a standalone response
+			return workflowIMRouteResult{Response: &IMAgentResponse{Text: notifStr}}
+		}
+	}
+
 	// Review replies must be handled before generic router matching. Otherwise
 	// short confirms like "继续推进" or implementation requests at the coding
 	// task-breakdown gate can be misrouted as a fresh task or a new workflow.
@@ -714,6 +728,17 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 					WorkflowAgentLoop: true,
 					WorkflowDocPhase:  false,
 				}
+			case v2.ExecModeRemoteSubAgent:
+				// Remote SubAgent execution (e.g. paper_reproduction iterative_improvement).
+				// Launches RemoteExperimentOrchestrator in a background goroutine.
+				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=remote_subagent for phase=%s", hr.Phase.ID)
+				resp := h.launchRemoteExperimentOrchestrator(msg.UserID, hr.State)
+				if resp != nil {
+					return workflowIMRouteResult{Response: resp}
+				}
+				// Fallback to normal agent loop if launch failed
+				log.Printf("[workflow-v2] RemoteExperimentOrchestrator launch failed, falling back to agent loop")
+
 			case v2.ExecModeAutoFromPrev:
 				// Auto-complete from previous phase output — no execution needed.
 				// This is used for phases like "verification" where the prior
@@ -2281,10 +2306,8 @@ func (h *IMMessageHandler) setupDirectCodingExecution(userID, originalText, rawP
 			taskDir := buildStandaloneTaskPath(dataDir, originalText)
 			if taskDir != "" {
 				projectPath = taskDir
-			} else if cwd, err := os.Getwd(); err == nil && cwd != "" && !strings.EqualFold(filepath.Clean(cwd), cleanedHome) {
-				projectPath = cwd
 			}
-			log.Printf("[workflow-v2] setupDirectCodingExecution: allocated task dir %q (rejected home/cwd fallback)", projectPath)
+			log.Printf("[workflow-v2] setupDirectCodingExecution: allocated task dir %q (rejected home/root path)", projectPath)
 		}
 	}
 	// Cancel any existing workflow

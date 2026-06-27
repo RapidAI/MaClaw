@@ -129,7 +129,9 @@ func (s *Service) RunReport(ctx context.Context, p Principal, reportID string, i
 	if err != nil {
 		return nil, err
 	}
-	return &ReportResult{Report: *report, Result: *result}, nil
+	out := &ReportResult{Report: *report, Result: *result}
+	applyReportResultPackage(out)
+	return out, nil
 }
 
 func (s *Service) AggregateRecords(ctx context.Context, p Principal, datasetID string, in AggregateInput) (*AggregateResult, error) {

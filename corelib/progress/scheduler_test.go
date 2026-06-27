@@ -222,3 +222,94 @@ func TestCosineSimilarity(t *testing.T) {
 		})
 	}
 }
+
+
+func TestCharOverlapRatio(t *testing.T) {
+	tests := []struct {
+		name     string
+		a, b     string
+		minRatio float64
+		maxRatio float64
+	}{
+		{
+			name:     "identical strings",
+			a:        "是两个端口的反代，9399/9399 ,确认下",
+			b:        "是两个端口的反代，9399/9399 ,确认下",
+			minRatio: 1.0,
+			maxRatio: 1.0,
+		},
+		{
+			name:     "correction: one number changed",
+			a:        "是两个端口的反代，9399/9399 ,确认下",
+			b:        "是两个端口的反代，9399/9388 ,确认下",
+			minRatio: 0.70,
+			maxRatio: 0.99,
+		},
+		{
+			name:     "correction: port number changed (English)",
+			a:        "set up reverse proxy for ports 9399/9399, confirm",
+			b:        "set up reverse proxy for ports 9399/9388, confirm",
+			minRatio: 0.70,
+			maxRatio: 0.99,
+		},
+		{
+			name:     "different topic entirely",
+			a:        "帮我查一下杭州的天气",
+			b:        "开发一个贪吃蛇游戏",
+			minRatio: 0.0,
+			maxRatio: 0.30,
+		},
+		{
+			name:     "same topic different content (supplement)",
+			a:        "开发一个贪吃蛇游戏",
+			b:        "用C++和CMake来实现，需要音效",
+			minRatio: 0.0,
+			maxRatio: 0.40,
+		},
+		{
+			name:     "empty strings",
+			a:        "",
+			b:        "something",
+			minRatio: 0.0,
+			maxRatio: 0.0,
+		},
+		{
+			name:     "both empty",
+			a:        "",
+			b:        "",
+			minRatio: 1.0,
+			maxRatio: 1.0,
+		},
+		{
+			name:     "short correction: typo fix",
+			a:        "用C++ cmake",
+			b:        "用C++ CMake",
+			minRatio: 0.60,
+			maxRatio: 0.99,
+		},
+		{
+			name:     "single char: too short for correction detection",
+			a:        "是",
+			b:        "否",
+			minRatio: 0.0,
+			maxRatio: 0.0,
+		},
+		{
+			name:     "length ratio > 2:1 would be caught by caller guard",
+			a:        "确认",
+			b:        "确认一下，另外帮我加上SSL证书和负载均衡",
+			minRatio: 0.0,
+			maxRatio: 0.50,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ratio := CharOverlapRatio(tt.a, tt.b)
+			if ratio < tt.minRatio || ratio > tt.maxRatio {
+				t.Errorf("CharOverlapRatio(%q, %q) = %.3f, want [%.2f, %.2f]",
+					tt.a, tt.b, ratio, tt.minRatio, tt.maxRatio)
+			}
+		})
+	}
+}

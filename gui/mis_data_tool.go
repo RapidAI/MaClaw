@@ -507,10 +507,14 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			{"applicantId", "applicant_id"},
 			{"submitted_by", "applicant_id"},
 			{"submittedBy", "applicant_id"},
+			{"created_by", "applicant_id"},
+			{"createdBy", "applicant_id"},
 			{"approver_id", "approver_id"},
 			{"approverId", "approver_id"},
 			{"assigned_to", "approver_id"},
 			{"assignedTo", "approver_id"},
+			{"current_assignee", "approver_id"},
+			{"currentAssignee", "approver_id"},
 			{"approval_id", "approval_id"},
 			{"approvalId", "approval_id"},
 			{"record_approval_id", "approval_id"},
@@ -526,8 +530,10 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			{"instanceId", "workflow_instance_id"},
 			{"dataset_id", "dataset_id"},
 			{"datasetId", "dataset_id"},
+			{"dataset", "dataset_id"},
 			{"object_role", "object_role"},
 			{"objectRole", "object_role"},
+			{"object", "object_role"},
 			{"record_id", "record_id"},
 			{"recordId", "record_id"},
 			{"business_record_id", "record_id"},
@@ -550,6 +556,9 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			{"beforeId", "before_id"},
 		} {
 			if value := strings.TrimSpace(stringArg(args, pair.arg)); value != "" && values.Get(pair.query) == "" {
+				if pair.query == "app_id" {
+					value = canonicalMISDataAppInstallationID(value)
+				}
 				values.Set(pair.query, value)
 			}
 		}
@@ -568,7 +577,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
 	case misDataToolActionGetAppInstallation:
-		appID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "app_id"), stringArg(args, "appId"), stringArg(args, "id")))
+		appID := canonicalMISDataAppInstallationID(firstNonEmptyMISAgentView(stringArg(args, "app_id"), stringArg(args, "appId"), stringArg(args, "id")))
 		if appID == "" {
 			return "missing app_id"
 		}
@@ -3424,6 +3433,14 @@ func firstNonEmptyMISAgentView(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func canonicalMISDataAppInstallationID(id string) string {
+	id = strings.TrimSpace(id)
+	if strings.HasPrefix(id, "datasrv-installed-") {
+		return strings.TrimSpace(strings.TrimPrefix(id, "datasrv-installed-"))
+	}
+	return id
 }
 
 func (a *App) callMISDataDownloadSummary(cfg corelib.MISDataConfig, path string) string {

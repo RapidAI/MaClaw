@@ -35,6 +35,7 @@ import { AITabBar } from "./AITabBar";
 import { getAITabDisplayTitle } from "./AITabItem";
 import type { AITab } from "./AITabTypes";
 import { useAITabManager } from "./useAITabManager";
+import { ProjectDirBar } from "./ProjectDirBar";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { useAddGroupParticipantToTab } from "./useAddGroupParticipantToTab";
 import { useAddLocalMaclawToTab } from "./useAddLocalMaclawToTab";
@@ -2109,6 +2110,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 activateTab(tab.id);
             }} onAddLocalMaclawToTab={addLocalMaclawToTab} onRenameGroupTab={openRenameGroupDialog} lang={lang} getLastActiveAt={getLastActiveAt} recordingTabId={skillRecordingTabId} />
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
+            {(activeTab?.type === "local" || activeTab?.type === "project") && (
+                <ProjectDirBar tabId={activeTab?.type === "local" ? "" : (activeTab?.id || "")} theme={t} lang={lang} />
+            )}
             {showChatUI && <>
                 <AssistantWorkflowMaximizeSuggestion inline={!!inline} lang={lang} maximized={!!maximized} onDismiss={dismissMaximizeSuggestion} onToggleMaximize={onToggleMaximize} suggestMaximize={workflowState.suggestMaximize} theme={t} themeMode={themeMode} />
                 <ProjectSearchPanel search={projectSearch} lang={lang} theme={t} inline={!!inline} onProjectSwitch={handleProjectSearchSwitch} onCreateProjectTab={createProjectTabFromSearch} onCloseProjectTab={closeProjectTabByPath} onForkCurrentChat={handleForkCurrentChat} onTaskPrefsChanged={onTaskPrefsChanged} />

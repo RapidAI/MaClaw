@@ -678,6 +678,20 @@
     max-width: 1180px;
 }
 
+.apps-preview--studio {
+    max-width: none;
+}
+
+.apps-preview--studio > .apps-studio-panel {
+    min-width: 0;
+    width: 100%;
+}
+
+.apps-preview--studio > .apps-studio-panel > * {
+    min-width: 0;
+    width: 100%;
+}
+
 .apps-runtime-layout {
     align-items: start;
     grid-auto-flow: row;
@@ -984,6 +998,10 @@
     gap: 10px;
 }
 
+.apps-approval-manager {
+    container-type: inline-size;
+}
+
 .apps-datasrv-approval-summary {
     display: grid;
     gap: 8px;
@@ -1254,6 +1272,40 @@
     outline: none;
 }
 
+.apps-approval-manager__section-head {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 2px 1px 0;
+}
+
+.apps-approval-manager__section-head div {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+}
+
+.apps-approval-manager__section-head strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--theme-text-primary);
+    font-size: 0.78rem;
+    font-weight: 900;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.apps-approval-manager__section-head span {
+    min-width: 0;
+    color: var(--theme-text-secondary);
+    font-size: 0.68rem;
+    font-weight: 750;
+    line-height: 1.45;
+    text-wrap: pretty;
+}
+
 .apps-approval-manager__body {
     display: grid;
     grid-template-columns: minmax(240px, 0.8fr) minmax(360px, 1.2fr);
@@ -1401,11 +1453,46 @@
     text-align: center;
 }
 
+.apps-approval-empty--detail {
+    min-height: 142px;
+    align-self: stretch;
+}
+
 .apps-approval-detail {
     display: grid;
     align-content: start;
     gap: 8px;
     padding: 9px;
+}
+
+.apps-approval-detail__section-head {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+    padding-bottom: 7px;
+    border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.apps-approval-detail__section-head strong,
+.apps-approval-detail__section-head span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.apps-approval-detail__section-head strong {
+    color: var(--theme-text-primary);
+    font-size: 0.78rem;
+    font-weight: 900;
+    white-space: nowrap;
+}
+
+.apps-approval-detail__section-head span {
+    color: var(--theme-text-secondary);
+    font-size: 0.68rem;
+    font-weight: 750;
+    line-height: 1.45;
+    text-wrap: pretty;
 }
 
 .apps-approval-detail__head strong,
@@ -1654,6 +1741,15 @@
 }
 
 @container (max-width: 680px) {
+    .apps-approval-manager__filters,
+    .apps-approval-manager__body {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .apps-approval-manager__lanes {
+        grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+    }
+
     .apps-approval-layout {
         grid-template-columns: minmax(0, 1fr);
     }

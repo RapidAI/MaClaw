@@ -34,6 +34,29 @@ func decodeDownloadedSkillJSON(data []byte) (*corelib.NLSkillEntry, error) {
 	return decodeDownloadedSkillJSONToDir(data, "")
 }
 
+func normalizeDownloadedSkillVersion(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" || len(version) > 32 {
+		return ""
+	}
+	first := version[0]
+	if first != 'v' && first != 'V' && (first < '0' || first > '9') {
+		return ""
+	}
+	for _, r := range version {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '.', '-', '_', '+':
+			continue
+		default:
+			return ""
+		}
+	}
+	return version
+}
+
 func decodeDownloadedSkillJSONToDir(data []byte, targetDir string) (*corelib.NLSkillEntry, error) {
 	var full struct {
 		ID          string            `json:"id"`
@@ -96,7 +119,7 @@ func decodeDownloadedSkillJSONToDir(data []byte, targetDir string) (*corelib.NLS
 		CreatedAt:   time.Now().Format(time.RFC3339),
 		Source:      "hub",
 		HubSkillID:  full.ID,
-		HubVersion:  full.Version,
+		HubVersion:  normalizeDownloadedSkillVersion(full.Version),
 		TrustLevel:  trustLevel,
 		SkillDir:    installSkillDir,
 	}, nil

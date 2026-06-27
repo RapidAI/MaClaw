@@ -5,11 +5,18 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
 
 const recordApprovalSelectColumns = `id, tenant_id, dataset_id, record_id, app_id, blueprint_id, object_role, approval_workflow_id, trigger_event, submitted_by, current_assignee, current_assignee_type, from_status, to_status, status, kind, summary, request_json, workflow_skill_id, workflow_version, workflow_instance_id, workflow_node_id, workflow_node_ids_json, workflow_decision_id, detail_url, business_status, result_status, decision, reason, created_by, reviewed_by, created_at, reviewed_at, updated_at, assigned_to, due_at, priority, result_payload_json, outputs_json, artifacts_json`
+
+var (
+	recordApprovalRequesterRequestAliases = []string{"submitted_by", "submittedBy", "owner", "applicant"}
+	recordApprovalAssigneeRequestAliases  = []string{"assigned_to", "assignedTo", "current_assignee", "currentAssignee"}
+	recordApprovalReviewerRequestAliases  = []string{"reviewed_by", "reviewedBy"}
+)
 
 func (s *SQLiteStore) CreateRecordApproval(ctx context.Context, approval RecordApproval) (*RecordApproval, error) {
 	approval.Request = cloneJSONMap(approval.Request)
@@ -60,12 +67,10 @@ func (s *SQLiteStore) ListRecordApprovals(ctx context.Context, tenantID string, 
 		args = append(args, triggerEvent)
 	}
 	if submittedBy := strings.TrimSpace(in.SubmittedBy); submittedBy != "" {
-		clauses = append(clauses, "submitted_by = ?")
-		args = append(args, submittedBy)
+		clauses, args = appendRecordApprovalIdentityFilter(clauses, args, submittedBy, []string{"submitted_by"}, recordApprovalRequesterRequestAliases)
 	}
 	if currentAssignee := strings.TrimSpace(in.CurrentAssignee); currentAssignee != "" {
-		clauses = append(clauses, "current_assignee = ?")
-		args = append(args, currentAssignee)
+		clauses, args = appendRecordApprovalIdentityFilter(clauses, args, currentAssignee, []string{"current_assignee"}, recordApprovalAssigneeRequestAliases)
 	}
 	if currentAssigneeType := strings.TrimSpace(in.CurrentAssigneeType); currentAssigneeType != "" {
 		clauses = append(clauses, "current_assignee_type = ?")
@@ -112,8 +117,7 @@ func (s *SQLiteStore) ListRecordApprovals(ctx context.Context, tenantID string, 
 		args = append(args, resultStatus)
 	}
 	if assignedTo := strings.TrimSpace(in.AssignedTo); assignedTo != "" {
-		clauses = append(clauses, "assigned_to = ?")
-		args = append(args, assignedTo)
+		clauses, args = appendRecordApprovalIdentityFilter(clauses, args, assignedTo, []string{"assigned_to"}, recordApprovalAssigneeRequestAliases)
 	}
 	if createdBy := strings.TrimSpace(in.CreatedBy); createdBy != "" {
 		clauses = append(clauses, "created_by = ?")
@@ -127,14 +131,17 @@ func (s *SQLiteStore) ListRecordApprovals(ctx context.Context, tenantID string, 
 		userID := strings.TrimSpace(in.UserID)
 		switch lane {
 		case "my_requests":
-			clauses = append(clauses, "created_by = ?")
-			args = append(args, userID)
+			clauses, args = appendRecordApprovalIdentityFilter(clauses, args, userID, []string{"created_by", "submitted_by"}, recordApprovalRequesterRequestAliases)
 		case "pending_my_approval":
-			clauses = append(clauses, "status = ? AND (assigned_to = ? OR current_assignee = ?)")
-			args = append(args, recordApprovalStatusPending, userID, userID)
+			assigneeClause, assigneeArgs := recordApprovalIdentityFilter(userID, []string{"assigned_to", "current_assignee"}, recordApprovalAssigneeRequestAliases)
+			clauses = append(clauses, "status = ? AND "+assigneeClause)
+			args = append(args, recordApprovalStatusPending)
+			args = append(args, assigneeArgs...)
 		case "handled":
-			clauses = append(clauses, "status IN (?, ?) AND reviewed_by = ?")
-			args = append(args, recordApprovalStatusApproved, recordApprovalStatusRejected, userID)
+			reviewerClause, reviewerArgs := recordApprovalIdentityFilter(userID, []string{"reviewed_by"}, recordApprovalReviewerRequestAliases)
+			clauses = append(clauses, "status IN (?, ?) AND "+reviewerClause)
+			args = append(args, recordApprovalStatusApproved, recordApprovalStatusRejected)
+			args = append(args, reviewerArgs...)
 		case "attention":
 			clauses = append(clauses, "(business_status = ? OR result_status = ? OR kind = ?)")
 			args = append(args, "attention", "attention", "attention")
@@ -170,6 +177,37 @@ func (s *SQLiteStore) ListRecordApprovals(ctx context.Context, tenantID string, 
 		out = append(out, approval)
 	}
 	return out, rows.Err()
+}
+
+func appendRecordApprovalIdentityFilter(clauses []string, args []any, value string, columns, requestAliases []string) ([]string, []any) {
+	clause, clauseArgs := recordApprovalIdentityFilter(value, columns, requestAliases)
+	return append(clauses, clause), append(args, clauseArgs...)
+}
+
+func recordApprovalIdentityFilter(value string, columns, requestAliases []string) (string, []any) {
+	value = strings.TrimSpace(value)
+	parts := make([]string, 0, len(columns)+len(requestAliases))
+	args := make([]any, 0, len(columns)+len(requestAliases))
+	for _, column := range columns {
+		column = strings.TrimSpace(column)
+		if column == "" {
+			continue
+		}
+		parts = append(parts, column+" = ?")
+		args = append(args, value)
+	}
+	for _, alias := range requestAliases {
+		alias = strings.TrimSpace(alias)
+		if alias == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("json_extract(request_json, '$.%s') = ?", alias))
+		args = append(args, value)
+	}
+	if len(parts) == 0 {
+		return "1 = 0", nil
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args
 }
 
 func (s *SQLiteStore) GetRecordApproval(ctx context.Context, tenantID, approvalID string) (*RecordApproval, error) {

@@ -56,5 +56,88 @@ Codex currently only supports skills in **Zip Package** format. If you try to in
 ## 17. Are skills shared across all tools?
 Yes. Skills added via **Zip Package** are stored in a global repository and are automatically recognized and usable by **Claude**, **Codex**, and other supported tools. You only need to add them once to use them anywhere.
 
+## 18. AI Assistant stops during PPT generation or long code generation (tool call truncation)
+
+### Symptoms
+
+During the PPT design workflow's generation phase, or any scenario requiring the AI to generate large code/content, the assistant repeatedly attempts to call `write_file`/`bash` but the arguments are truncated (logs show `truncated tool call (invalid JSON)` + `finish_reason=`), and the agent loop eventually stops.
+
+### Root Cause
+
+When using Thinking/Reasoning models (e.g., DeepSeek V4 Flash), the model's reasoning phase on complex requests (large context) can have a **60-90 second silent period** with no SSE data output. If the Nginx reverse proxy in front of HubCenter has `proxy_read_timeout` set too low (default 60s), Nginx will assume the upstream is unresponsive and close the SSE connection, resulting in incomplete tool call JSON.
+
+### Solution
+
+**1. Hub Nginx configuration** (already correct in hub_manual.md Section 12 with 3600s):
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:9399;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+}
+```
+
+**2. HubCenter Nginx configuration (critical - often missed!)**:
+
+HubCenter forwards LLM requests to backend APIs (DeepSeek/GLM etc.). The `/api/llm/` path must have sufficient timeouts:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name hubs.example.com;
+
+    # LLM proxy path - large timeout required
+    location /api/llm/ {
+        proxy_pass http://127.0.0.1:9499;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # ⚠️ Critical: Thinking models may be silent for 60-180s during reasoning
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_connect_timeout 30s;
+
+        # ⚠️ Critical: SSE streaming requires buffering disabled
+        proxy_buffering off;
+    }
+
+    # Other API paths
+    location / {
+        proxy_pass http://127.0.0.1:9499;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}
+```
+
+**3. Timeout requirements summary**:
+
+| Layer | Config | Minimum | Notes |
+|-------|--------|---------|-------|
+| Hub Nginx | proxy_read_timeout | 600s | SSE stream from Hub to client |
+| HubCenter Nginx | proxy_read_timeout | 600s | SSE stream from HubCenter to backend LLM API |
+| HubCenter Nginx | proxy_buffering | off | Must be disabled for SSE |
+| Hub Go code | MaClawProviderClient.TimeoutSec | 600 (default) | Hub → HubCenter HTTP timeout |
+| HubCenter Go code | proxyStreamingHTTPClient | ResponseHeaderTimeout=600s | HubCenter → backend API first-byte timeout |
+
+## 19. How different models affect long content generation
+
+| Model Type | Reasoning silent period | Long tool call risk | Recommendation |
+|-----------|------------------------|--------------------|----|
+| GLM-5.1/5.2 | ❌ None | Low (65K output all for content) | Use directly, no special config needed |
+| DeepSeek V4 Flash (thinking) | ✅ Yes (60-180s) | High (reasoning consumes output budget) | Ensure Nginx timeout ≥ 600s |
+| DeepSeek V4 (non-thinking) | ❌ None | Low | Same as GLM |
+| Kimi K2 / Qwen thinking | ✅ Possible | Medium | Ensure Nginx timeout ≥ 600s |
+
 ---
 *For more issues, please visit GitHub Issues: [RapidAI/cceasy/issues](https://github.com/RapidAI/cceasy/issues)*

@@ -315,15 +315,18 @@ func TestSaveMaclawAppDefinitionForSkillWritesEnterpriseAppFile(t *testing.T) {
 						"approval_workspace": {
 							"template": "classic_split",
 							"density": "compact",
-							"primaryRegion": "center",
-							"outputRegion": "bottom",
-							"regions": [
-								{"id": "request_form", "role": "input", "placement": "center"},
-								{"id": "approval_inbox", "role": "instance_list", "placement": "left"},
-								{"id": "result_panel", "role": "output", "placement": "bottom"}
-							]
+								"primaryRegion": "center",
+								"outputRegion": "bottom",
+								"navigation": ["my_requests", "pending_my_approval", "attention"],
+								"list": {"columns": ["title", "applicant", "current_node", "status"]},
+								"studio": {"generated": true, "lastEditedBy": "app_studio"},
+								"regions": [
+									{"id": "request_form", "role": "input", "placement": "center", "locked": true},
+									{"id": "approval_inbox", "role": "instance_list", "placement": "left"},
+									{"id": "result_panel", "role": "output", "placement": "bottom", "width": 420}
+								]
+							}
 						}
-					}
 				},
 				"mis": {"approvalBindings": [{"event": "expense.submitted", "workflowSkillId": "expense-workflow", "workflowVersion": "2.0.0", "objectRole": "expense_report"}]}
 			},
@@ -367,6 +370,24 @@ func TestSaveMaclawAppDefinitionForSkillWritesEnterpriseAppFile(t *testing.T) {
 	regions := layout["regions"].([]any)
 	if layout["primaryRegion"] != "center" || layout["outputRegion"] != "bottom" || len(regions) != 3 {
 		t.Fatalf("enterprise app should preserve dynamic workspace layout: %#v", layout)
+	}
+	navigation := layout["navigation"].([]any)
+	if len(navigation) != 3 || navigation[0] != "my_requests" || navigation[1] != "pending_my_approval" || navigation[2] != "attention" {
+		t.Fatalf("enterprise app should preserve workspace navigation: %#v", layout)
+	}
+	list := layout["list"].(map[string]any)
+	columns := list["columns"].([]any)
+	if len(columns) != 4 || columns[2] != "current_node" {
+		t.Fatalf("enterprise app should preserve workspace list columns: %#v", layout)
+	}
+	studio := layout["studio"].(map[string]any)
+	if studio["generated"] != true || studio["lastEditedBy"] != "app_studio" {
+		t.Fatalf("enterprise app should preserve App Studio layout metadata: %#v", layout)
+	}
+	firstRegion := regions[0].(map[string]any)
+	thirdRegion := regions[2].(map[string]any)
+	if firstRegion["locked"] != true || thirdRegion["width"] != float64(420) {
+		t.Fatalf("enterprise app should preserve user-adjusted region metadata: %#v", regions)
 	}
 	mis := binding["mis"].(map[string]any)
 	approvalBindings := mis["approvalBindings"].([]any)
@@ -801,6 +822,88 @@ func TestRecordMaclawAppRunEvidenceForSkillPreservesEnterpriseEvidence(t *testin
 	}
 	if verification, ok := evidence["dependencyVerification"].(map[string]any); !ok || verification["schema"] != "maclaw.app.install_plan.v1" {
 		t.Fatalf("run evidence should preserve dependency verification: %#v", evidence)
+	}
+}
+
+func TestMergeMaclawAppRunEvidenceDeepPreservesEnterpriseEvidence(t *testing.T) {
+	merged := mergeMaclawAppRunEvidence(map[string]any{
+		"runId": "run-old",
+		"resultPayload": map[string]any{
+			"approval_result": "approved",
+			"business_status": "finance_ready",
+		},
+		"outputs":   []any{map[string]any{"kind": "approval_result", "title": "Decision", "text": "approved"}},
+		"artifacts": []any{map[string]any{"id": "artifact-old", "name": "approval.pdf"}},
+		"approvalInstance": map[string]any{
+			"instanceId":      "wf-expense-1",
+			"approvalID":      "approval-expense-1",
+			"currentNode":     "finance.archive",
+			"workflowSkillId": "expense-workflow",
+			"businessStatus":  "finance_ready",
+			"resultStatus":    "approved",
+			"resultPayload":   map[string]any{"approval_result": "approved", "amount": float64(1280)},
+			"outputs":         []any{map[string]any{"kind": "text", "text": "ready"}},
+			"artifacts":       []any{map[string]any{"id": "artifact-approval", "name": "approval.pdf"}},
+		},
+		"dependencyVerification": map[string]any{
+			"schema":                "maclaw.app.install_plan.v1",
+			"dependencyCount":       float64(1),
+			"hasBlockingDependency": false,
+			"dependencies":          []any{map[string]any{"id": "expense-workflow", "installed": true, "health": "ready"}},
+		},
+	}, map[string]any{
+		"runId":          "run-fresh",
+		"verifiedAt":     "2026-06-27T11:00:00Z",
+		"definitionHash": "fresh-hash",
+		"resultPayload": map[string]any{
+			"business_status": "payment_ready",
+		},
+		"outputs":   []any{},
+		"artifacts": []any{},
+		"approvalInstance": map[string]any{
+			"currentNode":   "payment.queue",
+			"resultPayload": map[string]any{"business_status": "payment_ready"},
+			"outputs":       []any{},
+			"artifacts":     []any{},
+		},
+		"dependencyVerification": map[string]any{
+			"verifiedAt": "2026-06-27T10:59:00Z",
+		},
+	})
+
+	if merged["runId"] != "run-fresh" || merged["definitionHash"] != "fresh-hash" || merged["verifiedAt"] != "2026-06-27T11:00:00Z" {
+		t.Fatalf("freshness fields should update: %#v", merged)
+	}
+	payload, ok := merged["resultPayload"].(map[string]any)
+	if !ok || payload["approval_result"] != "approved" || payload["business_status"] != "payment_ready" {
+		t.Fatalf("top-level result payload should deep merge: %#v", merged["resultPayload"])
+	}
+	if outputs, ok := merged["outputs"].([]any); !ok || len(outputs) != 1 {
+		t.Fatalf("empty incoming outputs should not clear existing outputs: %#v", merged["outputs"])
+	}
+	if artifacts, ok := merged["artifacts"].([]any); !ok || len(artifacts) != 1 {
+		t.Fatalf("empty incoming artifacts should not clear existing artifacts: %#v", merged["artifacts"])
+	}
+	approval, ok := merged["approvalInstance"].(map[string]any)
+	if !ok || approval["approvalID"] != "approval-expense-1" || approval["workflowSkillId"] != "expense-workflow" || approval["currentNode"] != "payment.queue" {
+		t.Fatalf("approval instance should deep merge identity and node fields: %#v", merged["approvalInstance"])
+	}
+	approvalPayload, ok := approval["resultPayload"].(map[string]any)
+	if !ok || approvalPayload["approval_result"] != "approved" || approvalPayload["business_status"] != "payment_ready" {
+		t.Fatalf("approval instance result payload should deep merge: %#v", approval["resultPayload"])
+	}
+	if outputs, ok := approval["outputs"].([]any); !ok || len(outputs) != 1 {
+		t.Fatalf("empty incoming approval outputs should not clear existing outputs: %#v", approval["outputs"])
+	}
+	if artifacts, ok := approval["artifacts"].([]any); !ok || len(artifacts) != 1 {
+		t.Fatalf("empty incoming approval artifacts should not clear existing artifacts: %#v", approval["artifacts"])
+	}
+	verification, ok := merged["dependencyVerification"].(map[string]any)
+	if !ok || verification["schema"] != "maclaw.app.install_plan.v1" || verification["verifiedAt"] != "2026-06-27T10:59:00Z" {
+		t.Fatalf("dependency verification should deep merge: %#v", merged["dependencyVerification"])
+	}
+	if dependencies, ok := verification["dependencies"].([]any); !ok || len(dependencies) != 1 {
+		t.Fatalf("dependency verification dependencies should be preserved: %#v", verification)
 	}
 }
 

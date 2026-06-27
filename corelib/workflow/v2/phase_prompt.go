@@ -587,21 +587,48 @@ Reference the task breakdown explicitly so CodingSubAgent knows which task to ex
 
 这是最终 PPT 产物生成阶段，必须实际生成可下载的 .pptx 文件，不要只输出 Markdown 文案，也不要把最终交付降级为 PDF。
 
+⚠️ 关键约束——分步写入，禁止单次大输出：
+由于模型输出长度限制，一次 tool call 中写入超过 3000 字符的内容会被系统截断导致失败。
+你必须按以下模式分步执行：
+1. 先用 write_file 写入一个 Python 生成脚本（< 2500 字符），该脚本内嵌少量页面数据或读取外部数据。
+2. 用 write_file 分多次写入页面数据文件（纯文本格式，每行一条记录），每次控制在 2500 字符以内：
+   - 第一次用 write_file 写入前 5-8 页的数据。
+   - 后续用 write_file(mode="append") 追加剩余页面（纯文本追加，无 JSON 语法顾虑）。
+3. 最后用 bash 执行该脚本。
+
+推荐的数据文件格式（每页用分隔行隔开，避免 JSON 语法错误）：
+
+===SLIDE===
+title: 第1页标题
+bullet: 要点1
+bullet: 要点2
+notes: 演讲备注
+===SLIDE===
+title: 第2页标题
+...
+
+示例流程：
+- write_file(path="gen_pptx.py", content='...脚本读取slides.txt生成pptx...')  // 短脚本 < 2500字符
+- write_file(path="slides.txt", content='===SLIDE===\ntitle: ...\n...')  // 前8页
+- write_file(path="slides.txt", mode="append", content='===SLIDE===\ntitle: ...\n...')  // 后续页
+- bash(command="pip install python-pptx -q && python gen_pptx.py")
+
 执行要求：
 - 基于前序阶段的「受众与目标」「内容大纲」「逐页脚本」生成完整演示文稿。
 - 优先复用已有产物生成能力，例如调用 manage_skill(action="run", name="pptx-generator", args={...})。
 - 如果现有 PPTX 生成 Skill 不存在或不可用，先尝试 search_and_install_skill 搜索/安装合适的 PPTX 生成 Skill。
-- 如果仍不可用，使用 craft_tool 创建一个本次可用的 PPTX 生成工具，再调用该工具生成 .pptx。工具可以基于本地可用的 Office/PowerPoint/Python/Node 能力实现，但输出必须是 .pptx。
-- 传给生成工具的 args 应保持结构化和简洁：包含逐页内容/脚本、主题/风格要求、输出路径；避免把超长全文塞进单个 JSON 字符串导致工具调用被截断。
+- 如果 Skill 也不可用，按上面「分步写入」模式手动创建脚本生成 .pptx。
 - 输出文件名使用清晰的 ASCII 或安全中文文件名，扩展名必须是 .pptx。
 - 如果工具返回 run_id，使用对应 status 动作轮询直到 completed/failed。
-- 成功后调用 send_file 发送生成的 .pptx 文件；如果同时生成预览 PDF，可作为附加文件发送，但 .pptx 必须是主交付物。
-- 只有在已有 Skill、安装 Skill、craft_tool 自建工具都明确失败时，才说明失败原因，并给出已尝试的真实工具调用结果。
+- 成功后调用 send_file 发送生成的 .pptx 文件。
+- 只有在已有 Skill、安装 Skill、手动脚本生成都明确失败时，才说明失败原因。
 
 禁止事项：
-- 禁止只承诺“将生成 PPT”但不调用工具。
-- 禁止只调用 generate_pdf 生成 PDF 作为最终结果。
-- 禁止输出“完整 PPT 内容如下”后停止；本阶段的完成标准是实际 .pptx 文件已生成并发送。
+- ❌ 禁止在单次 write_file/bash/craft_tool 的参数中放入超过 2500 字符的内容——会被截断！
+- ❌ 禁止把完整 Python 脚本（含所有页面数据）塞进一个 tool call。
+- ❌ 禁止只承诺“将生成 PPT”但不调用工具。
+- ❌ 禁止只调用 generate_pdf 生成 PDF 作为最终结果。
+- ❌ 禁止输出“完整 PPT 内容如下”后停止；本阶段的完成标准是实际 .pptx 文件已生成并发送。
 `
 
 	case "problem_discovery":

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/imgconv"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
@@ -190,10 +191,11 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 
 func resolveFileToolPath(path string) (string, error) {
 	return resolveFileToolPathWithBase(path, func() string {
-		if wd, err := os.Getwd(); err == nil {
-			return wd
-		}
-		return ""
+		// Use EffectiveWorkspaceDir as fallback, NOT os.Getwd() which is the
+		// maclaw installation directory on Windows. CodingSubAgent tools always
+		// pass absolute paths (via withProjectRelativePath wrapper), but this
+		// fallback protects against regressions if the wrapper is omitted.
+		return corelib.EffectiveWorkspaceDir()
 	})
 }
 
@@ -206,10 +208,9 @@ func (h *IMMessageHandler) resolveFileToolPathForOwner(path, ownerID string) (st
 		if dir := h.projectTabWorkDirForOwner(ownerID); dir != "" {
 			return dir
 		}
-		if wd, err := os.Getwd(); err == nil {
-			return wd
-		}
-		return ""
+		// Fall back to EffectiveWorkspaceDir, NOT os.Getwd() which is the
+		// maclaw installation directory on Windows.
+		return corelib.EffectiveWorkspaceDir()
 	})
 }
 

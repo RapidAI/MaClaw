@@ -1663,6 +1663,51 @@ func TestInstallMixedSkillSkillMarketFailsOver(t *testing.T) {
 	}
 }
 
+func TestDecodeDownloadedSkillJSONDropsInstallRefVersion(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"id":          "hubcenter-8bb7c35f-448e-bd70-1d28805770b0",
+		"name":        "Market Skill",
+		"description": "downloaded from skill market",
+		"version":     "enterprise:功能Skill!hubcenter-8bb7c35f-448e-bd70-1d28805770b0@5",
+		"steps":       []map[string]any{{"action": "craft_tool", "params": map[string]any{"instructions": "hello"}}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	skill, err := decodeDownloadedSkillJSON(payload)
+	if err != nil {
+		t.Fatalf("decodeDownloadedSkillJSON() error = %v", err)
+	}
+	if skill.HubVersion != "" {
+		t.Fatalf("HubVersion = %q, want empty for install-ref-shaped version", skill.HubVersion)
+	}
+	if skill.HubSkillID != "hubcenter-8bb7c35f-448e-bd70-1d28805770b0" {
+		t.Fatalf("HubSkillID = %q", skill.HubSkillID)
+	}
+}
+
+func TestNormalizeDownloadedSkillVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain semver", in: "1.2.3", want: "1.2.3"},
+		{name: "v prefix", in: " v2.0.0-beta+5 ", want: "v2.0.0-beta+5"},
+		{name: "install ref", in: "enterprise:功能Skill!hubcenter-8bb7c35f-448e-bd70-1d28805770b0@5", want: ""},
+		{name: "url", in: "https://hub.example/skills/demo", want: ""},
+		{name: "too long", in: "v123456789012345678901234567890123", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeDownloadedSkillVersion(tt.in); got != tt.want {
+				t.Fatalf("normalizeDownloadedSkillVersion(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestInstallMixedSkillSkillMarketPreservesMaclawAppDefinition(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

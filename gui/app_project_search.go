@@ -743,8 +743,27 @@ func (a *App) recentTaskWorkingDir(projectPath string) string {
 
 func (a *App) recentTaskExecutionProjectPath(projectPath string) string {
 	projectPath = normalizeProjectSessionPath(projectPath)
+	// Priority 1: in-memory override (set immediately by SetTabWorkingDir UI action).
+	// This ensures the new directory takes effect on the next agent loop without
+	// waiting for memory flush + ProjectIndex rebuild.
+	if override, ok := a.tabWorkingDirOverrides.Load(projectPath); ok {
+		if dir, _ := override.(string); dir != "" {
+			return dir
+		}
+	}
+	// Priority 2: persistent workingDir tag from memory store.
 	if workingDir := a.recentTaskWorkingDir(projectPath); workingDir != "" {
 		return workingDir
+	}
+	// Priority 3: for managed task directories, use workspace/ subdirectory
+	// to isolate tool outputs from task metadata (task.md, conversation).
+	if a.isManagedRecentTaskWorkspacePath(projectPath) {
+		wsDir := filepath.Join(projectPath, "workspace")
+		// Fast path: check if already exists before MkdirAll syscall.
+		if info, err := os.Stat(wsDir); err != nil || !info.IsDir() {
+			_ = os.MkdirAll(wsDir, 0o755)
+		}
+		return wsDir
 	}
 	return projectPath
 }
@@ -1931,12 +1950,156 @@ func (a *App) CloseProjectTabSession(tabID string) {
 
 	a.tabProjectPaths.Delete(tabID)
 	if strings.TrimSpace(projectPath) != "" {
+		// Clean up working directory override — prevents stale overrides from
+		// leaking into future sessions that reuse the same projectPath.
+		a.tabWorkingDirOverrides.Delete(normalizeProjectSessionPath(projectPath))
 		a.cancelProjectTaskLoop(projectPath)
 		if workingDir := a.recentTaskWorkingDir(projectPath); workingDir != "" && !strings.EqualFold(workingDir, projectPath) {
 			a.cancelProjectTaskLoop(workingDir)
 		}
 	}
 	log.Printf("[CloseProjectTabSession] tab=%s closed project=%q", tabID, projectPath)
+}
+
+// SetTabWorkingDir changes the effective working directory for a project tab.
+// Called immediately from the frontend directory switcher UI. The new directory
+// takes effect on the next agent loop via the in-memory tabWorkingDirOverrides
+// cache (no delay waiting for memory flush).
+//
+// For the Local Tab, pass tabID="" and the change updates config.WorkingDirectory.
+// This is a Wails binding method.
+func (a *App) SetTabWorkingDir(tabID, newDir string) error {
+	newDir = strings.TrimSpace(newDir)
+	if newDir == "" {
+		return fmt.Errorf("directory path is empty")
+	}
+	newDir = filepath.Clean(newDir)
+
+	// Validate: must be an absolute path.
+	if !filepath.IsAbs(newDir) {
+		return fmt.Errorf("directory path must be absolute: %s", newDir)
+	}
+
+	// Create if not exists.
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		return fmt.Errorf("cannot create directory %s: %w", newDir, err)
+	}
+
+	tabID = strings.TrimSpace(tabID)
+
+	// Local Tab: update global config.
+	if tabID == "" {
+		corelib.SetWorkspaceDir(newDir)
+		_, _ = a.PatchConfigFields(map[string]interface{}{"working_directory": newDir})
+		log.Printf("[SetTabWorkingDir] local tab working dir updated to %q", newDir)
+		return nil
+	}
+
+	// Project Tab: resolve projectPath from tabID, then write override.
+	projectPath := ""
+	if cached, ok := a.tabProjectPaths.Load(tabID); ok {
+		projectPath, _ = cached.(string)
+	}
+	if projectPath == "" {
+		return fmt.Errorf("tab %s has no associated project path", tabID)
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+
+	// Write to in-memory cache — takes effect immediately on next agent loop.
+	a.tabWorkingDirOverrides.Store(projectPath, newDir)
+
+	// Persist to task record asynchronously (update workingDir tag).
+	go func() {
+		if err := a.persistTaskWorkingDir(projectPath, newDir); err != nil {
+			log.Printf("[SetTabWorkingDir] persist failed tab=%s project=%q dir=%q err=%v", tabID, projectPath, newDir, err)
+		}
+	}()
+
+	log.Printf("[SetTabWorkingDir] tab=%s project=%q dir=%q (immediate + async persist)", tabID, projectPath, newDir)
+	return nil
+}
+
+// GetTabWorkingDir returns the current effective working directory for a tab.
+// Returns the directory path and whether it is a system default (not user-specified).
+// This is a Wails binding method.
+func (a *App) GetTabWorkingDir(tabID string) map[string]interface{} {
+	tabID = strings.TrimSpace(tabID)
+
+	var dir string
+	isDefault := true
+
+	if tabID == "" {
+		// Local Tab: use global EffectiveWorkspaceDir.
+		dir = corelib.EffectiveWorkspaceDir()
+		isDefault = (dir == corelib.WorkspaceDir()) // true if user hasn't customized
+	} else {
+		// Project Tab: resolve via the same chain that tools use.
+		projectPath := ""
+		if cached, ok := a.tabProjectPaths.Load(tabID); ok {
+			projectPath, _ = cached.(string)
+		}
+		if projectPath != "" {
+			projectPath = normalizeProjectSessionPath(projectPath)
+			dir = a.recentTaskExecutionProjectPath(projectPath)
+			// It's "default" if it's a system-managed workspace path (not user-specified).
+			isDefault = a.isManagedRecentTaskWorkspacePath(dir) ||
+				(a.isManagedRecentTaskWorkspacePath(projectPath) && dir == filepath.Join(projectPath, "workspace"))
+		}
+	}
+
+	if dir == "" {
+		dir = corelib.EffectiveWorkspaceDir()
+	}
+
+	return map[string]interface{}{
+		"path":       dir,
+		"is_default": isDefault,
+	}
+}
+
+// persistTaskWorkingDir updates the persistent workingDir tag for a task.
+func (a *App) persistTaskWorkingDir(projectPath, newDir string) error {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return fmt.Errorf("memory store unavailable")
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return fmt.Errorf("project index unavailable")
+	}
+	rec := pi.Get(projectPath)
+	if rec == nil {
+		return fmt.Errorf("project record not found for %s", projectPath)
+	}
+
+	// Remove old workingDir tag and add new one.
+	newTag := recentTaskWorkingDirTag(newDir)
+	var updatedTags []string
+	for _, tag := range rec.Tags {
+		if !strings.HasPrefix(tag, recentTaskWorkingDirTagPrefix) {
+			updatedTags = append(updatedTags, tag)
+		}
+	}
+	updatedTags = append(updatedTags, newTag)
+
+	// UpsertTaskArtifact requires non-empty Content (empty = no-op).
+	// Re-use the existing record's content to trigger an update.
+	content := strings.TrimSpace(rec.Name)
+	if content == "" {
+		content = "task working directory updated"
+	}
+
+	_, err := a.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
+		Title:            rec.Name,
+		Content:          content,
+		Tags:             updatedTags,
+		IdentityTagCount: 3,
+		SourceType:       "working_dir_update",
+	})
+	if err != nil {
+		return err
+	}
+	return a.memoryStore.Flush()
 }
 
 // SendMessageForTab routes a message to the project-specific session identified

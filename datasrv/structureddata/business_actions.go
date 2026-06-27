@@ -596,7 +596,9 @@ func (s *Service) ExecuteBusinessAction(ctx context.Context, p Principal, action
 		if errors.Is(err, ErrDatasetNotFound) {
 			if in.DryRun {
 				validation := validateBusinessActionTemplateData(*action, in.Data)
-				return &ExecuteBusinessActionResult{Action: *action, DryRun: true, Valid: validation.Valid, Validation: validation, Preview: cloneJSONMap(in.Data), Rules: s.businessActionRuleEvaluation(ctx, p, *action, in)}, nil
+				result := &ExecuteBusinessActionResult{Action: *action, DryRun: true, Valid: validation.Valid, Validation: validation, Preview: cloneJSONMap(in.Data), Rules: s.businessActionRuleEvaluation(ctx, p, *action, in)}
+				applyBusinessActionResultPackage(result, *action, in)
+				return result, nil
 			}
 			if _, createErr := s.CreateDatasetFromTemplate(ctx, p, action.DatasetID, CreateFromTemplateInput{}); createErr != nil {
 				return nil, createErr
@@ -616,7 +618,9 @@ func (s *Service) ExecuteBusinessAction(ctx context.Context, p Principal, action
 	if err != nil {
 		return nil, err
 	}
-	return &ExecuteBusinessActionResult{Action: *action, Event: event, Rules: s.businessActionRuleEvaluation(ctx, p, *action, in)}, nil
+	result := &ExecuteBusinessActionResult{Action: *action, Valid: true, Event: event, Rules: s.businessActionRuleEvaluation(ctx, p, *action, in)}
+	applyBusinessActionResultPackage(result, *action, in)
+	return result, nil
 }
 
 func (s *Service) dryRunBusinessAction(ctx context.Context, p Principal, action BusinessAction, in ExecuteBusinessActionInput) (*ExecuteBusinessActionResult, error) {
@@ -648,7 +652,84 @@ func (s *Service) dryRunBusinessAction(ctx context.Context, p Principal, action 
 		validation.Errors = append(validation.Errors, uniqueErrors...)
 	}
 	appendBusinessActionDataErrors(&validation, action.ID, preview)
-	return &ExecuteBusinessActionResult{Action: action, DryRun: true, Valid: validation.Valid, Validation: &validation, Preview: preview, Rules: s.businessActionRuleEvaluation(ctx, p, action, in)}, nil
+	result := &ExecuteBusinessActionResult{Action: action, DryRun: true, Valid: validation.Valid, Validation: &validation, Preview: preview, Rules: s.businessActionRuleEvaluation(ctx, p, action, in)}
+	applyBusinessActionResultPackage(result, action, in)
+	return result, nil
+}
+
+func applyBusinessActionResultPackage(result *ExecuteBusinessActionResult, action BusinessAction, in ExecuteBusinessActionInput) {
+	if result == nil {
+		return
+	}
+	result.PrimaryResult = "business_record"
+	result.Artifacts = []map[string]any{}
+	recordID := strings.TrimSpace(in.RecordID)
+	businessRecord := map[string]any{}
+	if result.Event != nil && result.Event.Record != nil {
+		if recordID == "" {
+			recordID = strings.TrimSpace(result.Event.Record.ID)
+		}
+		businessRecord = cloneJSONMap(result.Event.Record.Data)
+		businessRecord["id"] = result.Event.Record.ID
+		businessRecord["dataset_id"] = result.Event.Record.DatasetID
+		if result.Event.Record.Title != "" {
+			businessRecord["title"] = result.Event.Record.Title
+		}
+	} else {
+		businessRecord = cloneJSONMap(result.Preview)
+	}
+	if recordID != "" {
+		businessRecord["id"] = recordID
+	}
+	status := "completed"
+	if result.Event != nil && strings.TrimSpace(result.Event.Status) != "" {
+		status = strings.TrimSpace(result.Event.Status)
+	}
+	if result.DryRun {
+		status = "preview"
+	}
+	businessStatus := status
+	if result.DryRun {
+		if result.Valid {
+			businessStatus = "dry_run_valid"
+		} else {
+			businessStatus = "dry_run_invalid"
+		}
+	}
+	result.BusinessStatus = businessStatus
+	result.ResultStatus = status
+	result.ResultPayload = map[string]any{
+		"business_status":    businessStatus,
+		"result_status":      status,
+		"business_action_id": action.ID,
+		"dataset_id":         action.DatasetID,
+		"domain":             action.Domain,
+		"operation":          action.Operation,
+		"business_record":    businessRecord,
+	}
+	if recordID != "" {
+		result.ResultPayload["record_id"] = recordID
+	}
+	if result.DryRun {
+		result.ResultPayload["dry_run"] = true
+		result.ResultPayload["valid"] = result.Valid
+	}
+	title := action.Title
+	if title == "" {
+		title = action.ID
+	}
+	output := map[string]any{
+		"kind":   "business_record",
+		"title":  title,
+		"status": status,
+		"data":   cloneJSONMap(businessRecord),
+	}
+	if result.DryRun {
+		output["text"] = "Business action preview"
+	} else {
+		output["text"] = "Business action executed"
+	}
+	result.Outputs = []map[string]any{output}
 }
 
 func (s *Service) businessActionRuleEvaluation(ctx context.Context, p Principal, action BusinessAction, in ExecuteBusinessActionInput) *BusinessRuleEvaluation {

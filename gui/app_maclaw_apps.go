@@ -153,6 +153,7 @@ type maclawAppInstallPlanDependency struct {
 	Kind            string   `json:"kind,omitempty"`
 	Required        bool     `json:"required"`
 	Source          string   `json:"source,omitempty"`
+	InstallRef      string   `json:"install_ref,omitempty"`
 	AppIDs          []string `json:"app_ids,omitempty"`
 	Installed       bool     `json:"installed"`
 	InstalledName   string   `json:"installed_name,omitempty"`
@@ -631,7 +632,7 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 		if a.maclawAppInstallMixedSkill != nil {
 			installMixedSkill = a.maclawAppInstallMixedSkill
 		}
-		if err := installMixedSkill(source, dep.ID, ""); err != nil {
+		if err := installMixedSkill(source, dep.ID, dep.InstallRef); err != nil {
 			dep.Health = "missing"
 			dep.Action = "failed"
 			dep.Message = err.Error()
@@ -757,6 +758,7 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 		"schema":                  registry.Schema,
 		"installed_at":            now,
 		"app_count":               len(entries),
+		"apps":                    plan.Apps,
 		"package_sha":             packageSHA,
 		"package_bytes":           packageSize,
 		"dependencies":            cloneMaclawAppPlanDependencies(plan.Dependencies),
@@ -922,6 +924,8 @@ func (a *App) ExecuteMaclawAppBusinessOperation(input MaclawAppBusinessOperation
 			response["raw"] = strings.TrimSpace(string(raw))
 		}
 	}
+	resultStatus := firstNonEmptyMaclawAppString(stringMapValue(response, "result_status"), stringMapValue(response, "status"), "done")
+	resultPayload, outputs, artifacts, primaryResult := maclawAppBusinessOperationResultPackage(input, mode, target, resultStatus, response)
 	return map[string]any{
 		"synced":          true,
 		"mode":            mode,
@@ -930,9 +934,111 @@ func (a *App) ExecuteMaclawAppBusinessOperation(input MaclawAppBusinessOperation
 		"dataset_id":      strings.TrimSpace(input.DatasetID),
 		"object_role":     strings.TrimSpace(input.ObjectRole),
 		"business_action": strings.TrimSpace(input.BusinessAction),
-		"result_status":   firstNonEmptyMaclawAppString(stringMapValue(response, "result_status"), stringMapValue(response, "status"), "done"),
+		"result_status":   resultStatus,
+		"business_status": firstNonEmptyMaclawAppString(stringMapValue(response, "business_status"), resultStatus),
+		"primary_result":  primaryResult,
+		"result_payload":  resultPayload,
+		"outputs":         outputs,
+		"artifacts":       artifacts,
 		"response":        response,
 	}, nil
+}
+
+func maclawAppBusinessOperationResultPackage(input MaclawAppBusinessOperationInput, mode string, target string, resultStatus string, response map[string]any) (map[string]any, []map[string]any, []map[string]any, string) {
+	resultPayload := cloneMapAny(anyMap(response["result_payload"]))
+	if resultPayload == nil {
+		resultPayload = cloneMapAny(response)
+	}
+	if resultPayload == nil {
+		resultPayload = map[string]any{}
+	}
+	if strings.TrimSpace(input.AppID) != "" {
+		resultPayload["app_id"] = strings.TrimSpace(input.AppID)
+	}
+	if strings.TrimSpace(input.DatasetID) != "" {
+		resultPayload["dataset_id"] = strings.TrimSpace(input.DatasetID)
+	}
+	if strings.TrimSpace(input.ObjectRole) != "" {
+		resultPayload["object_role"] = strings.TrimSpace(input.ObjectRole)
+	}
+	if strings.TrimSpace(input.BusinessAction) != "" {
+		resultPayload["business_action"] = strings.TrimSpace(input.BusinessAction)
+	}
+	if resultStatus != "" {
+		resultPayload["result_status"] = resultStatus
+	}
+
+	outputs := maclawAppBusinessOperationOutputs(response, mode, target, resultStatus)
+	artifacts := maclawAppBusinessOperationArtifacts(response)
+	primaryResult := firstNonEmptyMaclawAppString(stringMapValue(response, "primary_result"), stringMapValue(response, "primaryResult"))
+	if primaryResult == "" {
+		switch mode {
+		case "business_action":
+			if response["record"] != nil || stringMapValue(response, "record_id") != "" {
+				primaryResult = "business_record"
+			} else {
+				primaryResult = "business_status"
+			}
+		case "business_view":
+			primaryResult = "records"
+		case "business_report":
+			primaryResult = "report"
+		case "business_dashboard":
+			primaryResult = "dashboard"
+		default:
+			primaryResult = "content"
+		}
+	}
+	return resultPayload, outputs, artifacts, primaryResult
+}
+
+func maclawAppBusinessOperationOutputs(response map[string]any, mode string, target string, resultStatus string) []map[string]any {
+	if raw := anySlice(response["outputs"]); len(raw) > 0 {
+		outputs := make([]map[string]any, 0, len(raw))
+		for _, item := range raw {
+			if output := cloneMapAny(anyMap(item)); output != nil {
+				outputs = append(outputs, output)
+			}
+		}
+		if len(outputs) > 0 {
+			return outputs
+		}
+	}
+	kind := "content"
+	switch mode {
+	case "business_action":
+		kind = "business_record"
+	case "business_view":
+		kind = "table"
+	case "business_report":
+		kind = "report"
+	case "business_dashboard":
+		kind = "dashboard"
+	}
+	output := map[string]any{
+		"kind":   kind,
+		"title":  target,
+		"status": resultStatus,
+		"data":   cloneMapAny(response),
+	}
+	if text := firstNonEmptyMaclawAppString(stringMapValue(response, "text"), stringMapValue(response, "summary"), stringMapValue(response, "message")); text != "" {
+		output["text"] = text
+	}
+	return []map[string]any{output}
+}
+
+func maclawAppBusinessOperationArtifacts(response map[string]any) []map[string]any {
+	raw := anySlice(response["artifacts"])
+	if len(raw) == 0 {
+		return []map[string]any{}
+	}
+	artifacts := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		if artifact := cloneMapAny(anyMap(item)); artifact != nil {
+			artifacts = append(artifacts, artifact)
+		}
+	}
+	return artifacts
 }
 
 // RecordMaclawAppApprovalInstance persists one approval instance snapshot for a
@@ -1666,20 +1772,20 @@ func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, r
 		AppID:               firstNonEmptyMaclawAppString(item.AppID, stringMapValue(request, "app_id"), stringMapValue(request, "appID"), stringMapValue(request, "maclaw_app_id"), stringMapValue(request, "maclawAppID")),
 		BlueprintID:         firstNonEmptyMaclawAppString(item.BlueprintID, stringMapValue(request, "blueprint_id"), stringMapValue(request, "blueprintID")),
 		DatasetID:           item.DatasetID,
-		ObjectRole:          firstNonEmptyMaclawAppString(item.ObjectRole, stringMapValue(request, "object_role")),
-		ApprovalObjectRole:  firstNonEmptyMaclawAppString(item.ObjectRole, stringMapValue(request, "object_role")),
-		ApprovalEvent:       firstNonEmptyMaclawAppString(item.TriggerEvent, stringMapValue(request, "approval_event"), stringMapValue(request, "trigger_event")),
+		ObjectRole:          firstNonEmptyMaclawAppString(item.ObjectRole, stringMapValue(request, "object_role"), stringMapValue(request, "objectRole"), stringMapValue(request, "business_object_role"), stringMapValue(request, "businessObjectRole")),
+		ApprovalObjectRole:  firstNonEmptyMaclawAppString(item.ObjectRole, stringMapValue(request, "object_role"), stringMapValue(request, "objectRole"), stringMapValue(request, "business_object_role"), stringMapValue(request, "businessObjectRole")),
+		ApprovalEvent:       firstNonEmptyMaclawAppString(item.TriggerEvent, stringMapValue(request, "approval_event"), stringMapValue(request, "approvalEvent"), stringMapValue(request, "trigger_event"), stringMapValue(request, "triggerEvent")),
 		InstanceID:          instanceID,
 		Title:               firstNonEmptyMaclawAppString(item.Summary, stringMapValue(request, "title"), instanceID, item.ID),
 		Lane:                lane,
 		Status:              status,
 		CurrentNode:         firstNonEmptyMaclawAppString(item.WorkflowNodeID, stringMapValue(request, "current_node"), stringMapValue(request, "currentNode"), stringMapValue(request, "workflow_node"), stringMapValue(request, "workflowNode")),
 		CurrentNodeIDs:      currentNodeIDs,
-		Owner:               firstNonEmptyMaclawAppString(item.SubmittedBy, item.CreatedBy, stringMapValue(request, "owner"), stringMapValue(request, "applicant")),
+		Owner:               firstNonEmptyMaclawAppString(item.SubmittedBy, item.CreatedBy, stringMapValue(request, "submitted_by"), stringMapValue(request, "submittedBy"), stringMapValue(request, "owner"), stringMapValue(request, "applicant")),
 		Applicant:           firstNonEmptyMaclawAppString(stringMapValue(request, "applicant"), item.SubmittedBy, item.CreatedBy),
-		Approver:            firstNonEmptyMaclawAppString(item.AssignedTo, item.ReviewedBy),
-		CurrentAssignee:     item.CurrentAssignee,
-		CurrentAssigneeType: item.CurrentAssigneeType,
+		Approver:            firstNonEmptyMaclawAppString(item.AssignedTo, item.CurrentAssignee, item.ReviewedBy, stringMapValue(request, "assigned_to"), stringMapValue(request, "assignedTo"), stringMapValue(request, "current_assignee"), stringMapValue(request, "currentAssignee"), stringMapValue(request, "reviewed_by"), stringMapValue(request, "reviewedBy")),
+		CurrentAssignee:     firstNonEmptyMaclawAppString(item.CurrentAssignee, item.AssignedTo, stringMapValue(request, "current_assignee"), stringMapValue(request, "currentAssignee"), stringMapValue(request, "assigned_to"), stringMapValue(request, "assignedTo")),
+		CurrentAssigneeType: firstNonEmptyMaclawAppString(item.CurrentAssigneeType, stringMapValue(request, "current_assignee_type"), stringMapValue(request, "currentAssigneeType"), stringMapValue(request, "assigned_to_type"), stringMapValue(request, "assignedToType")),
 		CreatedAt:           maclawAppApprovalTimeString(item.CreatedAt),
 		UpdatedAt:           maclawAppApprovalTimeString(item.UpdatedAt),
 		Result:              result,
@@ -1694,10 +1800,10 @@ func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, r
 		RecordID:            item.RecordID,
 		ApprovalID:          item.ID,
 		RecordApprovalID:    item.ID,
-		DetailURL:           firstNonEmptyMaclawAppString(item.DetailURL, stringMapValue(request, "detail_url"), stringMapValue(request, "detailUrl")),
-		BusinessEntity:      stringMapValue(request, "business_entity"),
-		BusinessAction:      stringMapValue(request, "business_action"),
-		BusinessNote:        stringMapValue(request, "business_note"),
+		DetailURL:           firstNonEmptyMaclawAppString(item.DetailURL, stringMapValue(request, "detail_url"), stringMapValue(request, "detailURL"), stringMapValue(request, "detailUrl")),
+		BusinessEntity:      firstNonEmptyMaclawAppString(stringMapValue(request, "business_entity"), stringMapValue(request, "businessEntity")),
+		BusinessAction:      firstNonEmptyMaclawAppString(stringMapValue(request, "business_action"), stringMapValue(request, "businessAction")),
+		BusinessNote:        firstNonEmptyMaclawAppString(stringMapValue(request, "business_note"), stringMapValue(request, "businessNote")),
 		ResultPayload:       resultPayload,
 		Outputs:             maclawAppApprovalOutputsFromRecordApprovals(item.Outputs),
 		Artifacts:           maclawAppApprovalArtifactsFromRecordApprovals(item.Artifacts),
@@ -1721,14 +1827,16 @@ func normalizeMaclawAppApprovalLaneForRecordApproval(item contract.RecordApprova
 	}
 	currentUserID = strings.TrimSpace(currentUserID)
 	if currentUserID != "" {
-		submitter := firstNonEmptyMaclawAppString(item.SubmittedBy, item.CreatedBy, stringMapValue(request, "submitted_by"), stringMapValue(request, "owner"), stringMapValue(request, "applicant"))
+		submitter := firstNonEmptyMaclawAppString(item.SubmittedBy, item.CreatedBy, stringMapValue(request, "submitted_by"), stringMapValue(request, "submittedBy"), stringMapValue(request, "owner"), stringMapValue(request, "applicant"))
 		if maclawAppApprovalActorMatches(currentUserID, submitter) {
 			return "my_requests"
 		}
-		if status == "pending" && (maclawAppApprovalActorMatches(currentUserID, item.AssignedTo) || maclawAppApprovalActorMatches(currentUserID, item.CurrentAssignee)) {
+		assignee := firstNonEmptyMaclawAppString(item.CurrentAssignee, item.AssignedTo, stringMapValue(request, "current_assignee"), stringMapValue(request, "currentAssignee"), stringMapValue(request, "assigned_to"), stringMapValue(request, "assignedTo"))
+		if status == "pending" && maclawAppApprovalActorMatches(currentUserID, assignee) {
 			return "pending_my_approval"
 		}
-		if maclawAppApprovalActorMatches(currentUserID, item.ReviewedBy) {
+		reviewer := firstNonEmptyMaclawAppString(item.ReviewedBy, stringMapValue(request, "reviewed_by"), stringMapValue(request, "reviewedBy"))
+		if maclawAppApprovalActorMatches(currentUserID, reviewer) {
 			return "handled"
 		}
 	}
@@ -1864,7 +1972,7 @@ func maclawAppApprovalInstanceMatchesLane(instance maclawAppApprovalInstance, la
 	case "attention":
 		return status == "attention" || normalizeMaclawAppApprovalLane(instance.Lane) == "attention"
 	case "pending_my_approval":
-		return status == "pending" && normalizeMaclawAppApprovalLane(instance.Lane) == "pending_my_approval"
+		return status == "pending" && (normalizeMaclawAppApprovalLane(instance.Lane) == "pending_my_approval" || strings.TrimSpace(firstNonEmptyMaclawAppString(instance.CurrentAssignee, instance.Approver)) != "")
 	case "my_requests":
 		return normalizeMaclawAppApprovalLane(instance.Lane) == "my_requests"
 	default:
@@ -2515,6 +2623,7 @@ func maclawAppInstallPlanDependencyMergeKey(dep maclawAppInstallPlanDependency) 
 		strings.ToLower(strings.TrimSpace(dep.Version)),
 		strings.ToLower(strings.TrimSpace(dep.Kind)),
 		strings.ToLower(strings.TrimSpace(dep.Source)),
+		strings.ToLower(strings.TrimSpace(dep.InstallRef)),
 		strconv.FormatBool(dep.Required),
 	}, "\x1f")
 }
@@ -2557,6 +2666,7 @@ func maclawAppInstallEvidenceByApp(entries []parsedMaclawAppEntry, dependencies 
 			"has_blocking_dependency": hasBlockingMaclawAppRequiredDependencyForApp(dependencies, entry.ID),
 			"workspace_layout":        maclawAppWorkspaceLayoutMetadataForEntry(entry),
 			"result_contract":         anyMap(governance["result_contract"]),
+			"workflow_mapping":        maclawAppWorkflowMappingForEntry(entry),
 			"workflow_contract":       maclawAppWorkflowContractForEntry(entry),
 			"test_evidence":           anyMap(governance["test_evidence"]),
 			"dependency_verification": maclawAppDependencyVerificationMetadataForEntry(entry, dependencies),
@@ -2810,6 +2920,9 @@ func applyMaclawAppDataSrvTestEvidenceMetadata(metadata map[string]interface{}, 
 			}
 		}
 	}
+	approval := anyMap(firstNonEmptyMaclawAppAny(testEvidence["approvalInstance"], testEvidence["approval_instance"], testEvidence["approval"]))
+	approvalOutputs := anySlice(firstNonEmptyMaclawAppAny(approval["outputs"], approval["output_blocks"], approval["outputBlocks"]))
+	approvalArtifacts := anySlice(approval["artifacts"])
 	if value, ok := firstNonEmptyMaclawAppAny(testEvidence["artifactPresent"], testEvidence["artifact_present"]).(bool); ok {
 		metadata["test_evidence_artifact_present"] = value
 	}
@@ -2817,20 +2930,30 @@ func applyMaclawAppDataSrvTestEvidenceMetadata(metadata map[string]interface{}, 
 		metadata["test_evidence_artifact_count"] = value
 	} else if artifacts := anySlice(testEvidence["artifacts"]); len(artifacts) > 0 {
 		metadata["test_evidence_artifact_count"] = len(artifacts)
+	} else if len(approvalArtifacts) > 0 {
+		metadata["test_evidence_artifact_count"] = len(approvalArtifacts)
 	}
 	if value, ok := maclawAppNumberFromAny(firstNonEmptyMaclawAppAny(testEvidence["outputCount"], testEvidence["output_count"])); ok {
 		metadata["test_evidence_output_count"] = value
 	} else if outputs := maclawAppTestEvidenceOutputs(testEvidence); len(outputs) > 0 {
 		metadata["test_evidence_output_count"] = len(outputs)
+	} else if len(approvalOutputs) > 0 {
+		metadata["test_evidence_output_count"] = len(approvalOutputs)
 	}
 	if payload := anyMap(firstNonEmptyMaclawAppAny(testEvidence["resultPayload"], testEvidence["result_payload"])); payload != nil {
+		metadata["test_evidence_result_payload"] = payload
+	} else if payload := anyMap(firstNonEmptyMaclawAppAny(approval["resultPayload"], approval["result_payload"])); payload != nil {
 		metadata["test_evidence_result_payload"] = payload
 	}
 	if outputs := maclawAppTestEvidenceOutputs(testEvidence); len(outputs) > 0 {
 		metadata["test_evidence_outputs"] = outputs
+	} else if len(approvalOutputs) > 0 {
+		metadata["test_evidence_outputs"] = approvalOutputs
 	}
 	if artifacts := anySlice(testEvidence["artifacts"]); len(artifacts) > 0 {
 		metadata["test_evidence_artifacts"] = artifacts
+	} else if len(approvalArtifacts) > 0 {
+		metadata["test_evidence_artifacts"] = approvalArtifacts
 	}
 	if coverage := anyMap(firstNonEmptyMaclawAppAny(testEvidence["resultCoverage"], testEvidence["result_coverage"])); coverage != nil {
 		metadata["test_evidence_result_coverage"] = coverage
@@ -2847,7 +2970,7 @@ func applyMaclawAppDataSrvTestEvidenceMetadata(metadata map[string]interface{}, 
 			metadata["test_evidence_missing_types"] = missing
 		}
 	}
-	if approval := anyMap(firstNonEmptyMaclawAppAny(testEvidence["approvalInstance"], testEvidence["approval_instance"], testEvidence["approval"])); approval != nil {
+	if approval != nil {
 		metadata["test_evidence_approval_instance"] = approval
 		if instanceID := firstNonEmptyMaclawAppString(
 			maclawAppStringValue(approval, "instanceId", "instance_id", "approvalInstanceId", "approval_instance_id", "workflowInstanceId", "workflow_instance_id"),
@@ -2892,6 +3015,7 @@ func maclawAppDependencyVerificationMetadataForEntry(entry parsedMaclawAppEntry,
 	}
 	return compactPayload(map[string]interface{}{
 		"schema":                  "maclaw.app.install_plan.v1",
+		"verified_at":             time.Now().UTC().Format(time.RFC3339),
 		"app_count":               1,
 		"dependency_count":        len(appDependencies),
 		"has_missing_required":    hasMissingMaclawAppRequiredDependencyForApp(dependencies, entry.ID),
@@ -3565,11 +3689,12 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 		}
 		if skill := anyMap(holder["skill"]); skill != nil {
 			add(maclawAppInstallPlanDependency{
-				ID:       stringMapValue(skill, "id"),
-				Version:  stringMapValue(skill, "version"),
-				Kind:     "runtime_skill",
-				Required: true,
-				Source:   stringMapValue(skill, "source"),
+				ID:         stringMapValue(skill, "id"),
+				Version:    stringMapValue(skill, "version"),
+				Kind:       "runtime_skill",
+				Required:   true,
+				Source:     stringMapValue(skill, "source"),
+				InstallRef: maclawAppDependencyInstallRef(skill),
 			})
 		}
 		for _, appSkill := range []map[string]any{anyMap(holder["appSkill"]), anyMap(holder["app_skill"])} {
@@ -3577,11 +3702,12 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 				continue
 			}
 			add(maclawAppInstallPlanDependency{
-				ID:       stringMapValue(appSkill, "id"),
-				Version:  stringMapValue(appSkill, "version"),
-				Kind:     "app_skill",
-				Required: true,
-				Source:   stringMapValue(appSkill, "source"),
+				ID:         stringMapValue(appSkill, "id"),
+				Version:    stringMapValue(appSkill, "version"),
+				Kind:       "app_skill",
+				Required:   true,
+				Source:     stringMapValue(appSkill, "source"),
+				InstallRef: maclawAppDependencyInstallRef(appSkill),
 			})
 		}
 		if misBlock := anyMap(holder["mis"]); misBlock != nil {
@@ -3595,11 +3721,12 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 					continue
 				}
 				add(maclawAppInstallPlanDependency{
-					ID:       firstNonEmptyMISAgentView(stringMapValue(bindingMap, "workflowSkillId"), stringMapValue(bindingMap, "workflow_skill_id"), stringMapValue(bindingMap, "workflowId"), stringMapValue(bindingMap, "workflow_id")),
-					Version:  firstNonEmptyMISAgentView(stringMapValue(bindingMap, "workflowVersion"), stringMapValue(bindingMap, "workflow_version")),
-					Kind:     "workflow_skill",
-					Required: true,
-					Source:   "hub",
+					ID:         firstNonEmptyMISAgentView(stringMapValue(bindingMap, "workflowSkillId"), stringMapValue(bindingMap, "workflow_skill_id"), stringMapValue(bindingMap, "workflowId"), stringMapValue(bindingMap, "workflow_id")),
+					Version:    firstNonEmptyMISAgentView(stringMapValue(bindingMap, "workflowVersion"), stringMapValue(bindingMap, "workflow_version")),
+					Kind:       "workflow_skill",
+					Required:   true,
+					Source:     "hub",
+					InstallRef: maclawAppDependencyInstallRef(bindingMap),
 				})
 			}
 		}
@@ -3614,16 +3741,29 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 					required = rawRequired
 				}
 				add(maclawAppInstallPlanDependency{
-					ID:       stringMapValue(depMap, "id"),
-					Version:  stringMapValue(depMap, "version"),
-					Kind:     stringMapValue(depMap, "kind"),
-					Required: required,
-					Source:   stringMapValue(depMap, "source"),
+					ID:         stringMapValue(depMap, "id"),
+					Version:    stringMapValue(depMap, "version"),
+					Kind:       stringMapValue(depMap, "kind"),
+					Required:   required,
+					Source:     stringMapValue(depMap, "source"),
+					InstallRef: maclawAppDependencyInstallRef(depMap),
 				})
 			}
 		}
 	}
 	return deps
+}
+
+func maclawAppDependencyInstallRef(values map[string]any) string {
+	if values == nil {
+		return ""
+	}
+	for _, key := range []string{"install_ref", "installRef", "capability_id", "capabilityID", "hub_skill_id", "hubSkillID", "skill_id", "skillID", "raw_url", "rawURL", "repo_url", "repoURL"} {
+		if value := stringMapValue(values, key); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func maclawAppNumberFromAny(value any) (float64, bool) {
@@ -4453,10 +4593,13 @@ func maclawAppResultCoverageReviewIssue(governance map[string]any, appPath strin
 		coverage = anyMap(testEvidence["result_coverage"])
 	}
 	if coverage != nil {
+		missing := maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(coverage["missingTypes"], coverage["missing_types"]))
+		if len(missing) > 0 {
+			return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.resultCoverage", Severity: "error", Message: "run evidence does not cover result contract: " + strings.Join(missing, ", "), Suggestion: "run the app again and verify every declared required result type is present in the result payload or outputs"}
+		}
 		if ok, _ := coverage["ok"].(bool); ok && maclawAppCoveredResultTypesContain(maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(coverage["coveredTypes"], coverage["covered_types"])), primary) {
 			return nil
 		}
-		missing := maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(coverage["missingTypes"], coverage["missing_types"]))
 		if len(missing) == 0 {
 			missing = []string{primary}
 		}
@@ -4729,6 +4872,8 @@ func maclawAppInstallSkillSource(source string) (string, bool) {
 		return string(skillSearchSourceSkillMarket), true
 	case "enterprise", "enterprise_hub":
 		return string(skillSearchSourceEnterpriseHub), true
+	case "github":
+		return string(skillSearchSourceGitHub), true
 	default:
 		return "", false
 	}

@@ -364,18 +364,35 @@ func openAPISpec(version string) map[string]interface{} {
 			stringQueryParam("workflow_skill_id", "Filter approval apps by workflow skill id."),
 			stringQueryParam("workflow_node", "Filter approval apps by submit, approval, attention, or result workflow node."),
 			stringQueryParam("approval_status", "Filter approval apps by approval instance status such as approved, rejected, attention, pending, or requires_input."),
+			stringQueryParam("approval_result_status", "Alias of approval_status for approval result status filters."),
 			stringQueryParam("approval_decision", "Filter approval apps by approval result decision such as approved, rejected, or attention."),
+			stringQueryParam("decision", "Alias of approval_decision."),
 			stringQueryParam("applicant_id", "Filter approval apps by applicant or requester id for My Requests views."),
+			stringQueryParam("submitted_by", "Alias of applicant_id for submitted-by filters."),
+			stringQueryParam("created_by", "Alias of applicant_id for creator filters."),
 			stringQueryParam("approver_id", "Filter approval apps by assigned approver or current assignee id for My Approvals views."),
+			stringQueryParam("assigned_to", "Alias of approver_id for current task assignment filters."),
+			stringQueryParam("current_assignee", "Alias of approver_id for current approval assignee filters."),
 			stringQueryParam("approval_id", "Filter approval apps by DataSrv approval id or record approval id found in test evidence."),
+			stringQueryParam("record_approval_id", "Alias of approval_id for DataSrv record approval ids."),
 			stringQueryParam("workflow_instance_id", "Filter approval apps by workflow or approval instance id found in test evidence."),
+			stringQueryParam("approval_instance_id", "Alias of workflow_instance_id for approval instance ids."),
+			stringQueryParam("instance_id", "Alias of workflow_instance_id for compact approval instance ids."),
 			stringQueryParam("dataset_id", "Filter approval apps by DataSrv dataset id found in approval or result evidence."),
+			stringQueryParam("dataset", "Alias of dataset_id."),
 			stringQueryParam("object_role", "Filter installed MaClaw Apps by semantic DataSrv object role from bindings or evidence."),
+			stringQueryParam("object", "Alias of object_role."),
 			stringQueryParam("record_id", "Filter approval apps by business record id found in approval or result evidence."),
+			stringQueryParam("business_record_id", "Alias of record_id for result payload business records."),
 			stringQueryParam("result_type", "Filter installed MaClaw Apps by declared or observed result type such as approval_result, document, inline_content, table, or business_status."),
+			stringQueryParam("output_type", "Alias of result_type for output block filters."),
 			stringQueryParam("definition_fingerprint", "Filter installed MaClaw Apps by the app definition hash or fingerprint carried by current test evidence."),
+			stringQueryParam("definition_hash", "Alias of definition_fingerprint."),
+			stringQueryParam("app_definition_hash", "Alias of definition_fingerprint for App Studio definition hash filters."),
+			stringQueryParam("app_definition_fingerprint", "Alias of definition_fingerprint for App Studio definition fingerprint filters."),
 			boolQueryParam("has_blocking_dependency", "Filter installed MaClaw Apps by whether dependency verification found a blocking dependency."),
 			boolQueryParam("has_missing_required_dependency", "Filter installed MaClaw Apps by whether a required dependency is missing or unavailable."),
+			boolQueryParam("has_missing_required", "Alias of has_missing_required_dependency."),
 		},
 		"/api/v1/data/relationships": {
 			stringQueryParam("dataset_id", "Filter relationships by source or target dataset id."),
@@ -516,6 +533,7 @@ func openAPISpec(version string) map[string]interface{} {
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/app-installations", upsertAppInstallationOpenAPIRequestBody())
 	setOpenAPIPutRequestBody(paths, "/api/v1/data/app-installations/{appId}", upsertAppInstallationOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/business-actions/{actionId}/execute", executeBusinessActionOpenAPIRequestBody())
+	setOpenAPIPostResponses(paths, "/api/v1/data/business-actions/{actionId}/execute", executeBusinessActionOpenAPIResponses())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/business-rules/evaluate", evaluateBusinessRulesOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/reports/{reportId}/run", aggregateOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/events", ingestEventOpenAPIRequestBody())
@@ -597,12 +615,16 @@ func openAPISpec(version string) map[string]interface{} {
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/operation-plans", createOperationPlanOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/operation-plans/{planId}/review", reviewDecisionOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/operation-plans/{planId}/apply", applyOperationPlanOpenAPIRequestBody())
+	setOpenAPIGetResponses(paths, "/api/v1/data/approvals", recordApprovalListOpenAPIResponses())
+	setOpenAPIGetResponses(paths, "/api/v1/data/approvals/{approvalId}", recordApprovalOpenAPIResponses())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals", createRecordApprovalOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/approvals/{approvalId}/review", reviewRecordApprovalOpenAPIRequestBody())
 	setOpenAPIPostResponses(paths, "/api/v1/data/datasets/{datasetId}/records/query", listResponseOpenAPIResponses())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/datasets/{datasetId}/records/query", queryRecordsOpenAPIRequestBody(500, "Maximum number of records to return."))
 	setOpenAPIPostResponses(paths, "/api/v1/data/views/{viewId}/query", businessViewQueryOpenAPIResponses())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/views/{viewId}/query", queryRecordsOpenAPIRequestBody(500, "Maximum number of records to return."))
+	setOpenAPIPostResponses(paths, "/api/v1/data/reports/{reportId}/run", reportRunOpenAPIResponses())
+	setOpenAPIPostResponses(paths, "/api/v1/data/dashboards/{dashboardId}/run", dashboardRunOpenAPIResponses())
 	addDownloadResponseMetadata(paths, downloadOpenAPIMetadataByRoute())
 	addAuthErrorResponses(paths)
 	return map[string]interface{}{
@@ -1059,6 +1081,102 @@ func appInstallationMetadataOpenAPISchema() map[string]interface{} {
 			"source":  map[string]interface{}{"type": "string"},
 		},
 	}
+	versionApprovalBindingSchema := map[string]interface{}{
+		"type":        "object",
+		"description": "Approval binding version captured with the installed app so approval workflow dependencies can be checked and reproduced.",
+		"properties": map[string]interface{}{
+			"event":             map[string]interface{}{"type": "string", "description": "Approval trigger event bound by the app."},
+			"object_role":       map[string]interface{}{"type": "string", "description": "Business object role covered by this approval binding."},
+			"workflow_skill_id": map[string]interface{}{"type": "string", "description": "Workflow Skill dependency selected for the binding."},
+			"workflow_version":  map[string]interface{}{"type": "string", "description": "Workflow Skill version selected for the binding."},
+		},
+	}
+	workflowStatusMappingSchema := map[string]interface{}{
+		"type":        "object",
+		"description": "Approval workflow status mapping used by App Studio and approval instance views.",
+		"properties": map[string]interface{}{
+			"pending":       map[string]interface{}{"type": "string"},
+			"approved":      map[string]interface{}{"type": "string"},
+			"rejected":      map[string]interface{}{"type": "string"},
+			"attention":     map[string]interface{}{"type": "string"},
+			"requiresInput": map[string]interface{}{"type": "string"},
+		},
+	}
+	workflowMappingSchema := map[string]interface{}{
+		"type":        "object",
+		"description": "Approval workflow node mapping for enterprise approval apps, preserved from App Studio workflow_mapping.",
+		"properties": map[string]interface{}{
+			"schema":        map[string]interface{}{"type": "string", "description": "Always maclaw.app.workflow.v1."},
+			"submitNode":    map[string]interface{}{"type": "string", "description": "Workflow node used when the applicant submits the request."},
+			"approvalNode":  map[string]interface{}{"type": "string", "description": "Workflow node shown in pending approval lanes."},
+			"resultNode":    map[string]interface{}{"type": "string", "description": "Workflow node used for result feedback."},
+			"attentionNode": map[string]interface{}{"type": "string", "description": "Workflow node used for needs-attention review."},
+			"statusMapping": workflowStatusMappingSchema,
+		},
+	}
+	workflowContractSchema := map[string]interface{}{
+		"type":        "object",
+		"description": "Approval workflow Skill contract captured for enterprise approval apps and used by install gates, run routing, and approval instance views.",
+		"properties": map[string]interface{}{
+			"schema":          map[string]interface{}{"type": "string", "description": "Always maclaw.app.workflow_contract.v1."},
+			"workflowSkillId": map[string]interface{}{"type": "string", "description": "Workflow Skill dependency that runs the approval flow."},
+			"workflowVersion": map[string]interface{}{"type": "string", "description": "Workflow Skill version expected by the app."},
+			"objectRole":      map[string]interface{}{"type": "string", "description": "Business object role governed by this approval workflow."},
+			"requiredInputs":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Input fields required before the workflow can be started."},
+			"decisionOutputs": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Workflow decision outputs the app expects to receive."},
+			"statusMapping":   workflowStatusMappingSchema,
+		},
+	}
+	testProtocolSchema := map[string]interface{}{
+		"type":        "object",
+		"description": "Full App Studio test protocol used to reproduce the local app verification run.",
+		"properties": map[string]interface{}{
+			"schema":          map[string]interface{}{"type": "string", "description": "Always maclaw.app.test_protocol.v1."},
+			"fingerprint":     map[string]interface{}{"type": "string", "description": "Stable fingerprint of the test protocol."},
+			"sample_input":    map[string]interface{}{"type": "object", "description": "Sample input used by App Studio for the verification run."},
+			"expected_output": map[string]interface{}{"type": "object", "description": "Expected output/result assertions for the verification run."},
+			"required_roles":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Roles required to reproduce the test."},
+			"required_scopes": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Runtime scopes required by the test."},
+			"risk_level":      map[string]interface{}{"type": "string", "description": "Risk level evaluated during App Studio testing."},
+		},
+	}
+	resultContractDeliverySchema := map[string]interface{}{
+		"type":        "object",
+		"description": "Delivery channels enabled by the app result contract.",
+		"properties": map[string]interface{}{
+			"inlineContent":  map[string]interface{}{"type": "boolean"},
+			"artifacts":      map[string]interface{}{"type": "boolean"},
+			"businessRecord": map[string]interface{}{"type": "boolean"},
+			"notifications":  map[string]interface{}{"type": "boolean"},
+		},
+	}
+	resultContractSchema := map[string]interface{}{
+		"type":        "object",
+		"description": "Declared MaClaw App output/result contract used by runtime rendering, publish governance, and install evidence.",
+		"properties": map[string]interface{}{
+			"schema":             map[string]interface{}{"type": "string", "description": "Always maclaw.app.result.v1."},
+			"primary":            map[string]interface{}{"type": "string", "description": "Primary result channel such as content, document, business_status, or approval_result."},
+			"types":              map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Result types the app promises to return."},
+			"output_modes":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Tool output modes associated with the result contract."},
+			"approval_decisions": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Approval decisions surfaced by enterprise approval apps."},
+			"delivery":           resultContractDeliverySchema,
+		},
+	}
+	dependencyVerificationSchema := map[string]interface{}{
+		"type":        "object",
+		"description": "Canonical dependency verification evidence for the installed app, scoped to the app id and used by install, run, and publish gates.",
+		"properties": map[string]interface{}{
+			"verified_at":                   map[string]interface{}{"type": "string", "format": "date-time"},
+			"dependencies":                  map[string]interface{}{"type": "array", "items": dependencySchema, "description": "Per-dependency verification details after app-scoped alias and requirement checks."},
+			"dependency_count":              map[string]interface{}{"type": "integer"},
+			"has_missing_required":          map[string]interface{}{"type": "boolean"},
+			"has_blocking_dependency":       map[string]interface{}{"type": "boolean"},
+			"has_governance_review_issue":   map[string]interface{}{"type": "boolean"},
+			"governance_review_issue_count": map[string]interface{}{"type": "integer"},
+			"has_workflow_contract_issue":   map[string]interface{}{"type": "boolean"},
+			"workflow_contract_issue_count": map[string]interface{}{"type": "integer"},
+		},
+	}
 	return map[string]interface{}{
 		"type":                 "object",
 		"additionalProperties": true,
@@ -1075,49 +1193,61 @@ func appInstallationMetadataOpenAPISchema() map[string]interface{} {
 			"workflow_skill_versions":         stringArray,
 			"approval_binding_versions":       stringArray,
 			"dependencies":                    map[string]interface{}{"type": "array", "items": dependencySchema, "description": "Backend-authoritative dependency verification snapshot."},
+			"dependency_verification":         dependencyVerificationSchema,
 			"dependency_count":                map[string]interface{}{"type": "integer", "description": "Number of dependency records captured for this app."},
 			"has_missing_required_dependency": map[string]interface{}{"type": "boolean", "description": "True when a required dependency was missing in the verification snapshot."},
 			"has_blocking_dependency":         map[string]interface{}{"type": "boolean", "description": "True when a required dependency was unavailable or blocked."},
 			"version_snapshot": map[string]interface{}{
-				"type": "object",
+				"type":        "object",
+				"description": "Resolved MaClaw App dependency version snapshot captured at install time for app Skill, workflow Skills, and approval bindings.",
 				"properties": map[string]interface{}{
 					"app_entry_version": map[string]interface{}{"type": "string"},
 					"app_skill":         versionSkillSchema,
 					"workflow_skills":   map[string]interface{}{"type": "array", "items": versionSkillSchema},
-					"approval_bindings": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}},
+					"approval_bindings": map[string]interface{}{"type": "array", "items": versionApprovalBindingSchema},
 				},
 			},
-			"workspace_layout":                            map[string]interface{}{"type": "object", "description": "Saved dynamic UI layout generated by App Studio."},
+			"workspace_layout":                            map[string]interface{}{"type": "object", "description": "Saved dynamic UI layout generated by App Studio, including preserved workspace_layout.regions placement metadata."},
 			"workspace_layout_entry":                      map[string]interface{}{"type": "string"},
 			"workspace_layout_template":                   map[string]interface{}{"type": "string"},
 			"workspace_layout_density":                    map[string]interface{}{"type": "string"},
 			"workspace_layout_primary_region":             map[string]interface{}{"type": "string", "description": "Primary App Studio region placement saved in the dynamic UI layout."},
 			"workspace_layout_output_region":              map[string]interface{}{"type": "string", "description": "Output/result region placement saved in the dynamic UI layout."},
 			"workspace_layout_region_count":               map[string]interface{}{"type": "integer", "description": "Number of layout regions preserved in workspace_layout.regions."},
-			"workspace_layout_region_ids":                 stringArray,
+			"workspace_layout_region_ids":                 map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Canonical region ids preserved from workspace_layout.regions."},
 			"workspace_layout_navigation":                 stringArray,
 			"workspace_layout_list_columns":               stringArray,
-			"workflow_mapping":                            map[string]interface{}{"type": "object", "description": "Approval workflow node mapping for enterprise approval apps."},
-			"workflow_contract":                           map[string]interface{}{"type": "object", "description": "Approval workflow skill contract captured at install time."},
+			"workflow_mapping":                            workflowMappingSchema,
+			"workflow_contract":                           workflowContractSchema,
 			"workflow_contract_skill_id":                  map[string]interface{}{"type": "string"},
 			"workflow_contract_version":                   map[string]interface{}{"type": "string"},
 			"workflow_contract_object_role":               map[string]interface{}{"type": "string"},
-			"result_contract":                             map[string]interface{}{"type": "object", "description": "Declared app output/result contract."},
+			"workflow_contract_required_inputs":           stringArray,
+			"workflow_contract_decision_outputs":          stringArray,
+			"workflow_contract_status_mapping":            workflowStatusMappingSchema,
+			"result_contract":                             resultContractSchema,
 			"result_contract_primary":                     map[string]interface{}{"type": "string"},
 			"result_contract_types":                       stringArray,
+			"result_contract_delivery":                    map[string]interface{}{"type": "string", "description": "Legacy or compact delivery mode summary for the result contract."},
+			"result_contract_delivery_modes":              map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Enabled delivery channels derived from result_contract.delivery."},
+			"result_contract_delivery_inline_content":     map[string]interface{}{"type": "boolean", "description": "True when inline text/content delivery is enabled."},
+			"result_contract_delivery_artifacts":          map[string]interface{}{"type": "boolean", "description": "True when artifact/file delivery is enabled."},
+			"result_contract_delivery_business_record":    map[string]interface{}{"type": "boolean", "description": "True when business record delivery is enabled."},
+			"result_contract_delivery_notifications":      map[string]interface{}{"type": "boolean", "description": "True when notification delivery is enabled."},
 			"test_evidence":                               map[string]interface{}{"type": "object", "description": "Canonical local test evidence captured before market upload or install, including full outputs, artifacts, approval instance evidence, and result payload when present."},
 			"test_evidence_run_id":                        map[string]interface{}{"type": "string"},
 			"test_evidence_verified_at":                   map[string]interface{}{"type": "string", "format": "date-time"},
 			"test_evidence_definition_fingerprint":        map[string]interface{}{"type": "string", "description": "Fingerprint of the tested app definition."},
+			"test_evidence_test_protocol":                 testProtocolSchema,
 			"test_evidence_test_protocol_fingerprint":     map[string]interface{}{"type": "string", "description": "Fingerprint of the App Studio test protocol used to verify the package."},
 			"test_evidence_artifact_present":              map[string]interface{}{"type": "boolean", "description": "Whether test execution produced at least one artifact."},
 			"test_evidence_artifact_name":                 map[string]interface{}{"type": "string"},
 			"test_evidence_artifact_count":                map[string]interface{}{"type": "integer"},
 			"test_evidence_output_count":                  map[string]interface{}{"type": "integer"},
 			"test_evidence_primary_result":                map[string]interface{}{"type": "string", "description": "Primary result channel observed during test execution."},
-			"test_evidence_outputs":                       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}, "description": "Full dynamic output blocks produced by the tested MaClaw App."},
-			"test_evidence_artifacts":                     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}, "description": "Full artifact descriptors produced by the tested MaClaw App."},
-			"test_evidence_result_payload":                map[string]interface{}{"type": "object", "description": "Structured result payload returned by the app or workflow Skill; omitted from audit summaries but preserved in installation metadata."},
+			"test_evidence_outputs":                       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}, "description": "Full dynamic output blocks produced by the tested MaClaw App, normalized from test_evidence.outputs or promoted from approval_instance.outputs."},
+			"test_evidence_artifacts":                     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}, "description": "Full artifact descriptors produced by the tested MaClaw App, normalized from test_evidence.artifacts or promoted from approval_instance.artifacts."},
+			"test_evidence_result_payload":                map[string]interface{}{"type": "object", "description": "Structured result payload returned by the app or workflow Skill, normalized from test_evidence.result_payload or promoted from approval_instance.result_payload."},
 			"test_evidence_approval_instance":             map[string]interface{}{"type": "object", "description": "Full approval instance evidence captured for enterprise approval apps."},
 			"test_evidence_approval_instance_id":          map[string]interface{}{"type": "string", "description": "Workflow or approval instance id used to locate the tested approval."},
 			"test_evidence_approval_id":                   map[string]interface{}{"type": "string", "description": "DataSrv approval id returned while syncing approval evidence."},
@@ -1170,6 +1300,29 @@ func executeBusinessActionOpenAPIRequestBody() map[string]interface{} {
 				},
 			},
 		},
+	}
+}
+
+func executeBusinessActionOpenAPIResponses() map[string]interface{} {
+	return map[string]interface{}{
+		"200": jsonObjectOpenAPIResponse("Business action execution result with MaClaw App result package.", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"action":          map[string]interface{}{"type": "object", "description": "Business action definition that was executed."},
+				"dry_run":         map[string]interface{}{"type": "boolean", "description": "True when the action was validated without writing."},
+				"valid":           map[string]interface{}{"type": "boolean", "description": "Validation status for dry-run and committed action results."},
+				"validation":      map[string]interface{}{"type": "object", "description": "Record validation result when available."},
+				"preview":         map[string]interface{}{"type": "object", "description": "Preview business record for dry-run execution."},
+				"event":           map[string]interface{}{"type": "object", "description": "Committed data event result when dry_run is false."},
+				"rules":           map[string]interface{}{"type": "object", "description": "Business rule and governance gate evaluation."},
+				"primary_result":  map[string]interface{}{"type": "string", "description": "Primary MaClaw App result channel, usually business_record."},
+				"business_status": map[string]interface{}{"type": "string", "description": "Business-facing action status such as dry_run_valid, dry_run_invalid, or committed event status."},
+				"result_status":   map[string]interface{}{"type": "string", "description": "Machine-readable result status for MaClaw App run evidence."},
+				"result_payload":  map[string]interface{}{"type": "object", "description": "Structured MaClaw App result payload with business_status, business_record, dataset_id, record_id, and action metadata."},
+				"outputs":         map[string]interface{}{"type": "array", "description": "Structured output blocks for GUI run history and app evidence.", "items": map[string]interface{}{"type": "object"}},
+				"artifacts":       map[string]interface{}{"type": "array", "description": "Generated artifact descriptors; empty when no files were produced.", "items": map[string]interface{}{"type": "object"}},
+			},
+		}),
 	}
 }
 
@@ -1617,7 +1770,7 @@ func createRecordApprovalOpenAPIRequestBody() map[string]interface{} {
 		"kind":         map[string]interface{}{"type": "string"},
 		"priority":     map[string]interface{}{"type": "string", "description": "Approval priority: low, medium, high, or critical. Defaults to medium when omitted."},
 		"summary":      map[string]interface{}{"type": "string"},
-		"request":      map[string]interface{}{"type": "object"},
+		"request":      recordApprovalRequestOpenAPISchema(),
 		"assigned_to":  map[string]interface{}{"type": "string"},
 		"due_at":       map[string]interface{}{"type": "string", "format": "date-time"},
 	}
@@ -1643,10 +1796,75 @@ func recordApprovalWorkflowOpenAPIProperties() map[string]interface{} {
 		"workflow_version":      map[string]interface{}{"type": "string", "description": "Workflow skill version."},
 		"workflow_instance_id":  map[string]interface{}{"type": "string", "description": "External workflow instance id."},
 		"workflow_node_id":      map[string]interface{}{"type": "string", "description": "Current or completed workflow node id."},
+		"workflow_node_ids":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Ordered workflow node ids that describe the current approval path or active node set."},
 		"workflow_decision_id":  map[string]interface{}{"type": "string", "description": "Decision event id from the workflow skill."},
 		"detail_url":            map[string]interface{}{"type": "string", "description": "URL or deep link for opening the full workflow approval instance trace."},
 		"business_status":       map[string]interface{}{"type": "string", "description": "Business-facing state produced by the workflow."},
 		"result_status":         map[string]interface{}{"type": "string", "description": "Machine-readable output state produced by the workflow."},
+	}
+}
+
+func recordApprovalRequestOpenAPISchema() map[string]interface{} {
+	stringProp := func(description string) map[string]interface{} {
+		return map[string]interface{}{"type": "string", "description": description}
+	}
+	return map[string]interface{}{
+		"type":        "object",
+		"description": "MaClaw App approval request context persisted with the approval instance. Both snake_case and camelCase aliases are documented for enterprise-system interoperability.",
+		"properties": map[string]interface{}{
+			"approval_instance_id":  stringProp("Stable app/workflow approval instance id."),
+			"approvalInstanceId":    stringProp("CamelCase alias of approval_instance_id."),
+			"workflowInstanceId":    stringProp("External workflow instance id alias used by workflow engines."),
+			"app_id":                stringProp("MaClaw App id."),
+			"appID":                 stringProp("CamelCase alias of app_id."),
+			"maclaw_app_id":         stringProp("MaClaw App id alias used by older install evidence."),
+			"blueprint_id":          stringProp("MaClaw App blueprint id."),
+			"blueprintID":           stringProp("CamelCase alias of blueprint_id."),
+			"object_role":           stringProp("Semantic business object role."),
+			"objectRole":            stringProp("CamelCase alias of object_role."),
+			"business_object_role":  stringProp("Business object role alias."),
+			"businessObjectRole":    stringProp("CamelCase alias of business_object_role."),
+			"approval_event":        stringProp("Approval trigger event."),
+			"approvalEvent":         stringProp("CamelCase alias of approval_event."),
+			"trigger_event":         stringProp("Business trigger event alias."),
+			"triggerEvent":          stringProp("CamelCase alias of trigger_event."),
+			"business_entity":       stringProp("Business entity label shown in approval workspaces."),
+			"businessEntity":        stringProp("CamelCase alias of business_entity."),
+			"business_action":       stringProp("Business action label shown in approval workspaces."),
+			"businessAction":        stringProp("CamelCase alias of business_action."),
+			"business_note":         stringProp("Business note or summary shown in approval workspaces."),
+			"businessNote":          stringProp("CamelCase alias of business_note."),
+			"submitted_by":          stringProp("Submitting user id."),
+			"submittedBy":           stringProp("CamelCase alias of submitted_by."),
+			"owner":                 stringProp("Owner/requester alias."),
+			"applicant":             stringProp("Applicant alias."),
+			"assigned_to":           stringProp("Assigned approver user, role, or queue."),
+			"assignedTo":            stringProp("CamelCase alias of assigned_to."),
+			"current_assignee":      stringProp("Current approver user, role, or queue."),
+			"currentAssignee":       stringProp("CamelCase alias of current_assignee."),
+			"current_assignee_type": stringProp("Current assignee type such as user, role, department, queue, or ve."),
+			"currentAssigneeType":   stringProp("CamelCase alias of current_assignee_type."),
+			"reviewed_by":           stringProp("Reviewer user id."),
+			"reviewedBy":            stringProp("CamelCase alias of reviewed_by."),
+			"current_node":          stringProp("Current workflow node id."),
+			"currentNode":           stringProp("CamelCase alias of current_node."),
+			"workflow_node":         stringProp("Workflow node alias."),
+			"workflowNode":          stringProp("CamelCase alias of workflow_node."),
+			"current_node_ids":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Current or active workflow node ids."},
+			"currentNodeIDs":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "CamelCase alias of current_node_ids."},
+			"workflow_node_ids":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Workflow node path ids."},
+			"workflowNodeIDs":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "CamelCase alias of workflow_node_ids."},
+			"workflow_skill_id":     stringProp("Workflow skill id."),
+			"workflowSkillID":       stringProp("CamelCase alias of workflow_skill_id."),
+			"workflowSkillId":       stringProp("JavaScript-style alias of workflow_skill_id."),
+			"workflow_version":      stringProp("Workflow skill version."),
+			"workflowVersion":       stringProp("CamelCase alias of workflow_version."),
+			"approval_workflow_id":  stringProp("Approval workflow id."),
+			"approvalWorkflowID":    stringProp("CamelCase alias of approval_workflow_id."),
+			"detail_url":            stringProp("Approval detail deep link."),
+			"detailURL":             stringProp("CamelCase alias of detail_url."),
+			"detailUrl":             stringProp("JavaScript-style alias of detail_url."),
+		},
 	}
 }
 
@@ -1690,6 +1908,64 @@ func recordApprovalArtifactOpenAPISchema() map[string]interface{} {
 			"status":         map[string]interface{}{"type": "string"},
 			"presentation":   map[string]interface{}{"type": "string"},
 		},
+	}
+}
+
+func recordApprovalOpenAPIResponses() map[string]interface{} {
+	return map[string]interface{}{
+		"200": jsonObjectOpenAPIResponse("Approval instance with workflow state and MaClaw App result package.", recordApprovalOpenAPISchema()),
+	}
+}
+
+func recordApprovalListOpenAPIResponses() map[string]interface{} {
+	schema := listResponseOpenAPISchema()
+	if properties, ok := schema["properties"].(map[string]interface{}); ok {
+		properties["items"] = map[string]interface{}{
+			"type":        "array",
+			"description": "Current page of approval instances.",
+			"items":       recordApprovalOpenAPISchema(),
+		}
+	}
+	return map[string]interface{}{
+		"200": jsonObjectOpenAPIResponse("Approval instances with cursor metadata.", schema),
+	}
+}
+
+func recordApprovalOpenAPISchema() map[string]interface{} {
+	properties := map[string]interface{}{
+		"id":           map[string]interface{}{"type": "string"},
+		"tenant_id":    map[string]interface{}{"type": "string"},
+		"dataset_id":   map[string]interface{}{"type": "string"},
+		"record_id":    map[string]interface{}{"type": "string"},
+		"app_id":       map[string]interface{}{"type": "string", "description": "MaClaw App id that owns this approval instance."},
+		"blueprint_id": map[string]interface{}{"type": "string", "description": "Optional MaClaw App blueprint id that produced this approval instance."},
+		"object_role":  map[string]interface{}{"type": "string", "description": "Semantic object role for the approved business record."},
+		"status":       map[string]interface{}{"type": "string"},
+		"kind":         map[string]interface{}{"type": "string"},
+		"priority":     map[string]interface{}{"type": "string"},
+		"summary":      map[string]interface{}{"type": "string"},
+		"request":      recordApprovalRequestOpenAPISchema(),
+		"decision":     map[string]interface{}{"type": "string"},
+		"reason":       map[string]interface{}{"type": "string"},
+		"assigned_to":  map[string]interface{}{"type": "string"},
+		"reused":       map[string]interface{}{"type": "boolean"},
+		"created_by":   map[string]interface{}{"type": "string"},
+		"reviewed_by":  map[string]interface{}{"type": "string"},
+		"created_at":   map[string]interface{}{"type": "string", "format": "date-time"},
+		"due_at":       map[string]interface{}{"type": "string", "format": "date-time"},
+		"reviewed_at":  map[string]interface{}{"type": "string", "format": "date-time"},
+		"updated_at":   map[string]interface{}{"type": "string", "format": "date-time"},
+	}
+	for key, value := range recordApprovalWorkflowOpenAPIProperties() {
+		properties[key] = value
+	}
+	for key, value := range recordApprovalResultPackageOpenAPIProperties() {
+		properties[key] = value
+	}
+	return map[string]interface{}{
+		"type":       "object",
+		"required":   []string{"id", "dataset_id", "record_id", "status", "created_at", "updated_at"},
+		"properties": properties,
 	}
 }
 
@@ -2038,18 +2314,62 @@ func errorResponseOpenAPISchema(description string) map[string]interface{} {
 }
 
 func businessViewQueryOpenAPIResponses() map[string]interface{} {
+	properties := map[string]interface{}{
+		"view":    map[string]interface{}{"type": "object", "description": "Business view definition used for projection."},
+		"records": map[string]interface{}{"type": "array", "description": "Projected records for the current page.", "items": map[string]string{"type": "object"}},
+	}
+	for key, value := range maclawResultPackageOpenAPIProperties() {
+		properties[key] = value
+	}
 	return map[string]interface{}{
 		"200": map[string]interface{}{
 			"description": "Business view records with cursor metadata",
 			"content": map[string]interface{}{
 				"application/json": map[string]interface{}{
-					"schema": cursorEnvelopeOpenAPISchema([]string{"view", "records", "limit", "has_more"}, map[string]interface{}{
-						"view":    map[string]interface{}{"type": "object", "description": "Business view definition used for projection."},
-						"records": map[string]interface{}{"type": "array", "description": "Projected records for the current page.", "items": map[string]string{"type": "object"}},
-					}),
+					"schema": cursorEnvelopeOpenAPISchema([]string{"view", "records", "limit", "has_more"}, properties),
 				},
 			},
 		},
+	}
+}
+
+func reportRunOpenAPIResponses() map[string]interface{} {
+	properties := map[string]interface{}{
+		"report": map[string]interface{}{"type": "object", "description": "Report definition that was executed."},
+		"result": map[string]interface{}{"type": "object", "description": "Aggregate report result."},
+	}
+	for key, value := range maclawResultPackageOpenAPIProperties() {
+		properties[key] = value
+	}
+	return map[string]interface{}{
+		"200": jsonObjectOpenAPIResponse("Report run result with MaClaw App result package.", map[string]interface{}{"type": "object", "properties": properties}),
+	}
+}
+
+func dashboardRunOpenAPIResponses() map[string]interface{} {
+	properties := map[string]interface{}{
+		"dashboard":     map[string]interface{}{"type": "object", "description": "Dashboard definition that was executed."},
+		"stats":         map[string]interface{}{"type": "object", "description": "Optional system stats snapshot."},
+		"inbox_summary": map[string]interface{}{"type": "object", "description": "Optional MIS inbox summary."},
+		"reports":       map[string]interface{}{"type": "array", "description": "Dashboard report cards.", "items": map[string]interface{}{"type": "object"}},
+		"generated_at":  map[string]interface{}{"type": "string", "format": "date-time"},
+	}
+	for key, value := range maclawResultPackageOpenAPIProperties() {
+		properties[key] = value
+	}
+	return map[string]interface{}{
+		"200": jsonObjectOpenAPIResponse("Dashboard run result with MaClaw App result package.", map[string]interface{}{"type": "object", "properties": properties}),
+	}
+}
+
+func maclawResultPackageOpenAPIProperties() map[string]interface{} {
+	return map[string]interface{}{
+		"primary_result":  map[string]interface{}{"type": "string", "description": "Primary MaClaw App result channel."},
+		"business_status": map[string]interface{}{"type": "string", "description": "Business-facing result status."},
+		"result_status":   map[string]interface{}{"type": "string", "description": "Machine-readable result status."},
+		"result_payload":  map[string]interface{}{"type": "object", "description": "Structured MaClaw App result payload."},
+		"outputs":         map[string]interface{}{"type": "array", "description": "Structured output blocks for GUI run history and app evidence.", "items": map[string]interface{}{"type": "object"}},
+		"artifacts":       map[string]interface{}{"type": "array", "description": "Generated artifact descriptors; empty when no files were produced.", "items": map[string]interface{}{"type": "object"}},
 	}
 }
 

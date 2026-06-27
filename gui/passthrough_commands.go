@@ -838,10 +838,9 @@ func resolvePassthroughProgram(program string, runtimeName string) (resolved str
 		if err != nil {
 			return "", "", fmt.Errorf("executable not found: %s", program)
 		}
-		cwd, err := os.Getwd()
-		if err != nil || strings.TrimSpace(cwd) == "" {
-			cwd = os.TempDir()
-		}
+		// Use EffectiveWorkspaceDir as default cwd for passthrough commands,
+		// not os.Getwd() which is the maclaw installation directory on Windows.
+		cwd := corelib.EffectiveWorkspaceDir()
 		return resolved, cwd, nil
 	}
 	absProgram, err := filepath.Abs(program)

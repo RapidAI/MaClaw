@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
 func TestCodingSubAgentStartFailuresReturnCompleteResult(t *testing.T) {
@@ -239,17 +241,30 @@ func TestCodingSubAgentDynamicSelectionTextCachesTaskSnapshot(t *testing.T) {
 		Files:              []string{"gui/frontend/src/components/ai/CodingAgentProgressStatus.tsx"},
 		AcceptanceCriteria: []string{"Quality failed state is visible"},
 	}
-	cb := &codingSubAgentCallbacks{task: task}
+	cb := &codingSubAgentCallbacks{
+		task:        task,
+		reqCtx:      "User requires browser screenshot evidence for the progress UI.",
+		designCtx:   "Design says failed status uses a red outline and audit detail row.",
+		prevOutputs: []string{"Previous task touched gui/frontend/src/components/ai/CodingAgentTimeline.tsx"},
+	}
 
 	first := cb.dynamicSelectionText()
 	task.Title = "Changed title"
 	task.Description = "Changed description"
 	task.Files = []string{"other.go"}
 	task.AcceptanceCriteria = []string{"Different criterion"}
+	cb.reqCtx = "Changed requirement"
+	cb.designCtx = "Changed design"
+	cb.prevOutputs = []string{"Changed previous output"}
 	second := cb.dynamicSelectionText()
 
 	if first == "" {
 		t.Fatal("expected non-empty dynamic selection text")
+	}
+	for _, want := range []string{"browser screenshot evidence", "red outline", "CodingAgentTimeline.tsx"} {
+		if !strings.Contains(first, want) {
+			t.Fatalf("dynamic selection text should include task context %q: %q", want, first)
+		}
 	}
 	if second != first {
 		t.Fatalf("dynamic selection text should be cached per task: first=%q second=%q", first, second)
@@ -345,16 +360,18 @@ func TestCodingSubAgentTaskUserMessageIncludesPreflightChecklist(t *testing.T) {
 	userMsg := cb.buildTaskUserMessage()
 	for _, want := range []string{
 		"Before editing",
+		"Before finalizing",
 		".codegraph/",
 		"codegraph explore",
 		"codegraph node",
 		"Glob/ripgrep/read_file",
 		"risk/impact",
 		"minimal edit",
-		"verification",
 		"retry context",
+		"After the last edit",
+		"Do not present pre-edit verification as final verification",
 		"actual modified/created file paths",
-		"verification commands you really ran",
+		"verification commands you really ran after editing",
 		"acceptance criteria",
 		"scope expansion",
 		"remaining risk",
@@ -365,6 +382,15 @@ func TestCodingSubAgentTaskUserMessageIncludesPreflightChecklist(t *testing.T) {
 	}
 	if strings.Contains(userMsg, "验收验证要求") {
 		t.Fatalf("task without acceptance criteria should not add acceptance verification noise: %q", userMsg)
+	}
+	beforeEditingStart := strings.Index(userMsg, "Before editing")
+	beforeFinalizingStart := strings.Index(userMsg, "Before finalizing")
+	if beforeEditingStart < 0 || beforeFinalizingStart < 0 || beforeFinalizingStart <= beforeEditingStart {
+		t.Fatalf("task user message should separate pre-edit and finalization checklists: %q", userMsg)
+	}
+	beforeEditingSection := userMsg[beforeEditingStart:beforeFinalizingStart]
+	if strings.Contains(beforeEditingSection, "Run matching verification") || strings.Contains(beforeEditingSection, "test/build/lint/typecheck") {
+		t.Fatalf("pre-edit checklist should not ask for final verification before edits: %q", beforeEditingSection)
 	}
 }
 
@@ -507,7 +533,7 @@ func TestBuildCodingToolDefinitions_BashDescribesSubAgentGuardrails(t *testing.T
 		})
 	}
 }
-func TestBuildCodingToolDefinitions_ReadFileExposesTailOffset(t *testing.T) {
+func TestBuildCodingToolDefinitions_ReadFileExposesLineRangeHints(t *testing.T) {
 	for name, tools := range map[string][]map[string]interface{}{
 		"fallback": buildCodingToolDefinitionsFallback(),
 		"registry": buildCodingToolDefinitionsFromRegistry(&IMMessageHandler{}),
@@ -526,6 +552,14 @@ func TestBuildCodingToolDefinitions_ReadFileExposesTailOffset(t *testing.T) {
 			desc := codingToolPropDescriptionForTest(offset)
 			if !strings.Contains(desc, "last N lines") {
 				t.Fatalf("read_file offset description should explain tail reads, got %q", desc)
+			}
+			linesDesc := codingToolPropDescriptionForTest(props["lines"])
+			if !strings.Contains(linesDesc, "limit/num_lines/line_count") {
+				t.Fatalf("read_file lines description should expose aliases, got %q", linesDesc)
+			}
+			startDesc := codingToolPropDescriptionForTest(props["start_line"])
+			if !strings.Contains(startDesc, "start/startLine") {
+				t.Fatalf("read_file start_line description should expose aliases, got %q", startDesc)
 			}
 		})
 	}
@@ -731,6 +765,16 @@ func TestCodingSubAgentToolArgumentErrorsIncludeValidExamples(t *testing.T) {
 	if !strings.Contains(typeErr.Text, "Example valid arguments:") || !strings.Contains(typeErr.Text, `{"path":"."}`) {
 		t.Fatalf("type error should include a list_directory example, got %q", typeErr.Text)
 	}
+	if !strings.Contains(typeErr.Text, "dir/directory/root -> path") || !strings.Contains(typeErr.Text, "filename/target_path") {
+		t.Fatalf("list_directory argument error should include path and directory alias recovery hints, got %q", typeErr.Text)
+	}
+
+	editMissing := missingCodingSubAgentRequiredArgumentResult("edit_file", "old_string")
+	if !strings.Contains(editMissing.Text, "old_content/find/search -> old_string") ||
+		!strings.Contains(editMissing.Text, "new_content/replace/replacement -> new_string") ||
+		!strings.Contains(editMissing.Text, "filename/target_path") {
+		t.Fatalf("edit_file argument error should include edit alias recovery hints, got %q", editMissing.Text)
+	}
 
 	allowed := invalidCodingSubAgentArgumentAllowedValuesResult("edit_lines", "operation", "move", []string{"replace", "insert", "delete"})
 	if !strings.Contains(allowed.Text, "Example valid arguments:") || !strings.Contains(allowed.Text, `{"path":"src/main.go","operation":"replace"`) {
@@ -791,6 +835,30 @@ func TestCodingSubAgentToolArgumentAliasesNormalizeCommonModelFields(t *testing.
 		t.Fatalf("edit_file new_content alias should populate new_string, got %#v from %s", editArgs, normalized)
 	}
 
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("edit_file", `{"path":"main.go","find":"old","replace":"new"}`)
+	editArgs = nil
+	if err := json.Unmarshal([]byte(normalized), &editArgs); err != nil {
+		t.Fatalf("normalized edit_file find/replace args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := editArgs["old_string"].(string); got != "old" {
+		t.Fatalf("edit_file find alias should populate old_string, got %#v from %s", editArgs, normalized)
+	}
+	if got, _ := editArgs["new_string"].(string); got != "new" {
+		t.Fatalf("edit_file replace alias should populate new_string, got %#v from %s", editArgs, normalized)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("edit_file", `{"path":"main.go","search":"old","replacement":"new"}`)
+	editArgs = nil
+	if err := json.Unmarshal([]byte(normalized), &editArgs); err != nil {
+		t.Fatalf("normalized edit_file search/replacement args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := editArgs["old_string"].(string); got != "old" {
+		t.Fatalf("edit_file search alias should populate old_string, got %#v from %s", editArgs, normalized)
+	}
+	if got, _ := editArgs["new_string"].(string); got != "new" {
+		t.Fatalf("edit_file replacement alias should populate new_string, got %#v from %s", editArgs, normalized)
+	}
+
 	normalized = normalizeCodingSubAgentToolArgumentsForTool("edit_file", `{"path":"main.go","old_string":"canonical","old_content":"alias","new_string":"done"}`)
 	editArgs = nil
 	if err := json.Unmarshal([]byte(normalized), &editArgs); err != nil {
@@ -825,6 +893,78 @@ func TestCodingSubAgentToolArgumentAliasesNormalizeCommonModelFields(t *testing.
 	}
 	if _, ok := readArgs["file"]; ok {
 		t.Fatalf("read_file file alias should be removed when canonical is present: %#v", readArgs)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("read_file", `{"path":"main.go","limit":40,"start":12}`)
+	readArgs = nil
+	if err := json.Unmarshal([]byte(normalized), &readArgs); err != nil {
+		t.Fatalf("normalized read_file range args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := readArgs["lines"].(float64); got != 40 {
+		t.Fatalf("read_file limit alias should populate lines, got %#v from %s", readArgs, normalized)
+	}
+	if got, _ := readArgs["start_line"].(float64); got != 12 {
+		t.Fatalf("read_file start alias should populate start_line, got %#v from %s", readArgs, normalized)
+	}
+	if _, ok := readArgs["limit"]; ok {
+		t.Fatalf("read_file limit alias should be removed after normalization: %#v", readArgs)
+	}
+	if _, ok := readArgs["start"]; ok {
+		t.Fatalf("read_file start alias should be removed after normalization: %#v", readArgs)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("read_file", `{"path":"main.go","lines":20,"limit":40,"start_line":3,"start":12}`)
+	readArgs = nil
+	if err := json.Unmarshal([]byte(normalized), &readArgs); err != nil {
+		t.Fatalf("normalized canonical read_file range args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := readArgs["lines"].(float64); got != 20 {
+		t.Fatalf("canonical read_file lines should not be overwritten by limit alias, got %#v", readArgs)
+	}
+	if got, _ := readArgs["start_line"].(float64); got != 3 {
+		t.Fatalf("canonical read_file start_line should not be overwritten by start alias, got %#v", readArgs)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("write_file", `{"target_path":"generated.go","content":"package main\n"}`)
+	var writeArgs map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &writeArgs); err != nil {
+		t.Fatalf("normalized write_file args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := writeArgs["path"].(string); got != "generated.go" {
+		t.Fatalf("write_file target_path alias should populate path, got %#v from %s", writeArgs, normalized)
+	}
+	if _, ok := writeArgs["target_path"]; ok {
+		t.Fatalf("write_file target_path alias should be removed after normalization: %#v", writeArgs)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("list_directory", `{"directory":"src"}`)
+	var listArgs map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &listArgs); err != nil {
+		t.Fatalf("normalized list_directory args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := listArgs["path"].(string); got != "src" {
+		t.Fatalf("list_directory directory alias should populate path, got %#v from %s", listArgs, normalized)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("Glob", `{"glob":"**/*.go","root":"src"}`)
+	var globArgs map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &globArgs); err != nil {
+		t.Fatalf("normalized Glob args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := globArgs["path"].(string); got != "src" {
+		t.Fatalf("Glob root alias should populate path, got %#v from %s", globArgs, normalized)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("read_file", `{"directory":"src"}`)
+	readArgs = nil
+	if err := json.Unmarshal([]byte(normalized), &readArgs); err != nil {
+		t.Fatalf("normalized read_file directory args should be valid JSON: %v; %s", err, normalized)
+	}
+	if _, ok := readArgs["path"]; ok {
+		t.Fatalf("read_file should not treat directory alias as file path, got %#v", readArgs)
+	}
+	if got, _ := readArgs["directory"].(string); got != "src" {
+		t.Fatalf("read_file should preserve unsupported directory argument for validation, got %#v", readArgs)
 	}
 
 	normalized = normalizeCodingSubAgentToolArgumentsForTool("edit_lines", `{"file":"main.go","action":"update","startLine":2,"endLine":3,"content":"replacement"}`)
@@ -876,6 +1016,650 @@ func TestCodingSubAgentToolArgumentAliasesNormalizeCommonModelFields(t *testing.
 	}
 	if _, ok := canonicalMCPArgs["server"]; ok {
 		t.Fatalf("call_mcp_tool server alias should be removed when canonical is present: %#v", canonicalMCPArgs)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("coding_knowledge_search", `{"question":"how does task execution work?"}`)
+	var knowledgeArgs map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &knowledgeArgs); err != nil {
+		t.Fatalf("normalized coding_knowledge_search args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := knowledgeArgs["query"].(string); got != "how does task execution work?" {
+		t.Fatalf("coding_knowledge_search question alias should populate query, got %#v from %s", knowledgeArgs, normalized)
+	}
+	if _, ok := knowledgeArgs["question"]; ok {
+		t.Fatalf("coding_knowledge_search question alias should be removed after normalization: %#v", knowledgeArgs)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("knowledge_search", `{"query":"canonical","keywords":"alias"}`)
+	var projectKnowledgeArgs map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &projectKnowledgeArgs); err != nil {
+		t.Fatalf("normalized knowledge_search args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := projectKnowledgeArgs["query"].(string); got != "canonical" {
+		t.Fatalf("canonical knowledge_search query should not be overwritten by alias, got %#v", projectKnowledgeArgs)
+	}
+	if _, ok := projectKnowledgeArgs["keywords"]; ok {
+		t.Fatalf("knowledge_search keywords alias should be removed when canonical is present: %#v", projectKnowledgeArgs)
+	}
+}
+
+func TestRemoteCodingSubAgentToolArgumentAliasesNormalizeCommonModelFields(t *testing.T) {
+	args := map[string]interface{}{
+		"file":        "app/main.go",
+		"old_string":  "old text",
+		"replacement": "new text",
+	}
+	if !applyRemoteCodingSubAgentToolArgumentAliases("ssh_edit_file", args) {
+		t.Fatalf("ssh_edit_file aliases should report a change")
+	}
+	if got, _ := args["path"].(string); got != "app/main.go" {
+		t.Fatalf("ssh_edit_file file alias should populate path, got %#v", args)
+	}
+	if got, _ := args["old_str"].(string); got != "old text" {
+		t.Fatalf("ssh_edit_file old_string alias should populate old_str, got %#v", args)
+	}
+	if got, _ := args["new_str"].(string); got != "new text" {
+		t.Fatalf("ssh_edit_file replacement alias should populate new_str, got %#v", args)
+	}
+	for _, alias := range []string{"file", "old_string", "replacement"} {
+		if _, ok := args[alias]; ok {
+			t.Fatalf("ssh_edit_file alias %q should be removed after normalization: %#v", alias, args)
+		}
+	}
+
+	args = map[string]interface{}{
+		"path":        "canonical.go",
+		"target_path": "alias.go",
+		"old_str":     "canonical old",
+		"find":        "alias old",
+		"new_str":     "canonical new",
+		"replace":     "alias new",
+	}
+	if !applyRemoteCodingSubAgentToolArgumentAliases("ssh_edit_file", args) {
+		t.Fatalf("ssh_edit_file canonical/alias mix should report a change")
+	}
+	if got, _ := args["path"].(string); got != "canonical.go" {
+		t.Fatalf("canonical path should not be overwritten by alias, got %#v", args)
+	}
+	if got, _ := args["old_str"].(string); got != "canonical old" {
+		t.Fatalf("canonical old_str should not be overwritten by alias, got %#v", args)
+	}
+	if got, _ := args["new_str"].(string); got != "canonical new" {
+		t.Fatalf("canonical new_str should not be overwritten by alias, got %#v", args)
+	}
+	for _, alias := range []string{"target_path", "find", "replace"} {
+		if _, ok := args[alias]; ok {
+			t.Fatalf("ssh_edit_file alias %q should be removed when canonical is present: %#v", alias, args)
+		}
+	}
+
+	args = map[string]interface{}{"directory": "src"}
+	if !applyRemoteCodingSubAgentToolArgumentAliases("ssh_list_dir", args) {
+		t.Fatalf("ssh_list_dir directory alias should report a change")
+	}
+	if got, _ := args["path"].(string); got != "src" {
+		t.Fatalf("ssh_list_dir directory alias should populate path, got %#v", args)
+	}
+
+	args = map[string]interface{}{"command": "go test ./gui", "cwd": "gui"}
+	if !applyRemoteCodingSubAgentToolArgumentAliases("ssh_bash", args) {
+		t.Fatalf("ssh_bash cwd alias should report a change")
+	}
+	if got, _ := args["working_dir"].(string); got != "gui" {
+		t.Fatalf("ssh_bash cwd alias should populate working_dir, got %#v", args)
+	}
+
+	args = map[string]interface{}{"id": "task-123"}
+	if !applyRemoteCodingSubAgentToolArgumentAliases("ssh_check_task", args) {
+		t.Fatalf("ssh_check_task id alias should report a change")
+	}
+	if got, _ := args["task_id"].(string); got != "task-123" {
+		t.Fatalf("ssh_check_task id alias should populate task_id, got %#v", args)
+	}
+
+	args = map[string]interface{}{"question": "vector index"}
+	if !applyRemoteCodingSubAgentToolArgumentAliases("knowledge_search", args) {
+		t.Fatalf("knowledge_search question alias should report a change")
+	}
+	if got, _ := args["query"].(string); got != "vector index" {
+		t.Fatalf("knowledge_search question alias should populate query, got %#v", args)
+	}
+}
+
+func TestRemoteCodingSubAgentEmptyToolArgumentsNormalizeToObject(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}}
+	result := cb.executeRemoteTool("ssh_list_dir", "")
+	if strings.Contains(result, "参数解析失败") || strings.Contains(result, "unexpected end of JSON input") {
+		t.Fatalf("empty remote arguments should not surface JSON parse failure: %q", result)
+	}
+	if !strings.Contains(result, "handler unavailable") {
+		t.Fatalf("empty remote arguments should parse and reach handler validation, got %q", result)
+	}
+}
+
+func TestRemoteCodingSubAgentResolvePathKeepsRelativePathWhenProjectDirMissing(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}}
+	if got := cb.resolvePath("src/main.go"); got != "src/main.go" {
+		t.Fatalf("relative path without project dir should stay relative, got %q", got)
+	}
+	cb.agent.projectDir = "/repo/project/"
+	if got := cb.resolvePath("src/main.go"); got != "/repo/project/src/main.go" {
+		t.Fatalf("relative path should resolve under trimmed project dir, got %q", got)
+	}
+	if got := cb.resolvePath("/tmp/main.go"); got != "/tmp/main.go" {
+		t.Fatalf("absolute path should stay absolute, got %q", got)
+	}
+}
+
+func TestRemoteWriteFileResultRequiresExplicitOK(t *testing.T) {
+	success := remoteWriteFileResult("/repo/main.py", 12, "OK\n", false)
+	if !strings.Contains(success, "✅ 已写入 /repo/main.py (12 bytes)") {
+		t.Fatalf("write result should report success when command prints OK, got %q", success)
+	}
+	chunked := remoteWriteFileResult("/repo/main.py", 40000, "OK\n", true)
+	if !strings.Contains(chunked, "chunked") {
+		t.Fatalf("chunked write result should mention chunked success, got %q", chunked)
+	}
+	for _, result := range []string{
+		"",
+		"ERROR: permission denied",
+		"remote coding subagent: handler unavailable",
+		"python3: command not found",
+		"Traceback (most recent call last):",
+	} {
+		got := remoteWriteFileResult("/repo/main.py", 12, result, false)
+		if !strings.HasPrefix(got, "写入失败:") {
+			t.Fatalf("write result for %q should fail closed, got %q", result, got)
+		}
+	}
+}
+
+func TestRemoteEditFileResultRequiresExplicitOK(t *testing.T) {
+	success := remoteEditFileResult("/repo/main.py", "OK: replaced 1 occurrence\n")
+	if !strings.Contains(success, "✅ 已编辑 /repo/main.py") {
+		t.Fatalf("edit result should report success when command prints OK, got %q", success)
+	}
+	for _, result := range []string{
+		"",
+		"ERROR: old_str not found in file",
+		"remote coding subagent: handler unavailable",
+		"python3: command not found",
+		"Traceback (most recent call last):",
+		"replaced 1 occurrence",
+	} {
+		got := remoteEditFileResult("/repo/main.py", result)
+		if !strings.HasPrefix(got, "编辑失败:") {
+			t.Fatalf("edit result for %q should fail closed, got %q", result, got)
+		}
+	}
+}
+
+func TestRemoteCodingSubAgentResultFromLoopResultPreservesNonSuccessStates(t *testing.T) {
+	result := remoteCodingSubAgentResultFromLoopResult(agent.LoopResult{
+		Error:      "cancelled during LLM retry",
+		Text:       "partial",
+		Iterations: 2,
+		ToolCalls:  3,
+	})
+	if result.Status != "cancelled" || result.Error != "cancelled during LLM retry" || result.Summary != "partial" || result.Iterations != 2 || result.ToolCalls != 3 {
+		t.Fatalf("cancelled loop result should preserve cancellation metadata, got %#v", result)
+	}
+
+	result = remoteCodingSubAgentResultFromLoopResult(agent.LoopResult{
+		Text:      "工具 bash 连续失败 12 次，已停止执行。",
+		HardExit:  true,
+		ToolCalls: 12,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "hard exit") || result.ToolCalls != 12 {
+		t.Fatalf("hard-exit loop result should be failed, got %#v", result)
+	}
+
+	result = remoteCodingSubAgentResultFromLoopResult(agent.LoopResult{
+		Text:    "[ask_user] Need approval",
+		AskUser: &agent.AskUserRequest{Question: "Proceed?"},
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "requires user input") {
+		t.Fatalf("ask-user loop result should be failed for remote autonomous task, got %#v", result)
+	}
+
+	result = remoteCodingSubAgentResultFromLoopResult(agent.LoopResult{Text: " \n\t", Iterations: 1})
+	if result.Status != "failed" || !strings.Contains(result.Error, "empty summary") {
+		t.Fatalf("empty remote loop summary should be failed, got %#v", result)
+	}
+
+	result = remoteCodingSubAgentResultFromLoopResult(agent.LoopResult{Text: "done"})
+	if result.Status != "success" || result.Summary != "done" || result.Error != "" {
+		t.Fatalf("normal loop result should remain success, got %#v", result)
+	}
+}
+
+func TestRemoteCodingSubAgentCallbacksAreNilSafe(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("remote coding callbacks should be nil-safe, panicked: %v", r)
+		}
+	}()
+
+	var nilCB *remoteCodingCallbacks
+	if cfg := nilCB.GetLLMConfig(); cfg.URL != "" || cfg.Key != "" {
+		t.Fatalf("nil callback config should be empty, got %#v", cfg)
+	}
+	if nilCB.ShouldStop() {
+		t.Fatalf("nil callback should not request stop")
+	}
+	if ctx, release, err := nilCB.LLMRequestContext(1); err != nil || ctx == nil || release == nil {
+		t.Fatalf("nil callback should return background request context, ctx=%v release=%v err=%v", ctx, release, err)
+	}
+	if prompt := nilCB.BuildSystemPrompt("task", true); !strings.Contains(prompt, "Remote Coding SubAgent") {
+		t.Fatalf("nil callback should still build base remote prompt, got %q", prompt)
+	}
+	tools := nilCB.BuildTools("task")
+	if len(tools) == 0 {
+		t.Fatalf("nil callback should still expose base remote tools")
+	}
+	nilCB.OnToken("delta")
+	nilCB.OnProgress("progress")
+	nilCB.OnToolCall("ssh_list_dir")
+
+	if result := nilCB.ExecuteTool("ssh_list_dir", "{}"); !strings.Contains(result, "agent unavailable") {
+		t.Fatalf("nil callback execute should report unavailable agent, got %q", result)
+	}
+
+	cb := &remoteCodingCallbacks{}
+	cb.OnToken("delta")
+	cb.OnProgress("progress")
+	cb.OnToolCall("ssh_list_dir")
+	if cb.ShouldStop() {
+		t.Fatalf("callback with nil agent should not request stop")
+	}
+	if result := cb.ExecuteTool("ssh_list_dir", "{}"); !strings.Contains(result, "agent unavailable") {
+		t.Fatalf("callback with nil agent should report unavailable agent, got %q", result)
+	}
+
+	cb = &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}}
+	if result := cb.ExecuteTool("ssh_check_task", `{"task_id":"task-123"}`); !strings.Contains(result, "handler unavailable") {
+		t.Fatalf("ssh_check_task should report unavailable handler instead of panicking, got %q", result)
+	}
+}
+
+func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T) {
+	prompt := buildRemoteCodingSystemPrompt("/repo/project", "/repo", "")
+	for _, want := range []string{
+		"file/file_path/filename/target_path",
+		"offset/limit",
+		"默认读取前 200 行",
+		"old_string/old_content/find/search -> old_str",
+		"new_string/new_content/replace/replacement -> new_str",
+		"cwd/work_dir -> working_dir",
+		"id/task -> task_id",
+		"再次 ssh_read_file",
+		"运行匹配任务的验证命令",
+		"实际运行的验证命令及结果",
+		"剩余风险或未验证项",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("remote prompt should expose alias hint %q, got %q", want, prompt)
+		}
+	}
+
+	defs := remoteCodingToolDefinitions()
+	descriptions := make(map[string]string)
+	for _, def := range defs {
+		fn, _ := def["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		descriptions[name], _ = fn["description"].(string)
+		params, _ := fn["parameters"].(map[string]interface{})
+		props, _ := params["properties"].(map[string]interface{})
+		for propName, propDef := range props {
+			prop, _ := propDef.(map[string]interface{})
+			desc, _ := prop["description"].(string)
+			descriptions[name+"."+propName] = desc
+		}
+	}
+
+	expectDescriptionContains := func(key string, wants ...string) {
+		t.Helper()
+		got := descriptions[key]
+		if got == "" {
+			t.Fatalf("missing remote tool description for %s in %#v", key, descriptions)
+		}
+		for _, want := range wants {
+			if !strings.Contains(got, want) {
+				t.Fatalf("remote tool description %s should contain %q, got %q", key, want, got)
+			}
+		}
+	}
+
+	expectDescriptionContains("ssh_read_file.path", "file/file_path/filename/target_path")
+	expectDescriptionContains("ssh_read_file.offset", "start/start_line")
+	expectDescriptionContains("ssh_read_file.limit", "默认 200", "num_lines/line_count", "最大 2000")
+	expectDescriptionContains("ssh_edit_file", "old_string/old_content/find/search", "new_string/new_content/replace/replacement")
+	expectDescriptionContains("ssh_edit_file.old_str", "old_string/old_content/find/search")
+	expectDescriptionContains("ssh_edit_file.new_str", "new_string/new_content/replace/replacement")
+	expectDescriptionContains("ssh_bash.working_dir", "cwd/work_dir")
+	expectDescriptionContains("ssh_list_dir.path", "dir/directory/root", "file/file_path/filename/target_path")
+	expectDescriptionContains("ssh_check_task.task_id", "id/task")
+}
+
+func TestRemoteShellQuoteEscapesSingleQuotes(t *testing.T) {
+	got := remoteShellQuote("/repo/O'Reilly/app")
+	want := "'/repo/O'\\''Reilly/app'"
+	if got != want {
+		t.Fatalf("remoteShellQuote single quote escaping = %q, want %q", got, want)
+	}
+	command := fmt.Sprintf("cd %s && ls -la %s", got, remoteShellQuote("src's"))
+	if strings.Contains(command, "O'Reilly") || !strings.Contains(command, "'\\''") {
+		t.Fatalf("remote shell command should not contain unescaped single quote payload, got %q", command)
+	}
+}
+
+func TestRemoteCodingSubAgentKnowledgeSearchDoesNotRequireSSHHandler(t *testing.T) {
+	store, err := knowledge.NewCodingKnowledgeStore(filepath.Join(t.TempDir(), "coding_knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewCodingKnowledgeStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	_, err = store.SaveExperience(context.Background(), knowledge.CodingExperience{
+		Title:            "Remote alias normalization",
+		Category:         "pattern",
+		Scope:            "language",
+		Language:         "python",
+		TriggerCondition: "remote alias normalization",
+		Content:          "Remote coding tools should normalize old_string and replacement aliases before dispatch.",
+		Status:           knowledge.CodingStatusActive,
+		Confidence:       0.9,
+	})
+	if err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+
+	cb := &remoteCodingCallbacks{
+		agent: &RemoteCodingSubAgent{
+			codingKB: store,
+			// handler intentionally nil: coding knowledge search does not need SSH.
+		},
+	}
+	result := cb.executeRemoteTool("coding_knowledge_search", `{"question":"remote alias normalization"}`)
+	if strings.Contains(result, "handler unavailable") {
+		t.Fatalf("coding knowledge search should not require SSH handler, got %q", result)
+	}
+	if !strings.Contains(result, "Remote alias normalization") || !strings.Contains(result, "old_string") {
+		t.Fatalf("coding knowledge search should return matching experience, got %q", result)
+	}
+
+	sshResult := cb.executeRemoteTool("ssh_list_dir", "{}")
+	if !strings.Contains(sshResult, "handler unavailable") {
+		t.Fatalf("SSH tools should still require handler, got %q", sshResult)
+	}
+
+	unknownResult := cb.executeRemoteTool("not_a_remote_tool", "{}")
+	if !strings.Contains(unknownResult, "unknown tool") || strings.Contains(unknownResult, "handler unavailable") {
+		t.Fatalf("unknown tools should report unknown without requiring handler, got %q", unknownResult)
+	}
+}
+
+func TestRemoteCodingToolOutcomeDetectsCommonFailureText(t *testing.T) {
+	failures := []string{
+		"错误: 需要 path 参数",
+		"写入失败: disk full",
+		"参数解析失败: invalid character",
+		"error: permission denied",
+		"Traceback (most recent call last):",
+		"panic: runtime error",
+		"exit status 1",
+		"command exited with code 2",
+		"ls: cannot access 'missing': No such file or directory",
+		"bash: pytest: command not found",
+		"ERROR: file not found: /repo/missing.py",
+		"remote coding subagent: handler unavailable",
+		"unknown tool: ssh_delete_all",
+	}
+	for _, result := range failures {
+		if got := remoteCodingToolOutcome(result); got != "failed" {
+			t.Fatalf("remoteCodingToolOutcome(%q) = %q, want failed", result, got)
+		}
+	}
+
+	successes := []string{
+		"",
+		"OK: replaced 1 occurrence",
+		"✅ 已写入 /tmp/file.py (42 bytes)",
+		"0 errors and 0 warnings",
+	}
+	for _, result := range successes {
+		if got := remoteCodingToolOutcome(result); got != "success" {
+			t.Fatalf("remoteCodingToolOutcome(%q) = %q, want success", result, got)
+		}
+	}
+}
+
+func TestRemoteCodingSubAgentToolFinishedEventUsesFailureOutcomeClassifier(t *testing.T) {
+	var progress []string
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
+		onProgress: func(text string) {
+			progress = append(progress, text)
+		},
+	}}
+
+	result := cb.executeRemoteTool("ssh_list_dir", "{}")
+	if !strings.Contains(result, "handler unavailable") {
+		t.Fatalf("expected handler unavailable result, got %q", result)
+	}
+
+	var finished CodingAgentEvent
+	found := false
+	for _, line := range progress {
+		event, ok := parseCodingAgentEventText(line)
+		if !ok || event.Event != codingAgentEventKindToolFinished.String() {
+			continue
+		}
+		finished = event
+		found = true
+	}
+	if !found {
+		t.Fatalf("expected tool_finished event, progress=%#v", progress)
+	}
+	if finished.Outcome != "failed" {
+		t.Fatalf("tool_finished outcome should use failure classifier, got event=%#v progress=%#v", finished, progress)
+	}
+	if !strings.Contains(finished.Summary, "handler unavailable") {
+		t.Fatalf("failed tool event should include diagnostic summary, got %#v", finished)
+	}
+}
+
+func TestRemoteCodingSubAgentLongCommandClassifierAvoidsShortCommandFalsePositives(t *testing.T) {
+	longCommands := []string{
+		"python train.py --epochs 10",
+		"bash scripts/train_model.sh",
+		"nohup python train.py > train.log 2>&1 &",
+		"pip install -r requirements.txt",
+		"conda install pytorch",
+		"apt-get install -y build-essential",
+		"git clone https://example.com/repo.git",
+		"git pull origin main",
+		"wget https://example.com/model.bin",
+		"curl -L https://example.com/model.bin -o model.bin",
+		"docker build -t app .",
+		"make build",
+		"make train",
+		"cmake --build build",
+	}
+	for _, command := range longCommands {
+		if !isLongRemoteCommand(command) {
+			t.Fatalf("isLongRemoteCommand(%q) = false, want true", command)
+		}
+	}
+
+	shortCommands := []string{
+		"",
+		"python3 -c \"print('train')\"",
+		"python - <<'PY'\nprint('fit')\nPY",
+		"python scripts/check_fit.py",
+		"python scripts/constraint.py",
+		"python scripts/validate_epoch_metrics.py",
+		"bash scripts/check_train.sh",
+		"bash scripts/run_checks.sh",
+		"pytest tests/test_train.py",
+		"make test",
+		"make check",
+		"cmake -S . -B build",
+		"go test ./...",
+	}
+	for _, command := range shortCommands {
+		if isLongRemoteCommand(command) {
+			t.Fatalf("isLongRemoteCommand(%q) = true, want false", command)
+		}
+	}
+}
+
+func TestRemoteCodingSubAgentRawTextArgumentsPreserveWhitespace(t *testing.T) {
+	args := map[string]interface{}{
+		"path":    "  src/main.py  ",
+		"content": "\n  print('hello')\n",
+		"old_str": "  old text\n",
+		"new_str": "\nnew text  ",
+	}
+
+	if got := remoteArgStr(args, "path"); got != "src/main.py" {
+		t.Fatalf("remoteArgStr should trim control/path args, got %q", got)
+	}
+	content, ok := remoteArgRawStr(args, "content")
+	if !ok || content != "\n  print('hello')\n" {
+		t.Fatalf("remoteArgRawStr should preserve content whitespace, got ok=%v value=%q", ok, content)
+	}
+	oldStr, ok := remoteArgRawStr(args, "old_str")
+	if !ok || oldStr != "  old text\n" {
+		t.Fatalf("remoteArgRawStr should preserve old_str whitespace, got ok=%v value=%q", ok, oldStr)
+	}
+	newStr, ok := remoteArgRawStr(args, "new_str")
+	if !ok || newStr != "\nnew text  " {
+		t.Fatalf("remoteArgRawStr should preserve new_str whitespace, got ok=%v value=%q", ok, newStr)
+	}
+
+	emptyContent, ok := remoteArgRawStr(map[string]interface{}{"content": ""}, "content")
+	if !ok || emptyContent != "" {
+		t.Fatalf("empty content should be present and preserved, got ok=%v value=%q", ok, emptyContent)
+	}
+	if _, ok := remoteArgRawStr(map[string]interface{}{}, "content"); ok {
+		t.Fatalf("missing content should not be reported as present")
+	}
+}
+
+func TestRemoteCodingSubAgentEditFileRequiresExplicitNewStringButAllowsEmptyReplacement(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{projectDir: "/repo"}}
+
+	missingNew := cb.sshEditFile(map[string]interface{}{
+		"path":    "main.py",
+		"old_str": "old",
+	})
+	if !strings.Contains(missingNew, "new_str") {
+		t.Fatalf("missing new_str should be rejected before execution, got %q", missingNew)
+	}
+
+	result := cb.sshEditFile(map[string]interface{}{
+		"path":    "main.py",
+		"old_str": "old",
+		"new_str": "",
+	})
+	if !strings.Contains(result, "handler unavailable") {
+		t.Fatalf("empty new_str should pass validation and reach execution, got %q", result)
+	}
+}
+
+func TestRemoteCodingSubAgentPythonCommandsEncodePaths(t *testing.T) {
+	path := "/repo/src/O'Reilly $HOME/main.py"
+	pathB64 := base64.StdEncoding.EncodeToString([]byte(path))
+
+	writeCmd := remoteWriteFilePythonCommand(path, "print('hello')\n")
+	if !strings.Contains(writeCmd, pathB64) {
+		t.Fatalf("write command should contain base64 path %q, got %q", pathB64, writeCmd)
+	}
+	if strings.Contains(writeCmd, path) || strings.Contains(writeCmd, "pathlib.Path('/repo") {
+		t.Fatalf("write command should not embed raw path in Python string, got %q", writeCmd)
+	}
+	if strings.Contains(writeCmd, "\n\timport ") || strings.Contains(writeCmd, "\n\tp =") {
+		t.Fatalf("write command should not embed Go indentation into Python source, got %q", writeCmd)
+	}
+	if !strings.Contains(writeCmd, "base64.b64decode") {
+		t.Fatalf("write command should decode path/content via base64, got %q", writeCmd)
+	}
+
+	largeCmd := remoteWriteFileLargeDecodeCommand(path, "/tmp/maclaw_write_123")
+	if !strings.Contains(largeCmd, pathB64) {
+		t.Fatalf("large-write decode command should contain base64 path %q, got %q", pathB64, largeCmd)
+	}
+	if strings.Contains(largeCmd, path) || strings.Contains(largeCmd, "pathlib.Path('/repo") {
+		t.Fatalf("large-write decode command should not embed raw path in Python string, got %q", largeCmd)
+	}
+	if strings.Contains(largeCmd, "\n\timport ") || strings.Contains(largeCmd, "\n\tp =") {
+		t.Fatalf("large-write decode command should not embed Go indentation into Python source, got %q", largeCmd)
+	}
+	if !strings.Contains(largeCmd, "rm -f '/tmp/maclaw_write_123'") {
+		t.Fatalf("large-write decode command should shell-quote tmp cleanup path, got %q", largeCmd)
+	}
+
+	editCmd := remoteEditFilePythonCommand(path, "  old\n", "")
+	if !strings.Contains(editCmd, pathB64) {
+		t.Fatalf("edit command should contain base64 path %q, got %q", pathB64, editCmd)
+	}
+	if strings.Contains(editCmd, path) || strings.Contains(editCmd, "pathlib.Path('/repo") {
+		t.Fatalf("edit command should not embed raw path in Python string, got %q", editCmd)
+	}
+	if strings.Contains(editCmd, "\n\timport ") || strings.Contains(editCmd, "\n\tif ") {
+		t.Fatalf("edit command should not embed Go indentation into Python source, got %q", editCmd)
+	}
+	if !strings.Contains(editCmd, base64.StdEncoding.EncodeToString([]byte("  old\n"))) ||
+		!strings.Contains(editCmd, base64.StdEncoding.EncodeToString([]byte(""))) {
+		t.Fatalf("edit command should base64 encode old/new strings, got %q", editCmd)
+	}
+}
+
+func TestRemoteCodingSubAgentReadFileRangeCommandAndArgs(t *testing.T) {
+	path := "/repo/src/O'Reilly $HOME/main.py"
+	pathB64 := base64.StdEncoding.EncodeToString([]byte(path))
+	cmd := remoteReadFileRangePythonCommand(path, 25, 40)
+	if !strings.Contains(cmd, pathB64) {
+		t.Fatalf("read range command should contain base64 path %q, got %q", pathB64, cmd)
+	}
+	if strings.Contains(cmd, path) || strings.Contains(cmd, "pathlib.Path('/repo") {
+		t.Fatalf("read range command should not embed raw path in Python string, got %q", cmd)
+	}
+	for _, want := range []string{"start = 25", "limit = 40", "begin >= len(lines)", "enumerate(lines[begin:end], start=start)", "remote read_file EOF", "remote read_file truncated", "offset=%d"} {
+		if !strings.Contains(cmd, want) {
+			t.Fatalf("read range command should contain %q, got %q", want, cmd)
+		}
+	}
+	if strings.Contains(cmd, "sys.stdout.buffer.write(p.read_bytes())") {
+		t.Fatalf("read range command should not dump full binary/non-UTF8 files, got %q", cmd)
+	}
+	if strings.Contains(cmd, "%!d(MISSING)") {
+		t.Fatalf("read range command should preserve Python percent-format placeholders, got %q", cmd)
+	}
+	if strings.Contains(cmd, "\n\timport ") || strings.Contains(cmd, "\n\tfor ") || strings.Contains(cmd, "\n\tif ") {
+		t.Fatalf("read range command should not embed Go indentation into Python source, got %q", cmd)
+	}
+	if !strings.Contains(cmd, "remote read_file binary/non-UTF8") || !strings.Contains(cmd, "text line range unavailable") {
+		t.Fatalf("read range command should report bounded binary/non-UTF8 diagnostics, got %q", cmd)
+	}
+
+	cmd = remoteReadFileRangePythonCommand(path, 0, 0)
+	if !strings.Contains(cmd, "start = 1") || !strings.Contains(cmd, "limit = 200") {
+		t.Fatalf("read range command should default to offset=1 limit=200, got %q", cmd)
+	}
+
+	args := map[string]interface{}{
+		"start_line": "7",
+		"limit":      float64(9999),
+	}
+	if got := remoteArgInt(args, 0, 0, 1000000, "offset", "start_line"); got != 7 {
+		t.Fatalf("remoteArgInt should read string alias start_line, got %d", got)
+	}
+	if got := remoteArgInt(args, 0, 0, 2000, "limit"); got != 2000 {
+		t.Fatalf("remoteArgInt should clamp max value, got %d", got)
+	}
+	if got := remoteArgInt(map[string]interface{}{"offset": -5}, 10, 0, 2000, "offset"); got != 0 {
+		t.Fatalf("remoteArgInt should clamp min value, got %d", got)
 	}
 }
 
@@ -1114,6 +1898,31 @@ func TestCodingSubAgentDynamicSelectionTextCapsTaskSignals(t *testing.T) {
 		t.Fatalf("dynamic selection criteria should report remaining count, got %q", text)
 	}
 }
+func TestCodingSubAgentDynamicSelectionTextIncludesCappedContextSignals(t *testing.T) {
+	var prevOutputs []string
+	for i := 0; i < codingSubAgentDynamicSelectionPrevOutputsMax+2; i++ {
+		prevOutputs = append(prevOutputs, fmt.Sprintf("Previous output %02d mentions browser MCP screenshot flow", i))
+	}
+	text := codingSubAgentDynamicSelectionTextWithContext(
+		&TaskItem{Title: "Polish status panel"},
+		"Requirement context mentions browser screenshot review and MCP automation.",
+		"Design context says the status panel needs compact failed-state diagnostics.",
+		prevOutputs,
+	)
+
+	for _, want := range []string{"browser screenshot review", "MCP automation", "failed-state diagnostics", "Previous output 00"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("dynamic selection context text missing %q: %q", want, text)
+		}
+	}
+	if strings.Contains(text, "Previous output 06") {
+		t.Fatalf("dynamic selection previous outputs should be capped, got %q", text)
+	}
+	if !strings.Contains(text, "还有 2 项未展开") {
+		t.Fatalf("dynamic selection previous outputs should report remaining count, got %q", text)
+	}
+}
+
 func TestCodingSubAgentDynamicToolSelectionCachesEmptyResults(t *testing.T) {
 	cb := &codingSubAgentCallbacks{
 		subagent: &CodingSubAgent{handler: &IMMessageHandler{}, projectPath: t.TempDir()},
@@ -1679,6 +2488,12 @@ func TestCodingToolExecutionUsesStructuredOutcome(t *testing.T) {
 	if got := compactCodingToolResultSummary("ordinary prelude\ncoverage: 12.3%\nFAIL: TestCheckout expected 200 got 500\ncommand exited with code 1"); got != "FAIL: TestCheckout expected 200 got 500" {
 		t.Fatalf("stdout failure diagnostic summary = %q", got)
 	}
+	if got := compactCodingToolResultSummary("ordinary prelude\n✖ 10 errors and 0 warnings\ncommand exited with code 1"); got != "✖ 10 errors and 0 warnings" {
+		t.Fatalf("double-digit error count should remain actionable diagnostic, got %q", got)
+	}
+	if got := compactCodingToolResultSummary("ordinary prelude\n0 errors and 0 warnings\nsrc/main.ts:12: TypeError: missing handler\ncommand exited with code 1"); got != "src/main.ts:12: TypeError: missing handler" {
+		t.Fatalf("zero-error noise should not hide later diagnostic, got %q", got)
+	}
 }
 
 func TestExecuteCodingBashReturnsStructuredOutcome(t *testing.T) {
@@ -2093,6 +2908,42 @@ func TestCodingSubAgentEmitsVerificationSummaryEvent(t *testing.T) {
 	}
 }
 
+func TestSubAgentEventSummaryLinePrefersDiagnostics(t *testing.T) {
+	tests := []struct {
+		name    string
+		summary string
+		want    string
+	}{
+		{
+			name:    "markdown heading",
+			summary: "## 质量审计\n- FAIL command: go test ./gui -> panic: nil parser",
+			want:    "- FAIL command: go test ./gui -> panic: nil parser",
+		},
+		{
+			name:    "english header",
+			summary: "Verification summary:\npytest tests failed: AssertionError",
+			want:    "pytest tests failed: AssertionError",
+		},
+		{
+			name:    "chinese header",
+			summary: "命令摘要：\nFAIL bash: npm test -> TypeError: missing config",
+			want:    "FAIL bash: npm test -> TypeError: missing config",
+		},
+		{
+			name:    "single line",
+			summary: "verification not run",
+			want:    "verification not run",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := subAgentEventSummaryLine(tt.summary); got != tt.want {
+				t.Fatalf("subAgentEventSummaryLine() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCodingSubAgentEmitsExplorationSummaryEvent(t *testing.T) {
 	var progress []string
 	cb := &codingSubAgentCallbacks{
@@ -2191,7 +3042,7 @@ func TestCodingSubAgentEmitsCommandSummaryEvent(t *testing.T) {
 	}
 
 	cb.emitCommandSummaryEvent([]CodingSubAgentCommandResult{
-		{Command: "go test ./gui", Succeeded: true},
+		{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s"},
 		{Command: "npm test", Succeeded: false},
 	})
 
@@ -2305,6 +3156,40 @@ func TestCodingSubAgentEmitsPrecomputedQualitySummaryEvent(t *testing.T) {
 		!strings.Contains(joined, `"summary":"1 dynamic tool failed: call_mcp_tool browser/screenshot -\u003e browser closed"`) ||
 		!strings.Contains(joined, `"count":1`) {
 		t.Fatalf("expected precomputed structured quality progress, got %#v", progress)
+	}
+}
+
+func TestCodingSubAgentSummaryEventsSkipGenericHeaders(t *testing.T) {
+	var progress []string
+	cb := &codingSubAgentCallbacks{
+		task: &TaskItem{Index: 15, Title: "Quality diagnostics"},
+		subagent: &CodingSubAgent{
+			onProgress: func(text string) {
+				progress = append(progress, text)
+			},
+		},
+	}
+
+	cb.emitQualitySummaryEventWithAudit(codingSubAgentQualityFailed, "## 质量审计\nverification not run after last edit", 1)
+	cb.emitVerificationSummaryEvent(codingSubAgentQualityFailed, "Verification summary:\ngo test ./gui failed: panic: nil parser", 1)
+	cb.emitGuardrailSummaryEvent([]CodingSubAgentGuardrailViolation{{
+		Tool:     "bash",
+		Category: codingSubAgentGuardrailCategoryGit,
+		Summary:  "Guardrail summary:\nrefused destructive git command",
+	}})
+
+	joined := strings.Join(progress, "\n")
+	for _, want := range []string{
+		`"summary":"verification not run after last edit"`,
+		`"summary":"go test ./gui failed: panic: nil parser"`,
+		`"summary":"blocked | bash | category:git | refused destructive git command"`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected diagnostic summary %s, got %#v", want, progress)
+		}
+	}
+	if strings.Contains(joined, `"summary":"## 质量审计"`) || strings.Contains(joined, `"summary":"Verification summary:"`) {
+		t.Fatalf("generic summary header should not be emitted as the visible event summary, got %#v", progress)
 	}
 }
 
@@ -2468,6 +3353,18 @@ func TestCodingSubAgentRejectsModifyAfterExternalFileChange(t *testing.T) {
 	cb.refreshFileSnapshot(path)
 	if msg := cb.requireReadBeforeModify(path, "edit_file"); msg != "" {
 		t.Fatalf("expected modify to be allowed after snapshot refresh, got %q", msg)
+	}
+}
+
+func TestCanonicalCodingPathKeyNormalizesWindowsCase(t *testing.T) {
+	if got, want := canonicalCodingPathKey(`C:\Repo\App\MAIN.go`), "c:/repo/app/main.go"; got != want {
+		t.Fatalf("Windows drive path key = %q, want %q", got, want)
+	}
+	if got, want := canonicalCodingPathKey(`\\Server\Share\Repo\MAIN.go`), "//server/share/repo/main.go"; got != want {
+		t.Fatalf("Windows UNC path key = %q, want %q", got, want)
+	}
+	if got, want := canonicalCodingPathKey(`src/Main.go`), "src/Main.go"; got != want {
+		t.Fatalf("relative path key should preserve case, got %q want %q", got, want)
 	}
 }
 
@@ -3285,7 +4182,9 @@ func TestClassifyCodingGuardrail(t *testing.T) {
 		{name: "delete", tool: "bash", command: "Remove-Item -Recurse .\\build", category: "delete"},
 		{name: "shell_write", tool: "bash", command: "Set-Content src\\a.go x", category: "shell_write"},
 		{name: "scope", tool: "read_file", path: "..\\outside.go", result: "outside project", category: "scope"},
+		{name: "scope_result_marker", tool: "call_mcp_tool", result: "requested path is outside the project scope", category: "scope"},
 		{name: "host", tool: "read_file", result: "coding subagent host tool handler is unavailable", category: "host"},
+		{name: "policy_with_project_word", tool: "call_mcp_tool", result: "project approval policy rejected this dynamic tool", category: "policy"},
 	}
 	for _, tc := range cases {
 		if got := classifyCodingGuardrailCategory(tc.tool, tc.path, tc.command, tc.result).String(); got != tc.category {
@@ -3429,8 +4328,8 @@ func TestApplySubAgentQualityOutcomeFailsPassedResult(t *testing.T) {
 	}
 
 	status, errMsg = applySubAgentQualityOutcome(TaskExecFailed, "agent loop failed", codingSubAgentQualityFailed, "verification not run", 1)
-	if status != TaskExecFailed || errMsg != "agent loop failed" {
-		t.Fatalf("quality fallback should not overwrite existing failure, got status=%s err=%q", status, errMsg)
+	if status != TaskExecFailed || !strings.Contains(errMsg, "agent loop failed") || !strings.Contains(errMsg, "quality audit failed") || !strings.Contains(errMsg, "verification not run") {
+		t.Fatalf("quality fallback should append to existing failure, got status=%s err=%q", status, errMsg)
 	}
 
 	status, errMsg = applySubAgentQualityOutcome(TaskExecPassed, "", codingSubAgentQualityWarning, "dynamic tool warning", 1)
@@ -3606,7 +4505,7 @@ func TestAppendSubAgentGuardrailSummaryCompactsLongEntries(t *testing.T) {
 	longSummary := "拒绝执行高风险命令：" + strings.Repeat("detail ", 80)
 
 	summary := appendSubAgentGuardrailSummary("完成", []CodingSubAgentGuardrailViolation{
-		{Tool: "bash	ool", Path: longPath, Command: longCommand, Summary: longSummary},
+		{Tool: "bash`tool", Path: longPath, Command: longCommand, Summary: longSummary},
 	})
 	if !strings.Contains(summary, "blocked `bash'tool`") {
 		t.Fatalf("expected tool name to be escaped, got %q", summary)
@@ -3928,6 +4827,48 @@ func TestAppendSubAgentDynamicToolSummaryKeepsLateFailures(t *testing.T) {
 		t.Fatalf("summary should still be capped at %d entries, got %q", codingSubAgentCommandSummaryMax, summary)
 	}
 }
+
+func TestAppendSubAgentDynamicToolSummaryPrefersLatestProblems(t *testing.T) {
+	var tools []CodingSubAgentDynamicToolResult
+	for i := 0; i < codingSubAgentCommandSummaryMax+3; i++ {
+		tools = append(tools, CodingSubAgentDynamicToolResult{
+			Tool:      "call_mcp_tool",
+			Name:      fmt.Sprintf("server/tool-%02d", i),
+			Succeeded: false,
+			Summary:   fmt.Sprintf("failure %02d", i),
+		})
+	}
+
+	summary := appendSubAgentDynamicToolSummary("完成", tools)
+	if strings.Contains(summary, "server/tool-00") || strings.Contains(summary, "server/tool-01") || strings.Contains(summary, "server/tool-02") {
+		t.Fatalf("dynamic tool summary should omit oldest failures when capped, got %q", summary)
+	}
+	if !strings.Contains(summary, "server/tool-12") || !strings.Contains(summary, "failure 12") {
+		t.Fatalf("dynamic tool summary should keep latest failures, got %q", summary)
+	}
+}
+
+func TestAppendSubAgentDynamicToolSummaryKeepsEmptySuccess(t *testing.T) {
+	var tools []CodingSubAgentDynamicToolResult
+	for i := 0; i < codingSubAgentCommandSummaryMax+2; i++ {
+		tools = append(tools, CodingSubAgentDynamicToolResult{
+			Tool:      "call_mcp_tool",
+			Name:      fmt.Sprintf("server/tool-%02d", i),
+			Succeeded: true,
+			Summary:   "ok",
+		})
+	}
+	tools[0].Summary = "(无输出)"
+
+	summary := appendSubAgentDynamicToolSummary("完成", tools)
+	if !strings.Contains(summary, "EMPTY: `call_mcp_tool` `server/tool-00`") {
+		t.Fatalf("empty successful dynamic tool should remain visible, got %q", summary)
+	}
+	if strings.Count(summary, "- PASS: `")+strings.Count(summary, "- EMPTY: `") != codingSubAgentCommandSummaryMax {
+		t.Fatalf("summary should still be capped at %d entries, got %q", codingSubAgentCommandSummaryMax, summary)
+	}
+}
+
 func TestSummarizeSubAgentCommands(t *testing.T) {
 	status, summary := summarizeSubAgentCommands(nil)
 	if status != "none" || summary != "no bash commands run" {
@@ -3989,6 +4930,30 @@ func TestCompactFailedVerificationCommandResultsDedupesRepeatedFailures(t *testi
 	}
 }
 
+func TestCompactFailedVerificationCommandResultsPrefersDiagnosticsOverExitStatus(t *testing.T) {
+	commands := make([]CodingSubAgentCommandResult, 0, codingSubAgentFailedVerificationSummaryMax+2)
+	for i := 0; i < codingSubAgentFailedVerificationSummaryMax+2; i++ {
+		commands = append(commands, CodingSubAgentCommandResult{
+			Command:   fmt.Sprintf("go test ./pkg/%02d", i),
+			Succeeded: false,
+			Summary:   "exit status 1",
+			seq:       uint64(i + 1),
+		})
+	}
+	commands[0].Summary = "panic: nil pointer dereference\nexit status 2"
+
+	summary := compactFailedVerificationCommandResults(commands)
+	if !strings.Contains(summary, "go test ./pkg/00: panic: nil pointer dereference") {
+		t.Fatalf("old actionable diagnostic should outrank newer exit-status-only failures, got %q", summary)
+	}
+	if strings.Contains(summary, "go test ./pkg/01") || strings.Contains(summary, "go test ./pkg/02") {
+		t.Fatalf("summary should omit older exit-status-only failures when capped, got %q", summary)
+	}
+	if !strings.Contains(summary, "还有 2 条失败命令未展开") {
+		t.Fatalf("summary should report omitted command failures, got %q", summary)
+	}
+}
+
 func TestCompactFailedSubAgentDynamicToolResultsPrefersActionableLateFailure(t *testing.T) {
 	tools := make([]CodingSubAgentDynamicToolResult, 0, codingSubAgentFailedVerificationSummaryMax+2)
 	for i := 0; i < codingSubAgentFailedVerificationSummaryMax+2; i++ {
@@ -4007,6 +4972,30 @@ func TestCompactFailedSubAgentDynamicToolResultsPrefersActionableLateFailure(t *
 	}
 	if strings.Contains(summary, "browser/tool-00") || strings.Contains(summary, "browser/tool-01") {
 		t.Fatalf("summary should omit oldest low-signal failures when capped, got %q", summary)
+	}
+	if !strings.Contains(summary, "... 2 more") {
+		t.Fatalf("summary should report omitted dynamic failures, got %q", summary)
+	}
+}
+
+func TestCompactFailedSubAgentDynamicToolResultsPrefersDiagnosticsOverExitStatus(t *testing.T) {
+	tools := make([]CodingSubAgentDynamicToolResult, 0, codingSubAgentFailedVerificationSummaryMax+2)
+	for i := 0; i < codingSubAgentFailedVerificationSummaryMax+2; i++ {
+		tools = append(tools, CodingSubAgentDynamicToolResult{
+			Tool:      "call_mcp_tool",
+			Name:      fmt.Sprintf("browser/tool-%02d", i),
+			Succeeded: false,
+			Summary:   "Error: process exited with code 1.",
+		})
+	}
+	tools[0].Summary = "ordinary prelude\nTypeError: cannot read property id"
+
+	summary := compactFailedSubAgentDynamicToolResults(tools)
+	if !strings.Contains(summary, "browser/tool-00 -> TypeError: cannot read property id") {
+		t.Fatalf("old actionable dynamic tool diagnostic should outrank newer exit-status-only failures, got %q", summary)
+	}
+	if strings.Contains(summary, "browser/tool-01") || strings.Contains(summary, "browser/tool-02") {
+		t.Fatalf("summary should omit older exit-status-only dynamic tool failures when capped, got %q", summary)
 	}
 	if !strings.Contains(summary, "... 2 more") {
 		t.Fatalf("summary should report omitted dynamic failures, got %q", summary)
@@ -4105,6 +5094,11 @@ func TestSummarizeSubAgentQuality(t *testing.T) {
 		t.Fatalf("guardrail-blocked command should not be duplicated as command failure, got %q, %q, %d", status, summary, count)
 	}
 
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{{Command: "Git   reset --hard HEAD", Succeeded: false, Summary: "blocked"}}, 0, []CodingSubAgentGuardrailViolation{{Tool: "bash", Command: "git reset --hard head"}}, nil)
+	if status != "failed" || count != 1 || !strings.Contains(summary, "guardrail") || strings.Contains(summary, "command(s) failed") {
+		t.Fatalf("equivalent guardrail-blocked command should not be duplicated as command failure, got %q, %q, %d", status, summary, count)
+	}
+
 	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{{Command: "npm test", Succeeded: false, Summary: "ordinary prelude\n[stderr] jest failed"}}, 0, []CodingSubAgentGuardrailViolation{{Tool: "bash", Command: "Set-Content src\\a.go x"}}, nil)
 	if status != "failed" || count != 2 || !strings.Contains(summary, "guardrail") || !strings.Contains(summary, "npm test -> jest failed") || strings.Contains(summary, "ordinary prelude") {
 		t.Fatalf("unrelated failed command should still be reported with guardrail, got %q, %q, %d", status, summary, count)
@@ -4150,12 +5144,17 @@ func TestSummarizeSubAgentNoChangeEvidence(t *testing.T) {
 		t.Fatalf("read evidence should satisfy no-change task, got %q", warning)
 	}
 
-	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, []CodingSubAgentSearchResult{{Tool: "codegraph", Query: "codegraph explore handler", Succeeded: true}}, nil, nil)
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, []CodingSubAgentSearchResult{{Tool: "codegraph", Query: "codegraph explore handler", Succeeded: true, Summary: "Found 3 symbols in handlers.go"}}, nil, nil)
 	if warning != "" {
 		t.Fatalf("successful search evidence should satisfy no-change task, got %q", warning)
 	}
 
-	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, []CodingSubAgentSearchResult{{Tool: "list_directory", Path: "src", Succeeded: true}}, nil, nil)
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, []CodingSubAgentSearchResult{{Tool: "codegraph", Query: "missing handler", Succeeded: true, Summary: "No results found"}}, nil, nil)
+	if warning == "" {
+		t.Fatalf("empty-result search evidence should not satisfy no-change task")
+	}
+
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, []CodingSubAgentSearchResult{{Tool: "list_directory", Path: "src", Succeeded: true, Summary: "README.md\nmain.go"}}, nil, nil)
 	if warning != "" {
 		t.Fatalf("successful list_directory evidence should satisfy no-change task, got %q", warning)
 	}
@@ -4180,6 +5179,16 @@ func TestSummarizeSubAgentNoChangeEvidence(t *testing.T) {
 		t.Fatalf("empty-output MCP inspection should not satisfy no-change inspection evidence")
 	}
 
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "knowledge_search", Succeeded: true, Summary: "No results found for query: settings handler"}})
+	if warning == "" {
+		t.Fatalf("empty-result knowledge search should not satisfy no-change inspection evidence")
+	}
+
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "knowledge_search", Succeeded: true, Summary: "Found 2 results: settings handler, config store"}})
+	if warning != "" {
+		t.Fatalf("non-empty knowledge search should satisfy no-change inspection evidence, got %q", warning)
+	}
+
 	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Succeeded: true}})
 	if warning == "" {
 		t.Fatalf("unnamed MCP tool call should not satisfy no-change inspection evidence")
@@ -4193,6 +5202,29 @@ func TestSummarizeSubAgentNoChangeEvidence(t *testing.T) {
 	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "github/createIssue", Succeeded: true, Summary: "created issue"}})
 	if warning == "" {
 		t.Fatalf("camelCase mutating MCP tool call should not satisfy no-change inspection evidence")
+	}
+
+	for _, name := range []string{
+		"files/renameFile",
+		"cms/publish_page",
+		"server/restart-server",
+		"process/startServer",
+		"jobs/stopJob",
+		"comments/addComment",
+		"records/upsert_record",
+		"threads/archiveThread",
+		"requests/approve-request",
+		"flags/disableFeature",
+	} {
+		warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: name, Succeeded: true, Summary: "ok"}})
+		if warning == "" {
+			t.Fatalf("mutating MCP tool call %q should not satisfy no-change inspection evidence", name)
+		}
+	}
+
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "contacts/addressLookup", Succeeded: true, Summary: "found address"}})
+	if warning != "" {
+		t.Fatalf("read-only MCP tool with name starting address should satisfy no-change inspection evidence, got %q", warning)
 	}
 
 	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "runtime/info", Succeeded: true, Summary: "runtime status"}})
@@ -4247,14 +5279,24 @@ func TestSummarizeSubAgentCreatedFileContextEvidence(t *testing.T) {
 		t.Fatalf("read evidence from an existing file should satisfy created-file context, got %q", warning)
 	}
 
-	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, []CodingSubAgentSearchResult{{Tool: "codegraph", Query: "codegraph explore handlers", Succeeded: true}}, nil)
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, []CodingSubAgentSearchResult{{Tool: "codegraph", Query: "codegraph explore handlers", Succeeded: true, Summary: "Found handler symbols in src/existing_handler.go"}}, nil)
 	if warning != "" {
 		t.Fatalf("successful search should satisfy created-file context, got %q", warning)
+	}
+
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, []CodingSubAgentSearchResult{{Tool: "ripgrep", Query: "NewHandler", Succeeded: true, Summary: "0 results"}}, nil)
+	if warning == "" {
+		t.Fatalf("empty-result search should not satisfy created-file context")
 	}
 
 	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "project_docs/search", Succeeded: true, Summary: "found related handlers"}})
 	if warning != "" {
 		t.Fatalf("inspection dynamic tool should satisfy created-file context, got %q", warning)
+	}
+
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "coding_knowledge_search", Succeeded: true, Summary: "0 results"}})
+	if warning == "" {
+		t.Fatalf("empty-result knowledge search should not satisfy created-file context")
 	}
 
 	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "repo/write_file", Succeeded: true}})
@@ -4326,6 +5368,17 @@ func TestSummarizeSubAgentAcceptanceCriteriaEvidence(t *testing.T) {
 		t.Fatalf("generic acceptance verification should not pass without criterion evidence, got %q", warning)
 	}
 
+	tokenBoundaryTask := &TaskItem{AcceptanceCriteria: []string{"auth token expires", "save setting"}}
+	warning = summarizeSubAgentAcceptanceCriteriaEvidence(tokenBoundaryTask, "Acceptance criteria verified with npm test: authorization tokenization covered and autosave settings checked.", []string{"settings.go"}, nil)
+	if warning == "" || !strings.Contains(warning, "each listed criterion") {
+		t.Fatalf("acceptance criterion token substrings should not satisfy criteria, got %q", warning)
+	}
+
+	warning = summarizeSubAgentAcceptanceCriteriaEvidence(tokenBoundaryTask, "Acceptance criteria verified with npm test: auth token expires and save setting.", []string{"settings.go"}, nil)
+	if warning != "" {
+		t.Fatalf("acceptance criterion token boundaries should satisfy criteria, got %q", warning)
+	}
+
 	warning = summarizeSubAgentAcceptanceCriteriaEvidence(task, "Acceptance criteria verified with npm test: save button persists the setting.", []string{"settings.go"}, nil)
 	if warning != "" {
 		t.Fatalf("English acceptance verification summary should pass when it references the criterion, got %q", warning)
@@ -4361,6 +5414,17 @@ func TestSummarizeSubAgentAcceptanceCriteriaEvidence(t *testing.T) {
 		warning = summarizeSubAgentAcceptanceCriteriaEvidence(multiTask, summary, []string{"settings.go"}, nil)
 		if warning != "" {
 			t.Fatalf("acceptance criterion numbered references should pass for %q, got %q", summary, warning)
+		}
+	}
+
+	for _, summary := range []string{
+		"Acceptance criteria AC10 and AC20 verified with npm test.",
+		"Acceptance criterion #10 and criterion #20 verified with npm test.",
+		"Acceptance criteria AC-10 and AC-20 verified with npm test.",
+	} {
+		warning = summarizeSubAgentAcceptanceCriteriaEvidence(multiTask, summary, []string{"settings.go"}, nil)
+		if warning == "" || !strings.Contains(warning, "each listed criterion") {
+			t.Fatalf("acceptance criterion index prefixes should not satisfy AC1/AC2 for %q, got %q", summary, warning)
 		}
 	}
 
@@ -4436,6 +5500,16 @@ func TestSummarizeSubAgentScopeEvidence(t *testing.T) {
 		t.Fatalf("summary mentioning out-of-scope file with backslashes should satisfy scope evidence, got %q", warning)
 	}
 
+	warning = summarizeSubAgentScopeEvidence(task, "Mentioned src/router.go.bak in the summary.", []string{"src/router.go"}, nil)
+	if warning == "" || !strings.Contains(warning, "outside listed task scope") || !strings.Contains(warning, "src/router.go") {
+		t.Fatalf("path prefix mention should not satisfy out-of-scope file evidence, got %q", warning)
+	}
+
+	warning = summarizeSubAgentScopeEvidence(task, "Also changed ./src/router.go for route registration.", []string{"src/router.go"}, nil)
+	if warning != "" {
+		t.Fatalf("summary mentioning out-of-scope file with ./ prefix should satisfy scope evidence, got %q", warning)
+	}
+
 	warning = summarizeSubAgentScopeEvidence(&TaskItem{}, "Changed src/router.go.", []string{"src/router.go"}, nil)
 	if warning != "" {
 		t.Fatalf("task without planned files should not warn, got %q", warning)
@@ -4460,6 +5534,16 @@ func TestSummarizeSubAgentChangedFileSummaryEvidence(t *testing.T) {
 	warning = summarizeSubAgentChangedFileSummaryEvidence(`Updated src\settings.go and ran tests.`, []string{"src/settings.go"}, nil)
 	if warning != "" {
 		t.Fatalf("summary mentioning changed file with backslashes should not warn, got %q", warning)
+	}
+
+	warning = summarizeSubAgentChangedFileSummaryEvidence("Updated src/settings.go.bak and ran tests.", []string{"src/settings.go"}, nil)
+	if warning == "" || !strings.Contains(warning, "src/settings.go") {
+		t.Fatalf("path prefix mention should not satisfy changed-file evidence, got %q", warning)
+	}
+
+	warning = summarizeSubAgentChangedFileSummaryEvidence("Updated ./src/settings.go and ran tests.", []string{"src/settings.go"}, nil)
+	if warning != "" {
+		t.Fatalf("summary mentioning changed file with ./ prefix should not warn, got %q", warning)
 	}
 
 	warning = summarizeSubAgentChangedFileSummaryEvidence("Updated the settings handler and ran tests.", []string{"src/settings.go"}, []string{"tests/settings_test.go"})
@@ -4532,6 +5616,17 @@ func TestSummarizeSubAgentRiskSummaryEvidence(t *testing.T) {
 		t.Fatalf("generic no-regressions note should not satisfy remaining-risk summary, got %q", warning)
 	}
 
+	for _, summary := range []string{
+		"Updated src/settings.go. The unblocker path was cleaned up.",
+		"Updated src/settings.go. The manual tester helper was renamed.",
+		"Updated src/settings.go. The brisk parser path was refactored.",
+	} {
+		warning = summarizeSubAgentRiskSummaryEvidence(summary, []string{"src/settings.go"}, nil)
+		if warning == "" || !strings.Contains(warning, "remaining risk") {
+			t.Fatalf("risk phrase substrings should not satisfy remaining-risk summary for %q, got %q", summary, warning)
+		}
+	}
+
 	warning = summarizeSubAgentRiskSummaryEvidence("Updated src/settings.go and ran go test.", []string{"src/settings.go"}, nil)
 	if warning == "" || !strings.Contains(warning, "remaining risk") {
 		t.Fatalf("changed task summary without risk note should warn, got %q", warning)
@@ -4599,6 +5694,27 @@ func TestSummarizeSubAgentVerificationCommandSummaryEvidence(t *testing.T) {
 	}, 2)
 	if warning != "" {
 		t.Fatalf("summary listing multiple verification commands should match fresh later command, got %q", warning)
+	}
+
+	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./gui && go vet ./gui passed.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./gui && go vet ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3},
+	}, 2)
+	if warning != "" {
+		t.Fatalf("summary with compound verification command should match full audit command, got %q", warning)
+	}
+
+	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: `go test ./gui` and `go vet ./gui` passed.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./gui && go vet ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3},
+	}, 2)
+	if warning != "" {
+		t.Fatalf("summary naming all verification subcommands should match fresh compound audit command, got %q", warning)
+	}
+
+	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: `go test ./gui` and `go vet ./gui`.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./gui && go vet ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3},
+	}, 2)
+	if warning == "" || !strings.Contains(warning, "verification command outcome not referenced") {
+		t.Fatalf("summary naming compound verification subcommands without outcome should warn, got %q", warning)
 	}
 
 	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./gui; go vet ./gui failed.\nRisk: known vet failure.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
@@ -4699,6 +5815,20 @@ func TestSummarizeSubAgentClaimedVerificationEvidence(t *testing.T) {
 	})
 	if warning != "" {
 		t.Fatalf("structured unquoted verification command present in audit log should not warn, got %q", warning)
+	}
+
+	warning = summarizeSubAgentClaimedVerificationEvidence("Verification: go test ./gui && go vet ./gui passed.", []CodingSubAgentCommandResult{
+		{Command: "go test ./gui && go vet ./gui", Succeeded: true},
+	})
+	if warning != "" {
+		t.Fatalf("structured compound verification command should match full audit log entry, got %q", warning)
+	}
+
+	warning = summarizeSubAgentClaimedVerificationEvidence("Verification: go test ./gui; go vet ./gui passed.", []CodingSubAgentCommandResult{
+		{Command: "go test ./gui; go vet ./gui", Succeeded: true},
+	})
+	if warning == "" || !strings.Contains(warning, "claimed verification command not found") {
+		t.Fatalf("semicolon compound verification should not count as reliable audit evidence, got %q", warning)
 	}
 
 	warning = summarizeSubAgentClaimedVerificationEvidence("Verification command: go test ./gui (passed)", []CodingSubAgentCommandResult{
@@ -4885,6 +6015,62 @@ func TestUnresolvedFailedSubAgentCommandsRequireLaterEquivalentRealSuccess(t *te
 	}
 
 	commands = []CodingSubAgentCommandResult{
+		{Command: "go test ./...", WorkingDir: "D:/Repo/GUI", Succeeded: false, Summary: "FAIL", seq: 1},
+		{Command: "go test ./...", WorkingDir: "d:/repo/gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("same Windows drive working dir with different casing should resolve failed command, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: "go test ./...", WorkingDir: "//Server/Share/Repo/GUI", Succeeded: false, Summary: "FAIL", seq: 1},
+		{Command: "go test ./...", WorkingDir: "//server/share/repo/gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("same Windows UNC working dir with different casing should resolve failed command, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: "timeout 30s go test ./gui", Succeeded: false, Summary: "FAIL", seq: 1},
+		{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("later direct success should resolve failed timeout-wrapped command, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: "env CGO_ENABLED=0 go test ./gui", Succeeded: false, Summary: "FAIL", seq: 1},
+		{Command: "CGO_ENABLED=0 go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("later equivalent env assignment success should resolve failed env-wrapped command, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: "cmd /c go test ./gui", Succeeded: false, Summary: "FAIL", seq: 1},
+		{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("later direct success should resolve failed cmd-wrapped command, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `bash -lc "go test ./gui"`, Succeeded: false, Summary: "FAIL", seq: 1},
+		{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("later direct success should resolve failed shell-wrapped command, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: "prepare-fixtures && go test ./gui", Succeeded: false, Summary: "FAIL", seq: 1},
+		{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 1 || unresolved[0].Command != "prepare-fixtures && go test ./gui" {
+		t.Fatalf("later direct success should not resolve failed compound command with non-wrapper setup, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
 		{Command: "pytest tests", Succeeded: false, Summary: "FAIL", seq: 1},
 		{Command: "pytest tests", Succeeded: true, Summary: "no tests collected in 0.01s", seq: 2},
 	}
@@ -4907,6 +6093,15 @@ func TestUnresolvedFailedSubAgentDynamicToolsRequireLaterSameTargetSuccess(t *te
 	tools = append(tools, CodingSubAgentDynamicToolResult{Tool: "call_mcp_tool", Name: " browser/screenshot ", Succeeded: true, Summary: "captured", seq: 3})
 	if unresolved := unresolvedFailedSubAgentDynamicTools(tools); len(unresolved) != 0 {
 		t.Fatalf("later same dynamic tool target success should resolve failed target, got %#v", unresolved)
+	}
+
+	tools = []CodingSubAgentDynamicToolResult{
+		{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: false, Summary: "browser closed", seq: 1},
+		{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: true, Summary: "(无输出)", seq: 2},
+	}
+	unresolved = unresolvedFailedSubAgentDynamicTools(tools)
+	if len(unresolved) != 2 {
+		t.Fatalf("empty successful dynamic tool output should not resolve failed target and should remain actionable, got %#v", unresolved)
 	}
 
 	tools = []CodingSubAgentDynamicToolResult{
@@ -4955,6 +6150,20 @@ func TestCodingSubAgentCodeGraphCommandCountsAsExploration(t *testing.T) {
 	}, "symbols", true)
 	if searches := cb.getSearchesRun(); len(searches) != 3 || searches[0].Tool != "codegraph" || searches[1].Tool != "codegraph" || searches[2].Tool != "codegraph" {
 		t.Fatalf("codegraph executable suffixes and paths should count as exploration, got %#v", searches)
+	}
+
+	cb = &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	cb.trackCommandResult(map[string]interface{}{
+		"command":     `codegraph explore "missing"`,
+		"working_dir": project,
+	}, "No results found", true)
+	cb.trackFile("gui/coding_subagent.go")
+	searches = cb.getSearchesRun()
+	if len(searches) != 1 || !subAgentSearchSuccessLooksEmpty(searches[0]) {
+		t.Fatalf("empty codegraph result should be audited as empty successful search, got %#v", searches)
+	}
+	if cb.exploredBeforeFirstEdit() {
+		t.Fatalf("empty codegraph result before edit should not satisfy exploration gate")
 	}
 
 	cb = &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
@@ -5057,7 +6266,10 @@ func TestSearchResultSummaryAndStatus(t *testing.T) {
 	}
 	searches := cb.getSearchesRun()
 	if len(searches) != 1 || !searches[0].Succeeded || searches[0].Query != "**/*.md" {
-		t.Fatalf("no-match search should be audited as successful exploration, got %#v", searches)
+		t.Fatalf("no-match search should be audited as a successful tool call, got %#v", searches)
+	}
+	if countSuccessfulSubAgentSearches(searches) != 0 {
+		t.Fatalf("no-match search should not count as successful exploration evidence, got %#v", searches)
 	}
 }
 
@@ -5078,7 +6290,7 @@ func TestSummarizeSubAgentExploration(t *testing.T) {
 	}
 
 	status, summary = summarizeSubAgentExploration([]string{"main.go"}, []string{"main.go"}, []CodingSubAgentSearchResult{
-		{Tool: "ripgrep", Query: "func main", Succeeded: true},
+		{Tool: "ripgrep", Query: "func main", Succeeded: true, Summary: "main.go: func main()"},
 		{Tool: "Glob", Query: "**/*.go", Succeeded: false},
 	}, true)
 	if status != "explored" || !strings.Contains(summary, "1 次成功搜索") {
@@ -5090,7 +6302,7 @@ func TestSummarizeSubAgentExplorationRequiresPreEditEvidence(t *testing.T) {
 	status, summary := summarizeSubAgentExploration(
 		[]string{"main.go"},
 		[]string{"main.go"},
-		[]CodingSubAgentSearchResult{{Tool: "ripgrep", Query: "func main", Succeeded: true}},
+		[]CodingSubAgentSearchResult{{Tool: "ripgrep", Query: "func main", Succeeded: true, Summary: "main.go: func main()"}},
 		false,
 	)
 	if status != codingSubAgentQualityMissing || !strings.Contains(summary, "首次修改前") {
@@ -5231,6 +6443,11 @@ func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T)
 		{Command: "biome check .", Succeeded: true, Summary: "Checked 0 files in 2ms. No fixes applied."},
 		{Command: "prettier --check src", Succeeded: true, Summary: "Checking formatting...\n0 files checked."},
 		{Command: "eslint .", Succeeded: true, Summary: "Processed 0 files."},
+		{Command: "eslint .", Succeeded: true, Summary: "No files matched the pattern \"src/**/*.ts\"."},
+		{Command: "prettier --check src", Succeeded: true, Summary: "No matching files. Patterns tried: src/**/*.tsx"},
+		{Command: "biome check src", Succeeded: true, Summary: "No files to check."},
+		{Command: "ruff check src", Succeeded: true, Summary: "Found 0 files."},
+		{Command: "mypy src", Succeeded: true, Summary: "There are no source files."},
 	}
 	for _, command := range emptySuccessfulOutputs {
 		status, summary = summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{command}, 0)
@@ -5525,10 +6742,12 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"uv run --with pytest pytest tests",
 		"uvx --from ruff ruff check .",
 		"uv run ruff check .",
+		"uv run lint --fix=false",
 		"uv run --project app pytest tests",
 		"poetry run pytest tests",
 		"poetry run -- mypy src",
 		"poetry run mypy src",
+		"poetry run lint --fix=false",
 		"poetry check",
 		"poetry --directory app check",
 		"pipenv run pytest tests",
@@ -5538,6 +6757,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"pdm check",
 		"pdm --project app check",
 		"rye test",
+		"rye lint --fix=false",
 		"tox -q",
 		"nox -s tests",
 		"make check",
@@ -5583,6 +6803,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"dotnet msbuild -t:Test",
 		"dotnet msbuild /t:Restore,Build",
 		"bundle exec rspec",
+		"bundle exec lint --fix=false",
 		"rails test",
 		"bin/rails test test/models/user_test.rb",
 		"bundle exec rails test",
@@ -5600,6 +6821,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"composer test",
 		"composer run test",
 		"composer run-script lint",
+		"composer run lint -- --fix=false",
 		"composer --working-dir app exec phpunit",
 		"composer exec -- phpstan analyse src",
 		"composer exec pest --ci",
@@ -5628,6 +6850,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"timeout --signal=TERM 1m pytest tests",
 		"gtimeout 45s go test ./gui",
 		"env CI=1 timeout 30s go test ./...",
+		"go test ./... && go vet ./...",
 		"mkdir out || true; go test ./...",
 		"optional-setup || true && go test ./...",
 	}
@@ -5700,6 +6923,11 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"poetry install",
 		"poetry update",
 		"poetry build",
+		"poetry run lint --fix",
+		"poetry run lint --fix=true",
+		"poetry run lint --write=true",
+		"uv run lint --fix",
+		"uv run lint --write=true",
 		"pipenv run flask run",
 		"hatch run serve",
 		"hatch build",
@@ -5708,6 +6936,8 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"pdm install",
 		"pdm update",
 		"pdm build",
+		"rye lint --fix",
+		"rye lint --write=true",
 		"tox --listenvs",
 		"tox --listenvs=true",
 		"tox -l",
@@ -5716,6 +6946,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"nox --list-sessions=true",
 		"nox --json",
 		"bundle exec rails server",
+		"bundle exec lint --fix",
 		"bundle exec rspec --dry-run",
 		"cucumber --dry-run",
 		"bundle exec cucumber --dry-run",
@@ -5747,6 +6978,9 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"composer update",
 		"composer dump-autoload",
 		"composer run serve",
+		"composer run lint -- --fix",
+		"composer run lint -- --fix=true",
+		"composer run-script lint -- --write",
 		"composer exec php-cs-fixer fix",
 		"vendor/bin/phpunit --list-tests",
 		"./vendor/bin/phpunit --list-groups",
@@ -5915,7 +7149,6 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"go test ./... ; echo done",
 		"go test ./... ; go vet ./...",
 		"go test ./... && echo done",
-		"go test ./... && go vet ./...",
 		"go test ./... & echo done",
 		"bash -lc go test ./... ; echo done",
 		"bash -lc go test ./... && echo done",
@@ -6182,8 +7415,13 @@ func TestApplySubAgentGuardrailOutcomeFailsPassedTask(t *testing.T) {
 	}
 
 	status, errMsg = applySubAgentGuardrailOutcome(TaskExecFailed, "model error", violations)
-	if status != TaskExecFailed || errMsg != "model error" {
-		t.Fatalf("guardrail outcome should not replace existing failure, got status=%s err=%q", status, errMsg)
+	if status != TaskExecFailed || !strings.Contains(errMsg, "model error") || !strings.Contains(errMsg, "2 guardrail block") {
+		t.Fatalf("guardrail outcome should append to existing failure, got status=%s err=%q", status, errMsg)
+	}
+
+	status, errMsg = applySubAgentGuardrailOutcome(TaskExecFailed, "", violations)
+	if status != TaskExecFailed || !strings.Contains(errMsg, "2 guardrail block") {
+		t.Fatalf("guardrail outcome should provide diagnostic for existing failed status with empty error, got status=%s err=%q", status, errMsg)
 	}
 
 	status, errMsg = applySubAgentGuardrailOutcome(TaskExecPassed, "", nil)
@@ -6233,7 +7471,7 @@ func TestLimitSubAgentResultAuditSlices(t *testing.T) {
 	var dynamicTools []CodingSubAgentDynamicToolResult
 	for i := 0; i < codingSubAgentResultAuditMax+2; i++ {
 		commands = append(commands, CodingSubAgentCommandResult{Command: fmt.Sprintf("cmd-%03d", i), Succeeded: true})
-		searches = append(searches, CodingSubAgentSearchResult{Query: fmt.Sprintf("query-%03d", i), Succeeded: true})
+		searches = append(searches, CodingSubAgentSearchResult{Query: fmt.Sprintf("query-%03d", i), Succeeded: true, Summary: "found match"})
 		guardrails = append(guardrails, CodingSubAgentGuardrailViolation{Summary: fmt.Sprintf("guard-%03d", i)})
 		dynamicTools = append(dynamicTools, CodingSubAgentDynamicToolResult{Tool: "call_mcp_tool", Name: fmt.Sprintf("server/tool-%03d", i), Succeeded: true})
 	}
@@ -6260,7 +7498,7 @@ func TestLimitSubAgentResultAuditSlices(t *testing.T) {
 
 	var successfulSearches []CodingSubAgentSearchResult
 	for i := 0; i < codingSubAgentResultAuditMax+2; i++ {
-		successfulSearches = append(successfulSearches, CodingSubAgentSearchResult{Query: fmt.Sprintf("pass-query-%03d", i), Succeeded: true, seq: uint64(i + 1)})
+		successfulSearches = append(successfulSearches, CodingSubAgentSearchResult{Query: fmt.Sprintf("pass-query-%03d", i), Succeeded: true, Summary: "found match", seq: uint64(i + 1)})
 	}
 	limitedSuccessfulSearches := limitSubAgentSearchResults(successfulSearches, codingSubAgentResultAuditMax)
 	if limitedSuccessfulSearches[0].Query != fmt.Sprintf("pass-query-%03d", codingSubAgentResultAuditMax+1) || limitedSuccessfulSearches[len(limitedSuccessfulSearches)-1].Query != "pass-query-002" {
@@ -6285,7 +7523,7 @@ func TestLimitSubAgentResultAuditSlices(t *testing.T) {
 	allPassingDynamicTools := make([]CodingSubAgentDynamicToolResult, 0, codingSubAgentResultAuditMax+2)
 	for i := 0; i < codingSubAgentResultAuditMax+2; i++ {
 		allPassingCommands = append(allPassingCommands, CodingSubAgentCommandResult{Command: fmt.Sprintf("pass-cmd-%03d", i), Succeeded: true})
-		allPassingDynamicTools = append(allPassingDynamicTools, CodingSubAgentDynamicToolResult{Tool: "call_mcp_tool", Name: fmt.Sprintf("pass-tool-%03d", i), Succeeded: true})
+		allPassingDynamicTools = append(allPassingDynamicTools, CodingSubAgentDynamicToolResult{Tool: "call_mcp_tool", Name: fmt.Sprintf("pass-tool-%03d", i), Succeeded: true, Summary: "ok"})
 	}
 	limitedPassingCommands := limitSubAgentCommandResults(allPassingCommands, codingSubAgentResultAuditMax)
 	if limitedPassingCommands[0].Command != "pass-cmd-002" || limitedPassingCommands[len(limitedPassingCommands)-1].Command != fmt.Sprintf("pass-cmd-%03d", codingSubAgentResultAuditMax+1) {
@@ -6294,6 +7532,23 @@ func TestLimitSubAgentResultAuditSlices(t *testing.T) {
 	limitedPassingDynamicTools := limitSubAgentDynamicToolResults(allPassingDynamicTools, codingSubAgentResultAuditMax)
 	if limitedPassingDynamicTools[0].Name != "pass-tool-002" || limitedPassingDynamicTools[len(limitedPassingDynamicTools)-1].Name != fmt.Sprintf("pass-tool-%03d", codingSubAgentResultAuditMax+1) {
 		t.Fatalf("all-passing dynamic tool audit should keep latest entries in order, got %#v", limitedPassingDynamicTools)
+	}
+
+	var commandsWithEmptySuccess []CodingSubAgentCommandResult
+	var toolsWithEmptySuccess []CodingSubAgentDynamicToolResult
+	for i := 0; i < codingSubAgentResultAuditMax+2; i++ {
+		commandsWithEmptySuccess = append(commandsWithEmptySuccess, CodingSubAgentCommandResult{Command: fmt.Sprintf("pytest tests/%03d", i), Succeeded: true, Summary: "1 passed"})
+		toolsWithEmptySuccess = append(toolsWithEmptySuccess, CodingSubAgentDynamicToolResult{Tool: "call_mcp_tool", Name: fmt.Sprintf("empty-tool-%03d", i), Succeeded: true, Summary: "ok"})
+	}
+	commandsWithEmptySuccess[0].Summary = "no tests collected"
+	toolsWithEmptySuccess[0].Summary = "(无输出)"
+	limitedEmptyCommands := limitSubAgentCommandResults(commandsWithEmptySuccess, codingSubAgentResultAuditMax)
+	if limitedEmptyCommands[0].Command != "pytest tests/000" {
+		t.Fatalf("empty-success command audit should preserve problem entry first, got %#v", limitedEmptyCommands)
+	}
+	limitedEmptyDynamicTools := limitSubAgentDynamicToolResults(toolsWithEmptySuccess, codingSubAgentResultAuditMax)
+	if limitedEmptyDynamicTools[0].Name != "empty-tool-000" {
+		t.Fatalf("empty-success dynamic tool audit should preserve problem entry first, got %#v", limitedEmptyDynamicTools)
 	}
 
 	var sameRiskGuardrails []CodingSubAgentGuardrailViolation

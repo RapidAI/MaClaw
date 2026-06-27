@@ -103,5 +103,6 @@ func (s *Service) RunDashboard(ctx context.Context, p Principal, dashboardID str
 		}
 		out.Reports = append(out.Reports, item)
 	}
+	applyDashboardResultPackage(out)
 	return out, nil
 }

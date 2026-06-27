@@ -240,10 +240,10 @@ func appInstallationMatchesMetadataFilters(app AppInstallation, in QueryAppInsta
 	if definitionFingerprint := strings.TrimSpace(in.DefinitionFingerprint); definitionFingerprint != "" && !appInstallationHasIdentifier(app.Metadata, definitionFingerprint, []string{"definition_fingerprint", "definitionFingerprint", "definition_hash", "definitionHash", "test_evidence_definition_fingerprint", "app_definition_hash", "appDefinitionHash", "app_definition_fingerprint", "appDefinitionFingerprint"}) {
 		return false
 	}
-	if in.HasBlockingDependency != nil && appInstallationMetadataBool(app.Metadata, "dependency_verification.has_blocking_dependency", "dependency_verification.hasBlockingDependency", "test_evidence.dependency_verification.has_blocking_dependency", "test_evidence.dependency_verification.hasBlockingDependency", "test_evidence_dependency_blocking", "has_blocking_dependency") != *in.HasBlockingDependency {
+	if in.HasBlockingDependency != nil && appInstallationMetadataBool(app.Metadata, "dependency_verification.has_blocking_dependency", "dependency_verification.hasBlockingDependency", "has_blocking_dependency", "test_evidence.dependency_verification.has_blocking_dependency", "test_evidence.dependency_verification.hasBlockingDependency", "test_evidence_dependency_blocking") != *in.HasBlockingDependency {
 		return false
 	}
-	if in.HasMissingRequiredDependency != nil && appInstallationMetadataBool(app.Metadata, "dependency_verification.has_missing_required", "dependency_verification.hasMissingRequired", "test_evidence.dependency_verification.has_missing_required", "test_evidence.dependency_verification.hasMissingRequired", "test_evidence_dependency_missing_required", "has_missing_required_dependency", "has_missing_required") != *in.HasMissingRequiredDependency {
+	if in.HasMissingRequiredDependency != nil && appInstallationMetadataBool(app.Metadata, "dependency_verification.has_missing_required", "dependency_verification.hasMissingRequired", "has_missing_required_dependency", "has_missing_required", "test_evidence.dependency_verification.has_missing_required", "test_evidence.dependency_verification.hasMissingRequired", "test_evidence_dependency_missing_required") != *in.HasMissingRequiredDependency {
 		return false
 	}
 	return true
@@ -506,6 +506,17 @@ func appInstallationHasResultType(metadata map[string]any, resultType string) bo
 			}
 		}
 	}
+	for _, approval := range appInstallationApprovalInstances(metadata) {
+		for _, key := range []string{"outputs", "artifacts"} {
+			for _, item := range appInstallationMapList(approval[key]) {
+				for _, itemKey := range []string{"kind", "type", "result_type", "resultType"} {
+					if appInstallationString(item, itemKey) == resultType {
+						return true
+					}
+				}
+			}
+		}
+	}
 	return false
 }
 
@@ -539,6 +550,14 @@ func appInstallationResultPayloads(metadata map[string]any) []map[string]any {
 			out = append(out, value)
 		}
 		if value := appInstallationMap(evidence["resultPayload"]); value != nil {
+			out = append(out, value)
+		}
+	}
+	for _, approval := range appInstallationApprovalInstances(metadata) {
+		if value := appInstallationMap(approval["result_payload"]); value != nil {
+			out = append(out, value)
+		}
+		if value := appInstallationMap(approval["resultPayload"]); value != nil {
 			out = append(out, value)
 		}
 	}

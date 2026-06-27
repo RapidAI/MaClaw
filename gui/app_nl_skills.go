@@ -2587,9 +2587,32 @@ func mergeMaclawAppRunEvidence(existing any, incoming map[string]any) map[string
 		}
 	}
 	for key, value := range incoming {
-		merged[key] = value
+		merged[key] = mergeMaclawAppRunEvidenceValue(merged[key], value)
 	}
 	return merged
+}
+
+func mergeMaclawAppRunEvidenceValue(existing any, incoming any) any {
+	if incoming == nil {
+		return existing
+	}
+	switch typed := incoming.(type) {
+	case map[string]any:
+		if len(typed) == 0 {
+			return existing
+		}
+		if current, ok := existing.(map[string]any); ok {
+			return mergeMaclawAppRunEvidence(current, typed)
+		}
+		return typed
+	case []any:
+		if len(typed) == 0 {
+			return existing
+		}
+		return typed
+	default:
+		return incoming
+	}
 }
 
 func maclawAppDefinitionIDMatches(definitionID string, appID string, skillName string) bool {
@@ -2772,17 +2795,17 @@ func skillAppManifestEntryFromDefinitionDoc(doc map[string]any, skillName string
 	}
 	binding, _ := app["binding"].(map[string]any)
 	skillBinding, _ := binding["skill"].(map[string]any)
-		entry := SkillAppManifestEntry{
-			ID:                strings.TrimSpace(stringMapValue(app, "id")),
-			SkillID:           skillName,
-			Name:              strings.TrimSpace(stringMapValue(app, "name")),
-			Description:       stringMapValue(app, "description"),
-			Category:          firstNonEmptySkillAppString(stringMapValue(app, "category"), "Skill"),
-			Kind:              firstNonEmptySkillAppString(stringMapValue(app, "kind"), "tool_app"),
-			Icon:              normalizeSkillAppIconName(stringMapValue(app, "icon")),
-			CustomIconDataURL: normalizeMaclawAppCustomIconDataURL(firstNonEmptySkillAppString(stringMapValue(app, "customIconDataUrl"), stringMapValue(app, "custom_icon_data_url"))),
-			InputMode:         normalizeSkillAppInputMode(firstNonEmptySkillAppString(stringMapValue(skillBinding, "inputMode"), stringMapValue(skillBinding, "input_mode"))),
-			MultipleFiles:     boolMapValue(skillBinding, "multipleFiles") || boolMapValue(skillBinding, "multiple_files"),
+	entry := SkillAppManifestEntry{
+		ID:                strings.TrimSpace(stringMapValue(app, "id")),
+		SkillID:           skillName,
+		Name:              strings.TrimSpace(stringMapValue(app, "name")),
+		Description:       stringMapValue(app, "description"),
+		Category:          firstNonEmptySkillAppString(stringMapValue(app, "category"), "Skill"),
+		Kind:              firstNonEmptySkillAppString(stringMapValue(app, "kind"), "tool_app"),
+		Icon:              normalizeSkillAppIconName(stringMapValue(app, "icon")),
+		CustomIconDataURL: normalizeMaclawAppCustomIconDataURL(firstNonEmptySkillAppString(stringMapValue(app, "customIconDataUrl"), stringMapValue(app, "custom_icon_data_url"))),
+		InputMode:         normalizeSkillAppInputMode(firstNonEmptySkillAppString(stringMapValue(skillBinding, "inputMode"), stringMapValue(skillBinding, "input_mode"))),
+		MultipleFiles:     boolMapValue(skillBinding, "multipleFiles") || boolMapValue(skillBinding, "multiple_files"),
 		OutputModes:       normalizeSkillAppOutputModes(firstNonEmptyStringSlice(stringSliceMapValue(skillBinding, "outputModes"), stringSliceMapValue(skillBinding, "output_modes"))),
 		Fields:            normalizeSkillAppFields(skillAppFieldsFromAny(skillBinding["fields"])),
 	}

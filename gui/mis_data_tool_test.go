@@ -49,25 +49,26 @@ func TestExecuteMISDataToolListAppInstallationsPassesDependencyFilters(t *testin
 	}
 
 	out := app.executeMISDataTool(map[string]interface{}{
-		"action":                          "list_app_installations",
-		"kind":                            "enterprise_approval_app",
-		"source":                          "hub",
-		"workflow_skill_id":               "skill.expense.approval",
-		"workflow_node":                   "finance.review",
-		"approval_status":                 "approved",
-		"approval_decision":               "approved",
-		"applicant_id":                    "employee_1",
-		"approver_id":                     "manager_1",
-		"approval_id":                     "approval-expense-1",
-		"workflow_instance_id":            "workflow-expense-1",
-		"dataset_id":                      "finance.expenses",
-		"object_role":                     "expense_report",
-		"record_id":                       "expense-1",
-		"result_type":                     "document",
-		"definitionHash":                  "hash-expense-current",
-		"has_blocking_dependency":         true,
-		"has_missing_required_dependency": false,
-		"limit":                           12,
+		"action":                  "list_app_installations",
+		"app_id":                  "datasrv-installed-expense.blocked",
+		"kind":                    "enterprise_approval_app",
+		"source":                  "hub",
+		"workflow_skill_id":       "skill.expense.approval",
+		"workflow_node":           "finance.review",
+		"approval_result_status":  "approved",
+		"decision":                "approved",
+		"created_by":              "employee_1",
+		"current_assignee":        "manager_1",
+		"record_approval_id":      "approval-expense-1",
+		"approval_instance_id":    "workflow-expense-1",
+		"dataset":                 "finance.expenses",
+		"object":                  "expense_report",
+		"business_record_id":      "expense-1",
+		"output_type":             "document",
+		"app_definition_hash":     "hash-expense-current",
+		"has_blocking_dependency": true,
+		"has_missing_required":    false,
+		"limit":                   12,
 	})
 	if capturedAuth != "Bearer data-token" {
 		t.Fatalf("Authorization = %q", capturedAuth)
@@ -77,6 +78,7 @@ func TestExecuteMISDataToolListAppInstallationsPassesDependencyFilters(t *testin
 	}
 	query := mustParseTestURLQuery(t, capturedPath)
 	expected := map[string]string{
+		"app_id":                          "expense.blocked",
 		"kind":                            "enterprise_approval_app",
 		"source":                          "hub",
 		"workflow_skill_id":               "skill.expense.approval",
@@ -147,7 +149,7 @@ func TestExecuteMISDataToolGetAppInstallation(t *testing.T) {
 
 	out := app.executeMISDataTool(map[string]interface{}{
 		"action": "get_app_installation",
-		"app_id": "expense.approval",
+		"app_id": "datasrv-installed-expense.approval",
 	})
 	if capturedAuth != "Bearer data-token" {
 		t.Fatalf("Authorization = %q", capturedAuth)
