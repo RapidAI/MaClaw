@@ -1198,15 +1198,23 @@
 
 .apps-approval-manager__filters {
     display: grid;
-    grid-template-columns: minmax(180px, 1fr) minmax(150px, 0.55fr) minmax(140px, 0.45fr);
+    grid-template-columns: minmax(180px, 0.62fr) minmax(220px, 0.9fr) minmax(190px, 0.72fr);
     align-items: end;
     gap: 8px;
+}
+
+.apps-approval-manager__filters > .apps-search {
+    width: 100%;
 }
 
 .apps-approval-manager__filters label {
     min-width: 0;
     display: grid;
     gap: 4px;
+}
+
+.apps-approval-manager__filters label:only-child {
+    grid-column: 1 / -1;
 }
 
 .apps-approval-manager__filters label span {

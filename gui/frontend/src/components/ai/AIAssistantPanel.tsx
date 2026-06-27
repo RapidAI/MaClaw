@@ -2111,7 +2111,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }} onAddLocalMaclawToTab={addLocalMaclawToTab} onRenameGroupTab={openRenameGroupDialog} lang={lang} getLastActiveAt={getLastActiveAt} recordingTabId={skillRecordingTabId} />
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
             {(activeTab?.type === "local" || activeTab?.type === "project") && (
-                <ProjectDirBar tabId={activeTab?.type === "local" ? "" : (activeTab?.id || "")} theme={t} lang={lang} />
+                <ProjectDirBar key={activeTab?.type === "local" ? "local" : activeTab?.id || "local"} tabId={activeTab?.type === "local" ? "" : (activeTab?.id || "")} theme={t} lang={lang} />
             )}
             {showChatUI && <>
                 <AssistantWorkflowMaximizeSuggestion inline={!!inline} lang={lang} maximized={!!maximized} onDismiss={dismissMaximizeSuggestion} onToggleMaximize={onToggleMaximize} suggestMaximize={workflowState.suggestMaximize} theme={t} themeMode={themeMode} />

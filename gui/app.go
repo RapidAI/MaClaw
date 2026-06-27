@@ -5401,6 +5401,14 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 	// ── HubCenter URLs (failover persistence) ──
 	incoming.RemoteHubCenterURLs = ondisk.RemoteHubCenterURLs
 
+	// ── Working directory (SetTabWorkingDir for local tab) ──
+	// Only PatchConfigFields should modify this. A stale frontend snapshot
+	// must not accidentally set it to a Project Tab's directory.
+	if incoming.WorkingDirectory != ondisk.WorkingDirectory {
+		restored = append(restored, fmt.Sprintf("working_directory(%s->%s)", incoming.WorkingDirectory, ondisk.WorkingDirectory))
+	}
+	incoming.WorkingDirectory = ondisk.WorkingDirectory
+
 	if len(restored) > 0 {
 		log.Printf("[config] SaveConfig:preserved_backend_fields=%v", restored)
 	}
