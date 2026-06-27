@@ -87,6 +87,7 @@ type App struct {
 	skillExecutor                   *SkillExecutor
 	cachedSkillScanner              *CachedSkillScanner
 	skillRunner                     *SkillRunner
+	maclawAppInstallMixedSkill      func(source, id, installRef string) error
 	sessionStarter                  *CodingSessionStarter
 	skillMarketClient               *SkillMarketClient
 	skillMarketAutoLoginRunning     atomic.Bool

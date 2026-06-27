@@ -12,10 +12,10 @@ APP_NAME="MaClaw"
 # Read version from build_number if exists, else default
 if [ -f "build_number" ]; then
     BUILD_NUM=$(cat build_number)
-    VERSION="3.5.0.${BUILD_NUM}"
+    VERSION="6.5.1.${BUILD_NUM}"
 else
     BUILD_NUM="1"
-    VERSION="3.5.0.1"
+    VERSION="6.5.1.1"
 fi
 
 # Sync version to frontend

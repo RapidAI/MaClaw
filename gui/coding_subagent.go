@@ -3944,16 +3944,43 @@ func summarizeSubAgentCommands(commands []CodingSubAgentCommandResult) (codingSu
 		return codingSubAgentQualityNone, "no bash commands run"
 	}
 	failed := failedSubAgentCommands(commands)
-	if len(failed) == 0 {
+	emptySuccesses := emptySuccessSubAgentCommands(commands)
+	problems := append(append([]CodingSubAgentCommandResult{}, failed...), emptySuccesses...)
+	if len(problems) == 0 {
 		if len(commands) == 1 {
 			return codingSubAgentQualityPassed, "1 bash command run, no failures"
 		}
 		return codingSubAgentQualityPassed, fmt.Sprintf("%d bash commands run, no failures", len(commands))
 	}
-	if len(failed) == 1 {
-		return codingSubAgentQualityFailed, fmt.Sprintf("%d bash commands run, 1 failed: %s", len(commands), compactFailedVerificationCommandResults(failed))
+	return codingSubAgentQualityFailed, fmt.Sprintf("%d bash commands run, %s: %s", len(commands), summarizeSubAgentCommandProblemCounts(len(failed), len(emptySuccesses)), compactFailedVerificationCommandResults(problems))
+}
+
+func emptySuccessSubAgentCommands(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
+	if len(commands) == 0 {
+		return nil
 	}
-	return codingSubAgentQualityFailed, fmt.Sprintf("%d bash commands run, %d failed: %s", len(commands), len(failed), compactFailedVerificationCommandResults(failed))
+	empty := make([]CodingSubAgentCommandResult, 0)
+	for _, cmd := range commands {
+		if subAgentCommandSuccessLooksEmpty(cmd) {
+			empty = append(empty, cmd)
+		}
+	}
+	return empty
+}
+
+func summarizeSubAgentCommandProblemCounts(failedCount, emptySuccessCount int) string {
+	var parts []string
+	if failedCount == 1 {
+		parts = append(parts, "1 failed")
+	} else if failedCount > 1 {
+		parts = append(parts, fmt.Sprintf("%d failed", failedCount))
+	}
+	if emptySuccessCount == 1 {
+		parts = append(parts, "1 empty success")
+	} else if emptySuccessCount > 1 {
+		parts = append(parts, fmt.Sprintf("%d empty successes", emptySuccessCount))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAgentQualityStatus, diffChecked bool, filesModified, filesCreated []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64, guardrails []CodingSubAgentGuardrailViolation, dynamicTools []CodingSubAgentDynamicToolResult) (codingSubAgentQualityStatus, string, int) {

@@ -2749,3 +2749,36 @@ P2
   强化 App Studio 的动态 UI 编辑体验：传统软件式工作台、可视化布局调整、区域锁定、运行前依赖健康提示。
   强化市场页安装体验：依赖安装进度、失败原因、版本冲突、可选依赖降级说明。
 ```
+
+### 推进记录：审批型应用结果反馈闭环（2026-06-27）
+
+本轮把审批型应用的结果反馈从“状态可回写”推进到“完整结果包可回写”：
+
+```text
+DataSrv RecordApproval.review
+  接收并持久化 result_payload / outputs / artifacts
+  审批完成后同步到业务记录：
+    approval_result_payload
+    approval_outputs
+    approval_artifacts
+    approval_result_summary
+    approval_primary_artifact
+    approval_output_count
+    approval_artifact_count
+
+审批实例视图
+  handled / my_requests / pending_my_approval / attention 等 lane 继续以 RecordApproval 为实例数据源
+  GUI 审批工作台和审批管理页已有结果包展示区，可显示 payload、文本/结构化 outputs、文件 artifacts
+```
+
+已补充 DataSrv HTTP 级样例验证：
+
+```text
+创建企业审批型 expense approval
+  -> pending_my_approval / attention / my_requests lane 查询
+  -> review approve 并提交 resultPayload、outputs、artifacts
+  -> handled lane 保留完整结果包
+  -> 业务记录保留完整结果包与摘要字段
+```
+
+这使“数据录入 + 审批工作流 Skill 运行 + 审批实例数据管理 + 结果反馈”中的结果反馈环节更接近可验收闭环。下一步继续补齐真实 App 运行样例：从 GUI 发起一个企业审批型 App，经过 workflow-skill 产出审批实例，再回到 DataSrv/GUI lane 与 Hub 安装包证据。

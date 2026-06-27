@@ -3451,6 +3451,21 @@ func TestSummarizeSubAgentCommands(t *testing.T) {
 	if status != "failed" || !strings.Contains(summary, "1 failed: npm test: jest failed") {
 		t.Fatalf("failed command summary = %q, %q", status, summary)
 	}
+
+	status, summary = summarizeSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: "pytest tests", Succeeded: true, Summary: "no tests collected in 0.01s"},
+	})
+	if status != codingSubAgentQualityFailed || !strings.Contains(summary, "1 empty success") || !strings.Contains(summary, "pytest tests: no tests collected") {
+		t.Fatalf("empty verification success should be surfaced in command summary, got %q, %q", status, summary)
+	}
+
+	status, summary = summarizeSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: "npm test", Succeeded: false, Summary: "jest failed"},
+		{Command: "pytest tests", Succeeded: true, Summary: "no tests collected in 0.01s"},
+	})
+	if status != codingSubAgentQualityFailed || !strings.Contains(summary, "1 failed, 1 empty success") || !strings.Contains(summary, "npm test: jest failed") || !strings.Contains(summary, "pytest tests: no tests collected") {
+		t.Fatalf("mixed failed and empty command summary = %q, %q", status, summary)
+	}
 }
 
 func TestCompactFailedSubAgentDynamicToolResultsPrefersActionableLateFailure(t *testing.T) {

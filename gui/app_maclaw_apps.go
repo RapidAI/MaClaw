@@ -637,7 +637,11 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 			dep.Message = fmt.Sprintf("required skill dependency source %q cannot be installed automatically", dep.Source)
 			continue
 		}
-		if err := a.InstallMixedSkill(source, dep.ID, ""); err != nil {
+		installMixedSkill := a.InstallMixedSkill
+		if a.maclawAppInstallMixedSkill != nil {
+			installMixedSkill = a.maclawAppInstallMixedSkill
+		}
+		if err := installMixedSkill(source, dep.ID, ""); err != nil {
 			dep.Health = "missing"
 			dep.Action = "failed"
 			dep.Message = err.Error()

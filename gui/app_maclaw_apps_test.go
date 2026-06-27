@@ -2206,6 +2206,67 @@ func TestMaclawAppInstallSkillSourceNormalizesHubAndMarket(t *testing.T) {
 	}
 }
 
+func TestInstallMaclawAppDependenciesInstallsHubBackedSources(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	type installCall struct {
+		source string
+		id     string
+	}
+	var calls []installCall
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		calls = append(calls, installCall{source: source, id: id})
+		skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", id)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# "+id+"\n"), 0o644); err != nil {
+			return err
+		}
+		cfg, err := app.LoadConfig()
+		if err != nil {
+			return err
+		}
+		cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{Name: id, SkillDir: skillDir, Status: "active", Source: source, HubSkillID: id})
+		return app.SaveConfig(cfg)
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "dependency-source-app",
+			"name": "Dependency Source App",
+			"kind": "enterprise_approval_app",
+			"dependencies": { "skills": [
+				{ "id": "market-workflow", "kind": "workflow_skill", "required": true, "source": "skillmarket" },
+				{ "id": "enterprise-workflow", "kind": "workflow_skill", "required": true, "source": "enterprise_hub" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected two dependency install calls, got %#v", calls)
+	}
+	if calls[0] != (installCall{source: "skillmarket", id: "market-workflow"}) || calls[1] != (installCall{source: "enterprise_hub", id: "enterprise-workflow"}) {
+		t.Fatalf("unexpected dependency install calls: %#v", calls)
+	}
+	for _, id := range []string{"market-workflow", "enterprise-workflow"} {
+		dep := maclawAppPlanDepForTest(plan, id)
+		if dep == nil || !dep.Installed || dep.Action != "installed" || dep.Health != "ready" {
+			t.Fatalf("dependency %s should be installed and ready: %#v", id, dep)
+		}
+	}
+	if plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("installed hub-backed dependencies should clear blocking flags: %#v", plan)
+	}
+}
+
 func TestPlanMaclawAppInstallNormalizesWorkspaceLayout(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	plan, err := app.PlanMaclawAppInstall(`{
