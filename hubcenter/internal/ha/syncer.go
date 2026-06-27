@@ -174,6 +174,16 @@ func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
 			if nextSeq < afterSeq {
 				nextSeq = afterSeq
 			}
+			// Skip cursor write if position hasn't changed — reduces disk IO
+			// in idle clusters where peers have no new ops.
+			if cursor != nil && cursor.LastPulledSeq == nextSeq {
+				backlog := int64(0)
+				if resp.MaxSeq > nextSeq {
+					backlog = resp.MaxSeq - nextSeq
+				}
+				s.svc.updatePeerSync(peer.NodeID, backlog)
+				return
+			}
 			_ = s.svc.cursors.Upsert(ctx, &store.HAPeerCursor{PeerNodeID: peer.NodeID, LastPulledSeq: nextSeq, LastPulledAt: &now, LastSuccessAt: &now, LastError: ""})
 			backlog := int64(0)
 			if resp.MaxSeq > nextSeq {

@@ -143,6 +143,165 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	}
 }
 
+func TestUpsertAppInstallationSynthesizesTestEvidenceFromSummaryMetadata(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	installed, err := svc.UpsertAppInstallation(context.Background(), principal, "sales.customer.console", UpsertAppInstallationInput{
+		AppID: "sales.customer.console",
+		Name:  "Customer Console",
+		Kind:  "enterprise_normal_app",
+		RoleBindings: []RoleBinding{{
+			ObjectRole: "customer",
+			Domain:     "sales",
+			DatasetID:  "sales.customers",
+			Required:   true,
+		}},
+		Metadata: map[string]any{
+			"test_evidence_run_id":                        "run-customer-summary",
+			"test_evidence_verified_at":                   "2026-06-27T08:30:00Z",
+			"test_evidence_definition_fingerprint":        "sha256:customer-console",
+			"test_evidence_test_protocol_fingerprint":     "proto-customer-summary",
+			"test_evidence_primary_result":                "business_status",
+			"test_evidence_artifact_present":              true,
+			"test_evidence_artifact_name":                 "customer-summary.zip",
+			"test_evidence_artifact_count":                1,
+			"test_evidence_output_count":                  1,
+			"test_evidence_result_payload":                map[string]any{"business_status": "renewal_ready", "business_record": map[string]any{"id": "customer-1"}},
+			"test_evidence_outputs":                       []any{map[string]any{"kind": "business_record", "title": "Customer renewal", "text": "renewal ready", "status": "ready"}},
+			"test_evidence_artifacts":                     []any{map[string]any{"id": "artifact-customer-summary", "name": "customer-summary.zip", "uri": "artifact://customer/summary.zip", "status": "ready"}},
+			"test_evidence_result_coverage_ok":            true,
+			"test_evidence_result_coverage_primary":       "business_status",
+			"test_evidence_covered_types":                 []any{"business_status", "business_record", "document"},
+			"test_evidence_missing_types":                 []any{},
+			"test_evidence_approval_instance_id":          "wf-customer-1",
+			"test_evidence_approval_id":                   "approval-customer-1",
+			"test_evidence_record_id":                     "customer-1",
+			"test_evidence_approval_status":               "approved",
+			"test_evidence_approval_view_verified":        true,
+			"test_evidence_dependency_verified_at":        "2026-06-27T08:20:00Z",
+			"test_evidence_dependency_count":              1,
+			"test_evidence_dependency_missing_required":   false,
+			"test_evidence_dependency_blocking":           false,
+			"test_evidence_workflow_contract_issue":       false,
+			"test_evidence_workflow_contract_issue_count": 0,
+			"test_evidence_governance_review_issue":       false,
+			"test_evidence_governance_review_issue_count": 0,
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation summary evidence: %v", err)
+	}
+	evidence, ok := installed.Metadata["test_evidence"].(map[string]any)
+	if !ok || evidence["schema"] != "maclaw.app.test_evidence.v1" || evidence["run_id"] != "run-customer-summary" || evidence["primary_result"] != "business_status" {
+		t.Fatalf("expected synthesized test evidence: %#v", installed.Metadata)
+	}
+	if evidence["test_protocol_fingerprint"] != "proto-customer-summary" || evidence["definition_fingerprint"] != "sha256:customer-console" || evidence["artifact_present"] != true {
+		t.Fatalf("expected synthesized test evidence identity summaries: %#v", evidence)
+	}
+	if payload, ok := evidence["result_payload"].(map[string]any); !ok || payload["business_status"] != "renewal_ready" {
+		t.Fatalf("expected synthesized result payload: %#v", evidence)
+	}
+	if outputs, ok := evidence["outputs"].([]any); !ok || len(outputs) != 1 {
+		t.Fatalf("expected synthesized outputs: %#v", evidence)
+	}
+	if artifacts, ok := evidence["artifacts"].([]any); !ok || len(artifacts) != 1 {
+		t.Fatalf("expected synthesized artifacts: %#v", evidence)
+	}
+	coverage, ok := evidence["result_coverage"].(map[string]any)
+	if !ok || coverage["ok"] != true || coverage["primary"] != "business_status" {
+		t.Fatalf("expected synthesized result coverage: %#v", evidence)
+	}
+	if covered := appInstallationStringList(coverage["covered_types"]); len(covered) != 3 || covered[2] != "document" {
+		t.Fatalf("expected synthesized covered types: %#v", coverage)
+	}
+	approval, ok := evidence["approval_instance"].(map[string]any)
+	if !ok || approval["instance_id"] != "wf-customer-1" || approval["approval_id"] != "approval-customer-1" || approval["record_id"] != "customer-1" || approval["approval_instance_view_verified"] != true {
+		t.Fatalf("expected synthesized approval instance: %#v", evidence)
+	}
+	verification, ok := evidence["dependency_verification"].(map[string]any)
+	if !ok || verification["schema"] != "maclaw.app.install_plan.v1" || verification["has_blocking_dependency"] != false || verification["has_governance_review_issue"] != false {
+		t.Fatalf("expected synthesized dependency verification: %#v", evidence)
+	}
+
+	caps, err := svc.Capabilities(context.Background(), principal)
+	if err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+	if len(caps.AppInstallations) != 1 {
+		t.Fatalf("expected capabilities app installation: %#v", caps.AppInstallations)
+	}
+	capEvidence, ok := caps.AppInstallations[0].Metadata["test_evidence"].(map[string]any)
+	if !ok || capEvidence["run_id"] != "run-customer-summary" || caps.AppInstallations[0].Metadata["test_evidence_artifact_count"] != float64(1) {
+		t.Fatalf("expected capabilities to expose synthesized evidence and summaries: %#v", caps.AppInstallations[0].Metadata)
+	}
+}
+
+func TestListAppInstallationsFiltersByApprovalInstanceEvidence(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "expense.approval", UpsertAppInstallationInput{
+		AppID: "expense.approval",
+		Name:  "Expense Approval",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"test_evidence": map[string]any{
+				"runId": "run-expense-approval",
+				"approvalInstance": map[string]any{
+					"instanceId":          "wf-expense-1",
+					"approvalID":          "approval-expense-1",
+					"recordID":            "expense-1",
+					"status":              "approved",
+					"currentNode":         "expense.result_feedback",
+					"workflowSkillId":     "expense-approval-flow",
+					"workflowVersion":     "2.1.0",
+					"resultStatus":        "approved",
+					"resultPayload":       map[string]any{"approval_result": "approved"},
+					"approvalViewVerified": true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation approval evidence: %v", err)
+	}
+
+	bySkill, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{WorkflowSkillID: "expense-approval-flow"})
+	if err != nil {
+		t.Fatalf("ListAppInstallations by workflow skill: %v", err)
+	}
+	if len(bySkill) != 1 || bySkill[0].AppID != "expense.approval" {
+		t.Fatalf("expected workflow skill filter to match approval evidence: %#v", bySkill)
+	}
+
+	byNode, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{WorkflowNode: "expense.result_feedback"})
+	if err != nil {
+		t.Fatalf("ListAppInstallations by workflow node: %v", err)
+	}
+	if len(byNode) != 1 || byNode[0].AppID != "expense.approval" {
+		t.Fatalf("expected workflow node filter to match approval evidence: %#v", byNode)
+	}
+
+	missing, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{WorkflowSkillID: "other-flow"})
+	if err != nil {
+		t.Fatalf("ListAppInstallations missing workflow skill: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("unexpected app for different workflow skill: %#v", missing)
+	}
+}
+
 func appInstallationNumberEquals(value any, expected float64) bool {
 	switch typed := value.(type) {
 	case int:

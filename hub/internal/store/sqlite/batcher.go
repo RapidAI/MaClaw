@@ -28,17 +28,17 @@ type writeBatcher struct {
 func newWriteBatcher(db *sql.DB, cfg Config) *writeBatcher {
 	flushInterval := time.Duration(cfg.BatchFlushMS) * time.Millisecond
 	if flushInterval <= 0 {
-		flushInterval = 250 * time.Millisecond
+		flushInterval = 100 * time.Millisecond
 	}
 
 	maxBatchSize := cfg.BatchMaxSize
 	if maxBatchSize <= 0 {
-		maxBatchSize = 64
+		maxBatchSize = 128
 	}
 
 	queueSize := cfg.BatchQueueSize
 	if queueSize <= 0 {
-		queueSize = 1024
+		queueSize = 4096
 	}
 
 	b := &writeBatcher{
@@ -184,6 +184,8 @@ func (b *writeBatcher) flush(batch []writeBatchJob) []error {
 		return results
 	}
 
+	allOK := true
+	failIdx := -1
 	for i, job := range batch {
 		select {
 		case <-job.ctx.Done():
@@ -193,21 +195,45 @@ func (b *writeBatcher) flush(batch []writeBatchJob) []error {
 		}
 
 		if _, err := tx.ExecContext(job.ctx, job.query, job.args...); err != nil {
-			_ = tx.Rollback()
-			for j := range results {
-				if results[j] == nil {
-					results[j] = err
-				}
-			}
-			return results
+			results[i] = err
+			allOK = false
+			failIdx = i
+			break
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		for i := range results {
-			if results[i] == nil {
-				results[i] = err
+	if allOK {
+		if err := tx.Commit(); err != nil {
+			for i := range results {
+				if results[i] == nil {
+					results[i] = err
+				}
 			}
+		}
+		return results
+	}
+
+	// Batch failed — rollback and retry every job individually.
+	// Each job gets its own implicit transaction. This is slower than batch mode
+	// but guarantees no collateral damage: each job either succeeds or gets its
+	// own specific error. This path is only triggered when one job has bad SQL/data,
+	// which is rare in production.
+	_ = tx.Rollback()
+	for i, job := range batch {
+		if i == failIdx {
+			continue // already has error from batch attempt
+		}
+		if results[i] != nil {
+			continue // already has ctx.Err()
+		}
+		select {
+		case <-job.ctx.Done():
+			results[i] = job.ctx.Err()
+			continue
+		default:
+		}
+		if _, execErr := b.db.ExecContext(job.ctx, job.query, job.args...); execErr != nil {
+			results[i] = execErr
 		}
 	}
 	return results

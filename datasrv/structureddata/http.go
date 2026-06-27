@@ -633,7 +633,7 @@ func inboxQueryFromRequest(r *http.Request) (QueryMISInboxInput, error) {
 		WorkflowSkillID:    strings.TrimSpace(r.URL.Query().Get("workflow_skill_id")),
 		WorkflowVersion:    strings.TrimSpace(r.URL.Query().Get("workflow_version")),
 		WorkflowInstanceID: strings.TrimSpace(r.URL.Query().Get("workflow_instance_id")),
-		WorkflowNodeID:     strings.TrimSpace(r.URL.Query().Get("workflow_node_id")),
+		WorkflowNodeID:     firstQueryValue(r, "workflow_node_id", "current_node_id", "current_node", "workflow_node"),
 		BusinessStatus:     strings.TrimSpace(r.URL.Query().Get("business_status")),
 		ResultStatus:       strings.TrimSpace(r.URL.Query().Get("result_status")),
 		Lane:               strings.TrimSpace(r.URL.Query().Get("lane")),
@@ -644,6 +644,16 @@ func inboxQueryFromRequest(r *http.Request) (QueryMISInboxInput, error) {
 		Before:             strings.TrimSpace(r.URL.Query().Get("before")),
 		BeforeID:           strings.TrimSpace(r.URL.Query().Get("before_id")),
 	}, nil
+}
+
+func firstQueryValue(r *http.Request, keys ...string) string {
+	values := r.URL.Query()
+	for _, key := range keys {
+		if value := strings.TrimSpace(values.Get(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (s *HTTPServer) handleSystemStats(w http.ResponseWriter, r *http.Request, p Principal) {
@@ -1593,7 +1603,7 @@ func (s *HTTPServer) handleListRecordApprovals(w http.ResponseWriter, r *http.Re
 		WorkflowSkillID:     strings.TrimSpace(r.URL.Query().Get("workflow_skill_id")),
 		WorkflowVersion:     strings.TrimSpace(r.URL.Query().Get("workflow_version")),
 		WorkflowInstanceID:  strings.TrimSpace(r.URL.Query().Get("workflow_instance_id")),
-		WorkflowNodeID:      strings.TrimSpace(r.URL.Query().Get("workflow_node_id")),
+		WorkflowNodeID:      firstQueryValue(r, "workflow_node_id", "current_node_id", "current_node", "workflow_node"),
 		BusinessStatus:      strings.TrimSpace(r.URL.Query().Get("business_status")),
 		ResultStatus:        strings.TrimSpace(r.URL.Query().Get("result_status")),
 		AssignedTo:          strings.TrimSpace(r.URL.Query().Get("assigned_to")),

@@ -1170,22 +1170,13 @@ func (a *App) ForkConversationToProject(projectPath string) {
 }
 
 func normalizeRecentTaskName(name string) string {
-	// Preserve newlines: collapse horizontal whitespace per line, trim each line
-	lines := strings.Split(name, "\n")
-	for i, line := range lines {
-		lines[i] = strings.Join(strings.Fields(line), " ")
-	}
-	normalized := strings.TrimSpace(strings.Join(lines, "\n"))
-	// Collapse 3+ consecutive newlines to 2
-	for strings.Contains(normalized, "\n\n\n") {
-		normalized = strings.ReplaceAll(normalized, "\n\n\n", "\n\n")
-	}
+	normalized := strings.Join(strings.Fields(name), " ")
 	if isGenericSedimentRequest(normalized) {
 		return ""
 	}
 	runes := []rune(normalized)
-	if len(runes) > 2000 {
-		normalized = string(runes[:2000])
+	if len(runes) > 120 {
+		normalized = string(runes[:120])
 	}
 	return normalized
 }

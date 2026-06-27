@@ -195,6 +195,14 @@ func appInstallationHasWorkflowSkillID(metadata map[string]any, workflowSkillID 
 			return true
 		}
 	}
+	if evidence := appInstallationMap(metadata["test_evidence"]); evidence != nil {
+		if appInstallationApprovalInstanceHasWorkflowSkillID(appInstallationMap(evidence["approval_instance"]), workflowSkillID) {
+			return true
+		}
+	}
+	if appInstallationApprovalInstanceHasWorkflowSkillID(appInstallationMap(metadata["test_evidence_approval_instance"]), workflowSkillID) {
+		return true
+	}
 	return false
 }
 
@@ -209,11 +217,42 @@ func appInstallationHasWorkflowNode(metadata map[string]any, workflowNode string
 		}
 	}
 	workflow := appInstallationMap(metadata["workflow_mapping"])
-	if workflow == nil {
+	if workflow != nil {
+		for _, key := range []string{"submitNode", "approvalNode", "resultNode", "attentionNode", "submit_node", "approval_node", "result_node", "attention_node"} {
+			if value, ok := workflow[key].(string); ok && strings.TrimSpace(value) == workflowNode {
+				return true
+			}
+		}
+	}
+	if evidence := appInstallationMap(metadata["test_evidence"]); evidence != nil {
+		if appInstallationApprovalInstanceHasWorkflowNode(appInstallationMap(evidence["approval_instance"]), workflowNode) {
+			return true
+		}
+	}
+	if appInstallationApprovalInstanceHasWorkflowNode(appInstallationMap(metadata["test_evidence_approval_instance"]), workflowNode) {
+		return true
+	}
+	return false
+}
+
+func appInstallationApprovalInstanceHasWorkflowSkillID(approval map[string]any, workflowSkillID string) bool {
+	if approval == nil {
 		return false
 	}
-	for _, key := range []string{"submitNode", "approvalNode", "resultNode", "attentionNode", "submit_node", "approval_node", "result_node", "attention_node"} {
-		if value, ok := workflow[key].(string); ok && strings.TrimSpace(value) == workflowNode {
+	for _, key := range []string{"workflowSkillId", "workflowSkillID", "workflow_skill_id", "approvalWorkflowID", "approvalWorkflowId", "approval_workflow_id"} {
+		if value, ok := approval[key].(string); ok && strings.TrimSpace(value) == workflowSkillID {
+			return true
+		}
+	}
+	return false
+}
+
+func appInstallationApprovalInstanceHasWorkflowNode(approval map[string]any, workflowNode string) bool {
+	if approval == nil {
+		return false
+	}
+	for _, key := range []string{"currentNode", "current_node", "node", "workflowNode", "workflow_node"} {
+		if value, ok := approval[key].(string); ok && strings.TrimSpace(value) == workflowNode {
 			return true
 		}
 	}

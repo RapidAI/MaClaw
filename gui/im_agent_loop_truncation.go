@@ -3,7 +3,10 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -63,6 +66,56 @@ func (h *IMMessageHandler) handleAgentLoopTruncatedToolCalls(
 		return result
 	}
 	result.ContinueLoop = true
+
+	// Best-effort partial write: if write_file was truncated and we have
+	// the raw (incomplete) args, extract path+content and write to disk.
+	// This converts a failed call into a partially successful one.
+	if rawArgs, ok := truncatedToolArgsForName(choice.TruncatedToolArgs, "write_file"); ok && rawArgs != "" {
+		workingDir := h.getEffectiveWorkingDir()
+		if pw := attemptPartialWriteFile(rawArgs, workingDir); pw != nil {
+			phase.ConsecutiveNoTool = 0
+			phase.TruncationRetries = 0 // reset — we made progress
+			hint := buildPartialWriteHint(pw)
+			systemMessagesStart := len(conversation)
+			conversation = append(conversation, map[string]string{
+				"role":    "system",
+				"content": hint,
+			})
+			recordSystemMessages(systemMessagesStart, conversation)
+			result.Conversation = conversation
+			log.Printf("[agent-loop] partial write success: %s (%d bytes), guiding LLM to append remaining content",
+				pw.Path, pw.BytesWritten)
+			return result
+		}
+		// Partial write was not possible. If the file already exists (from a
+		// previous partial write), inject a targeted hint to use mode=append
+		// instead of falling through to the generic essential-tool hint.
+		extractedPath := extractJSONStringField(rawArgs, "path")
+		if extractedPath != "" {
+			resolvedPath, pathOK := resolveTruncationPartialWritePath(extractedPath, workingDir)
+			if pathOK {
+				if info, statErr := os.Stat(resolvedPath); statErr == nil && info.Size() > 0 {
+					phase.ConsecutiveNoTool = 0
+					hint := fmt.Sprintf(
+						"[system] write_file was truncated again. The file %q already exists (%d bytes from a previous partial write). "+
+							"Do NOT use mode=overwrite — use write_file(path=%q, mode=\"append\", content=\"...remaining...\") to continue from where you left off. "+
+							"Keep each chunk under 3000 characters.",
+						resolvedPath, info.Size(), resolvedPath)
+					systemMessagesStart := len(conversation)
+					conversation = append(conversation, map[string]string{
+						"role":    "system",
+						"content": hint,
+					})
+					recordSystemMessages(systemMessagesStart, conversation)
+					result.Conversation = conversation
+					log.Printf("[agent-loop] partial write refused (file exists %d bytes), injecting append hint for %s",
+						info.Size(), resolvedPath)
+					return result
+				}
+			}
+		}
+	}
+
 	if allTruncatedToolsPreservedAfterTruncation(choice.TruncatedToolNames) {
 		return h.handleAgentLoopEssentialTruncatedToolCalls(iteration, choice, phase, conversation, tools, recordSystemMessages)
 	}
@@ -333,4 +386,304 @@ func toolListContainsName(tools []map[string]interface{}, want string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// Best-effort partial write for truncated write_file calls
+// ---------------------------------------------------------------------------
+
+// getEffectiveWorkingDir returns the effective working directory for write_file
+// tool resolution, reusing the same logic as resolveToolWorkDir("").
+func (h *IMMessageHandler) getEffectiveWorkingDir() string {
+	return h.resolveToolWorkDir("")
+}
+
+// truncationPartialWriteResult holds the result of a best-effort partial write.
+type truncationPartialWriteResult struct {
+	Path         string // file path that was written to
+	BytesWritten int    // number of bytes successfully written
+	RuneCount    int    // number of runes in the written content
+	Tail         string // last N characters of written content (for LLM to know where to continue)
+}
+
+// attemptPartialWriteFile tries to extract path and partial content from a
+// truncated write_file JSON argument string and writes whatever content was
+// received to disk. This converts a failed tool call into a partially
+// successful one, giving the LLM a concrete next step ("continue with
+// mode=append from byte N") instead of a vague "please split" hint.
+//
+// Returns nil if the raw args don't contain enough information to perform
+// a partial write (e.g. path is missing or content is empty).
+func attemptPartialWriteFile(rawArgs string, workingDir string) *truncationPartialWriteResult {
+	if rawArgs == "" {
+		return nil
+	}
+
+	// The JSON is truncated (invalid), so we can't use json.Unmarshal.
+	// Extract "path" and "content" fields using best-effort JSON string extraction.
+	path := extractJSONStringField(rawArgs, "path")
+	if path == "" {
+		return nil
+	}
+	resolvedPath, ok := resolveTruncationPartialWritePath(path, workingDir)
+	if !ok {
+		log.Printf("[agent-loop] partial write: refusing path outside working directory: %q", path)
+		return nil
+	}
+	path = resolvedPath
+
+	content := extractJSONStringField(rawArgs, "content")
+	if content == "" {
+		return nil
+	}
+	// Require minimum content length to avoid writing useless tiny fragments
+	// that are too short to be meaningful code (e.g. just a few chars from
+	// a truncated JSON value boundary).
+	const minPartialWriteBytes = 10
+	if len(content) < minPartialWriteBytes {
+		log.Printf("[agent-loop] partial write: content too short (%d bytes), skipping partial write for %q", len(content), path)
+		return nil
+	}
+
+	// Determine write mode from args (default: overwrite).
+	mode := extractJSONStringField(rawArgs, "mode")
+
+	if mode != "append" {
+		if _, statErr := os.Stat(path); statErr == nil {
+			log.Printf("[agent-loop] partial write: refusing to overwrite existing file with truncated content: %q", path)
+			return nil
+		} else if !os.IsNotExist(statErr) {
+			log.Printf("[agent-loop] partial write: failed to stat %q: %v", path, statErr)
+			return nil
+		}
+	}
+
+	// Ensure parent directory exists.
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[agent-loop] partial write: failed to create directory %q: %v", dir, err)
+		return nil
+	}
+
+	var err error
+	contentBytes := []byte(content)
+	if mode == "append" {
+		f, openErr := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if openErr != nil {
+			log.Printf("[agent-loop] partial write: failed to open %q for append: %v", path, openErr)
+			return nil
+		}
+		_, err = f.Write(contentBytes)
+		f.Close()
+	} else {
+		err = os.WriteFile(path, contentBytes, 0o644)
+	}
+	if err != nil {
+		log.Printf("[agent-loop] partial write: failed to write %q: %v", path, err)
+		return nil
+	}
+
+	runeCount := utf8.RuneCount(contentBytes)
+	log.Printf("[agent-loop] partial write: wrote %d bytes (%d runes) to %q (mode=%s, truncated args=%d bytes)",
+		len(contentBytes), runeCount, path, mode, len(rawArgs))
+
+	// Capture tail of written content so LLM knows where to continue.
+	tail := content
+	runes := []rune(tail)
+	const tailMaxRunes = 80
+	if len(runes) > tailMaxRunes {
+		tail = string(runes[len(runes)-tailMaxRunes:])
+	}
+
+	return &truncationPartialWriteResult{
+		Path:         path,
+		BytesWritten: len(contentBytes),
+		RuneCount:    runeCount,
+		Tail:         tail,
+	}
+}
+
+func truncatedToolArgsForName(args map[string]string, name string) (string, bool) {
+	if len(args) == 0 {
+		return "", false
+	}
+	if value, ok := args[name]; ok {
+		return value, true
+	}
+	want := strings.TrimSpace(name)
+	for key, value := range args {
+		if strings.TrimSpace(key) == want {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func resolveTruncationPartialWritePath(path string, workingDir string) (string, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", false
+	}
+	if workingDir == "" {
+		// No working directory constraint — only allow relative paths as a
+		// safety measure. Absolute paths without a base dir could write anywhere.
+		if filepath.IsAbs(path) {
+			return "", false
+		}
+		return filepath.Clean(path), true
+	}
+	base, err := filepath.Abs(workingDir)
+	if err != nil {
+		base = filepath.Clean(workingDir)
+	}
+	target := path
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(base, target)
+	}
+	target, err = filepath.Abs(target)
+	if err != nil {
+		target = filepath.Clean(target)
+	}
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return "", false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", false
+	}
+	return target, true
+}
+
+// extractJSONStringField does best-effort extraction of a string field from
+// potentially truncated JSON. It finds "fieldName": "..." and extracts the
+// string value, handling JSON escape sequences. If the string value is
+// truncated (no closing quote), it returns whatever content was found.
+func extractJSONStringField(rawJSON string, fieldName string) string {
+	fieldMarker := `"` + fieldName + `"`
+	startIdx := strings.Index(rawJSON, fieldMarker)
+	if startIdx < 0 {
+		return ""
+	}
+	i := startIdx + len(fieldMarker)
+	for i < len(rawJSON) && (rawJSON[i] == ' ' || rawJSON[i] == '\t' || rawJSON[i] == '\r' || rawJSON[i] == '\n') {
+		i++
+	}
+	if i >= len(rawJSON) || rawJSON[i] != ':' {
+		return ""
+	}
+	i++
+	for i < len(rawJSON) && (rawJSON[i] == ' ' || rawJSON[i] == '\t' || rawJSON[i] == '\r' || rawJSON[i] == '\n') {
+		i++
+	}
+	if i >= len(rawJSON) || rawJSON[i] != '"' {
+		return ""
+	}
+	i++
+
+	// Parse the JSON string value, handling escapes.
+	var buf strings.Builder
+	for i < len(rawJSON) {
+		ch := rawJSON[i]
+		if ch == '"' {
+			break
+		}
+		if ch == '\\' {
+			if i+1 >= len(rawJSON) {
+				break // truncated escape at end of input
+			}
+			next := rawJSON[i+1]
+			switch next {
+			case '"', '\\', '/':
+				buf.WriteByte(next)
+				i += 2
+			case 'n':
+				buf.WriteByte('\n')
+				i += 2
+			case 'r':
+				buf.WriteByte('\r')
+				i += 2
+			case 't':
+				buf.WriteByte('\t')
+				i += 2
+			case 'b':
+				buf.WriteByte('\b')
+				i += 2
+			case 'f':
+				buf.WriteByte('\f')
+				i += 2
+			case 'u':
+				// Unicode escape \uXXXX (with surrogate pair support)
+				if i+5 >= len(rawJSON) {
+					// Truncated unicode escape — return what we have.
+					return buf.String()
+				}
+				hexStr := rawJSON[i+2 : i+6]
+				var codepoint uint32
+				if _, err := fmt.Sscanf(hexStr, "%04x", &codepoint); err == nil {
+					// Check for UTF-16 surrogate pair (emoji etc.)
+					if codepoint >= 0xD800 && codepoint <= 0xDBFF {
+						// High surrogate — look for \uDCxx low surrogate
+						if i+11 < len(rawJSON) && rawJSON[i+6] == '\\' && rawJSON[i+7] == 'u' {
+							lowHex := rawJSON[i+8 : i+12]
+							var low uint32
+							if _, err2 := fmt.Sscanf(lowHex, "%04x", &low); err2 == nil && low >= 0xDC00 && low <= 0xDFFF {
+								combined := 0x10000 + (codepoint-0xD800)*0x400 + (low - 0xDC00)
+								buf.WriteRune(rune(combined))
+								i += 12
+							} else {
+								// Orphan high surrogate — emit replacement character.
+								buf.WriteRune('\uFFFD')
+								i += 6
+							}
+						} else {
+							// No following \u — emit replacement character.
+							buf.WriteRune('\uFFFD')
+							i += 6
+						}
+					} else if codepoint >= 0xDC00 && codepoint <= 0xDFFF {
+						// Orphan low surrogate — emit replacement character.
+						buf.WriteRune('\uFFFD')
+						i += 6
+					} else {
+						buf.WriteRune(rune(codepoint))
+						i += 6
+					}
+				} else {
+					// Malformed \u escape — emit literal and advance.
+					buf.WriteByte('\\')
+					buf.WriteByte('u')
+					i += 2
+				}
+			default:
+				// Unknown escape — emit literal backslash + char.
+				buf.WriteByte('\\')
+				buf.WriteByte(next)
+				i += 2
+			}
+		} else {
+			buf.WriteByte(ch)
+			i++
+		}
+	}
+
+	return buf.String()
+}
+
+// buildPartialWriteHint generates the system message after a successful
+// partial write, telling the LLM exactly what happened and what to do next.
+func buildPartialWriteHint(result *truncationPartialWriteResult) string {
+	hint := fmt.Sprintf(
+		"[system] write_file arguments were truncated by the model output limit. "+
+			"The system saved the received partial content to disk.\n"+
+			"  File: %s\n"+
+			"  Written: %d bytes (%d runes)\n",
+		result.Path, result.BytesWritten, result.RuneCount)
+	if result.Tail != "" {
+		hint += fmt.Sprintf("  Last written chars: ...%s\n", result.Tail)
+	}
+	hint += fmt.Sprintf(
+		"Continue from where you left off with write_file(path=%q, mode=\"append\", content=\"...remaining content starting after the last chars shown above...\"). "+
+			"Keep each content chunk under about 3000 characters; multiple append calls are fine.",
+		result.Path)
+	return hint
 }

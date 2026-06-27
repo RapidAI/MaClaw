@@ -11,22 +11,30 @@ import (
 )
 
 type Config struct {
-	DSN               string
-	WAL               bool
-	BusyTimeoutMS     int
-	MaxReadOpenConns  int
-	MaxReadIdleConns  int
-	MaxWriteOpenConns int
-	MaxWriteIdleConns int
-	BatchFlushMS      int
-	BatchMaxSize      int
-	BatchQueueSize    int
+	DSN                   string
+	WAL                   bool
+	BusyTimeoutMS         int
+	MaxReadOpenConns      int
+	MaxReadIdleConns      int
+	MaxWriteOpenConns     int
+	MaxWriteIdleConns     int
+	BatchFlushMS          int
+	BatchMaxSize          int
+	BatchQueueSize        int
+	CacheSizeKB           int
+	MmapSizeBytes         int64
+	CheckpointIntervalSec int
+	CoalesceFlushMS       int // write-coalescer flush interval (default 5000ms)
+	CoalesceMaxBatch      int // max statements per coalescer flush tx (default 512)
 }
 
 type Provider struct {
-	Write *sql.DB
-	Read  *sql.DB
-	batch *writeBatcher
+	Write    *sql.DB
+	Read     *sql.DB
+	batch    *writeBatcher
+	coalesce *WriteCoalescer
+	stopCkpt chan struct{}
+	doneCkpt chan struct{}
 }
 
 func NewProvider(cfg Config) (*Provider, error) {
@@ -53,27 +61,54 @@ func NewProvider(cfg Config) (*Provider, error) {
 	readDB.SetMaxIdleConns(cfg.MaxReadIdleConns)
 	readDB.SetConnMaxLifetime(30 * time.Minute)
 
-	if err := applyPragmas(writeDB, cfg); err != nil {
+	if err := applyPragmas(writeDB, cfg, true); err != nil {
 		_ = readDB.Close()
 		_ = writeDB.Close()
 		return nil, err
 	}
-	if err := applyPragmas(readDB, cfg); err != nil {
+	if err := applyPragmas(readDB, cfg, false); err != nil {
 		_ = readDB.Close()
 		_ = writeDB.Close()
 		return nil, err
 	}
 
-	return &Provider{
-		Write: writeDB,
-		Read:  readDB,
-		batch: newWriteBatcher(writeDB, cfg),
-	}, nil
+	p := &Provider{
+		Write:    writeDB,
+		Read:     readDB,
+		batch:    newWriteBatcher(writeDB, cfg),
+		coalesce: NewWriteCoalescer(writeDB, WriteCoalescerConfig{
+			FlushIntervalMS: cfg.CoalesceFlushMS,
+			MaxBatchSize:    cfg.CoalesceMaxBatch,
+		}),
+	}
+
+	// Start background WAL checkpointer if WAL mode is enabled.
+	if cfg.WAL {
+		interval := time.Duration(cfg.CheckpointIntervalSec) * time.Second
+		if interval <= 0 {
+			interval = 60 * time.Second
+		}
+		p.startCheckpointer(interval)
+	}
+
+	return p, nil
 }
 
 func (p *Provider) Close() error {
 	if p == nil {
 		return nil
+	}
+	if p.stopCkpt != nil {
+		select {
+		case <-p.stopCkpt:
+			// already closed
+		default:
+			close(p.stopCkpt)
+			<-p.doneCkpt
+		}
+	}
+	if p.coalesce != nil {
+		p.coalesce.Close()
 	}
 	if p.batch != nil {
 		p.batch.Close()
@@ -87,15 +122,44 @@ func (p *Provider) Close() error {
 	return nil
 }
 
-func applyPragmas(db *sql.DB, cfg Config) error {
+func (p *Provider) startCheckpointer(interval time.Duration) {
+	p.stopCkpt = make(chan struct{})
+	p.doneCkpt = make(chan struct{})
+	go func() {
+		defer close(p.doneCkpt)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-p.stopCkpt:
+				return
+			case <-ticker.C:
+				// PASSIVE checkpoint: moves committed WAL pages to DB
+				// without blocking concurrent readers or writers.
+				// Execute on the Read pool to avoid contending with the
+				// single Write connection used by the batcher.
+				_, _ = p.Read.Exec("PRAGMA wal_checkpoint(PASSIVE);")
+			}
+		}
+	}()
+}
+
+func applyPragmas(db *sql.DB, cfg Config, isWriter bool) error {
 	stmts := []string{
 		"PRAGMA foreign_keys = ON;",
 		fmt.Sprintf("PRAGMA busy_timeout = %d;", cfg.BusyTimeoutMS),
 		"PRAGMA synchronous = NORMAL;",
 		"PRAGMA temp_store = MEMORY;",
 	}
-	if cfg.WAL {
+	// journal_mode and wal_autocheckpoint are database-level settings.
+	// Only apply on the write connection to avoid redundant work and potential
+	// lock contention with an in-flight write transaction.
+	if cfg.WAL && isWriter {
 		stmts = append(stmts, "PRAGMA journal_mode = WAL;")
+		stmts = append(stmts, "PRAGMA wal_autocheckpoint = 2000;")
+	}
+	if cfg.CacheSizeKB > 0 {
+		stmts = append(stmts, fmt.Sprintf("PRAGMA cache_size = -%d;", cfg.CacheSizeKB))
 	}
 
 	for _, stmt := range stmts {
@@ -103,6 +167,14 @@ func applyPragmas(db *sql.DB, cfg Config) error {
 			return fmt.Errorf("apply pragma %q: %w", stmt, err)
 		}
 	}
+
+	// mmap_size may fail on some platforms/drivers (e.g. modernc/sqlite on Windows)
+	// without affecting correctness — it's a best-effort optimization.
+	// Apply separately so failure doesn't abort startup.
+	if cfg.MmapSizeBytes > 0 {
+		_, _ = db.Exec(fmt.Sprintf("PRAGMA mmap_size = %d;", cfg.MmapSizeBytes))
+	}
+
 	return nil
 }
 

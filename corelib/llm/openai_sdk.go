@@ -253,10 +253,11 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 			}
 		}
 	}
+	var truncatedToolArgs map[string]string
 	if len(truncatedTools) == 0 {
-		finishReason, truncatedTools = filterStreamTruncatedToolCalls(&msg, finishReason)
+		finishReason, truncatedTools, truncatedToolArgs = filterStreamTruncatedToolCalls(&msg, finishReason)
 	}
-	return &Response{Choices: []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools}}, Usage: usage}, http.StatusOK, nil, nil
+	return &Response{Choices: []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}}, Usage: usage}, http.StatusOK, nil, nil
 }
 
 func openAISDKChunkLegacyFunctionCall(raw string) *sseFunctionCallDelta {

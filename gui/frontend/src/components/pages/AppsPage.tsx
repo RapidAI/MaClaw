@@ -43,7 +43,7 @@ type AppsPageProps = {
 type AppSkillDependency = {
     id: string;
     version?: string;
-    kind?: 'runtime_skill' | 'workflow_skill' | 'ui_component_skill' | 'connector_skill' | 'policy_skill';
+    kind?: 'app_skill' | 'runtime_skill' | 'workflow_skill' | 'ui_component_skill' | 'connector_skill' | 'policy_skill';
     required?: boolean;
     source?: 'local' | 'hub' | 'market' | 'builtin';
     capabilities?: string[];
@@ -2059,7 +2059,7 @@ function normalizeAppWorkspaceLayout(raw: unknown, kind: AppKind): AppWorkspaceL
 
 function appSkillDependencies(app: AppEntry): AppSkillDependency[] {
     const deps = app.manifest?.dependencies?.skills || [];
-    const appSkill = app.manifest?.appSkill?.id ? [{ id: app.manifest.appSkill.id, version: app.manifest.appSkill.version, kind: 'runtime_skill' as const, required: true, source: (app.manifest.appSkill.source || 'local') as AppSkillDependency['source'] }] : [];
+    const appSkill = app.manifest?.appSkill?.id ? [{ id: app.manifest.appSkill.id, version: app.manifest.appSkill.version, kind: 'app_skill' as const, required: true, source: (app.manifest.appSkill.source || 'local') as AppSkillDependency['source'] }] : [];
     const boundSkill = app.manifest?.skill?.id ? [{ id: app.manifest.skill.id, kind: 'runtime_skill' as const, required: true, source: 'hub' as const }] : [];
     const approvalWorkflowSkills = (app.manifest?.mis?.approvalBindings || []).map((binding) => ({
         id: binding.workflowSkillId,
@@ -2069,7 +2069,25 @@ function appSkillDependencies(app: AppEntry): AppSkillDependency[] {
         source: 'hub' as const,
         capabilities: ['approval.workflow'],
     })).filter((dep) => dep.id);
-    return Array.from(new Map([...appSkill, ...boundSkill, ...deps, ...approvalWorkflowSkills].map((dep) => [dep.id, dep])).values());
+    const merged = new Map<string, AppSkillDependency>();
+    [...appSkill, ...boundSkill, ...deps, ...approvalWorkflowSkills].forEach((dep) => {
+        const id = String(dep.id || '').trim();
+        if (!id) return;
+        const existing = merged.get(id);
+        if (!existing) {
+            merged.set(id, { ...dep, id });
+            return;
+        }
+        merged.set(id, {
+            ...existing,
+            version: existing.version || dep.version,
+            kind: existing.kind || dep.kind,
+            required: existing.required !== false || dep.required !== false,
+            source: existing.source || dep.source,
+            capabilities: Array.from(new Set([...(existing.capabilities || []), ...(dep.capabilities || [])])),
+        });
+    });
+    return Array.from(merged.values());
 }
 
 function makeAutomationManifest(): AppManifestBinding {
@@ -2525,7 +2543,7 @@ function dataSrvInstalledVersionSnapshot(metadata: Record<string, any>, item: Da
     const appSkill = normalizeVersionSnapshotSkill(undefined, {
         id: String(metadata.app_skill_id || '').trim(),
         version: String(metadata.app_skill_version || '').trim(),
-        kind: 'runtime_skill',
+        kind: 'app_skill',
         source: String(metadata.app_skill_source || metadata.appSkillSource || 'hub').trim(),
     });
     if (appSkill) snapshot.app_skill = appSkill;
@@ -5817,7 +5835,8 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
         title: appTitle,
         lane: lane === 'pending_my_approval' || lane === 'handled' || lane === 'attention' ? lane : 'my_requests',
         status: status === 'approved' || status === 'rejected' || status === 'attention' || status === 'draft' ? status : 'pending',
-        currentNode: String(instance.current_node || (isZh(lang) ? '\u5f53\u524d\u8282\u70b9' : 'Current node')).trim(),
+        currentNode,
+        currentNodeIDs,
         owner: String(instance.owner || '-').trim(),
         approver: String(instance.approver || '-').trim(),
         currentAssignee: String(instance.current_assignee || instance.approver || '').trim(),
@@ -9317,6 +9336,9 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const draftResultContract = normalizeAppResultContract(resultContractDraft, kind, draftApp.manifest?.skill?.outputModes || outputModes);
     const draftTestProtocol = appTestProtocolWithFingerprint(normalizeAppTestProtocol(testProtocolDraft, kind, draftApp.manifest?.skill?.outputModes || outputModes, draftResultContract));
     const draftManifestText = JSON.stringify(appToManifest(draftApp), null, 2);
+    const skillDefinitionTargetID = isEnterpriseAppKind(kind) ? appSkillID.trim() : selectedSkill.trim();
+    const skillDefinitionTargetInstalled = kind === 'tool_app' ? selectedSkillSource === 'installed' : isEnterpriseAppKind(kind) && appSkillSource === 'local';
+    const canWriteSkillDefinition = (kind === 'tool_app' || isEnterpriseAppKind(kind)) && !!name.trim() && !!skillDefinitionTargetID && skillDefinitionTargetInstalled;
     const studioLayoutValue: RuntimeWorkspaceLayout = normalizeRuntimeWorkspaceLayout({ template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion, regions: layoutRegions }, kind);
     const updateStudioLayout = (layout: RuntimeWorkspaceLayout) => {
         setLayoutTemplate(layout.template);
@@ -9375,14 +9397,22 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     };
     const persistSkillAppDefinition = async () => {
         const cleanName = name.trim();
-        const skillID = selectedSkill.trim();
-        if (!cleanName || !skillID || kind !== 'tool_app' || selectedSkillSource !== 'installed') return null;
+        const skillID = skillDefinitionTargetID;
+        if (!cleanName || !skillID || !canWriteSkillDefinition) return null;
         const appID = makeSkillAppDefinitionId(cleanName);
         const app = buildDraftApp(appID, cleanName, skillID, 'maclaw.app.json');
-        const manifestText = JSON.stringify(appToManifest(app), null, 2);
+        const skillBoundApp: AppEntry = {
+            ...app,
+            manifest: app.manifest ? {
+                ...app.manifest,
+                installUnit: app.manifest.installUnit === 'builtin' ? 'skill' : app.manifest.installUnit,
+                skill: { ...(app.manifest.skill || {}), id: skillID, appDefinitionFile: 'maclaw.app.json' },
+            } : app.manifest,
+        };
+        const manifestText = JSON.stringify(appToManifest(skillBoundApp), null, 2);
         await SaveMaclawAppDefinitionForSkill(skillID, manifestText);
         onCreateApp({
-            ...app,
+            ...skillBoundApp,
             id: skillPanelAppID(skillID, appID),
             source: 'skill',
         }, { keepStudioCreate: true });
@@ -9407,9 +9437,9 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         }
     };
     const uploadSelectedSkillApp = async () => {
-        const skillID = selectedSkill.trim();
+        const skillID = skillDefinitionTargetID;
         if (!skillID || skillMarketUploadState === 'uploading') return;
-        if (selectedSkillSource !== 'installed') {
+        if (!skillDefinitionTargetInstalled) {
             setSkillMarketUploadState('error');
             setSkillAppSaveState('error');
             setSkillAppSaveMessage(zh ? '\u8bf7\u5148\u9009\u62e9\u5df2\u5b89\u88c5 Skill\uff0c\u518d\u4fdd\u5b58\u6216\u4e0a\u4f20\u5e94\u7528\u5b9a\u4e49\u3002' : 'Choose an installed Skill before saving or uploading this app definition.');
@@ -9418,10 +9448,16 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         const cleanName = name.trim();
         if (!cleanName) return;
         const appID = makeSkillAppDefinitionId(cleanName);
+        const draftPanelApp = buildDraftApp(appID, cleanName, skillID, 'maclaw.app.json');
         const panelApp: AppEntry = {
-            ...buildDraftApp(appID, cleanName, skillID, 'maclaw.app.json'),
+            ...draftPanelApp,
             id: skillPanelAppID(skillID, appID),
             source: 'skill',
+            manifest: draftPanelApp.manifest ? {
+                ...draftPanelApp.manifest,
+                installUnit: draftPanelApp.manifest.installUnit === 'builtin' ? 'skill' : draftPanelApp.manifest.installUnit,
+                skill: { ...(draftPanelApp.manifest.skill || {}), id: skillID, appDefinitionFile: 'maclaw.app.json' },
+            } : draftPanelApp.manifest,
         };
         if (!latestAppRunEvidence(panelApp)) {
             setSkillMarketUploadState('error');
@@ -9708,12 +9744,12 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                 </div>
                 <div className="apps-actions">
                     <button className="apps-primary-button" type="button" disabled={!name.trim()} onClick={createApp}>{text.createTab}</button>
-                    {kind === 'tool_app' && (
+                    {(kind === 'tool_app' || isEnterpriseAppKind(kind)) && (
                         <>
-                            <button className="apps-secondary-button" type="button" disabled={!name.trim() || !selectedSkill.trim() || selectedSkillSource !== 'installed' || skillAppSaveState === 'saving'} onClick={() => void saveAsSkillApp()}>
+                            <button className="apps-secondary-button" type="button" disabled={!canWriteSkillDefinition || skillAppSaveState === 'saving'} onClick={() => void saveAsSkillApp()}>
                                 {skillAppSaveState === 'saving' ? (zh ? '\u4fdd\u5b58\u4e2d...' : 'Saving...') : (zh ? '\u4fdd\u5b58\u5230 Skill' : 'Save to Skill')}
                             </button>
-                            <button className="apps-secondary-button" type="button" disabled={!selectedSkill.trim() || selectedSkillSource !== 'installed' || skillMarketUploadState === 'uploading'} onClick={() => void uploadSelectedSkillApp()}>
+                            <button className="apps-secondary-button" type="button" disabled={!skillDefinitionTargetID || !skillDefinitionTargetInstalled || skillMarketUploadState === 'uploading'} onClick={() => void uploadSelectedSkillApp()}>
                                 {skillMarketUploadState === 'uploading' ? (zh ? '\u4e0a\u4f20\u4e2d...' : 'Uploading...') : (zh ? '\u4e0a\u4f20\u5230 SkillMarket' : 'Upload to SkillMarket')}
                             </button>
                         </>
@@ -10744,7 +10780,12 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
         };
         const skillID = String(updatedApp.manifest?.skill?.id || '').trim();
         const appDefinitionFile = String(updatedApp.manifest?.skill?.appDefinitionFile || '').trim();
-        const shouldWriteSkillDefinition = updatedApp.source === 'skill' && updatedApp.kind === 'tool_app' && !!skillID && (appDefinitionFile === 'maclaw.app.json' || appDefinitionFile === 'maclaw.apps.json');
+        const isWritableSkillAppDefinition = updatedApp.kind === 'tool_app'
+            ? (appDefinitionFile === 'maclaw.app.json' || appDefinitionFile === 'maclaw.apps.json')
+            : isEnterpriseAppKind(updatedApp.kind) && appDefinitionFile === 'maclaw.app.json';
+        const shouldWriteSkillDefinition = updatedApp.source === 'skill'
+            && isWritableSkillAppDefinition
+            && !!skillID;
         try {
             if (shouldWriteSkillDefinition) {
                 await SaveMaclawAppDefinitionForSkill(skillID, JSON.stringify(appToSkillDefinitionManifest(updatedApp), null, 2));

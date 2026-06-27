@@ -30,6 +30,13 @@ type Choice struct {
 	// with shorter arguments.
 	// This is NOT serialized — it is an in-process signal only.
 	TruncatedToolNames []string `json:"-"`
+
+	// TruncatedToolArgs maps tool name to its raw (incomplete) JSON argument
+	// string for truncated tool calls. This allows the agent loop to attempt
+	// best-effort partial execution (e.g. extracting path and partial content
+	// from a truncated write_file call and writing the partial content to disk).
+	// This is NOT serialized — it is an in-process signal only.
+	TruncatedToolArgs map[string]string `json:"-"`
 }
 
 type Message struct {
@@ -299,11 +306,12 @@ func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
 				finishReason = "stop"
 			}
 		}
-		finishReason, truncatedTools := filterStreamTruncatedToolCalls(&msg, finishReason)
+		finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 		result.Choices = append(result.Choices, Choice{
 			Message:            msg,
 			FinishReason:       finishReason,
 			TruncatedToolNames: truncatedTools,
+			TruncatedToolArgs:  truncatedToolArgs,
 		})
 	}
 	return result

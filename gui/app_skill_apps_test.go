@@ -379,6 +379,50 @@ func TestSaveMaclawAppDefinitionForSkillWritesEnterpriseAppFile(t *testing.T) {
 	}
 }
 
+func TestSaveMaclawAppDefinitionForSkillRejectsEnterpriseAppsManifestFile(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "expense-super-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# Expense approval super skill\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "expense-super-skill", SkillDir: skillDir, Status: "active"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	_, err = app.SaveMaclawAppDefinitionForSkill("expense-super-skill", `{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "expense-approval",
+			"name": "Expense Approval",
+			"kind": "enterprise_approval_app",
+			"binding": {
+				"skill": {"id": "expense-super-skill", "appDefinitionFile": "maclaw.apps.json"},
+				"appSkill": {"id": "expense-super-skill", "version": "1.0.0"}
+			}
+		}
+	}`)
+	if err == nil || !strings.Contains(err.Error(), "enterprise MaClaw App definitions must be saved as maclaw.app.json") {
+		t.Fatalf("SaveMaclawAppDefinitionForSkill() error = %v, want enterprise maclaw.app.json rejection", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(skillDir, "maclaw.apps.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("enterprise app must not be written to maclaw.apps.json, stat err=%v", statErr)
+	}
+}
+
 func TestListSkillAppManifestsReadsEnterpriseAppDefinition(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

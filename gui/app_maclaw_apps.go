@@ -1666,9 +1666,13 @@ func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, r
 	status := normalizeMaclawAppApprovalStatusForRecordApproval(item)
 	lane := normalizeMaclawAppApprovalLaneForRecordApproval(item, requestedLane, status, currentUserID)
 	result := firstNonEmptyMaclawAppString(item.Reason, stringMapValue(resultPayload, "text"), stringMapValue(resultPayload, "summary"), item.ResultStatus, item.BusinessStatus, status)
+	currentNodeIDs := append([]string(nil), item.WorkflowNodeIDs...)
+	for _, key := range []string{"current_node_ids", "currentNodeIDs", "workflow_node_ids", "workflowNodeIDs", "current_node", "currentNode", "workflow_node", "workflowNode"} {
+		currentNodeIDs = append(currentNodeIDs, maclawAppStringListFromAny(request[key])...)
+	}
 	instance := maclawAppApprovalInstance{
-		AppID:               firstNonEmptyMaclawAppString(item.AppID, stringMapValue(request, "app_id")),
-		BlueprintID:         firstNonEmptyMaclawAppString(item.BlueprintID, stringMapValue(request, "blueprint_id")),
+		AppID:               firstNonEmptyMaclawAppString(item.AppID, stringMapValue(request, "app_id"), stringMapValue(request, "appID"), stringMapValue(request, "maclaw_app_id"), stringMapValue(request, "maclawAppID")),
+		BlueprintID:         firstNonEmptyMaclawAppString(item.BlueprintID, stringMapValue(request, "blueprint_id"), stringMapValue(request, "blueprintID")),
 		DatasetID:           item.DatasetID,
 		ObjectRole:          firstNonEmptyMaclawAppString(item.ObjectRole, stringMapValue(request, "object_role")),
 		ApprovalObjectRole:  firstNonEmptyMaclawAppString(item.ObjectRole, stringMapValue(request, "object_role")),
@@ -1677,8 +1681,8 @@ func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, r
 		Title:               firstNonEmptyMaclawAppString(item.Summary, stringMapValue(request, "title"), instanceID, item.ID),
 		Lane:                lane,
 		Status:              status,
-		CurrentNode:         item.WorkflowNodeID,
-		CurrentNodeIDs:      append([]string(nil), item.WorkflowNodeIDs...),
+		CurrentNode:         firstNonEmptyMaclawAppString(item.WorkflowNodeID, stringMapValue(request, "current_node"), stringMapValue(request, "currentNode"), stringMapValue(request, "workflow_node"), stringMapValue(request, "workflowNode")),
+		CurrentNodeIDs:      currentNodeIDs,
 		Owner:               firstNonEmptyMaclawAppString(item.SubmittedBy, item.CreatedBy, stringMapValue(request, "owner"), stringMapValue(request, "applicant")),
 		Applicant:           firstNonEmptyMaclawAppString(stringMapValue(request, "applicant"), item.SubmittedBy, item.CreatedBy),
 		Approver:            firstNonEmptyMaclawAppString(item.AssignedTo, item.ReviewedBy),
@@ -1687,9 +1691,9 @@ func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, r
 		CreatedAt:           maclawAppApprovalTimeString(item.CreatedAt),
 		UpdatedAt:           maclawAppApprovalTimeString(item.UpdatedAt),
 		Result:              result,
-		ApprovalWorkflowID:  item.ApprovalWorkflowID,
-		WorkflowSkillID:     item.WorkflowSkillID,
-		WorkflowVersion:     item.WorkflowVersion,
+		ApprovalWorkflowID:  firstNonEmptyMaclawAppString(item.ApprovalWorkflowID, stringMapValue(request, "approval_workflow_id"), stringMapValue(request, "approvalWorkflowID"), stringMapValue(request, "workflow_id"), stringMapValue(request, "workflowID")),
+		WorkflowSkillID:     firstNonEmptyMaclawAppString(item.WorkflowSkillID, stringMapValue(request, "workflow_skill_id"), stringMapValue(request, "workflowSkillID"), stringMapValue(request, "workflowSkillId")),
+		WorkflowVersion:     firstNonEmptyMaclawAppString(item.WorkflowVersion, stringMapValue(request, "workflow_version"), stringMapValue(request, "workflowVersion")),
 		BusinessStatus:      item.BusinessStatus,
 		ResultStatus:        item.ResultStatus,
 		FromStatus:          item.FromStatus,
@@ -2559,7 +2563,7 @@ func maclawAppInstallVersionSnapshotForEntry(entry parsedMaclawAppEntry) maclawA
 			skill := maclawAppInstallSkillVersionSnapshot{
 				ID:      id,
 				Version: maclawAppVersionString(firstNonEmptyMaclawAppAny(appSkill["version"], appSkill["version_constraint"], appSkill["versionConstraint"])),
-				Kind:    firstNonEmptyMaclawAppString(maclawAppStringValue(appSkill, "kind"), "runtime_skill"),
+				Kind:    firstNonEmptyMaclawAppString(maclawAppStringValue(appSkill, "kind"), "app_skill"),
 				Source:  maclawAppStringValue(appSkill, "source"),
 			}
 			snapshot.AppSkill = &skill
@@ -3553,7 +3557,7 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 			add(maclawAppInstallPlanDependency{
 				ID:       stringMapValue(appSkill, "id"),
 				Version:  stringMapValue(appSkill, "version"),
-				Kind:     "runtime_skill",
+				Kind:     "app_skill",
 				Required: true,
 				Source:   stringMapValue(appSkill, "source"),
 			})
@@ -4656,6 +4660,8 @@ func maclawAppStringListFromAny(value any) []string {
 		}
 	}
 	switch items := value.(type) {
+	case string:
+		add(items)
 	case []string:
 		for _, item := range items {
 			add(item)

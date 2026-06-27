@@ -22,16 +22,19 @@ import (
 
 func Bootstrap(cfg *config.Config) (*App, error) {
 	provider, err := sqlite.NewProvider(sqlite.Config{
-		DSN:               cfg.Database.DSN,
-		WAL:               cfg.Database.WAL,
-		BusyTimeoutMS:     cfg.Database.BusyTimeoutMS,
-		MaxReadOpenConns:  cfg.Database.MaxReadOpenConns,
-		MaxReadIdleConns:  cfg.Database.MaxReadIdleConns,
-		MaxWriteOpenConns: cfg.Database.MaxWriteOpenConns,
-		MaxWriteIdleConns: cfg.Database.MaxWriteIdleConns,
-		BatchFlushMS:      cfg.Database.BatchFlushMS,
-		BatchMaxSize:      cfg.Database.BatchMaxSize,
-		BatchQueueSize:    cfg.Database.BatchQueueSize,
+		DSN:                   cfg.Database.DSN,
+		WAL:                   cfg.Database.WAL,
+		BusyTimeoutMS:         cfg.Database.BusyTimeoutMS,
+		MaxReadOpenConns:      cfg.Database.MaxReadOpenConns,
+		MaxReadIdleConns:      cfg.Database.MaxReadIdleConns,
+		MaxWriteOpenConns:     cfg.Database.MaxWriteOpenConns,
+		MaxWriteIdleConns:     cfg.Database.MaxWriteIdleConns,
+		BatchFlushMS:          cfg.Database.BatchFlushMS,
+		BatchMaxSize:          cfg.Database.BatchMaxSize,
+		BatchQueueSize:        cfg.Database.BatchQueueSize,
+		CacheSizeKB:           cfg.Database.CacheSizeKB,
+		MmapSizeBytes:         cfg.Database.MmapSizeBytes,
+		CheckpointIntervalSec: cfg.Database.CheckpointIntervalSec,
 	})
 	if err != nil {
 		return nil, err

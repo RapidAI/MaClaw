@@ -2383,13 +2383,14 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 			finishReason = "stop"
 		}
 	}
-	finishReason, truncatedTools := filterStreamTruncatedToolCalls(&msg, finishReason)
+	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
 	return &Response{
 		Choices: []Choice{{
 			Message:            msg,
 			FinishReason:       finishReason,
 			TruncatedToolNames: truncatedTools,
+			TruncatedToolArgs:  truncatedToolArgs,
 		}},
 		Usage: usage,
 	}, nil

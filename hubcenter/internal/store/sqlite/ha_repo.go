@@ -16,6 +16,19 @@ func (r *haSyncOpRepo) AppendLocalWithVersion(ctx context.Context, op *store.HAS
 	if op == nil {
 		return 0, errors.New("nil ha sync op")
 	}
+
+	// Memory pre-check: if the payload hash matches the cached value for this
+	// entity, skip the SQLite transaction entirely. This eliminates the cost of
+	// BEGIN IMMEDIATE + SELECT + COMMIT for repeated identical payloads (common
+	// during heartbeat cycles).
+	cacheKey := op.EntityType + ":" + op.EntityID
+	payloadHash := strings.TrimSpace(op.PayloadHash)
+	if payloadHash != "" {
+		if cached, ok := r.lastPayloadHash.Load(cacheKey); ok && cached.(string) == payloadHash {
+			return 0, nil
+		}
+	}
+
 	conn, err := r.db.Conn(ctx)
 	if err != nil {
 		return 0, err
@@ -44,11 +57,15 @@ func (r *haSyncOpRepo) AppendLocalWithVersion(ctx context.Context, op *store.HAS
 		LIMIT 1
 	`, op.EntityType, op.EntityID).Scan(&latestOpType, &latestPayloadJSON, &latestPayloadHash); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
-	} else if err == nil && latestOpType == op.OpType && haPayloadEquivalent(op.EntityType, op.OpType, op.PayloadJSON, op.PayloadHash, latestPayloadJSON, latestPayloadHash) {
+	} else if err == nil && latestOpType == op.OpType && haPayloadEquivalent(op.EntityType, op.OpType, op.PayloadJSON, payloadHash, latestPayloadJSON, latestPayloadHash) {
 		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 			return 0, err
 		}
 		committed = true
+		// Update cache so next call hits the fast path.
+		if payloadHash != "" {
+			r.lastPayloadHash.Store(cacheKey, payloadHash)
+		}
 		return 0, nil
 	}
 
@@ -100,6 +117,10 @@ func (r *haSyncOpRepo) AppendLocalWithVersion(ctx context.Context, op *store.HAS
 		return 0, err
 	}
 	committed = true
+	// Update cache with new hash after successful write.
+	if payloadHash != "" {
+		r.lastPayloadHash.Store(cacheKey, payloadHash)
+	}
 	return version, nil
 }
 
@@ -107,9 +128,9 @@ func haPayloadEquivalent(entityType, opType, currentJSON, currentHash, previousJ
 	if strings.TrimSpace(currentHash) != "" && currentHash == previousHash {
 		return true
 	}
-	if opType != "upsert" {
-		return false
-	}
+	// For non-upsert ops (e.g. delete), hash match above is the only dedup path.
+	// If hashes are both empty for a delete, fall through to JSON comparison below
+	// since delete payloads are typically small/identical.
 	current, ok := normalizedNoisyHAPayload(entityType, currentJSON)
 	if !ok {
 		return false
@@ -126,16 +147,15 @@ func normalizedNoisyHAPayload(entityType, payloadJSON string) (map[string]any, b
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
 		return nil, false
 	}
+	// All entity types: remove timestamp fields that change on every write
+	// but don't represent meaningful state changes.
 	delete(payload, "updated_at")
+	delete(payload, "created_at")
 	switch entityType {
-	case "hub_user_link", "hub_domain_route", "llm_card_order":
-		return payload, true
 	case "hub_instance":
 		delete(payload, "last_seen_at")
-		return payload, true
-	default:
-		return nil, false
 	}
+	return payload, true
 }
 
 func (r *haSyncOpRepo) Append(ctx context.Context, op *store.HASyncOp) error {

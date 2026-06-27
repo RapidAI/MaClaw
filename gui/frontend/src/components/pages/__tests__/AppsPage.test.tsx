@@ -454,7 +454,7 @@ describe('AppsPage', () => {
             title: 'Travel expense',
             lane: 'pending_my_approval',
             status: 'pending',
-            current_node: 'manager_approval',
+            current_node_ids: ['manager_approval', 'finance_review'],
             owner: 'alice',
             approver: 'manager',
             updated_at: '2026-06-20T00:00:00Z',
@@ -478,6 +478,7 @@ describe('AppsPage', () => {
         const detail = document.querySelector('.apps-approval-detail') as HTMLElement;
         expect(within(detail).getByText('结果契约')).not.toBeNull();
         expect(within(detail).getAllByText('approval_result').length).toBeGreaterThan(0);
+        expect(within(detail).getByText('manager_approval / finance_review')).not.toBeNull();
         expect(screen.getByText('EXP-1')).not.toBeNull();
     });
     it('does not repeat pinned apps in the main icon grid', () => {
@@ -715,6 +716,46 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('上传到 SkillMarket'));
         await waitFor(() => expect(uploadNLSkillToMarketMock).toHaveBeenCalledWith('invoice-review'));
         await waitFor(() => expect(screen.getByText('已提交到 SkillMarket: submission-app-1')).not.toBeNull());
+    });
+
+    it('saves a newly created enterprise approval app into its app skill definition', async () => {
+        listNLSkillsMock.mockResolvedValue([
+            { name: 'expense-super-skill', description: '费用应用 Skill', capabilities: ['enterprise.app'] },
+            { name: 'expense-workflow', description: '费用审批流程', product_kind: 'workflow_skill', capabilities: ['approval.workflow'] },
+        ]);
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        const kindPicker = screen.getByRole('group', { name: '应用类型' });
+        fireEvent.click(within(kindPicker).getByRole('button', { name: /企业审批型/ }));
+        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '费用报销审批' } });
+
+        const appSkillPicker = screen.getByTestId('studio-app-skill-id');
+        await waitFor(() => expect(within(appSkillPicker).getAllByText('expense-super-skill').length).toBeGreaterThan(0));
+        const workflowSkillPicker = screen.getByTestId('studio-workflow-skill-id');
+        await waitFor(() => expect(within(workflowSkillPicker).getAllByText('expense-workflow').length).toBeGreaterThan(0));
+
+        fireEvent.click(screen.getByText('保存到 Skill'));
+
+        await waitFor(() => expect(saveMaclawAppDefinitionForSkillMock).toHaveBeenCalledTimes(1));
+        const [skillID, manifestText] = saveMaclawAppDefinitionForSkillMock.mock.calls[0];
+        expect(skillID).toBe('expense-super-skill');
+        const payload = JSON.parse(String(manifestText));
+        expect(payload.schema).toBe('maclaw.app.v1');
+        expect(payload.privateMarker).toBe('x_maclaw_apps');
+        expect(payload.app.name).toBe('费用报销审批');
+        expect(payload.app.kind).toBe('enterprise_approval_app');
+        expect(payload.app.launchMode).toBe('agent_dynamic_ui');
+        expect(payload.app.binding.skill.id).toBe('expense-super-skill');
+        expect(payload.app.binding.skill.appDefinitionFile).toBe('maclaw.app.json');
+        expect(payload.app.binding.appSkill.id).toBe('expense-super-skill');
+        expect(payload.app.binding.dependencies.skills[0].id).toBe('expense-workflow');
+        expect(payload.app.binding.dependencies.skills[0].kind).toBe('workflow_skill');
+        expect(payload.app.binding.mis.approvalBindings[0].workflowSkillId).toBe('expense-workflow');
+        expect(payload.app.binding.ui.layouts.approval_workspace.regions.length).toBeGreaterThan(0);
+        expect(payload.app.binding.resultContract.primary).toBe('approval_result');
+        expect(payload.app.binding.testProtocol.fingerprint).toMatch(/^[0-9a-f]{8}$/);
+        await waitFor(() => expect(screen.getByText('已保存到 expense-super-skill/maclaw.app.json')).not.toBeNull());
     });
 
     it('requires a successful current-version test before uploading a skill app', async () => {
@@ -1991,7 +2032,7 @@ describe('AppsPage', () => {
                                 preferredAction: 'operations.approved_app_open',
                             },
                             dependencies: {
-                                skills: [{ id: 'approved-app-skill', kind: 'runtime_skill', source: 'hub', required: true }],
+                                skills: [{ id: 'approved-app-skill', kind: 'app_skill', source: 'hub', required: true }],
                             },
                         },
                     },
@@ -2000,7 +2041,7 @@ describe('AppsPage', () => {
             install_plan: {
                 schema: 'maclaw.app.install_plan.v1',
                 apps: [{ id: 'approved-app', name: 'Approved Queue App', kind: 'enterprise_normal_app' }],
-                dependencies: [{ id: 'approved-app-skill', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'installed' }],
+                dependencies: [{ id: 'approved-app-skill', kind: 'app_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'installed' }],
                 has_missing_required: false,
                 has_blocking_dependency: false,
             },
@@ -2008,11 +2049,11 @@ describe('AppsPage', () => {
                 schema: 'maclaw.app.install_record.v1',
                 app_count: 1,
                 apps: [{ id: 'approved-app', name: 'Approved Queue App', kind: 'enterprise_normal_app' }],
-                dependencies: [{ id: 'approved-app-skill', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'installed' }],
+                dependencies: [{ id: 'approved-app-skill', kind: 'app_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'installed' }],
                 app_versions: {
                     'approved-app': {
                         app_entry_version: '7',
-                        app_skill: { id: 'approved-app-skill', version: '2.0.0', kind: 'runtime_skill', source: 'hub' },
+                        app_skill: { id: 'approved-app-skill', version: '2.0.0', kind: 'app_skill', source: 'hub' },
                     },
                 },
                 install_evidence: {
@@ -2020,7 +2061,7 @@ describe('AppsPage', () => {
                         workspace_layout: { entry: 'business_workspace', template: 'dashboard', density: 'compact' },
                         result_contract: { primary: 'business_record', types: ['business_record', 'content'] },
                         test_evidence: { runId: 'run-approved-install', testProtocolFingerprint: 'proto-approved-install' },
-                        dependencies: [{ id: 'approved-app-skill', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'installed' }],
+                        dependencies: [{ id: 'approved-app-skill', kind: 'app_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'installed' }],
                     },
                 },
             },
@@ -5275,6 +5316,116 @@ describe('AppsPage', () => {
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     });
 
+    it('writes enterprise approval skill apps back with dynamic layout and workflow bindings', async () => {
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            customApps: [{
+                id: 'skill-app-reimbursement-app-reimbursement-approval',
+                name: 'Reimbursement Approval',
+                description: 'Submit and approve reimbursement requests',
+                category: 'Finance',
+                kind: 'enterprise_approval_app',
+                icon: 'receipt',
+                accent: '#2f5f98',
+                source: 'skill',
+                version: 2,
+                manifest: {
+                    schema: 'maclaw.app.v1',
+                    installUnit: 'skill',
+                    privateMarker: 'x_maclaw_apps',
+                    entryKind: 'enterprise_approval_app',
+                    launchMode: 'agent_dynamic_ui',
+                    datasrv: { domain: 'reimbursement', objectRole: 'expense_claim' },
+                    mis: {
+                        approvalBindings: [{
+                            event: 'reimbursement.submitted',
+                            workflowSkillId: 'expense-approval-flow',
+                            workflowVersion: '1.2.0',
+                            objectRole: 'expense_claim',
+                        }],
+                    },
+                    skill: { id: 'reimbursement-app', appDefinitionFile: 'maclaw.app.json' },
+                    appSkill: { id: 'reimbursement-app', version: '1.0.0', source: 'local' },
+                    dependencies: {
+                        skills: [{
+                            id: 'expense-approval-flow',
+                            version: '1.2.0',
+                            kind: 'workflow_skill',
+                            required: true,
+                            source: 'hub',
+                            capabilities: ['approval.workflow'],
+                        }],
+                    },
+                    ui: {
+                        schema: 'maclaw.app.ui.v1',
+                        layouts: {
+                            approval_workspace: {
+                                template: 'split_workbench',
+                                primaryRegion: 'left',
+                                outputRegion: 'bottom',
+                                regions: [
+                                    { id: 'request_form', role: 'input', placement: 'left' },
+                                    { id: 'approval_inbox', role: 'instance_list', placement: 'center' },
+                                    { id: 'approval_detail', role: 'detail', placement: 'center' },
+                                    { id: 'result_panel', role: 'output', placement: 'bottom' },
+                                ],
+                            },
+                        },
+                    },
+                    resultContract: {
+                        schema: 'maclaw.app.result.v1',
+                        primary: 'approval_result',
+                        types: ['approval_result', 'business_status', 'content'],
+                        approvalDecisions: ['approved', 'rejected', 'needs_attention'],
+                        delivery: { inlineContent: true, artifacts: true, businessRecord: true, notifications: true },
+                    },
+                    testProtocol: {
+                        schema: 'maclaw.app.test_protocol.v1',
+                        fingerprint: 'approval-test-fingerprint',
+                        sampleInput: { amount: 1280, applicant: 'current_user' },
+                        expectedOutput: { approval_result: 'approved', primary: 'approval_result' },
+                        requiredRoles: ['applicant', 'approver'],
+                        requiredScopes: ['datasrv:write'],
+                        riskLevel: 'medium',
+                    },
+                },
+            }],
+        }));
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(document.querySelector('.apps-studio-button') as HTMLButtonElement);
+        fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
+
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Reimbursement Approval')) as HTMLElement;
+        fireEvent.click(row.querySelector('.apps-manage-actions .apps-secondary-button') as HTMLButtonElement);
+        fireEvent.click(within(screen.getByRole('dialog')).getByText('Save'));
+
+        await waitFor(() => expect(saveMaclawAppDefinitionForSkillMock).toHaveBeenCalledTimes(1));
+        const [skillID, manifestText] = saveMaclawAppDefinitionForSkillMock.mock.calls[0];
+        expect(skillID).toBe('reimbursement-app');
+        const manifest = JSON.parse(String(manifestText));
+        expect(manifest.schema).toBe('maclaw.app.v1');
+        expect(manifest.privateMarker).toBe('x_maclaw_apps');
+        expect(manifest.app.id).toBe('reimbursement-approval');
+        expect(manifest.app.kind).toBe('enterprise_approval_app');
+        expect(manifest.app.launchMode).toBe('agent_dynamic_ui');
+        expect(manifest.app.binding.skill.appDefinitionFile).toBe('maclaw.app.json');
+        expect(manifest.app.binding.datasrv.objectRole).toBe('expense_claim');
+        expect(manifest.app.binding.appSkill.id).toBe('reimbursement-app');
+        expect(manifest.app.binding.dependencies.skills[0].id).toBe('expense-approval-flow');
+        expect(manifest.app.binding.mis.approvalBindings[0].workflowSkillId).toBe('expense-approval-flow');
+        expect(manifest.app.binding.ui.layouts.approval_workspace.regions).toEqual([
+            { id: 'request_form', role: 'input', placement: 'left' },
+            { id: 'approval_inbox', role: 'instance_list', placement: 'center' },
+            { id: 'approval_detail', role: 'detail', placement: 'center' },
+            { id: 'result_panel', role: 'output', placement: 'bottom' },
+        ]);
+        expect(manifest.app.binding.resultContract.approvalDecisions).toEqual(['approved', 'rejected', 'needs_attention']);
+        expect(manifest.app.binding.testProtocol.fingerprint).toMatch(/^[0-9a-f]{8}$/);
+        expect(manifest.app.binding.testProtocol.expectedOutput.approval_result).toBe('approved');
+        expect(manifest.app.binding.testProtocol.requiredRoles).toEqual(['applicant', 'approver']);
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    });
+
     it('edits tool app structured fields from app studio management', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
@@ -5316,6 +5467,56 @@ describe('AppsPage', () => {
         expect(copied).toContain('报销申请');
         expect(copied).toContain('"governance"');
         expect(screen.getByText('已复制')).not.toBeNull();
+    });
+
+    it('keeps explicit enterprise skill dependency metadata when exporting an app pack', async () => {
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            customApps: [{
+                id: 'expense-approval-export',
+                name: 'Expense Approval Export',
+                description: 'Approval app with explicit dependency sources',
+                category: 'Finance',
+                kind: 'enterprise_approval_app',
+                icon: 'receipt',
+                accent: '#2f5f98',
+                source: 'local',
+                version: 1,
+                manifest: {
+                    schema: 'maclaw.app.v1',
+                    installUnit: 'enterprise_app_pack',
+                    privateMarker: 'x_maclaw_apps',
+                    entryKind: 'enterprise_approval_app',
+                    launchMode: 'agent_dynamic_ui',
+                    datasrv: { domain: 'expense', objectRole: 'expense_report' },
+                    skill: { id: 'expense-super-skill', appDefinitionFile: 'maclaw.app.json' },
+                    appSkill: { id: 'expense-super-skill', version: '1.3.0', source: 'local' },
+                    dependencies: {
+                        skills: [{
+                            id: 'expense-approval-flow',
+                            version: '2.1.0',
+                            kind: 'workflow_skill',
+                            required: true,
+                            source: 'market',
+                            capabilities: ['approval.workflow'],
+                        }],
+                    },
+                    mis: { approvalBindings: [{ event: 'expense.submitted', objectRole: 'expense_report', workflowSkillId: 'expense-approval-flow', workflowVersion: '2.1.0' }] },
+                },
+            }],
+        }));
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByText('复制应用包'));
+
+        await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
+        const copied = JSON.parse(String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || '{}'));
+        const exported = copied.apps.find((item: any) => item.app?.id === 'expense-approval-export');
+        expect(exported).toBeTruthy();
+        const dependencies = exported.app.governance.dependencies.skills;
+        expect(dependencies.find((dep: any) => dep.id === 'expense-super-skill')).toMatchObject({ version: '1.3.0', kind: 'app_skill', source: 'local' });
+        expect(dependencies.find((dep: any) => dep.id === 'expense-approval-flow')).toMatchObject({ version: '2.1.0', kind: 'workflow_skill', source: 'market' });
     });
 
     it('shows market apps as a list and adds one to the panel', async () => {
@@ -6093,7 +6294,7 @@ describe('AppsPage', () => {
             app_versions: {
                 'market-contract-archive': {
                     app_entry_version: '3',
-                    app_skill: { id: 'contract-archive-skill', version: '1.0.0', kind: 'runtime_skill', source: 'hub' },
+                    app_skill: { id: 'contract-archive-skill', version: '1.0.0', kind: 'app_skill', source: 'hub' },
                 },
             },
             install_evidence: {
@@ -6126,7 +6327,7 @@ describe('AppsPage', () => {
         expect(within(versionSnapshot).getByText('Version')).not.toBeNull();
         expect(within(versionSnapshot).getByText('v3')).not.toBeNull();
         expect(within(versionSnapshot).getByText('App Skill')).not.toBeNull();
-        expect(within(versionSnapshot).getByText('contract-archive-skill · runtime_skill · hub · v1.0.0')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('contract-archive-skill · app_skill · hub · v1.0.0')).not.toBeNull();
         const evidenceSnapshot = row.querySelector('.apps-install-evidence-snapshot') as HTMLElement;
         expect(evidenceSnapshot).not.toBeNull();
         expect(evidenceSnapshot.getAttribute('aria-label')).toBe('Test evidence');
@@ -6178,7 +6379,7 @@ describe('AppsPage', () => {
                 ],
                 version_snapshot: {
                     app_entry_version: '4',
-                    app_skill: { id: 'contract-super-app', version: '1.1.0', kind: 'runtime_skill', source: 'hub' },
+                    app_skill: { id: 'contract-super-app', version: '1.1.0', kind: 'app_skill', source: 'hub' },
                     workflow_skills: [{ id: 'policy-skill', version: '2.0.0', kind: 'workflow_skill', source: 'hub' }],
                     approval_bindings: [{ event: 'contract.submitted', object_role: 'contract', workflow_skill_id: 'policy-skill', workflow_version: '2.0.0' }],
                 },
@@ -6222,7 +6423,7 @@ describe('AppsPage', () => {
         expect(within(versionSnapshot).getByText('Version')).not.toBeNull();
         expect(within(versionSnapshot).getByText('v4')).not.toBeNull();
         expect(within(versionSnapshot).getByText('App Skill')).not.toBeNull();
-        expect(within(versionSnapshot).getByText('contract-super-app · runtime_skill · hub · v1.1.0')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('contract-super-app · app_skill · hub · v1.1.0')).not.toBeNull();
         expect(within(versionSnapshot).getByText('Approval workflow')).not.toBeNull();
         expect(within(versionSnapshot).getByText('policy-skill · workflow_skill · hub · v2.0.0')).not.toBeNull();
         expect(within(versionSnapshot).getByText('Approval binding')).not.toBeNull();
@@ -7383,7 +7584,7 @@ describe('AppsPage', () => {
         });
         expect(added.versionSnapshot).toMatchObject({
             app_entry_version: '3',
-            app_skill: { id: 'expense-super-skill', version: '1.0.0', kind: 'runtime_skill', source: 'hub' },
+            app_skill: { id: 'expense-super-skill', version: '1.0.0', kind: 'app_skill', source: 'hub' },
             workflow_skills: [{ id: 'expense-workflow', version: '2.1.0', kind: 'workflow_skill', source: 'hub' }],
             approval_bindings: [{ event: 'expense.submitted', object_role: 'expense_report', workflow_skill_id: 'expense-workflow', workflow_version: '2.1.0' }],
         });
@@ -7442,7 +7643,7 @@ describe('AppsPage', () => {
         expect(within(runtimeVersionSnapshot).getByText('Version')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('v3')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('App Skill')).not.toBeNull();
-        expect(within(runtimeVersionSnapshot).getByText('expense-super-skill · runtime_skill · hub · v1.0.0')).not.toBeNull();
+        expect(within(runtimeVersionSnapshot).getByText('expense-super-skill · app_skill · hub · v1.0.0')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('Approval workflow')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('expense-workflow · workflow_skill · hub · v2.1.0')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('Approval binding')).not.toBeNull();

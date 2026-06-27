@@ -117,7 +117,7 @@ func (s *Service) UpdateHubRegistrationPolicy(ctx context.Context, hubID string,
 	if err := s.persistHubRegistrationPolicyFields(ctx, hub, cfg); err != nil {
 		return HubRegistrationPolicyConfig{}, err
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	return cfg, nil
 }
 
@@ -126,11 +126,16 @@ func (s *Service) ensureDefaultHubRegistrationPolicy(ctx context.Context, hubID 
 	if hubID == "" || s == nil || s.settings == nil {
 		return nil
 	}
+	// Fast path: already known to exist in the database.
+	if _, ok := s.knownPolicyHubs.Load(hubID); ok {
+		return nil
+	}
 	state, err := s.loadRegistrationPolicyStore(ctx)
 	if err != nil {
 		return err
 	}
 	if _, ok := state.Hubs[hubID]; ok {
+		s.knownPolicyHubs.Store(hubID, struct{}{})
 		return nil
 	}
 	var hub *store.HubInstance
@@ -145,6 +150,7 @@ func (s *Service) ensureDefaultHubRegistrationPolicy(ctx context.Context, hubID 
 	if err := s.saveRegistrationPolicyStore(ctx, state); err != nil {
 		return err
 	}
+	s.knownPolicyHubs.Store(hubID, struct{}{})
 	if hub == nil {
 		return nil
 	}
@@ -164,6 +170,7 @@ func (s *Service) deleteHubRegistrationPolicy(ctx context.Context, hubID string)
 		return nil
 	}
 	delete(state.Hubs, hubID)
+	s.knownPolicyHubs.Delete(hubID)
 	return s.saveRegistrationPolicyStore(ctx, state)
 }
 

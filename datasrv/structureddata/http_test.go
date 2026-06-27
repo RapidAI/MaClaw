@@ -562,8 +562,8 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/access/api-keys":                       {"q", "status", "enabled"},
 		"/api/v1/data/business-rules":                        {"domain", "dataset_id", "business_action_id", "severity"},
 		"/api/v1/data/relationships":                         {"dataset_id"},
-		"/api/v1/data/inbox":                                 {"dataset_id", "app_id", "blueprint_id", "object_role", "workflow_skill_id", "workflow_instance_id", "workflow_node_id", "business_status", "result_status", "lane", "user_id", "type", "status", "include_ok"},
-		"/api/v1/data/inbox/summary":                         {"dataset_id", "app_id", "blueprint_id", "object_role", "workflow_skill_id", "workflow_instance_id", "workflow_node_id", "business_status", "result_status", "lane", "user_id", "type", "status", "include_ok"},
+		"/api/v1/data/inbox":                                 {"dataset_id", "app_id", "blueprint_id", "object_role", "workflow_skill_id", "workflow_instance_id", "workflow_node_id", "current_node_id", "current_node", "workflow_node", "business_status", "result_status", "lane", "user_id", "type", "status", "include_ok"},
+		"/api/v1/data/inbox/summary":                         {"dataset_id", "app_id", "blueprint_id", "object_role", "workflow_skill_id", "workflow_instance_id", "workflow_node_id", "current_node_id", "current_node", "workflow_node", "business_status", "result_status", "lane", "user_id", "type", "status", "include_ok"},
 		"/api/v1/data/event-contracts":                       {"domain"},
 		"/api/v1/data/connectors":                            {"domain", "kind", "enabled"},
 		"/api/v1/data/connectors/health":                     {"domain", "kind", "enabled"},
@@ -574,7 +574,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/export-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/operation-plans":                       {"dataset_id", "operation", "status"},
 		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node"},
-		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "app_id", "blueprint_id", "object_role", "approval_workflow_id", "trigger_event", "submitted_by", "current_assignee", "current_assignee_type", "from_status", "to_status", "status", "kind", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "business_status", "result_status", "assigned_to", "created_by", "reviewed_by", "lane", "overdue", "before", "before_id"},
+		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "app_id", "blueprint_id", "object_role", "approval_workflow_id", "trigger_event", "submitted_by", "current_assignee", "current_assignee_type", "from_status", "to_status", "status", "kind", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "current_node_id", "current_node", "workflow_node", "business_status", "result_status", "assigned_to", "created_by", "reviewed_by", "lane", "overdue", "before", "before_id"},
 		"/api/v1/data/datasets/{datasetId}/schema-proposals": {"status"},
 		"/api/v1/data/datasets/{datasetId}/records":          {"q", "tag"},
 	} {
@@ -6024,6 +6024,22 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	}
 	if len(nodeFiltered.Items) != 1 || nodeFiltered.Items[0].ID != expenseApproval.ID || len(nodeFiltered.Items[0].WorkflowNodeIDs) != 2 {
 		t.Fatalf("workflow_node_id filter should return approvals for parallel nodes: %#v", nodeFiltered)
+	}
+	for _, alias := range []string{"current_node_id", "current_node", "workflow_node"} {
+		nodeReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?app_id=mis.expense&"+alias+"=finance_review", nil)
+		auth(nodeReq)
+		nodeW = httptest.NewRecorder()
+		server.Handler().ServeHTTP(nodeW, nodeReq)
+		if nodeW.Code != http.StatusOK {
+			t.Fatalf("%s alias filter status=%d body=%s", alias, nodeW.Code, nodeW.Body.String())
+		}
+		nodeFiltered = ListResponse[RecordApproval]{}
+		if err := json.NewDecoder(nodeW.Body).Decode(&nodeFiltered); err != nil {
+			t.Fatalf("decode %s alias workflow node filter: %v", alias, err)
+		}
+		if len(nodeFiltered.Items) != 1 || nodeFiltered.Items[0].ID != expenseApproval.ID || len(nodeFiltered.Items[0].WorkflowNodeIDs) != 2 {
+			t.Fatalf("%s alias filter should return approvals for parallel nodes: %#v", alias, nodeFiltered)
+		}
 	}
 	nodeReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?app_id=mis.expense&workflow_node_id=unknown_review", nil)
 	auth(nodeReq)

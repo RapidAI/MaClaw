@@ -446,10 +446,10 @@ postLoop:
 	}
 
 	// Detect and filter truncated tool calls caused by output token limit.
-	finishReason, truncatedTools := filterTruncatedToolCalls(&msg, finishReason)
+	finishReason, truncatedTools, truncatedToolArgs := filterTruncatedToolCalls(&msg, finishReason)
 
 	return &llm.Response{
-		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools}},
+		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:   usage,
 	}, nil
 }

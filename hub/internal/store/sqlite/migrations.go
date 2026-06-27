@@ -909,6 +909,21 @@ func RunMigrations(db *sql.DB) error {
 		return err
 	}
 
+	// Performance indexes for high-frequency query patterns.
+	perfIndexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_sessions_machine_status ON sessions(machine_id, status);`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_user_status ON sessions(tenant_id, user_id, status);`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_machines_user_tenant ON machines(tenant_id, user_id, status);`,
+		`CREATE INDEX IF NOT EXISTS idx_viewer_tokens_user_id ON viewer_tokens(user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_login_tokens_expires_at ON login_tokens(expires_at);`,
+	}
+	for _, stmt := range perfIndexes {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("perf index: %w", err)
+		}
+	}
+
 	return nil
 }
 

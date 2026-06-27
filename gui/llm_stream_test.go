@@ -32,7 +32,7 @@ func TestFilterTruncatedToolCallsTreatsEmptyRequiredFieldAsTruncated(t *testing.
 		}},
 	}
 
-	finishReason, truncated := filterTruncatedToolCalls(msg, "length")
+	finishReason, truncated, _ := filterTruncatedToolCalls(msg, "length")
 	if finishReason != "length" {
 		t.Fatalf("finishReason = %q, want length", finishReason)
 	}
@@ -56,7 +56,7 @@ func TestFilterTruncatedToolCallsTrimsToolNameForRequiredFieldDetection(t *testi
 		}},
 	}
 
-	_, truncated := filterTruncatedToolCalls(msg, "length")
+	_, truncated, _ := filterTruncatedToolCalls(msg, "length")
 	if len(truncated) != 1 || truncated[0] != " bash " {
 		t.Fatalf("truncated = %#v, want original tool name preserved", truncated)
 	}

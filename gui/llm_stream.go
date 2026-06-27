@@ -56,11 +56,12 @@ const (
 // message and continue the loop. msg.Content is NOT modified  - the hint
 // belongs in a system message, not in the assistant's own text.
 //
-// Returns the (possibly modified) finishReason and the list of truncated
-// tool names (nil if none were truncated).
-func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []string) {
+// Returns the (possibly modified) finishReason, the list of truncated
+// tool names (nil if none were truncated), and a map of tool name to raw
+// (incomplete) argument strings for truncated calls.
+func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []string, map[string]string) {
 	if len(msg.ToolCalls) == 0 {
-		return finishReason, nil
+		return finishReason, nil, nil
 	}
 
 	// Primary signal: finish_reason="length" means the model hit max_output_tokens.
@@ -68,6 +69,7 @@ func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []
 
 	var validCalls []llm.ToolCall
 	var truncatedNames []string
+	var truncatedArgs map[string]string
 	for _, tc := range msg.ToolCalls {
 		args := strings.TrimSpace(tc.Function.Arguments)
 		if args == "" {
@@ -86,6 +88,10 @@ func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []
 			// anyway, so removing the call and hinting is strictly better
 			// than letting it through to produce a confusing error message.
 			truncatedNames = append(truncatedNames, tc.Function.Name)
+			if truncatedArgs == nil {
+				truncatedArgs = make(map[string]string)
+			}
+			truncatedArgs[tc.Function.Name] = args
 			log.Printf("[LLM Stream] truncated tool call (invalid JSON): %s args=%d bytes finish_reason=%s", tc.Function.Name, len(args), finishReason)
 		} else if missingField := detectTruncatedRequiredField(tc.Function.Name, parsed); missingField != "" {
 			// Case 2: JSON valid but required field missing.
@@ -95,6 +101,10 @@ func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []
 			// when hitting max_output_tokens  - still treat as truncation.
 			if isLengthTruncated || len(args) > 4000 {
 				truncatedNames = append(truncatedNames, tc.Function.Name)
+				if truncatedArgs == nil {
+					truncatedArgs = make(map[string]string)
+				}
+				truncatedArgs[tc.Function.Name] = args
 				log.Printf("[LLM Stream] truncated tool call (missing required field %q): %s args=%d bytes finish_reason=%s",
 					missingField, tc.Function.Name, len(args), finishReason)
 			} else {
@@ -107,14 +117,14 @@ func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []
 		}
 	}
 	if len(truncatedNames) == 0 {
-		return finishReason, nil
+		return finishReason, nil, nil
 	}
 	msg.ToolCalls = validCalls
 	// Do NOT append hint to msg.Content  - the agent loop will inject it
 	// as a separate system message. Keeping msg.Content clean ensures the
 	// assistant message in conversation history only contains the LLM's
 	// own text, not system-injected recovery instructions.
-	return finishReason, truncatedNames
+	return finishReason, truncatedNames, truncatedArgs
 }
 
 // truncatedRequiredFields maps tool names to their required fields for
@@ -1326,11 +1336,12 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 	if finishReason == "" {
 		finishReason = llmFinishReasonStop.String()
 	}
+	var truncatedToolArgs map[string]string
 	if len(truncatedTools) == 0 {
-		finishReason, truncatedTools = filterTruncatedToolCalls(&msg, finishReason)
+		finishReason, truncatedTools, truncatedToolArgs = filterTruncatedToolCalls(&msg, finishReason)
 	}
 	return &llm.Response{
-		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools}},
+		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:   resp.Usage,
 	}, nil
 }

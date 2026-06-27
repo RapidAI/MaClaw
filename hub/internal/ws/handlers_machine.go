@@ -36,6 +36,10 @@ type ConnContext struct {
 	MachineName string // populated by handleMachineHello
 	ViewerID    string
 
+	// lastLLMTokenTotal tracks the last reported cumulative token count.
+	// Used to detect actual LLM activity (delta > 0) for duration recording.
+	lastLLMTokenTotal int64
+
 	// gwClaimSeqs tracks the claim sequence for each IM gateway platform
 	// claimed by this connection. Used during cleanup to only release claims
 	// that belong to this specific connection (prevents race where a stale
@@ -911,14 +915,6 @@ func (g *Gateway) handleMachineHeartbeat(ctx *ConnContext, msg Envelope) error {
 		log.Printf("[ws] handleMachineHeartbeat: Heartbeat FAILED for machine_id=%s: %v", ctx.MachineID, err)
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
-	// Record heartbeat to the duration log for usage-time calculation.
-	// The INSERT OR IGNORE + UNIQUE constraint prevents exact-second duplicates.
-	// Normal heartbeat interval is 60s so this writes ~1440 rows/day/machine.
-	if g.Sessions != nil && ctx.TenantID != "" && ctx.UserID != "" {
-		if err := g.Sessions.RecordHeartbeat(store.WithTenant(context.Background(), ctx.TenantID), ctx.TenantID, ctx.MachineID, ctx.UserID, time.Now()); err != nil {
-			log.Printf("[ws] handleMachineHeartbeat: record heartbeat log FAILED for machine_id=%s: %v", ctx.MachineID, err)
-		}
-	}
 	if payload.LLMTokenUsage != nil && g.Sessions != nil {
 		usage := store.UserTokenUsage{
 			InputTokens:       payload.LLMTokenUsage.InputTokens,
@@ -928,6 +924,21 @@ func (g *Gateway) handleMachineHeartbeat(ctx *ConnContext, msg Envelope) error {
 		}
 		if err := g.Sessions.RecordUserTokenUsageSnapshot(store.WithTenant(context.Background(), ctx.TenantID), ctx.TenantID, "gui:"+ctx.MachineID, ctx.UserID, usage, time.Now()); err != nil {
 			log.Printf("[ws] handleMachineHeartbeat: record llm token usage FAILED for machine_id=%s: %v", ctx.MachineID, err)
+		}
+		// Record heartbeat to duration log only when LLM token total has
+		// increased since the last heartbeat. This ensures "usage duration"
+		// measures actual AI activity, not idle client uptime.
+		// On fresh connection lastLLMTokenTotal=0, so the first heartbeat with
+		// any accumulated tokens triggers one recording (~60s over-count on
+		// reconnect, acceptable vs missing the user's first AI session entirely).
+		currentTotal := usage.TotalTokens()
+		if currentTotal > ctx.lastLLMTokenTotal {
+			ctx.lastLLMTokenTotal = currentTotal
+			if ctx.TenantID != "" && ctx.UserID != "" {
+				if err := g.Sessions.RecordHeartbeat(store.WithTenant(context.Background(), ctx.TenantID), ctx.TenantID, ctx.MachineID, ctx.UserID, time.Now()); err != nil {
+					log.Printf("[ws] handleMachineHeartbeat: record heartbeat log FAILED for machine_id=%s: %v", ctx.MachineID, err)
+				}
+			}
 		}
 	}
 	ackPayload := map[string]any{"ok": true}

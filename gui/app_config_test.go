@@ -1385,7 +1385,7 @@ func TestSaveConfigSanitizesSubAgentConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	cfg.SubAgentConcurrency = 9
+	cfg.SubAgentConcurrency = corelib.MaxSubAgentConcurrency + 1
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -8,6 +10,100 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
+
+func TestAttemptPartialWriteFileWritesInsideWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	raw := "{\n  \"path\" : \"nested/out.txt\",\n  \"content\" : \"hello\\npartial"
+
+	result := attemptPartialWriteFile(raw, dir)
+	if result == nil {
+		t.Fatal("expected partial write result")
+	}
+	wantPath := filepath.Join(dir, "nested", "out.txt")
+	if result.Path != wantPath {
+		t.Fatalf("path = %q, want %q", result.Path, wantPath)
+	}
+	data, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "hello\npartial" {
+		t.Fatalf("written content = %q", string(data))
+	}
+}
+
+func TestAttemptPartialWriteFileRejectsPathOutsideWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(dir, "..", "outside.txt")
+	raw := `{"path":"` + filepath.ToSlash(outside) + `","content":"escape"}`
+
+	if result := attemptPartialWriteFile(raw, dir); result != nil {
+		t.Fatalf("expected outside path to be rejected, got %#v", result)
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("outside file should not be written, stat err=%v", err)
+	}
+}
+
+func TestAttemptPartialWriteFileDoesNotOverwriteExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "existing.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	raw := `{"path":"existing.txt","content":"partial replacement`
+
+	if result := attemptPartialWriteFile(raw, dir); result != nil {
+		t.Fatalf("expected partial overwrite of existing file to be rejected, got %#v", result)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "original" {
+		t.Fatalf("existing file was modified: %q", string(data))
+	}
+}
+
+func TestAttemptPartialWriteFileAllowsAppendToExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "existing.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	raw := `{"path":"existing.txt","mode":"append","content":" plus partial`
+
+	result := attemptPartialWriteFile(raw, dir)
+	if result == nil {
+		t.Fatal("expected append partial write result")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "original plus partial" {
+		t.Fatalf("append content = %q", string(data))
+	}
+}
+
+func TestTruncatedToolArgsForNameTrimsToolName(t *testing.T) {
+	args := map[string]string{" write_file ": `{"path":"out.txt","content":"partial`}
+	got, ok := truncatedToolArgsForName(args, "write_file")
+	if !ok || got == "" {
+		t.Fatalf("expected trimmed tool name lookup to find raw args, got ok=%v value=%q", ok, got)
+	}
+}
+
+func TestExtractJSONStringFieldHandlesWhitespaceEscapesAndTruncation(t *testing.T) {
+	raw := "{\n  \"path\" \t : \t \"src/file.txt\",\n  \"content\" : \"line1\\nline2\\u0021"
+
+	if got := extractJSONStringField(raw, "path"); got != "src/file.txt" {
+		t.Fatalf("path = %q", got)
+	}
+	if got := extractJSONStringField(raw, "content"); got != "line1\nline2!" {
+		t.Fatalf("content = %q", got)
+	}
+}
 
 func TestEnsureTruncationFallbackToolsAddsRealAlternates(t *testing.T) {
 	current := []map[string]interface{}{

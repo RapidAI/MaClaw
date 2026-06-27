@@ -2090,6 +2090,10 @@ func (a *App) emitAIAssistantResponse(requestID string, resp *IMAgentResponse) (
 		log.Printf("[emitAIAssistantResponse] marshal failed: %v", err)
 		return false
 	}
+	if a == nil || a.ctx == nil {
+		log.Printf("[emitAIAssistantResponse] skip emit without Wails context request_id=%s session_key=%q", requestID, strings.TrimSpace(resp.SessionKey))
+		return false
+	}
 	log.Printf("[emitAIAssistantResponse] emit request_id=%s session_key=%q text_len=%d error_len=%d fields=%d actions=%d payload_len=%d",
 		requestID, strings.TrimSpace(resp.SessionKey), len(resp.Text), len(resp.Error), len(resp.Fields), len(resp.Actions), len(payload))
 	defer func() {

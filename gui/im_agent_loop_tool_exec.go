@@ -267,15 +267,28 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		ToolOutcomes:    make([]toolOutcome, 0, len(opts.ToolCalls)),
 		ToolExecResults: make([]toolExecutionResult, 0, len(opts.ToolCalls)),
 	}
-	for tcIdx, tc := range opts.ToolCalls {
-		if opts.Context != nil && opts.Context.IsCancelled() {
-			opts.Context.SetLoopState(LoopStateStopped)
-			result.Response = h.cancelledExitResponse(opts.UserID, result.History, opts.UserText)
-			result.Cancelled = true
-			return result
-		}
+		for tcIdx, tc := range opts.ToolCalls {
+			if opts.Context != nil && opts.Context.IsCancelled() {
+				opts.Context.SetLoopState(LoopStateStopped)
+				result.Response = h.cancelledExitResponse(opts.UserID, result.History, opts.UserText)
+				result.Cancelled = true
+				return result
+			}
+			if argSize := len([]byte(tc.Function.Arguments)); argSize > guiMaxToolArgumentsBytes {
+				toolName := strings.TrimSpace(tc.Function.Name)
+				if toolName == "" {
+					toolName = "unknown"
+				}
+				if opts.Context != nil {
+					opts.Context.SetLoopState(LoopStateFailed)
+				}
+				result.Response = &IMAgentResponse{
+					Error: fmt.Sprintf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, argSize, guiMaxToolArgumentsBytes),
+				}
+				return result
+			}
 
-		toolExecStartedAt := time.Now()
+			toolExecStartedAt := time.Now()
 		replanRevision := int64(0)
 		if opts.Context != nil {
 			replanRevision = opts.Context.ReplanRevision()

@@ -122,12 +122,14 @@ func TestSendAIAssistantMessage_RejectsOversizedToolArguments_OpenAI(t *testing.
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	oversized := strings.Repeat("a", guiMaxToolArgumentsBytes+1)
+	oversizedArgs := `{"payload":"` + strings.Repeat("a", guiMaxToolArgumentsBytes+1) + `"}`
+	encodedArgs, err := json.Marshal(oversizedArgs)
+	if err != nil {
+		t.Fatalf("marshal oversized args: %v", err)
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"send_file\",\"arguments\":\"" + oversized + "\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","model":"test-model","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-send-file","type":"function","function":{"name":"send_file","arguments":` + string(encodedArgs) + `}}]},"finish_reason":"tool_calls"}]}`))
 	}))
 	defer server.Close()
 
@@ -137,10 +139,7 @@ func TestSendAIAssistantMessage_RejectsOversizedToolArguments_OpenAI(t *testing.
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMUrl = server.URL
-	cfg.MaclawLLMModel = "test-model"
-	cfg.MaclawLLMProtocol = "openai"
-	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
+	providers := []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -149,10 +148,12 @@ func TestSendAIAssistantMessage_RejectsOversizedToolArguments_OpenAI(t *testing.
 		AuthType:      "none",
 		ContextLength: 16000,
 	}}
-	cfg.MaclawLLMCurrentProvider = "Custom1"
 	cfg.MaclawAgentMaxIterations = 2
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	if err := app.SaveMaclawLLMProviders(providers, "Custom1"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
@@ -172,14 +173,25 @@ func TestSendAIAssistantMessage_RejectsOversizedToolArguments_Anthropic(t *testi
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	oversized := strings.Repeat("a", guiMaxToolArgumentsBytes+1)
+	oversizedArgs := `{"payload":"` + strings.Repeat("a", guiMaxToolArgumentsBytes+1) + `"}`
+	encodedArgs, err := json.Marshal(oversizedArgs)
+	if err != nil {
+		t.Fatalf("marshal oversized args: %v", err)
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":8}}}\n\n"))
-		_, _ = w.Write([]byte("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-send-file\",\"name\":\"send_file\"}}\n\n"))
-		_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"" + oversized + "\"}}\n\n"))
-		_, _ = w.Write([]byte("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":4}}\n\n"))
-		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+		_, _ = w.Write([]byte(`event: message_start` + "\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"usage":{"input_tokens":8,"output_tokens":0}}}` + "\n\n"))
+		_, _ = w.Write([]byte(`event: content_block_start` + "\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-send-file","name":"send_file","input":{}}}` + "\n\n"))
+		_, _ = w.Write([]byte(`event: content_block_delta` + "\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":` + string(encodedArgs) + `}}` + "\n\n"))
+		_, _ = w.Write([]byte(`event: content_block_stop` + "\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_stop","index":0}` + "\n\n"))
+		_, _ = w.Write([]byte(`event: message_delta` + "\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}` + "\n\n"))
+		_, _ = w.Write([]byte(`event: message_stop` + "\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
 	}))
 	defer server.Close()
 
@@ -189,10 +201,7 @@ func TestSendAIAssistantMessage_RejectsOversizedToolArguments_Anthropic(t *testi
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	cfg.UIMode = "pro"
-	cfg.MaclawLLMUrl = server.URL
-	cfg.MaclawLLMModel = "test-model"
-	cfg.MaclawLLMProtocol = "anthropic"
-	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
+	providers := []corelib.MaclawLLMProvider{{
 		Name:          "Custom1",
 		URL:           server.URL,
 		Model:         "test-model",
@@ -201,10 +210,12 @@ func TestSendAIAssistantMessage_RejectsOversizedToolArguments_Anthropic(t *testi
 		AuthType:      "none",
 		ContextLength: 16000,
 	}}
-	cfg.MaclawLLMCurrentProvider = "Custom1"
 	cfg.MaclawAgentMaxIterations = 2
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	if err := app.SaveMaclawLLMProviders(providers, "Custom1"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})

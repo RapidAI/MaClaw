@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -53,6 +54,9 @@ type blockedIPRepo struct {
 type haSyncOpRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
+	// lastPayloadHash caches the most recent payload hash per entity for fast
+	// duplicate detection without hitting SQLite. Key: "entityType:entityID".
+	lastPayloadHash sync.Map
 }
 
 type haPeerCursorRepo struct {

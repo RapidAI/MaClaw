@@ -312,6 +312,8 @@ func TestInitiateGroupConversationErrorsOnMissingSessionID(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/a2a/consultations":
 			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{}})
+		case "/api/ve/discoverable":
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]string{{"id": "ve-a", "machine_id": "machine-a"}, {"id": "ve-b", "machine_id": "machine-b"}}})
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 			http.NotFound(w, r)

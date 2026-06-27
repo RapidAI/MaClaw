@@ -2879,7 +2879,13 @@ func normalizeMaclawAppDefinitionForSkill(appJSON string, skillName string) (map
 		return nil, "", "", fmt.Errorf("maclaw app binding %s id %q does not match target skill %q", skillBindingKey, boundSkill, skillName)
 	}
 	skillBinding["id"] = skillName
-	appDefinitionFile := firstNonEmptySkillAppString(stringMapValue(skillBinding, "appDefinitionFile"), stringMapValue(skillBinding, "app_definition_file"))
+	legacySkillBinding, _ := binding["skill"].(map[string]any)
+	appDefinitionFile := firstNonEmptySkillAppString(
+		stringMapValue(skillBinding, "appDefinitionFile"),
+		stringMapValue(skillBinding, "app_definition_file"),
+		stringMapValue(legacySkillBinding, "appDefinitionFile"),
+		stringMapValue(legacySkillBinding, "app_definition_file"),
+	)
 	if appDefinitionFile != "" && appDefinitionFile != "maclaw.app.json" && appDefinitionFile != "maclaw.apps.json" {
 		return nil, "", "", fmt.Errorf("maclaw app binding %s appDefinitionFile must be maclaw.app.json or maclaw.apps.json", skillBindingKey)
 	}

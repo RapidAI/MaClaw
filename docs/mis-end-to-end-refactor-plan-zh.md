@@ -2905,3 +2905,490 @@ metadata.test_evidence_artifact_name
 ```
 
 这样即使 DataSrv 将文件结果作为顶层摘要字段归一化，GUI 仍能在 “Add to panel” 后恢复 `importedRunEvidence.artifacts`、`artifactName`，后续二次发布和运行证据展示不会丢失文档/附件类输出。前端测试已调整为审批型 installed app 不在深层 test_evidence 放 artifacts，而从顶层 `test_evidence_artifacts` 恢复，覆盖真实 Hub/DataSrv 摘要回流形态。
+
+### 推进记录：DataSrv 摘要-only 安装证据规范化（2026-06-27）
+
+本轮补齐 DataSrv `app_installations` 的归一化能力：当安装记录只携带顶层 `test_evidence_*` 摘要字段、没有深层 `metadata.test_evidence` 对象时，DataSrv 会自动合成标准 `metadata.test_evidence`：
+
+```text
+test_evidence.run_id / verified_at / definition_fingerprint
+test_evidence.test_protocol_fingerprint
+test_evidence.result_payload
+test_evidence.outputs
+test_evidence.artifacts
+test_evidence.result_coverage
+test_evidence.approval_instance
+test_evidence.dependency_verification
+```
+
+同时继续保留顶层摘要字段，供列表过滤、能力市场审核、GUI App 面板回流直接使用。新增 DataSrv 测试覆盖 summary-only 输入，验证 `UpsertAppInstallation` 和 `/api/v1/data/capabilities` 输出都能暴露合成后的深层证据与原有摘要。这让 Hub/GUI/DataSrv 任一环节即使只保存摘要字段，也不会破坏 MaClaw App 的运行证据闭环。
+
+### 推进记录：Hub 多 App 包选择安装的定义指纹门禁（2026-06-27）
+
+本轮补齐 Hub 多 App 包中“只安装选中的子 App”测试夹具的治理证据：即使是被筛选后的单个 App 子包，也必须携带当前 `definitionHash` / `definitionFingerprint`。安装链路仍然按当前选中子包重新运行：
+
+```text
+DownloadMaclawAppPackageFromHub
+  -> maclawAppPackageForSelectedAppIDs
+  -> InstallMaclawAppDependencies
+  -> RecordMaclawAppInstall
+  -> governance.testEvidence.definitionHash 校验
+```
+
+这避免多 App 包选择安装绕过“运行证据必须绑定当前 App 定义”的发布/安装门禁。对应 GUI 后端测试已恢复通过，覆盖 Hub 下载、子包过滤、依赖规划、安装审计写入。
+
+### 推进记录：GUI 包级回归审计与 MaClaw App 相关失败修复（2026-06-27）
+
+本轮重新运行 `go test ./gui -count=1 -vet=off` 做包级回归审计。当前全包仍未完全通过，但 MaClaw App 主链路中的失败已修复：
+
+```text
+已修复：
+  TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps
+  原因：Hub 多 App 测试包缺少当前 definitionHash，被治理门禁正确拒绝。
+  处理：测试夹具通过 maclawAppPackageWithCurrentDefinitionHashes 注入当前定义指纹。
+
+仍待清理的外围失败：
+  AI assistant oversized tool args 测试受 OpenAI OAuth 401 影响
+  Skill create-session guard 测试受语义分类器/LLM 可用性影响
+  Hub Skill bundled file fixture base64 解码失败
+  SubAgentConcurrency 配置上限断言与当前实现不一致
+  VE group conversation 测试路由期望与实际 discoverable 请求不一致
+  recent task name whitespace 归一化断言不一致
+```
+
+MaClaw App 相关的安装/规划定向回归已通过：
+
+```bash
+go test ./gui -count=1 -vet=off -run "InstallSelectedMaclawAppPackageFromHubFiltersPackageApps|InstallMaclawAppPackageFromHub|RecordMaclawAppInstall|PlanMaclawAppInstall"
+```
+
+这说明当前 MaClaw App 的 Hub 下载、子包过滤、依赖规划、安装记录与 definitionHash 门禁路径可继续作为后续端到端验收基础；全 GUI 包级绿色仍需要继续清理上述外围测试阻塞。
+
+### 推进记录：App Studio 企业审批型应用写回完整超级 Skill 定义（2026-06-27）
+本轮补齐 App Studio 管理面板的保存链路：此前已发现企业审批型/企业普通型 App 能从 `maclaw.app.json` 读回为动态应用，但管理面板编辑保存时只允许 `tool_app` 调用 `SaveMaclawAppDefinitionForSkill`，导致“可视化调整布局 -> 保存 -> 测试 -> 上传能力市场”的企业应用链路存在断点。
+
+调整后，来自 Skill 的以下应用类型都会在保存时写回 Skill 定义文件：
+
+```text
+tool_app
+enterprise_approval_app
+enterprise_normal_app
+```
+
+写回门禁仍要求：
+
+```text
+source == skill
+manifest.skill.id 非空
+tool_app: manifest.skill.appDefinitionFile 为 maclaw.app.json 或 maclaw.apps.json
+enterprise_approval_app / enterprise_normal_app: manifest.skill.appDefinitionFile 必须为 maclaw.app.json
+```
+
+其中企业应用前端保存门禁和后端规范化逻辑均保证只能保存为完整 `maclaw.app.json`，避免企业审批型/普通型应用被降级成轻量 `maclaw.apps.json`。
+
+新增前端回归测试覆盖一个企业审批型 Skill App 的管理面板保存，验证写回 payload 仍保留：
+
+```text
+schema/privateMarker/installUnit
+enterprise_approval_app kind
+agent_dynamic_ui launchMode
+DataSrv domain/objectRole
+appSkill
+workflow_skill dependency
+MIS approvalBindings
+ui.layouts.approval_workspace.regions
+resultContract.approvalDecisions
+testProtocol expectedOutput/requiredRoles/fingerprint
+```
+
+这让“应用程序设计时自动生成界面 -> 用户可视化调整位置 -> 保存到应用信息文件 -> 测试 -> 上传 Hub 能力市场”的企业审批型应用制作链路更接近完整闭环。
+
+### 推进记录：后端禁止企业应用降级写入轻量 maclaw.apps.json（2026-06-27）
+本轮继续收紧 GUI 后端 `SaveMaclawAppDefinitionForSkill` 的企业应用保存规则。前端企业 App 为了兼容发现/面板状态，会同时携带 `binding.skill` 与 `binding.appSkill`；此前后端规范化阶段只检查企业 App 的 `binding.appSkill.appDefinitionFile`，但最终文件选择会同时读取 `binding.skill.appDefinitionFile`。这意味着异常/旧版 payload 可能通过 `binding.skill.appDefinitionFile = maclaw.apps.json` 绕过规范化检查，最终把企业审批型应用写入轻量 `maclaw.apps.json`。
+
+修复后，企业审批型/企业普通型应用的定义文件判定会同时检查：
+
+```text
+binding.appSkill.appDefinitionFile
+binding.appSkill.app_definition_file
+binding.skill.appDefinitionFile
+binding.skill.app_definition_file
+```
+
+只要任一有效声明指向 `maclaw.apps.json`，就拒绝保存，并返回：
+
+```text
+enterprise MaClaw App definitions must be saved as maclaw.app.json
+```
+
+新增后端回归测试覆盖“企业审批型 App 通过 `binding.skill.appDefinitionFile` 声明 `maclaw.apps.json`”的情况，确认保存失败且不会生成 `maclaw.apps.json`。这把前端保存门禁和后端规范化门禁对齐，保证企业审批型应用始终作为完整超级 Skill 定义保存，动态 UI、审批流依赖、DataSrv 绑定、结果契约和测试证据不会被轻量清单格式截断。
+
+### 推进记录：App Studio 创建态支持企业审批型应用直接保存为超级 Skill（2026-06-27）
+本轮补齐 App Studio “新建应用”入口的企业应用制作链路。此前管理面板已经能把企业审批型/企业普通型 Skill App 写回 `maclaw.app.json`，但创建态 `保存到 Skill / 上传到 SkillMarket` 仍只对 `tool_app` 开放，企业应用只能先创建成本地面板 App，再进入管理态间接写回，制作流程不完整。
+
+调整后，创建态会按应用类型选择定义写回目标：
+
+```text
+tool_app:
+  使用 Existing Skill 作为目标 Skill
+
+enterprise_approval_app / enterprise_normal_app:
+  使用 App Skill 作为目标超级 Skill
+  workflow_skill 作为依赖写入 dependencies.skills
+```
+
+保存前会在企业应用 manifest 中补齐 Skill 定义定位信息：
+
+```text
+binding.skill.id = App Skill
+binding.skill.appDefinitionFile = maclaw.app.json
+binding.appSkill.id = App Skill
+```
+
+这样创建态保存后的面板应用既是 `source = skill`，又保留后续管理面板再次编辑写回所需的 `manifest.skill.appDefinitionFile`。新增前端回归测试覆盖“新建企业审批型应用 -> 默认选择 App Skill/workflow Skill -> 保存到 Skill”，验证写回 payload 包含：
+
+```text
+maclaw.app.v1 / x_maclaw_apps
+enterprise_approval_app
+agent_dynamic_ui
+binding.skill.appDefinitionFile = maclaw.app.json
+binding.appSkill
+dependencies.skills[workflow_skill]
+mis.approvalBindings
+ui.layouts.approval_workspace
+resultContract.primary = approval_result
+testProtocol.fingerprint
+```
+
+至此，App Studio 的企业审批型应用制作路径从“自动生成/手工设计动态界面”到“保存为完整超级 Skill 定义”不再需要绕到管理态完成。
+
+### 推进记录：依赖证据合并改为显式配置优先（2026-06-27）
+本轮修复 App Studio / 发布治理中的依赖证据合并问题。企业应用会同时携带：
+
+```text
+binding.appSkill          # 超级 Skill / App Skill
+binding.skill             # 用于面板写回 maclaw.app.json 的定义定位
+dependencies.skills       # 显式依赖，如 workflow_skill、connector_skill
+mis.approvalBindings      # 可推断 workflow_skill
+```
+
+此前前端 `appSkillDependencies` 直接按数组顺序用 Map 去重，后出现的推断依赖会覆盖前面的显式依赖。实际影响包括：
+
+```text
+App Skill 显式 source=local 可能被 binding.skill 推断成 hub
+workflow_skill 显式 source=market/local 可能被 approvalBindings 推断成 hub
+显式 version/source 在治理导出和安装规划证据中不稳定
+```
+
+现在依赖合并改为“先出现的显式元数据优先，后续推断项只补空字段”，并合并 capabilities。这样 App Skill、workflow Skill 的版本、来源、required 标记会稳定进入：
+
+```text
+安装预览 buildInstallPlan
+发布治理 app.governance.dependencies.skills
+复制应用包 / 上传包
+安装审计与依赖检查的前端证据
+```
+
+新增前端回归测试构造企业审批型 App：
+
+```text
+appSkill: expense-super-skill@1.3.0 source=local
+binding.skill: expense-super-skill appDefinitionFile=maclaw.app.json
+dependencies.skills: expense-approval-flow@2.1.0 source=market
+mis.approvalBindings: workflowSkillId=expense-approval-flow
+```
+
+导出应用包后断言 governance dependencies 仍保留 `expense-super-skill · local` 和 `expense-approval-flow · market`，避免安装/发布环节错误地从 Hub 查找本地或市场来源的依赖。
+
+### 推进记录：DataSrv 安装记录支持从审批实例运行证据过滤 workflow（2026-06-27）
+本轮补齐 DataSrv `app_installations` 的审批实例查询能力。此前安装记录列表已经支持按 `workflow_skill_id` / `workflow_node` 过滤，但主要依赖顶层摘要字段和 `workflow_mapping`。实际企业审批型 App 的运行结果经常只体现在测试证据中：
+
+```text
+metadata.test_evidence.approval_instance.workflowSkillId
+metadata.test_evidence.approval_instance.currentNode
+metadata.test_evidence_approval_instance.workflowSkillId
+metadata.test_evidence_approval_instance.currentNode
+```
+
+如果没有同步写入 `workflow_mapping`，DataSrv 无法通过“当前审批流 / 当前节点”查回对应 App 安装记录，会影响 GUI 中“我的申请 / 我审批的 / 当前节点状态 / 审批结果反馈”的后续数据回流。
+
+调整后，DataSrv store 的安装记录 metadata filter 会额外识别审批实例运行证据中的：
+
+```text
+workflowSkillId / workflowSkillID / workflow_skill_id
+approvalWorkflowID / approvalWorkflowId / approval_workflow_id
+currentNode / current_node / node / workflowNode / workflow_node
+```
+
+新增回归测试覆盖企业审批型安装记录只携带 `test_evidence.approvalInstance` 的情况，验证：
+
+```text
+ListAppInstallations(WorkflowSkillID="expense-approval-flow") 可以命中
+ListAppInstallations(WorkflowNode="expense.result_feedback") 可以命中
+ListAppInstallations(WorkflowSkillID="other-flow") 不会误命中
+```
+
+这让 DataSrv 的审批实例数据管理更贴近实际运行链路：即使安装审计记录只保存运行证据包，也能按审批 workflow 和当前节点进行回流查询。
+
+### 推进记录：GUI 审批实例详情保留多当前节点回流（2026-06-27）
+本轮补齐 GUI 审批实例视图对 DataSrv / 后端回流的 `current_node_ids` 支持。后端审批实例记录已经允许返回：
+
+```text
+current_node
+current_node_ids
+workflow_node_ids
+```
+
+前端 `backendApprovalInstanceToView` 虽然会解析节点数组并选出首个节点作为当前节点，但没有把完整 `currentNodeIDs` 保存到视图模型，导致审批实例详情、全局审批管理、搜索文本只能看到单个节点，无法呈现多节点/并行节点状态。
+
+修复后，`ApprovalInstanceView` 会保留完整 `currentNodeIDs`，详情头、列表行和时间线继续通过 `approvalCurrentNodeText` 展示：
+
+```text
+manager_approval / finance_review
+```
+
+新增前端回归测试覆盖全局“审批状态”入口：后端只返回 `current_node_ids`、不返回 `current_node` 时，GUI 仍能在审批详情中显示完整节点路径。这和 DataSrv 新增的 workflow/node 过滤能力拼起来，形成“按当前节点查回 -> GUI 展示当前节点状态”的闭环。
+
+### 推进记录：GUI 后端审批实例回流兼容 request 别名字段（2026-06-27）
+本轮补齐 Wails 后端从 DataSrv `/api/v1/data/approvals` 读取审批实例时的字段兼容。DataSrv 标准响应包含顶层 `app_id`、`workflow_skill_id`、`workflow_node_id(s)`，但企业审批工作流运行证据、旧版同步记录或外部连接器可能把这些信息放在 `request` 载荷里：
+
+```text
+request.maclaw_app_id / request.appID / request.app_id
+request.blueprintID / request.blueprint_id
+request.workflowSkillId / request.workflowSkillID / request.workflow_skill_id
+request.workflowVersion / request.workflow_version
+request.approvalWorkflowID / request.approval_workflow_id
+request.current_node_ids / request.workflow_node_ids
+request.currentNode / request.current_node / request.workflowNode / request.workflow_node
+```
+
+调整后，`maclawAppApprovalInstanceFromRecordApproval` 会从 request 别名中补齐：
+
+```text
+AppID / BlueprintID
+ApprovalWorkflowID / WorkflowSkillID / WorkflowVersion
+CurrentNode / CurrentNodeIDs
+```
+
+并扩展字符串列表解析，支持 request 中单字符串或数组形式的节点字段。新增 GUI 后端测试覆盖 DataSrv 审批记录只通过 request 携带 App、workflow 和 current nodes 的情况，验证 `ListMaclawAppApprovalInstancesAll("pending_my_approval")` 仍能输出完整审批实例视图。
+
+这让“DataSrv 审批实例数据管理 -> Wails 后端转换 -> GUI 全局审批状态/单应用审批工作台”在面对不同来源的审批记录时更稳，不会因为字段落在 request 包里就丢失 App 归属或当前节点状态。
+
+### 推进记录：DataSrv 审批实例查询支持当前节点语义别名（2026-06-27）
+本轮补齐 DataSrv HTTP 查询层对审批“当前节点”命名的兼容。原 `/api/v1/data/approvals`、`/api/v1/data/inbox`、`/api/v1/data/inbox/summary` 已支持 `workflow_node_id`，SQLite 层也能同时匹配主节点和 `workflow_node_ids_json` 中的并行节点。但 App manifest、测试证据、安装记录和 GUI 文案里更常出现：
+
+```text
+current_node_id
+current_node
+workflow_node
+```
+
+如果调用方使用这些语义字段，HTTP 层此前不会映射到 `WorkflowNodeID`，导致“按当前节点查看我的申请/我审批的/需关注实例”必须记住底层字段名。
+
+调整后，DataSrv 三个审批实例入口统一使用同一套别名解析：
+
+```text
+workflow_node_id -> current_node_id -> current_node -> workflow_node
+```
+
+并同步更新 OpenAPI，使能力市场、App Studio、GUI 后端和外部连接器都能从接口描述里看到这些别名。新增回归测试覆盖 `/api/v1/data/approvals?current_node_id=...`、`current_node=...`、`workflow_node=...` 对并行审批节点的命中，确保企业审批型 App 的“当前节点状态”查询不再依赖单一底层字段名。
+
+### 推进记录：安装计划明确区分 App 超级 Skill 依赖（2026-06-27）
+本轮继续梳理“MaClaw App 是带特殊数据的超级 Skill”在安装链路里的表达。后端安装计划此前已经会从 `binding.appSkill` / `binding.app_skill` 提取 App 自身的 Skill，并和 `dependencies.skills`、审批工作流 Skill 一起做依赖检查/安装；但计划中的 `kind` 使用的是 `runtime_skill`，容易和普通工具/运行动作 Skill 混淆。
+
+调整后，安装计划和安装证据中的依赖类型更明确：
+
+```text
+binding.skill        -> runtime_skill
+binding.appSkill     -> app_skill
+binding.app_skill    -> app_skill
+dependencies.skills(kind=workflow_skill) -> workflow_skill
+```
+
+这让安装、审计、DataSrv 注册 metadata、能力市场治理都能区分三类依赖：
+
+```text
+app_skill：App 本身的超级 Skill，包含 maclaw.app.json、动态 UI、workflow/result/test contract
+workflow_skill：审批工作流 Skill，实际驱动审批节点和结果回写
+runtime_skill：普通工具/动作 Skill，支撑一次性调用或业务操作
+```
+
+新增/更新回归测试覆盖：
+
+```text
+PlanMaclawAppInstall 会把 enterprise app 的 binding.appSkill 标记为 app_skill
+binding.app_skill 的 source/version 保持不丢失
+RecordMaclawAppInstall 写入 DataSrv metadata 时保留 app_skill 依赖类型
+```
+
+这一步不改变安装行为本身，但把安装计划的语义层补齐，为后续“安装 MaClaw App 时从本 Hub/市场安装超级 Skill + workflow Skill + runtime Skill，并分别做版本/来源治理”打基础。
+
+### 推进记录：前端发布包和回流视图保留 app_skill 语义（2026-06-27）
+上一轮后端安装计划已把 `binding.appSkill` / `binding.app_skill` 标记为 `app_skill`。本轮继续补齐 GUI 前端侧，避免 App Studio 在导出、发布、安装记录回显时又把超级 Skill 降级为普通 `runtime_skill`。
+
+调整后，前端依赖证据的语义保持一致：
+
+```text
+manifest.appSkill -> governance.dependencies.skills(kind=app_skill)
+DataSrv metadata.app_skill_id -> version_snapshot.app_skill(kind=app_skill)
+install_record.app_versions[app].app_skill.kind -> 详情页显示 app_skill
+```
+
+对应影响：
+
+```text
+复制/上传应用包：超级 Skill 以 app_skill 写入 governance.dependencies
+安装市场 App：版本快照 App Skill 行显示 app_skill
+DataSrv 安装记录回流：从 app_skill_id/app_skill_version 恢复版本快照时默认 kind=app_skill
+```
+
+新增/更新前端回归测试覆盖：
+
+```text
+导出企业审批型 App 包时，expense-super-skill 为 app_skill，workflow 仍为 workflow_skill
+单个市场 App 安装后的版本快照显示 app_skill
+安装记录列表和应用详情页从 install_record / DataSrv 回流的 app_skill 语义保持不变
+```
+
+这样从 App Studio 设计、发布包治理、Hub/市场安装、DataSrv 注册和 GUI 回流视图，App 本体 Skill 都统一叫 `app_skill`；普通动作 Skill 才叫 `runtime_skill`，审批流仍叫 `workflow_skill`。
+
+### 推进记录：GUI 包级回归阻塞清理进展（2026-06-27）
+本轮重新审计 `go test ./gui -count=1 -vet=off` 的当前失败状态。此前文档里提到的 `TemplateRegistry` 编译缺口和 Volcengine TokenPlan 常量迁移问题已经不是当前阻塞：GUI 包可以编译并进入运行测试阶段。当前全包失败主要集中在外围测试和外部状态依赖上，其中两个不依赖外部网络、可以直接修复的阻塞已清理：
+
+```text
+TestSaveConfigSanitizesSubAgentConcurrency
+TestNormalizeRecentTaskName
+```
+
+处理结果：
+
+```text
+SubAgentConcurrency 测试改为真正的越界输入 Max+1，继续验证 SaveConfig 会 clamp 到 MaxSubAgentConcurrency。
+normalizeRecentTaskName 改为把所有空白折叠为单空格，并按 120 rune 截断，符合最近任务标题的侧边栏展示契约。
+```
+
+定向验证已通过：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestSaveConfigSanitizesSubAgentConcurrency|TestNormalizeRecentTaskName"
+```
+
+当前全量 GUI 包级剩余阻塞仍包括：
+
+```text
+TestSendAIAssistantMessage_RejectsOversizedToolArguments_OpenAI / Anthropic
+  真实 OpenAI OAuth 401 抢先返回，测试没有隔离 LLM 调用。
+
+TestSkillCreateSessionGuard_DoesNotGuess*WithoutSemantic
+  语义分类器/LLM 退化路径仍会使用 embedding/tree fallback 做判断，测试期望“无语义分类器时只返回 ambiguous”。
+
+TestInstallManagedHubSkillAllowsHighRiskWithAuditOnly
+TestInstallHubSkillSucceedsWhenHubExtractsFileBackedSkillDir
+  Hub Skill 安装测试 fixture / 文件包路径仍需单独清理。
+
+TestInitiateGroupConversationErrorsOnMissingSessionID
+  VE group conversation 测试服务器未预期 /api/ve/discoverable 探测请求。
+```
+
+这一步不是 MaClaw App 主链路功能本身，但它减少了全流程交付前的包级回归噪音：全包回归已从“编译阻塞”推进到“少数外围运行测试阻塞”，MaClaw App 定向链路仍保持可验证。
+
+### 推进记录：Hub 文件型 Skill 安装夹具对齐 base64 契约（2026-06-27）
+
+本轮继续从“安装 MaClaw App 时自动检查并安装依赖 Skill”这条链路向下收敛。`SkillHubClient.extractBundledSkillFiles` 的生产契约是：Hub 下载包中的 `files` 字段按路径映射到 base64 编码后的文件内容，客户端只负责安全路径校验、base64 解码、写入本地 Skill 目录，再进入后续安全扫描和注册流程。
+
+此前两个 Hub 安装回归测试的 fixture 把文件内容做了双层 JSON 字符串转义，实际返回值变成了带引号字符的 `"base64内容"`，导致解包器在第 0 字节遇到非法 base64 字符。修复后，测试夹具只保留一层 JSON 字符串编码，和真实 Hub 下载协议一致：
+
+```text
+files["skill.yaml"] = base64.StdEncoding.EncodeToString(...)
+files["skill.md"]   = base64.StdEncoding.EncodeToString(...)
+```
+
+这次不放宽生产解包逻辑，因为 MaClaw App / Skill 市场分发需要一个明确、可审计的包格式；客户端不应在安装企业能力或审批工作流依赖时猜测内容格式。
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestInstallManagedHubSkillAllowsHighRiskWithAuditOnly|TestInstallHubSkillSucceedsWhenHubExtractsFileBackedSkillDir"
+go test ./gui -count=1 -vet=off -run "PlanMaclawAppInstall|InstallMaclawAppDependencies|RecordMaclawAppInstallRegistersEnterpriseApprovalAppEvidence|ListMaclawAppApprovalInstances"
+go test ./structureddata -count=1 -run "HTTPServerRequiresBearerTokenAndHandlesRecords|Approval|AppInstallation|Capabilities"
+```
+
+对应全流程意义：
+
+```text
+Hub / 能力市场下载文件型 Skill -> base64 解包 -> 本地 Skill 目录落盘 -> 安全扫描/审计 -> 注册为可安装依赖
+MaClaw App 安装计划 -> app_skill / workflow_skill / runtime_skill 依赖识别 -> 依赖检查与安装 -> DataSrv 安装证据回写
+```
+
+当前仍未宣称全链路完整。下一步继续清理 GUI 包剩余阻塞，优先处理和运行期可信性相关的测试隔离问题：超大 tool arguments 应在真实 LLM 网络调用前被拒绝；无语义分类器时的 Skill 会话创建 guard 应避免 fallback 过度猜测；VE group conversation 测试需要显式处理 `/api/ve/discoverable` 探测请求。
+
+### 推进记录：运行期工具参数上限前置到执行入口（2026-06-27）
+
+本轮继续清理 GUI 包级阻塞中和运行期可信性直接相关的一项：模型返回的 tool arguments 过大时，不能让工具执行器、Skill、审批工作流节点或文件/网络类工具收到超大输入。
+
+原有底层 OpenAI/Responses 部分流式聚合器已经有 `guiMaxToolArgumentsBytes` / `maxToolArgumentsBytes` 检查，但 GUI agent loop 对已经解析出的 Anthropic `tool_use`、非流式 OpenAI 兼容返回、以及其他能进入工具执行入口的调用，仍可能先尝试执行工具，再在失败记录里截断参数。这对 MaClaw App 来说不够稳：企业审批型应用运行 workflow skill 时，任何节点上的 MIS 操作 Skill 都应该在执行前完成参数边界检查。
+
+调整后，`executeAgentLoopToolCalls` 在调用具体工具 handler 前统一检查：
+
+```text
+len([]byte(tool_call.function.arguments)) > guiMaxToolArgumentsBytes
+  -> 直接返回 IMAgentResponse.Error
+  -> 不调用工具 handler
+  -> loop 状态标记 failed
+```
+
+测试隔离也同步修正：
+
+```text
+MaClaw LLM provider 测试配置不再用普通 SaveConfig 覆盖后端拥有字段
+改为走 SaveMaclawLLMProviders，与真实 GUI 设置面板一致
+OpenAI 用例使用兼容 JSON 返回覆盖非流式解析后的执行前拦截
+Anthropic 用例使用 tool_use stream 覆盖已解析 tool call 的执行前拦截
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestSendAIAssistantMessage_RejectsOversizedToolArguments"
+go test ./gui -count=1 -vet=off -run "TestInstallManagedHubSkillAllowsHighRiskWithAuditOnly|TestInstallHubSkillSucceedsWhenHubExtractsFileBackedSkillDir|TestSendAIAssistantMessage_RejectsOversizedToolArguments"
+go test ./gui -count=1 -vet=off -run "PlanMaclawAppInstall|InstallMaclawAppDependencies|RecordMaclawAppInstallRegistersEnterpriseApprovalAppEvidence|ListMaclawAppApprovalInstances"
+go test ./structureddata -count=1 -run "HTTPServerRequiresBearerTokenAndHandlesRecords|Approval|AppInstallation|Capabilities"
+```
+
+对应全流程意义：
+
+```text
+MaClaw App 运行 -> workflow/app/runtime skill 触发工具 -> agent loop 执行入口 -> 参数大小边界检查 -> 合法才进入实际 MIS 操作/文件/网络/Skill handler
+```
+
+这一步把“审批工作流 Skill 运行”和“工具型/企业普通应用的一次性功能调用”的运行期防护都前移了一层，减少了企业应用运行时由模型输出异常带来的资源和安全风险。
+
+### 推进记录：清理剩余 GUI 定向阻塞并验证会话路由 guard（2026-06-27）
+
+本轮继续按“从 DataSrv 到 MaClaw App 设计、安装、测试、上传、运行”的全链路视角清理外围阻塞。重点不是新增业务表面，而是让企业应用运行入口和协作会话入口的测试证据更干净。
+
+首先复核了 Skill 创建外部 coding session 的 guard。当前源码中 `classifyTaskIntentWithoutSemantic` 在语义分类器缺席时已经返回 `intentUnknown`，不会再靠关键词或 fallback 猜测 SSH、非编码演示或编码任务。定向测试已证明无语义分类器时会走保守 ambiguous/unknown 分支：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestSkillCreateSessionGuard_DoesNotGuess|TestSkillCreateSessionGuard"
+```
+
+随后清理 VE group conversation 的测试隔离问题。`InitiateGroupConversation` 的真实流程会先调用 `/api/ve/discoverable` 解析可邀请对象，再创建 A2A consultation。`TestInitiateGroupConversationErrorsOnMissingSessionID` 只 mock 了 `/api/a2a/consultations`，导致测试在 discoverable 探测处提前失败，无法验证原本目标“consultation 返回缺失 session id 时应报错”。本轮补齐测试服务器的 discoverable 响应，使测试进入原始 missing-session-id 分支。
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestInitiateGroupConversationErrorsOnMissingSessionID|TestInitiateGroupConversationReturnsInviteFailure|TestInitiateGroupConversationDeduplicatesInvitees"
+go test ./gui -count=1 -vet=off -run "TestSkillCreateSessionGuard_DoesNotGuess|TestInitiateGroupConversationErrorsOnMissingSessionID|TestSendAIAssistantMessage_RejectsOversizedToolArguments|TestInstallManagedHubSkillAllowsHighRiskWithAuditOnly|TestInstallHubSkillSucceedsWhenHubExtractsFileBackedSkillDir"
+go test ./gui -count=1 -vet=off -run "PlanMaclawAppInstall|InstallMaclawAppDependencies|RecordMaclawAppInstallRegistersEnterpriseApprovalAppEvidence|ListMaclawAppApprovalInstances"
+go test ./structureddata -count=1 -run "HTTPServerRequiresBearerTokenAndHandlesRecords|Approval|AppInstallation|Capabilities"
+```
+
+对应全流程意义：
+
+```text
+企业应用 / MaClaw App 运行入口 -> 不在语义分类缺席时误开外部 coding session
+VE 群组协作入口 -> discoverable 探测、consultation 创建、邀请失败、缺失 session id 分支都有稳定测试证据
+```
+
+至此，上一轮列出的几个可直接清理的 GUI 包级阻塞中，Hub 文件型 Skill 安装、超大工具参数执行前拒绝、Skill 会话 guard、VE group conversation discoverable 夹具均已定向通过。后续仍需继续扩大验证范围，尤其是 App Studio 动态界面制作/保存/测试/上传/安装/运行的前端交互闭环和全包 GUI 回归。

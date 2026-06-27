@@ -316,10 +316,10 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 			finishReason = "stop"
 		}
 	}
-	finishReason, truncatedTools := filterStreamTruncatedToolCalls(&msg, finishReason)
+	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
 	return &Response{
-		Choices: []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools}},
+		Choices: []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:   usage,
 	}, nil
 }
@@ -469,21 +469,22 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 			finishReason = "stop"
 		}
 	}
-	finishReason, truncatedTools := filterStreamTruncatedToolCalls(&msg, finishReason)
+	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
 	return &Response{
-		Choices: []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools}},
+		Choices: []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:   usage,
 	}, nil
 }
 
-func filterStreamTruncatedToolCalls(msg *Message, finishReason string) (string, []string) {
+func filterStreamTruncatedToolCalls(msg *Message, finishReason string) (string, []string, map[string]string) {
 	if msg == nil || len(msg.ToolCalls) == 0 {
-		return finishReason, nil
+		return finishReason, nil, nil
 	}
 	isLengthTruncated := isStreamLengthFinishReason(finishReason)
 	validCalls := make([]ToolCall, 0, len(msg.ToolCalls))
 	var truncatedNames []string
+	var truncatedArgs map[string]string
 	for _, tc := range msg.ToolCalls {
 		args := strings.TrimSpace(tc.Function.Arguments)
 		if args == "" {
@@ -497,21 +498,29 @@ func filterStreamTruncatedToolCalls(msg *Message, finishReason string) (string, 
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(args), &parsed); err != nil {
 			truncatedNames = append(truncatedNames, tc.Function.Name)
+			if truncatedArgs == nil {
+				truncatedArgs = make(map[string]string)
+			}
+			truncatedArgs[tc.Function.Name] = args
 			log.Printf("[LLM-stream] truncated tool call (invalid JSON): %s args=%d bytes finish_reason=%s", tc.Function.Name, len(args), finishReason)
 			continue
 		}
 		if missing := streamTruncatedRequiredField(tc.Function.Name, parsed); missing != "" && (isLengthTruncated || len(args) > 4000) {
 			truncatedNames = append(truncatedNames, tc.Function.Name)
+			if truncatedArgs == nil {
+				truncatedArgs = make(map[string]string)
+			}
+			truncatedArgs[tc.Function.Name] = args
 			log.Printf("[LLM-stream] truncated tool call (missing required field %q): %s args=%d bytes finish_reason=%s", missing, tc.Function.Name, len(args), finishReason)
 			continue
 		}
 		validCalls = append(validCalls, tc)
 	}
 	if len(truncatedNames) == 0 {
-		return finishReason, nil
+		return finishReason, nil, nil
 	}
 	msg.ToolCalls = validCalls
-	return finishReason, truncatedNames
+	return finishReason, truncatedNames, truncatedArgs
 }
 
 func isStreamLengthFinishReason(reason string) bool {

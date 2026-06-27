@@ -17,17 +17,20 @@ type Config struct {
 	HA HAConfig `yaml:"ha"`
 
 	Database struct {
-		Driver            string `yaml:"driver"`
-		DSN               string `yaml:"dsn"`
-		WAL               bool   `yaml:"wal"`
-		BusyTimeoutMS     int    `yaml:"busy_timeout_ms"`
-		MaxReadOpenConns  int    `yaml:"max_read_open_conns"`
-		MaxReadIdleConns  int    `yaml:"max_read_idle_conns"`
-		MaxWriteOpenConns int    `yaml:"max_write_open_conns"`
-		MaxWriteIdleConns int    `yaml:"max_write_idle_conns"`
-		BatchFlushMS      int    `yaml:"batch_flush_ms"`
-		BatchMaxSize      int    `yaml:"batch_max_size"`
-		BatchQueueSize    int    `yaml:"batch_queue_size"`
+		Driver                string `yaml:"driver"`
+		DSN                   string `yaml:"dsn"`
+		WAL                   bool   `yaml:"wal"`
+		BusyTimeoutMS         int    `yaml:"busy_timeout_ms"`
+		MaxReadOpenConns      int    `yaml:"max_read_open_conns"`
+		MaxReadIdleConns      int    `yaml:"max_read_idle_conns"`
+		MaxWriteOpenConns     int    `yaml:"max_write_open_conns"`
+		MaxWriteIdleConns     int    `yaml:"max_write_idle_conns"`
+		BatchFlushMS          int    `yaml:"batch_flush_ms"`
+		BatchMaxSize          int    `yaml:"batch_max_size"`
+		BatchQueueSize        int    `yaml:"batch_queue_size"`
+		CacheSizeKB           int    `yaml:"cache_size_kb"`
+		MmapSizeBytes         int64  `yaml:"mmap_size_bytes"`
+		CheckpointIntervalSec int    `yaml:"checkpoint_interval_sec"`
 	} `yaml:"database"`
 
 	Mail struct {
@@ -102,13 +105,16 @@ func Default() *Config {
 	cfg.Database.DSN = "./data/MaClaw-hubcenter.db"
 	cfg.Database.WAL = true
 	cfg.Database.BusyTimeoutMS = 10000
-	cfg.Database.MaxReadOpenConns = 4
+	cfg.Database.MaxReadOpenConns = 8
 	cfg.Database.MaxReadIdleConns = 4
 	cfg.Database.MaxWriteOpenConns = 1
 	cfg.Database.MaxWriteIdleConns = 1
-	cfg.Database.BatchFlushMS = 250
-	cfg.Database.BatchMaxSize = 64
-	cfg.Database.BatchQueueSize = 1024
+	cfg.Database.BatchFlushMS = 100
+	cfg.Database.BatchMaxSize = 128
+	cfg.Database.BatchQueueSize = 4096
+	cfg.Database.CacheSizeKB = 16384
+	cfg.Database.MmapSizeBytes = 134217728
+	cfg.Database.CheckpointIntervalSec = 60
 	cfg.Mail.Provider = "smtp"
 	cfg.Mail.FromName = "MaClaw Hub Center"
 	cfg.Logging.Level = "info"

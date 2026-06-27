@@ -4118,14 +4118,22 @@ func subAgentVerificationOutputLooksEmpty(cmd CodingSubAgentCommandResult) bool 
 		"no test suite found",
 		"no test suites found",
 		"no tests were found",
+		"no tests to run",
+		"matched no packages",
 		"0 passing",
 		"0 examples",
 		"0 tests found",
 		"0 tests passed",
+		"0 tests run",
 		"0 tests total",
 		"0 tests completed",
 		"0 tests successful",
 		"0 tests executed",
+		"running 0 tests",
+		"total tests: 0",
+		"tests run: 0",
+		"tests 0 passed",
+		"test files 0 passed",
 		"ran 0 tests",
 		"executed 0 tests",
 		"found 0 tests",
@@ -4348,26 +4356,39 @@ func summarizeSubAgentVerificationCommandSummaryEvidence(modelSummary string, fi
 	if len(claimed) == 0 {
 		return "verification command not referenced in final summary"
 	}
-	if subAgentClaimedVerificationIncludesFreshCommand(claimed, freshVerification) {
-		return ""
+	includesFresh, includesOutcome := subAgentClaimedVerificationIncludesFreshCommandOutcome(claimed, freshVerification)
+	if !includesFresh {
+		return "fresh verification command not referenced in final summary"
 	}
-	return "fresh verification command not referenced in final summary"
+	if !includesOutcome {
+		return "fresh verification command outcome not referenced in final summary"
+	}
+	return ""
 }
 
 func subAgentClaimedVerificationIncludesFreshCommand(claimed []subAgentClaimedVerificationCommand, fresh []CodingSubAgentCommandResult) bool {
+	includesFresh, _ := subAgentClaimedVerificationIncludesFreshCommandOutcome(claimed, fresh)
+	return includesFresh
+}
+
+func subAgentClaimedVerificationIncludesFreshCommandOutcome(claimed []subAgentClaimedVerificationCommand, fresh []CodingSubAgentCommandResult) (bool, bool) {
 	if len(claimed) == 0 || len(fresh) == 0 {
-		return false
+		return false, false
 	}
 	freshCommands := make(map[string]bool, len(fresh))
 	for _, cmd := range fresh {
 		freshCommands[normalizeSubAgentCommandForEvidence(cmd.Command)] = true
 	}
+	includesFresh := false
 	for _, command := range claimed {
 		if freshCommands[normalizeSubAgentCommandForEvidence(command.Command)] {
-			return true
+			includesFresh = true
+			if command.ClaimedPassed || command.ClaimedFailed {
+				return true, true
+			}
 		}
 	}
-	return false
+	return includesFresh, false
 }
 
 func summarizeSubAgentClaimedVerificationEvidence(modelSummary string, commands []CodingSubAgentCommandResult) string {
@@ -4413,6 +4434,7 @@ func collectSubAgentClaimedVerificationEvidence(modelSummary string, commands []
 type subAgentClaimedVerificationCommand struct {
 	Command       string
 	ClaimedPassed bool
+	ClaimedFailed bool
 }
 
 func subAgentClaimedVerificationCommands(summary string) []subAgentClaimedVerificationCommand {
@@ -4434,6 +4456,7 @@ func subAgentClaimedVerificationCommands(summary string) []subAgentClaimedVerifi
 			commands = append(commands, subAgentClaimedVerificationCommand{
 				Command:       candidate,
 				ClaimedPassed: subAgentInlineVerificationClaimedPassed(parts, i),
+				ClaimedFailed: subAgentInlineVerificationClaimedFailed(parts, i),
 			})
 		}
 	}
@@ -4444,7 +4467,7 @@ func subAgentClaimedVerificationCommands(summary string) []subAgentClaimedVerifi
 func subAgentClaimedVerificationLineCommands(summary string) []subAgentClaimedVerificationCommand {
 	var commands []subAgentClaimedVerificationCommand
 	for _, line := range strings.Split(summary, "\n") {
-		candidate, claimedPassed, ok := subAgentVerificationLineCommandCandidate(line)
+		candidate, claimedPassed, claimedFailed, ok := subAgentVerificationLineCommandCandidate(line)
 		if !ok {
 			continue
 		}
@@ -4452,22 +4475,26 @@ func subAgentClaimedVerificationLineCommands(summary string) []subAgentClaimedVe
 			commands = append(commands, subAgentClaimedVerificationCommand{
 				Command:       candidate,
 				ClaimedPassed: claimedPassed,
+				ClaimedFailed: claimedFailed,
 			})
 		}
 	}
 	return commands
 }
 
-func subAgentVerificationLineCommandCandidate(line string) (string, bool, bool) {
+func subAgentVerificationLineCommandCandidate(line string) (string, bool, bool, bool) {
 	line = strings.TrimSpace(line)
 	if line == "" {
-		return "", false, false
+		return "", false, false, false
 	}
 	line = strings.TrimLeft(line, "-*0123456789.）) \t")
 	lower := strings.ToLower(line)
 	prefixes := []string{
 		"verification:", "verification：",
+		"verification command:", "verification command：",
 		"verified with:", "verified with：",
+		"validated with:", "validated with：",
+		"tests:", "tests：",
 		"验证:", "验证：",
 		"验证命令:", "验证命令：",
 	}
@@ -4477,30 +4504,53 @@ func subAgentVerificationLineCommandCandidate(line string) (string, bool, bool) 
 		}
 		candidate := strings.TrimSpace(line[len(prefix):])
 		candidate = strings.ReplaceAll(strings.Trim(candidate, "` "), "`", "")
-		candidate, claimedPassed := trimSubAgentClaimedCommandTail(candidate)
-		return candidate, claimedPassed, candidate != ""
+		candidate, claimedPassed, claimedFailed := trimSubAgentClaimedCommandTail(candidate)
+		return candidate, claimedPassed, claimedFailed, candidate != ""
 	}
-	return "", false, false
+	return "", false, false, false
 }
 
-func trimSubAgentClaimedCommandTail(candidate string) (string, bool) {
+func trimSubAgentClaimedCommandTail(candidate string) (string, bool, bool) {
 	claimedPassed := false
-	for _, sep := range []string{"；", ";", "。", "，", ",", " - ", " — "} {
+	claimedFailed := false
+	for _, sep := range []string{"；", ";", "。", "，", ",", " - ", " — ", " -> ", " => "} {
 		if idx := strings.Index(candidate, sep); idx >= 0 {
-			if subAgentClaimTailClaimsPassed(candidate[idx+len(sep):]) {
+			tail := candidate[idx+len(sep):]
+			if subAgentClaimTailClaimsPassed(tail) {
 				claimedPassed = true
+			}
+			if subAgentClaimTailClaimsFailed(tail) {
+				claimedFailed = true
 			}
 			candidate = candidate[:idx]
 		}
 	}
 	candidate = strings.TrimSpace(candidate)
 	lower := strings.ToLower(candidate)
-	for _, suffix := range []string{" passed", " succeeded", " succeeded.", " passed.", " ok", " ok."} {
+	for _, suffix := range []string{
+		" passed", " succeeded", " ok",
+		" passed.", " succeeded.", " ok.",
+		" (passed)", " (succeeded)", " (ok)",
+		" [passed]", " [succeeded]", " [ok]",
+		"（通过）", "（成功）",
+	} {
 		if strings.HasSuffix(lower, suffix) {
-			return strings.TrimSpace(candidate[:len(candidate)-len(suffix)]), true
+			return strings.TrimSpace(candidate[:len(candidate)-len(suffix)]), true, claimedFailed
 		}
 	}
-	return candidate, claimedPassed
+	for _, suffix := range []string{
+		" failed", " failing", " errored",
+		" failed.", " failing.", " errored.",
+		" (failed)", " (failing)", " (errored)",
+		" [failed]", " [failing]", " [errored]",
+		"（失败）", "（未通过）",
+	} {
+		if strings.HasSuffix(lower, suffix) {
+			return strings.TrimSpace(candidate[:len(candidate)-len(suffix)]), claimedPassed, true
+		}
+	}
+	candidate = strings.TrimSpace(strings.TrimRight(candidate, ".。"))
+	return candidate, claimedPassed, claimedFailed
 }
 
 func subAgentInlineVerificationClaimedPassed(parts []string, commandPartIndex int) bool {
@@ -4510,15 +4560,30 @@ func subAgentInlineVerificationClaimedPassed(parts []string, commandPartIndex in
 	return subAgentClaimTailClaimsPassed(parts[commandPartIndex+1])
 }
 
+func subAgentInlineVerificationClaimedFailed(parts []string, commandPartIndex int) bool {
+	if commandPartIndex+1 >= len(parts) {
+		return false
+	}
+	return subAgentClaimTailClaimsFailed(parts[commandPartIndex+1])
+}
+
 func subAgentClaimTailClaimsPassed(tail string) bool {
-	tail = strings.TrimLeft(tail, " \t:：;；,，.-—")
+	return subAgentClaimTailHasOutcome(tail, []string{"passed", "succeeded", "ok", "通过", "成功"})
+}
+
+func subAgentClaimTailClaimsFailed(tail string) bool {
+	return subAgentClaimTailHasOutcome(tail, []string{"failed", "failing", "errored", "failure", "失败", "未通过"})
+}
+
+func subAgentClaimTailHasOutcome(tail string, prefixes []string) bool {
+	tail = strings.TrimLeft(tail, " \t:：;；,，.-—>()[]（）【】")
 	if idx := strings.IndexByte(tail, '\n'); idx >= 0 {
 		tail = tail[:idx]
 	}
 	tail = strings.TrimSpace(tail)
-	tail = strings.Trim(tail, "。.,，；;:：!！")
+	tail = strings.Trim(tail, "。.,，；;:：!！()[]（）【】")
 	lower := strings.ToLower(tail)
-	for _, prefix := range []string{"passed", "succeeded", "ok", "通过", "成功"} {
+	for _, prefix := range prefixes {
 		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
@@ -4540,6 +4605,7 @@ func uniqueSubAgentClaimedVerificationCommands(items []subAgentClaimedVerificati
 		key := normalizeSubAgentCommandForEvidence(item.Command)
 		if idx, ok := seen[key]; ok {
 			out[idx].ClaimedPassed = out[idx].ClaimedPassed || item.ClaimedPassed
+			out[idx].ClaimedFailed = out[idx].ClaimedFailed || item.ClaimedFailed
 			continue
 		}
 		seen[key] = len(out)
@@ -4570,7 +4636,18 @@ func compactSubAgentClaimedCommandList(commands []string, maxItems int) string {
 }
 
 func normalizeSubAgentCommandForEvidence(command string) string {
-	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(command)), " "))
+	fields := shellCommandFields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return ""
+	}
+	normalized := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = normalizeShellExecutableToken(field)
+		if field != "" {
+			normalized = append(normalized, field)
+		}
+	}
+	return strings.ToLower(strings.Join(normalized, " "))
 }
 
 func subAgentSummaryMentionsAcceptanceVerification(summary string) bool {
@@ -5230,6 +5307,28 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 		return goRunsVerification(args)
 	case "cargo":
 		return firstArgIn(args, "test", "check", "clippy", "build")
+	case "swift":
+		return swiftRunsVerification(args)
+	case "zig":
+		return zigRunsVerification(args)
+	case "stack":
+		return stackRunsVerification(args)
+	case "cabal":
+		return cabalRunsVerification(args)
+	case "lein":
+		return leinRunsVerification(args)
+	case "clojure", "clj":
+		return clojureRunsVerification(args)
+	case "bb":
+		return babashkaRunsVerification(args)
+	case "sbt":
+		return sbtRunsVerification(args)
+	case "mill":
+		return millRunsVerification(args)
+	case "dune":
+		return duneRunsVerification(args)
+	case "opam":
+		return opamRunsVerification(args)
 	case "npm", "pnpm", "yarn":
 		return packageManagerRunsVerification(args)
 	case "npx", "pnpx", "yarnx":
@@ -5286,6 +5385,10 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 		return pythonProjectToolRunsVerification(cmd, args)
 	case "bundle", "bundler":
 		return bundleRunsVerification(args)
+	case "rails":
+		return railsRunsVerification(args)
+	case "rake":
+		return rakeRunsVerification(args)
 	}
 	return cmd == "test" || isVerificationRunnerCommand(cmd, args)
 }
@@ -5636,6 +5739,10 @@ func isVerificationRunnerCommand(name string, args []string) bool {
 		return false
 	}
 	switch cmd {
+	case "rails":
+		return railsRunsVerification(args)
+	case "rake":
+		return rakeRunsVerification(args)
 	case "ruff":
 		return firstArgIn(args, "check")
 	case "golangci-lint":
@@ -5656,6 +5763,423 @@ func isVerificationRunnerCommand(name string, args []string) bool {
 	return isVerificationRunner(name)
 }
 
+func railsRunsVerification(args []string) bool {
+	return firstArgIn(args, "test")
+}
+
+func rakeRunsVerification(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for _, arg := range args {
+		normalized := normalizeShellExecutableToken(arg)
+		if strings.HasPrefix(normalized, "-") || isShellEnvAssignment(normalized) {
+			continue
+		}
+		return isRakeVerificationTask(normalized)
+	}
+	return false
+}
+
+func isRakeVerificationTask(task string) bool {
+	task = strings.TrimSpace(task)
+	if task == "" {
+		return false
+	}
+	return task == "test" || task == "spec" || task == "cucumber" ||
+		strings.HasPrefix(task, "test:") ||
+		strings.HasPrefix(task, "spec:") ||
+		strings.HasPrefix(task, "cucumber:")
+}
+
+func swiftRunsVerification(args []string) bool {
+	return firstArgIn(args, "test", "build")
+}
+
+func zigRunsVerification(args []string) bool {
+	return firstArgIn(args, "test", "build")
+}
+
+func stackRunsVerification(args []string) bool {
+	args = stripHaskellToolOptions(args)
+	return firstArgIn(args, "test", "build", "bench", "haddock")
+}
+
+func cabalRunsVerification(args []string) bool {
+	args = stripHaskellToolOptions(args)
+	return firstArgIn(args, "test", "v2-test", "new-test", "build", "v2-build", "new-build", "bench", "v2-bench", "new-bench", "haddock", "v2-haddock", "new-haddock")
+}
+
+func stripHaskellToolOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		if arg == "--" || isShellEnvAssignment(arg) {
+			args = args[1:]
+			continue
+		}
+		switch arg {
+		case "--stack-yaml", "--resolver", "--compiler", "--project-file", "--store-dir", "-w", "--with-compiler":
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--stack-yaml=") ||
+			strings.HasPrefix(arg, "--resolver=") ||
+			strings.HasPrefix(arg, "--compiler=") ||
+			strings.HasPrefix(arg, "--project-file=") ||
+			strings.HasPrefix(arg, "--store-dir=") ||
+			strings.HasPrefix(arg, "--with-compiler=") {
+			args = args[1:]
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func leinRunsVerification(args []string) bool {
+	args = stripClojureToolOptions(args)
+	return firstArgIn(args, "test", "check", "eastwood", "kibit", "clj-kondo")
+}
+
+func clojureRunsVerification(args []string) bool {
+	args = stripClojureToolOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	for i, arg := range args {
+		normalized := normalizeShellExecutableToken(arg)
+		if clojureAliasLooksVerification(normalized) {
+			return true
+		}
+		if normalized == "-m" && i+1 < len(args) && !strings.HasPrefix(normalizeShellExecutableToken(args[i+1]), "-") {
+			return clojureMainLooksVerification(args[i+1])
+		}
+	}
+	return false
+}
+
+func babashkaRunsVerification(args []string) bool {
+	args = stripClojureToolOptions(args)
+	if firstArgIn(args, "test", "check") {
+		return true
+	}
+	if len(args) > 1 && normalizeShellExecutableToken(args[0]) == "run" {
+		return isVerificationScriptName(normalizeShellExecutableToken(args[1]))
+	}
+	return false
+}
+
+func stripClojureToolOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		if arg == "--" || isShellEnvAssignment(arg) {
+			args = args[1:]
+			continue
+		}
+		switch arg {
+		case "-sdeps", "-jvm-opts", "-config", "-deps-root", "-main":
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "-sdeps=") ||
+			strings.HasPrefix(arg, "-jvm-opts=") ||
+			strings.HasPrefix(arg, "-config=") ||
+			strings.HasPrefix(arg, "-deps-root=") {
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func clojureAliasLooksVerification(arg string) bool {
+	if arg == "" {
+		return false
+	}
+	for _, prefix := range []string{"-m:", "-x:", "-a:", "-a"} {
+		if strings.HasPrefix(arg, prefix) {
+			arg = strings.TrimPrefix(arg, prefix)
+			break
+		}
+	}
+	for _, part := range strings.Split(arg, ":") {
+		switch part {
+		case "test", "tests", "kaocha", "eftest", "cognitect-test-runner", "runner", "check", "lint", "clj-kondo":
+			return true
+		}
+	}
+	return false
+}
+
+func clojureMainLooksVerification(main string) bool {
+	main = normalizeShellExecutableToken(main)
+	return strings.Contains(main, "kaocha") ||
+		strings.Contains(main, "eftest") ||
+		strings.Contains(main, "cognitect.test-runner") ||
+		strings.Contains(main, "clj-kondo")
+}
+
+func sbtRunsVerification(args []string) bool {
+	args = stripScalaToolOptions(args)
+	for _, arg := range args {
+		for _, task := range scalaTaskTokens(arg) {
+			if scalaTaskLooksVerification(task) {
+				return true
+			}
+			if scalaTaskLooksNonVerification(task) {
+				return false
+			}
+		}
+	}
+	return false
+}
+
+func millRunsVerification(args []string) bool {
+	args = stripScalaToolOptions(args)
+	for _, arg := range args {
+		for _, task := range scalaTaskTokens(arg) {
+			if millTaskLooksVerification(task) {
+				return true
+			}
+			if scalaTaskLooksNonVerification(task) {
+				return false
+			}
+		}
+	}
+	return false
+}
+
+func stripScalaToolOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		if arg == "--" || isShellEnvAssignment(arg) {
+			args = args[1:]
+			continue
+		}
+		switch arg {
+		case "-d", "--debug", "-v", "--verbose", "-batch", "--batch", "-no-colors", "--no-colors":
+			args = args[1:]
+			continue
+		case "-sbt-dir", "-sbt-boot", "-ivy", "-java-home", "-jvm-debug", "--meta-level":
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "-sbt-dir=") ||
+			strings.HasPrefix(arg, "-sbt-boot=") ||
+			strings.HasPrefix(arg, "-ivy=") ||
+			strings.HasPrefix(arg, "-java-home=") ||
+			strings.HasPrefix(arg, "-jvm-debug=") ||
+			strings.HasPrefix(arg, "--meta-level=") {
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func normalizeScalaTaskToken(task string) string {
+	task = strings.TrimSpace(normalizeShellExecutableToken(task))
+	task = strings.Trim(task, "'\"")
+	for strings.HasPrefix(task, ";") {
+		task = strings.TrimPrefix(task, ";")
+	}
+	return task
+}
+
+func scalaTaskTokens(arg string) []string {
+	normalized := normalizeScalaTaskToken(arg)
+	if normalized == "" {
+		return nil
+	}
+	parts := strings.Split(normalized, ";")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = normalizeScalaTaskToken(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func scalaTaskLooksVerification(task string) bool {
+	task = strings.TrimPrefix(task, "+")
+	task = strings.TrimPrefix(task, "~")
+	task = strings.TrimPrefix(task, "!")
+	task = strings.TrimSpace(task)
+	if idx := strings.LastIndex(task, "/"); idx >= 0 {
+		task = task[idx+1:]
+	}
+	switch task {
+	case "test", "testonly", "testquick", "compile", "test:compile", "it:test", "integrationtest/test",
+		"scalafmtcheck", "scalafmtcheckall", "scalafmtsbtcheck", "scalafmttestcheck",
+		"scalafix", "scalafixall", "scalastyle", "coverage", "coverageoff", "coverageaggregate":
+		return true
+	}
+	return strings.HasSuffix(task, ":test") ||
+		strings.HasSuffix(task, "/test") ||
+		strings.HasSuffix(task, ".test") ||
+		strings.HasSuffix(task, ".compile") ||
+		strings.HasSuffix(task, ".scalafmtcheck") ||
+		strings.HasSuffix(task, ".scalafmtcheckall")
+}
+
+func millTaskLooksVerification(task string) bool {
+	return scalaTaskLooksVerification(task)
+}
+
+func scalaTaskLooksNonVerification(task string) bool {
+	task = strings.TrimPrefix(task, "+")
+	task = strings.TrimPrefix(task, "~")
+	task = strings.TrimSpace(task)
+	if idx := strings.LastIndex(task, "/"); idx >= 0 {
+		task = task[idx+1:]
+	}
+	switch task {
+	case "run", "console", "repl", "update", "reload", "publishlocal", "publish", "assembly":
+		return true
+	}
+	return strings.HasSuffix(task, ".run") ||
+		strings.HasSuffix(task, "/run") ||
+		strings.HasSuffix(task, ":run")
+}
+
+func duneRunsVerification(args []string) bool {
+	args = stripDuneOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	cmd := normalizeShellExecutableToken(args[0])
+	switch cmd {
+	case "runtest", "test":
+		return true
+	case "build":
+		if len(args) == 1 {
+			return true
+		}
+		for _, arg := range args[1:] {
+			target := normalizeShellExecutableToken(arg)
+			if target == "@runtest" || target == "@check" || target == "@fmt" || strings.HasSuffix(target, "/runtest") || strings.HasSuffix(target, "/check") {
+				return true
+			}
+		}
+		return true
+	case "exec", "utop", "promote", "clean", "install", "subst":
+		return false
+	}
+	return false
+}
+
+func stripDuneOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		if arg == "--" || isShellEnvAssignment(arg) {
+			args = args[1:]
+			continue
+		}
+		switch arg {
+		case "--root", "--workspace", "--profile", "--build-dir", "-j":
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--root=") ||
+			strings.HasPrefix(arg, "--workspace=") ||
+			strings.HasPrefix(arg, "--profile=") ||
+			strings.HasPrefix(arg, "--build-dir=") ||
+			strings.HasPrefix(arg, "-j") {
+			args = args[1:]
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func opamRunsVerification(args []string) bool {
+	args = stripOpamOptions(args)
+	if len(args) == 0 {
+		return false
+	}
+	if normalizeShellExecutableToken(args[0]) != "exec" {
+		return false
+	}
+	args = stripOpamExecOptions(args[1:])
+	if len(args) == 0 {
+		return false
+	}
+	if commandNameBase(args[0]) == "dune" {
+		return duneRunsVerification(args[1:])
+	}
+	return isVerificationRunnerCommand(args[0], args[1:])
+}
+
+func stripOpamOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		if arg == "--" || isShellEnvAssignment(arg) {
+			args = args[1:]
+			continue
+		}
+		switch arg {
+		case "--switch", "--root", "--cli":
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--switch=") || strings.HasPrefix(arg, "--root=") || strings.HasPrefix(arg, "--cli=") {
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
+func stripOpamExecOptions(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		if arg == "--" || isShellEnvAssignment(arg) {
+			args = args[1:]
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return args
+}
+
 func hasNonExecutingVerificationArg(cmd string, args []string) bool {
 	if hasNormalizedArg(args, "--help", "-h", "help", "--version") {
 		return true
@@ -5671,6 +6195,25 @@ func hasNonExecutingVerificationArg(cmd string, args []string) bool {
 		return hasNormalizedArg(args, "--print-config", "--env-info")
 	case "tsc":
 		return hasNormalizedArg(args, "--showconfig", "--init")
+	case "tox":
+		return hasNormalizedArg(args, "--listenvs", "--listenvs-all", "-l", "--showconfig")
+	case "nox":
+		return hasNormalizedArg(args, "--list", "-l", "--list-sessions", "--json")
+	case "rspec", "cucumber":
+		return hasNormalizedArg(args, "--dry-run")
+	case "rubocop":
+		return hasNormalizedArg(args, "--show-cops", "--init")
+	case "phpunit", "pest":
+		return hasNormalizedArg(args, "--list-tests", "--list-groups", "--list-suites", "--generate-configuration", "--migrate-configuration")
+	case "phpstan":
+		return hasNormalizedArg(args, "clear-result-cache", "dump-parameters")
+	case "psalm":
+		return hasNormalizedArg(args, "--init", "--alter", "--set-baseline", "--clear-cache", "--clear-global-cache") ||
+			hasNormalizedArgPrefix(args, "--set-baseline=")
+	case "mypy":
+		return hasNormalizedArg(args, "--install-types")
+	case "pyright", "basedpyright":
+		return hasNormalizedArg(args, "--createstub")
 	}
 	return false
 }
@@ -5832,7 +6375,7 @@ func nxTargetIsVerification(value string) bool {
 }
 func isVerificationRunner(name string) bool {
 	switch commandNameBase(name) {
-	case "pytest", "unittest", "tox", "nox", "jest", "vitest", "eslint", "tsc", "phpunit", "pest", "phpstan", "psalm", "rspec", "rubocop":
+	case "pytest", "unittest", "tox", "nox", "jest", "vitest", "eslint", "tsc", "phpunit", "pest", "phpstan", "psalm", "rspec", "rubocop", "cucumber":
 		return true
 	}
 	return false
@@ -5854,6 +6397,18 @@ func hasNormalizedArg(args []string, targets ...string) bool {
 		normalized := normalizeShellExecutableToken(arg)
 		for _, target := range targets {
 			if normalized == target {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasNormalizedArgPrefix(args []string, prefixes ...string) bool {
+	for _, arg := range args {
+		normalized := normalizeShellExecutableToken(arg)
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(normalized, prefix) {
 				return true
 			}
 		}

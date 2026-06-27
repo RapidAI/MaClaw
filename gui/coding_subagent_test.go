@@ -4013,6 +4013,20 @@ func TestSummarizeSubAgentVerificationCommandSummaryEvidence(t *testing.T) {
 		t.Fatalf("summary naming fresh verification command should not warn, got %q", warning)
 	}
 
+	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./gui.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", Succeeded: true, seq: 3},
+	}, 2)
+	if warning == "" || !strings.Contains(warning, "verification command outcome not referenced") {
+		t.Fatalf("summary naming fresh verification command without outcome should warn, got %q", warning)
+	}
+
+	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./gui failed.\nRisk: known failing assertion.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", Succeeded: false, Summary: "FAIL", seq: 3},
+	}, 2)
+	if warning != "" {
+		t.Fatalf("summary naming fresh failed verification command with outcome should not warn, got %q", warning)
+	}
+
 	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./old passed.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
 		{Command: "go test ./old", Succeeded: true, seq: 1},
 		{Command: "go test ./gui", Succeeded: true, seq: 3},
@@ -4052,6 +4066,20 @@ func TestSummarizeSubAgentClaimedVerificationEvidence(t *testing.T) {
 		t.Fatalf("claimed verification command present in audit log should not warn, got %q", warning)
 	}
 
+	warning = summarizeSubAgentClaimedVerificationEvidence("Verification: `go test ./gui -run TestParser` passed.", []CodingSubAgentCommandResult{
+		{Command: `go   test ./gui -run "TestParser"`, Succeeded: true},
+	})
+	if warning != "" {
+		t.Fatalf("equivalent quoted verification command should match audit log, got %q", warning)
+	}
+
+	warning = summarizeSubAgentClaimedVerificationEvidence("Verification: `go test ./gui -run TestParser` passed.", []CodingSubAgentCommandResult{
+		{Command: `bash -lc "go test ./gui -run TestParser"`, Succeeded: true},
+	})
+	if warning == "" || !strings.Contains(warning, "claimed verification command not found") {
+		t.Fatalf("wrapped verification command should not be treated as the same audit command, got %q", warning)
+	}
+
 	warning = summarizeSubAgentClaimedVerificationEvidence("Verification: `go test ./gui` passed.", []CodingSubAgentCommandResult{
 		{Command: "go test ./api", Succeeded: true},
 	})
@@ -4071,13 +4099,48 @@ func TestSummarizeSubAgentClaimedVerificationEvidence(t *testing.T) {
 		t.Fatalf("structured unquoted verification command present in audit log should not warn, got %q", warning)
 	}
 
+	warning = summarizeSubAgentClaimedVerificationEvidence("Verification command: go test ./gui (passed)", []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", Succeeded: true},
+	})
+	if warning != "" {
+		t.Fatalf("structured verification command with parenthesized status should match audit log, got %q", warning)
+	}
+
+	warning = summarizeSubAgentClaimedVerificationEvidence("Verification command: go test ./gui (failed)", []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", Succeeded: false, Summary: "FAIL"},
+	})
+	if warning != "" {
+		t.Fatalf("structured verification command with failed status should match audit log, got %q", warning)
+	}
+
+	warning = summarizeSubAgentClaimedVerificationEvidence("Tests: go test ./gui => passed", []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", Succeeded: true},
+	})
+	if warning != "" {
+		t.Fatalf("tests-prefixed verification command with arrow status should match audit log, got %q", warning)
+	}
+
+	warning = summarizeSubAgentClaimedVerificationEvidence("Tests: go test ./gui => failed", []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", Succeeded: false, Summary: "FAIL"},
+	})
+	if warning != "" {
+		t.Fatalf("tests-prefixed verification command with failed arrow status should match audit log, got %q", warning)
+	}
+
+	failure := summarizeSubAgentClaimedVerificationFailureEvidence("Validated with: go test ./gui -> passed", []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", Succeeded: false, Summary: "FAIL"},
+	})
+	if failure == "" || !strings.Contains(failure, "claimed verification command passed but audit log recorded failure or empty success") || !strings.Contains(failure, "go test ./gui") {
+		t.Fatalf("arrow-status structured command claimed passed but failed in audit log should fail quality, got %q", failure)
+	}
+
 	warning = summarizeSubAgentClaimedVerificationEvidence("Verification: go test ./gui passed.", []CodingSubAgentCommandResult{
 		{Command: "go test ./gui", Succeeded: false, Summary: "FAIL"},
 	})
 	if warning != "" {
 		t.Fatalf("structured command present in audit log should not warn as missing even when failed, got %q", warning)
 	}
-	failure := summarizeSubAgentClaimedVerificationFailureEvidence("Verification: go test ./gui passed.", []CodingSubAgentCommandResult{
+	failure = summarizeSubAgentClaimedVerificationFailureEvidence("Verification: go test ./gui passed.", []CodingSubAgentCommandResult{
 		{Command: "go test ./gui", Succeeded: false, Summary: "FAIL"},
 	})
 	if failure == "" || !strings.Contains(failure, "claimed verification command passed but audit log recorded failure or empty success") || !strings.Contains(failure, "go test ./gui") {
@@ -4513,6 +4576,10 @@ func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T)
 		{Command: "bundle exec cucumber", Succeeded: true, Summary: "0 scenarios\n0 steps\n0m0.000s"},
 		{Command: "vendor/bin/phpunit", Succeeded: true, Summary: "OK (0 tests, 0 assertions)"},
 		{Command: "vitest run", Succeeded: true, Summary: "Test Files  0 passed (0)\nTests  0 passed (0)"},
+		{Command: "go test ./...", Succeeded: true, Summary: `go: warning: "./..." matched no packages`},
+		{Command: "mvn test", Succeeded: true, Summary: "[INFO] No tests to run."},
+		{Command: "cargo test", Succeeded: true, Summary: "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored"},
+		{Command: "dotnet test", Succeeded: true, Summary: "Total tests: 0. Passed: 0. Failed: 0. Skipped: 0."},
 	}
 	for _, command := range emptySuccessfulOutputs {
 		status, summary = summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{command}, 0)
@@ -4540,6 +4607,13 @@ func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T)
 	}, 0)
 	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "`bundle exec cucumber`") {
 		t.Fatalf("normal successful cucumber output with 0 failures should pass, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeSubAgentVerification([]string{"App.Tests/UnitTest1.cs"}, []CodingSubAgentCommandResult{
+		{Command: "dotnet test", Succeeded: true, Summary: "Total tests: 10. Passed: 10. Failed: 0. Skipped: 0."},
+	}, 0)
+	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "`dotnet test`") {
+		t.Fatalf("normal successful dotnet output should pass, got (%q, %q)", status, summary)
 	}
 }
 
@@ -4671,6 +4745,8 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"mix credo --strict",
 		"mix dialyzer",
 		"MIX_ENV=test mix test",
+		"cucumber",
+		"bundle exec cucumber",
 		"npm run typecheck",
 		"eslint .",
 		"npm exec eslint .",
@@ -4704,6 +4780,42 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"npx --package typescript tsc --noEmit",
 		"npx.cmd tsc --noEmit",
 		"cargo clippy --all-targets",
+		"swift test",
+		"swift test --filter ParserTests",
+		"swift build",
+		"zig test src/main.zig",
+		"zig build test",
+		"zig build",
+		"stack test",
+		"stack --stack-yaml stack-ci.yaml test",
+		"stack build",
+		"cabal test all",
+		"cabal v2-test all",
+		"cabal --project-file=cabal.project.ci build all",
+		"cabal haddock all",
+		"lein test",
+		"lein check",
+		"lein clj-kondo",
+		"clojure -M:test",
+		"clojure -X:test",
+		"clojure -M:kaocha",
+		"clj -M -m kaocha.runner",
+		"bb test",
+		"bb run test",
+		"sbt test",
+		"sbt compile",
+		"sbt scalafmtCheckAll",
+		"sbt clean test",
+		"sbt +testQuick",
+		"mill __.test",
+		"mill app.compile",
+		"mill app.scalafmtCheck",
+		"dune runtest",
+		"dune test",
+		"dune build @check",
+		"dune --profile release build @runtest",
+		"opam exec -- dune runtest",
+		"opam --switch 5.1 exec -- dune build @check",
 		"go vet ./...",
 		"go build ./...",
 		"golangci-lint run ./...",
@@ -4776,6 +4888,12 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"dotnet msbuild -t:Test",
 		"dotnet msbuild /t:Restore,Build",
 		"bundle exec rspec",
+		"rails test",
+		"bin/rails test test/models/user_test.rb",
+		"bundle exec rails test",
+		"rake test",
+		"bundle exec rake spec",
+		"bundle exec rake test:models",
 		"rubocop",
 		"bundle exec rubocop",
 		"vendor/bin/phpunit",
@@ -4824,6 +4942,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"echo build",
 		"echo lint",
 		"echo --test",
+		"rake assets:precompile",
 		"rg test .",
 		"git log --oneline --grep test",
 		"npm exec serve .",
@@ -4851,7 +4970,15 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"pipenv run flask run",
 		"hatch run serve",
 		"pdm run serve",
+		"tox --listenvs",
+		"tox -l",
+		"tox --showconfig",
+		"nox --list-sessions",
+		"nox --json",
 		"bundle exec rails server",
+		"bundle exec rspec --dry-run",
+		"cucumber --dry-run",
+		"bundle exec cucumber --dry-run",
 		"cmake -S . -B build",
 		"cmake --build build --target clean",
 		"cmake --build build --target install",
@@ -4877,6 +5004,17 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"composer dump-autoload",
 		"composer run serve",
 		"composer exec php-cs-fixer fix",
+		"vendor/bin/phpunit --list-tests",
+		"./vendor/bin/phpunit --list-groups",
+		"vendor/bin/pest --list-suites",
+		"phpunit --generate-configuration",
+		"phpunit --migrate-configuration",
+		"vendor/bin/phpstan clear-result-cache",
+		"vendor/bin/phpstan dump-parameters",
+		"./vendor/bin/psalm --init",
+		"vendor/bin/psalm --alter",
+		"vendor/bin/psalm --set-baseline=psalm-baseline.xml",
+		"vendor/bin/psalm --clear-cache",
 		"./mvnw dependency:tree",
 		"mvn -q dependency:tree",
 		"gradle dependencies",
@@ -4890,6 +5028,36 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"go -C gui env",
 		"go fmt ./...",
 		"cargo fmt --all",
+		"swift run App",
+		"swift package update",
+		"swift package resolve",
+		"zig run src/main.zig",
+		"zig fmt src/main.zig",
+		"stack run app",
+		"stack setup",
+		"cabal run app",
+		"cabal update",
+		"cabal install exe:app",
+		"lein repl",
+		"lein run",
+		"lein deps",
+		"clojure -M:dev",
+		"clojure -X",
+		"clj -M -m app.main",
+		"bb run app",
+		"bb repl",
+		"sbt run",
+		"sbt console",
+		"sbt update",
+		"sbt assembly",
+		"mill app.run",
+		"mill clean",
+		"dune exec ./app.exe",
+		"dune utop",
+		"dune promote",
+		"dune clean",
+		"opam install dune",
+		"opam update",
 		"npm run format",
 		"npm run fmt",
 		"pnpm run format",
@@ -4927,6 +5095,8 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"golangci-lint run --fix ./...",
 		"rubocop -a",
 		"bundle exec rubocop -A",
+		"bundle exec rubocop --show-cops",
+		"rubocop --init",
 		"biome format .",
 		"biome format --write .",
 		"biome check --write .",
@@ -4991,6 +5161,10 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"npx nx reset",
 		"npm exec -- vite --host 0.0.0.0",
 		"golangci-lint cache clean",
+		"mypy --install-types",
+		"python -m mypy --install-types --non-interactive",
+		"pyright --createstub requests",
+		"basedpyright --createstub django",
 		"pyre init",
 	}
 	for _, command := range negative {

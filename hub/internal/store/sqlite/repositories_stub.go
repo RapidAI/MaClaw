@@ -48,6 +48,7 @@ type emailBlockRepo struct {
 type machineRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
+	coalesce   *WriteCoalescer
 }
 type viewerTokenRepo struct {
 	db, readDB *sql.DB
@@ -64,6 +65,7 @@ type invitationCodeRepo struct {
 type sessionRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
+	coalesce   *WriteCoalescer
 	heartbeatCleanupCounter atomic.Int32
 }
 type emailInviteRepo struct {
@@ -90,10 +92,10 @@ func NewStore(p *Provider) *store.Store {
 		Enrollments:     &enrollmentRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		EmailBlocks:     &emailBlockRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		InvitationCodes: &invitationCodeRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Machines:        &machineRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Machines:        &machineRepo{db: p.Write, readDB: p.Read, batch: p.batch, coalesce: p.coalesce},
 		ViewerTokens:    &viewerTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		LoginTokens:     &loginTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Sessions:        &sessionRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Sessions:        &sessionRepo{db: p.Write, readDB: p.Read, batch: p.batch, coalesce: p.coalesce},
 		EmailInvites:    &emailInviteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		WorkflowRepo:    &workflowRepo{db: p.Write, readDB: p.Read},
 		LLMPromptCache:  &llmPromptCacheRepo{db: p.Write, readDB: p.Read, batch: p.batch},
@@ -964,6 +966,26 @@ func (r *machineRepo) UpdateMetadata(ctx context.Context, machineID string, meta
 	if heartbeatSec < 5 {
 		heartbeatSec = 10
 	}
+	// Use write-coalescer: metadata updates arrive on every heartbeat (~every 10-60s
+	// per machine). At 10K machines, that's 167-1000 writes/sec. The coalescer
+	// deduplicates per machineID, only flushing the latest values every 5s.
+	if r.coalesce != nil {
+		r.coalesce.Set(
+			"machine_meta:"+machineID,
+			`UPDATE machines
+			 SET name = ?, platform = ?, hostname = ?, arch = ?, app_version = ?, heartbeat_sec = ?, updated_at = ?
+			 WHERE id = ?`,
+			metadata.Name,
+			metadata.Platform,
+			metadata.Hostname,
+			metadata.Arch,
+			metadata.AppVersion,
+			heartbeatSec,
+			time.Now().Format(time.RFC3339),
+			machineID,
+		)
+		return nil
+	}
 	return execWrite(
 		ctx,
 		r.batch,
@@ -995,6 +1017,19 @@ func (r *machineRepo) UpdateStatus(ctx context.Context, machineID string, status
 }
 
 func (r *machineRepo) UpdateHeartbeat(ctx context.Context, machineID string, at time.Time) error {
+	// Use write-coalescer: heartbeats are the highest frequency write
+	// (~1 per 5-60s per machine). At 10K machines this is 167-2000 writes/sec.
+	// Coalescing by machineID reduces to ~2000 writes per 5s flush = 1 tx.
+	if r.coalesce != nil {
+		r.coalesce.Set(
+			"machine_hb:"+machineID,
+			`UPDATE machines SET last_seen_at = ?, updated_at = ? WHERE id = ?`,
+			at.Format(time.RFC3339),
+			at.Format(time.RFC3339),
+			machineID,
+		)
+		return nil
+	}
 	return execWrite(
 		ctx,
 		r.batch,
@@ -1584,6 +1619,22 @@ func (r *sessionRepo) UpdateSummary(ctx context.Context, sessionID string, summa
 }
 
 func (r *sessionRepo) UpdatePreview(ctx context.Context, sessionID string, previewText string, outputSeq int64, updatedAt time.Time) error {
+	// Use write-coalescer: preview deltas are already throttled to 1 write per
+	// 2s per session by the session.Service. With 1000 active sessions that's
+	// still 500 writes/sec. Coalescing by sessionID reduces to ~1000 writes per
+	// 5s flush = 1 transaction.
+	if r.coalesce != nil {
+		r.coalesce.Set(
+			"session_preview:"+sessionID,
+			`UPDATE sessions SET preview_text = ?, output_seq = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
+			previewText,
+			outputSeq,
+			updatedAt.Format(time.RFC3339),
+			sessionID,
+			store.TenantIDFromContext(ctx),
+		)
+		return nil
+	}
 	return execWrite(
 		ctx,
 		r.batch,

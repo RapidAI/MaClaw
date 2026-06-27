@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -314,19 +315,34 @@ type Service struct {
 	sync                 syncRecorder
 	refresher            routeSnapshotRefresher
 	recorder             *diagnostics.FailureEventRecorder
+
+	// heartbeatWriteThrottle tracks the last time UpdateHeartbeat was actually
+	// written to SQLite for each hub. Heartbeats arriving within
+	// heartbeatWriteInterval of the last write are skipped to reduce disk IO.
+	heartbeatWriteThrottle sync.Map // map[hubID string]time.Time
+	heartbeatWriteInterval time.Duration
+
+	// knownPolicyHubs caches hub IDs whose registration policy already exists
+	// in the database, eliminating repeated SELECT queries on every heartbeat.
+	knownPolicyHubs sync.Map // map[hubID string]struct{}
+
+	// routesDirty signals that hub routing data has changed and the in-memory
+	// route table should be rebuilt. When false, refreshRoutes is a no-op.
+	routesDirty atomic.Bool
 }
 
 func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, routes store.HubDomainRouteRepository, blockedEmails BlockedEmailRepository, blockedIPs BlockedIPRepository, settings store.SystemSettingsRepository, mailer mail.Mailer, publicBaseURL string) *Service {
 	return &Service{
-		hubs:          hubs,
-		links:         links,
-		routes:        routes,
-		blockedEmails: blockedEmails,
-		blockedIPs:    blockedIPs,
-		settings:      settings,
-		mailer:        mailer,
-		publicBaseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
-		client:        &http.Client{Timeout: 30 * time.Second},
+		hubs:                   hubs,
+		links:                  links,
+		routes:                 routes,
+		blockedEmails:          blockedEmails,
+		blockedIPs:             blockedIPs,
+		settings:               settings,
+		mailer:                 mailer,
+		publicBaseURL:          strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
+		client:                 &http.Client{Timeout: 30 * time.Second},
+		heartbeatWriteInterval: 5 * time.Minute,
 	}
 }
 
@@ -336,6 +352,10 @@ func (s *Service) SetSyncRecorder(recorder syncRecorder) {
 
 func (s *Service) SetRouteSnapshotRefresher(refresher routeSnapshotRefresher) {
 	s.refresher = refresher
+	// Mark dirty so the next refreshRoutes call triggers an initial Rebuild.
+	// This covers the startup path where routing data exists in the DB but
+	// the in-memory route table hasn't been populated yet.
+	s.markRoutesDirty()
 }
 
 func (s *Service) SetFailureEventRecorder(recorder *diagnostics.FailureEventRecorder) {
@@ -573,7 +593,7 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 	if err := s.ensureDefaultHubRegistrationPolicy(ctx, hub.ID); err != nil {
 		return nil, err
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	confirmURL, err := s.prepareConfirmation(ctx, hub.ID)
 	if err != nil {
 		return nil, err
@@ -655,7 +675,7 @@ func (s *Service) updateRegisteredHub(ctx context.Context, existing *store.HubIn
 	if err := s.ensureDefaultHubRegistrationPolicy(ctx, existing.ID); err != nil {
 		return nil, err
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 
 	if alreadyConfirmed {
 		return &RegisterHubResult{HubID: existing.ID, HubSecret: rawSecret, PendingConfirmation: false, Message: "Hub re-registered successfully, already confirmed"}, nil
@@ -782,8 +802,18 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 			}
 		}
 	}
-	if err := s.hubs.UpdateHeartbeat(ctx, hubID, now); err != nil {
-		return err
+	// Skip UpdateHeartbeat when update != nil: UpdateRegistration above already
+	// wrote last_seen_at and updated_at in the same hub row. Avoid a redundant
+	// second write for the same timestamp. Still update the throttle timestamp
+	// so the next update==nil heartbeat won't write again immediately.
+	if update == nil && s.shouldWriteHeartbeat(hubID) {
+		if err := s.hubs.UpdateHeartbeat(ctx, hubID, now); err != nil {
+			return err
+		}
+	} else if update != nil {
+		// UpdateRegistration already wrote last_seen_at. Record the write time
+		// in the throttle so subsequent simple heartbeats are suppressed.
+		s.heartbeatWriteThrottle.Store(hubID, now)
 	}
 	if invitationCodeRequired != nil {
 		if err := s.hubs.UpdateInvitationCodeRequired(ctx, hubID, *invitationCodeRequired, now); err != nil {
@@ -877,7 +907,7 @@ func (s *Service) confirmHubRegistration(ctx context.Context, hub *store.HubInst
 		return err
 	}
 	s.recordHubInstance(ctx, hub)
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	if s.settings != nil {
 		if err := s.settings.Set(ctx, hubConfirmationPrefix+hubID, mustJSON(confirmationTokenState{Tokens: []confirmationTokenRecord{}})); err != nil {
 			return err
@@ -1594,7 +1624,7 @@ func (s *Service) MigrateUser(ctx context.Context, req MigrateUserRequest) (*Mig
 			upserted = append(upserted, item.ID)
 		}
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	if err := cleanupLocalUsers(ctx); err != nil {
 		return nil, err
 	}
@@ -1642,7 +1672,7 @@ func (s *Service) migrateUserPattern(ctx context.Context, pattern, fromHubID, to
 			}
 		}
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	if err := cleanupLocalUsers(ctx); err != nil {
 		return nil, err
 	}
@@ -1747,7 +1777,7 @@ func (s *Service) MigrateDomain(ctx context.Context, req MigrateDomainRequest) (
 			}
 		}
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	if err := cleanupLocalUsers(ctx); err != nil {
 		return nil, err
 	}
@@ -1810,7 +1840,7 @@ func (s *Service) migrateTenantDomain(ctx context.Context, domain, sourceTenantI
 			}
 		}
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	return &MigrationResult{Mode: "domain", Domain: domain, ToHubID: toHubID, RemovedIDs: removed, UpsertedIDs: upserted}, nil
 }
 
@@ -1849,7 +1879,7 @@ func (s *Service) RefreshUserInventory(ctx context.Context) (RefreshUserInventor
 			result.UsersIndexed += len(emails)
 		}
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	return result, nil
 }
 
@@ -2639,7 +2669,7 @@ func (s *Service) UpdateVisibility(ctx context.Context, hubID, visibility string
 	if err := s.recordHubByID(ctx, hubID); err != nil {
 		return err
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	return nil
 }
 
@@ -2650,7 +2680,7 @@ func (s *Service) DisableHub(ctx context.Context, hubID, reason string) error {
 	if err := s.recordHubByID(ctx, hubID); err != nil {
 		return err
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	return nil
 }
 
@@ -2661,7 +2691,7 @@ func (s *Service) EnableHub(ctx context.Context, hubID string) error {
 	if err := s.recordHubByID(ctx, hubID); err != nil {
 		return err
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	return nil
 }
 
@@ -2705,6 +2735,9 @@ func (s *Service) DeleteHub(ctx context.Context, hubID string) error {
 	if err := s.deleteHubRegistrationPolicy(ctx, hubID); err != nil {
 		return err
 	}
+	// Clean up per-hub in-memory caches.
+	s.heartbeatWriteThrottle.Delete(hubID)
+	s.knownPolicyHubs.Delete(hubID)
 	if s.settings != nil {
 		if err := s.settings.Set(ctx, tenantDigitalEmployeeAuthorizationsKey(hubID), "{}"); err != nil {
 			return err
@@ -2719,7 +2752,7 @@ func (s *Service) DeleteHub(ctx context.Context, hubID string) error {
 		}
 		s.sync.DeleteHubInstance(ctx, hubID)
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	return nil
 }
 
@@ -2769,7 +2802,7 @@ func (s *Service) AddBlockedEmail(ctx context.Context, email, reason string) err
 	if s.sync != nil {
 		s.sync.AppendBlockedEmail(ctx, item)
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	return nil
 }
 
@@ -2791,7 +2824,7 @@ func (s *Service) RemoveBlockedEmail(ctx context.Context, email string) error {
 	if s.sync != nil {
 		s.sync.DeleteBlockedEmail(ctx, normalized)
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	return nil
 }
 
@@ -2807,7 +2840,7 @@ func (s *Service) AddBlockedIP(ctx context.Context, ip, reason string) error {
 	if s.sync != nil {
 		s.sync.AppendBlockedIP(ctx, item)
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	return nil
 }
 
@@ -2829,7 +2862,7 @@ func (s *Service) RemoveBlockedIP(ctx context.Context, ip string) error {
 	if s.sync != nil {
 		s.sync.DeleteBlockedIP(ctx, normalized)
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	return nil
 }
 
@@ -3006,7 +3039,7 @@ func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email s
 	if s.sync != nil {
 		s.sync.AppendHubUserLink(ctx, link)
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	return nil
 }
 
@@ -3050,7 +3083,7 @@ func (s *Service) DeleteHubUserLink(ctx context.Context, hubID, rawSecret, email
 			}
 		}
 	}
-	s.refreshRoutes(ctx)
+	s.refreshRoutesForce(ctx)
 	return nil
 }
 
@@ -4092,5 +4125,45 @@ func (s *Service) refreshRoutes(ctx context.Context) {
 	if s.refresher == nil {
 		return
 	}
+	if !s.routesDirty.Swap(false) {
+		return
+	}
 	_ = s.refresher.Rebuild(ctx)
+}
+
+// refreshRoutesForce marks routes dirty and immediately rebuilds.
+// Use this in mutation paths that change routing state (registrations,
+// domain changes, user link updates, etc.).
+func (s *Service) refreshRoutesForce(ctx context.Context) {
+	s.markRoutesDirty()
+	s.refreshRoutes(ctx)
+}
+
+// markRoutesDirty signals that routing data has changed and the in-memory
+// route table should be rebuilt on the next refreshRoutes call.
+func (s *Service) markRoutesDirty() {
+	s.routesDirty.Store(true)
+}
+
+// shouldWriteHeartbeat returns true if enough time has elapsed since the last
+// UpdateHeartbeat SQLite write for this hub. This throttles the high-frequency
+// heartbeat writes (every 30-60s from each Hub client) down to one write per
+// heartbeatWriteInterval (default 5 minutes).
+func (s *Service) shouldWriteHeartbeat(hubID string) bool {
+	now := time.Now()
+	if v, ok := s.heartbeatWriteThrottle.Load(hubID); ok {
+		if now.Sub(v.(time.Time)) < s.heartbeatWriteInterval {
+			return false
+		}
+	}
+	s.heartbeatWriteThrottle.Store(hubID, now)
+	return true
+}
+
+// SetHeartbeatWriteInterval configures the minimum interval between SQLite
+// heartbeat writes for the same hub. Zero or negative values are ignored.
+func (s *Service) SetHeartbeatWriteInterval(d time.Duration) {
+	if d > 0 {
+		s.heartbeatWriteInterval = d
+	}
 }
