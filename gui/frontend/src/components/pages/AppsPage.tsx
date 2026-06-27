@@ -2074,17 +2074,19 @@ function appSkillDependencies(app: AppEntry): AppSkillDependency[] {
         const id = String(dep.id || '').trim();
         if (!id) return;
         const existing = merged.get(id);
+        const depVersion = 'version' in dep ? dep.version : undefined;
+        const depCapabilities = 'capabilities' in dep && Array.isArray(dep.capabilities) ? dep.capabilities : [];
         if (!existing) {
             merged.set(id, { ...dep, id });
             return;
         }
         merged.set(id, {
             ...existing,
-            version: existing.version || dep.version,
+            version: existing.version || depVersion,
             kind: existing.kind || dep.kind,
             required: existing.required !== false || dep.required !== false,
             source: existing.source || dep.source,
-            capabilities: Array.from(new Set([...(existing.capabilities || []), ...(dep.capabilities || [])])),
+            capabilities: Array.from(new Set([...(existing.capabilities || []), ...depCapabilities])),
         });
     });
     return Array.from(merged.values());
@@ -2360,6 +2362,8 @@ function mergeDataSrvInstalledDependencies(base: AppSkillDependency[], recovered
         const id = String(dep.id || '').trim();
         if (!id) return;
         const existing = byID.get(id);
+        const depVersion = 'version' in dep ? dep.version : undefined;
+        const depCapabilities = 'capabilities' in dep && Array.isArray(dep.capabilities) ? dep.capabilities : [];
         if (!existing) {
             byID.set(id, { ...dep, id });
             return;
@@ -2367,11 +2371,11 @@ function mergeDataSrvInstalledDependencies(base: AppSkillDependency[], recovered
         byID.set(id, {
             ...existing,
             ...dep,
-            version: existing.version || dep.version,
+            version: existing.version || depVersion,
             kind: existing.kind || dep.kind,
             source: existing.source || dep.source,
             required: existing.required !== false && dep.required !== false,
-            capabilities: Array.from(new Set([...(existing.capabilities || []), ...(dep.capabilities || [])])),
+            capabilities: Array.from(new Set([...(existing.capabilities || []), ...depCapabilities])),
         });
     });
     return Array.from(byID.values());
@@ -9406,7 +9410,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             manifest: app.manifest ? {
                 ...app.manifest,
                 installUnit: app.manifest.installUnit === 'builtin' ? 'skill' : app.manifest.installUnit,
-                skill: { ...(app.manifest.skill || {}), id: skillID, appDefinitionFile: 'maclaw.app.json' },
+                skill: app.manifest.skill ? { ...app.manifest.skill, id: skillID, appDefinitionFile: 'maclaw.app.json' } : app.manifest.skill,
             } : app.manifest,
         };
         const manifestText = JSON.stringify(appToManifest(skillBoundApp), null, 2);
@@ -9456,7 +9460,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             manifest: draftPanelApp.manifest ? {
                 ...draftPanelApp.manifest,
                 installUnit: draftPanelApp.manifest.installUnit === 'builtin' ? 'skill' : draftPanelApp.manifest.installUnit,
-                skill: { ...(draftPanelApp.manifest.skill || {}), id: skillID, appDefinitionFile: 'maclaw.app.json' },
+                skill: draftPanelApp.manifest.skill ? { ...draftPanelApp.manifest.skill, id: skillID, appDefinitionFile: 'maclaw.app.json' } : draftPanelApp.manifest.skill,
             } : draftPanelApp.manifest,
         };
         if (!latestAppRunEvidence(panelApp)) {

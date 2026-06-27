@@ -1015,6 +1015,27 @@ func TestBuildCodingToolDefinitionsFallbackUsesCoreRegistryPlusExtras(t *testing
 	}
 }
 
+func TestBuildCodingToolDefinitionsFallbackReturnsDefensiveCopy(t *testing.T) {
+	first := buildCodingToolDefinitionsFallback()
+	writeFile := codingToolDefinitionForTest(t, first, "write_file")
+	params, _ := writeFile["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	content, _ := props["content"].(map[string]interface{})
+	content["description"] = "mutated fallback cache"
+
+	second := buildCodingToolDefinitionsFallback()
+	writeFile = codingToolDefinitionForTest(t, second, "write_file")
+	params, _ = writeFile["parameters"].(map[string]interface{})
+	props, _ = params["properties"].(map[string]interface{})
+	contentDesc := codingToolPropDescriptionForTest(props["content"])
+	if strings.Contains(contentDesc, "mutated fallback cache") {
+		t.Fatalf("fallback tool cache should return defensive copies, got description %q", contentDesc)
+	}
+	if !strings.Contains(contentDesc, "No length limit") {
+		t.Fatalf("fallback tool cache lost write_file hint, got description %q", contentDesc)
+	}
+}
+
 func TestCodingSubAgentToolNames_SingleSource(t *testing.T) {
 	// Verify that codingSubAgentToolOrder is the single source of truth:
 	// every tool in the fallback definitions must be in the derived map.

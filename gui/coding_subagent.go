@@ -7973,6 +7973,11 @@ var codingSubAgentToolOrder = []string{
 
 var codingSubAgentToolNames = makeCodingSubAgentToolNameSet(codingSubAgentToolOrder)
 
+var (
+	codingSubAgentFallbackToolsOnce sync.Once
+	codingSubAgentFallbackTools     []map[string]interface{}
+)
+
 // codingSubAgentDynamicToolNames lists tools that are conditionally available
 // in the SubAgent (injected based on task context, not always present).
 // These bypass the static tool name check in executeToolWithOutcome.
@@ -8004,7 +8009,6 @@ func buildCodingToolDefinitionsFromRegistry(handler *IMMessageHandler) []map[str
 		return buildCodingToolDefinitionsFallback()
 	}
 
-	fallbacks := buildCodingToolDefinitionsFallback()
 	byName := make(map[string]map[string]interface{}, len(codingSubAgentToolNames))
 	for _, t := range allTools {
 		fn, ok := t["function"].(map[string]interface{})
@@ -8019,15 +8023,19 @@ func buildCodingToolDefinitionsFromRegistry(handler *IMMessageHandler) []map[str
 
 	// The GUI registry does not currently expose every coding-agent-only tool.
 	// Keep registry definitions when present, then fill gaps from fallback defs.
-	for _, t := range fallbacks {
-		fn, ok := t["function"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		name, _ := fn["name"].(string)
-		if codingSubAgentToolNames[name] {
-			if _, exists := byName[name]; !exists {
-				byName[name] = t
+	var fallbacks []map[string]interface{}
+	if len(byName) < len(codingSubAgentToolNames) {
+		fallbacks = buildCodingToolDefinitionsFallback()
+		for _, t := range fallbacks {
+			fn, ok := t["function"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			name, _ := fn["name"].(string)
+			if codingSubAgentToolNames[name] {
+				if _, exists := byName[name]; !exists {
+					byName[name] = t
+				}
 			}
 		}
 	}
@@ -8035,10 +8043,13 @@ func buildCodingToolDefinitionsFromRegistry(handler *IMMessageHandler) []map[str
 	ordered := make([]map[string]interface{}, 0, len(codingSubAgentToolNames))
 	for _, name := range codingSubAgentToolOrder {
 		if t, ok := byName[name]; ok {
-			ordered = append(ordered, compactCodingSubAgentToolDefinition(t))
+			ordered = append(ordered, t)
 		}
 	}
 	if len(ordered) == 0 {
+		if fallbacks == nil {
+			fallbacks = buildCodingToolDefinitionsFallback()
+		}
 		return fallbacks
 	}
 	return ordered
@@ -8047,6 +8058,13 @@ func buildCodingToolDefinitionsFromRegistry(handler *IMMessageHandler) []map[str
 // buildCodingToolDefinitionsFallback provides minimal inline definitions
 // for testing or when the registry is unavailable.
 func buildCodingToolDefinitionsFallback() []map[string]interface{} {
+	codingSubAgentFallbackToolsOnce.Do(func() {
+		codingSubAgentFallbackTools = buildCodingToolDefinitionsFallbackUncached()
+	})
+	return cloneCodingSubAgentToolDefinitions(codingSubAgentFallbackTools)
+}
+
+func buildCodingToolDefinitionsFallbackUncached() []map[string]interface{} {
 	core := agent.NewCoreToolRegistry()
 	agent.RegisterCoreTools(core, agent.CoreToolDeps{})
 	byName := make(map[string]map[string]interface{})
