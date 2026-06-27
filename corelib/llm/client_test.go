@@ -147,8 +147,8 @@ func TestBuildOpenAIChatRequestDataDefaultsToolUseMaxTokens(t *testing.T) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		t.Fatalf("unmarshal body: %v", err)
 	}
-	if req.MaxTokens != defaultOpenAIToolUseMaxTokens {
-		t.Fatalf("max_tokens = %d, want %d", req.MaxTokens, defaultOpenAIToolUseMaxTokens)
+	if req.MaxTokens != cfg.EffectiveMaxOutputTokens() {
+		t.Fatalf("max_tokens = %d, want %d", req.MaxTokens, cfg.EffectiveMaxOutputTokens())
 	}
 }
 
@@ -246,8 +246,8 @@ func TestBuildAnthropicMessagesRequestDataDefaultsTextMaxTokens(t *testing.T) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		t.Fatalf("unmarshal body: %v", err)
 	}
-	if req.MaxTokens != 4096 {
-		t.Fatalf("max_tokens = %d, want 4096", req.MaxTokens)
+	if req.MaxTokens != cfg.EffectiveMaxOutputTokens() {
+		t.Fatalf("max_tokens = %d, want %d", req.MaxTokens, cfg.EffectiveMaxOutputTokens())
 	}
 }
 

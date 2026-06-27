@@ -96,7 +96,7 @@ func (s *SQLiteStore) ListAppInstallations(ctx context.Context, tenantID string,
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	metadataFiltered := strings.TrimSpace(in.WorkflowSkillID) != "" || strings.TrimSpace(in.WorkflowNode) != ""
+	metadataFiltered := appInstallationHasMetadataFilters(in)
 	if !metadataFiltered {
 		query += ` LIMIT ?`
 		args = append(args, limit)
@@ -179,7 +179,264 @@ func appInstallationMatchesMetadataFilters(app AppInstallation, in QueryAppInsta
 	if workflowNode := strings.TrimSpace(in.WorkflowNode); workflowNode != "" && !appInstallationHasWorkflowNode(app.Metadata, workflowNode) {
 		return false
 	}
+	if approvalStatus := strings.TrimSpace(in.ApprovalStatus); approvalStatus != "" && !appInstallationHasApprovalStatus(app.Metadata, approvalStatus) {
+		return false
+	}
+	if approvalDecision := strings.TrimSpace(in.ApprovalDecision); approvalDecision != "" && !appInstallationHasApprovalDecision(app.Metadata, approvalDecision) {
+		return false
+	}
+	if applicantID := strings.TrimSpace(in.ApplicantID); applicantID != "" && !appInstallationHasApprovalActor(app.Metadata, applicantID, "applicant") {
+		return false
+	}
+	if approverID := strings.TrimSpace(in.ApproverID); approverID != "" && !appInstallationHasApprovalActor(app.Metadata, approverID, "approver") {
+		return false
+	}
+	if resultType := strings.TrimSpace(in.ResultType); resultType != "" && !appInstallationHasResultType(app.Metadata, resultType) {
+		return false
+	}
+	if in.HasBlockingDependency != nil && appInstallationMetadataBool(app.Metadata, "has_blocking_dependency", "test_evidence_dependency_blocking", "dependency_verification.has_blocking_dependency", "dependency_verification.hasBlockingDependency", "test_evidence.dependency_verification.has_blocking_dependency", "test_evidence.dependency_verification.hasBlockingDependency") != *in.HasBlockingDependency {
+		return false
+	}
+	if in.HasMissingRequiredDependency != nil && appInstallationMetadataBool(app.Metadata, "has_missing_required_dependency", "has_missing_required", "test_evidence_dependency_missing_required", "dependency_verification.has_missing_required", "dependency_verification.hasMissingRequired", "test_evidence.dependency_verification.has_missing_required", "test_evidence.dependency_verification.hasMissingRequired") != *in.HasMissingRequiredDependency {
+		return false
+	}
 	return true
+}
+
+func appInstallationHasMetadataFilters(in QueryAppInstallationsInput) bool {
+	return strings.TrimSpace(in.WorkflowSkillID) != "" ||
+		strings.TrimSpace(in.WorkflowNode) != "" ||
+		strings.TrimSpace(in.ApprovalStatus) != "" ||
+		strings.TrimSpace(in.ApprovalDecision) != "" ||
+		strings.TrimSpace(in.ApplicantID) != "" ||
+		strings.TrimSpace(in.ApproverID) != "" ||
+		strings.TrimSpace(in.ResultType) != "" ||
+		in.HasBlockingDependency != nil ||
+		in.HasMissingRequiredDependency != nil
+}
+
+func appInstallationMetadataBool(metadata map[string]any, keys ...string) bool {
+	values := make([]any, 0, len(keys))
+	for _, key := range keys {
+		cursor := metadata
+		parts := strings.Split(key, ".")
+		for index, part := range parts {
+			if index == len(parts)-1 {
+				values = append(values, cursor[part])
+				break
+			}
+			cursor = appInstallationMap(cursor[part])
+			if cursor == nil {
+				break
+			}
+		}
+	}
+	value, _ := firstAppInstallationBool(values...)
+	return value
+}
+
+func appInstallationHasApprovalStatus(metadata map[string]any, status string) bool {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return true
+	}
+	for _, value := range []string{
+		appInstallationString(metadata, "approval_status"),
+		appInstallationString(metadata, "test_evidence_approval_status"),
+		appInstallationString(metadata, "result_status"),
+		appInstallationString(metadata, "business_status"),
+	} {
+		if strings.TrimSpace(value) == status {
+			return true
+		}
+	}
+	for _, approval := range appInstallationApprovalInstances(metadata) {
+		for _, key := range []string{"status", "approvalStatus", "approval_status", "resultStatus", "result_status", "businessStatus", "business_status"} {
+			if value, ok := approval[key].(string); ok && strings.TrimSpace(value) == status {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appInstallationHasApprovalDecision(metadata map[string]any, decision string) bool {
+	decision = strings.TrimSpace(decision)
+	if decision == "" {
+		return true
+	}
+	for _, value := range []string{
+		appInstallationString(metadata, "approval_decision"),
+		appInstallationString(metadata, "decision"),
+		appInstallationString(metadata, "test_evidence_approval_decision"),
+	} {
+		if strings.TrimSpace(value) == decision {
+			return true
+		}
+	}
+	for _, approval := range appInstallationApprovalInstances(metadata) {
+		for _, key := range []string{"decision", "approvalDecision", "approval_decision", "result", "approvalResult", "approval_result"} {
+			if value, ok := approval[key].(string); ok && strings.TrimSpace(value) == decision {
+				return true
+			}
+		}
+	}
+	for _, result := range appInstallationResultPayloads(metadata) {
+		for _, key := range []string{"decision", "approval_decision", "approvalResult", "approval_result"} {
+			if value, ok := result[key].(string); ok && strings.TrimSpace(value) == decision {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appInstallationHasApprovalActor(metadata map[string]any, actorID, role string) bool {
+	actorID = strings.TrimSpace(actorID)
+	if actorID == "" {
+		return true
+	}
+	var keys []string
+	switch role {
+	case "applicant":
+		keys = []string{"applicant_id", "applicantId", "submitted_by", "submittedBy", "created_by", "createdBy", "requester_id", "requesterId"}
+	case "approver":
+		keys = []string{"approver_id", "approverId", "assigned_to", "assignedTo", "current_assignee", "currentAssignee", "reviewer_id", "reviewerId", "handled_by", "handledBy"}
+	default:
+		return false
+	}
+	for _, key := range keys {
+		if value, ok := metadata[key].(string); ok && strings.TrimSpace(value) == actorID {
+			return true
+		}
+		for _, value := range appInstallationStringList(metadata[key]) {
+			if value == actorID {
+				return true
+			}
+		}
+	}
+	for _, approval := range appInstallationApprovalInstances(metadata) {
+		for _, key := range keys {
+			if value, ok := approval[key].(string); ok && strings.TrimSpace(value) == actorID {
+				return true
+			}
+			for _, value := range appInstallationStringList(approval[key]) {
+				if value == actorID {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func appInstallationHasResultType(metadata map[string]any, resultType string) bool {
+	resultType = strings.TrimSpace(resultType)
+	if resultType == "" {
+		return true
+	}
+	for _, value := range []string{
+		appInstallationString(metadata, "result_type"),
+		appInstallationString(metadata, "output_type"),
+		appInstallationString(metadata, "result_contract_primary"),
+		appInstallationString(metadata, "test_evidence_primary_result"),
+		appInstallationString(metadata, "test_evidence_result_coverage_primary"),
+	} {
+		if strings.TrimSpace(value) == resultType {
+			return true
+		}
+	}
+	for _, value := range appInstallationStringList(metadata["result_contract_types"]) {
+		if value == resultType {
+			return true
+		}
+	}
+	for _, value := range appInstallationStringList(metadata["test_evidence_covered_types"]) {
+		if value == resultType {
+			return true
+		}
+	}
+	if contract := appInstallationMap(metadata["result_contract"]); contract != nil {
+		if appInstallationString(contract, "primary") == resultType {
+			return true
+		}
+		for _, value := range appInstallationStringList(contract["types"]) {
+			if value == resultType {
+				return true
+			}
+		}
+	}
+	for _, evidence := range appInstallationTestEvidenceMaps(metadata) {
+		if appInstallationString(evidence, "primary_result") == resultType || appInstallationString(evidence, "primaryResult") == resultType {
+			return true
+		}
+		if coverage := appInstallationMap(evidence["result_coverage"]); coverage != nil {
+			if appInstallationString(coverage, "primary") == resultType {
+				return true
+			}
+			for _, value := range appInstallationStringList(coverage["covered_types"]) {
+				if value == resultType {
+					return true
+				}
+			}
+		}
+		for _, key := range []string{"outputs", "artifacts"} {
+			for _, item := range appInstallationMapList(evidence[key]) {
+				for _, itemKey := range []string{"kind", "type", "result_type", "resultType"} {
+					if appInstallationString(item, itemKey) == resultType {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func appInstallationApprovalInstances(metadata map[string]any) []map[string]any {
+	out := []map[string]any{}
+	for _, key := range []string{"approval_instance", "approvalInstance", "test_evidence_approval_instance"} {
+		if value := appInstallationMap(metadata[key]); value != nil {
+			out = append(out, value)
+		}
+	}
+	for _, evidence := range appInstallationTestEvidenceMaps(metadata) {
+		if value := appInstallationMap(evidence["approval_instance"]); value != nil {
+			out = append(out, value)
+		}
+		if value := appInstallationMap(evidence["approvalInstance"]); value != nil {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func appInstallationResultPayloads(metadata map[string]any) []map[string]any {
+	out := []map[string]any{}
+	for _, key := range []string{"result_payload", "resultPayload", "test_evidence_result_payload"} {
+		if value := appInstallationMap(metadata[key]); value != nil {
+			out = append(out, value)
+		}
+	}
+	for _, evidence := range appInstallationTestEvidenceMaps(metadata) {
+		if value := appInstallationMap(evidence["result_payload"]); value != nil {
+			out = append(out, value)
+		}
+		if value := appInstallationMap(evidence["resultPayload"]); value != nil {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func appInstallationTestEvidenceMaps(metadata map[string]any) []map[string]any {
+	out := []map[string]any{}
+	for _, key := range []string{"test_evidence", "testEvidence"} {
+		if value := appInstallationMap(metadata[key]); value != nil {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func appInstallationHasWorkflowSkillID(metadata map[string]any, workflowSkillID string) bool {

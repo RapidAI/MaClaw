@@ -312,6 +312,166 @@ func TestListAppInstallationsFiltersByApprovalInstanceEvidence(t *testing.T) {
 	}
 }
 
+func TestListAppInstallationsFiltersByDependencyHealth(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "expense.blocked", UpsertAppInstallationInput{
+		AppID: "expense.blocked",
+		Name:  "Blocked Expense Approval",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"dependency_verification": map[string]any{
+				"schema":                  "maclaw.app.install_plan.v1",
+				"dependency_count":        2,
+				"has_missing_required":    true,
+				"has_blocking_dependency": true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation blocked: %v", err)
+	}
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "expense.ready", UpsertAppInstallationInput{
+		AppID: "expense.ready",
+		Name:  "Ready Expense Approval",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"test_evidence": map[string]any{
+				"dependency_verification": map[string]any{
+					"schema":                  "maclaw.app.install_plan.v1",
+					"dependency_count":        2,
+					"has_missing_required":    false,
+					"has_blocking_dependency": false,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation ready: %v", err)
+	}
+
+	blocking := true
+	blocked, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{HasBlockingDependency: &blocking})
+	if err != nil {
+		t.Fatalf("ListAppInstallations blocking: %v", err)
+	}
+	if len(blocked) != 1 || blocked[0].AppID != "expense.blocked" {
+		t.Fatalf("expected blocking dependency filter to return blocked app: %#v", blocked)
+	}
+	blocking = false
+	ready, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{HasBlockingDependency: &blocking})
+	if err != nil {
+		t.Fatalf("ListAppInstallations nonblocking: %v", err)
+	}
+	if len(ready) != 1 || ready[0].AppID != "expense.ready" {
+		t.Fatalf("expected nonblocking dependency filter to return ready app: %#v", ready)
+	}
+	missingRequired := true
+	missing, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{HasMissingRequiredDependency: &missingRequired})
+	if err != nil {
+		t.Fatalf("ListAppInstallations missing required: %v", err)
+	}
+	if len(missing) != 1 || missing[0].AppID != "expense.blocked" {
+		t.Fatalf("expected missing required dependency filter to return blocked app: %#v", missing)
+	}
+}
+
+func TestListAppInstallationsFiltersByApprovalResultMetadata(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "expense.approval", UpsertAppInstallationInput{
+		AppID: "expense.approval",
+		Name:  "Expense Approval",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"result_contract": map[string]any{
+				"schema":  "maclaw.app.result.v1",
+				"primary": "approval_result",
+				"types":   []any{"approval_result", "document", "inline_content"},
+			},
+			"test_evidence": map[string]any{
+				"primary_result": "approval_result",
+				"approval_instance": map[string]any{
+					"approval_id":      "approval-expense-1",
+					"record_id":        "expense-1",
+					"status":           "approved",
+					"decision":         "approved",
+					"applicant_id":     "employee_1",
+					"current_assignee": "manager_1",
+					"current_node":     "expense.result_pack",
+				},
+				"result_payload": map[string]any{
+					"decision":        "approved",
+					"business_status": "finance_approved",
+				},
+				"outputs": []any{
+					map[string]any{"kind": "document", "title": "Approval PDF", "status": "ready"},
+					map[string]any{"kind": "inline_content", "title": "Decision", "status": "ready"},
+				},
+				"result_coverage": map[string]any{
+					"primary":       "approval_result",
+					"covered_types": []any{"approval_result", "document", "inline_content"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation approval: %v", err)
+	}
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "expense.rejected", UpsertAppInstallationInput{
+		AppID: "expense.rejected",
+		Name:  "Rejected Expense",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"test_evidence_approval_status": "rejected",
+			"test_evidence_approval_instance": map[string]any{
+				"status":       "rejected",
+				"decision":     "rejected",
+				"applicant_id": "employee_2",
+				"approver_id":  "manager_2",
+			},
+			"test_evidence_primary_result": "approval_result",
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation rejected: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		in   QueryAppInstallationsInput
+	}{
+		{name: "approval status", in: QueryAppInstallationsInput{ApprovalStatus: "approved"}},
+		{name: "approval decision", in: QueryAppInstallationsInput{ApprovalDecision: "approved"}},
+		{name: "applicant", in: QueryAppInstallationsInput{ApplicantID: "employee_1"}},
+		{name: "approver", in: QueryAppInstallationsInput{ApproverID: "manager_1"}},
+		{name: "result type", in: QueryAppInstallationsInput{ResultType: "document"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			items, err := svc.ListAppInstallations(context.Background(), principal, tc.in)
+			if err != nil {
+				t.Fatalf("ListAppInstallations: %v", err)
+			}
+			if len(items) != 1 || items[0].AppID != "expense.approval" {
+				t.Fatalf("expected expense.approval for %s, got %#v", tc.name, items)
+			}
+		})
+	}
+}
+
 func appInstallationNumberEquals(value any, expected float64) bool {
 	switch typed := value.(type) {
 	case int:

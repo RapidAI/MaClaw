@@ -573,7 +573,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/import-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/export-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/operation-plans":                       {"dataset_id", "operation", "status"},
-		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node"},
+		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node", "approval_status", "approval_decision", "applicant_id", "approver_id", "result_type", "has_blocking_dependency", "has_missing_required_dependency"},
 		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "app_id", "blueprint_id", "object_role", "approval_workflow_id", "trigger_event", "submitted_by", "current_assignee", "current_assignee_type", "from_status", "to_status", "status", "kind", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "current_node_id", "current_node", "workflow_node", "business_status", "result_status", "assigned_to", "created_by", "reviewed_by", "lane", "overdue", "before", "before_id"},
 		"/api/v1/data/datasets/{datasetId}/schema-proposals": {"status"},
 		"/api/v1/data/datasets/{datasetId}/records":          {"q", "tag"},
@@ -5770,6 +5770,21 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 		t.Fatalf("expected workflow-filtered app installation: %#v", workflowListed)
 	}
 
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?approval_status=approved&approval_decision=approved&result_type=document", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations by approval result status=%d body=%s", w.Code, w.Body.String())
+	}
+	var approvalResultListed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&approvalResultListed); err != nil {
+		t.Fatalf("decode approval-result-filtered app installations: %v", err)
+	}
+	if len(approvalResultListed.Items) != 1 || approvalResultListed.Items[0].AppID != "mis.expense" {
+		t.Fatalf("expected approval-result-filtered app installation: %#v", approvalResultListed)
+	}
+
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?workflow_node=finance.cfo_review", nil)
 	auth(req)
 	w = httptest.NewRecorder()
@@ -5783,6 +5798,36 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if len(emptyWorkflowListed.Items) != 0 {
 		t.Fatalf("unexpected workflow-filtered app installations: %#v", emptyWorkflowListed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?has_blocking_dependency=true", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations by blocking dependency status=%d body=%s", w.Code, w.Body.String())
+	}
+	var blockingDependencyListed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&blockingDependencyListed); err != nil {
+		t.Fatalf("decode blocking dependency app installations: %v", err)
+	}
+	if len(blockingDependencyListed.Items) != 1 || blockingDependencyListed.Items[0].AppID != "mis.expense" {
+		t.Fatalf("expected blocking dependency filter to match installed app: %#v", blockingDependencyListed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?has_missing_required_dependency=true", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations by missing dependency status=%d body=%s", w.Code, w.Body.String())
+	}
+	var missingRequiredDependencyListed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&missingRequiredDependencyListed); err != nil {
+		t.Fatalf("decode missing dependency app installations: %v", err)
+	}
+	if len(missingRequiredDependencyListed.Items) != 0 {
+		t.Fatalf("expected missing dependency filter to exclude installed app: %#v", missingRequiredDependencyListed)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/business-objects?app_id=mis.expense&object_role=expense_report", nil)

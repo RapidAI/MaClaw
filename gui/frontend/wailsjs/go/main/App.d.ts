@@ -689,6 +689,8 @@ export function InjectAIAssistantGuideReferenceForSession(arg1:string,arg2:strin
 
 export function ResolveCriticalConfirm(arg1:string,arg2:boolean):Promise<void>;
 
+export function ResolveScopeApproval(arg1:string,arg2:string):Promise<void>;
+
 export function CancelAIAssistantTask(arg1:string):Promise<void>;
 
 export function SelectAIAssistantFile():Promise<string>;

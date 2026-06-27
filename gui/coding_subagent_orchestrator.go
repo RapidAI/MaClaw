@@ -338,12 +338,24 @@ func (r *SubAgentTaskRunner) runTaskWithRecover(
 	if runner == nil {
 		runner = RunTaskWithSubAgent
 	}
+
+	// Per-task project path resolution: when the orchestrator's declared
+	// ProjectPath doesn't cover the task's file references, derive the
+	// effective path from those references. This prevents scope enforcement
+	// (requireProjectWriteScope) from rejecting operations on files the user
+	// explicitly asked to modify.
+	effectiveProjectPath := resolveEffectiveProjectPathForTask(task, r.orchestrator.ProjectPath)
+	if effectiveProjectPath != r.orchestrator.ProjectPath {
+		log.Printf("[subagent-runner] T%d project path adjusted: declared=%s effective=%s",
+			taskDisplayNumber(task), r.orchestrator.ProjectPath, effectiveProjectPath)
+	}
+
 	return runner(
 		r.handler,
 		r.cfg,
 		r.httpClient,
 		task,
-		r.orchestrator.ProjectPath,
+		effectiveProjectPath,
 		r.orchestrator.RequirementsContext,
 		r.orchestrator.DesignContext,
 		prevOutputs,

@@ -3024,12 +3024,20 @@ func TestRejectDisallowedCodingBashCommand(t *testing.T) {
 		"make format",
 		"just",
 		"just --list",
+		"just --list test",
+		"just --summary test",
 		"just fmt",
 		"just dev",
 		"task --list",
+		"task --list test",
+		"task -l test",
+		"go-task --list-all test",
+		"task --dry test",
 		"task dev",
 		"task format",
 		"mage -l",
+		"mage -l test",
+		"mage -h test",
 		"mage dev",
 		"bazel run //app:server",
 		"bazel clean",
@@ -4272,6 +4280,21 @@ func TestSummarizeSubAgentVerificationCommandSummaryEvidence(t *testing.T) {
 		t.Fatalf("summary naming fresh verification command should not warn, got %q", warning)
 	}
 
+	for _, summary := range []string{
+		"Verification: go test ./gui completed successfully.\nRisk: none.",
+		"Verification: go test ./gui exit 0.\nRisk: none.",
+		"Verification: go test ./gui all tests passed.\nRisk: none.",
+		"Verification: go test ./gui green.\nRisk: none.",
+		"验证：go test ./gui 全部通过。\n风险：无。",
+	} {
+		warning = summarizeSubAgentVerificationCommandSummaryEvidence(summary, []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
+			{Command: "go test ./gui", Succeeded: true, seq: 3},
+		}, 2)
+		if warning != "" {
+			t.Fatalf("summary with natural successful verification outcome should not warn for %q, got %q", summary, warning)
+		}
+	}
+
 	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./gui.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
 		{Command: "go test ./gui", Succeeded: true, seq: 3},
 	}, 2)
@@ -4841,6 +4864,9 @@ func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T)
 		{Command: "mvn test", Succeeded: true, Summary: "[INFO] No tests to run."},
 		{Command: "cargo test", Succeeded: true, Summary: "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored"},
 		{Command: "dotnet test", Succeeded: true, Summary: "Total tests: 0. Passed: 0. Failed: 0. Skipped: 0."},
+		{Command: "biome check .", Succeeded: true, Summary: "Checked 0 files in 2ms. No fixes applied."},
+		{Command: "prettier --check src", Succeeded: true, Summary: "Checking formatting...\n0 files checked."},
+		{Command: "eslint .", Succeeded: true, Summary: "Processed 0 files."},
 	}
 	for _, command := range emptySuccessfulOutputs {
 		status, summary = summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{command}, 0)
@@ -4875,6 +4901,13 @@ func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T)
 	}, 0)
 	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "`dotnet test`") {
 		t.Fatalf("normal successful dotnet output should pass, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeSubAgentVerification([]string{"src/app.ts"}, []CodingSubAgentCommandResult{
+		{Command: "eslint .", Succeeded: true, Summary: "10 files checked, 0 errors"},
+	}, 0)
+	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "`eslint .`") {
+		t.Fatalf("normal successful eslint output with 0 errors should pass, got (%q, %q)", status, summary)
 	}
 }
 
@@ -4940,6 +4973,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"go -C=gui build ./...",
 		"go test ./... 2>&1",
 		`go test ./... -run "TestAPI|TestHandler"`,
+		"go test ./... -run TestIsSubAgentVerificationCommand",
 		`bash -lc 'go test ./... -run "TestAPI|TestHandler"'`,
 		`powershell -NoProfile -Command 'go test ./... -run "TestAPI|TestHandler"'`,
 		"bash -c go test ./...",
@@ -5317,6 +5351,11 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"rg \"TODO\" .",
 		"git diff -- .",
 		"go -C gui env",
+		"go test -c",
+		"go test -c -o package.test",
+		"go test ./... -run '^$'",
+		"go test -run=^$ ./...",
+		"go test ./... -run $^",
 		"go fmt ./...",
 		"cargo fmt --all",
 		"cargo test --no-run",
@@ -5362,12 +5401,20 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"make format",
 		"just",
 		"just --list",
+		"just --list test",
+		"just --summary test",
 		"just fmt",
 		"just dev",
 		"task --list",
+		"task --list test",
+		"task -l test",
+		"go-task --list-all test",
+		"task --dry test",
 		"task dev",
 		"task format",
 		"mage -l",
+		"mage -l test",
+		"mage -h test",
 		"mage dev",
 		"bazel run //app:server",
 		"bazel clean",

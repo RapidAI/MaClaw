@@ -403,6 +403,7 @@ func buildLLMConfigFromAppConfig(cfg corelib.AppConfig) corelib.MaclawLLMConfig 
 			llm.AgentType = p.AgentType
 			llm.SupportsVision = p.SupportsVision
 			llm.WireAPI = p.WireAPI
+			llm.MaxOutputTokens = p.MaxOutputTokens
 			break
 		}
 	}

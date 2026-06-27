@@ -18,18 +18,23 @@ set "GOPATH=%USERPROFILE%\go"
 set "PATH=%GOPATH%\bin;%PATH%"
 set "GOMAXPROCS=1"
 
-REM -- Clean previous build artifacts --
-echo [Step 1/14] Cleaning previous build...
-if exist "%OUTPUT_DIR%" (
-    rmdir /s /q "%OUTPUT_DIR%" 2>nul
-    if exist "%OUTPUT_DIR%" (
-        echo [WARN] Could not fully clean %OUTPUT_DIR% - some files may be locked.
-        echo [WARN] Attempting to continue...
-        del /q "%OUTPUT_DIR%\*.exe" 2>nul
-        del /q "%OUTPUT_DIR%\*.zip" 2>nul
-    )
-)
+REM -- Clean previous MaClaw build artifacts (preserve other brands' files) --
+REM    Note: maclawsrv and maclaw-data-srv binary names are shared across brands.
+REM    Building MaClaw will overwrite MetaStaff's service binaries (same names, different build tags).
+echo [Step 1/14] Cleaning previous MaClaw build...
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
+del /q "%OUTPUT_DIR%\%APP_NAME%.exe" 2>nul
+del /q "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" 2>nul
+del /q "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" 2>nul
+del /q "%OUTPUT_DIR%\%APP_NAME%-Setup.exe" 2>nul
+del /q "%OUTPUT_DIR%\%APP_NAME%-Windows-Portable.zip" 2>nul
+del /q "%OUTPUT_DIR%\maclaw-tui*.exe" 2>nul
+del /q "%OUTPUT_DIR%\maclaw-cli*.exe" 2>nul
+del /q "%OUTPUT_DIR%\maclaw-tool*.exe" 2>nul
+del /q "%OUTPUT_DIR%\maclawsrv*.exe" 2>nul
+del /q "%OUTPUT_DIR%\maclawsrv-Setup.exe" 2>nul
+del /q "%OUTPUT_DIR%\maclaw-data-srv*.exe" 2>nul
+del /q "%OUTPUT_DIR%\maclaw-data-srv-Setup.exe" 2>nul
 
 REM -- Increment build number and set version (single PowerShell call) --
 echo [Step 2/14] Updating version number...

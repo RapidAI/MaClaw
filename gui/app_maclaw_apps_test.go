@@ -2883,6 +2883,9 @@ func TestRecordMaclawAppInstallPersistsNewestInstallAudit(t *testing.T) {
 	if records[0].HasMissingRequired || len(records[0].Dependencies) != 1 || !records[0].Dependencies[0].Installed {
 		t.Fatalf("expected installed dependency snapshot: %#v", records[0])
 	}
+	if verification := anyMap(records[0].DependencyVerification); maclawAppStringValue(verification, "schema") != "maclaw.app.install_plan.v1" || verification["dependencyCount"] != float64(1) {
+		t.Fatalf("expected install record dependency verification snapshot: %#v", records[0].DependencyVerification)
+	}
 	if records[0].VersionSnapshot.AppEntryVersion != "7" || records[0].VersionSnapshot.AppSkill == nil || records[0].VersionSnapshot.AppSkill.ID != "doc-archive" || records[0].VersionSnapshot.AppSkill.Version != "1.2.3" {
 		t.Fatalf("expected install record version snapshot: %#v", records[0].VersionSnapshot)
 	}
@@ -2912,6 +2915,39 @@ func TestRecordMaclawAppInstallPersistsNewestInstallAudit(t *testing.T) {
 	}
 	if len(records) != 1 {
 		t.Fatalf("install records should upsert by app id: %#v", records)
+	}
+}
+func TestMaclawAppInstallEvidenceGeneratesDependencyVerification(t *testing.T) {
+	entry := parsedMaclawAppEntry{
+		ID:   "expense-approval",
+		Name: "Expense Approval",
+		Kind: "enterprise_approval_app",
+		Entry: map[string]any{
+			"schema": "maclaw.app.v1",
+		},
+		App: map[string]any{
+			"id":   "expense-approval",
+			"name": "Expense Approval",
+			"kind": "enterprise_approval_app",
+		},
+	}
+	dependencies := []maclawAppInstallPlanDependency{
+		{ID: "expense-workflow", Kind: "workflow_skill", Required: true, AppIDs: []string{"expense-approval"}, Installed: true, Health: "ready", Action: "skip"},
+		{ID: "expense-export", Kind: "skill", Required: false, AppIDs: []string{"expense-approval"}, Installed: false, Health: "missing", Action: "optional_missing"},
+	}
+
+	evidence := maclawAppInstallEvidenceByApp([]parsedMaclawAppEntry{entry}, dependencies)
+	appEvidence, ok := evidence["expense-approval"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("install evidence should include app id: %#v", evidence)
+	}
+	verification := anyMap(appEvidence["dependency_verification"])
+	if verification == nil || maclawAppStringValue(verification, "schema") != "maclaw.app.install_plan.v1" || verification["app_count"] != 1 || verification["dependency_count"] != 2 || verification["has_missing_required"] != false || verification["has_blocking_dependency"] != false {
+		t.Fatalf("install evidence should generate dependency verification: %#v", appEvidence["dependency_verification"])
+	}
+	verifiedDependencies, ok := verification["dependencies"].([]maclawAppInstallPlanDependency)
+	if !ok || len(verifiedDependencies) != 2 || verifiedDependencies[0].ID != "expense-workflow" || !verifiedDependencies[0].Installed || verifiedDependencies[1].Action != "optional_missing" {
+		t.Fatalf("generated dependency verification should carry per-app dependencies: %#v", verification["dependencies"])
 	}
 }
 func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {

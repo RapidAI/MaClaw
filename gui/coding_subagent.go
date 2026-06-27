@@ -66,6 +66,11 @@ type CodingSubAgent struct {
 	// ShouldStop checks loopCtx.IsCancelled().
 	loopCtx *LoopContext
 
+	// scopeApproval handles interactive user confirmation when the SubAgent
+	// attempts to access paths outside the declared projectPath. When nil,
+	// out-of-scope access is hard-rejected (legacy behavior).
+	scopeApproval *scopeApprovalState
+
 	// Knowledge stores (both optional, nil = gracefully skipped)
 	codingKB  *knowledge.CodingKnowledgeStore // coding experiences (coding_knowledge.db)
 	generalKB *knowledge.SQLiteStore          // project docs (knowledge.db)
@@ -199,6 +204,14 @@ func NewCodingSubAgent(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, h
 func (s *CodingSubAgent) SetCallbacks(onToken func(string), onProgress func(string)) {
 	s.onToken = onToken
 	s.onProgress = onProgress
+}
+
+// SetScopeApprovalCallback configures interactive user confirmation for
+// out-of-scope file access. When set, the SubAgent will pause and ask the
+// user before rejecting operations on paths outside projectPath.
+// If not set (nil), out-of-scope access is hard-rejected (legacy behavior).
+func (s *CodingSubAgent) SetScopeApprovalCallback(callback ScopeApprovalCallback) {
+	s.scopeApproval = newScopeApprovalState(callback)
 }
 
 func failedCodingSubAgentStartResult(errMsg string) *CodingSubAgentResult {
@@ -3322,7 +3335,11 @@ func (c *codingSubAgentCallbacks) requireProjectWriteScope(path string) string {
 	if ok {
 		return ""
 	}
-	return fmt.Sprintf("拒绝修改项目目录外的文件：%s。编码 SubAgent 只能修改项目路径 %s 内的文件。", path, projectPath)
+	// Out of scope — try interactive approval before rejecting.
+	if c.subagent != nil && c.subagent.scopeApproval != nil {
+		return c.subagent.scopeApproval.check("write_file", path, projectPath)
+	}
+	return formatScopeRejection("write_file", path, projectPath)
 }
 
 func (c *codingSubAgentCallbacks) requireProjectReadScope(path, toolName string) string {
@@ -3337,7 +3354,11 @@ func (c *codingSubAgentCallbacks) requireProjectReadScope(path, toolName string)
 	if ok {
 		return ""
 	}
-	return fmt.Sprintf("拒绝读取项目目录外的路径：%s。编码 SubAgent 只能用 %s 读取/搜索项目路径 %s 内的文件。", path, toolName, projectPath)
+	// Out of scope — try interactive approval before rejecting.
+	if c.subagent != nil && c.subagent.scopeApproval != nil {
+		return c.subagent.scopeApproval.check(toolName, path, projectPath)
+	}
+	return formatScopeRejection(toolName, path, projectPath)
 }
 
 func (c *codingSubAgentCallbacks) requireProjectWorkingDirScope(path string) string {
@@ -3352,7 +3373,11 @@ func (c *codingSubAgentCallbacks) requireProjectWorkingDirScope(path string) str
 	if ok {
 		return ""
 	}
-	return fmt.Sprintf("拒绝在项目目录外执行命令：%s。编码 SubAgent 的 bash working_dir 必须位于项目路径 %s 内。", path, projectPath)
+	// Out of scope — try interactive approval before rejecting.
+	if c.subagent != nil && c.subagent.scopeApproval != nil {
+		return c.subagent.scopeApproval.check("bash", path, projectPath)
+	}
+	return formatScopeRejection("bash", path, projectPath)
 }
 
 func (c *codingSubAgentCallbacks) requireProjectDiffScope(path string) string {
@@ -3367,7 +3392,11 @@ func (c *codingSubAgentCallbacks) requireProjectDiffScope(path string) string {
 	if ok {
 		return ""
 	}
-	return fmt.Sprintf("拒绝查看项目目录外的 diff：%s。编码 SubAgent 只能检查项目路径 %s 内的 diff。", path, projectPath)
+	// Out of scope — try interactive approval before rejecting.
+	if c.subagent != nil && c.subagent.scopeApproval != nil {
+		return c.subagent.scopeApproval.check("git_diff", path, projectPath)
+	}
+	return formatScopeRejection("git_diff", path, projectPath)
 }
 
 func (c *codingSubAgentCallbacks) requireReadBeforeModify(path, toolName string) string {
@@ -4289,6 +4318,12 @@ func subAgentVerificationOutputLooksEmpty(cmd CodingSubAgentCommandResult) bool 
 		"0 specs",
 		"0 scenarios",
 		"0 features",
+		"checked 0 files",
+		"0 files checked",
+		"processed 0 files",
+		"0 files processed",
+		"analyzed 0 files",
+		"0 files analyzed",
 		"no tests executed",
 		"no specs found",
 		"no files matching",
@@ -4674,11 +4709,20 @@ func trimSubAgentClaimedCommandTail(candidate string) (string, bool, bool) {
 	candidate = strings.TrimSpace(candidate)
 	lower := strings.ToLower(candidate)
 	for _, suffix := range []string{
-		" passed", " succeeded", " ok",
-		" passed.", " succeeded.", " ok.",
+		" all tests passed", " all checks passed", " green", " clean",
+		" all tests passed.", " all checks passed.", " green.", " clean.",
+		" completed successfully", " completed successfully.",
+		" returned exit code 0", " returned exit code 0.",
+		" exit code 0", " exit code 0.",
+		" exit 0", " exit 0.",
+		" passed", " succeeded", " successful", " ok",
+		" passed.", " succeeded.", " successful.", " ok.",
+		" pass", " passes",
+		" pass.", " passes.",
 		" (passed)", " (succeeded)", " (ok)",
 		" [passed]", " [succeeded]", " [ok]",
-		"（通过）", "（成功）",
+		"（通过）", "（成功）", " 全部通过", " 已通过", " 执行成功",
+		" 全部通过。", " 已通过。", " 执行成功。",
 	} {
 		if strings.HasSuffix(lower, suffix) {
 			return strings.TrimSpace(candidate[:len(candidate)-len(suffix)]), true, claimedFailed
@@ -4714,7 +4758,14 @@ func subAgentInlineVerificationClaimedFailed(parts []string, commandPartIndex in
 }
 
 func subAgentClaimTailClaimsPassed(tail string) bool {
-	return subAgentClaimTailHasOutcome(tail, []string{"passed", "succeeded", "ok", "通过", "成功"})
+	return subAgentClaimTailHasOutcome(tail, []string{
+		"passed", "pass", "passes",
+		"succeeded", "successful", "completed successfully",
+		"ok", "green", "clean",
+		"exit 0", "exit code 0", "returned exit code 0",
+		"all tests passed", "all checks passed",
+		"通过", "已通过", "全部通过", "成功", "执行成功",
+	})
 }
 
 func subAgentClaimTailClaimsFailed(tail string) bool {
@@ -6698,6 +6749,9 @@ func makeOptionConsumesValue(arg string) bool {
 }
 
 func justRunsVerification(args []string) bool {
+	if hasTaskRunnerNonExecutingArg(args) {
+		return false
+	}
 	args = stripJustOptions(args)
 	if len(args) == 0 {
 		return false
@@ -6748,6 +6802,9 @@ func justOptionConsumesTwoValues(arg string) bool {
 }
 
 func taskRunnerRunsVerification(args []string) bool {
+	if hasTaskRunnerNonExecutingArg(args) {
+		return false
+	}
 	args = stripTaskRunnerOptions(args)
 	if len(args) == 0 {
 		return false
@@ -6787,11 +6844,27 @@ func taskRunnerOptionConsumesValue(arg string) bool {
 }
 
 func mageRunsVerification(args []string) bool {
+	if hasTaskRunnerNonExecutingArg(args) {
+		return false
+	}
 	args = stripMageOptions(args)
 	if len(args) == 0 {
 		return false
 	}
 	return isVerificationScriptName(args[0])
+}
+
+func hasTaskRunnerNonExecutingArg(args []string) bool {
+	for _, arg := range args {
+		arg = normalizeShellExecutableToken(arg)
+		switch arg {
+		case "--help", "-h", "help", "--version", "version",
+			"--list", "-l", "list", "--list-all", "-a",
+			"--summary", "--dump", "--dry-run", "--dry", "-n":
+			return true
+		}
+	}
+	return false
 }
 
 func stripMageOptions(args []string) []string {
@@ -7218,7 +7291,34 @@ func mixOptionConsumesValue(arg string) bool {
 
 func goRunsVerification(args []string) bool {
 	args = stripGoGlobalOptions(args)
-	return firstArgIn(args, "test", "vet", "build")
+	if len(args) == 0 {
+		return false
+	}
+	if normalizeShellExecutableToken(args[0]) == "test" {
+		return !hasGoTestNoRunArg(args[1:])
+	}
+	return firstArgIn(args, "vet", "build")
+}
+
+func hasGoTestNoRunArg(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := normalizeShellExecutableToken(args[i])
+		if arg == "-c" || strings.HasPrefix(arg, "-c=") {
+			return true
+		}
+		if arg == "-run" && i+1 < len(args) && goTestRunPatternRunsNoTests(args[i+1]) {
+			return true
+		}
+		if strings.HasPrefix(arg, "-run=") && goTestRunPatternRunsNoTests(strings.TrimPrefix(arg, "-run=")) {
+			return true
+		}
+	}
+	return false
+}
+
+func goTestRunPatternRunsNoTests(pattern string) bool {
+	pattern = strings.Trim(strings.ToLower(strings.TrimSpace(pattern)), "'\"")
+	return pattern == "^$" || pattern == "^$/" || pattern == "$^"
 }
 
 func stripGoGlobalOptions(args []string) []string {
@@ -8512,6 +8612,14 @@ func RunTaskWithSubAgent(
 	}
 	sa := NewCodingSubAgent(handler, cfg, httpClient, projectPath, loopCtx)
 	sa.SetCallbacks(onToken, onProgress)
+
+	// Wire interactive scope approval: when the SubAgent tries to access paths
+	// outside projectPath, pause and ask the user instead of hard-rejecting.
+	// The approval callback uses onProgress to send the prompt and blocks on
+	// loopCtx's approval channel.
+	if handler != nil && handler.app != nil {
+		sa.SetScopeApprovalCallback(buildSubAgentScopeApprovalCallback(handler, loopCtx, onProgress))
+	}
 
 	// Wire knowledge stores for experience recall and project doc lookup.
 	if handler != nil && handler.app != nil {

@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
@@ -97,6 +98,17 @@ func BuildResponsesAPIRequestData(
 			continue
 		}
 		reqBody[k] = v
+	}
+	// Ensure max_output_tokens is set for Responses API (analogous to ensureMaxOutputTokens for Chat API)
+	if _, ok := reqBody["max_output_tokens"]; !ok {
+		limit := cfg.EffectiveMaxOutputTokens()
+		cacheKey := strings.ToLower(strings.TrimSpace(cfg.Model))
+		if cached, ok := maxOutputTokensCache.Load(cacheKey); ok {
+			if cachedLimit, isInt := cached.(int); isInt && cachedLimit > 0 && cachedLimit < limit {
+				limit = cachedLimit
+			}
+		}
+		reqBody["max_output_tokens"] = limit
 	}
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
 		corelib.SanitizeCodeGenOpenAICompatBody(reqBody)

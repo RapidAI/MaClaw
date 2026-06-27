@@ -20,10 +20,6 @@ type AnthropicMessagesRequestOptions struct {
 	MaxTokens int
 }
 
-const (
-	defaultAnthropicMaxTokens        = 4096
-	defaultAnthropicToolUseMaxTokens = 8192
-)
 
 func BuildAnthropicMessagesRequestBody(
 	cfg corelib.MaclawLLMConfig,
@@ -34,10 +30,8 @@ func BuildAnthropicMessagesRequestBody(
 	converted := ConvertToAnthropicMessages(messages)
 	maxTokens := opts.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = defaultAnthropicMaxTokens
-		if len(opts.Tools) > 0 {
-			maxTokens = defaultAnthropicToolUseMaxTokens
-		}
+		// Use config-aware default: user setting > model-specific default > hardcoded fallback
+		maxTokens = cfg.EffectiveMaxOutputTokens()
 	}
 	reqBody := map[string]interface{}{
 		"model":      cfg.UpstreamModel(),

@@ -520,17 +520,18 @@ func IsLearnedSource(source string) bool {
 
 // MaclawLLMProvider 描述一个 MaClaw LLM 提供商配置。
 type MaclawLLMProvider struct {
-	Name           string `json:"name"`
-	URL            string `json:"url"`
-	Key            string `json:"key"`
-	Model          string `json:"model"`
-	Protocol       string `json:"protocol,omitempty"`
-	ContextLength  int    `json:"context_length,omitempty"`
-	TimeoutSec     int    `json:"timeout_sec,omitempty"`
-	IsCustom       bool   `json:"is_custom,omitempty"`
-	IsHubService   bool   `json:"is_hub_service,omitempty"`
-	SupportsVision bool   `json:"supports_vision"`
-	AgentType      string `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
+	Name            string `json:"name"`
+	URL             string `json:"url"`
+	Key             string `json:"key"`
+	Model           string `json:"model"`
+	Protocol        string `json:"protocol,omitempty"`
+	ContextLength   int    `json:"context_length,omitempty"`
+	TimeoutSec      int    `json:"timeout_sec,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"` // per-request output token limit; 0 = use system default
+	IsCustom        bool   `json:"is_custom,omitempty"`
+	IsHubService    bool   `json:"is_hub_service,omitempty"`
+	SupportsVision  bool   `json:"supports_vision"`
+	AgentType       string `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 	// ── 新增 OAuth 字段 ──
 	AuthType                 string  `json:"auth_type,omitempty"`
 	RefreshToken             string  `json:"refresh_token,omitempty"`
@@ -557,6 +558,7 @@ type MaclawLLMConfig struct {
 	Protocol                 string `json:"protocol,omitempty"`
 	ContextLength            int    `json:"context_length,omitempty"`
 	TimeoutSec               int    `json:"timeout_sec,omitempty"`
+	MaxOutputTokens          int    `json:"max_output_tokens,omitempty"` // per-request output token limit; 0 = use system default
 	SupportsVision           bool   `json:"supports_vision"`
 	AgentType                string `json:"agent_type,omitempty"`    // "openclaw" (default) or "claude" → controls User-Agent header
 	WireAPI                  string `json:"wire_api,omitempty"`      // "chat" or "responses"; empty defaults to "chat"
@@ -577,6 +579,19 @@ func (c MaclawLLMConfig) IsResponsesAPI() bool {
 // Responses API over WebSocket transport.
 func (c MaclawLLMConfig) IsResponsesWebSocket() bool {
 	return strings.EqualFold(strings.TrimSpace(c.WireAPI), "responses-ws")
+}
+
+// EffectiveMaxOutputTokens returns the max output token limit for this config.
+// Priority: user-configured value > thinking-model default > standard default.
+// The returned value is used as max_tokens (or max_completion_tokens) in API requests.
+func (c MaclawLLMConfig) EffectiveMaxOutputTokens() int {
+	if c.MaxOutputTokens > 0 {
+		return c.MaxOutputTokens
+	}
+	if IsDeepSeekThinkingModeModel(c) {
+		return 16384 // thinking models need larger budget (reasoning tokens consume output budget)
+	}
+	return 8192 // safe default for most models (DeepSeek non-thinking, Claude, GPT-4o, Qwen, etc.)
 }
 
 type MaclawLLMTestResult struct {

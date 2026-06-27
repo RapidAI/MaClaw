@@ -517,17 +517,34 @@ func (s *HTTPServer) handleResolveObjectRole(w http.ResponseWriter, r *http.Requ
 
 func (s *HTTPServer) handleListAppInstallations(w http.ResponseWriter, r *http.Request, p Principal) {
 	limit := parseLimit(r.URL.Query().Get("limit"))
+	hasBlockingDependency, err := parseOptionalBoolQueryPointer(r, "has_blocking_dependency")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	hasMissingRequiredDependency, err := parseOptionalBoolQueryPointer(r, "has_missing_required_dependency", "has_missing_required")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	in := QueryAppInstallationsInput{
-		AppID:           strings.TrimSpace(r.URL.Query().Get("app_id")),
-		BlueprintID:     strings.TrimSpace(r.URL.Query().Get("blueprint_id")),
-		Kind:            strings.TrimSpace(r.URL.Query().Get("kind")),
-		Source:          strings.TrimSpace(r.URL.Query().Get("source")),
-		WorkflowSkillID: strings.TrimSpace(r.URL.Query().Get("workflow_skill_id")),
-		WorkflowNode:    strings.TrimSpace(r.URL.Query().Get("workflow_node")),
-		Status:          strings.TrimSpace(r.URL.Query().Get("status")),
-		Limit:           effectiveLimit(limit, 100, 500),
-		Before:          strings.TrimSpace(r.URL.Query().Get("before")),
-		BeforeID:        strings.TrimSpace(r.URL.Query().Get("before_id")),
+		AppID:                        strings.TrimSpace(r.URL.Query().Get("app_id")),
+		BlueprintID:                  strings.TrimSpace(r.URL.Query().Get("blueprint_id")),
+		Kind:                         strings.TrimSpace(r.URL.Query().Get("kind")),
+		Source:                       strings.TrimSpace(r.URL.Query().Get("source")),
+		WorkflowSkillID:              strings.TrimSpace(r.URL.Query().Get("workflow_skill_id")),
+		WorkflowNode:                 strings.TrimSpace(r.URL.Query().Get("workflow_node")),
+		ApprovalStatus:               strings.TrimSpace(firstNonEmptyQueryValue(r.URL.Query().Get("approval_status"), r.URL.Query().Get("approval_result_status"))),
+		ApprovalDecision:             strings.TrimSpace(firstNonEmptyQueryValue(r.URL.Query().Get("approval_decision"), r.URL.Query().Get("decision"))),
+		ApplicantID:                  strings.TrimSpace(firstNonEmptyQueryValue(r.URL.Query().Get("applicant_id"), r.URL.Query().Get("submitted_by"), r.URL.Query().Get("created_by"))),
+		ApproverID:                   strings.TrimSpace(firstNonEmptyQueryValue(r.URL.Query().Get("approver_id"), r.URL.Query().Get("assigned_to"), r.URL.Query().Get("current_assignee"))),
+		ResultType:                   strings.TrimSpace(firstNonEmptyQueryValue(r.URL.Query().Get("result_type"), r.URL.Query().Get("output_type"))),
+		HasBlockingDependency:        hasBlockingDependency,
+		HasMissingRequiredDependency: hasMissingRequiredDependency,
+		Status:                       strings.TrimSpace(r.URL.Query().Get("status")),
+		Limit:                        effectiveLimit(limit, 100, 500),
+		Before:                       strings.TrimSpace(r.URL.Query().Get("before")),
+		BeforeID:                     strings.TrimSpace(r.URL.Query().Get("before_id")),
 	}
 	out, err := s.svc.ListAppInstallations(r.Context(), p, in)
 	writeResult(w, http.StatusOK, appInstallationListResponse(out, limit), err)
@@ -2071,6 +2088,15 @@ func parseLimit(raw string) int {
 	return limit
 }
 
+func firstNonEmptyQueryValue(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func parseBoolQueryValue(raw string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "true", "1":
@@ -2092,6 +2118,21 @@ func parseOptionalBoolQueryValue(r *http.Request, name string) (bool, error) {
 		return false, fmt.Errorf("%w: %s must be true, false, 1, or 0", ErrInvalidInput, name)
 	}
 	return value, nil
+}
+
+func parseOptionalBoolQueryPointer(r *http.Request, names ...string) (*bool, error) {
+	for _, name := range names {
+		if !r.URL.Query().Has(name) {
+			continue
+		}
+		raw := strings.TrimSpace(r.URL.Query().Get(name))
+		value, err := parseBoolQueryValue(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s must be true, false, 1, or 0", ErrInvalidInput, name)
+		}
+		return &value, nil
+	}
+	return nil, nil
 }
 
 func effectiveLimit(limit, fallback, max int) int {

@@ -221,23 +221,24 @@ type MaclawAppBusinessOperationInput struct {
 type maclawAppBusinessOperationInput = MaclawAppBusinessOperationInput
 
 type maclawAppInstallRecord struct {
-	AppID                 string                           `json:"app_id"`
-	AppName               string                           `json:"app_name,omitempty"`
-	Kind                  string                           `json:"kind,omitempty"`
-	Source                string                           `json:"source,omitempty"`
-	InstalledAt           string                           `json:"installed_at"`
-	PackageSHA            string                           `json:"package_sha256,omitempty"`
-	PackageSize           int                              `json:"package_bytes,omitempty"`
-	Package               map[string]any                   `json:"package,omitempty"`
-	Dependencies          []maclawAppInstallPlanDependency `json:"dependencies,omitempty"`
-	VersionSnapshot       maclawAppInstallVersionSnapshot  `json:"version_snapshot,omitempty"`
-	WorkflowContract      map[string]any                   `json:"workflow_contract,omitempty"`
-	WorkspaceLayout       map[string]any                   `json:"workspace_layout,omitempty"`
-	ResultContract        map[string]any                   `json:"result_contract,omitempty"`
-	TestEvidence          map[string]any                   `json:"test_evidence,omitempty"`
-	HasMissingRequired    bool                             `json:"has_missing_required"`
-	HasBlockingDependency bool                             `json:"has_blocking_dependency,omitempty"`
-	Message               string                           `json:"message,omitempty"`
+	AppID                  string                           `json:"app_id"`
+	AppName                string                           `json:"app_name,omitempty"`
+	Kind                   string                           `json:"kind,omitempty"`
+	Source                 string                           `json:"source,omitempty"`
+	InstalledAt            string                           `json:"installed_at"`
+	PackageSHA             string                           `json:"package_sha256,omitempty"`
+	PackageSize            int                              `json:"package_bytes,omitempty"`
+	Package                map[string]any                   `json:"package,omitempty"`
+	Dependencies           []maclawAppInstallPlanDependency `json:"dependencies,omitempty"`
+	VersionSnapshot        maclawAppInstallVersionSnapshot  `json:"version_snapshot,omitempty"`
+	WorkflowContract       map[string]any                   `json:"workflow_contract,omitempty"`
+	WorkspaceLayout        map[string]any                   `json:"workspace_layout,omitempty"`
+	ResultContract         map[string]any                   `json:"result_contract,omitempty"`
+	TestEvidence           map[string]any                   `json:"test_evidence,omitempty"`
+	DependencyVerification map[string]any                   `json:"dependency_verification,omitempty"`
+	HasMissingRequired     bool                             `json:"has_missing_required"`
+	HasBlockingDependency  bool                             `json:"has_blocking_dependency,omitempty"`
+	Message                string                           `json:"message,omitempty"`
 }
 
 type maclawAppInstallRegistry struct {
@@ -737,23 +738,24 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 	for _, entry := range entries {
 		governance := maclawAppGovernanceMetadataForEntry(entry)
 		record := maclawAppInstallRecord{
-			AppID:                 entry.ID,
-			AppName:               entry.Name,
-			Kind:                  normalizeMaclawAppKind(entry.Kind),
-			Source:                strings.TrimSpace(source),
-			InstalledAt:           now,
-			PackageSHA:            packageSHA,
-			PackageSize:           packageSize,
-			Package:               cloneMapAny(entry.Entry),
-			Dependencies:          cloneMaclawAppPlanDependenciesForApp(plan.Dependencies, entry.ID),
-			VersionSnapshot:       maclawAppInstallVersionSnapshotForEntry(entry),
-			WorkflowContract:      cloneMapAny(maclawAppWorkflowContractForEntry(entry)),
-			WorkspaceLayout:       cloneMapAny(maclawAppWorkspaceLayoutMetadataForEntry(entry)),
-			ResultContract:        cloneMapAny(anyMap(governance["result_contract"])),
-			TestEvidence:          cloneMapAny(anyMap(governance["test_evidence"])),
-			HasMissingRequired:    hasMissingMaclawAppRequiredDependencyForApp(plan.Dependencies, entry.ID),
-			HasBlockingDependency: hasBlockingMaclawAppRequiredDependencyForApp(plan.Dependencies, entry.ID),
-			Message:               "installed locally",
+			AppID:                  entry.ID,
+			AppName:                entry.Name,
+			Kind:                   normalizeMaclawAppKind(entry.Kind),
+			Source:                 strings.TrimSpace(source),
+			InstalledAt:            now,
+			PackageSHA:             packageSHA,
+			PackageSize:            packageSize,
+			Package:                cloneMapAny(entry.Entry),
+			Dependencies:           cloneMaclawAppPlanDependenciesForApp(plan.Dependencies, entry.ID),
+			VersionSnapshot:        maclawAppInstallVersionSnapshotForEntry(entry),
+			WorkflowContract:       cloneMapAny(maclawAppWorkflowContractForEntry(entry)),
+			WorkspaceLayout:        cloneMapAny(maclawAppWorkspaceLayoutMetadataForEntry(entry)),
+			ResultContract:         cloneMapAny(anyMap(governance["result_contract"])),
+			TestEvidence:           cloneMapAny(anyMap(governance["test_evidence"])),
+			DependencyVerification: cloneMapAny(maclawAppDependencyVerificationMetadataForEntry(entry, plan.Dependencies)),
+			HasMissingRequired:     hasMissingMaclawAppRequiredDependencyForApp(plan.Dependencies, entry.ID),
+			HasBlockingDependency:  hasBlockingMaclawAppRequiredDependencyForApp(plan.Dependencies, entry.ID),
+			Message:                "installed locally",
 		}
 		registry.upsert(record)
 	}
@@ -853,6 +855,7 @@ func (a *App) ListMaclawAppInstalls(limit int) ([]maclawAppInstallRecord, error)
 		record.WorkspaceLayout = cloneMapAny(record.WorkspaceLayout)
 		record.ResultContract = cloneMapAny(record.ResultContract)
 		record.TestEvidence = cloneMapAny(record.TestEvidence)
+		record.DependencyVerification = cloneMapAny(record.DependencyVerification)
 		out = append(out, record)
 	}
 	return out, nil
@@ -2557,7 +2560,7 @@ func maclawAppInstallEvidenceByApp(entries []parsedMaclawAppEntry, dependencies 
 			"result_contract":         anyMap(governance["result_contract"]),
 			"workflow_contract":       maclawAppWorkflowContractForEntry(entry),
 			"test_evidence":           anyMap(governance["test_evidence"]),
-			"dependency_verification": anyMap(governance["dependency_verification"]),
+			"dependency_verification": maclawAppDependencyVerificationMetadataForEntry(entry, dependencies),
 		})
 	}
 	return out

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -160,8 +161,10 @@ func filterCodingWorkflowImplementationMainLoopTools(tools []map[string]interfac
 }
 
 var workflowArtifactPhaseAllowedTools = map[string]bool{
+	"bash":                     true,
 	"craft_tool":               true,
 	"generate_pdf":             true,
+	"list_directory":           true,
 	"manage_skill":             true,
 	"office":                   true,
 	"read_file":                true,
@@ -191,6 +194,8 @@ func filterWorkflowArtifactPhaseTools(tools []map[string]interface{}) []map[stri
 
 func workflowArtifactPhaseRequiredTools() []string {
 	return []string{
+		"bash",
+		"list_directory",
 		"write_file",
 		"manage_skill",
 		"search_and_install_skill",
@@ -219,13 +224,28 @@ func validateWorkflowArtifactPhaseToolCall(name string, args map[string]interfac
 		path = firstNonEmptyStringValue(args, "file_path", "path", "output")
 	case "web_fetch":
 		path = firstNonEmptyStringValue(args, "save_path", "output")
+	case "bash":
+		// Check if the bash command explicitly references source directories.
+		// Unlike craft_tool (which has natural-language task text), bash commands
+		// directly contain paths, so we check path tokens without requiring
+		// mutation-intent keywords — any bash command targeting a source dir
+		// in artifact phase is suspicious.
+		if cmd := stringVal(args, "command"); cmd != "" {
+			for _, token := range workflowMutationReferenceTokens(cmd) {
+				if isWorkflowProjectMutationPath(token) {
+					return "artifact workflow phase cannot run bash commands that target source/project paths. Use a non-source output directory instead."
+				}
+			}
+		}
 	case "craft_tool":
 		if text := firstNonEmptyStringValue(args, "task", "instructions", "description", "user_prompt"); text != "" && containsWorkflowProjectMutationReference(text) {
 			return "artifact workflow phase cannot craft tools that mutate source/project paths"
 		}
 	}
-	if path != "" && isWorkflowProjectMutationPath(path) {
-		return "artifact workflow phase cannot write into source/project paths"
+	if path != "" {
+		if dir := matchedProjectMutationDir(path); dir != "" {
+			return fmt.Sprintf("artifact workflow phase cannot write into source/project paths (matched: %s/). Use a temp or output directory instead.", dir)
+		}
 	}
 	return ""
 }
@@ -240,19 +260,49 @@ func firstNonEmptyStringValue(args map[string]interface{}, keys ...string) strin
 }
 
 func isWorkflowProjectMutationPath(path string) bool {
+	return matchedProjectMutationDir(path) != ""
+}
+
+// matchedProjectMutationDir returns the matched source directory name (e.g., "src")
+// if the path appears to target a project source directory, or "" if not.
+func matchedProjectMutationDir(path string) string {
 	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(path), "\\", "/"))
 	normalized = strings.TrimPrefix(normalized, "./")
-	for _, prefix := range []string{"src/", "app/", "cmd/", "internal/", "pkg/", "web/", "frontend/", "backend/"} {
-		if strings.HasPrefix(normalized, prefix) {
-			return true
+
+	// Strip Windows drive letter prefix (e.g. "d:/专利申请测试1/gen.js" → "专利申请测试1/gen.js")
+	if len(normalized) >= 3 && normalized[1] == ':' && normalized[2] == '/' {
+		normalized = normalized[3:]
+	}
+
+	// Only directory-prefix matching determines "project mutation".
+	// File extension is NOT a valid signal — artifact generation phases
+	// legitimately write .js/.py/.ps1 tool scripts to produce deliverables
+	// (e.g., a Node.js script that calls pptxgenjs to generate a .pptx file).
+	// Using extension matching causes false positives that create unbreakable
+	// dead loops (LLM cannot change the extension because it needs that
+	// language to generate the artifact).
+	//
+	// We check both as prefix (relative paths: "src/main.go") and as a path
+	// component anywhere in the path (absolute paths: "workprj/myproject/src/main.go").
+	// The component check uses "/dir/" to avoid substring matches within longer
+	// directory names (e.g., "/webapp/" should not match "app/").
+	for _, dir := range []string{"src", "cmd", "internal", "pkg", "frontend", "backend"} {
+		if strings.HasPrefix(normalized, dir+"/") {
+			return dir
+		}
+		if strings.Contains(normalized, "/"+dir+"/") {
+			return dir
 		}
 	}
-	for _, suffix := range []string{".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".java", ".rs", ".cpp", ".c", ".h", ".cs"} {
-		if strings.HasSuffix(normalized, suffix) {
-			return true
+	// "app/" and "web/" are common false-positive sources in absolute paths:
+	// "AppData" contains "app", "webapp" contains "web".
+	// Only match as exact first path component (relative paths from project root).
+	for _, dir := range []string{"app", "web"} {
+		if strings.HasPrefix(normalized, dir+"/") {
+			return dir
 		}
 	}
-	return false
+	return ""
 }
 
 func containsWorkflowProjectMutationReference(text string) bool {

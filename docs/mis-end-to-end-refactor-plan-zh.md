@@ -3816,3 +3816,366 @@ appRunApprovalInstanceEvidenceFromBackend
 ```text
 npm.cmd test -- AppsPage.test.tsx -t "turns DataSrv installed MaClaw apps into addable app candidates with layout metadata"
 ```
+
+### 推进记录：安装证据自动固化依赖验证摘要（2026-06-27）
+本轮继续补齐 MaClaw App 作为“超级 Skill”的安装证据链。此前 app 级 `install_evidence` 已保存依赖列表和阻断状态，但标准 `dependency_verification` 只在 manifest/governance 主动提供时才会出现；如果用户在 App Studio 设计后直接安装或从 Hub 安装一个没有预置验证块的 App，GUI/DataSrv 后续恢复时会缺少统一的依赖验证摘要。
+
+已落地调整：
+
+```text
+maclawAppInstallEvidenceByApp
+  -> dependency_verification 改为调用 maclawAppDependencyVerificationMetadataForEntry
+  -> 优先保留 governance.dependency_verification
+  -> 未预置时，根据安装计划中的 per-app dependencies 自动生成：
+     schema=maclaw.app.install_plan.v1
+     app_count=1
+     dependency_count
+     has_missing_required
+     has_blocking_dependency
+     dependencies
+```
+
+对应全链路意义：
+
+```text
+PlanMaclawAppInstall 依赖检查
+  -> RecordMaclawAppInstall
+  -> install_evidence[app_id].dependency_verification
+  -> Hub 队列安装 / 本地安装 / DataSrv app_installations 回填
+  -> GUI installed App 恢复与运行历史诊断可读取同一份依赖验证证据
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestMaclawAppInstallEvidenceGeneratesDependencyVerification|TestRecordMaclawAppInstallPersistsNewestInstallAudit"
+```
+
+### 推进记录：本地安装记录持久化依赖验证证据（2026-06-27）
+本轮继续收口 MaClaw App 安装证据链的一致性。上一轮已让 app 级 `install_evidence` 在缺少 manifest 预置验证块时自动生成 `dependency_verification`；但本地 install registry 的 `maclawAppInstallRecord` 仍只保存 `dependencies`、`has_missing_required`、`has_blocking_dependency`，没有保存标准验证摘要。这样会造成：Hub/DataSrv/安装结果能看到标准依赖验证证据，而本地安装历史只能看到散落字段。
+
+已落地调整：
+
+```text
+maclawAppInstallRecord
+  -> 新增 dependency_verification
+
+RecordMaclawAppInstall
+  -> 写入每个 App 的 dependency_verification 快照
+  -> 复用 maclawAppDependencyVerificationMetadataForEntry
+
+ListMaclawAppInstalls
+  -> 返回记录时克隆 dependency_verification，避免调用侧修改 registry 快照
+```
+
+对应全链路意义：
+
+```text
+安装计划依赖检查
+  -> 本地 install registry
+  -> ListMaclawAppInstalls
+  -> GUI 安装历史 / 依赖复检 / 修复入口
+  -> 与 Hub install_record、DataSrv metadata、install_evidence 使用同一种依赖验证证据结构
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestMaclawAppInstallEvidenceGeneratesDependencyVerification|TestRecordMaclawAppInstallPersistsNewestInstallAudit"
+```
+
+### 推进记录：安装历史界面展示依赖验证证据（2026-06-27）
+本轮继续把后端新增的 `dependency_verification` 快照接到 GUI 可见层。此前安装历史只展示包 SHA、依赖数量、依赖列表、版本快照、布局/结果/测试证据和 DataSrv 注册状态；即使本地 install registry 已保存标准依赖验证证据，用户也无法在安装历史证据区直接看到这份标准化摘要。
+
+已落地调整：
+
+```text
+InstallRecordEvidenceSnapshot / installRecordEvidenceItems
+  -> 读取 record.dependency_verification
+  -> 优先使用 dependency_verification.dependencies 计算阻断项
+  -> 缺失时回退 record.dependencies / has_missing_required / has_blocking_dependency
+  -> 在证据快照中展示：
+     Dependency verification
+     Skill dependencies: N · Blocking deps: M
+```
+
+对应全链路意义：
+
+```text
+RecordMaclawAppInstall 写入 dependency_verification
+  -> ListMaclawAppInstalls 返回本地安装历史
+  -> GUI 安装历史证据快照展示依赖验证摘要
+  -> 用户可以从同一处看到 App 包、依赖状态、测试证据、DataSrv 注册状态
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "shows recent app install records in the market pane"
+```
+
+### 推进记录：DataSrv app-installations 支持依赖健康过滤（2026-06-27）
+本轮继续补齐企业 Hub / DataSrv / GUI 的安装治理链路。此前 `app_installations` 已保存 `dependency_verification`、`dependency_count`、`has_missing_required_dependency`、`has_blocking_dependency` 等元数据，但 `/api/v1/data/app-installations` 只能按 app、kind、source、status、workflow skill/node 过滤，无法直接列出“安装后依赖阻断”或“缺少必需依赖”的 App。
+
+已落地调整：
+
+```text
+QueryAppInstallationsInput
+  -> 新增 HasBlockingDependency
+  -> 新增 HasMissingRequiredDependency
+
+GET /api/v1/data/app-installations
+  -> has_blocking_dependency=true|false
+  -> has_missing_required_dependency=true|false
+  -> 兼容别名 has_missing_required=true|false
+
+SQLite ListAppInstallations
+  -> metadata filter 支持：
+     has_blocking_dependency
+     test_evidence_dependency_blocking
+     dependency_verification.has_blocking_dependency / hasBlockingDependency
+     test_evidence.dependency_verification.has_blocking_dependency / hasBlockingDependency
+     has_missing_required_dependency
+     has_missing_required
+     test_evidence_dependency_missing_required
+     dependency_verification.has_missing_required / hasMissingRequired
+     test_evidence.dependency_verification.has_missing_required / hasMissingRequired
+
+OpenAPI
+  -> 公开 has_blocking_dependency
+  -> 公开 has_missing_required_dependency
+```
+
+对应全链路意义：
+
+```text
+MaClaw App 安装 / Hub 安装 / DataSrv 注册
+  -> dependency_verification 标准证据入库
+  -> DataSrv 可直接查询依赖阻断或缺失必需依赖的 App
+  -> 企业运维 / GUI 能力发现 / 安装修复入口可按依赖健康状态定位问题 App
+```
+
+已通过定向验证：
+
+```text
+go test ./structureddata -count=1 -run "TestListAppInstallationsFiltersByDependencyHealth|TestListAppInstallationsFiltersByApprovalInstanceEvidence|TestHTTPServerAppInstallations"
+go test ./structureddata -count=1 -run "TestHTTPServerOpenAPIIncludesExpectedQueryParameters|TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence"
+```
+
+### 推进记录：GUI MIS Data Tool 暴露 app-installations 依赖健康查询（2026-06-27）
+本轮继续把上一段 DataSrv `app-installations` 依赖健康过滤接到 GUI/agent 工具链。此前 DataSrv 已支持 `has_blocking_dependency`、`has_missing_required_dependency` 查询参数，但 GUI 的 `executeMISDataTool` 没有 `list_app_installations` action，agent/工具调用侧无法直接列出安装后依赖阻断或缺少必需依赖的 MaClaw App。
+
+已落地调整：
+
+```text
+MIS Data Tool
+  -> 新增 action: list_app_installations
+  -> 支持过滤参数：
+     app_id / appId
+     blueprint_id / blueprintId
+     kind
+     source
+     status
+     workflow_skill_id / workflowSkillId
+     workflow_node / workflowNode / current_node / currentNode
+     has_blocking_dependency / hasBlockingDependency
+     has_missing_required_dependency / hasMissingRequiredDependency
+     has_missing_required / hasMissingRequired
+     before / before_id / beforeId
+     limit
+  -> 布尔过滤支持 true 和 false，避免只能查询阻断项、不能查询健康项
+```
+
+对应全链路意义：
+
+```text
+DataSrv app-installations 依赖健康过滤
+  -> GUI MIS Data Tool list_app_installations
+  -> agent / App Studio / 运维辅助可以按依赖阻断状态定位已安装 App
+  -> 安装修复入口与企业治理诊断可以复用同一查询契约
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestExecuteMISDataToolListAppInstallationsPassesDependencyFilters"
+```
+
+### 推进记录：DataSrv 与 MIS Tool 支持审批结果/参与人/输出类型过滤（2026-06-27）
+本轮继续从“企业审批型应用 = 数据录入 + 审批工作流 skill 运行 + 审批实例数据管理 + 结果反馈”的闭环检查缺口。此前 `app_installations` 已能保存 workflow contract、approval instance evidence、result contract、test evidence outputs/artifacts，但列表查询主要只能按 App、workflow skill/node、依赖健康筛选；GUI/App Studio/agent 要做“我的申请”“我审批的”“已通过/已拒绝/需关注”“返回文档/文本内容”等视图时，仍需要拉全量 metadata 后自行扫描。
+
+已落地调整：
+
+```text
+QueryAppInstallationsInput
+  -> 新增 ApprovalStatus
+  -> 新增 ApprovalDecision
+  -> 新增 ApplicantID
+  -> 新增 ApproverID
+  -> 新增 ResultType
+
+GET /api/v1/data/app-installations
+  -> approval_status / approval_result_status
+  -> approval_decision / decision
+  -> applicant_id / submitted_by / created_by
+  -> approver_id / assigned_to / current_assignee
+  -> result_type / output_type
+
+SQLite ListAppInstallations metadata filter
+  -> 支持从顶层 metadata、test_evidence、approval_instance、result_payload 中匹配审批状态/审批决定
+  -> 支持 applicant/requester/submitted_by 与 approver/current_assignee/assigned_to
+  -> 支持从 result_contract、result_coverage、outputs、artifacts 中匹配 approval_result、document、inline_content、table、business_status 等输出类型
+
+OpenAPI
+  -> 公开 approval_status
+  -> 公开 approval_decision
+  -> 公开 applicant_id
+  -> 公开 approver_id
+  -> 公开 result_type
+
+MIS Data Tool list_app_installations
+  -> 同步支持上述过滤参数及 camelCase/常用别名
+```
+
+对应全链路意义：
+
+```text
+审批型 MaClaw App 运行/测试/安装记录
+  -> DataSrv 保存 approval instance + result package evidence
+  -> app-installations 可按审批状态、参与人、输出类型直接查询
+  -> GUI 应用面板可构建“我的申请 / 我审批的 / 审批结果 / 文档或内容输出”视图
+  -> App Studio / agent 测试与运维诊断可复用同一查询契约，不再依赖前端扫 metadata
+```
+
+已通过定向验证：
+
+```text
+go test ./structureddata -count=1 -run "TestListAppInstallationsFiltersByApprovalResultMetadata|TestListAppInstallationsFiltersByDependencyHealth|TestHTTPServerOpenAPIIncludesExpectedQueryParameters"
+go test ./gui -count=1 -vet=off -run "TestExecuteMISDataToolListAppInstallationsPassesDependencyFilters"
+```
+
+### 推进记录：GUI 审批实例管理接入 DataSrv app-installations 审批概览（2026-06-27）
+本轮继续把上一段 DataSrv 查询能力接到 MaClaw App 面板。此前 `/api/v1/data/app-installations` 已支持按审批状态、审批决定、申请人、审批人、输出类型过滤，但 GUI 的“审批实例管理”仍主要依赖本地审批实例列表；用户无法在同一个工作台上直接看到 DataSrv 侧已经登记的审批型应用结果概览。
+
+已落地调整：
+
+```text
+AppsPage ApprovalManager
+  -> 新增 DataSrv approval overview 汇总栏
+  -> 读取 MIS DataSrv 配置与 token
+  -> 并行查询：
+     kind=enterprise_approval_app
+     applicant_id=<current user>
+     approver_id=<current user>
+     approval_status=approved / rejected / attention
+     result_type=document / inline_content
+  -> 显示每类匹配数量与最近应用名称
+  -> DataSrv 未启用、加载中、读取失败、无匹配结果均有对应状态
+
+界面风格
+  -> 保持企业工作台密度
+  -> 使用现有审批管理的边框、字号、状态色和列表语义
+  -> 不改变本地审批实例列表和审批详情操作流
+```
+
+对应全链路意义：
+
+```text
+DataSrv app-installations 审批过滤契约
+  -> GUI 审批实例管理直接消费
+  -> 我的申请 / 我审批的 / 已通过 / 已拒绝 / 需关注 / 文档输出 / 文本输出
+  -> 审批型 App 的实例数据管理与结果反馈开始在同一个应用工作台露出
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "shows DataSrv approval app summary with approval result filters"
+npm.cmd test -- AppsPage.test.tsx -t "opens global approval management from the operation section"
+完整 npm.cmd run build 当前被不相关并行改动阻塞：
+src/components/ai/AIAssistantPanel.tsx(2049,66): Property 'textSecondary' does not exist on type 'Theme'.
+```
+
+### 推进记录：GUI DataSrv 审批明细携带实例/记录标识并驱动真实实例过滤（2026-06-27）
+本轮继续把 DataSrv app-installations 审批概览从“看得到明细”推进到“能定位具体实例”。上一段已经可以点入分类并查看应用明细，但明细行主要依靠 `app_id` 或应用名去过滤审批实例列表；当同一个 App 下有多个审批实例、多个业务记录或多个工作流实例时，这仍然不够精确。
+
+已落地调整：
+
+```text
+DataSrv approval summary item
+  -> 新增 approvalID
+  -> 新增 workflowInstanceID
+  -> 新增 recordID
+
+DataSrv metadata 解析
+  -> 从 test_evidence.approval_instance / approval_instance 中读取：
+     approval_id / record_approval_id
+     workflow_instance_id
+     record_id / business_record_id
+  -> 从 result_payload 与顶层 metadata 中读取同名兼容字段
+
+GUI 点击行为
+  -> 点击 DataSrv 明细行时优先按 approvalID 过滤
+  -> 其次按 workflowInstanceID / recordID
+  -> 最后才回退到 appID / app 名称
+
+GUI 明细展示
+  -> 在 DataSrv 明细行中显示 approvalID / workflowInstanceID / recordID
+  -> 保持企业工作台密集列表风格，不新增跳转式页面
+```
+
+对应全链路意义：
+
+```text
+DataSrv app-installations 审批结果证据
+  -> GUI DataSrv 审批概览明细
+  -> approval_id / workflow_instance_id / record_id
+  -> 合并后的审批实例列表搜索命中具体实例
+  -> 后续可继续升级为“打开 DataSrv approval detail / business record detail”的直达操作
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "shows DataSrv approval app summary with approval result filters"
+```
+
+### 推进记录：GUI DataSrv 审批概览支持点入明细（2026-06-27）
+本轮继续把“审批型应用的实例数据管理”从摘要推进到可查看明细。上一段已经在审批实例管理中显示 DataSrv app-installations 的审批概览，但每个分类只显示数量和最近应用名；用户仍无法在该工作台里确认这些数量对应哪些应用、当前节点是什么、输出类型是什么。
+
+已落地调整：
+
+```text
+DataSrv approval overview
+  -> 每个分类从纯摘要扩展为可点击 bucket
+  -> 点击后在同一审批管理区域展开明细
+  -> 明细包含：
+     app_id / app 名称
+     当前节点 / workflow result node
+     审批状态或审批决定
+     result_contract / result_coverage / outputs 推导出的输出类型
+     更新时间或测试证据 verified_at
+
+DataSrv metadata 解析
+  -> 从 test_evidence.approval_instance 读取 status / decision / current_node
+  -> 从 result_payload 读取 decision / approval_result
+  -> 从 result_contract_types、test_evidence_covered_types、primary_result、outputs.kind 推导结果类型
+```
+
+对应全链路意义：
+
+```text
+DataSrv app-installations 审批过滤契约
+  -> GUI 审批概览分类
+  -> 点击分类查看匹配应用明细
+  -> 审批型 App 的“我的申请 / 我审批的 / 审批结果 / 输出结果”不再停留在数量层
+  -> 后续可继续把这些明细连接到具体 DataSrv approval instance / business record
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "shows DataSrv approval app summary with approval result filters"
+npm.cmd test -- AppsPage.test.tsx -t "opens global approval management from the operation section"
+npm.cmd run build
+```

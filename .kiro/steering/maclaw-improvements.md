@@ -6504,3 +6504,69 @@ Priority 4: 空白（用户手动填写）
 - Talent 类型（长江/杰青/优青）生成不同于 Project 类型（青基/面上/重点）的 prompt
 - 29 个新增测试全部 PASS + 全量 v2 包 30s 测试零回归
 - `go build` + `go vet` 零错误
+
+
+### 113. PPT 生成阶段 write_file 被 isWorkflowProjectMutationPath 扩展名误拦截——30 分钟死循环
+
+**来源**：用户让 maclaw 生成北京纪念 PPT，进入 `presentation_design` 工作流的 `ppt_generation` 阶段（`Kind=PhaseKindArtifactGeneration, MutationScope=MutationScopeArtifact`）后，LLM 尝试用 `write_file` 写入 Node.js 脚本来生成 PPTX，被系统反复拒绝，agent loop 跑了 29 轮（30 分钟）后被漂移检测器强制终止。
+
+**根因**：`isWorkflowProjectMutationPath()` 用**文件扩展名**（`.go`/`.ts`/`.js`/`.py` 等 12 种）判断 write_file 是否在"修改项目源代码"。在 artifact generation 阶段，LLM 必须写入 `.js` 脚本文件（Node.js + pptxgenjs）来生成 PPTX 产物。扩展名拦截把"生成产物的手段"和"修改项目源代码"混为一谈，创造了不可打破的死循环——LLM 无法换扩展名（因为它需要那个语言来生成产物），只能反复换路径，但所有路径的 `.js` 都被拦截。
+
+**机制性问题**：扩展名只能告诉你"这个文件可能是什么语言写的"——但不能告诉你"写入这个文件是否在修改项目逻辑"。判断"是否修改项目"的正确信号是**路径位置**（是否在项目源代码目录下），不是**文件类型**。
+
+**修复**：
+
+#### 1. `isWorkflowProjectMutationPath` 重写为目录分层匹配（`gui/workflow_coding_main_loop_policy.go`）
+
+- 移除全部 12 种扩展名匹配（`.go`/`.ts`/`.tsx`/`.js`/`.jsx`/`.py`/`.java`/`.rs`/`.cpp`/`.c`/`.h`/`.cs`）
+- 新增 Windows 盘符前缀剥离（`D:\专利申请测试1\gen.js` → `专利申请测试1/gen.js`）
+- 两类目录分层匹配：
+  - **安全目录**（`src`/`cmd`/`internal`/`pkg`/`frontend`/`backend`）：前缀匹配 + 路径组件匹配（`/dir/`），覆盖相对路径和绝对路径
+  - **高歧义目录**（`app`/`web`）：仅前缀匹配（避免 `AppData` 含 "app"、`webapp` 含 "web" 的误报）
+- 提取 `matchedProjectMutationDir()` 函数，返回匹配的目录名（供错误消息使用）
+
+#### 2. `workflowArtifactPhaseAllowedTools` 新增 `bash` 和 `list_directory`
+
+- `bash`：artifact 阶段需要执行生成脚本（`node gen.js`），当 `craft_tool` 因 runtime_missing 失败时作为 fallback
+- `list_directory`：验证产物是否生成
+- 与 agent service 层 `isMutationScopeAllowed(MutationScopeArtifact, "bash")` 返回 true 保持一致
+
+#### 3. `workflowArtifactPhaseRequiredTools()` 新增 `bash` 和 `list_directory`
+
+- `requiredTools` 确保工具在 `applyWorkflowToolFilterWithCatalog` 的 `ensureWorkflowRequiredToolsForNames` 阶段被从 catalog 拉入，不会因初始 tools 集合中没有而被过滤掉
+
+#### 4. `validateWorkflowArtifactPhaseToolCall` 新增 `case "bash"` 路径验证
+
+- 对 bash 命令文本做 `workflowMutationReferenceTokens` 提取 + `isWorkflowProjectMutationPath` 检查
+- 与 `craft_tool` 不同：bash 命令直接包含路径（非自然语言描述），不需要 mutation-intent 关键词预检，直接检查 token 是否匹配源代码目录
+- `bash(command="node generate.js")` → 允许（无源代码目录 token）
+- `bash(command="touch src/main.go")` → 拒绝（`src/` 匹配）
+
+#### 5. 错误消息可操作性提升
+
+从 `"artifact workflow phase cannot write into source/project paths"` 改为 `"... (matched: src/). Use a temp or output directory instead."`，让 LLM 知道哪个目录触发了拦截和如何修复。
+
+#### 6. 已有测试更新（`gui/im_agent_loop_workflow_filter_test.go`）
+
+- `TestPresentationPPTGenerationPhaseUsesArtifactToolPolicy`：`bash`/`list_directory` 从 "should not expose" 移到 "should expose"
+- `TestArtifactWorkflowPhaseDoesNotExposeProjectMutationTools`：bash 命令路径验证仍然生效
+
+#### 7. 新增回归测试（`gui/workflow_coding_main_loop_policy_test.go`）
+
+- `TestIsWorkflowProjectMutationPath`：45+ 用例覆盖相对路径/绝对路径/中文路径/临时目录/边界情况
+- `TestValidateWorkflowArtifactPhaseToolCall_AllowsArtifactScripts`：8 用例精确复现导致死循环的场景
+
+**设计原则**：
+
+- 判断"是否修改项目"的正确信号是**路径位置**（目录前缀），不是**文件类型**（扩展名）
+- artifact generation 阶段的目的是生成产物，`write_file`/`bash` 是生成产物的手段，不应限制手段的实现方式（用什么语言写脚本），只应限制作用范围（不能写入项目源代码目录）
+- 两层策略一致性：GUI 层 `validateWorkflowArtifactPhaseToolCall` 与 agent service 层 `isMutationScopeAllowed` 行为一致
+
+**验收标准**：
+- `write_file(path="D:\专利申请测试1\gen_pptx.js")` → 允许（非源代码目录）
+- `write_file(path="src/components/Slide.tsx")` → 拒绝（`src/` 匹配）
+- `bash(command="node generate.js")` → 允许
+- `bash(command="touch src/main.go")` → 拒绝（命令引用 `src/`）
+- `C:\Users\ma139\AppData\Local\Temp\generate.js` → 允许（临时目录，不含源代码目录组件）
+- 所有 53 个新增单元测试 PASS + 所有已有 artifact/PPT/workflow filter 测试 PASS
+- 仅 2 个 pre-existing SSH Upload 测试因 test harness 问题失败（`Unknown tool: ssh`，与本次修改无关）

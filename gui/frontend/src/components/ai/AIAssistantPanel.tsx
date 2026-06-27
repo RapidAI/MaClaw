@@ -366,6 +366,32 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }).catch(() => { /* ignore */ });
         return () => { if (typeof off === "function") off(); };
     }, []);
+    // SubAgent scope approval: interactive confirmation when accessing paths outside project
+    const [scopeApprovalPending, setScopeApprovalPending] = useState<{ id: string; tool: string; path: string; projectPath: string; directory: string } | null>(null);
+    useEffect(() => {
+        const off = EventsOn("subagent-scope-approval", (payload: unknown) => {
+            if (!payload || typeof payload !== "object") return;
+            const data = payload as Record<string, string>;
+            if (!data.id) return;
+            setScopeApprovalPending({
+                id: data.id,
+                tool: data.tool,
+                path: data.path,
+                projectPath: data.project_path,
+                directory: data.directory,
+            });
+        });
+        return () => { if (typeof off === "function") off(); };
+    }, []);
+    const handleScopeApprovalResolve = useCallback(async (decision: "allow_dir" | "deny") => {
+        const pending = scopeApprovalPending;
+        setScopeApprovalPending(null);
+        if (!pending) return;
+        try {
+            const { ResolveScopeApproval } = await import("../../../wailsjs/go/main/App");
+            await ResolveScopeApproval(pending.id, decision);
+        } catch { /* expired or already resolved */ }
+    }, [scopeApprovalPending]);
     const handleToggleSkillRecording = useCallback(() => {
         const currentTabId = activeTabIdForRecRef.current;
         const isRecordingCurrentTab = skillRecordingTabId === currentTabId;
@@ -2007,6 +2033,28 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             <div data-testid="ai-panel-content-row" style={{ display: "flex", flexDirection: "row", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
             <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }}>
             <KnowledgeDialog open={knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
+            {scopeApprovalPending && (
+                <div data-testid="scope-approval-backdrop" style={{ position: "fixed", inset: 0, zIndex: 50001, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(15, 23, 42, 0.35)", padding: 16 }}>
+                    <div role="alertdialog" aria-modal="true" aria-labelledby="scope-approval-title" style={{ width: 440, maxWidth: "calc(100vw - 32px)", background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: 8, boxShadow: "0 12px 32px rgba(15, 23, 42, 0.22)", color: t.text, overflow: "hidden" }} onMouseDown={e => e.stopPropagation()}>
+                        <div style={{ padding: "12px 14px", borderBottom: `1px solid ${t.titleBarBorder}` }}>
+                            <h3 id="scope-approval-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#f59e0b" }}>{localizeText(lang, "⚠️ Scope Approval", "⚠️ 目录越权确认", "⚠️ 目錄越權確認")}</h3>
+                        </div>
+                        <div style={{ padding: "12px 14px", fontSize: 13, lineHeight: 1.6 }}>
+                            <div style={{ marginBottom: 8 }}>{localizeText(lang, "CodingSubAgent is trying to access a path outside the project:", "编码 SubAgent 尝试访问项目目录外的路径：", "編碼 SubAgent 嘗試訪問項目目錄外的路徑：")}</div>
+                            <div style={{ background: t.fieldBg, borderRadius: 4, padding: "6px 8px", fontSize: 12, fontFamily: "monospace", wordBreak: "break-all", marginBottom: 6 }}>
+                                <div><strong>{localizeText(lang, "Tool", "工具", "工具")}:</strong> {scopeApprovalPending.tool}</div>
+                                <div><strong>{localizeText(lang, "Path", "路径", "路徑")}:</strong> {scopeApprovalPending.path}</div>
+                                <div><strong>{localizeText(lang, "Project", "项目范围", "項目範圍")}:</strong> {scopeApprovalPending.projectPath}</div>
+                            </div>
+                            <div style={{ fontSize: 12, color: t.textMuted }}>{localizeText(lang, `Allow directory "${scopeApprovalPending.directory}" for the remainder of this task?`, `允许目录「${scopeApprovalPending.directory}」在本任务中后续操作？`, `允許目錄「${scopeApprovalPending.directory}」在本任務中後續操作？`)}</div>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: `1px solid ${t.titleBarBorder}` }}>
+                            <button type="button" onClick={() => void handleScopeApprovalResolve("deny")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: t.text, fontSize: 12, cursor: "pointer" }}>{localizeText(lang, "Deny", "拒绝", "拒絕")}</button>
+                            <button type="button" onClick={() => void handleScopeApprovalResolve("allow_dir")} style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: "#f59e0b", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{localizeText(lang, "Allow Directory", "允许该目录", "允許該目錄")}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
             {saveTaskDialogOpen && (
                 <div data-testid="save-task-dialog-backdrop" style={{ position: "fixed", inset: 0, zIndex: 50000, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(15, 23, 42, 0.28)", padding: 16 }} onMouseDown={event => { if (event.target === event.currentTarget && !savingTask) setSaveTaskDialogOpen(false); }}>
                     <form role="dialog" aria-modal="true" aria-labelledby="save-task-dialog-title" onSubmit={event => { event.preventDefault(); void submitSaveTask(); }} style={{ width: 390, maxWidth: "calc(100vw - 32px)", background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: 8, boxShadow: "0 12px 32px rgba(15, 23, 42, 0.22)", color: t.text, overflow: "hidden" }} onMouseDown={event => event.stopPropagation()}>

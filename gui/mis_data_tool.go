@@ -436,7 +436,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		return "MIS data service token is empty. Configure it in Settings > MIS data."
 	}
 	if action == misDataToolActionUnknown {
-		return "missing action. Supported: status, get_capabilities, list_domains, get_domain, list_business_objects, resolve_object_role, list_relationships, resolve_intent, get_inbox, get_inbox_summary, get_stats, export_governance_evidence_pack, export_governance_evidence_summary, run_maintenance, list_business_actions, get_business_action, list_business_rules, evaluate_business_rules, list_event_contracts, get_event_contract, list_event_dead_letters, get_event_dead_letter, retry_event_dead_letter, resolve_event_dead_letter, list_connectors, list_connector_health, get_connector, upsert_connector, delete_connector, test_connector, validate_connector_config, check_connector_readiness, get_connector_health, get_connector_sync_state, list_connector_sync_runs, update_connector_sync_state, plan_connector_sync, sync_connector_batch, suggest_connector_mapping, patch_connector_config, preview_connector_event, ingest_connector_event, execute_business_action, list_business_views, get_business_view, query_business_view, list_dashboards, get_dashboard, run_dashboard, list_reports, get_report, run_report, aggregate_records, list_quality_checks, run_quality_check, list_quality_runs, get_quality_run, list_import_jobs, get_import_job, list_export_jobs, get_export_job, download_export_job, list_operation_plans, create_operation_plan, get_operation_plan, review_operation_plan, apply_operation_plan, cancel_operation_plan, mis.approval.start, mis.approval.list, mis.approval.list_by_record, mis.approval.get, mis.approval.sync_result, mis.approval.my_inbox, mis.approval.my_pending, mis.approval.my_requests, mis.approval.pending_my_approval, mis.approval.handled, mis.approval.attention, list_record_approvals, create_record_approval, get_record_approval, review_record_approval, list_audit_logs, export_audit_logs_csv, list_data_events, list_record_revisions, get_record_timeline, get_related_records, list_schema_proposals, get_schema_proposal, list_templates, get_template, bootstrap_templates, create_dataset_from_template, list_datasets, get_dataset, create_dataset, delete_dataset, list_fields, upsert_fields, propose_schema, apply_schema_proposal, validate_record, batch_import_records, bulk_update_records, bulk_delete_records, restore_record, start_batch_import_job, get_import_template_csv, import_records_csv, start_csv_import_job, import_records_jsonl, start_jsonl_import_job, upsert_record, get_record, delete_record, query_records, export_records, export_records_jsonl, start_csv_export_job, start_jsonl_export_job, ingest_event, create_backup, list_backups, get_backup, download_backup, restore_backup"
+		return "missing action. Supported: status, get_capabilities, list_domains, get_domain, list_business_objects, list_app_installations, resolve_object_role, list_relationships, resolve_intent, get_inbox, get_inbox_summary, get_stats, export_governance_evidence_pack, export_governance_evidence_summary, run_maintenance, list_business_actions, get_business_action, list_business_rules, evaluate_business_rules, list_event_contracts, get_event_contract, list_event_dead_letters, get_event_dead_letter, retry_event_dead_letter, resolve_event_dead_letter, list_connectors, list_connector_health, get_connector, upsert_connector, delete_connector, test_connector, validate_connector_config, check_connector_readiness, get_connector_health, get_connector_sync_state, list_connector_sync_runs, update_connector_sync_state, plan_connector_sync, sync_connector_batch, suggest_connector_mapping, patch_connector_config, preview_connector_event, ingest_connector_event, execute_business_action, list_business_views, get_business_view, query_business_view, list_dashboards, get_dashboard, run_dashboard, list_reports, get_report, run_report, aggregate_records, list_quality_checks, run_quality_check, list_quality_runs, get_quality_run, list_import_jobs, get_import_job, list_export_jobs, get_export_job, download_export_job, list_operation_plans, create_operation_plan, get_operation_plan, review_operation_plan, apply_operation_plan, cancel_operation_plan, mis.approval.start, mis.approval.list, mis.approval.list_by_record, mis.approval.get, mis.approval.sync_result, mis.approval.my_inbox, mis.approval.my_pending, mis.approval.my_requests, mis.approval.pending_my_approval, mis.approval.handled, mis.approval.attention, list_record_approvals, create_record_approval, get_record_approval, review_record_approval, list_audit_logs, export_audit_logs_csv, list_data_events, list_record_revisions, get_record_timeline, get_related_records, list_schema_proposals, get_schema_proposal, list_templates, get_template, bootstrap_templates, create_dataset_from_template, list_datasets, get_dataset, create_dataset, delete_dataset, list_fields, upsert_fields, propose_schema, apply_schema_proposal, validate_record, batch_import_records, bulk_update_records, bulk_delete_records, restore_record, start_batch_import_job, get_import_template_csv, import_records_csv, start_csv_import_job, import_records_jsonl, start_jsonl_import_job, upsert_record, get_record, delete_record, query_records, export_records, export_records_jsonl, start_csv_export_job, start_jsonl_export_job, ingest_event, create_backup, list_backups, get_backup, download_backup, restore_backup"
 	}
 	switch action {
 	case "status":
@@ -473,6 +473,66 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			values.Set("before_id", beforeID)
 		}
 		path := "/api/v1/data/business-objects"
+		if encoded := values.Encode(); encoded != "" {
+			path += "?" + encoded
+		}
+		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
+	case misDataToolActionListAppInstallations:
+		values := url.Values{}
+		for _, pair := range []struct {
+			arg   string
+			query string
+		}{
+			{"app_id", "app_id"},
+			{"appId", "app_id"},
+			{"blueprint_id", "blueprint_id"},
+			{"blueprintId", "blueprint_id"},
+			{"kind", "kind"},
+			{"source", "source"},
+			{"status", "status"},
+			{"workflow_skill_id", "workflow_skill_id"},
+			{"workflowSkillId", "workflow_skill_id"},
+			{"workflow_node", "workflow_node"},
+			{"workflowNode", "workflow_node"},
+			{"current_node", "workflow_node"},
+			{"currentNode", "workflow_node"},
+			{"approval_status", "approval_status"},
+			{"approvalStatus", "approval_status"},
+			{"approval_result_status", "approval_status"},
+			{"approvalResultStatus", "approval_status"},
+			{"approval_decision", "approval_decision"},
+			{"approvalDecision", "approval_decision"},
+			{"decision", "approval_decision"},
+			{"applicant_id", "applicant_id"},
+			{"applicantId", "applicant_id"},
+			{"submitted_by", "applicant_id"},
+			{"submittedBy", "applicant_id"},
+			{"approver_id", "approver_id"},
+			{"approverId", "approver_id"},
+			{"assigned_to", "approver_id"},
+			{"assignedTo", "approver_id"},
+			{"result_type", "result_type"},
+			{"resultType", "result_type"},
+			{"output_type", "result_type"},
+			{"outputType", "result_type"},
+			{"before", "before"},
+			{"before_id", "before_id"},
+			{"beforeId", "before_id"},
+		} {
+			if value := strings.TrimSpace(stringArg(args, pair.arg)); value != "" && values.Get(pair.query) == "" {
+				values.Set(pair.query, value)
+			}
+		}
+		if value, ok := misBoolQueryArg(args, "has_blocking_dependency", "hasBlockingDependency"); ok {
+			values.Set("has_blocking_dependency", value)
+		}
+		if value, ok := misBoolQueryArg(args, "has_missing_required_dependency", "hasMissingRequiredDependency", "has_missing_required", "hasMissingRequired"); ok {
+			values.Set("has_missing_required_dependency", value)
+		}
+		if limit := strings.TrimSpace(fmt.Sprint(args["limit"])); limit != "" && limit != "<nil>" {
+			values.Set("limit", limit)
+		}
+		path := "/api/v1/data/app-installations"
 		if encoded := values.Encode(); encoded != "" {
 			path += "?" + encoded
 		}
@@ -3399,6 +3459,34 @@ func misBoolArg(args map[string]interface{}, key string) bool {
 		return v
 	}
 	return false
+}
+
+func misBoolQueryArg(args map[string]interface{}, keys ...string) (string, bool) {
+	if args == nil {
+		return "", false
+	}
+	for _, key := range keys {
+		value, ok := args[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case bool:
+			if typed {
+				return "true", true
+			}
+			return "false", true
+		case string:
+			normalized := strings.ToLower(strings.TrimSpace(typed))
+			if normalized == "true" || normalized == "1" {
+				return "true", true
+			}
+			if normalized == "false" || normalized == "0" {
+				return "false", true
+			}
+		}
+	}
+	return "", false
 }
 
 func pathEscape(value string) string {

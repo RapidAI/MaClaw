@@ -512,17 +512,18 @@ func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
 					wireAPI, keyPfx, keyLen, oatPfx, oatLen, p.AuthType)
 			}
 			return corelib.MaclawLLMConfig{
-				URL:            p.URL,
-				Key:            key,
-				Model:          p.Model,
-				Protocol:       p.Protocol,
-				ContextLength:  p.ContextLength,
-				TimeoutSec:     normalizeLLMTimeoutSec(p.TimeoutSec),
-				SupportsVision: p.SupportsVision,
-				AgentType:      p.AgentType,
-				WireAPI:        wireAPI,
-				ProviderName:   p.Name,
-				AuthType:       p.AuthType,
+				URL:             p.URL,
+				Key:             key,
+				Model:           p.Model,
+				Protocol:        p.Protocol,
+				ContextLength:   p.ContextLength,
+				TimeoutSec:      normalizeLLMTimeoutSec(p.TimeoutSec),
+				MaxOutputTokens: p.MaxOutputTokens,
+				SupportsVision:  p.SupportsVision,
+				AgentType:       p.AgentType,
+				WireAPI:         wireAPI,
+				ProviderName:    p.Name,
+				AuthType:        p.AuthType,
 			}
 		}
 	}

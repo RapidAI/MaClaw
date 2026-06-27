@@ -363,6 +363,13 @@ func openAPISpec(version string) map[string]interface{} {
 			stringQueryParam("status", "Filter installed MaClaw Apps by status such as installed, disabled, or error."),
 			stringQueryParam("workflow_skill_id", "Filter approval apps by workflow skill id."),
 			stringQueryParam("workflow_node", "Filter approval apps by submit, approval, attention, or result workflow node."),
+			stringQueryParam("approval_status", "Filter approval apps by approval instance status such as approved, rejected, attention, pending, or requires_input."),
+			stringQueryParam("approval_decision", "Filter approval apps by approval result decision such as approved, rejected, or attention."),
+			stringQueryParam("applicant_id", "Filter approval apps by applicant or requester id for My Requests views."),
+			stringQueryParam("approver_id", "Filter approval apps by assigned approver or current assignee id for My Approvals views."),
+			stringQueryParam("result_type", "Filter installed MaClaw Apps by declared or observed result type such as approval_result, document, inline_content, table, or business_status."),
+			boolQueryParam("has_blocking_dependency", "Filter installed MaClaw Apps by whether dependency verification found a blocking dependency."),
+			boolQueryParam("has_missing_required_dependency", "Filter installed MaClaw Apps by whether a required dependency is missing or unavailable."),
 		},
 		"/api/v1/data/relationships": {
 			stringQueryParam("dataset_id", "Filter relationships by source or target dataset id."),

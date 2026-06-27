@@ -12,10 +12,27 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
+
+// maxOutputTokensCache stores discovered per-model output limits after a successful
+// binary-halving downgrade. Keyed by model name (lowercase).
+// Prevents repeating the downgrade probe on subsequent requests for the same model.
+var maxOutputTokensCache sync.Map
+
+// LoadMaxOutputTokensCache returns the cached output token limit for a model (if any).
+// Used by external packages (e.g. gui) that build request frames independently.
+func LoadMaxOutputTokensCache(modelKey string) (int, bool) {
+	if v, ok := maxOutputTokensCache.Load(modelKey); ok {
+		if limit, isInt := v.(int); isInt {
+			return limit, true
+		}
+	}
+	return 0, false
+}
 
 // DoOpenAIRequestStream sends a streaming OpenAI-compatible chat request.
 // It calls onToken for each text delta, then returns the fully assembled Response.
@@ -56,6 +73,46 @@ func DoOpenAIRequestStreamWithReasoning(
 
 	startedAt := time.Now()
 	result, statusCode, body, err := openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
+	if err != nil {
+		// Auto-downgrade max_tokens via binary halving if API rejects it as too high.
+		// No parsing of error message numbers — just detect "is this about max_tokens?" and halve.
+		if (statusCode == 400 || statusCode == 422) && looksLikeMaxTokensError(string(body), err.Error()) {
+			currentLimit := cfg.EffectiveMaxOutputTokens()
+			const minOutputTokens = 1024
+			for attempt := 0; attempt < 3 && currentLimit > minOutputTokens; attempt++ {
+				currentLimit /= 2
+				if currentLimit < minOutputTokens {
+					currentLimit = minOutputTokens
+				}
+				log.Printf("[LLM-stream] max_tokens_downgrade model=%s attempt=%d trying=%d %s",
+					cfg.Model, attempt+1, currentLimit, traceFields)
+				var reqMap map[string]interface{}
+				if json.Unmarshal(reqBody, &reqMap) != nil {
+					break
+				}
+				reqMap["max_tokens"] = currentLimit
+				delete(reqMap, "max_completion_tokens")
+				retryBody, marshalErr := json.Marshal(reqMap)
+				if marshalErr != nil {
+					break
+				}
+				retryStartedAt := time.Now()
+				result, statusCode, body, err = openAISDKChatStream(ctx, cfg, retryBody, client, onToken, onReasoning)
+				if err == nil {
+					log.Printf("[LLM-stream] max_tokens_downgrade succeeded model=%s limit=%d elapsed=%s %s",
+						cfg.Model, currentLimit, time.Since(retryStartedAt).Round(time.Millisecond), traceFields)
+					// Cache the discovered limit so subsequent requests skip the probe.
+					cacheKey := strings.ToLower(strings.TrimSpace(cfg.Model))
+					maxOutputTokensCache.Store(cacheKey, currentLimit)
+					break
+				}
+				// If the error is no longer about max_tokens, stop halving
+				if !looksLikeMaxTokensError(string(body), err.Error()) {
+					break
+				}
+			}
+		}
+	}
 	if err != nil {
 		if statusCode == 0 {
 			log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
@@ -551,4 +608,27 @@ func streamTruncatedRequiredField(toolName string, parsed map[string]interface{}
 		}
 	}
 	return ""
+}
+
+// looksLikeMaxTokensError checks if an API error is about max_tokens being too high.
+// Only does keyword matching — no number extraction needed.
+func looksLikeMaxTokensError(body string, errMsg string) bool {
+	for _, text := range []string{body, errMsg} {
+		if text == "" {
+			continue
+		}
+		lower := strings.ToLower(text)
+		if strings.Contains(lower, "max_tokens") || strings.Contains(lower, "max_output_tokens") || strings.Contains(lower, "max_completion_tokens") {
+			// Must also contain an indicator that the value is "too high" / "exceeded" / "must be less"
+			if strings.Contains(lower, "less than") || strings.Contains(lower, "<=") ||
+				strings.Contains(lower, "exceed") || strings.Contains(lower, "invalid") ||
+				strings.Contains(lower, "must be") || strings.Contains(lower, "maximum") ||
+				strings.Contains(text, "超出") || strings.Contains(text, "超过") ||
+				strings.Contains(text, "最大") || strings.Contains(text, "限制") ||
+				strings.Contains(text, "不能超过") || strings.Contains(text, "不得超过") {
+				return true
+			}
+		}
+	}
+	return false
 }

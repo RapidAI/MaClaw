@@ -283,12 +283,12 @@ func TestPresentationPPTGenerationPhaseUsesArtifactToolPolicy(t *testing.T) {
 		handler.getTools(),
 	)
 	names := toolNameSetForWorkflowFilterTest(filtered)
-	for _, name := range []string{"write_file", "manage_skill", "search_and_install_skill", "craft_tool", "office", "generate_pdf", "send_file"} {
+	for _, name := range []string{"write_file", "manage_skill", "search_and_install_skill", "craft_tool", "office", "generate_pdf", "send_file", "bash", "list_directory"} {
 		if !names[name] {
 			t.Fatalf("ppt_generation phase should expose %s, got %#v", name, names)
 		}
 	}
-	for _, name := range []string{"edit_file", "task", "bash"} {
+	for _, name := range []string{"edit_file", "task"} {
 		if names[name] {
 			t.Fatalf("ppt_generation phase should not expose %s, got %#v", name, names)
 		}

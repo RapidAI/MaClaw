@@ -2374,6 +2374,12 @@ func (a *App) ResolveCriticalConfirm(confirmID string, confirmed bool) error {
 	return handler.ResolveCriticalConfirm(confirmID, confirmed)
 }
 
+// ResolveScopeApproval handles the user's response to a SubAgent scope approval prompt.
+// decision: "deny", "allow_once", or "allow_dir"
+func (a *App) ResolveScopeApproval(approvalID string, decision string) {
+	ResolveScopeApproval(approvalID, decision)
+}
+
 // ---------------------------------------------------------------------------
 // Background Loop Wails bindings
 // ---------------------------------------------------------------------------

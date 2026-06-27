@@ -669,6 +669,7 @@ type MISDataConfig = {
     enabled?: boolean;
     endpoint?: string;
     token?: string;
+    user_id?: string;
 };
 
 type DataSrvDiscovery = {
@@ -902,8 +903,21 @@ const labels = {
         myRequests: '\u6211\u7684\u7533\u8bf7',
         pendingMyApproval: '\u5f85\u6211\u5ba1\u6279',
         handledApprovals: '\u5df2\u5904\u7406',
+        approvedApprovals: '\u5df2\u901a\u8fc7',
+        rejectedApprovals: '\u5df2\u9a73\u56de',
         attentionApprovals: '\u9700\u5173\u6ce8',
         allApprovalInstances: '\u5168\u90e8',
+        documentOutputs: '\u6587\u6863\u8f93\u51fa',
+        inlineContentOutputs: '\u6587\u672c\u8f93\u51fa',
+        datasrvApprovalSummary: 'DataSrv \u5ba1\u6279\u6982\u89c8',
+        datasrvApprovalSummaryHint: '\u6309 DataSrv app-installations \u67e5\u8be2\u805a\u5408\u6211\u7684\u7533\u8bf7\u3001\u5f85\u5ba1\u3001\u5ba1\u6279\u7ed3\u679c\u548c\u8f93\u51fa\u7c7b\u578b\u3002',
+        datasrvApprovalSummaryDisabled: 'DataSrv \u672a\u542f\u7528\uff0c\u53ea\u663e\u793a\u672c\u5730\u5ba1\u6279\u5b9e\u4f8b\u3002',
+        datasrvApprovalSummaryLoading: '\u6b63\u5728\u805a\u5408 DataSrv \u5ba1\u6279\u7ed3\u679c',
+        datasrvApprovalSummaryError: 'DataSrv \u5ba1\u6279\u6982\u89c8\u8bfb\u53d6\u5931\u8d25',
+        datasrvApprovalSummaryEmpty: '\u6682\u65e0\u5339\u914d\u7684\u5ba1\u6279\u578b\u5e94\u7528',
+        datasrvApprovalDetails: 'DataSrv \u5ba1\u6279\u660e\u7ec6',
+        openDataSrvApproval: '\u6253\u5f00\u5ba1\u6279',
+        openDataSrvRecord: '\u6253\u5f00\u8bb0\u5f55',
         approvalInstanceData: '\u5b9e\u4f8b\u6570\u636e',
         currentApprovalNode: '\u5f53\u524d\u8282\u70b9',
         currentAssigneeLabel: '\u5f53\u524d\u5904\u7406\u4eba',
@@ -1228,8 +1242,21 @@ const labels = {
         myRequests: 'My requests',
         pendingMyApproval: 'Pending my approval',
         handledApprovals: 'Handled',
+        approvedApprovals: 'Approved',
+        rejectedApprovals: 'Rejected',
         attentionApprovals: 'Needs attention',
         allApprovalInstances: 'All',
+        documentOutputs: 'Document outputs',
+        inlineContentOutputs: 'Text outputs',
+        datasrvApprovalSummary: 'DataSrv approval overview',
+        datasrvApprovalSummaryHint: 'Aggregates my requests, approvals, decisions, and output types from DataSrv app-installations.',
+        datasrvApprovalSummaryDisabled: 'DataSrv is disabled; showing local approval instances only.',
+        datasrvApprovalSummaryLoading: 'Aggregating DataSrv approval results',
+        datasrvApprovalSummaryError: 'Failed to load the DataSrv approval overview',
+        datasrvApprovalSummaryEmpty: 'No matching approval apps yet',
+        datasrvApprovalDetails: 'DataSrv approval details',
+        openDataSrvApproval: 'Open approval',
+        openDataSrvRecord: 'Open record',
         approvalInstanceData: 'Instance data',
         currentApprovalNode: 'Current node',
         currentAssigneeLabel: 'Current assignee',
@@ -2276,9 +2303,43 @@ type DataSrvAppInstallationItem = {
     version?: string | number;
     kind?: string;
     source?: string;
+    updated_at?: string;
+    updatedAt?: string;
     role_bindings?: Array<Record<string, any>>;
     roleBindings?: Array<Record<string, any>>;
     metadata?: Record<string, any>;
+};
+
+type DataSrvApprovalSummaryBucket = {
+    key: string;
+    label: string;
+    query: Record<string, string>;
+    count: number;
+    apps: string[];
+    items: DataSrvApprovalSummaryItem[];
+};
+
+type DataSrvApprovalSummaryItem = {
+    appID: string;
+    name: string;
+    datasetID: string;
+    objectRole: string;
+    approvalID: string;
+    workflowInstanceID: string;
+    recordID: string;
+    detailURL: string;
+    status: string;
+    decision: string;
+    currentNode: string;
+    resultTypes: string[];
+    updatedAt: string;
+};
+
+type DataSrvApprovalSummaryState = {
+    status: 'disabled' | 'loading' | 'ready' | 'error';
+    endpoint?: string;
+    error?: string;
+    buckets: DataSrvApprovalSummaryBucket[];
 };
 
 function buildDataSrvAppCandidates(caps: any): AppEntry[] {
@@ -2368,6 +2429,192 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
             workflow: workflowMapping,
         },
     };
+}
+
+async function fetchDataSrvApprovalAppSummary(text: typeof labels.zh): Promise<DataSrvApprovalSummaryState> {
+    const config = await Promise.resolve().then(() => GetMISDataConfig()) as MISDataConfig;
+    const endpoint = String(config?.endpoint || 'http://127.0.0.1:18180').replace(/\/+$/, '');
+    if (!config?.enabled) return { status: 'disabled', endpoint, buckets: [] };
+    const currentUser = String(config.user_id || 'current_user').trim() || 'current_user';
+    const definitions: Array<{ key: string; label: string; query: Record<string, string> }> = [
+        { key: 'all', label: text.allApprovalInstances, query: {} },
+        { key: 'my_requests', label: text.myRequests, query: { applicant_id: currentUser } },
+        { key: 'pending_my_approval', label: text.pendingMyApproval, query: { approver_id: currentUser } },
+        { key: 'approved', label: text.approvedApprovals, query: { approval_status: 'approved' } },
+        { key: 'rejected', label: text.rejectedApprovals, query: { approval_status: 'rejected' } },
+        { key: 'attention', label: text.attentionApprovals, query: { approval_status: 'attention' } },
+        { key: 'document', label: text.documentOutputs, query: { result_type: 'document' } },
+        { key: 'inline_content', label: text.inlineContentOutputs, query: { result_type: 'inline_content' } },
+    ];
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (config.token) headers.Authorization = `Bearer ${config.token}`;
+    const buckets = await Promise.all(definitions.map(async (definition) => {
+        const params = new URLSearchParams({ kind: 'enterprise_approval_app', limit: '20', ...definition.query });
+        const response = await fetch(`${endpoint}/api/v1/data/app-installations?${params.toString()}`, { headers });
+        if (!response.ok) throw new Error(`GET /api/v1/data/app-installations ${response.status}`);
+        const payload = await response.json();
+        const items = Array.isArray(payload?.items) ? payload.items as DataSrvAppInstallationItem[] : Array.isArray(payload) ? payload as DataSrvAppInstallationItem[] : [];
+        const summaryItems = items.map(dataSrvApprovalSummaryItem).filter((item): item is DataSrvApprovalSummaryItem => !!item);
+        return {
+            ...definition,
+            count: summaryItems.length,
+            apps: summaryItems.slice(0, 3).map((item) => item.name).filter(Boolean),
+            items: summaryItems,
+        };
+    }));
+    return { status: 'ready', endpoint, buckets };
+}
+
+function dataSrvApprovalSummaryItem(item: DataSrvAppInstallationItem): DataSrvApprovalSummaryItem | null {
+    const metadata = item.metadata && typeof item.metadata === 'object' ? item.metadata : {};
+    const roleBindings = Array.isArray(item.role_bindings) ? item.role_bindings : Array.isArray(item.roleBindings) ? item.roleBindings : [];
+    const primaryBinding = roleBindings[0] || {};
+    const evidence = appEvidenceRecord(metadata.test_evidence) || {};
+    const approval = appEvidenceRecord(evidence.approval_instance)
+        || appEvidenceRecord(evidence.approvalInstance)
+        || appEvidenceRecord(metadata.test_evidence_approval_instance)
+        || appEvidenceRecord(metadata.approval_instance)
+        || {};
+    const resultPayload = appEvidenceRecord(evidence.result_payload)
+        || appEvidenceRecord(evidence.resultPayload)
+        || appEvidenceRecord(metadata.test_evidence_result_payload)
+        || {};
+    const appID = appEvidenceString(item.app_id, item.appId);
+    const name = appEvidenceString(item.name, appID);
+    if (!appID && !name) return null;
+    const status = appEvidenceString(
+        approval.status,
+        approval.approval_status,
+        metadata.test_evidence_approval_status,
+        metadata.approval_status,
+        resultPayload.result_status,
+    );
+    const decision = appEvidenceString(
+        approval.decision,
+        approval.approval_decision,
+        resultPayload.decision,
+        resultPayload.approval_result,
+        metadata.approval_decision,
+    );
+    const currentNode = appEvidenceString(
+        approval.current_node,
+        approval.currentNode,
+        approval.workflow_node,
+        approval.workflowNode,
+        metadata.workflow_node,
+        metadata.workflow_result_node,
+    );
+    const datasetID = appEvidenceString(
+        approval.dataset_id,
+        approval.datasetID,
+        resultPayload.dataset_id,
+        resultPayload.datasetID,
+        metadata.dataset_id,
+        metadata.datasetID,
+        primaryBinding.dataset_id,
+        primaryBinding.datasetID,
+    );
+    const objectRole = appEvidenceString(
+        approval.object_role,
+        approval.objectRole,
+        approval.approval_object_role,
+        approval.approvalObjectRole,
+        resultPayload.object_role,
+        resultPayload.objectRole,
+        metadata.object_role,
+        metadata.objectRole,
+        primaryBinding.object_role,
+        primaryBinding.objectRole,
+    );
+    const approvalID = appEvidenceString(
+        approval.approval_id,
+        approval.approvalID,
+        approval.record_approval_id,
+        approval.recordApprovalID,
+        resultPayload.approval_id,
+        resultPayload.approvalID,
+        metadata.approval_id,
+        metadata.approvalID,
+        metadata.record_approval_id,
+        metadata.recordApprovalID,
+    );
+    const workflowInstanceID = appEvidenceString(
+        approval.workflow_instance_id,
+        approval.workflowInstanceID,
+        approval.workflowInstanceId,
+        resultPayload.workflow_instance_id,
+        resultPayload.workflowInstanceID,
+        resultPayload.workflowInstanceId,
+        metadata.workflow_instance_id,
+        metadata.workflowInstanceID,
+        metadata.workflowInstanceId,
+        metadata.test_evidence_workflow_instance_id,
+    );
+    const recordID = appEvidenceString(
+        approval.record_id,
+        approval.recordID,
+        approval.business_record_id,
+        approval.businessRecordID,
+        resultPayload.record_id,
+        resultPayload.recordID,
+        resultPayload.business_record_id,
+        resultPayload.businessRecordID,
+        metadata.record_id,
+        metadata.recordID,
+        metadata.business_record_id,
+        metadata.businessRecordID,
+        metadata.test_evidence_record_id,
+    );
+    const detailURL = appEvidenceString(
+        approval.detail_url,
+        approval.detailURL,
+        resultPayload.detail_url,
+        resultPayload.detailURL,
+        metadata.detail_url,
+        metadata.detailURL,
+    );
+    const evidenceOutputs = normalizeApprovalOutputs(Array.isArray(evidence.outputs) ? evidence.outputs as Array<SkillRunOutputBlockView | ApprovalInstanceOutputView | null | undefined> : undefined) || [];
+    const resultTypes = Array.from(new Set([
+        ...parseStringList(metadata.result_contract_types),
+        ...parseStringList(metadata.test_evidence_covered_types),
+        appEvidenceString(metadata.result_contract_primary),
+        appEvidenceString(evidence.primary_result, evidence.primaryResult, metadata.test_evidence_primary_result),
+        ...evidenceOutputs.map(approvalOutputKind),
+    ].map((value) => String(value || '').trim()).filter(Boolean)));
+    return {
+        appID,
+        name: name || appID,
+        datasetID,
+        objectRole,
+        approvalID,
+        workflowInstanceID,
+        recordID,
+        detailURL,
+        status,
+        decision,
+        currentNode,
+        resultTypes,
+        updatedAt: appEvidenceString(item.updated_at, item.updatedAt, metadata.updated_at, evidence.verified_at, evidence.verifiedAt),
+    };
+}
+
+function dataSrvApprovalDetailURL(endpoint: string | undefined, item: DataSrvApprovalSummaryItem) {
+    const base = String(endpoint || '').replace(/\/+$/, '');
+    if (item.detailURL) return item.detailURL;
+    if (!base) return '';
+    if (item.approvalID) return `${base}/api/v1/data/approvals/${encodeURIComponent(item.approvalID)}`;
+    const params = new URLSearchParams({ limit: '20' });
+    if (item.datasetID) params.set('dataset_id', item.datasetID);
+    if (item.recordID) params.set('record_id', item.recordID);
+    if (item.workflowInstanceID) params.set('workflow_instance_id', item.workflowInstanceID);
+    if (item.appID) params.set('app_id', item.appID);
+    return `${base}/api/v1/data/approvals?${params.toString()}`;
+}
+
+function dataSrvBusinessRecordURL(endpoint: string | undefined, item: DataSrvApprovalSummaryItem) {
+    const base = String(endpoint || '').replace(/\/+$/, '');
+    if (!base || !item.datasetID || !item.recordID) return '';
+    return `${base}/api/v1/data/datasets/${encodeURIComponent(item.datasetID)}/records/${encodeURIComponent(item.recordID)}`;
 }
 
 function mergeDataSrvInstalledDependencies(base: AppSkillDependency[], recovered: AppSkillDependency[]) {
@@ -7190,7 +7437,9 @@ const approvalLanes = (text: typeof labels.zh) => [
 ] as const;
 
 function approvalSearchText(item: ApprovalInstanceView, appName: string, lang?: string) {
-    return [appName, item.appName, item.title, item.id, approvalCurrentNodeText(item, lang), item.currentNode, item.owner, item.approver, item.currentAssignee, item.currentAssigneeType, item.result, item.workflowSkillID, item.approvalWorkflowID, item.workflowVersion, item.workflowDecisionID, item.datasetID, item.objectRole, item.approvalID, item.businessStatus, item.resultStatus, item.fromStatus, item.toStatus, item.recordID]
+    const outputText = (item.outputs || []).flatMap((output) => [approvalOutputKind(output), output.kind, output.type, output.title, output.text, output.status, output.artifact_id]).filter(Boolean);
+    const artifactText = (item.artifacts || []).flatMap((artifact) => [artifact.id, artifact.name, artifact.uri, artifact.path, artifact.status, artifact.mime_type]).filter(Boolean);
+    return [appName, item.appName, item.appID, item.title, item.id, approvalCurrentNodeText(item, lang), item.currentNode, item.owner, item.approver, item.currentAssignee, item.currentAssigneeType, item.result, item.workflowSkillID, item.approvalWorkflowID, item.workflowVersion, item.workflowDecisionID, item.datasetID, item.objectRole, item.approvalID, item.businessStatus, item.resultStatus, item.fromStatus, item.toStatus, item.recordID, ...outputText, ...artifactText]
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
@@ -7205,6 +7454,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
     const [instances, setInstances] = useState<ApprovalInstanceView[]>([]);
     const [selectedInstanceId, setSelectedInstanceId] = useState('');
     const [loadingState, setLoadingState] = useState<'idle' | 'loading' | 'error'>('idle');
+    const [dataSrvSummary, setDataSrvSummary] = useState<DataSrvApprovalSummaryState>({ status: 'loading', buckets: [] });
     const appNameById = useMemo(() => new Map(apps.map((app) => [app.id, app.name])), [apps]);
     const approvalApps = useMemo(() => apps.filter((app) => isEnterpriseApprovalAppKind(app.kind)), [apps]);
 
@@ -7229,6 +7479,19 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
         void loadInstances();
     }, [loadInstances]);
 
+    const loadDataSrvSummary = useCallback(async () => {
+        setDataSrvSummary((current) => ({ ...current, status: 'loading', error: undefined }));
+        try {
+            setDataSrvSummary(await fetchDataSrvApprovalAppSummary(text));
+        } catch (error: any) {
+            setDataSrvSummary({ status: 'error', error: error?.message || String(error), buckets: [] });
+        }
+    }, [text]);
+
+    useEffect(() => {
+        void loadDataSrvSummary();
+    }, [loadDataSrvSummary]);
+
     const filteredInstances = useMemo(() => {
         const normalizedQuery = query.trim().toLowerCase();
         return instances.filter((item) => {
@@ -7247,6 +7510,30 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
         : key === 'handled'
             ? instances.filter((item) => item.status === 'approved' || item.status === 'rejected').length
             : instances.filter((item) => item.lane === key).length;
+    const applyDataSrvSummaryBucket = (bucket: DataSrvApprovalSummaryBucket) => {
+        setSelectedInstanceId('');
+        setAppFilter('all');
+        setQuery(bucket.query.result_type || '');
+        if (bucket.key === 'my_requests' || bucket.key === 'pending_my_approval' || bucket.key === 'attention') {
+            setLane(bucket.key as ApprovalLaneFilter);
+        } else {
+            setLane('all');
+        }
+        if (bucket.query.approval_status) {
+            setStatusFilter(bucket.query.approval_status);
+        } else if (bucket.key === 'attention') {
+            setStatusFilter('attention');
+        } else {
+            setStatusFilter('all');
+        }
+    };
+    const applyDataSrvSummaryItem = (item: DataSrvApprovalSummaryItem) => {
+        setSelectedInstanceId('');
+        setLane('all');
+        setAppFilter('all');
+        setStatusFilter(item.status || 'all');
+        setQuery(item.approvalID || item.workflowInstanceID || item.recordID || item.appID || item.name);
+    };
 
     const updateApprovalInstanceDecision = async (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => {
         if (!instance?.id) return;
@@ -7317,10 +7604,17 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
                     <h2 className="apps-detail__title">{text.approvalManagerTitle}</h2>
                     <p className="apps-detail__subtitle">{text.approvalManagerHint}</p>
                 </div>
-                <button className="apps-secondary-button" type="button" onClick={() => void loadInstances()}>{text.approvalRefresh}</button>
+                <button className="apps-secondary-button" type="button" onClick={() => { void loadInstances(); void loadDataSrvSummary(); }}>{text.approvalRefresh}</button>
             </div>
             <div className="apps-detail__body elegant-scrollbar">
                 <div className="apps-approval-manager">
+                    <DataSrvApprovalSummaryPanel summary={dataSrvSummary} text={text} onBucketSelect={applyDataSrvSummaryBucket} onItemSelect={applyDataSrvSummaryItem} onOpenApproval={(item) => {
+                        const url = dataSrvApprovalDetailURL(dataSrvSummary.endpoint, item);
+                        if (url) BrowserOpenURL(url);
+                    }} onOpenRecord={(item) => {
+                        const url = dataSrvBusinessRecordURL(dataSrvSummary.endpoint, item);
+                        if (url) BrowserOpenURL(url);
+                    }} />
                     <div className="apps-approval-manager__filters">
                         <input className="apps-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={text.approvalSearch} />
                         <label><span>{text.approvalAppFilter}</span><select value={appFilter} onChange={(event) => { setAppFilter(event.target.value); setSelectedInstanceId(''); }}><option value="all">{text.approvalAllApps}</option>{approvalApps.map((app) => <option key={app.id} value={app.id}>{app.name}</option>)}</select></label>
@@ -7347,6 +7641,76 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
                 </div>
             </div>
         </>
+    );
+};
+
+const DataSrvApprovalSummaryPanel = ({ summary, text, onBucketSelect, onItemSelect, onOpenApproval, onOpenRecord }: { summary: DataSrvApprovalSummaryState; text: typeof labels.zh; onBucketSelect?: (bucket: DataSrvApprovalSummaryBucket) => void; onItemSelect?: (item: DataSrvApprovalSummaryItem) => void; onOpenApproval?: (item: DataSrvApprovalSummaryItem) => void; onOpenRecord?: (item: DataSrvApprovalSummaryItem) => void }) => {
+    const [selectedKey, setSelectedKey] = useState('all');
+    if (summary.status === 'loading') {
+        return <section className="apps-datasrv-approval-summary" aria-label={text.datasrvApprovalSummary}><div className="apps-approval-empty" role="status">{text.datasrvApprovalSummaryLoading}</div></section>;
+    }
+    if (summary.status === 'disabled') {
+        return <section className="apps-datasrv-approval-summary" aria-label={text.datasrvApprovalSummary}><div className="apps-approval-empty" role="status">{text.datasrvApprovalSummaryDisabled}</div></section>;
+    }
+    if (summary.status === 'error') {
+        return <section className="apps-datasrv-approval-summary" aria-label={text.datasrvApprovalSummary}><div className="apps-approval-empty" role="alert">{`${text.datasrvApprovalSummaryError}: ${summary.error || '-'}`}</div></section>;
+    }
+    const visibleBuckets = summary.buckets.filter((bucket) => bucket.count > 0);
+    const selectedBucket = visibleBuckets.find((bucket) => bucket.key === selectedKey) || visibleBuckets[0];
+    return (
+        <section className="apps-datasrv-approval-summary" aria-label={text.datasrvApprovalSummary}>
+            <div className="apps-datasrv-approval-summary__head">
+                <div>
+                    <strong>{text.datasrvApprovalSummary}</strong>
+                    <span>{text.datasrvApprovalSummaryHint}</span>
+                </div>
+                {summary.endpoint && <code>{summary.endpoint}</code>}
+            </div>
+            {visibleBuckets.length === 0 ? (
+                <div className="apps-approval-empty" role="status">{text.datasrvApprovalSummaryEmpty}</div>
+            ) : (
+                <>
+                    <div className="apps-datasrv-approval-summary__grid">
+                        {visibleBuckets.map((bucket) => (
+                        <button className="apps-datasrv-approval-summary__item" data-selected={selectedBucket?.key === bucket.key ? 'true' : 'false'} type="button" key={bucket.key} onClick={() => { setSelectedKey(bucket.key); onBucketSelect?.(bucket); }} aria-pressed={selectedBucket?.key === bucket.key}>
+                            <span>{bucket.label}</span>
+                            <strong>{bucket.count}</strong>
+                            <small>{bucket.apps.join(' / ') || '-'}</small>
+                        </button>
+                        ))}
+                    </div>
+                    {selectedBucket && (
+                        <div className="apps-datasrv-approval-summary__details" aria-label={text.datasrvApprovalDetails}>
+                            <div className="apps-datasrv-approval-summary__details-head">
+                                <strong>{selectedBucket.label}</strong>
+                                <span>{selectedBucket.count}</span>
+                            </div>
+                            {selectedBucket.items.slice(0, 6).map((item) => {
+                                const approvalURL = dataSrvApprovalDetailURL(summary.endpoint, item);
+                                const recordURL = dataSrvBusinessRecordURL(summary.endpoint, item);
+                                return (
+                                    <div className="apps-datasrv-approval-summary__row" key={`${selectedBucket.key}-${item.approvalID || item.workflowInstanceID || item.recordID || item.appID || item.name}`}>
+                                        <button className="apps-datasrv-approval-summary__row-main" type="button" onClick={() => onItemSelect?.(item)}>
+                                            <div>
+                                                <strong>{item.name}</strong>
+                                                <span>{[item.appID, item.currentNode].filter(Boolean).join(' / ') || '-'}</span>
+                                                {(item.approvalID || item.workflowInstanceID || item.recordID) && <code>{[item.approvalID, item.workflowInstanceID, item.recordID].filter(Boolean).join(' / ')}</code>}
+                                                {(item.datasetID || item.objectRole) && <code>{[item.datasetID, item.objectRole].filter(Boolean).join(' / ')}</code>}
+                                            </div>
+                                            <small>{[item.status || item.decision, item.resultTypes.slice(0, 3).join(', '), item.updatedAt].filter(Boolean).join(' · ') || '-'}</small>
+                                        </button>
+                                        <div className="apps-datasrv-approval-summary__row-actions">
+                                            <button className="apps-link-button" type="button" disabled={!approvalURL} onClick={() => approvalURL && onOpenApproval?.(item)}>{text.openDataSrvApproval}</button>
+                                            <button className="apps-link-button" type="button" disabled={!recordURL} onClick={() => recordURL && onOpenRecord?.(item)}>{text.openDataSrvRecord}</button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </>
+            )}
+        </section>
     );
 };
 
@@ -8238,6 +8602,20 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
         installRecordString(evidence.testProtocolFingerprint || evidence.test_protocol_fingerprint || protocol.fingerprint || protocol.hash),
     ].filter(Boolean).join(' · ');
     if (evidenceValue) items.push({ label: text.testEvidence, value: evidenceValue });
+    const dependencyVerification = record.dependency_verification || {};
+    const verificationDependencies = parseBackendAppInstallDependencies(dependencyVerification.dependencies);
+    const dependencyCount = appEvidenceNumber(dependencyVerification.dependencyCount, dependencyVerification.dependency_count)
+        ?? (verificationDependencies.length || (record.dependencies || []).length);
+    const blockingCountFromRecord = (record.dependencies || []).filter(isBlockingBackendDependency).length;
+    const blockingCountFromVerification = verificationDependencies.filter(isBlockingBackendDependency).length;
+    const hasBlockingDependency = appEvidenceBool(dependencyVerification.hasBlockingDependency, dependencyVerification.has_blocking_dependency)
+        || appEvidenceBool(dependencyVerification.hasMissingRequired, dependencyVerification.has_missing_required)
+        || record.has_blocking_dependency
+        || record.has_missing_required;
+    const blockingCount = blockingCountFromVerification || blockingCountFromRecord || (hasBlockingDependency ? 1 : 0);
+    if (installRecordString(dependencyVerification.schema) || dependencyCount > 0 || blockingCount > 0) {
+        items.push({ label: text.dependencyVerification, value: `${text.skillDependencies}: ${dependencyCount} · ${text.missingDependencyCount}: ${blockingCount}` });
+    }
     const dataSrvValue = dataSrvRegistrationSummary(record.datasrv_registration, text);
     if (dataSrvValue) items.push({ label: 'DataSrv', value: dataSrvValue });
     return items;

@@ -45,7 +45,6 @@ type OpenAIChatRequestOptions struct {
 	ResponseFormat interface{}
 }
 
-const defaultOpenAIToolUseMaxTokens = 8192
 
 var openAIChatPassThroughKeys = []string{
 	"temperature",
@@ -141,7 +140,7 @@ func buildOpenAIChatRequestBody(
 			reqBody[k] = v
 		}
 	}
-	ensureOpenAIToolUseMaxTokens(reqBody)
+	ensureMaxOutputTokens(reqBody, cfg)
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
 		corelib.SanitizeCodeGenOpenAICompatBody(reqBody)
 	}
@@ -162,11 +161,8 @@ func buildOpenAIChatRequestBody(
 	return reqBody
 }
 
-func ensureOpenAIToolUseMaxTokens(reqBody map[string]interface{}) {
+func ensureMaxOutputTokens(reqBody map[string]interface{}, cfg corelib.MaclawLLMConfig) {
 	if reqBody == nil {
-		return
-	}
-	if _, hasTools := reqBody["tools"]; !hasTools {
 		return
 	}
 	if _, ok := reqBody["max_tokens"]; ok {
@@ -175,7 +171,15 @@ func ensureOpenAIToolUseMaxTokens(reqBody map[string]interface{}) {
 	if _, ok := reqBody["max_completion_tokens"]; ok {
 		return
 	}
-	reqBody["max_tokens"] = defaultOpenAIToolUseMaxTokens
+	// Use cached discovered limit if available (from prior binary-halving downgrade).
+	limit := cfg.EffectiveMaxOutputTokens()
+	cacheKey := strings.ToLower(strings.TrimSpace(cfg.Model))
+	if cached, ok := maxOutputTokensCache.Load(cacheKey); ok {
+		if cachedLimit, isInt := cached.(int); isInt && cachedLimit > 0 && cachedLimit < limit {
+			limit = cachedLimit
+		}
+	}
+	reqBody["max_tokens"] = limit
 }
 
 func ShouldOmitOpenAIToolsForInitialRequest(cfg corelib.MaclawLLMConfig, messages []interface{}) bool {

@@ -481,6 +481,104 @@ describe('AppsPage', () => {
         expect(within(detail).getByText('manager_approval / finance_review')).not.toBeNull();
         expect(screen.getByText('EXP-1')).not.toBeNull();
     });
+    it('shows DataSrv approval app summary with approval result filters', async () => {
+        const requested = new Set<string>();
+        getMISDataConfigMock.mockResolvedValue({ enabled: true, endpoint: 'http://datasrv.test', token: 'data-token', user_id: 'user_1' });
+        listMaclawAppApprovalInstancesAllMock.mockResolvedValue([
+            {
+                app_id: 'expense.document',
+                app_name: 'Approval PDF exporter',
+                instance_id: 'approval-document-1',
+                title: 'Approval PDF instance',
+                lane: 'handled',
+                status: 'approved',
+                current_node: 'document.result',
+                owner: 'user_1',
+                approver: 'manager_1',
+                approval_id: 'approval-datasrv-document-1',
+                record_id: 'EXP-DOC-1',
+                updated_at: '2026-06-27T08:05:00Z',
+                result: 'approved',
+                outputs: [{ kind: 'document', title: 'Approval PDF', status: 'ready' }],
+            },
+            {
+                app_id: 'expense.other',
+                app_name: 'Other approval',
+                instance_id: 'approval-other-1',
+                title: 'Other approval instance',
+                lane: 'handled',
+                status: 'approved',
+                current_node: 'other.result',
+                owner: 'user_1',
+                approver: 'manager_1',
+                updated_at: '2026-06-27T08:06:00Z',
+                result: 'approved',
+            },
+        ]);
+        (globalThis.fetch as any).mockImplementation(async (input: string) => {
+            const url = new URL(String(input));
+            requested.add(`${url.pathname}?${url.searchParams.toString()}`);
+            if (url.pathname === '/api/v1/data/capabilities') {
+                return { ok: true, json: async () => ({ service: 'MaClawDataSrv', app_installations: [] }) };
+            }
+            if (url.pathname === '/api/v1/data/app-installations') {
+                const label = url.searchParams.get('approval_status')
+                    || url.searchParams.get('result_type')
+                    || (url.searchParams.get('applicant_id') ? 'my_requests' : '')
+                    || (url.searchParams.get('approver_id') ? 'pending_my_approval' : '')
+                    || 'all';
+                return {
+                    ok: true,
+                    json: async () => ({
+                        items: label === 'rejected' ? [] : [{
+                            app_id: `expense.${label}`,
+                            name: label === 'document' ? 'Approval PDF exporter' : `Approval ${label}`,
+                            kind: 'enterprise_approval_app',
+                            updated_at: '2026-06-27T08:00:00Z',
+                            metadata: {
+                                test_evidence_approval_status: label === 'document' || label === 'inline_content' ? 'approved' : label,
+                                workflow_result_node: `${label}.result`,
+                                result_contract_types: label === 'document' ? ['approval_result', 'document'] : ['approval_result'],
+                                dataset_id: 'finance.expenses',
+                                object_role: 'expense_report',
+                                approval_id: `approval-datasrv-${label}-1`,
+                                record_id: `record-${label}-1`,
+                                workflow_instance_id: `workflow-${label}-1`,
+                            },
+                        }],
+                    }),
+                };
+            }
+            return { ok: false, status: 404, json: async () => ({}) };
+        });
+
+        render(<AppsPage lang="zh-Hans" />);
+        fireEvent.click(screen.getByText('\u5ba1\u6279\u72b6\u6001'));
+
+        await waitFor(() => expect(screen.getByText('DataSrv \u5ba1\u6279\u6982\u89c8')).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('Approval PDF exporter')).not.toBeNull());
+        fireEvent.click(screen.getByRole('button', { name: /\u6587\u6863\u8f93\u51fa/ }));
+        const detail = document.querySelector('.apps-datasrv-approval-summary__details') as HTMLElement;
+        expect(within(detail).getByText('Approval PDF exporter')).not.toBeNull();
+        expect(within(detail).getByText('expense.document / document.result')).not.toBeNull();
+        expect(within(detail).getByText('approval-datasrv-document-1 / workflow-document-1 / record-document-1')).not.toBeNull();
+        expect(within(detail).getByText('finance.expenses / expense_report')).not.toBeNull();
+        expect(within(detail).getByText(/approval_result, document/)).not.toBeNull();
+        fireEvent.click(within(detail).getByRole('button', { name: '打开审批' }));
+        expect(browserOpenURLMock).toHaveBeenCalledWith('http://datasrv.test/api/v1/data/approvals/approval-datasrv-document-1');
+        fireEvent.click(within(detail).getByRole('button', { name: '打开记录' }));
+        expect(browserOpenURLMock).toHaveBeenCalledWith('http://datasrv.test/api/v1/data/datasets/finance.expenses/records/record-document-1');
+        fireEvent.click(within(detail).getByRole('button', { name: /Approval PDF exporter/ }));
+        await waitFor(() => expect(screen.getAllByText('Approval PDF instance').length).toBeGreaterThan(0));
+        expect(screen.queryByText('Other approval instance')).toBeNull();
+        expect(Array.from(requested).some((url) => url.includes('applicant_id=user_1'))).toBe(true);
+        expect(Array.from(requested).some((url) => url.includes('approver_id=user_1'))).toBe(true);
+        expect(Array.from(requested).some((url) => url.includes('approval_status=approved'))).toBe(true);
+        expect(Array.from(requested).some((url) => url.includes('approval_status=attention'))).toBe(true);
+        expect(Array.from(requested).some((url) => url.includes('result_type=document'))).toBe(true);
+        expect(Array.from(requested).some((url) => url.includes('result_type=inline_content'))).toBe(true);
+        expect(Array.from(requested).every((url) => !url.includes('/api/v1/data/app-installations') || url.includes('kind=enterprise_approval_app'))).toBe(true);
+    });
     it('does not repeat pinned apps in the main icon grid', () => {
         render(<AppsPage lang="zh-Hans" />);
 
@@ -6421,6 +6519,16 @@ describe('AppsPage', () => {
                     testProtocolFingerprint: 'proto-contract',
                     testProtocol: { schema: 'maclaw.app.test_protocol.v1', fingerprint: 'proto-contract' },
                 },
+                dependency_verification: {
+                    schema: 'maclaw.app.install_plan.v1',
+                    dependency_count: 2,
+                    has_missing_required: true,
+                    has_blocking_dependency: true,
+                    dependencies: [
+                        { id: 'contract-skill', version: '1.0.0', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'skip' },
+                        { id: 'policy-skill', version: '2.0.0', kind: 'workflow_skill', source: 'hub', required: true, installed: false, health: 'missing', action: 'blocked' },
+                    ],
+                },
                 has_missing_required: true,
                 package: installedPackage,
             },
@@ -6433,8 +6541,8 @@ describe('AppsPage', () => {
 
         await waitFor(() => expect(screen.getByText('Contract Audit')).not.toBeNull());
         expect(screen.getByText(/Package SHA: abcdef123456/)).not.toBeNull();
-        expect(screen.getByText(/Skill dependencies: 2/)).not.toBeNull();
-        expect(screen.getByText(/Blocking deps: 1/)).not.toBeNull();
+        expect(screen.getAllByText(/Skill dependencies: 2/).length).toBeGreaterThanOrEqual(1);
+        expect(screen.getAllByText(/Blocking deps: 1/).length).toBeGreaterThanOrEqual(1);
         const dependencyList = document.querySelector('.apps-install-record__deps') as HTMLElement;
         expect(dependencyList).not.toBeNull();
         expect(dependencyList.getAttribute('aria-label')).toBe('Skill dependencies');
@@ -6468,6 +6576,8 @@ describe('AppsPage', () => {
         expect(within(evidenceSnapshot).getByText('content · 1 types')).not.toBeNull();
         expect(within(evidenceSnapshot).getByText('Test evidence')).not.toBeNull();
         expect(within(evidenceSnapshot).getByText('run-contract-audit · proto-contract')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('Dependency verification')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('Skill dependencies: 2 · Blocking deps: 1')).not.toBeNull();
         expect(listMaclawAppInstallsMock).toHaveBeenCalledWith(6);
 
         fireEvent.click(screen.getByText('Check dependencies'));

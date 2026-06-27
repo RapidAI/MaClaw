@@ -133,16 +133,23 @@ type UpsertAppInstallationInput struct {
 }
 
 type QueryAppInstallationsInput struct {
-	AppID           string `json:"app_id,omitempty"`
-	BlueprintID     string `json:"blueprint_id,omitempty"`
-	Kind            string `json:"kind,omitempty"`
-	Source          string `json:"source,omitempty"`
-	WorkflowSkillID string `json:"workflow_skill_id,omitempty"`
-	WorkflowNode    string `json:"workflow_node,omitempty"`
-	Status          string `json:"status,omitempty"`
-	Limit           int    `json:"limit,omitempty"`
-	Before          string `json:"before,omitempty"`
-	BeforeID        string `json:"before_id,omitempty"`
+	AppID                        string `json:"app_id,omitempty"`
+	BlueprintID                  string `json:"blueprint_id,omitempty"`
+	Kind                         string `json:"kind,omitempty"`
+	Source                       string `json:"source,omitempty"`
+	WorkflowSkillID              string `json:"workflow_skill_id,omitempty"`
+	WorkflowNode                 string `json:"workflow_node,omitempty"`
+	ApprovalStatus               string `json:"approval_status,omitempty"`
+	ApprovalDecision             string `json:"approval_decision,omitempty"`
+	ApplicantID                  string `json:"applicant_id,omitempty"`
+	ApproverID                   string `json:"approver_id,omitempty"`
+	ResultType                   string `json:"result_type,omitempty"`
+	HasBlockingDependency        *bool  `json:"has_blocking_dependency,omitempty"`
+	HasMissingRequiredDependency *bool  `json:"has_missing_required_dependency,omitempty"`
+	Status                       string `json:"status,omitempty"`
+	Limit                        int    `json:"limit,omitempty"`
+	Before                       string `json:"before,omitempty"`
+	BeforeID                     string `json:"before_id,omitempty"`
 }
 type BusinessObjectCatalog struct {
 	ObjectRole         string                   `json:"object_role"`

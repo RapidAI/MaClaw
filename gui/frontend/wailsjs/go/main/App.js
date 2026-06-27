@@ -1342,6 +1342,10 @@ export function ResolveCriticalConfirm(arg1, arg2) {
   return window['go']['main']['App']['ResolveCriticalConfirm'](arg1, arg2);
 }
 
+export function ResolveScopeApproval(arg1, arg2) {
+  return window['go']['main']['App']['ResolveScopeApproval'](arg1, arg2);
+}
+
 export function CancelAIAssistantTask(arg1) {
   return window['go']['main']['App']['CancelAIAssistantTask'](arg1);
 }
