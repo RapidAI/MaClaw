@@ -2641,6 +2641,7 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 		if appSkill := maclawAppAppSkillBlockForEntry(entry); appSkill != nil {
 			metadata["app_skill_id"] = maclawAppStringValue(appSkill, "id")
 			metadata["app_skill_version"] = maclawAppStringValue(appSkill, "version")
+			metadata["app_skill_source"] = maclawAppStringValue(appSkill, "source")
 		}
 		if workflowSkillIDs := maclawAppWorkflowSkillIDsForEntry(entry); len(workflowSkillIDs) > 0 {
 			metadata["workflow_skill_ids"] = workflowSkillIDs
@@ -4158,9 +4159,25 @@ func maclawAppDefinitionFingerprintForEntry(entry parsedMaclawAppEntry) string {
 		"launchMode":    firstNonEmptyMaclawAppString(maclawAppStringValue(app, "launchMode", "launch_mode"), stringMapValue(entry.Entry, "launchMode")),
 	}
 	if binding != nil {
-		for _, pair := range []struct{ out, key string }{{"datasrv", "datasrv"}, {"mis", "mis"}, {"skill", "skill"}} {
-			if value := binding[pair.key]; value != nil {
-				runtimeManifest[pair.out] = value
+		for _, pair := range []struct {
+			out  string
+			keys []string
+		}{
+			{"datasrv", []string{"datasrv"}},
+			{"mis", []string{"mis"}},
+			{"skill", []string{"skill"}},
+			{"appSkill", []string{"appSkill", "app_skill"}},
+			{"dependencies", []string{"dependencies"}},
+			{"ui", []string{"ui"}},
+			{"resultContract", []string{"resultContract", "result_contract"}},
+			{"testProtocol", []string{"testProtocol", "test_protocol"}},
+			{"workflow", []string{"workflow"}},
+		} {
+			for _, key := range pair.keys {
+				if value := binding[key]; value != nil {
+					runtimeManifest[pair.out] = value
+					break
+				}
 			}
 		}
 	}

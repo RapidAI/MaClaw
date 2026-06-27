@@ -10,7 +10,7 @@ func TestInFlightLifecycleUsesProjectTabPathFromUserID(t *testing.T) {
 	memory := agent.NewConversationMemory()
 	t.Cleanup(memory.Stop)
 
-	projectPath := `D:\tasks\recent-task-instance`
+	projectPath := `D:\tasks\managed-task-instance`
 	userID := desktopUserID + ":" + projectPath
 	h := &IMMessageHandler{memory: memory}
 

@@ -145,12 +145,11 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
     });
 
-    it('shows Volcengine TokenPlan protocol variants in the provider chip list', async () => {
+    it('shows the Volcengine Agent Plan provider chip without protocol variants', async () => {
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [
                 { name: 'MaClaw\u5b98\u65b9', url: 'https://hub.example.com/api/llm/v1', key: 'viewer-token', model: 'auto', protocol: 'openai' },
-                { name: '\u706b\u5c71\u5f15\u64ceTokenPlan', url: 'https://ark.cn-beijing.volces.com/api/plan/v3', key: '', model: 'Auto', protocol: 'openai', wire_api: 'responses', supports_vision: false },
-                { name: '\u706b\u5c71\u5f15\u64ceTokenPlan (Anthropic)', url: 'https://ark.cn-beijing.volces.com/api/plan', key: '', model: 'Auto', protocol: 'anthropic', agent_type: 'claude code 2.0', supports_vision: false },
+                { name: '\u706b\u5c71\u5f15\u64ce Agent Plan', url: 'https://ark.cn-beijing.volces.com/api/plan/v3', key: '', model: 'glm-5.2', protocol: 'openai', wire_api: 'responses', supports_vision: false },
                 { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
             ],
             current: 'Custom1',
@@ -160,18 +159,16 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
 
-        expect(await screen.findByRole('button', { name: /\u706b\u5c71\u5f15\u64ceTokenPlan\s+OpenAI/ })).toBeTruthy();
-        expect(await screen.findByRole('button', { name: /\u706b\u5c71\u5f15\u64ceTokenPlan \(Anthropic\)\s+Anthropic/ })).toBeTruthy();
+        expect(await screen.findByRole('button', { name: '\u706b\u5c71\u5f15\u64ce Agent Plan' })).toBeTruthy();
     });
 
-    it('fetches Volcengine TokenPlan models through the OpenAI v3 endpoint', async () => {
-        FetchProviderModelsMock.mockResolvedValue([{ id: 'Auto', name: 'Auto' }]);
+    it('fetches Volcengine Agent Plan models through the OpenAI v3 endpoint', async () => {
+        FetchProviderModelsMock.mockResolvedValue([{ id: 'glm-5.2', name: 'glm-5.2' }]);
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [
-                { name: '\u706b\u5c71\u5f15\u64ceTokenPlan', url: 'https://ark.cn-beijing.volces.com/api/plan/v3', key: 'secret', model: 'Auto', protocol: 'openai', wire_api: 'responses', supports_vision: false },
-                { name: '\u706b\u5c71\u5f15\u64ceTokenPlan (Anthropic)', url: 'https://ark.cn-beijing.volces.com/api/plan', key: 'secret', model: 'Auto', protocol: 'anthropic', agent_type: 'claude code 2.0', supports_vision: false },
+                { name: '\u706b\u5c71\u5f15\u64ce Agent Plan', url: 'https://ark.cn-beijing.volces.com/api/plan/v3', key: 'secret', model: 'glm-5.2', protocol: 'openai', wire_api: 'responses', supports_vision: false },
             ],
-            current: '\u706b\u5c71\u5f15\u64ceTokenPlan',
+            current: '\u706b\u5c71\u5f15\u64ce Agent Plan',
         });
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
@@ -184,7 +181,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
     });
 
-    it('quick-fills Volcengine TokenPlan OpenAI endpoint without stale Anthropic fields', async () => {
+    it('quick-fills Volcengine Agent Plan endpoint with the tested model defaults', async () => {
         TestMaclawLLMMock.mockResolvedValue({ message: 'hello', supports_vision: false });
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [
@@ -206,7 +203,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
         fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
-        fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: '\u706b\u5c71\u5f15\u64ceTokenPlan (OpenAI)' } });
+        fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: '\u706b\u5c71\u5f15\u64ce Agent Plan' } });
         fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 
@@ -214,7 +211,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
             expect(TestMaclawLLMMock).toHaveBeenCalledWith({
                 url: 'https://ark.cn-beijing.volces.com/api/plan/v3',
                 key: 'secret',
-                model: 'Auto',
+                model: 'glm-5.2',
                 protocol: 'openai',
                 agent_type: 'openclaw',
                 wire_api: 'responses',

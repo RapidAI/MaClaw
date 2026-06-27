@@ -625,6 +625,7 @@ func parseEnterpriseMaclawAppEntry(entry map[string]any, path string) (enterpris
 }
 
 func enterpriseMaclawAppCapabilityMetadata(pkg map[string]any, entry enterpriseMaclawAppPackageEntry, checksum string, principal *marketplaceViewerPrincipal, sourceSubmissionID string) map[string]any {
+	binding := enterpriseMaclawAppBindingForEntry(entry)
 	metadata := map[string]any{
 		"is_maclaw_app":                true,
 		"product_kind":                 "maclaw_app_skill",
@@ -665,6 +666,38 @@ func enterpriseMaclawAppCapabilityMetadata(pkg map[string]any, entry enterpriseM
 			}
 		}
 	}
+	if appSkill := anyMapFromMap(binding, "appSkill", "app_skill"); appSkill != nil {
+		metadata["app_skill"] = appSkill
+		if id := stringFromMap(appSkill, "id"); id != "" {
+			metadata["app_skill_id"] = id
+		}
+		if version := stringFromMap(appSkill, "version"); version != "" {
+			metadata["app_skill_version"] = version
+		}
+		if source := stringFromMap(appSkill, "source"); source != "" {
+			metadata["app_skill_source"] = source
+		}
+	}
+	if dependencies := enterpriseMaclawAppSkillDependenciesForEntry(entry); len(dependencies) > 0 {
+		metadata["dependencies"] = dependencies
+		metadata["skill_dependency_count"] = len(dependencies)
+		requiredCount := 0
+		workflowIDs := make([]string, 0, len(dependencies))
+		for _, dep := range dependencies {
+			if required, ok := dep["required"].(bool); !ok || required {
+				requiredCount++
+			}
+			if strings.EqualFold(stringFromAny(dep["kind"]), "workflow_skill") {
+				if id := stringFromAny(dep["id"]); id != "" {
+					workflowIDs = append(workflowIDs, id)
+				}
+			}
+		}
+		metadata["required_skill_dependency_count"] = requiredCount
+		if len(workflowIDs) > 0 {
+			metadata["workflow_skill_ids"] = compactStringList(workflowIDs)
+		}
+	}
 	if entry.Governance != nil {
 		if resultContract := anyMapFromMap(entry.Governance, "resultContract", "result_contract"); resultContract != nil {
 			metadata["result_contract"] = resultContract
@@ -680,6 +713,39 @@ func enterpriseMaclawAppCapabilityMetadata(pkg map[string]any, entry enterpriseM
 			metadata["maclaw_app_test_evidence"] = testEvidence
 		}
 	}
+	if _, ok := metadata["result_contract"]; !ok {
+		if resultContract := anyMapFromMap(binding, "resultContract", "result_contract"); resultContract != nil {
+			metadata["result_contract"] = resultContract
+		}
+	}
+	if _, ok := metadata["workflow_contract"]; !ok {
+		if workflowContract := anyMapFromMap(binding, "workflowContract", "workflow_contract"); workflowContract != nil {
+			metadata["workflow_contract"] = workflowContract
+		}
+	}
+	if workflowMapping := enterpriseMaclawAppWorkflowMappingForEntry(entry); workflowMapping != nil {
+		metadata["workflow_mapping"] = workflowMapping
+		for _, pair := range []struct {
+			key  string
+			meta string
+		}{
+			{"submitNode", "workflow_submit_node"},
+			{"submit_node", "workflow_submit_node"},
+			{"approvalNode", "workflow_approval_node"},
+			{"approval_node", "workflow_approval_node"},
+			{"resultNode", "workflow_result_node"},
+			{"result_node", "workflow_result_node"},
+			{"attentionNode", "workflow_attention_node"},
+			{"attention_node", "workflow_attention_node"},
+		} {
+			if _, exists := metadata[pair.meta]; exists {
+				continue
+			}
+			if value := stringFromMap(workflowMapping, pair.key); value != "" {
+				metadata[pair.meta] = value
+			}
+		}
+	}
 	return compactMetadata(metadata)
 }
 
@@ -690,6 +756,9 @@ func enterpriseMaclawAppWorkspaceLayoutForEntry(entry enterpriseMaclawAppPackage
 		}
 	}
 	ui := anyMapFromMap(entry.App, "ui")
+	if ui == nil {
+		ui = anyMapFromMap(enterpriseMaclawAppBindingForEntry(entry), "ui")
+	}
 	if ui == nil {
 		return nil
 	}
@@ -712,6 +781,51 @@ func enterpriseMaclawAppWorkspaceLayoutForEntry(entry enterpriseMaclawAppPackage
 		}
 	}
 	return compactMetadata(out)
+}
+
+func enterpriseMaclawAppBindingForEntry(entry enterpriseMaclawAppPackageEntry) map[string]any {
+	return anyMapFromMap(entry.App, "binding")
+}
+
+func enterpriseMaclawAppSkillDependenciesForEntry(entry enterpriseMaclawAppPackageEntry) []map[string]any {
+	binding := enterpriseMaclawAppBindingForEntry(entry)
+	candidates := []map[string]any{
+		anyMapFromMap(binding, "dependencies"),
+		anyMapFromMap(entry.Governance, "dependencies"),
+	}
+	out := []map[string]any{}
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		for _, raw := range anySliceFromMap(candidate, "skills") {
+			dep, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			id := stringFromAny(dep["id"])
+			if id == "" || seen[strings.ToLower(id)] {
+				continue
+			}
+			seen[strings.ToLower(id)] = true
+			out = append(out, compactMetadata(map[string]any{
+				"id":           id,
+				"version":      stringFromAny(dep["version"]),
+				"kind":         stringFromAny(dep["kind"]),
+				"required":     dep["required"],
+				"source":       stringFromAny(dep["source"]),
+				"capabilities": dep["capabilities"],
+			}))
+		}
+	}
+	return out
+}
+
+func enterpriseMaclawAppWorkflowMappingForEntry(entry enterpriseMaclawAppPackageEntry) map[string]any {
+	if entry.Governance != nil {
+		if workflow := anyMapFromMap(entry.Governance, "workflowMapping", "workflow_mapping"); workflow != nil {
+			return workflow
+		}
+	}
+	return anyMapFromMap(enterpriseMaclawAppBindingForEntry(entry), "workflow")
 }
 
 func CapabilityMaclawAppPackageHandler(svc *capability.Service, identity viewerAuthenticator) http.HandlerFunc {

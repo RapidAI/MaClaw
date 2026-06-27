@@ -2292,6 +2292,8 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
     const appSkillVersion = String(metadata.app_skill_version || '').trim();
     const versionSnapshot = dataSrvInstalledVersionSnapshot(metadata, item, workflowIDs, primaryBinding);
     const workflowContract = dataSrvInstalledWorkflowContract(metadata, kind);
+    const resultContract = dataSrvInstalledResultContract(metadata, kind);
+    const workflowMapping = dataSrvInstalledWorkflowMapping(metadata, kind, domain, String(primaryBinding.object_role || primaryBinding.objectRole || '').trim() || domain);
     const workflowVersionByID = new Map((versionSnapshot?.workflow_skills || []).map((skill) => [skill.id || '', skill.version || '']));
     const workflowDependencies: AppSkillDependency[] = workflowIDs.map((id) => ({ id, version: workflowVersionByID.get(id) || undefined, kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }));
     const mergedDependencies = mergeDataSrvInstalledDependencies(dependencies, workflowDependencies);
@@ -2327,7 +2329,9 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
             dependencies: mergedDependencies.length ? { skills: mergedDependencies } : undefined,
             mis: kind === 'enterprise_approval_app' && workflowIDs.length > 0 ? { approvalBindings: [dataSrvInstalledApprovalBinding(domain, workflowIDs[0], primaryBinding, versionSnapshot)] } : undefined,
             ui: dataSrvInstalledWorkspaceLayout(metadata, kind),
+            resultContract,
             testProtocol: dataSrvInstalledTestProtocol(metadata, kind),
+            workflow: workflowMapping,
         },
     };
 }
@@ -2483,6 +2487,35 @@ function dataSrvInstalledWorkflowContract(metadata: Record<string, any>, kind: A
     };
     return normalizeAppWorkflowContract(raw, kind, fallback);
 }
+
+function dataSrvInstalledResultContract(metadata: Record<string, any>, kind: AppKind): AppResultContract {
+    const rawGovernance = metadata.governance && typeof metadata.governance === 'object' ? metadata.governance as Record<string, any> : {};
+    const raw = metadata.result_contract || metadata.resultContract || rawGovernance.result_contract || rawGovernance.resultContract;
+    const fallback = {
+        schema: metadata.result_contract_schema || 'maclaw.app.result.v1',
+        primary: metadata.result_contract_primary,
+        types: metadata.result_contract_types,
+        outputModes: metadata.result_contract_output_modes || metadata.result_contract_outputModes,
+        approvalDecisions: metadata.result_contract_approval_decisions,
+        delivery: metadata.result_contract_delivery,
+    };
+    return normalizeAppResultContract(raw || fallback, kind, []);
+}
+
+function dataSrvInstalledWorkflowMapping(metadata: Record<string, any>, kind: AppKind, domain: string, objectRole: string): AppWorkflowMapping | undefined {
+    const rawGovernance = metadata.governance && typeof metadata.governance === 'object' ? metadata.governance as Record<string, any> : {};
+    const raw = metadata.workflow_mapping || metadata.workflowMapping || rawGovernance.workflow_mapping || rawGovernance.workflowMapping;
+    const fallback = {
+        schema: metadata.workflow_mapping_schema || 'maclaw.app.workflow.v1',
+        submitNode: metadata.workflow_submit_node,
+        approvalNode: metadata.workflow_approval_node,
+        resultNode: metadata.workflow_result_node,
+        attentionNode: metadata.workflow_attention_node,
+        statusMapping: metadata.workflow_status_mapping,
+    };
+    return normalizeAppWorkflowMapping(raw || fallback, kind, domain, objectRole);
+}
+
 function dataSrvInstalledVersionSnapshot(metadata: Record<string, any>, item: DataSrvAppInstallationItem, workflowIDs: string[], primaryBinding: Record<string, any>): BackendAppInstallVersionSnapshot | undefined {
     const explicit = normalizeVersionSnapshot(metadata.version_snapshot || metadata.versionSnapshot);
     if (explicit) return explicit;
@@ -7668,6 +7701,12 @@ function appDefinitionFingerprint(app: AppEntry): string {
         ...(manifest.datasrv ? { datasrv: manifest.datasrv } : {}),
         ...(manifest.mis ? { mis: manifest.mis } : {}),
         ...(manifest.skill ? { skill: manifest.skill } : {}),
+        ...(manifest.appSkill ? { appSkill: manifest.appSkill } : {}),
+        ...(manifest.dependencies ? { dependencies: manifest.dependencies } : {}),
+        ...(manifest.ui ? { ui: manifest.ui } : {}),
+        ...(manifest.resultContract ? { resultContract: manifest.resultContract } : {}),
+        ...(manifest.testProtocol ? { testProtocol: manifest.testProtocol } : {}),
+        ...(manifest.workflow ? { workflow: manifest.workflow } : {}),
     } : undefined;
     return textHash(stableStringify({
         name: app.name,
@@ -11413,8 +11452,41 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
             const upgradedActionCount = plan.filter((item) => item.action === 'upgrade' && selectedKeys.has(item.key)).length;
             const skippedActionCount = plan.length - nextApps.length;
             const installedResultKeys = new Set(resultItems.filter((item) => item.action !== 'skipped').map((item) => item.key));
+            const hasEnterpriseInstall = nextApps.some((installedApp) => isEnterpriseAppKind(installedApp.kind));
             let installAudit: BackendAppInstallRecord | null = null;
             let dataSrvRegistration: BackendAppDataSrvRegistration | undefined;
+            if (!hasEnterpriseInstall) {
+                nextApps.forEach(onInstallApp);
+                setInstallMessage(installSummaryMessage(installedActionCount, upgradedActionCount, skippedActionCount, text));
+                setInstallResultItems(resultItems);
+                setInstallResultDependencyPlan(dependencyPlanForResult);
+                setInstallResultAppIDs(selectedAppIDs);
+                setInstallState('installed');
+                setConfirmHighRiskInstall(false);
+                if (nextApps.length > 0) {
+                    const installAuditPackage = appsToInstallManifest(nextApps);
+                    try {
+                        installAudit = await RecordMaclawAppInstall(JSON.stringify(installAuditPackage), 'market') as BackendAppInstallRecord;
+                        dataSrvRegistration = installAudit?.datasrv_registration;
+                        await refreshInstallRecords();
+                        nextApps.forEach((installedApp) => onInstallApp(installedAppWithInstallEvidence(installedApp, installAudit)));
+                        setInstallResultItems((current) => current.map((item) => {
+                            if (!installedResultKeys.has(item.key)) return item;
+                            const versionSnapshot = item.appID ? installRecordVersionSnapshotForApp(installAudit, item.appID) : undefined;
+                            const installEvidence = installEvidenceRecordForApp(installAudit, item.appID);
+                            return {
+                                ...item,
+                                detail: dataSrvRegistration ? installDetailWithDataSrvRegistration(item.detail, dataSrvRegistration, item.appID, item.dataSrvCandidate, text) : item.detail,
+                                versionSnapshot: versionSnapshot || item.versionSnapshot,
+                                installEvidence: installEvidence || item.installEvidence,
+                            };
+                        }));
+                    } catch {
+                        // Dependency health is the install gate for tool apps; audit refresh failures should not discard an otherwise valid local install.
+                    }
+                }
+                return;
+            }
             if (nextApps.length > 0) {
                 const installAuditPackage = appsToInstallManifest(nextApps);
                 try {
@@ -11422,10 +11494,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                     dataSrvRegistration = installAudit?.datasrv_registration;
                     await refreshInstallRecords();
                 } catch (error: any) {
-                    if (nextApps.some((installedApp) => isEnterpriseAppKind(installedApp.kind))) {
-                        throw new Error(error?.message || text.installAuditRequired);
-                    }
-                    // Dependency health is the install gate; audit refresh failures should not discard an otherwise valid local install.
+                    throw new Error(error?.message || text.installAuditRequired);
                 }
             }
             nextApps.forEach((installedApp) => onInstallApp(installedAppWithInstallEvidence(installedApp, installAudit)));

@@ -899,7 +899,7 @@ func (h *IMMessageHandler) workflowPolicyUserID(userID string) string {
 	}
 	// Empty owner means caller did not provide an isolation boundary. Do not
 	// guess from lastUserID, currentLoopCtx, or single active desktop workflow:
-	// all three can point at another tab under concurrent recent-task agents.
+	// all three can point at another tab under concurrent managed-task agents.
 	return ""
 }
 

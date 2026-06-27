@@ -93,7 +93,7 @@ type ProjectConversationHistoryItem struct {
 }
 
 // ProjectWorkflowState is a compact pointer to an unfinished workflow attached
-// to a recent task artifact. Continue the workflow with ProjectPath; normal
+// to a task-management artifact. Continue the workflow with ProjectPath; normal
 // opens may use an independent fork for unconstrained follow-up work.
 type ProjectWorkflowState struct {
 	ID            string `json:"id,omitempty"`
@@ -473,7 +473,7 @@ func enrichProjectSearchResultWithScene(result *ProjectSearchResult, scene memor
 }
 
 // CreateRecentTask creates a lightweight standalone task record so it appears
-// in the recent task list immediately and after restart.
+// in task management immediately and after restart.
 func (a *App) CreateRecentTask(name string) ProjectSearchResult {
 	return a.CreateRecentTaskWithWorkingDir(name, "")
 }
@@ -490,7 +490,7 @@ func (a *App) CreateRecentTaskWithWorkingDir(name, workingDir string) ProjectSea
 	if taskName == "" {
 		return ProjectSearchResult{}
 	}
-	return a.createRecentTaskRecordWithWorkingDir(taskName, "", []string{taskManagementTag, taskUserCreatedTag}, normalizeRecentTaskWorkingDir(workingDir), false)
+	return a.createTaskRecordWithWorkingDir(taskName, "", []string{taskManagementTag, taskUserCreatedTag}, normalizeRecentTaskWorkingDir(workingDir), false)
 }
 
 // SaveCurrentChatAsTask saves the current main assistant conversation as a
@@ -505,7 +505,7 @@ func (a *App) SaveCurrentChatAsTask(name string) ProjectSearchResult {
 	}
 	content := fmt.Sprintf("# %s\n\nSaved from current main assistant conversation.\nSaved at: %s", recentTaskDisplayTitle(taskName), time.Now().Format(time.RFC3339))
 	workingDir := a.currentTaskManagementWorkingDir()
-	created := a.createRecentTaskRecordWithWorkingDir(taskName, content, []string{taskManagementTag, taskUserSavedTag, taskSavedConversationTag}, workingDir, false)
+	created := a.createTaskRecordWithWorkingDir(taskName, content, []string{taskManagementTag, taskUserSavedTag, taskSavedConversationTag}, workingDir, false)
 	if created.ProjectPath == "" {
 		return created
 	}
@@ -579,9 +579,9 @@ func (a *App) currentTaskManagementWorkingDir() string {
 	return normalizeRecentTaskWorkingDir(a.GetCurrentProjectPath())
 }
 
-// ForkRecentTask returns the independent task/session for a recent task. The
+// ForkRecentTask returns the independent task/session for a managed task. The
 // first open creates that session; later opens of the same source return the
-// same visible fork instead of creating duplicate recent-task rows.
+// same visible fork instead of creating duplicate task rows.
 func (a *App) ForkRecentTask(sourceProjectPath string) ProjectSearchResult {
 	started := time.Now()
 	sourceProjectPath = strings.TrimSpace(sourceProjectPath)
@@ -637,7 +637,7 @@ func (a *App) ForkRecentTask(sourceProjectPath string) ProjectSearchResult {
 
 		workingDir := a.recentTaskWorkingDir(sourceProjectPath)
 		content := fmt.Sprintf("# %s\n\nOpened from task management.\nSource task: %s\nFork ID: %d", taskName, sourceProjectPath, time.Now().UnixNano())
-		created := a.createRecentTaskRecordWithWorkingDir(taskName, content, []string{taskForkedTag, taskSourceTagPrefix + sourceProjectPath}, workingDir, false)
+		created := a.createTaskRecordWithWorkingDir(taskName, content, []string{taskForkedTag, taskSourceTagPrefix + sourceProjectPath}, workingDir, false)
 		if created.ProjectPath == "" {
 			log.Printf("[project_search] ForkRecentTask create failed source=%q elapsed=%s", sourceProjectPath, time.Since(started).Round(time.Millisecond))
 			return created
@@ -694,11 +694,11 @@ func normalizeRecentTaskWorkingDir(workingDir string) string {
 	}
 	normalized, _, err := normalizeWorkflowProjectPath(workingDir)
 	if err != nil {
-		log.Printf("[project_search] invalid recent task working directory %q: %v", workingDir, err)
+		log.Printf("[project_search] invalid task working directory %q: %v", workingDir, err)
 		return ""
 	}
 	if !filepath.IsAbs(normalized) {
-		log.Printf("[project_search] invalid recent task working directory %q: path must be absolute", workingDir)
+		log.Printf("[project_search] invalid task working directory %q: path must be absolute", workingDir)
 		return ""
 	}
 	return normalizeProjectSessionPath(normalized)
@@ -751,7 +751,7 @@ func (a *App) recentTaskExecutionProjectPath(projectPath string) string {
 
 func (a *App) ensureRecentTaskExecutionWorkingDir(taskProjectPath, executionProjectPath string) error {
 	taskProjectPath = normalizeProjectSessionPath(taskProjectPath)
-	executionProjectPath, created, err := ensureAbsoluteDirectoryPath(executionProjectPath, "recent task working directory")
+	executionProjectPath, created, err := ensureAbsoluteDirectoryPath(executionProjectPath, "task working directory")
 	if err != nil {
 		return err
 	}
@@ -759,7 +759,7 @@ func (a *App) ensureRecentTaskExecutionWorkingDir(taskProjectPath, executionProj
 		return nil
 	}
 	if created {
-		log.Printf("[project_search] created recent task working directory task=%q working_dir=%q", taskProjectPath, executionProjectPath)
+		log.Printf("[project_search] created task working directory task=%q working_dir=%q", taskProjectPath, executionProjectPath)
 	}
 	return nil
 }
@@ -900,7 +900,7 @@ func (a *App) ensureRecentTaskWorkspace(projectPath, taskName string) bool {
 		return true
 	}
 	if err := os.MkdirAll(projectPath, 0o755); err != nil {
-		log.Printf("[project_search] repair recent-task workspace failed project=%q err=%v", projectPath, err)
+		log.Printf("[project_search] repair managed task workspace failed project=%q err=%v", projectPath, err)
 		return false
 	}
 	name := normalizeRecentTaskName(taskName)
@@ -909,20 +909,20 @@ func (a *App) ensureRecentTaskWorkspace(projectPath, taskName string) bool {
 	}
 	taskFile := filepath.Join(projectPath, "task.md")
 	if _, err := os.Stat(taskFile); os.IsNotExist(err) {
-		content := fmt.Sprintf("# %s\n\nRecovered recent-task workspace.\nProject path: %s\n", name, projectPath)
+		content := fmt.Sprintf("# %s\n\nRecovered task workspace.\nProject path: %s\n", name, projectPath)
 		if writeErr := os.WriteFile(taskFile, []byte(content), 0o644); writeErr != nil {
-			log.Printf("[project_search] repair recent-task task.md failed project=%q err=%v", projectPath, writeErr)
+			log.Printf("[project_search] repair managed task task.md failed project=%q err=%v", projectPath, writeErr)
 		}
 	}
-	log.Printf("[project_search] repaired recent-task workspace project=%q", projectPath)
+	log.Printf("[project_search] repaired managed task workspace project=%q", projectPath)
 	return true
 }
 
-func (a *App) createRecentTaskRecord(taskName, taskContent string, extraTags []string, flushSync ...bool) ProjectSearchResult {
-	return a.createRecentTaskRecordWithWorkingDir(taskName, taskContent, extraTags, "", flushSync...)
+func (a *App) createTaskRecord(taskName, taskContent string, extraTags []string, flushSync ...bool) ProjectSearchResult {
+	return a.createTaskRecordWithWorkingDir(taskName, taskContent, extraTags, "", flushSync...)
 }
 
-func (a *App) createRecentTaskRecordWithWorkingDir(taskName, taskContent string, extraTags []string, workingDir string, flushSync ...bool) ProjectSearchResult {
+func (a *App) createTaskRecordWithWorkingDir(taskName, taskContent string, extraTags []string, workingDir string, flushSync ...bool) ProjectSearchResult {
 	a.ensureMemoryStore()
 	if a.memoryStore == nil {
 		return ProjectSearchResult{}
@@ -1038,7 +1038,7 @@ func stringifyProjectConversationContent(value interface{}) string {
 
 // LoadProjectConversationHistory returns the visible conversation history for a
 // project-scoped task session. This is used by the frontend when reopening a
-// recent task fork so the chat transcript can be restored from the backend
+// managed task fork so the chat transcript can be restored from the backend
 // conversation memory that ForkRecentTask already copied.
 func (a *App) LoadProjectConversationHistory(projectPath string) []ProjectConversationHistoryItem {
 	projectPath = normalizeProjectSessionPath(projectPath)
@@ -1332,7 +1332,7 @@ func (a *App) ResumeProject(projectPath string) string {
 	return msg
 }
 
-// RenameTask sets a user-defined display name for a task in the recent tasks list.
+// RenameTask sets a user-defined display name for a task-management item.
 // Pass empty name to revert to the auto-generated name.
 // This is a Wails binding method called from the frontend inline editor.
 func (a *App) RenameTask(projectPath, newName string) string {
@@ -1348,7 +1348,7 @@ func (a *App) RenameTask(projectPath, newName string) string {
 	return pi.GetDisplayName(projectPath)
 }
 
-// PinTask pins or unpins a task in the recent tasks list.
+// PinTask pins or unpins a task-management item.
 // Pinned tasks appear at the top of the list.
 func (a *App) PinTask(projectPath string, pinned bool) {
 	a.ensureMemoryStore()
@@ -1362,7 +1362,7 @@ func (a *App) PinTask(projectPath string, pinned bool) {
 	pi.SetPinned(projectPath, pinned)
 }
 
-// HideTask removes a task from the recent tasks list (soft delete).
+// HideTask removes a task from task management (soft delete).
 // The underlying memory entries are preserved — only the list visibility is affected.
 func (a *App) HideTask(projectPath string) {
 	projectPath = strings.TrimSpace(projectPath)
@@ -2110,6 +2110,57 @@ func (a *App) LoadProjectTabIndex() []TabIndexEntry {
 		active = active[:maxRestoredTabs]
 	}
 	return active
+}
+
+// SaveProjectTabConversation persists the conversation history for a project tab
+// to the backend session file. Called from frontend on debounced history changes.
+// Pass an empty slice to clear persisted conversation.
+// This is a Wails binding method.
+func (a *App) SaveProjectTabConversation(tabID string, conversation []interface{}) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return
+	}
+	persist := a.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession(tabID)
+	if err != nil || session == nil {
+		if len(conversation) == 0 {
+			return // Nothing to clear if session doesn't exist
+		}
+		// Session file doesn't exist yet — create it with conversation.
+		session = &TabSessionData{
+			TabID:        tabID,
+			Conversation: conversation,
+			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		}
+		if cached, ok := a.tabProjectPaths.Load(tabID); ok {
+			session.ProjectPath, _ = cached.(string)
+		}
+	} else {
+		session.Conversation = conversation
+	}
+	if err := persist.SaveSession(session); err != nil {
+		log.Printf("[SaveProjectTabConversation] tab=%s err=%v", tabID, err)
+	}
+}
+
+// LoadProjectTabConversation loads persisted conversation history for a tab
+// from the backend session file. Returns nil if no data exists.
+// This is a Wails binding method.
+func (a *App) LoadProjectTabConversation(tabID string) []interface{} {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return nil
+	}
+	persist := a.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession(tabID)
+	if err != nil || session == nil {
+		return nil
+	}
+	if len(session.Conversation) == 0 {
+		return nil
+	}
+	return session.Conversation
 }
 
 // ---------------------------------------------------------------------------

@@ -1273,37 +1273,23 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	}
 
 	tokenPlan := providers[5]
-	if tokenPlan.Name != volcengineTokenPlanProviderName {
-		t.Errorf("providers[5].Name = %q, want %q", tokenPlan.Name, volcengineTokenPlanProviderName)
+	if tokenPlan.Name != volcengineAgentPlanProviderName {
+		t.Errorf("providers[5].Name = %q, want %q", tokenPlan.Name, volcengineAgentPlanProviderName)
 	}
 	if tokenPlan.URL != "https://ark.cn-beijing.volces.com/api/plan/v3" {
-		t.Errorf("火山引擎TokenPlan URL = %q, want %q", tokenPlan.URL, "https://ark.cn-beijing.volces.com/api/plan/v3")
+		t.Errorf("火山引擎 Agent Plan URL = %q, want %q", tokenPlan.URL, "https://ark.cn-beijing.volces.com/api/plan/v3")
 	}
-	if tokenPlan.Model != "Auto" {
-		t.Errorf("火山引擎TokenPlan Model = %q, want %q", tokenPlan.Model, "Auto")
+	if tokenPlan.Model != "glm-5.2" {
+		t.Errorf("火山引擎 Agent Plan Model = %q, want %q", tokenPlan.Model, "glm-5.2")
 	}
 	if tokenPlan.Protocol != "openai" {
-		t.Errorf("火山引擎TokenPlan Protocol = %q, want %q", tokenPlan.Protocol, "openai")
+		t.Errorf("火山引擎 Agent Plan Protocol = %q, want %q", tokenPlan.Protocol, "openai")
 	}
 	if tokenPlan.WireAPI != "responses" {
-		t.Errorf("火山引擎TokenPlan WireAPI = %q, want %q", tokenPlan.WireAPI, "responses")
+		t.Errorf("火山引擎 Agent Plan WireAPI = %q, want %q", tokenPlan.WireAPI, "responses")
 	}
 
-	tokenPlanAnthropic := providers[6]
-	if tokenPlanAnthropic.Name != volcengineTokenPlanAnthropicProviderName {
-		t.Errorf("providers[6].Name = %q, want %q", tokenPlanAnthropic.Name, volcengineTokenPlanAnthropicProviderName)
-	}
-	if tokenPlanAnthropic.URL != "https://ark.cn-beijing.volces.com/api/plan" {
-		t.Errorf("火山引擎TokenPlan Anthropic URL = %q, want %q", tokenPlanAnthropic.URL, "https://ark.cn-beijing.volces.com/api/plan")
-	}
-	if tokenPlanAnthropic.Protocol != "anthropic" {
-		t.Errorf("火山引擎TokenPlan Anthropic Protocol = %q, want %q", tokenPlanAnthropic.Protocol, "anthropic")
-	}
-	if tokenPlanAnthropic.AgentType != "claude code 2.0" {
-		t.Errorf("火山引擎TokenPlan Anthropic AgentType = %q, want %q", tokenPlanAnthropic.AgentType, "claude code 2.0")
-	}
-
-	expectedNames := []string{"OpenAI", "DeepSeek", "智谱编程", "MiniMax", "Kimi", volcengineTokenPlanProviderName, volcengineTokenPlanAnthropicProviderName, "讯飞星辰", "Custom1", "Custom2"}
+	expectedNames := []string{"OpenAI", "DeepSeek", "智谱编程", "MiniMax", "Kimi", volcengineAgentPlanProviderName, "讯飞星辰", "Custom1", "Custom2"}
 	for i, want := range expectedNames {
 		if providers[i].Name != want {
 			t.Errorf("providers[%d].Name = %q, want %q", i, providers[i].Name, want)
@@ -1358,7 +1344,7 @@ func TestGetMaclawLLMProviders_BackfillsLegacyTimeoutIntoCurrentProvider(t *test
 	}
 }
 
-func TestGetMaclawLLMProviders_BackfillsVolcengineTokenPlanProvider(t *testing.T) {
+func TestGetMaclawLLMProviders_BackfillsVolcengineAgentPlanProvider(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
@@ -1377,38 +1363,31 @@ func TestGetMaclawLLMProviders_BackfillsVolcengineTokenPlanProvider(t *testing.T
 	}
 
 	data := app.GetMaclawLLMProviders()
-	provider, ok := findProviderByName(data.Providers, volcengineTokenPlanProviderName)
+	provider, ok := findProviderByName(data.Providers, volcengineAgentPlanProviderName)
 	if !ok {
-		t.Fatalf("providers missing 火山引擎TokenPlan card: %+v", data.Providers)
+		t.Fatalf("providers missing 火山引擎 Agent Plan card: %+v", data.Providers)
 	}
 	if provider.URL != "https://ark.cn-beijing.volces.com/api/plan/v3" {
-		t.Fatalf("火山引擎TokenPlan URL = %q, want %q", provider.URL, "https://ark.cn-beijing.volces.com/api/plan/v3")
+		t.Fatalf("火山引擎 Agent Plan URL = %q, want %q", provider.URL, "https://ark.cn-beijing.volces.com/api/plan/v3")
 	}
-	if provider.Model != "Auto" || provider.Protocol != "openai" || provider.WireAPI != "responses" {
-		t.Fatalf("火山引擎TokenPlan config = model %q protocol %q wire %q, want Auto/openai/responses", provider.Model, provider.Protocol, provider.WireAPI)
+	if provider.Model != "glm-5.2" || provider.Protocol != "openai" || provider.WireAPI != "responses" {
+		t.Fatalf("火山引擎 Agent Plan config = model %q protocol %q wire %q, want glm-5.2/openai/responses", provider.Model, provider.Protocol, provider.WireAPI)
 	}
 	if provider.IsCustom {
-		t.Fatal("火山引擎TokenPlan IsCustom = true, want false")
-	}
-	anthropicProvider, ok := findProviderByName(data.Providers, volcengineTokenPlanAnthropicProviderName)
-	if !ok {
-		t.Fatalf("providers missing 火山引擎TokenPlan Anthropic card: %+v", data.Providers)
-	}
-	if anthropicProvider.URL != "https://ark.cn-beijing.volces.com/api/plan" || anthropicProvider.Protocol != "anthropic" || anthropicProvider.AgentType != "claude code 2.0" {
-		t.Fatalf("火山引擎TokenPlan Anthropic config = url %q protocol %q agent %q, want /api/plan anthropic claude code 2.0", anthropicProvider.URL, anthropicProvider.Protocol, anthropicProvider.AgentType)
+		t.Fatal("火山引擎 Agent Plan IsCustom = true, want false")
 	}
 }
 
-func TestGetMaclawLLMProviders_MigratesVolcengineTokenPlanToOpenAIV3(t *testing.T) {
+func TestGetMaclawLLMProviders_MigratesVolcengineTokenPlanToAgentPlan(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
 	cfg := corelib.AppConfig{
-		MaclawLLMCurrentProvider: volcengineTokenPlanProviderName,
+		MaclawLLMCurrentProvider: legacyVolcengineTokenPlanProviderName,
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{
-			{Name: volcengineTokenPlanProviderName, URL: "https://ark.cn-beijing.volces.com/api/plan", Model: "Auto", Protocol: "anthropic", AgentType: "claude code 2.0"},
+			{Name: legacyVolcengineTokenPlanProviderName, URL: "https://ark.cn-beijing.volces.com/api/plan", Model: "Auto", Protocol: "anthropic", AgentType: "claude code 2.0"},
 			{Name: "Custom1", IsCustom: true},
 			{Name: "Custom2", IsCustom: true},
 		},
@@ -1418,19 +1397,19 @@ func TestGetMaclawLLMProviders_MigratesVolcengineTokenPlanToOpenAIV3(t *testing.
 	}
 
 	data := app.GetMaclawLLMProviders()
-	provider, ok := findProviderByName(data.Providers, volcengineTokenPlanProviderName)
+	provider, ok := findProviderByName(data.Providers, volcengineAgentPlanProviderName)
 	if !ok {
-		t.Fatalf("providers missing 火山引擎TokenPlan card: %+v", data.Providers)
+		t.Fatalf("providers missing 火山引擎 Agent Plan card: %+v", data.Providers)
 	}
 	if provider.URL != "https://ark.cn-beijing.volces.com/api/plan/v3" {
-		t.Fatalf("火山引擎TokenPlan URL = %q, want %q", provider.URL, "https://ark.cn-beijing.volces.com/api/plan/v3")
+		t.Fatalf("火山引擎 Agent Plan URL = %q, want %q", provider.URL, "https://ark.cn-beijing.volces.com/api/plan/v3")
 	}
 	if provider.Protocol != "openai" || provider.WireAPI != "responses" || provider.AgentType != "" {
-		t.Fatalf("火山引擎TokenPlan migrated config = protocol %q wire %q agent %q, want openai/responses/empty", provider.Protocol, provider.WireAPI, provider.AgentType)
+		t.Fatalf("火山引擎 Agent Plan migrated config = protocol %q wire %q agent %q, want openai/responses/empty", provider.Protocol, provider.WireAPI, provider.AgentType)
 	}
 }
 
-func TestGetMaclawLLMProviders_MigratesLegacyVolcengineTokenPlanAnthropicName(t *testing.T) {
+func TestGetMaclawLLMProviders_MigratesLegacyVolcengineTokenPlanAnthropicNameToAgentPlan(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
@@ -1449,22 +1428,22 @@ func TestGetMaclawLLMProviders_MigratesLegacyVolcengineTokenPlanAnthropicName(t 
 	}
 
 	data := app.GetMaclawLLMProviders()
-	if data.Current != volcengineTokenPlanAnthropicProviderName {
-		t.Fatalf("Current = %q, want %q", data.Current, volcengineTokenPlanAnthropicProviderName)
+	if data.Current != volcengineAgentPlanProviderName {
+		t.Fatalf("Current = %q, want %q", data.Current, volcengineAgentPlanProviderName)
 	}
 	if _, ok := findProviderByName(data.Providers, legacyVolcengineTokenPlanAnthropicProviderName); ok {
 		t.Fatalf("providers still contain legacy Anthropic TokenPlan name: %+v", data.Providers)
 	}
-	provider, ok := findProviderByName(data.Providers, volcengineTokenPlanAnthropicProviderName)
+	provider, ok := findProviderByName(data.Providers, volcengineAgentPlanProviderName)
 	if !ok {
-		t.Fatalf("providers missing canonical Anthropic TokenPlan card: %+v", data.Providers)
+		t.Fatalf("providers missing canonical 火山引擎 Agent Plan card: %+v", data.Providers)
 	}
-	if provider.URL != "https://ark.cn-beijing.volces.com/api/plan" || provider.Protocol != "anthropic" || provider.AgentType != "claude code 2.0" {
-		t.Fatalf("canonical Anthropic TokenPlan config = url %q protocol %q agent %q", provider.URL, provider.Protocol, provider.AgentType)
+	if provider.URL != "https://ark.cn-beijing.volces.com/api/plan/v3" || provider.Protocol != "openai" || provider.WireAPI != "responses" {
+		t.Fatalf("canonical 火山引擎 Agent Plan config = url %q protocol %q wire %q", provider.URL, provider.Protocol, provider.WireAPI)
 	}
 }
 
-func TestGetMaclawLLMProviders_DedupesLegacyAndCanonicalVolcengineTokenPlanAnthropicNames(t *testing.T) {
+func TestGetMaclawLLMProviders_DedupesLegacyAndCanonicalVolcengineTokenPlanNames(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
@@ -1474,7 +1453,7 @@ func TestGetMaclawLLMProviders_DedupesLegacyAndCanonicalVolcengineTokenPlanAnthr
 		MaclawLLMCurrentProvider: legacyVolcengineTokenPlanAnthropicProviderName,
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{
 			{Name: legacyVolcengineTokenPlanAnthropicProviderName, URL: "https://old.example.com/api/plan", Model: "Old", Protocol: "anthropic", AgentType: "claude code 2.0"},
-			{Name: volcengineTokenPlanAnthropicProviderName, URL: "https://ark.cn-beijing.volces.com/api/plan", Model: "Auto", Protocol: "anthropic", AgentType: "claude code 2.0"},
+			{Name: volcengineAgentPlanProviderName, URL: "https://ark.cn-beijing.volces.com/api/plan/v3", Model: "glm-5.2", Protocol: "openai", WireAPI: "responses"},
 			{Name: "Custom1", IsCustom: true},
 			{Name: "Custom2", IsCustom: true},
 		},
@@ -1486,10 +1465,10 @@ func TestGetMaclawLLMProviders_DedupesLegacyAndCanonicalVolcengineTokenPlanAnthr
 	data := app.GetMaclawLLMProviders()
 	count := 0
 	for _, provider := range data.Providers {
-		if provider.Name == volcengineTokenPlanAnthropicProviderName {
+		if provider.Name == volcengineAgentPlanProviderName {
 			count++
-			if provider.URL != "https://ark.cn-beijing.volces.com/api/plan" {
-				t.Fatalf("canonical Anthropic TokenPlan URL = %q, want %q", provider.URL, "https://ark.cn-beijing.volces.com/api/plan")
+			if provider.URL != "https://ark.cn-beijing.volces.com/api/plan/v3" {
+				t.Fatalf("canonical 火山引擎 Agent Plan URL = %q, want %q", provider.URL, "https://ark.cn-beijing.volces.com/api/plan/v3")
 			}
 		}
 		if provider.Name == legacyVolcengineTokenPlanAnthropicProviderName {
@@ -1497,14 +1476,14 @@ func TestGetMaclawLLMProviders_DedupesLegacyAndCanonicalVolcengineTokenPlanAnthr
 		}
 	}
 	if count != 1 {
-		t.Fatalf("canonical Anthropic TokenPlan count = %d, want 1; providers=%+v", count, data.Providers)
+		t.Fatalf("canonical 火山引擎 Agent Plan count = %d, want 1; providers=%+v", count, data.Providers)
 	}
-	if data.Current != volcengineTokenPlanAnthropicProviderName {
-		t.Fatalf("Current = %q, want %q", data.Current, volcengineTokenPlanAnthropicProviderName)
+	if data.Current != volcengineAgentPlanProviderName {
+		t.Fatalf("Current = %q, want %q", data.Current, volcengineAgentPlanProviderName)
 	}
 }
 
-func TestSaveMaclawLLMProviders_CanonicalizesLegacyVolcengineTokenPlanAnthropicCurrent(t *testing.T) {
+func TestSaveMaclawLLMProviders_CanonicalizesLegacyVolcengineTokenPlanCurrent(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
@@ -1522,14 +1501,14 @@ func TestSaveMaclawLLMProviders_CanonicalizesLegacyVolcengineTokenPlanAnthropicC
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if saved.MaclawLLMCurrentProvider != volcengineTokenPlanAnthropicProviderName {
-		t.Fatalf("MaclawLLMCurrentProvider = %q, want %q", saved.MaclawLLMCurrentProvider, volcengineTokenPlanAnthropicProviderName)
+	if saved.MaclawLLMCurrentProvider != volcengineAgentPlanProviderName {
+		t.Fatalf("MaclawLLMCurrentProvider = %q, want %q", saved.MaclawLLMCurrentProvider, volcengineAgentPlanProviderName)
 	}
 	if _, ok := findProviderByName(saved.MaclawLLMProviders, legacyVolcengineTokenPlanAnthropicProviderName); ok {
 		t.Fatalf("saved providers still contain legacy Anthropic TokenPlan name: %+v", saved.MaclawLLMProviders)
 	}
-	if _, ok := findProviderByName(saved.MaclawLLMProviders, volcengineTokenPlanAnthropicProviderName); !ok {
-		t.Fatalf("saved providers missing canonical Anthropic TokenPlan name: %+v", saved.MaclawLLMProviders)
+	if _, ok := findProviderByName(saved.MaclawLLMProviders, volcengineAgentPlanProviderName); !ok {
+		t.Fatalf("saved providers missing canonical 火山引擎 Agent Plan name: %+v", saved.MaclawLLMProviders)
 	}
 }
 

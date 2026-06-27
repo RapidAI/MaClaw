@@ -321,6 +321,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentScopeEvidence(task, modelSummary, allFilesModified, allFilesCreated))
 	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentChangedFileSummaryEvidence(modelSummary, allFilesModified, allFilesCreated))
 	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentRiskSummaryEvidence(modelSummary, allFilesModified, allFilesCreated))
+	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentVerificationCommandSummaryEvidence(modelSummary, allFilesModified, allFilesCreated, allCommandsRun, audit.LastEditSeq))
 	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentClaimedVerificationEvidence(modelSummary, allCommandsRun))
 	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentClaimedVerificationFailureEvidence(modelSummary, allCommandsRun))
 	status, errMsg = applySubAgentQualityOutcome(status, errMsg, qualityStatus, qualitySummary, qualityIssueCount)
@@ -436,6 +437,11 @@ type codingSubAgentCallbacks struct {
 	matchedMCPTools         []codingSubAgentMCPToolMatch
 	matchedMCPToolsSelected bool
 
+	// cachedDynamicSelectionText is the stable task text used to select dynamic
+	// skills and MCP tools once per task.
+	cachedDynamicSelectionText string
+	dynamicSelectionTextBuilt  bool
+
 	// filesModified tracks files written/edited during execution.
 	mu             sync.Mutex
 	filesModified  map[string]bool
@@ -520,6 +526,7 @@ func (c *codingSubAgentCallbacks) GetMaxIterations() int {
 
 func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
 	if c.cachedSystemPrompt != "" {
+		c.logCacheEvent("system_prompt", "hit", "prompt_chars", len(c.cachedSystemPrompt))
 		return c.cachedSystemPrompt
 	}
 	prompt := buildCodingSubAgentSystemPrompt(c.task, c.subagent.projectPath, c.reqCtx, c.designCtx, c.prevOutputs)
@@ -545,6 +552,7 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 	}
 
 	c.cachedSystemPrompt = prompt
+	c.logCacheEvent("system_prompt", "build", "prompt_chars", len(prompt))
 	return prompt
 }
 
@@ -556,7 +564,7 @@ func (c *codingSubAgentCallbacks) ensureMatchedSkillsSelected() {
 		c.matchedSkillsSelected = true
 		return
 	}
-	c.matchedSkills = c.selectRelevantSkillsForTask(codingSubAgentDynamicSelectionText(c.task))
+	c.matchedSkills = c.selectRelevantSkillsForTask(c.dynamicSelectionText())
 	c.matchedSkillsSelected = true
 }
 
@@ -568,8 +576,20 @@ func (c *codingSubAgentCallbacks) ensureMatchedMCPToolsSelected() {
 		c.matchedMCPToolsSelected = true
 		return
 	}
-	c.matchedMCPTools = c.selectRelevantMCPToolsForTask(codingSubAgentDynamicSelectionText(c.task))
+	c.matchedMCPTools = c.selectRelevantMCPToolsForTask(c.dynamicSelectionText())
 	c.matchedMCPToolsSelected = true
+}
+
+func (c *codingSubAgentCallbacks) dynamicSelectionText() string {
+	if c == nil {
+		return ""
+	}
+	if c.dynamicSelectionTextBuilt {
+		return c.cachedDynamicSelectionText
+	}
+	c.cachedDynamicSelectionText = codingSubAgentDynamicSelectionText(c.task)
+	c.dynamicSelectionTextBuilt = true
+	return c.cachedDynamicSelectionText
 }
 
 func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]interface{} {
@@ -598,8 +618,92 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 		}
 
 		c.cachedTools = tools
+		c.logCacheEvent("tools", "build", "tool_count", len(tools))
+	} else {
+		c.logCacheEvent("tools", "hit", "tool_count", len(c.cachedTools))
 	}
-	return c.cachedTools
+	return cloneCodingSubAgentToolDefinitions(c.cachedTools)
+}
+
+func cloneCodingSubAgentToolDefinitions(tools []map[string]interface{}) []map[string]interface{} {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, len(tools))
+	for i, tool := range tools {
+		out[i], _ = cloneCodingSubAgentToolValue(tool).(map[string]interface{})
+	}
+	return out
+}
+
+func cloneCodingSubAgentToolValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(v))
+		for key, item := range v {
+			out[key] = cloneCodingSubAgentToolValue(item)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			out[i] = cloneCodingSubAgentToolValue(item)
+		}
+		return out
+	case []string:
+		out := make([]string, len(v))
+		copy(out, v)
+		return out
+	case []map[string]interface{}:
+		out := make([]map[string]interface{}, len(v))
+		for i, item := range v {
+			out[i], _ = cloneCodingSubAgentToolValue(item).(map[string]interface{})
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(v))
+		for key, item := range v {
+			out[key] = item
+		}
+		return out
+	case map[string][]string:
+		out := make(map[string][]string, len(v))
+		for key, items := range v {
+			copied := make([]string, len(items))
+			copy(copied, items)
+			out[key] = copied
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func (c *codingSubAgentCallbacks) logCacheEvent(cacheName, event string, kv ...interface{}) {
+	if os.Getenv("MACLAW_DEBUG_CODING_SUBAGENT_CACHE") != "1" {
+		return
+	}
+	taskIndex := 0
+	skillCount := 0
+	mcpToolCount := 0
+	if c != nil && c.task != nil {
+		taskIndex = c.task.Index
+	}
+	if c != nil {
+		skillCount = len(c.matchedSkills)
+		mcpToolCount = len(c.matchedMCPTools)
+	}
+	parts := []string{
+		fmt.Sprintf("cache=%s", cacheName),
+		fmt.Sprintf("event=%s", event),
+		fmt.Sprintf("task_index=%d", taskIndex),
+		fmt.Sprintf("skills=%d", skillCount),
+		fmt.Sprintf("mcp_tools=%d", mcpToolCount),
+	}
+	for i := 0; i+1 < len(kv); i += 2 {
+		parts = append(parts, fmt.Sprintf("%v=%v", kv[i], kv[i+1]))
+	}
+	log.Printf("[coding-subagent-cache] %s", strings.Join(parts, " "))
 }
 
 func (c *codingSubAgentCallbacks) ExecuteTool(name, argsJSON string) string {
@@ -622,6 +726,10 @@ func (c *codingSubAgentCallbacks) ExecuteToolStructured(name, argsJSON string) a
 
 func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) (toolResult codingToolExecutionResult) {
 	name = canonicalCodingSubAgentToolName(name)
+	dynamicToolInitialCount := -1
+	if c != nil && codingSubAgentDynamicToolNames[name] {
+		dynamicToolInitialCount = c.dynamicToolResultCount()
+	}
 	if c.ShouldStop() {
 		toolResult = codingToolExecutionResult{Text: "coding subagent cancelled before tool execution", Outcome: codingToolOutcomeFailed}
 		logCodingSubAgentOperationFailure(c, name, argsJSON, toolResult, 0)
@@ -634,6 +742,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		c.emitToolFinishedEvent(name, toolResult.Text, toolResult.Outcome, duration)
 		if toolResult.Outcome != codingToolOutcomeSuccess {
 			logCodingSubAgentOperationFailure(c, name, argsJSON, toolResult, duration)
+			c.trackRejectedDynamicToolResult(name, argsJSON, toolResult.Text, dynamicToolInitialCount)
 		}
 	}()
 
@@ -1231,7 +1340,7 @@ func codingSubAgentToolArgumentExample(name string) string {
 	case "git_diff":
 		return `{"path":"."}`
 	case "manage_skill":
-		return `{"action":"run","name":"skill-name"}`
+		return `{"action":"run","name":"skill-name","args":{"input":"task-specific instructions"}}`
 	case "call_mcp_tool":
 		return `{"server_id":"server","tool_name":"tool","arguments":{}}`
 	case "coding_knowledge_search", "knowledge_search":
@@ -2877,6 +2986,48 @@ func (c *codingSubAgentCallbacks) trackDynamicToolResult(toolName, name, result 
 	})
 }
 
+func (c *codingSubAgentCallbacks) dynamicToolResultCount() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.dynamicTools)
+}
+
+func (c *codingSubAgentCallbacks) trackRejectedDynamicToolResult(toolName, argsJSON, result string, initialCount int) {
+	if c == nil || initialCount < 0 || !codingSubAgentDynamicToolNames[toolName] {
+		return
+	}
+	if c.dynamicToolResultCount() != initialCount {
+		return
+	}
+	c.trackDynamicToolResult(toolName, dynamicToolEvidenceName(toolName, argsJSON), result, false)
+}
+
+func dynamicToolEvidenceName(toolName, argsJSON string) string {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(normalizeCodingSubAgentToolArguments(argsJSON)), &args); err != nil {
+		return ""
+	}
+	switch canonicalCodingSubAgentToolName(toolName) {
+	case "manage_skill":
+		name, _ := args["name"].(string)
+		return strings.TrimSpace(name)
+	case "call_mcp_tool":
+		serverID, _ := args["server_id"].(string)
+		tool, _ := args["tool_name"].(string)
+		serverID = strings.TrimSpace(serverID)
+		tool = strings.TrimSpace(tool)
+		if serverID == "" || tool == "" {
+			return ""
+		}
+		return serverID + "/" + tool
+	default:
+		return ""
+	}
+}
+
 func (c *codingSubAgentCallbacks) getDynamicToolsRun() []CodingSubAgentDynamicToolResult {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -3814,8 +3965,12 @@ func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAge
 	}
 	postEditCommands := filterGuardrailBlockedSubAgentCommands(filterPostEditSubAgentCommands(commands, lastEditSeq), guardrails)
 	failedCommands := unresolvedFailedSubAgentCommands(postEditCommands)
+	failedCommandSummary := ""
+	if len(failedCommands) > 0 {
+		failedCommandSummary = summarizeFailedSubAgentCommandWarning(failedCommands)
+	}
 	if len(failedCommands) > 0 && verificationStatus != codingSubAgentQualityFailed {
-		failed = append(failed, summarizeFailedSubAgentCommandWarning(failedCommands))
+		failed = append(failed, failedCommandSummary)
 	}
 	failedDynamicTools := unresolvedFailedSubAgentDynamicTools(filterPostEditSubAgentDynamicTools(dynamicTools, lastEditSeq))
 	if len(failedDynamicTools) > 0 {
@@ -3828,7 +3983,11 @@ func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAge
 		if verificationStatus == codingSubAgentQualityMissing {
 			failed = append(failed, "verification not run")
 		} else if verificationStatus == codingSubAgentQualityFailed {
-			failed = append(failed, "verification failed")
+			if failedCommandSummary != "" {
+				failed = append(failed, "verification failed: "+failedCommandSummary)
+			} else {
+				failed = append(failed, "verification failed")
+			}
 		}
 		if !diffChecked {
 			failed = append(failed, "diff not checked")
@@ -3906,24 +4065,65 @@ func subAgentVerificationOutputLooksEmpty(cmd CodingSubAgentCommandResult) bool 
 		return false
 	}
 	emptyPhrases := []string{
+		"[no test files]",
+		"no test files",
 		"no tests collected",
 		"collected 0 items",
 		"collected 0 tests",
 		"no tests found",
 		"no test files found",
 		"no test files were found",
+		"no test suite found",
+		"no test suites found",
+		"no tests were found",
+		"0 passing",
+		"0 examples",
 		"0 tests found",
 		"0 tests passed",
 		"0 tests total",
+		"0 tests completed",
+		"0 tests successful",
+		"0 tests executed",
+		"# tests 0",
+		"0 test cases",
+		"no tests executed",
 		"no specs found",
 		"no files matching",
 	}
 	for _, phrase := range emptyPhrases {
-		if strings.Contains(summary, phrase) {
+		if subAgentSummaryContainsEmptyVerificationPhrase(summary, phrase) {
 			return true
 		}
 	}
 	return false
+}
+
+func subAgentSummaryContainsEmptyVerificationPhrase(summary, phrase string) bool {
+	if phrase == "" {
+		return false
+	}
+	if !strings.HasPrefix(phrase, "0 ") {
+		return strings.Contains(summary, phrase)
+	}
+	start := 0
+	for {
+		idx := strings.Index(summary[start:], phrase)
+		if idx < 0 {
+			return false
+		}
+		absolute := start + idx
+		if absolute == 0 || !isASCIIDigit(summary[absolute-1]) {
+			return true
+		}
+		start = absolute + len(phrase)
+		if start >= len(summary) {
+			return false
+		}
+	}
+}
+
+func isASCIIDigit(b byte) bool {
+	return b >= '0' && b <= '9'
 }
 
 func appendSubAgentQualityFailure(status codingSubAgentQualityStatus, summary string, count int, failure string) (codingSubAgentQualityStatus, string, int) {
@@ -4082,6 +4282,45 @@ func subAgentSummaryMentionsRisk(summary string) bool {
 	return false
 }
 
+func summarizeSubAgentVerificationCommandSummaryEvidence(modelSummary string, filesModified, filesCreated []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64) string {
+	modelSummary = strings.TrimSpace(modelSummary)
+	if modelSummary == "" {
+		return ""
+	}
+	changedFiles := uniqueSortedSubAgentStrings(append(append([]string{}, filesModified...), filesCreated...))
+	if len(changedFiles) == 0 {
+		return ""
+	}
+	freshVerification := filterFreshSubAgentVerificationCommands(commands, lastEditSeq)
+	if len(freshVerification) == 0 {
+		return ""
+	}
+	claimed := subAgentClaimedVerificationCommands(modelSummary)
+	if len(claimed) == 0 {
+		return "verification command not referenced in final summary"
+	}
+	if subAgentClaimedVerificationIncludesFreshCommand(claimed, freshVerification) {
+		return ""
+	}
+	return "fresh verification command not referenced in final summary"
+}
+
+func subAgentClaimedVerificationIncludesFreshCommand(claimed []subAgentClaimedVerificationCommand, fresh []CodingSubAgentCommandResult) bool {
+	if len(claimed) == 0 || len(fresh) == 0 {
+		return false
+	}
+	freshCommands := make(map[string]bool, len(fresh))
+	for _, cmd := range fresh {
+		freshCommands[normalizeSubAgentCommandForEvidence(cmd.Command)] = true
+	}
+	for _, command := range claimed {
+		if freshCommands[normalizeSubAgentCommandForEvidence(command.Command)] {
+			return true
+		}
+	}
+	return false
+}
+
 func summarizeSubAgentClaimedVerificationEvidence(modelSummary string, commands []CodingSubAgentCommandResult) string {
 	missing, _ := collectSubAgentClaimedVerificationEvidence(modelSummary, commands)
 	if len(missing) == 0 {
@@ -4095,7 +4334,7 @@ func summarizeSubAgentClaimedVerificationFailureEvidence(modelSummary string, co
 	if len(claimedPassedButFailed) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("claimed verification command passed but audit log recorded failure: %s", compactSubAgentClaimedCommandList(claimedPassedButFailed, 3))
+	return fmt.Sprintf("claimed verification command passed but audit log recorded failure or empty success: %s", compactSubAgentClaimedCommandList(claimedPassedButFailed, 3))
 }
 
 func collectSubAgentClaimedVerificationEvidence(modelSummary string, commands []CodingSubAgentCommandResult) ([]string, []string) {
@@ -4115,7 +4354,7 @@ func collectSubAgentClaimedVerificationEvidence(modelSummary string, commands []
 			missing = append(missing, command.Command)
 			continue
 		}
-		if command.ClaimedPassed && !audited.Succeeded {
+		if command.ClaimedPassed && (!audited.Succeeded || subAgentCommandSuccessLooksEmpty(audited)) {
 			claimedPassedButFailed = append(claimedPassedButFailed, command.Command)
 		}
 	}
@@ -4418,10 +4657,12 @@ func unresolvedFailedSubAgentDynamicTools(tools []CodingSubAgentDynamicToolResul
 		return nil
 	}
 	laterSucceeded := make(map[string]bool, len(tools))
+	laterSucceededByTool := make(map[string]bool, len(tools))
 	unresolvedReversed := make([]CodingSubAgentDynamicToolResult, 0)
 	for i := len(tools) - 1; i >= 0; i-- {
 		tool := tools[i]
 		key := normalizeSubAgentDynamicToolForEvidence(tool)
+		toolKey := strings.ToLower(strings.TrimSpace(tool.Tool))
 		if key == "" {
 			if !tool.Succeeded {
 				unresolvedReversed = append(unresolvedReversed, tool)
@@ -4430,6 +4671,12 @@ func unresolvedFailedSubAgentDynamicTools(tools []CodingSubAgentDynamicToolResul
 		}
 		if tool.Succeeded {
 			laterSucceeded[key] = true
+			if toolKey != "" {
+				laterSucceededByTool[toolKey] = true
+			}
+			continue
+		}
+		if strings.TrimSpace(tool.Name) == "" && toolKey != "" && laterSucceededByTool[toolKey] {
 			continue
 		}
 		if !laterSucceeded[key] {
@@ -4466,8 +4713,9 @@ func compactFailedSubAgentDynamicToolResults(tools []CodingSubAgentDynamicToolRe
 	if len(tools) < limit {
 		limit = len(tools)
 	}
+	selected := selectSubAgentDynamicToolFailuresForSummary(tools, limit)
 	parts := make([]string, 0, limit+1)
-	for _, tool := range tools[:limit] {
+	for _, tool := range selected {
 		label := strings.TrimSpace(tool.Tool)
 		if strings.TrimSpace(tool.Name) != "" {
 			label += " " + strings.TrimSpace(tool.Name)
@@ -4478,10 +4726,40 @@ func compactFailedSubAgentDynamicToolResults(tools []CodingSubAgentDynamicToolRe
 		}
 		parts = append(parts, truncateRunesForSubAgent(label, codingSubAgentCommandTextMaxRunes))
 	}
-	if remaining := len(tools) - limit; remaining > 0 {
+	if remaining := len(tools) - len(selected); remaining > 0 {
 		parts = append(parts, fmt.Sprintf("... %d more", remaining))
 	}
 	return strings.Join(parts, "; ")
+}
+
+func selectSubAgentDynamicToolFailuresForSummary(tools []CodingSubAgentDynamicToolResult, limit int) []CodingSubAgentDynamicToolResult {
+	if limit <= 0 || len(tools) == 0 {
+		return nil
+	}
+	if len(tools) <= limit {
+		out := make([]CodingSubAgentDynamicToolResult, len(tools))
+		copy(out, tools)
+		return out
+	}
+	selected := make(map[int]bool, limit)
+	for i := len(tools) - 1; i >= 0 && len(selected) < limit; i-- {
+		if isActionableCommandDiagnosticLine(commandResultDiagnosticLine(tools[i].Summary)) {
+			selected[i] = true
+		}
+	}
+	for i := len(tools) - 1; i >= 0 && len(selected) < limit; i-- {
+		selected[i] = true
+	}
+	indices := make([]int, 0, len(selected))
+	for i := range selected {
+		indices = append(indices, i)
+	}
+	sort.Ints(indices)
+	out := make([]CodingSubAgentDynamicToolResult, 0, len(indices))
+	for _, i := range indices {
+		out = append(out, tools[i])
+	}
+	return out
 }
 
 func filterPostEditSubAgentCommands(commands []CodingSubAgentCommandResult, lastEditSeq uint64) []CodingSubAgentCommandResult {
@@ -4583,12 +4861,13 @@ func failedSubAgentCommandWithBestDiagnostic(commands []CodingSubAgentCommandRes
 	if len(commands) == 0 {
 		return CodingSubAgentCommandResult{}
 	}
-	for _, command := range commands {
+	for i := len(commands) - 1; i >= 0; i-- {
+		command := commands[i]
 		if isActionableCommandDiagnosticLine(commandResultDiagnosticLine(command.Summary)) {
 			return command
 		}
 	}
-	return commands[0]
+	return commands[len(commands)-1]
 }
 
 func isActionableCommandDiagnosticLine(line string) bool {
@@ -5245,10 +5524,17 @@ func composerOptionConsumesValue(arg string) bool {
 
 func isVerificationScriptName(name string) bool {
 	switch name {
-	case "test", "tests", "check", "checks", "build", "lint", "vet", "typecheck", "type-check":
+	case "test", "tests", "unit", "units", "integration", "e2e", "ci", "verify", "validate", "validation", "check", "checks", "build", "lint", "vet", "typecheck", "type-check":
 		return true
 	}
 	return strings.HasPrefix(name, "test:") ||
+		strings.HasPrefix(name, "unit:") ||
+		strings.HasPrefix(name, "integration:") ||
+		strings.HasPrefix(name, "e2e:") ||
+		strings.HasPrefix(name, "ci:") ||
+		strings.HasPrefix(name, "verify:") ||
+		strings.HasPrefix(name, "validate:") ||
+		strings.HasPrefix(name, "validation:") ||
 		strings.HasPrefix(name, "check:") ||
 		strings.HasPrefix(name, "build:") ||
 		strings.HasPrefix(name, "lint:") ||

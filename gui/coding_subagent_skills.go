@@ -308,10 +308,7 @@ func (c *codingSubAgentCallbacks) executeManageSkill(args map[string]interface{}
 		name, _ := args["name"].(string)
 		name = strings.TrimSpace(name)
 		if name == "" {
-			return codingToolExecutionResult{
-				Text:    "manage_skill(action=run) requires 'name' parameter",
-				Outcome: codingToolOutcomeFailed,
-			}
+			return missingCodingSubAgentRequiredArgumentResult("manage_skill", "name")
 		}
 		matchedSkill, matched := c.matchedSkill(name)
 		if !matched {

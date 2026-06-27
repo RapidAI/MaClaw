@@ -152,6 +152,152 @@ func TestBuildCodingSubAgentSystemPrompt_WithContext(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentSystemPromptCachesDynamicSelections(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir()},
+		task:     &TaskItem{Index: 1, Title: "Polish UI", Description: "Improve frontend progress status"},
+		matchedSkills: []codingSubAgentSkillMatch{
+			{Name: "impeccable", Description: "Audit and polish frontend UI", Score: 0.9, RequiredArgs: []string{"input"}},
+		},
+		matchedMCPTools: []codingSubAgentMCPToolMatch{
+			{ServerID: "browser", ServerName: "browser", ToolName: "screenshot", Description: "Capture browser screenshot", Score: 0.8, RequiredArgs: []string{"url"}},
+		},
+	}
+
+	first := cb.BuildSystemPrompt("first turn", true)
+	if !cb.matchedSkillsSelected || !cb.matchedMCPToolsSelected {
+		t.Fatalf("dynamic selections should be marked selected after first prompt build")
+	}
+	if !strings.Contains(first, "impeccable") || !strings.Contains(first, "screenshot") || !strings.Contains(first, "server: browser") {
+		t.Fatalf("prompt should include preselected skill and MCP sections, got %q", first)
+	}
+
+	cb.matchedSkills = nil
+	cb.matchedMCPTools = nil
+	second := cb.BuildSystemPrompt("later turn", false)
+	if second != first {
+		t.Fatalf("system prompt should be cached across turns even if match fields change")
+	}
+}
+
+func TestCodingSubAgentBuildToolsCachesDynamicToolDefinitions(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{},
+		task:     &TaskItem{Index: 1, Title: "Use dynamic helpers"},
+		matchedSkills: []codingSubAgentSkillMatch{
+			{Name: "impeccable", Description: "Audit and polish frontend UI", Score: 0.9, RequiredArgs: []string{"input"}},
+		},
+		matchedMCPTools: []codingSubAgentMCPToolMatch{
+			{ServerID: "browser", ServerName: "browser", ToolName: "screenshot", Description: "Capture browser screenshot", Score: 0.8, RequiredArgs: []string{"url"}},
+		},
+	}
+
+	first := cb.BuildTools("first turn")
+	firstNames := codingSubAgentToolDefinitionNamesForTest(first)
+	if !containsStringForTest(firstNames, "manage_skill") || !containsStringForTest(firstNames, "call_mcp_tool") {
+		t.Fatalf("tools should include dynamic manage_skill and call_mcp_tool definitions, got %#v", firstNames)
+	}
+	if len(first) == 0 {
+		t.Fatal("expected at least one tool definition")
+	}
+	if fn, _ := first[0]["function"].(map[string]interface{}); fn != nil {
+		fn["name"] = "mutated_external_tool_name"
+	}
+
+	cb.matchedSkills = nil
+	cb.matchedMCPTools = nil
+	second := cb.BuildTools("later turn")
+	if len(second) != len(first) {
+		t.Fatalf("cached tool list length changed after matched tools were cleared: first=%d second=%d", len(first), len(second))
+	}
+	secondNames := codingSubAgentToolDefinitionNamesForTest(second)
+	if strings.Join(secondNames, "\n") != strings.Join(firstNames, "\n") {
+		t.Fatalf("cached tool names changed after matched tools were cleared: first=%#v second=%#v", firstNames, secondNames)
+	}
+	if containsStringForTest(secondNames, "mutated_external_tool_name") {
+		t.Fatalf("BuildTools should return a defensive copy of cached tool definitions, got %#v", secondNames)
+	}
+}
+
+func TestCodingSubAgentDynamicSelectionTextCachesTaskSnapshot(t *testing.T) {
+	task := &TaskItem{
+		Title:              "Polish progress UI",
+		Description:        "Use screenshots to verify failed status rendering",
+		Files:              []string{"gui/frontend/src/components/ai/CodingAgentProgressStatus.tsx"},
+		AcceptanceCriteria: []string{"Quality failed state is visible"},
+	}
+	cb := &codingSubAgentCallbacks{task: task}
+
+	first := cb.dynamicSelectionText()
+	task.Title = "Changed title"
+	task.Description = "Changed description"
+	task.Files = []string{"other.go"}
+	task.AcceptanceCriteria = []string{"Different criterion"}
+	second := cb.dynamicSelectionText()
+
+	if first == "" {
+		t.Fatal("expected non-empty dynamic selection text")
+	}
+	if second != first {
+		t.Fatalf("dynamic selection text should be cached per task: first=%q second=%q", first, second)
+	}
+	if !cb.dynamicSelectionTextBuilt {
+		t.Fatal("dynamic selection text cache should be marked built")
+	}
+}
+
+func TestCloneCodingSubAgentToolDefinitionsDeepCopiesTypedSchemaContainers(t *testing.T) {
+	original := []map[string]interface{}{
+		{
+			"function": map[string]interface{}{
+				"name": "typed_schema_tool",
+				"parameters": map[string]interface{}{
+					"oneOf": []map[string]interface{}{
+						{"required": []string{"path"}},
+					},
+					"dependentRequired": map[string][]string{
+						"action": {"path"},
+					},
+				},
+			},
+		},
+	}
+
+	cloned := cloneCodingSubAgentToolDefinitions(original)
+	params := cloned[0]["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	params["oneOf"].([]map[string]interface{})[0]["required"].([]string)[0] = "mutated"
+	params["dependentRequired"].(map[string][]string)["action"][0] = "also_mutated"
+
+	originalParams := original[0]["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	if got := originalParams["oneOf"].([]map[string]interface{})[0]["required"].([]string)[0]; got != "path" {
+		t.Fatalf("typed []map schema was not deep-copied, original required = %q", got)
+	}
+	if got := originalParams["dependentRequired"].(map[string][]string)["action"][0]; got != "path" {
+		t.Fatalf("typed map[string][]string schema was not deep-copied, original dependentRequired = %q", got)
+	}
+}
+
+func codingSubAgentToolDefinitionNamesForTest(tools []map[string]interface{}) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func containsStringForTest(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCodingSubAgentPromptCapsTaskLists(t *testing.T) {
 	var files []string
 	for i := 0; i < codingSubAgentTaskFilesMax+2; i++ {
@@ -577,6 +723,11 @@ func TestCodingSubAgentToolArgumentErrorsIncludeValidExamples(t *testing.T) {
 	if !strings.Contains(allowed.Text, "Example valid arguments:") || !strings.Contains(allowed.Text, `{"path":"src/main.go","operation":"replace"`) {
 		t.Fatalf("allowed-values error should include an edit_lines example, got %q", allowed.Text)
 	}
+
+	skillTypeErr := invalidCodingSubAgentArgumentTypeResult("manage_skill", "args", "object", "string", "a JSON object")
+	if !strings.Contains(skillTypeErr.Text, `{"action":"run","name":"skill-name","args":{"input":"task-specific instructions"}}`) {
+		t.Fatalf("manage_skill type error should include args object example, got %q", skillTypeErr.Text)
+	}
 }
 
 func TestCodingSubAgentEmptyToolArgumentsNormalizeToObject(t *testing.T) {
@@ -591,6 +742,46 @@ func TestCodingSubAgentEmptyToolArgumentsNormalizeToObject(t *testing.T) {
 	result := cb.executeToolWithOutcome("read_file", "")
 	if strings.Contains(result.Text, "argument parse failed") || strings.Contains(result.Text, "unexpected end of JSON input") {
 		t.Fatalf("empty arguments should not surface JSON parse failure: %q", result.Text)
+	}
+}
+
+func TestCodingSubAgentManageSkillRunMissingNameUsesStandardArgumentError(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{},
+		matchedSkills: []codingSubAgentSkillMatch{
+			{Name: "impeccable", Description: "Audit and polish frontend UI"},
+		},
+	}
+
+	result := cb.executeManageSkill(map[string]interface{}{"action": "run"})
+	if result.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("outcome = %s, want failed", result.Outcome)
+	}
+	if !strings.Contains(result.Text, `missing required argument "name"`) ||
+		!strings.Contains(result.Text, `Example valid arguments:`) ||
+		!strings.Contains(result.Text, `"args":{"input":"task-specific instructions"}`) {
+		t.Fatalf("missing manage_skill name should use standard argument guidance, got %q", result.Text)
+	}
+}
+
+func TestRejectedDynamicToolArgumentFailureIsTrackedForAudit(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{},
+		matchedSkills: []codingSubAgentSkillMatch{
+			{Name: "impeccable", Description: "Audit and polish frontend UI"},
+		},
+	}
+
+	result := cb.executeToolWithOutcome("manage_skill", `{"action":"run"}`)
+	if result.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("outcome = %s, want failed", result.Outcome)
+	}
+	tools := cb.getDynamicToolsRun()
+	if len(tools) != 1 {
+		t.Fatalf("dynamic tool failures tracked = %d, want 1: %#v", len(tools), tools)
+	}
+	if tools[0].Tool != "manage_skill" || tools[0].Succeeded || !strings.Contains(tools[0].Summary, "missing required argument") {
+		t.Fatalf("unexpected tracked dynamic failure: %#v", tools[0])
 	}
 }
 
@@ -3262,6 +3453,30 @@ func TestSummarizeSubAgentCommands(t *testing.T) {
 	}
 }
 
+func TestCompactFailedSubAgentDynamicToolResultsPrefersActionableLateFailure(t *testing.T) {
+	tools := make([]CodingSubAgentDynamicToolResult, 0, codingSubAgentFailedVerificationSummaryMax+2)
+	for i := 0; i < codingSubAgentFailedVerificationSummaryMax+2; i++ {
+		tools = append(tools, CodingSubAgentDynamicToolResult{
+			Tool:      "call_mcp_tool",
+			Name:      fmt.Sprintf("browser/tool-%02d", i),
+			Succeeded: false,
+			Summary:   "ordinary prelude only",
+		})
+	}
+	tools[len(tools)-1].Summary = "ordinary prelude\n[stderr] MCP call failed: browser closed"
+
+	summary := compactFailedSubAgentDynamicToolResults(tools)
+	if !strings.Contains(summary, "browser/tool-06 -> MCP call failed: browser closed") {
+		t.Fatalf("late actionable MCP failure should remain visible, got %q", summary)
+	}
+	if strings.Contains(summary, "browser/tool-00") || strings.Contains(summary, "browser/tool-01") {
+		t.Fatalf("summary should omit oldest low-signal failures when capped, got %q", summary)
+	}
+	if !strings.Contains(summary, "... 2 more") {
+		t.Fatalf("summary should report omitted dynamic failures, got %q", summary)
+	}
+}
+
 func TestSummarizeSubAgentQuality(t *testing.T) {
 	status, summary, count := summarizeSubAgentQuality("not_needed", "not_needed", false, nil, nil, nil, 0, nil, nil)
 	if status != "passed" || count != 0 || !strings.Contains(summary, "no file changes") {
@@ -3286,6 +3501,20 @@ func TestSummarizeSubAgentQuality(t *testing.T) {
 		t.Fatalf("unresolved failed commands should fail quality and prefer actionable diagnostics, got %q, %q, %d", status, summary, count)
 	}
 	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./old", Succeeded: false, Summary: "old compile error", seq: 2},
+		{Command: "go test ./new", Succeeded: false, Summary: "new compile error", seq: 3},
+	}, 1, nil, nil)
+	if status != "failed" || count != 1 || !strings.Contains(summary, "2 command(s) failed: go test ./new -> new compile error") || strings.Contains(summary, "go test ./old") {
+		t.Fatalf("failed command summary should prefer latest actionable diagnostic, got %q, %q, %d", status, summary, count)
+	}
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./old", Succeeded: false, Summary: "command exited with code 1", seq: 2},
+		{Command: "go test ./new", Succeeded: false, Summary: "command exited with code 1", seq: 3},
+	}, 1, nil, nil)
+	if status != "failed" || count != 1 || !strings.Contains(summary, "2 command(s) failed: go test ./new -> command exited with code 1") || strings.Contains(summary, "go test ./old") {
+		t.Fatalf("failed command summary should fall back to latest failure, got %q, %q, %d", status, summary, count)
+	}
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{
 		{Command: "npm test", Succeeded: false, Summary: "jest failed", seq: 2},
 		{Command: "npm   test", Succeeded: true, Summary: "ok", seq: 3},
 	}, 1, nil, nil)
@@ -3296,7 +3525,7 @@ func TestSummarizeSubAgentQuality(t *testing.T) {
 		{Command: "pytest tests", Succeeded: false, Summary: "failed", seq: 2},
 		{Command: "pytest   tests", Succeeded: true, Summary: "no tests collected in 0.01s", seq: 3},
 	}, 1, nil, nil)
-	if status != "failed" || count != 1 || !strings.Contains(summary, "pytest tests") || strings.Contains(summary, "passed") {
+	if status != "failed" || count != 1 || !strings.Contains(summary, "pytest   tests -> no tests collected") || strings.Contains(summary, "passed") {
 		t.Fatalf("empty verification success should not resolve earlier command failure, got %q, %q, %d", status, summary, count)
 	}
 	status, summary, count = summarizeSubAgentQuality("missing", "passed", true, []string{"new.go"}, []string{"new.go"}, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: true}}, 0, nil, nil)
@@ -3310,8 +3539,8 @@ func TestSummarizeSubAgentQuality(t *testing.T) {
 	if status != "passed" || count != 0 || strings.Contains(summary, "command(s) failed") {
 		t.Fatalf("stale pre-edit command failure should not warn after fresh pass, got %q, %q, %d", status, summary, count)
 	}
-	status, summary, count = summarizeSubAgentQuality("explored", "failed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: false}}, 0, []CodingSubAgentGuardrailViolation{{Tool: "bash"}}, nil)
-	if status != "failed" || count != 2 || !strings.Contains(summary, "guardrail") || !strings.Contains(summary, "verification failed") {
+	status, summary, count = summarizeSubAgentQuality("explored", "failed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: false, Summary: "compile failed"}}, 0, []CodingSubAgentGuardrailViolation{{Tool: "bash"}}, nil)
+	if status != "failed" || count != 2 || !strings.Contains(summary, "guardrail") || !strings.Contains(summary, "verification failed: 1 command(s) failed: go test ./... -> compile failed") {
 		t.Fatalf("failed quality summary = %q, %q, %d", status, summary, count)
 	}
 
@@ -3344,6 +3573,13 @@ func TestSummarizeSubAgentQuality(t *testing.T) {
 	})
 	if status != "passed" || count != 0 || strings.Contains(summary, "dynamic tool failed") {
 		t.Fatalf("stale pre-edit dynamic failure should not warn after fresh success, got %q, %q, %d", status, summary, count)
+	}
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, nil, 1, nil, []CodingSubAgentDynamicToolResult{
+		{Tool: "manage_skill", Succeeded: false, Summary: "missing required argument name", seq: 2},
+		{Tool: "manage_skill", Name: "impeccable", Succeeded: true, Summary: "ok", seq: 3},
+	})
+	if status != "passed" || count != 0 || strings.Contains(summary, "dynamic tool failed") {
+		t.Fatalf("target-less dynamic argument failure should be resolved by later same-tool success, got %q, %q, %d", status, summary, count)
 	}
 }
 
@@ -3665,6 +3901,52 @@ func TestRiskSummaryEvidenceAddsQualityFailure(t *testing.T) {
 	}
 }
 
+func TestSummarizeSubAgentVerificationCommandSummaryEvidence(t *testing.T) {
+	warning := summarizeSubAgentVerificationCommandSummaryEvidence("Updated src/settings.go and ran tests. Risk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", Succeeded: true, seq: 3},
+	}, 2)
+	if warning == "" || !strings.Contains(warning, "verification command not referenced") {
+		t.Fatalf("changed task with fresh verification but no command in summary should warn, got %q", warning)
+	}
+
+	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./gui passed.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", Succeeded: true, seq: 3},
+	}, 2)
+	if warning != "" {
+		t.Fatalf("summary naming fresh verification command should not warn, got %q", warning)
+	}
+
+	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./old passed.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./old", Succeeded: true, seq: 1},
+		{Command: "go test ./gui", Succeeded: true, seq: 3},
+	}, 2)
+	if warning == "" || !strings.Contains(warning, "fresh verification command not referenced") {
+		t.Fatalf("summary naming only stale verification command should warn, got %q", warning)
+	}
+
+	warning = summarizeSubAgentVerificationCommandSummaryEvidence("No changes needed.", nil, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", Succeeded: true, seq: 3},
+	}, 2)
+	if warning != "" {
+		t.Fatalf("no changed files should not require verification command summary, got %q", warning)
+	}
+
+	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Updated src/settings.go. Risk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", Succeeded: true, seq: 1},
+	}, 2)
+	if warning != "" {
+		t.Fatalf("stale verification command should not require command summary, got %q", warning)
+	}
+}
+
+func TestVerificationCommandSummaryEvidenceAddsQualityFailure(t *testing.T) {
+	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityExplored, codingSubAgentQualityPassed, true, []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true, seq: 3}}, 2, nil, nil)
+	status, summary, count = appendSubAgentQualityFailure(status, summary, count, summarizeSubAgentVerificationCommandSummaryEvidence("Updated src/settings.go and ran tests. Risk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true, seq: 3}}, 2))
+	if status != codingSubAgentQualityFailed || count != 1 || !strings.Contains(summary, "verification command not referenced") {
+		t.Fatalf("missing verification command summary should become quality failure, got (%q, %q, %d)", status, summary, count)
+	}
+}
+
 func TestSummarizeSubAgentClaimedVerificationEvidence(t *testing.T) {
 	warning := summarizeSubAgentClaimedVerificationEvidence("Verification: `go test ./gui` passed.", []CodingSubAgentCommandResult{
 		{Command: "go test ./gui", Succeeded: true},
@@ -3701,7 +3983,7 @@ func TestSummarizeSubAgentClaimedVerificationEvidence(t *testing.T) {
 	failure := summarizeSubAgentClaimedVerificationFailureEvidence("Verification: go test ./gui passed.", []CodingSubAgentCommandResult{
 		{Command: "go test ./gui", Succeeded: false, Summary: "FAIL"},
 	})
-	if failure == "" || !strings.Contains(failure, "claimed verification command passed but audit log recorded failure") || !strings.Contains(failure, "go test ./gui") {
+	if failure == "" || !strings.Contains(failure, "claimed verification command passed but audit log recorded failure or empty success") || !strings.Contains(failure, "go test ./gui") {
 		t.Fatalf("structured command claimed passed but failed in audit log should fail quality, got %q", failure)
 	}
 
@@ -3739,7 +4021,7 @@ func TestSummarizeSubAgentClaimedVerificationEvidence(t *testing.T) {
 	failure = summarizeSubAgentClaimedVerificationFailureEvidence("验证命令：go test ./gui；通过。", []CodingSubAgentCommandResult{
 		{Command: "go test ./gui", Succeeded: false, Summary: "FAIL"},
 	})
-	if failure == "" || !strings.Contains(failure, "claimed verification command passed but audit log recorded failure") || !strings.Contains(failure, "go test ./gui") {
+	if failure == "" || !strings.Contains(failure, "claimed verification command passed but audit log recorded failure or empty success") || !strings.Contains(failure, "go test ./gui") {
 		t.Fatalf("Chinese structured command claimed passed but failed in audit log should fail quality, got %q", failure)
 	}
 
@@ -3752,8 +4034,15 @@ func TestSummarizeSubAgentClaimedVerificationEvidence(t *testing.T) {
 	failure = summarizeSubAgentClaimedVerificationFailureEvidence("Verification: `go test ./gui` passed.", []CodingSubAgentCommandResult{
 		{Command: "go test ./gui", Succeeded: false, Summary: "FAIL"},
 	})
-	if failure == "" || !strings.Contains(failure, "claimed verification command passed but audit log recorded failure") || !strings.Contains(failure, "go test ./gui") {
+	if failure == "" || !strings.Contains(failure, "claimed verification command passed but audit log recorded failure or empty success") || !strings.Contains(failure, "go test ./gui") {
 		t.Fatalf("inline command claimed passed but failed in audit log should fail quality, got %q", failure)
+	}
+
+	failure = summarizeSubAgentClaimedVerificationFailureEvidence("Verification: `pytest tests` passed.", []CodingSubAgentCommandResult{
+		{Command: "pytest tests", Succeeded: true, Summary: "no tests collected in 0.01s"},
+	})
+	if failure == "" || !strings.Contains(failure, "empty success") || !strings.Contains(failure, "pytest tests") {
+		t.Fatalf("claimed passed command with empty-success audit output should fail quality, got %q", failure)
 	}
 
 	warning = summarizeSubAgentClaimedVerificationEvidence("I would run go test ./gui if more time were available.", nil)
@@ -4117,11 +4406,32 @@ func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T)
 		t.Fatalf("empty successful npm test output should fail quality audit, got (%q, %q)", status, summary)
 	}
 
+	emptySuccessfulOutputs := []CodingSubAgentCommandResult{
+		{Command: "go test ./pkg/empty", Succeeded: true, Summary: "?   \tgithub.com/RapidAI/CodeClaw/pkg/empty\t[no test files]"},
+		{Command: "node --test", Succeeded: true, Summary: "# tests 0\n# suites 0\n# pass 0\n# fail 0"},
+		{Command: "rspec", Succeeded: true, Summary: "0 examples, 0 failures"},
+		{Command: "vendor/bin/phpunit", Succeeded: true, Summary: "No tests executed!"},
+		{Command: "gradle test", Succeeded: true, Summary: "0 tests completed, 0 failed"},
+	}
+	for _, command := range emptySuccessfulOutputs {
+		status, summary = summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{command}, 0)
+		if status != codingSubAgentQualityFailed || !strings.Contains(summary, "未实际执行测试或检查") || !strings.Contains(summary, "`"+command.Command+"`") {
+			t.Fatalf("empty successful output should fail quality audit for %q, got (%q, %q)", command.Command, status, summary)
+		}
+	}
+
 	status, summary = summarizeSubAgentVerification([]string{"main.py"}, []CodingSubAgentCommandResult{
 		{Command: "pytest tests", Succeeded: true, Summary: "1 passed in 0.05s"},
 	}, 0)
 	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "`pytest tests`") {
 		t.Fatalf("normal successful pytest output should pass, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeSubAgentVerification([]string{"spec/app_spec.rb"}, []CodingSubAgentCommandResult{
+		{Command: "rspec", Succeeded: true, Summary: "10 examples, 0 failures"},
+	}, 0)
+	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "`rspec`") {
+		t.Fatalf("normal successful rspec output should pass, got (%q, %q)", status, summary)
 	}
 }
 
@@ -4205,6 +4515,12 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"npm run test -- --watch=false",
 		"npm run test:unit",
 		`npm run "test:unit"`,
+		"npm run unit",
+		"npm run e2e",
+		"npm run integration",
+		"npm run verify",
+		"npm run validate",
+		"npm run ci",
 		"npm run build:prod",
 		"npm run type-check",
 		"pnpm test",
@@ -4213,12 +4529,15 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"pnpm -F web exec vitest run",
 		"pnpm lint",
 		"pnpm run test:e2e",
+		"pnpm run verify:all",
 		"yarn test",
 		"yarn --cwd web test",
 		"yarn workspace web test",
+		"yarn workspace web verify",
 		"yarn workspaces foreach -A run test",
 		"yarn workspaces foreach --all --topological run build",
 		"yarn workspaces foreach --from web run lint",
+		"yarn workspaces foreach --from web run ci",
 		"yarn build",
 		"yarn test:unit",
 		"node --test",
@@ -4314,10 +4633,14 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"make -w test",
 		"mingw32-make check",
 		"just test",
+		"just verify",
+		"just ci",
 		"just --justfile recipes.just lint",
 		"just -d gui typecheck",
 		"just --set profile ci test",
 		"task test",
+		"task e2e",
+		"go-task integration",
 		"go-task --taskfile Taskfile.yml build",
 		"task -d gui lint",
 		"task -s test",

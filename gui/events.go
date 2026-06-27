@@ -15,16 +15,14 @@ package main
 // error (unused constant) rather than a silent runtime bug.
 
 const (
-	// EventProjectIndexChanged is emitted when the ProjectIndex is updated
-	// (new project record or activity timestamp change). Frontend uses this
-	// to refresh the "最近任务" sidebar.
-	// Frontend listener: App.tsx useEffect → refreshRecentProjects()
+	// EventProjectIndexChanged is emitted when the ProjectIndex is updated.
+	// Frontend listener: App.tsx useEffect -> refreshTasks().
 	EventProjectIndexChanged = "project-index:changed"
 
 	// EventTasksChanged is a companion event to EventProjectIndexChanged,
 	// emitted together for backward compatibility with components that only
 	// listen to one of the two.
-	// Frontend listener: App.tsx useEffect → refreshRecentProjects()
+	// Frontend listener: App.tsx useEffect -> refreshTasks().
 	EventTasksChanged = "tasks:changed"
 
 	// EventProjectTaskClosed is emitted when a task is removed or archived and

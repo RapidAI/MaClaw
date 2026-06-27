@@ -1161,6 +1161,10 @@ export function CreateProjectTabSession(arg1:string, arg2:string):Promise<string
 
 export function CloseProjectTabSession(arg1:string):Promise<void>;
 
+export function SaveProjectTabConversation(arg1:string, arg2:Array<any>):Promise<void>;
+
+export function LoadProjectTabConversation(arg1:string):Promise<Array<any>>;
+
 export function SendMessageForTab(arg1:string, arg2:string, arg3:string):Promise<any>;
 
 

@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -181,6 +183,9 @@ func buildWorkflowV2State(store v2.WorkflowStore) *workflowV2State {
 	v2.RegisterBuiltinTemplates(registry)
 	machine := v2.NewStateMachine(store, registry)
 	router := v2.NewWorkflowRouter(machine, registry, nil) // no LLM confirm for now
+	// Populate the template-keyword-driven explicit hint registry so that
+	// inferExplicitWorkflowHint works for ALL templates, not just PPT.
+	SetExplicitHintTemplates(registry)
 	return &workflowV2State{
 		router:   router,
 		machine:  machine,
@@ -196,6 +201,9 @@ func buildWorkflowV2State(store v2.WorkflowStore) *workflowV2State {
 //
 // Only workflow-candidate labels need mapping here. Non-workflow labels (ssh,
 // search, etc.) are passed through for veto purposes and don't need mapping.
+//
+// TODO: When more mappings accumulate, move to IntentDefinition.MappedWorkflowType
+// field in corelib/intent/definitions.go so it's part of the unified intent data.
 func intentLabelToTemplateType(label string) string {
 	switch label {
 	case "office":
@@ -205,31 +213,239 @@ func intentLabelToTemplateType(label string) string {
 	}
 }
 
-var explicitPresentationObjectSignals = []string{"ppt", "pptx", "powerpoint", "幻灯片", "演示文稿", "slide deck", "slides"}
+// workflowHintExclusionPatterns are verbs/patterns that indicate the user is
+// operating on an EXISTING artifact (open, read, send, delete) rather than
+// requesting to CREATE a new one. This is a closed set — there are only a few
+// ways to reference an existing file. In contrast, creation patterns are open-ended
+// ("做"/"搞"/"弄"/"帮我来个"/...) and cannot be enumerated.
+//
+// Design principle: exclude the finite set of non-creation actions rather than
+// enumerate the infinite set of creation actions.
+var workflowHintExclusionPatterns = []string{
+	// File operations — user is acting on an existing artifact
+	"打开", "读取", "查看", "看看", "阅读", "浏览", "预览",
+	"发送", "发给", "转发", "分享",
+	"删除", "移除", "清理",
+	"截图", "截屏",
+	// Modification — ambiguous (could be "modify existing" vs "create new"),
+	// conservatively excluded to avoid false-positive workflow triggers
+	"修改", "编辑", "更新",
+	// Content processing — when combined with a template keyword (e.g. "总结这个PPT"),
+	// usually means operating on existing material, not creating from scratch.
+	// Ambiguous cases (e.g. "做竞品分析总结") fall through to UIC for accurate classification.
+	"总结", "翻译", "转换",
+	// English equivalents
+	"open", "read", "view", "preview", "send", "forward", "delete", "remove",
+	"edit", "modify", "update", "summarize", "translate", "convert", "screenshot",
+}
 
-var explicitPresentationActionSignals = []string{"生成", "制作", "设计", "创建", "做一份", "做个", "写一份", "准备", "build", "create", "make", "design", "prepare", "generate"}
-
+// inferExplicitWorkflowHint detects explicit template signals from user text by
+// matching template Keywords. This is a fast pre-router heuristic (~0ms) that
+// provides a high-confidence hint before the full UIC classification (~7s).
+//
+// Logic: if the message contains a strong template keyword AND does NOT contain
+// an exclusion pattern (file operations, read/send/delete), return that template
+// type as hint. The exclusion set is finite and stable; the creation intent set
+// is open and need not be enumerated.
+//
+// Returns the template type string if matched, empty otherwise.
 func inferExplicitWorkflowHint(text string) string {
 	lower := strings.ToLower(strings.TrimSpace(text))
-	if lower == "" {
+	if lower == "" || utf8.RuneCountInString(lower) < 3 {
 		return ""
 	}
-	hasPresentationObject := false
-	for _, token := range explicitPresentationObjectSignals {
-		if strings.Contains(lower, token) {
-			hasPresentationObject = true
-			break
+	// Step 1: Match a strong template keyword.
+	reg := getExplicitHintRegistry()
+	if reg == nil {
+		return ""
+	}
+	matched := reg.matchStrongKeyword(lower)
+	if matched == "" {
+		return ""
+	}
+	// Step 2: Check exclusion — if the message looks like a file operation on
+	// an existing artifact rather than a creation request, don't hint.
+	for _, excl := range workflowHintExclusionPatterns {
+		if strings.Contains(lower, excl) {
+			return ""
 		}
 	}
-	if !hasPresentationObject {
-		return ""
+	return matched
+}
+
+// explicitHintRegistry caches strong keywords from templates for fast matching.
+// The entries slice is populated once at init time and never modified after,
+// so no mutex is needed for reads.
+type explicitHintRegistry struct {
+	entries []explicitHintEntry
+}
+
+type explicitHintEntry struct {
+	keyword           string // lowercased
+	workflowType      string
+	needsWordBoundary bool // true for short ASCII keywords that would substring-match common words
+}
+
+var globalExplicitHintRegistry *explicitHintRegistry
+var globalExplicitHintRegistryOnce sync.Once
+
+// getExplicitHintRegistry returns the hint registry, lazy-initializing it from
+// builtin templates if SetExplicitHintTemplates was not called (e.g. in tests).
+func getExplicitHintRegistry() *explicitHintRegistry {
+	globalExplicitHintRegistryOnce.Do(func() {
+		if globalExplicitHintRegistry == nil {
+			// Lazy init from builtin templates for test and fallback scenarios.
+			registry := v2.NewTemplateRegistry()
+			v2.RegisterBuiltinTemplates(registry)
+			SetExplicitHintTemplates(registry)
+		}
+	})
+	return globalExplicitHintRegistry
+}
+
+// SetExplicitHintTemplates populates the hint registry from template keywords.
+// Called once during initialization when the TemplateRegistry is ready.
+func SetExplicitHintTemplates(templates *v2.TemplateRegistry) {
+	if templates == nil {
+		return
 	}
-	for _, action := range explicitPresentationActionSignals {
-		if strings.Contains(lower, action) {
-			return "presentation_design"
+	reg := &explicitHintRegistry{}
+	for _, typ := range templates.AllTypes() {
+		tmpl := templates.Get(typ)
+		if tmpl == nil {
+			continue
+		}
+		// SemanticOnly templates are explicitly designed to NOT be activated
+		// via keyword matching — they require IUM LLM classification.
+		if tmpl.SemanticOnly {
+			continue
+		}
+		for _, kw := range tmpl.Keywords {
+			kwLower := strings.ToLower(strings.TrimSpace(kw))
+			if kwLower == "" {
+				continue
+			}
+			// Only include "strong" keywords: >=3 CJK chars, or uppercase
+			// abbreviations (PPT, SWOT, PRD), or multi-word phrases.
+			if isStrongExplicitKeyword(kwLower) {
+				reg.entries = append(reg.entries, explicitHintEntry{
+					keyword:           kwLower,
+					workflowType:      tmpl.Type,
+					needsWordBoundary: needsWordBoundaryMatch(kwLower),
+				})
+			}
+		}
+	}
+	globalExplicitHintRegistry = reg
+}
+
+func isStrongExplicitKeyword(kw string) bool {
+	// Uppercase abbreviations (original case was lowered, check if short and ASCII)
+	if len(kw) >= 2 && len(kw) <= 6 && isASCIIAlpha(kw) {
+		return true // PPT, SWOT, PRD etc
+	}
+	// CJK-heavy strings (>=3 runes that are CJK)
+	cjkCount := 0
+	for _, r := range kw {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			cjkCount++
+		}
+	}
+	if cjkCount >= 3 {
+		return true // 幻灯片, 演示文稿, 商业计划, 竞品分析, etc.
+	}
+	// Multi-word English phrases
+	if strings.Contains(kw, " ") && len(kw) >= 8 {
+		return true // "slide deck", "business plan", etc.
+	}
+	return false
+}
+
+func isASCIIAlpha(s string) bool {
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+			return false
+		}
+	}
+	return true
+}
+
+// needsWordBoundaryMatch returns true for short ASCII keywords that could
+// accidentally substring-match common English words (e.g. "dd" in "add",
+// "bp" in "subproject"). CJK keywords don't need this because CJK characters
+// are inherently word-boundary-separated in text.
+func needsWordBoundaryMatch(kw string) bool {
+	// Only pure-ASCII short keywords need word boundary.
+	// CJK keywords (幻灯片, 演示文稿) don't — they're self-delimiting.
+	if !isASCIIAlpha(kw) {
+		return false
+	}
+	return len(kw) <= 4 // "dd"(2), "bp"(2), "ppt"(3), "prd"(3), "qa"(2), "swot"(4)
+}
+
+func (r *explicitHintRegistry) matchStrongKeyword(lowerText string) string {
+	for _, entry := range r.entries {
+		if entry.needsWordBoundary {
+			// Short ASCII keywords require word-boundary matching to avoid
+			// false positives like "dd" matching "add" or "bp" matching "subproject".
+			if containsWordBoundary(lowerText, entry.keyword) {
+				return entry.workflowType
+			}
+		} else {
+			if strings.Contains(lowerText, entry.keyword) {
+				return entry.workflowType
+			}
 		}
 	}
 	return ""
+}
+
+// containsWordBoundary checks if keyword appears in text at a word boundary.
+// A word boundary is: start/end of string, space, punctuation, or CJK character.
+// The keyword is guaranteed to be pure ASCII (from isASCIIAlpha + needsWordBoundary),
+// so strings.Index byte positions correctly delimit the keyword. We only need
+// proper UTF-8 decoding for the boundary characters adjacent to the keyword.
+func containsWordBoundary(text, keyword string) bool {
+	idx := 0
+	for {
+		pos := strings.Index(text[idx:], keyword)
+		if pos < 0 {
+			return false
+		}
+		absPos := idx + pos
+		endPos := absPos + len(keyword)
+
+		// Check left boundary: decode the rune ending at absPos.
+		leftOK := absPos == 0
+		if !leftOK {
+			r, _ := utf8.DecodeLastRuneInString(text[:absPos])
+			leftOK = r != utf8.RuneError && isWordBoundaryChar(r)
+		}
+
+		// Check right boundary: decode the rune starting at endPos.
+		rightOK := endPos >= len(text)
+		if !rightOK {
+			r, _ := utf8.DecodeRuneInString(text[endPos:])
+			rightOK = isWordBoundaryChar(r)
+		}
+
+		if leftOK && rightOK {
+			return true
+		}
+		idx = absPos + 1
+		if idx >= len(text) {
+			return false
+		}
+	}
+}
+
+func isWordBoundaryChar(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == ',' || r == '.' ||
+		r == '!' || r == '?' || r == ';' || r == ':' || r == '"' || r == '\'' ||
+		r == '(' || r == ')' || r == '[' || r == ']' || r == '{' || r == '}' ||
+		r == '/' || r == '-' || r == '_' ||
+		(r >= 0x4E00 && r <= 0x9FFF) || // CJK char is always a boundary
+		(r >= 0x3000 && r <= 0x303F) // CJK punctuation
 }
 
 // routeWithWorkflowV2 is the V2 replacement for routeWorkflowIMMessage.

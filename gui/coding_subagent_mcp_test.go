@@ -156,6 +156,11 @@ func TestExecuteCallMCPTool_MissingParams(t *testing.T) {
 	if result.Outcome != codingToolOutcomeFailed {
 		t.Errorf("expected failed for missing tool_name, got %v", result.Outcome)
 	}
+	if !strings.Contains(result.Text, `missing required argument "tool_name"`) ||
+		!strings.Contains(result.Text, `Example valid arguments:`) ||
+		!strings.Contains(result.Text, `{"server_id":"server","tool_name":"tool","arguments":{}}`) {
+		t.Fatalf("missing tool_name should use standard argument guidance, got %q", result.Text)
+	}
 }
 
 func TestMCPRequiredArgsAllowTopLevelCompatibility(t *testing.T) {
@@ -196,6 +201,28 @@ func TestMCPRequiredArgsCreateArgumentsFromTopLevelCompatibility(t *testing.T) {
 		t.Fatalf("expected arguments.url to be normalized from top-level url, got %#v", args["arguments"])
 	}
 }
+
+func TestMCPRequiredArgsMissingIncludesTargetSpecificExample(t *testing.T) {
+	tool := codingSubAgentMCPToolMatch{ServerID: "browser", ServerName: "Browser", ToolName: "navigate", RequiredArgs: []string{"url", "timeout"}}
+	args := map[string]interface{}{"server_id": "browser", "tool_name": "navigate", "arguments": map[string]interface{}{"timeout": float64(5)}}
+
+	result, rejected := rejectMissingCodingSubAgentMCPRequiredArguments(tool, args)
+	if !rejected {
+		t.Fatal("expected missing MCP required arg to be rejected")
+	}
+	if result.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("outcome = %s, want failed", result.Outcome)
+	}
+	if !strings.Contains(result.Text, `arguments.url`) ||
+		!strings.Contains(result.Text, `Example valid arguments:`) ||
+		!strings.Contains(result.Text, `"server_id":"browser"`) ||
+		!strings.Contains(result.Text, `"tool_name":"navigate"`) ||
+		!strings.Contains(result.Text, `"url":"<url>"`) ||
+		!strings.Contains(result.Text, `"timeout":"<timeout>"`) {
+		t.Fatalf("missing MCP arg should include target-specific arguments example, got %q", result.Text)
+	}
+}
+
 func TestExtractMCPToolRequiredArgs(t *testing.T) {
 	// Normal case: []interface{} of strings
 	schema := map[string]interface{}{

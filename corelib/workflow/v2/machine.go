@@ -443,7 +443,7 @@ func (m *StateMachine) RecordOutput(userID, output string) error {
 	if phase == nil {
 		return fmt.Errorf("no active phase")
 	}
-	sanitizedOutput := SanitizePhaseOutput(phase.ID, output)
+	sanitizedOutput := SanitizePhaseOutputWithKind(phase.ID, phase.Kind, output)
 	if err := validatePhaseOutputForCompletion(state.Type, phase.ID, sanitizedOutput); err != nil {
 		return err
 	}
@@ -649,11 +649,22 @@ func containsHTTPURL(text string) bool {
 }
 
 func SanitizePhaseOutput(phaseID, output string) string {
+	return SanitizePhaseOutputWithKind(phaseID, PhaseKindUnknown, output)
+}
+
+// SanitizePhaseOutputWithKind sanitizes phase output using PhaseKind semantics.
+// When kind is known (non-Unknown), it drives the decision; otherwise falls
+// back to phaseID string matching for backward compatibility.
+func SanitizePhaseOutputWithKind(phaseID string, kind PhaseKind, output string) string {
 	output = strings.TrimSpace(output)
 	if output == "" {
 		return ""
 	}
 	if calls, malformed := llm.ParseContentToolCallsDetailed(output); len(calls) > 0 {
+		// Kind-based decision takes priority over phaseID string matching.
+		if kind != PhaseKindUnknown && !ShouldExtractDocFromToolCalls(kind) {
+			return llm.StripAllExtra(output)
+		}
 		if extracted := SanitizePhaseOutputFromToolCalls(phaseID, calls); extracted != "" {
 			return llm.StripAllExtra(extracted)
 		}
@@ -665,7 +676,25 @@ func SanitizePhaseOutput(phaseID, output string) string {
 	return llm.StripAllExtra(output)
 }
 
+// ShouldExtractDocFromToolCalls returns true if a phase's tool calls may
+// contain document content worth capturing (e.g. write_file producing a
+// requirements .md). Execution/artifact/review phases use tool calls for
+// actions (code generation, file generation, testing), not document authoring.
+func ShouldExtractDocFromToolCalls(kind PhaseKind) bool {
+	switch kind {
+	case PhaseKindDocumentPlanning, PhaseKindCodePlanning, PhaseKindUnknown:
+		return true
+	default:
+		// PhaseKindArtifactGeneration, PhaseKindExecution, PhaseKindReview,
+		// PhaseKindOpsExecution, PhaseKindOpsRiskPolicy — tool calls are actions.
+		return false
+	}
+}
+
 func SanitizePhaseOutputFromToolCalls(phaseID string, calls []llm.ToolCall) string {
+	// Legacy hardcoded list kept as fallback for phases that don't yet have
+	// Kind metadata propagated through the RecordOutput call path.
+	// Once all callers pass Kind, this switch can be removed.
 	switch strings.ToLower(strings.TrimSpace(phaseID)) {
 	case "implementation", "verification", "ppt_generation", "test_execution", "defect_report":
 		return ""

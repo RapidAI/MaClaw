@@ -104,6 +104,12 @@ function testAppDefinitionFingerprint(app: any): string {
         ...(manifest.datasrv ? { datasrv: manifest.datasrv } : {}),
         ...(manifest.mis ? { mis: manifest.mis } : {}),
         ...(manifest.skill ? { skill: manifest.skill } : {}),
+        ...(manifest.appSkill ? { appSkill: manifest.appSkill } : {}),
+        ...(manifest.dependencies ? { dependencies: manifest.dependencies } : {}),
+        ...(manifest.ui ? { ui: manifest.ui } : {}),
+        ...(manifest.resultContract ? { resultContract: manifest.resultContract } : {}),
+        ...(manifest.testProtocol ? { testProtocol: manifest.testProtocol } : {}),
+        ...(manifest.workflow ? { workflow: manifest.workflow } : {}),
     } : undefined;
     return textHash(stableStringify({
         name: app.name,
@@ -115,6 +121,89 @@ function testAppDefinitionFingerprint(app: any): string {
         version: normalizeTestAppVersion(app.version),
         manifest: runtimeManifest,
     }));
+}
+
+function testToolAppResultContract(outputModes = ['docx', 'pdf']) {
+    return {
+        schema: 'maclaw.app.result.v1',
+        primary: outputModes.includes('json') || outputModes.includes('txt') ? 'content' : 'artifact',
+        types: ['content', 'document', 'artifact'],
+        outputModes,
+        approvalDecisions: undefined,
+        delivery: { inlineContent: true, artifacts: true, businessRecord: false, notifications: false },
+    };
+}
+
+function testToolAppProtocol(outputModes = ['docx', 'pdf']) {
+    const contract = testToolAppResultContract(outputModes);
+    const protocol = {
+        schema: 'maclaw.app.test_protocol.v1',
+        sampleInput: { file: 'sample.pdf', params: '' },
+        expectedOutput: { status: 'ok', primary: contract.primary },
+        requiredRoles: [],
+        requiredScopes: [],
+        riskLevel: 'low',
+    };
+    return { ...protocol, fingerprint: textHash(stableStringify(protocol)) };
+}
+
+function testProtocolWithFingerprint(protocol: any) {
+    return { ...protocol, fingerprint: textHash(stableStringify(protocol)) };
+}
+
+function normalizeTestAppForFingerprint(app: any) {
+    if (!app?.manifest) return app;
+    const manifest = { ...app.manifest };
+    if (!manifest.testProtocol && app.kind === 'enterprise_normal_app') {
+        const primary = manifest.resultContract?.primary || 'business_status';
+        manifest.testProtocol = testProtocolWithFingerprint({
+            schema: 'maclaw.app.test_protocol.v1',
+            sampleInput: { business_payload: { note: 'sample' } },
+            expectedOutput: { business_status: 'ready', primary },
+            requiredRoles: ['operator'],
+            requiredScopes: [],
+            riskLevel: 'medium',
+        });
+    }
+    if (!manifest.testProtocol && app.kind === 'enterprise_approval_app') {
+        const primary = manifest.resultContract?.primary || 'approval_result';
+        manifest.testProtocol = testProtocolWithFingerprint({
+            schema: 'maclaw.app.test_protocol.v1',
+            sampleInput: { record_ref: 'sample-record', applicant: 'current_user', business_payload: { amount: 1280 } },
+            expectedOutput: { approval_result: 'approved', primary },
+            requiredRoles: ['applicant', 'approver'],
+            requiredScopes: [],
+            riskLevel: 'medium',
+        });
+    }
+    const ui = manifest.ui ? { ...manifest.ui, layouts: { ...(manifest.ui.layouts || {}) } } : undefined;
+    if (ui && app.kind === 'enterprise_normal_app') {
+        const layout = { ...(ui.layouts.business_workspace || {}) };
+        if (!Array.isArray(layout.regions)) {
+            layout.regions = [
+                { id: 'operation_form', role: 'input', placement: layout.primaryRegion || 'left' },
+                { id: 'record_list', role: 'record_list', placement: layout.template === 'left_nav' ? 'left' : 'center' },
+                { id: 'record_detail', role: 'detail', placement: 'center' },
+                { id: 'output_panel', role: 'output', placement: layout.outputRegion || 'bottom' },
+            ];
+        }
+        ui.layouts.business_workspace = layout;
+        manifest.ui = ui;
+    }
+    if (ui && app.kind === 'enterprise_approval_app') {
+        const layout = { ...(ui.layouts.approval_workspace || {}) };
+        if (!Array.isArray(layout.regions)) {
+            layout.regions = [
+                { id: 'request_form', role: 'input', placement: layout.primaryRegion || 'left' },
+                { id: 'approval_inbox', role: 'instance_list', placement: layout.template === 'left_nav' ? 'left' : 'center' },
+                { id: 'approval_detail', role: 'detail', placement: 'center' },
+                { id: 'result_panel', role: 'output', placement: layout.outputRegion || 'bottom' },
+            ];
+        }
+        ui.layouts.approval_workspace = layout;
+        manifest.ui = ui;
+    }
+    return { ...app, manifest };
 }
 
 type SeedRunOptions = {
@@ -131,6 +220,24 @@ type SeedRunOptions = {
 };
 
 function seedSuccessfulLocalAppRun(app: any, options: SeedRunOptions = {}) {
+    const normalizedApp = normalizeTestAppForFingerprint(app);
+    const panelRaw = window.localStorage.getItem('maclaw:apps-panel:v1');
+    if (panelRaw && normalizedApp?.id) {
+        const panel = JSON.parse(panelRaw) as { customApps?: any[] };
+        if (Array.isArray(panel.customApps)) {
+            panel.customApps = panel.customApps.map((item) => item?.id === normalizedApp.id ? normalizedApp : item);
+            window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify(panel));
+        }
+    }
+    const evidenceApp = normalizedApp?.manifest?.resultContract ? {
+        ...normalizedApp,
+        manifest: {
+            ...normalizedApp.manifest,
+            resultContract: Object.prototype.hasOwnProperty.call(normalizedApp.manifest.resultContract, 'approvalDecisions')
+                ? { ...normalizedApp.manifest.resultContract, approvalDecisions: normalizedApp.manifest.resultContract.approvalDecisions }
+                : normalizedApp.manifest.resultContract,
+        },
+    } : normalizedApp;
     const artifacts = options.artifacts || [];
     const primaryArtifact = artifacts[0] || {};
     const raw = window.localStorage.getItem(runHistoryStorageKey) || '{}';
@@ -139,7 +246,7 @@ function seedSuccessfulLocalAppRun(app: any, options: SeedRunOptions = {}) {
         runID: options.runID || `run-ok-${app.id}`,
         appID: app.id,
         status: 'done',
-        definitionHash: testAppDefinitionFingerprint(app),
+        definitionHash: testAppDefinitionFingerprint(evidenceApp),
         outputMode: options.outputMode || 'pdf',
         inputSummary: options.inputSummary || 'sample.pdf',
         message: options.message || 'done',
@@ -182,7 +289,19 @@ async function createAndRunLocalToolApp(name = '合同归档') {
 function seedSuccessfulSkillAppRun(skillID = 'invoice-review', name = '发票审核') {
 
     const appID = `skill-app-${skillID}-app-tool-app`;
-    const definitionHash = textHash(stableStringify({
+    const panel = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}') as { customApps?: any[] };
+    const storedApp = (panel.customApps || []).find((item) => item.id === appID)
+        || (panel.customApps || []).find((item) => item.manifest?.skill?.id === skillID);
+    const app = storedApp ? {
+        ...storedApp,
+        manifest: {
+            ...storedApp.manifest,
+            resultContract: storedApp.manifest?.resultContract
+                ? { ...storedApp.manifest.resultContract, approvalDecisions: undefined }
+                : testToolAppResultContract(['docx', 'pdf']),
+        },
+    } : {
+        id: appID,
         name,
         description: '由应用程序工作室创建的应用入口。',
         category: '文档处理',
@@ -195,6 +314,33 @@ function seedSuccessfulSkillAppRun(skillID = 'invoice-review', name = '发票审
             privateMarker: 'x_maclaw_apps',
             entryKind: 'tool_app',
             launchMode: 'fixed_skill_ui',
+            appSkill: { id: skillID, version: '1.0.0' },
+            ui: {
+                schema: 'maclaw.app.ui.v1',
+                generated: true,
+                entry: 'tool_workspace',
+                layouts: {
+                    tool_workspace: {
+                        type: 'tool_workspace',
+                        toolbar: ['add_file', 'run', 'cancel', 'open_output'],
+                        template: 'document_workspace',
+                        density: 'comfortable',
+                        primaryRegion: 'left',
+                        outputRegion: 'right',
+                        regions: [
+                            { id: 'file_queue', role: 'input', placement: 'left' },
+                            { id: 'settings_panel', role: 'parameters', placement: 'right' },
+                            { id: 'preview_panel', role: 'preview', placement: 'center' },
+                            { id: 'output_panel', role: 'output', placement: 'right' },
+                        ],
+                        studio: {
+                            editable: true,
+                            savedInManifest: true,
+                            updatedBy: 'app_studio',
+                        },
+                    },
+                },
+            },
             skill: {
                 id: skillID,
                 appDefinitionFile: 'maclaw.app.json',
@@ -203,17 +349,27 @@ function seedSuccessfulSkillAppRun(skillID = 'invoice-review', name = '发票审
                 outputModes: ['docx', 'pdf'],
                 fields: [],
             },
+            resultContract: testToolAppResultContract(['docx', 'pdf']),
+            testProtocol: testToolAppProtocol(['docx', 'pdf']),
         },
-    }));
+    };
+    const historyAppID = app.id || appID;
+    const definitionHash = testAppDefinitionFingerprint(app);
     window.localStorage.setItem(runHistoryStorageKey, JSON.stringify({
-        [appID]: [{
+        [historyAppID]: [{
             runID: 'run-ok-1',
-            appID,
+            appID: historyAppID,
             status: 'done',
             definitionHash,
             outputMode: 'pdf',
             inputSummary: 'sample.pdf',
             message: 'done',
+            artifactID: 'artifact-sample-pdf',
+            artifactURI: 'artifact://skill-run/run-ok-1/artifact-sample-pdf',
+            artifactName: 'sample-output.pdf',
+            artifacts: [{ id: 'artifact-sample-pdf', uri: 'artifact://skill-run/run-ok-1/artifact-sample-pdf', name: 'sample-output.pdf', status: 'ready' }],
+            outputs: [{ kind: 'artifact', title: 'Sample PDF', artifact_id: 'artifact-sample-pdf', status: 'ready' }],
+            resultPayload: { status: 'ok' },
             at: new Date().toISOString(),
         }],
     }));
@@ -833,6 +989,7 @@ describe('AppsPage', () => {
     });
 
     it('shows returned review status and allows resubmission', async () => {
+        const { approvalDecisions: _approvalDecisions, ...reviewedResultContract } = testToolAppResultContract(['docx', 'pdf']);
         const reviewedApp = {
             id: 'local-app-review-returned',
             name: '审核回退应用',
@@ -850,7 +1007,32 @@ describe('AppsPage', () => {
                 privateMarker: 'x_maclaw_apps',
                 entryKind: 'tool_app',
                 launchMode: 'fixed_skill_ui',
+                appSkill: { id: 'contract-review', version: '1.0.0' },
+                ui: {
+                    schema: 'maclaw.app.ui.v1',
+                    generated: true,
+                    entry: 'tool_workspace',
+                    layouts: {
+                        tool_workspace: {
+                            type: 'tool_workspace',
+                            toolbar: ['add_file', 'run', 'cancel', 'open_output'],
+                            template: 'document_workspace',
+                            density: 'comfortable',
+                            primaryRegion: 'left',
+                            outputRegion: 'right',
+                            regions: [
+                                { id: 'file_queue', role: 'input', placement: 'left' },
+                                { id: 'settings_panel', role: 'parameters', placement: 'right' },
+                                { id: 'preview_panel', role: 'preview', placement: 'center' },
+                                { id: 'output_panel', role: 'output', placement: 'right' },
+                            ],
+                            studio: { editable: true, savedInManifest: true, updatedBy: 'app_studio' },
+                        },
+                    },
+                },
                 skill: { id: 'contract-review', inputMode: 'mixed', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [] },
+                resultContract: reviewedResultContract,
+                testProtocol: testToolAppProtocol(['docx', 'pdf']),
             },
         };
         window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
@@ -858,7 +1040,11 @@ describe('AppsPage', () => {
             customApps: [reviewedApp],
             recentUsedAtById: { [reviewedApp.id]: reviewedApp.recentUsedAt },
         }));
-        seedSuccessfulLocalAppRun(reviewedApp);
+        seedSuccessfulLocalAppRun(reviewedApp, {
+            artifacts: [{ id: 'artifact-queue-doc', uri: 'artifact://skill-run/run-ok-reviewed/artifact-queue-doc', name: 'queue-review.pdf', status: 'ready' }],
+            outputs: [{ kind: 'artifact', title: 'Queue review PDF', artifact_id: 'artifact-queue-doc', status: 'ready' }],
+            resultPayload: { status: 'ok' },
+        });
         window.localStorage.setItem('maclaw:apps-publish-submissions:v1', JSON.stringify({
             [reviewedApp.id]: {
                 id: 'local-review-returned',
@@ -1556,6 +1742,81 @@ describe('AppsPage', () => {
         expect(evidence.dependencyVerification.dependencies[0]).toEqual(expect.objectContaining({ id: 'imported-tool-skill', installed: true, health: 'ready' }));
     });
 
+    it('treats imported run evidence as stale after dynamic UI layout changes', async () => {
+        const app = {
+            id: 'datasrv-installed-stale-layout-app',
+            name: 'Installed Stale Layout App',
+            description: 'Imported evidence should expire when UI layout changes',
+            category: 'Finance',
+            kind: 'tool_app',
+            icon: 'sheet',
+            accent: '#4b6572',
+            pinned: false,
+            source: 'local',
+            version: 1,
+            importedRunEvidence: {
+                runID: 'run-imported-layout',
+                appID: 'datasrv-installed-stale-layout-app',
+                status: 'done',
+                outputMode: 'content',
+                inputSummary: 'Imported DataSrv test evidence',
+                message: 'Imported DataSrv test evidence',
+                outputs: [{ kind: 'content', title: 'Imported content', text: 'ready', status: 'ready' }],
+                resultPayload: { text: 'ready' },
+                at: '2026-06-21T11:00:00Z',
+            },
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'tool_app',
+                launchMode: 'fixed_skill_ui',
+                appSkill: { id: 'imported-tool-skill', version: '1.0.0', source: 'hub' },
+                skill: { id: 'imported-tool-skill', inputMode: 'form', outputModes: ['text'], fields: [] },
+                dependencies: { skills: [{ id: 'imported-tool-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub' }] },
+                ui: {
+                    schema: 'maclaw.app.ui.v1',
+                    entry: 'tool_workspace',
+                    layouts: {
+                        tool_workspace: {
+                            template: 'classic_split',
+                            density: 'compact',
+                            primaryRegion: 'left',
+                            outputRegion: 'right',
+                            regions: [{ id: 'input', role: 'input', placement: 'left' }, { id: 'output', role: 'output', placement: 'right' }],
+                            studio: { savedInManifest: true },
+                        },
+                    },
+                },
+                resultContract: { schema: 'maclaw.app.result.v1', primary: 'content', types: ['content'], delivery: { inlineContent: true, artifacts: false, businessRecord: false, notifications: false } },
+                testProtocol: { schema: 'maclaw.app.test_protocol.v1', requiredRuns: 1, cases: [{ id: 'smoke', name: 'Smoke', required: true, expectedOutputs: ['content'] }] },
+            },
+        };
+        (app.importedRunEvidence as any).definitionHash = testAppDefinitionFingerprint(app);
+        (app.manifest.ui.layouts.tool_workspace as any).density = 'comfortable';
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: app.kind }],
+            dependencies: [{ id: 'imported-tool-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: [app.id] }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+            has_governance_review_issue: false,
+        });
+        const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'stale-layout-evidence', submitted_at: '2026-06-21T11:05:00Z', status: 'submitted' });
+        (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
+
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Review / publish'));
+        const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Installed Stale Layout App')) as HTMLElement;
+        expect(card).toBeTruthy();
+        const submitButton = within(card).getByText('Submit for review') as HTMLButtonElement;
+        expect(submitButton.disabled).toBe(true);
+        expect(submitMaclawAppPackage).not.toHaveBeenCalled();
+    });
+
     it('keeps local channel when the app package bridge queues locally', async () => {
         const submitMaclawAppPackage = vi.fn().mockResolvedValue({
             submission_id: 'local-review-queued',
@@ -2016,7 +2277,20 @@ describe('AppsPage', () => {
         fireEvent.change(nameInput, { target: { value: '队列回写应用修正版' } });
         fireEvent.click(screen.getByText('保存'));
         await waitFor(() => expect(latestStoredCustomApp('队列回写应用修正版')).toBeTruthy());
-        seedSuccessfulLocalAppRun(latestStoredCustomApp('队列回写应用修正版'));
+        const updatedQueueApp = latestStoredCustomApp('队列回写应用修正版');
+        seedSuccessfulLocalAppRun({
+            ...updatedQueueApp,
+            manifest: {
+                ...updatedQueueApp.manifest,
+                resultContract: updatedQueueApp.manifest?.resultContract
+                    ? { ...updatedQueueApp.manifest.resultContract, approvalDecisions: undefined }
+                    : testToolAppResultContract(['docx', 'pdf']),
+            },
+        }, {
+            artifacts: [{ id: 'artifact-queue-doc-v2', uri: 'artifact://skill-run/run-ok-reviewed-v2/artifact-queue-doc-v2', name: 'queue-review-v2.pdf', status: 'ready' }],
+            outputs: [{ kind: 'artifact', title: 'Queue review PDF v2', artifact_id: 'artifact-queue-doc-v2', status: 'ready' }],
+            resultPayload: { status: 'ok' },
+        });
 
         fireEvent.click(screen.getByText('审核/发布'));
         await waitFor(() => expect(screen.getAllByText('本地已修改，需重新提交').length).toBeGreaterThan(0));
@@ -3468,24 +3742,7 @@ describe('AppsPage', () => {
         const installedAppsState = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
         const installedApp = installedAppsState.customApps.find((item: any) => item.id === 'skill-app-run-tools-run-tool');
         expect(installedApp.customIconDataUrl).toBe(customIconDataUrl);
-        const runtimeManifest = {
-            schema: installedApp.manifest.schema,
-            installUnit: installedApp.manifest.installUnit,
-            privateMarker: installedApp.manifest.privateMarker,
-            entryKind: installedApp.manifest.entryKind,
-            launchMode: installedApp.manifest.launchMode,
-            skill: installedApp.manifest.skill,
-        };
-        const expectedDefinitionHash = textHash(stableStringify({
-            name: installedApp.name,
-            description: installedApp.description,
-            category: installedApp.category,
-            kind: installedApp.kind,
-            icon: installedApp.icon,
-            customIconDataUrl: installedApp.customIconDataUrl,
-            version: installedApp.version,
-            manifest: runtimeManifest,
-        }));
+        const expectedDefinitionHash = testAppDefinitionFingerprint(installedApp);
         await waitFor(() => expect(recordMaclawAppRunEvidenceForSkillMock).toHaveBeenCalledWith('run-tools', 'skill-app-run-tools-run-tool', expectedDefinitionHash, 'run-test-1', '', expect.any(String)));
 
         unmount();
@@ -5371,7 +5628,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getByTitle('App Studio'));
         fireEvent.click(screen.getByText('Add from market'));
-        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+        fireEvent.change(screen.getByPlaceholderText(/Paste app package JSON/), {
             target: {
                 value: JSON.stringify({
                     schema: 'maclaw.app.v1',
@@ -6897,6 +7154,21 @@ describe('AppsPage', () => {
                             decision_outputs: ['approved', 'rejected', 'attention'],
                             status_mapping: { pending: 'finance_pending', approved: 'approved', rejected: 'rejected', attention: 'attention', requires_input: 'requires_input' },
                         },
+                        workflow_mapping: {
+                            schema: 'maclaw.app.workflow.v1',
+                            submit_node: 'expense_report.submit',
+                            approval_node: 'finance.director_review',
+                            result_node: 'expense_report.result_pack',
+                            attention_node: 'finance.attention_review',
+                            status_mapping: { pending: 'finance_pending', approved: 'approved', rejected: 'rejected', attention: 'attention', requires_input: 'requires_input' },
+                        },
+                        result_contract: {
+                            schema: 'maclaw.app.result.v1',
+                            primary: 'approval_result',
+                            types: ['approval_result', 'business_status', 'artifact', 'notification'],
+                            approval_decisions: ['approved', 'rejected', 'attention'],
+                            delivery: { inlineContent: true, artifacts: true, businessRecord: true, notifications: true },
+                        },
                         workspace_layout_entry: 'approval_workspace',
                         workspace_layout_template: 'dashboard',
                         workspace_layout_density: 'spacious',
@@ -6985,6 +7257,21 @@ describe('AppsPage', () => {
         expect(added.manifest.datasrv).toMatchObject({ appID: 'mis.expense', domain: 'finance', datasetID: 'finance.expense_forms', objectRole: 'expense_report', blueprintID: 'mis.expense.approval', templateID: 'finance.expenses' });
         expect(added.manifest.appSkill).toMatchObject({ id: 'expense-super-skill', version: '1.0.0' });
         expect(added.manifest.dependencies.skills.find((dep: any) => dep.id === 'expense-workflow')).toMatchObject({ version: '2.1.0', kind: 'workflow_skill' });
+        expect(added.manifest.resultContract).toMatchObject({
+            schema: 'maclaw.app.result.v1',
+            primary: 'approval_result',
+            types: ['approval_result', 'business_status', 'artifact', 'notification'],
+            approvalDecisions: ['approved', 'rejected', 'attention'],
+            delivery: { inlineContent: true, artifacts: true, businessRecord: true, notifications: true },
+        });
+        expect(added.manifest.workflow).toMatchObject({
+            schema: 'maclaw.app.workflow.v1',
+            submitNode: 'expense_report.submit',
+            approvalNode: 'finance.director_review',
+            resultNode: 'expense_report.result_pack',
+            attentionNode: 'finance.attention_review',
+            statusMapping: { pending: 'finance_pending', approved: 'approved', rejected: 'rejected', attention: 'attention', requiresInput: 'requires_input' },
+        });
         expect(added.manifest.testProtocol).toMatchObject({
             schema: 'maclaw.app.test_protocol.v1',
             sampleInput: { record_ref: 'expense-1', amount: 1280 },

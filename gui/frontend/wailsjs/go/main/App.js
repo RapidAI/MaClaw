@@ -2315,6 +2315,14 @@ export function CloseProjectTabSession(arg1) {
   return window['go']['main']['App']['CloseProjectTabSession'](arg1);
 }
 
+export function SaveProjectTabConversation(arg1, arg2) {
+  return window['go']['main']['App']['SaveProjectTabConversation'](arg1, arg2);
+}
+
+export function LoadProjectTabConversation(arg1) {
+  return window['go']['main']['App']['LoadProjectTabConversation'](arg1);
+}
+
 export function SendMessageForTab(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendMessageForTab'](arg1, arg2, arg3);
 }

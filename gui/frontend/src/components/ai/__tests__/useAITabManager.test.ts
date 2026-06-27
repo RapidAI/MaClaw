@@ -22,6 +22,8 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
     LoadProjectTabIndex: vi.fn().mockResolvedValue([]),
     CloseProjectTabSession: vi.fn().mockResolvedValue(undefined),
     CreateProjectTabSession: vi.fn().mockResolvedValue(undefined),
+    SaveProjectTabConversation: vi.fn().mockResolvedValue(undefined),
+    LoadProjectTabConversation: vi.fn().mockResolvedValue(null),
 }));
 
 // Arbitrary for generating valid project paths (non-empty strings)

@@ -1001,6 +1001,56 @@ func TestRunCurrentTaskRetryContextIncludesFailedToolEvidence(t *testing.T) {
 		t.Fatalf("retry prevOutputs missing failed tool evidence: %#v", retryPrevOutputs)
 	}
 }
+
+func TestRunCurrentTaskRetryContextOmitsResolvedFailedToolEvidence(t *testing.T) {
+	orch := NewTaskExecutionOrchestrator()
+	orch.MaxRetries = 2
+	orch.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{orchestrator: orch}
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+
+	calls := 0
+	var retryPrevOutputs []string
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		calls++
+		if calls == 1 {
+			return &CodingSubAgentResult{
+				Status: TaskExecFailed,
+				Error:  "quality gate failed",
+				CommandsRun: []CodingSubAgentCommandResult{
+					{Command: "go test ./gui", Succeeded: false, Summary: "compile failed", seq: 1},
+					{Command: "go   test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 2},
+				},
+				DynamicToolsRun: []CodingSubAgentDynamicToolResult{
+					{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: false, Summary: "MCP call failed: browser closed", seq: 1},
+					{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: true, Summary: "ok", seq: 2},
+				},
+				QualityStatus:     codingSubAgentQualityFailed,
+				QualitySummary:    "remaining risk not called out",
+				QualityIssueCount: 1,
+			}
+		}
+		retryPrevOutputs = append([]string(nil), prevOutputs...)
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "fixed after retry"}
+	}
+
+	if summary, passed := runner.RunCurrentTask(nil, nil); passed || !strings.Contains(summary, "will retry") {
+		t.Fatalf("first run should be retryable failure, passed=%v summary=%q", passed, summary)
+	}
+	if summary, passed := runner.RunCurrentTask(nil, nil); !passed || !strings.Contains(summary, "fixed after retry") {
+		t.Fatalf("second run should pass, passed=%v summary=%q", passed, summary)
+	}
+	joined := strings.Join(retryPrevOutputs, "\n")
+	if strings.Contains(joined, "failed command evidence") || strings.Contains(joined, "dynamic tool evidence") {
+		t.Fatalf("retry prevOutputs should omit resolved failed evidence, got %#v", retryPrevOutputs)
+	}
+	if !strings.Contains(joined, "quality audit evidence") || !strings.Contains(joined, "remaining risk not called out") {
+		t.Fatalf("retry prevOutputs should retain unresolved quality evidence, got %#v", retryPrevOutputs)
+	}
+}
+
 func TestRunCurrentTaskInjectsRetryFailureContext(t *testing.T) {
 	orch := NewTaskExecutionOrchestrator()
 	orch.MaxRetries = 2

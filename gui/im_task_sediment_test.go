@@ -42,7 +42,7 @@ func TestBuildSedimentTitle(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"Build a recent tasks filter with descriptive output titles", "Build a recent tasks filter with descriptive"},
+		{"Build a task management filter with descriptive output titles", "Build a task management filter with descriptive"},
 		{"short title", "short title"},
 		{"", ""},
 		{"# heading", "heading"},
@@ -55,11 +55,11 @@ func TestBuildSedimentTitle(t *testing.T) {
 }
 
 func TestBuildSedimentTitleFromConversationUsesResultForGenericRequest(t *testing.T) {
-	got := buildSedimentTitleFromConversation("review/fix/optimize", "Added output-backed recent task filtering and tests")
-	if got != "Added output-backed recent task filtering and" {
+	got := buildSedimentTitleFromConversation("review/fix/optimize", "Added output-backed task filtering and tests")
+	if got != "Added output-backed task filtering and tests" {
 		t.Fatalf("generic title = %q", got)
 	}
-	if got := buildSedimentTitleFromConversation("Improve recent task titles", "Updated tests"); got != "Improve recent task titles" {
+	if got := buildSedimentTitleFromConversation("Improve task titles", "Updated tests"); got != "Improve task titles" {
 		t.Fatalf("specific title = %q", got)
 	}
 }
@@ -155,7 +155,7 @@ func TestConversationHasTangibleOutputAcceptsToolResultRole(t *testing.T) {
 
 func TestConversationHasTangibleOutputAcceptsEditLines(t *testing.T) {
 	history := []agent.ConversationEntry{
-		{Role: "user", Content: "fix recent task filtering"},
+		{Role: "user", Content: "fix task filtering"},
 		{Role: "assistant", ToolCalls: []interface{}{map[string]interface{}{"id": "e1", "function": map[string]interface{}{"name": "edit_lines"}}}},
 		{Role: "tool_result", ToolCallID: "e1", Content: "edited gui/im_task_sediment.go", ToolOutcome: toolOutcomeSucceeded.String()},
 	}

@@ -566,10 +566,10 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 					"description": "Archive reviewed contracts",
 					"kind": "tool_app",
 					"version": "3",
-					"ui": {
-						"schema": "maclaw.app.ui.v1",
-						"entry": "tool_workspace",
-						"generated": true,
+						"ui": {
+							"schema": "maclaw.app.ui.v1",
+							"entry": "tool_workspace",
+							"generated": true,
 						"layouts": {
 							"tool_workspace": {
 								"template": "document_workspace",
@@ -582,12 +582,27 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 									{"id": "file_queue", "role": "input", "placement": "left"},
 									{"id": "output_panel", "role": "output", "placement": "right"}
 								]
+								}
 							}
-						}
-					},
-					"governance": {
-						"resultContract": {"primary": "artifact", "types": ["artifact", "content"]},
-						"workflowContract": {"schema": "maclaw.app.workflow_contract.v1", "workflowSkillId": "contract-approval", "objectRole": "contract"},
+						},
+						"binding": {
+							"appSkill": {"id": "contract-app-skill", "version": "3.0.0", "source": "hub"},
+							"dependencies": {"skills": [
+								{"id": "contract-app-skill", "version": "3.0.0", "kind": "runtime_skill", "required": true, "source": "hub"},
+								{"id": "contract-approval", "version": "1.2.0", "kind": "workflow_skill", "required": true, "source": "hub", "capabilities": ["approval.workflow"]}
+							]},
+							"workflow": {
+								"schema": "maclaw.app.workflow.v1",
+								"submitNode": "contract.submit",
+								"approvalNode": "contract.legal_review",
+								"resultNode": "contract.result",
+								"attentionNode": "contract.attention",
+								"statusMapping": {"pending": "approval_pending", "approved": "approved", "rejected": "rejected", "attention": "attention", "requiresInput": "requires_input"}
+							}
+						},
+						"governance": {
+							"resultContract": {"primary": "artifact", "types": ["artifact", "content"]},
+							"workflowContract": {"schema": "maclaw.app.workflow_contract.v1", "workflowSkillId": "contract-approval", "objectRole": "contract"},
 						"testEvidence": {
 							"runId": "run-contract",
 							"testProtocolFingerprint": "proto-contract",
@@ -653,6 +668,18 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 	if metadata["workspace_layout_primary_region"] != "file_queue" || metadata["workspace_layout_output_region"] != "output_panel" || metadata["workspace_layout_region_count"] != float64(2) {
 		t.Fatalf("workspace layout summaries=%+v", metadata)
 	}
+	appSkill := metadata["app_skill"].(map[string]any)
+	if appSkill["id"] != "contract-app-skill" || metadata["app_skill_id"] != "contract-app-skill" || metadata["app_skill_version"] != "3.0.0" {
+		t.Fatalf("app skill metadata=%+v", metadata)
+	}
+	dependencies, ok := metadata["dependencies"].([]any)
+	if !ok || len(dependencies) != 2 || metadata["skill_dependency_count"] != float64(2) || metadata["required_skill_dependency_count"] != float64(2) {
+		t.Fatalf("dependency metadata=%+v", metadata)
+	}
+	workflowIDs, ok := metadata["workflow_skill_ids"].([]any)
+	if !ok || len(workflowIDs) != 1 || workflowIDs[0] != "contract-approval" {
+		t.Fatalf("workflow skill metadata=%+v", metadata)
+	}
 	resultContract := metadata["result_contract"].(map[string]any)
 	if resultContract["primary"] != "artifact" {
 		t.Fatalf("result contract metadata=%+v", resultContract)
@@ -660,6 +687,10 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 	workflowContract := metadata["workflow_contract"].(map[string]any)
 	if workflowContract["workflowSkillId"] != "contract-approval" || workflowContract["objectRole"] != "contract" {
 		t.Fatalf("workflow contract metadata=%+v", workflowContract)
+	}
+	workflowMapping := metadata["workflow_mapping"].(map[string]any)
+	if workflowMapping["approvalNode"] != "contract.legal_review" || metadata["workflow_approval_node"] != "contract.legal_review" || metadata["workflow_result_node"] != "contract.result" {
+		t.Fatalf("workflow mapping metadata=%+v", metadata)
 	}
 	testEvidence := metadata["maclaw_app_test_evidence"].(map[string]any)
 	if testEvidence["runId"] != "run-contract" || testEvidence["testProtocolFingerprint"] != "proto-contract" {

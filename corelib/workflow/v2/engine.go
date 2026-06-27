@@ -1113,6 +1113,7 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) (string, error)
 	// Also record in V2 machine before mutating the legacy engine state. This
 	// keeps invalid phase outputs from becoming pending-confirm through the
 	// engine compatibility path.
+	var phaseKind PhaseKind
 	if e.machine != nil {
 		state := e.machine.GetActive(userID)
 		if state != nil {
@@ -1124,10 +1125,14 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) (string, error)
 				}
 				return phaseID, fmt.Errorf("workflow state mismatch: engine type=%s phase=%s, v2 type=%s phase=%s", workflowType, phaseID, state.Type, machinePhaseID)
 			}
+			phaseKind = activePhase.Kind
 		}
 	}
 
-	sanitizedContent := SanitizePhaseOutput(phaseID, content)
+	// Use Kind-aware sanitization so validation sees the same result as
+	// RecordOutput's storage path. This prevents new artifact phases from
+	// failing validation due to legacy phaseID list not covering them.
+	sanitizedContent := SanitizePhaseOutputWithKind(phaseID, phaseKind, content)
 	if err := validatePhaseOutputForCompletion(string(workflowType), phaseID, sanitizedContent); err != nil {
 		return phaseID, err
 	}

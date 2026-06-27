@@ -579,7 +579,7 @@ func (a *App) KnowledgeShareToHub(req KnowledgeHubShareRequest) (KnowledgeHubSha
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("Authorization", knowledgeShareBearerToken(token))
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := hubHTTPClient.Do(httpReq)
 	if err != nil {
 		return KnowledgeHubShareResult{}, fmt.Errorf("share knowledge to hub: %w", err)
 	}
@@ -666,16 +666,32 @@ func (a *App) KnowledgeImportHubShare(req KnowledgeHubShareImportRequest) (Knowl
 		DryRun:      req.DryRun,
 		Share:       share,
 	}
+	// Convert to canonical shared type.
+	sources := make([]knowledge.PackageSource, 0, len(pkg.Sources))
+	for _, item := range pkg.Sources {
+		sources = append(sources, knowledge.PackageSource{
+			ID:           item.ID,
+			Kind:         item.Kind,
+			URI:          item.URI,
+			CanonicalURI: item.CanonicalURI,
+			Title:        item.Title,
+			TopicHint:    item.TopicHint,
+			Labels:       item.Labels,
+			Content:      item.Content,
+		})
+	}
 	if req.DryRun {
+		// Dry-run uses the same classification logic as real import — no store needed.
+		importResult := knowledge.ImportPackageSources(ctx, nil, sources, knowledge.PackageImportOptions{
+			DryRun: true,
+		})
+		result.Imported = importResult.Imported
+		result.Skipped = importResult.Skipped
+		result.Warnings = append(result.Warnings, importResult.Warnings...)
+		// Append truncation warnings (dry-run specific — alerts user before commit).
 		for _, item := range pkg.Sources {
 			if item.Truncated {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("source %s content is truncated", firstNonEmptyKnowledgeValue(item.ID, item.Title, item.URI)))
-			}
-			if strings.TrimSpace(item.Content) != "" || strings.HasPrefix(strings.TrimSpace(item.URI), "http://") || strings.HasPrefix(strings.TrimSpace(item.URI), "https://") || strings.HasPrefix(strings.TrimSpace(item.CanonicalURI), "http://") || strings.HasPrefix(strings.TrimSpace(item.CanonicalURI), "https://") {
-				result.Imported++
-			} else {
-				result.Skipped++
-				result.Warnings = append(result.Warnings, fmt.Sprintf("%s source %s is metadata-only", strings.TrimSpace(item.Kind), firstNonEmptyKnowledgeValue(item.ID, item.Title, item.URI)))
 			}
 		}
 		return result, nil
@@ -685,32 +701,12 @@ func (a *App) KnowledgeImportHubShare(req KnowledgeHubShareImportRequest) (Knowl
 		return result, err
 	}
 	defer store.Close()
-	for _, item := range pkg.Sources {
-		if item.Truncated {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("source %s content is truncated", firstNonEmptyKnowledgeValue(item.ID, item.Title, item.URI)))
-		}
-		content := strings.TrimSpace(item.Content)
-		uri := firstNonEmptyKnowledgeValue(item.CanonicalURI, item.URI)
-		switch {
-		case content != "":
-			if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: content, Title: item.Title, TopicHint: item.TopicHint, Labels: item.Labels, SaveScope: knowledge.SaveScopePersonal}); err != nil {
-				result.Skipped++
-				result.Warnings = append(result.Warnings, fmt.Sprintf("text source %s skipped: %v", firstNonEmptyKnowledgeValue(item.ID, item.Title), err))
-				continue
-			}
-			result.Imported++
-		case strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://"):
-			if _, err := store.SaveURL(ctx, knowledge.URLSaveRequest{URL: uri, TopicHint: item.TopicHint, Labels: item.Labels, SaveScope: knowledge.SaveScopePersonal}); err != nil {
-				result.Skipped++
-				result.Warnings = append(result.Warnings, fmt.Sprintf("url source %s skipped: %v", uri, err))
-				continue
-			}
-			result.Imported++
-		default:
-			result.Skipped++
-			result.Warnings = append(result.Warnings, fmt.Sprintf("%s source %s is metadata-only", strings.TrimSpace(item.Kind), firstNonEmptyKnowledgeValue(item.ID, item.Title, uri)))
-		}
-	}
+	importResult := knowledge.ImportPackageSources(ctx, store, sources, knowledge.PackageImportOptions{
+		SaveScope: knowledge.SaveScopePersonal,
+	})
+	result.Imported = importResult.Imported
+	result.Skipped = importResult.Skipped
+	result.Warnings = append(result.Warnings, importResult.Warnings...)
 	return result, nil
 }
 
@@ -1175,7 +1171,7 @@ func fetchGUIKnowledgeShareJSON(ctx context.Context, apiURL, authorization strin
 	if strings.TrimSpace(authorization) != "" {
 		req.Header.Set("Authorization", authorization)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := hubHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch knowledge share: %w", err)
 	}
@@ -1204,7 +1200,7 @@ func fetchGUIKnowledgePackage(ctx context.Context, packageURL, authorization str
 	if strings.TrimSpace(authorization) != "" {
 		req.Header.Set("Authorization", authorization)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := hubHTTPClient.Do(req)
 	if err != nil {
 		return pkg, fmt.Errorf("fetch knowledge package: %w", err)
 	}

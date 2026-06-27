@@ -212,7 +212,7 @@ func TestCreateRecentTaskAddsSearchableRecentTask(t *testing.T) {
 		t.Fatalf("EntryCount = %d, want 1", created.EntryCount)
 	}
 	if !created.HasOutput {
-		t.Fatalf("HasOutput = false, want true for manual recent task")
+		t.Fatalf("HasOutput = false, want true for manual task")
 	}
 	taskFile := filepath.Join(created.ProjectPath, "task.md")
 	content, err := os.ReadFile(taskFile)
@@ -252,8 +252,8 @@ func TestSearchProjectsFiltersNonOutputRecords(t *testing.T) {
 		t.Fatalf("Save non-output: %v", err)
 	}
 	if err := app.memoryStore.Save(memory.Entry{
-		Title:      "Improve Recent Tasks Filtering",
-		Content:    "Task: recent tasks\nResult: Added has_output filtering",
+		Title:      "Improve Task Management Filtering",
+		Content:    "Task: task management\nResult: Added has_output filtering",
 		Category:   memory.CategoryProjectKnowledge,
 		SourceType: "task_sediment",
 		Tags:       []string{"task_sediment", "tangible_output", "output_tool:edit_file", filepath.Join(app.GetDataDir(), "tasks", "output-task")},
@@ -267,7 +267,7 @@ func TestSearchProjectsFiltersNonOutputRecords(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("SearchProjects returned %d records, want 1: %+v", len(results), results)
 	}
-	if results[0].Name != "Improve Recent Tasks Filtering" || !results[0].HasOutput {
+	if results[0].Name != "Improve Task Management Filtering" || !results[0].HasOutput {
 		t.Fatalf("result = %+v, want output-backed task", results[0])
 	}
 }
@@ -290,7 +290,7 @@ func TestListTasksOnlyShowsExplicitTaskManagementRecords(t *testing.T) {
 	}
 
 	created := app.CreateTask("Explicit created task", "")
-	saved := app.createRecentTaskRecord("Explicit saved task", "# Explicit saved task\n", []string{taskManagementTag, taskUserSavedTag}, true)
+	saved := app.createTaskRecord("Explicit saved task", "# Explicit saved task\n", []string{taskManagementTag, taskUserSavedTag}, true)
 	forked := app.ForkRecentTask(created.ProjectPath)
 	if created.ProjectPath == "" || saved.ProjectPath == "" || forked.ProjectPath == "" {
 		t.Fatalf("setup task paths created=%q saved=%q forked=%q", created.ProjectPath, saved.ProjectPath, forked.ProjectPath)
@@ -315,8 +315,8 @@ func TestListTasksOnlyShowsExplicitTaskManagementRecords(t *testing.T) {
 func TestCreateRecentTaskUsesTaskNamePreview(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 
-	created := app.CreateRecentTask("Draft recent task filtering implementation")
-	if created.Name != "Draft recent task filtering implementation" {
+	created := app.CreateRecentTask("Draft task management filtering implementation")
+	if created.Name != "Draft task management filtering implementation" {
 		t.Fatalf("Name = %q, want task name", created.Name)
 	}
 	if created.Preview == "Manual task placeholder." {
@@ -450,7 +450,7 @@ func TestForkRecentTaskCreatesIndependentTaskPath(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 
 	workingDir := filepath.Join(t.TempDir(), "worktree")
-	source := app.CreateRecentTaskWithWorkingDir("Draft recent task filtering implementation", workingDir)
+	source := app.CreateRecentTaskWithWorkingDir("Draft task management filtering implementation", workingDir)
 	forked := app.ForkRecentTask(source.ProjectPath)
 	if forked.ProjectPath == "" || forked.ProjectPath == source.ProjectPath {
 		t.Fatalf("ForkRecentTask ProjectPath = %q, source = %q", forked.ProjectPath, source.ProjectPath)
@@ -468,7 +468,7 @@ func TestForkRecentTaskCreatesIndependentTaskPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(fork task.md): %v", err)
 	}
-	if !strings.Contains(string(content), "Forked from recent task") || !strings.Contains(string(content), source.ProjectPath) {
+	if !strings.Contains(string(content), "Opened from task management.") || !strings.Contains(string(content), source.ProjectPath) {
 		t.Fatalf("fork task content = %q, want source metadata", content)
 	}
 	if !strings.Contains(string(content), "Working directory: "+filepath.Clean(workingDir)) {
@@ -476,9 +476,9 @@ func TestForkRecentTaskCreatesIndependentTaskPath(t *testing.T) {
 	}
 	recent := app.SearchProjects("", 10)
 	if len(recent) != 1 || !searchResultsContainProjectPath(recent, forked.ProjectPath) {
-		t.Fatalf("recent tasks after fork = %+v, want only independent fork", recent)
+		t.Fatalf("task management after fork = %+v, want only independent fork", recent)
 	}
-	search := app.SearchProjects("Draft recent task", 10)
+	search := app.SearchProjects("Draft task management", 10)
 	if len(search) != 1 || !searchResultsContainProjectPath(search, forked.ProjectPath) {
 		t.Fatalf("search after fork = %+v, want only independent fork", search)
 	}
@@ -487,7 +487,7 @@ func TestForkRecentTaskCreatesIndependentTaskPath(t *testing.T) {
 func TestForkRecentTaskRepeatedOpenReusesIndependentTask(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 
-	source := app.CreateRecentTask("Draft recent task filtering implementation")
+	source := app.CreateRecentTask("Draft task management filtering implementation")
 	forked := app.ForkRecentTask(source.ProjectPath)
 	if forked.ProjectPath == "" || forked.ProjectPath == source.ProjectPath {
 		t.Fatalf("ForkRecentTask ProjectPath = %q, source = %q", forked.ProjectPath, source.ProjectPath)
@@ -504,9 +504,9 @@ func TestForkRecentTaskRepeatedOpenReusesIndependentTask(t *testing.T) {
 	if child.ProjectPath != forked.ProjectPath {
 		t.Fatalf("child ForkRecentTask path = %q, want same existing fork %q", child.ProjectPath, forked.ProjectPath)
 	}
-	recent := app.SearchProjects("Draft recent task", 10)
+	recent := app.SearchProjects("Draft task management", 10)
 	if len(recent) != 1 || !searchResultsContainProjectPath(recent, forked.ProjectPath) {
-		t.Fatalf("recent tasks after repeated opens = %+v, want one independent fork", recent)
+		t.Fatalf("task management after repeated opens = %+v, want one independent fork", recent)
 	}
 }
 
@@ -624,9 +624,9 @@ func TestNonForkSourceTagDoesNotBorrowWorkflowState(t *testing.T) {
 		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
 	}
 
-	other := app.createRecentTaskRecord("Ordinary task with source tag", "ordinary output", []string{"source:" + source.ProjectPath}, false)
+	other := app.createTaskRecord("Ordinary task with source tag", "ordinary output", []string{"source:" + source.ProjectPath}, false)
 	if other.ProjectPath == "" {
-		t.Fatal("createRecentTaskRecord returned empty ordinary project path")
+		t.Fatal("createTaskRecord returned empty ordinary project path")
 	}
 
 	recent := app.SearchProjects("Ordinary task with source tag", 10)
@@ -652,9 +652,9 @@ func TestNonForkSourceTagDoesNotCollapseRecentTaskLineage(t *testing.T) {
 	if source.ProjectPath == "" {
 		t.Fatal("CreateRecentTask returned empty source project path")
 	}
-	other := app.createRecentTaskRecord("Ordinary task with metadata source", "ordinary output", []string{"source:" + source.ProjectPath}, false)
+	other := app.createTaskRecord("Ordinary task with metadata source", "ordinary output", []string{"source:" + source.ProjectPath}, false)
 	if other.ProjectPath == "" {
-		t.Fatal("createRecentTaskRecord returned empty ordinary project path")
+		t.Fatal("createTaskRecord returned empty ordinary project path")
 	}
 
 	recent := app.SearchProjects("", 10)
@@ -690,7 +690,7 @@ func TestForkRecentTaskRepeatedOpenRepairsMissingForkWorkspace(t *testing.T) {
 func TestForkRecentTaskReopenAfterClosedTabReusesIndependentTask(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 
-	source := app.CreateRecentTask("Reopen forked recent task")
+	source := app.CreateRecentTask("Reopen forked task")
 	if source.ProjectPath == "" {
 		t.Fatal("CreateRecentTask returned empty project path")
 	}
@@ -715,7 +715,7 @@ func TestForkRecentTaskReopenAfterClosedTabReusesIndependentTask(t *testing.T) {
 	if len(got) != 1 || got[0].ID != tabID || got[0].ProjectPath != forked.ProjectPath || got[0].Archived {
 		t.Fatalf("LoadProjectTabIndex after reopen = %+v, want same fork tab active", got)
 	}
-	search := app.SearchProjects("Reopen forked recent task", 10)
+	search := app.SearchProjects("Reopen forked task", 10)
 	if len(search) != 1 || !searchResultsContainProjectPath(search, forked.ProjectPath) {
 		t.Fatalf("search after reopen = %+v, want only existing fork", search)
 	}
@@ -724,7 +724,7 @@ func TestForkRecentTaskReopenAfterClosedTabReusesIndependentTask(t *testing.T) {
 func TestForkRecentTaskConcurrentCallsReuseIndependentTask(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 
-	source := app.CreateRecentTask("Concurrent recent task fork")
+	source := app.CreateRecentTask("Concurrent task fork")
 	const workers = 8
 	results := make([]ProjectSearchResult, workers)
 	var wg sync.WaitGroup
@@ -755,11 +755,11 @@ func TestForkRecentTaskConcurrentCallsReuseIndependentTask(t *testing.T) {
 	}
 	recent := app.SearchProjects("", 10)
 	if len(recent) != 1 {
-		t.Fatalf("recent tasks after concurrent open = %+v, want one fork", recent)
+		t.Fatalf("task management after concurrent open = %+v, want one fork", recent)
 	}
 	for forkPath := range forks {
 		if !searchResultsContainProjectPath(recent, forkPath) {
-			t.Fatalf("recent tasks after concurrent fork = %+v, missing fork %q", recent, forkPath)
+			t.Fatalf("task management after concurrent fork = %+v, missing fork %q", recent, forkPath)
 		}
 	}
 }
@@ -806,7 +806,7 @@ func TestForkRecentTaskDoesNotCancelSourceProjectLoop(t *testing.T) {
 
 	select {
 	case <-loop.DoneC:
-		t.Fatal("forking recent task cancelled source project loop")
+		t.Fatal("forking managed task cancelled source project loop")
 	case <-time.After(50 * time.Millisecond):
 	}
 	loop.Cancel()
@@ -881,7 +881,7 @@ func TestLoadProjectTabIndexSkipsHiddenTasks(t *testing.T) {
 
 func TestCreateProjectTabSessionReopensArchivedExistingSession(t *testing.T) {
 	app := newProjectSearchTestApp(t)
-	source := app.CreateRecentTask("Reopen closed recent task tab")
+	source := app.CreateRecentTask("Reopen closed managed task tab")
 	if source.ProjectPath == "" {
 		t.Fatal("CreateRecentTask returned empty project path")
 	}
@@ -899,16 +899,16 @@ func TestCreateProjectTabSessionReopensArchivedExistingSession(t *testing.T) {
 		t.Fatalf("LoadProjectTabIndex after reopen = %+v, want active reopened tab", got)
 	}
 	if got[0].Title != source.Name {
-		t.Fatalf("restored tab title = %q, want recent task name %q", got[0].Title, source.Name)
+		t.Fatalf("restored tab title = %q, want task name %q", got[0].Title, source.Name)
 	}
 }
 
 func TestProjectSessionOwnerIDNormalizesPathVariants(t *testing.T) {
-	base := filepath.Clean(`D:\workprj\recent-task`)
+	base := filepath.Clean(`D:\workprj\managed-task`)
 	variants := []string{
-		` D:\workprj\recent-task\ `,
-		`d:/workprj/recent-task`,
-		`D:/workprj/recent-task/.`,
+		` D:\workprj\managed-task\ `,
+		`d:/workprj/managed-task`,
+		`D:/workprj/managed-task/.`,
 	}
 	want := projectSessionOwnerID(base)
 	for _, variant := range variants {
@@ -947,7 +947,7 @@ func TestLoadProjectTabIndexRestoresRecentTaskDisplayName(t *testing.T) {
 		t.Fatalf("LoadProjectTabIndex = %+v, want one active tab", got)
 	}
 	if got[0].Title != "北京天气" {
-		t.Fatalf("restored tab title = %q, want recent task display name", got[0].Title)
+		t.Fatalf("restored tab title = %q, want task display name", got[0].Title)
 	}
 }
 
@@ -994,7 +994,7 @@ func TestCancelProjectTaskLoopForHandlerCancelsMatchingProjectSession(t *testing
 
 func TestCloseProjectTabSessionCancelsRunningProjectLoop(t *testing.T) {
 	app := newProjectSearchTestApp(t)
-	source := app.CreateRecentTask("Close running recent task tab")
+	source := app.CreateRecentTask("Close running managed task tab")
 	if source.ProjectPath == "" {
 		t.Fatal("CreateRecentTask returned empty project path")
 	}

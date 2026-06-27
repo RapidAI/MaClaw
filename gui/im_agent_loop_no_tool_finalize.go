@@ -584,9 +584,10 @@ func workflowDocTextLooksComplete(phaseID string, text string) bool {
 		return docSignals >= 2 && (strings.Contains(cleaned, "大纲") || strings.Contains(cleaned, "章节") || strings.Contains(cleaned, "结构") || strings.Contains(lower, "outline"))
 	case "slide_scripting":
 		return docSignals >= 2 && (strings.Contains(cleaned, "脚本") || strings.Contains(cleaned, "第1页") || strings.Contains(cleaned, "第 1 页") || strings.Contains(lower, "slide"))
-	case "ppt_generation":
-		return docSignals >= 2 && (strings.Contains(cleaned, "PPT") || strings.Contains(cleaned, "逐页") || strings.Contains(cleaned, "视觉") || strings.Contains(lower, "slide"))
 	}
+	// For artifact generation phases (ppt_generation, etc.) with NeedsConfirm=false,
+	// this function's result doesn't drive any force-return decision. Return true
+	// unconditionally to avoid needing per-phase signal word lists.
 	return docSignals >= 2
 }
 

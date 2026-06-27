@@ -246,6 +246,7 @@ func TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence(t *testing.T) {
 		t.Fatalf("expected app installation metadata schema properties")
 	}
 	for _, key := range []string{
+		"app_skill_source",
 		"workspace_layout_primary_region",
 		"workspace_layout_output_region",
 		"workspace_layout_region_count",

@@ -503,7 +503,7 @@ func buildSedimentTags(standalonePath, projectTag string, outputTools map[string
 // task sediment entry.
 //
 // Every task gets its own standalone path so it appears as a separate item
-// in the recent tasks list. The standalone path is derived from the task
+// in task management. The standalone path is derived from the task
 // title (deterministic hash), ensuring:
 //   - Different tasks → different paths → separate list items
 //   - Same task re-run → same path → updates existing item (idempotent)

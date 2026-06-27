@@ -21,6 +21,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/nwaples/rardecode/v2"
 )
 
@@ -28,6 +29,10 @@ const defaultMaxFileSize int64 = 50 << 20 // 50MB
 const maxReadableKnowledgeSourcesPerScope = 5000
 const maxKnowledgeArchiveFiles = 2000
 const maxKnowledgeUploadFiles = 20
+
+// knowledgeShareClient is a shared HTTP client for Hub knowledge share operations.
+// Uses TLS-skip transport because Hub servers commonly use self-signed certificates.
+var knowledgeShareClient = remote.NewHubHTTPClient()
 
 // resolveKnowledgeMaxFileSize parses the file size limit from env at startup.
 func resolveKnowledgeMaxFileSize() int64 {
@@ -676,25 +681,26 @@ type knowledgePackageManifest struct {
 }
 
 type knowledgePackageSource struct {
-	ID           string   `json:"id,omitempty"`
-	Kind         string   `json:"kind,omitempty"`
-	URI          string   `json:"uri,omitempty"`
-	CanonicalURI string   `json:"canonical_uri,omitempty"`
-	Title        string   `json:"title,omitempty"`
-	Author       string   `json:"author,omitempty"`
-	SiteName     string   `json:"site_name,omitempty"`
-	TopicHint    string   `json:"topic_hint,omitempty"`
-	Labels       []string `json:"labels,omitempty"`
-	Status       string   `json:"status,omitempty"`
-	RelativePath string   `json:"relative_path,omitempty"`
-	BatchID      string   `json:"batch_id,omitempty"`
-	ContentHash  string   `json:"content_hash,omitempty"`
-	NodeCount    int      `json:"node_count,omitempty"`
-	CardCount    int      `json:"card_count,omitempty"`
-	FactCount    int      `json:"fact_count,omitempty"`
-	CreatedAt    string   `json:"created_at,omitempty"`
-	UpdatedAt    string   `json:"updated_at,omitempty"`
-	Content      string   `json:"content,omitempty"`
+	ID              string   `json:"id,omitempty"`
+	Kind            string   `json:"kind,omitempty"`
+	URI             string   `json:"uri,omitempty"`
+	CanonicalURI    string   `json:"canonical_uri,omitempty"`
+	Title           string   `json:"title,omitempty"`
+	Author          string   `json:"author,omitempty"`
+	SiteName        string   `json:"site_name,omitempty"`
+	TopicHint       string   `json:"topic_hint,omitempty"`
+	Labels          []string `json:"labels,omitempty"`
+	Status          string   `json:"status,omitempty"`
+	RelativePath    string   `json:"relative_path,omitempty"`
+	BatchID         string   `json:"batch_id,omitempty"`
+	ContentHash     string   `json:"content_hash,omitempty"`
+	NodeCount       int      `json:"node_count,omitempty"`
+	CardCount       int      `json:"card_count,omitempty"`
+	FactCount       int      `json:"fact_count,omitempty"`
+	CreatedAt       string   `json:"created_at,omitempty"`
+	UpdatedAt       string   `json:"updated_at,omitempty"`
+	Content         string   `json:"content,omitempty"`
+	ContentTruncated bool   `json:"content_truncated,omitempty"`
 }
 
 type knowledgePackage struct {
@@ -716,7 +722,9 @@ func (s *HTTPServer) handleKnowledgeExport(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "description is required"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	// Increased from 15s to 60s: buildKnowledgeExportPackageWithStore now reads document
+	// nodes for each source to include inline content. Large knowledge bases may take time.
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	opts := knowledge.ListSourcesOptions{
 		TenantID:  p.TenantID,
@@ -732,7 +740,7 @@ func (s *HTTPServer) handleKnowledgeExport(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("export knowledge failed: %v", err))})
 		return
 	}
-	pkg := buildKnowledgeExportPackage(s.svc.DataRoot(), p, strings.TrimSpace(req.Title), description, sources)
+	pkg := buildKnowledgeExportPackageWithStore(ctx, s.knowledgeMgr.Store(), s.svc.DataRoot(), p, strings.TrimSpace(req.Title), description, sources)
 	filename := fmt.Sprintf("maclaw-knowledge-%s.json", pkg.Manifest.PackageID)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
@@ -831,44 +839,32 @@ func validateKnowledgePackage(pkg knowledgePackage) error {
 func (s *HTTPServer) startKnowledgePackageImportJob(kind string, p agentservice.Principal, pkg knowledgePackage) *asyncJobRecord {
 	return s.jobs.createUserJob(kind, p, func(ctx context.Context) (any, error) {
 		store := s.knowledgeMgr.Store()
-		result := map[string]interface{}{
+		// Convert package sources to the canonical shared type.
+		sources := make([]knowledge.PackageSource, 0, len(pkg.Sources))
+		for _, item := range pkg.Sources {
+			sources = append(sources, knowledge.PackageSource{
+				ID:           item.ID,
+				Kind:         item.Kind,
+				URI:          item.URI,
+				CanonicalURI: item.CanonicalURI,
+				Title:        item.Title,
+				TopicHint:    item.TopicHint,
+				Labels:       item.Labels,
+				Content:      item.Content,
+			})
+		}
+		importResult := knowledge.ImportPackageSources(ctx, store, sources, knowledge.PackageImportOptions{
+			OwnerID:  p.UserID,
+			TenantID: p.TenantID,
+		})
+		return map[string]interface{}{
 			"package_id": pkg.Manifest.PackageID,
 			"title":      pkg.Manifest.Title,
-			"imported":   0,
-			"skipped":    0,
-			"warnings":   []string{},
-		}
-		warnings := []string{}
-		imported := 0
-		skipped := 0
-		for _, item := range pkg.Sources {
-			kind := strings.ToLower(strings.TrimSpace(item.Kind))
-			uri := strings.TrimSpace(knowledgePackageFirstNonEmpty(item.CanonicalURI, item.URI))
-			content := strings.TrimSpace(item.Content)
-			switch {
-			case content != "":
-				if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: content, Title: item.Title, OwnerID: p.UserID, TenantID: p.TenantID, TopicHint: item.TopicHint, Labels: item.Labels}); err != nil {
-					warnings = append(warnings, fmt.Sprintf("text source %s skipped: %v", knowledgePackageFirstNonEmpty(item.ID, item.Title), err))
-					skipped++
-					continue
-				}
-				imported++
-			case strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://"):
-				if _, err := store.SaveURL(ctx, knowledge.URLSaveRequest{URL: uri, OwnerID: p.UserID, TenantID: p.TenantID, TopicHint: item.TopicHint, Labels: item.Labels}); err != nil {
-					warnings = append(warnings, fmt.Sprintf("url source %s skipped: %v", uri, err))
-					skipped++
-					continue
-				}
-				imported++
-			default:
-				warnings = append(warnings, fmt.Sprintf("%s source %s is metadata-only in this package", kind, knowledgePackageFirstNonEmpty(item.ID, item.Title, uri)))
-				skipped++
-			}
-		}
-		result["imported"] = imported
-		result["skipped"] = skipped
-		result["warnings"] = warnings
-		return result, nil
+			"imported":   importResult.Imported,
+			"skipped":    importResult.Skipped,
+			"total":      importResult.Total,
+			"warnings":   importResult.Warnings,
+		}, nil
 	})
 }
 
@@ -930,7 +926,7 @@ func fetchKnowledgeShareMetadata(ctx context.Context, apiURL, authorization stri
 	if strings.TrimSpace(authorization) != "" {
 		req.Header.Set("Authorization", authorization)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := knowledgeShareClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch knowledge share: %w", err)
 	}
@@ -979,7 +975,7 @@ func fetchKnowledgePackage(ctx context.Context, packageURL, authorization string
 	if strings.TrimSpace(authorization) != "" {
 		req.Header.Set("Authorization", authorization)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := knowledgeShareClient.Do(req)
 	if err != nil {
 		return pkg, fmt.Errorf("fetch knowledge package: %w", err)
 	}
@@ -997,12 +993,19 @@ func fetchKnowledgePackage(ctx context.Context, packageURL, authorization string
 	return pkg, nil
 }
 
-func buildKnowledgeExportPackage(dataRoot string, p agentservice.Principal, title, description string, sources []knowledge.Source) knowledgePackage {
+// maxExportPackageContentBytes caps total inline content in an export package to prevent
+// excessively large JSON payloads. Individual sources are capped at maxExportSourceContentBytes.
+const maxExportPackageContentBytes = 20 * 1024 * 1024 // 20 MB total
+const maxExportSourceContentBytes = 512 * 1024        // 512 KB per source
+const maxExportSourceNodes = 500
+
+func buildKnowledgeExportPackageWithStore(ctx context.Context, store *knowledge.SQLiteStore, dataRoot string, p agentservice.Principal, title, description string, sources []knowledge.Source) knowledgePackage {
 	now := time.Now().UTC()
 	packageID := fmt.Sprintf("kxp_%s_%d", now.Format("20060102T150405Z"), now.UnixNano())
 	items := make([]knowledgePackageSource, 0, len(sources))
+	remainingContentBytes := maxExportPackageContentBytes
 	for _, source := range sanitizeKnowledgeSourcesForAPI(dataRoot, sources) {
-		items = append(items, knowledgePackageSource{
+		item := knowledgePackageSource{
 			ID:           source.ID,
 			Kind:         source.Kind,
 			URI:          source.URI,
@@ -1021,7 +1024,21 @@ func buildKnowledgeExportPackage(dataRoot string, p agentservice.Principal, titl
 			FactCount:    source.FactCount,
 			CreatedAt:    knowledgePackageTime(source.CreatedAt),
 			UpdatedAt:    knowledgePackageTime(source.UpdatedAt),
-		})
+		}
+		// Include inline content from document nodes so the package is self-contained.
+		// URL sources that fail to re-fetch on import will fall back to this content.
+		if store != nil && strings.TrimSpace(source.ID) != "" && remainingContentBytes > 0 && ctx.Err() == nil {
+			content, truncated := exportPackageSourceContent(ctx, store, source, remainingContentBytes)
+			if content != "" {
+				item.Content = content
+				item.ContentTruncated = truncated
+				remainingContentBytes -= len([]byte(content))
+				if remainingContentBytes < 0 {
+					remainingContentBytes = 0
+				}
+			}
+		}
+		items = append(items, item)
 	}
 	return knowledgePackage{
 		Manifest: knowledgePackageManifest{
@@ -1035,10 +1052,95 @@ func buildKnowledgeExportPackage(dataRoot string, p agentservice.Principal, titl
 			OwnerID:     p.UserID,
 			SourceCount: len(items),
 			Editable:    true,
-			Notes:       "This package is editable JSON. URL sources can be re-imported by refetching; text sources can be imported when a content field is present.",
+			Notes:       "Editable JSON package. Includes inline content for URL sources as fallback when re-fetch fails on import.",
 		},
 		Sources: items,
 	}
+}
+
+// exportPackageSourceContent reads document nodes for a source and returns concatenated
+// text content. Returns (content, truncated). This ensures export packages are self-contained.
+func exportPackageSourceContent(ctx context.Context, store *knowledge.SQLiteStore, source knowledge.Source, remainingBudget int) (string, bool) {
+	if store == nil || remainingBudget <= 0 {
+		return "", false
+	}
+	nodes, err := store.ListNodesBySource(ctx, source.ID, maxExportSourceNodes)
+	if err != nil || len(nodes) == 0 {
+		return "", false
+	}
+	truncated := source.NodeCount > len(nodes) && len(nodes) >= maxExportSourceNodes
+	limit := maxExportSourceContentBytes
+	if remainingBudget < limit {
+		limit = remainingBudget
+	}
+	var builder strings.Builder
+	used := 0
+	for _, node := range nodes {
+		text := strings.TrimSpace(node.Text)
+		if text == "" {
+			continue
+		}
+		separatorBytes := 0
+		if used > 0 {
+			separatorBytes = 2 // "\n\n"
+		}
+		available := limit - used - separatorBytes
+		if available <= 0 {
+			truncated = true
+			break
+		}
+		textBytes := len([]byte(text))
+		if textBytes > available {
+			// Truncate at rune boundary using linear scan (avoids O(n²) string rebuilds).
+			text = truncateUTF8ToBytes(text, available)
+			truncated = true
+		}
+		if text == "" {
+			break
+		}
+		if used > 0 {
+			builder.WriteString("\n\n")
+		}
+		builder.WriteString(text)
+		used += separatorBytes + len([]byte(text))
+		if truncated {
+			break
+		}
+	}
+	return builder.String(), truncated
+}
+
+// truncateUTF8ToBytes truncates a UTF-8 string to at most maxBytes without breaking
+// multi-byte rune boundaries. O(n) single-pass.
+func truncateUTF8ToBytes(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	// Simple linear walk: advance one rune at a time until budget is exceeded.
+	pos := 0
+	for pos < maxBytes {
+		// Leading byte tells us the rune width without decoding.
+		b := s[pos]
+		var size int
+		switch {
+		case b < 0x80:
+			size = 1
+		case b < 0xE0:
+			size = 2
+		case b < 0xF0:
+			size = 3
+		default:
+			size = 4
+		}
+		if pos+size > maxBytes {
+			break
+		}
+		pos += size
+	}
+	return s[:pos]
 }
 
 func compactStrings(values []string) []string {

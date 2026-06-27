@@ -287,7 +287,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			t.Fatalf("openapi app installation body missing %s: %#v", name, paths["/api/v1/data/app-installations"])
 		}
 	}
-	for _, name := range []string{"schema", "package_sha256", "package_bytes", "app_skill_id", "version_snapshot", "dependencies", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout", "workflow_mapping", "workflow_contract", "result_contract", "test_evidence", "governance_status", "governance_risk_level"} {
+	for _, name := range []string{"schema", "package_sha256", "package_bytes", "app_skill_id", "app_skill_source", "version_snapshot", "dependencies", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout", "workflow_mapping", "workflow_contract", "result_contract", "test_evidence", "governance_status", "governance_risk_level"} {
 		if !openAPIRequestBodyNestedPropertyHasProperty(paths, "/api/v1/data/app-installations", "post", "metadata", name) {
 			t.Fatalf("openapi app installation metadata missing %s: %#v", name, openAPIRequestBodyProperty(paths, "/api/v1/data/app-installations", "post", "metadata"))
 		}
@@ -5486,6 +5486,7 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 			"package_sha256":     "sha256:expense-package",
 			"package_bytes":      4096,
 			"app_skill_id":       "mis-expense-claim",
+			"app_skill_source":   "hub",
 			"workflow_skill_ids": []any{"skill.expense.approval"},
 			"version_snapshot": map[string]any{
 				"app_entry_version": "1.2.3",
@@ -5641,7 +5642,7 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if versionSnapshot, ok := installed.Metadata["version_snapshot"].(map[string]any); !ok || versionSnapshot["app_entry_version"] != "1.2.3" {
 		t.Fatalf("app installation should persist version snapshot metadata: %#v", installed.Metadata)
 	}
-	if installed.Metadata["app_entry_version"] != "1.2.3" || installed.Metadata["app_skill_version"] != "1.0.0" {
+	if installed.Metadata["app_entry_version"] != "1.2.3" || installed.Metadata["app_skill_version"] != "1.0.0" || installed.Metadata["app_skill_source"] != "hub" {
 		t.Fatalf("app installation should expose version snapshot summaries: %#v", installed.Metadata)
 	}
 	if workflowVersions := appInstallationStringList(installed.Metadata["workflow_skill_versions"]); len(workflowVersions) != 1 || workflowVersions[0] != "skill.expense.approval@2.0.0" {
@@ -5750,7 +5751,7 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if len(listed.Items) != 1 || listed.Items[0].RoleBindings[0].DatasetID != "finance.expense_forms" {
 		t.Fatalf("unexpected listed app installations: %#v", listed)
 	}
-	if listed.Items[0].Metadata["app_skill_version"] != "1.0.0" || listed.Items[0].Metadata["workflow_contract_skill_id"] != "skill.expense.approval" {
+	if listed.Items[0].Metadata["app_skill_version"] != "1.0.0" || listed.Items[0].Metadata["app_skill_source"] != "hub" || listed.Items[0].Metadata["workflow_contract_skill_id"] != "skill.expense.approval" {
 		t.Fatalf("listed app installation should include version and workflow contract summaries: %#v", listed.Items[0].Metadata)
 	}
 
@@ -5841,7 +5842,7 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if regionIDs := appInstallationStringList(caps.AppInstallations[0].Metadata["workspace_layout_region_ids"]); len(regionIDs) != 3 || regionIDs[1] != "approval_inbox" {
 		t.Fatalf("capabilities should expose workspace region ids: %#v", caps.AppInstallations[0].Metadata)
 	}
-	if caps.AppInstallations[0].Metadata["app_entry_version"] != "1.2.3" || caps.AppInstallations[0].Metadata["app_skill_version"] != "1.0.0" {
+	if caps.AppInstallations[0].Metadata["app_entry_version"] != "1.2.3" || caps.AppInstallations[0].Metadata["app_skill_version"] != "1.0.0" || caps.AppInstallations[0].Metadata["app_skill_source"] != "hub" {
 		t.Fatalf("capabilities should expose version snapshot summaries: %#v", caps.AppInstallations[0].Metadata)
 	}
 	if caps.AppInstallations[0].Metadata["test_evidence_run_id"] != "run-expense-1" || caps.AppInstallations[0].Metadata["test_evidence_primary_result"] != "approval_result" || caps.AppInstallations[0].Metadata["test_evidence_output_count"] != float64(3) {
@@ -5883,7 +5884,7 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if regionIDs := appInstallationStringList(metadata["workspace_layout_region_ids"]); len(regionIDs) != 3 || regionIDs[0] != "request_form" || regionIDs[2] != "result_panel" {
 		t.Fatalf("app installation audit should summarize layout region ids: %#v", metadata)
 	}
-	if metadata["app_entry_version"] != "1.2.3" || metadata["app_skill_version"] != "1.0.0" {
+	if metadata["app_entry_version"] != "1.2.3" || metadata["app_skill_version"] != "1.0.0" || metadata["app_skill_source"] != "hub" {
 		t.Fatalf("app installation audit should summarize version snapshot: %#v", metadata)
 	}
 	workflowVersions, ok := metadata["workflow_skill_versions"].([]any)

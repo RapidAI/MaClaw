@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import type { AITab, AITabType, AITabState, AIAssistantPanelTabState } from "./AITabTypes";
 import { createInitialTabState, DEFAULT_MAX_VE_TABS } from "./AITabTypes";
-import { LoadProjectTabIndex, CloseProjectTabSession, CreateProjectTabSession } from "../../../wailsjs/go/main/App";
+import { LoadProjectTabIndex, CloseProjectTabSession, CreateProjectTabSession, SaveProjectTabConversation, LoadProjectTabConversation } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { isLocalHumanParticipantId, normalizeParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
@@ -365,6 +365,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     // localStorage clears, works across different browser contexts, etc.).
     // Don't immediately load conversation history — that happens on-demand when
     // a Tab is activated.
+    const backendIndexMergedRef = useRef(false);
     useEffect(() => {
         let cancelled = false;
         Promise.resolve().then(() => LoadProjectTabIndex()).then((entries: BackendTabIndexEntry[]) => {
@@ -441,8 +442,15 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 persistProjectTabs(next.tabs);
                 return next;
             });
+
+            // After tab index merge is complete, hydrate histories from backend session files.
+            backendIndexMergedRef.current = true;
+            hydrateHistoriesFromBackend();
         }).catch(() => {
-            // Backend not available (e.g., during development) — localStorage fallback is sufficient.
+            // Backend not available — still try to hydrate from session files for tabs we already have.
+            if (cancelled) return;
+            backendIndexMergedRef.current = true;
+            hydrateHistoriesFromBackend();
         });
         return () => { cancelled = true; };
     }, []);
@@ -533,7 +541,18 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     // Also flush on visibilitychange (hidden) as a backup — in Wails/Tauri desktop
     // apps, beforeunload may not fire reliably when the window is closed.
     useEffect(() => {
-        const flush = () => persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
+        const flush = () => {
+            persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
+            // Also flush to backend session files for reliability
+            const projectTabs = tabStateRef.current.tabs.filter(t => t.type === "project" && t.projectPath);
+            for (const tab of projectTabs) {
+                const state = tabStatesRef.current.get(tab.id);
+                if (state && Array.isArray(state.history) && state.history.length > 0) {
+                    SaveProjectTabConversation(tab.id, state.history.slice(-MAX_PERSISTED_HISTORY_PER_TAB))
+                        .catch(() => {});
+                }
+            }
+        };
         const onVisibilityChange = () => {
             if (document.visibilityState === "hidden") flush();
         };
@@ -543,6 +562,32 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             window.removeEventListener("beforeunload", flush);
             document.removeEventListener("visibilitychange", onVisibilityChange);
         };
+    }, []);
+
+    // Async hydration from backend session files (authoritative source).
+    // localStorage provides instant UI on startup; backend files fill in data
+    // that may have been lost when the process was killed without flushing.
+    // Triggered after LoadProjectTabIndex merge completes (event-driven, not timer).
+    const backendHydrationDoneRef = useRef(false);
+    const hydrateHistoriesFromBackend = useCallback(() => {
+        if (backendHydrationDoneRef.current) return;
+        backendHydrationDoneRef.current = true;
+        const projectTabs = tabStateRef.current.tabs.filter(t => t.type === "project");
+        for (const tab of projectTabs) {
+            LoadProjectTabConversation(tab.id).then(conversation => {
+                if (!conversation || !Array.isArray(conversation) || conversation.length === 0) return;
+                const existing = tabStatesRef.current.get(tab.id);
+                const existingLen = existing?.history?.length || 0;
+                // Backend wins if it has more or equal history (more recent flush survived process kill)
+                if (conversation.length >= existingLen) {
+                    tabStatesRef.current.set(tab.id, {
+                        ...(existing || { scrollTop: 0, inputText: "" }),
+                        history: conversation,
+                        lastActiveAt: Date.now(),
+                    });
+                }
+            }).catch(() => {});
+        }
     }, []);
 
     const activeTab = tabState.tabs.find(t => t.id === tabState.activeTabId) || tabState.tabs[0];
@@ -824,10 +869,25 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     }, [updateTabState]);
 
     const historyPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const dirtyTabIdsRef = useRef<Set<string>>(new Set());
     const scheduleHistoryPersist = useCallback(() => {
         if (historyPersistTimerRef.current) clearTimeout(historyPersistTimerRef.current);
         historyPersistTimerRef.current = setTimeout(() => {
+            // 1. localStorage (fast local cache)
             persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
+            // 2. Backend session file (reliable, survives process kill) — only dirty tabs
+            const dirtyIds = dirtyTabIdsRef.current;
+            if (dirtyIds.size > 0) {
+                const projectTabs = tabStateRef.current.tabs.filter(t => t.type === "project" && t.projectPath && dirtyIds.has(t.id));
+                for (const tab of projectTabs) {
+                    const state = tabStatesRef.current.get(tab.id);
+                    if (state && Array.isArray(state.history) && state.history.length > 0) {
+                        SaveProjectTabConversation(tab.id, state.history.slice(-MAX_PERSISTED_HISTORY_PER_TAB))
+                            .catch(() => {});
+                    }
+                }
+                dirtyTabIdsRef.current = new Set();
+            }
         }, 500);
     }, []);
 
@@ -843,7 +903,10 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             tabs: prev.tabs.map(t => t.id === tabId ? { ...t, discussionId: undefined, conversationResetSeq: (t.conversationResetSeq || 0) + 1 } : t),
         }));
         // Persist the cleared state so it doesn't resurrect after restart
+        dirtyTabIdsRef.current.add(tabId);
         scheduleHistoryPersist();
+        // Also clear backend session file immediately (don't wait for debounce)
+        SaveProjectTabConversation(tabId, []).catch(() => {});
     }, [scheduleHistoryPersist, updateTabState]);
 
     const saveTabState = useCallback((tabId: string, state: Partial<AITabState>) => {
@@ -858,6 +921,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         tabStatesRef.current.set(tabId, { ...existing, ...state });
         // Debounce-persist history for project tabs
         if (openTab && openTab.type === "project" && state.history) {
+            dirtyTabIdsRef.current.add(tabId);
             scheduleHistoryPersist();
         }
     }, [scheduleHistoryPersist]);

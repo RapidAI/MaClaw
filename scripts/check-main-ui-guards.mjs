@@ -622,7 +622,7 @@ requireIncludes('gui/frontend/src/App.css', '--theme-page-bg: #0b1220;', 'sideba
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'STATUS_DOT', 'system status decoded status dot');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'CREDIT_SEPARATOR', 'system status decoded credit separator');
 requireExcludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', '>\\u', 'JSX unicode escape text that renders as code');
-requireExcludes(appRel, 'recentProjects.map', 'inline recent tasks list; use components/layout/SidebarAiPane.tsx');
+requireExcludes(appRel, 'taskItems.map', 'inline task management list; use components/layout/SidebarAiPane.tsx');
 requireExcludes(appRel, 'className="top-header"', 'inline non-AI top header; use components/layout/MainTopHeader.tsx');
 requireExcludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'ReadTutorial', 'inline top header actions; use components/layout/MainTopHeaderActions.tsx');
 requireExcludes(appRel, 'className="status-message"', 'inline status message bar; use components/layout/AppStatusMessageBar.tsx');
@@ -754,7 +754,7 @@ const criticalMarkers = [
   ['MCPPage', 'MCP main page'],
   ['GossipPage', 'gossip main page'],
   ['chatFontSize', 'AI assistant font-size setting'],
-  ['recentTasksPaneWidth', 'resizable recent tasks pane'],
+  ['taskManagementPaneWidth', 'resizable task management pane'],
   ['getSettingsTabOptions', 'settings tab registry import'],
   ['SettingsTabsRail', 'settings tabs rail'],
   ['GeneralSettingsPanel', 'general settings panel'],
@@ -905,12 +905,12 @@ requireIncludes('gui/frontend/src/components/layout/SidebarNavRail.tsx', 'export
 requireIncludes('gui/frontend/src/components/layout/SidebarNavRail.tsx', 'left-nav-item--ai', 'AI nav rail button');
 requireIncludes('gui/frontend/src/components/layout/SidebarNavRail.tsx', 'runningTaskCount', 'monitor running task badge');
 requireIncludes('gui/frontend/src/components/layout/SidebarAiPane.tsx', 'export const SidebarAiPane', 'sidebar AI pane export');
-requireIncludes('gui/frontend/src/components/layout/SidebarAiPane.tsx', 'handleRecentTasksResizeStart', 'recent tasks resize handle wiring');
+requireIncludes('gui/frontend/src/components/layout/SidebarAiPane.tsx', 'handleTaskManagementResizeStart', 'task management resize handle wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarToolSelector.tsx', 'export const SidebarToolSelector', 'sidebar tool selector export');
 requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'export const SidebarTaskManagement', 'sidebar task management export');
-requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'renameTask', 'recent task rename wiring');
-requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'pinTask', 'recent task pin wiring');
-requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'hideTask', 'recent task hide wiring');
+requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'renameTask', 'task rename wiring');
+requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'pinTask', 'task pin wiring');
+requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'hideTask', 'task hide wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarToolSelector.tsx', 'Claude Code', 'Claude Code selector entry');
 requireIncludes('gui/frontend/src/components/layout/SidebarToolSelector.tsx', 'CodeBuddy', 'CodeBuddy selector entry');
 requireIncludes('gui/frontend/src/components/layout/SidebarToolSelector.tsx', 'Kilo Code', 'Kilo Code selector entry');
@@ -918,7 +918,7 @@ requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'f
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'formatSidebarHubUsedCredits', 'hub credits used display wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'formatSidebarHubExpiry', 'hub credits expiry display wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'sidebarCurrentProviderTokenUsage.isHubService', 'hub service credits visibility condition');
-requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'visibleTasks.map', 'recent tasks list stays in sidebar task management component');
+requireIncludes('gui/frontend/src/components/layout/SidebarTaskManagement.tsx', 'visibleTasks.map', 'task list stays in sidebar task management component');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'showHubCreditAction', 'hub credits action stays in sidebar system status');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'openHubCreditsPage', 'hub credits purchase action wiring');
 requireIncludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'export const MainTopHeader', 'non-AI top header export');

@@ -12,6 +12,8 @@ package main
 //   4. Inject matched tools into system prompt + add call_mcp_tool definition
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -194,11 +196,11 @@ func (c *codingSubAgentCallbacks) executeCallMCPTool(args map[string]interface{}
 	serverID = strings.TrimSpace(serverID)
 	toolName = strings.TrimSpace(toolName)
 
-	if serverID == "" || toolName == "" {
-		return codingToolExecutionResult{
-			Text:    "call_mcp_tool requires both server_id and tool_name parameters",
-			Outcome: codingToolOutcomeFailed,
-		}
+	if serverID == "" {
+		return missingCodingSubAgentRequiredArgumentResult("call_mcp_tool", "server_id")
+	}
+	if toolName == "" {
+		return missingCodingSubAgentRequiredArgumentResult("call_mcp_tool", "tool_name")
 	}
 
 	// Validate tool is in the matched set.
@@ -290,10 +292,43 @@ func rejectMissingCodingSubAgentMCPRequiredArguments(tool codingSubAgentMCPToolM
 }
 
 func missingCodingSubAgentMCPRequiredArgumentResult(tool codingSubAgentMCPToolMatch, field string) codingToolExecutionResult {
+	target := tool.ServerName + "/" + tool.ToolName
+	example := codingSubAgentMCPToolArgumentExample(tool, field)
 	return codingToolExecutionResult{
-		Text:    fmt.Sprintf("Error: call_mcp_tool target %q is missing required MCP argument %q in arguments. The MCP tool was not executed. Regenerate call_mcp_tool with arguments.%s set.", tool.ServerName+"/"+tool.ToolName, field, field),
+		Text:    fmt.Sprintf("Error: call_mcp_tool target %q is missing required MCP argument %q in arguments. The MCP tool was not executed. Regenerate call_mcp_tool with arguments.%s set. Example valid arguments: %s.", target, field, field, example),
 		Outcome: codingToolOutcomeFailed,
 	}
+}
+
+func codingSubAgentMCPToolArgumentExample(tool codingSubAgentMCPToolMatch, missingField string) string {
+	serverID := strings.TrimSpace(tool.ServerID)
+	if serverID == "" {
+		serverID = strings.TrimSpace(tool.ServerName)
+	}
+	toolName := strings.TrimSpace(tool.ToolName)
+	arguments := make(map[string]interface{}, len(tool.RequiredArgs)+1)
+	for _, field := range tool.RequiredArgs {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		arguments[field] = fmt.Sprintf("<%s>", field)
+	}
+	if strings.TrimSpace(missingField) != "" {
+		arguments[strings.TrimSpace(missingField)] = fmt.Sprintf("<%s>", strings.TrimSpace(missingField))
+	}
+	example := map[string]interface{}{
+		"server_id": serverID,
+		"tool_name": toolName,
+		"arguments": arguments,
+	}
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(example); err != nil {
+		return `{"server_id":"server","tool_name":"tool","arguments":{}}`
+	}
+	return strings.TrimSpace(buf.String())
 }
 
 // getSubAgentEmbedderSafe is a nil-safe wrapper (avoids import cycle issues

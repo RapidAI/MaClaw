@@ -668,10 +668,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                 {dlgProviders.map((p, i) => {
                                     const isHubProvider = hasHubEntitlement && p.name === HUB_SERVICE_PROVIDER_NAME;
                                     const active = isHubProvider ? dlgHubSelected : dlgSelectedIdx === i;
-                                    const badge: Record<string, string> = {
-                                        "\u706b\u5c71\u5f15\u64ceTokenPlan": "OpenAI",
-                                        "\u706b\u5c71\u5f15\u64ceTokenPlan (Anthropic)": "Anthropic",
-                                    };
+                                    const badge: Record<string, string> = {};
                                     const tag = isHubProvider && hubOfficial.kind !== "active" ? hubOfficial.label : badge[p.name];
                                     return (
                                         <button className="llm-config-provider-chip" key={i} aria-label={tag ? `${p.name} ${tag}` : p.name} onClick={() => isHubProvider ? dlgSelectHubService() : dlgSelectProvider(i)} style={{
@@ -943,7 +940,9 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
                                                 {providerModels.length > 0
                                                     ? t("(select model)", "（选择模型）")
-                                                    : t("(preset, click Fetch to browse)", "（预设，可点击“获取”浏览可用模型）", "（預設，可點擊「獲取」瀏覽可用模型）")}
+                                                    : dlgProvider.name === "\u706b\u5c71\u5f15\u64ce Agent Plan"
+                                                        ? t("(preset model, enter manually)", "（预设模型，请手动填写）", "（預設模型，請手動填寫）")
+                                                        : t("(preset, click Fetch to browse)", "（预设，可点击“获取”浏览可用模型）", "（預設，可點擊「獲取」瀏覽可用模型）")}
                                             </span>
                                         )}
                                     </label>
@@ -973,7 +972,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                             fetching={providerModelsFetching}
                                             error={providerModelsError}
                                             open={providerModelListOpen}
-                                            canFetch={!!dlgProvider.url}
+                                            canFetch={!!dlgProvider.url && dlgProvider.name !== "\u706b\u5c71\u5f15\u64ce Agent Plan"}
                                             onOpenChange={setProviderModelListOpen}
                                             onChange={value => dlgUpdateField("model", value)}
                                             onFetch={handleFetchProviderModels}

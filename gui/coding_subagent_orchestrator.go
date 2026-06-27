@@ -303,10 +303,10 @@ func enrichSubAgentFailureError(result *CodingSubAgentResult, errSummary string)
 	}
 	lower := strings.ToLower(errSummary)
 	var evidence []string
-	if failed := failedSubAgentCommands(result.CommandsRun); len(failed) > 0 && !strings.Contains(lower, "failed command evidence") {
+	if failed := unresolvedFailedSubAgentCommands(result.CommandsRun); len(failed) > 0 && !strings.Contains(lower, "failed command evidence") {
 		evidence = append(evidence, "failed command evidence: "+compactFailedVerificationCommandResults(failed))
 	}
-	if failed := failedSubAgentDynamicTools(result.DynamicToolsRun); len(failed) > 0 && !strings.Contains(lower, "dynamic tool evidence") {
+	if failed := unresolvedFailedSubAgentDynamicTools(result.DynamicToolsRun); len(failed) > 0 && !strings.Contains(lower, "dynamic tool evidence") {
 		evidence = append(evidence, "dynamic tool evidence: "+compactFailedSubAgentDynamicToolResults(failed))
 	}
 	if quality := compactSubAgentQualityEvidence(result); quality != "" && !strings.Contains(lower, "quality audit evidence") {

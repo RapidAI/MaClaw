@@ -28,9 +28,12 @@ const codegenProviderName = "CodeGen"
 const legacyHubServiceProviderName = "MaClaw\u6a21\u578b\u670d\u52a1"
 
 const zhipuCodingProviderName = "智谱编程"
-const volcengineTokenPlanProviderName = "\u706b\u5c71\u5f15\u64ceTokenPlan"
-const volcengineTokenPlanAnthropicProviderName = "\u706b\u5c71\u5f15\u64ceTokenPlan (Anthropic)"
-const legacyVolcengineTokenPlanAnthropicProviderName = "\u706b\u5c71\u5f15\u64ceTokenPlan Anthropic"
+const volcengineAgentPlanProviderName = "\u706b\u5c71\u5f15\u64ce Agent Plan"
+const volcengineTokenPlanProviderName = volcengineAgentPlanProviderName
+const volcengineTokenPlanAnthropicProviderName = volcengineAgentPlanProviderName
+const legacyVolcengineTokenPlanProviderName = "\u706b\u5c71\u5f15\u64ceTokenPlan"
+const legacyVolcengineTokenPlanAnthropicProviderName = "\u706b\u5c71\u5f15\u64ceTokenPlan (Anthropic)"
+const legacyVolcengineTokenPlanAnthropicProviderNameAlt = "\u706b\u5c71\u5f15\u64ceTokenPlan Anthropic"
 
 // obsoleteProviderNames lists provider names that have been permanently removed.
 // They are stripped from the persisted provider list on load.
@@ -62,8 +65,7 @@ func canonicalHubServiceProviderName(name string) string {
 func normalizeMaclawLLMProviders(providers []corelib.MaclawLLMProvider) []corelib.MaclawLLMProvider {
 	normalized := make([]corelib.MaclawLLMProvider, 0, len(providers))
 	seenHubService := false
-	seenVolcengineTokenPlan := false
-	seenVolcengineTokenPlanAnthropic := false
+	seenVolcengineAgentPlan := false
 	hubIndex := -1
 	for _, provider := range providers {
 		originalName := strings.TrimSpace(provider.Name)
@@ -78,17 +80,11 @@ func normalizeMaclawLLMProviders(providers []corelib.MaclawLLMProvider) []coreli
 			}
 			seenHubService = true
 		}
-		if provider.Name == volcengineTokenPlanProviderName {
-			if seenVolcengineTokenPlan {
+		if provider.Name == volcengineAgentPlanProviderName {
+			if seenVolcengineAgentPlan {
 				continue
 			}
-			seenVolcengineTokenPlan = true
-		}
-		if provider.Name == volcengineTokenPlanAnthropicProviderName {
-			if seenVolcengineTokenPlanAnthropic {
-				continue
-			}
-			seenVolcengineTokenPlanAnthropic = true
+			seenVolcengineAgentPlan = true
 		}
 		normalized = append(normalized, provider)
 		if provider.Name == hubServiceProviderName {
@@ -131,8 +127,9 @@ func markHubServiceProvider(provider corelib.MaclawLLMProvider) corelib.MaclawLL
 }
 
 func canonicalVolcengineTokenPlanProviderName(name string) string {
-	if name == legacyVolcengineTokenPlanAnthropicProviderName {
-		return volcengineTokenPlanAnthropicProviderName
+	switch strings.TrimSpace(name) {
+	case volcengineAgentPlanProviderName, legacyVolcengineTokenPlanProviderName, legacyVolcengineTokenPlanAnthropicProviderName, legacyVolcengineTokenPlanAnthropicProviderNameAlt:
+		return volcengineAgentPlanProviderName
 	}
 	return name
 }
@@ -145,8 +142,7 @@ func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "GLM-5.2", Protocol: "anthropic", AgentType: "claude code 2.0", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0"},
-		{Name: volcengineTokenPlanProviderName, URL: "https://ark.cn-beijing.volces.com/api/plan/v3", Model: "Auto", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
-		{Name: volcengineTokenPlanAnthropicProviderName, URL: "https://ark.cn-beijing.volces.com/api/plan", Model: "Auto", Protocol: "anthropic", AgentType: "claude code 2.0", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: volcengineAgentPlanProviderName, URL: "https://ark.cn-beijing.volces.com/api/plan/v3", Model: "glm-5.2", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
 		{Name: "讯飞星辰", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", Model: "astron-code-latest", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Custom1", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Custom2", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
@@ -246,7 +242,7 @@ func (a *App) GetMaclawLLMProviders() struct {
 			if u, ok := defaultURL[providers[i].Name]; ok {
 				providers[i].URL = u
 			}
-			if providers[i].Name == volcengineTokenPlanProviderName || providers[i].Name == volcengineTokenPlanAnthropicProviderName {
+			if providers[i].Name == volcengineAgentPlanProviderName {
 				if d, ok := defaultProvider[providers[i].Name]; ok {
 					providers[i].Model = d.Model
 					providers[i].Protocol = d.Protocol

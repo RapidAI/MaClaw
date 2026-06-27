@@ -616,6 +616,7 @@ ListMaclawAppInstalls(limit)
 前端市场导入流程
   粘贴应用包后先预览依赖；点击安装时如有必需依赖缺失，先调用 InstallMaclawAppDependencies，再安装 MaClaw App 面板入口，并后台写安装记录。
   对标准 maclaw.app.v1 / maclaw.app.pack.v1 包，安装按钮不能只信任前端预览缓存；即使依赖预览仍在 loading，也必须针对用户当前选中的 App 子包重新调用后端 PlanMaclawAppInstall / InstallMaclawAppDependencies，确认治理、workflow contract 和必需 Skill 依赖通过后，才允许写入本地面板。
+  企业审批型/企业普通型 App 不能先写入本地面板再异步补安装审计；必须在 RecordMaclawAppInstall 成功写入本地安装记录、安装证据和 DataSrv 注册结果后，才允许进入本地 AppEntry。否则会出现“看似安装成功但审批实例/证据/依赖快照无法恢复”的断链。工具型 App 可以继续保留安装审计失败不阻断的宽容策略。
 
 运行前健康检查
   已安装的 market/local/skill/datasrv App 如显式声明 appSkill 或 dependencies.skills，执行前先调用 PlanMaclawAppInstall 检查必需依赖；缺失时阻止运行并展示依赖错误。DataSrv 能力发现恢复出的企业应用如果带有 workflow_skill_ids、workflow_skill_versions、approval_binding_versions 或 dependencies，也必须纳入同一运行前健康检查。
@@ -743,7 +744,7 @@ App Studio 不以 JSON 编辑器为主入口。
    App Studio 前端发布检查和 GUI 后端 SubmitMaclawAppPackage 必须把企业审批型应用的 approvalInstance 完整性作为能力市场门禁；缺 currentNode、workflowSkillId、businessStatus/resultStatus，或 approvalInstance 自身没有 resultPayload / outputs / artifacts 结果包时，即使顶层 testEvidence 有 resultPayload，也必须在前端禁用提交并在后端返回 review issue，阻止空壳审批证据进入 Hub。
    从 Hub 或 DataSrv 安装记录恢复审批证据时，如果 approval_instance 只有 approval_id / record_approval_id 而没有 instanceId / workflow_instance_id，也必须用远端审批 ID 作为实例定位兜底，不能丢弃整段 approvalInstance 证据。
    App Studio 发布检查必须将“审批实例证据”作为企业审批型应用的独立门禁；缺少 instanceId、status 或实例视图校验证据时，提交审核按钮不可用。提交包的 governance.testEvidence 必须携带同一份 approvalInstance 证据。
-   App Studio、GUI 后端和 Hub 审核都必须把运行证据绑定到当前 App 定义：governance.testEvidence 必须携带 definitionHash / definitionFingerprint，且该值必须等于当前 app manifest、动态 UI、binding、version 与运行契约计算出的定义指纹。用户编辑应用名称、版本、binding、UI 布局、workflow/result contract 或依赖后，旧的 importedRunEvidence / run history 只能作为历史审计，不能再满足发布门禁，必须重新测试后才能上传能力市场。
+   App Studio、GUI 后端和 Hub 审核都必须把运行证据绑定到当前 App 定义：governance.testEvidence 必须携带 definitionHash / definitionFingerprint，且该值必须等于当前 app manifest、动态 UI layout、binding.datasrv/mis/skill/appSkill、dependencies.skills、workflow/result/test protocol、version 等字段共同计算出的定义指纹。用户编辑应用名称、版本、binding、UI 布局、workflow/result contract、test protocol 或依赖后，旧的 importedRunEvidence / run history 只能作为历史审计，不能再满足发布门禁，必须重新测试后才能上传能力市场。
    从 DataSrv app_installations 恢复已安装应用时，也必须把 metadata.test_evidence.approvalInstance / approval_instance 恢复成 importedRunEvidence.approvalInstance，避免安装后再发布时丢失审批测试证据。
    从 DataSrv app_installations 恢复已安装应用时，metadata.workspace_layout 必须是 App Studio 保存的完整动态布局契约；除 entry/template/density/navigation/list columns 外，还要保留 primaryRegion / outputRegion / regions。regions 是用户调整位置后的 canonical 布局，不允许在 DataSrv 往返、Hub 安装或二次发布时退化成只有模板名的摘要。
    DataSrv 服务端 normalize app_installations.metadata.workspace_layout 时，必须保留完整 workspace_layout.regions，并暴露 workspace_layout_primary_region、workspace_layout_output_region、workspace_layout_region_count、workspace_layout_region_ids 等轻量摘要；审计日志可以只写这些摘要字段，但能力发现接口必须返回完整 workspace_layout，供 GUI 恢复传统软件式工作台。
@@ -2678,4 +2679,73 @@ DataSrv
 
 审批中心
   统一查看和处理审批
+```
+
+## 当前全链路完整性审计（推进中）
+
+从 MaClaw DataSrv 到 MaClaw App 的制作、测试、上传、安装和运行角度看，主干链路已经形成，但还没有完全闭环。
+
+### 已落地的主干能力
+
+```text
+App Studio / GUI
+  动态 UI layout、resultContract、workflow mapping、testProtocol、testEvidence 进入 MaClaw App 定义
+  definitionHash 覆盖 appSkill、dependencies、动态 UI、workflow/result contract、test protocol、binding
+  旧运行证据在定义变化后会失效，必须重新测试才能发布
+
+GUI 后端
+  PlanMaclawAppInstall / InstallMaclawAppDependencies / RecordMaclawAppInstall 串起安装前依赖检查
+  Hub 安装时会重新规划选中的 App 子包，不能只信任前端预览
+  安装记录保存 package 指纹、依赖快照、版本快照、workflow contract、workspace layout、result contract、test evidence
+  企业 App 安装成功后再写本地入口，并尝试注册 DataSrv app_installations
+
+DataSrv 回流
+  MaClaw App 安装注册 metadata 保留 workspace_layout、workflow_mapping、workflow_contract、result_contract、test_evidence、dependency_verification、version_snapshot
+  app_skill_id / app_skill_version / app_skill_source 可回流为 GUI 里的 appSkill 快照
+  GUI 从 DataSrv app_installations 恢复候选 App 时，能恢复 resultContract 和 workflow mapping
+
+Hub 能力市场
+  MaClaw App 提交后保留原始 manifest 作为安装包本体
+  metadata 额外暴露 appSkill、Skill 依赖、workflow skill IDs、workflow mapping、result/workflow contract、workspace layout 摘要
+  package 下载仍以完整 App entry 为准，metadata 只做市场搜索、审核和列表摘要
+```
+
+### 仍不完整的缺口
+
+```text
+1. DataSrv 服务端契约还要继续硬化
+   app_installations.metadata 的 OpenAPI / normalize / 审计摘要需要把 workspace_layout、test_evidence、result_contract、workflow_mapping、app_skill_source 等字段显式列为稳定契约。
+
+2. 依赖自动安装还要做真实 Hub/SkillMarket 联动验收
+   当前安装规划和阻断逻辑已经存在，但仍要用真实缺失 Skill 场景验证：
+   enterprise_hub -> 企业 Hub
+   hub/local -> 当前 Hub/SkillHub
+   market/skillmarket -> SkillMarket
+   builtin/unknown -> blocked
+
+3. 审批型应用运行闭环还要端到端验收
+   需要用一个样例报销/合同 App 跑通：
+   发起数据提交 -> workflow-skill 创建审批实例 -> DataSrv RecordApproval -> 我的申请/待我审批/已处理/需关注 -> 最终 resultPayload/outputs/artifacts 回写。
+
+4. App Studio 可视化设计还要补完整保存/复测/上传体验
+   UI 动态生成和 layout 保存契约已经进入 manifest，但还要把用户拖拽调整、传统软件式工具栏/列表/详情/输出面板的编辑体验进一步产品化。
+
+5. GUI 包当前有外部编译阻塞
+   当前工作树里 `gui/workflow_v2_integration.go` 缺 `TemplateRegistry`，`gui/app_maclaw_llm_test.go` 仍引用已迁移的 Volcengine TokenPlan 常量。它们不是 MaClaw App 链路本轮改动引入，但会阻塞 `go test ./gui` 的包级验证，必须在全量回归前清理。
+```
+
+### 下一步推进计划
+
+```text
+P0
+  修复 GUI 包外部编译阻塞，恢复 `go test ./gui` 可运行。
+  给 DataSrv app_installations metadata schema/normalize/openapi 补齐 appSkill、layout、workflow、result、test evidence 字段。
+
+P1
+  做一个企业审批型样例 App 端到端测试：安装依赖、发起审批、实例视图、结果回写、Hub 上传、Hub 下载重装。
+  做一个企业普通 App 端到端测试：DataSrv business action/query/report 执行、结构化 outputs、测试证据、二次发布。
+
+P2
+  强化 App Studio 的动态 UI 编辑体验：传统软件式工作台、可视化布局调整、区域锁定、运行前依赖健康提示。
+  强化市场页安装体验：依赖安装进度、失败原因、版本冲突、可选依赖降级说明。
 ```

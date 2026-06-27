@@ -3,6 +3,7 @@ package structureddata
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -366,6 +367,18 @@ func (s *Service) syncBusinessRecordFromApproval(ctx context.Context, p Principa
 		nextData[key] = value
 		changed = true
 	}
+	setJSONValue := func(key string, value any) {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return
+		}
+		value = cloneJSONValue(value)
+		if reflect.DeepEqual(nextData[key], value) {
+			return
+		}
+		nextData[key] = value
+		changed = true
+	}
 	setString("status", approvalBusinessRecordStatus(approval))
 	setString("business_status", approval.BusinessStatus)
 	setString("result_status", approval.ResultStatus)
@@ -395,11 +408,16 @@ func (s *Service) syncBusinessRecordFromApproval(ctx context.Context, p Principa
 	setString("approval_detail_url", approval.DetailURL)
 	setString("approval_result_summary", recordApprovalResultSummary(approval))
 	setString("approval_primary_artifact", recordApprovalPrimaryArtifactName(approval))
+	if len(approval.ResultPayload) > 0 {
+		setJSONValue("approval_result_payload", approval.ResultPayload)
+	}
 	if len(approval.Outputs) > 0 {
+		setJSONValue("approval_outputs", approval.Outputs)
 		nextData["approval_output_count"] = len(approval.Outputs)
 		changed = true
 	}
 	if len(approval.Artifacts) > 0 {
+		setJSONValue("approval_artifacts", approval.Artifacts)
 		nextData["approval_artifact_count"] = len(approval.Artifacts)
 		changed = true
 	}

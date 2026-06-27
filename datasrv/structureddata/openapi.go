@@ -1048,6 +1048,7 @@ func appInstallationMetadataOpenAPISchema() map[string]interface{} {
 			"app_entry_version":               map[string]interface{}{"type": "string", "description": "Version of the app entry saved in the manifest."},
 			"app_skill_id":                    map[string]interface{}{"type": "string", "description": "Super Skill or runtime Skill id that owns the app entry."},
 			"app_skill_version":               map[string]interface{}{"type": "string", "description": "Installed app Skill version."},
+			"app_skill_source":                map[string]interface{}{"type": "string", "description": "Source used to resolve the app Skill dependency, such as hub, enterprise_hub, or skillmarket."},
 			"workflow_skill_ids":              stringArray,
 			"workflow_skill_versions":         stringArray,
 			"approval_binding_versions":       stringArray,

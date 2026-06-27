@@ -1664,9 +1664,9 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		return nil, fmt.Errorf("project task is closed: %s", projectPath)
 	}
 	if executionProjectPath := a.recentTaskExecutionProjectPath(projectPath); executionProjectPath != projectPath {
-		log.Printf("[AI assistant] route recent task to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
+		log.Printf("[AI assistant] route managed task to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
 		if err := a.ensureRecentTaskExecutionWorkingDir(projectPath, executionProjectPath); err != nil {
-			log.Printf("[AI assistant] reject recent task working directory request_id=%s task_path=%q working_dir=%q err=%v", requestID, projectPath, executionProjectPath, err)
+			log.Printf("[AI assistant] reject managed task working directory request_id=%s task_path=%q working_dir=%q err=%v", requestID, projectPath, executionProjectPath, err)
 			return nil, err
 		}
 	}
@@ -2344,7 +2344,7 @@ func normalizeAIAssistantSessionUserID(userID string) (string, error) {
 func activeAIAssistantLoopUserID(handler *IMMessageHandler) string {
 	// Legacy desktop APIs do not carry a tab/session id. Under concurrent tabs,
 	// lastUserID is whichever loop most recently started, so using it here can
-	// cancel or inject into a recent-task tab from the main panel. Session-aware
+	// cancel or inject into a task-management tab from the main panel. Session-aware
 	// callers must use the *ForSession variants.
 	return desktopUserID
 }

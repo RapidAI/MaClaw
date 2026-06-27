@@ -312,11 +312,19 @@ func isArtifactGenerationPhase(workflowType string, phase *Phase) bool {
 }
 
 func phaseInstructionHasOwnArtifactGuidance(phaseID string) bool {
-	switch phaseID {
-	case "ppt_generation":
-		return true
+	// Instead of hardcoding phase IDs, detect from the instruction content itself.
+	// A phase instruction that already mentions artifact-generation tool chains
+	// (manage_skill, craft_tool, send_file) doesn't need the generic guidance.
+	instruction := phaseInstruction(phaseID)
+	if instruction == "" {
+		return false
 	}
-	return false
+	lower := strings.ToLower(instruction)
+	// If the instruction mentions both a tool-invocation method AND a delivery method,
+	// it has its own artifact generation guidance.
+	hasToolChain := strings.Contains(lower, "manage_skill") || strings.Contains(lower, "craft_tool")
+	hasDelivery := strings.Contains(lower, "send_file") || strings.Contains(lower, ".pptx") || strings.Contains(lower, ".docx")
+	return hasToolChain && hasDelivery
 }
 
 func genericArtifactGenerationGuidance(phase *Phase) string {

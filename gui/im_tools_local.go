@@ -265,17 +265,17 @@ func (h *IMMessageHandler) ensureRecentTaskWorkspaceForProjectPath(projectPath s
 		return false
 	}
 	if err := os.MkdirAll(projectPath, 0o755); err != nil {
-		log.Printf("[projectTabWorkDir] repair managed recent-task workspace failed path=%q err=%v", projectPath, err)
+		log.Printf("[projectTabWorkDir] repair managed task workspace failed path=%q err=%v", projectPath, err)
 		return false
 	}
 	taskFile := filepath.Join(projectPath, "task.md")
 	if _, err := os.Stat(taskFile); os.IsNotExist(err) {
-		content := fmt.Sprintf("# %s\n\nRecovered recent-task workspace.\nProject path: %s\n", lastPathComponent(projectPath), projectPath)
+		content := fmt.Sprintf("# %s\n\nRecovered task workspace.\nProject path: %s\n", lastPathComponent(projectPath), projectPath)
 		if writeErr := os.WriteFile(taskFile, []byte(content), 0o644); writeErr != nil {
-			log.Printf("[projectTabWorkDir] repair managed recent-task task.md failed path=%q err=%v", taskFile, writeErr)
+			log.Printf("[projectTabWorkDir] repair managed task task.md failed path=%q err=%v", taskFile, writeErr)
 		}
 	}
-	log.Printf("[projectTabWorkDir] repaired managed recent-task workspace path=%q", projectPath)
+	log.Printf("[projectTabWorkDir] repaired managed task workspace path=%q", projectPath)
 	return true
 }
 
