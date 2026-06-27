@@ -130,8 +130,8 @@ func (s *SQLiteStore) ListRecordApprovals(ctx context.Context, tenantID string, 
 			clauses = append(clauses, "created_by = ?")
 			args = append(args, userID)
 		case "pending_my_approval":
-			clauses = append(clauses, "status = ? AND assigned_to = ?")
-			args = append(args, recordApprovalStatusPending, userID)
+			clauses = append(clauses, "status = ? AND (assigned_to = ? OR current_assignee = ?)")
+			args = append(args, recordApprovalStatusPending, userID, userID)
 		case "handled":
 			clauses = append(clauses, "status IN (?, ?) AND reviewed_by = ?")
 			args = append(args, recordApprovalStatusApproved, recordApprovalStatusRejected, userID)

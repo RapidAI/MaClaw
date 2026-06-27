@@ -1597,7 +1597,7 @@ func (a *App) listMaclawAppApprovalInstances(appID string, lane string, limit in
 		}
 		cloned := cloneMaclawAppApprovalInstance(instance)
 		localContext = append(localContext, cloned)
-		if lane == "all" || lane == "" || instance.Lane == lane {
+		if maclawAppApprovalInstanceMatchesLane(instance, lane) {
 			localVisible = append(localVisible, cloned)
 		}
 	}
@@ -1853,11 +1853,31 @@ func filterMaclawAppApprovalInstancesByLane(instances []maclawAppApprovalInstanc
 	}
 	out := make([]maclawAppApprovalInstance, 0, len(instances))
 	for _, instance := range instances {
-		if instance.Lane == lane {
+		if maclawAppApprovalInstanceMatchesLane(instance, lane) {
 			out = append(out, instance)
 		}
 	}
 	return out
+}
+
+func maclawAppApprovalInstanceMatchesLane(instance maclawAppApprovalInstance, lane string) bool {
+	lane = normalizeMaclawAppApprovalLaneFilter(lane)
+	if lane == "" || lane == "all" {
+		return true
+	}
+	status := normalizeMaclawAppApprovalStatus(instance.Status)
+	switch lane {
+	case "handled":
+		return status == "approved" || status == "rejected" || status == "cancelled" || status == "timeout" || normalizeMaclawAppApprovalLane(instance.Lane) == "handled"
+	case "attention":
+		return status == "attention" || normalizeMaclawAppApprovalLane(instance.Lane) == "attention"
+	case "pending_my_approval":
+		return status == "pending" && normalizeMaclawAppApprovalLane(instance.Lane) == "pending_my_approval"
+	case "my_requests":
+		return normalizeMaclawAppApprovalLane(instance.Lane) == "my_requests"
+	default:
+		return normalizeMaclawAppApprovalLane(instance.Lane) == lane
+	}
 }
 func maclawAppApprovalInstanceMergeKeys(instance maclawAppApprovalInstance) []string {
 	keys := []string{}

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -723,10 +724,18 @@ func TestCodingSubAgentToolArgumentErrorsIncludeValidExamples(t *testing.T) {
 	if !strings.Contains(allowed.Text, "Example valid arguments:") || !strings.Contains(allowed.Text, `{"path":"src/main.go","operation":"replace"`) {
 		t.Fatalf("allowed-values error should include an edit_lines example, got %q", allowed.Text)
 	}
+	if !strings.Contains(allowed.Text, "action/op -> operation") || !strings.Contains(allowed.Text, "start/startLine -> start_line") {
+		t.Fatalf("edit_lines argument error should include alias recovery hints, got %q", allowed.Text)
+	}
 
 	skillTypeErr := invalidCodingSubAgentArgumentTypeResult("manage_skill", "args", "object", "string", "a JSON object")
 	if !strings.Contains(skillTypeErr.Text, `{"action":"run","name":"skill-name","args":{"input":"task-specific instructions"}}`) {
 		t.Fatalf("manage_skill type error should include args object example, got %q", skillTypeErr.Text)
+	}
+
+	mcpMissing := missingCodingSubAgentRequiredArgumentResult("call_mcp_tool", "server_id")
+	if !strings.Contains(mcpMissing.Text, "server/server_name -> server_id") || !strings.Contains(mcpMissing.Text, "args/params/input -> arguments") {
+		t.Fatalf("call_mcp_tool argument error should include alias recovery hints, got %q", mcpMissing.Text)
 	}
 }
 
@@ -780,6 +789,106 @@ func TestCodingSubAgentToolArgumentAliasesNormalizeCommonModelFields(t *testing.
 	}
 	if _, ok := editArgs["old_content"]; ok {
 		t.Fatalf("edit_file old_content alias should be removed when canonical is present: %#v", editArgs)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("grep_search", `{"query":"TODO","file_path":"gui"}`)
+	var grepArgs map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &grepArgs); err != nil {
+		t.Fatalf("normalized grep_search args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := grepArgs["pattern"].(string); got != "TODO" {
+		t.Fatalf("grep_search query alias should populate pattern, got %#v from %s", grepArgs, normalized)
+	}
+	if got, _ := grepArgs["path"].(string); got != "gui" {
+		t.Fatalf("grep_search file_path alias should populate path, got %#v from %s", grepArgs, normalized)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("read_file", `{"file":"main.go","path":"canonical.go"}`)
+	var readArgs map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &readArgs); err != nil {
+		t.Fatalf("normalized read_file args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := readArgs["path"].(string); got != "canonical.go" {
+		t.Fatalf("canonical path should not be overwritten by file alias, got %#v", readArgs)
+	}
+	if _, ok := readArgs["file"]; ok {
+		t.Fatalf("read_file file alias should be removed when canonical is present: %#v", readArgs)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("edit_lines", `{"file":"main.go","action":"update","startLine":2,"endLine":3,"content":"replacement"}`)
+	var editLinesArgs map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &editLinesArgs); err != nil {
+		t.Fatalf("normalized edit_lines args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := editLinesArgs["path"].(string); got != "main.go" {
+		t.Fatalf("edit_lines file alias should populate path, got %#v from %s", editLinesArgs, normalized)
+	}
+	if got, _ := editLinesArgs["operation"].(string); got != "replace" {
+		t.Fatalf("edit_lines action value should normalize to replace, got %#v from %s", editLinesArgs, normalized)
+	}
+	if got, _ := editLinesArgs["start_line"].(float64); got != 2 {
+		t.Fatalf("edit_lines startLine alias should populate start_line, got %#v from %s", editLinesArgs, normalized)
+	}
+	if got, _ := editLinesArgs["end_line"].(float64); got != 3 {
+		t.Fatalf("edit_lines endLine alias should populate end_line, got %#v from %s", editLinesArgs, normalized)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("call_mcp_tool", `{"server":"browser","tool":"screenshot","params":{"fullPage":true}}`)
+	var mcpArgs map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &mcpArgs); err != nil {
+		t.Fatalf("normalized call_mcp_tool args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := mcpArgs["server_id"].(string); got != "browser" {
+		t.Fatalf("call_mcp_tool server alias should populate server_id, got %#v from %s", mcpArgs, normalized)
+	}
+	if got, _ := mcpArgs["tool_name"].(string); got != "screenshot" {
+		t.Fatalf("call_mcp_tool tool alias should populate tool_name, got %#v from %s", mcpArgs, normalized)
+	}
+	if arguments, _ := mcpArgs["arguments"].(map[string]interface{}); arguments == nil || arguments["fullPage"] != true {
+		t.Fatalf("call_mcp_tool params alias should populate arguments, got %#v from %s", mcpArgs, normalized)
+	}
+
+	normalized = normalizeCodingSubAgentToolArgumentsForTool("call_mcp_tool", `{"server":"alias","server_id":"canonical","tool":"alias_tool","tool_name":"canonical_tool","args":{"bad":true},"arguments":{"ok":true}}`)
+	var canonicalMCPArgs map[string]interface{}
+	if err := json.Unmarshal([]byte(normalized), &canonicalMCPArgs); err != nil {
+		t.Fatalf("normalized canonical call_mcp_tool args should be valid JSON: %v; %s", err, normalized)
+	}
+	if got, _ := canonicalMCPArgs["server_id"].(string); got != "canonical" {
+		t.Fatalf("canonical server_id should not be overwritten by alias, got %#v", canonicalMCPArgs)
+	}
+	if got, _ := canonicalMCPArgs["tool_name"].(string); got != "canonical_tool" {
+		t.Fatalf("canonical tool_name should not be overwritten by alias, got %#v", canonicalMCPArgs)
+	}
+	if arguments, _ := canonicalMCPArgs["arguments"].(map[string]interface{}); arguments == nil || arguments["ok"] != true {
+		t.Fatalf("canonical arguments should not be overwritten by alias, got %#v", canonicalMCPArgs)
+	}
+	if _, ok := canonicalMCPArgs["server"]; ok {
+		t.Fatalf("call_mcp_tool server alias should be removed when canonical is present: %#v", canonicalMCPArgs)
+	}
+}
+
+func TestCodingSubAgentEditLinesAliasesPassExecution(t *testing.T) {
+	project := t.TempDir()
+	path := filepath.Join(project, "main.txt")
+	if err := os.WriteFile(path, []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{handler: &IMMessageHandler{}, projectPath: project}}
+
+	readResult := cb.executeToolWithOutcome("read_file", `{"path":"main.txt"}`)
+	if readResult.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("read_file before edit_lines outcome=%q result=%s", readResult.Outcome, readResult.Text)
+	}
+	result := cb.executeToolWithOutcome("edit_lines", `{"file":"main.txt","action":"update","startLine":2,"endLine":3,"content":"TWO"}`)
+	if result.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("edit_lines aliases should execute successfully, outcome=%q result=%s", result.Outcome, result.Text)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read edited file: %v", err)
+	}
+	if got := string(data); got != "one\nTWO\n" {
+		t.Fatalf("edit_lines aliases produced unexpected content %q", got)
 	}
 }
 
@@ -848,6 +957,16 @@ func TestCanonicalCodingSubAgentToolNameAcceptsModelCasing(t *testing.T) {
 	}
 	if got := canonicalCodingSubAgentToolName("search_files"); got != "Glob" {
 		t.Fatalf("canonical search_files = %q, want Glob", got)
+	}
+}
+
+func TestCodingSubAgentToolNameListIsStable(t *testing.T) {
+	names := codingSubAgentToolNameList()
+	if len(names) == 0 {
+		t.Fatal("tool name list should not be empty")
+	}
+	if !sort.StringsAreSorted(names) {
+		t.Fatalf("tool name list should be sorted for stable unknown-tool guidance, got %#v", names)
 	}
 }
 
@@ -1431,8 +1550,38 @@ func TestCodingSubAgentRejectsMissingMCPRequiredArguments(t *testing.T) {
 	if !strings.Contains(result.Text, "missing required MCP argument") || !strings.Contains(result.Text, "parent_id") {
 		t.Fatalf("missing MCP argument should produce targeted recovery error, got %q", result.Text)
 	}
+	if !result.SkipRejectedDynamicToolRecord {
+		t.Fatalf("missing MCP argument rejection should skip rejected dynamic tool tracking")
+	}
 	if len(cb.getDynamicToolsRun()) != 0 {
 		t.Fatalf("MCP call with missing required arguments should not execute or be tracked, got %#v", cb.getDynamicToolsRun())
+	}
+}
+
+func TestCodingSubAgentMCPArgumentAliasesReachTargetValidation(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir()},
+		matchedMCPTools: []codingSubAgentMCPToolMatch{{
+			ServerID:     "wiki",
+			ServerName:   "Wiki",
+			ToolName:     "get_page_children",
+			RequiredArgs: []string{"parent_id"},
+		}},
+	}
+
+	result := cb.executeToolWithOutcome("call_mcp_tool", `{"server":"wiki","tool":"get_page_children","params":{"limit":25}}`)
+
+	if result.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("aliased MCP call missing target required arg outcome = %q, want failed; result=%s", result.Outcome, result.Text)
+	}
+	if !strings.Contains(result.Text, "missing required MCP argument") || !strings.Contains(result.Text, "parent_id") {
+		t.Fatalf("aliased MCP call should reach target-specific required-argument validation, got %q", result.Text)
+	}
+	if !result.SkipRejectedDynamicToolRecord {
+		t.Fatalf("aliased MCP missing argument rejection should skip rejected dynamic tool tracking")
+	}
+	if len(cb.getDynamicToolsRun()) != 0 {
+		t.Fatalf("aliased MCP call with missing required arguments should not execute or be tracked, got %#v", cb.getDynamicToolsRun())
 	}
 }
 
@@ -4686,6 +4835,8 @@ func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T)
 		{Command: "bundle exec cucumber", Succeeded: true, Summary: "0 scenarios\n0 steps\n0m0.000s"},
 		{Command: "vendor/bin/phpunit", Succeeded: true, Summary: "OK (0 tests, 0 assertions)"},
 		{Command: "vitest run", Succeeded: true, Summary: "Test Files  0 passed (0)\nTests  0 passed (0)"},
+		{Command: "jest --runInBand", Succeeded: true, Summary: "Test Suites: 0 passed, 0 total\nTests:       0 total\nSnapshots:   0 total"},
+		{Command: "vitest run", Succeeded: true, Summary: "Test Files: 0 passed (0)\nTests: 0 total"},
 		{Command: "go test ./...", Succeeded: true, Summary: `go: warning: "./..." matched no packages`},
 		{Command: "mvn test", Succeeded: true, Summary: "[INFO] No tests to run."},
 		{Command: "cargo test", Succeeded: true, Summary: "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored"},
@@ -4830,6 +4981,9 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"yarn workspaces foreach --all --topological run build",
 		"yarn workspaces foreach --from web run lint",
 		"yarn workspaces foreach --from web run ci",
+		"yarn workspaces foreach -A exec tsc --noEmit",
+		"yarn workspaces foreach --from web exec eslint .",
+		"yarn workspaces foreach --all exec vitest run",
 		"yarn build",
 		"yarn test:unit",
 		"node --test",
@@ -4890,6 +5044,8 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"npx --package typescript tsc --noEmit",
 		"npx.cmd tsc --noEmit",
 		"cargo clippy --all-targets",
+		"cargo test --workspace",
+		"cargo check --all-targets",
 		"swift test",
 		"swift test --filter ParserTests",
 		"swift build",
@@ -4947,12 +5103,18 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"uv run --with pytest pytest tests",
 		"uvx --from ruff ruff check .",
 		"uv run ruff check .",
+		"uv run --project app pytest tests",
 		"poetry run pytest tests",
 		"poetry run -- mypy src",
 		"poetry run mypy src",
+		"poetry check",
+		"poetry --directory app check",
 		"pipenv run pytest tests",
 		"hatch run test",
+		"hatch test",
 		"pdm run pytest",
+		"pdm check",
+		"pdm --project app check",
 		"rye test",
 		"tox -q",
 		"nox -s tests",
@@ -4993,6 +5155,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"make lint",
 		"dotnet build",
 		"dotnet test --no-build",
+		"dotnet test --filter FullyQualifiedName~Unit",
 		"dotnet vstest bin/Debug/app.Tests.dll",
 		"dotnet format --verify-no-changes",
 		"dotnet msbuild -t:Test",
@@ -5021,12 +5184,14 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"mvn -q test",
 		"mvn -B -pl app -am verify",
 		"mvnw -DskipTests=false test",
+		"mvn -Dmaven.test.skip=false verify",
 		"mvnw verify",
 		"gradlew.bat test",
 		"gradlew.bat :app:build",
 		"./gradlew check",
 		"./gradlew --continue :service:check",
 		"gradle :app:test",
+		"gradle --continue :app:test",
 		"CGO_ENABLED=0 go test ./...",
 		"env CGO_ENABLED=0 go test ./...",
 		"env -i CGO_ENABLED=0 go test ./...",
@@ -5077,9 +5242,17 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"corepack npm exec serve .",
 		"corepack pnpm --filter web dev",
 		"poetry run serve",
+		"poetry install",
+		"poetry update",
+		"poetry build",
 		"pipenv run flask run",
 		"hatch run serve",
+		"hatch build",
+		"hatch env show",
 		"pdm run serve",
+		"pdm install",
+		"pdm update",
+		"pdm build",
 		"tox --listenvs",
 		"tox -l",
 		"tox --showconfig",
@@ -5107,6 +5280,9 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"dotnet watch test",
 		"dotnet tool restore",
 		"dotnet format",
+		"dotnet test --list-tests",
+		"dotnet test -t",
+		"dotnet vstest bin/Debug/app.Tests.dll /ListTests",
 		"dotnet msbuild -t:Clean",
 		"./vendor/bin/php-cs-fixer fix",
 		"composer install",
@@ -5127,7 +5303,12 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"vendor/bin/psalm --clear-cache",
 		"./mvnw dependency:tree",
 		"mvn -q dependency:tree",
+		"mvn -DskipTests test",
+		"mvn test -DskipTests=true",
+		"mvn -Dmaven.test.skip=true verify",
 		"gradle dependencies",
+		"./gradlew --dry-run test",
+		"gradle -m :app:test",
 		"./gradlew bootRun",
 		"gradlew :app:run",
 		"TEST_NAME=unit echo test",
@@ -5138,6 +5319,8 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"go -C gui env",
 		"go fmt ./...",
 		"cargo fmt --all",
+		"cargo test --no-run",
+		"cargo clippy --fix",
 		"swift run App",
 		"swift package update",
 		"swift package resolve",
@@ -5174,6 +5357,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"yarn format",
 		"yarn workspaces foreach -A run format",
 		"yarn workspaces foreach -A exec vite --host 0.0.0.0",
+		"yarn workspaces foreach -A exec eslint --fix .",
 		"make fmt",
 		"make format",
 		"just",

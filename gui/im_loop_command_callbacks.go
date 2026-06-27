@@ -19,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 // guiLoopCommandCallbacks implements agent.LoopCommandCallbacks.
@@ -259,6 +260,9 @@ func (c *loopCycleCallbacks) IsToolAllowed(name string) bool {
 	if c == nil || c.parent == nil || c.parent.handler == nil {
 		return true
 	}
+	if c.disallowLoopCommandBashForDocOnly(name) {
+		return false
+	}
 	return c.parent.handler.isWorkflowToolAllowedForOwner(c.parent.handler.workflowPolicyUserID(strings.TrimSpace(c.parent.userID)), name)
 }
 
@@ -266,7 +270,22 @@ func (c *loopCycleCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, str
 	if c == nil || c.parent == nil || c.parent.handler == nil {
 		return true, ""
 	}
+	if c.disallowLoopCommandBashForDocOnly(name) {
+		return false, "bash is not allowed during doc-only workflow command cycles"
+	}
 	return c.parent.handler.isWorkflowToolCallAllowedForOwner(c.parent.handler.workflowPolicyUserID(strings.TrimSpace(c.parent.userID)), name, argsJSON)
+}
+
+func (c *loopCycleCallbacks) disallowLoopCommandBashForDocOnly(name string) bool {
+	if strings.TrimSpace(name) != "bash" || c == nil || c.parent == nil || c.parent.handler == nil {
+		return false
+	}
+	policyUserID := c.parent.handler.workflowPolicyUserID(strings.TrimSpace(c.parent.userID))
+	if policyUserID == "" {
+		return false
+	}
+	_, policy, apply := c.parent.handler.workflowToolFilterOwnerPolicyAndDecision(policyUserID, nil)
+	return apply && policy == v2.ToolFilterDocOnly
 }
 
 func (c *loopCycleCallbacks) OnToken(delta string) {

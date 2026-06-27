@@ -4833,10 +4833,22 @@
     white-space: nowrap;
 }
 
-.apps-layout-designer__region-control > span {
+.apps-layout-designer__region-visible {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr);
+    gap: 7px;
+    align-items: center;
+}
+
+.apps-layout-designer__region-visible > span {
     min-width: 0;
     display: grid;
     gap: 1px;
+}
+
+.apps-layout-designer__region-control[data-visible="false"] {
+    opacity: 0.62;
 }
 
 .apps-layout-designer__region-control select {

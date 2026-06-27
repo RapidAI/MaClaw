@@ -256,6 +256,13 @@ func appInstallationApprovalInstanceHasWorkflowNode(approval map[string]any, wor
 			return true
 		}
 	}
+	for _, key := range []string{"currentNodeIDs", "current_node_ids", "workflowNodeIDs", "workflow_node_ids", "workflowNodes", "workflow_nodes"} {
+		for _, value := range appInstallationStringList(approval[key]) {
+			if value == workflowNode {
+				return true
+			}
+		}
+	}
 	return false
 }
 

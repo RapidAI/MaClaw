@@ -295,8 +295,9 @@ func missingCodingSubAgentMCPRequiredArgumentResult(tool codingSubAgentMCPToolMa
 	target := tool.ServerName + "/" + tool.ToolName
 	example := codingSubAgentMCPToolArgumentExample(tool, field)
 	return codingToolExecutionResult{
-		Text:    fmt.Sprintf("Error: call_mcp_tool target %q is missing required MCP argument %q in arguments. The MCP tool was not executed. Regenerate call_mcp_tool with arguments.%s set. Example valid arguments: %s.", target, field, field, example),
-		Outcome: codingToolOutcomeFailed,
+		Text:                          fmt.Sprintf("Error: call_mcp_tool target %q is missing required MCP argument %q in arguments. The MCP tool was not executed. Regenerate call_mcp_tool with arguments.%s set. Example valid arguments: %s.", target, field, field, example),
+		Outcome:                       codingToolOutcomeFailed,
+		SkipRejectedDynamicToolRecord: true,
 	}
 }
 

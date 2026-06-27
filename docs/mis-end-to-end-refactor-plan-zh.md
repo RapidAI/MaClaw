@@ -3392,3 +3392,384 @@ VE 群组协作入口 -> discoverable 探测、consultation 创建、邀请失�
 ```
 
 至此，上一轮列出的几个可直接清理的 GUI 包级阻塞中，Hub 文件型 Skill 安装、超大工具参数执行前拒绝、Skill 会话 guard、VE group conversation discoverable 夹具均已定向通过。后续仍需继续扩大验证范围，尤其是 App Studio 动态界面制作/保存/测试/上传/安装/运行的前端交互闭环和全包 GUI 回归。
+
+### 推进记录：群聊执行器上下文隔离、确认门测试隔离与 DataSrv 验证修正（2026-06-27）
+本轮继续从“MaClaw App 作为超级 Skill，运行时会依赖其它 Skill、审批工作流和 DataSrv 操作”的角度清理全链路外围阻塞。重点是让 GUI 后端测试不再被真实用户配置、全局语义分类器或后台群聊执行器拖入不可控路径。
+
+处理内容：
+
+```text
+1. VE group executor 运行入口显式创建 LoopContext
+   - Platform/UserID/Lang 写入 LoopContext，prepareIMLoopContext 对已有上下文也补齐这些字段。
+   - initialAgentLoopPhase 对 platform=ve_group_executor 跳过 skill preference，避免群聊上下文中的“文档/pdf/report”等词误触发 Skill/Hub 搜索。
+   - group executor session cancel 会传播到 LoopContext.Cancel，handler 返回时也主动 cancel，减少异步测试和真实会话取消泄漏。
+
+2. Wails 事件发送在无生命周期 ctx 时降级为日志
+   - emitAIAssistantResponse 在 App nil 或 ctx nil 时直接跳过 EventsEmit。
+   - 这避免后端异步失败路径在无 Wails runtime 的单元测试里二次 panic/报错。
+
+3. 执行确认门测试隔离 LLM provider 和全局 UIC
+   - 确认门用例使用 SaveMaclawLLMProviders 写入 httptest provider，而不是只依赖 SaveConfig 中的后端拥有字段。
+   - 需要“无语义分类器”前提的测试显式 setUnifiedClassifierForIM(nil) 并在 Cleanup 中清理，避免全包运行时被其它 App 初始化留下的 UIC 影响。
+
+4. DataSrv 模块验证命令修正
+   - DataSrv 是独立 Go module，结构化数据测试需要在 datasrv 目录下运行 go test ./structureddata。
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestSendMessageForTabRoutesRecentTaskToWorkingDir|TestSendAIAssistantMessageRoutesRecentTaskToWorkingDir"
+go test ./gui -count=1 -vet=off -run "TestSkillCreateSessionGuard_DoesNotGuess|TestSkillCreateSessionGuard_BlocksAmbiguousIntent|TestSkillExecutorExecute_BlocksCreateSessionWhenSemanticUnavailable"
+go test ./gui -count=1 -vet=off -run "TestHandleIMMessageWithProgressAndStream_ReturnsConfirmationBeforeExecution|TestHandleIMMessageWithProgressAndStream_PresentationTaskSkipsCodingConfirmation|TestHandleIMMessageWithProgressAndStream_ScreenshotTaskUsesLLMAndSkipsConfirmation"
+go test ./gui -count=1 -vet=off -run "TestInitiateGroupConversationErrorsOnMissingSessionID|TestCodingSubAgentFinalGitDiffRejectsEmptyDiffAfterTrackedModification|TestClassifyTaskIntent_WithoutUIC_ReturnsUnknown"
+go test ./gui -count=1 -vet=off -run "PlanMaclawAppInstall|InstallMaclawAppDependencies|RecordMaclawAppInstallRegistersEnterpriseApprovalAppEvidence|ListMaclawAppApprovalInstances"
+cd datasrv && go test ./structureddata -count=1 -run "HTTPServerRequiresBearerTokenAndHandlesRecords|Approval|AppInstallation|Capabilities"
+git diff --check -- gui/app_wails_bindings.go gui/app_ve_test.go gui/app_ai_assistant_delivery_runtime_test.go gui/app_nl_skills_market_test.go gui/im_agent_loop_tool_exec.go gui/im_loop_control.go gui/im_agent_loop_phase.go gui/ve_group_dispatcher.go gui/im_confirmation_gate_test.go gui/app_nl_skills_guard_test.go docs/mis-end-to-end-refactor-plan-zh.md
+```
+
+当前仍不能宣称全 GUI 包级完成。最新 `go test ./gui -count=1 -vet=off -timeout 150s` 已不再卡在最初的 Hub file-backed Skill、oversized tool args、VE discoverable 或确认门 httptest provider 问题上，但全包仍暴露其它历史/外围测试失败与全局状态污染，例如：
+
+```text
+coding subagent 动态工具失败是否应计入 rejected result 的断言不一致
+workflow doc-only / planning phase 工具过滤策略与测试期望不一致
+confirmation typed approval 语义分类上下文在 full run 下仍受全局分类器/配置影响
+in-flight marker / agent loop trace 类测试存在多处旧期望与当前执行策略不一致
+```
+
+这些失败暂不作为 MaClaw App 主链路完成证明。下一步继续优先处理两类工作：
+
+```text
+1. 继续压低全包 GUI 回归噪音：优先修复全局状态隔离和与运行时可信性相关的失败。
+2. 回到 App Studio / 动态 UI / Hub 上传下载重装 / DataSrv app_installations 回流的端到端样例，把企业审批型应用和企业普通应用各做成可验收闭环。
+```
+
+### 推进记录：企业 App 保存到超级 Skill 定义时补齐绑定契约（2026-06-27）
+
+本轮继续回到 App Studio / MaClaw App 制作链路。企业审批型应用现在按“超级 Skill”保存时，需要同时满足两个视角：
+
+```text
+appSkill
+  表示 MaClaw App 自身依附的超级 Skill 身份，用于能力市场、依赖检查、安装记录和版本快照。
+
+skill
+  表示运行期/兼容读取所需的 App 定义绑定，包含 appDefinitionFile、inputMode、outputModes、fields 等动态 UI 与运行入口信息。
+```
+
+此前企业审批型/企业普通型 App 的草稿 manifest 只写 `appSkill`，保存到 `maclaw.app.json` 后缺少 `binding.skill`，导致 App Studio 保存到 Skill 的契约测试无法证明“这个 App 定义可以被旧读取点、运行入口和市场包校验共同识别”。本轮在前端序列化层补齐兼容绑定：
+
+```text
+App Studio 企业 App 草稿 -> 保存到 Skill
+  -> manifest.appSkill 保留超级 Skill 身份
+  -> manifest.skill 自动派生为同一 Skill ID
+  -> appDefinitionFile 固定为 maclaw.app.json
+  -> inputMode 默认为 form，outputModes 从结果契约继承
+
+appToManifest
+  -> 若 manifest.skill 缺失但 manifest.appSkill 存在，发布/安装包输出中也补齐 binding.skill
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "saves a newly created enterprise approval app into its app skill definition"
+npm.cmd test -- AppsPage.test.tsx -t "approval"
+npm.cmd run build
+```
+
+对应全链路意义：
+
+```text
+App Studio 可视化制作 -> 保存 maclaw.app.json 到超级 Skill -> 测试当前定义 -> 上传 SkillMarket/Hub -> 安装时依赖检查和运行时读取都能识别同一个 App Skill 绑定
+```
+
+### 推进记录：审批/输入门控优先于工具策略，补齐运行期安全回归（2026-06-27）
+
+本轮继续从“企业审批型应用 = 数据录入 + 审批工作流 Skill 运行 + 审批实例数据管理 + 结果反馈”的运行期角度推进。核心结论是：当当前节点还在等待表单输入、等待确认或等待审批时，工具暴露与工具执行都必须先被节点状态拦住，不能因为后续 `doc_only`、`planning` 或默认路由策略又把 `read_file`、`bash` 等工具补回来。
+
+已落地调整：
+
+```text
+1. WorkflowEngine.IsPhaseExecutionBlocked 不再固定返回 false
+   - 当前 phase 存在待审 PendingReviewPhaseID 且就是 CurrentPhase 时阻断执行。
+   - 当前 phase 定义了 InputSchema，且 PhaseFormSubmitted / PhaseFormSkipped 都未发生时阻断执行。
+
+2. GUI agent loop 工具暴露把“阶段阻断”放在工具策略之前
+   - workflowToolFilterOwnerPolicyAndDecision 先检查 IsPhaseExecutionBlocked。
+   - applyWorkflowFilter=true 且 ToolFilterNone 时明确清空工具列表。
+   - 这把 ToolFilterNone 的两种语义区分开：未应用策略时不处理；已应用策略时代表当前阶段无可用工具。
+
+3. doc_only / planning 阶段不允许具体执行型工具
+   - 文档阶段和规划阶段允许检查/阅读类能力，但阻止 bash、write_file、edit_file、edit_lines、task、delegate_task 等会改变系统状态的工具。
+   - loop command cycle 也同步禁止 doc-only 阶段通过 bash 绕过。
+
+4. MCP 与 inline payload 安全边界收紧
+   - call_mcp_tool.arguments 不是完整 JSON object 时，错误信息明确要求传入完整对象。
+   - 超大 inline bash payload 在 handler 前被拒绝，不再自动放行；提示改为先写入或上传脚本。
+   - MCP required-argument 预检查失败不再记为 dynamic tool execution result，因为该 MCP tool 实际没有被执行。
+   - manage_skill 等真实动态工具参数失败仍保留 rejected audit 记录。
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestDocOnlyWorkflowPhaseBlocksImplementationTools|TestPlanningWorkflowPhaseAllowsInspectionButBlocksImplementationTools|TestLoopCommandCycleHonorsWorkflowPolicy|TestPrepareAgentLoopToolsUsesRuntimePolicyOwner|TestPrepareAgentLoopToolsBlockedPhaseWithNoPolicyExposesNoTools"
+go test ./gui -count=1 -vet=off -run "TestPreCheckToolArgsForAgentLoopRejectsInvalidMCPArgumentsShape|TestPreCheckAgentLoopInlinePayloadLimitGuidesChunking|TestExecuteAgentLoopToolCallRejectsOversizedInlinePayloadBeforeHandler|TestRejectedDynamicToolArgumentFailureIsTrackedForAudit|TestCodingSubAgentRejectsMissingMCPRequiredArguments"
+git diff --check -- corelib/workflow/v2/engine.go gui/im_agent_loop_tools.go gui/im_tool_execution.go gui/im_loop_command_callbacks.go gui/coding_subagent.go gui/coding_subagent_mcp.go
+```
+
+对应全链路意义：
+
+```text
+企业审批型 MaClaw App 发起节点 -> 动态 UI 提交数据 -> 未提交前不暴露执行工具
+审批工作流 Skill 当前节点 -> 待确认/待审批 -> 不允许通过工具路由绕过节点状态
+workflow/app/runtime skill 调用 MCP 或本地工具 -> 参数形态、payload 大小、动态工具审计在执行前完成
+```
+
+### 推进记录：App Studio 动态布局支持区域显示/隐藏并驱动运行界面（2026-06-27）
+
+本轮继续补“所有 MaClaw App 的界面动态生成，应用程序设计时自动生成，用户调节位置，在应用信息文件中保存界面布局信息”这一条。此前 App Studio 已能选择布局模板、密度、主操作区、输出区，并能逐个调整 region placement；本轮补齐 region 可见性：
+
+```text
+App Studio / UI layout
+  -> 每个 region 有显示开关
+  -> 关闭后从布局预览里移除
+  -> placement select 禁用，避免隐藏区域继续误调位置
+  -> manifest.ui.layouts[entry].regions 写入 visible:false
+
+App runtime panel
+  -> 读取 runtimeWorkspaceLayoutForApp(app)
+  -> input / instance_list / record_list / output 等区域按 visible 状态渲染
+  -> 隐藏 output region 时，输出面板和运行历史不再显示
+  -> 发布校验仍会检查必需 region role，避免无效企业应用进入市场
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "workspace region visibility"
+npm.cmd test -- AppsPage.test.tsx -t "App Studio|layout|enterprise normal|approval"
+npm.cmd run build
+```
+
+对应全链路意义：
+
+```text
+App Studio 自动生成动态 UI -> 用户可视化调整区域位置和可见性 -> 布局写入 maclaw.app.json / app package -> 运行界面按 manifest 布局渲染 -> 测试后上传 Hub 能携带同一布局契约
+```
+
+### 推进记录：布局可见性进入发布队列、安装记录与 DataSrv 回流（2026-06-27）
+
+上一轮补了 App Studio 和运行面板对 `regions[].visible=false` 的支持。本轮把这件事继续推过分发/安装链路，避免用户在 Studio 里隐藏的区域只在本机草稿有效，上传、重装或 DataSrv 回流后又丢失。
+
+已补齐验证点：
+
+```text
+GUI 提交队列
+  SubmitMaclawAppPackage -> normalized package -> queued package
+  保留 ui.layouts[entry].regions[].visible=false
+
+DataSrv app_installations
+  UpsertAppInstallation -> normalize workspace_layout -> SQLite persistence
+  保留 workspace_layout.regions[].visible=false
+
+前端 App Studio / runtime
+  用户隐藏 region -> manifest 写入 visible:false
+  runtime panel 按 visible 状态隐藏 output/history 等区块
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestSubmitMaclawAppPackagePersistsNormalizedWorkspaceLayout"
+go test ./structureddata -count=1 -run "TestUpsertAppInstallationNormalizesGovernanceResultContract"
+go test ./gui -count=1 -vet=off -run "SubmitMaclawAppPackage|PlanMaclawAppInstallNormalizesWorkspaceLayout|RecordMaclawAppInstall|InstallSelectedMaclawAppPackageFromHub|InstallMaclawAppPackageFromHub|ListMaclawAppInstalls"
+go test ./structureddata -count=1 -run "AppInstallation|Approval|Capabilities|HTTPServerRequiresBearerTokenAndHandlesRecords"
+npm.cmd test -- AppsPage.test.tsx -t "App Studio|layout|enterprise normal|approval|install records|app_installations"
+```
+
+对应全链路意义：
+
+```text
+App Studio 可视化布局 -> maclaw.app.json / app package -> 本地提交队列 -> Hub 安装包 -> RecordMaclawAppInstall -> DataSrv app_installations -> GUI 应用面板恢复
+```
+
+布局字段现在不只是前端状态，而是进入了 MaClaw App 分发和安装审计的持久契约。
+
+### 推进记录：审核通过队列安装补齐 DataSrv 注册可视化证据（2026-06-27）
+
+本轮继续从“本地制作 / 测试 / 上传 Hub / 审核通过 / 安装回本机 / DataSrv 注册 / 运行入口恢复”的全链路检查发布面板。后端安装返回的 `install_record.datasrv_registration` 已经存在，但发布队列里按单个 App 拆出的安装证据没有把父级 DataSrv 注册结果带下来，导致用户从“审核通过的队列项”直接安装后，只能看到依赖、版本、布局和测试证据，看不到企业普通应用或企业审批型应用是否已经完成 DataSrv 应用安装登记。
+
+已落地调整：
+
+```text
+Hub 审核通过队列项
+  -> Install approved app
+  -> InstallMaclawAppPackageFromHub
+  -> install_record.datasrv_registration
+  -> installEvidenceRecordForApp 继承父级 DataSrv 注册结果
+  -> InstallRecordEvidenceSnapshot 显示 DataSrv bindings registered / failed / skipped
+```
+
+现在发布队列中同一个审核通过安装结果会同时展示：
+
+```text
+Dependency verification
+Version snapshot
+Workspace layout
+Result contract
+Test evidence
+DataSrv registration summary
+```
+
+对应全链路意义：
+
+```text
+App Studio 设计企业普通/审批型应用
+  -> 测试证据与定义 hash 绑定
+  -> 上传/同步到 Hub 审核
+  -> 审核通过后从队列安装
+  -> 自动安装依赖 Skill
+  -> 记录安装版本与安装证据
+  -> DataSrv app_installations 注册结果回显到发布队列
+  -> 用户能确认“已安装 + 已登记 + 可运行”
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "installs an approved Hub app directly from the publish queue"
+```
+
+### 推进记录：审批实例管理的 lane/status 语义对齐（2026-06-27）
+
+本轮继续检查“企业审批型应用 = 数据录入 + 审批工作流 Skill 运行 + 审批实例数据管理 + 结果反馈”中的审批实例管理环节。前端运行工作台和全局审批实例管理器已经提供“我的申请 / 待我审批 / 已处理 / 需关注 / 全部”、当前节点、审批结果、结果包和决策按钮；但后端本地/远端合并后的 lane 过滤仍主要依赖 `instance.Lane == lane`。这会导致旧数据或 DataSrv 回流数据出现以下不一致：
+
+```text
+status = approved / rejected
+lane   = pending_my_approval  // 旧数据或外部回流未迁移
+
+前端语义：应显示在“已处理”
+后端旧语义：仍按 lane 字段过滤，可能从“已处理”漏掉
+```
+
+已落地调整：
+
+```text
+ListMaclawAppApprovalInstances / ListMaclawAppApprovalInstancesAll
+  -> 本地审批实例过滤改为 maclawAppApprovalInstanceMatchesLane
+  -> DataSrv 远端合并后的二次过滤也使用同一语义
+
+maclawAppApprovalInstanceMatchesLane
+  -> handled: approved / rejected / cancelled / timeout 或 lane=handled
+  -> attention: status=attention 或 lane=attention
+  -> pending_my_approval: 只有 status=pending 且 lane=pending_my_approval
+  -> my_requests: 保持 lane=my_requests
+```
+
+对应全链路意义：
+
+```text
+审批工作流 Skill 运行/回写
+  -> 本地审批实例 registry
+  -> DataSrv RecordApproval 回流
+  -> GUI 单 App 审批工作台
+  -> GUI 全局审批实例管理器
+  -> 我的申请 / 我审批的 / 已处理 / 需关注 分类一致
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestMaclawAppApprovalInstancesPersistAndFilter|TestListMaclawAppApprovalInstancesAll|TestListMaclawAppApprovalInstancesMergesDataSrvWithLocal"
+```
+
+### 推进记录：DataSrv 待审批 lane 支持 current_assignee（2026-06-27）
+
+本轮继续检查 DataSrv 到 GUI 的审批实例回流。MaClaw App 审批型应用在运行时已经把“当前节点状态”拆成：
+
+```text
+current_node / workflow_node_ids
+current_assignee
+current_assignee_type
+from_status / to_status
+```
+
+但 DataSrv 的 `/api/v1/data/approvals?lane=pending_my_approval` 旧查询只使用 `assigned_to = 当前用户`。如果审批工作流 Skill 或 MaClaw App 运行时只写入 `current_assignee`，或者当前节点负责人从个人切换到队列/节点上下文，GUI 从 DataSrv 拉取“待我审批”时可能漏掉该审批实例。
+
+已落地调整：
+
+```text
+DataSrv SQLiteStore.ListRecordApprovals
+  lane=pending_my_approval
+  旧: status=pending AND assigned_to=current_user
+  新: status=pending AND (assigned_to=current_user OR current_assignee=current_user)
+```
+
+对应全链路意义：
+
+```text
+审批型 App 发起
+  -> 审批工作流 Skill 运行
+  -> DataSrv RecordApproval 写入 current_assignee/current_node
+  -> GUI 查询 pending_my_approval
+  -> 我的审批列表能看到当前节点负责人为自己的审批实例
+```
+
+已通过定向验证：
+
+```text
+go test ./structureddata -count=1 -run "TestHTTPServerRecordApprovalsCarryMaClawAppSemantics"
+```
+
+### 推进记录：DataSrv app_installations 支持并行审批节点检索（2026-06-27）
+
+本轮继续推进“安装登记 -> DataSrv 能力发现 -> GUI 恢复企业审批型 App”的链路。此前 DataSrv `ListAppInstallations` 已支持按 `workflow_skill_id` 和 `workflow_node` 从安装 metadata / test evidence 中筛选 App，但 `workflow_node` 只匹配单值字段：
+
+```text
+currentNode
+current_node
+workflowNode
+workflow_node
+```
+
+审批工作流实际可能存在并行节点或多当前节点，GUI 与审批实例回流已使用：
+
+```text
+currentNodeIDs / current_node_ids
+workflowNodeIDs / workflow_node_ids
+workflowNodes / workflow_nodes
+```
+
+如果安装证据里只在数组字段中保留并行节点，DataSrv 的 app_installations 查询就无法按该节点找回对应 App，影响“按当前节点定位关联企业审批应用/安装记录”的全链路诊断。
+
+已落地调整：
+
+```text
+appInstallationApprovalInstanceHasWorkflowNode
+  -> 保留单值节点匹配
+  -> 增加数组节点匹配:
+     currentNodeIDs
+     current_node_ids
+     workflowNodeIDs
+     workflow_node_ids
+     workflowNodes
+     workflow_nodes
+```
+
+对应全链路意义：
+
+```text
+App Studio / 测试证据
+  -> approvalInstance.currentNodeIDs
+  -> RecordMaclawAppInstall
+  -> DataSrv app_installations metadata
+  -> ListAppInstallations(workflow_node=并行节点)
+  -> GUI / DataSrv 能力发现可恢复对应审批型 App
+```
+
+已通过定向验证：
+
+```text
+go test ./structureddata -count=1 -run "TestListAppInstallationsFiltersByApprovalInstanceEvidence"
+```

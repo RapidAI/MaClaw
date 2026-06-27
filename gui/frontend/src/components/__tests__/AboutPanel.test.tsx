@@ -113,7 +113,7 @@ describe('AboutPanel', () => {
         expect(baseProps.onOpenGithub).toHaveBeenCalledTimes(1);
     });
 
-    it('renders OEM brand product name from Chinese and English display names', () => {
+    it('renders MetaStaff about product name with the stylized 6 pattern', () => {
         render(
             <AboutPanel
                 {...baseProps}
@@ -131,7 +131,7 @@ describe('AboutPanel', () => {
             />,
         );
 
-        expect(screen.getByText('智员 MetaStaff')).toBeTruthy();
+        expect(screen.getByRole('heading', { name: '智员 6 程启' })).toBeTruthy();
     });
 
     it('renders current tenant and registered hub instance name', () => {

@@ -173,8 +173,9 @@ const (
 const codingSubAgentInlineContentLimit = 1800
 
 type codingToolExecutionResult struct {
-	Text    string
-	Outcome codingToolOutcome
+	Text                          string
+	Outcome                       codingToolOutcome
+	SkipRejectedDynamicToolRecord bool
 }
 
 var codingSubAgentFreeformSecretPatterns = []*regexp.Regexp{
@@ -742,7 +743,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		c.emitToolFinishedEvent(name, toolResult.Text, toolResult.Outcome, duration)
 		if toolResult.Outcome != codingToolOutcomeSuccess {
 			logCodingSubAgentOperationFailure(c, name, argsJSON, toolResult, duration)
-			c.trackRejectedDynamicToolResult(name, argsJSON, toolResult.Text, dynamicToolInitialCount)
+			if !toolResult.SkipRejectedDynamicToolRecord {
+				c.trackRejectedDynamicToolResult(name, argsJSON, toolResult.Text, dynamicToolInitialCount)
+			}
 		}
 	}()
 
@@ -1319,7 +1322,11 @@ func appendCodingSubAgentArgumentExample(text, name string) string {
 	if example == "" {
 		return text
 	}
-	return strings.TrimSpace(text) + " Example valid arguments: " + example + "."
+	text = strings.TrimSpace(text) + " Example valid arguments: " + example + "."
+	if hint := codingSubAgentToolArgumentAliasHint(name); hint != "" {
+		text += " " + hint
+	}
+	return text
 }
 
 func codingSubAgentToolArgumentExample(name string) string {
@@ -1348,6 +1355,27 @@ func codingSubAgentToolArgumentExample(name string) string {
 		return `{"server_id":"server","tool_name":"tool","arguments":{}}`
 	case "coding_knowledge_search", "knowledge_search":
 		return `{"query":"search terms"}`
+	default:
+		return ""
+	}
+}
+
+func codingSubAgentToolArgumentAliasHint(name string) string {
+	switch canonicalCodingSubAgentToolName(name) {
+	case "Glob":
+		return `Accepted aliases: glob/query -> pattern; file/file_path/filepath -> path.`
+	case "ripgrep":
+		return `Accepted aliases: regex/query -> pattern; file/file_path/filepath -> path.`
+	case "read_file", "write_file", "list_directory", "git_diff":
+		return `Accepted aliases: file/file_path/filepath -> path.`
+	case "edit_file":
+		return `Accepted aliases: file/file_path/filepath -> path; old_content -> old_string; new_content -> new_string.`
+	case "edit_lines":
+		return `Accepted aliases: file/file_path/filepath -> path; action/op -> operation; start/startLine -> start_line; end/endLine -> end_line; add/update/remove-style operations are normalized.`
+	case "bash":
+		return `Accepted aliases: work_dir/cwd -> working_dir.`
+	case "call_mcp_tool":
+		return `Accepted aliases: server/server_name -> server_id; tool/name -> tool_name; args/params/input -> arguments.`
 	default:
 		return ""
 	}
@@ -1390,13 +1418,73 @@ func applyCodingSubAgentToolArgumentAliases(name string, args map[string]interfa
 	}
 	changed := false
 	switch canonicalCodingSubAgentToolName(name) {
+	case "Glob":
+		changed = applyCodingSubAgentToolArgumentAlias(args, "glob", "pattern") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "query", "pattern") || changed
+		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
+	case "ripgrep":
+		changed = applyCodingSubAgentToolArgumentAlias(args, "regex", "pattern") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "query", "pattern") || changed
+		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
+	case "read_file", "write_file", "list_directory", "git_diff":
+		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
+	case "edit_lines":
+		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "action", "operation") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "op", "operation") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "start", "start_line") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "startLine", "start_line") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "end", "end_line") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "endLine", "end_line") || changed
+		changed = applyCodingSubAgentEditLinesOperationAliases(args) || changed
 	case "bash":
 		changed = applyCodingSubAgentToolArgumentAlias(args, "work_dir", "working_dir") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "cwd", "working_dir") || changed
 	case "edit_file":
+		changed = applyCodingSubAgentPathArgumentAliases(args) || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "old_content", "old_string") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "new_content", "new_string") || changed
+	case "call_mcp_tool":
+		changed = applyCodingSubAgentToolArgumentAlias(args, "server", "server_id") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "server_name", "server_id") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "name", "tool_name") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "tool", "tool_name") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "args", "arguments") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "params", "arguments") || changed
+		changed = applyCodingSubAgentToolArgumentAlias(args, "input", "arguments") || changed
 	}
+	return changed
+}
+
+func applyCodingSubAgentEditLinesOperationAliases(args map[string]interface{}) bool {
+	operation, ok := args["operation"].(string)
+	if !ok {
+		return false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(operation))
+	switch normalized {
+	case "insert", "replace", "delete":
+		if operation == normalized {
+			return false
+		}
+		args["operation"] = normalized
+	case "add", "append", "insert_line", "insert_lines":
+		args["operation"] = "insert"
+	case "update", "modify", "replace_line", "replace_lines":
+		args["operation"] = "replace"
+	case "remove", "rm", "delete_line", "delete_lines":
+		args["operation"] = "delete"
+	default:
+		return false
+	}
+	return true
+}
+
+func applyCodingSubAgentPathArgumentAliases(args map[string]interface{}) bool {
+	changed := false
+	changed = applyCodingSubAgentToolArgumentAlias(args, "file", "path") || changed
+	changed = applyCodingSubAgentToolArgumentAlias(args, "file_path", "path") || changed
+	changed = applyCodingSubAgentToolArgumentAlias(args, "filepath", "path") || changed
 	return changed
 }
 
@@ -2760,6 +2848,7 @@ func codingSubAgentToolNameList() []string {
 	for n := range codingSubAgentToolNames {
 		names = append(names, n)
 	}
+	sort.Strings(names)
 	return names
 }
 
@@ -4185,8 +4274,12 @@ func subAgentVerificationOutputLooksEmpty(cmd CodingSubAgentCommandResult) bool 
 		"running 0 tests",
 		"total tests: 0",
 		"tests run: 0",
+		"tests: 0 total",
 		"tests 0 passed",
+		"test suites: 0 total",
+		"test suites: 0 passed",
 		"test files 0 passed",
+		"test files: 0 passed",
 		"ran 0 tests",
 		"executed 0 tests",
 		"found 0 tests",
@@ -5359,7 +5452,7 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 	case "go":
 		return goRunsVerification(args)
 	case "cargo":
-		return firstArgIn(args, "test", "check", "clippy", "build")
+		return cargoRunsVerification(args)
 	case "swift":
 		return swiftRunsVerification(args)
 	case "zig":
@@ -5575,6 +5668,9 @@ func yarnWorkspacesForeachRunsVerification(args []string) bool {
 		scriptArgs := stripPackageManagerOptions(args[1:])
 		return len(scriptArgs) > 0 && isVerificationScriptName(scriptArgs[0]) && !hasMutatingVerificationArg(scriptArgs)
 	}
+	if args[0] == "exec" && len(args) > 1 {
+		return verificationRunnerCommandFromArgs(args[1:])
+	}
 	return false
 }
 
@@ -5647,7 +5743,19 @@ func pythonProjectToolRunsVerification(cmd string, args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
+	args = stripVerificationRunnerOptions(args)
+	if len(args) == 0 {
+		return false
+	}
 	switch cmd {
+	case "poetry", "pdm":
+		if firstArgIn(args, "check") {
+			return true
+		}
+	case "hatch":
+		if firstArgIn(args, "test") {
+			return true
+		}
 	case "rye":
 		if isVerificationScriptName(args[0]) {
 			return true
@@ -6852,7 +6960,9 @@ func dotnetRunsVerification(args []string) bool {
 		return false
 	}
 	switch normalizeShellExecutableToken(args[0]) {
-	case "test", "build", "vstest":
+	case "test", "vstest":
+		return !hasDotnetListOnlyArg(args[1:])
+	case "build":
 		return true
 	case "format":
 		return hasArg(args[1:], "--verify-no-changes") || hasArg(args[1:], "--check")
@@ -6860,6 +6970,10 @@ func dotnetRunsVerification(args []string) bool {
 		return dotnetMSBuildRunsVerification(args[1:])
 	}
 	return false
+}
+
+func hasDotnetListOnlyArg(args []string) bool {
+	return hasNormalizedArg(args, "--list-tests", "-t", "--listtests", "/listtests", "/lt")
 }
 
 func dotnetMSBuildRunsVerification(args []string) bool {
@@ -6882,8 +6996,45 @@ func dotnetMSBuildRunsVerification(args []string) bool {
 }
 
 func mavenRunsVerification(args []string) bool {
+	if hasMavenSkipTestsArg(args) {
+		return false
+	}
 	args = stripMavenOptions(args)
 	return firstArgIn(args, "test", "verify")
+}
+
+func hasMavenSkipTestsArg(args []string) bool {
+	for _, arg := range args {
+		arg = strings.ToLower(normalizeShellExecutableToken(arg))
+		for _, key := range []string{"-dskiptests", "-dmaven.test.skip"} {
+			if arg == key {
+				return true
+			}
+			if strings.HasPrefix(arg, key+"=") {
+				value := strings.TrimSpace(strings.TrimPrefix(arg, key+"="))
+				if value != "" && value != "false" && value != "0" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func cargoRunsVerification(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	subcommand := normalizeShellExecutableToken(args[0])
+	switch subcommand {
+	case "test":
+		return !hasNormalizedArg(args[1:], "--no-run")
+	case "clippy":
+		return !hasMutatingVerificationArg(args[1:])
+	case "check", "build":
+		return true
+	}
+	return false
 }
 
 func stripMavenOptions(args []string) []string {
@@ -6918,6 +7069,9 @@ func mavenOptionConsumesValue(arg string) bool {
 }
 
 func gradleRunsVerification(args []string) bool {
+	if hasNormalizedArg(args, "--dry-run", "-m") {
+		return false
+	}
 	for _, arg := range args {
 		if isGradleVerificationTask(arg) {
 			return true

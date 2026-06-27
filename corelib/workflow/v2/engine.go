@@ -1056,8 +1056,25 @@ func (e *WorkflowEngine) GetActivePhaseToolFilter(userID string) ToolFilterPolic
 	}
 	return ToolFilterNone
 }
-func (e *WorkflowEngine) IsActivePhaseExecutionOrchestrator(userID string) bool     { return false }
-func (e *WorkflowEngine) IsPhaseExecutionBlocked(userID string) bool                { return false }
+func (e *WorkflowEngine) IsActivePhaseExecutionOrchestrator(userID string) bool { return false }
+func (e *WorkflowEngine) IsPhaseExecutionBlocked(userID string) bool {
+	if e == nil {
+		return false
+	}
+	ws := e.GetActiveWorkflow(userID)
+	if ws == nil {
+		return false
+	}
+	if ws.PendingReviewPhaseID != "" && ws.PendingReviewPhaseID == ws.CurrentPhase {
+		return true
+	}
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil || ws.PhaseIndex < 0 || ws.PhaseIndex >= len(tmpl.Phases) {
+		return false
+	}
+	phase := tmpl.Phases[ws.PhaseIndex]
+	return phase.InputSchema != nil && !ws.PhaseFormSubmitted && !ws.PhaseFormSkipped
+}
 func (e *WorkflowEngine) GetOpsApprovedCommands(userID string) []OpsApprovedCommand { return nil }
 func (e *WorkflowEngine) HasPhaseOutput(userID string) bool {
 	ws := e.GetActiveWorkflow(userID)

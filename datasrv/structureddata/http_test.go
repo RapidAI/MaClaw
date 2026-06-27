@@ -6069,6 +6069,21 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	if len(pendingLane.Items) != 1 || pendingLane.Items[0].ID != expenseApproval.ID || pendingLane.Items[0].AssignedTo != "user_1" {
 		t.Fatalf("pending_my_approval lane should use authenticated assignee: %#v", pendingLane)
 	}
+	currentAssigneeOnlyApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.current-assignee", BlueprintID: "mis.current-assignee.approval", ObjectRole: "current_assignee_case", Kind: "approval", Summary: "Current assignee approval", CurrentAssignee: "user_1", CurrentAssigneeType: "user", WorkflowSkillID: "skill.current.approval", WorkflowInstanceID: "wf-current-100", WorkflowNodeID: "manager_review"})
+	laneReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=pending_my_approval&app_id=mis.current-assignee", nil)
+	auth(laneReq)
+	laneW = httptest.NewRecorder()
+	server.Handler().ServeHTTP(laneW, laneReq)
+	if laneW.Code != http.StatusOK {
+		t.Fatalf("pending current assignee lane status=%d body=%s", laneW.Code, laneW.Body.String())
+	}
+	pendingLane = ListResponse[RecordApproval]{}
+	if err := json.NewDecoder(laneW.Body).Decode(&pendingLane); err != nil {
+		t.Fatalf("decode pending current assignee lane: %v", err)
+	}
+	if len(pendingLane.Items) != 1 || pendingLane.Items[0].ID != currentAssigneeOnlyApproval.ID || pendingLane.Items[0].AssignedTo != "" || pendingLane.Items[0].CurrentAssignee != "user_1" {
+		t.Fatalf("pending_my_approval lane should include current_assignee-owned approvals: %#v", pendingLane)
+	}
 
 	laneReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=my_requests&app_id=mis.travel", nil)
 	auth(laneReq)

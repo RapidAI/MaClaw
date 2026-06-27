@@ -1241,6 +1241,7 @@ func TestSubAgentRetryRecoveryHintCoversQualityGateTiming(t *testing.T) {
 		{err: `Error: truncated tool call "write_file" arguments: {"path":"src/generated.ts","content":"...`, want: "split big write_file/edit payloads"},
 		{err: `Error parsing tool arguments: unexpected end of JSON input`, want: "valid complete JSON"},
 		{err: `Error: incomplete tool call arguments: unterminated string literal`, want: "reduce large content/query payloads"},
+		{err: `Error: tool call "edit_lines" has invalid argument value for "operation": expected one of replace/insert/delete, got "move". Example valid arguments: {"path":"src/main.go","operation":"replace","start_line":10,"end_line":12,"content":"replacement text"}. Accepted aliases: file/file_path/filepath -> path; action/op -> operation; start/startLine -> start_line; end/endLine -> end_line; add/update/remove-style operations are normalized.`, want: "prefer canonical fields"},
 		{err: `Error: tool call "read_file" is missing required argument "path".`, want: "every required argument"},
 		{err: `Error: tool call "bash" has invalid argument type for "working_dir": expected string, got number.`, want: "valid JSON scalar types"},
 		{err: `Error: tool call "read_file" has invalid argument value for "lines": expected integer >= 1, got 0.`, want: "allowed values"},

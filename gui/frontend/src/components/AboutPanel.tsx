@@ -127,6 +127,9 @@ export function AboutPanel({
         if (brandInfo.id === 'qianxin') {
             return '\u864e\u722a 6 \u7a0b\u542f';
         }
+        if (brandInfo.id === 'metastaff') {
+            return '\u667a\u5458 6 \u7a0b\u542f';
+        }
         const cnName = String(brandInfo.displayNameCN || '').trim();
         const displayName = String(brandInfo.displayName || '').trim();
         return [cnName, displayName].filter(Boolean).join(' ') || t("aboutProductName");

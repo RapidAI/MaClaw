@@ -399,6 +399,7 @@ type AppRunApprovalInstanceEvidence = {
     status: string;
     lane?: string;
     currentNode?: string;
+    currentNodeIDs?: string[];
     datasetID?: string;
     blueprintID?: string;
     objectRole?: string;
@@ -1840,7 +1841,10 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
         if (changedRegion?.role === 'output' && (placement === 'right' || placement === 'bottom' || placement === 'modal')) summaryPatch.outputRegion = placement;
         onChange({ ...value, ...summaryPatch, regions: nextRegions });
     };
-    const regionsForPlacement = (placement: StudioPrimaryRegion | 'bottom') => regions.filter((region) => region.placement === placement || (placement === 'right' && region.placement === 'modal'));
+    const updateRegionVisibility = (regionID: string, visible: boolean) => {
+        onChange({ ...value, regions: regions.map((region) => region.id === regionID ? { ...region, visible: visible ? undefined : false } : region) });
+    };
+    const regionsForPlacement = (placement: StudioPrimaryRegion | 'bottom') => regions.filter((region) => region.visible !== false && (region.placement === placement || (placement === 'right' && region.placement === 'modal')));
     const renderRegionPill = (region: { id: string; role: string; placement: string }) => (
         <span className="apps-layout-designer__region" data-role={region.role} key={region.id}>
             <strong>{studioLayoutRegionLabel(kind, region.id, lang)}</strong>
@@ -1853,6 +1857,7 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
         const hasOutput = value.outputRegion === slot || (slot === 'right' && value.outputRegion === 'modal');
         return (
             <button
+                key={slot}
                 className="apps-layout-designer__slot"
                 data-slot={slot}
                 data-primary={isPrimary ? 'true' : undefined}
@@ -1970,13 +1975,22 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                             <span>{zh ? '\u5199\u5165 manifest.regions' : 'Saved to manifest.regions'}</span>
                         </div>
                         {regions.map((region) => (
-                            <div className="apps-layout-designer__region-control" key={region.id}>
-                                <span>
-                                    <strong>{studioLayoutRegionLabel(kind, region.id, lang)}</strong>
-                                    <small>{studioLayoutRoleLabel(region.role, lang)}</small>
-                                </span>
+                            <div className="apps-layout-designer__region-control" data-visible={region.visible === false ? 'false' : 'true'} key={region.id}>
+                                <label className="apps-layout-designer__region-visible">
+                                    <input
+                                        data-testid={`${testIdPrefix}-layout-region-visible-${region.id}`}
+                                        type="checkbox"
+                                        checked={region.visible !== false}
+                                        onChange={(event) => updateRegionVisibility(region.id, event.target.checked)}
+                                    />
+                                    <span>
+                                        <strong>{studioLayoutRegionLabel(kind, region.id, lang)}</strong>
+                                        <small>{studioLayoutRoleLabel(region.role, lang)}</small>
+                                    </span>
+                                </label>
                                 <select
                                     data-testid={`${testIdPrefix}-layout-region-${region.id}`}
+                                    disabled={region.visible === false}
                                     value={region.placement}
                                     onChange={(event) => updateRegionPlacement(region.id, event.target.value as RuntimeWorkspaceRegion['placement'])}
                                 >
@@ -4572,6 +4586,8 @@ function normalizeAppRunApprovalInstanceEvidence(raw: unknown): AppRunApprovalIn
     if (!instanceId) return undefined;
     const approvalViews = appEvidenceRecord(value.approvalViews || value.approval_views);
     const approvalInstanceViewVerified = appEvidenceBool(value.approvalInstanceViewVerified, value.approval_instance_view_verified, value.approvalViewVerified, value.approval_view_verified, value.viewVerified, value.view_verified);
+    const currentNodeIDs = parseStringList(firstAppEvidenceValue(value.currentNodeIDs, value.current_node_ids, value.workflowNodeIDs, value.workflow_node_ids, value.workflowNodes, value.workflow_nodes));
+    const currentNode = appEvidenceString(value.currentNode, value.current_node, currentNodeIDs[0]) || undefined;
     return {
         instanceId,
         approvalInstanceId: appEvidenceString(value.approvalInstanceId, value.approval_instance_id) || instanceId,
@@ -4579,7 +4595,8 @@ function normalizeAppRunApprovalInstanceEvidence(raw: unknown): AppRunApprovalIn
         workflowInstanceId: appEvidenceString(value.workflowInstanceId, value.workflow_instance_id) || instanceId,
         status,
         lane: appEvidenceString(value.lane, value.approvalLane, value.approval_lane) || undefined,
-        currentNode: appEvidenceString(value.currentNode, value.current_node) || undefined,
+        currentNode,
+        currentNodeIDs: currentNodeIDs.length > 0 ? currentNodeIDs : currentNode ? [currentNode] : undefined,
         datasetID: appEvidenceString(value.datasetID, value.dataset_id) || undefined,
         blueprintID: appEvidenceString(value.blueprintID, value.blueprint_id) || undefined,
         objectRole: appEvidenceString(value.objectRole, value.object_role) || undefined,
@@ -4621,6 +4638,7 @@ function appRunApprovalInstanceEvidenceFromBackend(instance: BackendApprovalInst
         status: String(instance.status || instance.result_status || '').trim(),
         lane: String(instance.lane || '').trim() || undefined,
         currentNode: String(instance.current_node || '').trim() || undefined,
+        currentNodeIDs: normalizeApprovalCurrentNodeIDs(instance),
         datasetID: String(instance.dataset_id || '').trim() || undefined,
         blueprintID: String(instance.blueprint_id || '').trim() || undefined,
         objectRole: String(instance.object_role || '').trim() || undefined,
@@ -6945,6 +6963,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const runtimeWorkflowContractState = workflowContractStatus(runtimeWorkflowContract, runtimeDependencyPlan, app);
     const runtimeLayout = runtimeWorkspaceLayoutForApp(app);
     const runtimeOrder = runtimeWorkspaceOrder(runtimeLayout);
+    const isRuntimeRoleVisible = (role: string) => runtimeLayout.regions.some((region) => region.role === role && region.visible !== false);
     const regionPlacementForRole = (role: string, fallback: string) => runtimeLayout.regions.find((region) => region.visible !== false && region.role === role)?.placement || fallback;
     const inputRegion = regionPlacementForRole('input', runtimeLayout.primaryRegion);
     const outputRegion = regionPlacementForRole('output', runtimeLayout.outputRegion);
@@ -6952,6 +6971,10 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const centerRegion = runtimeLayout.primaryRegion === 'center' ? secondaryRegion : 'center';
     const workspaceRegion = isApproval ? regionPlacementForRole('instance_list', centerRegion) : regionPlacementForRole('record_list', centerRegion);
     const statusRegion = outputRegion === 'bottom' ? centerRegion : outputRegion;
+    const showInputRegion = isRuntimeRoleVisible('input') || isAutomation;
+    const showWorkspaceRegion = isApproval ? isRuntimeRoleVisible('instance_list') : isBusiness ? isRuntimeRoleVisible('record_list') : isRuntimeRoleVisible('preview');
+    const showStatusRegion = isRuntimeRoleVisible('detail') || isRuntimeRoleVisible('parameters') || isRuntimeRoleVisible('preview');
+    const showOutputRegion = isRuntimeRoleVisible('output');
 
     return (
         <>
@@ -6966,7 +6989,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             <div className="apps-detail__body elegant-scrollbar">
                 <div className={`apps-preview apps-preview--layout-${runtimeLayout.template}`}>
                     <div className="apps-preview__mock apps-runtime-layout" data-template={runtimeLayout.template} data-density={runtimeLayout.density} data-primary-region={runtimeLayout.primaryRegion} data-output-region={runtimeLayout.outputRegion} data-region-count={runtimeLayout.regions.length}>
-                        <section className="apps-runtime-section apps-runtime-input" data-region={inputRegion} style={{ order: runtimeOrder.input }}>
+                        {showInputRegion && <section className="apps-runtime-section apps-runtime-input" data-region={inputRegion} style={{ order: runtimeOrder.input }}>
                             <div className="apps-runtime-section__title">{text.runtimeInput}</div>
                             {isTool ? (
                                 <>
@@ -7068,10 +7091,10 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                     </div>
                                 </>
                             )}
-                        </section>
-                        {isApproval && <ApprovalWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} backendInstances={approvalInstances} approvalLoadState={approvalInstancesLoadState} lang={lang} text={text} style={{ order: runtimeOrder.approval }} layoutRegion={workspaceRegion} onRefresh={loadApprovalInstances} onDecision={updateApprovalInstanceDecision} />}
-                        {isBusiness && <BusinessWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} lang={lang} style={{ order: runtimeOrder.approval }} layoutRegion={workspaceRegion} />}
-                        <section className="apps-runtime-section apps-runtime-status" data-region={statusRegion} style={{ order: runtimeOrder.status }}>
+                        </section>}
+                        {isApproval && showWorkspaceRegion && <ApprovalWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} backendInstances={approvalInstances} approvalLoadState={approvalInstancesLoadState} lang={lang} text={text} style={{ order: runtimeOrder.approval }} layoutRegion={workspaceRegion} onRefresh={loadApprovalInstances} onDecision={updateApprovalInstanceDecision} />}
+                        {isBusiness && showWorkspaceRegion && <BusinessWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} lang={lang} style={{ order: runtimeOrder.approval }} layoutRegion={workspaceRegion} />}
+                        {showStatusRegion && <section className="apps-runtime-section apps-runtime-status" data-region={statusRegion} style={{ order: runtimeOrder.status }}>
                             <div className="apps-runtime-section__title">{text.runtimeStatus}</div>
 							<div className={`apps-result-panel${showRuntimeDependencyDetails || runtimeBusinessError ? ' apps-result-panel--stacked' : ''}`} data-state={runtimeStatusState}>
 								<span>{runtimeStatusMessage}</span>
@@ -7085,8 +7108,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                 )}
                             </div>
                             {isTool && <SkillRunEvidence status={skillRunStatus} runState={runState} text={text} />}
-                        </section>
-                        <div className="apps-actions apps-runtime-actions" data-region={inputRegion} style={{ order: runtimeOrder.actions }}>
+                        </section>}
+                        {showInputRegion && <div className="apps-actions apps-runtime-actions" data-region={inputRegion} style={{ order: runtimeOrder.actions }}>
                             <button className="apps-secondary-button" type="button" onClick={() => {
                                 setFileName('');
                                 setSelectedFile(null);
@@ -7110,9 +7133,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                             }}>{text.reset}</button>
                             {runState === 'running' && runID && <button className="apps-secondary-button" type="button" onClick={cancelRun}>{text.cancelRun}</button>}
                             <button className="apps-primary-button" type="button" disabled={runDisabled} onClick={() => runApp()}>{text.run}</button>
-                        </div>
-                        <AppRunOutput status={skillRunStatus} runState={runState} resultText={resultText} businessResult={businessResult} isTool={isTool} text={text} style={{ order: runtimeOrder.output }} layoutRegion={outputRegion} />
-                        {(isTool || isBusiness) && (
+                        </div>}
+                        {showOutputRegion && <AppRunOutput status={skillRunStatus} runState={runState} resultText={resultText} businessResult={businessResult} isTool={isTool} text={text} style={{ order: runtimeOrder.output }} layoutRegion={outputRegion} />}
+                        {showOutputRegion && (isTool || isBusiness) && (
                             <section className="apps-run-history" data-region={outputRegion === 'bottom' ? 'bottom' : outputRegion} style={{ order: runtimeOrder.history }}>
                                 <div className="apps-preview-title-row">
                                     <div className="apps-definition__title">{text.runHistory}</div>
@@ -7755,6 +7778,7 @@ function canonicalAppManifestID(app: AppEntry): string {
 function appToManifest(app: AppEntry, submission?: AppPublishSubmission, governanceOverrides: AppGovernanceOverrides = {}) {
     const manifest = app.manifest;
     const appID = canonicalAppManifestID(app);
+    const skillBinding = appSkillRuntimeBinding(manifest);
     return {
         schema: manifest?.schema || 'maclaw.app.v1',
         privateMarker: manifest?.privateMarker || 'x_maclaw_apps',
@@ -7774,7 +7798,7 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission, governa
             binding: {
                 datasrv: manifest?.datasrv,
                 mis: manifest?.mis,
-                skill: manifest?.skill,
+                skill: skillBinding,
                 appSkill: manifest?.appSkill,
                 dependencies: manifest?.dependencies,
                 ui: manifest?.ui,
@@ -7796,6 +7820,22 @@ function skillDefinitionAppId(app: AppEntry): string {
     const skillID = String(app.manifest?.skill?.id || '').trim();
     const prefixedID = skillID ? `skill-app-${skillID}-` : '';
     return prefixedID && app.id.startsWith(prefixedID) ? app.id.slice(prefixedID.length) : app.id;
+}
+
+function appSkillRuntimeBinding(manifest?: AppManifestBinding, skillIDOverride?: string): AppManifestBinding['skill'] | undefined {
+    if (!manifest) return undefined;
+    const existing = manifest.skill;
+    const skillID = String(skillIDOverride || existing?.id || manifest.appSkill?.id || '').trim();
+    if (!skillID) return existing;
+    const outputModes = normalizeOutputModes(existing?.outputModes || manifest.resultContract?.outputModes);
+    return {
+        id: skillID,
+        appDefinitionFile: existing?.appDefinitionFile || 'maclaw.app.json',
+        inputMode: existing?.inputMode || 'form',
+        multipleFiles: existing?.multipleFiles || false,
+        outputModes,
+        fields: normalizeSkillAppFields(existing?.fields || []),
+    };
 }
 
 function appToSkillDefinitionManifest(app: AppEntry) {
@@ -8198,6 +8238,8 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
         installRecordString(evidence.testProtocolFingerprint || evidence.test_protocol_fingerprint || protocol.fingerprint || protocol.hash),
     ].filter(Boolean).join(' · ');
     if (evidenceValue) items.push({ label: text.testEvidence, value: evidenceValue });
+    const dataSrvValue = dataSrvRegistrationSummary(record.datasrv_registration, text);
+    if (dataSrvValue) items.push({ label: 'DataSrv', value: dataSrvValue });
     return items;
 }
 
@@ -8248,6 +8290,7 @@ function installEvidenceRecordForApp(installAudit: BackendAppInstallRecord | nul
         dependencies: parseBackendAppInstallDependencies(record.dependencies),
         has_missing_required: !!record.has_missing_required,
         has_blocking_dependency: !!record.has_blocking_dependency,
+        datasrv_registration: installAudit?.datasrv_registration,
     };
 }
 
@@ -9410,7 +9453,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             manifest: app.manifest ? {
                 ...app.manifest,
                 installUnit: app.manifest.installUnit === 'builtin' ? 'skill' : app.manifest.installUnit,
-                skill: app.manifest.skill ? { ...app.manifest.skill, id: skillID, appDefinitionFile: 'maclaw.app.json' } : app.manifest.skill,
+                skill: appSkillRuntimeBinding({ ...app.manifest, skill: app.manifest.skill ? { ...app.manifest.skill, appDefinitionFile: 'maclaw.app.json' } : app.manifest.skill }, skillID),
             } : app.manifest,
         };
         const manifestText = JSON.stringify(appToManifest(skillBoundApp), null, 2);
@@ -9460,7 +9503,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             manifest: draftPanelApp.manifest ? {
                 ...draftPanelApp.manifest,
                 installUnit: draftPanelApp.manifest.installUnit === 'builtin' ? 'skill' : draftPanelApp.manifest.installUnit,
-                skill: draftPanelApp.manifest.skill ? { ...draftPanelApp.manifest.skill, id: skillID, appDefinitionFile: 'maclaw.app.json' } : draftPanelApp.manifest.skill,
+                skill: appSkillRuntimeBinding({ ...draftPanelApp.manifest, skill: draftPanelApp.manifest.skill ? { ...draftPanelApp.manifest.skill, appDefinitionFile: 'maclaw.app.json' } : draftPanelApp.manifest.skill }, skillID),
             } : draftPanelApp.manifest,
         };
         if (!latestAppRunEvidence(panelApp)) {

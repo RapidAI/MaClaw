@@ -858,6 +858,8 @@ func subAgentRetryRecoveryHint(errSummary string) string {
 		}
 	}
 	switch {
+	case strings.Contains(normalized, "accepted aliases:"):
+		return "Use the Example valid arguments snippet from the previous tool error as the canonical JSON shape for the next call. If reusing the previous wording, apply the listed accepted aliases to normalize field names, but prefer canonical fields such as path/pattern/operation/start_line/server_id/tool_name/arguments in the retry."
 	case strings.Contains(normalized, "example valid arguments:"):
 		return "Use the Example valid arguments snippet from the previous tool error as the JSON shape for the next call. Preserve the same tool intent, fill real task paths/content/query values, and do not retry malformed or empty arguments."
 	case strings.Contains(normalized, "truncated tool") ||

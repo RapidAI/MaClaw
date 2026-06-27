@@ -846,6 +846,9 @@ func TestLoopCommandCycleHonorsWorkflowPolicy(t *testing.T) {
 	if cb.IsToolAllowed("write_file") {
 		t.Fatal("loop command cycle must reject write_file during doc-only workflow phase")
 	}
+	if ok, reason := cb.IsToolCallAllowed("bash", `{"command":"echo should-not-run"}`); ok || !strings.Contains(reason, "doc-only") {
+		t.Fatalf("loop command cycle must reject direct bash calls during doc-only workflow phase, ok=%v reason=%q", ok, reason)
+	}
 }
 
 func TestLoopCommandCycleWithoutOwnerDoesNotInheritLastUserWorkflowPolicy(t *testing.T) {

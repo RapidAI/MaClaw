@@ -2050,6 +2050,13 @@ describe('AppsPage', () => {
                 app_count: 1,
                 apps: [{ id: 'approved-app', name: 'Approved Queue App', kind: 'enterprise_normal_app' }],
                 dependencies: [{ id: 'approved-app-skill', kind: 'app_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'installed' }],
+                datasrv_registration: {
+                    synced: true,
+                    eligible_count: 1,
+                    synced_count: 1,
+                    failed_count: 0,
+                    items: [{ app_id: 'approved-app', synced: true, role_binding_count: 2 }],
+                },
                 app_versions: {
                     'approved-app': {
                         app_entry_version: '7',
@@ -2086,6 +2093,8 @@ describe('AppsPage', () => {
         expect(within(approvedRow).getByText('business_workspace · dashboard · compact')).not.toBeNull();
         expect(within(approvedRow).getByText('Test evidence')).not.toBeNull();
         expect(within(approvedRow).getByText('run-approved-install · proto-approved-install')).not.toBeNull();
+        expect(within(approvedRow).getByText('DataSrv')).not.toBeNull();
+        expect(within(approvedRow).getByText('DataSrv bindings registered: 1/1')).not.toBeNull();
         fireEvent.click(screen.getByText('Manage apps'));
         await waitFor(() => expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('Approved Queue App'))).toBe(true));
     });
@@ -2743,6 +2752,28 @@ describe('AppsPage', () => {
         expect(created.manifest.testProtocol.riskLevel).toBe('high');
         expect(created.manifest.testProtocol.requiredRoles).toEqual(['operator', 'reviewer']);
         expect(created.manifest.testProtocol.fingerprint).toMatch(/^[0-9a-f]{8}$/);
+    });
+
+    it('saves visual workspace region visibility and applies it in the runtime panel', async () => {
+        const { container } = render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByRole('button', { name: 'Business app' }));
+        fireEvent.change(screen.getByPlaceholderText('Example: Contract filing'), { target: { value: 'Operations Desk' } });
+        fireEvent.click(screen.getByTestId('studio-layout-region-visible-output_panel'));
+        fireEvent.click(screen.getByRole('button', { name: 'Create app' }));
+
+        const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
+        const created = stored.customApps.find((app: any) => app.name === 'Operations Desk');
+        const layout = created.manifest.ui.layouts.business_workspace;
+        expect(layout.regions.find((region: any) => region.id === 'output_panel')).toMatchObject({ role: 'output', visible: false });
+
+        const tile = Array.from(container.querySelectorAll<HTMLButtonElement>('.apps-app-tile')).find((item) => item.textContent?.includes('Operations Desk'));
+        expect(tile).not.toBeNull();
+        fireEvent.click(tile as HTMLButtonElement);
+        await waitFor(() => expect(container.querySelector('.apps-business-workspace')).not.toBeNull());
+        expect(container.querySelector('.apps-runtime-output')).toBeNull();
+        expect(container.querySelector('.apps-run-history')).toBeNull();
     });
 
     it('copies the draft manifest preview to clipboard', async () => {
@@ -7503,7 +7534,7 @@ describe('AppsPage', () => {
                             outputs: [{ kind: 'table', title: 'Approval rows', text: 'expense approved', status: 'ready', data: { rows: [{ id: 'expense-1', status: 'finance_approved' }] } }],
                             primary_result: 'approval_result',
                             result_payload: { decision: 'approved', business_status: 'finance_approved' },
-                            approval_instance: { approval_id: 'approval-remote-imported', record_id: 'expense-1', status: 'approved', current_node: 'expense_report.result_feedback', approval_instance_view_verified: true, approval_views: { my_requests: true, handled: true, all: true } },
+                            approval_instance: { approval_id: 'approval-remote-imported', record_id: 'expense-1', status: 'approved', current_node: 'expense_report.result_feedback', current_node_ids: ['expense_report.result_feedback', 'finance.archive'], approval_instance_view_verified: true, approval_views: { my_requests: true, handled: true, all: true } },
                         },
                         test_evidence_artifact_count: 1,
                         test_evidence_artifacts: [{ id: 'artifact-expense-evidence', uri: 'artifact://expense/evidence.zip', name: 'expense-approval-evidence.zip', status: 'ready' }],
@@ -7628,6 +7659,7 @@ describe('AppsPage', () => {
             recordID: 'expense-1',
             status: 'approved',
             currentNode: 'expense_report.result_feedback',
+            currentNodeIDs: ['expense_report.result_feedback', 'finance.archive'],
             approvalInstanceViewVerified: true,
             approvalViews: { my_requests: true, handled: true, all: true },
         });

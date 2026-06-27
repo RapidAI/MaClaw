@@ -161,7 +161,7 @@ func TestSubmitMaclawAppPackagePersistsNormalizedWorkspaceLayout(t *testing.T) {
 							"studio": {"savedInManifest": true, "designerVersion": "2026.06"},
 							"regions": [
 								{"id":"operation_form","role":"input","placement":"left"},
-								{"id":"output_panel","role":"output","placement":"right"}
+								{"id":"output_panel","role":"output","placement":"right","visible":false}
 							]
 						}
 					}
@@ -197,6 +197,10 @@ func TestSubmitMaclawAppPackagePersistsNormalizedWorkspaceLayout(t *testing.T) {
 	}
 	if layout["template"] != "dashboard" || layout["density"] != "spacious" || layout["type"] != "split_view" {
 		t.Fatalf("expected custom layout fields plus backend defaults: %#v", layout)
+	}
+	regions := anySlice(layout["regions"])
+	if len(regions) != 2 || anyMap(regions[1])["visible"] != false {
+		t.Fatalf("expected hidden region visibility to survive queueing: %#v", layout["regions"])
 	}
 	studio := anyMap(layout["studio"])
 	if studio == nil || studio["savedInManifest"] != true || studio["designerVersion"] != "2026.06" {
@@ -3509,6 +3513,35 @@ func TestMaclawAppApprovalInstancesPersistAndFilter(t *testing.T) {
 	}
 	if len(again) != 1 || again[0].Events[0].Decision == "mutated" || again[0].ResultPayload["text"] == "mutated" || again[0].Outputs[0].Data["id"] == "mutated" || again[0].Outputs[1].Artifact.Name == "mutated.pdf" {
 		t.Fatalf("approval instances should be cloned: %#v", again)
+	}
+	if _, err := app.RecordMaclawAppApprovalInstance(maclawAppApprovalInstance{
+		AppID:          "expense-approval",
+		InstanceID:     "legacy-approved-lane",
+		Title:          "Legacy approved lane",
+		Lane:           "pending_my_approval",
+		Status:         "approved",
+		CurrentNode:    "completed",
+		Owner:          "alice",
+		Approver:       "manager",
+		Result:         "approved before lane migration",
+		BusinessStatus: "approved",
+		ResultStatus:   "approved",
+	}); err != nil {
+		t.Fatalf("record legacy approved lane: %v", err)
+	}
+	handledList, err := app.ListMaclawAppApprovalInstances("expense-approval", "handled", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstances handled error = %v", err)
+	}
+	if len(handledList) != 2 || handledList[0].InstanceID != "legacy-approved-lane" {
+		t.Fatalf("approved status should be visible in handled lane even when stored lane is stale: %#v", handledList)
+	}
+	pending, err = app.ListMaclawAppApprovalInstances("expense-approval", "pending_my_approval", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstances pending with stale lane error = %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("approved status should not remain visible in pending lane even when stored lane is stale: %#v", pending)
 	}
 	if _, err := app.ListMaclawAppApprovalInstances(" ", "all", 10); err == nil {
 		t.Fatal("expected app_id required error")

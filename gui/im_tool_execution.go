@@ -446,6 +446,9 @@ func (h *IMMessageHandler) isWorkflowToolAllowedForOwner(policyUserID, name stri
 	if h.shouldConstrainCodingWorkflowImplementationMainLoop(policyUserID) {
 		return isCodingWorkflowImplementationMainLoopToolAllowed(name)
 	}
+	if workflowPolicyBlocksImplementationTool(policy, name) {
+		return false
+	}
 	return v2.IsToolAllowedByPolicy(policy, name)
 }
 
@@ -482,6 +485,9 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 			return false, reason
 		}
 	}
+	if workflowPolicyBlocksImplementationTool(policy, name) {
+		return false, fmt.Sprintf("%s is not allowed by the current workflow phase tool policy", strings.TrimSpace(name))
+	}
 	if h.isWorkflowArtifactPhase(policyUserID) {
 		if reason := validateWorkflowArtifactPhaseToolCall(name, args); reason != "" {
 			return false, reason
@@ -505,6 +511,18 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 		return false, err.Error()
 	}
 	return true, ""
+}
+
+func workflowPolicyBlocksImplementationTool(policy v2.ToolFilterPolicy, name string) bool {
+	name = strings.TrimSpace(name)
+	switch string(policy) {
+	case string(v2.ToolFilterDocOnly), string(v2.ToolFilterPlanning):
+		switch name {
+		case "bash", "write_file", "edit_file", "edit_lines", "task", "delegate_task":
+			return true
+		}
+	}
+	return false
 }
 
 func rewriteInternalBrowserToolCall(name string, args map[string]interface{}) (string, map[string]interface{}, bool) {
@@ -980,13 +998,6 @@ func preCheckAgentLoopInlinePayloadLimit(name, argsJSON string, iteration int) *
 		return nil
 	}
 
-	// Let oversized bash commands pass through to toolBash. It will write the
-	// command to a temp script file and execute that file.
-	if name == "bash" {
-		log.Printf("[agent-loop] bash auto-spill: allowing oversized command (%d runes > %d limit) to pass through for temp-file execution (iter=%d)", valueRunes, limit, iteration)
-		return nil
-	}
-
 	// --- Auto-pass for write_file: the backend toolWriteFile has no 1800-char limit
 	// (actual limit is writeFileMaxSize = 1MB). The schema maxLength was removed to avoid
 	// LLM refusing to call write_file for content >1800 chars. Let oversized write_file
@@ -1100,7 +1111,7 @@ func (h *IMMessageHandler) preCheckToolArgsForAgentLoop(name, argsJSON string, i
 		var normalizeErr error
 		args, normalizeErr = normalizeMCPToolCallArgsForAgentLoop(args)
 		if normalizeErr != nil {
-			msg := "Tool call_mcp_tool arguments must be a complete valid JSON object. Please correct and retry."
+			msg := fmt.Sprintf("Tool call_mcp_tool.arguments must be a complete valid JSON object. %s. Please correct and retry.", normalizeErr.Error())
 			log.Printf("[agent-loop] tool call_mcp_tool arguments normalization failed (iter=%d): %v", iteration, normalizeErr)
 			return &toolExecutionResult{
 				Text:        msg,

@@ -60,7 +60,11 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	policyOwnerID, policy, applyWorkflowFilter := h.workflowToolFilterOwnerPolicyAndDecision(userID, ctx)
 	if applyWorkflowFilter {
 		workflowFilterPolicy = workflowToolFilterDecision(string(policy))
-		tools = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, tools, allTools)
+		if policy == v2.ToolFilterNone {
+			tools = nil
+		} else {
+			tools = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, tools, allTools)
+		}
 	} else if skipNeedsConfirmGate {
 		workflowFilterPolicy = workflowToolFilterSkippedConfirmBypass
 		workflowFilterSkipped = true
@@ -95,6 +99,9 @@ func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID strin
 	}
 	if policyOwnerID == "" {
 		return policyOwnerID, v2.ToolFilterNone, false
+	}
+	if h != nil && h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.IsPhaseExecutionBlocked(policyOwnerID) {
+		return policyOwnerID, v2.ToolFilterNone, true
 	}
 	if h.shouldConstrainCodingWorkflowImplementationMainLoop(policyOwnerID) {
 		return policyOwnerID, v2.ToolFilterFull, true

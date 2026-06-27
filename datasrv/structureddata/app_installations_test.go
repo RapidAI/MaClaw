@@ -33,7 +33,7 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 				"list":          map[string]any{"columns": []any{"title", "status"}},
 				"regions": []any{
 					map[string]any{"id": "file_queue", "role": "input", "placement": "left"},
-					map[string]any{"id": "output_panel", "role": "output", "placement": "right"},
+					map[string]any{"id": "output_panel", "role": "output", "placement": "right", "visible": false},
 				},
 			},
 			"governance": map[string]any{
@@ -88,6 +88,8 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 		t.Fatalf("expected canonical workspace layout: %#v", installed.Metadata)
 	} else if regions, ok := layout["regions"].([]any); !ok || len(regions) != 2 {
 		t.Fatalf("expected canonical workspace regions: %#v", layout)
+	} else if output, ok := regions[1].(map[string]any); !ok || output["visible"] != false {
+		t.Fatalf("expected workspace region visibility to roundtrip: %#v", regions[1])
 	}
 	if navigation := appInstallationStringList(installed.Metadata["workspace_layout_navigation"]); len(navigation) != 2 || navigation[0] != "input" || navigation[1] != "output" {
 		t.Fatalf("expected workspace navigation summary: %#v", installed.Metadata)
@@ -259,15 +261,16 @@ func TestListAppInstallationsFiltersByApprovalInstanceEvidence(t *testing.T) {
 			"test_evidence": map[string]any{
 				"runId": "run-expense-approval",
 				"approvalInstance": map[string]any{
-					"instanceId":          "wf-expense-1",
-					"approvalID":          "approval-expense-1",
-					"recordID":            "expense-1",
-					"status":              "approved",
-					"currentNode":         "expense.result_feedback",
-					"workflowSkillId":     "expense-approval-flow",
-					"workflowVersion":     "2.1.0",
-					"resultStatus":        "approved",
-					"resultPayload":       map[string]any{"approval_result": "approved"},
+					"instanceId":           "wf-expense-1",
+					"approvalID":           "approval-expense-1",
+					"recordID":             "expense-1",
+					"status":               "approved",
+					"currentNode":          "expense.result_feedback",
+					"currentNodeIDs":       []any{"expense.result_feedback", "expense.finance_archive"},
+					"workflowSkillId":      "expense-approval-flow",
+					"workflowVersion":      "2.1.0",
+					"resultStatus":         "approved",
+					"resultPayload":        map[string]any{"approval_result": "approved"},
 					"approvalViewVerified": true,
 				},
 			},
@@ -291,6 +294,13 @@ func TestListAppInstallationsFiltersByApprovalInstanceEvidence(t *testing.T) {
 	}
 	if len(byNode) != 1 || byNode[0].AppID != "expense.approval" {
 		t.Fatalf("expected workflow node filter to match approval evidence: %#v", byNode)
+	}
+	byParallelNode, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{WorkflowNode: "expense.finance_archive"})
+	if err != nil {
+		t.Fatalf("ListAppInstallations by parallel workflow node: %v", err)
+	}
+	if len(byParallelNode) != 1 || byParallelNode[0].AppID != "expense.approval" {
+		t.Fatalf("expected workflow node filter to match approval evidence parallel node IDs: %#v", byParallelNode)
 	}
 
 	missing, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{WorkflowSkillID: "other-flow"})
