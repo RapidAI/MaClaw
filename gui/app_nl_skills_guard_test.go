@@ -88,6 +88,8 @@ func TestSkillExecutorExecuteStep_CallMCPToolRejectsAmbiguousName(t *testing.T) 
 }
 
 func TestSkillCreateSessionGuard_DoesNotGuessSSHIntentWithoutSemantic(t *testing.T) {
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
 	hint := skillCreateSessionGuard("", corelib.NLSkillStep{
 		Action: "create_session",
 		Params: map[string]interface{}{
@@ -101,6 +103,8 @@ func TestSkillCreateSessionGuard_DoesNotGuessSSHIntentWithoutSemantic(t *testing
 }
 
 func TestSkillCreateSessionGuard_BlocksAmbiguousIntent(t *testing.T) {
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
 	hint := skillCreateSessionGuard("handle the production issue", corelib.NLSkillStep{
 		Action: "create_session",
 		Params: map[string]interface{}{"tool": "claude"},
@@ -111,6 +115,8 @@ func TestSkillCreateSessionGuard_BlocksAmbiguousIntent(t *testing.T) {
 }
 
 func TestSkillCreateSessionGuard_DoesNotGuessNonCodingPresentationIntentWithoutSemantic(t *testing.T) {
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
 	hint := skillCreateSessionGuard("generate a presentation PPT", corelib.NLSkillStep{
 		Action: "create_session",
 		Params: map[string]interface{}{"tool": "claude"},
@@ -121,6 +127,8 @@ func TestSkillCreateSessionGuard_DoesNotGuessNonCodingPresentationIntentWithoutS
 }
 
 func TestSkillCreateSessionGuard_DoesNotGuessCodingIntentWithoutSemantic(t *testing.T) {
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
 	hint := skillCreateSessionGuard("fix the Go project bug and modify code", corelib.NLSkillStep{
 		Action: "create_session",
 		Params: map[string]interface{}{"tool": "claude"},
@@ -142,6 +150,8 @@ func TestResolveSkillTaskText_PrefersStepTaskFields(t *testing.T) {
 }
 
 func TestSkillExecutorExecute_BlocksCreateSessionWhenSemanticUnavailable(t *testing.T) {
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)

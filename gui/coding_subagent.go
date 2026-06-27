@@ -2773,6 +2773,12 @@ func canonicalCodingSubAgentToolName(name string) string {
 		return trimmed
 	}
 	lower := strings.ToLower(trimmed)
+	switch lower {
+	case "grep_search":
+		return "ripgrep"
+	case "search_files":
+		return "Glob"
+	}
 	for _, candidate := range codingSubAgentToolOrder {
 		if strings.ToLower(candidate) == lower {
 			return candidate

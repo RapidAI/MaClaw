@@ -843,6 +843,28 @@ func TestCanonicalCodingSubAgentToolNameAcceptsModelCasing(t *testing.T) {
 	if got := canonicalCodingSubAgentToolName(" read_file "); got != "read_file" {
 		t.Fatalf("canonical read_file = %q, want read_file", got)
 	}
+	if got := canonicalCodingSubAgentToolName("grep_search"); got != "ripgrep" {
+		t.Fatalf("canonical grep_search = %q, want ripgrep", got)
+	}
+	if got := canonicalCodingSubAgentToolName("search_files"); got != "Glob" {
+		t.Fatalf("canonical search_files = %q, want Glob", got)
+	}
+}
+
+func TestCodingSubAgentToolNameAliasesAvoidUnknownToolFailure(t *testing.T) {
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: t.TempDir()}}
+
+	result := cb.executeToolWithOutcome("grep_search", `{}`)
+
+	if result.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("grep_search alias without pattern outcome = %q, want failed; result=%s", result.Outcome, result.Text)
+	}
+	if strings.Contains(result.Text, "unknown tool") {
+		t.Fatalf("grep_search alias should reach ripgrep argument validation, got %q", result.Text)
+	}
+	if !strings.Contains(result.Text, "missing required argument") || !strings.Contains(result.Text, `"pattern"`) {
+		t.Fatalf("grep_search alias should produce ripgrep pattern guidance, got %q", result.Text)
+	}
 }
 
 func TestCodingSubAgentMaxIterationsUsesRuntimeBudget(t *testing.T) {
