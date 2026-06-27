@@ -3355,6 +3355,57 @@ func TestAppendSubAgentCommandSummaryKeepsLateFailures(t *testing.T) {
 	}
 }
 
+func TestAppendSubAgentCommandSummaryPrefersLatestProblemsWhenCapped(t *testing.T) {
+	var commands []CodingSubAgentCommandResult
+	for i := 0; i < codingSubAgentCommandSummaryMax+3; i++ {
+		commands = append(commands, CodingSubAgentCommandResult{
+			Command:   fmt.Sprintf("go test ./pkg/%02d", i),
+			Succeeded: false,
+			Summary:   fmt.Sprintf("failure %02d", i),
+		})
+	}
+
+	summary := appendSubAgentCommandSummary("完成", commands)
+	if strings.Contains(summary, "go test ./pkg/00") || strings.Contains(summary, "failure 00") {
+		t.Fatalf("oldest failed commands should be omitted when capped, got %q", summary)
+	}
+	if !strings.Contains(summary, "FAIL: `go test ./pkg/12`") || !strings.Contains(summary, "failure 12") {
+		t.Fatalf("latest failed command should remain visible, got %q", summary)
+	}
+	if strings.Count(summary, "- FAIL: `") != codingSubAgentCommandSummaryMax {
+		t.Fatalf("summary should still be capped at %d failed entries, got %q", codingSubAgentCommandSummaryMax, summary)
+	}
+}
+
+func TestAppendSubAgentCommandSummaryKeepsSelectedEntriesChronological(t *testing.T) {
+	var commands []CodingSubAgentCommandResult
+	for i := 0; i < codingSubAgentCommandSummaryMax+3; i++ {
+		commands = append(commands, CodingSubAgentCommandResult{
+			Command:   fmt.Sprintf("go test ./pkg/%02d", i),
+			Succeeded: true,
+			Summary:   "ok",
+		})
+	}
+	commands[1].Succeeded = false
+	commands[1].Summary = "early failure"
+	commands[3].Succeeded = false
+	commands[3].Summary = "middle failure"
+
+	summary := appendSubAgentCommandSummary("完成", commands)
+	earlyFailure := strings.Index(summary, "FAIL: `go test ./pkg/01`")
+	middleFailure := strings.Index(summary, "FAIL: `go test ./pkg/03`")
+	recentPass := strings.Index(summary, "PASS: `go test ./pkg/12`")
+	if earlyFailure < 0 || middleFailure < 0 || recentPass < 0 {
+		t.Fatalf("expected selected failures and recent commands to remain visible, got %q", summary)
+	}
+	if !(earlyFailure < middleFailure && middleFailure < recentPass) {
+		t.Fatalf("selected command entries should stay chronological, got %q", summary)
+	}
+	if strings.Count(summary, "- PASS: `")+strings.Count(summary, "- FAIL: `") != codingSubAgentCommandSummaryMax {
+		t.Fatalf("summary should still be capped at %d entries, got %q", codingSubAgentCommandSummaryMax, summary)
+	}
+}
+
 func TestAppendSubAgentCommandSummaryMarksEmptySuccess(t *testing.T) {
 	summary := appendSubAgentCommandSummary("完成", []CodingSubAgentCommandResult{
 		{Command: "pytest tests", Succeeded: true, Summary: "no tests collected in 0.01s"},
@@ -4458,6 +4509,10 @@ func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T)
 		{Command: "rspec", Succeeded: true, Summary: "0 examples, 0 failures"},
 		{Command: "vendor/bin/phpunit", Succeeded: true, Summary: "No tests executed!"},
 		{Command: "gradle test", Succeeded: true, Summary: "0 tests completed, 0 failed"},
+		{Command: "python -m unittest", Succeeded: true, Summary: "----------------------------------------------------------------------\nRan 0 tests in 0.000s\n\nOK"},
+		{Command: "bundle exec cucumber", Succeeded: true, Summary: "0 scenarios\n0 steps\n0m0.000s"},
+		{Command: "vendor/bin/phpunit", Succeeded: true, Summary: "OK (0 tests, 0 assertions)"},
+		{Command: "vitest run", Succeeded: true, Summary: "Test Files  0 passed (0)\nTests  0 passed (0)"},
 	}
 	for _, command := range emptySuccessfulOutputs {
 		status, summary = summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{command}, 0)
@@ -4478,6 +4533,13 @@ func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T)
 	}, 0)
 	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "`rspec`") {
 		t.Fatalf("normal successful rspec output should pass, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeSubAgentVerification([]string{"features/app.feature"}, []CodingSubAgentCommandResult{
+		{Command: "bundle exec cucumber", Succeeded: true, Summary: "1 scenario (1 passed)\n3 steps (3 passed)\n0 failures"},
+	}, 0)
+	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "`bundle exec cucumber`") {
+		t.Fatalf("normal successful cucumber output with 0 failures should pass, got (%q, %q)", status, summary)
 	}
 }
 

@@ -2691,8 +2691,10 @@ function dataSrvInstalledRunEvidence(metadata: Record<string, any>, appID: strin
     const runID = String(evidence.run_id || evidence.runId || metadata.test_evidence_run_id || '').trim();
     if (!runID) return undefined;
     const artifactName = String(evidence.artifact_name || evidence.artifactName || metadata.test_evidence_artifact_name || '').trim();
-    const evidenceArtifacts = Array.isArray(evidence.artifacts) ? evidence.artifacts as ApprovalInstanceArtifactView[] : [];
-    const artifactPresent = !!(evidence.artifact_present ?? evidence.artifactPresent ?? metadata.test_evidence_artifact_present) || evidenceArtifacts.length > 0;
+    const rawEvidenceArtifacts = firstAppEvidenceValue(evidence.artifacts, metadata.test_evidence_artifacts);
+    const evidenceArtifacts = Array.isArray(rawEvidenceArtifacts) ? rawEvidenceArtifacts as ApprovalInstanceArtifactView[] : [];
+    const artifactCount = Number(evidence.artifact_count ?? evidence.artifactCount ?? metadata.test_evidence_artifact_count ?? 0) || 0;
+    const artifactPresent = !!(evidence.artifact_present ?? evidence.artifactPresent ?? metadata.test_evidence_artifact_present) || evidenceArtifacts.length > 0 || artifactCount > 0;
     const resultPayload = (evidence.result_payload || evidence.resultPayload || metadata.test_evidence_result_payload) as Record<string, unknown> | undefined;
     const outputCount = Number(evidence.output_count ?? evidence.outputCount ?? metadata.test_evidence_output_count ?? 0) || 0;
     const rawEvidenceOutputs = firstAppEvidenceValue(evidence.outputs, evidence.output_blocks, evidence.outputBlocks, metadata.test_evidence_outputs, metadata.outputs);

@@ -950,6 +950,51 @@ func TestEnrichSubAgentFailureErrorAddsQualityEvidenceOnce(t *testing.T) {
 		t.Fatalf("quality evidence should not be duplicated, got %q", again)
 	}
 }
+
+func TestSubAgentRetryRecoveryHintForFinalSummaryQualityFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     string
+		want    string
+		notWant string
+	}{
+		{
+			name: "acceptance criteria summary missing",
+			err:  "quality audit evidence: FAILED: acceptance criteria verification not summarized (1 issue)",
+			want: "acceptance-criteria verification section",
+		},
+		{
+			name:    "fresh verification command missing from final summary",
+			err:     "quality audit evidence: FAILED: fresh verification command not referenced in final summary",
+			want:    "fresh post-edit verification command",
+			notWant: "Run a focused verification command",
+		},
+		{
+			name: "verification command missing from final summary",
+			err:  "quality audit evidence: FAILED: verification command not referenced in final summary",
+			want: "cite the fresh post-edit verification command",
+		},
+		{
+			name: "combined summary and diff failures keep both actions",
+			err:  "quality audit evidence: FAILED: fresh verification command not referenced in final summary; diff not checked",
+			want: "fresh post-edit verification command",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hint := subAgentRetryRecoveryHint(tt.err)
+			if !strings.Contains(hint, tt.want) {
+				t.Fatalf("hint = %q, want substring %q", hint, tt.want)
+			}
+			if tt.notWant != "" && strings.Contains(hint, tt.notWant) {
+				t.Fatalf("hint = %q, should not contain generic fallback %q", hint, tt.notWant)
+			}
+			if tt.name == "combined summary and diff failures keep both actions" && !strings.Contains(hint, "git_diff after edits") {
+				t.Fatalf("combined quality hint should keep both final-summary and diff actions, got %q", hint)
+			}
+		})
+	}
+}
 func TestRunCurrentTaskRetryContextIncludesFailedToolEvidence(t *testing.T) {
 	orch := NewTaskExecutionOrchestrator()
 	orch.MaxRetries = 2

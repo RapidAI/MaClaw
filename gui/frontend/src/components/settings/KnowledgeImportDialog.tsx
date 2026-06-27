@@ -262,10 +262,22 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExt
 
     const total = job?.result?.total_files || scanResult?.total_files || 0;
     const processed = job?.result?.processed_files || 0;
-    // Single file: use step_progress for granular feedback; multi-file: use file count
-    const percent = total === 1 && (job?.result?.step_progress || 0) > 0
-        ? job!.result!.step_progress!
-        : total > 0 ? Math.round((processed / total) * 100) : 0;
+    // Progress calculation: combines file-level and step-level granularity.
+    // For post-import phases (embedding/linking), files are done but step_progress tracks the sub-operation.
+    const currentStep = job?.result?.current_step || '';
+    const isPostImportPhase = currentStep === 'embedding' || currentStep === 'linking';
+    const stepProgress = job?.result?.step_progress || 0;
+    const isDone = step === 'done';
+    // File processing occupies 0-85%, embedding occupies 85-95%, linking occupies 95-99%, done=100%.
+    const percent = isDone
+        ? 100
+        : isPostImportPhase
+            ? currentStep === 'embedding'
+                ? Math.min(95, 85 + Math.round(stepProgress / 10))
+                : Math.min(99, 95 + Math.round(stepProgress / 25))
+            : total === 1 && stepProgress > 0
+                ? Math.min(85, stepProgress)
+                : total > 0 ? Math.round((processed / total) * 85) : 0;
 
     return (
         <div className="knowledge-import-overlay" onClick={handleClose}>
@@ -437,6 +449,13 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExt
                                     {job.result.current_step && <span className="knowledge-import-current-step">{stepLabel(job.result.current_step, t)}</span>}
                                 </div>
                             )}
+                            {/* Post-import phase indicator (no current_file, just step name) */}
+                            {step === 'progress' && !job?.result?.current_file && job?.result?.current_step && (
+                                <div className="knowledge-import-current-file">
+                                    <span className="knowledge-import-current-step">{stepLabel(job.result.current_step, t)}</span>
+                                    {(job.result.step_progress || 0) > 0 && <span className="knowledge-import-current-path" style={{ marginLeft: 8 }}>{job.result.step_progress}%</span>}
+                                </div>
+                            )}
 
                             {/* Compact stats row */}
                             <div className="knowledge-import-stats">
@@ -579,7 +598,11 @@ function stepLabel(step: string, t: TFunc): string {
         case 'saving': return t('Saving source...', '保存来源...');
         case 'parsing': return t('Parsing document...', '解析文档...');
         case 'indexing': return t('Indexing content...', '索引内容...');
+        case 'indexing_rows': return t('Indexing rows...', '索引行数据...');
         case 'distilling': return t('Generating cards...', '生成知识卡片...');
+        case 'embedding': return t('Building vector index...', '构建向量索引...');
+        case 'linking': return t('Linking topics...', '关联主题...');
+        case 'processing image': return t('Processing image...', '处理图片...');
         default: return step;
     }
 }

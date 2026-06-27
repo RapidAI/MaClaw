@@ -470,6 +470,7 @@ type SessionRepository interface {
 	UpdateHostOnline(ctx context.Context, sessionID string, hostOnline bool, updatedAt time.Time) error
 	Close(ctx context.Context, sessionID string, exitCode *int, endedAt time.Time, status string) error
 	RecordUserTokenUsageSnapshot(ctx context.Context, tenantID, sourceID, userID string, usage UserTokenUsage, observedAt time.Time) error
+	RecordHeartbeat(ctx context.Context, tenantID, machineID, userID string, at time.Time) error
 	SummarizeUserTokenUsage(ctx context.Context, tenantID string, start, end time.Time) ([]UserTokenSummary, error)
 	SummarizeUserDurations(ctx context.Context, tenantID string, start, end, now time.Time) ([]UserDurationSummary, error)
 }

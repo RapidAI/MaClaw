@@ -1375,6 +1375,9 @@ func TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall(t *testing.T) 
 	app := &App{testHomeDir: t.TempDir()}
 	var capturedPath string
 	var capturedAuth string
+	var capturedDataSrvPath string
+	var capturedDataSrvAuth string
+	var capturedDataSrvBody map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedPath = r.URL.Path
 		capturedAuth = r.Header.Get("Authorization")
@@ -1390,26 +1393,45 @@ func TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall(t *testing.T) 
 			"apps": [{
 				"schema": "maclaw.app.v1",
 				"privateMarker": "x_maclaw_apps",
-				"app": {
-					"id": "hub-install-app",
-					"name": "Hub Install App",
-					"description": "Install from Hub",
-					"kind": "tool_app",
-					"version": 2,
-					"governance": {
-						"submission": {"channel": "hub", "status": "approved", "capability_id": "cap-hub-install-app"},
-                        "resultContract": {"schema": "maclaw.app.result.v1", "primary": "content", "types": ["content"]},
-                        "testProtocol": {"schema": "maclaw.app.test_protocol.v1", "sampleInput": {"text": "hello"}, "expectedOutput": {"type": "content"}, "fingerprint": "proto-hub-install"},
-                        "testEvidence": {"runId": "run-hub-install", "testProtocolFingerprint": "proto-hub-install", "resultPayload": {"content": "done"}}
+					"app": {
+						"id": "hub-install-app",
+						"name": "Hub Install App",
+						"description": "Install from Hub",
+						"kind": "enterprise_normal_app",
+						"version": 2,
+						"governance": {
+							"submission": {"channel": "hub", "status": "approved", "capability_id": "cap-hub-install-app"},
+	                        "resultContract": {"schema": "maclaw.app.result.v1", "primary": "content", "types": ["content"]},
+	                        "testProtocol": {"schema": "maclaw.app.test_protocol.v1", "sampleInput": {"text": "hello"}, "expectedOutput": {"type": "content"}, "fingerprint": "proto-hub-install"},
+	                        "testEvidence": {"runId": "run-hub-install", "verifiedAt": "2026-06-27T08:00:00Z", "testProtocolFingerprint": "proto-hub-install", "primaryResult": "content", "resultPayload": {"content": "done"}, "outputs": [{"kind": "text", "title": "Result", "text": "done", "status": "ready"}], "resultCoverage": {"ok": true, "primary": "content", "coveredTypes": ["content"], "missingTypes": []}}
+						},
+						"binding": {
+							"datasrv": {"domain": "tools", "datasetID": "tools.hub_install_runs", "templateID": "tools.hub_install_runs", "objectRole": "hub_install_run"}
+						}
 					}
-				}
-				}]
-			}`)
+					}]
+				}`)
 		_, _ = w.Write([]byte(pkg))
 	}))
 	defer server.Close()
+	dataSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedDataSrvPath = r.URL.Path
+		capturedDataSrvAuth = r.Header.Get("Authorization")
+		if r.Method != http.MethodPut {
+			t.Fatalf("expected DataSrv PUT, got %s", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&capturedDataSrvBody); err != nil {
+			t.Fatalf("decode DataSrv registration body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"installed"}`))
+	}))
+	defer dataSrv.Close()
 	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: dataSrv.URL, Token: "data-token", TenantID: "tenant", UserID: "alice", Role: "data_admin"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
 	}
 	result, err := app.InstallMaclawAppPackageFromHub("cap-hub-install-app")
 	if err != nil {
@@ -1420,6 +1442,46 @@ func TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall(t *testing.T) 
 	}
 	if result["schema"] != "maclaw.app.hub_install.v1" || result["capability_id"] != "cap-hub-install-app" || result["app_count"] != 1 {
 		t.Fatalf("unexpected install result: %#v", result)
+	}
+	installRecord, ok := result["install_record"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing install record: %#v", result)
+	}
+	registration, ok := installRecord["datasrv_registration"].(map[string]any)
+	if !ok || registration["synced"] != true || registration["eligible_count"] != 1 || registration["synced_count"] != 1 {
+		t.Fatalf("expected Hub install to register DataSrv installation: %#v", installRecord["datasrv_registration"])
+	}
+	if capturedDataSrvPath != "/api/v1/data/app-installations/hub-install-app" || capturedDataSrvAuth != "Bearer data-token" {
+		t.Fatalf("unexpected DataSrv request path=%q auth=%q", capturedDataSrvPath, capturedDataSrvAuth)
+	}
+	if capturedDataSrvBody["app_id"] != "hub-install-app" || capturedDataSrvBody["kind"] != "enterprise_normal_app" || capturedDataSrvBody["source"] != "enterprise_hub" {
+		t.Fatalf("DataSrv registration missing Hub app body: %#v", capturedDataSrvBody)
+	}
+	metadata, ok := capturedDataSrvBody["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("DataSrv registration missing metadata: %#v", capturedDataSrvBody)
+	}
+	if metadata["test_evidence_run_id"] != "run-hub-install" || metadata["test_evidence_verified_at"] != "2026-06-27T08:00:00Z" || metadata["test_evidence_test_protocol_fingerprint"] != "proto-hub-install" || metadata["test_evidence_primary_result"] != "content" {
+		t.Fatalf("DataSrv registration missing Hub test evidence summary: %#v", metadata)
+	}
+	if metadata["test_evidence_output_count"] != float64(1) || metadata["test_evidence_result_coverage_ok"] != true || metadata["test_evidence_result_coverage_primary"] != "content" {
+		t.Fatalf("DataSrv registration missing Hub result coverage summary: %#v", metadata)
+	}
+	resultPayload, ok := metadata["test_evidence_result_payload"].(map[string]interface{})
+	if !ok || resultPayload["content"] != "done" {
+		t.Fatalf("DataSrv registration missing Hub result payload summary: %#v", metadata)
+	}
+	outputs, ok := metadata["test_evidence_outputs"].([]interface{})
+	if !ok || len(outputs) != 1 {
+		t.Fatalf("DataSrv registration missing Hub output summary: %#v", metadata)
+	}
+	roleBindings, ok := capturedDataSrvBody["role_bindings"].([]interface{})
+	if !ok || len(roleBindings) != 1 {
+		t.Fatalf("DataSrv registration missing role bindings: %#v", capturedDataSrvBody)
+	}
+	roleBinding, ok := roleBindings[0].(map[string]interface{})
+	if !ok || roleBinding["object_role"] != "hub_install_run" || roleBinding["dataset_id"] != "tools.hub_install_runs" {
+		t.Fatalf("DataSrv registration missing normal app role binding: %#v", roleBindings)
 	}
 	records, err := app.ListMaclawAppInstalls(10)
 	if err != nil {
@@ -3176,9 +3238,23 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	if !ok || topLevelTestEvidence["testProtocolFingerprint"] != "proto-basic" || topLevelTestEvidence["runId"] != "run-expense-1" || metadata["test_evidence_test_protocol_fingerprint"] != "proto-basic" {
 		t.Fatalf("registration metadata missing top-level test evidence for DataSrv: %#v", metadata)
 	}
+	if metadata["test_evidence_run_id"] != "run-expense-1" || metadata["test_evidence_verified_at"] != "2026-06-17T01:00:00Z" || metadata["test_evidence_definition_fingerprint"] != topLevelTestEvidence["definitionHash"] {
+		t.Fatalf("registration metadata missing stable test evidence identity summary: %#v", metadata)
+	}
+	if metadata["test_evidence_artifact_present"] != true || metadata["test_evidence_artifact_count"] != float64(1) || metadata["test_evidence_output_count"] != float64(1) {
+		t.Fatalf("registration metadata missing stable test evidence count summary: %#v", metadata)
+	}
 	topLevelTestProtocol, ok := topLevelTestEvidence["testProtocol"].(map[string]interface{})
 	if !ok || topLevelTestProtocol["schema"] != "maclaw.app.test_protocol.v1" || topLevelTestProtocol["fingerprint"] != "proto-basic" {
 		t.Fatalf("registration metadata missing top-level test protocol for DataSrv: %#v", topLevelTestEvidence)
+	}
+	topLevelSummaryOutputs, ok := metadata["test_evidence_outputs"].([]interface{})
+	if !ok || len(topLevelSummaryOutputs) != 1 {
+		t.Fatalf("registration metadata missing stable output summary for DataSrv: %#v", metadata)
+	}
+	topLevelSummaryOutput, ok := topLevelSummaryOutputs[0].(map[string]interface{})
+	if !ok || topLevelSummaryOutput["kind"] != "table" || topLevelSummaryOutput["title"] != "Approval rows" {
+		t.Fatalf("registration metadata missing stable table output summary for DataSrv: %#v", topLevelSummaryOutputs)
 	}
 	topLevelOutputs, ok := topLevelTestEvidence["outputs"].([]interface{})
 	if !ok || len(topLevelOutputs) != 1 {
@@ -3196,13 +3272,32 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	if !ok || topLevelArtifact["uri"] != "artifact://expense/evidence.zip" {
 		t.Fatalf("registration metadata missing top-level artifact for DataSrv: %#v", topLevelArtifacts)
 	}
+	topLevelSummaryArtifacts, ok := metadata["test_evidence_artifacts"].([]interface{})
+	if !ok || len(topLevelSummaryArtifacts) != 1 {
+		t.Fatalf("registration metadata missing stable artifact summary for DataSrv: %#v", metadata)
+	}
+	topLevelSummaryArtifact, ok := topLevelSummaryArtifacts[0].(map[string]interface{})
+	if !ok || topLevelSummaryArtifact["name"] != "expense-approval-evidence.zip" {
+		t.Fatalf("registration metadata missing stable artifact name summary for DataSrv: %#v", topLevelSummaryArtifacts)
+	}
 	topLevelResultPayload, ok := topLevelTestEvidence["resultPayload"].(map[string]interface{})
 	if !ok || topLevelResultPayload["approval_result"] != "approved" || topLevelResultPayload["business_status"] != "finance_approved" {
 		t.Fatalf("registration metadata missing top-level result payload for DataSrv: %#v", topLevelTestEvidence)
 	}
+	topLevelSummaryResultPayload, ok := metadata["test_evidence_result_payload"].(map[string]interface{})
+	if !ok || topLevelSummaryResultPayload["approval_result"] != "approved" || topLevelSummaryResultPayload["business_status"] != "finance_approved" {
+		t.Fatalf("registration metadata missing stable result payload summary for DataSrv: %#v", metadata)
+	}
 	topLevelApprovalInstance, ok := topLevelTestEvidence["approvalInstance"].(map[string]interface{})
 	if !ok || topLevelApprovalInstance["instanceId"] != "wf-test-1" || topLevelApprovalInstance["approvalID"] != "approval-remote-install-1" || topLevelApprovalInstance["recordID"] != "expense-1" {
 		t.Fatalf("registration metadata missing top-level approval instance remote id for DataSrv: %#v", topLevelTestEvidence)
+	}
+	if metadata["test_evidence_approval_instance_id"] != "wf-test-1" || metadata["test_evidence_approval_id"] != "approval-remote-install-1" || metadata["test_evidence_record_id"] != "expense-1" || metadata["test_evidence_approval_status"] != "approved" || metadata["test_evidence_approval_view_verified"] != true {
+		t.Fatalf("registration metadata missing stable approval instance summary for DataSrv: %#v", metadata)
+	}
+	topLevelSummaryApprovalInstance, ok := metadata["test_evidence_approval_instance"].(map[string]interface{})
+	if !ok || topLevelSummaryApprovalInstance["instanceId"] != "wf-test-1" || topLevelSummaryApprovalInstance["approvalID"] != "approval-remote-install-1" {
+		t.Fatalf("registration metadata missing stable approval instance payload for DataSrv: %#v", metadata)
 	}
 	topLevelApprovalResultPayload, ok := topLevelApprovalInstance["resultPayload"].(map[string]interface{})
 	if !ok || topLevelApprovalInstance["currentNode"] != "expense.result" || topLevelApprovalInstance["workflowSkillId"] != "expense-workflow" || topLevelApprovalInstance["businessStatus"] != "finance_approved" || topLevelApprovalInstance["resultStatus"] != "approved" || topLevelApprovalResultPayload["business_record"] == nil {
@@ -3215,6 +3310,14 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	topLevelApprovalArtifacts, ok := topLevelApprovalInstance["artifacts"].([]interface{})
 	if !ok || len(topLevelApprovalArtifacts) != 1 {
 		t.Fatalf("registration metadata missing top-level approval instance artifacts for DataSrv: %#v", topLevelApprovalInstance)
+	}
+	topLevelSummaryCoverage, ok := metadata["test_evidence_result_coverage"].(map[string]interface{})
+	if !ok || topLevelSummaryCoverage["ok"] != true || topLevelSummaryCoverage["primary"] != "approval_result" || metadata["test_evidence_result_coverage_ok"] != true || metadata["test_evidence_result_coverage_primary"] != "approval_result" {
+		t.Fatalf("registration metadata missing stable result coverage summary for DataSrv: %#v", metadata)
+	}
+	topLevelSummaryCoveredTypes, ok := metadata["test_evidence_covered_types"].([]interface{})
+	if !ok || len(topLevelSummaryCoveredTypes) != 4 || topLevelSummaryCoveredTypes[2] != "business_record" {
+		t.Fatalf("registration metadata missing stable covered result types for DataSrv: %#v", metadata)
 	}
 	topLevelResultContract, ok := metadata["result_contract"].(map[string]interface{})
 	if !ok || topLevelResultContract["schema"] != "maclaw.app.result.v1" || topLevelResultContract["primary"] != "approval_result" || metadata["result_contract_schema"] != "maclaw.app.result.v1" || metadata["result_contract_primary"] != "approval_result" {

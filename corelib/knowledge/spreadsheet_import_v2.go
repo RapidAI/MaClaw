@@ -31,7 +31,15 @@ type normalizedTableCell struct {
 	BoolValue       *bool
 }
 
+// SpreadsheetRowProgressFunc reports row-level progress during spreadsheet import.
+// totalRows is the total data rows across all sheets, processedRows is how many have been inserted so far.
+type SpreadsheetRowProgressFunc func(processedRows, totalRows int)
+
 func importSpreadsheetSourceV2(ctx context.Context, tx *sql.Tx, source Source, filePath string, kind string) (Source, error) {
+	return importSpreadsheetSourceV2WithProgress(ctx, tx, source, filePath, kind, nil)
+}
+
+func importSpreadsheetSourceV2WithProgress(ctx context.Context, tx *sql.Tx, source Source, filePath string, kind string, onRowProgress SpreadsheetRowProgressFunc) (Source, error) {
 	if !isSpreadsheetKind(kind) {
 		return source, nil
 	}
@@ -42,9 +50,14 @@ func importSpreadsheetSourceV2(ctx context.Context, tx *sql.Tx, source Source, f
 	if err != nil {
 		return source, err
 	}
-	now := time.Now().UTC()
-	tableCount := 0
-	rowCount := 0
+
+	// Read all sheets into memory once (avoids double-read for pre-count + processing)
+	type sheetData struct {
+		result    *excelread.ReadResult
+		headerRow int
+	}
+	sheetResults := make([]sheetData, 0, len(sheets))
+	totalDataRows := 0
 	for _, sheetName := range sheets {
 		result, err := excelread.ReadFile(filePath, excelread.ReadOptions{SheetName: sheetName})
 		if err != nil {
@@ -53,8 +66,25 @@ func importSpreadsheetSourceV2(ctx context.Context, tx *sql.Tx, source Source, f
 		if result == nil || len(result.Rows) == 0 {
 			continue
 		}
-		tableID := NewID("ktbl")
 		headerRow := detectSpreadsheetHeaderRow(result.Rows)
+		dataRows := 0
+		for rowIdx := headerRow + 1; rowIdx < len(result.Rows); rowIdx++ {
+			if !spreadsheetRowEmpty(result.Rows[rowIdx]) {
+				dataRows++
+			}
+		}
+		totalDataRows += dataRows
+		sheetResults = append(sheetResults, sheetData{result: result, headerRow: headerRow})
+	}
+	processedDataRows := 0
+
+	now := time.Now().UTC()
+	tableCount := 0
+	rowCount := 0
+	for _, sd := range sheetResults {
+		result := sd.result
+		headerRow := sd.headerRow
+		tableID := NewID("ktbl")
 		headers := spreadsheetHeaders(result.Rows, headerRow, result.ColCount)
 		valueTypes := inferSpreadsheetColumnTypes(result.Rows, headerRow, len(headers))
 		schemaJSON := spreadsheetSchemaJSON(headers, valueTypes)
@@ -77,6 +107,9 @@ func importSpreadsheetSourceV2(ctx context.Context, tx *sql.Tx, source Source, f
 			}
 		}
 		for rowIdx := headerRow + 1; rowIdx < len(result.Rows); rowIdx++ {
+			if ctx.Err() != nil {
+				return source, ctx.Err()
+			}
 			row := result.Rows[rowIdx]
 			if spreadsheetRowEmpty(row) {
 				continue
@@ -155,6 +188,10 @@ func importSpreadsheetSourceV2(ctx context.Context, tx *sql.Tx, source Source, f
 				return source, err
 			}
 			rowCount++
+			processedDataRows++
+			if onRowProgress != nil && totalDataRows > 0 && (processedDataRows%50 == 0 || processedDataRows == totalDataRows) {
+				onRowProgress(processedDataRows, totalDataRows)
+			}
 		}
 		tableCount++
 	}

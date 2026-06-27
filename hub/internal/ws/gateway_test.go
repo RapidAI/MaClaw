@@ -158,6 +158,9 @@ func (s *testSessionService) RecordUserTokenUsageSnapshot(ctx context.Context, t
 	s.tokenUsage = usage
 	return nil
 }
+func (s *testSessionService) RecordHeartbeat(ctx context.Context, tenantID, machineID, userID string, at time.Time) error {
+	return nil
+}
 func (s *testSessionService) MarkMachineOffline(ctx context.Context, machineID string) error {
 	s.offlineMachineID = machineID
 	return nil

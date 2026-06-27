@@ -603,13 +603,16 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 						"governance": {
 							"resultContract": {"primary": "artifact", "types": ["artifact", "content"]},
 							"workflowContract": {"schema": "maclaw.app.workflow_contract.v1", "workflowSkillId": "contract-approval", "objectRole": "contract"},
-						"testEvidence": {
-							"runId": "run-contract",
-							"testProtocolFingerprint": "proto-contract",
-							"outputs": [{"kind": "document", "title": "Archived contract", "artifact_id": "artifact-contract"}],
-							"artifacts": [{"id": "artifact-contract", "uri": "artifact://contract/archive.pdf", "name": "archive.pdf"}],
-							"approvalInstance": {"approvalID": "approval-contract-1", "recordID": "contract-1", "datasetID": "legal.contracts", "objectRole": "contract", "approvalEvent": "contract.submitted", "approvalWorkflowID": "contract-approval", "status": "approved", "currentNode": "contract.result", "workflowSkillId": "contract-approval", "workflowVersion": "1.2.0", "businessStatus": "archived", "resultStatus": "approved", "resultPayload": {"approval_result": "approved", "business_status": "archived", "business_record": {"id": "contract-1"}}, "outputs": [{"kind": "approval_result", "title": "Approval", "text": "approved", "status": "approved"}], "artifacts": [{"id": "artifact-contract", "uri": "artifact://contract/archive.pdf", "name": "archive.pdf"}], "approvalInstanceViewVerified": true}
-						},
+							"testEvidence": {
+								"runId": "run-contract",
+								"testProtocolFingerprint": "proto-contract",
+								"primaryResult": "artifact",
+								"resultPayload": {"business_status": "archived", "business_record": {"id": "contract-1"}},
+								"outputs": [{"kind": "document", "title": "Archived contract", "artifact_id": "artifact-contract"}],
+								"artifacts": [{"id": "artifact-contract", "uri": "artifact://contract/archive.pdf", "name": "archive.pdf"}],
+								"resultCoverage": {"ok": true, "primary": "artifact", "coveredTypes": ["artifact", "content"], "missingTypes": []},
+								"approvalInstance": {"approvalID": "approval-contract-1", "recordID": "contract-1", "datasetID": "legal.contracts", "objectRole": "contract", "approvalEvent": "contract.submitted", "approvalWorkflowID": "contract-approval", "status": "approved", "currentNode": "contract.result", "workflowSkillId": "contract-approval", "workflowVersion": "1.2.0", "businessStatus": "archived", "resultStatus": "approved", "resultPayload": {"approval_result": "approved", "business_status": "archived", "business_record": {"id": "contract-1"}}, "outputs": [{"kind": "approval_result", "title": "Approval", "text": "approved", "status": "approved"}], "artifacts": [{"id": "artifact-contract", "uri": "artifact://contract/archive.pdf", "name": "archive.pdf"}], "approvalInstanceViewVerified": true}
+							},
 						"dependencyVerification": {"schema": "maclaw.app.install_plan.v1", "dependencyCount": 1}
 					}
 				}
@@ -701,6 +704,24 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 	}
 	if artifacts, ok := testEvidence["artifacts"].([]any); !ok || len(artifacts) != 1 {
 		t.Fatalf("test evidence should preserve artifacts: %+v", testEvidence)
+	}
+	if metadata["test_evidence_run_id"] != "run-contract" || metadata["test_evidence_test_protocol_fingerprint"] != "proto-contract" || metadata["test_evidence_primary_result"] != "artifact" {
+		t.Fatalf("test evidence summary metadata missing ids/results: %+v", metadata)
+	}
+	if metadata["test_evidence_output_count"] != float64(1) || metadata["test_evidence_artifact_count"] != float64(1) {
+		t.Fatalf("test evidence summary metadata missing counts: %+v", metadata)
+	}
+	if payload, ok := metadata["test_evidence_result_payload"].(map[string]any); !ok || payload["business_status"] != "archived" {
+		t.Fatalf("test evidence summary metadata should expose result payload: %+v", metadata)
+	}
+	if coverage, ok := metadata["test_evidence_result_coverage"].(map[string]any); !ok || coverage["ok"] != true || coverage["primary"] != "artifact" {
+		t.Fatalf("test evidence summary metadata should expose result coverage: %+v", metadata)
+	}
+	if metadata["test_evidence_result_coverage_ok"] != true || metadata["test_evidence_result_coverage_primary"] != "artifact" {
+		t.Fatalf("test evidence coverage summary missing: %+v", metadata)
+	}
+	if covered, ok := metadata["test_evidence_covered_types"].([]any); !ok || len(covered) != 2 || covered[0] != "artifact" || covered[1] != "content" {
+		t.Fatalf("test evidence covered types summary missing: %+v", metadata)
 	}
 	approvalInstance := testEvidence["approvalInstance"].(map[string]any)
 	if approvalInstance["approvalID"] != "approval-contract-1" || approvalInstance["recordID"] != "contract-1" || approvalInstance["status"] != "approved" {

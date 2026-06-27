@@ -3824,7 +3824,26 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					continue
 				}
 				if isSpreadsheetKind(item.Kind) {
-					if nextSource, err := importSpreadsheetSourceV2(ctx, tx, source, item.FilePath, item.Kind); err != nil {
+					if nextSource, err := importSpreadsheetSourceV2WithProgress(ctx, tx, source, item.FilePath, item.Kind, func(processedRows, totalRows int) {
+						if s == nil || s.importProgress == nil {
+							return
+						}
+						snapshot := result
+						snapshot.Status = ImportStatusRunning
+						snapshot.ImportedFiles = imported
+						snapshot.FailedFiles = failed
+						snapshot.ProcessedFiles = processed
+						snapshot.CurrentFile = item.RelativePath
+						if snapshot.CurrentFile == "" {
+							snapshot.CurrentFile = item.FilePath
+						}
+						snapshot.CurrentStep = "indexing_rows"
+						snapshot.TotalSteps = 5
+						snapshot.CurrentStepNum = 4
+						snapshot.StepProgress = (processedRows * 100) / totalRows
+						snapshot.Items = nil
+						s.importProgress(snapshot)
+					}); err != nil {
 						source.Status = StatusFailed
 						source.ErrorMessage = err.Error()
 						if saveErr := insertSource(ctx, tx, source); saveErr != nil {
@@ -3934,9 +3953,51 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 	if err := tx.Commit(); err != nil {
 		return result, err
 	}
-	_ = s.BackfillNodeEmbeddingsForSources(ctx, importedSourceIDs)
-	for _, sourceID := range importedSourceIDs {
-		_, _ = s.RefreshSourceTopicLinks(ctx, sourceID, 8)
+	// Post-import: embedding backfill with progress reporting
+	if len(importedSourceIDs) > 0 && s.importProgress != nil {
+		// Check if there are nodes to embed before emitting progress events
+		nodes, _ := s.queryMissingNodeEmbeddings(ctx, importedSourceIDs)
+		if len(nodes) > 0 {
+			postImportSnapshot := result
+			postImportSnapshot.Status = ImportStatusRunning
+			postImportSnapshot.CurrentFile = ""
+			postImportSnapshot.CurrentStep = "embedding"
+			postImportSnapshot.StepProgress = 0
+			postImportSnapshot.TotalSteps = 0
+			postImportSnapshot.CurrentStepNum = 0
+			s.importProgress(postImportSnapshot)
+
+			_ = s.embedAndStoreNodeEmbeddingsWithProgress(ctx, nodes, func(processed, total int) {
+				snap := result
+				snap.Status = ImportStatusRunning
+				snap.CurrentFile = ""
+				snap.CurrentStep = "embedding"
+				snap.StepProgress = (processed * 100) / total
+				snap.TotalSteps = 0
+				snap.CurrentStepNum = 0
+				s.importProgress(snap)
+			})
+		}
+	} else {
+		_ = s.BackfillNodeEmbeddingsForSources(ctx, importedSourceIDs)
+	}
+	// Post-import: topic linking with progress reporting
+	if len(importedSourceIDs) > 0 && s.importProgress != nil {
+		for i, sourceID := range importedSourceIDs {
+			snap := result
+			snap.Status = ImportStatusRunning
+			snap.CurrentFile = ""
+			snap.CurrentStep = "linking"
+			snap.StepProgress = (i * 100) / len(importedSourceIDs)
+			snap.TotalSteps = 0
+			snap.CurrentStepNum = 0
+			s.importProgress(snap)
+			_, _ = s.RefreshSourceTopicLinks(ctx, sourceID, 8)
+		}
+	} else {
+		for _, sourceID := range importedSourceIDs {
+			_, _ = s.RefreshSourceTopicLinks(ctx, sourceID, 8)
+		}
 	}
 	result.Items = items
 	return result, nil

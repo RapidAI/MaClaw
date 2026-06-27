@@ -306,6 +306,13 @@ func (s *Service) RecordUserTokenUsageSnapshot(ctx context.Context, tenantID, so
 	return s.sessions.RecordUserTokenUsageSnapshot(store.WithTenant(ctx, tenantID), tenantID, sourceID, userID, usage, observedAt)
 }
 
+func (s *Service) RecordHeartbeat(ctx context.Context, tenantID, machineID, userID string, at time.Time) error {
+	if s == nil || s.sessions == nil {
+		return nil
+	}
+	return s.sessions.RecordHeartbeat(store.WithTenant(ctx, tenantID), tenantID, machineID, userID, at)
+}
+
 func (s *Service) OnSessionPreviewDelta(ctx context.Context, machineID, userID, sessionID string, delta SessionPreviewDelta) error {
 	// Atomically update the cache entry under the shard lock to prevent
 	// concurrent delta appends from losing lines.

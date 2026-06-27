@@ -526,7 +526,31 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 		}
 	}
 	if evidence == nil {
-		return nil
+		if !appInstallationHasAny(out,
+			"test_evidence_run_id",
+			"test_evidence_verified_at",
+			"test_evidence_definition_fingerprint",
+			"test_evidence_test_protocol",
+			"test_evidence_test_protocol_fingerprint",
+			"test_evidence_artifact_present",
+			"test_evidence_artifact_name",
+			"test_evidence_artifact_count",
+			"test_evidence_output_count",
+			"test_evidence_result_payload",
+			"test_evidence_outputs",
+			"test_evidence_artifacts",
+			"test_evidence_primary_result",
+			"test_evidence_result_coverage",
+			"test_evidence_result_coverage_ok",
+			"test_evidence_approval_instance",
+			"test_evidence_approval_id",
+			"test_evidence_record_id",
+			"test_evidence_dependency_verification",
+			"test_evidence_dependency_count",
+		) {
+			return nil
+		}
+		evidence = map[string]any{}
 	}
 	normalized := map[string]any{}
 	if schema := firstNonEmptyAppInstallationString(appInstallationString(evidence, "schema"), "maclaw.app.test_evidence.v1"); schema != "maclaw.app.test_evidence.v1" {
@@ -625,6 +649,26 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 			}
 		}
 	}
+	if _, hasApproval := normalized["approval_instance"]; !hasApproval && appInstallationHasAny(out, "test_evidence_approval_instance_id", "test_evidence_approval_id", "test_evidence_record_id", "test_evidence_approval_status", "test_evidence_approval_view_verified") {
+		approval := map[string]any{}
+		if instanceID := appInstallationString(out, "test_evidence_approval_instance_id"); instanceID != "" {
+			approval["instance_id"] = instanceID
+		}
+		if approvalID := appInstallationString(out, "test_evidence_approval_id"); approvalID != "" {
+			approval["approval_id"] = approvalID
+		}
+		if recordID := appInstallationString(out, "test_evidence_record_id"); recordID != "" {
+			approval["record_id"] = recordID
+		}
+		if status := appInstallationString(out, "test_evidence_approval_status"); status != "" {
+			approval["status"] = status
+		}
+		if verified, ok := firstAppInstallationBool(out["test_evidence_approval_view_verified"]); ok {
+			approval["approval_instance_view_verified"] = verified
+		}
+		normalized["approval_instance"] = approval
+		out["test_evidence_approval_instance"] = approval
+	}
 	if coverage := normalizeAppInstallationResultCoverage(evidence, out); coverage != nil {
 		normalized["result_coverage"] = coverage
 	}
@@ -644,7 +688,10 @@ func normalizeAppInstallationResultCoverage(evidence, out map[string]any) map[st
 		coverage = appInstallationMap(out["test_evidence_result_coverage"])
 	}
 	if coverage == nil {
-		return nil
+		if !appInstallationHasAny(out, "test_evidence_result_coverage_ok", "test_evidence_result_coverage_primary", "test_evidence_covered_types", "test_evidence_missing_types") {
+			return nil
+		}
+		coverage = map[string]any{}
 	}
 	normalized := map[string]any{}
 	if value, ok := firstAppInstallationBool(coverage["ok"], out["test_evidence_result_coverage_ok"]); ok {
@@ -684,7 +731,19 @@ func normalizeAppInstallationDependencyVerification(evidence, governance, out ma
 		verification = appInstallationMap(out["test_evidence_dependency_verification"])
 	}
 	if verification == nil {
-		return nil
+		if !appInstallationHasAny(out,
+			"test_evidence_dependency_verified_at",
+			"test_evidence_dependency_count",
+			"test_evidence_dependency_missing_required",
+			"test_evidence_dependency_blocking",
+			"test_evidence_workflow_contract_issue",
+			"test_evidence_workflow_contract_issue_count",
+			"test_evidence_governance_review_issue",
+			"test_evidence_governance_review_issue_count",
+		) {
+			return nil
+		}
+		verification = map[string]any{}
 	}
 	normalized := map[string]any{}
 	if schema := firstNonEmptyAppInstallationString(appInstallationString(verification, "schema"), "maclaw.app.install_plan.v1"); schema != "maclaw.app.install_plan.v1" {
@@ -721,6 +780,16 @@ func normalizeAppInstallationDependencyVerification(evidence, governance, out ma
 	}
 	return normalized
 }
+
+func appInstallationHasAny(values map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := values[key]; ok && value != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func appInstallationMap(value any) map[string]any {
 	if item, ok := value.(map[string]any); ok {
 		return item

@@ -7137,6 +7137,81 @@ describe('AppsPage', () => {
         expect(screen.getAllByText('人事').length).toBeGreaterThan(0);
     });
 
+    it('restores DataSrv installed enterprise normal app run evidence into app candidates', async () => {
+        getMISDataConfigMock.mockResolvedValue({ enabled: true, endpoint: 'http://datasrv.test', token: 'token' });
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({
+                service: 'MaClawDataSrv',
+                domains: ['sales'],
+                app_installations: [{
+                    app_id: 'sales.customer.console',
+                    blueprint_id: 'sales.customer.console',
+                    name: 'Customer Console Installed',
+                    version: '5',
+                    kind: 'enterprise_normal_app',
+                    source: 'hub',
+                    role_bindings: [{ object_role: 'customer', domain: 'sales', dataset_id: 'sales.customers', required: true }],
+                    metadata: {
+                        app_skill_id: 'customer-console-skill',
+                        app_skill_version: '2.0.0',
+                        app_skill_source: 'hub',
+                        result_contract: {
+                            schema: 'maclaw.app.result.v1',
+                            primary: 'business_status',
+                            types: ['business_status', 'business_record', 'content'],
+                            delivery: { inlineContent: true, artifacts: false, businessRecord: true, notifications: false },
+                        },
+                        test_evidence: {
+                            run_id: 'run-customer-imported',
+                            verified_at: '2026-06-22T09:30:00Z',
+                            definition_hash: 'sha256:customer-console',
+                            test_protocol: {
+                                schema: 'maclaw.app.test_protocol.v1',
+                                fingerprint: 'proto-customer',
+                                sample_input: { customer_id: 'customer-1' },
+                                expected_output: { business_status: 'renewal_ready' },
+                                required_roles: ['operator'],
+                                required_scopes: ['app.run'],
+                                risk_level: 'medium',
+                            },
+                            test_protocol_fingerprint: 'proto-customer',
+                            primary_result: 'business_status',
+                            output_count: 1,
+                            result_payload: { business_status: 'renewal_ready', business_record: { id: 'customer-1', status: 'renewal_ready' }, text: 'renewal ready' },
+                            outputs: [{ kind: 'business_record', title: 'Customer renewal', text: '{"id":"customer-1"}', status: 'ready', data: { id: 'customer-1', status: 'renewal_ready' } }],
+                        },
+                    },
+                }],
+            }),
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        render(<AppsPage lang="en" />);
+        fireEvent.click(screen.getByTitle('App Studio'));
+
+        await waitFor(() => expect(screen.getByText('Customer Console Installed')).not.toBeNull());
+        fireEvent.click(screen.getByText('Add to panel'));
+        fireEvent.click(screen.getByText('Close'));
+
+        const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
+        const added = stored.customApps.find((app: any) => app.name === 'Customer Console Installed');
+        expect(added.kind).toBe('enterprise_normal_app');
+        expect(added.manifest.datasrv).toMatchObject({ appID: 'sales.customer.console', domain: 'sales', datasetID: 'sales.customers', objectRole: 'customer', blueprintID: 'sales.customer.console' });
+        expect(added.manifest.appSkill).toMatchObject({ id: 'customer-console-skill', version: '2.0.0', source: 'hub' });
+        expect(added.manifest.resultContract).toMatchObject({ schema: 'maclaw.app.result.v1', primary: 'business_status', types: ['business_status', 'business_record', 'content'] });
+        expect(added.manifest.testProtocol).toMatchObject({ schema: 'maclaw.app.test_protocol.v1', sampleInput: { customer_id: 'customer-1' }, expectedOutput: { business_status: 'renewal_ready' }, requiredRoles: ['operator'], requiredScopes: ['app.run'], riskLevel: 'medium' });
+        expect(added.importedRunEvidence).toMatchObject({
+            runID: 'run-customer-imported',
+            appID: 'sales.customer.console',
+            definitionHash: 'sha256:customer-console',
+            testProtocolFingerprint: 'proto-customer',
+            outputMode: 'business_status',
+            resultPayload: { business_status: 'renewal_ready', business_record: { id: 'customer-1', status: 'renewal_ready' }, text: 'renewal ready' },
+            outputs: [{ kind: 'business_record', title: 'Customer renewal', text: '{"id":"customer-1"}', status: 'ready', data: { id: 'customer-1', status: 'renewal_ready' } }],
+        });
+    });
+
     it('turns DataSrv installed MaClaw apps into addable app candidates with layout metadata', async () => {
         getMISDataConfigMock.mockResolvedValue({ enabled: true, endpoint: 'http://datasrv.test', token: 'token' });
         const fetchMock = vi.fn().mockResolvedValue({
@@ -7223,13 +7298,14 @@ describe('AppsPage', () => {
                             test_protocol_fingerprint: 'proto-expense',
                             artifact_present: true,
                             artifact_name: 'expense-approval-evidence.zip',
-                            artifacts: [{ id: 'artifact-expense-evidence', uri: 'artifact://expense/evidence.zip', name: 'expense-approval-evidence.zip', status: 'ready' }],
                             output_count: 3,
                             outputs: [{ kind: 'table', title: 'Approval rows', text: 'expense approved', status: 'ready', data: { rows: [{ id: 'expense-1', status: 'finance_approved' }] } }],
                             primary_result: 'approval_result',
                             result_payload: { decision: 'approved', business_status: 'finance_approved' },
                             approval_instance: { approval_id: 'approval-remote-imported', record_id: 'expense-1', status: 'approved', current_node: 'expense_report.result_feedback', approval_instance_view_verified: true, approval_views: { my_requests: true, handled: true, all: true } },
                         },
+                        test_evidence_artifact_count: 1,
+                        test_evidence_artifacts: [{ id: 'artifact-expense-evidence', uri: 'artifact://expense/evidence.zip', name: 'expense-approval-evidence.zip', status: 'ready' }],
                         dependency_verification: {
                             schema: 'maclaw.app.install_plan.v1',
                             verified_at: '2026-06-21T10:58:00Z',

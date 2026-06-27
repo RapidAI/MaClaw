@@ -2807,3 +2807,101 @@ resultCoverage
 ```
 
 这补上了“企业普通应用：DataSrv business action/query/report 执行、结构化 outputs、测试证据、二次发布”里的测试证据上传断点。下一步继续把同类证据向真实 Hub 安装包下载重装、DataSrv app_installations 回流做端到端串联。
+
+### 推进记录：企业普通应用 DataSrv 安装记录回流（2026-06-27）
+
+本轮补强了企业普通应用从 DataSrv app_installations 回到 GUI App 面板的证据链：
+
+```text
+DataSrv capabilities.app_installations
+  enterprise_normal_app
+  metadata.result_contract
+  metadata.test_evidence.test_protocol
+  metadata.test_evidence.result_payload
+  metadata.test_evidence.outputs
+
+GUI App Studio
+  发现已安装应用
+  Add to panel
+  还原 manifest.datasrv / manifest.appSkill / manifest.resultContract / manifest.testProtocol
+  还原 importedRunEvidence.resultPayload / outputs / definitionHash
+```
+
+新增前端测试覆盖普通企业 App 的回流场景，避免只有审批型应用保留安装证据、普通企业应用丢失结构化运行结果。下一步继续把 Hub 下载重装后的 app_installations 注册和 GUI 回流放进同一个端到端验收链。
+
+### 推进记录：Hub 市场元数据测试证据摘要（2026-06-27）
+
+本轮补强了 Hub/能力市场侧的 MaClaw App 测试证据摘要字段。提交 maclaw.app.pack.v1 后，完整 test_evidence 仍保留在 metadata 中，同时额外派生 DataSrv app_installations 已使用的稳定摘要键：
+
+```text
+test_evidence_run_id
+test_evidence_test_protocol_fingerprint
+test_evidence_primary_result
+test_evidence_output_count
+test_evidence_artifact_count
+test_evidence_result_payload
+test_evidence_outputs
+test_evidence_artifacts
+test_evidence_result_coverage
+test_evidence_result_coverage_ok
+test_evidence_result_coverage_primary
+test_evidence_covered_types
+test_evidence_missing_types
+test_evidence_approval_instance_id / approval_id / record_id / approval_status
+test_evidence_approval_view_verified
+```
+
+这样市场列表、审核、安装包注册到 DataSrv、再由 GUI 从 DataSrv 回流时，可以使用同一套摘要字段，不必每一层都重新解析深层 governance.testEvidence。下一步继续把 Hub 下载重装后的 RecordMaclawAppInstall/DataSrv registration 与 GUI 回流放进同一条验收测试。
+
+### 推进记录：GUI 安装注册到 DataSrv 的测试证据摘要对齐（2026-06-27）
+
+本轮补齐了 GUI 侧 `RecordMaclawAppInstall -> DataSrv app_installations` 注册 payload 的证据摘要。安装 MaClaw App 时，完整 `metadata.test_evidence` 仍保留，同时派生与 Hub 市场、DataSrv app_installations 归一化一致的稳定字段：
+
+```text
+test_evidence_run_id
+test_evidence_verified_at
+test_evidence_definition_fingerprint
+test_evidence_test_protocol_fingerprint
+test_evidence_artifact_present / artifact_count / artifact_name
+test_evidence_output_count
+test_evidence_result_payload
+test_evidence_outputs
+test_evidence_artifacts
+test_evidence_result_coverage
+test_evidence_result_coverage_ok / primary
+test_evidence_covered_types / missing_types
+test_evidence_approval_instance
+test_evidence_approval_instance_id / approval_id / record_id / approval_status
+test_evidence_approval_view_verified
+```
+
+这使真实 Hub 安装包、GUI 本地安装审计、DataSrv 已安装应用记录、GUI App 面板回流之间的证据索引口径保持一致。新增 GUI 后端测试验证审批型 App 安装注册时，DataSrv 收到的 metadata 同时包含嵌套证据包和这些可查询摘要，覆盖 resultPayload、outputs、artifacts、resultCoverage、approvalInstance 等核心结果反馈字段。
+
+### 推进记录：Hub 下载安装到 DataSrv 注册验收链（2026-06-27）
+
+本轮把 “从能力市场/Enterprise Hub 下载 MaClaw App 并安装” 的后端测试推进到 DataSrv 注册环节。测试现在覆盖：
+
+```text
+GUI InstallMaclawAppPackageFromHub
+  -> Enterprise Hub 下载 maclaw.app.pack.v1
+  -> 选择/安装包进入 RecordMaclawAppInstall
+  -> 读取 MIS Data 配置
+  -> PUT /api/v1/data/app-installations/{app_id}
+  -> DataSrv 接收 enterprise_normal_app 的 role_bindings + metadata
+  -> metadata 携带 test_evidence_* 结果证据摘要
+```
+
+新增断言确认 Hub 安装来源为 `enterprise_hub`，DataSrv registration 为 synced，普通企业应用的 DataSrv role binding 被写入，同时测试证据摘要包含 `run_id`、`verified_at`、`test_protocol_fingerprint`、`primary_result`、`result_payload`、`outputs`、`result_coverage` 等字段。这样 “Hub 分发 -> 本地安装 -> DataSrv 已安装应用记录” 不再只停留在本地 install audit，而是有了可回流到 GUI App 面板的数据基础。
+
+### 推进记录：DataSrv 已安装应用回流的文件结果摘要兼容（2026-06-27）
+
+本轮补齐 GUI App 面板从 DataSrv `app_installations` 回流时的文件结果恢复规则。此前 `importedRunEvidence.artifacts` 主要依赖深层 `metadata.test_evidence.artifacts`；现在同时支持 DataSrv/Hub 稳定摘要字段：
+
+```text
+metadata.test_evidence_artifacts
+metadata.test_evidence_artifact_count
+metadata.test_evidence_artifact_present
+metadata.test_evidence_artifact_name
+```
+
+这样即使 DataSrv 将文件结果作为顶层摘要字段归一化，GUI 仍能在 “Add to panel” 后恢复 `importedRunEvidence.artifacts`、`artifactName`，后续二次发布和运行证据展示不会丢失文档/附件类输出。前端测试已调整为审批型 installed app 不在深层 test_evidence 放 artifacts，而从顶层 `test_evidence_artifacts` 恢复，覆盖真实 Hub/DataSrv 摘要回流形态。

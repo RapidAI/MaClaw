@@ -68,6 +68,10 @@ func (s *sessionRepoStub) RecordUserTokenUsageSnapshot(ctx context.Context, tena
 	return nil
 }
 
+func (s *sessionRepoStub) RecordHeartbeat(ctx context.Context, tenantID, machineID, userID string, at time.Time) error {
+	return nil
+}
+
 func (s *sessionRepoStub) SummarizeUserTokenUsage(ctx context.Context, tenantID string, start, end time.Time) ([]store.UserTokenSummary, error) {
 	return nil, nil
 }

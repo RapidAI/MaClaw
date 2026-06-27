@@ -3837,31 +3837,40 @@ func selectSubAgentCommandSummaryEntries(commands []CodingSubAgentCommandResult,
 	if maxItems <= 0 || len(commands) <= maxItems {
 		return commands
 	}
-	selected := make([]CodingSubAgentCommandResult, 0, maxItems)
+	selectedIndexes := make([]int, 0, maxItems)
 	used := make(map[int]bool, maxItems)
-	for i, cmd := range commands {
+	for i := len(commands) - 1; i >= 0; i-- {
+		cmd := commands[i]
 		if !subAgentCommandSummaryHasProblem(cmd) {
 			continue
 		}
-		selected = append(selected, cmd)
+		selectedIndexes = append(selectedIndexes, i)
 		used[i] = true
-		if len(selected) == maxItems {
-			return selected
+		if len(selectedIndexes) == maxItems {
+			return subAgentCommandResultsAtIndexes(commands, selectedIndexes)
 		}
 	}
-	recent := make([]CodingSubAgentCommandResult, 0, maxItems-len(selected))
 	for i := len(commands) - 1; i >= 0; i-- {
 		if used[i] {
 			continue
 		}
-		recent = append(recent, commands[i])
-		if len(selected)+len(recent) == maxItems {
-			reverseSubAgentCommandResults(recent)
-			return append(selected, recent...)
+		selectedIndexes = append(selectedIndexes, i)
+		if len(selectedIndexes) == maxItems {
+			return subAgentCommandResultsAtIndexes(commands, selectedIndexes)
 		}
 	}
-	reverseSubAgentCommandResults(recent)
-	return append(selected, recent...)
+	return subAgentCommandResultsAtIndexes(commands, selectedIndexes)
+}
+
+func subAgentCommandResultsAtIndexes(commands []CodingSubAgentCommandResult, indexes []int) []CodingSubAgentCommandResult {
+	sort.Ints(indexes)
+	selected := make([]CodingSubAgentCommandResult, 0, len(indexes))
+	for _, i := range indexes {
+		if i >= 0 && i < len(commands) {
+			selected = append(selected, commands[i])
+		}
+	}
+	return selected
 }
 
 func subAgentCommandSummaryHasProblem(cmd CodingSubAgentCommandResult) bool {
@@ -4117,8 +4126,15 @@ func subAgentVerificationOutputLooksEmpty(cmd CodingSubAgentCommandResult) bool 
 		"0 tests completed",
 		"0 tests successful",
 		"0 tests executed",
+		"ran 0 tests",
+		"executed 0 tests",
+		"found 0 tests",
 		"# tests 0",
 		"0 test cases",
+		"0 assertions",
+		"0 specs",
+		"0 scenarios",
+		"0 features",
 		"no tests executed",
 		"no specs found",
 		"no files matching",

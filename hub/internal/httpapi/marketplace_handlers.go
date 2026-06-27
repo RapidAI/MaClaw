@@ -711,6 +711,7 @@ func enterpriseMaclawAppCapabilityMetadata(pkg map[string]any, entry enterpriseM
 		if testEvidence := anyMapFromMap(entry.Governance, "testEvidence", "test_evidence"); testEvidence != nil {
 			metadata["test_evidence"] = testEvidence
 			metadata["maclaw_app_test_evidence"] = testEvidence
+			applyEnterpriseMaclawAppTestEvidenceMetadata(metadata, testEvidence)
 		}
 	}
 	if _, ok := metadata["result_contract"]; !ok {
@@ -747,6 +748,93 @@ func enterpriseMaclawAppCapabilityMetadata(pkg map[string]any, entry enterpriseM
 		}
 	}
 	return compactMetadata(metadata)
+}
+
+func applyEnterpriseMaclawAppTestEvidenceMetadata(metadata, testEvidence map[string]any) {
+	if metadata == nil || testEvidence == nil {
+		return
+	}
+	for _, pair := range []struct {
+		keys []string
+		meta string
+	}{
+		{[]string{"runId", "run_id"}, "test_evidence_run_id"},
+		{[]string{"verifiedAt", "verified_at"}, "test_evidence_verified_at"},
+		{[]string{"definitionFingerprint", "definition_fingerprint", "definitionHash", "definition_hash"}, "test_evidence_definition_fingerprint"},
+		{[]string{"testProtocolFingerprint", "test_protocol_fingerprint", "testProtocolHash", "test_protocol_hash"}, "test_evidence_test_protocol_fingerprint"},
+		{[]string{"artifactName", "artifact_name"}, "test_evidence_artifact_name"},
+		{[]string{"primaryResult", "primary_result"}, "test_evidence_primary_result"},
+	} {
+		if value := enterpriseMaclawAppFirstString(testEvidence, pair.keys...); value != "" {
+			metadata[pair.meta] = value
+		}
+	}
+	if value, ok := enterpriseMaclawAppFirstBool(testEvidence, "artifactPresent", "artifact_present"); ok {
+		metadata["test_evidence_artifact_present"] = value
+	}
+	if value, ok := enterpriseMaclawAppFirstNumber(testEvidence, "artifactCount", "artifact_count"); ok {
+		metadata["test_evidence_artifact_count"] = value
+	} else if artifacts := anySliceFromMap(testEvidence, "artifacts"); len(artifacts) > 0 {
+		metadata["test_evidence_artifact_count"] = len(artifacts)
+	}
+	if value, ok := enterpriseMaclawAppFirstNumber(testEvidence, "outputCount", "output_count"); ok {
+		metadata["test_evidence_output_count"] = value
+	} else {
+		outputs := anySliceFromMap(testEvidence, "outputs")
+		if len(outputs) == 0 {
+			outputs = anySliceFromMap(testEvidence, "output_blocks")
+		}
+		if len(outputs) > 0 {
+			metadata["test_evidence_output_count"] = len(outputs)
+		}
+	}
+	if payload := anyMapFromMap(testEvidence, "resultPayload", "result_payload"); payload != nil {
+		metadata["test_evidence_result_payload"] = payload
+	}
+	if outputs := anySliceFromMap(testEvidence, "outputs"); len(outputs) > 0 {
+		metadata["test_evidence_outputs"] = outputs
+	} else if outputs := anySliceFromMap(testEvidence, "output_blocks"); len(outputs) > 0 {
+		metadata["test_evidence_outputs"] = outputs
+	}
+	if artifacts := anySliceFromMap(testEvidence, "artifacts"); len(artifacts) > 0 {
+		metadata["test_evidence_artifacts"] = artifacts
+	}
+	if coverage := anyMapFromMap(testEvidence, "resultCoverage", "result_coverage"); coverage != nil {
+		metadata["test_evidence_result_coverage"] = coverage
+		if value, ok := enterpriseMaclawAppFirstBool(coverage, "ok"); ok {
+			metadata["test_evidence_result_coverage_ok"] = value
+		}
+		if primary := enterpriseMaclawAppFirstString(coverage, "primary"); primary != "" {
+			metadata["test_evidence_result_coverage_primary"] = primary
+		}
+		if covered := enterpriseMaclawAppStringList(firstEnterpriseMaclawAppPresent(coverage, "coveredTypes", "covered_types")); len(covered) > 0 {
+			metadata["test_evidence_covered_types"] = covered
+		}
+		if missing := enterpriseMaclawAppStringList(firstEnterpriseMaclawAppPresent(coverage, "missingTypes", "missing_types")); len(missing) > 0 {
+			metadata["test_evidence_missing_types"] = missing
+		}
+	}
+	if approval := anyMapFromMap(testEvidence, "approvalInstance", "approval_instance", "approval"); approval != nil {
+		metadata["test_evidence_approval_instance"] = approval
+		if instanceID := firstNonEmpty(
+			enterpriseMaclawAppFirstString(approval, "instanceId", "instance_id", "approvalInstanceId", "approval_instance_id", "workflowInstanceId", "workflow_instance_id"),
+			enterpriseMaclawAppFirstString(approval, "approvalID", "approvalId", "approval_id"),
+		); instanceID != "" {
+			metadata["test_evidence_approval_instance_id"] = instanceID
+		}
+		if approvalID := enterpriseMaclawAppFirstString(approval, "approvalID", "approvalId", "approval_id", "recordApprovalID", "record_approval_id"); approvalID != "" {
+			metadata["test_evidence_approval_id"] = approvalID
+		}
+		if recordID := enterpriseMaclawAppFirstString(approval, "recordID", "record_id"); recordID != "" {
+			metadata["test_evidence_record_id"] = recordID
+		}
+		if status := enterpriseMaclawAppFirstString(approval, "status", "approvalStatus", "approval_status", "resultStatus", "result_status"); status != "" {
+			metadata["test_evidence_approval_status"] = status
+		}
+		if verified, ok := enterpriseMaclawAppFirstBool(approval, "approvalInstanceViewVerified", "approval_instance_view_verified", "approvalViewVerified", "approval_view_verified", "viewVerified", "view_verified"); ok {
+			metadata["test_evidence_approval_view_verified"] = verified
+		}
+	}
 }
 
 func enterpriseMaclawAppWorkspaceLayoutForEntry(entry enterpriseMaclawAppPackageEntry) map[string]any {
@@ -3988,6 +4076,88 @@ func anySliceFromMap(values map[string]any, key string) []any {
 	}
 	out, _ := values[key].([]any)
 	return out
+}
+
+func firstEnterpriseMaclawAppPresent(values map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if values == nil {
+			return nil
+		}
+		if value, ok := values[key]; ok && value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func enterpriseMaclawAppFirstString(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := stringFromAny(firstEnterpriseMaclawAppPresent(values, key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func enterpriseMaclawAppFirstBool(values map[string]any, keys ...string) (bool, bool) {
+	for _, key := range keys {
+		value := firstEnterpriseMaclawAppPresent(values, key)
+		switch typed := value.(type) {
+		case bool:
+			return typed, true
+		case string:
+			switch strings.ToLower(strings.TrimSpace(typed)) {
+			case "true", "1", "yes", "y":
+				return true, true
+			case "false", "0", "no", "n":
+				return false, true
+			}
+		case float64:
+			return typed != 0, true
+		case int:
+			return typed != 0, true
+		}
+	}
+	return false, false
+}
+
+func enterpriseMaclawAppFirstNumber(values map[string]any, keys ...string) (any, bool) {
+	for _, key := range keys {
+		value := firstEnterpriseMaclawAppPresent(values, key)
+		switch typed := value.(type) {
+		case float64:
+			return typed, true
+		case int:
+			return typed, true
+		case int64:
+			return typed, true
+		case json.Number:
+			if parsed, err := typed.Int64(); err == nil {
+				return parsed, true
+			}
+			if parsed, err := typed.Float64(); err == nil {
+				return parsed, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func enterpriseMaclawAppStringList(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return compactStringList(typed)
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if value := stringFromAny(item); value != "" {
+				out = append(out, value)
+			}
+		}
+		return compactStringList(out)
+	default:
+		return nil
+	}
 }
 
 func canonicalJSONSHA256(value any) (string, error) {

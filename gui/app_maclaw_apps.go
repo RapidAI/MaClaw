@@ -2717,13 +2717,7 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 			}
 			if testEvidence := anyMap(governance["test_evidence"]); testEvidence != nil {
 				metadata["test_evidence"] = testEvidence
-				if fingerprint := maclawAppStringValue(testEvidence, "testProtocolFingerprint", "test_protocol_fingerprint", "testProtocolHash", "test_protocol_hash"); fingerprint != "" {
-					metadata["test_evidence_test_protocol_fingerprint"] = fingerprint
-				} else if protocol := anyMap(firstNonEmptyMaclawAppAny(testEvidence["testProtocol"], testEvidence["test_protocol"])); protocol != nil {
-					if fingerprint := maclawAppStringValue(protocol, "fingerprint", "hash"); fingerprint != "" {
-						metadata["test_evidence_test_protocol_fingerprint"] = fingerprint
-					}
-				}
+				applyMaclawAppDataSrvTestEvidenceMetadata(metadata, testEvidence)
 			}
 		}
 		if dependencyVerification := maclawAppDependencyVerificationMetadataForEntry(entry, dependencies); dependencyVerification != nil {
@@ -2762,6 +2756,102 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 		payloads = append(payloads, maclawAppDataSrvInstallationPayload{AppID: entry.ID, RoleBindingCount: len(roleBindings), Body: compactPayload(body)})
 	}
 	return payloads
+}
+
+func applyMaclawAppDataSrvTestEvidenceMetadata(metadata map[string]interface{}, testEvidence map[string]any) {
+	if metadata == nil || testEvidence == nil {
+		return
+	}
+	for _, pair := range []struct {
+		keys []string
+		meta string
+	}{
+		{[]string{"runId", "run_id"}, "test_evidence_run_id"},
+		{[]string{"verifiedAt", "verified_at"}, "test_evidence_verified_at"},
+		{[]string{"definitionFingerprint", "definition_fingerprint", "definitionHash", "definition_hash"}, "test_evidence_definition_fingerprint"},
+		{[]string{"testProtocolFingerprint", "test_protocol_fingerprint", "testProtocolHash", "test_protocol_hash"}, "test_evidence_test_protocol_fingerprint"},
+		{[]string{"artifactName", "artifact_name"}, "test_evidence_artifact_name"},
+		{[]string{"primaryResult", "primary_result"}, "test_evidence_primary_result"},
+	} {
+		if value := maclawAppStringValue(testEvidence, pair.keys...); value != "" {
+			metadata[pair.meta] = value
+		}
+	}
+	if _, ok := metadata["test_evidence_test_protocol_fingerprint"]; !ok {
+		if protocol := anyMap(firstNonEmptyMaclawAppAny(testEvidence["testProtocol"], testEvidence["test_protocol"])); protocol != nil {
+			if fingerprint := maclawAppStringValue(protocol, "fingerprint", "hash"); fingerprint != "" {
+				metadata["test_evidence_test_protocol_fingerprint"] = fingerprint
+			}
+		}
+	}
+	if value, ok := firstNonEmptyMaclawAppAny(testEvidence["artifactPresent"], testEvidence["artifact_present"]).(bool); ok {
+		metadata["test_evidence_artifact_present"] = value
+	}
+	if value, ok := maclawAppNumberFromAny(firstNonEmptyMaclawAppAny(testEvidence["artifactCount"], testEvidence["artifact_count"])); ok {
+		metadata["test_evidence_artifact_count"] = value
+	} else if artifacts := anySlice(testEvidence["artifacts"]); len(artifacts) > 0 {
+		metadata["test_evidence_artifact_count"] = len(artifacts)
+	}
+	if value, ok := maclawAppNumberFromAny(firstNonEmptyMaclawAppAny(testEvidence["outputCount"], testEvidence["output_count"])); ok {
+		metadata["test_evidence_output_count"] = value
+	} else if outputs := maclawAppTestEvidenceOutputs(testEvidence); len(outputs) > 0 {
+		metadata["test_evidence_output_count"] = len(outputs)
+	}
+	if payload := anyMap(firstNonEmptyMaclawAppAny(testEvidence["resultPayload"], testEvidence["result_payload"])); payload != nil {
+		metadata["test_evidence_result_payload"] = payload
+	}
+	if outputs := maclawAppTestEvidenceOutputs(testEvidence); len(outputs) > 0 {
+		metadata["test_evidence_outputs"] = outputs
+	}
+	if artifacts := anySlice(testEvidence["artifacts"]); len(artifacts) > 0 {
+		metadata["test_evidence_artifacts"] = artifacts
+	}
+	if coverage := anyMap(firstNonEmptyMaclawAppAny(testEvidence["resultCoverage"], testEvidence["result_coverage"])); coverage != nil {
+		metadata["test_evidence_result_coverage"] = coverage
+		if value, ok := coverage["ok"].(bool); ok {
+			metadata["test_evidence_result_coverage_ok"] = value
+		}
+		if primary := maclawAppStringValue(coverage, "primary"); primary != "" {
+			metadata["test_evidence_result_coverage_primary"] = primary
+		}
+		if covered := maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(coverage["coveredTypes"], coverage["covered_types"])); len(covered) > 0 {
+			metadata["test_evidence_covered_types"] = covered
+		}
+		if missing := maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(coverage["missingTypes"], coverage["missing_types"])); len(missing) > 0 {
+			metadata["test_evidence_missing_types"] = missing
+		}
+	}
+	if approval := anyMap(firstNonEmptyMaclawAppAny(testEvidence["approvalInstance"], testEvidence["approval_instance"], testEvidence["approval"])); approval != nil {
+		metadata["test_evidence_approval_instance"] = approval
+		if instanceID := firstNonEmptyMaclawAppString(
+			maclawAppStringValue(approval, "instanceId", "instance_id", "approvalInstanceId", "approval_instance_id", "workflowInstanceId", "workflow_instance_id"),
+			maclawAppStringValue(approval, "approvalID", "approvalId", "approval_id"),
+		); instanceID != "" {
+			metadata["test_evidence_approval_instance_id"] = instanceID
+		}
+		if approvalID := maclawAppStringValue(approval, "approvalID", "approvalId", "approval_id", "recordApprovalID", "record_approval_id"); approvalID != "" {
+			metadata["test_evidence_approval_id"] = approvalID
+		}
+		if recordID := maclawAppStringValue(approval, "recordID", "record_id"); recordID != "" {
+			metadata["test_evidence_record_id"] = recordID
+		}
+		if status := maclawAppStringValue(approval, "status", "approvalStatus", "approval_status", "resultStatus", "result_status"); status != "" {
+			metadata["test_evidence_approval_status"] = status
+		}
+		if verified, ok := firstNonEmptyMaclawAppAny(approval["approvalInstanceViewVerified"], approval["approval_instance_view_verified"], approval["approvalViewVerified"], approval["approval_view_verified"], approval["viewVerified"], approval["view_verified"]).(bool); ok {
+			metadata["test_evidence_approval_view_verified"] = verified
+		}
+	}
+}
+
+func maclawAppTestEvidenceOutputs(testEvidence map[string]any) []any {
+	if testEvidence == nil {
+		return nil
+	}
+	if outputs := anySlice(testEvidence["outputs"]); len(outputs) > 0 {
+		return outputs
+	}
+	return anySlice(testEvidence["output_blocks"])
 }
 
 func maclawAppDependencyVerificationMetadataForEntry(entry parsedMaclawAppEntry, dependencies []maclawAppInstallPlanDependency) map[string]interface{} {

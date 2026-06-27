@@ -852,6 +852,11 @@ func subAgentRetryRecoveryHint(errSummary string) string {
 	if normalized == "" {
 		return ""
 	}
+	if strings.Contains(normalized, "quality audit evidence") {
+		if hint := subAgentQualityAuditRecoveryHint(normalized); hint != "" {
+			return hint
+		}
+	}
 	switch {
 	case strings.Contains(normalized, "example valid arguments:"):
 		return "Use the Example valid arguments snippet from the previous tool error as the JSON shape for the next call. Preserve the same tool intent, fill real task paths/content/query values, and do not retry malformed or empty arguments."
@@ -946,6 +951,9 @@ func subAgentRetryRecoveryHint(errSummary string) string {
 		return "Run git_diff after edits; if it fails, inspect the repository/working_dir state before finalizing."
 
 	case strings.Contains(normalized, "acceptance criteria") &&
+		strings.Contains(normalized, "not summarized"):
+		return "Update the final task summary with an explicit acceptance-criteria verification section. For each listed criterion, state the evidence from the actual verification command or explain why it cannot be automated."
+	case strings.Contains(normalized, "acceptance criteria") &&
 		(strings.Contains(normalized, "each listed criterion") || strings.Contains(normalized, "listed criterion")):
 		return "Update the final task summary to verify every listed acceptance criterion explicitly. Reference each item by its AC/标准 label, such as AC1/标准1 and AC2/标准2, and map each one to the verification command or explain why it cannot be automated."
 	case strings.Contains(normalized, "created files without inspection") ||
@@ -960,6 +968,9 @@ func subAgentRetryRecoveryHint(errSummary string) string {
 		return "Do not claim verification commands that were not actually run. Re-run the exact verification command after the final edit, or correct the final summary to list only commands present in the audit log."
 	case strings.Contains(normalized, "claimed verification command passed but audit log recorded failure"):
 		return "Do not claim a verification command passed when the audit log recorded failure. Inspect the failed command output, fix the root cause or correct the final summary, then rerun the focused verification command."
+	case strings.Contains(normalized, "fresh verification command not referenced in final summary") ||
+		strings.Contains(normalized, "verification command not referenced in final summary"):
+		return "Update the final summary to cite the fresh post-edit verification command exactly as run in the audit log, including its pass/fail outcome. Do not substitute stale pre-edit verification or an unrun command."
 	case strings.Contains(normalized, "changed files not referenced in final summary"):
 		return "Update the final summary to name the actual modified and created file paths from the audit evidence, then briefly state what changed in each important file."
 	case strings.Contains(normalized, "remaining risk not called out"):
@@ -973,6 +984,96 @@ func subAgentRetryRecoveryHint(errSummary string) string {
 		return "Address the blocked policy directly before retrying; choose the allowed tool path instead of repeating the blocked tool call."
 	}
 	return ""
+}
+
+func subAgentQualityAuditRecoveryHint(normalized string) string {
+	var hints []string
+	add := func(hint string) {
+		if strings.TrimSpace(hint) == "" {
+			return
+		}
+		for _, existing := range hints {
+			if existing == hint {
+				return
+			}
+		}
+		hints = append(hints, hint)
+	}
+	if strings.Contains(normalized, "no exploration before existing-file edits") ||
+		strings.Contains(normalized, "no exploration before editing existing files") ||
+		strings.Contains(normalized, "first edit") ||
+		strings.Contains(normalized, "首次修改前") {
+		add("inspect/explore before editing existing files; use codegraph explore/codegraph node when .codegraph/ exists, then keep the edit minimal.")
+	}
+	if strings.Contains(normalized, "created files without inspection") ||
+		strings.Contains(normalized, "project-context evidence") {
+		add("Inspect existing project context before creating new files, then keep new files consistent with discovered patterns.")
+	}
+	if strings.Contains(normalized, "no file changes and no inspection or verification evidence") {
+		add("Do not retry with another empty/no-evidence answer; inspect or verify the relevant behavior, then either make the minimal edit or explain why no change is needed.")
+	}
+	if strings.Contains(normalized, "outside listed task scope") ||
+		strings.Contains(normalized, "scope rationale") {
+		add("Review changed files outside the listed task scope; revert unrelated edits or explicitly explain the scope rationale and paths in the final summary.")
+	}
+	if strings.Contains(normalized, "acceptance criteria") && strings.Contains(normalized, "not summarized") {
+		add("Update the final task summary with an explicit acceptance-criteria verification section mapping each criterion to actual verification evidence or a non-automated rationale.")
+	} else if strings.Contains(normalized, "acceptance criteria") &&
+		(strings.Contains(normalized, "each listed criterion") || strings.Contains(normalized, "listed criterion")) {
+		add("Update the final task summary to verify every listed acceptance criterion explicitly, using AC/标准 labels and mapping each item to verification evidence.")
+	}
+	if strings.Contains(normalized, "fresh verification command not referenced in final summary") ||
+		strings.Contains(normalized, "verification command not referenced in final summary") {
+		add("Update the final summary to cite the fresh post-edit verification command exactly as run in the audit log, including its outcome.")
+	}
+	if strings.Contains(normalized, "claimed verification command not found in audit log") {
+		add("Do not claim verification commands that were not actually run; rerun the exact command after the final edit or list only commands present in the audit log.")
+	}
+	if strings.Contains(normalized, "claimed verification command passed but audit log recorded failure") {
+		add("Do not claim a verification command passed when the audit log recorded failure; fix the root cause or correct the final summary, then rerun verification.")
+	}
+	if strings.Contains(normalized, "changed files not referenced in final summary") {
+		add("Update the final summary to name the actual modified and created file paths and state what changed in each important file.")
+	}
+	if strings.Contains(normalized, "remaining risk not called out") {
+		add("Update the final summary with a remaining-risk note, either naming concrete residual risk or stating no known remaining risk after verification.")
+	}
+	if strings.Contains(normalized, "未实际执行测试或检查") ||
+		strings.Contains(normalized, "no tests collected") ||
+		strings.Contains(normalized, "no test files found") ||
+		strings.Contains(normalized, "0 tests found") {
+		add("The previous verification command succeeded without actually running tests or checks; inspect the test selector/path/config and rerun a command that discovers real tests or use a focused build/lint/typecheck fallback.")
+	}
+	if strings.Contains(normalized, "failure-suppressing shell syntax") ||
+		strings.Contains(normalized, "without || fallback") ||
+		strings.Contains(normalized, "pipe filters") ||
+		strings.Contains(normalized, "output redirection") ||
+		strings.Contains(normalized, "extra commands after the verifier") {
+		add("Re-run verification as a clean standalone command without `||` fallbacks, pipe filters, output redirection, or extra commands after the verifier.")
+	}
+	if strings.Contains(normalized, "timed out") ||
+		strings.Contains(normalized, "timeout") ||
+		strings.Contains(normalized, "context deadline exceeded") {
+		add("The previous command timed out; narrow broad commands when possible or set a reasonable timeout before rerunning verification after the final edit.")
+	}
+	if strings.Contains(normalized, "failed command evidence") ||
+		strings.Contains(normalized, "verification failed") ||
+		strings.Contains(normalized, "command(s) failed") ||
+		strings.Contains(normalized, "命令失败") ||
+		strings.Contains(normalized, "验证命令失败") {
+		add("Inspect the failing command output first, fix the reported compile/test/lint/typecheck root cause, then rerun the same focused verification command after the final edit.")
+	}
+	if strings.Contains(normalized, "verification not run") ||
+		strings.Contains(normalized, "no verification") ||
+		strings.Contains(normalized, "验证命令") ||
+		strings.Contains(normalized, "test/build/lint/typecheck") {
+		add("Run a focused verification command after the final edit that matches the change, such as test/build/lint/typecheck.")
+	}
+	if strings.Contains(normalized, "diff not checked") ||
+		strings.Contains(normalized, "git diff") {
+		add("Run git_diff after edits as the final self-check.")
+	}
+	return strings.Join(hints, " ")
 }
 
 func compactSubAgentPreviousResultSummary(summary string) string {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -334,17 +335,21 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 			execResult.Outcome == toolOutcomeSucceeded &&
 			strings.TrimSpace(tc.Function.Name) == "write_file" {
 			if writtenPath := extractWrittenPathFromResult(rawResult); writtenPath != "" {
-				// Deduplicate: append mode writes to the same file multiple times.
-				found := false
-				for _, existing := range opts.Context.WorkflowWrittenFiles {
-					if existing == writtenPath {
-						found = true
-						break
-					}
-				}
-				if !found {
-					opts.Context.WorkflowWrittenFiles = append(opts.Context.WorkflowWrittenFiles, writtenPath)
-				}
+				appendWorkflowWrittenFile(opts.Context, writtenPath)
+			}
+		}
+
+		// Track files delivered via send_file during workflow agent loops.
+		// This covers the case where LLM creates a file via bash (heredoc/Python)
+		// and then delivers it via send_file. The file path from send_file args
+		// is the definitive "this is the phase output" signal — regardless of how
+		// the file was created. This is a generic mechanism: any tool path that
+		// produces a deliverable document contributes to phase output capture.
+		if opts.Context != nil && opts.Context.WorkflowAgentLoop &&
+			execResult.Outcome == toolOutcomeSucceeded &&
+			strings.TrimSpace(tc.Function.Name) == "send_file" {
+			if sentPath := extractSendFileResolvedPath(tc, h, opts.Context); sentPath != "" {
+				appendWorkflowWrittenFile(opts.Context, sentPath)
 			}
 		}
 
@@ -472,6 +477,21 @@ func derefAgentLoopPhase(phase *agentLoopPhase) agentLoopPhase {
 
 // extractWrittenPathFromResult extracts the resolved absolute file path from
 // a successful write_file tool result string. The result format is one of:
+// appendWorkflowWrittenFile appends a file path to the workflow written files
+// list with deduplication. This is the single append point for both write_file
+// and send_file tracking — avoids repeating the dedup loop.
+func appendWorkflowWrittenFile(ctx *LoopContext, path string) {
+	if ctx == nil || path == "" {
+		return
+	}
+	for _, existing := range ctx.WorkflowWrittenFiles {
+		if existing == path {
+			return
+		}
+	}
+	ctx.WorkflowWrittenFiles = append(ctx.WorkflowWrittenFiles, path)
+}
+
 //   - "已写入 /path/to/file（1234 字节）"
 //   - "已追加到 /path/to/file（当前 1234 字节）"
 //   - "已清空 /path/to/file（0 字节）"
@@ -500,6 +520,46 @@ func extractWrittenPathFromResult(result string) string {
 		return strings.TrimSpace(rest)
 	}
 	return ""
+}
+
+// extractSendFileResolvedPath extracts and resolves the file path from a
+// send_file tool call's arguments using the same resolution logic as toolSendFile.
+// This enables phase output capture when LLM creates files via bash (heredoc/Python)
+// and then delivers them via send_file — the send_file path is the definitive
+// delivery signal for the phase document.
+func extractSendFileResolvedPath(tc llm.ToolCall, h *IMMessageHandler, ctx *LoopContext) string {
+	if tc.Function.Arguments == "" {
+		return ""
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return ""
+	}
+	p, _ := args["path"].(string)
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	// Use the same owner-aware resolution as toolSendFile.
+	ownerID := ""
+	if ctx != nil {
+		ownerID = ctx.Runtime.PolicyOwnerID
+	}
+	if h != nil {
+		if resolved, err := h.resolveFileToolPathForOwner(p, ownerID); err == nil {
+			return resolved
+		}
+	}
+	// Fallback: if already absolute, use as-is.
+	if filepath.IsAbs(p) {
+		return p
+	}
+	// Last resort: resolve against CWD.
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	return abs
 }
 
 // extractGeneratePDFContent extracts the content parameter from a generate_pdf

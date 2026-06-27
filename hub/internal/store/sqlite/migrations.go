@@ -868,6 +868,19 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN email_verified_at TEXT NOT NULL DEFAULT ''`)
 	alterStmts = append(alterStmts, `ALTER TABLE knowledge_shares ADD COLUMN expires_at TEXT`)
 
+	// machine_heartbeat_log: stores timestamped heartbeats for accurate
+	// usage-duration calculation. SummarizeUserDurations merges consecutive
+	// heartbeats (gap < 5 min) into online intervals.
+	alterStmts = append(alterStmts, `CREATE TABLE IF NOT EXISTS machine_heartbeat_log (
+		tenant_id TEXT NOT NULL,
+		machine_id TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		heartbeat_at TEXT NOT NULL,
+		UNIQUE(tenant_id, machine_id, heartbeat_at)
+	)`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_heartbeat_log_tenant_user_at ON machine_heartbeat_log(tenant_id, user_id, heartbeat_at)`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_heartbeat_log_cleanup ON machine_heartbeat_log(heartbeat_at)`)
+
 	for _, stmt := range alterStmts {
 		if _, err := db.Exec(stmt); err != nil && !isIgnorableMigrationError(err) {
 			return fmt.Errorf("run alter migration: %w", err)

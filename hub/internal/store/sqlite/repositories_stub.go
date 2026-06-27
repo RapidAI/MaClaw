@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -63,6 +64,7 @@ type invitationCodeRepo struct {
 type sessionRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
+	heartbeatCleanupCounter atomic.Int32
 }
 type emailInviteRepo struct {
 	db, readDB *sql.DB
@@ -1622,6 +1624,41 @@ func (r *sessionRepo) Close(ctx context.Context, sessionID string, exitCode *int
 	return err
 }
 
+func (r *sessionRepo) RecordHeartbeat(ctx context.Context, tenantID, machineID, userID string, at time.Time) error {
+	tenantID = normalizeTenantID(tenantID)
+	machineID = strings.TrimSpace(machineID)
+	userID = strings.TrimSpace(userID)
+	if machineID == "" || userID == "" {
+		return nil
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	// INSERT OR IGNORE: the UNIQUE constraint on (tenant_id, machine_id, heartbeat_at)
+	// prevents exact-second duplicates from network retransmissions.
+	err := execWrite(
+		ctx,
+		r.batch,
+		r.db,
+		`INSERT OR IGNORE INTO machine_heartbeat_log (tenant_id, machine_id, user_id, heartbeat_at) VALUES (?, ?, ?, ?)`,
+		tenantID,
+		machineID,
+		userID,
+		at.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return err
+	}
+	// Probabilistic cleanup: ~1/500 calls delete records older than 90 days.
+	// With 60s heartbeat interval this triggers roughly once every 8 hours per machine.
+	if r.heartbeatCleanupCounter.Add(1) >= 500 {
+		r.heartbeatCleanupCounter.Store(0)
+		cutoff := at.AddDate(0, 0, -90).Format(time.RFC3339)
+		_ = execWrite(ctx, r.batch, r.db, `DELETE FROM machine_heartbeat_log WHERE heartbeat_at < ?`, cutoff)
+	}
+	return nil
+}
+
 func (r *sessionRepo) RecordUserTokenUsageSnapshot(ctx context.Context, tenantID, sourceID, userID string, usage store.UserTokenUsage, observedAt time.Time) error {
 	tenantID = normalizeTenantID(tenantID)
 	sourceID = strings.TrimSpace(sourceID)
@@ -1763,82 +1800,112 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 	if end.Before(start) || end.Equal(start) {
 		return []store.UserDurationSummary{}, nil
 	}
-	effectiveNow := now
-	if effectiveNow.IsZero() || effectiveNow.After(end) {
-		effectiveNow = end
-	}
-	rows, err := r.db.QueryContext(ctx, `
-			SELECT LOWER(COALESCE(NULLIF(TRIM(u.email), ''), CASE WHEN s.user_id LIKE '%@%' THEN TRIM(s.user_id) ELSE '' END)) AS user_email,
-			       s.started_at, s.updated_at, s.ended_at, s.status, s.host_online
-			  FROM sessions s
-			  LEFT JOIN users u ON u.id = s.user_id AND u.tenant_id = s.tenant_id
-			 WHERE s.tenant_id = ?
-			   AND s.started_at < ?
-			   AND COALESCE(NULLIF(TRIM(u.email), ''), CASE WHEN s.user_id LIKE '%@%' THEN TRIM(s.user_id) ELSE '' END) <> ''
-			   AND (
-			       COALESCE(NULLIF(s.ended_at, ''), NULLIF(s.updated_at, ''), s.started_at) >= ?
-			       OR (
-			           COALESCE(NULLIF(s.ended_at, ''), '') = ''
-			           AND s.host_online = 1
-			           AND COALESCE(LOWER(s.status), '') NOT IN ('stopped', 'finished', 'failed', 'killed', 'exited', 'closed', 'done', 'error', 'completed', 'terminated')
-			       )
-			   )`,
-		tenantID, end.Format(time.RFC3339), start.Format(time.RFC3339))
+
+	// Step 1: Query heartbeat timestamps grouped by user_id.
+	// Uses the (tenant_id, user_id, heartbeat_at) index for efficient scan.
+	rows, err := r.readDB.QueryContext(ctx, `
+		SELECT user_id, heartbeat_at
+		  FROM machine_heartbeat_log
+		 WHERE tenant_id = ?
+		   AND heartbeat_at >= ?
+		   AND heartbeat_at < ?
+		 ORDER BY user_id, heartbeat_at`,
+		tenantID, start.Format(time.RFC3339), end.Format(time.RFC3339))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	intervalsByEmail := map[string][]usageDurationInterval{}
+	// Merge consecutive heartbeats where gap <= maxHeartbeatGap into intervals.
+	// Each heartbeat represents at least baseHeartbeatDuration of online time
+	// (the interval since the previous heartbeat tick, or the tick itself for
+	// a single isolated point).
+	const maxHeartbeatGap = 5 * time.Minute
+	const baseHeartbeatDuration = 60 // seconds — assumed heartbeat interval
+
+	type userState struct {
+		intervalStart time.Time
+		intervalEnd   time.Time
+		totalSeconds  int64
+	}
+	byUserID := map[string]*userState{}
+
 	for rows.Next() {
-		var email string
-		var startedRaw string
-		var updatedRaw string
-		var endedRaw sql.NullString
-		var statusRaw string
-		var hostOnline int
-		if err := rows.Scan(&email, &startedRaw, &updatedRaw, &endedRaw, &statusRaw, &hostOnline); err != nil {
+		var userID string
+		var atRaw string
+		if err := rows.Scan(&userID, &atRaw); err != nil {
 			return nil, err
 		}
-		email = strings.ToLower(strings.TrimSpace(email))
-		if email == "" {
+		userID = strings.TrimSpace(userID)
+		if userID == "" {
 			continue
 		}
-		startedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(startedRaw))
+		at, err := time.Parse(time.RFC3339, strings.TrimSpace(atRaw))
 		if err != nil {
 			continue
 		}
-		activityEnd := effectiveNow
-		if endedRaw.Valid && strings.TrimSpace(endedRaw.String) != "" {
-			if endedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(endedRaw.String)); err == nil {
-				activityEnd = endedAt
+
+		state := byUserID[userID]
+		if state == nil {
+			state = &userState{intervalStart: at, intervalEnd: at}
+			byUserID[userID] = state
+			continue
+		}
+
+		gap := at.Sub(state.intervalEnd)
+		if gap <= maxHeartbeatGap {
+			// Extend current interval.
+			state.intervalEnd = at
+		} else {
+			// Close current interval. For single-point intervals (start==end),
+			// count baseHeartbeatDuration.
+			dur := int64(state.intervalEnd.Sub(state.intervalStart).Seconds())
+			if dur < int64(baseHeartbeatDuration) {
+				dur = int64(baseHeartbeatDuration)
 			}
-		} else if isActiveUsageDurationSession(statusRaw, hostOnline != 0) {
-			activityEnd = effectiveNow
-		} else if strings.TrimSpace(updatedRaw) != "" {
-			if updatedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(updatedRaw)); err == nil {
-				activityEnd = updatedAt
-			}
-		}
-		if activityEnd.After(end) {
-			activityEnd = end
-		}
-		if activityEnd.After(effectiveNow) {
-			activityEnd = effectiveNow
-		}
-		if startedAt.Before(start) {
-			startedAt = start
-		}
-		if activityEnd.After(startedAt) {
-			intervalsByEmail[email] = append(intervalsByEmail[email], usageDurationInterval{start: startedAt, end: activityEnd})
+			state.totalSeconds += dur
+			state.intervalStart = at
+			state.intervalEnd = at
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	out := make([]store.UserDurationSummary, 0, len(intervalsByEmail))
-	for email, intervals := range intervalsByEmail {
-		seconds := mergedUsageDurationSeconds(intervals)
+
+	// Close the last open interval for each user.
+	for _, state := range byUserID {
+		dur := int64(state.intervalEnd.Sub(state.intervalStart).Seconds())
+		if dur < int64(baseHeartbeatDuration) {
+			dur = int64(baseHeartbeatDuration)
+		}
+		state.totalSeconds += dur
+	}
+
+	// Step 2: Resolve user_id → email. Batch-load all relevant users once.
+	userIDs := make([]string, 0, len(byUserID))
+	for uid := range byUserID {
+		userIDs = append(userIDs, uid)
+	}
+	emailByUserID := r.resolveUserEmails(ctx, tenantID, userIDs)
+
+	// Step 3: Aggregate by email (multiple machines of same user → merge).
+	byEmail := map[string]int64{}
+	for userID, state := range byUserID {
+		email := emailByUserID[userID]
+		if email == "" {
+			// Fallback: treat user_id as email if it looks like one.
+			if strings.Contains(userID, "@") {
+				email = strings.ToLower(strings.TrimSpace(userID))
+			}
+		}
+		if email == "" {
+			continue
+		}
+		byEmail[email] += state.totalSeconds
+	}
+
+	out := make([]store.UserDurationSummary, 0, len(byEmail))
+	for email, seconds := range byEmail {
 		if seconds <= 0 {
 			continue
 		}
@@ -1850,6 +1917,47 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 	return out, nil
 }
 
+// resolveUserEmails batch-resolves user IDs to lowercase email addresses.
+// Handles SQLite's SQLITE_MAX_VARIABLE_NUMBER limit by batching.
+func (r *sessionRepo) resolveUserEmails(ctx context.Context, tenantID string, userIDs []string) map[string]string {
+	result := make(map[string]string, len(userIDs))
+	if len(userIDs) == 0 {
+		return result
+	}
+	const batchSize = 400 // well under SQLite's default 999 limit, minus 1 for tenantID
+	for i := 0; i < len(userIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(userIDs) {
+			end = len(userIDs)
+		}
+		batch := userIDs[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, tenantID)
+		for j, uid := range batch {
+			placeholders[j] = "?"
+			args = append(args, uid)
+		}
+		query := `SELECT id, LOWER(TRIM(email)) FROM users WHERE tenant_id = ? AND id IN (` + strings.Join(placeholders, ",") + `)`
+		rows, err := r.readDB.QueryContext(ctx, query, args...)
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var uid, email string
+			if err := rows.Scan(&uid, &email); err != nil {
+				continue
+			}
+			if strings.TrimSpace(email) != "" {
+				result[uid] = strings.ToLower(strings.TrimSpace(email))
+			}
+		}
+		rows.Close()
+	}
+	return result
+}
+
+// Legacy helpers — kept for backward compatibility with older data.
 type usageDurationInterval struct {
 	start time.Time
 	end   time.Time

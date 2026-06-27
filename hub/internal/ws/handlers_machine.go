@@ -215,6 +215,7 @@ type SessionService interface {
 	OnSessionClosed(ctx context.Context, machineID, userID, sessionID string, payload map[string]any) error
 	OnSessionImage(ctx context.Context, machineID, userID, sessionID string, img session.SessionImage)
 	RecordUserTokenUsageSnapshot(ctx context.Context, tenantID, sourceID, userID string, usage store.UserTokenUsage, observedAt time.Time) error
+	RecordHeartbeat(ctx context.Context, tenantID, machineID, userID string, at time.Time) error
 	MarkMachineOffline(ctx context.Context, machineID string) error
 	GetSnapshot(userID, machineID, sessionID string) (*session.SessionCacheEntry, bool)
 	GetSnapshotForTenant(tenantID, userID, machineID, sessionID string) (*session.SessionCacheEntry, bool)
@@ -909,6 +910,14 @@ func (g *Gateway) handleMachineHeartbeat(ctx *ConnContext, msg Envelope) error {
 	if err := g.Devices.Heartbeat(context.Background(), ctx.MachineID, payload); err != nil {
 		log.Printf("[ws] handleMachineHeartbeat: Heartbeat FAILED for machine_id=%s: %v", ctx.MachineID, err)
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
+	}
+	// Record heartbeat to the duration log for usage-time calculation.
+	// The INSERT OR IGNORE + UNIQUE constraint prevents exact-second duplicates.
+	// Normal heartbeat interval is 60s so this writes ~1440 rows/day/machine.
+	if g.Sessions != nil && ctx.TenantID != "" && ctx.UserID != "" {
+		if err := g.Sessions.RecordHeartbeat(store.WithTenant(context.Background(), ctx.TenantID), ctx.TenantID, ctx.MachineID, ctx.UserID, time.Now()); err != nil {
+			log.Printf("[ws] handleMachineHeartbeat: record heartbeat log FAILED for machine_id=%s: %v", ctx.MachineID, err)
+		}
 	}
 	if payload.LLMTokenUsage != nil && g.Sessions != nil {
 		usage := store.UserTokenUsage{
