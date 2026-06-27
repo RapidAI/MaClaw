@@ -78,12 +78,13 @@ location / {
     proxy_set_header Connection "upgrade";
     proxy_read_timeout 3600s;
     proxy_send_timeout 3600s;
+  
 }
 ```
 
 **2. HubCenter 的 Nginx 配置（关键！容易遗漏）**：
 
-HubCenter 需要转发 LLM 请求到后端 API（DeepSeek/GLM 等），其中 `/api/llm/` 路径必须有足够大的超时：
+HubCenter /hub  需要转发 LLM 请求到后端 API（DeepSeek/GLM 等），其中 `/api/llm/` 路径必须有足够大的超时：
 
 ```nginx
 server {
