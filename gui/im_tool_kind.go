@@ -35,7 +35,7 @@ func classifyAgentToolKind(name string) agentToolKind {
 		return agentToolKindBash
 	case "read_file":
 		return agentToolKindReadFile
-	case "edit_file":
+	case "edit_file", "edit_lines":
 		return agentToolKindEditFile
 	case "write_file":
 		return agentToolKindWriteFile

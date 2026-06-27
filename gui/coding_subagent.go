@@ -4757,16 +4757,43 @@ func subAgentClaimedVerificationCommands(summary string) []subAgentClaimedVerifi
 func subAgentClaimedVerificationLineCommands(summary string) []subAgentClaimedVerificationCommand {
 	var commands []subAgentClaimedVerificationCommand
 	for _, line := range strings.Split(summary, "\n") {
-		candidate, claimedPassed, claimedFailed, ok := subAgentVerificationLineCommandCandidate(line)
-		if !ok {
+		commands = append(commands, subAgentVerificationLineCommandCandidates(line)...)
+	}
+	return commands
+}
+
+func subAgentVerificationLineCommandCandidates(line string) []subAgentClaimedVerificationCommand {
+	candidate, claimedPassed, claimedFailed, ok := subAgentVerificationLineCommandCandidate(line)
+	if !ok {
+		return nil
+	}
+	_, rawClaimedPassed, rawClaimedFailed := trimSubAgentClaimedCommandTail(candidate)
+	parts := splitSubAgentVerificationCommandCandidates(candidate)
+	if len(parts) == 0 {
+		parts = []string{candidate}
+	}
+	commands := make([]subAgentClaimedVerificationCommand, 0, len(parts))
+	lineClaimsPassed := claimedPassed || rawClaimedPassed
+	lineClaimsFailed := claimedFailed || rawClaimedFailed
+	for _, part := range parts {
+		part, partClaimedPassed, partClaimedFailed := trimSubAgentClaimedCommandTail(part)
+		if !isSubAgentVerificationCommand(part) {
 			continue
 		}
-		if isSubAgentVerificationCommand(candidate) {
-			commands = append(commands, subAgentClaimedVerificationCommand{
-				Command:       candidate,
-				ClaimedPassed: claimedPassed,
-				ClaimedFailed: claimedFailed,
-			})
+		lineClaimsPassed = lineClaimsPassed || partClaimedPassed
+		lineClaimsFailed = lineClaimsFailed || partClaimedFailed
+		commands = append(commands, subAgentClaimedVerificationCommand{
+			Command:       part,
+			ClaimedPassed: partClaimedPassed,
+			ClaimedFailed: partClaimedFailed,
+		})
+	}
+	if len(commands) > 0 && (lineClaimsPassed || lineClaimsFailed) {
+		for i := range commands {
+			if !commands[i].ClaimedPassed && !commands[i].ClaimedFailed {
+				commands[i].ClaimedPassed = lineClaimsPassed
+				commands[i].ClaimedFailed = lineClaimsFailed
+			}
 		}
 	}
 	return commands
@@ -4804,10 +4831,68 @@ func subAgentVerificationLineCommandCandidate(line string) (string, bool, bool, 
 		}
 		candidate := strings.TrimSpace(line[len(prefix):])
 		candidate = strings.ReplaceAll(strings.Trim(candidate, "` "), "`", "")
-		candidate, claimedPassed, claimedFailed := trimSubAgentClaimedCommandTail(candidate)
-		return candidate, claimedPassed, claimedFailed, candidate != ""
+		return candidate, false, false, candidate != ""
 	}
 	return "", false, false, false
+}
+
+func splitSubAgentVerificationCommandCandidates(candidate string) []string {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return nil
+	}
+	parts := []string{candidate}
+	for _, sep := range []string{"；", ";", " and ", " && "} {
+		parts = splitSubAgentVerificationCommandCandidateParts(parts, sep)
+	}
+	parts = splitSubAgentVerificationCommandCandidatePartsOnComma(parts)
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(strings.Trim(part, "` "))
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func splitSubAgentVerificationCommandCandidateParts(parts []string, sep string) []string {
+	if len(parts) == 0 || sep == "" {
+		return parts
+	}
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, strings.Split(part, sep)...)
+	}
+	return out
+}
+
+func splitSubAgentVerificationCommandCandidatePartsOnComma(parts []string) []string {
+	if len(parts) == 0 {
+		return parts
+	}
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		commaParts := strings.Split(part, ",")
+		if len(commaParts) == 1 {
+			out = append(out, part)
+			continue
+		}
+		allVerification := true
+		for _, commaPart := range commaParts {
+			candidate, _, _ := trimSubAgentClaimedCommandTail(commaPart)
+			if !isSubAgentVerificationCommand(candidate) {
+				allVerification = false
+				break
+			}
+		}
+		if allVerification {
+			out = append(out, commaParts...)
+		} else {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func trimSubAgentClaimedCommandTail(candidate string) (string, bool, bool) {

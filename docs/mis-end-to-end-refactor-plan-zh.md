@@ -4222,6 +4222,114 @@ go test ./gui -count=1 -vet=off -run "TestMaclawAppDataSrvInstallationPayloadsSc
 npm.cmd test -- AppsPage.test.tsx -t "turns DataSrv installed MaClaw apps into addable app candidates with layout metadata"
 ```
 
+### 推进记录：多 App 包共享 Skill 依赖按语义拆分（2026-06-27）
+
+本轮继续从“能力市场包安装 -> 依赖检查 -> DataSrv/GUI 恢复 -> 运行/发布复核”的全链路检查依赖归属。发现后端安装计划此前按 Skill ID 合并依赖；当同一个 Skill 在不同 App 中语义不同，例如：
+
+```text
+App A: shared-skill required=true
+App B: shared-skill required=false
+
+或：
+
+App A: workflow-skill version=1.0.0
+App B: workflow-skill version=2.0.0
+```
+
+如果只按 ID 合并，就会把 A 的 required / version 覆盖到 B，导致用户只安装或运行 B 时被 A 的必需依赖误阻断，或丢失版本约束。这和 MaClaw App 作为“超级 Skill + 依赖 Skill”的能力市场分发模型不一致。
+
+已落地调整：
+
+```text
+GUI 后端 PlanMaclawAppInstall
+  -> 依赖合并键从 id 改为：
+     id + version + kind + source + required
+  -> 只有同一语义的依赖才合并 app_ids
+  -> 同一 Skill 在不同 App 中 required/optional 不再互相污染
+  -> 同一 Skill 在不同 App 中版本不同也不再丢失约束
+
+依赖证据过滤
+  -> hasBlockingMaclawAppRequiredDependencyForApp 继续按 app_id 过滤
+  -> optional-app 不会被 required-app 的 shared-skill 阻断
+
+GUI 前端 identity alias
+  -> appInstallIdentityKeys 增加 datasrv-installed-* 双向别名
+  -> DataSrv 恢复应用、本地包装 ID、canonical app_id 的依赖证据过滤口径保持一致
+```
+
+对应全链路意义：
+
+```text
+maclaw.app.pack.v1 多应用包
+  -> 用户选择其中一个 App
+  -> 后端安装计划保留该 App 自己的 required/version/source 语义
+  -> 市场安装、DataSrv 注册、运行前健康检查、发布门禁都按当前 App 判断
+  -> 多 App 包共享 Skill 不再造成跨 App 误阻断
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestPlanMaclawAppInstallScopesSharedDependencyRequirementPerApp"
+npm.cmd test -- AppsPage.test.tsx -t "turns DataSrv installed MaClaw apps into addable app candidates with layout metadata"
+```
+
+### 推进记录：DataSrv 依赖健康过滤优先使用结构化验证证据（2026-06-27）
+
+本轮继续把 GUI 与 DataSrv 的安装证据口径对齐。前面 GUI 从 `app_installations.metadata` 恢复安装证据时，已经改为优先读取结构化 `dependency_verification`，再回退旧的扁平 metadata 字段；但 DataSrv 服务端 `ListAppInstallations` 的依赖健康过滤仍先读取 `has_blocking_dependency` / `has_missing_required_dependency` 顶层字段。
+
+这会造成一个旧数据兼容问题：
+
+```text
+metadata.has_blocking_dependency = true          # 旧包级字段，可能来自多 App 包汇总
+metadata.has_missing_required_dependency = true  # 旧包级字段，可能来自多 App 包汇总
+metadata.dependency_verification.has_blocking_dependency = false
+metadata.dependency_verification.has_missing_required = false
+```
+
+如果 DataSrv 按顶层字段优先判断，`/api/v1/data/app-installations?has_blocking_dependency=false` 会漏掉当前 App 已验证 ready 的安装记录；GUI、MIS Tool 和运维 agent 查询“可运行 App”时会被旧包级字段误导。
+
+已落地调整：
+
+```text
+DataSrv ListAppInstallations
+  -> HasBlockingDependency 过滤优先读取：
+     dependency_verification.has_blocking_dependency
+     dependency_verification.hasBlockingDependency
+     test_evidence.dependency_verification.*
+     test_evidence_dependency_blocking
+     顶层 has_blocking_dependency
+
+  -> HasMissingRequiredDependency 过滤优先读取：
+     dependency_verification.has_missing_required
+     dependency_verification.hasMissingRequired
+     test_evidence.dependency_verification.*
+     test_evidence_dependency_missing_required
+     顶层 has_missing_required_dependency / has_missing_required
+
+DataSrv 回归测试
+  -> 新增 legacy_ready 安装记录：
+     顶层字段为 blocking=true
+     结构化 dependency_verification 为 blocking=false
+  -> 查询 has_blocking_dependency=true 只返回真正 blocked App
+  -> 查询 has_blocking_dependency=false 返回 ready 与 legacy_ready
+```
+
+对应全链路意义：
+
+```text
+GUI 安装 / Hub 安装 / DataSrv 注册
+  -> 结构化 dependency_verification 成为权威 App 级证据
+  -> 旧扁平字段只作为兼容兜底
+  -> MIS Tool、App Studio、agent 通过 DataSrv 查询依赖健康时，不再被多 App 包旧汇总状态误阻断
+```
+
+已通过定向验证：
+
+```text
+go test ./structureddata -count=1 -timeout 60s -run "TestListAppInstallationsFiltersByDependencyHealth"
+```
+
 ### 推进记录：市场包安装依赖验证按选中 App 收敛（2026-06-27）
 
 本轮继续检查“能力市场安装 -> 依赖检查 -> 安装记录 -> 本地 AppEntry”链路。此前粘贴 `maclaw.app.pack.v1` 包时，安装动作已经会按用户当前选中的 App 子包重新调用 `PlanMaclawAppInstall` / `InstallMaclawAppDependencies`，安装审计也只记录实际安装的 App；但依赖验证面板仍会读取后端计划的包级 `has_missing_required` / `has_blocking_dependency` 汇总标记。

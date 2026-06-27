@@ -4576,6 +4576,8 @@ func TestSummarizeSubAgentVerificationCommandSummaryEvidence(t *testing.T) {
 		"Verification: go test ./gui exit 0.\nRisk: none.",
 		"Verification: go test ./gui all tests passed.\nRisk: none.",
 		"Verification: go test ./gui green.\nRisk: none.",
+		"Verification: go test ./gui, go vet ./gui passed.\nRisk: none.",
+		"Verification: go test ./gui; go vet ./gui passed.\nRisk: none.",
 		"Ran: go test ./gui passed.\nRisk: none.",
 		"Test command: go test ./gui ok.\nRisk: none.",
 		"Check command: go test ./gui succeeded.\nRisk: none.",
@@ -4590,6 +4592,20 @@ func TestSummarizeSubAgentVerificationCommandSummaryEvidence(t *testing.T) {
 		if warning != "" {
 			t.Fatalf("summary with natural successful verification outcome should not warn for %q, got %q", summary, warning)
 		}
+	}
+
+	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./gui, go vet ./gui passed.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go vet ./gui", Succeeded: true, Summary: "go vet ./gui ok", seq: 3},
+	}, 2)
+	if warning != "" {
+		t.Fatalf("summary listing multiple verification commands should match fresh later command, got %q", warning)
+	}
+
+	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./gui; go vet ./gui failed.\nRisk: known vet failure.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go vet ./gui", Succeeded: false, Summary: "vet failed", seq: 3},
+	}, 2)
+	if warning != "" {
+		t.Fatalf("summary listing multiple verification commands should match fresh failed later command, got %q", warning)
 	}
 
 	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./gui.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{

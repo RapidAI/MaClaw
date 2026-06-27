@@ -9039,6 +9039,8 @@ function appInstallIdentityKeys(appId: string) {
     const keys = [id];
     if (id.startsWith('market-')) keys.push(id.slice('market-'.length));
     else keys.push(`market-${id}`);
+    if (id.startsWith('datasrv-installed-')) keys.push(id.slice('datasrv-installed-'.length));
+    else keys.push(`datasrv-installed-${id}`);
     return Array.from(new Set(keys));
 }
 

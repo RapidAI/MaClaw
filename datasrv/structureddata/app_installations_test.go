@@ -369,6 +369,24 @@ func TestListAppInstallationsFiltersByDependencyHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertAppInstallation ready: %v", err)
 	}
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "expense.legacy_ready", UpsertAppInstallationInput{
+		AppID: "expense.legacy_ready",
+		Name:  "Legacy Ready Expense Approval",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"has_missing_required_dependency": true,
+			"has_blocking_dependency":         true,
+			"dependency_verification": map[string]any{
+				"schema":                  "maclaw.app.install_plan.v1",
+				"dependency_count":        1,
+				"has_missing_required":    false,
+				"has_blocking_dependency": false,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation legacy ready: %v", err)
+	}
 
 	blocking := true
 	blocked, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{HasBlockingDependency: &blocking})
@@ -383,7 +401,11 @@ func TestListAppInstallationsFiltersByDependencyHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAppInstallations nonblocking: %v", err)
 	}
-	if len(ready) != 1 || ready[0].AppID != "expense.ready" {
+	readyByID := map[string]bool{}
+	for _, app := range ready {
+		readyByID[app.AppID] = true
+	}
+	if len(ready) != 2 || !readyByID["expense.ready"] || !readyByID["expense.legacy_ready"] {
 		t.Fatalf("expected nonblocking dependency filter to return ready app: %#v", ready)
 	}
 	missingRequired := true

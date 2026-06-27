@@ -151,7 +151,18 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		capturedStore := h.memoryStore
 		capturedApp := h.app
 		go func() {
+			// Overall timeout: if Store.mu is held by a long-running background
+			// operation, bail out rather than accumulating blocked goroutines.
+			timer := time.NewTimer(30 * time.Second)
+			defer timer.Stop()
+			processed := 0
 			for _, dt := range capturedTexts {
+				select {
+				case <-timer.C:
+					log.Printf("[compaction-async] timeout after 30s, processed %d/%d dropped texts for user=%s", processed, len(capturedTexts), capturedUserID)
+					return
+				default:
+				}
 				preview := memoryRefPreview(dt.Content)
 				if preview == "" {
 					continue
@@ -194,8 +205,9 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 				if err == nil && capturedApp != nil {
 					capturedApp.triggerMemoryPipelineSoon(45 * time.Second)
 				}
+				processed++
 			}
-			log.Printf("[compaction-async] processed %d dropped texts for user=%s", len(capturedTexts), capturedUserID)
+			log.Printf("[compaction-async] processed %d dropped texts for user=%s", processed, capturedUserID)
 		}()
 	}
 

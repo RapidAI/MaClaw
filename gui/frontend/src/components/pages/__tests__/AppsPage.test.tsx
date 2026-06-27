@@ -7917,7 +7917,7 @@ describe('AppsPage', () => {
                             workflow_contract_issue_count: 0,
                             has_governance_review_issue: false,
                             governance_review_issue_count: 0,
-                            dependencies: [{ id: 'expense-workflow', version: '2.1.0', kind: 'workflow_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: ['mis.expense'] }],
+                            dependencies: [{ id: 'expense-workflow', version: '2.1.0', kind: 'workflow_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: ['datasrv-installed-mis.expense'] }],
                         },
                         test_evidence_dependency_verified_at: '2026-06-21T10:58:00Z',
                         test_evidence_dependency_count: 1,
