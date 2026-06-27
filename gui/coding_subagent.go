@@ -4501,7 +4501,7 @@ func subAgentSummaryExplainsScopeExpansion(summary string, outsideFiles []string
 	}
 	for _, file := range outsideFiles {
 		key := subAgentPathEvidenceKey(file)
-		if key != "" && strings.Contains(slashSummary, key) {
+		if subAgentSummaryContainsPathEvidence(slashSummary, key) {
 			return true
 		}
 	}
@@ -4558,12 +4558,60 @@ func subAgentSummaryMissingChangedFiles(summary string, changedFiles []string) [
 	}
 	var missing []string
 	for _, file := range changedFiles {
-		key := strings.ToLower(subAgentPathEvidenceKey(file))
-		if key == "" || !strings.Contains(slashSummary, key) {
+		key := subAgentPathEvidenceKey(file)
+		if !subAgentSummaryContainsPathEvidence(slashSummary, key) {
 			missing = append(missing, file)
 		}
 	}
 	return uniqueSortedSubAgentStrings(missing)
+}
+
+func subAgentSummaryContainsPathEvidence(slashSummary, pathKey string) bool {
+	slashSummary = strings.ToLower(filepath.ToSlash(strings.TrimSpace(slashSummary)))
+	pathKey = strings.ToLower(strings.Trim(subAgentPathEvidenceKey(pathKey), "/"))
+	if slashSummary == "" || pathKey == "" {
+		return false
+	}
+	for _, candidate := range []string{pathKey, "./" + pathKey} {
+		if subAgentSummaryContainsPathEvidenceCandidate(slashSummary, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func subAgentSummaryContainsPathEvidenceCandidate(summary, candidate string) bool {
+	start := 0
+	for {
+		idx := strings.Index(summary[start:], candidate)
+		if idx < 0 {
+			return false
+		}
+		absolute := start + idx
+		after := absolute + len(candidate)
+		if subAgentPathEvidenceBoundaryBefore(summary, absolute) && subAgentPathEvidenceBoundaryAfter(summary, after) {
+			return true
+		}
+		start = absolute + len(candidate)
+	}
+}
+
+func subAgentPathEvidenceBoundaryBefore(summary string, absolute int) bool {
+	if absolute <= 0 {
+		return true
+	}
+	return !isSubAgentPathEvidenceContinuationByte(summary[absolute-1])
+}
+
+func subAgentPathEvidenceBoundaryAfter(summary string, after int) bool {
+	if after >= len(summary) {
+		return true
+	}
+	return !isSubAgentPathEvidenceContinuationByte(summary[after])
+}
+
+func isSubAgentPathEvidenceContinuationByte(b byte) bool {
+	return isASCIIAlphaNumeric(b) || b == '_' || b == '-' || b == '.' || b == '/'
 }
 
 func summarizeSubAgentRiskSummaryEvidence(modelSummary string, filesModified, filesCreated []string) string {
