@@ -998,22 +998,25 @@ func preCheckAgentLoopInlinePayloadLimit(name, argsJSON string, iteration int) *
 		return nil
 	}
 
-	// --- Auto-pass for write_file: the backend toolWriteFile has no 1800-char limit
-	// (actual limit is writeFileMaxSize = 1MB). The schema maxLength was removed to avoid
-	// LLM refusing to call write_file for content >1800 chars. Let oversized write_file
-	// calls pass through to the actual handler which will execute them successfully.
-	// Only log a hint — this is transparent to the LLM.
-	if name == "write_file" {
-		log.Printf("[agent-loop] write_file auto-pass: allowing oversized content (%d runes > %d soft limit) to pass through to handler (iter=%d)", valueRunes, limit, iteration)
+	// --- Auto-pass for write_file/edit_file/edit_lines ---
+	// These tools' backends have no content size limit:
+	// - write_file: actual limit is writeFileMaxSize=1MB
+	// - edit_file: strings.Replace on arbitrary content
+	// - edit_lines: line insert/replace on arbitrary content
+	//
+	// The preCheck limit was originally designed to prevent max_output_tokens
+	// truncation (long JSON args → incomplete JSON). But truncation is now
+	// handled at the stream layer by filterTruncatedToolCalls (#83/#88).
+	// Blocking edit_file/edit_lines here forces LLM to use write_file for
+	// full-file rewrites (larger payload, MORE likely to truncate) — the
+	// exact opposite of the intended protection.
+	if name == "write_file" || name == "edit_file" || name == "edit_lines" {
+		log.Printf("[agent-loop] %s auto-pass: allowing oversized %s (%d runes > %d soft limit) to pass through to handler (iter=%d)", name, field, valueRunes, limit, iteration)
 		return nil
 	}
 
 	text := fmt.Sprintf("Tool %s parameter %s is too large for one agent-loop call (%d runes, limit %d). %s", name, field, valueRunes, limit, agentLoopInlinePayloadLimitInstruction())
-	if name == "edit_file" || name == "edit_lines" {
-		text += " Split the edit into smaller targeted edits, or use line-scoped edit_lines after reading the file."
-	} else {
-		text += " Do not embed generated file bodies or long scripts in shell commands; write/upload a script file first, then execute that file."
-	}
+	text += " Do not embed generated file bodies or long scripts in shell commands; write/upload a script file first, then execute that file."
 	log.Printf("[agent-loop] tool %s inline payload limit exceeded field=%s runes=%d limit=%d (iter=%d)", name, field, valueRunes, limit, iteration)
 	return &toolExecutionResult{
 		Text:        text,

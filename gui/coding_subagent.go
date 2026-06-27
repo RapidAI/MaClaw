@@ -210,8 +210,9 @@ func (s *CodingSubAgent) SetCallbacks(onToken func(string), onProgress func(stri
 // out-of-scope file access. When set, the SubAgent will pause and ask the
 // user before rejecting operations on paths outside projectPath.
 // If not set (nil), out-of-scope access is hard-rejected (legacy behavior).
-func (s *CodingSubAgent) SetScopeApprovalCallback(callback ScopeApprovalCallback) {
-	s.scopeApproval = newScopeApprovalState(callback)
+// fullAccess: if true, all scope checks are bypassed (user previously granted permanent access).
+func (s *CodingSubAgent) SetScopeApprovalCallback(callback ScopeApprovalCallback, fullAccess bool) {
+	s.scopeApproval = newScopeApprovalState(callback, fullAccess)
 }
 
 func failedCodingSubAgentStartResult(errMsg string) *CodingSubAgentResult {
@@ -4243,20 +4244,55 @@ func summarizeSubAgentCreatedFileContextEvidence(filesCreated, filesRead []strin
 func countSuccessfulSubAgentInspectionDynamicTools(tools []CodingSubAgentDynamicToolResult) int {
 	count := 0
 	for _, tool := range tools {
-		if tool.Succeeded && subAgentDynamicToolProvidesInspectionEvidence(tool) {
+		if tool.Succeeded && subAgentDynamicToolProvidesInspectionEvidence(tool) && !subAgentDynamicToolInspectionOutputLooksEmpty(tool) {
 			count++
 		}
 	}
 	return count
 }
 
+func subAgentDynamicToolInspectionOutputLooksEmpty(tool CodingSubAgentDynamicToolResult) bool {
+	summary := strings.TrimSpace(tool.Summary)
+	return summary == "" || summary == "(无输出)"
+}
+
 func subAgentDynamicToolProvidesInspectionEvidence(tool CodingSubAgentDynamicToolResult) bool {
 	switch strings.ToLower(strings.TrimSpace(tool.Tool)) {
-	case "call_mcp_tool", "coding_knowledge_search", "knowledge_search":
+	case "coding_knowledge_search", "knowledge_search":
 		return true
+	case "call_mcp_tool":
+		return subAgentMCPToolCallProvidesInspectionEvidence(tool.Name)
 	default:
 		return false
 	}
+}
+
+func subAgentMCPToolCallProvidesInspectionEvidence(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	for _, part := range strings.FieldsFunc(name, func(r rune) bool {
+		return r == '/' || r == '\\' || r == ':' || r == '-' || r == '_' || r == '.' || unicode.IsSpace(r)
+	}) {
+		if subAgentMCPToolNamePartLooksMutating(part) {
+			return false
+		}
+	}
+	return true
+}
+
+func subAgentMCPToolNamePartLooksMutating(part string) bool {
+	switch part {
+	case "write", "create", "update", "delete", "remove", "send", "post", "put", "patch", "upload", "apply", "edit", "set", "run", "execute", "exec", "install":
+		return true
+	}
+	for _, prefix := range []string{"write", "create", "update", "delete", "remove", "send", "post", "put", "patch", "upload", "apply", "edit", "execute", "exec", "install"} {
+		if strings.HasPrefix(part, prefix) && len(part) > len(prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func countSuccessfulSubAgentVerificationCommands(commands []CodingSubAgentCommandResult) int {
@@ -4275,7 +4311,7 @@ func subAgentVerificationOutputLooksEmpty(cmd CodingSubAgentCommandResult) bool 
 	}
 	summary := strings.ToLower(strings.Join(strings.Fields(cmd.Summary), " "))
 	if summary == "" || summary == "(无输出)" {
-		return false
+		return true
 	}
 	emptyPhrases := []string{
 		"[no test files]",
@@ -4342,9 +4378,6 @@ func subAgentSummaryContainsEmptyVerificationPhrase(summary, phrase string) bool
 	if phrase == "" {
 		return false
 	}
-	if !strings.HasPrefix(phrase, "0 ") {
-		return strings.Contains(summary, phrase)
-	}
 	start := 0
 	for {
 		idx := strings.Index(summary[start:], phrase)
@@ -4352,7 +4385,7 @@ func subAgentSummaryContainsEmptyVerificationPhrase(summary, phrase string) bool
 			return false
 		}
 		absolute := start + idx
-		if absolute == 0 || !isASCIIDigit(summary[absolute-1]) {
+		if subAgentSummaryPhraseHasBoundary(summary, phrase, absolute) {
 			return true
 		}
 		start = absolute + len(phrase)
@@ -4360,6 +4393,20 @@ func subAgentSummaryContainsEmptyVerificationPhrase(summary, phrase string) bool
 			return false
 		}
 	}
+}
+
+func subAgentSummaryPhraseHasBoundary(summary, phrase string, absolute int) bool {
+	if strings.HasPrefix(phrase, "0 ") && absolute > 0 && isASCIIDigit(summary[absolute-1]) {
+		return false
+	}
+	beforeOK := absolute == 0 || !isASCIIAlphaNumeric(summary[absolute-1])
+	after := absolute + len(phrase)
+	afterOK := after >= len(summary) || !isASCIIAlphaNumeric(summary[after])
+	return beforeOK && afterOK
+}
+
+func isASCIIAlphaNumeric(b byte) bool {
+	return isASCIIDigit(b) || (b >= 'a' && b <= 'z')
 }
 
 func isASCIIDigit(b byte) bool {
@@ -4448,14 +4495,40 @@ func subAgentSummaryExplainsScopeExpansion(summary string, outsideFiles []string
 	if summary == "" || len(outsideFiles) == 0 {
 		return false
 	}
-	lower := strings.ToLower(summary)
 	slashSummary := filepath.ToSlash(summary)
-	if strings.Contains(lower, "scope") || strings.Contains(lower, "outside listed") || strings.Contains(summary, "范围") || strings.Contains(summary, "涉及文件外") {
+	if subAgentSummaryHasScopeExpansionRationale(summary) {
 		return true
 	}
 	for _, file := range outsideFiles {
 		key := subAgentPathEvidenceKey(file)
 		if key != "" && strings.Contains(slashSummary, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func subAgentSummaryHasScopeExpansionRationale(summary string) bool {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return false
+	}
+	lower := strings.ToLower(summary)
+	for _, token := range []string{
+		"scope expansion", "scope expanded", "expanded scope",
+		"outside listed", "outside planned", "outside scope", "out of scope",
+		"additional file", "additional files", "extra file", "extra files",
+		"also changed", "had to update", "needed to update", "required update",
+	} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	for _, token := range []string{
+		"范围外", "超出范围", "范围扩展", "扩展范围", "涉及文件外",
+		"额外修改", "额外文件", "同时修改", "还修改", "需要修改", "必须修改",
+	} {
+		if strings.Contains(summary, token) {
 			return true
 		}
 	}
@@ -4468,24 +4541,29 @@ func summarizeSubAgentChangedFileSummaryEvidence(modelSummary string, filesModif
 		return ""
 	}
 	changedFiles := uniqueSortedSubAgentStrings(append(append([]string{}, filesModified...), filesCreated...))
-	if len(changedFiles) == 0 || subAgentSummaryMentionsChangedFile(modelSummary, changedFiles) {
+	if len(changedFiles) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("changed files not referenced in final summary: %s", compactSubAgentFileList(changedFiles, 5))
+	missing := subAgentSummaryMissingChangedFiles(modelSummary, changedFiles)
+	if len(missing) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("changed files not referenced in final summary: %s", compactSubAgentFileList(missing, 5))
 }
 
-func subAgentSummaryMentionsChangedFile(summary string, changedFiles []string) bool {
+func subAgentSummaryMissingChangedFiles(summary string, changedFiles []string) []string {
 	slashSummary := strings.ToLower(filepath.ToSlash(strings.TrimSpace(summary)))
 	if slashSummary == "" {
-		return false
+		return uniqueSortedSubAgentStrings(changedFiles)
 	}
+	var missing []string
 	for _, file := range changedFiles {
 		key := strings.ToLower(subAgentPathEvidenceKey(file))
-		if key != "" && strings.Contains(slashSummary, key) {
-			return true
+		if key == "" || !strings.Contains(slashSummary, key) {
+			missing = append(missing, file)
 		}
 	}
-	return false
+	return uniqueSortedSubAgentStrings(missing)
 }
 
 func summarizeSubAgentRiskSummaryEvidence(modelSummary string, filesModified, filesCreated []string) string {
@@ -4507,14 +4585,21 @@ func subAgentSummaryMentionsRisk(summary string) bool {
 	}
 	lower := strings.ToLower(summary)
 	for _, token := range []string{
-		"risk", "risks", "remaining", "residual", "blocker", "blockers",
-		"known issue", "known issues", "no known", "not covered", "manual verification",
+		"risk:", "risks:", "risk：", "risks：",
+		"remaining risk", "remaining risks", "residual risk", "residual risks",
+		"known risk", "known risks", "known issue", "known issues",
+		"no known risk", "no known risks", "no known remaining risk", "no known remaining risks",
+		"blocker", "blockers", "blocked by",
+		"not covered", "not automatically verified", "manual verification", "manual test", "manual testing",
 	} {
 		if strings.Contains(lower, token) {
 			return true
 		}
 	}
-	for _, token := range []string{"风险", "剩余", "残留", "阻塞", "已知问题", "未覆盖", "无法自动验证", "人工验证"} {
+	for _, token := range []string{
+		"风险", "剩余风险", "残留风险", "已知风险",
+		"阻塞", "已知问题", "未覆盖", "无法自动验证", "人工验证", "手动验证", "人工测试", "手动测试",
+	} {
 		if strings.Contains(summary, token) {
 			return true
 		}
@@ -4535,6 +4620,10 @@ func summarizeSubAgentVerificationCommandSummaryEvidence(modelSummary string, fi
 	if len(freshVerification) == 0 {
 		return ""
 	}
+	freshVerification = filterSubAgentVerificationCommandsWithExecutionEvidence(freshVerification)
+	if len(freshVerification) == 0 {
+		return "fresh verification command did not produce execution evidence"
+	}
 	claimed := subAgentClaimedVerificationCommands(modelSummary)
 	if len(claimed) == 0 {
 		return "verification command not referenced in final summary"
@@ -4547,6 +4636,20 @@ func summarizeSubAgentVerificationCommandSummaryEvidence(modelSummary string, fi
 		return "fresh verification command outcome not referenced in final summary"
 	}
 	return ""
+}
+
+func filterSubAgentVerificationCommandsWithExecutionEvidence(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
+	if len(commands) == 0 {
+		return nil
+	}
+	filtered := make([]CodingSubAgentCommandResult, 0, len(commands))
+	for _, cmd := range commands {
+		if cmd.Succeeded && subAgentVerificationOutputLooksEmpty(cmd) {
+			continue
+		}
+		filtered = append(filtered, cmd)
+	}
+	return filtered
 }
 
 func subAgentClaimedVerificationIncludesFreshCommand(claimed []subAgentClaimedVerificationCommand, fresh []CodingSubAgentCommandResult) bool {
@@ -4595,19 +4698,23 @@ func collectSubAgentClaimedVerificationEvidence(modelSummary string, commands []
 	if len(claimed) == 0 {
 		return nil, nil
 	}
-	ran := make(map[string]CodingSubAgentCommandResult, len(commands))
+	ran := make(map[string][]CodingSubAgentCommandResult, len(commands))
 	for _, cmd := range commands {
-		ran[normalizeSubAgentCommandForEvidence(cmd.Command)] = cmd
+		key := normalizeSubAgentCommandForEvidence(cmd.Command)
+		if key == "" {
+			continue
+		}
+		ran[key] = append(ran[key], cmd)
 	}
 	var missing []string
 	var claimedPassedButFailed []string
 	for _, command := range claimed {
-		audited, ok := ran[normalizeSubAgentCommandForEvidence(command.Command)]
-		if !ok {
+		audited := ran[normalizeSubAgentCommandForEvidence(command.Command)]
+		if len(audited) == 0 {
 			missing = append(missing, command.Command)
 			continue
 		}
-		if command.ClaimedPassed && (!audited.Succeeded || subAgentCommandSuccessLooksEmpty(audited)) {
+		if command.ClaimedPassed && len(unresolvedFailedSubAgentCommands(audited)) > 0 {
 			claimedPassedButFailed = append(claimedPassedButFailed, command.Command)
 		}
 	}
@@ -4678,8 +4785,18 @@ func subAgentVerificationLineCommandCandidate(line string) (string, bool, bool, 
 		"verified with:", "verified with：",
 		"validated with:", "validated with：",
 		"tests:", "tests：",
+		"test command:", "test command：",
+		"check command:", "check command：",
+		"ran:", "ran：",
+		"run:", "run：",
 		"验证:", "验证：",
 		"验证命令:", "验证命令：",
+		"测试:", "测试：",
+		"测试命令:", "测试命令：",
+		"检查:", "检查：",
+		"检查命令:", "检查命令：",
+		"已运行:", "已运行：",
+		"运行:", "运行：",
 	}
 	for _, prefix := range prefixes {
 		if !strings.HasPrefix(lower, prefix) {
@@ -4903,12 +5020,57 @@ func subAgentSummaryReferencesAcceptanceIndex(lowerSummary string, index int) bo
 		return false
 	}
 	idx := fmt.Sprint(index)
-	for _, marker := range []string{"ac" + idx, "ac " + idx, "criterion " + idx, "criteria " + idx, "acceptance " + idx, "标准" + idx, "标准 " + idx, "验收" + idx, "验收 " + idx, "#" + idx} {
+	chineseIdx := subAgentChineseIndex(index)
+	markers := []string{
+		"ac" + idx, "ac " + idx, "ac-" + idx, "ac#" + idx, "ac #" + idx,
+		"criterion " + idx, "criterion #" + idx, "criteria " + idx, "criteria #" + idx,
+		"acceptance " + idx, "acceptance #" + idx, "acceptance criterion " + idx, "acceptance criterion #" + idx,
+		"标准" + idx, "标准 " + idx, "标准第" + idx, "标准第 " + idx, "标准第" + idx + "条", "标准第 " + idx + " 条",
+		"验收" + idx, "验收 " + idx, "验收第" + idx, "验收第 " + idx, "验收第" + idx + "条", "验收第 " + idx + " 条",
+		"第" + idx + "条", "第 " + idx + " 条",
+		"(" + idx + ")", "（" + idx + "）", "#" + idx,
+	}
+	if chineseIdx != "" {
+		markers = append(markers,
+			"标准"+chineseIdx, "标准第"+chineseIdx, "标准第"+chineseIdx+"条",
+			"验收"+chineseIdx, "验收第"+chineseIdx, "验收第"+chineseIdx+"条",
+			"第"+chineseIdx+"条",
+			"("+chineseIdx+")", "（"+chineseIdx+"）",
+		)
+	}
+	for _, marker := range markers {
 		if strings.Contains(lowerSummary, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+func subAgentChineseIndex(index int) string {
+	switch index {
+	case 1:
+		return "一"
+	case 2:
+		return "二"
+	case 3:
+		return "三"
+	case 4:
+		return "四"
+	case 5:
+		return "五"
+	case 6:
+		return "六"
+	case 7:
+		return "七"
+	case 8:
+		return "八"
+	case 9:
+		return "九"
+	case 10:
+		return "十"
+	default:
+		return ""
+	}
 }
 
 func subAgentAcceptanceCriterionTokens(criterion string) []string {
@@ -4982,12 +5144,10 @@ func unresolvedFailedSubAgentDynamicTools(tools []CodingSubAgentDynamicToolResul
 		return nil
 	}
 	laterSucceeded := make(map[string]bool, len(tools))
-	laterSucceededByTool := make(map[string]bool, len(tools))
 	unresolvedReversed := make([]CodingSubAgentDynamicToolResult, 0)
 	for i := len(tools) - 1; i >= 0; i-- {
 		tool := tools[i]
 		key := normalizeSubAgentDynamicToolForEvidence(tool)
-		toolKey := strings.ToLower(strings.TrimSpace(tool.Tool))
 		if key == "" {
 			if !tool.Succeeded {
 				unresolvedReversed = append(unresolvedReversed, tool)
@@ -4996,12 +5156,6 @@ func unresolvedFailedSubAgentDynamicTools(tools []CodingSubAgentDynamicToolResul
 		}
 		if tool.Succeeded {
 			laterSucceeded[key] = true
-			if toolKey != "" {
-				laterSucceededByTool[toolKey] = true
-			}
-			continue
-		}
-		if strings.TrimSpace(tool.Name) == "" && toolKey != "" && laterSucceededByTool[toolKey] {
 			continue
 		}
 		if !laterSucceeded[key] {
@@ -5034,6 +5188,7 @@ func compactFailedSubAgentDynamicToolResults(tools []CodingSubAgentDynamicToolRe
 	if len(tools) == 0 {
 		return ""
 	}
+	tools = dedupeSubAgentDynamicToolFailuresForSummary(tools)
 	limit := codingSubAgentFailedVerificationSummaryMax
 	if len(tools) < limit {
 		limit = len(tools)
@@ -5055,6 +5210,39 @@ func compactFailedSubAgentDynamicToolResults(tools []CodingSubAgentDynamicToolRe
 		parts = append(parts, fmt.Sprintf("... %d more", remaining))
 	}
 	return strings.Join(parts, "; ")
+}
+
+func dedupeSubAgentDynamicToolFailuresForSummary(tools []CodingSubAgentDynamicToolResult) []CodingSubAgentDynamicToolResult {
+	if len(tools) < 2 {
+		return tools
+	}
+	latestByKey := make(map[string]int, len(tools))
+	for i, tool := range tools {
+		latestByKey[subAgentDynamicToolFailureSummaryDedupeKey(tool, i)] = i
+	}
+	out := make([]CodingSubAgentDynamicToolResult, 0, len(latestByKey))
+	for i, tool := range tools {
+		key := subAgentDynamicToolFailureSummaryDedupeKey(tool, i)
+		if latestByKey[key] == i {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
+func subAgentDynamicToolFailureSummaryDedupeKey(tool CodingSubAgentDynamicToolResult, index int) string {
+	target := normalizeSubAgentDynamicToolForEvidence(tool)
+	if target == "" {
+		target = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(tool.Tool)), " "))
+	}
+	diagnostic := strings.ToLower(strings.Join(strings.Fields(commandResultDiagnosticLine(tool.Summary)), " "))
+	if diagnostic == "" {
+		diagnostic = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(tool.Summary)), " "))
+	}
+	if target == "" && diagnostic == "" {
+		return fmt.Sprintf("idx:%d", index)
+	}
+	return target + "\x00" + diagnostic
 }
 
 func selectSubAgentDynamicToolFailuresForSummary(tools []CodingSubAgentDynamicToolResult, limit int) []CodingSubAgentDynamicToolResult {
@@ -5140,7 +5328,7 @@ func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []
 	unresolvedReversed := make([]CodingSubAgentCommandResult, 0)
 	for i := len(commands) - 1; i >= 0; i-- {
 		cmd := commands[i]
-		key := normalizeSubAgentCommandForEvidence(cmd.Command)
+		key := subAgentCommandFailureResolutionKey(cmd)
 		if key == "" {
 			if !cmd.Succeeded {
 				unresolvedReversed = append(unresolvedReversed, cmd)
@@ -5160,6 +5348,26 @@ func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []
 		unresolved[len(unresolvedReversed)-1-i] = unresolvedReversed[i]
 	}
 	return unresolved
+}
+
+func subAgentCommandFailureResolutionKey(cmd CodingSubAgentCommandResult) string {
+	key := normalizeSubAgentCommandForEvidence(cmd.Command)
+	if key == "" {
+		return ""
+	}
+	workingDir := normalizeSubAgentWorkingDirForEvidence(cmd.WorkingDir)
+	if workingDir == "" {
+		return key
+	}
+	return key + "\x00" + workingDir
+}
+
+func normalizeSubAgentWorkingDirForEvidence(workingDir string) string {
+	workingDir = strings.TrimSpace(workingDir)
+	if workingDir == "" {
+		return ""
+	}
+	return filepath.ToSlash(filepath.Clean(workingDir))
 }
 
 func subAgentCommandSuccessLooksEmpty(cmd CodingSubAgentCommandResult) bool {
@@ -5535,7 +5743,7 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 	case "corepack":
 		return corepackRunsVerification(args)
 	case "node":
-		return hasArg(args, "--test")
+		return nodeRunsVerification(args)
 	case "bun":
 		return bunRunsVerification(args)
 	case "deno":
@@ -5615,10 +5823,68 @@ func stripVerificationCommandPrefixes(segment []string) []string {
 		case cmd == "cross-env" || cmd == "cross-env-shell" || cmd == "time":
 			segment = segment[1:]
 			continue
+		case cmd == "timeout" || cmd == "gtimeout":
+			segment = stripTimeoutCommandPrefix(segment[1:])
+			continue
+		case cmd == "cmd" || cmd == "cmd.exe":
+			segment = stripCmdCommandPrefix(segment[1:])
+			continue
 		}
 		break
 	}
 	return segment
+}
+
+func stripCmdCommandPrefix(args []string) []string {
+	for i := 0; i < len(args); i++ {
+		arg := normalizeShellExecutableToken(args[i])
+		switch arg {
+		case "/c", "-c":
+			return shellCommandFields(strings.Join(args[i+1:], " "))
+		case "/k", "-k":
+			return nil
+		}
+		if strings.HasPrefix(arg, "/") || strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return args[i:]
+	}
+	return nil
+}
+
+func stripTimeoutCommandPrefix(args []string) []string {
+	for len(args) > 0 {
+		arg := normalizeShellExecutableToken(args[0])
+		switch {
+		case arg == "--":
+			args = args[1:]
+			break
+		case timeoutOptionConsumesValue(arg):
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+			continue
+		case strings.HasPrefix(arg, "-"):
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	if len(args) == 0 {
+		return args
+	}
+	// GNU timeout syntax is: timeout [OPTION] DURATION COMMAND [ARG]...
+	return args[1:]
+}
+
+func timeoutOptionConsumesValue(arg string) bool {
+	switch arg {
+	case "-k", "--kill-after", "-s", "--signal":
+		return true
+	}
+	return false
 }
 
 func stripEnvCommandPrefix(args []string) []string {
@@ -6409,39 +6675,39 @@ func stripOpamExecOptions(args []string) []string {
 }
 
 func hasNonExecutingVerificationArg(cmd string, args []string) bool {
-	if hasNormalizedArg(args, "--help", "-h", "help", "--version") {
+	if hasNormalizedArgOrTruthyAssignment(args, "--help", "-h", "help", "--version") {
 		return true
 	}
 	switch cmd {
 	case "pytest":
-		return hasNormalizedArg(args, "--collect-only", "--co", "--fixtures", "--fixtures-per-test", "--setup-only", "--setup-plan")
+		return hasNormalizedArgOrTruthyAssignment(args, "--collect-only", "--co", "--fixtures", "--fixtures-per-test", "--setup-only", "--setup-plan", "--markers", "--trace-config")
 	case "jest":
-		return hasNormalizedArg(args, "--listtests", "--showconfig", "--clearcache")
+		return hasNormalizedArgOrTruthyAssignment(args, "--listtests", "--showconfig", "--clearcache")
 	case "vitest":
-		return len(args) > 0 && hasNormalizedArg(args[:1], "list", "--list")
+		return len(args) > 0 && hasNormalizedArgOrTruthyAssignment(args[:1], "list", "--list")
 	case "eslint":
-		return hasNormalizedArg(args, "--print-config", "--env-info")
+		return hasNormalizedArgOrTruthyAssignment(args, "--print-config", "--env-info")
 	case "tsc":
-		return hasNormalizedArg(args, "--showconfig", "--init")
+		return hasNormalizedArgOrTruthyAssignment(args, "--showconfig", "--init")
 	case "tox":
-		return hasNormalizedArg(args, "--listenvs", "--listenvs-all", "-l", "--showconfig")
+		return hasNormalizedArgOrTruthyAssignment(args, "--listenvs", "--listenvs-all", "-l", "--showconfig")
 	case "nox":
-		return hasNormalizedArg(args, "--list", "-l", "--list-sessions", "--json")
+		return hasNormalizedArgOrTruthyAssignment(args, "--list", "-l", "--list-sessions", "--json")
 	case "rspec", "cucumber":
-		return hasNormalizedArg(args, "--dry-run")
+		return hasNormalizedArgOrTruthyAssignment(args, "--dry-run")
 	case "rubocop":
-		return hasNormalizedArg(args, "--show-cops", "--init")
+		return hasNormalizedArgOrTruthyAssignment(args, "--show-cops", "--init")
 	case "phpunit", "pest":
-		return hasNormalizedArg(args, "--list-tests", "--list-groups", "--list-suites", "--generate-configuration", "--migrate-configuration")
+		return hasNormalizedArgOrTruthyAssignment(args, "--list-tests", "--list-groups", "--list-suites", "--generate-configuration", "--migrate-configuration")
 	case "phpstan":
-		return hasNormalizedArg(args, "clear-result-cache", "dump-parameters")
+		return hasNormalizedArgOrTruthyAssignment(args, "clear-result-cache", "dump-parameters")
 	case "psalm":
-		return hasNormalizedArg(args, "--init", "--alter", "--set-baseline", "--clear-cache", "--clear-global-cache") ||
+		return hasNormalizedArgOrTruthyAssignment(args, "--init", "--alter", "--set-baseline", "--clear-cache", "--clear-global-cache") ||
 			hasNormalizedArgPrefix(args, "--set-baseline=")
 	case "mypy":
-		return hasNormalizedArg(args, "--install-types")
+		return hasNormalizedArgOrTruthyAssignment(args, "--install-types")
 	case "pyright", "basedpyright":
-		return hasNormalizedArg(args, "--createstub")
+		return hasNormalizedArgOrTruthyAssignment(args, "--createstub")
 	}
 	return false
 }
@@ -6453,10 +6719,28 @@ func hasInteractiveVerificationArg(args []string) bool {
 		case "watch", "--watch", "--watchall", "--interactive", "--ui":
 			return true
 		}
-		for _, prefix := range []string{"--watch=", "--watchall="} {
-			if strings.HasPrefix(normalized, prefix) && !isFalseShellFlagValue(strings.TrimPrefix(normalized, prefix)) {
-				return true
-			}
+		if normalizedArgMatchesTruthyAssignment(normalized, "--watch", "--watchall", "--interactive", "--ui") {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeRunsVerification(args []string) bool {
+	return hasArg(args, "--test") && !hasNodeTestNoRunArg(args)
+}
+
+func hasNodeTestNoRunArg(args []string) bool {
+	if hasNormalizedArg(args, "--help", "-h", "--version", "-v") {
+		return true
+	}
+	for _, arg := range args {
+		normalized := normalizeShellExecutableToken(arg)
+		if normalized == "--test-only" {
+			return true
+		}
+		if strings.HasPrefix(normalized, "--test-only=") && !isFalseShellFlagValue(strings.TrimPrefix(normalized, "--test-only=")) {
+			return true
 		}
 	}
 	return false
@@ -6471,15 +6755,17 @@ func isFalseShellFlagValue(value string) bool {
 	}
 }
 func hasMutatingVerificationArg(args []string) bool {
-	return hasNormalizedArg(args,
-		"--fix", "--fix-dry-run",
-		"--write",
-		"--auto-correct", "--autocorrect", "--auto-correct-all", "--autocorrect-all",
-	)
+	for _, arg := range args {
+		normalized := normalizeShellExecutableToken(arg)
+		if normalizedArgMatchesOrTruthyAssignment(normalized, "--fix", "--fix-dry-run", "--write", "--auto-correct", "--autocorrect", "--auto-correct-all", "--autocorrect-all") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasRubocopAutoCorrectArg(args []string) bool {
-	return hasNormalizedArg(args, "-a", "-A")
+	return hasNormalizedArgOrTruthyAssignment(args, "-a", "-A")
 }
 
 func turboRunsVerification(args []string) bool {
@@ -6610,11 +6896,11 @@ func isVerificationRunner(name string) bool {
 }
 
 func prettierRunsVerification(args []string) bool {
-	return hasNormalizedArg(args, "--check", "-c", "--list-different", "-l") && !hasNormalizedArg(args, "--write", "-w")
+	return hasNormalizedArg(args, "--check", "-c", "--list-different", "-l") && !hasNormalizedArgOrTruthyAssignment(args, "--write", "-w")
 }
 
 func biomeRunsVerification(args []string) bool {
-	if len(args) == 0 || hasNormalizedArg(args, "--write", "--apply", "--apply-unsafe", "--suppress") {
+	if len(args) == 0 || hasNormalizedArgOrTruthyAssignment(args, "--write", "--apply", "--apply-unsafe", "--suppress") {
 		return false
 	}
 	return firstArgIn(args, "check", "ci", "lint")
@@ -6627,6 +6913,37 @@ func hasNormalizedArg(args []string, targets ...string) bool {
 			if normalized == target {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func hasNormalizedArgOrTruthyAssignment(args []string, targets ...string) bool {
+	for _, arg := range args {
+		normalized := normalizeShellExecutableToken(arg)
+		if normalizedArgMatchesOrTruthyAssignment(normalized, targets...) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedArgMatchesOrTruthyAssignment(normalized string, targets ...string) bool {
+	for _, target := range targets {
+		if normalized == target {
+			return true
+		}
+		if strings.HasPrefix(normalized, target+"=") && !isFalseShellFlagValue(strings.TrimPrefix(normalized, target+"=")) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedArgMatchesTruthyAssignment(normalized string, targets ...string) bool {
+	for _, target := range targets {
+		if strings.HasPrefix(normalized, target+"=") && !isFalseShellFlagValue(strings.TrimPrefix(normalized, target+"=")) {
+			return true
 		}
 	}
 	return false
@@ -7062,7 +7379,7 @@ func dotnetRunsVerification(args []string) bool {
 }
 
 func hasDotnetListOnlyArg(args []string) bool {
-	return hasNormalizedArg(args, "--list-tests", "-t", "--listtests", "/listtests", "/lt")
+	return hasNormalizedArgOrTruthyAssignment(args, "--list-tests", "-t", "--listtests", "/listtests", "/lt")
 }
 
 func dotnetMSBuildRunsVerification(args []string) bool {
@@ -7169,12 +7486,35 @@ func mavenOptionConsumesValue(arg string) bool {
 }
 
 func gradleRunsVerification(args []string) bool {
-	if hasNormalizedArg(args, "--dry-run", "-m") {
+	if hasNormalizedArgOrTruthyAssignment(args, "--dry-run", "-m") || hasGradleExcludedVerificationTask(args) {
 		return false
 	}
 	for _, arg := range args {
 		if isGradleVerificationTask(arg) {
 			return true
+		}
+	}
+	return false
+}
+
+func hasGradleExcludedVerificationTask(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := normalizeShellExecutableToken(args[i])
+		switch {
+		case arg == "-x" || arg == "--exclude-task":
+			if i+1 < len(args) && isGradleVerificationTask(args[i+1]) {
+				return true
+			}
+		case strings.HasPrefix(arg, "--exclude-task="):
+			if isGradleVerificationTask(strings.TrimPrefix(arg, "--exclude-task=")) {
+				return true
+			}
+		case strings.HasPrefix(arg, "-x") && len(arg) > len("-x"):
+			value := strings.TrimPrefix(arg, "-x")
+			value = strings.TrimPrefix(value, "=")
+			if isGradleVerificationTask(value) {
+				return true
+			}
 		}
 	}
 	return false
@@ -7335,6 +7675,12 @@ func hasGoTestNoRunArg(args []string) bool {
 		if arg == "-c" || strings.HasPrefix(arg, "-c=") {
 			return true
 		}
+		if arg == "-count" && i+1 < len(args) && goTestCountRunsNoTests(args[i+1]) {
+			return true
+		}
+		if strings.HasPrefix(arg, "-count=") && goTestCountRunsNoTests(strings.TrimPrefix(arg, "-count=")) {
+			return true
+		}
 		if arg == "-list" || strings.HasPrefix(arg, "-list=") {
 			return true
 		}
@@ -7364,6 +7710,11 @@ func goTestArgNamesWorkload(arg string, names ...string) bool {
 func goTestRunPatternRunsNoTests(pattern string) bool {
 	pattern = strings.Trim(strings.ToLower(strings.TrimSpace(pattern)), "'\"")
 	return pattern == "^$" || pattern == "^$/" || pattern == "$^"
+}
+
+func goTestCountRunsNoTests(value string) bool {
+	value = strings.Trim(strings.TrimSpace(value), "'\"")
+	return value == "0"
 }
 
 func stripGoGlobalOptions(args []string) []string {
@@ -7427,6 +7778,7 @@ func compactFailedVerificationCommands(commands []string) string {
 }
 
 func compactFailedVerificationCommandResults(commands []CodingSubAgentCommandResult) string {
+	commands = dedupeSubAgentCommandFailuresForSummary(commands)
 	entries := selectFailedVerificationSummaryEntries(commands, codingSubAgentFailedVerificationSummaryMax)
 	parts := make([]string, 0, len(entries)+1)
 	for _, command := range entries {
@@ -7440,6 +7792,36 @@ func compactFailedVerificationCommandResults(commands []CodingSubAgentCommandRes
 		parts = append(parts, fmt.Sprintf("还有 %d 条失败命令未展开", remaining))
 	}
 	return strings.Join(parts, "; ")
+}
+
+func dedupeSubAgentCommandFailuresForSummary(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
+	if len(commands) < 2 {
+		return commands
+	}
+	latestByKey := make(map[string]int, len(commands))
+	for i, cmd := range commands {
+		latestByKey[subAgentCommandFailureSummaryDedupeKey(cmd, i)] = i
+	}
+	out := make([]CodingSubAgentCommandResult, 0, len(latestByKey))
+	for i, cmd := range commands {
+		key := subAgentCommandFailureSummaryDedupeKey(cmd, i)
+		if latestByKey[key] == i {
+			out = append(out, cmd)
+		}
+	}
+	return out
+}
+
+func subAgentCommandFailureSummaryDedupeKey(cmd CodingSubAgentCommandResult, index int) string {
+	target := subAgentCommandFailureResolutionKey(cmd)
+	diagnostic := strings.ToLower(strings.Join(strings.Fields(commandResultDiagnosticLine(cmd.Summary)), " "))
+	if diagnostic == "" {
+		diagnostic = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(cmd.Summary)), " "))
+	}
+	if target == "" && diagnostic == "" {
+		return fmt.Sprintf("idx:%d", index)
+	}
+	return target + "\x00" + diagnostic
 }
 
 func selectFailedVerificationSummaryEntries(commands []CodingSubAgentCommandResult, maxItems int) []CodingSubAgentCommandResult {
@@ -7809,12 +8191,17 @@ func isLikelyCodingToolFailureDiagnostic(line string) bool {
 		"fatal:",
 		"panic:",
 		"fail:",
+		"fail ",
 		"failed",
 		"failure",
 		"build failed",
 		"compilation failed",
 		"typecheck failed",
 		"traceback",
+		"segmentation fault",
+		"signal: killed",
+		"exit status",
+		"permission denied",
 		"attributeerror:",
 		"importerror:",
 		"modulenotfounderror:",
@@ -7829,6 +8216,7 @@ func isLikelyCodingToolFailureDiagnostic(line string) bool {
 		"no such file",
 		"syntax error",
 		"type error",
+		"assert ",
 		"assertion",
 		"expected",
 		"received",
@@ -7848,6 +8236,9 @@ func isNonFailureDiagnosticNoise(lower string) bool {
 		"0 error",
 		"no error",
 		"no errors",
+		"0 assertion",
+		"no assertion",
+		"no assertions",
 		"without error",
 		"without errors",
 	} {
@@ -8192,26 +8583,27 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 
 	b.WriteString(fmt.Sprintf(`
 ## Single-task contract
-- Work only on the assigned task. Avoid broad refactors, unrelated formatting, dependency churn, or speculative feature work.
-- Keep edits small and reviewable. Prefer targeted patches over whole-file rewrites.
-- If verification fails because of unrelated pre-existing errors, report the exact blocker with file/line when available and do not rewrite unrelated areas unless they block this task directly.
+- Work only on the assigned task. Avoid broad refactors, unrelated formatting, dependency churn, or speculative feature work; keep edits small and reviewable.
+- If verification fails because of unrelated pre-existing errors, report the exact blocker with file/line when available.
 - Before the final answer, inspect the diff, summarize created/modified files, list verification commands, and call out remaining risk.
 
 ## Quality audit gates
 - Enforced hard gates: explore before existing-file edits, verify changed tasks, run git_diff, and give inspection/verification evidence for no-change tasks or project-context evidence for new files.
-- Final summary: actual modified/created file paths, only verification commands really run/passed, map every acceptance criterion, scope expansion, remaining risk/no known remaining risk; "no tests found"/"0 tests" does not count.
+- Verification evidence must be fresh after the final edit, include real execution output, and be named in the final summary with pass/fail outcome.
+- Empty/weak evidence does not count: blank, "(无输出)", "no tests found", "no tests collected", "[no test files]", "0 tests", "0 examples", list/help/collect-only/dry-run.
+- Final summary: actual modified/created file paths, only verification commands really run/passed, map every acceptance criterion, scope expansion, remaining risk/no known remaining risk.
 
 ## Tool-call JSON reliability
-- Keep every tool_call arguments JSON complete and valid. Never truncate JSON strings.
-- write_file has no per-call content limit. However, if content exceeds about 6000 characters, split it into chunks to avoid model output truncation: first call write_file(mode="overwrite"), then call write_file(mode="append") for following chunks.
+- Keep every tool_call arguments JSON complete and valid. If write_file content exceeds about 6000 chars, split it into chunks: first mode="overwrite", then mode="append".
 - Prefer edit_file or edit_lines for existing files. Use write_file only for new files, or TEST_REPORT.md append entries when the user or repo workflow explicitly asks for a report.
-- If a write_file call was rejected because arguments JSON was invalid or incomplete, retry with smaller chunks instead of repeating the same large call.
-- Treat tool error text as authoritative recovery guidance: fix the exact argument/range/path/guardrail issue it names, choose the proper file tool when bash is rejected, and do not repeat an identical failed tool call.
+- If write_file JSON was invalid/incomplete, retry smaller chunks. Treat tool error text as authoritative recovery guidance; do not repeat an identical failed tool call or command. If the same target fails, change the approach before retrying.
 
 ## Command guardrails
-- Do not run Git commands that rewrite or move worktree/index/history state: reset, checkout, restore, switch, merge, rebase, stash, add, commit, apply, am, cherry-pick, revert, rm, mv, update-index, read-tree, or clean -f. Read-only Git commands such as status, diff, and log are allowed.
+- Do not run Git commands that rewrite or move worktree/index/history state: reset, checkout, restore, switch, merge, rebase, stash, add, commit, apply, am, cherry-pick, revert, rm, mv, update-index, read-tree, or clean -f. Read-only status/diff/log are allowed.
 - Do not run recursive or forceful delete commands such as rm -r/-rf, Remove-Item -Recurse/-r/-rf, ri -r, rd/rmdir /s, del /s, or erase /s. Use edit_file/edit_lines/write_file for scoped file changes.
 - Do not mutate files through bash redirection or shell helpers: >, >>, tee/Tee-Object, Set-Content/Add-Content/Out-File, touch/mkdir, Copy-Item/Move-Item/Rename-Item, sed -i, perl -pi, Node fs write/copy/rename/rm/mkdir APIs, Python open(..., "w")/Path write/touch/rename/remove APIs, or dd of=. Use the file editing tools instead.
+- Verification wrappers timeout/gtimeout, env/cross-env/time, cmd /c, powershell -Command, bash -lc are OK only when the wrapped command runs tests/build/lint/typecheck.
+- Do not use failure-suppressing or non-auditable verification shells: no || true, pipes, output redirection, help/list/collect-only flags, watch/UI modes, mutating flags such as --fix/--write, or chained post-verification commands.
 `))
 
 	b.WriteString(fmt.Sprintf("\n## 项目路径\n%s\n", projectPath))
@@ -8225,13 +8617,13 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 
 	if reqCtx != "" {
 		b.WriteString("\n## 需求摘要\n")
-		b.WriteString(truncateRunesForSubAgent(reqCtx, 400))
+		b.WriteString(truncateRunesForSubAgent(reqCtx, 280))
 		b.WriteString("\n")
 	}
 
 	if designCtx != "" {
 		b.WriteString("\n## 设计摘要\n")
-		b.WriteString(truncateRunesForSubAgent(designCtx, 400))
+		b.WriteString(truncateRunesForSubAgent(designCtx, 280))
 		b.WriteString("\n")
 	}
 
@@ -8698,7 +9090,8 @@ func RunTaskWithSubAgent(
 	// The approval callback uses onProgress to send the prompt and blocks on
 	// loopCtx's approval channel.
 	if handler != nil && handler.app != nil {
-		sa.SetScopeApprovalCallback(buildSubAgentScopeApprovalCallback(handler, loopCtx, onProgress))
+		fullAccess := handler.app.isSubAgentFullAccessGranted()
+		sa.SetScopeApprovalCallback(buildSubAgentScopeApprovalCallback(handler, loopCtx, onProgress), fullAccess)
 	}
 
 	// Wire knowledge stores for experience recall and project doc lookup.

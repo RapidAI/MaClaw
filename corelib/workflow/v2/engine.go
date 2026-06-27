@@ -221,6 +221,7 @@ func phaseTemplateToSpec(workflowType WorkflowType, phase PhaseTemplate) PhaseSp
 		ToolPolicy:    ToolFilterPolicy(phase.ToolPolicy),
 		Kind:          firstPhaseKind(phase.Kind, kind),
 		MutationScope: firstMutationScope(phase.MutationScope, mutationScope),
+		DependsOnFull: append([]string(nil), phase.DependsOnFull...),
 	}
 	spec.InputSchema = phaseInputSchemaToSpec(phase.InputSchema)
 	return spec
@@ -235,6 +236,7 @@ func phaseSpecToTemplate(workflowType WorkflowType, spec PhaseSpec) PhaseTemplat
 		ToolPolicy:    ToolPolicy(spec.ToolPolicy),
 		Kind:          firstPhaseKind(spec.Kind, kind),
 		MutationScope: firstMutationScope(spec.MutationScope, mutationScope),
+		DependsOnFull: append([]string(nil), spec.DependsOnFull...),
 	}
 	tmpl.InputSchema = phaseInputSchemaFromSpec(spec.InputSchema)
 	return tmpl
@@ -974,6 +976,7 @@ func (e *WorkflowEngine) BuildPhasePrompt(userID string) string {
 			Kind:          firstPhaseKind(spec.Kind, kind),
 			MutationScope: firstMutationScope(spec.MutationScope, mutationScope),
 			InputSchema:   phaseInputSchemaFromSpec(spec.InputSchema),
+			DependsOnFull: spec.DependsOnFull,
 			Output:        ws.PhaseOutputs[spec.ID],
 		}
 		switch {

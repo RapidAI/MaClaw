@@ -230,6 +230,20 @@ func TestUpsertAppInstallationSynthesizesTestEvidenceFromSummaryMetadata(t *test
 	if !ok || verification["schema"] != "maclaw.app.install_plan.v1" || verification["has_blocking_dependency"] != false || verification["has_governance_review_issue"] != false {
 		t.Fatalf("expected synthesized dependency verification: %#v", evidence)
 	}
+	byDefinition, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{DefinitionFingerprint: "sha256:customer-console"})
+	if err != nil {
+		t.Fatalf("ListAppInstallations by definition fingerprint: %v", err)
+	}
+	if len(byDefinition) != 1 || byDefinition[0].AppID != "sales.customer.console" {
+		t.Fatalf("expected definition fingerprint filter to return installed app: %#v", byDefinition)
+	}
+	missingDefinition, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{DefinitionFingerprint: "sha256:other-definition"})
+	if err != nil {
+		t.Fatalf("ListAppInstallations by missing definition fingerprint: %v", err)
+	}
+	if len(missingDefinition) != 0 {
+		t.Fatalf("expected missing definition fingerprint filter to return no apps: %#v", missingDefinition)
+	}
 
 	caps, err := svc.Capabilities(context.Background(), principal)
 	if err != nil {
@@ -382,6 +396,62 @@ func TestListAppInstallationsFiltersByDependencyHealth(t *testing.T) {
 	}
 }
 
+func TestListAppInstallationsFiltersByRoleBinding(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "purchase.normal", UpsertAppInstallationInput{
+		AppID: "purchase.normal",
+		Name:  "Purchase Normal",
+		Kind:  "enterprise_normal_app",
+		RoleBindings: []RoleBinding{{
+			ObjectRole: "purchase_order",
+			Domain:     "purchase",
+			DatasetID:  "purchase.orders",
+			Required:   true,
+		}},
+		Metadata: map[string]any{"description": "role binding only"},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation role binding app: %v", err)
+	}
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "purchase.other", UpsertAppInstallationInput{
+		AppID: "purchase.other",
+		Name:  "Purchase Other",
+		Kind:  "enterprise_normal_app",
+		RoleBindings: []RoleBinding{{
+			ObjectRole: "supplier",
+			Domain:     "purchase",
+			DatasetID:  "purchase.suppliers",
+			Required:   true,
+		}},
+		Metadata: map[string]any{"description": "other binding"},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation other role binding app: %v", err)
+	}
+
+	byDataset, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{DatasetID: "purchase.orders"})
+	if err != nil {
+		t.Fatalf("ListAppInstallations by role binding dataset: %v", err)
+	}
+	if len(byDataset) != 1 || byDataset[0].AppID != "purchase.normal" || len(byDataset[0].RoleBindings) != 1 {
+		t.Fatalf("expected dataset filter to match role binding app: %#v", byDataset)
+	}
+	byObjectRole, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{ObjectRole: "purchase_order"})
+	if err != nil {
+		t.Fatalf("ListAppInstallations by role binding object role: %v", err)
+	}
+	if len(byObjectRole) != 1 || byObjectRole[0].AppID != "purchase.normal" {
+		t.Fatalf("expected object role filter to match role binding app: %#v", byObjectRole)
+	}
+}
+
 func TestListAppInstallationsFiltersByApprovalResultMetadata(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -404,13 +474,15 @@ func TestListAppInstallationsFiltersByApprovalResultMetadata(t *testing.T) {
 			"test_evidence": map[string]any{
 				"primary_result": "approval_result",
 				"approval_instance": map[string]any{
-					"approval_id":      "approval-expense-1",
-					"record_id":        "expense-1",
-					"status":           "approved",
-					"decision":         "approved",
-					"applicant_id":     "employee_1",
-					"current_assignee": "manager_1",
-					"current_node":     "expense.result_pack",
+					"approval_id":          "approval-expense-1",
+					"workflow_instance_id": "workflow-expense-1",
+					"dataset_id":           "finance.expenses",
+					"record_id":            "expense-1",
+					"status":               "approved",
+					"decision":             "approved",
+					"applicant_id":         "employee_1",
+					"current_assignee":     "manager_1",
+					"current_node":         "expense.result_pack",
 				},
 				"result_payload": map[string]any{
 					"decision":        "approved",
@@ -457,6 +529,10 @@ func TestListAppInstallationsFiltersByApprovalResultMetadata(t *testing.T) {
 		{name: "approval decision", in: QueryAppInstallationsInput{ApprovalDecision: "approved"}},
 		{name: "applicant", in: QueryAppInstallationsInput{ApplicantID: "employee_1"}},
 		{name: "approver", in: QueryAppInstallationsInput{ApproverID: "manager_1"}},
+		{name: "approval id", in: QueryAppInstallationsInput{ApprovalID: "approval-expense-1"}},
+		{name: "workflow instance id", in: QueryAppInstallationsInput{WorkflowInstanceID: "workflow-expense-1"}},
+		{name: "dataset id", in: QueryAppInstallationsInput{DatasetID: "finance.expenses"}},
+		{name: "record id", in: QueryAppInstallationsInput{RecordID: "expense-1"}},
 		{name: "result type", in: QueryAppInstallationsInput{ResultType: "document"}},
 	}
 	for _, tc := range cases {

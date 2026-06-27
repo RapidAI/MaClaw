@@ -261,11 +261,17 @@ func TestBuildToolDefinitionsCapInlinePayloads(t *testing.T) {
 	}
 
 	editProps := toolDefinitionProperties(t, defs, "edit_file")
-	if got := toolSchemaMaxLength(t, editProps, "old_string"); got != float64(maxAgentLoopInlineEditContentRunes) {
-		t.Fatalf("edit_file old_string maxLength = %v, want %d", got, maxAgentLoopInlineEditContentRunes)
-	}
-	if got := toolSchemaMaxLength(t, editProps, "new_string"); got != float64(maxAgentLoopInlineEditContentRunes) {
-		t.Fatalf("edit_file new_string maxLength = %v, want %d", got, maxAgentLoopInlineEditContentRunes)
+	// edit_file should NOT have maxLength — backends have no content size limit,
+	// truncation is handled at the stream layer by filterTruncatedToolCalls.
+	for _, propName := range []string{"old_string", "new_string"} {
+		propRaw, exists := editProps[propName]
+		if !exists {
+			t.Fatalf("edit_file missing property %s", propName)
+		}
+		propMap, _ := propRaw.(map[string]interface{})
+		if _, hasMaxLen := propMap["maxLength"]; hasMaxLen {
+			t.Fatalf("edit_file %s should not have maxLength, got %v", propName, propMap["maxLength"])
+		}
 	}
 
 	sshProps := toolDefinitionProperties(t, defs, "ssh")
@@ -302,19 +308,26 @@ func TestBuiltinRegistryCapsInlinePayloads(t *testing.T) {
 	if !ok || edit == nil {
 		t.Fatal("edit_file registry tool missing")
 	}
-	if got := registeredToolSchemaMaxLength(t, registeredToolSchemaProperties(edit.InputSchema), "old_string"); got != float64(maxAgentLoopInlineEditContentRunes) {
-		t.Fatalf("registry edit_file old_string maxLength = %v, want %d", got, maxAgentLoopInlineEditContentRunes)
-	}
-	if got := registeredToolSchemaMaxLength(t, registeredToolSchemaProperties(edit.InputSchema), "new_string"); got != float64(maxAgentLoopInlineEditContentRunes) {
-		t.Fatalf("registry edit_file new_string maxLength = %v, want %d", got, maxAgentLoopInlineEditContentRunes)
+	// edit_file should NOT have maxLength in registry.
+	regEditProps := registeredToolSchemaProperties(edit.InputSchema)
+	for _, propName := range []string{"old_string", "new_string"} {
+		if prop, exists := regEditProps[propName]; exists {
+			if _, hasMaxLen := prop["maxLength"]; hasMaxLen {
+				t.Fatalf("registry edit_file %s should not have maxLength, got %v", propName, prop["maxLength"])
+			}
+		}
 	}
 
 	editLines, ok := registry.Get("edit_lines")
 	if !ok || editLines == nil {
 		t.Fatal("edit_lines registry tool missing")
 	}
-	if got := registeredToolSchemaMaxLength(t, registeredToolSchemaProperties(editLines.InputSchema), "content"); got != float64(maxAgentLoopInlineEditContentRunes) {
-		t.Fatalf("registry edit_lines content maxLength = %v, want %d", got, maxAgentLoopInlineEditContentRunes)
+	// edit_lines should NOT have maxLength in registry.
+	regEditLinesProps := registeredToolSchemaProperties(editLines.InputSchema)
+	if prop, exists := regEditLinesProps["content"]; exists {
+		if _, hasMaxLen := prop["maxLength"]; hasMaxLen {
+			t.Fatalf("registry edit_lines content should not have maxLength, got %v", prop["maxLength"])
+		}
 	}
 
 	ssh, ok := registry.Get("ssh")
@@ -874,24 +887,16 @@ func TestPreCheckAgentLoopInlinePayloadLimitGuidesChunking(t *testing.T) {
 		t.Fatalf("expected oversized write_file content to pass through (auto-pass), got rejection: %+v", *writeResult)
 	}
 
+	// edit_file should now pass through (auto-pass) — backend has no content size limit.
 	editResult := preCheckAgentLoopInlinePayloadLimit("edit_file", fmt.Sprintf(`{"path":"out.txt","old_string":"small","new_string":%q}`, strings.Repeat("x", maxAgentLoopInlineEditContentRunes+1)), 4)
-	if editResult == nil {
-		t.Fatal("expected oversized edit_file text to be rejected before execution")
-	}
-	for _, want := range []string{"too large", "new_string", "smaller targeted edits"} {
-		if !strings.Contains(editResult.Text, want) {
-			t.Fatalf("edit_file result %q missing %q", editResult.Text, want)
-		}
+	if editResult != nil {
+		t.Fatalf("expected oversized edit_file text to pass through (auto-pass), got rejection: %+v", *editResult)
 	}
 
+	// edit_lines should now pass through (auto-pass) — backend has no content size limit.
 	editLinesResult := preCheckAgentLoopInlinePayloadLimit("edit_lines", fmt.Sprintf(`{"path":"out.txt","operation":"replace","start_line":1,"content":%q}`, strings.Repeat("x", maxAgentLoopInlineEditContentRunes+1)), 5)
-	if editLinesResult == nil {
-		t.Fatal("expected oversized edit_lines content to be rejected before execution")
-	}
-	for _, want := range []string{"too large", "content", "smaller targeted edits"} {
-		if !strings.Contains(editLinesResult.Text, want) {
-			t.Fatalf("edit_lines result %q missing %q", editLinesResult.Text, want)
-		}
+	if editLinesResult != nil {
+		t.Fatalf("expected oversized edit_lines content to pass through (auto-pass), got rejection: %+v", *editLinesResult)
 	}
 
 	bashResult := preCheckAgentLoopInlinePayloadLimit("bash", fmt.Sprintf(`{"command":%q}`, strings.Repeat("x", maxAgentLoopInlineBashCommandRunes+1)), 6)

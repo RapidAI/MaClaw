@@ -371,8 +371,8 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		ToolCategoryBuiltin, []string{"file", "edit", "replace"},
 		map[string]interface{}{
 			"path":        map[string]string{"type": "string", "description": "文件路径"},
-			"old_string":  map[string]interface{}{"type": "string", "description": "要查找的原始文本", "maxLength": maxAgentLoopInlineEditContentRunes},
-			"new_string":  map[string]interface{}{"type": "string", "description": "替换后的文本，可为空字符串", "maxLength": maxAgentLoopInlineEditContentRunes},
+			"old_string":  map[string]interface{}{"type": "string", "description": "要查找的原始文本"},
+			"new_string":  map[string]interface{}{"type": "string", "description": "替换后的文本，可为空字符串"},
 			"replace_all": map[string]string{"type": "boolean", "description": "是否替换全部匹配，默认 false"},
 		}, []string{"path", "old_string", "new_string"},
 		func(args map[string]interface{}) string { return h.toolEditFile(args) })
@@ -384,7 +384,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"operation":  map[string]string{"type": "string", "description": "操作类型: replace（替换行）、insert（插入行）、delete（删除行）"},
 			"start_line": map[string]string{"type": "integer", "description": "起始行号（1-indexed）。insert 时 0 表示插入到文件开头"},
 			"end_line":   map[string]string{"type": "integer", "description": "结束行号（含，replace/delete 时必填）"},
-			"content":    map[string]interface{}{"type": "string", "description": "新内容（replace/insert 时必填，delete 时忽略）", "maxLength": maxAgentLoopInlineEditContentRunes},
+			"content":    map[string]interface{}{"type": "string", "description": "新内容（replace/insert 时必填，delete 时忽略）"},
 		}, []string{"path", "operation", "start_line"},
 		func(args map[string]interface{}) string { return h.toolEditLines(args) })
 

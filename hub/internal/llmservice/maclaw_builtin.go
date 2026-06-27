@@ -31,6 +31,27 @@ func IsBuiltinProvider(id string) bool {
 	return strings.EqualFold(strings.TrimSpace(id), MaClawOfficialProviderID)
 }
 
+// HasBuiltinProviderRoute returns true if the registry contains at least one
+// model service group with a model routed through a built-in provider.
+// This is the single authoritative check for "built-in LLM service is configured
+// in this registry" — used by both the admin API (service_available field) and
+// any future readiness/health checks.
+func HasBuiltinProviderRoute(reg *Registry) bool {
+	if reg == nil {
+		return false
+	}
+	for i := range reg.ModelServiceGroups {
+		for j := range reg.ModelServiceGroups[i].Models {
+			for _, pid := range reg.ModelServiceGroups[i].Models[j].ProviderIDs {
+				if IsBuiltinProvider(pid) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // IsBuiltinServiceGroup returns true for the default MaClaw Official service
 // group. The group still follows normal service-group billing/access rules.
 func IsBuiltinServiceGroup(id string) bool {
@@ -47,6 +68,7 @@ type MaClawProviderConfig struct {
 	HubID        string // this Hub's ID
 	TenantID     string // current tenant
 	MachineToken string // Hub's machine token for auth
+	TimeoutSec   int    // upstream request timeout in seconds (default 600, min 300)
 }
 
 // MaClawProviderClient forwards LLM requests to HubCenter's LLM proxy.
@@ -63,7 +85,17 @@ type MaClawProviderClient struct {
 
 // NewMaClawProviderClient creates a new MaClaw Official provider client.
 func NewMaClawProviderClient(cfg MaClawProviderConfig) *MaClawProviderClient {
-	client := &http.Client{Timeout: 120 * time.Second}
+	// Default upstream timeout: 600s. DeepSeek V4 Flash thinking mode can spend
+	// 60-180s in reasoning before producing any output; complex tasks need more.
+	// Minimum recommended: 300s. Configurable via MaClawProviderConfig.TimeoutSec.
+	timeout := 600
+	if cfg.TimeoutSec > 0 {
+		timeout = cfg.TimeoutSec
+		if timeout < 300 {
+			timeout = 300 // enforce minimum
+		}
+	}
+	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
 	return &MaClawProviderClient{
 		Config:     cfg,
 		HTTPClient: client,
@@ -79,6 +111,21 @@ func (c *MaClawProviderClient) ConfigSnapshot() MaClawProviderConfig {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.Config
+}
+
+// UpdateTimeout updates the HTTP client timeout at runtime (e.g. when admin saves settings).
+// Replaces the HTTP client instance to avoid data races on the Timeout field.
+func (c *MaClawProviderClient) UpdateTimeout(timeoutSec int) {
+	if c == nil {
+		return
+	}
+	if timeoutSec < 300 {
+		timeoutSec = 300
+	}
+	c.mu.Lock()
+	c.Config.TimeoutSec = timeoutSec
+	c.HTTPClient = &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	c.mu.Unlock()
 }
 
 func (c *MaClawProviderClient) ensureCredentials() (hubID, token string) {
@@ -111,6 +158,7 @@ func (c *MaClawProviderClient) ensureCredentials() (hubID, token string) {
 func (c *MaClawProviderClient) Forward(ctx context.Context, body []byte, tenantID string, serviceGroupIDs ...string) ([]byte, int, error) {
 	c.mu.RLock()
 	targetURL := c.boundURL
+	httpClient := c.HTTPClient
 	c.mu.RUnlock()
 
 	if targetURL == "" {
@@ -135,7 +183,7 @@ func (c *MaClawProviderClient) Forward(ctx context.Context, body []byte, tenantI
 		req.Header.Set("X-MaClaw-Service-Group-ID", serviceGroupID)
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
 		return nil, 0, fmt.Errorf("maclaw official: forward failed: %w", err)
@@ -164,6 +212,7 @@ func (c *MaClawProviderClient) Forward(ctx context.Context, body []byte, tenantI
 func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, tenantID string, serviceGroupIDs ...string) (*http.Response, error) {
 	c.mu.RLock()
 	targetURL := c.boundURL
+	baseClient := c.HTTPClient
 	c.mu.RUnlock()
 
 	if targetURL == "" {
@@ -187,7 +236,7 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 		req.Header.Set("X-MaClaw-Service-Group-ID", serviceGroupID)
 	}
 
-	httpClient := c.streamHTTPClient()
+	httpClient := streamHTTPClientFrom(baseClient)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
@@ -211,20 +260,31 @@ func firstNonEmptyServiceGroupID(ids []string) string {
 }
 
 func (c *MaClawProviderClient) streamHTTPClient() *http.Client {
-	if c == nil || c.HTTPClient == nil {
-		return &http.Client{Transport: defaultStreamTransport(120 * time.Second)}
+	timeout := 600 * time.Second
+	if c != nil && c.Config.TimeoutSec >= 300 {
+		timeout = time.Duration(c.Config.TimeoutSec) * time.Second
 	}
-	if c.HTTPClient.Timeout == 0 {
-		if c.HTTPClient.Transport == nil {
-			client := *c.HTTPClient
-			client.Transport = defaultStreamTransport(120 * time.Second)
+	if c == nil || c.HTTPClient == nil {
+		return &http.Client{Transport: defaultStreamTransport(timeout)}
+	}
+	return streamHTTPClientFrom(c.HTTPClient)
+}
+
+func streamHTTPClientFrom(base *http.Client) *http.Client {
+	if base == nil {
+		return &http.Client{Transport: defaultStreamTransport(600 * time.Second)}
+	}
+	if base.Timeout == 0 {
+		if base.Transport == nil {
+			client := *base
+			client.Transport = defaultStreamTransport(600 * time.Second)
 			return &client
 		}
-		return c.HTTPClient
+		return base
 	}
-	client := *c.HTTPClient
+	client := *base
 	if client.Transport == nil {
-		client.Transport = defaultStreamTransport(c.HTTPClient.Timeout)
+		client.Transport = defaultStreamTransport(base.Timeout)
 	}
 	client.Timeout = 0
 	return &client

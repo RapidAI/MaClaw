@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -34,6 +36,34 @@ type normalizedTableCell struct {
 // SpreadsheetRowProgressFunc reports row-level progress during spreadsheet import.
 // totalRows is the total data rows across all sheets, processedRows is how many have been inserted so far.
 type SpreadsheetRowProgressFunc func(processedRows, totalRows int)
+
+// spreadsheetPreparedRow holds pre-computed data for a single row, produced in parallel.
+type spreadsheetPreparedRow struct {
+	rowIdx         int
+	rowID          string
+	rowText        string
+	primaryKeyText string
+	rowJSON        string
+	ftsRowText     string // pre-tokenized for FTS (expensive CJK segmentation)
+	ftsPKText      string // pre-tokenized primary key for FTS
+	cells          []spreadsheetPreparedCell
+	// Pre-computed card/fact FTS data (avoids segmentTextForFTS calls in SQL phase)
+	ftsTitle   string // segmentTextForFTS(title)
+	ftsSubject string // segmentTextForFTS(subject) — same for all facts in this row
+}
+
+// spreadsheetPreparedCell holds pre-computed cell data.
+type spreadsheetPreparedCell struct {
+	cellID          string
+	colIdx          int
+	rawValue        string
+	normalizedValue string
+	valueType       string
+	numberValue     *float64
+	dateValue       string
+	boolValue       *bool
+	ftsObject       string // segmentTextForFTS(cleanFactPart(normalizedValue))
+}
 
 func importSpreadsheetSourceV2(ctx context.Context, tx *sql.Tx, source Source, filePath string, kind string) (Source, error) {
 	return importSpreadsheetSourceV2WithProgress(ctx, tx, source, filePath, kind, nil)
@@ -106,93 +136,278 @@ func importSpreadsheetSourceV2WithProgress(ctx context.Context, tx *sql.Tx, sour
 				return source, fmt.Errorf("knowledge sqlite insert kb column: %w", err)
 			}
 		}
+		// --- Batched parallel row processing ---
+		// Phase 1: Collect non-empty row indices
+		dataRowIndices := make([]int, 0, len(result.Rows)-headerRow-1)
 		for rowIdx := headerRow + 1; rowIdx < len(result.Rows); rowIdx++ {
+			if !spreadsheetRowEmpty(result.Rows[rowIdx]) {
+				dataRowIndices = append(dataRowIndices, rowIdx)
+			}
+		}
+
+		if len(dataRowIndices) == 0 {
+			tableCount++
+			continue
+		}
+
+		// Pre-compute per-column invariants (same for all rows in this sheet)
+		normalizedColNames := make([]string, len(headers))
+		for i, h := range headers {
+			normalizedColNames[i] = normalizeSpreadsheetColumnName(h)
+		}
+		// Pre-compute FTS-tokenized predicate for each column (predicate = cleanFactPart(columnName))
+		ftsPredicates := make([]string, len(headers))
+		for i, h := range headers {
+			ftsPredicates[i] = segmentTextForFTS(cleanFactPart(h))
+		}
+		// Pre-compute primary key column index for fast lookup in goroutines
+		primaryKeyColIdx := findPrimaryKeyColumnIdx(headers, normalizedColNames)
+		// Pre-compute per-source invariants for card/fact insertion
+		tagsJSON, _ := json.Marshal([]string{source.Kind, "table_row", "structured"})
+		topicsJSON, _ := json.Marshal(topicsForSource(source))
+		tagsJSONStr := string(tagsJSON)
+		topicsJSONStr := string(topicsJSON)
+
+		// Prepare statements once per sheet (reused across all batches)
+		stmtRow, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO kb_rows
+			(id, table_id, source_id, row_index, primary_key_text, row_text, row_json, embedding, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`)
+		if err != nil {
+			return source, fmt.Errorf("knowledge sqlite prepare kb_rows: %w", err)
+		}
+		stmtRowFTSIns, err := tx.PrepareContext(ctx, `INSERT INTO kb_rows_fts(row_id, primary_key_text, row_text) VALUES (?, ?, ?)`)
+		if err != nil {
+			stmtRow.Close()
+			return source, fmt.Errorf("knowledge sqlite prepare kb_rows_fts ins: %w", err)
+		}
+		stmtCell, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO kb_cells
+			(id, row_id, table_id, column_id, column_name, normalized_column_name, raw_value, normalized_value,
+			 value_type, number_value, date_value, bool_value, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			stmtRow.Close()
+			stmtRowFTSIns.Close()
+			return source, fmt.Errorf("knowledge sqlite prepare kb_cells: %w", err)
+		}
+		cardFactStmts, err := prepareBatchCardFactStmts(ctx, tx)
+		if err != nil {
+			stmtRow.Close()
+			stmtRowFTSIns.Close()
+			stmtCell.Close()
+			return source, fmt.Errorf("knowledge sqlite prepare card/fact stmts: %w", err)
+		}
+		closeAllStmts := func() {
+			stmtRow.Close()
+			stmtRowFTSIns.Close()
+			stmtCell.Close()
+			cardFactStmts.Close()
+		}
+
+		// Phase 2+3: Parallel CPU preparation + sequential SQL insert, in batches
+		const prepBatchSize = 200
+		nowStr := formatTime(now)
+		for batchStart := 0; batchStart < len(dataRowIndices); batchStart += prepBatchSize {
 			if ctx.Err() != nil {
+				closeAllStmts()
 				return source, ctx.Err()
 			}
-			row := result.Rows[rowIdx]
-			if spreadsheetRowEmpty(row) {
-				continue
+			batchEnd := batchStart + prepBatchSize
+			if batchEnd > len(dataRowIndices) {
+				batchEnd = len(dataRowIndices)
 			}
-			rowID := NewID("krow")
-			rowText := buildSpreadsheetRowText(headers, row)
-			primaryKeyText := buildSpreadsheetPrimaryKey(headers, row)
-			rowJSON := spreadsheetRowJSON(headers, row)
-			if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO kb_rows
-				(id, table_id, source_id, row_index, primary_key_text, row_text, row_json, embedding, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-				rowID, tableID, source.ID, rowIdx+1, primaryKeyText, rowText, rowJSON, formatTime(now), formatTime(now)); err != nil {
-				return source, fmt.Errorf("knowledge sqlite insert kb row: %w", err)
+			batchIndices := dataRowIndices[batchStart:batchEnd]
+
+			// Phase 2: Parallel CPU-bound preparation
+			prepared := make([]spreadsheetPreparedRow, len(batchIndices))
+			workers := runtime.NumCPU()
+			if workers > 8 {
+				workers = 8
 			}
-			_, _ = tx.ExecContext(ctx, `DELETE FROM kb_rows_fts WHERE row_id = ?`, rowID)
-			_, _ = tx.ExecContext(ctx, `INSERT INTO kb_rows_fts(row_id, primary_key_text, row_text) VALUES (?, ?, ?)`,
-				rowID, segmentTextForFTS(primaryKeyText), segmentTextForFTS(rowText))
-			rowCells := make([]KnowledgeTableCell, 0, len(headers))
-			for colIdx := 0; colIdx < len(headers); colIdx++ {
-				cell := cellAt(row, colIdx)
-				normalized := normalizeSpreadsheetCell(cell, valueTypes[colIdx])
-				if normalized.ValueType == tableValueTypeEmpty {
-					continue
+			if workers > len(batchIndices) {
+				workers = len(batchIndices)
+			}
+
+			var wg sync.WaitGroup
+			chunkSize := (len(batchIndices) + workers - 1) / workers
+			for w := 0; w < workers; w++ {
+				wStart := w * chunkSize
+				wEnd := wStart + chunkSize
+				if wEnd > len(batchIndices) {
+					wEnd = len(batchIndices)
 				}
-				cellID := NewID("kcell")
-				cellRecord := KnowledgeTableCell{
-					ID:                   cellID,
-					RowID:                rowID,
-					TableID:              tableID,
-					ColumnID:             columnIDs[colIdx],
-					ColumnName:           headers[colIdx],
-					NormalizedColumnName: normalizeSpreadsheetColumnName(headers[colIdx]),
-					RawValue:             normalized.RawValue,
-					NormalizedValue:      normalized.NormalizedValue,
-					ValueType:            normalized.ValueType,
-					NumberValue:          normalized.NumberValue,
-					DateValue:            normalized.DateValue,
-					BoolValue:            normalized.BoolValue,
-					CreatedAt:            now,
-					UpdatedAt:            now,
+				if wStart >= wEnd {
+					break
 				}
-				var boolValue interface{}
-				if normalized.BoolValue != nil {
-					if *normalized.BoolValue {
-						boolValue = 1
-					} else {
-						boolValue = 0
+				wg.Add(1)
+				go func(start, end int) {
+					defer wg.Done()
+					for i := start; i < end; i++ {
+						rowIdx := batchIndices[i]
+						row := result.Rows[rowIdx]
+						rowID := NewID("krow")
+						rowText := buildSpreadsheetRowText(headers, row)
+						primaryKeyText := buildSpreadsheetPrimaryKeyFast(headers, row, primaryKeyColIdx)
+						rowJSON := spreadsheetRowJSON(headers, row)
+						// Pre-compute FTS tokenization (expensive for CJK)
+						ftsRowText := segmentTextForFTS(rowText)
+						ftsPKText := segmentTextForFTS(primaryKeyText)
+
+						// Pre-compute cells
+						cells := make([]spreadsheetPreparedCell, 0, len(headers))
+						for colIdx := 0; colIdx < len(headers); colIdx++ {
+							cell := cellAt(row, colIdx)
+							normalized := normalizeSpreadsheetCell(cell, valueTypes[colIdx])
+							if normalized.ValueType == tableValueTypeEmpty {
+								continue
+							}
+							cellID := NewID("kcell")
+							// Pre-compute fact object FTS
+							ftsObj := ""
+							if obj := cleanFactPart(normalized.NormalizedValue); obj != "" {
+								ftsObj = segmentTextForFTS(obj)
+							}
+							cells = append(cells, spreadsheetPreparedCell{
+								cellID:          cellID,
+								colIdx:          colIdx,
+								rawValue:        normalized.RawValue,
+								normalizedValue: normalized.NormalizedValue,
+								valueType:       normalized.ValueType,
+								numberValue:     normalized.NumberValue,
+								dateValue:       normalized.DateValue,
+								boolValue:       normalized.BoolValue,
+								ftsObject:       ftsObj,
+							})
+						}
+
+						// Pre-compute card title and subject FTS
+						// Must match chooseTableRowSubject logic exactly
+						subject := cleanFactPart(primaryKeyText)
+						if subject == "" {
+							// fallback: first "name"/"title"/"id" cell
+							for _, pc := range cells {
+								colName := normalizedColNames[pc.colIdx]
+								if strings.Contains(colName, "name") || strings.Contains(colName, "姓名") || strings.Contains(colName, "title") || strings.Contains(colName, "标题") || strings.Contains(colName, "id") || strings.Contains(colName, "编号") {
+									if v := cleanFactPart(pc.normalizedValue); v != "" {
+										subject = v
+										break
+									}
+								}
+							}
+						}
+						if subject == "" && source.Title != "" && (rowIdx+1) > 0 {
+							subject = fmt.Sprintf("%s row %d", source.Title, rowIdx+1)
+						}
+						if subject == "" {
+							subject = source.ID
+						}
+						title := tableRowCardTitle(source, KnowledgeTableRow{RowIndex: rowIdx + 1}, subject)
+						ftsTitle := segmentTextForFTS(title)
+						ftsSubject := segmentTextForFTS(subject)
+
+						prepared[i] = spreadsheetPreparedRow{
+							rowIdx:         rowIdx,
+							rowID:          rowID,
+							rowText:        rowText,
+							primaryKeyText: primaryKeyText,
+							rowJSON:        rowJSON,
+							ftsRowText:     ftsRowText,
+							ftsPKText:      ftsPKText,
+							cells:          cells,
+							ftsTitle:       ftsTitle,
+							ftsSubject:     ftsSubject,
+						}
+					}
+				}(wStart, wEnd)
+			}
+			wg.Wait()
+
+			// Phase 3: Sequential SQL inserts using pre-prepared statements
+			// Note: Since all row/card/fact IDs are freshly generated (NewID),
+			// FTS DELETE is unnecessary (no prior entries exist). Skip them.
+			for _, pr := range prepared {
+				if ctx.Err() != nil {
+					closeAllStmts()
+					return source, ctx.Err()
+				}
+				// Insert row
+				if _, err := stmtRow.ExecContext(ctx, pr.rowID, tableID, source.ID, pr.rowIdx+1,
+					pr.primaryKeyText, pr.rowText, pr.rowJSON, nowStr, nowStr); err != nil {
+					closeAllStmts()
+					return source, fmt.Errorf("knowledge sqlite insert kb row: %w", err)
+				}
+				// FTS index (skip DELETE — IDs are brand new, no prior FTS entry exists)
+				_, _ = stmtRowFTSIns.ExecContext(ctx, pr.rowID, pr.ftsPKText, pr.ftsRowText)
+				// Insert cells
+				for _, pc := range pr.cells {
+					var boolValue interface{}
+					if pc.boolValue != nil {
+						if *pc.boolValue {
+							boolValue = 1
+						} else {
+							boolValue = 0
+						}
+					}
+					var numberValue interface{}
+					if pc.numberValue != nil {
+						numberValue = *pc.numberValue
+					}
+					if _, err := stmtCell.ExecContext(ctx, pc.cellID, pr.rowID, tableID, columnIDs[pc.colIdx],
+						headers[pc.colIdx], normalizedColNames[pc.colIdx], pc.rawValue, pc.normalizedValue,
+						pc.valueType, numberValue, pc.dateValue, boolValue, nowStr, nowStr); err != nil {
+						closeAllStmts()
+						return source, fmt.Errorf("knowledge sqlite insert kb cell: %w", err)
 					}
 				}
-				var numberValue interface{}
-				if normalized.NumberValue != nil {
-					numberValue = *normalized.NumberValue
+				// Build KnowledgeTableCell slice for card/fact insertion
+				rowCells := make([]KnowledgeTableCell, len(pr.cells))
+				for i, pc := range pr.cells {
+					rowCells[i] = KnowledgeTableCell{
+						ID:                   pc.cellID,
+						RowID:                pr.rowID,
+						TableID:              tableID,
+						ColumnID:             columnIDs[pc.colIdx],
+						ColumnName:           headers[pc.colIdx],
+						NormalizedColumnName: normalizedColNames[pc.colIdx],
+						RawValue:             pc.rawValue,
+						NormalizedValue:      pc.normalizedValue,
+						ValueType:            pc.valueType,
+						NumberValue:          pc.numberValue,
+						DateValue:            pc.dateValue,
+						BoolValue:            pc.boolValue,
+						CreatedAt:            now,
+						UpdatedAt:            now,
+					}
 				}
-				if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO kb_cells
-					(id, row_id, table_id, column_id, column_name, normalized_column_name, raw_value, normalized_value,
-					 value_type, number_value, date_value, bool_value, created_at, updated_at)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-					cellID, rowID, tableID, columnIDs[colIdx], headers[colIdx], normalizeSpreadsheetColumnName(headers[colIdx]),
-					normalized.RawValue, normalized.NormalizedValue, normalized.ValueType, numberValue, normalized.DateValue, boolValue,
-					formatTime(now), formatTime(now)); err != nil {
-					return source, fmt.Errorf("knowledge sqlite insert kb cell: %w", err)
+				if err := insertKBTableRowCardAndFactsBatch(ctx, cardFactStmts, source, KnowledgeTableRow{
+					ID:             pr.rowID,
+					TableID:        tableID,
+					SourceID:       source.ID,
+					RowIndex:       pr.rowIdx + 1,
+					PrimaryKeyText: pr.primaryKeyText,
+					RowText:        pr.rowText,
+					RowJSON:        pr.rowJSON,
+					CreatedAt:      now,
+					UpdatedAt:      now,
+				}, rowCells, &rowCardFTSData{
+					ftsRowText:    pr.ftsRowText,
+					ftsTitle:      pr.ftsTitle,
+					ftsSubject:    pr.ftsSubject,
+					ftsPredicates: buildCellFTSPredicates(pr.cells, ftsPredicates),
+					ftsObjects:    buildCellFTSObjects(pr.cells),
+				}, nowStr, tagsJSONStr, topicsJSONStr, true); err != nil { // skipFTSDelete=true: fresh IDs, no prior entries
+					closeAllStmts()
+					return source, err
 				}
-				rowCells = append(rowCells, cellRecord)
+				rowCount++
+				processedDataRows++
 			}
-			if err := insertKBTableRowCardAndFacts(ctx, tx, source, KnowledgeTableRow{
-				ID:             rowID,
-				TableID:        tableID,
-				SourceID:       source.ID,
-				RowIndex:       rowIdx + 1,
-				PrimaryKeyText: primaryKeyText,
-				RowText:        rowText,
-				RowJSON:        rowJSON,
-				CreatedAt:      now,
-				UpdatedAt:      now,
-			}, rowCells); err != nil {
-				return source, err
-			}
-			rowCount++
-			processedDataRows++
-			if onRowProgress != nil && totalDataRows > 0 && (processedDataRows%50 == 0 || processedDataRows == totalDataRows) {
+
+			// Progress reporting per batch
+			if onRowProgress != nil && totalDataRows > 0 {
 				onRowProgress(processedDataRows, totalDataRows)
 			}
 		}
+		closeAllStmts()
 		tableCount++
 	}
 	source.NodeCount = rowCount
@@ -413,6 +628,42 @@ func buildSpreadsheetPrimaryKey(headers []string, row []excelread.CellValue) str
 	return strings.Join(values, " ")
 }
 
+// findPrimaryKeyColumnIdx pre-computes the primary key column index for a sheet.
+// Returns -1 if no preferred column is found (fallback to first 2 non-empty cells).
+func findPrimaryKeyColumnIdx(headers []string, normalizedColNames []string) int {
+	preferred := []string{"name", "姓名", "title", "标题", "id", "编号", "code", "编码", "客户", "项目", "案件"}
+	for _, needle := range preferred {
+		for i, norm := range normalizedColNames {
+			if strings.Contains(norm, needle) {
+				_ = headers[i] // bounds check elision
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// buildSpreadsheetPrimaryKeyFast uses pre-computed primaryKeyColIdx to avoid
+// calling normalizeSpreadsheetColumnName per row.
+func buildSpreadsheetPrimaryKeyFast(headers []string, row []excelread.CellValue, pkColIdx int) string {
+	if pkColIdx >= 0 {
+		if text := spreadsheetCellText(cellAt(row, pkColIdx)); text != "" {
+			return text
+		}
+	}
+	// Fallback: first 2 non-empty cells
+	values := make([]string, 0, 2)
+	for i := range headers {
+		if text := spreadsheetCellText(cellAt(row, i)); text != "" {
+			values = append(values, text)
+			if len(values) == 2 {
+				break
+			}
+		}
+	}
+	return strings.Join(values, " ")
+}
+
 func spreadsheetRowJSON(headers []string, row []excelread.CellValue) string {
 	values := make(map[string]string, len(headers))
 	for i, header := range headers {
@@ -510,6 +761,27 @@ func normalizedDate(value string) string {
 		}
 	}
 	return ""
+}
+
+// buildCellFTSPredicates maps each prepared cell to its pre-computed FTS predicate
+// from the sheet-level ftsPredicates array (indexed by column).
+func buildCellFTSPredicates(cells []spreadsheetPreparedCell, sheetFTSPredicates []string) []string {
+	preds := make([]string, len(cells))
+	for i, pc := range cells {
+		if pc.colIdx < len(sheetFTSPredicates) {
+			preds[i] = sheetFTSPredicates[pc.colIdx]
+		}
+	}
+	return preds
+}
+
+// buildCellFTSObjects extracts pre-computed FTS object tokens from prepared cells.
+func buildCellFTSObjects(cells []spreadsheetPreparedCell) []string {
+	objs := make([]string, len(cells))
+	for i, pc := range cells {
+		objs[i] = pc.ftsObject
+	}
+	return objs
 }
 
 func minInt(a, b int) int {

@@ -183,8 +183,8 @@ func TestIsRootOrNearRoot(t *testing.T) {
 	}{
 		{`C:\`, true},
 		{`D:\`, true},
-		{`C:\Users`, true},   // one level deep
-		{`D:\AI learning`, true}, // one level deep
+		{`C:\Users`, true},                  // one level deep
+		{`D:\AI learning`, true},            // one level deep
 		{`D:\AI learning\AI coding`, false}, // two levels deep
 		{`D:\workprj\aicoder`, false},
 	}
@@ -218,7 +218,6 @@ func TestCollectTaskAbsolutePaths_Combined(t *testing.T) {
 	}
 }
 
-
 // --- Layer 2: scopeApprovalState unit tests ---
 
 func TestScopeApproval_NilState_ReturnsRejection(t *testing.T) {
@@ -230,7 +229,7 @@ func TestScopeApproval_NilState_ReturnsRejection(t *testing.T) {
 }
 
 func TestScopeApproval_NilCallback_ReturnsRejection(t *testing.T) {
-	s := newScopeApprovalState(nil)
+	s := newScopeApprovalState(nil, false)
 	msg := s.check("write_file", `D:\outside\file.go`, `D:\project`)
 	if msg == "" {
 		t.Fatal("nil callback should produce rejection message")
@@ -240,7 +239,7 @@ func TestScopeApproval_NilCallback_ReturnsRejection(t *testing.T) {
 func TestScopeApproval_CallbackDeny_ReturnsRejection(t *testing.T) {
 	s := newScopeApprovalState(func(req ScopeApprovalRequest) ScopeApprovalDecision {
 		return ScopeApprovalDeny
-	})
+	}, false)
 	msg := s.check("write_file", `D:\outside\file.go`, `D:\project`)
 	if msg == "" {
 		t.Fatal("deny decision should produce rejection message")
@@ -252,7 +251,7 @@ func TestScopeApproval_CallbackAllowOnce_ReturnsEmpty(t *testing.T) {
 	s := newScopeApprovalState(func(req ScopeApprovalRequest) ScopeApprovalDecision {
 		calls++
 		return ScopeApprovalAllowOnce
-	})
+	}, false)
 	msg := s.check("write_file", `D:\outside\file.go`, `D:\project`)
 	if msg != "" {
 		t.Fatalf("allow_once should return empty, got %q", msg)
@@ -272,7 +271,7 @@ func TestScopeApproval_CallbackAllowDir_RemembersDirectory(t *testing.T) {
 	s := newScopeApprovalState(func(req ScopeApprovalRequest) ScopeApprovalDecision {
 		calls++
 		return ScopeApprovalAllowDir
-	})
+	}, false)
 	// First call triggers callback.
 	msg := s.check("write_file", `D:\outside\file.go`, `D:\project`)
 	if msg != "" {
@@ -291,13 +290,53 @@ func TestScopeApproval_CallbackAllowDir_RemembersDirectory(t *testing.T) {
 	}
 }
 
+func TestScopeApproval_FullAccessSkipsCallback(t *testing.T) {
+	calls := 0
+	s := newScopeApprovalState(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		calls++
+		return ScopeApprovalDeny
+	}, true)
+
+	msg := s.check("write_file", `D:\outside\file.go`, `D:\project`)
+	if msg != "" {
+		t.Fatalf("full access should allow without rejection, got %q", msg)
+	}
+	if calls != 0 {
+		t.Fatalf("full access should not call approval callback, got %d calls", calls)
+	}
+}
+
+func TestScopeApproval_CallbackFullAccess_RemembersForTask(t *testing.T) {
+	calls := 0
+	s := newScopeApprovalState(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		calls++
+		return ScopeApprovalFullAccess
+	}, false)
+
+	msg := s.check("write_file", `D:\outside\file.go`, `D:\project`)
+	if msg != "" {
+		t.Fatalf("full_access decision should allow current call, got %q", msg)
+	}
+	if calls != 1 {
+		t.Fatalf("expected first call to ask for approval, got %d calls", calls)
+	}
+
+	msg = s.check("read_file", `D:\other\file.go`, `D:\project`)
+	if msg != "" {
+		t.Fatalf("full_access decision should allow later paths, got %q", msg)
+	}
+	if calls != 1 {
+		t.Fatalf("expected full_access to skip later callbacks, got %d calls", calls)
+	}
+}
+
 func TestScopeApproval_AllowDir_CaseInsensitive(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific case-insensitive test")
 	}
 	s := newScopeApprovalState(func(req ScopeApprovalRequest) ScopeApprovalDecision {
 		return ScopeApprovalAllowDir
-	})
+	}, false)
 	s.check("write_file", `D:\Outside\file.go`, `D:\project`)
 	// Same dir, different case — should be pre-approved.
 	msg := s.check("read_file", `d:\outside\other.go`, `D:\project`)
@@ -309,7 +348,7 @@ func TestScopeApproval_AllowDir_CaseInsensitive(t *testing.T) {
 func TestScopeApproval_AllowDir_SubdirectoryApproved(t *testing.T) {
 	s := newScopeApprovalState(func(req ScopeApprovalRequest) ScopeApprovalDecision {
 		return ScopeApprovalAllowDir
-	})
+	}, false)
 	// Approve D:\outside via file in that dir.
 	s.check("write_file", `D:\outside\file.go`, `D:\project`)
 	// Subdirectory should also be approved.
@@ -324,7 +363,7 @@ func TestScopeApproval_RequestFieldsCorrect(t *testing.T) {
 	s := newScopeApprovalState(func(req ScopeApprovalRequest) ScopeApprovalDecision {
 		captured = req
 		return ScopeApprovalDeny
-	})
+	}, false)
 	s.check("bash", `D:\other\scripts`, `D:\myproject`)
 	if captured.ToolName != "bash" {
 		t.Fatalf("expected tool=bash, got %q", captured.ToolName)

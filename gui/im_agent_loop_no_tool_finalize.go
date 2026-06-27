@@ -422,7 +422,13 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 	preferSkill := phase.ForceSkillPreference && phase.PreferredSkillName != ""
 	effectiveNoToolRecoverThreshold := stalledNoToolRecoverThreshold
 	if hasPendingSkillRun || phase.SkillFailed || phase.Stage == agentStageRecover {
-		effectiveNoToolRecoverThreshold = 1
+		// Lower threshold to 1 for quick recovery — EXCEPT when tools were
+		// blocked due to truncation. In that case the LLM needs normal iterations
+		// to adapt to the new constraint (use bash instead of blocked tool).
+		// Lowering to 1 would immediately kill the LLM's first attempt to comply.
+		if len(phase.TruncationBlockedTools) == 0 {
+			effectiveNoToolRecoverThreshold = 1
+		}
 	}
 
 	if hasPendingSkillRun {

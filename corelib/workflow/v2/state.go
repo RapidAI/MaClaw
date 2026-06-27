@@ -54,6 +54,10 @@ type Phase struct {
 	Status        PhaseStatus   `json:"status"`
 	Output        string        `json:"output,omitempty"`
 
+	// DependsOnFull lists prior phase IDs whose full output is needed by this phase.
+	// Used by BuildPhasePrompt to allocate larger truncation budgets.
+	DependsOnFull []string `json:"depends_on_full,omitempty"`
+
 	// InputSchema is copied from the template at workflow creation time.
 	// When non-nil, the phase requires form input before the agent loop runs.
 	InputSchema *PhaseInputSchema `json:"input_schema,omitempty"`

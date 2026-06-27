@@ -87,6 +87,7 @@ type AppConfig struct {
 	WebSearchCurrentProvider string               `json:"web_search_current_provider,omitempty"`
 	MaclawAgentMaxIterations int                  `json:"maclaw_agent_max_iterations,omitempty"`
 	SubAgentConcurrency      int                  `json:"subagent_concurrency,omitempty"`
+	SubAgentFullAccess       bool                 `json:"subagent_full_access,omitempty"`
 	// MaClaw Role configuration
 	MaclawRoleName        string `json:"maclaw_role_name,omitempty"`
 	MaclawRoleDescription string `json:"maclaw_role_description,omitempty"`

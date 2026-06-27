@@ -124,6 +124,19 @@ type PhaseTemplate struct {
 	// phase prompt as structured context before the LLM generates the deliverable.
 	// Nil means the phase uses natural language interaction (default behavior).
 	InputSchema *PhaseInputSchema
+
+	// DependsOnFull declares which prior phase(s) this phase requires the FULL
+	// (un-truncated) output from. When BuildPhasePrompt constructs the "前序阶段
+	// 产出物" section, phases listed here receive a much larger rune budget
+	// (up to 30000 runes) instead of the default truncation (500 runes).
+	//
+	// This is the mechanism-level solution to the "PPT generation only sees 2
+	// pages of a 20-page script" problem: the template declares the dependency,
+	// and the prompt builder respects it. No hardcoded phase-ID checks needed.
+	//
+	// Example: ppt_generation depends on slide_scripting's full output to know
+	// what content to put on each of the 20 slides.
+	DependsOnFull []string
 }
 
 // WorkflowTemplate defines a type of workflow.
@@ -396,7 +409,8 @@ func PresentationTemplate() *WorkflowTemplate {
 			},
 			{ID: "outline", Name: "内容大纲", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc},
 			{ID: "slide_scripting", Name: "逐页脚本", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc},
-			{ID: "ppt_generation", Name: "PPT 生成", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindArtifactGeneration, MutationScope: MutationScopeArtifact},
+			{ID: "ppt_generation", Name: "PPT 生成", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindArtifactGeneration, MutationScope: MutationScopeArtifact,
+				DependsOnFull: []string{"slide_scripting", "outline"}},
 		},
 	}
 }

@@ -35,6 +35,7 @@ type llmProviderRegistryResponse struct {
 	CurrentProviderID        string   `json:"current_provider_id"`
 	SmartRouteSingleDevice   bool     `json:"smart_route_single_device"`
 	DownstreamMaxConcurrency int      `json:"downstream_max_concurrency"`
+	UpstreamTimeoutSec       int      `json:"upstream_timeout_sec"`
 	UserRateLimitPerMinute   int      `json:"user_rate_limit_per_minute"`
 	UserRateLimitBurst       int      `json:"user_rate_limit_burst"`
 	Providers                []any    `json:"providers"`
@@ -46,6 +47,11 @@ type llmProviderRegistryResponse struct {
 	AuthHint                 string   `json:"auth_hint"`
 	Hints                    []string `json:"hints,omitempty"`
 	Warnings                 []string `json:"warnings,omitempty"`
+	// ServiceAvailable is the single authoritative signal for whether the LLM
+	// service has at least one routable path (local providers OR built-in
+	// providers via HubCenter). Frontend uses this instead of checking
+	// len(providers)==0 to decide whether to show "no provider" warnings.
+	ServiceAvailable bool `json:"service_available"`
 }
 
 type llmServiceAdminResponse struct {
@@ -116,7 +122,7 @@ func GetLLMProvidersHandler(system store.SystemSettingsRepository, accessCtrl *l
 			return
 		}
 		visibleReg := filterLLMProviderRegistryForRequest(r, currentMaClawAccessControl(accessCtrl), reg)
-		writeJSON(w, http.StatusOK, registryResponse(r, visibleReg, collectLLMServiceProviderReferenceIssues(serviceReg, visibleReg)))
+		writeJSON(w, http.StatusOK, registryResponse(r, visibleReg, serviceReg, collectLLMServiceProviderReferenceIssues(serviceReg, visibleReg)))
 	}
 }
 
@@ -153,6 +159,9 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository, accessCtrl
 			}
 			if p.UpstreamTimeoutSec <= 0 {
 				p.UpstreamTimeoutSec = im.DefaultLLMProviderUpstreamTimeoutSec
+			}
+			if p.UpstreamTimeoutSec < 300 {
+				p.UpstreamTimeoutSec = 300
 			}
 			if p.CircuitBreakerThreshold <= 0 {
 				p.CircuitBreakerThreshold = im.DefaultLLMProviderCircuitBreakerThreshold
@@ -208,6 +217,16 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository, accessCtrl
 				req.DownstreamMaxConcurrency = im.DefaultLLMProviderDownstreamMaxConcurrency
 			}
 		}
+		if req.UpstreamTimeoutSec <= 0 {
+			if oldReg != nil && oldReg.UpstreamTimeoutSec > 0 {
+				req.UpstreamTimeoutSec = oldReg.UpstreamTimeoutSec
+			} else {
+				req.UpstreamTimeoutSec = im.DefaultLLMProviderUpstreamTimeoutSec
+			}
+		}
+		if req.UpstreamTimeoutSec < 300 {
+			req.UpstreamTimeoutSec = 300
+		}
 		if req.UserRateLimitPerMinute <= 0 {
 			if oldReg != nil && oldReg.UserRateLimitPerMinute > 0 {
 				req.UserRateLimitPerMinute = oldReg.UserRateLimitPerMinute
@@ -239,9 +258,10 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository, accessCtrl
 		if shouldReloadSharedRuntimeForRequest(r) {
 			applyLLMEndpointDownstreamConfig(&req)
 			applyLLMEndpointUserRateLimitConfig(&req)
+			applyMaClawUpstreamTimeout(&req)
 		}
 		_ = syncLegacyHubLLMConfig(r.Context(), system, &req)
-		writeJSON(w, http.StatusOK, registryResponse(r, &req, collectLLMServiceProviderReferenceIssues(serviceReg, &req)))
+		writeJSON(w, http.StatusOK, registryResponse(r, &req, serviceReg, collectLLMServiceProviderReferenceIssues(serviceReg, &req)))
 	}
 }
 
@@ -3817,7 +3837,7 @@ func applyProviderUsageCost(usage corelib.TokenUsageStat, provider *im.LLMProvid
 	return usage
 }
 
-func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, warnings []string) llmProviderRegistryResponse {
+func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, serviceReg *llmservice.Registry, warnings []string) llmProviderRegistryResponse {
 	usageByProvider := filterRemoteCodingToolTokenUsage(reg.TokenUsage)
 	providers := make([]any, 0, len(reg.Providers))
 	availableModels := make([]string, 0, len(reg.Providers))
@@ -3876,11 +3896,19 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, warnings []s
 		}
 		mergedHints = append(mergedHints, "Warning: "+warning)
 	}
+	// ServiceAvailable: the LLM service has at least one routable path.
+	// True when either local providers are configured, OR the service registry
+	// contains a model service group with at least one built-in provider route.
+	serviceAvailable := len(reg.Providers) > 0
+	if !serviceAvailable {
+		serviceAvailable = llmservice.HasBuiltinProviderRoute(serviceReg)
+	}
 	return llmProviderRegistryResponse{
 		Enabled:                  reg.Enabled,
 		CurrentProviderID:        reg.CurrentProviderID,
 		SmartRouteSingleDevice:   reg.SmartRouteSingleDevice,
 		DownstreamMaxConcurrency: reg.DownstreamMaxConcurrency,
+		UpstreamTimeoutSec:       reg.UpstreamTimeoutSec,
 		UserRateLimitPerMinute:   reg.UserRateLimitPerMinute,
 		UserRateLimitBurst:       reg.UserRateLimitBurst,
 		Providers:                providers,
@@ -3892,6 +3920,7 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, warnings []s
 		AuthHint:                 "Use Authorization: Bearer <viewer access token>. Reuse the access_token returned by /api/auth/email-confirm or /api/auth/email-poll after email sign-in.",
 		Hints:                    mergedHints,
 		Warnings:                 append([]string(nil), warnings...),
+		ServiceAvailable:         serviceAvailable,
 	}
 }
 

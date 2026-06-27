@@ -137,7 +137,7 @@ func TestNewLLMEndpointHTTPClientClampsTimeout(t *testing.T) {
 	if client.Timeout != time.Duration(MinAgentTimeoutSec)*time.Second {
 		t.Fatalf("client.Timeout = %s, want %ds", client.Timeout, MinAgentTimeoutSec)
 	}
-	client = NewLLMEndpointHTTPClient(MaclawLLMConfig{TimeoutSec: 900})
+	client = NewLLMEndpointHTTPClient(MaclawLLMConfig{TimeoutSec: 1200})
 	if client.Timeout != time.Duration(MaxAgentTimeoutSec)*time.Second {
 		t.Fatalf("client.Timeout = %s, want %ds", client.Timeout, MaxAgentTimeoutSec)
 	}

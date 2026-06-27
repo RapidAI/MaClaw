@@ -61,7 +61,7 @@ func TestRegistryResponseHidesRemoteCodingToolUsagePollution(t *testing.T) {
 			"codex:gpt-5.4": {InputTokens: 1200, OutputTokens: 80, TotalTokens: 1280, Requests: 1},
 			"provider-a":    {InputTokens: 10, OutputTokens: 5, TotalTokens: 15, Requests: 1},
 		},
-	}, nil)
+	}, nil, nil)
 
 	if len(resp.Providers) != 2 {
 		t.Fatalf("providers = %#v", resp.Providers)

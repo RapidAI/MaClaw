@@ -509,13 +509,14 @@ func TestHandleTruncatedToolCallsDoesNotBlockDelegateTaskHandoff(t *testing.T) {
 	}
 }
 
-func TestRepeatedEssentialTruncationFallsThroughAfterOneHint(t *testing.T) {
+func TestRepeatedEssentialTruncationBlocksToolAfterHintsExhausted(t *testing.T) {
 	phase := &agentLoopPhase{TruncationRetries: maxTruncationRetries, EssentialTruncationHints: maxEssentialTruncationHints}
 	tools := []map[string]interface{}{
 		toolDef("bash", "shell", nil, nil),
 		toolDef("read_file", "read", nil, nil),
 	}
 
+	var hintInjected bool
 	result := (&IMMessageHandler{}).handleAgentLoopTruncatedToolCalls(
 		8,
 		llm.Choice{TruncatedToolNames: []string{"bash"}},
@@ -523,17 +524,23 @@ func TestRepeatedEssentialTruncationFallsThroughAfterOneHint(t *testing.T) {
 		nil,
 		tools,
 		nil,
-		func(int, []interface{}) { t.Fatal("second essential truncation should not inject another hint") },
+		func(int, []interface{}) { hintInjected = true },
 	)
 
-	if result.ContinueLoop {
-		t.Fatal("expected repeated essential truncation to fall through to no-tool recovery instead of looping")
+	if !result.ContinueLoop {
+		t.Fatal("expected loop to continue after blocking essential tool (forcing alternative path)")
 	}
-	if phase.TruncationBlockedTools["bash"] {
-		t.Fatalf("bash should remain unblocked: %#v", phase.TruncationBlockedTools)
+	if !phase.TruncationBlockedTools["bash"] {
+		t.Fatalf("bash should be blocked after essential hints exhausted: %#v", phase.TruncationBlockedTools)
 	}
-	if len(result.Tools) != len(tools) {
-		t.Fatalf("tools changed unexpectedly: %#v", result.Tools)
+	if !hintInjected {
+		t.Fatal("expected system hint to be injected guiding LLM to use alternative")
+	}
+	// Verify bash was removed from tool list
+	for _, td := range result.Tools {
+		if tool.ExtractToolName(td) == "bash" {
+			t.Fatal("bash should be removed from tools after blocking")
+		}
 	}
 }
 

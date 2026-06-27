@@ -70,68 +70,27 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	willCompact := len(history) > dynamicLimit ||
 		(dynamicTokenLimit > 0 && estimateConversationEntryTokens(history) > dynamicTokenLimit)
 
-	// Build optional callbacks only when trimming will actually occur.
-	var memorySink func(string, []string)
+	// Collect dropped substantial texts for async memory sink (not on critical path).
+	// The memorySink callback collects texts during trimHistoryWithSummary, but
+	// the actual file I/O + Store.mu write happens AFTER response is returned.
+	type droppedText struct {
+		Content string
+		Tags    []string
+	}
+	var droppedTexts []droppedText
+	var memorySinkCollector func(string, []string)
 
-	if willCompact {
-		// Memory sink for substantial dropped assistant messages (Phase 1 supplement).
-		if h.memoryStore != nil {
-			memorySink = func(content string, tags []string) {
-				preview := memoryRefPreview(content)
-				if preview == "" {
-					return
-				}
-
-				// Derive title from first meaningful line of the dropped content.
-				title := ""
-				for _, line := range strings.SplitN(preview, "\n", 10) {
-					line = strings.TrimSpace(line)
-					if line != "" && !strings.HasPrefix(line, "#") {
-						if runes := []rune(line); len(runes) > 60 {
-							title = string(runes[:60]) + "..."
-						} else {
-							title = line
-						}
-						break
-					}
-				}
-
-				refPath, err := writeMemoryRefFile(h.memoryStore.Path(), userID, "conversation_trim", content, time.Now())
-				if err != nil {
-					log.Printf("[compaction] failed to write memory ref for user=%s: %v", userID, err)
-				}
-				entryTags := append([]string{}, tags...)
-				if refPath != "" {
-					entryTags = append(entryTags, "source_ref")
-				}
-				identityTagCount := len(entryTags)
-				if refPath != "" {
-					entryTags = append(entryTags, "ref:"+refPath)
-					identityTagCount = len(entryTags)
-				}
-				_, err = h.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
-					Title:            title,
-					Content:          preview,
-					Tags:             entryTags,
-					IdentityTagCount: identityTagCount,
-					OwnerID:          userID,
-					SourceType:       "conversation_trim_ref",
-					SourceURL:        refPath,
-				})
-				if err == nil && h.app != nil {
-					h.app.triggerMemoryPipelineSoon(45 * time.Second)
-				}
-			}
+	if willCompact && h.memoryStore != nil {
+		memorySinkCollector = func(content string, tags []string) {
+			droppedTexts = append(droppedTexts, droppedText{Content: content, Tags: tags})
 		}
 	}
 
 	beforeCount := len(history)
 	// Compaction: trim without LLM summarizer (fast, <1ms). Uses static
-	// placeholder for dropped entries. The LLM summary was previously done
-	// synchronously (6.5s blocking), but its value is marginal - the static
-	// placeholder is functionally equivalent for the LLM's next turn.
-	// Removing the summarizer from the critical path saves 6.5s per compaction.
-	trimmed := trimHistoryWithSummary(history, nil, memorySink, dynamicLimit, dynamicTokenLimit)
+	// placeholder for dropped entries. memorySinkCollector only collects
+	// texts into a slice (no I/O, no locks) — actual persistence is async.
+	trimmed := trimHistoryWithSummary(history, nil, memorySinkCollector, dynamicLimit, dynamicTokenLimit)
 	h.memory.Save(userID, trimmed)
 
 	// Index compacted entries for cross-page recall (Requirement 7).
@@ -183,6 +142,63 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	if requestID == "" {
 		requestID = h.activePostConversationRequestID(userID)
 	}
+
+	// Process dropped texts asynchronously — file I/O + Store.mu writes
+	// happen off the critical path so they never block response return.
+	if len(droppedTexts) > 0 && h.memoryStore != nil {
+		capturedUserID := userID
+		capturedTexts := droppedTexts
+		capturedStore := h.memoryStore
+		capturedApp := h.app
+		go func() {
+			for _, dt := range capturedTexts {
+				preview := memoryRefPreview(dt.Content)
+				if preview == "" {
+					continue
+				}
+				title := ""
+				for _, line := range strings.SplitN(preview, "\n", 10) {
+					line = strings.TrimSpace(line)
+					if line != "" && !strings.HasPrefix(line, "#") {
+						if runes := []rune(line); len(runes) > 60 {
+							title = string(runes[:60]) + "..."
+						} else {
+							title = line
+						}
+						break
+					}
+				}
+				refPath, err := writeMemoryRefFile(capturedStore.Path(), capturedUserID, "conversation_trim", dt.Content, time.Now())
+				if err != nil {
+					log.Printf("[compaction-async] failed to write memory ref for user=%s: %v", capturedUserID, err)
+					continue
+				}
+				entryTags := append([]string{}, dt.Tags...)
+				if refPath != "" {
+					entryTags = append(entryTags, "source_ref")
+				}
+				identityTagCount := len(entryTags)
+				if refPath != "" {
+					entryTags = append(entryTags, "ref:"+refPath)
+					identityTagCount = len(entryTags)
+				}
+				_, err = capturedStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
+					Title:            title,
+					Content:          preview,
+					Tags:             entryTags,
+					IdentityTagCount: identityTagCount,
+					OwnerID:          capturedUserID,
+					SourceType:       "conversation_trim_ref",
+					SourceURL:        refPath,
+				})
+				if err == nil && capturedApp != nil {
+					capturedApp.triggerMemoryPipelineSoon(45 * time.Second)
+				}
+			}
+			log.Printf("[compaction-async] processed %d dropped texts for user=%s", len(capturedTexts), capturedUserID)
+		}()
+	}
+
 	h.schedulePostConversationProcessingWithRequestID(userID, requestID, trimmed)
 }
 

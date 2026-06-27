@@ -27,17 +27,18 @@ import (
 	"time"
 )
 
-// scopeApprovalTimeout is the maximum time to wait for user response.
-// After this, access is automatically denied to prevent goroutine leak.
-const scopeApprovalTimeout = 60 * time.Second
+// scopeApprovalTimeout is the countdown before auto-allowing.
+// 10 seconds: short enough to not block SubAgent, long enough for user to read and reject if needed.
+const scopeApprovalTimeout = 10 * time.Second
 
 // ScopeApprovalDecision is the user's response to a scope violation prompt.
 type ScopeApprovalDecision string
 
 const (
-	ScopeApprovalDeny          ScopeApprovalDecision = "deny"
-	ScopeApprovalAllowOnce     ScopeApprovalDecision = "allow_once"
-	ScopeApprovalAllowDir      ScopeApprovalDecision = "allow_dir"
+	ScopeApprovalDeny       ScopeApprovalDecision = "deny"
+	ScopeApprovalAllowOnce  ScopeApprovalDecision = "allow_once"
+	ScopeApprovalAllowDir   ScopeApprovalDecision = "allow_dir"
+	ScopeApprovalFullAccess ScopeApprovalDecision = "full_access"
 )
 
 // ScopeApprovalRequest is sent to the user when an out-of-scope access is detected.
@@ -57,15 +58,18 @@ type ScopeApprovalCallback func(req ScopeApprovalRequest) ScopeApprovalDecision
 // scopeApprovalState tracks approved directories and pending decisions
 // for a single SubAgent task execution.
 type scopeApprovalState struct {
-	mu               sync.Mutex
-	approvedDirs     map[string]bool       // directories approved with "allow_dir" (case-insensitive keys on Windows)
-	onScopeApproval  ScopeApprovalCallback // nil = hard reject (legacy behavior)
+	mu              sync.Mutex
+	fullAccess      bool                  // when true, all paths are allowed without prompting (persistent across app restarts via config)
+	approvedDirs    map[string]bool       // directories approved with "allow_dir" (case-insensitive keys on Windows)
+	onScopeApproval ScopeApprovalCallback // nil = hard reject (legacy behavior)
 }
 
 // newScopeApprovalState creates a new approval state.
 // If callback is nil, all out-of-scope access is hard-rejected (backward compatible).
-func newScopeApprovalState(callback ScopeApprovalCallback) *scopeApprovalState {
+// If fullAccess is true, all scope checks pass immediately (user previously granted full access).
+func newScopeApprovalState(callback ScopeApprovalCallback, fullAccess bool) *scopeApprovalState {
 	return &scopeApprovalState{
+		fullAccess:      fullAccess,
 		approvedDirs:    make(map[string]bool),
 		onScopeApproval: callback,
 	}
@@ -84,6 +88,14 @@ func (s *scopeApprovalState) check(toolName, path, projectPath string) string {
 		// No approval state = hard reject (legacy behavior).
 		return formatScopeRejection(toolName, path, projectPath)
 	}
+
+	// Full access granted — skip all scope checks.
+	s.mu.Lock()
+	if s.fullAccess {
+		s.mu.Unlock()
+		return ""
+	}
+	s.mu.Unlock()
 
 	// Normalize the path for directory lookup.
 	absPath, err := filepath.Abs(path)
@@ -115,7 +127,10 @@ func (s *scopeApprovalState) check(toolName, path, projectPath string) string {
 		return "" // allow this single call
 	case ScopeApprovalAllowDir:
 		s.approveDir(dir)
-		return "" // allow and remember
+		return "" // allow and remember for this task
+	case ScopeApprovalFullAccess:
+		s.grantFullAccess()
+		return "" // allow everything permanently (persisted by callback layer)
 	default:
 		return formatScopeRejection(toolName, path, projectPath)
 	}
@@ -151,6 +166,14 @@ func (s *scopeApprovalState) approveDir(dir string) {
 	s.approvedDirs[strings.ToLower(absDir)] = true
 }
 
+// grantFullAccess permanently disables scope checking for this SubAgent
+// and all future SubAgent instances (persisted via onFullAccessGranted callback).
+func (s *scopeApprovalState) grantFullAccess() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fullAccess = true
+}
+
 // formatScopeRejection generates the rejection message shown to the LLM.
 func formatScopeRejection(toolName, path, projectPath string) string {
 	switch toolName {
@@ -164,7 +187,6 @@ func formatScopeRejection(toolName, path, projectPath string) string {
 		return fmt.Sprintf("\u62d2\u7edd\u4fee\u6539\u9879\u76ee\u76ee\u5f55\u5916\u7684\u6587\u4ef6\uff1a%s\u3002\u7f16\u7801 SubAgent \u53ea\u80fd\u4fee\u6539\u9879\u76ee\u8def\u5f84 %s \u5185\u7684\u6587\u4ef6\u3002", path, projectPath)
 	}
 }
-
 
 // buildSubAgentScopeApprovalCallback creates a ScopeApprovalCallback that
 // uses the GUI's event system to ask the user for approval.
@@ -193,15 +215,20 @@ func buildSubAgentScopeApprovalCallback(handler *IMMessageHandler, loopCtx *Loop
 			emitScopeApprovalEvent(handler.app, approvalID, req)
 		}
 
-		// Timeout: if user doesn't respond within 60 seconds, deny automatically.
-		// This prevents permanent goroutine leak when frontend is unavailable.
+		// Timeout: if user doesn't respond within the countdown, allow automatically.
+		// Rationale: user launched SubAgent intentionally; most scope violations are
+		// legitimate (task references files outside the declared workspace). The dialog
+		// serves as a notification + opt-out, not a blocker.
 		timeout := time.NewTimer(scopeApprovalTimeout)
 		defer timeout.Stop()
 
-		// Block until response, cancellation, or timeout.
+		// Block until response, cancellation, or timeout (auto-allow).
 		if loopCtx != nil {
 			select {
 			case decision := <-responseCh:
+				if decision == ScopeApprovalFullAccess && handler != nil && handler.app != nil {
+					handler.app.persistSubAgentFullAccess()
+				}
 				return decision
 			case <-loopCtx.CancelC:
 				pendingScopeApprovals.Delete(approvalID)
@@ -209,18 +236,21 @@ func buildSubAgentScopeApprovalCallback(handler *IMMessageHandler, loopCtx *Loop
 			case <-timeout.C:
 				pendingScopeApprovals.Delete(approvalID)
 				if onProgress != nil {
-					onProgress("\u26a0\ufe0f \u76ee\u5f55\u8d8a\u6743\u786e\u8ba4\u8d85\u65f6\uff0c\u81ea\u52a8\u62d2\u7edd")
+					onProgress(fmt.Sprintf("\u26a0\ufe0f \u76ee\u5f55\u8d8a\u6743\u786e\u8ba4\u8d85\u65f6\uff0c\u81ea\u52a8\u5141\u8bb8\u76ee\u5f55: %s", req.Directory))
 				}
-				return ScopeApprovalDeny
+				return ScopeApprovalAllowDir
 			}
 		}
 		// No loopCtx — wait with timeout only.
 		select {
 		case decision := <-responseCh:
+			if decision == ScopeApprovalFullAccess && handler != nil && handler.app != nil {
+				handler.app.persistSubAgentFullAccess()
+			}
 			return decision
 		case <-timeout.C:
 			pendingScopeApprovals.Delete(approvalID)
-			return ScopeApprovalDeny
+			return ScopeApprovalAllowDir
 		}
 	}
 }
@@ -233,7 +263,7 @@ type pendingScopeApproval struct {
 }
 
 var (
-	pendingScopeApprovals   sync.Map // approvalID → *pendingScopeApproval
+	pendingScopeApprovals  sync.Map // approvalID → *pendingScopeApproval
 	scopeApprovalIDCounter uint64
 )
 
@@ -262,6 +292,8 @@ func ResolveScopeApproval(approvalID string, decision string) {
 		d = ScopeApprovalAllowOnce
 	case "allow_dir", "allowdir", "allow dir", "allow directory":
 		d = ScopeApprovalAllowDir
+	case "full_access", "fullaccess", "full access":
+		d = ScopeApprovalFullAccess
 	default:
 		d = ScopeApprovalDeny
 	}
@@ -277,11 +309,36 @@ func emitScopeApprovalEvent(app *App, approvalID string, req ScopeApprovalReques
 	if app == nil {
 		return
 	}
-	app.emitEvent("subagent-scope-approval", map[string]string{
-		"id":           approvalID,
-		"tool":         req.ToolName,
-		"path":         req.Path,
-		"project_path": req.ProjectPath,
-		"directory":    req.Directory,
+	app.emitEvent("subagent-scope-approval", map[string]interface{}{
+		"id":              approvalID,
+		"tool":            req.ToolName,
+		"path":            req.Path,
+		"project_path":    req.ProjectPath,
+		"directory":       req.Directory,
+		"timeout_seconds": int(scopeApprovalTimeout / time.Second),
+	})
+}
+
+// isSubAgentFullAccessGranted checks if the user has permanently granted
+// full filesystem access to CodingSubAgent (persisted in AppConfig).
+func (a *App) isSubAgentFullAccessGranted() bool {
+	if a == nil {
+		return false
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return false
+	}
+	return cfg.SubAgentFullAccess
+}
+
+// persistSubAgentFullAccess saves the full-access grant to config so it
+// survives app restarts.
+func (a *App) persistSubAgentFullAccess() {
+	if a == nil {
+		return
+	}
+	a.PatchConfigFields(map[string]interface{}{
+		"subagent_full_access": true,
 	})
 }

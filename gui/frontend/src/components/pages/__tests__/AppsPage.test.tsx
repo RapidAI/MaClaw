@@ -1419,6 +1419,12 @@ describe('AppsPage', () => {
                 },
                 resultContract: { schema: 'maclaw.app.result.v1', primary: 'business_status', types: ['business_status', 'business_record', 'content'], delivery: { inlineContent: true, artifacts: false, businessRecord: true, notifications: false } },
             },
+            installEvidence: {
+                dependency_verification: {
+                    schema: 'maclaw.app.install_plan.v1',
+                    dependencies: [{ id: 'customer-renewal-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: ['publish-enterprise-ui-app'] }],
+                },
+            },
         };
         window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
         seedSuccessfulLocalAppRun(app, {
@@ -1726,6 +1732,12 @@ describe('AppsPage', () => {
                 },
                 resultContract: { schema: 'maclaw.app.result.v1', primary: 'business_status', types: ['business_status', 'business_record', 'content'], delivery: { inlineContent: true, artifacts: false, businessRecord: true, notifications: false } },
             },
+            installEvidence: {
+                dependency_verification: {
+                    schema: 'maclaw.app.install_plan.v1',
+                    dependencies: [{ id: 'customer-renewal-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: ['publish-enterprise-ui-app'] }],
+                },
+            },
         };
         window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
         seedSuccessfulLocalAppRun(app, {
@@ -1749,10 +1761,13 @@ describe('AppsPage', () => {
         });
         planMaclawAppInstallMock.mockResolvedValueOnce({
             schema: 'maclaw.app.install_plan.v1',
-            apps: [{ id: app.id, name: app.name, kind: app.kind }],
-            dependencies: [{ id: 'customer-renewal-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: [app.id] }],
+            apps: [{ id: app.id, name: app.name, kind: app.kind }, { id: 'other-blocked-app', name: 'Other blocked app', kind: 'tool_app' }],
+            dependencies: [
+                { id: 'customer-renewal-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: [app.id] },
+                { id: 'other-blocked-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', installed: false, health: 'missing', action: 'blocked', app_ids: ['other-blocked-app'] },
+            ],
             has_missing_required: false,
-            has_blocking_dependency: false,
+            has_blocking_dependency: true,
             has_governance_review_issue: false,
         });
         const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'market-enterprise-ui', submitted_at: '2026-06-17T01:00:00.000Z', status: 'submitted', message: 'queued' });
@@ -1764,6 +1779,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('审核/发布'));
         const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('客户续约工作台')) as HTMLElement;
         expect(card).toBeTruthy();
+        expect(within(card).getByText('customer-renewal-skill@1.0.0 (runtime_skill, ready)')).not.toBeNull();
         fireEvent.click(within(card).getByText('提交审核'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
@@ -1773,13 +1789,17 @@ describe('AppsPage', () => {
         expect(layout.navigation).toEqual(['customers', 'renewals']);
         expect(layout.list.columns).toEqual(['customer_name', 'status', 'updated_at']);
         expect(payload.apps[0].app.governance.resultContract.primary).toBe('business_status');
+        expect(payload.apps[0].app.governance.dependencies.skills[0]).toEqual(expect.objectContaining({ id: 'customer-renewal-skill', installed: true, health: 'ready', action: 'skip' }));
         const dependencyVerification = payload.apps[0].app.governance.dependencyVerification;
         expect(dependencyVerification.schema).toBe('maclaw.app.install_plan.v1');
+        expect(dependencyVerification.appCount).toBe(1);
         expect(dependencyVerification.dependencyCount).toBe(1);
         expect(dependencyVerification.hasMissingRequired).toBe(false);
+        expect(dependencyVerification.hasBlockingDependency).toBe(false);
         expect(dependencyVerification.hasGovernanceReviewIssue).toBe(false);
         expect(dependencyVerification.governanceReviewIssueCount).toBe(0);
         expect(dependencyVerification.dependencies[0]).toEqual(expect.objectContaining({ id: 'customer-renewal-skill', installed: true, health: 'ready' }));
+        expect(JSON.stringify(dependencyVerification)).not.toContain('other-blocked-skill');
         const evidence = payload.apps[0].app.governance.testEvidence;
         expect(evidence.outputCount).toBe(1);
         expect(evidence.resultPayload.business_record).toEqual({ id: 'customer-1', status: 'renewal_ready' });
@@ -3122,7 +3142,14 @@ describe('AppsPage', () => {
                     business_status: 'pending_payment',
                     result_status: 'approved',
                     business_record: { id: 'exp-1', status: 'pending_payment' },
-                    current_node: 'expense.result_feedback',
+                    approval_instance: {
+                        record_id: 'exp-1',
+                        current_node: 'expense.result_feedback',
+                        business_status: 'pending_payment',
+                        result_status: 'approved',
+                    },
+                    outputs: [{ kind: 'notification', title: 'Nested notice', text: 'Finance notified', status: 'ready' }],
+                    artifacts: [{ id: 'artifact-nested', uri: 'artifact://skill-run/run-test-1/artifact-nested', name: 'nested-result.zip', status: 'ready' }],
                     text: 'approved with note',
                 }),
             },
@@ -3186,9 +3213,12 @@ describe('AppsPage', () => {
         expect(completedPayload.record_id).toBe('exp-1');
         expect(completedPayload.dataset_id).toBe('finance.expenses');
         expect(completedPayload.object_role).toBe('expense_report');
+        expect(completedPayload.current_node).toBe('expense.result_feedback');
         expect(completedPayload.result_payload.business_record).toEqual({ id: 'exp-1', status: 'pending_payment' });
-        expect(completedPayload.outputs).toHaveLength(2);
+        expect(completedPayload.outputs).toHaveLength(3);
+        expect(completedPayload.outputs).toEqual(expect.arrayContaining([expect.objectContaining({ title: 'Nested notice', text: 'Finance notified' })]));
         expect(completedPayload.artifacts[0].name).toBe('approval.pdf');
+        expect(completedPayload.artifacts).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'nested-result.zip' })]));
         expect(completedPayload.events.map((event: any) => event.action)).toContain('workflow_completed');
         await waitFor(() => {
             const history = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
@@ -3217,7 +3247,8 @@ describe('AppsPage', () => {
         await waitFor(() => expect(syncMaclawAppApprovalInstanceToDataSrvMock).toHaveBeenCalledTimes(2));
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].dataset_id).toBe('finance.expenses');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].object_role).toBe('expense_report');
-        expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].record_id).toBe('appr-test-1');
+        expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].record_id).toMatch(/^appr-/);
+        expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].instance.record_id).toBe(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].record_id);
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].instance.workflow_version).toBe('1.0.0');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].instance.approval_workflow_id).toBe('expense.submitted');
         expect(syncMaclawAppApprovalInstanceToDataSrvMock.mock.calls[0][0].instance.current_assignee).toBe('\u5ba1\u6279\u4eba');
@@ -4042,6 +4073,20 @@ describe('AppsPage', () => {
             app_id: 'skill-app-disabled-runtime-tool-runtime-dep-tool',
             app_kind: 'tool_app',
         })));
+        await waitFor(() => {
+            const history = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
+            const entry = history['skill-app-disabled-runtime-tool-runtime-dep-tool']?.find((item) => item.runID === 'run-test-1');
+            expect(entry?.dependencyVerification).toMatchObject({
+                schema: 'maclaw.app.install_plan.v1',
+                hasMissingRequired: false,
+                hasBlockingDependency: false,
+            });
+            expect(entry?.dependencyVerification?.dependencies?.[0]).toMatchObject({
+                id: 'disabled-runtime-tool',
+                installed: true,
+                action: 'installed',
+            });
+        });
     });
     it('blocks approval app runs when the workflow contract plan reports drift', async () => {
         const app = {
@@ -5311,6 +5356,65 @@ describe('AppsPage', () => {
         expect(runtimeLayout.dataset.outputRegion).toBe('bottom');
     });
 
+    it('invalidates installed evidence snapshots when visual layout edits change the app definition', async () => {
+        const staleApp = {
+            id: 'editable-evidence-app',
+            name: 'Editable Evidence App',
+            description: 'Has stale install evidence',
+            category: 'Finance',
+            kind: 'enterprise_approval_app',
+            icon: 'receipt',
+            accent: '#2f5f98',
+            version: 2,
+            source: 'local',
+            importedRunEvidence: { runID: 'run-old', status: 'done', definitionHash: 'old-definition', outputMode: 'approval', inputSummary: 'old', at: '2026-06-20T00:00:00Z' },
+            versionSnapshot: { app_entry_version: '2', workflow_skills: [{ id: 'old-flow', version: '1.0.0', kind: 'workflow_skill', source: 'hub' }] },
+            installEvidence: {
+                schema: 'maclaw.app.install_record.v1',
+                apps: [{ id: 'editable-evidence-app', name: 'Editable Evidence App', kind: 'enterprise_approval_app' }],
+                dependency_verification: { schema: 'maclaw.app.install_plan.v1', dependencies: [{ id: 'old-flow', kind: 'workflow_skill', required: true, installed: true, health: 'ready' }] },
+            },
+            workflowContract: { schema: 'maclaw.app.workflow_contract.v1', workflowSkillId: 'old-flow', workflowVersion: '1.0.0', objectRole: 'old_record', requiredInputs: ['old'], decisionOutputs: ['approved'], statusMapping: { pending: 'old_pending', approved: 'old_approved', rejected: 'old_rejected', attention: 'old_attention' } },
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_approval_app',
+                launchMode: 'agent_dynamic_ui',
+                appSkill: { id: 'expense-app-skill', version: '1.0.0', source: 'hub' },
+                dependencies: { skills: [{ id: 'expense-flow', version: '2.0.0', kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }] },
+                datasrv: { domain: 'finance', datasetID: 'finance.expenses', objectRole: 'expense_report' },
+                mis: { approvalBindings: [{ event: 'expense.submitted', workflowSkillId: 'expense-flow', workflowVersion: '2.0.0', objectRole: 'expense_report' }] },
+                ui: { schema: 'maclaw.app.ui.v1', generated: true, entry: 'approval_workspace', layouts: { approval_workspace: { template: 'classic_split', density: 'comfortable', primaryRegion: 'left', outputRegion: 'right', regions: [{ id: 'request_form', role: 'input', placement: 'left' }, { id: 'approval_inbox', role: 'instance_list', placement: 'center' }, { id: 'result_panel', role: 'output', placement: 'right' }], studio: { savedInManifest: true } } } },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [staleApp.id], customApps: [staleApp], recentUsedAtById: {} }));
+
+        render(<AppsPage lang="en" />);
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Manage apps'));
+
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Editable Evidence App')) as HTMLElement;
+        fireEvent.click(within(row).getByRole('button', { name: 'Edit' }));
+        const dialog = screen.getByRole('dialog');
+        fireEvent.click(within(dialog).getByTestId('edit-layout-template-dashboard'));
+        fireEvent.click(within(dialog).getByTestId('edit-layout-output-bottom'));
+        fireEvent.click(within(dialog).getByText('Save'));
+
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        await waitFor(() => {
+            const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
+            const edited = stored.customApps.find((app: any) => app.id === 'editable-evidence-app');
+            expect(edited.version).toBe(3);
+            expect(edited.importedRunEvidence).toBeUndefined();
+            expect(edited.versionSnapshot).toBeUndefined();
+            expect(edited.installEvidence).toBeUndefined();
+            expect(edited.workflowContract).toBeUndefined();
+            expect(edited.manifest.ui.layouts.approval_workspace.template).toBe('dashboard');
+            expect(edited.manifest.ui.layouts.approval_workspace.outputRegion).toBe('bottom');
+        });
+    });
+
     it('edits approval workflow node mappings visually and persists them', async () => {
         const app = {
             id: 'editable-approval-nodes',
@@ -6348,6 +6452,75 @@ describe('AppsPage', () => {
         expect(screen.getByText('Installed: 1 · Skipped: 1')).not.toBeNull();
     });
 
+    it('scopes pasted pack dependency verification to selected apps', async () => {
+        planMaclawAppInstallMock.mockResolvedValue({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [
+                { id: 'pack-unselected-ready-scope', name: 'Unselected Scoped App', kind: 'tool_app' },
+                { id: 'pack-kept-ready-scope', name: 'Kept Scoped App', kind: 'tool_app' },
+            ],
+            dependencies: [
+                { id: 'unselected-scope-skill', kind: 'runtime_skill', source: 'hub', required: true, installed: false, health: 'missing', action: 'blocked', app_ids: ['pack-unselected-ready-scope'] },
+                { id: 'kept-scope-skill', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'skip', app_ids: ['pack-kept-ready-scope'] },
+            ],
+            has_missing_required: true,
+            has_blocking_dependency: true,
+        });
+
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Add from market'));
+        fireEvent.click(await screen.findByText('Import app package'));
+        fireEvent.change(screen.getByPlaceholderText('Paste app package JSON (maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json)'), {
+            target: {
+                value: JSON.stringify({
+                    schema: 'maclaw.app.pack.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    apps: [
+                        {
+                            schema: 'maclaw.app.v1',
+                            privateMarker: 'x_maclaw_apps',
+                            installUnit: 'skill',
+                            app: {
+                                id: 'pack-unselected-ready-scope',
+                                name: 'Unselected Scoped App',
+                                description: 'Missing dependency should not block after deselect',
+                                category: 'Legal',
+                                kind: 'tool_app',
+                                icon: 'contract',
+                                launchMode: 'fixed_skill_ui',
+                                binding: { skill: { id: 'unselected-scope-skill', appDefinitionFile: 'maclaw.apps.json', inputMode: 'file' } },
+                            },
+                        },
+                        {
+                            schema: 'maclaw.app.v1',
+                            privateMarker: 'x_maclaw_apps',
+                            installUnit: 'skill',
+                            app: {
+                                id: 'pack-kept-ready-scope',
+                                name: 'Kept Scoped App',
+                                description: 'Dependency is ready',
+                                category: 'Legal',
+                                kind: 'tool_app',
+                                icon: 'sheet',
+                                launchMode: 'fixed_skill_ui',
+                                binding: { skill: { id: 'kept-scope-skill', appDefinitionFile: 'maclaw.apps.json', inputMode: 'file' } },
+                            },
+                        },
+                    ],
+                }),
+            },
+        });
+
+        await waitFor(() => expect(screen.getByText('Required Skill dependencies are missing or unavailable. Install or enable them first.')).not.toBeNull());
+        const preview = document.querySelector('.apps-install-preview') as HTMLElement;
+        fireEvent.click(within(preview).getByRole('checkbox', { name: 'Unselected Scoped App · Will install' }));
+
+        await waitFor(() => expect(within(preview).getByText('Dependency verification complete')).not.toBeNull());
+        expect(within(preview).queryByText('Dependency verification found blocking items')).toBeNull();
+    });
+
     it('does not bypass dependency installation when market preview plan is still loading', async () => {
         const selectedPlan = {
             schema: 'maclaw.app.install_plan.v1',
@@ -6465,7 +6638,86 @@ describe('AppsPage', () => {
         expect(within(evidenceSnapshot).getByText('Result contract')).not.toBeNull();
         expect(within(evidenceSnapshot).getByText('artifact · 2 types')).not.toBeNull();
         expect(within(evidenceSnapshot).getByText('run-contract-archive · proto-contract-archive')).not.toBeNull();
+        await waitFor(() => {
+            const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
+            const installed = (stored.customApps || []).find((item: any) => item.id === 'market-contract-archive');
+            expect(installed?.installEvidence?.test_evidence?.runId).toBe('run-contract-archive');
+            expect(installed?.installEvidence?.dependencies?.[0]?.id).toBe('contract-archive-skill');
+        });
+        fireEvent.click(screen.getByText('Close'));
+        fireEvent.click(screen.getAllByText('合同归档')[0]);
+        await waitFor(() => expect(screen.getAllByText('Dependency verification complete').length).toBeGreaterThan(0));
+        expect(screen.getAllByText('contract-archive-skill').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('run-contract-archive · proto-contract-archive').length).toBeGreaterThan(0);
         expect(recordMaclawAppInstallMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('restores dynamic layout and install evidence from stored app entries after cold start', async () => {
+        const app = {
+            id: 'cold-start-layout-app',
+            name: 'Cold Start Console',
+            description: 'Restored local app',
+            category: 'Tools',
+            kind: 'tool_app',
+            icon: 'pdf',
+            accent: '#28705f',
+            version: 4,
+            source: 'market',
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'tool_app',
+                launchMode: 'agent_dynamic_ui',
+                dependencies: { skills: [{ id: 'cold-layout-skill', version: '1.2.0', kind: 'runtime_skill', required: true, source: 'hub' }] },
+                ui: {
+                    schema: 'maclaw.app.ui.v1',
+                    generated: true,
+                    entry: 'tool_workspace',
+                    layouts: {
+                        tool_workspace: {
+                            template: 'dashboard',
+                            density: 'compact',
+                            primaryRegion: 'right',
+                            outputRegion: 'bottom',
+                            regions: [
+                                { id: 'settings_panel', role: 'parameters', placement: 'right' },
+                                { id: 'preview_panel', role: 'preview', placement: 'center' },
+                                { id: 'output_panel', role: 'output', placement: 'bottom' },
+                            ],
+                            studio: { editable: true, savedInManifest: true, updatedBy: 'app_studio' },
+                        },
+                    },
+                },
+            },
+            versionSnapshot: {
+                app_entry_version: '4',
+                app_skill: { id: 'cold-layout-skill', version: '1.2.0', kind: 'app_skill', source: 'hub' },
+            },
+            installEvidence: {
+                workspace_layout: { entry: 'tool_workspace', template: 'dashboard', density: 'compact' },
+                result_contract: { primary: 'content', types: ['content'] },
+                test_evidence: { runId: 'run-cold-start', testProtocolFingerprint: 'proto-cold-start' },
+                dependency_verification: {
+                    schema: 'maclaw.app.install_plan.v1',
+                    apps: [{ id: 'cold-start-layout-app', name: 'Cold Start Console', kind: 'tool_app' }],
+                    dependencies: [{ id: 'cold-layout-skill', version: '1.2.0', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'skip', app_ids: ['cold-start-layout-app'] }],
+                    has_missing_required: false,
+                    has_blocking_dependency: false,
+                },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+
+        render(<AppsPage lang="en" />);
+
+        await waitFor(() => expect(screen.getAllByText('Cold Start Console').length).toBeGreaterThan(0));
+        fireEvent.click(screen.getAllByText('Cold Start Console')[0]);
+
+        await waitFor(() => expect(screen.getAllByText('Dependency verification complete').length).toBeGreaterThan(0));
+        expect(screen.getAllByText('cold-layout-skill').length).toBeGreaterThan(0);
+        expect(screen.getByText('tool_workspace · dashboard · compact')).not.toBeNull();
+        expect(screen.getByText('run-cold-start · proto-cold-start')).not.toBeNull();
     });
 
     it('shows recent app install records in the market pane', async () => {
@@ -7552,6 +7804,13 @@ describe('AppsPage', () => {
             resultPayload: { business_status: 'renewal_ready', business_record: { id: 'customer-1', status: 'renewal_ready' }, text: 'renewal ready' },
             outputs: [{ kind: 'business_record', title: 'Customer renewal', text: '{"id":"customer-1"}', status: 'ready', data: { id: 'customer-1', status: 'renewal_ready' } }],
         });
+        expect(added.installEvidence).toMatchObject({
+            schema: 'maclaw.app.install_record.v1',
+            apps: [{ id: 'sales.customer.console', name: 'Customer Console Installed', kind: 'enterprise_normal_app' }],
+            version_snapshot: { app_entry_version: '5', app_skill: { id: 'customer-console-skill', version: '2.0.0', kind: 'app_skill', source: 'hub' } },
+            result_contract: { primary: 'business_status', types: ['business_status', 'business_record', 'content'] },
+            test_evidence: { run_id: 'run-customer-imported', definition_hash: 'sha256:customer-console', test_protocol_fingerprint: 'proto-customer' },
+        });
     });
 
     it('turns DataSrv installed MaClaw apps into addable app candidates with layout metadata', async () => {
@@ -7668,6 +7927,8 @@ describe('AppsPage', () => {
                         test_evidence_workflow_contract_issue_count: 0,
                         test_evidence_governance_review_issue: false,
                         test_evidence_governance_review_issue_count: 0,
+                        has_missing_required_dependency: true,
+                        has_blocking_dependency: true,
                         dependencies: [{ id: 'expense-workflow', kind: 'workflow_skill', required: true, source: 'hub' }],
                     },
                 }],
@@ -7729,6 +7990,19 @@ describe('AppsPage', () => {
             workflow_skills: [{ id: 'expense-workflow', version: '2.1.0', kind: 'workflow_skill', source: 'hub' }],
             approval_bindings: [{ event: 'expense.submitted', object_role: 'expense_report', workflow_skill_id: 'expense-workflow', workflow_version: '2.1.0' }],
         });
+        expect(added.installEvidence).toMatchObject({
+            schema: 'maclaw.app.install_record.v1',
+            apps: [{ id: 'mis.expense', name: 'Expense Approval Installed', kind: 'enterprise_approval_app' }],
+            version_snapshot: { app_entry_version: '3' },
+            workspace_layout: { entry: 'approval_workspace', template: 'dashboard', density: 'spacious' },
+            result_contract: { primary: 'approval_result', types: ['approval_result', 'business_status', 'artifact', 'notification'] },
+            workflow_contract: { workflowSkillId: 'expense-workflow', workflowVersion: '2.1.0', objectRole: 'expense_report' },
+            test_evidence: { run_id: 'run-expense-imported', definition_fingerprint: 'sha256:expense-app', test_protocol_fingerprint: 'proto-expense' },
+            dependency_verification: { schema: 'maclaw.app.install_plan.v1', dependency_count: 1, has_blocking_dependency: false },
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        });
+        expect(added.installEvidence.dependencies[0]).toMatchObject({ id: 'expense-workflow', installed: true, health: 'ready' });
         expect(added.manifest.ui.layouts.approval_workspace.template).toBe('dashboard');
         expect(added.manifest.ui.layouts.approval_workspace.density).toBe('spacious');
         expect(added.manifest.ui.layouts.approval_workspace.primaryRegion).toBe('request_form');
@@ -7776,6 +8050,8 @@ describe('AppsPage', () => {
         expect(added.importedRunEvidence.outputs[0]).toMatchObject({ kind: 'table', title: 'Approval rows', text: 'expense approved' });
 
         fireEvent.click(screen.getByText('Expense Approval Installed'));
+        await waitFor(() => expect(listMaclawAppApprovalInstancesMock).toHaveBeenCalledWith('mis.expense', 'all', 50));
+        expect(listMaclawAppApprovalInstancesMock).not.toHaveBeenCalledWith('datasrv-installed-mis.expense', 'all', 50);
         const runtimeVersionSnapshot = await waitFor(() => {
             const snapshot = document.querySelector('.apps-detail__header .apps-install-version-snapshot') as HTMLElement | null;
             expect(snapshot).not.toBeNull();
@@ -7805,6 +8081,33 @@ describe('AppsPage', () => {
         await waitFor(() => expect(planMaclawAppInstallMock).toHaveBeenCalled());
         const runtimePlanPayload = JSON.parse(planMaclawAppInstallMock.mock.calls.at(-1)?.[0] as string);
         expect(runtimePlanPayload.app.id).toBe('mis.expense');
+        fireEvent.click(screen.getByText('Run'));
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('expense-workflow', expect.objectContaining({ app_id: 'mis.expense' })));
+        const workflowPayload = runNLSkillAsyncMock.mock.calls.at(-1)?.[1];
+        expect(workflowPayload.record_ref).toMatchObject({
+            app_id: 'mis.expense',
+            dataset_id: 'finance.expense_forms',
+            object_role: 'expense_report',
+            blueprint_id: 'mis.expense.approval',
+        });
+        expect(workflowPayload.applicant).toMatchObject({ id: 'current-user', type: 'user' });
+        expect(workflowPayload.business_payload).toMatchObject({
+            app_id: 'mis.expense',
+            business_entity: added.category,
+            business_action: 'create',
+            dataset_id: 'finance.expense_forms',
+            object_role: 'expense_report',
+        });
+        expect(workflowPayload.business_payload.record_ref).toMatchObject({ app_id: 'mis.expense' });
+        expect(workflowPayload.business_payload.applicant).toMatchObject({ id: 'current-user' });
+        expect(workflowPayload.workflow_contract).toMatchObject({
+            workflowSkillId: 'expense-workflow',
+            requiredInputs: ['record_ref', 'applicant', 'business_payload'],
+        });
+        expect(workflowPayload.workflow_required_inputs).toEqual(['record_ref', 'applicant', 'business_payload']);
+        await waitFor(() => expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalledWith(expect.objectContaining({ app_id: 'mis.expense' })));
+        expect(recordMaclawAppApprovalInstanceMock).toHaveBeenCalledWith(expect.objectContaining({ app_id: 'mis.expense', record_id: expect.stringMatching(/^appr-/) }));
+        expect(recordMaclawAppApprovalInstanceMock).not.toHaveBeenCalledWith(expect.objectContaining({ app_id: 'datasrv-installed-mis.expense' }));
     });
     it('blocks DataSrv installed MaClaw apps at runtime when dependency verification fails', async () => {
         getMISDataConfigMock.mockResolvedValue({ enabled: true, endpoint: 'http://datasrv.test', token: 'token' });

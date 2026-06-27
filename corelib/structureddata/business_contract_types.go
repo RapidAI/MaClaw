@@ -143,7 +143,13 @@ type QueryAppInstallationsInput struct {
 	ApprovalDecision             string `json:"approval_decision,omitempty"`
 	ApplicantID                  string `json:"applicant_id,omitempty"`
 	ApproverID                   string `json:"approver_id,omitempty"`
+	ApprovalID                   string `json:"approval_id,omitempty"`
+	WorkflowInstanceID           string `json:"workflow_instance_id,omitempty"`
+	DatasetID                    string `json:"dataset_id,omitempty"`
+	ObjectRole                   string `json:"object_role,omitempty"`
+	RecordID                     string `json:"record_id,omitempty"`
 	ResultType                   string `json:"result_type,omitempty"`
+	DefinitionFingerprint        string `json:"definition_fingerprint,omitempty"`
 	HasBlockingDependency        *bool  `json:"has_blocking_dependency,omitempty"`
 	HasMissingRequiredDependency *bool  `json:"has_missing_required_dependency,omitempty"`
 	Status                       string `json:"status,omitempty"`

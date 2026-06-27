@@ -47,6 +47,7 @@ type LLMProviderRegistry struct {
 	CurrentProviderID        string                             `json:"current_provider_id"`
 	SmartRouteSingleDevice   bool                               `json:"smart_route_single_device"`
 	DownstreamMaxConcurrency int                                `json:"downstream_max_concurrency,omitempty"`
+	UpstreamTimeoutSec       int                                `json:"upstream_timeout_sec,omitempty"`
 	UserRateLimitPerMinute   int                                `json:"user_rate_limit_per_minute,omitempty"`
 	UserRateLimitBurst       int                                `json:"user_rate_limit_burst,omitempty"`
 	Providers                []LLMProvider                      `json:"providers"`
@@ -59,6 +60,9 @@ func normalizeLLMProviderRegistry(reg *LLMProviderRegistry) *LLMProviderRegistry
 	}
 	if reg.DownstreamMaxConcurrency <= 0 {
 		reg.DownstreamMaxConcurrency = DefaultLLMProviderDownstreamMaxConcurrency
+	}
+	if reg.UpstreamTimeoutSec <= 0 {
+		reg.UpstreamTimeoutSec = DefaultLLMProviderUpstreamTimeoutSec
 	}
 	if reg.UserRateLimitPerMinute <= 0 {
 		reg.UserRateLimitPerMinute = DefaultLLMProviderUserRateLimitPerMinute
@@ -84,6 +88,9 @@ func normalizeLLMProviderRegistry(reg *LLMProviderRegistry) *LLMProviderRegistry
 		}
 		if reg.Providers[i].UpstreamTimeoutSec <= 0 {
 			reg.Providers[i].UpstreamTimeoutSec = DefaultLLMProviderUpstreamTimeoutSec
+		}
+		if reg.Providers[i].UpstreamTimeoutSec < 300 {
+			reg.Providers[i].UpstreamTimeoutSec = 300
 		}
 		if reg.Providers[i].CircuitBreakerThreshold <= 0 {
 			reg.Providers[i].CircuitBreakerThreshold = DefaultLLMProviderCircuitBreakerThreshold

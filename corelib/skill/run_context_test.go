@@ -1264,9 +1264,9 @@ func TestBuildCommandEnvDoesNotOverrideRequiredEnvWithPlaceholders(t *testing.T)
 }
 
 func TestRunnerStepTimeoutSecondsParsesAndCapsTimeout(t *testing.T) {
-	got := RunnerStepTimeoutSeconds(map[string]interface{}{"timeout": "700"}, corelib.DefaultAgentTimeoutSec, corelib.MaxAgentTimeoutSec)
-	if got != 600 {
-		t.Fatalf("RunnerStepTimeoutSeconds() = %d, want capped 600", got)
+	got := RunnerStepTimeoutSeconds(map[string]interface{}{"timeout": "1200"}, corelib.DefaultAgentTimeoutSec, corelib.MaxAgentTimeoutSec)
+	if got != 900 {
+		t.Fatalf("RunnerStepTimeoutSeconds() = %d, want capped 900", got)
 	}
 }
 
@@ -1287,7 +1287,7 @@ func TestRunnerStepTimeoutSecondsClampsBelowDefaultTimeout(t *testing.T) {
 func TestRunnerStepTimeoutSecondsCapsGlobalTimeout(t *testing.T) {
 	got := RunnerStepTimeoutSeconds(map[string]interface{}{
 		"timeout":        float64(700),
-		"global_timeout": "900",
+		"global_timeout": "1200",
 	}, corelib.DefaultAgentTimeoutSec, corelib.MaxAgentTimeoutSec)
 	if got != corelib.MaxAgentTimeoutSec {
 		t.Fatalf("RunnerStepTimeoutSeconds() = %d, want capped %d", got, corelib.MaxAgentTimeoutSec)

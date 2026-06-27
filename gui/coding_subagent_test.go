@@ -98,10 +98,16 @@ func TestBuildCodingSubAgentSystemPrompt_Minimal(t *testing.T) {
 	if !strings.Contains(prompt, "verification commands really run/passed") || !strings.Contains(prompt, "no tests found") || !strings.Contains(prompt, "0 tests") {
 		t.Error("prompt should prevent unsupported verification claims and empty-success verification")
 	}
+	if !strings.Contains(prompt, "fresh after the final edit") || !strings.Contains(prompt, "real execution output") || !strings.Contains(prompt, "pass/fail outcome") {
+		t.Error("prompt should require fresh verification with non-empty execution evidence and an outcome")
+	}
+	if !strings.Contains(prompt, "(无输出)") || !strings.Contains(prompt, "no tests collected") || !strings.Contains(prompt, "[no test files]") || !strings.Contains(prompt, "list/help/collect-only/dry-run") {
+		t.Error("prompt should enumerate weak verification outputs that do not count")
+	}
 	if !strings.Contains(prompt, "Tool-call JSON reliability") || !strings.Contains(prompt, "split it into chunks") || !strings.Contains(prompt, `mode="append"`) {
 		t.Error("prompt should instruct subagent to keep tool-call JSON valid and split large write_file content")
 	}
-	if !strings.Contains(prompt, "tool error text as authoritative recovery guidance") || !strings.Contains(prompt, "do not repeat an identical failed tool call") {
+	if !strings.Contains(prompt, "tool error text as authoritative recovery guidance") || !strings.Contains(prompt, "do not repeat an identical failed tool call or command") || !strings.Contains(prompt, "change the approach before retrying") {
 		t.Error("prompt should instruct subagent to recover from tool errors instead of repeating failed calls")
 	}
 	if !strings.Contains(prompt, "unrelated pre-existing errors") || !strings.Contains(prompt, "exact blocker") {
@@ -124,6 +130,12 @@ func TestBuildCodingSubAgentSystemPrompt_Minimal(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "working_dir 必须在项目路径内") {
 		t.Error("prompt should describe bash working directory boundary")
+	}
+	if !strings.Contains(prompt, "timeout/gtimeout") || !strings.Contains(prompt, "cmd /c") || !strings.Contains(prompt, "powershell -Command") || !strings.Contains(prompt, "bash -lc") {
+		t.Error("prompt should identify safe verification wrappers")
+	}
+	if !strings.Contains(prompt, "|| true") || !strings.Contains(prompt, "pipes") || !strings.Contains(prompt, "output redirection") || !strings.Contains(prompt, "--fix/--write") || !strings.Contains(prompt, "chained post-verification commands") {
+		t.Error("prompt should identify shell forms that make verification non-auditable")
 	}
 	// Should NOT contain IM rules, memory, browser, SSH, etc.
 	for _, noise := range []string{"飞书", "微信", "QQ", "Browser:", "SSH", "memory", "screenshot", "IM 通道"} {
@@ -1907,6 +1919,43 @@ func TestFirstDiagnosticCodingToolResultLineRecognizesCommonCompilerFormats(t *t
 			want: "render_test.go:42: got \"old\", want \"new\"",
 		},
 		{
+			name: "pytest assert detail",
+			output: strings.Join([]string{
+				"tests/test_render.py::test_render FAILED",
+				"E       assert 'old' == 'new'",
+				"command exited with code 1",
+			}, "\n"),
+			want: "E       assert 'old' == 'new'",
+		},
+		{
+			name: "jest file failure",
+			output: strings.Join([]string{
+				"Test Suites: 1 failed, 1 total",
+				"Tests:       1 failed, 1 total",
+				"FAIL  src/render.test.ts",
+				"command exited with code 1",
+			}, "\n"),
+			want: "FAIL  src/render.test.ts",
+		},
+		{
+			name: "process killed",
+			output: strings.Join([]string{
+				"running integration tests",
+				"signal: killed",
+				"command exited with code 137",
+			}, "\n"),
+			want: "signal: killed",
+		},
+		{
+			name: "permission denied",
+			output: strings.Join([]string{
+				"running tests",
+				"open ./tmp/cache: permission denied",
+				"command exited with code 1",
+			}, "\n"),
+			want: "open ./tmp/cache: permission denied",
+		},
+		{
 			name: "skip non failure error noise",
 			output: strings.Join([]string{
 				"summary: 0 errors reported before crash",
@@ -1914,6 +1963,15 @@ func TestFirstDiagnosticCodingToolResultLineRecognizesCommonCompilerFormats(t *t
 				"command exited with code 1",
 			}, "\n"),
 			want: "build failed: missing generated file",
+		},
+		{
+			name: "skip assertion count noise",
+			output: strings.Join([]string{
+				"summary: 0 assertions recorded",
+				"running tests",
+				"FAIL  src/render.test.ts",
+			}, "\n"),
+			want: "FAIL  src/render.test.ts",
 		},
 	}
 	for _, tc := range cases {
@@ -3877,15 +3935,15 @@ func TestSummarizeSubAgentCommands(t *testing.T) {
 	}
 
 	status, summary = summarizeSubAgentCommands([]CodingSubAgentCommandResult{
-		{Command: "go test ./gui", Succeeded: true},
-		{Command: "npm test", Succeeded: true},
+		{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s"},
+		{Command: "npm test", Succeeded: true, Summary: "2 tests passed"},
 	})
 	if status != "passed" || !strings.Contains(summary, "2 bash commands run, no failures") {
 		t.Fatalf("passed command summary = %q, %q", status, summary)
 	}
 
 	status, summary = summarizeSubAgentCommands([]CodingSubAgentCommandResult{
-		{Command: "go test ./gui", Succeeded: true},
+		{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s"},
 		{Command: "npm test", Succeeded: false, Summary: "jest failed\nfull output"},
 	})
 	if status != "failed" || !strings.Contains(summary, "1 failed: npm test: jest failed") {
@@ -3905,6 +3963,29 @@ func TestSummarizeSubAgentCommands(t *testing.T) {
 	})
 	if status != codingSubAgentQualityFailed || !strings.Contains(summary, "1 failed, 1 empty success") || !strings.Contains(summary, "npm test: jest failed") || !strings.Contains(summary, "pytest tests: no tests collected") {
 		t.Fatalf("mixed failed and empty command summary = %q, %q", status, summary)
+	}
+}
+
+func TestCompactFailedVerificationCommandResultsDedupesRepeatedFailures(t *testing.T) {
+	commands := []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", WorkingDir: filepath.Join("repo", "gui"), Succeeded: false, Summary: "ordinary prelude\ncompile failed: missing symbol", seq: 1},
+		{Command: "go   test ./gui", WorkingDir: filepath.Join("repo", "gui"), Succeeded: false, Summary: "compile failed: missing symbol", seq: 2},
+		{Command: "go test ./gui", WorkingDir: filepath.Join("repo", "gui"), Succeeded: false, Summary: "compile failed: different package", seq: 3},
+		{Command: "go test ./gui", WorkingDir: filepath.Join("repo", "api"), Succeeded: false, Summary: "compile failed: missing symbol", seq: 4},
+	}
+
+	summary := compactFailedVerificationCommandResults(commands)
+	if strings.Count(summary, "go   test ./gui: compile failed: missing symbol") != 1 {
+		t.Fatalf("repeated same-command same-dir same-diagnostic failure should appear once, got %q", summary)
+	}
+	if strings.Contains(summary, "ordinary prelude") || strings.Contains(summary, "go test ./gui: compile failed: missing symbol; go   test ./gui") {
+		t.Fatalf("older duplicate failure should be omitted, got %q", summary)
+	}
+	if !strings.Contains(summary, "go test ./gui: compile failed: different package") {
+		t.Fatalf("different diagnostic should remain visible, got %q", summary)
+	}
+	if strings.Count(summary, "compile failed: missing symbol") != 2 {
+		t.Fatalf("same diagnostic from a different working dir should remain visible, got %q", summary)
 	}
 }
 
@@ -3932,13 +4013,33 @@ func TestCompactFailedSubAgentDynamicToolResultsPrefersActionableLateFailure(t *
 	}
 }
 
+func TestCompactFailedSubAgentDynamicToolResultsDedupesRepeatedFailures(t *testing.T) {
+	tools := []CodingSubAgentDynamicToolResult{
+		{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: false, Summary: "ordinary prelude\n[stderr] MCP call failed: browser closed"},
+		{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: false, Summary: "MCP call failed: browser closed"},
+		{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: false, Summary: "MCP call failed: timeout"},
+		{Tool: "call_mcp_tool", Name: "project/search", Succeeded: false, Summary: "MCP call failed: browser closed"},
+	}
+
+	summary := compactFailedSubAgentDynamicToolResults(tools)
+	if strings.Count(summary, "call_mcp_tool browser/screenshot -> MCP call failed: browser closed") != 1 {
+		t.Fatalf("repeated same-target same-diagnostic failure should appear once, got %q", summary)
+	}
+	if !strings.Contains(summary, "call_mcp_tool browser/screenshot -> MCP call failed: timeout") {
+		t.Fatalf("different diagnostic for same target should remain visible, got %q", summary)
+	}
+	if !strings.Contains(summary, "call_mcp_tool project/search -> MCP call failed: browser closed") {
+		t.Fatalf("same diagnostic for different target should remain visible, got %q", summary)
+	}
+}
+
 func TestSummarizeSubAgentQuality(t *testing.T) {
 	status, summary, count := summarizeSubAgentQuality("not_needed", "not_needed", false, nil, nil, nil, 0, nil, nil)
 	if status != "passed" || count != 0 || !strings.Contains(summary, "no file changes") {
 		t.Fatalf("empty quality summary = %q, %q, %d", status, summary, count)
 	}
 
-	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: true}}, 0, nil, nil)
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s"}}, 0, nil, nil)
 	if status != "passed" || count != 0 || !strings.Contains(summary, "passed") {
 		t.Fatalf("passed quality summary = %q, %q, %d", status, summary, count)
 	}
@@ -3983,13 +4084,13 @@ func TestSummarizeSubAgentQuality(t *testing.T) {
 	if status != "failed" || count != 1 || !strings.Contains(summary, "pytest   tests -> no tests collected") || strings.Contains(summary, "passed") {
 		t.Fatalf("empty verification success should not resolve earlier command failure, got %q, %q, %d", status, summary, count)
 	}
-	status, summary, count = summarizeSubAgentQuality("missing", "passed", true, []string{"new.go"}, []string{"new.go"}, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: true}}, 0, nil, nil)
+	status, summary, count = summarizeSubAgentQuality("missing", "passed", true, []string{"new.go"}, []string{"new.go"}, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s"}}, 0, nil, nil)
 	if status != "passed" || count != 0 || !strings.Contains(summary, "passed") {
 		t.Fatalf("created-only quality summary should not require exploration, got %q, %q, %d", status, summary, count)
 	}
 	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{
 		{Command: "go test ./...", Succeeded: false, seq: 1},
-		{Command: "go test ./...", Succeeded: true, seq: 3},
+		{Command: "go test ./...", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3},
 	}, 2, nil, nil)
 	if status != "passed" || count != 0 || strings.Contains(summary, "command(s) failed") {
 		t.Fatalf("stale pre-edit command failure should not warn after fresh pass, got %q, %q, %d", status, summary, count)
@@ -4033,8 +4134,8 @@ func TestSummarizeSubAgentQuality(t *testing.T) {
 		{Tool: "manage_skill", Succeeded: false, Summary: "missing required argument name", seq: 2},
 		{Tool: "manage_skill", Name: "impeccable", Succeeded: true, Summary: "ok", seq: 3},
 	})
-	if status != "passed" || count != 0 || strings.Contains(summary, "dynamic tool failed") {
-		t.Fatalf("target-less dynamic argument failure should be resolved by later same-tool success, got %q, %q, %d", status, summary, count)
+	if status != "failed" || count != 1 || !strings.Contains(summary, "dynamic tool failed") || !strings.Contains(summary, "missing required argument name") {
+		t.Fatalf("target-less dynamic argument failure should not be resolved by later same-tool success, got %q, %q, %d", status, summary, count)
 	}
 }
 
@@ -4064,14 +4165,39 @@ func TestSummarizeSubAgentNoChangeEvidence(t *testing.T) {
 		t.Fatalf("failed list_directory evidence should not satisfy no-change task")
 	}
 
-	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true}}, nil)
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s"}}, nil)
 	if warning != "" {
 		t.Fatalf("successful verification evidence should satisfy no-change task, got %q", warning)
 	}
 
-	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: true}})
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: true, Summary: "captured screenshot"}})
 	if warning != "" {
 		t.Fatalf("successful inspection dynamic tool should satisfy no-change task, got %q", warning)
+	}
+
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: true, Summary: "(无输出)"}})
+	if warning == "" {
+		t.Fatalf("empty-output MCP inspection should not satisfy no-change inspection evidence")
+	}
+
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Succeeded: true}})
+	if warning == "" {
+		t.Fatalf("unnamed MCP tool call should not satisfy no-change inspection evidence")
+	}
+
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "github/create_issue", Succeeded: true}})
+	if warning == "" {
+		t.Fatalf("mutating MCP tool call should not satisfy no-change inspection evidence")
+	}
+
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "github/createIssue", Succeeded: true, Summary: "created issue"}})
+	if warning == "" {
+		t.Fatalf("camelCase mutating MCP tool call should not satisfy no-change inspection evidence")
+	}
+
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "runtime/info", Succeeded: true, Summary: "runtime status"}})
+	if warning != "" {
+		t.Fatalf("read-only MCP tool with name starting runtime should satisfy no-change inspection evidence, got %q", warning)
 	}
 
 	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "manage_skill", Name: "impeccable", Succeeded: true}})
@@ -4126,9 +4252,19 @@ func TestSummarizeSubAgentCreatedFileContextEvidence(t *testing.T) {
 		t.Fatalf("successful search should satisfy created-file context, got %q", warning)
 	}
 
-	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "project_docs/search", Succeeded: true}})
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "project_docs/search", Succeeded: true, Summary: "found related handlers"}})
 	if warning != "" {
 		t.Fatalf("inspection dynamic tool should satisfy created-file context, got %q", warning)
+	}
+
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "repo/write_file", Succeeded: true}})
+	if warning == "" {
+		t.Fatalf("mutating MCP tool call should not satisfy created-file context")
+	}
+
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "repo/writeFile", Succeeded: true, Summary: "wrote file"}})
+	if warning == "" {
+		t.Fatalf("camelCase mutating MCP tool call should not satisfy created-file context")
 	}
 
 	warning = summarizeSubAgentCreatedFileContextEvidence(nil, nil, nil, nil)
@@ -4214,6 +4350,20 @@ func TestSummarizeSubAgentAcceptanceCriteriaEvidence(t *testing.T) {
 		t.Fatalf("all acceptance criterion index references should pass, got %q", warning)
 	}
 
+	for _, summary := range []string{
+		"Acceptance criteria AC-1 and AC #2 verified with npm test.",
+		"Acceptance criterion #1 and criterion #2 verified with npm test.",
+		"Acceptance criteria (1) and (2) verified with npm test.",
+		"验收验证：第 1 条和第 2 条已通过 go test ./gui。",
+		"验收验证：验收第一条和验收第二条已通过 go test ./gui。",
+		"标准验证：标准第1条和标准第2条均已通过 go test ./gui。",
+	} {
+		warning = summarizeSubAgentAcceptanceCriteriaEvidence(multiTask, summary, []string{"settings.go"}, nil)
+		if warning != "" {
+			t.Fatalf("acceptance criterion numbered references should pass for %q, got %q", summary, warning)
+		}
+	}
+
 	zhTask := &TaskItem{AcceptanceCriteria: []string{"保存按钮持久化设置"}}
 	warning = summarizeSubAgentAcceptanceCriteriaEvidence(zhTask, "验收验证：go test ./gui 覆盖保存按钮持久化设置。", []string{"settings.go"}, nil)
 	if warning != "" {
@@ -4231,7 +4381,7 @@ func TestAcceptanceCriteriaEvidenceAddsQualityFailure(t *testing.T) {
 		"save button persists the setting",
 		"cancel button restores the previous setting",
 	}}
-	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityExplored, codingSubAgentQualityPassed, true, []string{"settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true}}, 1, nil, nil)
+	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityExplored, codingSubAgentQualityPassed, true, []string{"settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s"}}, 1, nil, nil)
 	status, summary, count = appendSubAgentQualityFailure(status, summary, count, summarizeSubAgentAcceptanceCriteriaEvidence(task, "Acceptance criteria AC1 verified with go test ./gui.", []string{"settings.go"}, nil))
 	if status != codingSubAgentQualityFailed || count != 1 || !strings.Contains(summary, "acceptance criteria verification does not reference each listed criterion") {
 		t.Fatalf("partial acceptance evidence should become quality failure, got (%q, %q, %d)", status, summary, count)
@@ -4261,6 +4411,21 @@ func TestSummarizeSubAgentScopeEvidence(t *testing.T) {
 		t.Fatalf("summary scope rationale should satisfy out-of-scope change, got %q", warning)
 	}
 
+	warning = summarizeSubAgentScopeEvidence(task, "Scope unchanged; settings behavior updated and tests passed.", []string{"src/router.go"}, nil)
+	if warning == "" || !strings.Contains(warning, "outside listed task scope") || !strings.Contains(warning, "src/router.go") {
+		t.Fatalf("generic scope mention should not satisfy out-of-scope change, got %q", warning)
+	}
+
+	warning = summarizeSubAgentScopeEvidence(task, "Scope expansion: updated route registration helper required by the settings change.", []string{"src/router.go"}, nil)
+	if warning != "" {
+		t.Fatalf("explicit scope expansion rationale should satisfy out-of-scope change, got %q", warning)
+	}
+
+	warning = summarizeSubAgentScopeEvidence(task, "范围扩展：设置路由注册逻辑需要同步调整。", []string{"src/router.go"}, nil)
+	if warning != "" {
+		t.Fatalf("Chinese explicit scope expansion rationale should satisfy out-of-scope change, got %q", warning)
+	}
+
 	warning = summarizeSubAgentScopeEvidence(task, "Also changed src/router.go for route registration.", []string{"src/router.go"}, nil)
 	if warning != "" {
 		t.Fatalf("summary mentioning out-of-scope file should satisfy scope evidence, got %q", warning)
@@ -4279,7 +4444,7 @@ func TestSummarizeSubAgentScopeEvidence(t *testing.T) {
 
 func TestScopeEvidenceAddsQualityFailure(t *testing.T) {
 	task := &TaskItem{Files: []string{"src/settings.go"}}
-	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityExplored, codingSubAgentQualityPassed, true, []string{"src/settings.go", "src/router.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true}}, 1, nil, nil)
+	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityExplored, codingSubAgentQualityPassed, true, []string{"src/settings.go", "src/router.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s"}}, 1, nil, nil)
 	status, summary, count = appendSubAgentQualityFailure(status, summary, count, summarizeSubAgentScopeEvidence(task, "Changed settings behavior and ran go test.", []string{"src/settings.go", "src/router.go"}, nil))
 	if status != codingSubAgentQualityFailed || count != 1 || !strings.Contains(summary, "outside listed task scope") || !strings.Contains(summary, "src/router.go") {
 		t.Fatalf("unexplained out-of-scope change should become quality failure, got (%q, %q, %d)", status, summary, count)
@@ -4302,6 +4467,16 @@ func TestSummarizeSubAgentChangedFileSummaryEvidence(t *testing.T) {
 		t.Fatalf("summary missing changed file paths should warn, got %q", warning)
 	}
 
+	warning = summarizeSubAgentChangedFileSummaryEvidence("Updated `src/settings.go` and ran tests.", []string{"src/settings.go"}, []string{"tests/settings_test.go"})
+	if warning == "" || !strings.Contains(warning, "changed files not referenced") || strings.Contains(warning, "src/settings.go") || !strings.Contains(warning, "tests/settings_test.go") {
+		t.Fatalf("summary should require every changed file and list only missing paths, got %q", warning)
+	}
+
+	warning = summarizeSubAgentChangedFileSummaryEvidence("Updated `src/settings.go` and `tests/settings_test.go`; ran tests.", []string{"src/settings.go"}, []string{"tests/settings_test.go"})
+	if warning != "" {
+		t.Fatalf("summary mentioning every changed file should not warn, got %q", warning)
+	}
+
 	warning = summarizeSubAgentChangedFileSummaryEvidence("", []string{"src/settings.go"}, nil)
 	if warning != "" {
 		t.Fatalf("empty model summary should rely on fallback summary and not warn, got %q", warning)
@@ -4314,7 +4489,7 @@ func TestSummarizeSubAgentChangedFileSummaryEvidence(t *testing.T) {
 }
 
 func TestChangedFileSummaryEvidenceAddsQualityFailure(t *testing.T) {
-	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityExplored, codingSubAgentQualityPassed, true, []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true}}, 1, nil, nil)
+	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityExplored, codingSubAgentQualityPassed, true, []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s"}}, 1, nil, nil)
 	status, summary, count = appendSubAgentQualityFailure(status, summary, count, summarizeSubAgentChangedFileSummaryEvidence("Updated the settings handler and ran tests.", []string{"src/settings.go"}, nil))
 	if status != codingSubAgentQualityFailed || count != 1 || !strings.Contains(summary, "changed files not referenced") || !strings.Contains(summary, "src/settings.go") {
 		t.Fatalf("missing changed-file summary should become quality failure, got (%q, %q, %d)", status, summary, count)
@@ -4330,6 +4505,31 @@ func TestSummarizeSubAgentRiskSummaryEvidence(t *testing.T) {
 	warning = summarizeSubAgentRiskSummaryEvidence("更新 src/settings.go。剩余风险：未发现。", []string{"src/settings.go"}, nil)
 	if warning != "" {
 		t.Fatalf("Chinese summary with risk note should not warn, got %q", warning)
+	}
+
+	for _, summary := range []string{
+		"Updated src/settings.go. Risk: none.",
+		"Updated src/settings.go. Residual risk: manual browser smoke test not covered.",
+		"Updated src/settings.go. Known issue: upstream API may still reject malformed input.",
+		"Updated src/settings.go. Manual verification required for the legacy browser path.",
+		"更新 src/settings.go。风险：无。",
+		"更新 src/settings.go。已知问题：旧浏览器路径需要人工验证。",
+		"更新 src/settings.go。无法自动验证旧浏览器路径。",
+	} {
+		warning = summarizeSubAgentRiskSummaryEvidence(summary, []string{"src/settings.go"}, nil)
+		if warning != "" {
+			t.Fatalf("explicit risk summary should not warn for %q, got %q", summary, warning)
+		}
+	}
+
+	warning = summarizeSubAgentRiskSummaryEvidence("Updated src/settings.go. Remaining work: none.", []string{"src/settings.go"}, nil)
+	if warning == "" || !strings.Contains(warning, "remaining risk") {
+		t.Fatalf("generic remaining-work note should not satisfy risk summary, got %q", warning)
+	}
+
+	warning = summarizeSubAgentRiskSummaryEvidence("Updated src/settings.go. No known regressions after go test.", []string{"src/settings.go"}, nil)
+	if warning == "" || !strings.Contains(warning, "remaining risk") {
+		t.Fatalf("generic no-regressions note should not satisfy remaining-risk summary, got %q", warning)
 	}
 
 	warning = summarizeSubAgentRiskSummaryEvidence("Updated src/settings.go and ran go test.", []string{"src/settings.go"}, nil)
@@ -4349,7 +4549,7 @@ func TestSummarizeSubAgentRiskSummaryEvidence(t *testing.T) {
 }
 
 func TestRiskSummaryEvidenceAddsQualityFailure(t *testing.T) {
-	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityExplored, codingSubAgentQualityPassed, true, []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true}}, 1, nil, nil)
+	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityExplored, codingSubAgentQualityPassed, true, []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s"}}, 1, nil, nil)
 	status, summary, count = appendSubAgentQualityFailure(status, summary, count, summarizeSubAgentRiskSummaryEvidence("Updated src/settings.go and ran go test.", []string{"src/settings.go"}, nil))
 	if status != codingSubAgentQualityFailed || count != 1 || !strings.Contains(summary, "remaining risk not called out") {
 		t.Fatalf("missing remaining-risk summary should become quality failure, got (%q, %q, %d)", status, summary, count)
@@ -4358,14 +4558,14 @@ func TestRiskSummaryEvidenceAddsQualityFailure(t *testing.T) {
 
 func TestSummarizeSubAgentVerificationCommandSummaryEvidence(t *testing.T) {
 	warning := summarizeSubAgentVerificationCommandSummaryEvidence("Updated src/settings.go and ran tests. Risk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
-		{Command: "go test ./gui", Succeeded: true, seq: 3},
+		{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3},
 	}, 2)
 	if warning == "" || !strings.Contains(warning, "verification command not referenced") {
 		t.Fatalf("changed task with fresh verification but no command in summary should warn, got %q", warning)
 	}
 
 	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./gui passed.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
-		{Command: "go test ./gui", Succeeded: true, seq: 3},
+		{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3},
 	}, 2)
 	if warning != "" {
 		t.Fatalf("summary naming fresh verification command should not warn, got %q", warning)
@@ -4376,10 +4576,16 @@ func TestSummarizeSubAgentVerificationCommandSummaryEvidence(t *testing.T) {
 		"Verification: go test ./gui exit 0.\nRisk: none.",
 		"Verification: go test ./gui all tests passed.\nRisk: none.",
 		"Verification: go test ./gui green.\nRisk: none.",
+		"Ran: go test ./gui passed.\nRisk: none.",
+		"Test command: go test ./gui ok.\nRisk: none.",
+		"Check command: go test ./gui succeeded.\nRisk: none.",
 		"验证：go test ./gui 全部通过。\n风险：无。",
+		"测试命令：go test ./gui 已通过。\n风险：无。",
+		"检查：go test ./gui 执行成功。\n风险：无。",
+		"已运行：go test ./gui，通过。\n风险：无。",
 	} {
 		warning = summarizeSubAgentVerificationCommandSummaryEvidence(summary, []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
-			{Command: "go test ./gui", Succeeded: true, seq: 3},
+			{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3},
 		}, 2)
 		if warning != "" {
 			t.Fatalf("summary with natural successful verification outcome should not warn for %q, got %q", summary, warning)
@@ -4387,7 +4593,7 @@ func TestSummarizeSubAgentVerificationCommandSummaryEvidence(t *testing.T) {
 	}
 
 	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./gui.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
-		{Command: "go test ./gui", Succeeded: true, seq: 3},
+		{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3},
 	}, 2)
 	if warning == "" || !strings.Contains(warning, "verification command outcome not referenced") {
 		t.Fatalf("summary naming fresh verification command without outcome should warn, got %q", warning)
@@ -4401,31 +4607,38 @@ func TestSummarizeSubAgentVerificationCommandSummaryEvidence(t *testing.T) {
 	}
 
 	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./old passed.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
-		{Command: "go test ./old", Succeeded: true, seq: 1},
-		{Command: "go test ./gui", Succeeded: true, seq: 3},
+		{Command: "go test ./old", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/old 0.1s", seq: 1},
+		{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3},
 	}, 2)
 	if warning == "" || !strings.Contains(warning, "fresh verification command not referenced") {
 		t.Fatalf("summary naming only stale verification command should warn, got %q", warning)
 	}
 
 	warning = summarizeSubAgentVerificationCommandSummaryEvidence("No changes needed.", nil, nil, []CodingSubAgentCommandResult{
-		{Command: "go test ./gui", Succeeded: true, seq: 3},
+		{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3},
 	}, 2)
 	if warning != "" {
 		t.Fatalf("no changed files should not require verification command summary, got %q", warning)
 	}
 
 	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Updated src/settings.go. Risk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
-		{Command: "go test ./gui", Succeeded: true, seq: 1},
+		{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 1},
 	}, 2)
 	if warning != "" {
 		t.Fatalf("stale verification command should not require command summary, got %q", warning)
 	}
+
+	warning = summarizeSubAgentVerificationCommandSummaryEvidence("Verification: go test ./gui passed.\nRisk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: "go test ./gui", Succeeded: true, Summary: "(无输出)", seq: 3},
+	}, 2)
+	if warning == "" || !strings.Contains(warning, "did not produce execution evidence") {
+		t.Fatalf("fresh empty-output verification should not satisfy final summary evidence, got %q", warning)
+	}
 }
 
 func TestVerificationCommandSummaryEvidenceAddsQualityFailure(t *testing.T) {
-	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityExplored, codingSubAgentQualityPassed, true, []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true, seq: 3}}, 2, nil, nil)
-	status, summary, count = appendSubAgentQualityFailure(status, summary, count, summarizeSubAgentVerificationCommandSummaryEvidence("Updated src/settings.go and ran tests. Risk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true, seq: 3}}, 2))
+	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityExplored, codingSubAgentQualityPassed, true, []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3}}, 2, nil, nil)
+	status, summary, count = appendSubAgentQualityFailure(status, summary, count, summarizeSubAgentVerificationCommandSummaryEvidence("Updated src/settings.go and ran tests. Risk: none.", []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./gui", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3}}, 2))
 	if status != codingSubAgentQualityFailed || count != 1 || !strings.Contains(summary, "verification command not referenced") {
 		t.Fatalf("missing verification command summary should become quality failure, got (%q, %q, %d)", status, summary, count)
 	}
@@ -4578,6 +4791,23 @@ func TestSummarizeSubAgentClaimedVerificationEvidence(t *testing.T) {
 		t.Fatalf("claimed passed command with empty-success audit output should fail quality, got %q", failure)
 	}
 
+	failure = summarizeSubAgentClaimedVerificationFailureEvidence("Verification: `go test ./...` passed.", []CodingSubAgentCommandResult{
+		{Command: "go test ./...", WorkingDir: filepath.Join("repo", "gui"), Succeeded: false, Summary: "FAIL", seq: 1},
+		{Command: "go test ./...", WorkingDir: filepath.Join("repo", "api"), Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/api 0.1s", seq: 2},
+	})
+	if failure == "" || !strings.Contains(failure, "go test ./...") {
+		t.Fatalf("claimed pass should not be cleared by same command text in a different working dir, got %q", failure)
+	}
+
+	failure = summarizeSubAgentClaimedVerificationFailureEvidence("Verification: `go test ./...` passed.", []CodingSubAgentCommandResult{
+		{Command: "go test ./...", WorkingDir: filepath.Join("repo", "gui"), Succeeded: false, Summary: "FAIL", seq: 1},
+		{Command: "go test ./...", WorkingDir: filepath.Join("repo", "api"), Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/api 0.1s", seq: 2},
+		{Command: "go   test ./...", WorkingDir: filepath.Join("repo", "gui"), Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3},
+	})
+	if failure != "" {
+		t.Fatalf("later equivalent real success in same working dir should clear claimed-pass failure, got %q", failure)
+	}
+
 	warning = summarizeSubAgentClaimedVerificationEvidence("I would run go test ./gui if more time were available.", nil)
 	if warning != "" {
 		t.Fatalf("unstructured unquoted command mention should be ignored, got %q", warning)
@@ -4625,6 +4855,20 @@ func TestUnresolvedFailedSubAgentCommandsRequireLaterEquivalentRealSuccess(t *te
 	}
 
 	commands = []CodingSubAgentCommandResult{
+		{Command: "go test ./...", WorkingDir: filepath.Join("repo", "gui"), Succeeded: false, Summary: "FAIL", seq: 1},
+		{Command: "go test ./...", WorkingDir: filepath.Join("repo", "api"), Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/api 0.1s", seq: 2},
+	}
+	unresolved = unresolvedFailedSubAgentCommands(commands)
+	if len(unresolved) != 1 || unresolved[0].WorkingDir != filepath.Join("repo", "gui") {
+		t.Fatalf("same command in different working dir should not resolve failed command, got %#v", unresolved)
+	}
+
+	commands = append(commands, CodingSubAgentCommandResult{Command: "go   test ./...", WorkingDir: filepath.Join("repo", "gui"), Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3})
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("same command in same working dir should resolve failed command, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
 		{Command: "pytest tests", Succeeded: false, Summary: "FAIL", seq: 1},
 		{Command: "pytest tests", Succeeded: true, Summary: "no tests collected in 0.01s", seq: 2},
 	}
@@ -4647,6 +4891,15 @@ func TestUnresolvedFailedSubAgentDynamicToolsRequireLaterSameTargetSuccess(t *te
 	tools = append(tools, CodingSubAgentDynamicToolResult{Tool: "call_mcp_tool", Name: " browser/screenshot ", Succeeded: true, Summary: "captured", seq: 3})
 	if unresolved := unresolvedFailedSubAgentDynamicTools(tools); len(unresolved) != 0 {
 		t.Fatalf("later same dynamic tool target success should resolve failed target, got %#v", unresolved)
+	}
+
+	tools = []CodingSubAgentDynamicToolResult{
+		{Tool: "call_mcp_tool", Succeeded: false, Summary: "target unavailable", seq: 1},
+		{Tool: "call_mcp_tool", Name: "browser/open", Succeeded: true, Summary: "opened", seq: 2},
+	}
+	unresolved = unresolvedFailedSubAgentDynamicTools(tools)
+	if len(unresolved) != 1 || unresolved[0].Summary != "target unavailable" {
+		t.Fatalf("unnamed failed dynamic tool should not be resolved by same tool success on another target, got %#v", unresolved)
 	}
 }
 
@@ -4897,8 +5150,8 @@ func TestSummarizeSubAgentVerification(t *testing.T) {
 	}
 
 	status, summary = summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{
-		{Command: "go test ./...", Succeeded: true},
-		{Command: "go vet ./...", Succeeded: true},
+		{Command: "go test ./...", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s"},
+		{Command: "go vet ./...", Succeeded: true, Summary: "go vet ./... ok"},
 	}, 0)
 	if status != "passed" || !strings.Contains(summary, "2 条") || !strings.Contains(summary, "`go test ./...`") || !strings.Contains(summary, "`go vet ./...`") {
 		t.Fatalf("passed summary should include verification command list, got (%q, %q)", status, summary)
@@ -4940,6 +5193,9 @@ func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T)
 	}
 
 	emptySuccessfulOutputs := []CodingSubAgentCommandResult{
+		{Command: "go test ./...", Succeeded: true},
+		{Command: "go test ./...", Succeeded: true, Summary: "   "},
+		{Command: "go test ./...", Succeeded: true, Summary: "(无输出)"},
 		{Command: "go test ./pkg/empty", Succeeded: true, Summary: "?   \tgithub.com/RapidAI/CodeClaw/pkg/empty\t[no test files]"},
 		{Command: "node --test", Succeeded: true, Summary: "# tests 0\n# suites 0\n# pass 0\n# fail 0"},
 		{Command: "rspec", Succeeded: true, Summary: "0 examples, 0 failures"},
@@ -4972,6 +5228,13 @@ func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T)
 	}, 0)
 	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "`pytest tests`") {
 		t.Fatalf("normal successful pytest output should pass, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeSubAgentVerification([]string{"main.py"}, []CodingSubAgentCommandResult{
+		{Command: "pytest -m slow", Succeeded: true, Summary: "collected 12 items / 2 deselected / 10 selected"},
+	}, 0)
+	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "`pytest -m slow`") {
+		t.Fatalf("pytest deselected count should not look empty when tests were selected, got (%q, %q)", status, summary)
 	}
 
 	status, summary = summarizeSubAgentVerification([]string{"spec/app_spec.rb"}, []CodingSubAgentCommandResult{
@@ -5015,12 +5278,12 @@ func TestCountSuccessfulSubAgentVerificationCommandsRejectsEmptySuccessfulOutput
 
 func TestSummarizeSubAgentVerificationPassedSummaryCapsCommands(t *testing.T) {
 	commands := []CodingSubAgentCommandResult{
-		{Command: "go test ./pkg/a", Succeeded: true},
-		{Command: "go test ./pkg/b", Succeeded: true},
-		{Command: "go test ./pkg/c", Succeeded: true},
-		{Command: "go test ./pkg/d", Succeeded: true},
-		{Command: "go test ./pkg/e", Succeeded: true},
-		{Command: "go test ./pkg/f", Succeeded: true},
+		{Command: "go test ./pkg/a", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/pkg/a 0.1s"},
+		{Command: "go test ./pkg/b", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/pkg/b 0.1s"},
+		{Command: "go test ./pkg/c", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/pkg/c 0.1s"},
+		{Command: "go test ./pkg/d", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/pkg/d 0.1s"},
+		{Command: "go test ./pkg/e", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/pkg/e 0.1s"},
+		{Command: "go test ./pkg/f", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/pkg/f 0.1s"},
 	}
 	status, summary := summarizeSubAgentVerification([]string{"main.go"}, commands, 0)
 	if status != codingSubAgentQualityPassed {
@@ -5031,7 +5294,7 @@ func TestSummarizeSubAgentVerificationPassedSummaryCapsCommands(t *testing.T) {
 	}
 
 	status, summary = summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{
-		{Command: "npm run `test`", Succeeded: true},
+		{Command: "npm run `test`", Succeeded: true, Summary: "1 test passed"},
 	}, 0)
 	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "`npm run 'test'`") {
 		t.Fatalf("passed summary should escape inline-code backticks, got (%q, %q)", status, summary)
@@ -5048,7 +5311,7 @@ func TestSummarizeSubAgentVerificationIgnoresNonVerificationCommands(t *testing.
 
 	status, summary = summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{
 		{Command: "git status --short", Succeeded: false},
-		{Command: "go test ./...", Succeeded: true},
+		{Command: "go test ./...", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s"},
 	}, 0)
 	if status != "passed" || !strings.Contains(summary, "1 条") {
 		t.Fatalf("only verification commands should determine pass count, got (%q, %q)", status, summary)
@@ -5069,6 +5332,8 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"go test ./... -run '^$' -bench .",
 		"go test -run=^$ -bench=BenchmarkRender ./gui",
 		"go test ./... -run '^$' -fuzz FuzzParse",
+		"go test ./... -count=1",
+		"go test ./... -count 2",
 		`bash -lc 'go test ./... -run "TestAPI|TestHandler"'`,
 		`powershell -NoProfile -Command 'go test ./... -run "TestAPI|TestHandler"'`,
 		"bash -c go test ./...",
@@ -5077,6 +5342,9 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"bash -lc go test ./...",
 		"powershell -NoProfile -Command go test ./...",
 		"pwsh -Command go test ./...",
+		"cmd /c go test ./...",
+		`cmd.exe /d /s /c "go test ./..."`,
+		"cmd /c npm test",
 		"npm run build",
 		"npm --workspace web test",
 		"npm --workspace=web run lint",
@@ -5116,6 +5384,8 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"yarn build",
 		"yarn test:unit",
 		"node --test",
+		"node --test test/*.test.js",
+		"node --test --test-only=false test/*.test.js",
 		"bun test",
 		"bun run test",
 		"bun run build",
@@ -5142,9 +5412,12 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"bundle exec cucumber",
 		"npm run typecheck",
 		"eslint .",
+		"eslint . --fix=false",
 		"npm exec eslint .",
 		"npm exec -- eslint .",
 		"pnpm exec vitest run",
+		"vitest run --ui=false",
+		"jest --watchAll=false --runInBand",
 		"pnpm dlx --package typescript tsc --noEmit",
 		"yarn dlx tsc --noEmit",
 		"corepack pnpm test",
@@ -5165,8 +5438,11 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"prettier --check .",
 		"prettier -c .",
 		"prettier --list-different .",
+		"prettier --check . --write=false",
+		"prettier --check . -w=false",
 		"npx prettier --check .",
 		"biome check .",
+		"biome check . --write=false",
 		"biome ci .",
 		"biome lint .",
 		"npx biome check .",
@@ -5298,6 +5574,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"bundle exec rake spec",
 		"bundle exec rake test:models",
 		"rubocop",
+		"rubocop -A=false",
 		"bundle exec rubocop",
 		"vendor/bin/phpunit",
 		"./vendor/bin/phpunit",
@@ -5330,6 +5607,11 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"cross-env CI=1 npm test",
 		"cross-env-shell CI=1 npm run lint",
 		"time go test ./...",
+		"timeout 30s go test ./...",
+		"timeout --preserve-status -k 5s 30s npm test",
+		"timeout --signal=TERM 1m pytest tests",
+		"gtimeout 45s go test ./gui",
+		"env CI=1 timeout 30s go test ./...",
 		"mkdir out || true; go test ./...",
 		"optional-setup || true && go test ./...",
 	}
@@ -5354,16 +5636,24 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"npm --workspace web exec serve .",
 		"pnpm --filter web dev",
 		"pytest --collect-only tests",
+		"pytest --collect-only=true tests",
 		"python -m pytest --co tests",
 		"pytest --setup-only tests",
 		"python -m pytest --setup-plan tests",
+		"pytest --markers",
+		"python -m pytest --trace-config",
 		"pytest --help",
 		"npx jest --listTests",
+		"npx jest --listTests=true",
 		"jest --showConfig",
+		"jest --showConfig=true",
 		"vitest list",
 		"npx vitest --list",
+		"npx vitest --list=true",
 		"eslint --print-config src/app.ts",
+		"eslint --print-config=true src/app.ts",
 		"tsc --showConfig",
+		"tsc --showConfig=true",
 		"npx tsc --init",
 		"npm test -- --watch",
 		"npm run test -- --watch=true",
@@ -5374,7 +5664,19 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"deno task test:watch",
 		"pnpm exec vitest watch",
 		"vitest --watch",
+		"vitest run --ui=true",
+		"vitest run --ui=1",
+		"jest --watchAll=true",
+		"pytest tests --interactive=true",
 		"jest --watchAll",
+		"node --test --test-only",
+		"node --test --test-only test/*.test.js",
+		"node --test --test-only=true test/*.test.js",
+		"node --test --test-only=1 test/*.test.js",
+		"node --test --help",
+		"node --test -h",
+		"node --test --version",
+		"node --test -v",
 		"yarn workspace web start",
 		"corepack npm exec serve .",
 		"corepack pnpm --filter web dev",
@@ -5391,9 +5693,11 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"pdm update",
 		"pdm build",
 		"tox --listenvs",
+		"tox --listenvs=true",
 		"tox -l",
 		"tox --showconfig",
 		"nox --list-sessions",
+		"nox --list-sessions=true",
 		"nox --json",
 		"bundle exec rails server",
 		"bundle exec rspec --dry-run",
@@ -5418,6 +5722,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"dotnet tool restore",
 		"dotnet format",
 		"dotnet test --list-tests",
+		"dotnet test --list-tests=true",
 		"dotnet test -t",
 		"dotnet vstest bin/Debug/app.Tests.dll /ListTests",
 		"dotnet msbuild -t:Clean",
@@ -5445,12 +5750,23 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"mvn -Dmaven.test.skip=true verify",
 		"gradle dependencies",
 		"./gradlew --dry-run test",
+		"./gradlew --dry-run=true test",
 		"gradle -m :app:test",
+		"./gradlew build -x test",
+		"gradle build -xtest",
+		"gradle check --exclude-task test",
+		"gradlew :app:build --exclude-task=:app:test",
 		"./gradlew bootRun",
 		"gradlew :app:run",
 		"TEST_NAME=unit echo test",
 		"env TEST_NAME=unit echo test",
 		"time echo test",
+		"timeout 1s echo test",
+		"timeout --help",
+		"timeout 30s go test ./... || true",
+		"cmd /c echo test",
+		"cmd /k go test ./...",
+		"cmd /c go test ./... || true",
 		"rg \"TODO\" .",
 		"git diff -- .",
 		"go -C gui env",
@@ -5462,6 +5778,9 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"go test ./... -run '^$'",
 		"go test -run=^$ ./...",
 		"go test ./... -run $^",
+		"go test ./... -count=0",
+		"go test ./... -count 0",
+		`go test ./... -count "0"`,
 		"go fmt ./...",
 		"cargo fmt --all",
 		"cargo test --no-run",
@@ -5469,6 +5788,14 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"cargo test -- --help",
 		"cargo test --help",
 		"cargo clippy --fix",
+		"cargo clippy --fix=true",
+		"eslint . --fix=true",
+		"prettier --write=true .",
+		"prettier --check . -w=true",
+		"biome check . --write=true",
+		"biome check . --apply=true",
+		"rubocop --auto-correct=true",
+		"rubocop -A=true",
 		"swift run App",
 		"swift package update",
 		"swift package resolve",
@@ -5649,7 +5976,7 @@ func TestSummarizeSubAgentVerificationRequiresPostEditVerification(t *testing.T)
 
 	commands = []CodingSubAgentCommandResult{
 		{Command: "go test ./...", Succeeded: false, seq: 1},
-		{Command: "go test ./...", Succeeded: true, seq: 3},
+		{Command: "go test ./...", Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/gui 0.1s", seq: 3},
 	}
 	status, summary = summarizeSubAgentVerification([]string{"main.go"}, commands, 2)
 	if status != codingSubAgentQualityPassed {

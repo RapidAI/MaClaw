@@ -12,6 +12,7 @@ const (
 	misDataToolActionGetDomain             misDataToolAction = "get_domain"
 	misDataToolActionListBusinessObjects   misDataToolAction = "list_business_objects"
 	misDataToolActionListAppInstallations  misDataToolAction = "list_app_installations"
+	misDataToolActionGetAppInstallation    misDataToolAction = "get_app_installation"
 	misDataToolActionResolveObjectRole     misDataToolAction = "resolve_object_role"
 	misDataToolActionListRelationships     misDataToolAction = "list_relationships"
 	misDataToolActionResolveIntent         misDataToolAction = "resolve_intent"

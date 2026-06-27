@@ -204,7 +204,74 @@ func (h *IMMessageHandler) handleAgentLoopEssentialTruncatedToolCalls(
 ) agentLoopTruncationRecoveryResult {
 	result := agentLoopTruncationRecoveryResult{Conversation: conversation, Tools: tools}
 	if phase.EssentialTruncationHints >= maxEssentialTruncationHints {
-		log.Printf("[agent-loop] essential tool truncation hint already injected; allowing no-tool recovery path (iter=%d)", iteration)
+		// Hints exhausted and the model still cannot complete the tool call JSON.
+		// Override the "essential" protection: block the tool and force an alternative path.
+		// This prevents the agent loop from finalizing with incomplete work.
+		if phase.TruncationBlockedTools == nil {
+			phase.TruncationBlockedTools = make(map[string]bool)
+		}
+		var newlyBlocked []string
+		for _, tn := range choice.TruncatedToolNames {
+			if !phase.TruncationBlockedTools[tn] {
+				phase.TruncationBlockedTools[tn] = true
+				newlyBlocked = append(newlyBlocked, tn)
+			}
+		}
+		if len(newlyBlocked) == 0 {
+			// Tools already blocked but LLM still produced a truncated call or
+			// a promise-only text response. Inject a lightweight reminder so the
+			// LLM knows to use bash + Python instead. Limit to 2 reminders to
+			// prevent infinite loops; after that, fall through to no-tool finalize.
+			const maxBlockedReminders = 2
+			if phase.TruncationBlockedReminders < maxBlockedReminders {
+				phase.TruncationBlockedReminders++
+				blockedNames := make([]string, 0, len(phase.TruncationBlockedTools))
+				for tn := range phase.TruncationBlockedTools {
+					blockedNames = append(blockedNames, tn)
+				}
+				hint := fmt.Sprintf("[system] %s is currently disabled (output too long for JSON). Use bash with a Python script instead. Example: bash(command=\"python3 -c \\\"import pathlib; pathlib.Path('file.py').write_text(content, encoding='utf-8')\\\"\")",
+					strings.Join(blockedNames, ", "))
+				systemMessagesStart := len(conversation)
+				conversation = append(conversation, map[string]string{
+					"role":    "system",
+					"content": hint,
+				})
+				recordSystemMessages(systemMessagesStart, conversation)
+				result.Conversation = conversation
+				result.ContinueLoop = true
+				phase.ConsecutiveNoTool = 0
+				log.Printf("[agent-loop] essential tool truncation: injecting blocked reminder %d/%d (iter=%d)", phase.TruncationBlockedReminders, maxBlockedReminders, iteration)
+				return result
+			}
+			log.Printf("[agent-loop] essential tool truncation: reminders exhausted, allowing no-tool recovery path (iter=%d)", iteration)
+			return result
+		}
+		// Remove blocked tools from the tool list
+		var filtered []map[string]interface{}
+		for _, td := range tools {
+			name := tool.ExtractToolName(td)
+			if !phase.TruncationBlockedTools[name] {
+				filtered = append(filtered, td)
+			}
+		}
+		result.Tools = filtered
+		blockedList := strings.Join(newlyBlocked, ", ")
+		log.Printf("[agent-loop] essential tool truncation override: blocking %s after %d failed hints (iter=%d, remaining_tools=%d)",
+			blockedList, phase.EssentialTruncationHints, iteration, len(filtered))
+		// Inject a strong system message forcing alternative approach
+		hint := fmt.Sprintf(
+			"[system] %s has been temporarily disabled because arguments were repeatedly truncated (model cannot finish the JSON). "+
+				"Use bash with a Python/Node script to write files instead. Example: bash(command=\"python3 -c \\\"import pathlib; pathlib.Path('output.py').write_text(content, encoding='utf-8')\\\"\")",
+			blockedList)
+		systemMessagesStart := len(conversation)
+		conversation = append(conversation, map[string]string{
+			"role":    "system",
+			"content": hint,
+		})
+		recordSystemMessages(systemMessagesStart, conversation)
+		result.Conversation = conversation
+		result.ContinueLoop = true
+		phase.ConsecutiveNoTool = 0
 		return result
 	}
 	phase.EssentialTruncationHints++
@@ -237,7 +304,7 @@ func buildEssentialTruncationRecoveryHint(toolNames []string) string {
 		parts = append(parts, "Use bash only for short commands.")
 	}
 	if containsToolName(toolNames, "write_file") {
-		parts = append(parts, "For write_file, keep the tool available and regenerate a complete JSON object; if the content is very large, split it across overwrite/append calls so the model can finish each argument.")
+		parts = append(parts, "For write_file, keep the tool available and regenerate a complete JSON object; if the content is very large, split it across overwrite/append calls so the model can finish each argument. Alternatively, use edit_lines for targeted insertions/replacements (no content size limit).")
 	}
 	return strings.Join(parts, " ")
 }
@@ -343,7 +410,7 @@ func buildTruncationRetryHint(truncatedList string, tools []map[string]interface
 }
 
 func agentLoopInlinePayloadLimitInstruction() string {
-	return fmt.Sprintf("Respect inline payload limits: edit_file/edit_lines text fields <= %d runes per call, and bash.command <= %d runes per call. write_file has no backend content limit, but its JSON arguments must still be complete; split very large file bodies across overwrite/append calls if the model cannot finish one JSON object.", maxAgentLoopInlineEditContentRunes, maxAgentLoopInlineBashCommandRunes)
+	return fmt.Sprintf("Respect inline payload limits: bash.command <= %d runes per call. write_file/edit_file/edit_lines have no content size limit, but their JSON arguments must still be complete within the model's output token budget; for very large content, split across multiple calls.", maxAgentLoopInlineBashCommandRunes)
 }
 
 func buildTruncationBlockAlternativeInstructions(blocked []string, availableTools []map[string]interface{}) string {

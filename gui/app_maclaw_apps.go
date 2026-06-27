@@ -546,7 +546,7 @@ func (a *App) PlanMaclawAppInstall(packageJSON string) (maclawAppInstallPlan, er
 		Apps:         make([]maclawAppInstallPlanApp, 0, len(entries)),
 		Dependencies: []maclawAppInstallPlanDependency{},
 	}
-	depsByID := make(map[string]*maclawAppInstallPlanDependency)
+	depsByKey := make(map[string]*maclawAppInstallPlanDependency)
 	for _, entry := range entries {
 		plan.Apps = append(plan.Apps, maclawAppInstallPlanApp{
 			ID:     entry.ID,
@@ -555,11 +555,11 @@ func (a *App) PlanMaclawAppInstall(packageJSON string) (maclawAppInstallPlan, er
 			Schema: entry.Schema,
 		})
 		for _, dep := range maclawAppDependenciesForEntry(entry) {
-			key := strings.ToLower(dep.ID)
-			existing := depsByID[key]
+			key := maclawAppInstallPlanDependencyMergeKey(dep)
+			existing := depsByKey[key]
 			if existing == nil {
 				dep.AppIDs = []string{entry.ID}
-				if match, ok := installed[key]; ok {
+				if match, ok := installed[strings.ToLower(dep.ID)]; ok {
 					applyMaclawAppInstalledSkillDependency(&dep, match)
 				} else if dep.Required {
 					dep.Health = "missing"
@@ -570,23 +570,12 @@ func (a *App) PlanMaclawAppInstall(packageJSON string) (maclawAppInstallPlan, er
 					dep.Action = "optional_missing"
 					dep.Message = "optional skill dependency is missing"
 				}
-				depsByID[key] = &dep
+				depsByKey[key] = &dep
 				plan.Dependencies = append(plan.Dependencies, dep)
 				continue
 			}
 			if !containsMaclawAppString(existing.AppIDs, entry.ID) {
 				existing.AppIDs = append(existing.AppIDs, entry.ID)
-			}
-			if dep.Required && !existing.Required {
-				existing.Required = true
-				if !existing.Installed {
-					existing.Health = "missing"
-					existing.Action = "blocked"
-					existing.Message = "required skill dependency is missing"
-				} else if !maclawAppDependencyIsReady(*existing) {
-					existing.Action = "blocked"
-					existing.Message = maclawAppDependencyInactiveMessage(*existing, true)
-				}
 			}
 		}
 	}
@@ -595,7 +584,7 @@ func (a *App) PlanMaclawAppInstall(packageJSON string) (maclawAppInstallPlan, er
 		plan.GovernanceReviewIssues = maclawAppBlockingInstallGovernanceReviewIssues(installDoc)
 	}
 	for i := range plan.Dependencies {
-		if dep := depsByID[strings.ToLower(plan.Dependencies[i].ID)]; dep != nil {
+		if dep := depsByKey[maclawAppInstallPlanDependencyMergeKey(plan.Dependencies[i])]; dep != nil {
 			plan.Dependencies[i] = *dep
 		}
 	}
@@ -2520,6 +2509,16 @@ func maclawAppDependencyBlocksInstall(dep maclawAppInstallPlanDependency) bool {
 	return health != "" && health != "ready"
 }
 
+func maclawAppInstallPlanDependencyMergeKey(dep maclawAppInstallPlanDependency) string {
+	return strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(dep.ID)),
+		strings.ToLower(strings.TrimSpace(dep.Version)),
+		strings.ToLower(strings.TrimSpace(dep.Kind)),
+		strings.ToLower(strings.TrimSpace(dep.Source)),
+		strconv.FormatBool(dep.Required),
+	}, "\x1f")
+}
+
 func (plan *maclawAppInstallPlan) refreshMaclawAppDependencyFlags() {
 	plan.HasMissingRequired = false
 	plan.HasBlockingDependency = false
@@ -4149,7 +4148,7 @@ func maclawAppDependencyVerificationReviewIssue(entry parsedMaclawAppEntry, gove
 	if schema := strings.TrimSpace(maclawAppStringValue(verification, "schema")); schema != "" && schema != "maclaw.app.install_plan.v1" {
 		return &maclawAppReviewIssue{Path: appPath + ".governance.dependencyVerification", Severity: "error", Message: "invalid dependency verification schema", Suggestion: "attach the backend PlanMaclawAppInstall result to governance.dependencyVerification"}
 	}
-	if maclawAppBoolValue(verification, "hasMissingRequired", "has_missing_required", "hasBlockingDependency", "has_blocking_dependency") {
+	if maclawAppDependencyVerificationBlocksEntry(verification, entry.ID) {
 		return &maclawAppReviewIssue{Path: appPath + ".governance.dependencyVerification", Severity: "error", Message: "required dependency is missing or blocked", Suggestion: "install or enable required Skill dependencies before submitting"}
 	}
 	if issue := maclawAppDependencyVerificationIssueFromEvidence(verification, appPath, "workflow", "approval workflow contract verification failed", "refresh dependency verification and align the approval workflow Skill contract before submitting"); issue != nil {
@@ -4182,6 +4181,80 @@ func maclawAppDependencyVerificationReviewIssue(entry parsedMaclawAppEntry, gove
 	return nil
 }
 
+func maclawAppDependencyVerificationBlocksEntry(verification map[string]any, appID string) bool {
+	if verification == nil {
+		return false
+	}
+	dependencies := anySlice(verification["dependencies"])
+	if len(dependencies) == 0 {
+		return maclawAppBoolValue(verification, "hasMissingRequired", "has_missing_required", "hasBlockingDependency", "has_blocking_dependency")
+	}
+	for _, item := range dependencies {
+		dep := anyMap(item)
+		if dep == nil || !maclawAppDependencyEvidenceMatchesAppID(dep, appID) {
+			continue
+		}
+		if maclawAppVerifiedDependencyBlocked(dep) {
+			return true
+		}
+	}
+	return false
+}
+
+func maclawAppDependencyEvidenceMatchesAppID(dep map[string]any, appID string) bool {
+	appIDs := maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(dep["app_ids"], dep["appIDs"], dep["AppIDs"]))
+	if len(appIDs) == 0 {
+		return true
+	}
+	for _, candidate := range appIDs {
+		if maclawAppIDsMatch(candidate, appID) {
+			return true
+		}
+	}
+	return false
+}
+
+func maclawAppIDsMatch(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return false
+	}
+	leftAliases := maclawAppIDAliases(left)
+	for alias := range maclawAppIDAliases(right) {
+		if leftAliases[strings.ToLower(alias)] {
+			return true
+		}
+	}
+	return false
+}
+
+func maclawAppIDAliases(id string) map[string]bool {
+	id = strings.TrimSpace(id)
+	aliases := map[string]bool{}
+	if id == "" {
+		return aliases
+	}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			aliases[strings.ToLower(value)] = true
+		}
+	}
+	add(id)
+	if strings.HasPrefix(id, "market-") {
+		add(strings.TrimPrefix(id, "market-"))
+	} else {
+		add("market-" + id)
+	}
+	if strings.HasPrefix(id, "datasrv-installed-") {
+		add(strings.TrimPrefix(id, "datasrv-installed-"))
+	} else {
+		add("datasrv-installed-" + id)
+	}
+	return aliases
+}
+
 func firstMaclawAppReviewIssueMessage(issues []maclawAppReviewIssue, fallback string) string {
 	for _, issue := range issues {
 		if msg := strings.TrimSpace(issue.Message); msg != "" {
@@ -4206,6 +4279,19 @@ func maclawAppDependencyVerificationIssueFromEvidence(verification map[string]an
 		pathSuffix = ".governanceReviewIssues"
 	}
 	issues := maclawAppReviewIssuesFromAny(rawIssues)
+	if len(issues) > 0 {
+		filtered := make([]maclawAppReviewIssue, 0, len(issues))
+		for _, issue := range issues {
+			issuePath := strings.TrimSpace(issue.Path)
+			if issuePath == "" || strings.HasPrefix(issuePath, appPath) || !strings.HasPrefix(issuePath, "apps[") {
+				filtered = append(filtered, issue)
+			}
+		}
+		issues = filtered
+		if len(issues) == 0 {
+			return nil
+		}
+	}
 	if !flagged && len(issues) == 0 {
 		return nil
 	}
@@ -5126,7 +5212,7 @@ func cloneMaclawAppPlanDependencies(deps []maclawAppInstallPlanDependency) []mac
 func cloneMaclawAppPlanDependenciesForApp(deps []maclawAppInstallPlanDependency, appID string) []maclawAppInstallPlanDependency {
 	out := []maclawAppInstallPlanDependency{}
 	for _, dep := range deps {
-		if !containsMaclawAppString(dep.AppIDs, appID) {
+		if !maclawAppPlanDependencyMatchesAppID(dep, appID) {
 			continue
 		}
 		dep.AppIDs = append([]string(nil), dep.AppIDs...)
@@ -5137,7 +5223,7 @@ func cloneMaclawAppPlanDependenciesForApp(deps []maclawAppInstallPlanDependency,
 
 func hasMissingMaclawAppRequiredDependencyForApp(deps []maclawAppInstallPlanDependency, appID string) bool {
 	for _, dep := range deps {
-		if dep.Required && !dep.Installed && containsMaclawAppString(dep.AppIDs, appID) {
+		if dep.Required && !dep.Installed && maclawAppPlanDependencyMatchesAppID(dep, appID) {
 			return true
 		}
 	}
@@ -5146,7 +5232,19 @@ func hasMissingMaclawAppRequiredDependencyForApp(deps []maclawAppInstallPlanDepe
 
 func hasBlockingMaclawAppRequiredDependencyForApp(deps []maclawAppInstallPlanDependency, appID string) bool {
 	for _, dep := range deps {
-		if containsMaclawAppString(dep.AppIDs, appID) && maclawAppDependencyBlocksInstall(dep) {
+		if maclawAppPlanDependencyMatchesAppID(dep, appID) && maclawAppDependencyBlocksInstall(dep) {
+			return true
+		}
+	}
+	return false
+}
+
+func maclawAppPlanDependencyMatchesAppID(dep maclawAppInstallPlanDependency, appID string) bool {
+	if len(dep.AppIDs) == 0 {
+		return false
+	}
+	for _, candidate := range dep.AppIDs {
+		if maclawAppIDsMatch(candidate, appID) {
 			return true
 		}
 	}

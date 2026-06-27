@@ -436,7 +436,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		return "MIS data service token is empty. Configure it in Settings > MIS data."
 	}
 	if action == misDataToolActionUnknown {
-		return "missing action. Supported: status, get_capabilities, list_domains, get_domain, list_business_objects, list_app_installations, resolve_object_role, list_relationships, resolve_intent, get_inbox, get_inbox_summary, get_stats, export_governance_evidence_pack, export_governance_evidence_summary, run_maintenance, list_business_actions, get_business_action, list_business_rules, evaluate_business_rules, list_event_contracts, get_event_contract, list_event_dead_letters, get_event_dead_letter, retry_event_dead_letter, resolve_event_dead_letter, list_connectors, list_connector_health, get_connector, upsert_connector, delete_connector, test_connector, validate_connector_config, check_connector_readiness, get_connector_health, get_connector_sync_state, list_connector_sync_runs, update_connector_sync_state, plan_connector_sync, sync_connector_batch, suggest_connector_mapping, patch_connector_config, preview_connector_event, ingest_connector_event, execute_business_action, list_business_views, get_business_view, query_business_view, list_dashboards, get_dashboard, run_dashboard, list_reports, get_report, run_report, aggregate_records, list_quality_checks, run_quality_check, list_quality_runs, get_quality_run, list_import_jobs, get_import_job, list_export_jobs, get_export_job, download_export_job, list_operation_plans, create_operation_plan, get_operation_plan, review_operation_plan, apply_operation_plan, cancel_operation_plan, mis.approval.start, mis.approval.list, mis.approval.list_by_record, mis.approval.get, mis.approval.sync_result, mis.approval.my_inbox, mis.approval.my_pending, mis.approval.my_requests, mis.approval.pending_my_approval, mis.approval.handled, mis.approval.attention, list_record_approvals, create_record_approval, get_record_approval, review_record_approval, list_audit_logs, export_audit_logs_csv, list_data_events, list_record_revisions, get_record_timeline, get_related_records, list_schema_proposals, get_schema_proposal, list_templates, get_template, bootstrap_templates, create_dataset_from_template, list_datasets, get_dataset, create_dataset, delete_dataset, list_fields, upsert_fields, propose_schema, apply_schema_proposal, validate_record, batch_import_records, bulk_update_records, bulk_delete_records, restore_record, start_batch_import_job, get_import_template_csv, import_records_csv, start_csv_import_job, import_records_jsonl, start_jsonl_import_job, upsert_record, get_record, delete_record, query_records, export_records, export_records_jsonl, start_csv_export_job, start_jsonl_export_job, ingest_event, create_backup, list_backups, get_backup, download_backup, restore_backup"
+		return "missing action. Supported: status, get_capabilities, list_domains, get_domain, list_business_objects, list_app_installations, get_app_installation, resolve_object_role, list_relationships, resolve_intent, get_inbox, get_inbox_summary, get_stats, export_governance_evidence_pack, export_governance_evidence_summary, run_maintenance, list_business_actions, get_business_action, list_business_rules, evaluate_business_rules, list_event_contracts, get_event_contract, list_event_dead_letters, get_event_dead_letter, retry_event_dead_letter, resolve_event_dead_letter, list_connectors, list_connector_health, get_connector, upsert_connector, delete_connector, test_connector, validate_connector_config, check_connector_readiness, get_connector_health, get_connector_sync_state, list_connector_sync_runs, update_connector_sync_state, plan_connector_sync, sync_connector_batch, suggest_connector_mapping, patch_connector_config, preview_connector_event, ingest_connector_event, execute_business_action, list_business_views, get_business_view, query_business_view, list_dashboards, get_dashboard, run_dashboard, list_reports, get_report, run_report, aggregate_records, list_quality_checks, run_quality_check, list_quality_runs, get_quality_run, list_import_jobs, get_import_job, list_export_jobs, get_export_job, download_export_job, list_operation_plans, create_operation_plan, get_operation_plan, review_operation_plan, apply_operation_plan, cancel_operation_plan, mis.approval.start, mis.approval.list, mis.approval.list_by_record, mis.approval.get, mis.approval.sync_result, mis.approval.my_inbox, mis.approval.my_pending, mis.approval.my_requests, mis.approval.pending_my_approval, mis.approval.handled, mis.approval.attention, list_record_approvals, create_record_approval, get_record_approval, review_record_approval, list_audit_logs, export_audit_logs_csv, list_data_events, list_record_revisions, get_record_timeline, get_related_records, list_schema_proposals, get_schema_proposal, list_templates, get_template, bootstrap_templates, create_dataset_from_template, list_datasets, get_dataset, create_dataset, delete_dataset, list_fields, upsert_fields, propose_schema, apply_schema_proposal, validate_record, batch_import_records, bulk_update_records, bulk_delete_records, restore_record, start_batch_import_job, get_import_template_csv, import_records_csv, start_csv_import_job, import_records_jsonl, start_jsonl_import_job, upsert_record, get_record, delete_record, query_records, export_records, export_records_jsonl, start_csv_export_job, start_jsonl_export_job, ingest_event, create_backup, list_backups, get_backup, download_backup, restore_backup"
 	}
 	switch action {
 	case "status":
@@ -511,10 +511,40 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			{"approverId", "approver_id"},
 			{"assigned_to", "approver_id"},
 			{"assignedTo", "approver_id"},
+			{"approval_id", "approval_id"},
+			{"approvalId", "approval_id"},
+			{"record_approval_id", "approval_id"},
+			{"recordApprovalId", "approval_id"},
+			{"recordApprovalID", "approval_id"},
+			{"workflow_instance_id", "workflow_instance_id"},
+			{"workflowInstanceId", "workflow_instance_id"},
+			{"workflowInstanceID", "workflow_instance_id"},
+			{"approval_instance_id", "workflow_instance_id"},
+			{"approvalInstanceId", "workflow_instance_id"},
+			{"approvalInstanceID", "workflow_instance_id"},
+			{"instance_id", "workflow_instance_id"},
+			{"instanceId", "workflow_instance_id"},
+			{"dataset_id", "dataset_id"},
+			{"datasetId", "dataset_id"},
+			{"object_role", "object_role"},
+			{"objectRole", "object_role"},
+			{"record_id", "record_id"},
+			{"recordId", "record_id"},
+			{"business_record_id", "record_id"},
+			{"businessRecordId", "record_id"},
+			{"businessRecordID", "record_id"},
 			{"result_type", "result_type"},
 			{"resultType", "result_type"},
 			{"output_type", "result_type"},
 			{"outputType", "result_type"},
+			{"definition_fingerprint", "definition_fingerprint"},
+			{"definitionFingerprint", "definition_fingerprint"},
+			{"definition_hash", "definition_fingerprint"},
+			{"definitionHash", "definition_fingerprint"},
+			{"app_definition_hash", "definition_fingerprint"},
+			{"appDefinitionHash", "definition_fingerprint"},
+			{"app_definition_fingerprint", "definition_fingerprint"},
+			{"appDefinitionFingerprint", "definition_fingerprint"},
 			{"before", "before"},
 			{"before_id", "before_id"},
 			{"beforeId", "before_id"},
@@ -537,6 +567,12 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			path += "?" + encoded
 		}
 		return a.callMISDataAPI(cfg, http.MethodGet, path, nil)
+	case misDataToolActionGetAppInstallation:
+		appID := strings.TrimSpace(firstNonEmptyMISAgentView(stringArg(args, "app_id"), stringArg(args, "appId"), stringArg(args, "id")))
+		if appID == "" {
+			return "missing app_id"
+		}
+		return a.callMISDataAPI(cfg, http.MethodGet, "/api/v1/data/app-installations/"+url.PathEscape(appID), nil)
 	case "resolve_object_role":
 		objectRole := misObjectRoleArg(args)
 		if objectRole == "" {

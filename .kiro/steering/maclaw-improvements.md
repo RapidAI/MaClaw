@@ -6570,3 +6570,241 @@ Priority 4: 空白（用户手动填写）
 - `C:\Users\ma139\AppData\Local\Temp\generate.js` → 允许（临时目录，不含源代码目录组件）
 - 所有 53 个新增单元测试 PASS + 所有已有 artifact/PPT/workflow filter 测试 PASS
 - 仅 2 个 pre-existing SSH Upload 测试因 test harness 问题失败（`Unknown tool: ssh`，与本次修改无关）
+
+
+### 113. LLM 输出截断导致 write_file 工具调用失败——max_tokens 未设置 + Hub 超时 + Essential Tool 保护过度
+
+**来源**：用户让 maclaw 生成 PPT 时，write_file 的 JSON 参数反复被截断（3634-5577 bytes），agent loop 停止。
+
+#### 根因（三层叠加）
+
+##### 根因 1 (P0): Hub MaClawProviderClient HTTP 超时硬编码 120s
+
+**根因**：`hub/internal/llmservice/maclaw_builtin.go` 中 `NewMaClawProviderClient` 的 HTTP client 超时硬编码为 120 秒。DeepSeek V4 Flash thinking mode 的 reasoning 阶段可能耗时 60-180 秒。当 reasoning 超过 120 秒时，hub 的 HTTP client 断连，客户端收到部分 SSE 数据（reasoning + 部分 tool call JSON），导致 tool call 参数不完整。
+
+**验证**：直连 DeepSeek API（`api.deepseek.com`）相同请求 → 33238 chars 完整 JSON，8179 tokens；通过 hub 转发 → 100% 返回 504 Gateway Timeout。
+
+**修复**：
+- `hub/internal/llmservice/maclaw_builtin.go`：
+  - `MaClawProviderConfig` 新增 `TimeoutSec int` 字段（默认 600s，最低 300s）
+  - `NewMaClawProviderClient`：从 `cfg.TimeoutSec` 读取超时（默认 600s）
+  - `streamHTTPClient`：`ResponseHeaderTimeout` 同步使用配置的超时值
+
+**部署注意**：
+- Hub/HubCenter 前方的 **nginx 反向代理** 也需要配置足够大的超时：
+  ```nginx
+  location /api/llm/ {
+      proxy_read_timeout 600s;
+      proxy_send_timeout 600s;
+      proxy_connect_timeout 30s;
+      proxy_buffering off;  # SSE 流式响应必须禁用缓冲
+  }
+  ```
+- 如果 nginx 的 `proxy_read_timeout` 小于 Hub 的 client timeout，nginx 会先超时返回 504
+- DeepSeek V4 Flash thinking mode 在 reasoning 阶段**不产生任何 SSE 数据**，nginx 看到的是"连接建立后长时间无数据传输"
+
+##### 根因 2 (P1): 客户端 max_tokens 未设置
+
+**根因**：`buildOpenAIChatRequestBody` 之前只在有 tools 时才设 `max_tokens=8192`，对 DeepSeek thinking mode 太小（reasoning 消耗 10K+ tokens 后留给 tool call 的空间不足）。
+
+**修复**：
+- `corelib/types.go`：`MaclawLLMConfig` 新增 `MaxOutputTokens int` 字段 + `EffectiveMaxOutputTokens()` 方法（统一默认 65536）
+- `corelib/llm/client.go`：`ensureMaxOutputTokens(reqBody, cfg)` 始终设 max_tokens，无论是否有 tools
+- `corelib/llm/stream.go`：二分降级机制——API 报 `max_tokens` 过大时自动折半重试（最多 6 次），成功后缓存到 `maxOutputTokensCache`
+- `corelib/llm/client_anthropic.go` + `responses.go` + `gui/llm_stream_responses_ws.go`：所有 4 条请求路径统一覆盖
+- `gui/app_maclaw_llm.go` + `tui/app.go`：config 加载路径传递 `MaxOutputTokens`
+- 前端 LLM 配置面板新增"最大输出长度"输入框（默认 65536，管理员可改）
+
+**二分降级逻辑**：
+- API 返回 400/422 + 错误消息含 `max_tokens`/`max_output_tokens`/`max_completion_tokens` + "must be"/"exceed"/"maximum"/"超出"/"最大" 等指示词 → 折半重试
+- 成功后缓存到 `sync.Map`（按 model name 索引），后续请求直接用缓存值，零额外开销
+- 覆盖中英文错误消息（包括智谱 GLM 的中文报错）
+
+##### 根因 3 (P2): Essential Tool 保护过度导致 agent loop 停止
+
+**根因**：`write_file` 被标记为 `PreserveAfterTruncation=true`（essential tool），当模型反复无法完成 write_file 的 JSON 参数时，系统只注入一次 hint，hint 失败后直接 finalize（`allowing no-tool recovery path`）。Agent loop 停了但任务没完成。
+
+**修复**：
+- `gui/im_agent_loop_truncation.go`：`handleAgentLoopEssentialTruncatedToolCalls` 当 essential hint 耗尽后**覆盖 essential 保护**——将截断的工具加入 `TruncationBlockedTools`，从工具列表移除，注入"使用 bash + Python 脚本写文件"的强制替代指令，`ContinueLoop=true`
+
+**修复后链路**：
+```
+iter N:   write_file 截断 → essential hint 注入 → continue
+iter N+1: write_file 再次截断 → hint 耗尽 → 移除 write_file → 注入替代方案 → continue
+iter N+2: LLM 没有 write_file → 使用 bash + Python 写文件 → 成功
+```
+
+#### 验收标准
+
+- 直连 DeepSeek API：33238 chars 完整 JSON，8179 tokens ✅
+- 通过 hub 转发（nginx timeout 已调大 + hub timeout 600s）：不再 504
+- GLM-4（max 4096）首次请求：二分降级 65536→32768→16384→8192→4096，之后缓存
+- Essential tool 反复截断：不再停止，自动切换到 bash 替代方案
+
+
+### 114. saveConversationHistoryTimed 同步阻塞 16 分钟导致 Agent Loop 假死 + edit_lines 限制过严导致任务无法完成
+
+**来源**：用户让 maclaw 实现 `detect_nontext_pii()` 方法（插入到已有 Python 文件中），maclaw 选择了"非编程任务"模式直接处理。Agent loop 在 iteration 8 之后停止响应，面板显示"执行中..."长达 16 分钟，最终返回一句残余文本，任务未完成。
+
+**日志证据**（`F:\newlog\logs\maclaw.log`，request_id=`desktop-ai-1782562243424-7ozbxoj1`）：
+- Agent loop 总耗时 34m50s，但只有 8 次 LLM 调用（iterations 0-8）
+- `[compaction] trigger=auto entries=111->91 duration=966263ms` — saveConversationHistoryTimed 从入口到 compaction log 耗时 **966 秒（16 分 6 秒）**
+- 20:29:42（iteration 8 结束）到 20:45:48（agent loop end）之间**零 LLM 请求**
+- `stream_tail=34m28.3173096s` — 非 LLM-stream 时间占总时间 99%
+
+#### 根因 1 (P0): saveConversationHistoryTimed 中的 memorySink + FlushNow 同步阻塞关键路径
+
+**根因**：`saveConversationHistoryTimed` 被放在 agent loop 返回用户响应的**关键路径**上（iteration finalize → response return 之间）。当 `willCompact=true`（111 entries > dynamicLimit）时：
+
+1. `memorySink` 回调对每个被截断的实质性 assistant 消息执行 `writeMemoryRefFile`（文件 I/O）+ `UpsertTaskArtifact`（内存 + signalSave）
+2. `h.memory.Save(userID, trimmed)` 持有 shard 写锁
+3. `h.memory.FlushNow()`（#55 引入）同步调用 `flushDirty()` → `saveToDisk()` → `cm.persistMu.Lock()` → JSON 序列化 111 条 entries → `os.WriteFile`
+
+当 `persistMu` 被异步 `persistLoop` goroutine 持有（正在进行另一次 saveToDisk），`FlushNow` 阻塞等待。在 Windows 上，`os.WriteFile` 对大 JSON 文件（111 条 entries 含大量 tool_calls args）可能被文件系统索引器/Defender 竞争，进一步放大延迟。
+
+更重要的是，`saveConversationHistoryTimed` 在 agent loop 的**多个退出路径**被调用：
+- `maxRoundsAgentLoopExit`
+- `handleAgentLoopEmptyNoToolResponse`（hard exit）
+- `maybeExitAgentLoopForNoToolHardCap`
+- WorkflowDocPhase finalize
+- 取消退出 / LLM 错误退出
+
+所有这些路径都**同步**等待 save + flush 完成后才返回 response 给前端。
+
+**机制性问题（深层根因，review 后修正）**：
+
+16 分钟阻塞不在文件 I/O，而在 **`memorySink` → `h.memoryStore.UpsertTaskArtifact` → `Store.mu.Lock()` 等待**。`memory.Store` 全局互斥锁被异步 `trial_reflect`/`online_extractor`/`pipeline` goroutine 长时间持有（日志证据：`[tool-usage] async_done tool="memory" elapsed=32m43.852s`——某个异步 memory 操作持锁 32 分钟）。`memorySink` 在关键路径上等待同一把锁释放。
+
+问题链路：
+1. Agent loop finalize 路径调用 `saveConversationHistoryTimed`
+2. `trimHistoryWithSummary` 遍历被截断的 entries，对每条实质性 assistant 消息调用 `memorySink`
+3. `memorySink` → `UpsertTaskArtifact` → `Store.SaveWithContext` → `s.mu.Lock()` **阻塞**
+4. 锁被 `trial_reflect` 的异步 memory save goroutine 持有（`RecordOutcome` → `Save` → 长时间 `ExpandQuery` 或 `findSubstringDuplicate` 遍历 500 条 entries）
+5. 直到异步 goroutine 释放锁（32 分钟后），`saveConversationHistoryTimed` 才能继续
+
+**两个设计违规叠加**：
+- **违规 1**：`saveConversationHistoryTimed` 在 agent loop 返回响应的关键路径上调用阻塞操作（需要 Store.mu 的写操作）
+- **违规 2**：`memory.Store.mu` 是单一全局锁，被前台（agent loop compaction）和后台（trial_reflect、online_extractor、pipeline）共享，无优先级区分
+
+**修复（三层机制性修复）**：
+
+##### Fix 1: memorySink 移到 response return 之后（关键路径解耦）
+
+- `gui/im_history_persistence.go`：`saveConversationHistoryTimed` 拆分为两步：
+  - **Step 1（同步，<5ms，关键路径）**：`trimHistoryWithSummary(history, nil, nil, ...)` — 传 `nil` memorySink，只做内存结构截断。然后 `h.memory.Save(userID, trimmed)` — 只写 shard（不 flush，<1ms）。返回 resp 给用户。
+  - **Step 2（异步，延迟执行）**：对 Step 1 中被截断的实质性 entries 执行 memorySink 回调。通过 `schedulePostConversationProcessing` 的已有后台队列执行，不阻塞 response return。
+- 实现方式：`trimHistoryWithSummary` 新增返回值 `droppedSubstantiveTexts []string`（被截断的 >=500 rune 的 assistant 文本）。调用方在 Step 1 收集这些文本，在 Step 2 的后台 goroutine 中处理。
+- `FlushNow` 从 Step 1 移到 Step 2（或完全移除——#55 的 in-flight marker 已保护数据安全）。
+
+##### Fix 2: Store.mu 读写分离——前台快速路径不等待后台长锁
+
+- `corelib/memory/store.go`：`Store.mu` 从 `sync.Mutex` 改为 `sync.RWMutex`
+- `UpsertEntryByTags`（前台写入）：短暂持写锁（只做 entries 修改 + dirty 标记）
+- `RecallDynamic`（后台读取）：持读锁（BM25 + embedding 遍历）
+- `findSubstringDuplicate`（写入路径内）：在 entries 的快照上操作（先 RLock 复制相关 entries，unlock，然后在快照上遍历），不在持锁状态下做 O(N) 子串扫描
+- `Save`/`SaveWithContext` 的内部 Lock 改为短暂写锁 + signalFlush
+
+**注意**：当前 `Store` 的大部分方法已经是全锁（`mu.Lock`），读写分离需要逐个方法审计。如果改动范围太大，替代方案是：
+
+##### Fix 2-alt: 前台写入使用 TryLock + 异步降级
+
+- `UpsertTaskArtifact` 在 `memorySink` 路径中使用 `mu.TryLock()`：
+  - 获得锁 → 正常执行（<1ms）
+  - 未获得锁 → 将操作入队到 pending 列表，在锁释放后批量执行
+- pending 列表在 `markDirtyAndScheduleFlush` 中消费
+
+##### Fix 3: trial_reflect 异步 memory save 加超时保护
+
+- `gui/im_trial_reflect.go`：`RecordOutcome` 的 memory save 操作加 context timeout（30s）
+- 超时后放弃本次 save，不影响主流程
+- 防止一个异步操作因 `ExpandQuery` 或子串遍历导致持锁 30+ 分钟
+
+##### Fix 4: duration 日志修正
+
+- `[compaction]` 日志计时从函数入口 `startedAt` 改为 `trimHistoryWithSummary` 调用前后的差值（只计同步部分）
+- 新增 `[compaction] blocking_wait=Xms` 日志：如果 `trimHistoryWithSummary` 耗时 >100ms（正常应 <1ms），记录为阻塞等待警告
+
+**不变量**：
+- `saveConversationHistoryTimed` 的所有调用点行为不变（signature 不变）
+- 数据安全：内存中的 entries 已更新（Save），磁盘 flush 在后台完成。进程被杀时 in-flight marker 保护任务恢复（#55）
+- `FlushNow` 在 `shutdown()` 中仍然同步等待（无超时），确保关闭时数据不丢失
+
+#### 根因 2 (P1): edit_lines/edit_file 的 preCheckAgentLoopInlinePayloadLimit 是多余的预防性限制——制造了它本想预防的问题
+
+**根因**：`preCheckAgentLoopInlinePayloadLimit` 在工具执行**之前**检查 `edit_lines`/`edit_file` 的 `content`/`old_string`/`new_string` 是否超过 1800 runes。超过则直接返回错误，不执行工具。
+
+这个限制的设计意图是"防止 LLM 生成过长的 tool call JSON 被 `max_output_tokens` 截断导致 JSON 不完整"。但这是**错误的防护层**：
+
+1. **后端无大小限制**：`edit_lines` 和 `edit_file` 的后端实现（`toolEditLines`/`toolEditFile`）就是 `strings.Replace` / 行替换，对任意大小的 content 都能正常处理。1800 runes 不是后端能力限制。
+2. **截断已有正确的防护层**：`filterTruncatedToolCalls`（#83）在 LLM stream 层面检测 JSON 截断——如果 tool call JSON 真的不完整，它会被移除并注入提示。这是处理截断的正确位置（输出层，而非输入层）。
+3. **preCheck 制造了死循环**：LLM 被 `edit_lines` 拒绝（4848 runes > 1800）→ 尝试 `write_file` 全量重写（更大，6255 bytes）→ 被 `max_output_tokens` 截断 → 被 `filterTruncatedToolCalls` 拦截。两条路径都走不通。如果没有 preCheck，4848 runes 的 `edit_lines` 调用会正常执行（JSON 总大小约 5200 runes ≈ 3000 tokens，远低于 DeepSeek V4 Flash 的 65536 output tokens）。
+
+**机制性问题**：用"预防性限制"在输入层拒绝了后端完全能处理的请求，同时迫使 LLM 选择更危险的替代方案（`write_file` 全量重写——参数更大、更容易被截断）。这是经典的"安全网制造了它本想预防的事故"反模式。
+
+**修复**：
+
+##### 删除 edit_lines/edit_file 的 preCheck 限制
+
+- `gui/im_tool_execution.go`：`preCheckAgentLoopInlinePayloadLimit` 中，`edit_file` 和 `edit_lines` 改为与 `write_file` 相同的 auto-pass 行为：
+  - 超过 soft threshold 时只记日志（`[agent-loop] edit_lines auto-pass: allowing oversized content (%d runes) to pass through to handler`）
+  - 不返回 error，让后端正常执行
+  - 如果 JSON 真的被 `max_output_tokens` 截断，由 `filterTruncatedToolCalls` 在 stream 层面处理
+
+- `gui/im_tool_definitions.go` + `gui/tool_registry_builtin.go`：
+  - 移除 `edit_file` 的 `old_string`/`new_string` 的 `maxLength: 1800` schema 约束
+  - 移除 `edit_lines` 的 `content` 的 `maxLength: 1800` schema 约束
+  - LLM 不再被 schema 限制阻止生成长编辑
+
+- `gui/im_agent_loop_truncation.go`：`maxAgentLoopInlineEditContentRunes` 保留为 soft logging threshold（不影响执行），注释更新说明它只用于日志观测
+
+**保留 bash/ssh 的 preCheck**：`bash` 命令有 4000 runes 限制是合理的——超长 bash 命令应该写入脚本文件再执行（这是正确的工程实践，不是人为限制）。`ssh` 同理。
+
+#### 根因 3 (P1): essential tool 截断后 LLM 进入无出路的 promise-stall 死胡同
+
+**根因**：触发链路为两个独立问题的叠加：
+
+1. **`edit_lines` 被反复拒绝**（content > 1800 runes）→ LLM 尝试 `write_file` 全量重写
+2. **`write_file` 被 `max_output_tokens` 截断**→ essential hint 注入 → 再次截断 → hint 耗尽 → `TruncationBlockedTools["write_file"]=true` → `write_file` 从工具列表移除
+3. **`newlyBlocked` 为空**（write_file 已在 blocked 中）→ `handleAgentLoopEssentialTruncatedToolCalls` return `{ContinueLoop: false}`
+4. **LLM 收到的信号不一致**：上一轮的 system message 说了"use bash + Python script"，但那是在**首次 block 时**注入的。现在 LLM 被 no-tool finalize 路径捕获——`classifyAgentNoToolReply` 将 "Let me write a Python patch script that handles this:" 分类为 `promise`
+5. **`promiseOnlyDeliverable` + `phase.Stage == agentStageRecover`**（前一轮 essential hint 设置的）→ `effectiveNoToolRecoverThreshold = 1` → 第一次 promise 直接触发 stall → hard cap exit → `saveConversationHistoryTimed`（阻塞 16 分钟）→ 返回残余文本
+
+**机制性问题**：两个 recover 机制互相矛盾。Essential truncation 告诉 LLM "用 bash 替代"，但 no-tool-stall-recover 把 LLM 的"我打算用 bash"response 当作 stall（因为 `agentStageRecover` 把容忍阈值降到 1）。LLM 的合规行为（准备按提示执行 bash）被系统当作不合规（stall）处理。
+
+**修复**：
+
+- `gui/im_agent_loop_truncation.go`：`handleAgentLoopEssentialTruncatedToolCalls` 在 `newlyBlocked == 0` 时的行为改为：
+  - **不** fall through 到 no-tool 路径（当前行为：`ContinueLoop=false` → 被 no-tool classify 为 stall）
+  - **而是** `ContinueLoop = true` + 注入轻量提醒："write_file 不可用，请现在使用 bash + Python 脚本写入文件"
+  - `phase.TruncationBlockedReminders` 计数器限制最多 2 次提醒
+  - 超过 2 次后才 fall through 到 finalize（此时 LLM 确实无法执行，需要终止）
+
+- `gui/im_agent_loop_no_tool_finalize.go`：`handleAgentLoopNoToolRecover` 中 `promiseOnlyDeliverable` 路径：
+  - 当 `phase.TruncationBlockedTools` 非空时，不使用 `effectiveNoToolRecoverThreshold = 1`
+  - 使用正常阈值（`stalledNoToolRecoverThreshold`）——给 LLM 足够轮次来执行 bash 替代方案
+  - 原理：工具被 block 后 LLM 说"让我用 bash..."是正确的中间状态（正在调整策略），不是 stall
+
+**设计原则**：当系统主动改变了 LLM 的能力边界（移除工具），必须给 LLM 足够的迭代次数来适应新约束。不能一边要求它"换方法"，一边又在它准备换方法时就判定为超时。
+
+**验收标准**：
+- 111 条 entries 的对话历史：`saveConversationHistoryTimed` 的 Step 1（同步部分）<5ms，response 立即返回给前端。memorySink 在后台异步执行。
+- 即使 `memory.Store.mu` 被后台 goroutine 持有，agent loop 的 response return 不受影响（memorySink 不在关键路径上）
+- `trial_reflect` 异步 memory save 超过 30s 自动放弃，不永久持锁
+- `edit_lines(content=4848 runes)` 正常执行，不被 preCheck 拒绝
+- `edit_file(new_string=3000 runes)` 正常执行，不被 preCheck 拒绝
+- schema 中无 `maxLength` 约束，LLM 不自我限制编辑大小
+- 如果 tool call JSON 被 max_output_tokens 截断 → 由 filterTruncatedToolCalls 处理（已有机制）
+- essential tool 被 block 后 LLM 输出 promise：系统注入轻量提醒 + `ContinueLoop=true`，LLM 在下一轮使用 bash 替代。不触发 stall/hard-cap exit
+- 轻量提醒最多 2 次，第 3 次正常 finalize（防止无限循环）
+- 所有 CodingGate / DriftDetector / Truncation / Compaction / Memory 测试通过
+- GUI / corelib 编译通过
+
+**机制性修复总结**：
+
+| 层面 | 修复前（问题） | 修复后（机制性保证） |
+|------|--------------|-------------------|
+| 关键路径阻塞 | memorySink 在 Store.mu 锁上阻塞 16 分钟 | memorySink 移到 response return 之后的异步路径 |
+| Store 锁竞争 | 前台/后台共享 mu，后台可持锁 32 分钟 | 后台操作 30s 超时 + 前台不在关键路径等锁 |
+| edit_lines 限制 | preCheck 人为限制 1800 runes，制造死循环 | 删除 preCheck 限制，后端无大小限制，截断由 stream 层处理 |
+| 截断恢复 | block 后 ContinueLoop=false → 被 stall 判定终止 | block 后 ContinueLoop=true + 提醒 → LLM 有机会适应 |
+| promise 分类 | 不区分"策略调整中"和"真正 stall" | TruncationBlockedTools 非空时使用正常容忍阈值 |

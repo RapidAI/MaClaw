@@ -26,6 +26,7 @@ type AppEntry = {
     manifest?: AppManifestBinding;
     importedRunEvidence?: AppRunHistoryEntry;
     versionSnapshot?: BackendAppInstallVersionSnapshot;
+    installEvidence?: BackendAppInstallRecord;
     workflowContract?: AppWorkflowContract;
     marketCapabilityID?: string;
     marketInstallSource?: 'enterprise_hub';
@@ -2184,23 +2185,30 @@ function applyLayoutState(apps: AppEntry[], layout: AppLayoutState): AppEntry[] 
 
 function normalizeStoredAppEntry(app: Partial<AppEntry> | undefined, custom = false): AppEntry | null {
     if (!app?.id || !app?.name) return null;
+    const kind = normalizeAppKind(app.kind);
     const source = app.source === 'builtin' || app.source === 'skill' || app.source === 'datasrv' || app.source === 'market' || app.source === 'local'
         ? app.source
         : undefined;
     const migratedSource = custom && (source === undefined || (source === 'market' && String(app.id).startsWith('local-app-'))) ? 'local' : source || 'local';
+    const installEvidence = (app as any).installEvidence && typeof (app as any).installEvidence === 'object'
+        ? (app as any).installEvidence as BackendAppInstallRecord
+        : undefined;
     return {
         ...app,
         id: String(app.id),
         name: String(app.name),
         description: String(app.description || ''),
         category: String(app.category || '\u672a\u5206\u7c7b'),
-        kind: normalizeAppKind(app.kind),
+        kind,
         icon: normalizeSkillAppIcon(app.icon),
         customIconDataUrl: normalizeCustomIconDataUrl((app as any).customIconDataUrl),
-        accent: String(app.accent || defaultAccentForKind(normalizeAppKind(app.kind))),
+        accent: String(app.accent || defaultAccentForKind(kind)),
         version: normalizeAppVersion(app.version),
         source: migratedSource,
         importedRunEvidence: normalizeImportedRunEvidence((app as any).importedRunEvidence),
+        versionSnapshot: normalizeVersionSnapshot((app as any).versionSnapshot),
+        installEvidence,
+        workflowContract: normalizeAppWorkflowContract((app as any).workflowContract, kind),
     };
 }
 
@@ -2393,6 +2401,7 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
     const workflowDependencies: AppSkillDependency[] = workflowIDs.map((id) => ({ id, version: workflowVersionByID.get(id) || undefined, kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }));
     const mergedDependencies = mergeDataSrvInstalledDependencies(dependencies, workflowDependencies);
     const importedRunEvidence = dataSrvInstalledRunEvidence(metadata, appID);
+    const installEvidence = dataSrvInstalledInstallEvidence(metadata, item, versionSnapshot, workflowContract, resultContract);
     return {
         id: `datasrv-installed-${appID}`,
         name,
@@ -2405,6 +2414,7 @@ function dataSrvInstalledAppCandidate(item: DataSrvAppInstallationItem): AppEntr
         version: normalizeAppVersion(item.version),
         importedRunEvidence,
         versionSnapshot,
+        installEvidence,
         workflowContract,
         manifest: {
             schema: 'maclaw.app.v1',
@@ -2969,6 +2979,80 @@ function dataSrvInstalledDependencyVerificationEvidence(metadata: Record<string,
     });
 }
 
+function dataSrvInstalledInstallEvidence(
+    metadata: Record<string, any>,
+    item: DataSrvAppInstallationItem,
+    versionSnapshot: BackendAppInstallVersionSnapshot | undefined,
+    workflowContract: AppWorkflowContract | undefined,
+    resultContract: AppResultContract | undefined,
+): BackendAppInstallRecord | undefined {
+    const appID = appEvidenceString(item.app_id, item.appId);
+    const appName = appEvidenceString(item.name, appID);
+    const kind = normalizeAppKind(item.kind || metadata.kind || 'enterprise_normal_app');
+    const rawTestEvidence = appEvidenceRecord(metadata.test_evidence) || {};
+    const testEvidence = Object.keys(rawTestEvidence).length > 0
+        ? rawTestEvidence
+        : {
+            run_id: metadata.test_evidence_run_id,
+            verified_at: metadata.test_evidence_verified_at,
+            definition_fingerprint: metadata.test_evidence_definition_fingerprint,
+            test_protocol_fingerprint: metadata.test_evidence_test_protocol_fingerprint,
+            artifact_present: metadata.test_evidence_artifact_present,
+            artifact_name: metadata.test_evidence_artifact_name,
+            artifact_count: metadata.test_evidence_artifact_count,
+            output_count: metadata.test_evidence_output_count,
+            primary_result: metadata.test_evidence_primary_result,
+            result_payload: metadata.test_evidence_result_payload,
+            outputs: metadata.test_evidence_outputs,
+            artifacts: metadata.test_evidence_artifacts,
+        };
+    const rawWorkspaceLayout = appEvidenceRecord(metadata.workspace_layout) || {};
+    const workspaceLayout = Object.keys(rawWorkspaceLayout).length > 0
+        ? rawWorkspaceLayout
+        : {
+            entry: metadata.workspace_layout_entry,
+            template: metadata.workspace_layout_template,
+            density: metadata.workspace_layout_density,
+            primaryRegion: metadata.workspace_layout_primary_region,
+            outputRegion: metadata.workspace_layout_output_region,
+            navigation: metadata.workspace_layout_navigation,
+            list: metadata.workspace_layout_list_columns ? { columns: metadata.workspace_layout_list_columns } : undefined,
+        };
+    const dependencyVerification = appEvidenceRecord(metadata.dependency_verification)
+        || appEvidenceRecord(rawTestEvidence.dependencyVerification)
+        || appEvidenceRecord(rawTestEvidence.dependency_verification)
+        || dataSrvInstalledDependencyVerificationEvidence(metadata, rawTestEvidence);
+    const dependencyVerificationRecord = dependencyVerification as Record<string, any> | undefined;
+    const dependencies = parseBackendAppInstallDependencies(dependencyVerificationRecord?.dependencies || metadata.dependencies);
+    const hasEvidence = [
+        versionSnapshot,
+        workflowContract,
+        resultContract,
+        dependencyVerification,
+        dependencies.length ? dependencies : undefined,
+        Object.values(testEvidence).some((value) => value !== undefined && value !== null && value !== ''),
+        Object.values(workspaceLayout).some((value) => value !== undefined && value !== null && value !== ''),
+    ].some(Boolean);
+    if (!hasEvidence) return undefined;
+    return {
+        schema: 'maclaw.app.install_record.v1',
+        package_sha: appEvidenceString(metadata.package_sha, metadata.package_sha256),
+        source: appEvidenceString(item.source, metadata.source),
+        installed_at: appEvidenceString(item.updated_at, item.updatedAt, metadata.installed_at, metadata.updated_at),
+        app_count: 1,
+        apps: appID ? [{ id: appID, name: appName, kind }] : undefined,
+        dependencies,
+        has_missing_required: appEvidenceBool(dependencyVerificationRecord?.hasMissingRequired, dependencyVerificationRecord?.has_missing_required, metadata.has_missing_required_dependency, metadata.has_missing_required),
+        has_blocking_dependency: appEvidenceBool(dependencyVerificationRecord?.hasBlockingDependency, dependencyVerificationRecord?.has_blocking_dependency, metadata.has_blocking_dependency),
+        version_snapshot: versionSnapshot,
+        workspace_layout: Object.keys(workspaceLayout).length > 0 ? workspaceLayout : undefined,
+        result_contract: resultContract,
+        workflow_contract: workflowContract,
+        test_evidence: Object.keys(testEvidence).length > 0 ? testEvidence : undefined,
+        dependency_verification: dependencyVerification,
+    };
+}
+
 function dataSrvInstalledRunEvidence(metadata: Record<string, any>, appID: string): AppRunHistoryEntry | undefined {
     const evidence = metadata.test_evidence && typeof metadata.test_evidence === 'object' ? metadata.test_evidence : {};
     const runID = String(evidence.run_id || evidence.runId || metadata.test_evidence_run_id || '').trim();
@@ -3463,6 +3547,22 @@ function parseSkillRunResultObjects(value: unknown): Record<string, any>[] {
     }
 }
 
+function expandSkillRunApprovalObjects(objects: Record<string, any>[]): Record<string, any>[] {
+    const out: Record<string, any>[] = [];
+    const seen = new Set<Record<string, any>>();
+    const add = (object: Record<string, any> | undefined | null) => {
+        if (!object || typeof object !== 'object' || Array.isArray(object) || seen.has(object)) return;
+        seen.add(object);
+        out.push(object);
+        for (const key of ['result_payload', 'resultPayload', 'approval_instance', 'approvalInstance', 'approval', 'record_ref', 'recordRef', 'business_payload', 'businessPayload']) {
+            const child = object[key];
+            if (child && typeof child === 'object' && !Array.isArray(child)) add(child as Record<string, any>);
+        }
+    };
+    objects.forEach(add);
+    return out;
+}
+
 function firstSkillRunResultString(objects: Record<string, any>[], keys: string[]) {
     for (const object of objects) {
         for (const key of keys) {
@@ -3527,7 +3627,7 @@ function mergeApprovalPayloadValue(payload: Record<string, unknown>, key: string
 
 function approvalWorkflowResultPayloadFromObjects(objects: Record<string, any>[], status?: SkillRunStatusView | null): Record<string, unknown> | undefined {
     const payload: Record<string, unknown> = {};
-    for (const object of objects) {
+    for (const object of expandSkillRunApprovalObjects(objects)) {
         const directPayload = object?.result_payload || object?.resultPayload;
         if (isApprovalRecordValue(directPayload)) {
             for (const [key, value] of Object.entries(directPayload)) mergeApprovalPayloadValue(payload, key, value);
@@ -3569,7 +3669,13 @@ function normalizeApprovalArtifacts(artifacts?: Array<ApprovalInstanceArtifactVi
 }
 
 function approvalWorkflowArtifactsFromStatus(status?: SkillRunStatusView | null): ApprovalInstanceArtifactView[] | undefined {
-    const items = [...(Array.isArray(status?.artifacts) ? status?.artifacts || [] : []), ...(Array.isArray(status?.summary?.artifacts) ? status?.summary?.artifacts || [] : []), ...skillRunOutputBlocks(status).map((block) => block.artifact), skillRunPrimaryArtifact(status)];
+    const objects = expandSkillRunApprovalObjects(skillRunApprovalObjects(status));
+    const resultArtifacts = objects.flatMap((object) => {
+        const artifacts = Array.isArray(object?.artifacts) ? object.artifacts : [];
+        const artifact = object?.artifact ? [object.artifact] : [];
+        return [...artifacts, ...artifact];
+    });
+    const items = [...(Array.isArray(status?.artifacts) ? status?.artifacts || [] : []), ...(Array.isArray(status?.summary?.artifacts) ? status?.summary?.artifacts || [] : []), ...skillRunOutputBlocks(status).map((block) => block.artifact), ...resultArtifacts, skillRunPrimaryArtifact(status)];
     return normalizeApprovalArtifacts(items);
 }
 
@@ -3613,7 +3719,9 @@ function normalizeApprovalOutputs(outputs?: Array<SkillRunOutputBlockView | Appr
 }
 
 function approvalWorkflowOutputsFromStatus(status?: SkillRunStatusView | null): ApprovalInstanceOutputView[] | undefined {
-    return normalizeApprovalOutputs(skillRunOutputBlocks(status));
+    const objects = expandSkillRunApprovalObjects(skillRunApprovalObjects(status));
+    const resultOutputs = objects.flatMap((object) => Array.isArray(object?.outputs) ? object.outputs : []);
+    return normalizeApprovalOutputs([...skillRunOutputBlocks(status), ...resultOutputs]);
 }
 
 function appRunResultPayloadFromStatus(status?: SkillRunStatusView | null): Record<string, unknown> | undefined {
@@ -3668,7 +3776,7 @@ function normalizeApprovalWorkflowDecision(value: string, lifecycle: 'done' | 'e
 
 function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | null, lifecycle: 'done' | 'error' | 'cancelled', lang?: string): ApprovalWorkflowCompletion {
     const zh = isZh(lang);
-    const objects = skillRunApprovalObjects(status);
+    const objects = expandSkillRunApprovalObjects(skillRunApprovalObjects(status));
     const explicitDecision = firstSkillRunResultString(objects, ['approval_result', 'approvalResult', 'approval_status', 'approvalStatus', 'approval_decision', 'approvalDecision', 'decision']);
     const decision = normalizeApprovalWorkflowDecision(explicitDecision, lifecycle);
     const outputText = skillRunOutputSuffix(status).replace(/^ · /, '');
@@ -4035,22 +4143,25 @@ function parseBackendAppInstallDependencies(value: unknown): BackendAppInstallDe
 function appRunDependencyVerificationEvidence(app: AppEntry, plan: BackendAppInstallPlan | null | undefined, verifiedAt = new Date().toISOString()): AppRunEvidenceDependencyVerification | undefined {
     if (!plan) return undefined;
     const appIDs = [canonicalAppManifestID(app)];
+    const dependencies = parseBackendAppInstallDependencies(plan.dependencies).filter((dep) => backendDependencyMatchesAppIDs(dep, appIDs));
+    const selectedAppIDs = new Set(appIDs.flatMap(appInstallIdentityKeys));
+    const apps = (plan.apps || []).filter((item) => appInstallIdentityKeys(String(item.id || '')).some((key) => selectedAppIDs.has(key)));
     const workflowContractIssues = workflowContractIssuesForAppIDs(plan, appIDs);
     const governanceReviewIssues = governanceReviewIssuesForAppIDs(plan, appIDs);
     return {
         schema: 'maclaw.app.install_plan.v1',
         verifiedAt,
-        appCount: plan.apps?.length || 0,
-        dependencyCount: plan.dependencies?.length || 0,
+        appCount: apps.length,
+        dependencyCount: dependencies.length,
         hasMissingRequired: hasMissingRequiredBackendDependency(plan, appIDs),
-        hasBlockingDependency: !!plan.has_blocking_dependency,
+        hasBlockingDependency: dependencies.some(isBlockingBackendDependency),
         hasWorkflowContractIssue: workflowContractHasIssueForAppIDs(plan, appIDs),
         workflowContractIssueCount: workflowContractIssues.length,
         hasGovernanceReviewIssue: governanceReviewHasIssueForAppIDs(plan, appIDs),
         governanceReviewIssueCount: governanceReviewIssues.length,
         workflowContractIssues,
         governanceReviewIssues,
-        dependencies: parseBackendAppInstallDependencies(plan.dependencies),
+        dependencies,
     };
 }
 function normalizeRiskLevel(value: unknown): string {
@@ -4388,7 +4499,40 @@ function appRunHistoryOutputEvidence(output: ApprovalInstanceOutputView) {
     };
 }
 
-function appDependencyEvidence(app: AppEntry) {
+type AppDependencyEvidence = BackendAppInstallDependency & { capabilities?: string[] };
+
+function appInstallEvidenceDependencyVerificationPlan(app: AppEntry): BackendAppInstallPlan | undefined {
+    const verification = app.installEvidence?.dependency_verification && typeof app.installEvidence.dependency_verification === 'object'
+        ? app.installEvidence.dependency_verification as Record<string, unknown>
+        : undefined;
+    const dependencies = verification
+        ? parseBackendAppInstallDependencies(verification.dependencies || (verification as any).Dependencies)
+        : parseBackendAppInstallDependencies(app.installEvidence?.dependencies);
+    if (dependencies.length === 0) return undefined;
+    return {
+        schema: String(verification?.schema || 'maclaw.app.install_plan.v1'),
+        apps: Array.isArray(verification?.apps) ? verification.apps as BackendAppInstallPlan['apps'] : [{ id: canonicalAppManifestID(app), name: app.name, kind: app.kind }],
+        dependencies,
+        workflow_contract_issues: parseReviewIssues(verification?.workflow_contract_issues || verification?.workflowContractIssues),
+        has_workflow_contract_issue: verification?.has_workflow_contract_issue === true || verification?.hasWorkflowContractIssue === true,
+        governance_review_issues: parseReviewIssues(verification?.governance_review_issues || verification?.governanceReviewIssues),
+        has_governance_review_issue: verification?.has_governance_review_issue === true || verification?.hasGovernanceReviewIssue === true,
+        has_missing_required: verification?.has_missing_required === true || verification?.hasMissingRequired === true || dependencies.some((dep) => isBlockingBackendDependency(dep) && dep.required !== false && !dep.installed),
+        has_blocking_dependency: verification?.has_blocking_dependency === true || verification?.hasBlockingDependency === true || dependencies.some(isBlockingBackendDependency),
+    };
+}
+
+function appInstallEvidenceDependencies(app: AppEntry): AppDependencyEvidence[] {
+    const verification = appInstallEvidenceDependencyVerificationPlan(app);
+    const verifiedDependencies = parseBackendAppInstallDependencies(verification?.dependencies);
+    const directDependencies = parseBackendAppInstallDependencies(app.installEvidence?.dependencies);
+    const dependencies = verifiedDependencies.length > 0 ? verifiedDependencies : directDependencies;
+    return dependencies.map((dep) => ({ ...dep, capabilities: [] }));
+}
+
+function appDependencyEvidence(app: AppEntry): AppDependencyEvidence[] {
+    const installedEvidence = appInstallEvidenceDependencies(app);
+    if (installedEvidence.length > 0) return installedEvidence;
     return appSkillDependencies(app).map((dep) => ({
         id: dep.id,
         version: dep.version,
@@ -4403,7 +4547,10 @@ function appDependencyPublishSummary(app: AppEntry, lang?: string) {
     const zh = isZh(lang);
     const deps = appDependencyEvidence(app);
     if (deps.length === 0) return zh ? '\u65e0 Skill \u4f9d\u8d56' : 'No Skill dependencies';
-    return deps.map((dep) => `${dep.id}${dep.version ? `@${dep.version}` : ''} (${dep.kind}${dep.required ? '' : ', optional'})`).join(', ');
+    return deps.map((dep) => {
+        const state = [dep.health, dep.action].map((item) => String(item || '').trim()).find(Boolean);
+        return `${dep.id}${dep.version ? `@${dep.version}` : ''} (${[dep.kind, dep.required ? '' : 'optional', state].filter(Boolean).join(', ')})`;
+    }).join(', ');
 }
 
 function appWorkspaceLayoutEvidence(app: AppEntry) {
@@ -4641,7 +4788,7 @@ function appWorkflowContractForManifest(app: AppEntry): AppWorkflowContract | un
 }
 
 function workflowContractForApp(app: AppEntry): AppWorkflowContract | undefined {
-    return app.workflowContract || appWorkflowContractForManifest(app);
+    return appWorkflowContractForManifest(app) || app.workflowContract;
 }
 
 function workflowContractIssueForApp(plan: BackendAppInstallPlan | null | undefined, app: AppEntry): AppReviewIssue | undefined {
@@ -5036,8 +5183,9 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
     const approvalInstanceEvidence = normalizeAppRunApprovalInstanceEvidence(evidence?.approvalInstance);
     const primaryArtifact = evidenceArtifacts[0];
     const artifactName = primaryArtifact?.name || (primaryArtifact?.path ? primaryArtifact.path.split(/[\\/]/).pop() : undefined);
-    const appIDs = [canonicalAppManifestID(app)];
     const dependencies = appDependencyEvidence(app);
+    const dependencyVerificationPlan = overrides.dependencyVerification || appInstallEvidenceDependencyVerificationPlan(app);
+    const dependencyVerificationEvidence = dependencyVerificationPlan ? appRunDependencyVerificationEvidence(app, dependencyVerificationPlan) : undefined;
     return {
         status: submission?.status || (evidence ? 'local_tested' : 'draft'),
         riskLevel: submission?.riskLevel || (isEnterpriseAppKind(app.kind) ? 'medium' : 'low'),
@@ -5048,21 +5196,7 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
             requiredCount: dependencies.filter((dep) => dep.required).length,
             optionalCount: dependencies.filter((dep) => !dep.required).length,
         },
-        dependencyVerification: overrides.dependencyVerification ? {
-            schema: overrides.dependencyVerification.schema || 'maclaw.app.install_plan.v1',
-            verifiedAt: new Date().toISOString(),
-            appCount: overrides.dependencyVerification.apps?.length || 0,
-            dependencyCount: overrides.dependencyVerification.dependencies?.length || 0,
-            hasMissingRequired: !!overrides.dependencyVerification.has_missing_required,
-            hasBlockingDependency: !!overrides.dependencyVerification.has_blocking_dependency,
-            hasWorkflowContractIssue: workflowContractHasIssueForAppIDs(overrides.dependencyVerification, appIDs),
-            workflowContractIssueCount: workflowContractIssuesForAppIDs(overrides.dependencyVerification, appIDs).length,
-            hasGovernanceReviewIssue: governanceReviewHasIssueForAppIDs(overrides.dependencyVerification, appIDs),
-            governanceReviewIssueCount: governanceReviewIssuesForAppIDs(overrides.dependencyVerification, appIDs).length,
-            workflowContractIssues: workflowContractIssuesForAppIDs(overrides.dependencyVerification, appIDs),
-            governanceReviewIssues: governanceReviewIssuesForAppIDs(overrides.dependencyVerification, appIDs),
-            dependencies: parseBackendAppInstallDependencies(overrides.dependencyVerification.dependencies),
-        } : undefined,
+        dependencyVerification: dependencyVerificationEvidence,
         workspaceLayout: appWorkspaceLayoutEvidence(app),
         resultContract,
         testProtocol,
@@ -5634,6 +5768,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                     const evidencePatch: Partial<AppEntry> = {};
                     if (app.importedRunEvidence && !existing.importedRunEvidence) evidencePatch.importedRunEvidence = app.importedRunEvidence;
                     if (app.versionSnapshot && !existing.versionSnapshot) evidencePatch.versionSnapshot = app.versionSnapshot;
+                    if (app.installEvidence && !existing.installEvidence) evidencePatch.installEvidence = app.installEvidence;
                     if (app.workflowContract && !existing.workflowContract) evidencePatch.workflowContract = app.workflowContract;
                     if (Object.keys(evidencePatch).length === 0) return current;
                     const next = [...current];
@@ -6159,6 +6294,64 @@ function appApprovalWorkflowVersion(app: AppEntry): string {
     const workflowID = binding?.workflowSkillId || '';
     return app.manifest?.dependencies?.skills?.find((dependency) => dependency.kind === 'workflow_skill' && (!workflowID || dependency.id === workflowID))?.version || '';
 }
+
+function approvalWorkflowContractInputPayload(app: AppEntry, options: {
+    instanceID: string;
+    inputSummary: string;
+    businessEntity: string;
+    businessAction: string;
+    businessNote: string;
+    submittedAt: string;
+    lang?: string;
+}) {
+    const appID = canonicalAppManifestID(app);
+    const datasetID = appDataSrvDatasetID(app);
+    const binding = appApprovalBinding(app);
+    const objectRole = String(binding?.objectRole || app.manifest?.datasrv?.objectRole || '').trim();
+    const blueprintID = String(app.manifest?.datasrv?.blueprintID || '').trim();
+    const applicantName = isZh(options.lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user';
+    const recordRef = {
+        app_id: appID,
+        app_name: app.name,
+        instance_id: options.instanceID,
+        record_id: options.instanceID,
+        dataset_id: datasetID,
+        object_role: objectRole,
+        blueprint_id: blueprintID,
+        title: options.inputSummary,
+    };
+    const applicant = {
+        id: 'current-user',
+        name: applicantName,
+        display_name: applicantName,
+        type: 'user',
+    };
+    const businessPayload = {
+        app_id: appID,
+        app_name: app.name,
+        approval_instance_id: options.instanceID,
+        record_ref: recordRef,
+        applicant,
+        business_entity: options.businessEntity || app.category,
+        business_action: options.businessAction || 'create',
+        business_note: options.businessNote,
+        dataset_id: datasetID,
+        object_role: objectRole,
+        blueprint_id: blueprintID,
+        datasrv_domain: app.manifest?.datasrv?.domain || '',
+        preferred_action: app.manifest?.datasrv?.preferredAction || '',
+        preferred_view: app.manifest?.datasrv?.preferredView || '',
+        submitted_at: options.submittedAt,
+    };
+    return {
+        record_ref: recordRef,
+        applicant,
+        business_payload: businessPayload,
+        workflow_contract: app.workflowContract,
+        workflow_required_inputs: app.workflowContract?.requiredInputs || [],
+    };
+}
+
 function appDataSrvDatasetID(app: AppEntry): string {
     const datasrv = app.manifest?.datasrv;
     const explicit = String(datasrv?.datasetID || '').trim();
@@ -6185,6 +6378,7 @@ function appApprovalRecordID(instance: BackendApprovalInstance): string {
 }
 
 function approvalDataSrvSyncPayload(app: AppEntry, instance: BackendApprovalInstance) {
+    const appID = canonicalAppManifestID(app);
 	const datasetID = String(instance.dataset_id || appDataSrvDatasetID(app)).trim();
 	const objectRole = String(instance.object_role || instance.approval_object_role || appApprovalBinding(app)?.objectRole || app.manifest?.datasrv?.objectRole || '').trim();
     const blueprintID = String(instance.blueprint_id || app.manifest?.datasrv?.blueprintID || '').trim();
@@ -6203,13 +6397,13 @@ function approvalDataSrvSyncPayload(app: AppEntry, instance: BackendApprovalInst
     return {
         dataset_id: datasetID,
         object_role: objectRole,
-        app_id: app.id,
+        app_id: appID,
         blueprint_id: blueprintID,
         record_id: recordID,
         approval_id: String(instance.approval_id || instance.record_approval_id || '').trim(),
         instance: {
             ...instance,
-            app_id: instance.app_id || app.id,
+            app_id: appID,
             dataset_id: datasetID,
             object_role: objectRole,
             approval_object_role: instance.approval_object_role || objectRole,
@@ -6463,6 +6657,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const [runtimeDependencyPlan, setRuntimeDependencyPlan] = useState<BackendAppInstallPlan | null>(null);
     const [runtimeDependencyCheckState, setRuntimeDependencyCheckState] = useState<'idle' | 'checking' | 'ready' | 'blocked' | 'error'>('idle');
     const approvalRunContextRef = useRef<ApprovalRunContext | null>(null);
+    const activeRunDependencyPlanRef = useRef<BackendAppInstallPlan | null>(null);
     useEffect(() => {
         setFileName('');
         setSelectedFile(null);
@@ -6484,6 +6679,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         setRuntimeDependencyPlan(null);
         setRuntimeDependencyCheckState('idle');
         approvalRunContextRef.current = null;
+        activeRunDependencyPlanRef.current = null;
         setRunHistory(loadAppRunHistory(app?.id || ''));
         setApprovalInstances([]);
         setApprovalInstancesLoadState('idle');
@@ -6492,6 +6688,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         if (!app || !appNeedsAutomaticRuntimeDependencyCheck(app)) {
             setRuntimeDependencyPlan(null);
             setRuntimeDependencyCheckState('idle');
+            activeRunDependencyPlanRef.current = null;
             return;
         }
         let disposed = false;
@@ -6522,7 +6719,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         }
         setApprovalInstancesLoadState('loading');
         try {
-            const records = await ListMaclawAppApprovalInstances(app.id, lane, 50) as BackendApprovalInstance[];
+            const records = await ListMaclawAppApprovalInstances(canonicalAppManifestID(app), lane, 50) as BackendApprovalInstance[];
             const views = (records || []).map((item) => backendApprovalInstanceToView(item, lang)).filter(Boolean) as ApprovalInstanceView[];
             setApprovalInstances((current) => lane === 'all' ? views : mergeApprovalInstanceViews(current, views));
             setApprovalInstancesLoadState('idle');
@@ -6563,7 +6760,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         const payload: BackendApprovalInstance = {
             ...previous,
             instance_id: previous.instance_id,
-            app_id: previous.app_id || app.id,
+            app_id: canonicalAppManifestID(app),
             app_name: previous.app_name || app.name,
             workflow_decision_id: runID || previous.workflow_decision_id,
             lane: completion.lane,
@@ -6637,7 +6834,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     const resultContract = app ? appResultContractForManifest(app) : buildAppResultContract('tool_app', [currentRunContext.outputMode]);
                     const primaryResult = appRunPrimaryResultFromPayload(resultContract, resultPayload, outputs);
                     const verifiedAt = new Date().toISOString();
-					const dependencyVerification = app ? appRunDependencyVerificationEvidence(app, runtimeDependencyPlan, verifiedAt) : undefined;
+					const dependencyVerificationPlan = activeRunDependencyPlanRef.current || runtimeDependencyPlan;
+					const dependencyVerification = app ? appRunDependencyVerificationEvidence(app, dependencyVerificationPlan, verifiedAt) : undefined;
 					setValidationMessage('');
 					setRuntimeBusinessError(null);
 					setRunState('done');
@@ -6742,11 +6940,15 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         setRuntimeDependencyPlan(null);
         setRuntimeDependencyCheckState('idle');
         approvalRunContextRef.current = null;
+        activeRunDependencyPlanRef.current = null;
     };
 	const runApp = async (options?: { skipDependencyCheck?: boolean }) => {
 		setDependencyRepairState('idle');
 		setRuntimeBusinessError(null);
 		approvalRunContextRef.current = null;
+        activeRunDependencyPlanRef.current = options?.skipDependencyCheck
+            ? activeRunDependencyPlanRef.current || runtimeDependencyPlan || runtimeInstallEvidencePlan || null
+            : runtimeDependencyPlan || runtimeInstallEvidencePlan || null;
         if (app?.id) onUse?.(app.id);
         if (!options?.skipDependencyCheck && app && appNeedsRuntimeDependencyCheck(app)) {
             const existingPlanBlocked = runtimeInstallPlanBlocked(runtimeDependencyPlan, app);
@@ -6760,6 +6962,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 setRuntimeDependencyCheckState('checking');
                 const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
                 setRuntimeDependencyPlan(dependencyPlan || null);
+                activeRunDependencyPlanRef.current = dependencyPlan || null;
                 if (runtimeInstallPlanBlocked(dependencyPlan, app)) {
                     setRuntimeDependencyCheckState('blocked');
                     setValidationMessage(runtimeInstallPlanBlockMessage(app, dependencyPlan, text, lang));
@@ -6858,11 +7061,21 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             setCurrentRunContext({ inputSummary, outputMode: 'approval' });
             let workflowRunID = '';
             try {
+                const contractInputs = approvalWorkflowContractInputPayload(app, {
+                    instanceID: fallbackID,
+                    inputSummary,
+                    businessEntity: businessEntity || app.category,
+                    businessAction: businessAction || 'create',
+                    businessNote,
+                    submittedAt: now,
+                    lang,
+                });
                 const runID = await RunNLSkillAsync(workflowSkillID, {
                     _maclaw_app: true,
-                    app_id: app.id,
+                    app_id: canonicalAppManifestID(app),
                     app_name: app.name,
                     app_kind: app.kind,
+                    ...contractInputs,
                     approval_instance_id: fallbackID,
                     approval_event: approvalBinding?.event || '',
                     approval_workflow_id: approvalBinding?.event || workflowSkillID,
@@ -6904,7 +7117,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             }
             const payload: BackendApprovalInstance = {
                 instance_id: fallbackID,
-                app_id: app.id,
+                app_id: canonicalAppManifestID(app),
                 app_name: app.name,
                 workflow_skill_id: workflowSkillID,
                 approval_workflow_id: approvalBinding?.event || workflowSkillID,
@@ -6930,6 +7143,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 result_status: 'pending',
                 from_status: 'submitted',
                 to_status: 'approval_pending',
+                record_id: fallbackID,
                 business_entity: businessEntity || app.category,
                 business_action: businessAction || 'create',
                 business_note: businessNote,
@@ -7057,17 +7271,19 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         try {
             const dependencyInstallPlan = await InstallMaclawAppDependencies(JSON.stringify(appToManifest(app)));
             setRuntimeDependencyPlan(dependencyInstallPlan || null);
+            activeRunDependencyPlanRef.current = dependencyInstallPlan || null;
             if (runtimeInstallPlanBlocked(dependencyInstallPlan, app)) {
                 setValidationMessage(runtimeInstallPlanBlockMessage(app, dependencyInstallPlan, text, lang));
                 setRunState('error');
                 setDependencyRepairState('idle');
                 return;
             }
-            setRuntimeDependencyPlan(null);
+            setRuntimeDependencyCheckState('ready');
             setDependencyRepairState('idle');
             await runApp({ skipDependencyCheck: true });
         } catch (error: any) {
             setRuntimeDependencyPlan(null);
+            activeRunDependencyPlanRef.current = null;
             setValidationMessage(error?.message || text.dependencyPlanError);
             setRunState('error');
             setDependencyRepairState('idle');
@@ -7086,7 +7302,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         const nextNode = decision === 'attention' ? instance.currentNode : (zh ? '\u5df2\u5b8c\u6210' : 'Completed');
         const payload: BackendApprovalInstance = {
             instance_id: instance.id,
-            app_id: instance.appID || app.id,
+            app_id: canonicalAppManifestID(app) || instance.appID || app.id,
             app_name: app.name,
             workflow_skill_id: instance.workflowSkillID || workflowSkillID,
             approval_workflow_id: instance.approvalWorkflowID || approvalBinding?.event || workflowSkillID || undefined,
@@ -7170,16 +7386,37 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         await finalizeApprovalRunFromStatus({ run_id: runID, status: 'cancelled', summary: { last_error_snippet: text.skillRunCancelled } }, 'cancelled');
     };
     const runtimeAppID = app ? canonicalAppManifestID(app) : '';
-    const runtimeDependencyDetails = runtimeDependencyPlan ? backendDependenciesForApp(runtimeDependencyPlan, runtimeAppID) : [];
-    const visibleRuntimeDependencyDetails = runtimeDependencyDetails.length > 0 ? runtimeDependencyDetails : runtimeDependencyPlan?.dependencies || [];
-    const runtimeDependencyBlocked = !!app && runtimeInstallPlanBlocked(runtimeDependencyPlan, app);
+    const runtimeInstallEvidencePlan = appInstallEvidenceDependencyVerificationPlan(app);
+    const runtimeDependencyPlanHasEvidence = !!runtimeDependencyPlan && (
+        (runtimeDependencyPlan.dependencies?.length || 0) > 0 ||
+        (runtimeDependencyPlan.workflow_contract_issues?.length || 0) > 0 ||
+        (runtimeDependencyPlan.governance_review_issues?.length || 0) > 0 ||
+        !!runtimeDependencyPlan.has_blocking_dependency ||
+        !!runtimeDependencyPlan.has_missing_required ||
+        !!runtimeDependencyPlan.has_workflow_contract_issue ||
+        !!runtimeDependencyPlan.has_governance_review_issue
+    );
+    const runtimeVisibleDependencyPlan = runtimeDependencyPlanHasEvidence ? runtimeDependencyPlan : runtimeInstallEvidencePlan || runtimeDependencyPlan || null;
+    const runtimeDependencyDetails = runtimeVisibleDependencyPlan ? backendDependenciesForApp(runtimeVisibleDependencyPlan, runtimeAppID) : [];
+    const visibleRuntimeDependencyDetails = runtimeDependencyDetails.length > 0 ? runtimeDependencyDetails : runtimeVisibleDependencyPlan?.dependencies || [];
+    const runtimeDependencyBlocked = !!app && runtimeInstallPlanBlocked(runtimeVisibleDependencyPlan, app);
     const runtimeDependencyChecking = runtimeDependencyCheckState === 'checking' || dependencyRepairState === 'installing';
     const runtimeDependencyReady = runtimeDependencyCheckState === 'ready' && visibleRuntimeDependencyDetails.length > 0 && !runtimeDependencyBlocked;
-    const runtimeDependencyMessage = app ? runtimeInstallPlanBlockMessage(app, runtimeDependencyPlan, text, lang) : backendDependencyUnavailableMessage(app, runtimeDependencyPlan, text, lang);
+    const runtimeEvidenceReady = runtimeDependencyCheckState === 'idle' && !!runtimeInstallEvidencePlan && visibleRuntimeDependencyDetails.length > 0 && !runtimeDependencyBlocked;
+    const runtimeDependencyMessage = app ? runtimeInstallPlanBlockMessage(app, runtimeVisibleDependencyPlan, text, lang) : backendDependencyUnavailableMessage(app, runtimeVisibleDependencyPlan, text, lang);
     const showRuntimeDependencyDetails = visibleRuntimeDependencyDetails.length > 0 && (runState === 'error' || dependencyRepairState === 'installing' || runtimeDependencyBlocked || runtimeDependencyReady);
-    const runtimeWorkflowContractBlocked = !!app && workflowContractHasIssue(runtimeDependencyPlan, app);
-    const runtimeGovernanceReviewBlocked = !!app && governanceReviewHasIssueForAppIDs(runtimeDependencyPlan, [runtimeAppID]);
+    const runtimeWorkflowContractBlocked = !!app && workflowContractHasIssue(runtimeVisibleDependencyPlan, app);
+    const runtimeGovernanceReviewBlocked = !!app && governanceReviewHasIssueForAppIDs(runtimeVisibleDependencyPlan, [runtimeAppID]);
     const canInstallRuntimeDependencies = !!app && appNeedsRuntimeDependencyCheck(app) && !runtimeWorkflowContractBlocked && !runtimeGovernanceReviewBlocked && (runtimeDependencyBlocked || dependencyRepairState === 'installing' || validationMessage === text.missingRequiredDependency);
+    const runtimeDependencyPanelState = dependencyRepairState === 'installing'
+        ? 'repairing'
+        : runtimeDependencyCheckState === 'checking'
+            ? 'loading'
+            : runtimeDependencyCheckState === 'error' && !runtimeVisibleDependencyPlan
+                ? 'error'
+                : runtimeVisibleDependencyPlan
+                    ? 'ready'
+                    : 'idle';
     const runDisabled = runState === 'running' || dependencyRepairState === 'installing';
     const runtimeStatusMessage = runState === 'done'
         ? text.runCompleted
@@ -7193,7 +7430,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                         ? text.dependencyPlanLoading
                         : runtimeDependencyBlocked
                             ? runtimeDependencyMessage
-                            : runtimeDependencyReady
+                            : runtimeDependencyReady || runtimeEvidenceReady
                                 ? text.dependencyReady
                                 : text.readyOutput;
     const runtimeStatusState = runState !== 'idle'
@@ -7204,10 +7441,12 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 ? 'error'
                 : runtimeDependencyReady
                     ? 'done'
-                    : 'idle';
+                    : runtimeEvidenceReady
+                        ? 'done'
+                        : 'idle';
     const runtimeWorkflowContract = workflowContractForApp(app);
-    const runtimeWorkflowContractIssue = workflowContractIssueForApp(runtimeDependencyPlan, app);
-    const runtimeWorkflowContractState = workflowContractStatus(runtimeWorkflowContract, runtimeDependencyPlan, app);
+    const runtimeWorkflowContractIssue = workflowContractIssueForApp(runtimeVisibleDependencyPlan, app);
+    const runtimeWorkflowContractState = workflowContractStatus(runtimeWorkflowContract, runtimeVisibleDependencyPlan, app);
     const runtimeLayout = runtimeWorkspaceLayoutForApp(app);
     const runtimeOrder = runtimeWorkspaceOrder(runtimeLayout);
     const isRuntimeRoleVisible = (role: string) => runtimeLayout.regions.some((region) => region.role === role && region.visible !== false);
@@ -7354,6 +7593,10 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                     </button>
                                 )}
                             </div>
+                            {runtimeVisibleDependencyPlan && (
+                                <DependencyVerificationPanel plan={runtimeVisibleDependencyPlan} state={runtimeDependencyPanelState} selectedAppIDs={[runtimeAppID]} text={text} />
+                            )}
+                            {app.installEvidence && <InstallRecordEvidenceSnapshot record={app.installEvidence} text={text} />}
                             {isTool && <SkillRunEvidence status={skillRunStatus} runState={runState} text={text} />}
                         </section>}
                         {showInputRegion && <div className="apps-actions apps-runtime-actions" data-region={inputRegion} style={{ order: runtimeOrder.actions }}>
@@ -8484,7 +8727,6 @@ function isBlockingBackendDependency(dep: BackendAppInstallDependency) {
 
 function hasMissingRequiredBackendDependency(plan: BackendAppInstallPlan | null | undefined, appIds: string[]) {
     if (appIds.length === 0) return false;
-    const selected = new Set(appIds);
     return (plan?.dependencies || []).some((dep) => isBlockingBackendDependency(dep) && backendDependencyMatchesAppIDs(dep, appIds));
 }
 function firstBlockingBackendDependencyForApp(plan: BackendAppInstallPlan | null | undefined, appId: string) {
@@ -8686,6 +8928,7 @@ function installedAppWithInstallEvidence(app: AppEntry, installAudit: BackendApp
     return {
         ...app,
         versionSnapshot: versionSnapshot || app.versionSnapshot,
+        installEvidence: installEvidence || app.installEvidence,
         workflowContract: workflowContract || app.workflowContract,
         importedRunEvidence: importedRunEvidence || app.importedRunEvidence,
     };
@@ -8703,7 +8946,8 @@ const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text 
     const governanceIssues = governanceReviewIssuesForAppIDs(plan, appIDs);
     const hasWorkflowIssue = workflowContractHasIssueForAppIDs(plan, appIDs);
     const hasGovernanceIssue = governanceReviewHasIssueForAppIDs(plan, appIDs);
-    const hasBlockingDependency = blockingCount > 0 || !!plan?.has_blocking_dependency || !!plan?.has_missing_required || hasWorkflowIssue || hasGovernanceIssue;
+    const hasPlanWideBlockingDependency = appIDs.length === 0 && (!!plan?.has_blocking_dependency || !!plan?.has_missing_required);
+    const hasBlockingDependency = blockingCount > 0 || hasPlanWideBlockingDependency || hasWorkflowIssue || hasGovernanceIssue;
     const status = state === 'loading' || state === 'repairing'
         ? text.dependencyPlanLoading
         : state === 'error'
@@ -10372,12 +10616,8 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
         let dependencyPlan: BackendAppInstallPlan | undefined;
         try {
             dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
-            const appIDs = [canonicalAppManifestID(app)];
-            if (workflowContractHasIssue(dependencyPlan, app)) {
+            if (runtimeInstallPlanBlocked(dependencyPlan, app)) {
                 throw new Error(runtimeInstallPlanBlockMessage(app, dependencyPlan, text, lang));
-            }
-            if (dependencyPlan?.has_blocking_dependency || hasMissingRequiredBackendDependency(dependencyPlan, appIDs)) {
-                throw new Error(text.missingRequiredDependency);
             }
         } catch (error) {
             setSubmitErrors((current) => ({
@@ -11202,6 +11442,10 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
             accent: updatedApp.accent,
             version: updatedApp.version,
             manifest: updatedApp.manifest,
+            importedRunEvidence: undefined,
+            versionSnapshot: undefined,
+            installEvidence: undefined,
+            workflowContract: undefined,
         };
         const skillID = String(updatedApp.manifest?.skill?.id || '').trim();
         const appDefinitionFile = String(updatedApp.manifest?.skill?.appDefinitionFile || '').trim();

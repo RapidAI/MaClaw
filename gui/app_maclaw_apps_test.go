@@ -518,6 +518,94 @@ func TestSubmitMaclawAppPackageFlagsStaleDependencyVerification(t *testing.T) {
 		t.Fatalf("expected backend install plan dependency state in submission: %#v", detail.Dependencies)
 	}
 }
+
+func TestSubmitMaclawAppPackageScopesDependencyVerificationToCurrentApp(t *testing.T) {
+	tmpHome := t.TempDir()
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "customer-renewal-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# Customer renewal\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "customer-renewal-skill", SkillDir: skillDir, Status: "active", HubVersion: "1.0.0"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	pkg := `{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [{
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {
+				"id": "scoped-dependency-verification",
+				"name": "Scoped Dependency Verification",
+				"kind": "enterprise_normal_app",
+				"binding": {
+					"appSkill": {"id":"customer-renewal-skill", "version":"1.0.0", "source":"hub"}
+				},
+				"governance": {
+					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"business_workspace", "template":"classic_split", "regionCount":4},
+					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"business_status", "types":["business_status", "business_record", "content"]},
+					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-basic","sampleInput":{"sample":true},"expectedOutput":{"business_status":"ready"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-basic", "runId":"run-business", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"business_status":"ready"}},
+					"dependencyVerification": {
+						"schema":"maclaw.app.install_plan.v1",
+						"hasBlockingDependency": true,
+						"hasMissingRequired": true,
+						"dependencies":[
+							{"id":"customer-renewal-skill", "kind":"runtime_skill", "required":true, "installed":true, "health":"ready", "action":"skip", "app_ids":["scoped-dependency-verification"]},
+							{"id":"other-blocked-skill", "kind":"runtime_skill", "required":true, "installed":false, "health":"missing", "action":"blocked", "app_ids":["other-blocked-app"]}
+						],
+						"governanceReviewIssues":[{"path":"apps[1].app.governance.testEvidence", "severity":"error", "message":"other app missing evidence"}],
+						"hasGovernanceReviewIssue": true
+					}
+				}
+			}
+		}]
+	}`
+
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
+	result, err := app.SubmitMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
+	}
+	if result["review_issue_count"] != 0 {
+		t.Fatalf("expected no dependency verification issue for foreign app dependency state, got %#v", result)
+	}
+	detail, err := app.GetMaclawAppPackageSubmission(result["submission_id"].(string))
+	if err != nil {
+		t.Fatalf("GetMaclawAppPackageSubmission error: %v", err)
+	}
+	if len(detail.ReviewIssues) != 0 {
+		t.Fatalf("expected clean scoped dependency verification record: %#v", detail.ReviewIssues)
+	}
+}
+
+func TestMaclawAppPlanDependencyMatchesWrappedAppIDs(t *testing.T) {
+	deps := []maclawAppInstallPlanDependency{
+		{ID: "market-skill", Required: true, Installed: true, Health: "ready", Action: "skip", AppIDs: []string{"market-customer-console"}},
+		{ID: "datasrv-skill", Required: true, Installed: false, Health: "missing", Action: "blocked", AppIDs: []string{"datasrv-installed-expense-approval"}},
+	}
+	if got := cloneMaclawAppPlanDependenciesForApp(deps, "customer-console"); len(got) != 1 || got[0].ID != "market-skill" {
+		t.Fatalf("expected market wrapped dependency to match canonical app id: %#v", got)
+	}
+	if !hasMissingMaclawAppRequiredDependencyForApp(deps, "expense-approval") {
+		t.Fatalf("expected datasrv wrapped dependency to match canonical app id")
+	}
+	if !hasBlockingMaclawAppRequiredDependencyForApp(deps, "expense-approval") {
+		t.Fatalf("expected datasrv wrapped dependency to count as blocking for canonical app id")
+	}
+	if got := cloneMaclawAppPlanDependenciesForApp(deps, "unrelated-app"); len(got) != 0 {
+		t.Fatalf("expected unrelated app id to stay isolated: %#v", got)
+	}
+}
+
 func TestSubmitMaclawAppPackageFlagsDependencyVerificationWorkflowIssueDetails(t *testing.T) {
 	tmpHome := t.TempDir()
 	workflowDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "expense-flow")
@@ -2634,6 +2722,59 @@ func TestPlanMaclawAppInstallTreatsBindingSkillAsDependency(t *testing.T) {
 		t.Fatalf("binding.skill should be a required runtime dependency: %#v", dep)
 	}
 }
+func TestPlanMaclawAppInstallScopesSharedDependencyRequirementPerApp(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [
+			{
+				"schema": "maclaw.app.v1",
+				"privateMarker": "x_maclaw_apps",
+				"app": {
+					"id": "required-app",
+					"name": "Required App",
+					"kind": "enterprise_normal_app",
+					"dependencies": {"skills": [{"id":"shared-skill", "kind":"runtime_skill", "required":true, "source":"hub"}]}
+				}
+			},
+			{
+				"schema": "maclaw.app.v1",
+				"privateMarker": "x_maclaw_apps",
+				"app": {
+					"id": "optional-app",
+					"name": "Optional App",
+					"kind": "enterprise_normal_app",
+					"dependencies": {"skills": [{"id":"shared-skill", "kind":"runtime_skill", "required":false, "source":"hub"}]}
+				}
+			}
+		]
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	var requiredDep, optionalDep *maclawAppInstallPlanDependency
+	for i := range plan.Dependencies {
+		dep := &plan.Dependencies[i]
+		if dep.ID != "shared-skill" {
+			continue
+		}
+		if dep.Required {
+			requiredDep = dep
+		} else {
+			optionalDep = dep
+		}
+	}
+	if requiredDep == nil || len(requiredDep.AppIDs) != 1 || requiredDep.AppIDs[0] != "required-app" || requiredDep.Action != "blocked" {
+		t.Fatalf("required app should retain its blocking shared dependency: %#v", plan.Dependencies)
+	}
+	if optionalDep == nil || len(optionalDep.AppIDs) != 1 || optionalDep.AppIDs[0] != "optional-app" || optionalDep.Action != "optional_missing" || optionalDep.Required {
+		t.Fatalf("optional app should retain optional shared dependency: %#v", plan.Dependencies)
+	}
+	if hasBlockingMaclawAppRequiredDependencyForApp(plan.Dependencies, "optional-app") {
+		t.Fatalf("optional app should not be blocked by required app dependency: %#v", plan.Dependencies)
+	}
+}
 
 func TestPlanMaclawAppInstallHonorsBindingSkillSourcesAndSnakeCaseAppSkill(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
@@ -2948,6 +3089,89 @@ func TestMaclawAppInstallEvidenceGeneratesDependencyVerification(t *testing.T) {
 	verifiedDependencies, ok := verification["dependencies"].([]maclawAppInstallPlanDependency)
 	if !ok || len(verifiedDependencies) != 2 || verifiedDependencies[0].ID != "expense-workflow" || !verifiedDependencies[0].Installed || verifiedDependencies[1].Action != "optional_missing" {
 		t.Fatalf("generated dependency verification should carry per-app dependencies: %#v", verification["dependencies"])
+	}
+}
+func TestMaclawAppDataSrvInstallationPayloadsScopeDependenciesPerApp(t *testing.T) {
+	entries := []parsedMaclawAppEntry{
+		{
+			ID:   "selected-app",
+			Name: "Selected App",
+			Kind: "enterprise_normal_app",
+			Entry: map[string]any{
+				"schema": "maclaw.app.v1",
+			},
+			App: map[string]any{
+				"id":   "selected-app",
+				"name": "Selected App",
+				"kind": "enterprise_normal_app",
+				"binding": map[string]any{
+					"datasrv": map[string]any{"domain": "finance", "datasetID": "finance.selected", "objectRole": "selected_record"},
+				},
+			},
+		},
+		{
+			ID:   "other-app",
+			Name: "Other App",
+			Kind: "enterprise_normal_app",
+			Entry: map[string]any{
+				"schema": "maclaw.app.v1",
+			},
+			App: map[string]any{
+				"id":   "other-app",
+				"name": "Other App",
+				"kind": "enterprise_normal_app",
+				"binding": map[string]any{
+					"datasrv": map[string]any{"domain": "finance", "datasetID": "finance.other", "objectRole": "other_record"},
+				},
+			},
+		},
+	}
+	dependencies := []maclawAppInstallPlanDependency{
+		{ID: "selected-skill", Kind: "runtime_skill", Required: true, AppIDs: []string{"market-selected-app"}, Installed: true, Health: "ready", Action: "skip"},
+		{ID: "other-skill", Kind: "runtime_skill", Required: true, AppIDs: []string{"other-app"}, Installed: false, Health: "missing", Action: "blocked"},
+	}
+
+	payloads := maclawAppDataSrvInstallationPayloads(entries, "market", "sha-selected", 4096, dependencies)
+	if len(payloads) != 2 {
+		t.Fatalf("expected one DataSrv payload per role-bound app, got %#v", payloads)
+	}
+	payloadByAppID := map[string]maclawAppDataSrvInstallationPayload{}
+	for _, payload := range payloads {
+		payloadByAppID[payload.AppID] = payload
+	}
+	selectedPayload, ok := payloadByAppID["selected-app"]
+	if !ok {
+		t.Fatalf("missing selected app payload: %#v", payloads)
+	}
+	selectedMetadata, ok := selectedPayload.Body["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("selected app payload missing metadata: %#v", selectedPayload.Body)
+	}
+	selectedVerification, ok := selectedMetadata["dependency_verification"].(map[string]interface{})
+	if !ok || selectedVerification["dependency_count"] != 1 || selectedVerification["has_missing_required"] != false || selectedVerification["has_blocking_dependency"] != false {
+		t.Fatalf("selected app dependency verification should be scoped and ready: %#v", selectedMetadata["dependency_verification"])
+	}
+	selectedVerificationDependencies, ok := selectedVerification["dependencies"].([]maclawAppInstallPlanDependency)
+	if !ok || len(selectedVerificationDependencies) != 1 {
+		t.Fatalf("selected app verification dependencies should be scoped: %#v", selectedVerification)
+	}
+	if selectedVerificationDependencies[0].ID != "selected-skill" || selectedVerificationDependencies[0].Health != "ready" {
+		t.Fatalf("selected app verification should not include other app dependency: %#v", selectedVerificationDependencies)
+	}
+	selectedDependencies, ok := selectedMetadata["dependencies"].([]maclawAppInstallPlanDependency)
+	if !ok || len(selectedDependencies) != 1 || selectedMetadata["dependency_count"] != 1 || selectedMetadata["has_missing_required_dependency"] != false || selectedMetadata["has_blocking_dependency"] != false {
+		t.Fatalf("selected app metadata dependencies should be scoped and ready: %#v", selectedMetadata)
+	}
+	if selectedDependencies[0].ID != "selected-skill" {
+		t.Fatalf("selected app metadata should only include selected dependency: %#v", selectedDependencies)
+	}
+	otherPayload, ok := payloadByAppID["other-app"]
+	if !ok {
+		t.Fatalf("missing other app payload: %#v", payloads)
+	}
+	otherMetadata, ok := otherPayload.Body["metadata"].(map[string]interface{})
+	if !ok || otherMetadata["has_blocking_dependency"] != true {
+		t.Fatalf("other app payload should retain its own blocking dependency: %#v", otherPayload.Body)
 	}
 }
 func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {

@@ -573,7 +573,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/import-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/export-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/operation-plans":                       {"dataset_id", "operation", "status"},
-		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node", "approval_status", "approval_decision", "applicant_id", "approver_id", "result_type", "has_blocking_dependency", "has_missing_required_dependency"},
+		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node", "approval_status", "approval_decision", "applicant_id", "approver_id", "approval_id", "workflow_instance_id", "dataset_id", "object_role", "record_id", "result_type", "definition_fingerprint", "has_blocking_dependency", "has_missing_required_dependency"},
 		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "app_id", "blueprint_id", "object_role", "approval_workflow_id", "trigger_event", "submitted_by", "current_assignee", "current_assignee_type", "from_status", "to_status", "status", "kind", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "current_node_id", "current_node", "workflow_node", "business_status", "result_status", "assigned_to", "created_by", "reviewed_by", "lane", "overdue", "before", "before_id"},
 		"/api/v1/data/datasets/{datasetId}/schema-proposals": {"status"},
 		"/api/v1/data/datasets/{datasetId}/records":          {"q", "tag"},
@@ -5585,7 +5585,7 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 						map[string]any{"id": "artifact-expense-evidence", "uri": "artifact://expense/evidence.zip", "name": "expense-approval-evidence.zip", "status": "ready"},
 						map[string]any{"id": "artifact-expense-pdf", "uri": "artifact://expense/approval.pdf", "name": "approval.pdf", "status": "ready"},
 					},
-					"approval_instance": map[string]any{"approval_id": "approval-remote-datasrv-1", "record_id": "expense-1", "status": "approved", "current_node": "expense.result_pack", "approval_instance_view_verified": true},
+					"approval_instance": map[string]any{"approval_id": "approval-remote-datasrv-1", "workflow_instance_id": "workflow-expense-datasrv-1", "dataset_id": "finance.expense_forms", "record_id": "expense-1", "status": "approved", "current_node": "expense.result_pack", "approval_instance_view_verified": true},
 					"result_payload": map[string]any{
 						"decision":        "approved",
 						"business_status": "finance_approved",
@@ -5783,6 +5783,36 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if len(approvalResultListed.Items) != 1 || approvalResultListed.Items[0].AppID != "mis.expense" {
 		t.Fatalf("expected approval-result-filtered app installation: %#v", approvalResultListed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?definition_hash=sha256:expense-app", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations by definition hash status=%d body=%s", w.Code, w.Body.String())
+	}
+	var definitionListed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&definitionListed); err != nil {
+		t.Fatalf("decode definition-filtered app installations: %v", err)
+	}
+	if len(definitionListed.Items) != 1 || definitionListed.Items[0].AppID != "mis.expense" {
+		t.Fatalf("expected definition-filtered app installation: %#v", definitionListed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?approval_id=approval-remote-datasrv-1&workflow_instance_id=workflow-expense-datasrv-1&dataset_id=finance.expense_forms&object_role=expense_report&record_id=expense-1", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations by approval identifiers status=%d body=%s", w.Code, w.Body.String())
+	}
+	var approvalIdentifierListed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&approvalIdentifierListed); err != nil {
+		t.Fatalf("decode approval-identifier-filtered app installations: %v", err)
+	}
+	if len(approvalIdentifierListed.Items) != 1 || approvalIdentifierListed.Items[0].AppID != "mis.expense" {
+		t.Fatalf("expected approval-identifier-filtered app installation: %#v", approvalIdentifierListed)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?workflow_node=finance.cfo_review", nil)

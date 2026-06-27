@@ -108,7 +108,7 @@ const DefaultLLMTimeoutSec = 600
 const (
 	MinAgentTimeoutSec     = 240
 	DefaultAgentTimeoutSec = 600
-	MaxAgentTimeoutSec     = 600
+	MaxAgentTimeoutSec     = 900
 )
 
 func NormalizeAgentTimeoutSec(seconds int) int {

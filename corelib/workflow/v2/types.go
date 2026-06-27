@@ -642,6 +642,7 @@ type PhaseSpec struct {
 	Kind                PhaseKind             `json:"kind,omitempty"`
 	MutationScope       MutationScope         `json:"mutation_scope,omitempty"`
 	InputSchema         *PhaseInputSchemaSpec `json:"input_schema,omitempty"`
+	DependsOnFull       []string              `json:"depends_on_full,omitempty"`
 	DisableOrchestrator bool                  `json:"disable_orchestrator,omitempty"`
 }
 

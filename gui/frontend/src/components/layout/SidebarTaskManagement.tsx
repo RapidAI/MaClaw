@@ -210,7 +210,9 @@ export const SidebarTaskManagement = ({
         if (creatingTaskRef.current) return;
         if (taskContextMenu) setTaskContextMenu(null);
         setNewTaskName('');
-        setNewTaskWorkingDir('');
+        // Use the most recent task's working directory as default
+        const lastDir = tasks.find(t => t.working_dir)?.working_dir || '';
+        setNewTaskWorkingDir(lastDir);
         setCreateDialogOpen(true);
     };
 
@@ -401,6 +403,15 @@ export const SidebarTaskManagement = ({
                                         {newTaskWorkingDir || (selectingWorkingDir ? textForLang(lang, 'Choosing...', '\u9009\u62e9\u4e2d...', '\u9078\u64c7\u4e2d...') : textForLang(lang, 'Choose folder', '\u9009\u62e9\u6587\u4ef6\u5939', '\u9078\u64c7\u8cc7\u6599\u593e'))}
                                     </span>
                                 </button>
+                                {newTaskWorkingDir && !creatingTask && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setNewTaskWorkingDir('')}
+                                        aria-label={textForLang(lang, 'Clear directory', '\u6e05\u9664\u76ee\u5f55', '\u6e05\u9664\u76ee\u9304')}
+                                        title={textForLang(lang, 'Clear directory', '\u6e05\u9664\u76ee\u5f55', '\u6e05\u9664\u76ee\u9304')}
+                                        style={{ flexShrink: 0, width: '18px', height: '18px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: '50%', background: 'color-mix(in srgb, var(--theme-text-muted) 15%, transparent)', color: 'var(--theme-text-muted)', cursor: 'pointer', padding: 0, fontSize: '11px', lineHeight: 1 }}
+                                    >×</button>
+                                )}
                             </div>
                             {newTaskName.length > 1600 && (
                                 <span style={{ flexShrink: 0, fontSize: '0.66rem', color: newTaskName.length >= 2000 ? 'var(--theme-danger, #ef4444)' : 'var(--theme-text-muted)', textAlign: 'right' }}>

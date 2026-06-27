@@ -1538,7 +1538,7 @@ func TestPatchConfigSanitizesAgentTimeouts(t *testing.T) {
 	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.AgentResponseTimeoutSec = 120
 		cfg.SkillRunnerTimeoutSec = 20000
-		cfg.MaclawLLMTimeoutSec = 900
+		cfg.MaclawLLMTimeoutSec = 1200
 		cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "slow", TimeoutSec: 120}}
 	}); err != nil {
 		t.Fatalf("PatchConfig() error = %v", err)

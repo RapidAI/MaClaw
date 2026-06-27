@@ -30,6 +30,7 @@ type agentLoopPhase struct {
 	TruncationRetries          int
 	EssentialTruncationHints   int
 	TruncationBlockedTools     map[string]bool
+	TruncationBlockedReminders int
 }
 
 func enterRecoverPhase(phase *agentLoopPhase, reason agentRecoverReason, prompt string) {

@@ -97,6 +97,7 @@ func (s *SQLiteStore) ListAppInstallations(ctx context.Context, tenantID string,
 		limit = 100
 	}
 	metadataFiltered := appInstallationHasMetadataFilters(in)
+	roleBindingFiltered := appInstallationHasRoleBindingFilters(in)
 	if !metadataFiltered {
 		query += ` LIMIT ?`
 		args = append(args, limit)
@@ -106,18 +107,22 @@ func (s *SQLiteStore) ListAppInstallations(ctx context.Context, tenantID string,
 		return nil, err
 	}
 	out := []AppInstallation{}
+	candidates := []AppInstallation{}
 	for rows.Next() {
 		app, err := scanAppInstallation(rows)
 		if err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
-		if !appInstallationMatchesMetadataFilters(app, in) {
+		if roleBindingFiltered {
+			candidates = append(candidates, app)
 			continue
 		}
-		out = append(out, app)
-		if metadataFiltered && len(out) >= limit {
-			break
+		if appInstallationMatchesMetadataFilters(app, in) {
+			out = append(out, app)
+			if metadataFiltered && len(out) >= limit {
+				break
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -127,7 +132,26 @@ func (s *SQLiteStore) ListAppInstallations(ctx context.Context, tenantID string,
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
+	if roleBindingFiltered {
+		for _, app := range candidates {
+			bindings, err := s.listAppRoleBindings(ctx, tenantID, app.ID)
+			if err != nil {
+				return nil, err
+			}
+			app.RoleBindings = bindings
+			if !appInstallationMatchesMetadataFilters(app, in) {
+				continue
+			}
+			out = append(out, app)
+			if metadataFiltered && len(out) >= limit {
+				break
+			}
+		}
+	}
 	for i := range out {
+		if len(out[i].RoleBindings) > 0 {
+			continue
+		}
 		bindings, err := s.listAppRoleBindings(ctx, tenantID, out[i].ID)
 		if err != nil {
 			return nil, err
@@ -191,7 +215,29 @@ func appInstallationMatchesMetadataFilters(app AppInstallation, in QueryAppInsta
 	if approverID := strings.TrimSpace(in.ApproverID); approverID != "" && !appInstallationHasApprovalActor(app.Metadata, approverID, "approver") {
 		return false
 	}
+	if approvalID := strings.TrimSpace(in.ApprovalID); approvalID != "" && !appInstallationHasIdentifier(app.Metadata, approvalID, []string{"approval_id", "approvalID", "approvalId", "record_approval_id", "recordApprovalID", "recordApprovalId"}) {
+		return false
+	}
+	if workflowInstanceID := strings.TrimSpace(in.WorkflowInstanceID); workflowInstanceID != "" && !appInstallationHasIdentifier(app.Metadata, workflowInstanceID, []string{"workflow_instance_id", "workflowInstanceID", "workflowInstanceId", "approval_instance_id", "approvalInstanceID", "approvalInstanceId", "instance_id", "instanceID", "instanceId"}) {
+		return false
+	}
+	if datasetID := strings.TrimSpace(in.DatasetID); datasetID != "" && !appInstallationHasIdentifier(app.Metadata, datasetID, []string{"dataset_id", "datasetID", "datasetId", "dataset"}) {
+		if !appInstallationHasRoleBindingIdentifier(app.RoleBindings, datasetID, "dataset") {
+			return false
+		}
+	}
+	if objectRole := strings.TrimSpace(in.ObjectRole); objectRole != "" && !appInstallationHasIdentifier(app.Metadata, objectRole, []string{"object_role", "objectRole", "approval_object_role", "approvalObjectRole"}) {
+		if !appInstallationHasRoleBindingIdentifier(app.RoleBindings, objectRole, "object_role") {
+			return false
+		}
+	}
+	if recordID := strings.TrimSpace(in.RecordID); recordID != "" && !appInstallationHasIdentifier(app.Metadata, recordID, []string{"record_id", "recordID", "recordId", "business_record_id", "businessRecordID", "businessRecordId"}) {
+		return false
+	}
 	if resultType := strings.TrimSpace(in.ResultType); resultType != "" && !appInstallationHasResultType(app.Metadata, resultType) {
+		return false
+	}
+	if definitionFingerprint := strings.TrimSpace(in.DefinitionFingerprint); definitionFingerprint != "" && !appInstallationHasIdentifier(app.Metadata, definitionFingerprint, []string{"definition_fingerprint", "definitionFingerprint", "definition_hash", "definitionHash", "test_evidence_definition_fingerprint", "app_definition_hash", "appDefinitionHash", "app_definition_fingerprint", "appDefinitionFingerprint"}) {
 		return false
 	}
 	if in.HasBlockingDependency != nil && appInstallationMetadataBool(app.Metadata, "has_blocking_dependency", "test_evidence_dependency_blocking", "dependency_verification.has_blocking_dependency", "dependency_verification.hasBlockingDependency", "test_evidence.dependency_verification.has_blocking_dependency", "test_evidence.dependency_verification.hasBlockingDependency") != *in.HasBlockingDependency {
@@ -210,9 +256,79 @@ func appInstallationHasMetadataFilters(in QueryAppInstallationsInput) bool {
 		strings.TrimSpace(in.ApprovalDecision) != "" ||
 		strings.TrimSpace(in.ApplicantID) != "" ||
 		strings.TrimSpace(in.ApproverID) != "" ||
+		strings.TrimSpace(in.ApprovalID) != "" ||
+		strings.TrimSpace(in.WorkflowInstanceID) != "" ||
+		strings.TrimSpace(in.DatasetID) != "" ||
+		strings.TrimSpace(in.ObjectRole) != "" ||
+		strings.TrimSpace(in.RecordID) != "" ||
 		strings.TrimSpace(in.ResultType) != "" ||
+		strings.TrimSpace(in.DefinitionFingerprint) != "" ||
 		in.HasBlockingDependency != nil ||
 		in.HasMissingRequiredDependency != nil
+}
+
+func appInstallationHasRoleBindingFilters(in QueryAppInstallationsInput) bool {
+	return strings.TrimSpace(in.DatasetID) != "" || strings.TrimSpace(in.ObjectRole) != ""
+}
+
+func appInstallationHasRoleBindingIdentifier(bindings []RoleBinding, expected, kind string) bool {
+	expected = strings.TrimSpace(expected)
+	if expected == "" {
+		return true
+	}
+	for _, binding := range bindings {
+		switch kind {
+		case "dataset":
+			if strings.TrimSpace(binding.DatasetID) == expected {
+				return true
+			}
+		case "object_role":
+			if strings.TrimSpace(binding.ObjectRole) == expected {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appInstallationHasIdentifier(metadata map[string]any, expected string, keys []string) bool {
+	expected = strings.TrimSpace(expected)
+	if expected == "" {
+		return true
+	}
+	if appInstallationMapHasAnyIdentifier(metadata, expected, keys) {
+		return true
+	}
+	for _, approval := range appInstallationApprovalInstances(metadata) {
+		if appInstallationMapHasAnyIdentifier(approval, expected, keys) {
+			return true
+		}
+	}
+	for _, payload := range appInstallationResultPayloads(metadata) {
+		if appInstallationMapHasAnyIdentifier(payload, expected, keys) {
+			return true
+		}
+	}
+	for _, evidence := range appInstallationTestEvidenceMaps(metadata) {
+		if appInstallationMapHasAnyIdentifier(evidence, expected, keys) {
+			return true
+		}
+	}
+	return false
+}
+
+func appInstallationMapHasAnyIdentifier(values map[string]any, expected string, keys []string) bool {
+	for _, key := range keys {
+		if value, ok := values[key].(string); ok && strings.TrimSpace(value) == expected {
+			return true
+		}
+		for _, value := range appInstallationStringList(values[key]) {
+			if value == expected {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func appInstallationMetadataBool(metadata map[string]any, keys ...string) bool {

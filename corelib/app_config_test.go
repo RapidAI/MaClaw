@@ -271,7 +271,7 @@ func TestNormalizeAgentTimeoutSec(t *testing.T) {
 		{name: "missing", in: 0, want: DefaultAgentTimeoutSec},
 		{name: "below min", in: 120, want: MinAgentTimeoutSec},
 		{name: "valid", in: 360, want: 360},
-		{name: "above max", in: 900, want: MaxAgentTimeoutSec},
+		{name: "above max", in: 1200, want: MaxAgentTimeoutSec},
 	}
 
 	for _, tt := range tests {

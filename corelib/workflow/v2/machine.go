@@ -100,6 +100,7 @@ func (m *StateMachine) Create(userID, workflowType, projectPath, summary string)
 			MutationScope: firstMutationScope(pt.MutationScope, mutationScope),
 			Status:        status,
 			InputSchema:   pt.InputSchema,
+			DependsOnFull: pt.DependsOnFull,
 		}
 	}
 

@@ -6434,6 +6434,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.SubAgentConcurrency = corelib.NormalizeSubAgentConcurrency(v)
+		case "subagent_full_access":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.SubAgentFullAccess = v
 		case "trial_reflect_enabled":
 			v, err := boolField(key, value)
 			if err != nil {

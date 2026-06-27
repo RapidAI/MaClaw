@@ -367,23 +367,42 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => { if (typeof off === "function") off(); };
     }, []);
     // SubAgent scope approval: interactive confirmation when accessing paths outside project
-    const [scopeApprovalPending, setScopeApprovalPending] = useState<{ id: string; tool: string; path: string; projectPath: string; directory: string } | null>(null);
+    const [scopeApprovalPending, setScopeApprovalPending] = useState<{ id: string; tool: string; path: string; projectPath: string; directory: string; timeoutSeconds: number } | null>(null);
+    const [scopeApprovalCountdown, setScopeApprovalCountdown] = useState(0);
     useEffect(() => {
         const off = EventsOn("subagent-scope-approval", (payload: unknown) => {
             if (!payload || typeof payload !== "object") return;
-            const data = payload as Record<string, string>;
+            const data = payload as Record<string, unknown>;
             if (!data.id) return;
+            const timeoutSec = typeof data.timeout_seconds === "number" ? data.timeout_seconds : 10;
             setScopeApprovalPending({
-                id: data.id,
-                tool: data.tool,
-                path: data.path,
-                projectPath: data.project_path,
-                directory: data.directory,
+                id: data.id as string,
+                tool: (data.tool as string) || "",
+                path: (data.path as string) || "",
+                projectPath: (data.project_path as string) || "",
+                directory: (data.directory as string) || "",
+                timeoutSeconds: timeoutSec,
             });
+            setScopeApprovalCountdown(timeoutSec);
         });
         return () => { if (typeof off === "function") off(); };
     }, []);
-    const handleScopeApprovalResolve = useCallback(async (decision: "allow_dir" | "deny") => {
+    // Countdown timer for scope approval auto-allow.
+    useEffect(() => {
+        if (!scopeApprovalPending || scopeApprovalCountdown <= 0) return;
+        const timer = setTimeout(() => {
+            setScopeApprovalCountdown(prev => prev - 1);
+        }, 1000);
+        return () => clearTimeout(timer);
+    }, [scopeApprovalPending, scopeApprovalCountdown]);
+    // Auto-dismiss 1 second before backend timeout to avoid race where user
+    // clicks "deny" but backend has already auto-allowed.
+    useEffect(() => {
+        if (scopeApprovalPending && scopeApprovalCountdown <= 1) {
+            setScopeApprovalPending(null);
+        }
+    }, [scopeApprovalPending, scopeApprovalCountdown]);
+    const handleScopeApprovalResolve = useCallback(async (decision: "allow_dir" | "deny" | "full_access") => {
         const pending = scopeApprovalPending;
         setScopeApprovalPending(null);
         if (!pending) return;
@@ -2050,7 +2069,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         </div>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: `1px solid ${t.titleBarBorder}` }}>
                             <button type="button" onClick={() => void handleScopeApprovalResolve("deny")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: t.text, fontSize: 12, cursor: "pointer" }}>{localizeText(lang, "Deny", "拒绝", "拒絕")}</button>
-                            <button type="button" onClick={() => void handleScopeApprovalResolve("allow_dir")} style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: "#f59e0b", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{localizeText(lang, "Allow Directory", "允许该目录", "允許該目錄")}</button>
+                            <button type="button" onClick={() => void handleScopeApprovalResolve("full_access")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: "#22c55e", fontSize: 12, cursor: "pointer" }}>{localizeText(lang, "Full Access", "完全访问", "完全訪問")}</button>
+                            <button type="button" onClick={() => void handleScopeApprovalResolve("allow_dir")} style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: "#f59e0b", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{localizeText(lang, `Allow Directory (${scopeApprovalCountdown}s)`, `允许该目录 (${scopeApprovalCountdown}s)`, `允許該目錄 (${scopeApprovalCountdown}s)`)}</button>
                         </div>
                     </div>
                 </div>

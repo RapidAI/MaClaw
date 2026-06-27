@@ -229,7 +229,7 @@ if (typeof I18N_EN !== 'undefined') {
       + field('llmPrvPriority', t('fieldPriority'), p ? String(p.priority||0) : '0', false, 'number')
       + '</div><div class="grid2">'
       + field('llmPrvConc', t('fieldConcurrency'), p ? String(p.max_concurrency||10) : '10', false, 'number')
-      + field('llmPrvTimeout', t('fieldTimeout'), p ? String(p.upstream_timeout_sec||120) : '120', false, 'number')
+      + field('llmPrvTimeout', t('fieldTimeout'), p ? String(p.upstream_timeout_sec||900) : '900', false, 'number')
       + '</div><div class="actions section-gap">'
       + '<button class="btn-primary" onclick="saveProvider(\'' + (mode==='edit'?esc(id):'') + '\')">' + esc(t('save')) + '</button>'
       + '<button class="btn-ghost" onclick="closeDialog()">' + esc(t('cancel')) + '</button></div>';

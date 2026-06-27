@@ -69,14 +69,72 @@ func BuildPhasePrompt(state *WorkflowState) string {
 		sb.WriteString(fmt.Sprintf("项目路径：%s\n\n", effectivePath))
 	}
 
-	// Previous phase outputs (truncated)
-	prevOutputs := state.PreviousOutputs(500)
-	if len(prevOutputs) > 0 {
-		sb.WriteString("## 前序阶段产出物（摘要）\n\n")
+	// Previous phase outputs — strategy depends on dependency declaration.
+	//
+	// DependsOnFull phases: the current phase needs detailed content from these
+	// prior phases. Instead of injecting the content inline (which blows up
+	// context for large documents like 50-page scripts), we inject a FILE PATH
+	// REFERENCE. The phase output is already persisted to disk by the workflow
+	// adapter. The LLM reads it on-demand via read_file during execution.
+	//
+	// This design treats prior phase outputs as working data (on disk), not as
+	// static prompt instructions. It scales to any document size — 5 pages or
+	// 500 pages use the same execution path.
+	//
+	// Non-DependsOnFull phases: inject a short 500-rune summary (enough for
+	// context awareness without polluting the prompt).
+	fullDepSet := make(map[string]bool, len(phase.DependsOnFull))
+	for _, dep := range phase.DependsOnFull {
+		fullDepSet[dep] = true
+	}
+	hasPrevOutputs := false
+	for i := 0; i < state.CurrentPhase && i < len(state.Phases); i++ {
+		if state.Phases[i].Output != "" {
+			hasPrevOutputs = true
+			break
+		}
+	}
+	if hasPrevOutputs {
+		sb.WriteString("## 前序阶段产出物\n\n")
 		for i := 0; i < state.CurrentPhase && i < len(state.Phases); i++ {
 			p := state.Phases[i]
-			if output, ok := prevOutputs[p.ID]; ok {
-				sb.WriteString(fmt.Sprintf("### %s\n%s\n\n", p.Name, output))
+			if p.Output == "" {
+				continue
+			}
+			output := stripBase64DataURLs(p.Output)
+			if fullDepSet[p.ID] {
+				// Full dependency: inject file reference + brief structure preview.
+				// The LLM must read_file to get the full content during execution.
+				outputRunes := []rune(output)
+				runeCount := len(outputRunes)
+				// Provide a structure preview so LLM understands the format.
+				previewBudget := 2000
+				if previewBudget > runeCount {
+					previewBudget = runeCount
+				}
+				preview := string(outputRunes[:previewBudget])
+				truncated := runeCount > previewBudget
+
+				if !truncated {
+					// Content fits entirely in preview — inject inline, no read_file needed.
+					sb.WriteString(fmt.Sprintf("### %s（完整，%d字）\n%s\n\n", p.Name, runeCount, preview))
+				} else {
+					// Content exceeds preview budget — inject preview + read_file instruction.
+					sb.WriteString(fmt.Sprintf("### %s（%d字，需读取完整文件）\n", p.Name, runeCount))
+					sb.WriteString(fmt.Sprintf("以下为前 %d 字结构预览：\n%s\n...(预览截断)\n\n", previewBudget, preview))
+					sb.WriteString(fmt.Sprintf("⚠️ 执行本阶段时，必须先使用 read_file 读取「%s」的完整内容。", p.Name))
+					if state.ProjectPath != "" && state.ProjectPath != "." {
+						sb.WriteString(fmt.Sprintf("\n文件位置：在 %s/.maclaw/workflow/ 目录下查找对应 .md 文件（使用 list_directory 确认文件名）。", state.ProjectPath))
+					}
+					sb.WriteString("\n逐页/逐段读取后，再按内容逐个生成产物。不要仅凭上方预览工作。\n\n")
+				}
+			} else {
+				// Default: truncate to 500 runes summary
+				runes := []rune(output)
+				if len(runes) > 500 {
+					output = string(runes[:500]) + "\n...(摘要)"
+				}
+				sb.WriteString(fmt.Sprintf("### %s（摘要）\n%s\n\n", p.Name, output))
 			}
 		}
 	}

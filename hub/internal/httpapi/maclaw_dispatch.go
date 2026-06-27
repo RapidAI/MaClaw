@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 )
 
@@ -75,4 +76,17 @@ func currentMaClawAccessControl(fallback *llmservice.TenantLLMAccessControl) *ll
 		return fallback
 	}
 	return GetMaClawAccessControl()
+}
+
+// applyMaClawUpstreamTimeout updates the MaClaw Official provider client timeout
+// from the registry's global UpstreamTimeoutSec value. Called after admin saves settings.
+func applyMaClawUpstreamTimeout(reg *im.LLMProviderRegistry) {
+	if reg == nil || reg.UpstreamTimeoutSec <= 0 {
+		return
+	}
+	module := GetMaClawModule()
+	if module == nil || module.Client == nil {
+		return
+	}
+	module.Client.UpdateTimeout(reg.UpstreamTimeoutSec)
 }
