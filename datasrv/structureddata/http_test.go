@@ -6084,12 +6084,31 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 		t.Fatalf("attention lane should return attention result approvals: %#v", attentionLane)
 	}
 
-	reviewReq := jsonRequest(http.MethodPost, "/api/v1/data/approvals/"+expenseApproval.ID+"/review", ReviewRecordApprovalInput{Decision: "approve", BusinessStatus: "approved", ResultStatus: "completed", CurrentAssignee: "finance_queue", CurrentAssigneeType: "queue", WorkflowInstanceID: "wf-exp-100", WorkflowNodeID: "finance_review", WorkflowNodeIDs: []string{"finance_review", "legal_review"}})
+	approvalResultPayload := map[string]any{
+		"summary":         "Expense approved and reimbursement packet generated",
+		"business_status": "approved",
+		"business_record": map[string]any{"status": "reimbursable", "reimbursement_id": "pay-100"},
+	}
+	approvalOutputs := []RecordApprovalOutput{
+		{Type: "text", Kind: "approval_summary", Title: "Approval result", Text: "Approved for reimbursement", Status: "completed"},
+		{Type: "file", Kind: "reimbursement_packet", Title: "Reimbursement packet", ArtifactID: "artifact-exp-100"},
+	}
+	approvalArtifacts := []RecordApprovalArtifact{
+		{ID: "artifact-exp-100", Name: "expense-100-reimbursement.pdf", URI: "maclaw://artifacts/expense-100-reimbursement.pdf", MimeType: "application/pdf", SizeBytes: 4096, Status: "ready", Presentation: "download"},
+	}
+	reviewReq := jsonRequest(http.MethodPost, "/api/v1/data/approvals/"+expenseApproval.ID+"/review", ReviewRecordApprovalInput{Decision: "approve", BusinessStatus: "approved", ResultStatus: "completed", CurrentAssignee: "finance_queue", CurrentAssigneeType: "queue", WorkflowInstanceID: "wf-exp-100", WorkflowNodeID: "finance_review", WorkflowNodeIDs: []string{"finance_review", "legal_review"}, ResultPayload: approvalResultPayload, Outputs: approvalOutputs, Artifacts: approvalArtifacts})
 	auth(reviewReq)
 	reviewW := httptest.NewRecorder()
 	server.Handler().ServeHTTP(reviewW, reviewReq)
 	if reviewW.Code != http.StatusOK {
 		t.Fatalf("review semantic approval status=%d body=%s", reviewW.Code, reviewW.Body.String())
+	}
+	var reviewedApproval RecordApproval
+	if err := json.NewDecoder(reviewW.Body).Decode(&reviewedApproval); err != nil {
+		t.Fatalf("decode reviewed approval: %v", err)
+	}
+	if reviewedApproval.ResultPayload["summary"] != approvalResultPayload["summary"] || len(reviewedApproval.Outputs) != 2 || reviewedApproval.Outputs[1].ArtifactID != "artifact-exp-100" || len(reviewedApproval.Artifacts) != 1 || reviewedApproval.Artifacts[0].Name != "expense-100-reimbursement.pdf" {
+		t.Fatalf("review response should preserve approval result package: %#v", reviewedApproval)
 	}
 
 	laneReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=handled&app_id=mis.expense", nil)
@@ -6106,12 +6125,27 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	if len(handledLane.Items) != 1 || handledLane.Items[0].ID != expenseApproval.ID || handledLane.Items[0].ReviewedBy != "user_1" || handledLane.Items[0].Status != "approved" || handledLane.Items[0].CurrentAssignee != "finance_queue" || handledLane.Items[0].CurrentAssigneeType != "queue" || handledLane.Items[0].FromStatus != "submitted" || handledLane.Items[0].ToStatus != "approved" || len(handledLane.Items[0].WorkflowNodeIDs) != 2 || handledLane.Items[0].WorkflowNodeIDs[0] != "finance_review" || handledLane.Items[0].WorkflowNodeIDs[1] != "legal_review" {
 		t.Fatalf("handled lane should use authenticated reviewer: %#v", handledLane)
 	}
+	if handledLane.Items[0].ResultPayload["summary"] != approvalResultPayload["summary"] || len(handledLane.Items[0].Outputs) != 2 || handledLane.Items[0].Outputs[1].ArtifactID != "artifact-exp-100" || len(handledLane.Items[0].Artifacts) != 1 || handledLane.Items[0].Artifacts[0].Name != "expense-100-reimbursement.pdf" {
+		t.Fatalf("handled lane should preserve approval result package: %#v", handledLane.Items[0])
+	}
 	updatedRecord, err := svc.GetRecord(context.Background(), p, ds.ID, "exp-100")
 	if err != nil {
 		t.Fatalf("GetRecord after approval review: %v", err)
 	}
 	if fmt.Sprint(updatedRecord.Data["approval_workflow_node_ids"]) != "[finance_review legal_review]" || fmt.Sprint(updatedRecord.Data["approval_current_nodes"]) != "[finance_review legal_review]" {
 		t.Fatalf("business record should carry parallel approval nodes: %#v", updatedRecord.Data)
+	}
+	if payload, ok := updatedRecord.Data["approval_result_payload"].(map[string]any); !ok || payload["summary"] != approvalResultPayload["summary"] {
+		t.Fatalf("business record should carry approval result payload: %#v", updatedRecord.Data)
+	}
+	if outputs, ok := updatedRecord.Data["approval_outputs"].([]any); !ok || len(outputs) != 2 {
+		t.Fatalf("business record should carry approval outputs: %#v", updatedRecord.Data)
+	}
+	if artifacts, ok := updatedRecord.Data["approval_artifacts"].([]any); !ok || len(artifacts) != 1 {
+		t.Fatalf("business record should carry approval artifacts: %#v", updatedRecord.Data)
+	}
+	if updatedRecord.Data["approval_result_summary"] != "Expense approved and reimbursement packet generated" || updatedRecord.Data["approval_primary_artifact"] != "expense-100-reimbursement.pdf" || updatedRecord.Data["approval_output_count"] != float64(2) || updatedRecord.Data["approval_artifact_count"] != float64(1) || updatedRecord.Data["status"] != "reimbursable" {
+		t.Fatalf("business record should summarize approval result package: %#v", updatedRecord.Data)
 	}
 
 	invalidLaneReq := httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=unknown", nil)
