@@ -1323,6 +1323,20 @@ describe('AppsPage', () => {
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
+        const evidence = payload.apps[0].app.governance.testEvidence;
+        expect(evidence.resultPayload).toEqual(expect.objectContaining({
+            business_status: 'renewal_ready',
+            business_record: { id: 'customer-1' },
+            text: 'renewal ready',
+        }));
+        expect(evidence.outputCount).toBe(1);
+        expect(evidence.outputs).toEqual([expect.objectContaining({
+            kind: 'business_record',
+            title: 'Customer renewal',
+            text: '{"id":"customer-1"}',
+            status: 'ready',
+            data: { id: 'customer-1' },
+        })]);
         expect(payload.apps[0].app.governance.testEvidence.resultCoverage).toEqual(expect.objectContaining({
             ok: true,
             primary: 'business_status',

@@ -2782,3 +2782,28 @@ DataSrv RecordApproval.review
 ```
 
 这使“数据录入 + 审批工作流 Skill 运行 + 审批实例数据管理 + 结果反馈”中的结果反馈环节更接近可验收闭环。下一步继续补齐真实 App 运行样例：从 GUI 发起一个企业审批型 App，经过 workflow-skill 产出审批实例，再回到 DataSrv/GUI lane 与 Hub 安装包证据。
+
+### 推进记录：企业普通应用运行证据上传闭环（2026-06-27）
+
+本轮补强了企业普通应用（enterprise_normal_app）的“运行后再上传”证据链：
+
+```text
+GUI 企业普通应用运行
+  -> ExecuteMaclawAppBusinessOperation 调用 DataSrv business action/view/report/dashboard
+  -> 前端生成 resultPayload + outputs 运行证据
+  -> 本地运行历史保存当前 definitionHash
+  -> 审核/发布时写入 governance.testEvidence
+  -> 上传到 Hub/能力市场的 maclaw.app.pack.v1 包携带结构化结果证据
+```
+
+新增前端测试断言普通企业 App 发布包里的 testEvidence 必须包含：
+
+```text
+resultPayload.business_status
+resultPayload.business_record
+outputs[].kind / title / text / status / data
+outputCount
+resultCoverage
+```
+
+这补上了“企业普通应用：DataSrv business action/query/report 执行、结构化 outputs、测试证据、二次发布”里的测试证据上传断点。下一步继续把同类证据向真实 Hub 安装包下载重装、DataSrv app_installations 回流做端到端串联。

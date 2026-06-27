@@ -3326,7 +3326,7 @@ func TestAppendSubAgentCommandSummaryCapsLongLists(t *testing.T) {
 	if count := strings.Count(summary, "- PASS: `"); count != codingSubAgentCommandSummaryMax {
 		t.Fatalf("command entry count = %d, want %d; summary=%q", count, codingSubAgentCommandSummaryMax, summary)
 	}
-	if strings.Contains(summary, "go test ./pkg/12") {
+	if strings.Contains(summary, "go test ./pkg/00") {
 		t.Fatalf("command summary should be capped, got %q", summary)
 	}
 	if !strings.Contains(summary, "还有 3 条命令记录未展开") {
@@ -3354,6 +3354,37 @@ func TestAppendSubAgentCommandSummaryKeepsLateFailures(t *testing.T) {
 		t.Fatalf("summary should still be capped at %d entries, got %q", codingSubAgentCommandSummaryMax, summary)
 	}
 }
+
+func TestAppendSubAgentCommandSummaryMarksEmptySuccess(t *testing.T) {
+	summary := appendSubAgentCommandSummary("完成", []CodingSubAgentCommandResult{
+		{Command: "pytest tests", Succeeded: true, Summary: "no tests collected in 0.01s"},
+	})
+	if !strings.Contains(summary, "EMPTY: `pytest tests`") || !strings.Contains(summary, "no tests collected") {
+		t.Fatalf("empty verification success should be marked distinctly, got %q", summary)
+	}
+}
+
+func TestAppendSubAgentCommandSummaryKeepsLateEmptySuccess(t *testing.T) {
+	var commands []CodingSubAgentCommandResult
+	for i := 0; i < codingSubAgentCommandSummaryMax+2; i++ {
+		commands = append(commands, CodingSubAgentCommandResult{
+			Command:   fmt.Sprintf("go test ./pkg/%02d", i),
+			Succeeded: true,
+			Summary:   "ok",
+		})
+	}
+	commands[len(commands)-1].Command = "pytest tests"
+	commands[len(commands)-1].Summary = "no tests collected in 0.01s"
+
+	summary := appendSubAgentCommandSummary("完成", commands)
+	if !strings.Contains(summary, "EMPTY: `pytest tests`") || !strings.Contains(summary, "no tests collected") {
+		t.Fatalf("late empty verification success should remain visible, got %q", summary)
+	}
+	if strings.Count(summary, "- PASS: `")+strings.Count(summary, "- EMPTY: `") != codingSubAgentCommandSummaryMax {
+		t.Fatalf("summary should still be capped at %d entries, got %q", codingSubAgentCommandSummaryMax, summary)
+	}
+}
+
 func TestAppendSubAgentCommandSummaryCompactsLongEntries(t *testing.T) {
 	longCommand := "go test ./..." + strings.Repeat(" -run TestVeryLongCaseName", 30)
 	longCwd := "D:\\repo\\" + strings.Repeat("very-long-folder\\", 30)

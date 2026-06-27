@@ -3806,6 +3806,8 @@ func appendSubAgentCommandSummary(summary string, commands []CodingSubAgentComma
 		status := "PASS"
 		if !cmd.Succeeded {
 			status = "FAIL"
+		} else if subAgentCommandSuccessLooksEmpty(cmd) {
+			status = "EMPTY"
 		}
 		b.WriteString("- ")
 		b.WriteString(status)
@@ -3838,7 +3840,7 @@ func selectSubAgentCommandSummaryEntries(commands []CodingSubAgentCommandResult,
 	selected := make([]CodingSubAgentCommandResult, 0, maxItems)
 	used := make(map[int]bool, maxItems)
 	for i, cmd := range commands {
-		if cmd.Succeeded {
+		if !subAgentCommandSummaryHasProblem(cmd) {
 			continue
 		}
 		selected = append(selected, cmd)
@@ -3860,6 +3862,10 @@ func selectSubAgentCommandSummaryEntries(commands []CodingSubAgentCommandResult,
 	}
 	reverseSubAgentCommandResults(recent)
 	return append(selected, recent...)
+}
+
+func subAgentCommandSummaryHasProblem(cmd CodingSubAgentCommandResult) bool {
+	return !cmd.Succeeded || subAgentCommandSuccessLooksEmpty(cmd)
 }
 
 func reverseSubAgentCommandResults(values []CodingSubAgentCommandResult) {
