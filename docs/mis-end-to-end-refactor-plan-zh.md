@@ -3773,3 +3773,46 @@ App Studio / 测试证据
 ```text
 go test ./structureddata -count=1 -run "TestListAppInstallationsFiltersByApprovalInstanceEvidence"
 ```
+
+### 推进记录：GUI 恢复 DataSrv installed App 时保留并行审批节点证据（2026-06-27）
+
+本轮继续把上一段 DataSrv app_installations 的并行节点检索补到 GUI 恢复链路。DataSrv 安装记录和测试证据中可能保存：
+
+```text
+approval_instance.current_node
+approval_instance.current_node_ids
+approval_instance.workflow_node_ids
+```
+
+此前 GUI 从 DataSrv `app_installations` 恢复 installed MaClaw App 时，`normalizeAppRunApprovalInstanceEvidence` 只保留单个 `currentNode`，会丢失并行节点数组。这样虽然 App 可以恢复，但后续测试证据、发布校验详情、运行历史诊断都无法看到完整当前节点状态。
+
+已落地调整：
+
+```text
+AppRunApprovalInstanceEvidence
+  -> 增加 currentNodeIDs
+
+normalizeAppRunApprovalInstanceEvidence
+  -> 解析 currentNodeIDs/current_node_ids/workflowNodeIDs/workflow_node_ids/workflowNodes/workflow_nodes
+  -> 如果缺少 currentNode，则使用数组第一个节点作为 currentNode
+  -> 如果只有 currentNode，也回填 currentNodeIDs=[currentNode]
+
+appRunApprovalInstanceEvidenceFromBackend
+  -> 从 BackendApprovalInstance 继承 normalizeApprovalCurrentNodeIDs(instance)
+```
+
+对应全链路意义：
+
+```text
+审批工作流 Skill 产生并行节点
+  -> DataSrv RecordApproval / app_installations 保存 current_node_ids
+  -> GUI 从 DataSrv 能力发现恢复 installed App
+  -> importedRunEvidence.approvalInstance.currentNodeIDs 保留完整节点状态
+  -> 发布校验、运行历史和审批实例诊断共享同一证据
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "turns DataSrv installed MaClaw apps into addable app candidates with layout metadata"
+```

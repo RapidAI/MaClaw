@@ -35,9 +35,47 @@ function applyInvitationExtraI18n() {
   if (grantCreditsLabel) grantCreditsLabel.textContent = invExtra("llmGrantCredits");
 }
 
+async function populateInvCodeServiceGroupDropdown() {
+  const select = document.getElementById("invCodeLLMServiceGroupID");
+  if (!select || select.tagName !== "SELECT") return;
+  let groups = [];
+  if (typeof llmServiceAdminCache !== "undefined" && llmServiceAdminCache && llmServiceAdminCache.model_service_groups) {
+    groups = llmServiceAdminCache.model_service_groups;
+  } else {
+    try {
+      const data = await api("/api/admin/llm/services?include_cards=false");
+      groups = (data && data.model_service_groups) || [];
+    } catch (_) {
+      return;
+    }
+  }
+  const currentValue = select.value;
+  const placeholder = (typeof currentLang !== "undefined" && currentLang === "zh")
+    ? "-- \u8bf7\u9009\u62e9 --"
+    : "-- select --";
+  select.innerHTML = "";
+  const emptyOpt = document.createElement("option");
+  emptyOpt.value = "";
+  emptyOpt.textContent = placeholder;
+  select.appendChild(emptyOpt);
+  groups.filter(function(group) {
+    return String(group && group.id || "").trim();
+  }).forEach(function(group) {
+    const id = String(group.id).trim();
+    const name = String(group.name || "").trim();
+    const label = name && name !== id ? id + " - " + name : id;
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = label;
+    if (id === currentValue) option.selected = true;
+    select.appendChild(option);
+  });
+}
+
 async function loadInvitationCodeStatus() {
   try {
     applyInvitationExtraI18n();
+    populateInvCodeServiceGroupDropdown();
     const data = await api("/api/admin/invitation-codes/status");
     invitationCodeRequired = !!data.invitation_code_required;
     renderInvitationCodeToggle();

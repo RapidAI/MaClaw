@@ -202,6 +202,7 @@ export interface UseAITabManagerResult {
 
 const PROJECT_TABS_STORAGE_KEY = "ai_assistant_project_tabs";
 const PROJECT_TAB_HISTORY_STORAGE_KEY = "ai_assistant_project_tab_histories";
+const VE_TABS_STORAGE_KEY = "ai_assistant_ve_tabs";
 
 /** Maximum number of messages to persist per tab (keep localStorage bounded). */
 const MAX_PERSISTED_HISTORY_PER_TAB = 50;
@@ -310,6 +311,81 @@ function loadPersistedProjectTabs(): AITab[] {
     }
 }
 
+/** Persist VE (digital employee) tabs to localStorage for cross-session recovery.
+ * Unlike project tabs which persist full conversation history, VE tabs only persist
+ * the tab metadata and sessionId — conversation history lives on the Hub and is
+ * loaded on-demand via GroupDiscussionGetConsultationDetail. */
+function persistVETabs(tabs: AITab[], tabStates: Map<string, AITabState>) {
+    try {
+        // Only persist active (non-readOnly) VE/group tabs.
+        // ReadOnly tabs are archived history views — they can be re-opened from
+        // the "历史会话" list and should not pile up in the tab bar on restart.
+        const veTabs = tabs.filter(t => (t.type === "ve" || t.type === "group") && t.veId && !t.readOnly);
+        const serialized = veTabs.map(t => {
+            const state = tabStates.get(t.id);
+            return {
+                id: t.id,
+                type: t.type,
+                title: t.title,
+                veId: t.veId,
+                sessionId: state?.sessionId || t.discussionId || undefined,
+                onlineStatus: t.onlineStatus,
+                // NOTE: avatarDataURL intentionally omitted — base64 images are
+                // too large for localStorage (50KB+ per tab). Avatars are re-fetched
+                // from Hub when the tab is opened after restart.
+                veSkillDescription: t.veSkillDescription,
+                participants: t.participants,
+                participantNames: t.participantNames,
+                discussionId: t.discussionId,
+            };
+        });
+        if (serialized.length === 0) {
+            localStorage.removeItem(VE_TABS_STORAGE_KEY);
+        } else {
+            localStorage.setItem(VE_TABS_STORAGE_KEY, JSON.stringify(serialized));
+        }
+    } catch {
+        // localStorage full or unavailable
+    }
+}
+
+/** Load persisted VE tabs from localStorage.
+ * Restored tabs will have their sessionId available, allowing the history loading
+ * effect to fetch conversation history from the Hub on activation. */
+function loadPersistedVETabs(): Array<{ tab: AITab; sessionId?: string }> {
+    try {
+        const raw = localStorage.getItem(VE_TABS_STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw) as Array<{
+            id: string; type: string; title: string; veId: string;
+            sessionId?: string; onlineStatus?: string; avatarDataURL?: string;
+            veSkillDescription?: string; participants?: string[];
+            participantNames?: Record<string, string>;
+            discussionId?: string; readOnly?: boolean;
+        }>;
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+            .filter(t => t.id && t.veId && !t.readOnly)
+            .map(t => ({
+                tab: {
+                    id: t.id,
+                    type: (t.type === "group" ? "group" : "ve") as AITabType,
+                    title: t.title || t.veId,
+                    veId: t.veId,
+                    onlineStatus: (t.onlineStatus === "offline" ? "offline" : "online") as "online" | "offline",
+                    veSkillDescription: t.veSkillDescription,
+                    participants: t.participants,
+                    participantNames: t.participantNames,
+                    discussionId: t.discussionId || t.sessionId,
+                    closable: true,
+                },
+                sessionId: t.sessionId,
+            }));
+    } catch {
+        return [];
+    }
+}
+
 /**
  * Sanitize a project tab title for display. If the title looks like a raw
  * file path or a long internal task ID, extract a friendlier short name.
@@ -354,6 +430,12 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         restoredProjectPathsRef.current = new Set(restored.map(t => normalizeProjectSessionPath(t.projectPath)).filter(Boolean));
         if (restored.length > 0) {
             initial.tabs = [...initial.tabs, ...restored.slice(0, 5)];
+        }
+        // Restore persisted VE (digital employee) tabs.
+        // Their sessionId is preserved so history can be loaded from Hub on activation.
+        const restoredVE = loadPersistedVETabs();
+        if (restoredVE.length > 0) {
+            initial.tabs = [...initial.tabs, ...restoredVE.slice(0, maxVETabs).map(v => v.tab)];
         }
         tabStateRef.current = initial;
         return initial;
@@ -440,6 +522,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 };
                 tabStateRef.current = next;
                 persistProjectTabs(next.tabs);
+                persistVETabs(next.tabs, tabStatesRef.current);
                 return next;
             });
 
@@ -463,6 +546,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             // Persist project tabs only when the tab list actually changes.
             if (next.tabs !== prev.tabs) {
                 persistProjectTabs(next.tabs);
+                persistVETabs(next.tabs, tabStatesRef.current);
             }
             return next;
         });
@@ -535,6 +619,23 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 tabStatesRef.current.set(tabId, { history, scrollTop: 0, inputText: "", lastActiveAt: 1 });
             }
         }
+        // Hydrate VE tab states with persisted sessionIds from the tabs already
+        // restored in the useState initializer above. Use the structured result
+        // from loadPersistedVETabs (already parsed once in useState) to get the
+        // sessionId. We call loadPersistedVETabs() again (cheap synchronous
+        // localStorage read, same data) to pair each tab with its sessionId.
+        const restoredVEForHydration = loadPersistedVETabs();
+        for (const { tab, sessionId } of restoredVEForHydration) {
+            if (!sessionId) continue;
+            if (!tabStatesRef.current.has(tab.id)) {
+                tabStatesRef.current.set(tab.id, { history: [], scrollTop: 0, inputText: "", sessionId, lastActiveAt: 1 });
+            } else {
+                const existing = tabStatesRef.current.get(tab.id)!;
+                if (!existing.sessionId) {
+                    tabStatesRef.current.set(tab.id, { ...existing, sessionId });
+                }
+            }
+        }
     }
 
     // Flush pending history to localStorage on page unload (app closing/restarting).
@@ -543,6 +644,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     useEffect(() => {
         const flush = () => {
             persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
+            persistVETabs(tabStateRef.current.tabs, tabStatesRef.current);
             // Also flush to backend session files for reliability
             const projectTabs = tabStateRef.current.tabs.filter(t => t.type === "project" && t.projectPath);
             for (const tab of projectTabs) {
@@ -923,6 +1025,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         if (openTab && openTab.type === "project" && state.history) {
             dirtyTabIdsRef.current.add(tabId);
             scheduleHistoryPersist();
+        }
+        // Persist VE tabs when sessionId changes (critical for cross-restart recovery).
+        // sessionId is set once after initSession and rarely changes, so no debounce needed.
+        if (openTab && (openTab.type === "ve" || openTab.type === "group") && state.sessionId) {
+            persistVETabs(tabStateRef.current.tabs, tabStatesRef.current);
         }
     }, [scheduleHistoryPersist]);
 
