@@ -1199,18 +1199,18 @@
 .apps-approval-manager__filters {
     display: grid;
     grid-template-columns: minmax(180px, 0.62fr) minmax(220px, 0.9fr) minmax(190px, 0.72fr);
-    align-items: end;
+    align-items: center;
     gap: 8px;
 }
 
 .apps-approval-manager__filters > .apps-search {
+    box-sizing: border-box;
     width: 100%;
 }
 
 .apps-approval-manager__filters label {
     min-width: 0;
-    display: grid;
-    gap: 4px;
+    display: block;
 }
 
 .apps-approval-manager__filters label:only-child {
@@ -1218,13 +1218,18 @@
 }
 
 .apps-approval-manager__filters label span {
-    color: var(--theme-text-secondary);
-    font-size: 0.68rem;
-    font-weight: 800;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
 }
 
 .apps-approval-manager__filters select {
+    box-sizing: border-box;
     min-width: 0;
+    width: 100%;
     height: 32px;
     padding: 0 8px;
     border: 1px solid var(--theme-border);
