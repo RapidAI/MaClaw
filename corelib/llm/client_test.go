@@ -85,7 +85,7 @@ func TestBuildAnthropicMessagesRequestDataUsesSharedEndpointAndOptions(t *testin
 	if err := json.Unmarshal(body, &req); err != nil {
 		t.Fatalf("unmarshal body: %v", err)
 	}
-	if req.Model != "claude-test" || req.System != "be brief" || !req.Stream || req.MaxTokens != 8192 {
+	if req.Model != "claude-test" || req.System != "be brief" || !req.Stream || req.MaxTokens != cfg.EffectiveMaxOutputTokens() {
 		t.Fatalf("request body scalar fields = %+v", req)
 	}
 	if len(req.Messages) != 1 || req.Messages[0]["role"] != "user" {
@@ -120,8 +120,8 @@ func TestBuildAnthropicMessagesRequestDataDefaultsToolUseMaxTokens(t *testing.T)
 	if err := json.Unmarshal(body, &req); err != nil {
 		t.Fatalf("unmarshal body: %v", err)
 	}
-	if req.MaxTokens != 8192 {
-		t.Fatalf("max_tokens = %d, want 8192", req.MaxTokens)
+	if req.MaxTokens != cfg.EffectiveMaxOutputTokens() {
+		t.Fatalf("max_tokens = %d, want %d", req.MaxTokens, cfg.EffectiveMaxOutputTokens())
 	}
 }
 

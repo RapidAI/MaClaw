@@ -582,16 +582,23 @@ func (c MaclawLLMConfig) IsResponsesWebSocket() bool {
 }
 
 // EffectiveMaxOutputTokens returns the max output token limit for this config.
-// Priority: user-configured value > thinking-model default > standard default.
-// The returned value is used as max_tokens (or max_completion_tokens) in API requests.
+// Priority: user-configured value > model-aware default.
+//
+// Design principle: the default should be large enough that truncation never
+// happens for models that support it, while relying on the binary-halving
+// downgrade (in stream.go) to auto-discover the actual limit for models that
+// reject the value. API providers charge by actual output consumed, not by
+// max_tokens requested, so over-requesting has zero cost impact.
 func (c MaclawLLMConfig) EffectiveMaxOutputTokens() int {
 	if c.MaxOutputTokens > 0 {
 		return c.MaxOutputTokens
 	}
-	if IsDeepSeekThinkingModeModel(c) {
-		return 16384 // thinking models need larger budget (reasoning tokens consume output budget)
-	}
-	return 8192 // safe default for most models (DeepSeek non-thinking, Claude, GPT-4o, Qwen, etc.)
+	// 2026 mainstream models: DeepSeek V4 384K, GLM-5.1 131K, GLM-5.2 384K,
+	// Claude 4 64K, GPT-4o 16K, Kimi K2 128K, Qwen 3.5 32K+.
+	// Use 65536 as the universal default — covers all mainstream models.
+	// The few legacy models with lower limits (GLM-4: 4096, GPT-3.5: 4096)
+	// will trigger the binary-halving downgrade on first request, then cache.
+	return 65536
 }
 
 type MaclawLLMTestResult struct {

@@ -1834,6 +1834,97 @@ func TestCodingCommandExecutionResultClassifiesExitOneByCommand(t *testing.T) {
 	}
 }
 
+func TestFirstDiagnosticCodingToolResultLineRecognizesCommonCompilerFormats(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name: "typescript",
+			output: strings.Join([]string{
+				"> tsc --noEmit",
+				"src/app.ts(12,7): error TS2304: Cannot find name 'missingValue'.",
+				"command exited with code 2",
+			}, "\n"),
+			want: "src/app.ts(12,7): error TS2304: Cannot find name 'missingValue'.",
+		},
+		{
+			name: "stdout diagnostic beats stderr warning",
+			output: strings.Join([]string{
+				"[stderr] npm WARN deprecated old-package@1.0.0",
+				"src/app.ts(12,7): error TS2304: Cannot find name 'missingValue'.",
+				"command exited with code 2",
+			}, "\n"),
+			want: "src/app.ts(12,7): error TS2304: Cannot find name 'missingValue'.",
+		},
+		{
+			name: "rust",
+			output: strings.Join([]string{
+				"   Compiling app v0.1.0",
+				"error[E0425]: cannot find value `missing_value` in this scope",
+				"command exited with code 101",
+			}, "\n"),
+			want: "error[E0425]: cannot find value `missing_value` in this scope",
+		},
+		{
+			name: "python traceback",
+			output: strings.Join([]string{
+				"running tests",
+				"Traceback (most recent call last):",
+				"  File \"test_app.py\", line 10, in <module>",
+				"command exited with code 1",
+			}, "\n"),
+			want: "Traceback (most recent call last):",
+		},
+		{
+			name: "python exception class",
+			output: strings.Join([]string{
+				"running tests",
+				"ModuleNotFoundError: No module named 'generated_client'",
+				"command exited with code 1",
+			}, "\n"),
+			want: "ModuleNotFoundError: No module named 'generated_client'",
+		},
+		{
+			name: "javascript exception class",
+			output: strings.Join([]string{
+				"> node --test",
+				"ReferenceError: missingValue is not defined",
+				"command exited with code 1",
+			}, "\n"),
+			want: "ReferenceError: missingValue is not defined",
+		},
+		{
+			name: "go assertion detail before package fail",
+			output: strings.Join([]string{
+				"--- FAIL: TestRender (0.00s)",
+				"    render_test.go:42: got \"old\", want \"new\"",
+				"FAIL",
+				"FAIL\tgithub.com/example/app/gui\t0.123s",
+				"command exited with code 1",
+			}, "\n"),
+			want: "render_test.go:42: got \"old\", want \"new\"",
+		},
+		{
+			name: "skip non failure error noise",
+			output: strings.Join([]string{
+				"summary: 0 errors reported before crash",
+				"build failed: missing generated file",
+				"command exited with code 1",
+			}, "\n"),
+			want: "build failed: missing generated file",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := firstDiagnosticCodingToolResultLine(tc.output); got != tc.want {
+				t.Fatalf("diagnostic line = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCodingSubAgentBashVerificationExitErrorFails(t *testing.T) {
 	project := t.TempDir()
 	cb := &codingSubAgentCallbacks{
@@ -4863,6 +4954,7 @@ func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T)
 		{Command: "go test ./...", Succeeded: true, Summary: `go: warning: "./..." matched no packages`},
 		{Command: "mvn test", Succeeded: true, Summary: "[INFO] No tests to run."},
 		{Command: "cargo test", Succeeded: true, Summary: "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored"},
+		{Command: "pytest -m slow", Succeeded: true, Summary: "collected 12 items / 12 deselected / 0 selected"},
 		{Command: "dotnet test", Succeeded: true, Summary: "Total tests: 0. Passed: 0. Failed: 0. Skipped: 0."},
 		{Command: "biome check .", Succeeded: true, Summary: "Checked 0 files in 2ms. No fixes applied."},
 		{Command: "prettier --check src", Succeeded: true, Summary: "Checking formatting...\n0 files checked."},
@@ -4974,6 +5066,9 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"go test ./... 2>&1",
 		`go test ./... -run "TestAPI|TestHandler"`,
 		"go test ./... -run TestIsSubAgentVerificationCommand",
+		"go test ./... -run '^$' -bench .",
+		"go test -run=^$ -bench=BenchmarkRender ./gui",
+		"go test ./... -run '^$' -fuzz FuzzParse",
 		`bash -lc 'go test ./... -run "TestAPI|TestHandler"'`,
 		`powershell -NoProfile -Command 'go test ./... -run "TestAPI|TestHandler"'`,
 		"bash -c go test ./...",
@@ -5079,6 +5174,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"npx.cmd tsc --noEmit",
 		"cargo clippy --all-targets",
 		"cargo test --workspace",
+		"cargo test -- --nocapture",
 		"cargo check --all-targets",
 		"swift test",
 		"swift test --filter ParserTests",
@@ -5259,6 +5355,8 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"pnpm --filter web dev",
 		"pytest --collect-only tests",
 		"python -m pytest --co tests",
+		"pytest --setup-only tests",
+		"python -m pytest --setup-plan tests",
 		"pytest --help",
 		"npx jest --listTests",
 		"jest --showConfig",
@@ -5269,6 +5367,11 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"npx tsc --init",
 		"npm test -- --watch",
 		"npm run test -- --watch=true",
+		"npm run test:watch",
+		"pnpm run lint:watch",
+		"yarn test:watch",
+		"bun run test:watch",
+		"deno task test:watch",
 		"pnpm exec vitest watch",
 		"vitest --watch",
 		"jest --watchAll",
@@ -5353,12 +5456,18 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"go -C gui env",
 		"go test -c",
 		"go test -c -o package.test",
+		"go test -list . ./...",
+		"go test ./... -list Test",
+		"go test -list=Test ./...",
 		"go test ./... -run '^$'",
 		"go test -run=^$ ./...",
 		"go test ./... -run $^",
 		"go fmt ./...",
 		"cargo fmt --all",
 		"cargo test --no-run",
+		"cargo test -- --list",
+		"cargo test -- --help",
+		"cargo test --help",
 		"cargo clippy --fix",
 		"swift run App",
 		"swift package update",
@@ -5403,6 +5512,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"just --list",
 		"just --list test",
 		"just --summary test",
+		"just test:watch",
 		"just fmt",
 		"just dev",
 		"task --list",
@@ -5410,6 +5520,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"task -l test",
 		"go-task --list-all test",
 		"task --dry test",
+		"task test:watch",
 		"task dev",
 		"task format",
 		"mage -l",

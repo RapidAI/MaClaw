@@ -4300,7 +4300,9 @@ func subAgentVerificationOutputLooksEmpty(cmd CodingSubAgentCommandResult) bool 
 		"0 tests completed",
 		"0 tests successful",
 		"0 tests executed",
+		"0 selected",
 		"running 0 tests",
+		"selected 0",
 		"total tests: 0",
 		"tests run: 0",
 		"tests: 0 total",
@@ -5887,6 +5889,9 @@ func composerOptionConsumesValue(arg string) bool {
 }
 
 func isVerificationScriptName(name string) bool {
+	if isWatchVerificationScriptName(name) {
+		return false
+	}
 	switch name {
 	case "test", "tests", "unit", "units", "integration", "e2e", "ci", "verify", "validate", "validation", "check", "checks", "build", "lint", "vet", "typecheck", "type-check":
 		return true
@@ -5904,6 +5909,17 @@ func isVerificationScriptName(name string) bool {
 		strings.HasPrefix(name, "lint:") ||
 		strings.HasPrefix(name, "typecheck:") ||
 		strings.HasPrefix(name, "type-check:")
+}
+
+func isWatchVerificationScriptName(name string) bool {
+	for _, part := range strings.FieldsFunc(name, func(r rune) bool {
+		return r == ':' || r == '-' || r == '_' || r == '.'
+	}) {
+		if part == "watch" {
+			return true
+		}
+	}
+	return false
 }
 
 func verificationRunnerCommandFromArgs(args []string) bool {
@@ -6398,7 +6414,7 @@ func hasNonExecutingVerificationArg(cmd string, args []string) bool {
 	}
 	switch cmd {
 	case "pytest":
-		return hasNormalizedArg(args, "--collect-only", "--co", "--fixtures", "--fixtures-per-test")
+		return hasNormalizedArg(args, "--collect-only", "--co", "--fixtures", "--fixtures-per-test", "--setup-only", "--setup-plan")
 	case "jest":
 		return hasNormalizedArg(args, "--listtests", "--showconfig", "--clearcache")
 	case "vitest":
@@ -7101,11 +7117,22 @@ func cargoRunsVerification(args []string) bool {
 	subcommand := normalizeShellExecutableToken(args[0])
 	switch subcommand {
 	case "test":
-		return !hasNormalizedArg(args[1:], "--no-run")
+		return !hasCargoTestNoRunArg(args[1:])
 	case "clippy":
 		return !hasMutatingVerificationArg(args[1:])
 	case "check", "build":
 		return true
+	}
+	return false
+}
+
+func hasCargoTestNoRunArg(args []string) bool {
+	for _, arg := range args {
+		arg = normalizeShellExecutableToken(arg)
+		switch arg {
+		case "--no-run", "--help", "-h", "--list":
+			return true
+		}
 	}
 	return false
 }
@@ -7301,15 +7328,33 @@ func goRunsVerification(args []string) bool {
 }
 
 func hasGoTestNoRunArg(args []string) bool {
+	runPatternRunsNoTests := false
+	hasExplicitWorkload := false
 	for i := 0; i < len(args); i++ {
 		arg := normalizeShellExecutableToken(args[i])
 		if arg == "-c" || strings.HasPrefix(arg, "-c=") {
 			return true
 		}
-		if arg == "-run" && i+1 < len(args) && goTestRunPatternRunsNoTests(args[i+1]) {
+		if arg == "-list" || strings.HasPrefix(arg, "-list=") {
 			return true
 		}
+		if goTestArgNamesWorkload(arg, "-bench", "-fuzz") {
+			hasExplicitWorkload = true
+			continue
+		}
+		if arg == "-run" && i+1 < len(args) && goTestRunPatternRunsNoTests(args[i+1]) {
+			runPatternRunsNoTests = true
+		}
 		if strings.HasPrefix(arg, "-run=") && goTestRunPatternRunsNoTests(strings.TrimPrefix(arg, "-run=")) {
+			runPatternRunsNoTests = true
+		}
+	}
+	return runPatternRunsNoTests && !hasExplicitWorkload
+}
+
+func goTestArgNamesWorkload(arg string, names ...string) bool {
+	for _, name := range names {
+		if arg == name || strings.HasPrefix(arg, name+"=") {
 			return true
 		}
 	}
@@ -7725,9 +7770,6 @@ func firstDiagnosticCodingToolResultLine(result string) string {
 			}
 		}
 	}
-	if firstStderr != "" {
-		return firstStderr
-	}
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" || isCodingToolCommandStatusLine(line) {
@@ -7737,6 +7779,9 @@ func firstDiagnosticCodingToolResultLine(result string) string {
 			return line
 		}
 	}
+	if firstStderr != "" {
+		return firstStderr
+	}
 	return firstLine(result)
 }
 
@@ -7744,7 +7789,9 @@ func isCodingToolCommandStatusLine(line string) bool {
 	line = strings.ToLower(strings.TrimSpace(line))
 	return strings.HasPrefix(line, "command exited with code") ||
 		strings.HasPrefix(line, "command timed out") ||
-		strings.HasPrefix(line, "command cancelled")
+		strings.HasPrefix(line, "command cancelled") ||
+		line == "fail" ||
+		strings.HasPrefix(line, "fail\t")
 }
 
 func isLikelyCodingToolFailureDiagnostic(line string) bool {
@@ -7752,13 +7799,29 @@ func isLikelyCodingToolFailureDiagnostic(line string) bool {
 	if lower == "" {
 		return false
 	}
+	if isNonFailureDiagnosticNoise(lower) {
+		return false
+	}
 	for _, marker := range []string{
 		"error:",
+		"error ",
+		"error[",
 		"fatal:",
 		"panic:",
 		"fail:",
 		"failed",
 		"failure",
+		"build failed",
+		"compilation failed",
+		"typecheck failed",
+		"traceback",
+		"attributeerror:",
+		"importerror:",
+		"modulenotfounderror:",
+		"nameerror:",
+		"referenceerror:",
+		"syntaxerror:",
+		"typeerror:",
 		"undefined:",
 		"cannot find",
 		"not found",
@@ -7769,7 +7832,24 @@ func isLikelyCodingToolFailureDiagnostic(line string) bool {
 		"assertion",
 		"expected",
 		"received",
+		"want ",
+		"want:",
 		"exception",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isNonFailureDiagnosticNoise(lower string) bool {
+	for _, marker := range []string{
+		"0 error",
+		"no error",
+		"no errors",
+		"without error",
+		"without errors",
 	} {
 		if strings.Contains(lower, marker) {
 			return true

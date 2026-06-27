@@ -309,7 +309,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         if (dlgSelectedIdx === null) return;
         setDlgProviders(prev => {
             const copy = [...prev];
-            const parsed: string | number = field === "context_length" ? (parseInt(value, 10) || 0) : value;
+            const parsed: string | number = (field === "context_length" || field === "max_output_tokens") ? (parseInt(value, 10) || 0) : value;
             copy[dlgSelectedIdx] = { ...copy[dlgSelectedIdx], [field]: parsed };
             return copy;
         });
@@ -1078,6 +1078,22 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                         {t(
                                             "Max context window of the model. GLM supports 180000. Defaults to 128000 if empty.",
                                             "模型支持的最大上下文长度。GLM 可支持 180000，留空默认 128000。"
+                                        )}
+                                    </p>
+                                </div>
+
+                                {/* Max Output Tokens */}
+                                <div style={{ marginTop: 12 }}>
+                                    <label style={labelStyle}>{t("Max Output Tokens", "最大输出长度 (tokens)")}</label>
+                                    <input style={inputStyle} type="number" min={1024} step={1024}
+                                        autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off"
+                                        value={dlgProvider.max_output_tokens || ""}
+                                        onChange={e => dlgUpdateField("max_output_tokens", e.target.value)}
+                                        placeholder="65536" />
+                                    <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
+                                        {t(
+                                            "Max tokens per LLM response. Defaults to 65536. For models with lower limits, the system auto-detects and adapts on first use.",
+                                            "单次回复最大 token 数。默认 65536。对于限制较低的模型，系统在首次使用时自动检测并适配。"
                                         )}
                                     </p>
                                 </div>

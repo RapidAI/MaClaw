@@ -9,6 +9,7 @@ export interface LLMProvider {
     model: string;
     protocol?: string; // "openai" (default) or "anthropic"
     context_length?: number; // max context tokens (0 = default 128k)
+    max_output_tokens?: number; // max output tokens per request (0 = system default 8192/16384)
     is_custom?: boolean;
     auth_type?: string;
     agent_type?: string; // "openclaw" (default) or "claude_code"

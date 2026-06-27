@@ -79,7 +79,8 @@ func DoOpenAIRequestStreamWithReasoning(
 		if (statusCode == 400 || statusCode == 422) && looksLikeMaxTokensError(string(body), err.Error()) {
 			currentLimit := cfg.EffectiveMaxOutputTokens()
 			const minOutputTokens = 1024
-			for attempt := 0; attempt < 3 && currentLimit > minOutputTokens; attempt++ {
+			const maxDowngradeAttempts = 6 // 65536 → 32768 → 16384 → 8192 → 4096 → 2048 → 1024
+			for attempt := 0; attempt < maxDowngradeAttempts && currentLimit > minOutputTokens; attempt++ {
 				currentLimit /= 2
 				if currentLimit < minOutputTokens {
 					currentLimit = minOutputTokens
