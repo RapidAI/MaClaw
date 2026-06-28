@@ -50,10 +50,11 @@ func ListKnowledgeSharesAdminHandler(repo store.KnowledgeShareRepository) http.H
 			offset = 0
 		}
 		filter := store.KnowledgeShareFilter{
-			User:   strings.TrimSpace(r.URL.Query().Get("user")),
-			Sort:   strings.TrimSpace(r.URL.Query().Get("sort")),
-			Offset: offset,
-			Limit:  limit,
+			User:    strings.TrimSpace(r.URL.Query().Get("user")),
+			Keyword: strings.TrimSpace(r.URL.Query().Get("keyword")),
+			Sort:    strings.TrimSpace(r.URL.Query().Get("sort")),
+			Offset:  offset,
+			Limit:   limit,
 		}
 		if IsGlobalAdmin(r.Context()) {
 			if tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id")); tenantID != "" {

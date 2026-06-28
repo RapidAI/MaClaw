@@ -325,6 +325,22 @@ func TestFormatSSHBackgroundTaskStatusTruncatesUTF8Safely(t *testing.T) {
 	}
 }
 
+func TestTruncateRunesMiddleKeepsUTF8SafeSSHExecBudget(t *testing.T) {
+	output := strings.Repeat("界", 9000)
+
+	truncated := truncateRunesMiddle(output, 4000, 4000)
+
+	if !strings.Contains(truncated, "... (truncated) ...") {
+		t.Fatalf("expected truncation marker, got len=%d", len([]rune(truncated)))
+	}
+	if strings.ContainsRune(truncated, '\uFFFD') {
+		t.Fatalf("truncated output contains replacement rune")
+	}
+	if !strings.HasPrefix(truncated, strings.Repeat("界", 20)) || !strings.HasSuffix(truncated, strings.Repeat("界", 20)) {
+		t.Fatalf("truncated output should preserve prefix and suffix")
+	}
+}
+
 func TestBoundedIntArgAcceptsJSONAndNativeNumbers(t *testing.T) {
 	args := map[string]interface{}{
 		"json_float":  float64(42),
@@ -639,4 +655,3 @@ func TestCompressContextContinuesLoopEvenWhenRecoverCapReached(t *testing.T) {
 	}
 	_ = task // referenced above in defer
 }
-

@@ -376,8 +376,8 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 	if output == "" {
 		output = "(无新输出)"
 	}
-	if len(output) > 8000 {
-		output = output[:4000] + "\n... (截断) ...\n" + output[len(output)-4000:]
+	if len([]rune(output)) > 8000 {
+		output = truncateRunesMiddle(output, 4000, 4000)
 	}
 
 	// Update background loop iteration count.

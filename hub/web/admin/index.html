@@ -1338,11 +1338,12 @@
       <section id="tab-knowledge" class="panel card">
         <div class="head"><div><h3 data-i18n="knowledgeTabTitle"></h3><div class="desc" data-i18n="knowledgeTabSubtitle"></div></div><button class="btn-ghost" type="button" onclick="loadKnowledgeShares()" data-i18n="knowledgeReload"></button></div>
         <div class="item">
-          <div class="grid4">
-            <div><label for="knowledgeTenantFilter" data-i18n="knowledgeTenantLabel"></label><input id="knowledgeTenantFilter" type="text" placeholder="tenant_default"></div>
-            <div><label for="knowledgeUserFilter" data-i18n="knowledgeUserLabel"></label><input id="knowledgeUserFilter" type="text" placeholder="user@example.com"></div>
-            <div><label for="knowledgeSortFilter" data-i18n="knowledgeSortLabel"></label><select id="knowledgeSortFilter"><option value="published_at_desc" data-i18n="knowledgeSortNewest"></option><option value="updated_at_desc" data-i18n="knowledgeSortUpdated"></option><option value="view_count_desc" data-i18n="knowledgeSortViews"></option><option value="import_count_desc" data-i18n="knowledgeSortImports"></option></select></div>
-            <div class="actions" style="align-items:end"><button class="btn-primary" type="button" onclick="searchKnowledgeShares()" data-i18n="knowledgeSearch"></button><button class="btn-ghost" type="button" onclick="resetKnowledgeShareFilters()" data-i18n="clear"></button></div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">
+            <div style="flex:1;min-width:140px"><label for="knowledgeUserFilter" data-i18n="knowledgeUserLabel"></label><input id="knowledgeUserFilter" type="text" placeholder="user@example.com"></div>
+            <div style="flex:1;min-width:140px"><label for="knowledgeKeywordFilter" data-i18n="knowledgeKeywordLabel"></label><input id="knowledgeKeywordFilter" type="text" placeholder="Search by title or description"></div>
+            <div style="flex:1;min-width:140px"><label for="knowledgeSortFilter" data-i18n="knowledgeSortLabel"></label><select id="knowledgeSortFilter"><option value="published_at_desc" data-i18n="knowledgeSortNewest"></option><option value="updated_at_desc" data-i18n="knowledgeSortUpdated"></option><option value="view_count_desc" data-i18n="knowledgeSortViews"></option><option value="import_count_desc" data-i18n="knowledgeSortImports"></option></select></div>
+            <div id="knowledgeTenantFilterWrap" style="flex:1;min-width:140px"><label for="knowledgeTenantFilter" data-i18n="knowledgeTenantLabel"></label><input id="knowledgeTenantFilter" type="text" placeholder="tenant_default"></div>
+            <div style="display:flex;gap:6px;align-self:end"><button class="btn-primary" type="button" onclick="searchKnowledgeShares()" data-i18n="knowledgeSearch"></button><button class="btn-ghost" type="button" onclick="resetKnowledgeShareFilters()" data-i18n="clear"></button></div>
           </div>
           <div class="hint" style="margin-top:10px" data-i18n="knowledgePrivacyHint"></div>
         </div>

@@ -57,7 +57,8 @@ type maclawAppSubmissionSummary struct {
 	Channel         string                           `json:"channel"`
 	AppIDs          []string                         `json:"app_ids"`
 	AppNames        []string                         `json:"app_names,omitempty"`
-	PackageSHA      string                           `json:"package_sha256,omitempty"`
+	PackageSHA      string                           `json:"package_sha,omitempty"`
+	PackageSHA256   string                           `json:"package_sha256,omitempty"`
 	PackageSize     int                              `json:"package_bytes,omitempty"`
 	ReviewedAt      string                           `json:"reviewed_at,omitempty"`
 	PublishedAt     string                           `json:"published_at,omitempty"`
@@ -463,6 +464,7 @@ func (a *App) InstallSelectedMaclawAppPackageFromHub(capabilityID string, appIDs
 		"capability_id":    strings.TrimSpace(capabilityID),
 		"package":          installPackage,
 		"package_json":     packageJSON,
+		"package_sha":      packageSHA,
 		"package_sha256":   packageSHA,
 		"package_bytes":    packageSize,
 		"source_app_count": download["app_count"],
@@ -521,6 +523,7 @@ func (a *App) SubmitMaclawAppPackage(packageJSON string) (map[string]any, error)
 		"channel":             record.Channel,
 		"app_ids":             append([]string(nil), record.AppIDs...),
 		"app_names":           append([]string(nil), record.AppNames...),
+		"package_sha":         record.PackageSHA,
 		"package_sha256":      record.PackageSHA,
 		"package_bytes":       record.PackageSize,
 		"dependencies":        cloneMaclawAppPlanDependencies(record.Dependencies),
@@ -760,6 +763,7 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 		"app_count":               len(entries),
 		"apps":                    plan.Apps,
 		"package_sha":             packageSHA,
+		"package_sha256":          packageSHA,
 		"package_bytes":           packageSize,
 		"dependencies":            cloneMaclawAppPlanDependencies(plan.Dependencies),
 		"app_versions":            maclawAppInstallVersionSnapshotsByApp(entries),
@@ -1215,20 +1219,49 @@ func (a *App) SyncMaclawAppApprovalInstanceToDataSrv(input maclawAppApprovalData
 		"from_status":           instance.FromStatus,
 		"to_status":             firstNonEmptyMaclawAppString(instance.ToStatus, instance.BusinessStatus, instance.Status),
 		"request": compactPayload(map[string]interface{}{
-			"app_id":               input.AppID,
-			"blueprint_id":         input.BlueprintID,
-			"dataset_id":           input.DatasetID,
-			"object_role":          input.ObjectRole,
-			"approval_instance_id": instance.InstanceID,
-			"approval_workflow_id": firstNonEmptyMaclawAppString(instance.ApprovalWorkflowID, instance.WorkflowSkillID),
-			"trigger_event":        firstNonEmptyMaclawAppString(instance.ApprovalEvent, input.AppID),
-			"owner":                instance.Owner,
-			"applicant":            instance.Applicant,
-			"business_entity":      instance.BusinessEntity,
-			"business_action":      instance.BusinessAction,
-			"business_note":        instance.BusinessNote,
-			"result":               instance.Result,
-			"detail_url":           instance.DetailURL,
+			"app_id":                input.AppID,
+			"blueprint_id":          input.BlueprintID,
+			"dataset_id":            input.DatasetID,
+			"object_role":           input.ObjectRole,
+			"approval_instance_id":  instance.InstanceID,
+			"approval_workflow_id":  firstNonEmptyMaclawAppString(instance.ApprovalWorkflowID, instance.WorkflowSkillID),
+			"trigger_event":         firstNonEmptyMaclawAppString(instance.ApprovalEvent, input.AppID),
+			"owner":                 instance.Owner,
+			"applicant":             instance.Applicant,
+			"submitted_by":          firstNonEmptyMaclawAppString(instance.Applicant, instance.Owner),
+			"assigned_to":           instance.Approver,
+			"current_assignee":      instance.CurrentAssignee,
+			"currentAssignee":       instance.CurrentAssignee,
+			"current_assignee_type": instance.CurrentAssigneeType,
+			"currentAssigneeType":   instance.CurrentAssigneeType,
+			"business_entity":       instance.BusinessEntity,
+			"business_action":       instance.BusinessAction,
+			"business_note":         instance.BusinessNote,
+			"workflow_skill_id":     instance.WorkflowSkillID,
+			"workflowSkillId":       instance.WorkflowSkillID,
+			"workflow_version":      instance.WorkflowVersion,
+			"workflowVersion":       instance.WorkflowVersion,
+			"workflow_node_id":      instance.CurrentNode,
+			"workflowNodeId":        instance.CurrentNode,
+			"workflow_node_ids":     append([]string(nil), instance.CurrentNodeIDs...),
+			"workflowNodeIds":       append([]string(nil), instance.CurrentNodeIDs...),
+			"workflow_decision_id":  instance.WorkflowDecisionID,
+			"workflowDecisionId":    instance.WorkflowDecisionID,
+			"from_status":           instance.FromStatus,
+			"fromStatus":            instance.FromStatus,
+			"to_status":             firstNonEmptyMaclawAppString(instance.ToStatus, instance.BusinessStatus, instance.Status),
+			"toStatus":              firstNonEmptyMaclawAppString(instance.ToStatus, instance.BusinessStatus, instance.Status),
+			"business_status":       firstNonEmptyMaclawAppString(instance.BusinessStatus, instance.Status),
+			"businessStatus":        firstNonEmptyMaclawAppString(instance.BusinessStatus, instance.Status),
+			"result_status":         firstNonEmptyMaclawAppString(instance.ResultStatus, instance.Status),
+			"resultStatus":          firstNonEmptyMaclawAppString(instance.ResultStatus, instance.Status),
+			"result_payload":        cloneMapAny(instance.ResultPayload),
+			"resultPayload":         cloneMapAny(instance.ResultPayload),
+			"outputs":               cloneMaclawAppApprovalOutputs(instance.Outputs),
+			"artifacts":             append([]maclawAppApprovalArtifact(nil), instance.Artifacts...),
+			"result":                instance.Result,
+			"detail_url":            instance.DetailURL,
+			"detailURL":             instance.DetailURL,
 		}),
 		"workflow_skill_id":    instance.WorkflowSkillID,
 		"workflow_version":     instance.WorkflowVersion,
@@ -1760,13 +1793,24 @@ func (a *App) listMaclawAppApprovalInstancesFromDataSrv(appID string, lane strin
 func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, requestedLane string, currentUserID string) maclawAppApprovalInstance {
 	request := cloneMapAny(item.Request)
 	resultPayload := cloneMapAny(item.ResultPayload)
+	if resultPayload == nil {
+		resultPayload = cloneMapAny(anyMap(firstNonEmptyMaclawAppAny(request["result_payload"], request["resultPayload"])))
+	}
 	instanceID := firstNonEmptyMaclawAppString(item.WorkflowInstanceID, stringMapValue(request, "approval_instance_id"), item.ID)
 	status := normalizeMaclawAppApprovalStatusForRecordApproval(item)
 	lane := normalizeMaclawAppApprovalLaneForRecordApproval(item, requestedLane, status, currentUserID)
 	result := firstNonEmptyMaclawAppString(item.Reason, stringMapValue(resultPayload, "text"), stringMapValue(resultPayload, "summary"), item.ResultStatus, item.BusinessStatus, status)
 	currentNodeIDs := append([]string(nil), item.WorkflowNodeIDs...)
-	for _, key := range []string{"current_node_ids", "currentNodeIDs", "workflow_node_ids", "workflowNodeIDs", "current_node", "currentNode", "workflow_node", "workflowNode"} {
+	for _, key := range []string{"current_node_ids", "currentNodeIDs", "workflow_node_ids", "workflowNodeIDs", "workflowNodeIds", "current_node", "currentNode", "workflow_node", "workflowNode", "workflow_node_id", "workflowNodeId"} {
 		currentNodeIDs = append(currentNodeIDs, maclawAppStringListFromAny(request[key])...)
+	}
+	outputs := maclawAppApprovalOutputsFromRecordApprovals(item.Outputs)
+	if len(outputs) == 0 {
+		outputs = maclawAppApprovalOutputsFromAny(firstNonEmptyMaclawAppAny(request["outputs"], request["approval_outputs"], request["approvalOutputs"]))
+	}
+	artifacts := maclawAppApprovalArtifactsFromRecordApprovals(item.Artifacts)
+	if len(artifacts) == 0 {
+		artifacts = maclawAppApprovalArtifactsFromAny(firstNonEmptyMaclawAppAny(request["artifacts"], request["approval_artifacts"], request["approvalArtifacts"]))
 	}
 	instance := maclawAppApprovalInstance{
 		AppID:               firstNonEmptyMaclawAppString(item.AppID, stringMapValue(request, "app_id"), stringMapValue(request, "appID"), stringMapValue(request, "maclaw_app_id"), stringMapValue(request, "maclawAppID")),
@@ -1779,7 +1823,7 @@ func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, r
 		Title:               firstNonEmptyMaclawAppString(item.Summary, stringMapValue(request, "title"), instanceID, item.ID),
 		Lane:                lane,
 		Status:              status,
-		CurrentNode:         firstNonEmptyMaclawAppString(item.WorkflowNodeID, stringMapValue(request, "current_node"), stringMapValue(request, "currentNode"), stringMapValue(request, "workflow_node"), stringMapValue(request, "workflowNode")),
+		CurrentNode:         firstNonEmptyMaclawAppString(item.WorkflowNodeID, stringMapValue(request, "current_node"), stringMapValue(request, "currentNode"), stringMapValue(request, "workflow_node"), stringMapValue(request, "workflowNode"), stringMapValue(request, "workflow_node_id"), stringMapValue(request, "workflowNodeId")),
 		CurrentNodeIDs:      currentNodeIDs,
 		Owner:               firstNonEmptyMaclawAppString(item.SubmittedBy, item.CreatedBy, stringMapValue(request, "submitted_by"), stringMapValue(request, "submittedBy"), stringMapValue(request, "owner"), stringMapValue(request, "applicant")),
 		Applicant:           firstNonEmptyMaclawAppString(stringMapValue(request, "applicant"), item.SubmittedBy, item.CreatedBy),
@@ -1792,11 +1836,11 @@ func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, r
 		ApprovalWorkflowID:  firstNonEmptyMaclawAppString(item.ApprovalWorkflowID, stringMapValue(request, "approval_workflow_id"), stringMapValue(request, "approvalWorkflowID"), stringMapValue(request, "workflow_id"), stringMapValue(request, "workflowID")),
 		WorkflowSkillID:     firstNonEmptyMaclawAppString(item.WorkflowSkillID, stringMapValue(request, "workflow_skill_id"), stringMapValue(request, "workflowSkillID"), stringMapValue(request, "workflowSkillId")),
 		WorkflowVersion:     firstNonEmptyMaclawAppString(item.WorkflowVersion, stringMapValue(request, "workflow_version"), stringMapValue(request, "workflowVersion")),
-		BusinessStatus:      item.BusinessStatus,
-		ResultStatus:        item.ResultStatus,
-		FromStatus:          item.FromStatus,
-		ToStatus:            item.ToStatus,
-		WorkflowDecisionID:  item.WorkflowDecisionID,
+		BusinessStatus:      firstNonEmptyMaclawAppString(item.BusinessStatus, stringMapValue(request, "business_status"), stringMapValue(request, "businessStatus")),
+		ResultStatus:        firstNonEmptyMaclawAppString(item.ResultStatus, stringMapValue(request, "result_status"), stringMapValue(request, "resultStatus")),
+		FromStatus:          firstNonEmptyMaclawAppString(item.FromStatus, stringMapValue(request, "from_status"), stringMapValue(request, "fromStatus")),
+		ToStatus:            firstNonEmptyMaclawAppString(item.ToStatus, stringMapValue(request, "to_status"), stringMapValue(request, "toStatus")),
+		WorkflowDecisionID:  firstNonEmptyMaclawAppString(item.WorkflowDecisionID, stringMapValue(request, "workflow_decision_id"), stringMapValue(request, "workflowDecisionId")),
 		RecordID:            item.RecordID,
 		ApprovalID:          item.ID,
 		RecordApprovalID:    item.ID,
@@ -1805,8 +1849,8 @@ func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, r
 		BusinessAction:      firstNonEmptyMaclawAppString(stringMapValue(request, "business_action"), stringMapValue(request, "businessAction")),
 		BusinessNote:        firstNonEmptyMaclawAppString(stringMapValue(request, "business_note"), stringMapValue(request, "businessNote")),
 		ResultPayload:       resultPayload,
-		Outputs:             maclawAppApprovalOutputsFromRecordApprovals(item.Outputs),
-		Artifacts:           maclawAppApprovalArtifactsFromRecordApprovals(item.Artifacts),
+		Outputs:             outputs,
+		Artifacts:           artifacts,
 	}
 	if instance.UpdatedAt == "" {
 		instance.UpdatedAt = instance.CreatedAt
@@ -1878,6 +1922,21 @@ func maclawAppApprovalOutputsFromRecordApprovals(outputs []contract.RecordApprov
 	return out
 }
 
+func maclawAppApprovalOutputsFromAny(value any) []maclawAppApprovalOutput {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out []maclawAppApprovalOutput
+	if err := json.Unmarshal(data, &out); err != nil || len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func maclawAppApprovalArtifactsFromRecordApprovals(artifacts []contract.RecordApprovalArtifact) []maclawAppApprovalArtifact {
 	if len(artifacts) == 0 {
 		return nil
@@ -1885,6 +1944,21 @@ func maclawAppApprovalArtifactsFromRecordApprovals(artifacts []contract.RecordAp
 	out := make([]maclawAppApprovalArtifact, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		out = append(out, maclawAppApprovalArtifactFromRecordApproval(artifact))
+	}
+	return out
+}
+
+func maclawAppApprovalArtifactsFromAny(value any) []maclawAppApprovalArtifact {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out []maclawAppApprovalArtifact
+	if err := json.Unmarshal(data, &out); err != nil || len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -2148,13 +2222,15 @@ func (a *App) SyncMaclawAppPackageSubmissionToHub(submissionID string) (map[stri
 	if !ok {
 		return nil, fmt.Errorf("submission %s disappeared before Hub sync status update", record.SubmissionID)
 	}
+	packageSHA := firstNonEmptyMaclawAppString(hubResp.PackageSHA256, record.PackageSHA)
 	return map[string]any{
 		"submission_id":        hubSubmissionID,
 		"source_submission_id": record.SubmissionID,
 		"hub_capability_id":    firstMaclawAppHubCapabilityID(hubResp.Submissions),
 		"status":               status,
 		"channel":              "hub",
-		"package_sha256":       firstNonEmptyMaclawAppString(hubResp.PackageSHA256, record.PackageSHA),
+		"package_sha":          packageSHA,
+		"package_sha256":       packageSHA,
 		"app_count":            hubResp.AppCount,
 		"submissions":          hubResp.Submissions,
 		"message":              message,
@@ -2763,6 +2839,7 @@ func maclawAppVersionString(value any) string {
 
 func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source, packageSHA string, packageSize int, dependencies []maclawAppInstallPlanDependency) []maclawAppDataSrvInstallationPayload {
 	payloads := make([]maclawAppDataSrvInstallationPayload, 0, len(entries))
+	installEvidenceByApp := maclawAppInstallEvidenceByApp(entries, dependencies)
 	for _, entry := range entries {
 		roleBindings := maclawAppDataSrvRoleBindingsForEntry(entry)
 		if len(roleBindings) == 0 {
@@ -2777,6 +2854,9 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 		metadata["version_snapshot"] = versionSnapshot
 		if versionSnapshot.AppEntryVersion != "" {
 			metadata["app_entry_version"] = versionSnapshot.AppEntryVersion
+		}
+		if installEvidence := anyMap(installEvidenceByApp[entry.ID]); installEvidence != nil {
+			metadata["install_evidence"] = installEvidence
 		}
 		if appSkill := maclawAppAppSkillBlockForEntry(entry); appSkill != nil {
 			metadata["app_skill_id"] = maclawAppStringValue(appSkill, "id")
@@ -3677,6 +3757,12 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 			}
 			if deps[idx].Kind == "skill" && dep.Kind != "" {
 				deps[idx].Kind = dep.Kind
+			}
+			if dep.Source != "" && (deps[idx].Source == "" || deps[idx].Source == "hub") {
+				deps[idx].Source = dep.Source
+			}
+			if deps[idx].InstallRef == "" {
+				deps[idx].InstallRef = dep.InstallRef
 			}
 			return
 		}
@@ -5208,6 +5294,7 @@ func (record maclawAppSubmissionRecord) maclawAppSubmissionSummary() maclawAppSu
 		AppIDs:          append([]string(nil), record.AppIDs...),
 		AppNames:        append([]string(nil), record.AppNames...),
 		PackageSHA:      packageSHA,
+		PackageSHA256:   packageSHA,
 		PackageSize:     packageSize,
 		ReviewedAt:      record.ReviewedAt,
 		PublishedAt:     record.PublishedAt,

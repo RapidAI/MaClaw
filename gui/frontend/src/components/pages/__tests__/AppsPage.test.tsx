@@ -362,9 +362,14 @@ async function createAndRunLocalToolApp(name = '合同归档') {
     });
     if (createdApp?.id) {
         const raw = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
+        const currentApp = latestStoredCustomApp(name) || createdApp;
+        const verified = testDependencyVerificationForApp(currentApp);
+        const verifiedIDs = new Set((verified.dependencies || []).map((dep: any) => String(dep.id || '').trim()).filter(Boolean));
         raw[createdApp.id] = (raw[createdApp.id] || []).map((entry) => ({
             ...entry,
-            dependencyVerification: entry.dependencyVerification || testDependencyVerificationForApp(createdApp),
+            dependencyVerification: testDeclaredSkillDependencies(currentApp).every((dep: any) => verifiedIDs.has(String(dep.id || '').trim()))
+                ? verified
+                : entry.dependencyVerification,
         }));
         window.localStorage.setItem(runHistoryStorageKey, JSON.stringify(raw));
     }
@@ -1443,7 +1448,11 @@ describe('AppsPage', () => {
         getNLSkillRunStatusMock.mockResolvedValue({
             run_id: 'run-test-1',
             status: 'success',
-            summary: { last_output_snippet: 'done' },
+            summary: {
+                last_output_snippet: 'Translated contract ready',
+                output_blocks: [{ id: 'summary-block', kind: 'content', title: 'Translation summary', text: 'Translated contract ready', status: 'ready' }],
+            },
+            outputs: [{ id: 'doc-block', kind: 'document', title: 'Translated DOCX', text: 'contract.docx', artifact_id: 'artifact-1', status: 'ready' }],
             artifacts: [
                 { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'contract.docx', path: '/tmp/contract.docx', status: 'ready' },
                 { id: 'artifact-2', uri: 'artifact://skill-run/run-test-1/artifact-2', name: 'report.pdf', path: '/tmp/report.pdf', status: 'ready', mime_type: 'application/pdf', size_bytes: 2048 },
@@ -1460,9 +1469,53 @@ describe('AppsPage', () => {
         render(<AppsPage lang="zh-Hans" />);
 
         await createAndRunLocalToolApp('合同归档');
+        const toolApp = latestStoredCustomApp('合同归档');
+        expect(toolApp).toBeTruthy();
+        const history = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
+        const toolSkillID = String(toolApp.manifest?.skill?.id || toolApp.manifest?.appSkill?.id || `${toolApp.id}-app`);
+        history[toolApp.id][0].dependencyVerification = {
+            schema: 'maclaw.app.install_plan.v1',
+            verifiedAt: '2026-06-17T00:04:00.000Z',
+            appCount: 1,
+            dependencyCount: 1,
+            hasMissingRequired: false,
+            hasBlockingDependency: false,
+            hasWorkflowContractIssue: false,
+            workflowContractIssueCount: 0,
+            hasGovernanceReviewIssue: false,
+            governanceReviewIssueCount: 0,
+            dependencies: [{ id: toolSkillID, kind: 'app_skill', required: true, source: 'local', installed: true, health: 'ready', action: 'skip', app_ids: [toolApp.id] }],
+        };
+        window.localStorage.setItem(runHistoryStorageKey, JSON.stringify(history));
+        expect(history[toolApp.id]?.[0]).toMatchObject({
+            runID: 'run-test-1',
+            status: 'done',
+            definitionHash: expect.stringMatching(/^[0-9a-f]{8}$/),
+            testProtocolFingerprint: expect.stringMatching(/^[0-9a-f]{8}$/),
+            dependencyVerification: {
+                schema: 'maclaw.app.install_plan.v1',
+                dependencyCount: 1,
+                hasBlockingDependency: false,
+                dependencies: [expect.objectContaining({ id: toolSkillID, kind: 'app_skill', source: 'local', app_ids: [toolApp.id] })],
+            },
+            resultPayload: { text: 'contract.docx' },
+            outputs: [
+                expect.objectContaining({ kind: 'document', title: 'Translated DOCX', artifact_id: 'artifact-1', status: 'ready' }),
+                expect.objectContaining({ kind: 'content', title: 'Translation summary', text: 'Translated contract ready', status: 'ready' }),
+            ],
+            resultCoverage: {
+                ok: true,
+                primary: 'artifact',
+                coveredTypes: expect.arrayContaining(['content', 'document', 'artifact']),
+                missingTypes: [],
+            },
+        });
         fireEvent.click(screen.getByTitle('应用程序工作室'));
         fireEvent.click(screen.getByText('审核/发布'));
-        fireEvent.click(screen.getByText('提交审核'));
+        const publishCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('合同归档')) as HTMLElement;
+        expect(publishCard).toBeTruthy();
+        expect(within(publishCard).getByText('可提交')).not.toBeNull();
+        fireEvent.click(within(publishCard).getByText('提交审核'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
@@ -1492,6 +1545,22 @@ describe('AppsPage', () => {
             expect.objectContaining({ id: 'artifact-1', name: 'contract.docx', path: '/tmp/contract.docx' }),
             expect.objectContaining({ id: 'artifact-2', name: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 2048 }),
         ]));
+        expect(evidence.resultPayload).toEqual({ text: 'contract.docx' });
+        expect(evidence.outputCount).toBe(2);
+        expect(evidence.outputs).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'document', title: 'Translated DOCX', artifactId: 'artifact-1', status: 'ready' }),
+            expect.objectContaining({ kind: 'content', title: 'Translation summary', text: 'Translated contract ready', status: 'ready' }),
+        ]));
+        expect(evidence.resultCoverage).toEqual(expect.objectContaining({
+            ok: true,
+            primary: 'artifact',
+            coveredTypes: expect.arrayContaining(['content', 'document', 'artifact']),
+            missingTypes: [],
+        }));
+        expect(evidence.dependencyVerification).toMatchObject({
+            schema: 'maclaw.app.install_plan.v1',
+            hasBlockingDependency: false,
+        });
         expect(screen.getAllByText('等待企业市场审核').length).toBeGreaterThan(0);
         expect(screen.getAllByText(/market-review-123/).length).toBeGreaterThan(0);
         expect(screen.getByText(/"channel": "hub"/)).not.toBeNull();
@@ -2480,7 +2549,7 @@ describe('AppsPage', () => {
             channel: 'local',
             app_ids: ['queued-app'],
             app_names: ['队列应用'],
-            package_sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+            package_sha: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
             package_bytes: 1536,
             dependencies: [{ id: 'queued-app-skill', required: true, installed: true }, { id: 'queued-workflow', kind: 'workflow_skill', required: true, installed: false }],
             submission_evidence: {
@@ -5176,7 +5245,7 @@ describe('AppsPage', () => {
         expect(screen.queryByText('PO-101')).toBeNull();
 		expect(container.querySelector('.apps-run-history')).not.toBeNull();
         const history = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
-        expect(history['purchase-inbound']?.[0]).toMatchObject({
+		expect(history['purchase-inbound']?.[0]).toMatchObject({
             status: 'done',
             outputMode: 'business',
             resultPayload: {
@@ -5196,9 +5265,157 @@ describe('AppsPage', () => {
                 missingTypes: [],
             },
         });
-	});
+		});
 
-	it('shows structured business errors for enterprise normal app operations', async () => {
+    it('publishes enterprise normal app evidence from an actual DataSrv business run', async () => {
+        const app = {
+            id: 'normal-run-publish-app',
+            name: '客户续约工作台',
+            description: 'Run and publish a normal enterprise app with standard result package',
+            category: 'CRM',
+            kind: 'enterprise_normal_app',
+            icon: 'customer',
+            accent: '#4b6572',
+            pinned: false,
+            source: 'local',
+            version: 1,
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'enterprise_app_pack',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'enterprise_normal_app',
+                launchMode: 'agent_dynamic_ui',
+                dependencies: { skills: [{ id: 'customer-renewal-runtime', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', install_ref: 'cap-customer-renewal-runtime' }] },
+                datasrv: { domain: 'sales', objectRole: 'customer', preferredAction: 'sales.customer_renewal_upsert', preferredView: 'sales.customer_renewal_review' },
+                ui: {
+                    schema: 'maclaw.app.ui.v1',
+                    entry: 'business_workspace',
+                    layouts: {
+                        business_workspace: {
+                            template: 'classic_split',
+                            density: 'compact',
+                            primaryRegion: 'left',
+                            outputRegion: 'right',
+                            regions: [
+                                { id: 'operation_form', role: 'input', placement: 'left' },
+                                { id: 'record_list', role: 'record_list', placement: 'center' },
+                                { id: 'record_detail', role: 'detail', placement: 'center' },
+                                { id: 'output_panel', role: 'output', placement: 'right' },
+                            ],
+                            studio: { savedInManifest: true },
+                        },
+                    },
+                },
+                resultContract: {
+                    schema: 'maclaw.app.result.v1',
+                    primary: 'business_status',
+                    types: ['business_status', 'business_record', 'content', 'artifact'],
+                    delivery: { inlineContent: true, artifacts: true, businessRecord: true, notifications: false },
+                },
+            },
+        };
+        const dependencyPlan = {
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: app.kind }],
+            dependencies: [{ id: 'customer-renewal-runtime', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', install_ref: 'cap-customer-renewal-runtime', installed: true, health: 'ready', action: 'skip', app_ids: [app.id] }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+            has_workflow_contract_issue: false,
+            has_governance_review_issue: false,
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app], recentUsedAtById: {} }));
+        planMaclawAppInstallMock.mockResolvedValue(dependencyPlan);
+        executeMaclawAppBusinessOperationMock.mockResolvedValueOnce({
+            synced: true,
+            mode: 'business_view',
+            target: 'sales.customer_renewal_review',
+            result_status: 'ready',
+            business_status: 'ready',
+            primary_result: 'business_record',
+            result_payload: {
+                business_status: 'ready',
+                result_status: 'ready',
+                business_record: { id: 'CUS-100', renewalStage: 'legal_review' },
+                text: 'Customer renewal package ready',
+            },
+            outputs: [{ kind: 'business_record', title: 'Renewal record', text: 'Customer renewal package ready', status: 'ready', data: { id: 'CUS-100', renewalStage: 'legal_review' } }],
+            artifacts: [{ id: 'renewal-report', name: 'renewal-report.pdf', uri: 'artifact://customer/renewal-report.pdf', status: 'ready', mime_type: 'application/pdf', size_bytes: 4096 }],
+            response: { legacy: 'kept' },
+        });
+        const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'normal-run-result-package', submitted_at: '2026-06-17T01:00:00.000Z', status: 'submitted', message: 'queued' });
+        (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getAllByText('客户续约工作台')[0]);
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(executeMaclawAppBusinessOperationMock).toHaveBeenCalled());
+        await waitFor(() => {
+            const history = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
+            expect(history[app.id]?.[0]).toMatchObject({
+                status: 'done',
+                definitionHash: expect.stringMatching(/^[0-9a-f]{8}$/),
+                dependencyVerification: {
+                    schema: 'maclaw.app.install_plan.v1',
+                    dependencyCount: 1,
+                    hasBlockingDependency: false,
+                    dependencies: [expect.objectContaining({ id: 'customer-renewal-runtime', installed: true, health: 'ready' })],
+                },
+                resultPayload: expect.objectContaining({
+                    business_status: 'ready',
+                    result_status: 'ready',
+                    business_record: { id: 'CUS-100', renewalStage: 'legal_review' },
+                    text: 'Customer renewal package ready',
+                }),
+                outputs: [expect.objectContaining({ kind: 'business_record', title: 'Renewal record', status: 'ready' })],
+                artifacts: [expect.objectContaining({ id: 'renewal-report', name: 'renewal-report.pdf' })],
+            });
+        });
+
+        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByText('审核/发布'));
+        const readyCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('客户续约工作台')) as HTMLElement;
+        expect(readyCard).toBeTruthy();
+        expect(within(readyCard).getByText('可提交')).not.toBeNull();
+        fireEvent.click(within(readyCard).getByText('提交审核'));
+
+        await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
+        const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
+        const governance = payload.apps[0].app.governance;
+        expect(governance.dependencyVerification).toMatchObject({
+            schema: 'maclaw.app.install_plan.v1',
+            dependencyCount: 1,
+            hasBlockingDependency: false,
+            dependencies: [expect.objectContaining({ id: 'customer-renewal-runtime', install_ref: 'cap-customer-renewal-runtime' })],
+        });
+        expect(governance.testEvidence.resultPayload).toEqual(expect.objectContaining({
+            business_status: 'ready',
+            result_status: 'ready',
+            business_record: { id: 'CUS-100', renewalStage: 'legal_review' },
+            text: 'Customer renewal package ready',
+        }));
+        expect(governance.testEvidence.outputs).toEqual([expect.objectContaining({
+            kind: 'business_record',
+            title: 'Renewal record',
+            status: 'ready',
+            data: { id: 'CUS-100', renewalStage: 'legal_review' },
+        })]);
+        expect(governance.testEvidence.artifacts).toEqual([expect.objectContaining({
+            id: 'renewal-report',
+            name: 'renewal-report.pdf',
+            mimeType: 'application/pdf',
+            sizeBytes: 4096,
+        })]);
+        expect(governance.testEvidence.resultCoverage).toEqual(expect.objectContaining({
+            ok: true,
+            primary: 'business_status',
+            coveredTypes: expect.arrayContaining(['business_status', 'business_record', 'content', 'artifact']),
+            missingTypes: [],
+        }));
+    });
+
+		it('shows structured business errors for enterprise normal app operations', async () => {
 		executeMaclawAppBusinessOperationMock.mockRejectedValueOnce(new Error(JSON.stringify({
 			error: 'invalid input: Approval approval-1 cannot be reviewed because it is already approved.',
 			code: 'approval_not_pending',
@@ -7174,7 +7391,6 @@ describe('AppsPage', () => {
         installMaclawAppDependenciesMock.mockResolvedValueOnce(installPlan);
         recordMaclawAppInstallMock.mockResolvedValueOnce({
             schema: 'maclaw.app.install_record.v1',
-            package_sha: 'sha-top-level-install',
             package_sha256: 'sha256-top-level-install',
             source: 'market',
             installed_at: '2026-06-27T09:05:00Z',
@@ -7226,7 +7442,7 @@ describe('AppsPage', () => {
             const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
             const installed = (stored.customApps || []).find((item: any) => item.id === 'market-contract-archive');
             expect(installed?.installEvidence?.schema).toBe('maclaw.app.install_record.v1');
-            expect(installed?.installEvidence?.package_sha).toBe('sha-top-level-install');
+            expect(installed?.installEvidence?.package_sha).toBe('sha256-top-level-install');
             expect(installed?.installEvidence?.package_sha256).toBe('sha256-top-level-install');
             expect(installed?.installEvidence?.source).toBe('market');
             expect(installed?.installEvidence?.installed_at).toBe('2026-06-27T09:05:00Z');
@@ -8535,7 +8751,10 @@ describe('AppsPage', () => {
                             workflow_contract_issue_count: 0,
                             has_governance_review_issue: false,
                             governance_review_issue_count: 0,
-                            dependencies: [{ id: 'expense-workflow', version: '2.1.0', kind: 'workflow_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: ['datasrv-installed-mis.expense'] }],
+                            dependencies: [{ id: 'expense-workflow', version: '2.1.0', kind: 'workflow_skill', required: true, source: 'hub', install_ref: 'cap-hub-expense-workflow', installed: true, health: 'ready', action: 'skip', app_ids: ['datasrv-installed-mis.expense'] }],
+                        },
+                        install_evidence: {
+                            apps: [{ id: 'mis.expense', name: 'Expense Approval Package Entry', kind: 'enterprise_approval_app' }],
                         },
                         test_evidence_dependency_verified_at: '2026-06-21T10:58:00Z',
                         test_evidence_dependency_count: 1,
@@ -8551,7 +8770,7 @@ describe('AppsPage', () => {
                         test_evidence_governance_review_issue_count: 0,
                         has_missing_required_dependency: true,
                         has_blocking_dependency: true,
-                        dependencies: [{ id: 'expense-workflow', kind: 'workflow_skill', required: true, source: 'hub' }],
+                        dependencies: [{ id: 'expense-workflow', kind: 'workflow_skill', required: true, source: 'hub', install_ref: 'cap-hub-expense-workflow' }],
                     },
                 }],
             }),
@@ -8571,7 +8790,7 @@ describe('AppsPage', () => {
         expect(added.id).toBe('datasrv-installed-mis.expense');
         expect(added.manifest.datasrv).toMatchObject({ appID: 'mis.expense', domain: 'finance', datasetID: 'finance.expense_forms', objectRole: 'expense_report', blueprintID: 'mis.expense.approval', templateID: 'finance.expenses' });
         expect(added.manifest.appSkill).toMatchObject({ id: 'expense-super-skill', version: '1.0.0' });
-        expect(added.manifest.dependencies.skills.find((dep: any) => dep.id === 'expense-workflow')).toMatchObject({ version: '2.1.0', kind: 'workflow_skill' });
+        expect(added.manifest.dependencies.skills.find((dep: any) => dep.id === 'expense-workflow')).toMatchObject({ version: '2.1.0', kind: 'workflow_skill', install_ref: 'cap-hub-expense-workflow' });
         expect(added.manifest.resultContract).toMatchObject({
             schema: 'maclaw.app.result.v1',
             primary: 'approval_result',
@@ -8618,7 +8837,7 @@ describe('AppsPage', () => {
             package_sha256: 'sha256-datasrv-install',
             source: 'hub',
             installed_at: '2026-06-21T11:05:00Z',
-            apps: [{ id: 'mis.expense', name: 'Expense Approval Installed', kind: 'enterprise_approval_app' }],
+            apps: [{ id: 'mis.expense', name: 'Expense Approval Package Entry', kind: 'enterprise_approval_app' }],
             version_snapshot: { app_entry_version: '3' },
             workspace_layout: { entry: 'approval_workspace', template: 'dashboard', density: 'spacious' },
             result_contract: { primary: 'approval_result', types: ['approval_result', 'business_status', 'artifact', 'notification'] },
@@ -8641,7 +8860,7 @@ describe('AppsPage', () => {
         expect(added.installEvidence.test_evidence.approval_instance.result_payload).toEqual({ decision: 'approved', business_status: 'finance_approved' });
         expect(added.installEvidence.test_evidence.approval_instance.outputs[0]).toMatchObject({ kind: 'table', title: 'Approval rows', text: 'expense approved' });
         expect(added.installEvidence.test_evidence.approval_instance.artifacts[0]).toMatchObject({ id: 'artifact-expense-evidence', name: 'expense-approval-evidence.zip' });
-        expect(added.installEvidence.dependencies[0]).toMatchObject({ id: 'expense-workflow', installed: true, health: 'ready' });
+        expect(added.installEvidence.dependencies[0]).toMatchObject({ id: 'expense-workflow', install_ref: 'cap-hub-expense-workflow', installed: true, health: 'ready' });
         expect(added.manifest.ui.layouts.approval_workspace.template).toBe('dashboard');
         expect(added.manifest.ui.layouts.approval_workspace.density).toBe('spacious');
         expect(added.manifest.ui.layouts.approval_workspace.primaryRegion).toBe('request_form');
@@ -8675,7 +8894,7 @@ describe('AppsPage', () => {
                 governanceReviewIssueCount: 0,
             },
         });
-        expect(added.importedRunEvidence.dependencyVerification.dependencies[0]).toMatchObject({ id: 'expense-workflow', installed: true, health: 'ready' });
+        expect(added.importedRunEvidence.dependencyVerification.dependencies[0]).toMatchObject({ id: 'expense-workflow', install_ref: 'cap-hub-expense-workflow', installed: true, health: 'ready' });
         expect(added.importedRunEvidence.approvalInstance).toMatchObject({
             instanceId: 'approval-remote-imported',
             approvalID: 'approval-remote-imported',

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
@@ -362,13 +363,13 @@ func formatCodingCommandOutput(stdoutText, stderrText string) string {
 	var b strings.Builder
 	if stdoutText != "" {
 		if len(stdoutText) > 8192 {
-			stdoutText = stdoutText[:8192] + "\n... (output truncated)"
+			stdoutText = truncateCodingCommandOutputText(stdoutText, 8192, "\n... (output truncated)")
 		}
 		b.WriteString(stdoutText)
 	}
 	if stderrText != "" {
 		if len(stderrText) > 4096 {
-			stderrText = stderrText[:4096] + "\n... (stderr truncated)"
+			stderrText = truncateCodingCommandOutputText(stderrText, 4096, "\n... (stderr truncated)")
 		}
 		if b.Len() > 0 {
 			b.WriteString("\n")
@@ -377,6 +378,20 @@ func formatCodingCommandOutput(stdoutText, stderrText string) string {
 		b.WriteString(stderrText)
 	}
 	return b.String()
+}
+
+func truncateCodingCommandOutputText(text string, maxBytes int, suffix string) string {
+	if maxBytes <= 0 || len(text) <= maxBytes {
+		return text
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.ValidString(text[:cut]) {
+		cut--
+	}
+	if cut <= 0 {
+		return suffix
+	}
+	return text[:cut] + suffix
 }
 
 func appendCodingCommandStatus(output, status string) string {

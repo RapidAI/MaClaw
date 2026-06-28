@@ -2111,6 +2111,7 @@ function normalizeAppDependencies(raw: unknown): AppManifestBinding['dependencie
             kind: dep?.kind,
             required: dep?.required !== false,
             source: dep?.source || 'hub',
+            install_ref: appSkillDependencyInstallRef(dep) || undefined,
             capabilities: Array.isArray(dep?.capabilities) ? dep.capabilities.map((capability) => String(capability || '').trim()).filter(Boolean) : undefined,
         });
     });
@@ -2712,6 +2713,7 @@ function mergeDataSrvInstalledDependencies(base: AppSkillDependency[], recovered
             kind: existing.kind || dep.kind,
             source: existing.source || dep.source,
             required: existing.required !== false && dep.required !== false,
+            install_ref: appSkillDependencyInstallRef(existing) || appSkillDependencyInstallRef(dep) || undefined,
             capabilities: Array.from(new Set([...(existing.capabilities || []), ...depCapabilities])),
         });
     });
@@ -3110,7 +3112,11 @@ function dataSrvInstalledInstallEvidence(
     const appID = appEvidenceString(item.app_id, item.appId);
     const appName = appEvidenceString(item.name, appID);
     const kind = normalizeAppKind(item.kind || metadata.kind || 'enterprise_normal_app');
-    const rawTestEvidence = appEvidenceRecord(metadata.test_evidence) || {};
+    const rawInstallEvidence = appEvidenceRecord(metadata.install_evidence) || appEvidenceRecord(metadata.installEvidence) || {};
+    const rawTestEvidence = appEvidenceRecord(rawInstallEvidence.test_evidence)
+        || appEvidenceRecord(rawInstallEvidence.testEvidence)
+        || appEvidenceRecord(metadata.test_evidence)
+        || {};
     const rawApprovalEvidence = appEvidenceRecord(firstAppEvidenceValue(rawTestEvidence.approval_instance, rawTestEvidence.approvalInstance, rawTestEvidence.approval, metadata.test_evidence_approval_instance, metadata.approval_instance, metadata.approvalInstance));
     const synthesizedTestEvidence = {
             run_id: metadata.test_evidence_run_id,
@@ -3140,7 +3146,10 @@ function dataSrvInstalledInstallEvidence(
             result_coverage: firstAppEvidenceValue(rawTestEvidence.result_coverage, rawTestEvidence.resultCoverage, synthesizedTestEvidence.result_coverage),
         }
         : synthesizedTestEvidence;
-    const rawWorkspaceLayout = appEvidenceRecord(metadata.workspace_layout) || {};
+    const rawWorkspaceLayout = appEvidenceRecord(rawInstallEvidence.workspace_layout)
+        || appEvidenceRecord(rawInstallEvidence.workspaceLayout)
+        || appEvidenceRecord(metadata.workspace_layout)
+        || {};
     const workspaceLayout = Object.keys(rawWorkspaceLayout).length > 0
         ? rawWorkspaceLayout
         : {
@@ -3152,12 +3161,14 @@ function dataSrvInstalledInstallEvidence(
             navigation: metadata.workspace_layout_navigation,
             list: metadata.workspace_layout_list_columns ? { columns: metadata.workspace_layout_list_columns } : undefined,
         };
-    const dependencyVerification = appEvidenceRecord(metadata.dependency_verification)
+    const dependencyVerification = appEvidenceRecord(rawInstallEvidence.dependency_verification)
+        || appEvidenceRecord(rawInstallEvidence.dependencyVerification)
+        || appEvidenceRecord(metadata.dependency_verification)
         || appEvidenceRecord(rawTestEvidence.dependencyVerification)
         || appEvidenceRecord(rawTestEvidence.dependency_verification)
         || dataSrvInstalledDependencyVerificationEvidence(metadata, rawTestEvidence);
     const dependencyVerificationRecord = dependencyVerification as Record<string, any> | undefined;
-    const dependencies = parseBackendAppInstallDependencies(dependencyVerificationRecord?.dependencies || metadata.dependencies);
+    const dependencies = parseBackendAppInstallDependencies(dependencyVerificationRecord?.dependencies || rawInstallEvidence.dependencies || metadata.dependencies);
     const hasEvidence = [
         versionSnapshot,
         workflowMapping,
@@ -3176,15 +3187,15 @@ function dataSrvInstalledInstallEvidence(
         source: appEvidenceString(item.source, metadata.source),
         installed_at: appEvidenceString(item.updated_at, item.updatedAt, metadata.installed_at, metadata.updated_at),
         app_count: 1,
-        apps: appID ? [{ id: appID, name: appName, kind }] : undefined,
+        apps: Array.isArray(rawInstallEvidence.apps) ? rawInstallEvidence.apps as BackendAppInstallRecord['apps'] : appID ? [{ id: appID, name: appName, kind }] : undefined,
         dependencies,
-        has_missing_required: appEvidenceBool(dependencyVerificationRecord?.hasMissingRequired, dependencyVerificationRecord?.has_missing_required, metadata.has_missing_required_dependency, metadata.has_missing_required),
-        has_blocking_dependency: appEvidenceBool(dependencyVerificationRecord?.hasBlockingDependency, dependencyVerificationRecord?.has_blocking_dependency, metadata.has_blocking_dependency),
-        version_snapshot: versionSnapshot,
+        has_missing_required: appEvidenceBool(rawInstallEvidence.hasMissingRequired, rawInstallEvidence.has_missing_required, dependencyVerificationRecord?.hasMissingRequired, dependencyVerificationRecord?.has_missing_required, metadata.has_missing_required_dependency, metadata.has_missing_required),
+        has_blocking_dependency: appEvidenceBool(rawInstallEvidence.hasBlockingDependency, rawInstallEvidence.has_blocking_dependency, dependencyVerificationRecord?.hasBlockingDependency, dependencyVerificationRecord?.has_blocking_dependency, metadata.has_blocking_dependency),
+        version_snapshot: appEvidenceRecord(rawInstallEvidence.version_snapshot) as BackendAppInstallVersionSnapshot || appEvidenceRecord(rawInstallEvidence.versionSnapshot) as BackendAppInstallVersionSnapshot || versionSnapshot,
         workspace_layout: Object.keys(workspaceLayout).length > 0 ? workspaceLayout : undefined,
-        result_contract: resultContract,
-        workflow_mapping: workflowMapping,
-        workflow_contract: workflowContract,
+        result_contract: appEvidenceRecord(rawInstallEvidence.result_contract) as AppResultContract || appEvidenceRecord(rawInstallEvidence.resultContract) as AppResultContract || resultContract,
+        workflow_mapping: appEvidenceRecord(rawInstallEvidence.workflow_mapping) as AppWorkflowMapping || appEvidenceRecord(rawInstallEvidence.workflowMapping) as AppWorkflowMapping || workflowMapping,
+        workflow_contract: appEvidenceRecord(rawInstallEvidence.workflow_contract) as AppWorkflowContract || appEvidenceRecord(rawInstallEvidence.workflowContract) as AppWorkflowContract || workflowContract,
         test_evidence: Object.keys(testEvidence).length > 0 ? testEvidence : undefined,
         dependency_verification: dependencyVerification,
     };
@@ -4308,7 +4319,8 @@ function appRunDependencyVerificationEvidence(app: AppEntry, plan: BackendAppIns
     const appIDs = [canonicalAppManifestID(app)];
     const allDependencies = parseBackendAppInstallDependencies(plan.dependencies);
     const scopedDependencies = allDependencies.filter((dep) => backendDependencyMatchesAppIDs(dep, appIDs));
-    const dependencies = scopedDependencies.length > 0 ? scopedDependencies : allDependencies.length === 1 ? allDependencies : scopedDependencies;
+    const dependencies = (scopedDependencies.length > 0 ? scopedDependencies : allDependencies.length === 1 ? allDependencies : scopedDependencies)
+        .map((dep) => ({ ...dep, app_ids: Array.from(new Set([...(dep.app_ids || []), ...appIDs])) }));
     const selectedAppIDs = new Set(appIDs.flatMap(appInstallIdentityKeys));
     const apps = (plan.apps || []).filter((item) => appInstallIdentityKeys(String(item.id || '')).some((key) => selectedAppIDs.has(key)));
     const workflowContractIssues = workflowContractIssuesForAppIDs(plan, appIDs);
@@ -4462,7 +4474,7 @@ async function listMaclawAppPackageSubmissions(limit = 8): Promise<AppPackageSub
             : Array.isArray(item?.appNames)
                 ? item.appNames.map((value: unknown) => String(value)).filter(Boolean)
                 : [],
-        packageSHA: String(item?.package_sha256 || item?.packageSHA || ''),
+        packageSHA: String(item?.package_sha || item?.package_sha256 || item?.packageSHA || ''),
         packageBytes: Number(item?.package_bytes || item?.packageBytes || 0) || 0,
         reviewedAt: String(item?.reviewed_at || item?.reviewedAt || ''),
         publishedAt: String(item?.published_at || item?.publishedAt || ''),
@@ -7035,8 +7047,14 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
 	const recordRunHistory = (entry: Omit<AppRunHistoryEntry, 'appID' | 'at'>) => {
 		const appID = app?.id || '';
 		if (!appID) return;
+		const verifiedAt = new Date().toISOString();
+		const definitionHash = app ? appDefinitionFingerprint(app) : undefined;
 		const protocolFingerprint = app ? appTestProtocolFingerprint(appTestProtocolForManifest(app)) : undefined;
-        const nextEntry: AppRunHistoryEntry = { ...entry, testProtocolFingerprint: entry.testProtocolFingerprint || protocolFingerprint, appID, at: new Date().toISOString() };
+		const dependencyVerificationPlan = activeRunDependencyPlanRef.current || runtimeDependencyPlan;
+		const dependencyVerification = entry.dependencyVerification || (app && entry.status === 'done'
+			? appRunDependencyVerificationEvidence(app, dependencyVerificationPlan, verifiedAt)
+			: undefined);
+        const nextEntry: AppRunHistoryEntry = { ...entry, definitionHash: entry.definitionHash || definitionHash, testProtocolFingerprint: entry.testProtocolFingerprint || protocolFingerprint, dependencyVerification, appID, at: verifiedAt };
         if (app && nextEntry.status === 'done' && !nextEntry.resultCoverage) {
             const coverage = appRunEvidenceContractCoverage(app, nextEntry);
             nextEntry.resultCoverage = {
@@ -9268,8 +9286,8 @@ function installEvidenceRecordForApp(installAudit: BackendAppInstallRecord | nul
     if (!hasEvidence) return undefined;
     return {
         schema: installRecordString(record.schema || installAudit?.schema) || 'maclaw.app.install_record.v1',
-        package_sha: installRecordString(record.package_sha || installAudit?.package_sha),
-        package_sha256: installRecordString(record.package_sha256 || installAudit?.package_sha256),
+        package_sha: installRecordString(record.package_sha || record.package_sha256 || installAudit?.package_sha || installAudit?.package_sha256),
+        package_sha256: installRecordString(record.package_sha256 || record.package_sha || installAudit?.package_sha256 || installAudit?.package_sha),
         source: installRecordString(record.source || installAudit?.source),
         installed_at: installRecordString(record.installed_at || installAudit?.installed_at),
         app_count: apps.length || record.app_count || installAudit?.app_count,

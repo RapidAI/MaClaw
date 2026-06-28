@@ -471,7 +471,7 @@ func TestUpsertAppInstallationNormalizesTopLevelDependencyVerification(t *testin
 				"hasMissingRequired":    false,
 				"hasBlockingDependency": false,
 				"dependencies": []any{
-					map[string]any{"id": "expense-workflow", "kind": "workflow_skill", "required": true, "installed": true, "health": "ready", "action": "skip", "app_ids": []any{"expense.ready"}},
+					map[string]any{"id": "expense-workflow", "kind": "workflow_skill", "source": "enterprise_hub", "installRef": "cap-hub-expense-workflow", "required": true, "installed": true, "health": "ready", "action": "skip", "app_ids": []any{"expense.ready"}},
 				},
 			},
 		},
@@ -491,8 +491,11 @@ func TestUpsertAppInstallationNormalizesTopLevelDependencyVerification(t *testin
 		t.Fatalf("expected dependency verification dependencies to roundtrip: %#v", verification)
 	}
 	dependency, ok := dependencies[0].(map[string]any)
-	if !ok || dependency["id"] != "expense-workflow" || dependency["health"] != "ready" {
+	if !ok || dependency["id"] != "expense-workflow" || dependency["health"] != "ready" || dependency["install_ref"] != "cap-hub-expense-workflow" {
 		t.Fatalf("expected dependency verification dependencies to roundtrip: %#v", verification)
+	}
+	if _, ok := dependency["installRef"]; ok {
+		t.Fatalf("expected dependency installRef to normalize to install_ref: %#v", dependency)
 	}
 	if installed.Metadata["test_evidence_dependency_verified_at"] != "2026-06-27T09:00:00Z" || installed.Metadata["test_evidence_dependency_count"] != float64(1) || installed.Metadata["test_evidence_dependency_blocking"] != false {
 		t.Fatalf("expected dependency verification summaries: %#v", installed.Metadata)
@@ -507,6 +510,14 @@ func TestUpsertAppInstallationNormalizesTopLevelDependencyVerification(t *testin
 	capVerification, ok := caps.AppInstallations[0].Metadata["dependency_verification"].(map[string]any)
 	if !ok || capVerification["verified_at"] != "2026-06-27T09:00:00Z" {
 		t.Fatalf("expected capabilities to expose normalized dependency verification: %#v", caps.AppInstallations[0].Metadata)
+	}
+	capDependencies, ok := capVerification["dependencies"].([]any)
+	if !ok || len(capDependencies) != 1 {
+		t.Fatalf("expected capabilities dependency verification dependencies: %#v", capVerification)
+	}
+	capDependency, ok := capDependencies[0].(map[string]any)
+	if !ok || capDependency["install_ref"] != "cap-hub-expense-workflow" {
+		t.Fatalf("expected capabilities dependency install_ref: %#v", capVerification)
 	}
 }
 
@@ -575,6 +586,97 @@ func TestListAppInstallationsFiltersByApprovalInstanceEvidence(t *testing.T) {
 	}
 	if len(missing) != 0 {
 		t.Fatalf("unexpected app for different workflow skill: %#v", missing)
+	}
+}
+
+func TestListAppInstallationsFiltersNestedInstallEvidence(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "expense.nested_install_evidence", UpsertAppInstallationInput{
+		AppID: "expense.nested_install_evidence",
+		Name:  "Nested Install Evidence Expense Approval",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"install_evidence": map[string]any{
+				"dependencies": []any{
+					map[string]any{"id": "expense-nested-flow", "kind": "workflow_skill", "required": true, "installed": true, "health": "ready"},
+				},
+				"dependency_verification": map[string]any{
+					"schema":                  "maclaw.app.install_plan.v1",
+					"dependency_count":        1,
+					"has_missing_required":    false,
+					"has_blocking_dependency": false,
+				},
+				"workflow_mapping": map[string]any{
+					"schema":       "maclaw.app.workflow.v1",
+					"submitNode":   "expense.submit",
+					"approvalNode": "expense.manager_review",
+					"resultNode":   "expense.result_pack",
+				},
+				"result_contract": map[string]any{
+					"schema":  "maclaw.app.result.v1",
+					"primary": "approval_result",
+					"types":   []any{"approval_result", "document"},
+				},
+				"test_evidence": map[string]any{
+					"runId":                 "run-nested-install-evidence",
+					"definitionFingerprint": "sha256:nested-install-evidence",
+					"primaryResult":         "approval_result",
+					"approvalInstance": map[string]any{
+						"instanceId":      "wf-nested-install-1",
+						"approvalID":      "approval-nested-install-1",
+						"recordID":        "expense-nested-1",
+						"status":          "approved",
+						"currentNode":     "expense.result_pack",
+						"workflowSkillId": "expense-nested-flow",
+						"resultPayload":   map[string]any{"decision": "approved", "approval_result": "approved"},
+						"outputs": []any{
+							map[string]any{"kind": "document", "title": "Approval document", "text": "approved"},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation nested install evidence: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		query QueryAppInstallationsInput
+	}{
+		{name: "workflow skill", query: QueryAppInstallationsInput{WorkflowSkillID: "expense-nested-flow"}},
+		{name: "workflow mapping node", query: QueryAppInstallationsInput{WorkflowNode: "expense.manager_review"}},
+		{name: "approval instance node", query: QueryAppInstallationsInput{WorkflowNode: "expense.result_pack"}},
+		{name: "approval status", query: QueryAppInstallationsInput{ApprovalStatus: "approved"}},
+		{name: "approval decision", query: QueryAppInstallationsInput{ApprovalDecision: "approved"}},
+		{name: "result type", query: QueryAppInstallationsInput{ResultType: "document"}},
+		{name: "definition fingerprint", query: QueryAppInstallationsInput{DefinitionFingerprint: "sha256:nested-install-evidence"}},
+	}
+	for _, tc := range cases {
+		items, err := svc.ListAppInstallations(context.Background(), principal, tc.query)
+		if err != nil {
+			t.Fatalf("ListAppInstallations by %s: %v", tc.name, err)
+		}
+		if len(items) != 1 || items[0].AppID != "expense.nested_install_evidence" {
+			t.Fatalf("expected nested install evidence to match %s, got %#v", tc.name, items)
+		}
+	}
+
+	blocking := false
+	ready, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{HasBlockingDependency: &blocking})
+	if err != nil {
+		t.Fatalf("ListAppInstallations by nested dependency health: %v", err)
+	}
+	if len(ready) != 1 || ready[0].AppID != "expense.nested_install_evidence" {
+		t.Fatalf("expected nested dependency verification to match nonblocking filter, got %#v", ready)
 	}
 }
 
@@ -1301,7 +1403,7 @@ func TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected dependency_verification dependency item properties: %#v", dependencyItems)
 	}
-	for _, key := range []string{"id", "version", "kind", "source", "required", "installed", "health", "action", "app_ids", "installed_status", "message"} {
+	for _, key := range []string{"id", "version", "kind", "source", "install_ref", "required", "installed", "health", "action", "app_ids", "installed_status", "message"} {
 		if _, ok := dependencyProperties[key]; !ok {
 			t.Fatalf("expected dependency item schema to document %s: %#v", key, dependencyProperties)
 		}

@@ -240,10 +240,10 @@ func appInstallationMatchesMetadataFilters(app AppInstallation, in QueryAppInsta
 	if definitionFingerprint := strings.TrimSpace(in.DefinitionFingerprint); definitionFingerprint != "" && !appInstallationHasIdentifier(app.Metadata, definitionFingerprint, []string{"definition_fingerprint", "definitionFingerprint", "definition_hash", "definitionHash", "test_evidence_definition_fingerprint", "app_definition_hash", "appDefinitionHash", "app_definition_fingerprint", "appDefinitionFingerprint"}) {
 		return false
 	}
-	if in.HasBlockingDependency != nil && appInstallationMetadataBool(app.Metadata, "dependency_verification.has_blocking_dependency", "dependency_verification.hasBlockingDependency", "has_blocking_dependency", "test_evidence.dependency_verification.has_blocking_dependency", "test_evidence.dependency_verification.hasBlockingDependency", "test_evidence_dependency_blocking") != *in.HasBlockingDependency {
+	if in.HasBlockingDependency != nil && appInstallationMetadataBool(app.Metadata, "dependency_verification.has_blocking_dependency", "dependency_verification.hasBlockingDependency", "install_evidence.dependency_verification.has_blocking_dependency", "install_evidence.dependency_verification.hasBlockingDependency", "installEvidence.dependencyVerification.hasBlockingDependency", "install_evidence.has_blocking_dependency", "installEvidence.hasBlockingDependency", "has_blocking_dependency", "test_evidence.dependency_verification.has_blocking_dependency", "test_evidence.dependency_verification.hasBlockingDependency", "test_evidence_dependency_blocking") != *in.HasBlockingDependency {
 		return false
 	}
-	if in.HasMissingRequiredDependency != nil && appInstallationMetadataBool(app.Metadata, "dependency_verification.has_missing_required", "dependency_verification.hasMissingRequired", "has_missing_required_dependency", "has_missing_required", "test_evidence.dependency_verification.has_missing_required", "test_evidence.dependency_verification.hasMissingRequired", "test_evidence_dependency_missing_required") != *in.HasMissingRequiredDependency {
+	if in.HasMissingRequiredDependency != nil && appInstallationMetadataBool(app.Metadata, "dependency_verification.has_missing_required", "dependency_verification.hasMissingRequired", "install_evidence.dependency_verification.has_missing_required", "install_evidence.dependency_verification.hasMissingRequired", "installEvidence.dependencyVerification.hasMissingRequired", "install_evidence.has_missing_required", "installEvidence.hasMissingRequired", "has_missing_required_dependency", "has_missing_required", "test_evidence.dependency_verification.has_missing_required", "test_evidence.dependency_verification.hasMissingRequired", "test_evidence_dependency_missing_required") != *in.HasMissingRequiredDependency {
 		return false
 	}
 	return true
@@ -482,6 +482,22 @@ func appInstallationHasResultType(metadata map[string]any, resultType string) bo
 			}
 		}
 	}
+	for _, evidence := range appInstallationInstallEvidenceMaps(metadata) {
+		contract := appInstallationMap(evidence["result_contract"])
+		if contract == nil {
+			contract = appInstallationMap(evidence["resultContract"])
+		}
+		if contract != nil {
+			if appInstallationString(contract, "primary") == resultType {
+				return true
+			}
+			for _, value := range appInstallationStringList(contract["types"]) {
+				if value == resultType {
+					return true
+				}
+			}
+		}
+	}
 	for _, evidence := range appInstallationTestEvidenceMaps(metadata) {
 		if appInstallationString(evidence, "primary_result") == resultType || appInstallationString(evidence, "primaryResult") == resultType {
 			return true
@@ -571,6 +587,23 @@ func appInstallationTestEvidenceMaps(metadata map[string]any) []map[string]any {
 			out = append(out, value)
 		}
 	}
+	for _, evidence := range appInstallationInstallEvidenceMaps(metadata) {
+		for _, key := range []string{"test_evidence", "testEvidence"} {
+			if value := appInstallationMap(evidence[key]); value != nil {
+				out = append(out, value)
+			}
+		}
+	}
+	return out
+}
+
+func appInstallationInstallEvidenceMaps(metadata map[string]any) []map[string]any {
+	out := []map[string]any{}
+	for _, key := range []string{"install_evidence", "installEvidence"} {
+		if value := appInstallationMap(metadata[key]); value != nil {
+			out = append(out, value)
+		}
+	}
 	return out
 }
 
@@ -587,9 +620,16 @@ func appInstallationHasWorkflowSkillID(metadata map[string]any, workflowSkillID 
 			return true
 		}
 	}
-	if evidence := appInstallationMap(metadata["test_evidence"]); evidence != nil {
-		if appInstallationApprovalInstanceHasWorkflowSkillID(appInstallationMap(evidence["approval_instance"]), workflowSkillID) {
+	for _, evidence := range appInstallationTestEvidenceMaps(metadata) {
+		if appInstallationApprovalInstanceHasWorkflowSkillID(appInstallationMap(evidence["approval_instance"]), workflowSkillID) || appInstallationApprovalInstanceHasWorkflowSkillID(appInstallationMap(evidence["approvalInstance"]), workflowSkillID) {
 			return true
+		}
+	}
+	for _, evidence := range appInstallationInstallEvidenceMaps(metadata) {
+		for _, dep := range appInstallationMapList(evidence["dependencies"]) {
+			if appInstallationString(dep, "kind") == "workflow_skill" && appInstallationString(dep, "id") == workflowSkillID {
+				return true
+			}
 		}
 	}
 	if appInstallationApprovalInstanceHasWorkflowSkillID(appInstallationMap(metadata["test_evidence_approval_instance"]), workflowSkillID) {
@@ -616,8 +656,21 @@ func appInstallationHasWorkflowNode(metadata map[string]any, workflowNode string
 			}
 		}
 	}
-	if evidence := appInstallationMap(metadata["test_evidence"]); evidence != nil {
-		if appInstallationApprovalInstanceHasWorkflowNode(appInstallationMap(evidence["approval_instance"]), workflowNode) {
+	for _, evidence := range appInstallationInstallEvidenceMaps(metadata) {
+		workflow := appInstallationMap(evidence["workflow_mapping"])
+		if workflow == nil {
+			workflow = appInstallationMap(evidence["workflowMapping"])
+		}
+		if workflow != nil {
+			for _, key := range []string{"submitNode", "approvalNode", "resultNode", "attentionNode", "submit_node", "approval_node", "result_node", "attention_node"} {
+				if value, ok := workflow[key].(string); ok && strings.TrimSpace(value) == workflowNode {
+					return true
+				}
+			}
+		}
+	}
+	for _, evidence := range appInstallationTestEvidenceMaps(metadata) {
+		if appInstallationApprovalInstanceHasWorkflowNode(appInstallationMap(evidence["approval_instance"]), workflowNode) || appInstallationApprovalInstanceHasWorkflowNode(appInstallationMap(evidence["approvalInstance"]), workflowNode) {
 			return true
 		}
 	}

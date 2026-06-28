@@ -131,7 +131,7 @@ func TestSubmitMaclawAppPackageQueuesLocalSubmission(t *testing.T) {
 	if result["status"] != "submitted" || result["channel"] != "local" {
 		t.Fatalf("unexpected result: %#v", result)
 	}
-	if result["package_sha256"] == "" || result["package_bytes"].(int) <= 0 {
+	if result["package_sha"] == "" || result["package_sha256"] == "" || result["package_sha"] != result["package_sha256"] || result["package_bytes"].(int) <= 0 {
 		t.Fatalf("expected package fingerprint in result: %#v", result)
 	}
 	if result["dependency_count"] != 2 {
@@ -176,8 +176,19 @@ func TestSubmitMaclawAppPackageQueuesLocalSubmission(t *testing.T) {
 	if len(summaries) != 1 || summaries[0].SubmissionID != submissionID || summaries[0].AppIDs[0] != "local-contract" {
 		t.Fatalf("unexpected summaries: %#v", summaries)
 	}
-	if summaries[0].AppNames[0] != "Contract" || len(summaries[0].PackageSHA) != 64 || summaries[0].PackageSize <= 0 {
+	if summaries[0].AppNames[0] != "Contract" || len(summaries[0].PackageSHA) != 64 || summaries[0].PackageSHA256 != summaries[0].PackageSHA || summaries[0].PackageSize <= 0 {
 		t.Fatalf("expected summary audit metadata: %#v", summaries[0])
+	}
+	summaryJSON, err := json.Marshal(summaries[0])
+	if err != nil {
+		t.Fatalf("marshal summary: %v", err)
+	}
+	var summaryFields map[string]any
+	if err := json.Unmarshal(summaryJSON, &summaryFields); err != nil {
+		t.Fatalf("decode summary json: %v", err)
+	}
+	if summaryFields["package_sha"] != summaries[0].PackageSHA || summaryFields["package_sha256"] != summaries[0].PackageSHA {
+		t.Fatalf("summary json should expose both package sha aliases: %s", summaryJSON)
 	}
 	if summaries[0].EventCount != 1 || summaries[0].LastEventAt == "" {
 		t.Fatalf("expected summary event metadata: %#v", summaries[0])
@@ -1540,6 +1551,9 @@ func TestSyncMaclawAppPackageSubmissionToHubUpdatesLocalQueue(t *testing.T) {
 	if result["submission_id"] != "hub-version-sync-app" || result["status"] != "pending_review" || result["channel"] != "hub" {
 		t.Fatalf("unexpected sync result: %#v", result)
 	}
+	if result["package_sha"] != "hub-sha" || result["package_sha256"] != "hub-sha" {
+		t.Fatalf("Hub sync result should expose both package sha aliases: %#v", result)
+	}
 	summaries, err := app.ListMaclawAppPackageSubmissions(10)
 	if err != nil {
 		t.Fatalf("list submissions: %v", err)
@@ -1626,6 +1640,9 @@ func TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall(t *testing.T) 
 	}
 	if result["schema"] != "maclaw.app.hub_install.v1" || result["capability_id"] != "cap-hub-install-app" || result["app_count"] != 1 {
 		t.Fatalf("unexpected install result: %#v", result)
+	}
+	if result["package_sha"] == "" || result["package_sha256"] == "" || result["package_sha"] != result["package_sha256"] {
+		t.Fatalf("Hub install result should expose both package sha aliases: %#v", result)
 	}
 	installRecord, ok := result["install_record"].(map[string]any)
 	if !ok {
@@ -3093,7 +3110,7 @@ func TestRecordMaclawAppInstallPersistsNewestInstallAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordMaclawAppInstall() error = %v", err)
 	}
-	if result["app_count"] != 1 || result["package_sha"] == "" || result["has_missing_required"] != false || result["has_blocking_dependency"] != false {
+	if result["app_count"] != 1 || result["package_sha"] == "" || result["package_sha256"] != result["package_sha"] || result["has_missing_required"] != false || result["has_blocking_dependency"] != false {
 		t.Fatalf("unexpected record result: %#v", result)
 	}
 	if deps, ok := result["dependencies"].([]maclawAppInstallPlanDependency); !ok || len(deps) != 1 || !deps[0].Installed {
@@ -3325,7 +3342,20 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 		}
 		captured = append(captured, item)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"app_id":"expense-approval","status":"installed"}`))
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/data/app-installations/expense-approval":
+			_, _ = w.Write([]byte(`{"app_id":"expense-approval","status":"installed"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/datasets/finance.expense_forms/records/expense-runtime-1":
+			_, _ = w.Write([]byte(`{"id":"expense-runtime-1","data":{"amount":860,"status":"draft"}}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/data/datasets/finance.expense_forms/records/expense-runtime-1":
+			_, _ = w.Write([]byte(`{"id":"expense-runtime-1","status":"updated"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/datasets/finance.expense_forms/records/expense-runtime-1/approvals":
+			_, _ = w.Write([]byte(`{"id":"approval-runtime-1","status":"pending"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/approvals":
+			_, _ = w.Write([]byte(`{"items":[{"id":"approval-runtime-1","dataset_id":"finance.expense_forms","record_id":"expense-runtime-1","status":"pending","summary":"Runtime Expense","request":{"approval_instance_id":"wf-runtime-1","appID":"expense-approval","blueprintID":"expense.blueprint.v1","objectRole":"expense_report","approvalEvent":"finance.submitted","applicant":"alice","currentAssignee":"manager","currentAssigneeType":"user","workflowSkillId":"expense-workflow","workflowVersion":"2.0.0","workflowNodeId":"finance.director_review","workflowNodeIds":["expense.intake","finance.director_review"],"businessStatus":"finance_pending","resultStatus":"pending","resultPayload":{"text":"waiting for director","business_record":{"id":"expense-runtime-1"}},"outputs":[{"type":"content","title":"Runtime Summary","text":"waiting for director"}],"artifacts":[{"id":"runtime-receipt","name":"runtime-receipt.pdf","uri":"artifact://runtime-receipt"}]},"created_by":"alice","submitted_by":"alice","assigned_to":"manager","created_at":"2026-06-28T01:00:00Z","updated_at":"2026-06-28T01:01:00Z"}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
 	}))
 	defer server.Close()
 
@@ -3528,6 +3558,22 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	workflowMapping, ok := metadata["workflow_mapping"].(map[string]interface{})
 	if !ok || workflowMapping["schema"] != "maclaw.app.workflow.v1" || workflowMapping["approvalNode"] != "finance.director_review" {
 		t.Fatalf("registration metadata missing workflow mapping: %#v", metadata)
+	}
+	nestedInstallEvidence, ok := metadata["install_evidence"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("registration metadata missing nested install evidence: %#v", metadata)
+	}
+	installWorkflowMapping := anyMap(nestedInstallEvidence["workflow_mapping"])
+	if installWorkflowMapping == nil || installWorkflowMapping["approvalNode"] != "finance.director_review" {
+		t.Fatalf("nested install evidence missing workflow mapping: %#v", nestedInstallEvidence)
+	}
+	installDependencyVerification := anyMap(nestedInstallEvidence["dependency_verification"])
+	if installDependencyVerification == nil || installDependencyVerification["schema"] != "maclaw.app.install_plan.v1" {
+		t.Fatalf("nested install evidence missing dependency verification: %#v", nestedInstallEvidence)
+	}
+	installTestEvidence := anyMap(nestedInstallEvidence["test_evidence"])
+	if installTestEvidence == nil || installTestEvidence["runId"] != "run-expense-1" {
+		t.Fatalf("nested install evidence missing test evidence: %#v", nestedInstallEvidence)
 	}
 	statusMapping, ok := workflowMapping["statusMapping"].(map[string]interface{})
 	if !ok || statusMapping["approved"] != "finance_approved" {
@@ -3785,6 +3831,76 @@ func TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv(t *testing.T) {
 	}
 	if records[0].WorkflowContract["workflowSkillId"] != "expense-workflow" || records[0].WorkflowContract["objectRole"] != "expense_report" {
 		t.Fatalf("install audit should keep workflow contract evidence: %#v", records[0].WorkflowContract)
+	}
+	runtimeInstance := maclawAppApprovalInstance{
+		AppID:               "expense-approval",
+		AppName:             "Expense Approval",
+		BlueprintID:         "expense.blueprint.v1",
+		DatasetID:           "finance.expense_forms",
+		ObjectRole:          "expense_report",
+		ApprovalObjectRole:  "expense_report",
+		ApprovalEvent:       "finance.submitted",
+		ApprovalWorkflowID:  "expense-workflow",
+		InstanceID:          "wf-runtime-1",
+		Title:               "Runtime Expense",
+		Lane:                "pending_my_approval",
+		Status:              "pending",
+		CurrentNode:         "finance.director_review",
+		CurrentNodeIDs:      []string{"expense.intake", "finance.director_review"},
+		Owner:               "alice",
+		Applicant:           "alice",
+		Approver:            "manager",
+		CurrentAssignee:     "manager",
+		CurrentAssigneeType: "user",
+		WorkflowSkillID:     "expense-workflow",
+		WorkflowVersion:     "2.0.0",
+		BusinessStatus:      "finance_pending",
+		ResultStatus:        "pending",
+		FromStatus:          "draft",
+		ToStatus:            "finance_pending",
+		RecordID:            "expense-runtime-1",
+		Result:              "waiting for director",
+		ResultPayload:       map[string]any{"text": "waiting for director", "business_record": map[string]any{"id": "expense-runtime-1"}},
+		Outputs:             []maclawAppApprovalOutput{{Type: "content", Title: "Runtime Summary", Text: "waiting for director"}},
+		Artifacts:           []maclawAppApprovalArtifact{{ID: "runtime-receipt", Name: "runtime-receipt.pdf", URI: "artifact://runtime-receipt"}},
+	}
+	synced, err := app.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{DatasetID: "finance.expense_forms", ObjectRole: "expense_report", RecordID: "expense-runtime-1", Instance: runtimeInstance})
+	if err != nil {
+		t.Fatalf("SyncMaclawAppApprovalInstanceToDataSrv runtime error = %v", err)
+	}
+	if synced["synced"] != true || synced["action"] != "create_record_approval" || synced["approval_id"] != "approval-runtime-1" {
+		t.Fatalf("runtime approval should sync to DataSrv and expose remote id: %#v", synced)
+	}
+	if len(captured) < 4 {
+		t.Fatalf("runtime sync should add DataSrv record and approval requests: %#v", captured)
+	}
+	createRequest := captured[len(captured)-1].Body
+	if captured[len(captured)-1].Method != http.MethodPost || captured[len(captured)-1].Path != "/api/v1/data/datasets/finance.expense_forms/records/expense-runtime-1/approvals" {
+		t.Fatalf("runtime approval create request should use installed app DataSrv binding: %#v", captured[len(captured)-1])
+	}
+	request, ok := createRequest["request"].(map[string]interface{})
+	if !ok || request["app_id"] != "expense-approval" || request["workflowSkillId"] != "expense-workflow" || request["workflowNodeId"] != "finance.director_review" {
+		t.Fatalf("runtime approval create request should keep installed app workflow context: %#v", createRequest)
+	}
+	if payload, ok := request["resultPayload"].(map[string]interface{}); !ok || payload["business_record"] == nil {
+		t.Fatalf("runtime approval create request should keep result payload for feedback: %#v", request)
+	}
+	runtimeList, err := app.ListMaclawAppApprovalInstances("expense-approval", "pending_my_approval", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstances runtime error = %v", err)
+	}
+	if len(runtimeList) != 1 {
+		t.Fatalf("expected one runtime approval in pending lane, got %#v", runtimeList)
+	}
+	gotRuntime := runtimeList[0]
+	if gotRuntime.AppID != "expense-approval" || gotRuntime.ApprovalID != "approval-runtime-1" || gotRuntime.InstanceID != "wf-runtime-1" || gotRuntime.DatasetID != "finance.expense_forms" || gotRuntime.ObjectRole != "expense_report" {
+		t.Fatalf("runtime approval list should preserve app and DataSrv identity: %#v", gotRuntime)
+	}
+	if gotRuntime.WorkflowSkillID != "expense-workflow" || gotRuntime.WorkflowVersion != "2.0.0" || gotRuntime.CurrentNode != "finance.director_review" || len(gotRuntime.CurrentNodeIDs) != 2 {
+		t.Fatalf("runtime approval list should preserve workflow state: %#v", gotRuntime)
+	}
+	if gotRuntime.ResultPayload["text"] != "waiting for director" || len(gotRuntime.Outputs) != 1 || gotRuntime.Outputs[0].Title != "Runtime Summary" || len(gotRuntime.Artifacts) != 1 || gotRuntime.Artifacts[0].Name != "runtime-receipt.pdf" {
+		t.Fatalf("runtime approval list should preserve result feedback package: %#v", gotRuntime)
 	}
 }
 func TestMaclawAppApprovalInstancesPersistAndFilter(t *testing.T) {
@@ -4107,6 +4223,39 @@ func TestListMaclawAppApprovalInstancesAllLoadsDataSrvLane(t *testing.T) {
 	}
 	if got.ResultPayload["text"] != "waiting for manager" || len(got.Outputs) != 1 || len(got.Artifacts) != 1 || got.Artifacts[0].Name != "receipt.pdf" {
 		t.Fatalf("remote approval should preserve result fields: %#v", got)
+	}
+}
+
+func TestListMaclawAppApprovalInstancesLoadsRequestOnlyRuntimeResult(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/data/approvals" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"approval-request-only-1","dataset_id":"finance.expenses","record_id":"exp-request-only-1","status":"pending","summary":"Request-only approval","request":{"approval_instance_id":"wf-request-only-1","appID":"expense","applicant":"alice","currentAssignee":"manager","currentAssigneeType":"user","workflowNodeId":"manager_approval","workflowNodeIds":["submit","manager_approval"],"workflowDecisionId":"decision-9","businessStatus":"approval_pending","resultStatus":"pending_review","fromStatus":"submitted","toStatus":"approval_pending","resultPayload":{"text":"waiting from request","amount":128},"outputs":[{"type":"content","title":"Request Summary","text":"waiting from request"}],"artifacts":[{"id":"request-artifact-1","name":"request.pdf","uri":"artifact://request"}]},"created_by":"alice","created_at":"2026-06-21T01:00:00Z","updated_at":"2026-06-21T02:00:00Z"}]}`))
+	}))
+	defer server.Close()
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: server.URL, Token: "token", TenantID: "tenant", UserID: "manager", Role: "approver"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	items, err := app.ListMaclawAppApprovalInstancesAll("pending_my_approval", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one request-only approval, got %#v", items)
+	}
+	got := items[0]
+	if got.AppID != "expense" || got.InstanceID != "wf-request-only-1" || got.CurrentNode != "manager_approval" || got.WorkflowDecisionID != "decision-9" {
+		t.Fatalf("request-only approval should restore identity and workflow context: %#v", got)
+	}
+	if len(got.CurrentNodeIDs) != 2 || got.CurrentNodeIDs[1] != "manager_approval" || got.BusinessStatus != "approval_pending" || got.ResultStatus != "pending_review" || got.FromStatus != "submitted" || got.ToStatus != "approval_pending" {
+		t.Fatalf("request-only approval should restore status transition context: %#v", got)
+	}
+	if got.Result != "waiting from request" || got.ResultPayload["text"] != "waiting from request" || len(got.Outputs) != 1 || got.Outputs[0].Title != "Request Summary" || len(got.Artifacts) != 1 || got.Artifacts[0].Name != "request.pdf" {
+		t.Fatalf("request-only approval should restore result package: %#v", got)
 	}
 }
 
@@ -4978,6 +5127,21 @@ func TestSyncMaclawAppApprovalInstanceToDataSrv(t *testing.T) {
 	if !ok || request["approval_instance_id"] != "appr-1" || request["object_role"] != "expense_report" || request["blueprint_id"] != "expense.blueprint.v1" || request["detail_url"] != "approval://instances/appr-1" {
 		t.Fatalf("create body request should keep app approval context: %#v", captured[2].Body)
 	}
+	if request["currentAssignee"] != "manager" || request["current_assignee"] != "manager" || request["currentAssigneeType"] != "user" || request["fromStatus"] != "submitted" || request["toStatus"] != "approval_pending" {
+		t.Fatalf("create body request should keep approval assignee and status transition: %#v", request)
+	}
+	if request["workflowSkillId"] != "expense-approval-workflow" || request["workflowNodeId"] != "manager_review" || fmt.Sprint(request["workflowNodeIds"]) != "[manager_review finance_review]" || request["workflowVersion"] != "2.1.0" {
+		t.Fatalf("create body request should keep workflow node context: %#v", request)
+	}
+	if payload, ok := request["resultPayload"].(map[string]interface{}); !ok || payload["business_record"] == nil {
+		t.Fatalf("create body request should keep result payload: %#v", request)
+	}
+	if outputs, ok := request["outputs"].([]interface{}); !ok || len(outputs) != 1 {
+		t.Fatalf("create body request should keep outputs: %#v", request)
+	}
+	if artifacts, ok := request["artifacts"].([]interface{}); !ok || len(artifacts) != 1 {
+		t.Fatalf("create body request should keep artifacts: %#v", request)
+	}
 	if payload, ok := captured[2].Body["result_payload"].(map[string]interface{}); !ok || payload["business_record"] == nil {
 		t.Fatalf("create body missing result payload: %#v", captured[2].Body)
 	}
@@ -5192,6 +5356,71 @@ func TestPlanMaclawAppInstallRejectsUnknownSchema(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	if _, err := app.PlanMaclawAppInstall(`{"schema":"unknown","privateMarker":"x_maclaw_apps"}`); err == nil || !strings.Contains(err.Error(), "schema") {
 		t.Fatalf("expected schema error, got %v", err)
+	}
+}
+
+func TestInstallMaclawAppDependenciesPreservesInstallRefFromDuplicateDependency(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	type installCall struct {
+		source     string
+		id         string
+		installRef string
+	}
+	var calls []installCall
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		calls = append(calls, installCall{source: source, id: id, installRef: installRef})
+		skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", id)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# "+id+"\n"), 0o644); err != nil {
+			return err
+		}
+		cfg, err := app.LoadConfig()
+		if err != nil {
+			return err
+		}
+		cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{Name: id, SkillDir: skillDir, Status: "active", Source: source, HubSkillID: id})
+		return app.SaveConfig(cfg)
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "duplicate-install-ref-app",
+			"name": "Duplicate Install Ref App",
+			"kind": "enterprise_approval_app",
+			"binding": {
+				"appSkill": { "id": "expense-app-skill" }
+			},
+			"dependencies": {
+				"skills": [
+					{ "id": "expense-app-skill", "kind": "app_skill", "required": true, "source": "enterprise_hub", "capability_id": "cap-expense-app-skill" },
+					{ "id": "expense-approval-workflow", "kind": "workflow_skill", "required": true, "source": "enterprise_hub", "capability_id": "cap-expense-workflow" }
+				]
+			}
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "expense-app-skill")
+	if dep == nil {
+		t.Fatalf("missing app skill dependency: %#v", plan.Dependencies)
+	}
+	if dep.Source != "enterprise_hub" || dep.InstallRef != "cap-expense-app-skill" || dep.Action != "installed" {
+		t.Fatalf("duplicate dependency should preserve precise install ref, got %#v", dep)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected app skill and workflow installs, got %#v", calls)
+	}
+	if calls[0] != (installCall{source: "enterprise_hub", id: "expense-app-skill", installRef: "cap-expense-app-skill"}) {
+		t.Fatalf("app skill install should use precise install ref, got %#v", calls)
 	}
 }
 

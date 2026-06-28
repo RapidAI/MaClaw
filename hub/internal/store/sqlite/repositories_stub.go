@@ -2536,8 +2536,8 @@ func (r *knowledgeShareRepo) List(ctx context.Context, filter store.KnowledgeSha
 	if offset < 0 {
 		offset = 0
 	}
-	where := make([]string, 0, 4)
-	args := make([]any, 0, 8)
+	where := make([]string, 0, 6)
+	args := make([]any, 0, 10)
 	if filter.TenantScoped {
 		where = append(where, "tenant_id = ?")
 		args = append(args, normalizeTenantID(filter.TenantID))
@@ -2564,6 +2564,11 @@ func (r *knowledgeShareRepo) List(ctx context.Context, filter store.KnowledgeSha
 		like := "%" + user + "%"
 		where = append(where, "(owner_user_id = ? OR owner_user_email LIKE ?)")
 		args = append(args, user, like)
+	}
+	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
+		like := "%" + keyword + "%"
+		where = append(where, "(title LIKE ? OR description LIKE ?)")
+		args = append(args, like, like)
 	}
 	whereSQL := ""
 	if len(where) > 0 {

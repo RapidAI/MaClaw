@@ -142,6 +142,7 @@ type KnowledgeShareFilter struct {
 	OwnerUserID    string
 	OwnerUserEmail string
 	User           string
+	Keyword        string
 	Sort           string
 	Offset         int
 	Limit          int

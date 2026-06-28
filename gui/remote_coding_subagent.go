@@ -125,7 +125,7 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	}
 
 	result := agent.RunLoop(cb, taskDescription, nil, r.httpClient)
-	return remoteCodingSubAgentResultFromLoopResult(result)
+	return cb.applyRemoteVerificationOutcome(remoteCodingSubAgentResultFromLoopResult(result))
 }
 
 func remoteCodingSubAgentResultFromLoopResult(result agent.LoopResult) *RemoteCodingSubAgentResult {
@@ -169,6 +169,15 @@ func remoteCodingSubAgentResultFromLoopResult(result agent.LoopResult) *RemoteCo
 			ToolCalls:  result.ToolCalls,
 		}
 	}
+	if result.ToolCalls == 0 {
+		return &RemoteCodingSubAgentResult{
+			Status:     "failed",
+			Error:      "remote coding subagent completed without using tools",
+			Summary:    result.Text,
+			Iterations: result.Iterations,
+			ToolCalls:  result.ToolCalls,
+		}
+	}
 
 	return &RemoteCodingSubAgentResult{
 		Status:     "success",
@@ -183,12 +192,505 @@ func remoteCodingSubAgentLoopErrorIsCancelled(errText string) bool {
 	return lower == "cancelled" || strings.HasPrefix(lower, "cancelled ")
 }
 
+func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCodingSubAgentResult) *RemoteCodingSubAgentResult {
+	if result == nil {
+		return result
+	}
+	filesModified, filesCreated, filesRead, searchesRun, exploredBeforeFirstEdit, commandsRun, lastEditSeq := c.remoteAuditSnapshot()
+	existingModified := existingSubAgentModifiedFiles(filesModified, filesCreated)
+	explorationStatus, explorationSummary := summarizeSubAgentExploration(existingModified, filesRead, searchesRun, exploredBeforeFirstEdit)
+	confirmationStatus, confirmationSummary := c.summarizeRemotePostEditConfirmation(filesModified)
+	verificationStatus, verificationSummary := summarizeSubAgentVerification(filesModified, commandsRun, lastEditSeq)
+	diffStatus, diffSummary := summarizeRemoteDiffSelfCheck(filesModified, commandsRun, lastEditSeq)
+	noChangeSummary := summarizeSubAgentNoChangeEvidence(filesModified, filesCreated, filesRead, searchesRun, commandsRun, nil)
+	failedCommands := unresolvedFailedSubAgentCommands(filterPostEditSubAgentCommands(commandsRun, lastEditSeq))
+	commandSummary := ""
+	if len(failedCommands) > 0 && verificationStatus != codingSubAgentQualityFailed {
+		commandSummary = summarizeFailedSubAgentCommandWarning(failedCommands)
+		if strings.TrimSpace(commandSummary) == "" {
+			commandSummary = "remote coding subagent left failed post-edit commands unresolved"
+		}
+	}
+	result.Summary = appendSubAgentExplorationSummary(result.Summary, explorationStatus, explorationSummary)
+	result.Summary = appendRemoteConfirmationSummary(result.Summary, confirmationStatus, confirmationSummary)
+	result.Summary = appendSubAgentVerificationSummary(result.Summary, verificationStatus, verificationSummary)
+	result.Summary = appendRemoteDiffSelfCheckSummary(result.Summary, diffStatus, diffSummary)
+	result.Summary = appendRemoteNoChangeEvidenceSummary(result.Summary, noChangeSummary)
+	result.Summary = appendRemoteCommandFailureSummary(result.Summary, commandSummary)
+	if result.Status != "success" {
+		return result
+	}
+	if strings.TrimSpace(noChangeSummary) != "" {
+		result.Status = "failed"
+		result.Error = compactSubAgentErrorSummary(noChangeSummary)
+		return result
+	}
+	if explorationStatus == codingSubAgentQualityMissing {
+		result.Status = "failed"
+		if strings.TrimSpace(explorationSummary) == "" {
+			explorationSummary = "remote coding subagent edited existing files without reading or searching first"
+		}
+		result.Error = compactSubAgentErrorSummary(explorationSummary)
+		return result
+	}
+	if confirmationStatus == codingSubAgentQualityMissing {
+		result.Status = "failed"
+		if strings.TrimSpace(confirmationSummary) == "" {
+			confirmationSummary = "remote coding subagent did not re-read modified files after editing"
+		}
+		result.Error = compactSubAgentErrorSummary(confirmationSummary)
+		return result
+	}
+	switch verificationStatus {
+	case codingSubAgentQualityFailed, codingSubAgentQualityMissing:
+		result.Status = "failed"
+		if strings.TrimSpace(verificationSummary) == "" {
+			verificationSummary = "remote coding subagent verification did not pass after file changes"
+		}
+		result.Error = compactSubAgentErrorSummary(verificationSummary)
+		return result
+	}
+	switch diffStatus {
+	case codingSubAgentQualityFailed, codingSubAgentQualityMissing:
+		result.Status = "failed"
+		if strings.TrimSpace(diffSummary) == "" {
+			diffSummary = "remote coding subagent did not run a usable git diff/status self-check after file changes"
+		}
+		result.Error = compactSubAgentErrorSummary(diffSummary)
+		return result
+	}
+	if strings.TrimSpace(commandSummary) != "" {
+		result.Status = "failed"
+		result.Error = compactSubAgentErrorSummary(commandSummary)
+	}
+	return result
+}
+
+func summarizeRemoteDiffSelfCheck(filesModified []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64) (codingSubAgentQualityStatus, string) {
+	if len(filesModified) == 0 {
+		return codingSubAgentQualityNotNeeded, "未检测到远程文件修改，跳过远程 diff/status 自检要求。"
+	}
+	var checks []CodingSubAgentCommandResult
+	for _, cmd := range commands {
+		if lastEditSeq > 0 && cmd.seq > 0 && cmd.seq < lastEditSeq {
+			continue
+		}
+		if isRemoteDiffSelfCheckCommand(cmd.Command) {
+			checks = append(checks, cmd)
+		}
+	}
+	if len(checks) == 0 {
+		return codingSubAgentQualityMissing, "远程文件已修改，但未记录编辑后的 git diff/status 自检。"
+	}
+	failed := failedSubAgentCommands(checks)
+	if len(failed) > 0 {
+		return codingSubAgentQualityFailed, fmt.Sprintf("远程 git diff/status 自检失败：%s", compactFailedVerificationCommandResults(failed))
+	}
+	clean := remoteCleanDiffSelfChecks(checks)
+	if len(clean) == len(checks) {
+		return codingSubAgentQualityFailed, fmt.Sprintf("远程 git diff/status 自检显示工作区干净，但审计记录已有远程文件修改：%s", compactSubAgentVerificationCommandList(clean))
+	}
+	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条远程 diff/status 自检命令：%s", len(checks), compactSubAgentVerificationCommandList(checks))
+}
+
+func appendRemoteDiffSelfCheckSummary(summary string, status codingSubAgentQualityStatus, diffSummary string) string {
+	if strings.TrimSpace(diffSummary) == "" {
+		return summary
+	}
+	label := status.String()
+	switch status {
+	case codingSubAgentQualityPassed:
+		label = "CHECKED"
+	case codingSubAgentQualityFailed:
+		label = "FAILED"
+	case codingSubAgentQualityMissing:
+		label = "MISSING"
+	case codingSubAgentQualityNotNeeded:
+		label = "NOT_NEEDED"
+	}
+	return strings.TrimSpace(summary) + "\n\n## 远程 Diff 自检\n\n" + label + ": " + diffSummary
+}
+
+func appendRemoteCommandFailureSummary(summary string, commandSummary string) string {
+	if strings.TrimSpace(commandSummary) == "" {
+		return summary
+	}
+	return strings.TrimSpace(summary) + "\n\n## 命令状态\n\nFAILED: " + commandSummary
+}
+
+func appendRemoteNoChangeEvidenceSummary(summary string, noChangeSummary string) string {
+	if strings.TrimSpace(noChangeSummary) == "" {
+		return summary
+	}
+	return strings.TrimSpace(summary) + "\n\n## 无改动证据\n\nFAILED: " + noChangeSummary
+}
+
+func remoteCleanDiffSelfChecks(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
+	clean := make([]CodingSubAgentCommandResult, 0)
+	for _, cmd := range commands {
+		if remoteDiffSelfCheckLooksClean(cmd) {
+			clean = append(clean, cmd)
+		}
+	}
+	return clean
+}
+
+func remoteDiffSelfCheckLooksClean(cmd CodingSubAgentCommandResult) bool {
+	output := strings.TrimSpace(cmd.Summary)
+	if output == "" {
+		return true
+	}
+	lines := strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
+	meaningful := make([]string, 0, len(lines))
+	for _, line := range lines {
+		text := strings.TrimSpace(line)
+		if text == "" || strings.EqualFold(text, "EXIT: 0") || text == "(无输出)" {
+			continue
+		}
+		meaningful = append(meaningful, text)
+	}
+	if len(meaningful) == 0 {
+		return true
+	}
+	joined := strings.ToLower(strings.Join(meaningful, "\n"))
+	if strings.Contains(joined, "nothing to commit") &&
+		(strings.Contains(joined, "working tree clean") || strings.Contains(joined, "working tree is clean")) {
+		return true
+	}
+	return len(meaningful) == 1 && strings.EqualFold(strings.TrimSpace(meaningful[0]), "no changes")
+}
+
+func isRemoteDiffSelfCheckCommand(command string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if normalized == "" {
+		return false
+	}
+	for _, segment := range shellCommandSegments(normalized) {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) < 2 || commandNameBase(segment[0]) != "git" {
+			continue
+		}
+		switch segment[1] {
+		case "diff", "status":
+			return true
+		}
+	}
+	return false
+}
+
+func appendRemoteConfirmationSummary(summary string, status codingSubAgentQualityStatus, confirmationSummary string) string {
+	if strings.TrimSpace(confirmationSummary) == "" {
+		return summary
+	}
+	label := status.String()
+	switch status {
+	case codingSubAgentQualityPassed:
+		label = "PASS"
+	case codingSubAgentQualityMissing:
+		label = "MISSING"
+	case codingSubAgentQualityNotNeeded:
+		label = "NOT_NEEDED"
+	}
+	return strings.TrimSpace(summary) + "\n\n## 确认状态\n\n" + label + ": " + confirmationSummary
+}
+
+func (c *remoteCodingCallbacks) summarizeRemotePostEditConfirmation(filesModified []string) (codingSubAgentQualityStatus, string) {
+	if len(filesModified) == 0 {
+		return codingSubAgentQualityNotNeeded, "未检测到远程文件修改，跳过修改后读取确认要求。"
+	}
+	missing := c.remoteFilesMissingPostEditRead()
+	if len(missing) == 0 {
+		return codingSubAgentQualityPassed, fmt.Sprintf("已在最终编辑后重新读取 %d 个远程修改文件。", len(uniqueSortedSubAgentStrings(filesModified)))
+	}
+	return codingSubAgentQualityMissing, fmt.Sprintf("远程文件修改后缺少 ssh_read_file 确认：%s", strings.Join(missing, ", "))
+}
+
+func (c *remoteCodingCallbacks) remoteFilesMissingPostEditRead() []string {
+	if c == nil || len(c.fileEdits) == 0 {
+		return nil
+	}
+	lastEditByPath := make(map[string]remoteCodingFileAuditEvent)
+	for _, edit := range c.fileEdits {
+		key := subAgentPathEvidenceKey(edit.Path)
+		if key == "" {
+			continue
+		}
+		if prev, ok := lastEditByPath[key]; !ok || edit.Seq > prev.Seq {
+			lastEditByPath[key] = edit
+		}
+	}
+	confirmed := make(map[string]bool, len(lastEditByPath))
+	for _, read := range c.fileReads {
+		key := subAgentPathEvidenceKey(read.Path)
+		edit, ok := lastEditByPath[key]
+		if ok && read.Seq > edit.Seq {
+			confirmed[key] = true
+		}
+	}
+	missing := make([]string, 0)
+	for key, edit := range lastEditByPath {
+		if !confirmed[key] {
+			missing = append(missing, edit.Path)
+		}
+	}
+	return uniqueSortedSubAgentStrings(missing)
+}
+
+func (c *remoteCodingCallbacks) remoteAuditSnapshot() ([]string, []string, []string, []CodingSubAgentSearchResult, bool, []CodingSubAgentCommandResult, uint64) {
+	if c == nil {
+		return nil, nil, nil, nil, true, nil, 0
+	}
+	files := append([]string(nil), c.filesModified...)
+	created := append([]string(nil), c.filesCreated...)
+	read := append([]string(nil), c.filesRead...)
+	searches := append([]CodingSubAgentSearchResult(nil), c.searchesRun...)
+	commands := append([]CodingSubAgentCommandResult(nil), c.commandsRun...)
+	return files, created, read, searches, c.remoteExploredBeforeFirstEdit(), commands, c.lastEditSeq
+}
+
+func (c *remoteCodingCallbacks) nextRemoteAuditSeq() uint64 {
+	if c == nil {
+		return 0
+	}
+	c.eventSeq++
+	return c.eventSeq
+}
+
+func (c *remoteCodingCallbacks) trackRemoteFileChanged(path string, created bool) {
+	if c == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	seq := c.nextRemoteAuditSeq()
+	c.filesModified = append(c.filesModified, path)
+	c.fileEdits = append(c.fileEdits, remoteCodingFileAuditEvent{Path: path, Seq: seq})
+	if created {
+		c.filesCreated = append(c.filesCreated, path)
+	}
+	if c.firstEditSeq == 0 {
+		c.firstEditSeq = seq
+	}
+	c.lastEditSeq = seq
+}
+
+func (c *remoteCodingCallbacks) trackRemoteFileRead(path string) {
+	if c == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	seq := c.nextRemoteAuditSeq()
+	c.filesRead = append(c.filesRead, path)
+	c.fileReads = append(c.fileReads, remoteCodingFileAuditEvent{Path: path, Seq: seq})
+	if c.firstReadSeq == 0 {
+		c.firstReadSeq = seq
+	}
+}
+
+func (c *remoteCodingCallbacks) remoteExploredBeforeFirstEdit() bool {
+	if c == nil || c.firstEditSeq == 0 {
+		return true
+	}
+	return (c.firstReadSeq > 0 && c.firstReadSeq < c.firstEditSeq) || (c.firstSearchSeq > 0 && c.firstSearchSeq < c.firstEditSeq)
+}
+
+func (c *remoteCodingCallbacks) trackRemoteCommand(command, workingDir, result string, succeeded bool) {
+	if c == nil || strings.TrimSpace(command) == "" {
+		return
+	}
+	seq := c.nextRemoteAuditSeq()
+	c.commandsRun = append(c.commandsRun, CodingSubAgentCommandResult{
+		Command:    command,
+		WorkingDir: workingDir,
+		Succeeded:  succeeded,
+		Summary:    compactCommandResult(result),
+		seq:        seq,
+	})
+	if succeeded && isRemoteCodingExplorationCommand(command) {
+		search := CodingSubAgentSearchResult{
+			Tool:      remoteCodingExplorationToolName(command),
+			Query:     compactSubAgentSearchText(command),
+			Path:      compactSubAgentPathText(workingDir),
+			Succeeded: true,
+			Summary:   compactSearchResult(result),
+			seq:       seq,
+		}
+		c.searchesRun = append(c.searchesRun, search)
+		if c.firstSearchSeq == 0 && subAgentSearchProvidesExplorationEvidence(search) {
+			c.firstSearchSeq = seq
+		}
+	}
+}
+
+func (c *remoteCodingCallbacks) trackRemoteSearch(tool, query, path, result string, succeeded bool) {
+	if c == nil || strings.TrimSpace(tool) == "" {
+		return
+	}
+	seq := c.nextRemoteAuditSeq()
+	search := CodingSubAgentSearchResult{
+		Tool:      strings.TrimSpace(tool),
+		Query:     compactSubAgentSearchText(query),
+		Path:      compactSubAgentPathText(path),
+		Succeeded: succeeded,
+		Summary:   compactSearchResult(result),
+		seq:       seq,
+	}
+	c.searchesRun = append(c.searchesRun, search)
+	if succeeded && c.firstSearchSeq == 0 && subAgentSearchProvidesExplorationEvidence(search) {
+		c.firstSearchSeq = seq
+	}
+}
+
+func isRemoteCodingExplorationCommand(command string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if normalized == "" {
+		return false
+	}
+	for _, segment := range shellCommandSegments(normalized) {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		name := commandNameBase(segment[0])
+		switch name {
+		case "codegraph":
+			if len(segment) >= 2 && (segment[1] == "explore" || segment[1] == "node") {
+				return true
+			}
+		case "rg", "ripgrep", "grep":
+			return true
+		case "git":
+			if len(segment) >= 2 && segment[1] == "grep" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func remoteCodingExplorationToolName(command string) string {
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	for _, segment := range shellCommandSegments(normalized) {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		name := commandNameBase(segment[0])
+		if name == "git" && len(segment) >= 2 && segment[1] == "grep" {
+			return "git grep"
+		}
+		switch name {
+		case "codegraph", "rg", "ripgrep", "grep":
+			return name
+		}
+	}
+	return "ssh_bash"
+}
+
+func (c *remoteCodingCallbacks) trackRemoteTaskCheckResult(result string) {
+	command, workingDir := remoteCodingTaskStatusCommandAndWorkingDir(result)
+	if command == "" {
+		return
+	}
+	if !remoteCodingTaskStatusCompleted(result) && remoteCodingToolOutcome(result) == "success" {
+		return
+	}
+	c.trackRemoteCommand(command, workingDir, result, remoteCodingToolOutcome(result) == "success" && remoteCodingTaskStatusCompletedSuccessfully(result))
+}
+
+func remoteCodingTaskStatusCommand(result string) string {
+	for _, line := range remoteCodingTaskHeaderLines(result) {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(strings.ToLower(line), "command:") {
+			continue
+		}
+		return strings.TrimSpace(strings.TrimPrefix(line, line[:len("command:")]))
+	}
+	return ""
+}
+
+func remoteCodingTaskStatusCommandAndWorkingDir(result string) (string, string) {
+	return remoteCodingCommandAndWorkingDir(remoteCodingTaskStatusCommand(result))
+}
+
+func remoteCodingCommandAndWorkingDir(command string) (string, string) {
+	command = strings.TrimSpace(command)
+	fields := shellCommandFields(command)
+	if len(fields) < 4 || normalizeShellCommandToken(fields[0]) != "cd" {
+		return command, ""
+	}
+	dirIndex := 1
+	if fields[dirIndex] == "--" {
+		dirIndex++
+	}
+	if dirIndex >= len(fields)-2 || fields[dirIndex] == "" || normalizeShellCommandToken(fields[dirIndex+1]) != "&&" {
+		return command, ""
+	}
+	rest := strings.TrimSpace(strings.Join(fields[dirIndex+2:], " "))
+	if rest == "" {
+		return command, ""
+	}
+	return rest, fields[dirIndex]
+}
+
+func remoteCodingTaskStatusCompleted(result string) bool {
+	for _, line := range remoteCodingTaskHeaderLines(strings.ToLower(result)) {
+		status, ok := remoteCodingToolResultLineFieldValue(strings.TrimSpace(line), "status")
+		if ok && (status == "completed" || status == "failed" || status == "killed" || status == "cancelled" || status == "error") {
+			return true
+		}
+	}
+	return false
+}
+
+func remoteCodingTaskStatusCompletedSuccessfully(result string) bool {
+	lower := strings.ToLower(result)
+	hasCompleted := false
+	hasExitZero := false
+	for _, line := range remoteCodingTaskHeaderLines(lower) {
+		line = strings.TrimSpace(line)
+		if status, ok := remoteCodingToolResultLineFieldValue(line, "status"); ok && status == "completed" {
+			hasCompleted = true
+		}
+		if value, ok := remoteCodingToolResultLineFieldValue(line, "exit_code", "exit"); ok && remoteCodingExitCodeValueIsZero(value) {
+			hasExitZero = true
+		}
+	}
+	return hasCompleted && hasExitZero
+}
+
+func remoteCodingTaskHeaderLines(result string) []string {
+	lines := strings.Split(result, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(strings.ToLower(line))
+		if strings.HasPrefix(trimmed, "--- latest log") || strings.HasPrefix(trimmed, "--- log") {
+			return lines[:i]
+		}
+	}
+	return lines
+}
+
 // --- LoopCallbacks Implementation ---
 
 type remoteCodingCallbacks struct {
 	agent       *RemoteCodingSubAgent
 	task        string
 	taskContext string
+
+	eventSeq       uint64
+	firstReadSeq   uint64
+	firstSearchSeq uint64
+	firstEditSeq   uint64
+	lastEditSeq    uint64
+	filesModified  []string
+	filesCreated   []string
+	filesRead      []string
+	fileEdits      []remoteCodingFileAuditEvent
+	fileReads      []remoteCodingFileAuditEvent
+	commandsRun    []CodingSubAgentCommandResult
+	searchesRun    []CodingSubAgentSearchResult
+}
+
+type remoteCodingFileAuditEvent struct {
+	Path string
+	Seq  uint64
 }
 
 func (c *remoteCodingCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
@@ -394,13 +896,17 @@ func remoteCodingToolResultLooksFailed(result string) bool {
 	if strings.HasPrefix(text, "错误") || strings.Contains(text, "失败") || strings.Contains(text, "参数解析失败") {
 		return true
 	}
+	if remoteCodingToolResultHasFailedTaskStatus(lower) || remoteCodingToolResultHasFailedExitCode(lower) {
+		return true
+	}
+	if remoteCodingToolResultHasFailedExitPhrase(lower) {
+		return true
+	}
 	for _, pattern := range []string{
 		"error:",
 		"traceback",
 		"exception",
 		"panic:",
-		"exit status",
-		"command exited with code",
 		"no such file or directory",
 		"command not found",
 		"file not found",
@@ -415,15 +921,184 @@ func remoteCodingToolResultLooksFailed(result string) bool {
 	return false
 }
 
+func remoteCodingToolResultHasFailedExitPhrase(lower string) bool {
+	for _, phrase := range []string{
+		"command exited with code",
+		"process exited with code",
+		"exit status",
+	} {
+		remaining := lower
+		for {
+			idx := strings.Index(remaining, phrase)
+			if idx < 0 {
+				break
+			}
+			tail := strings.TrimSpace(remaining[idx+len(phrase):])
+			fields := strings.FieldsFunc(tail, func(r rune) bool {
+				return r < '0' || r > '9'
+			})
+			if len(fields) == 0 {
+				return true
+			}
+			code, err := strconv.Atoi(fields[0])
+			if err != nil || code != 0 {
+				return true
+			}
+			remaining = tail
+		}
+	}
+	return false
+}
+
+func remoteCodingToolResultHasFailedTaskStatus(lower string) bool {
+	for _, line := range strings.Split(lower, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[failed]") || strings.HasPrefix(line, "[killed]") {
+			return true
+		}
+		if status, ok := remoteCodingToolResultJSONFieldValue(line, "status", "state"); ok {
+			if status == "failed" || status == "killed" || status == "error" || status == "cancelled" {
+				return true
+			}
+		}
+		if status, ok := remoteCodingToolResultLineFieldValue(line, "status", "state"); ok {
+			if status == "failed" || status == "killed" || status == "error" || status == "cancelled" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func remoteCodingToolResultHasFailedExitCode(lower string) bool {
+	for _, line := range strings.Split(lower, "\n") {
+		line = strings.TrimSpace(line)
+		if value, ok := remoteCodingToolResultJSONFieldValue(line, "exit_code", "exit", "exit code", "returncode", "return_code"); ok {
+			if remoteCodingExitCodeValueLooksFailed(value) {
+				return true
+			}
+		}
+		if value, ok := remoteCodingToolResultLineFieldValue(line, "exit_code", "exit", "exit code", "returncode", "return_code"); ok {
+			if remoteCodingExitCodeValueLooksFailed(value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func remoteCodingToolResultJSONFieldValue(line string, fields ...string) (string, bool) {
+	if !strings.HasPrefix(line, "{") {
+		return "", false
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(line), &payload); err != nil {
+		return "", false
+	}
+	for _, field := range fields {
+		value, ok := payload[field]
+		if !ok {
+			continue
+		}
+		switch v := value.(type) {
+		case nil:
+			return "null", true
+		case string:
+			return strings.ToLower(strings.TrimSpace(v)), true
+		default:
+			return strings.ToLower(strings.TrimSpace(fmt.Sprint(v))), true
+		}
+	}
+	return "", false
+}
+
+func remoteCodingToolResultLineFieldValue(line string, fields ...string) (string, bool) {
+	line = strings.Trim(strings.TrimSpace(line), "{}[],")
+	if line == "" {
+		return "", false
+	}
+	for _, sep := range []string{":", "="} {
+		parts := strings.SplitN(line, sep, 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.Trim(strings.TrimSpace(parts[0]), `"'`)
+		value := strings.Trim(strings.TrimSpace(parts[1]), `"',`)
+		for _, field := range fields {
+			if key == field {
+				return value, true
+			}
+		}
+	}
+	return "", false
+}
+
+func remoteCodingExitCodeValueLooksFailed(value string) bool {
+	value = strings.Trim(strings.TrimSpace(value), `"',`)
+	if value == "" || value == "unknown" || value == "none" || value == "null" {
+		return false
+	}
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r < '0' || r > '9'
+	})
+	if len(fields) == 0 {
+		return true
+	}
+	code, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return true
+	}
+	return code != 0
+}
+
+func remoteCodingExitCodeValueIsZero(value string) bool {
+	value = strings.Trim(strings.TrimSpace(value), `"',`)
+	if value == "" || value == "unknown" || value == "none" || value == "null" {
+		return false
+	}
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r < '0' || r > '9'
+	})
+	if len(fields) == 0 {
+		return false
+	}
+	code, err := strconv.Atoi(fields[0])
+	return err == nil && code == 0
+}
+
 func (c *remoteCodingCallbacks) sshReadFile(args map[string]interface{}) string {
 	path := remoteArgStr(args, "path")
 	if path == "" {
 		return "错误: 需要 path 参数"
 	}
 	path = c.resolvePath(path)
-	offset := remoteArgInt(args, 0, 0, 1000000, "offset", "start_line", "start")
-	limit := remoteArgInt(args, 0, 0, 2000, "limit", "num_lines", "line_count")
-	return c.execSSH(remoteReadFileRangePythonCommand(path, offset, limit), 10)
+	offset := remoteArgInt(args, 0, 0, 1000000, "offset", "start_line", "start", "startLine")
+	limit := remoteArgInt(args, 0, 0, 2000, "limit", "lines", "num_lines", "line_count")
+	result := c.execSSH(remoteReadFileRangePythonCommand(path, offset, limit), 10)
+	if remoteCodingToolOutcome(result) == "success" && remoteReadFileResultHasUsefulEvidence(result) {
+		c.trackRemoteFileRead(path)
+	}
+	return result
+}
+
+func remoteReadFileResultHasUsefulEvidence(result string) bool {
+	if strings.TrimSpace(result) == "" || strings.Contains(result, "[remote read_file binary/non-UTF8:") {
+		return false
+	}
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			continue
+		}
+		tab := strings.IndexByte(line, '\t')
+		if tab <= 0 {
+			continue
+		}
+		if _, err := strconv.Atoi(line[:tab]); err == nil {
+			return true
+		}
+	}
+	return strings.Contains(result, "[remote read_file EOF: offset 1 is beyond scanned file length 0]")
 }
 
 func remotePythonCommand(script string) string {
@@ -446,23 +1121,27 @@ func remoteReadFileRangePythonCommand(path string, offset, limit int) string {
 		"p = pathlib.Path(base64.b64decode('%s').decode('utf-8'))",
 		"start = %d",
 		"limit = %d",
+		"if start < 1:",
+		"    start = 1",
+		"shown = 0",
+		"last_lineno = 0",
 		"try:",
-		"    lines = p.read_text(encoding='utf-8').splitlines(True)",
+		"    with p.open('r', encoding='utf-8', errors='strict') as f:",
+		"        for lineno, line in enumerate(f, start=1):",
+		"            last_lineno = lineno",
+		"            if lineno < start:",
+		"                continue",
+		"            if shown >= limit:",
+		"                sys.stdout.write('\\n[remote read_file truncated: showing lines %%d-%%d; call again with offset=%%d]\\n' %% (start, lineno - 1, lineno))",
+		"                break",
+		"            sys.stdout.write(f'{lineno}\\t{line}')",
+		"            shown += 1",
 		"except UnicodeDecodeError:",
 		"    size = p.stat().st_size",
 		"    sys.stdout.write('[remote read_file binary/non-UTF8: %%d bytes; text line range unavailable for offset=%%d limit=%%d]\\n' %% (size, start, limit))",
 		"    sys.exit(0)",
-		"if start < 1:",
-		"    start = 1",
-		"begin = start - 1",
-		"if begin >= len(lines):",
-		"    sys.stdout.write('[remote read_file EOF: offset %%d is beyond file length %%d]\\n' %% (start, len(lines)))",
-		"    sys.exit(0)",
-		"end = min(len(lines), begin + limit)",
-		"for lineno, line in enumerate(lines[begin:end], start=start):",
-		"    sys.stdout.write(f'{lineno}\\t{line}')",
-		"if end < len(lines):",
-		"    sys.stdout.write('\\n[remote read_file truncated: showing lines %%d-%%d of %%d; call again with offset=%%d]\\n' %% (start, end, len(lines), end + 1))",
+		"if shown == 0 and start > last_lineno:",
+		"    sys.stdout.write('[remote read_file EOF: offset %%d is beyond scanned file length %%d]\\n' %% (start, last_lineno))",
 	}, "\n"), pathB64, offset, limit)
 	return remotePythonCommand(script)
 }
@@ -477,7 +1156,11 @@ func (c *remoteCodingCallbacks) sshWriteFile(args map[string]interface{}) string
 
 	// For large content (>32KB), write in chunks to avoid PTY buffer overflow.
 	if len(content) > 32*1024 {
-		return c.sshWriteFileLarge(path, content)
+		result := c.sshWriteFileLarge(path, content)
+		if remoteCodingToolOutcome(result) == "success" {
+			c.trackRemoteFileChanged(path, remoteWriteFileResultCreated(result))
+		}
+		return result
 	}
 
 	// Use base64 encoding embedded directly in Python code — no pipes needed.
@@ -485,17 +1168,44 @@ func (c *remoteCodingCallbacks) sshWriteFile(args map[string]interface{}) string
 	pyScript := remoteWriteFilePythonCommand(path, content)
 
 	result := c.execSSH(pyScript, 15)
-	return remoteWriteFileResult(path, len(content), result, false)
+	formatted := remoteWriteFileResult(path, len(content), result, false)
+	if remoteCodingToolOutcome(formatted) == "success" {
+		c.trackRemoteFileChanged(path, remoteWriteFileResultCreated(result))
+	}
+	return formatted
 }
 
 func remoteWriteFileResult(path string, contentLen int, commandResult string, chunked bool) string {
-	if remoteCodingToolResultLooksFailed(commandResult) || !strings.Contains(commandResult, "OK") {
+	if remoteCodingToolResultLooksFailed(commandResult) || !remoteWriteFileResultHasOK(commandResult) {
 		return fmt.Sprintf("写入失败: %s", commandResult)
 	}
-	if chunked {
-		return fmt.Sprintf("✅ 已写入 %s (%d bytes, chunked)", path, contentLen)
+	createdText := "created=false"
+	if remoteWriteFileResultCreated(commandResult) {
+		createdText = "created=true"
 	}
-	return fmt.Sprintf("✅ 已写入 %s (%d bytes)", path, contentLen)
+	if chunked {
+		return fmt.Sprintf("✅ 已写入 %s (%d bytes, chunked, %s)", path, contentLen, createdText)
+	}
+	return fmt.Sprintf("✅ 已写入 %s (%d bytes, %s)", path, contentLen, createdText)
+}
+
+func remoteWriteFileResultCreated(commandResult string) bool {
+	for _, line := range strings.Split(commandResult, "\n") {
+		if strings.TrimSpace(strings.ToLower(line)) == "ok created=true" {
+			return true
+		}
+	}
+	return false
+}
+
+func remoteWriteFileResultHasOK(commandResult string) bool {
+	for _, line := range strings.Split(commandResult, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "OK" || line == "OK created=true" || line == "OK created=false" {
+			return true
+		}
+	}
+	return false
 }
 
 func remoteWriteFilePythonCommand(path, content string) string {
@@ -504,9 +1214,10 @@ func remoteWriteFilePythonCommand(path, content string) string {
 	script := fmt.Sprintf(strings.Join([]string{
 		"import pathlib, base64",
 		"p = pathlib.Path(base64.b64decode('%s').decode('utf-8'))",
+		"created = not p.exists()",
 		"p.parent.mkdir(parents=True, exist_ok=True)",
 		"p.write_bytes(base64.b64decode('%s'))",
-		"print('OK')",
+		"print('OK created=' + str(created).lower())",
 	}, "\n"), pathB64, contentB64)
 	return remotePythonCommand(script)
 }
@@ -525,11 +1236,7 @@ func (c *remoteCodingCallbacks) sshWriteFileLarge(path, content string) string {
 			end = len(b64)
 		}
 		chunk := b64[i:end]
-		op := ">"
-		if i > 0 {
-			op = ">>"
-		}
-		cmd := fmt.Sprintf("echo -n '%s' %s %s", chunk, op, tmpPath)
+		cmd := remoteWriteFileLargeChunkCommand(tmpPath, chunk, i > 0)
 		result := c.execSSH(cmd, 10)
 		if remoteCodingToolResultLooksFailed(result) {
 			return fmt.Sprintf("写入失败（分块传输）: %s", result)
@@ -543,17 +1250,26 @@ func (c *remoteCodingCallbacks) sshWriteFileLarge(path, content string) string {
 	return remoteWriteFileResult(path, len(content), result, true)
 }
 
+func remoteWriteFileLargeChunkCommand(tmpPath, chunk string, appendMode bool) string {
+	op := ">"
+	if appendMode {
+		op = ">>"
+	}
+	return fmt.Sprintf("printf %%s %s %s %s", remoteShellQuote(chunk), op, remoteShellQuote(tmpPath))
+}
+
 func remoteWriteFileLargeDecodeCommand(path, tmpPath string) string {
 	pathB64 := base64EncodeString(path)
 	tmpPathB64 := base64EncodeString(tmpPath)
 	script := fmt.Sprintf(strings.Join([]string{
 		"import pathlib, base64",
 		"p = pathlib.Path(base64.b64decode('%s').decode('utf-8'))",
+		"created = not p.exists()",
 		"p.parent.mkdir(parents=True, exist_ok=True)",
 		"tmp = base64.b64decode('%s').decode('utf-8')",
 		"data = base64.b64decode(open(tmp).read())",
 		"p.write_bytes(data)",
-		"print('OK')",
+		"print('OK created=' + str(created).lower())",
 	}, "\n"), pathB64, tmpPathB64)
 	return fmt.Sprintf("%s && rm -f %s", remotePythonCommand(script), remoteShellQuote(tmpPath))
 }
@@ -571,14 +1287,27 @@ func (c *remoteCodingCallbacks) sshEditFile(args map[string]interface{}) string 
 	pyScript := remoteEditFilePythonCommand(path, oldStr, newStr)
 
 	result := c.execSSH(pyScript, 15)
-	return remoteEditFileResult(path, result)
+	formatted := remoteEditFileResult(path, result)
+	if remoteCodingToolOutcome(formatted) == "success" {
+		c.trackRemoteFileChanged(path, false)
+	}
+	return formatted
 }
 
 func remoteEditFileResult(path string, commandResult string) string {
-	if remoteCodingToolResultLooksFailed(commandResult) || !strings.Contains(commandResult, "OK:") {
+	if remoteCodingToolResultLooksFailed(commandResult) || !remoteEditFileResultHasOK(commandResult) {
 		return fmt.Sprintf("编辑失败: %s", commandResult)
 	}
 	return fmt.Sprintf("✅ 已编辑 %s", path)
+}
+
+func remoteEditFileResultHasOK(commandResult string) bool {
+	for _, line := range strings.Split(commandResult, "\n") {
+		if strings.TrimSpace(line) == "OK: replaced 1 occurrence" {
+			return true
+		}
+	}
+	return false
 }
 
 func remoteEditFilePythonCommand(path, oldStr, newStr string) string {
@@ -612,31 +1341,65 @@ func (c *remoteCodingCallbacks) sshBash(args map[string]interface{}) string {
 	}
 	workDir := remoteArgStr(args, "working_dir")
 	if workDir == "" {
-		workDir = c.agent.projectDir
+		workDir = c.defaultRemoteWorkingDir()
 	} else {
 		workDir = c.resolvePath(workDir)
 	}
 
-	// Prepend cd to working directory
 	fullCmd := fmt.Sprintf("cd %s && %s", remoteShellQuote(workDir), command)
 
 	// Long commands → use SSH background task
 	if isLongRemoteCommand(command) {
 		log.Printf("[remote-subagent] long command detected, using background task: %.80s", command)
-		return c.execSSHBackground(fullCmd)
+		result := c.execSSHBackground(fullCmd)
+		if remoteCodingToolOutcome(result) != "success" {
+			c.trackRemoteCommand(command, workDir, result, false)
+		}
+		return result
 	}
 
-	return c.execSSH(fullCmd, 60)
+	result := c.execSSH(remoteBashCommandWithExitMarker(workDir, command), 60)
+	c.trackRemoteCommand(command, workDir, result, remoteCodingToolOutcome(result) == "success")
+	return result
+}
+
+func remoteBashCommandWithExitMarker(workDir, command string) string {
+	return fmt.Sprintf(strings.Join([]string{
+		"cd %s",
+		"__maclaw_cd_status=$?",
+		"if [ $__maclaw_cd_status -ne 0 ]; then",
+		"  printf '\\nEXIT: %%s\\n' \"$__maclaw_cd_status\"",
+		"else",
+		"  sh -lc %s",
+		"  __maclaw_cmd_status=$?",
+		"  printf '\\nEXIT: %%s\\n' \"$__maclaw_cmd_status\"",
+		"fi",
+	}, "\n"), remoteShellQuote(workDir), remoteShellQuote(command))
 }
 
 func (c *remoteCodingCallbacks) sshListDir(args map[string]interface{}) string {
 	path := remoteArgStr(args, "path")
 	if path == "" {
-		path = c.agent.projectDir
+		path = c.defaultRemoteWorkingDir()
 	} else {
 		path = c.resolvePath(path)
 	}
-	return c.execSSH(fmt.Sprintf("ls -la %s", remoteShellQuote(path)), 10)
+	result := c.execSSH(fmt.Sprintf("ls -la %s", remoteShellQuote(path)), 10)
+	c.trackRemoteSearch("ssh_list_dir", "ls -la "+path, path, result, remoteCodingToolOutcome(result) == "success")
+	return result
+}
+
+func (c *remoteCodingCallbacks) defaultRemoteWorkingDir() string {
+	if c == nil || c.agent == nil {
+		return "."
+	}
+	if projectDir := strings.TrimSpace(c.agent.projectDir); projectDir != "" {
+		return projectDir
+	}
+	if workDir := strings.TrimSpace(c.agent.workDir); workDir != "" {
+		return workDir
+	}
+	return "."
 }
 
 func (c *remoteCodingCallbacks) sshCheckTask(args map[string]interface{}) string {
@@ -649,11 +1412,14 @@ func (c *remoteCodingCallbacks) sshCheckTask(args map[string]interface{}) string
 	}
 	// Delegate to the main SSH tool's check_task action.
 	h := c.agent.handler
-	return h.toolSSH(map[string]interface{}{
+	result := h.toolSSH(map[string]interface{}{
 		"action":     "check_task",
 		"session_id": c.agent.sessionID,
 		"task_id":    taskID,
+		"tail_lines": float64(remoteArgInt(args, 50, 1, 1000, "tail_lines", "tail", "lines", "limit")),
 	})
+	c.trackRemoteTaskCheckResult(result)
+	return result
 }
 
 // --- SSH Execution Helpers ---
@@ -702,11 +1468,11 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 	sb.WriteString(fmt.Sprintf("## 环境信息\n- 远程项目目录: %s\n- 工作目录: %s\n\n", projectDir, workDir))
 	sb.WriteString(`## 可用工具
 
-- ssh_read_file(path, offset?, limit?): 读取远程文件内容；默认读取前 200 行，大文件用 offset/limit 分片读取
+- ssh_read_file(path, offset?, limit?): 读取远程文件内容；默认读取前 200 行，大文件用 offset/limit 分片读取；也接受 start/start_line/startLine 和 lines/num_lines/line_count
 - ssh_write_file(path, content): 写入/创建远程文件（自动创建父目录）
 - ssh_edit_file(path, old_str, new_str): 精确替换远程文件中的文本（old_str 必须唯一匹配）
 - ssh_bash(command, working_dir?): 在远程服务器执行命令（长时间命令自动转后台任务，返回 task_id）
-- ssh_check_task(task_id): 查询后台任务状态和日志（训练完成后返回 EXIT: 0）
+- ssh_check_task(task_id, tail_lines?): 查询后台任务状态、exit_code 和日志尾部
 - ssh_list_dir(path?): 列出远程目录内容
 
 参数兼容: 路径可用 file/file_path/filename/target_path 代替 path；ssh_edit_file 也接受 old_string/old_content/find/search -> old_str 和 new_string/new_content/replace/replacement -> new_str；ssh_bash 接受 cwd/work_dir -> working_dir；ssh_check_task 接受 id/task -> task_id。
@@ -717,10 +1483,11 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 2. 使用 ssh_edit_file 做精确修改（小改动）或 ssh_write_file 重写文件（大改动）
 3. 修改后再次 ssh_read_file 读取关键片段，确认远程文件确实变成预期内容
 4. 修改后用 ssh_bash 运行匹配任务的验证命令（如 "python3 -c 'import module'"、pytest/go test/npm test 等）
-5. 路径可以是相对路径（相对于项目目录）或绝对路径
-6. ssh_read_file 默认只返回前 200 行；继续读取时用返回提示里的 offset 分片查看
-7. 长时间训练命令会自动作为后台任务运行，返回 task_id
-8. 最终回复必须说明：修改/创建的文件、实际运行的验证命令及结果、剩余风险或未验证项
+5. 修改后运行并查看只读自检命令（优先 git diff --stat / git diff / git status --short），确认远程改动范围符合任务要求
+6. 路径可以是相对路径（相对于项目目录）或绝对路径
+7. ssh_read_file 默认只返回前 200 行；继续读取时用返回提示里的 offset 分片查看
+8. 长时间训练命令会自动作为后台任务运行，返回 task_id
+9. 最终回复必须说明：修改/创建的文件、实际运行的验证命令及结果、diff/status 自检结果、剩余风险或未验证项
 
 ## 严禁行为
 - 不要删除项目根目录或关键系统文件
@@ -742,8 +1509,8 @@ func remoteCodingToolDefinitions() []map[string]interface{} {
 		buildRemoteToolDef("ssh_read_file", "读取远程服务器上的文件内容",
 			map[string]interface{}{
 				"path":   map[string]interface{}{"type": "string", "description": "文件路径（相对于项目目录或绝对路径；也接受 file/file_path/filename/target_path）"},
-				"offset": map[string]interface{}{"type": "number", "description": "可选，1-based 起始行；也接受 start/start_line"},
-				"limit":  map[string]interface{}{"type": "number", "description": "可选，最多读取的行数；默认 200，也接受 num_lines/line_count，最大 2000"},
+				"offset": map[string]interface{}{"type": "number", "description": "可选，1-based 起始行；也接受 start/start_line/startLine"},
+				"limit":  map[string]interface{}{"type": "number", "description": "可选，最多读取的行数；默认 200，也接受 lines/num_lines/line_count，最大 2000"},
 			}, []string{"path"}),
 		buildRemoteToolDef("ssh_write_file", "写入内容到远程文件（自动创建父目录）",
 			map[string]interface{}{
@@ -767,7 +1534,8 @@ func remoteCodingToolDefinitions() []map[string]interface{} {
 			}, nil),
 		buildRemoteToolDef("ssh_check_task", "查询后台任务状态（训练/下载等长时间任务）。返回运行状态和日志尾部",
 			map[string]interface{}{
-				"task_id": map[string]interface{}{"type": "string", "description": "后台任务 ID（由 ssh_bash 长命令自动返回；也接受 id/task）"},
+				"task_id":    map[string]interface{}{"type": "string", "description": "后台任务 ID（由 ssh_bash 长命令自动返回；也接受 id/task）"},
+				"tail_lines": map[string]interface{}{"type": "number", "description": "可选，返回的日志尾部行数；默认 50，也接受 tail/lines/limit，范围 1-1000"},
 			}, []string{"task_id"}),
 	}
 }

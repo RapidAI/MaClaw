@@ -541,7 +541,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			t.Fatalf("openapi create approval body missing %s: %#v", name, paths["/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals"])
 		}
 	}
-	for _, name := range []string{"approval_instance_id", "approvalInstanceId", "app_id", "appID", "objectRole", "approvalEvent", "businessEntity", "businessAction", "businessNote", "currentAssignee", "currentAssigneeType", "workflowNodeIDs", "detailURL"} {
+	for _, name := range []string{"approval_instance_id", "approvalInstanceId", "app_id", "appID", "objectRole", "approvalEvent", "businessEntity", "businessAction", "businessNote", "currentAssignee", "currentAssigneeType", "workflowNodeId", "workflowNodeIDs", "workflowNodeIds", "workflowDecisionId", "fromStatus", "toStatus", "businessStatus", "resultStatus", "resultPayload", "outputs", "artifacts", "detailURL"} {
 		if !openAPIRequestBodyNestedPropertyHasProperty(paths, "/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals", "post", "request", name) {
 			t.Fatalf("openapi create approval request body missing request.%s: %#v", name, openAPIRequestBodyProperty(paths, "/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals", "post", "request"))
 		}
@@ -554,7 +554,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			t.Fatalf("openapi approval detail response missing %s: %#v", name, paths["/api/v1/data/approvals/{approvalId}"])
 		}
 	}
-	for _, name := range []string{"approval_instance_id", "approvalInstanceId", "objectRole", "approvalEvent", "businessEntity", "businessAction", "businessNote", "currentAssignee", "currentAssigneeType", "workflowNodeIDs", "detailURL"} {
+	for _, name := range []string{"approval_instance_id", "approvalInstanceId", "objectRole", "approvalEvent", "businessEntity", "businessAction", "businessNote", "currentAssignee", "currentAssigneeType", "workflowNodeId", "workflowNodeIDs", "workflowNodeIds", "workflowDecisionId", "fromStatus", "toStatus", "businessStatus", "resultStatus", "resultPayload", "outputs", "artifacts", "detailURL"} {
 		if !openAPIListResponseItemNestedPropertyHasProperty(paths, "/api/v1/data/approvals", "request", name) {
 			t.Fatalf("openapi approvals list item missing request.%s: %#v", name, paths["/api/v1/data/approvals"])
 		}

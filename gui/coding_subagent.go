@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -3275,7 +3276,7 @@ func (c *codingSubAgentCallbacks) trackSearchResult(toolName string, args map[st
 		Summary:   compactSearchResult(result),
 		seq:       seq,
 	})
-	if succeeded && c.firstSearchSeq == 0 && !subAgentSearchSuccessLooksEmpty(c.searchesRun[len(c.searchesRun)-1]) {
+	if succeeded && c.firstSearchSeq == 0 && subAgentSearchProvidesExplorationEvidence(c.searchesRun[len(c.searchesRun)-1]) {
 		c.firstSearchSeq = seq
 	}
 }
@@ -4503,6 +4504,8 @@ func subAgentVerificationOutputLooksEmpty(cmd CodingSubAgentCommandResult) bool 
 		"collected 0 items",
 		"collected 0 tests",
 		"no tests found",
+		"no tests matching",
+		"no tests matched",
 		"no test files found",
 		"no test files were found",
 		"no test suite found",
@@ -4557,6 +4560,9 @@ func subAgentVerificationOutputLooksEmpty(cmd CodingSubAgentCommandResult) bool 
 		"no matching files",
 		"no files to check",
 		"no files to lint",
+		"no projects matched",
+		"no projects found",
+		"0 projects",
 	}
 	for _, phrase := range emptyPhrases {
 		if subAgentSummaryContainsEmptyVerificationPhrase(summary, phrase) {
@@ -6125,7 +6131,7 @@ func summarizeSubAgentVerification(filesModified []string, commands []CodingSubA
 		return codingSubAgentQualityMissing, fmt.Sprintf("file changes detected; ran %d bash command(s), but none were test/build/lint/typecheck verification", len(commands))
 	}
 	var failed []CodingSubAgentCommandResult
-	for _, cmd := range verificationCommands {
+	for _, cmd := range unresolvedFailedSubAgentCommands(verificationCommands) {
 		if !cmd.Succeeded {
 			failed = append(failed, cmd)
 		}
@@ -6148,7 +6154,13 @@ func summarizeSubAgentVerification(filesModified []string, commands []CodingSubA
 		}
 		return codingSubAgentQualityFailed, fmt.Sprintf("有 %d 条验证命令未实际执行测试或检查：%s", len(empty), compactSubAgentVerificationCommandList(empty))
 	}
-	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条 bash 验证命令，未检测到失败：%s", len(verificationCommands), compactSubAgentVerificationCommandList(verificationCommands))
+	var successful []CodingSubAgentCommandResult
+	for _, cmd := range verificationCommands {
+		if cmd.Succeeded {
+			successful = append(successful, cmd)
+		}
+	}
+	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条有效 bash 验证命令，未检测到未解决失败：%s", len(successful), compactSubAgentVerificationCommandList(successful))
 }
 
 func compactSubAgentVerificationCommandList(commands []CodingSubAgentCommandResult) string {
@@ -8486,7 +8498,7 @@ func summarizeSubAgentExploration(filesModified, filesRead []string, searches []
 	if len(filesModified) == 0 {
 		return codingSubAgentQualityNotNeeded, "未检测到既有文件修改，跳过探索要求。"
 	}
-	successfulSearches := countSuccessfulSubAgentSearches(searches)
+	successfulSearches := countSuccessfulSubAgentExplorationSearches(searches)
 	if !exploredBeforeFirstEdit {
 		return codingSubAgentQualityMissing, "检测到既有文件修改，但首次修改前没有记录成功搜索或文件读取。"
 	}
@@ -8516,7 +8528,15 @@ func existingSubAgentModifiedFiles(filesModified, filesCreated []string) []strin
 }
 
 func subAgentPathEvidenceKey(path string) string {
-	return filepath.ToSlash(strings.TrimSpace(path))
+	key := filepath.ToSlash(strings.TrimSpace(path))
+	if key == "" {
+		return ""
+	}
+	cleaned := pathpkg.Clean(key)
+	if cleaned == "." {
+		return ""
+	}
+	return cleaned
 }
 
 func countExistingSubAgentModifiedFiles(filesModified, filesCreated []string) int {
@@ -8531,6 +8551,27 @@ func countSuccessfulSubAgentSearches(searches []CodingSubAgentSearchResult) int 
 		}
 	}
 	return successfulSearches
+}
+
+func countSuccessfulSubAgentExplorationSearches(searches []CodingSubAgentSearchResult) int {
+	successfulSearches := 0
+	for _, s := range searches {
+		if subAgentSearchProvidesExplorationEvidence(s) {
+			successfulSearches++
+		}
+	}
+	return successfulSearches
+}
+
+func subAgentSearchProvidesExplorationEvidence(search CodingSubAgentSearchResult) bool {
+	if !search.Succeeded || subAgentSearchSuccessLooksEmpty(search) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(search.Tool)) {
+	case "list_directory", "ssh_list_dir":
+		return false
+	}
+	return true
 }
 
 func subAgentSearchSuccessLooksEmpty(search CodingSubAgentSearchResult) bool {
@@ -9757,8 +9798,8 @@ func applyCodingSubAgentToolHints(fn map[string]interface{}) {
 	case "bash":
 		appendCodingSubAgentToolDescription(fn, "Coding SubAgent bash is for read-only diagnostics and verification commands (test/build/lint/typecheck). Do not use bash to edit files, create/delete/move files, rewrite Git state, stage/commit/apply patches, or hide verifier failures with pipes/redirection/extra shell commands; use read_file/edit_file/edit_lines/write_file/git_diff instead.")
 	case "read_file":
-		setCodingSubAgentToolPropDescription(props, "lines", "Max lines to read (optional, default 200). Also accepts limit/num_lines/line_count.")
-		setCodingSubAgentToolPropDescription(props, "start_line", "Starting line number, 1-based (optional). Also accepts start/startLine.")
+		ensureCodingSubAgentToolIntegerProp(props, "lines", "Max lines to read (optional, default 200, maximum 2000). Also accepts limit/num_lines/line_count.")
+		ensureCodingSubAgentToolIntegerProp(props, "start_line", "Starting line number, 1-based (optional). Also accepts start/startLine.")
 		ensureCodingSubAgentToolIntegerProp(props, "offset", "Read the last N lines of the file. Use this after adaptive output says earlier content was skipped or when inspecting logs/tails.")
 	case "write_file":
 		setCodingSubAgentToolPropDescription(props, "content", "File content. No length limit; you can write complete scripts or documents in a single call. For very large files (>6000 chars), consider splitting into overwrite + append chunks.")

@@ -9,6 +9,8 @@ import (
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
+const codingSubAgentReadFileExplicitMaxLines = 2000
+
 func executeCodingReadFile(args map[string]interface{}) codingToolExecutionResult {
 	p, _ := args["path"].(string)
 	if p == "" {
@@ -31,6 +33,9 @@ func executeCodingReadFile(args map[string]interface{}) codingToolExecutionResul
 	explicitLines := false
 	if n, ok := codingSubAgentArgumentIntegerValue(args["lines"]); ok && n > 0 {
 		maxLines = int(n)
+		if maxLines > codingSubAgentReadFileExplicitMaxLines {
+			maxLines = codingSubAgentReadFileExplicitMaxLines
+		}
 		explicitLines = true
 	}
 

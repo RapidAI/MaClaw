@@ -6149,6 +6149,267 @@ ExecuteMaclawAppBusinessOperation
 ```text
 go test ./gui -count=1 -vet=off -run "TestExecuteMaclawAppBusinessOperationRunsPreferred(Action|Report|Dashboard)|TestExecuteMaclawAppBusinessOperationQueriesPreferredView"
 ```
+### 推进记录：企业普通应用实际运行结果进入发布证据包（2026-06-28）
+上一轮已经确认 DataSrv 和 GUI 后端会透传企业普通应用标准结果包。本轮继续补齐 App Studio 发布链路中的实际运行场景：不能只靠测试 helper 或安装回流证据证明发布包完整，用户在 GUI 内点击“执行”后产生的真实运行历史，也必须能直接满足“提交审核 / 上传能力市场”的治理证据要求。
+
+已落地调整：
+
+```text
+GUI recordRunHistory
+  -> 所有成功运行默认补写当前 App definitionHash
+  -> 所有成功运行默认补写当前 testProtocolFingerprint
+  -> 如果本次运行前执行过 PlanMaclawAppInstall，则把运行时依赖验证证据写入 dependencyVerification
+  -> 企业普通应用 DataSrv 执行路径不再产生缺 definitionHash / dependencyVerification 的半证据
+
+企业普通应用实际运行
+  -> ExecuteMaclawAppBusinessOperation 返回 primary_result / result_payload / outputs / artifacts
+  -> businessOperationRunEvidence 写入运行历史
+  -> recordRunHistory 自动生成 resultCoverage
+  -> latestAppRunEvidence 识别当前 definitionHash 的真实运行证据
+  -> appGovernanceForManifest 将 resultPayload / outputs / artifacts / resultCoverage / dependencyVerification 写入 governance.testEvidence
+```
+
+对应全链路意义：
+
+```text
+企业普通应用
+  -> 用户在传统软件式业务工作台点击执行
+  -> DataSrv 返回标准结果包
+  -> GUI 运行历史保留结果、附件、输出块、定义指纹和依赖验证
+  -> App Studio 提交审核时直接消费同一份运行证据
+  -> Hub / 能力市场获得可审计的 resultPayload / outputs / artifacts / resultCoverage
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "publishes enterprise normal app evidence from an actual DataSrv business run"
+npm.cmd test -- AppsPage.test.tsx -t "renders enterprise normal apps as business workspaces without approval instances|requires run evidence to cover the declared primary result contract|requires dependency verification to cover declared app Skill dependencies before publishing"
+npm.cmd run build
+```
+
+### 推进记录：DataSrv 审批 request OpenAPI 合同补齐运行上下文字段（2026-06-28）
+上一轮 GUI 后端已经在 `SyncMaclawAppApprovalInstanceToDataSrv` 的 `create_record_approval` 请求中保留完整审批运行上下文，包括当前节点、审批决策、状态流转、业务状态、结果状态、结构化结果包、输出块和文件产物。本轮把同一组字段补进 DataSrv OpenAPI，避免外部集成方、GUI 回流代码或后续 SDK 只看到旧的 request 摘要合同。
+
+已落地调整：
+
+```text
+recordApprovalRequestOpenAPISchema
+  -> 新增 workflow_node_id / workflowNodeId
+  -> 新增 workflowNodeIds，和既有 workflowNodeIDs 并存
+  -> 新增 workflow_decision_id / workflowDecisionId
+  -> 新增 from_status / fromStatus
+  -> 新增 to_status / toStatus
+  -> 新增 business_status / businessStatus
+  -> 新增 result_status / resultStatus
+  -> 新增 result_payload / resultPayload
+  -> 新增 outputs
+  -> 新增 artifacts
+
+HTTP OpenAPI 测试
+  -> create approval request body 检查 request 内部运行上下文字段
+  -> approvals list response 检查 request 内部运行上下文字段
+  -> approval detail response 继续检查审批字段合同
+```
+
+对应全链路意义：
+
+```text
+审批型 App 发起/审批/结果反馈
+  -> GUI 后端把完整 approval runtime context 写入 DataSrv request
+  -> DataSrv OpenAPI 对外声明同一组字段
+  -> GUI 审批工作台、外部系统、SDK、Hub 安装证据复核可按合同读取节点、状态和结果包
+  -> 我的申请 / 我审批的 / 结果反馈不再依赖未声明的隐式字段
+```
+
+已通过定向验证：
+
+```text
+go test ./structureddata -count=1 -timeout 60s -run "TestHTTPServerRequiresBearerTokenAndHandlesRecords"
+```
+
+### 推进记录：安装计划合并重复 Skill 依赖时保留 install_ref（2026-06-28）
+本轮继续补齐“安装 MaClaw App 时自动检查并安装相关 Skill 依赖”的精确引用链。此前 `maclawAppDependenciesForEntry` 会在单个 App 内部按 Skill `id` 去重：如果 `binding.appSkill` 先声明了应用 Skill id，而 `dependencies.skills` 后续为同一个 Skill 补充了 `source=enterprise_hub` 和 `capability_id/install_ref`，去重会提前返回，导致安装计划只剩 skill id，丢失 Hub 能力市场的精确安装引用。
+
+已落地调整：
+
+```text
+maclawAppDependenciesForEntry
+  -> 重复 Skill id 合并时继续保留 required/version/kind
+  -> 新增合并 source，后续显式 source 可覆盖默认 hub
+  -> 新增合并 install_ref/capability_id，避免 binding 与 dependencies 汇合时丢失精确安装目标
+
+InstallMaclawAppDependencies 回归测试
+  -> binding.appSkill 只有 id
+  -> dependencies.skills 为同一个 id 声明 enterprise_hub + capability_id
+  -> install plan 最终 dependency.Source = enterprise_hub
+  -> install plan 最终 dependency.InstallRef = capability_id
+  -> 实际安装调用使用 enterprise_hub + capability_id
+```
+
+对应全链路意义：
+
+```text
+App Studio 可视化设计
+  -> appSkill / workflowSkill 在界面绑定中出现
+  -> dependencies.skills 保存 Hub/能力市场 install_ref
+  -> PlanMaclawAppInstall 不丢 install_ref
+  -> InstallMaclawAppDependencies 按精确 Hub capability 下载依赖 Skill
+  -> RecordMaclawAppInstall / DataSrv / Hub 回流继续保留同一份依赖证据
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "Test(InstallMaclawAppDependenciesPreservesInstallRefFromDuplicateDependency|InstallMaclawAppDependenciesInstallsHubBackedSources|MaclawAppInstallSkillSourceNormalizesHubAndMarket)"
+```
+
+### 推进记录：GUI 审批工作台恢复 request-only 运行结果包（2026-06-28）
+本轮继续收口“审批型应用 = 数据录入 + 审批 workflow Skill 运行 + 审批实例数据管理 + 结果反馈”的运行态回流。此前 DataSrv 审批列表如果把 `result_payload / outputs / artifacts / business_status / workflow_node_id` 等字段放在 approval 顶层，GUI 后端可以恢复；但前面已经把同一组运行上下文写入并声明在 `request` 内部，外部系统或兼容 DataSrv 响应有可能只返回 request 内嵌字段。旧转换逻辑会导致审批工作台丢失结果反馈、当前节点和状态流转。
+
+已落地调整：
+
+```text
+maclawAppApprovalInstanceFromRecordApproval
+  -> resultPayload 缺失时读取 request.result_payload / request.resultPayload
+  -> outputs 缺失时读取 request.outputs / request.approval_outputs / request.approvalOutputs
+  -> artifacts 缺失时读取 request.artifacts / request.approval_artifacts / request.approvalArtifacts
+  -> CurrentNode / CurrentNodeIDs 读取 request.workflow_node_id / request.workflowNodeId / request.workflowNodeIds
+  -> BusinessStatus / ResultStatus / FromStatus / ToStatus / WorkflowDecisionID 读取 request snake/camel 别名
+
+结构恢复
+  -> request 内嵌 outputs 转为 GUI maclawAppApprovalOutput
+  -> request 内嵌 artifacts 转为 GUI maclawAppApprovalArtifact
+```
+
+对应全链路意义：
+
+```text
+审批 workflow Skill 运行
+  -> GUI/DataSrv 写入审批 request 运行上下文
+  -> DataSrv / 外部系统可返回顶层字段或 request-only 字段
+  -> GUI 审批工作台仍能显示我的申请、待我审批、当前节点、状态流转、结果文本、输出块和文件产物
+  -> 审批结果反馈不依赖某一种响应展开形态
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestListMaclawAppApprovalInstances(LoadsRequestOnlyRuntimeResult|AllLoadsDataSrvLane|MapsDataSrvAttentionStatus|AllInfersDataSrvLanesForCurrentUser)"
+```
+
+### 推进记录：App Studio 发布队列包身份字段对齐 package_sha/package_sha256（2026-06-28）
+本轮继续补齐“App Studio 制作、测试、上传 Hub、安装回流”的包身份链路。此前安装结果已经同时返回 `package_sha` 和 `package_sha256`，但发布提交 `SubmitMaclawAppPackage` 的即时返回和 `ListMaclawAppPackageSubmissions` summary 只暴露 `package_sha256`。这会造成上传/安装两个环节的包身份字段不对称：Hub、GUI 发布历史或外部集成若按 `package_sha` 追踪包，发布队列阶段会拿不到同一字段。
+
+已落地调整：
+
+```text
+SubmitMaclawAppPackage 返回体
+  -> 新增 package_sha
+  -> 保留 package_sha256
+  -> 两者都指向同一 package fingerprint
+
+maclawAppSubmissionSummary
+  -> JSON 同时暴露 package_sha 与 package_sha256
+  -> ListMaclawAppPackageSubmissions summary 可用两种字段追踪同一提交包
+
+AppsPage 发布队列解析
+  -> packageSHA 兼容 package_sha / package_sha256 / packageSHA
+```
+
+对应全链路意义：
+
+```text
+App Studio 保存/测试/提交发布包
+  -> 本地提交队列记录 package_sha/package_sha256
+  -> Hub 审核、同步、重新安装、DataSrv 回流都可用同一包哈希关联
+  -> 安装结果与发布结果的包身份合同保持一致
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestSubmitMaclawAppPackageQueuesLocalSubmission"
+npm.cmd test -- AppsPage.test.tsx -t "shows local app package submission queue summaries"
+```
+
+### 推进记录：Hub 同步与安装返回包身份字段对齐 package_sha/package_sha256（2026-06-28）
+上一轮已经让 App Studio 本地发布队列同时暴露 `package_sha` 和 `package_sha256`。本轮继续把同一合同推进到 Hub 同步和 Hub 安装回流：`SyncMaclawAppPackageSubmissionToHub` 与 `InstallSelectedMaclawAppPackageFromHub` 过去只返回 `package_sha256`，而安装记录、DataSrv 回流和部分前端证据对象已经使用 `package_sha` 作为通用别名。字段不对称会让“上传到 Hub 后再下载安装”的包身份追踪中途断开。
+
+已落地调整：
+
+```text
+SyncMaclawAppPackageSubmissionToHub
+  -> 返回 package_sha
+  -> 保留 package_sha256
+  -> 优先使用 Hub package_sha256，缺失时回退本地提交包哈希
+
+InstallSelectedMaclawAppPackageFromHub / InstallMaclawAppPackageFromHub
+  -> 返回 package_sha
+  -> 保留 package_sha256
+  -> 两者指向本次实际安装包 fingerprint
+
+AppsPage 安装证据写回
+  -> installEvidence.package_sha 可从 package_sha256 回填
+  -> installEvidence.package_sha256 可从 package_sha 回填
+```
+
+对应全链路意义：
+
+```text
+App Studio 发布包
+  -> Sync 到 Hub
+  -> Hub 审核/发布
+  -> 从 Hub 下载安装
+  -> RecordMaclawAppInstall / DataSrv app_installations / GUI AppEntry.installEvidence
+  -> 全链路都可用 package_sha 或 package_sha256 追踪同一个包
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "Test(SyncMaclawAppPackageSubmissionToHubUpdatesLocalQueue|InstallMaclawAppPackageFromHubDownloadsAndRecordsInstall)"
+npm.cmd test -- AppsPage.test.tsx -t "restores single app install evidence from top-level market install records"
+```
+
+### 推进记录：审批型 App 安装到运行实例回流端到端回归（2026-06-28）
+本轮开始把此前分散的安装证据、审批实例同步和审批工作台回流串成一条更接近真实使用路径的回归。过去已有单点测试分别覆盖 `RecordMaclawAppInstall`、DataSrv `app_installations` 注册、`SyncMaclawAppApprovalInstanceToDataSrv`、`ListMaclawAppApprovalInstances`；但缺少一条证明“同一个企业审批型 App 安装后，后续运行产生的审批实例还能沿着同一份 workflow/data/result 合同进入 DataSrv 并回流到审批工作台”的链路。
+
+已落地验证链：
+
+```text
+RecordMaclawAppInstall(enterprise_approval_app)
+  -> 保存本地安装审计
+  -> 注册 DataSrv app_installations
+  -> metadata.install_evidence 保留 workspace_layout / workflow_mapping / workflow_contract / dependency_verification / test_evidence
+
+SyncMaclawAppApprovalInstanceToDataSrv(runtime instance)
+  -> 使用已安装 App 的 app_id / blueprint / object_role / workflowSkillId / workflowNodeId
+  -> 先 PATCH business record，写入 approval_* 与 workflow_* 语义字段
+  -> POST /records/{recordId}/approvals 创建审批实例
+  -> request 内保留 resultPayload / outputs / artifacts
+
+ListMaclawAppApprovalInstances(pending_my_approval)
+  -> 从 DataSrv /approvals 回流同一实例
+  -> 恢复 app identity、dataset/object role、workflow 状态、业务状态、结果文本、输出块和文件产物
+```
+
+对应全链路意义：
+
+```text
+企业审批型应用
+  -> 数据录入/发起审批
+  -> 审批 workflow Skill 运行
+  -> 审批实例进入 DataSrv 管理
+  -> 我的申请 / 待我审批 等审批工作台视图可回流
+  -> 结果反馈包不丢失
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv"
+```
 
 ### 推进记录：App Studio 可视化保存审批 workflow install_ref（2026-06-28）
 
@@ -6227,6 +6488,250 @@ App Studio 设计依赖
 ```text
 npm.cmd test -- AppsPage.test.tsx -t "requires dependency verification to cover declared app Skill dependencies before publishing"
 npm.cmd run build
+```
+
+### 推进记录：安装依赖明细展示 install_ref 审计证据（2026-06-28）
+
+上一轮发布预检已经按 `install_ref` 精确匹配依赖验证证据。本轮继续补齐安装后的可见性：安装包预览、安装结果、最近安装记录、运行态依赖诊断共用同一套依赖明细组件，如果只显示 Skill id/version/source，用户仍然无法确认当前安装审计对应哪个 Hub capability、SkillMarket 条目或 GitHub URL。
+
+已落地调整：
+
+```text
+InstallRecordDependencies
+  -> 依赖 meta 增加 ref:<install_ref>
+  -> title / hover 摘要也包含 ref:<install_ref>
+
+backendDependencySummary
+  -> installed/missing/unavailable 摘要保留 install_ref
+
+市场包安装预览与安装结果
+  -> dependencyVerification.dependencies[] 中的 install_ref 直接展示
+  -> 安装后 result panel 能看到同一 ref
+```
+
+对应全链路意义：
+
+```text
+Hub / SkillMarket / GitHub 依赖安装
+  -> 后端安装计划返回 install_ref
+  -> 前端安装预览显示 install_ref
+  -> 安装结果和最近安装记录保留 install_ref
+  -> 运行态依赖诊断和发布复核可人工核对同一精确依赖
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "shows dependency verification in market package preview and install results"
+npm.cmd run build
+```
+
+### 推进记录：DataSrv 依赖验证合同保留 install_ref（2026-06-28）
+
+上一轮 GUI 已经能在安装预览、安装结果、最近安装记录和运行态依赖诊断里展示 `install_ref`。本轮继续把这个字段沉到 DataSrv 合同层，避免它只是前端/GUI 后端内部字段。企业 Hub capability id、SkillMarket install ref、GitHub raw URL 或 repo URL 都必须能随安装审计进入 DataSrv，并从 capabilities 回流给 App Studio。
+
+已落地调整：
+
+```text
+DataSrv app_installations.metadata.dependency_verification.dependencies[]
+  -> 归一化 installRef / InstallRef / capability_id / hub_skill_id / skill_id / raw_url / repo_url
+  -> canonical 字段统一保存为 install_ref
+  -> 删除 installRef 等 camelCase/别名字段，避免回流时字段漂移
+
+DataSrv capabilities 回流
+  -> dependency_verification.dependencies[].install_ref 原样返回
+  -> GUI 可继续用于依赖诊断、发布预检和安装审计展示
+
+OpenAPI
+  -> app_installations.metadata.dependencies[] item schema 文档化 install_ref
+  -> app_installations.metadata.dependency_verification.dependencies[] item schema 同步文档化 install_ref
+```
+
+对应全链路意义：
+
+```text
+App Studio / GUI 安装 MaClaw App
+  -> 后端安装计划记录精确依赖 install_ref
+  -> RecordMaclawAppInstall 注册到 DataSrv
+  -> DataSrv 归一化为稳定 install_ref 合同
+  -> capabilities / app-installations 回流
+  -> App Studio 发布治理、运行态依赖诊断、Hub 重装可以使用同一精确依赖引用
+```
+
+已通过定向验证：
+
+```text
+go test ./structureddata -count=1 -timeout 60s -run "TestUpsertAppInstallationNormalizesTopLevelDependencyVerification|TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence"
+```
+
+### 推进记录：GUI DataSrv App 回流保留依赖 install_ref（2026-06-28）
+
+上一轮 DataSrv 已经能把依赖验证合同中的 `install_ref` 规范化保存并通过 capabilities 回流。本轮继续补齐 GUI 侧回流入口：从 DataSrv `app_installations` 生成可添加 App 候选时，显式依赖与从 `workflow_skill_ids` 推断出的审批工作流依赖会合并；此前归一化步骤只保留 id/version/kind/source/capabilities，导致 `metadata.dependencies[].install_ref` 在进入 App Studio 候选 manifest 时丢失。
+
+已落地调整：
+
+```text
+normalizeAppDependencies
+  -> 使用 appSkillDependencyInstallRef 统一识别 install_ref / installRef / capability_id / hub_skill_id / skill_id / raw_url / repo_url
+  -> manifest.dependencies.skills[] 输出 canonical install_ref
+
+mergeDataSrvInstalledDependencies
+  -> 合并 DataSrv 显式依赖与 workflow_skill_ids 推断依赖时保留 install_ref
+  -> 显式 DataSrv dependency_verification / metadata.dependencies 与推断 workflow dependency 指向同一 Skill id 时不会丢失精确安装引用
+```
+
+对应全链路意义：
+
+```text
+DataSrv app_installations.metadata.dependencies[]
+  -> GUI capabilities 回流
+  -> App Studio addable candidate manifest.dependencies.skills[].install_ref
+  -> installEvidence.dependencies[].install_ref
+  -> importedRunEvidence.dependencyVerification.dependencies[].install_ref
+  -> 后续编辑、发布预检、Hub 重装继续按精确依赖引用推进
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "turns DataSrv installed MaClaw apps into addable app candidates with layout metadata"
+npm.cmd run build
+```
+
+### 推进记录：RecordMaclawAppInstall 返回体补齐 package_sha256（2026-06-28）
+
+前面已经让 DataSrv 冷启动安装证据和 GUI 最近安装记录兼容 `package_sha256`。继续复核 Hub 下载重装链路时发现，`maclawAppInstallRecord` 本地审计结构和 `ListMaclawAppInstalls` 输出使用 `package_sha256`，`InstallSelectedMaclawAppPackageFromHub` 外层安装结果也使用 `package_sha256`，但 `RecordMaclawAppInstall` 的即时返回体只有旧式 `package_sha`。这会让“刚安装完成的结果面板”和“刷新后的最近安装记录”字段名不完全一致。
+
+已落地调整：
+
+```text
+RecordMaclawAppInstall 返回
+  -> package_sha 保持兼容
+  -> package_sha256 同步返回同一包指纹
+
+Hub 安装结果
+  -> install_record.package_sha256 可直接用于安装反馈、依赖复检 key、DataSrv 注册审计对照
+```
+
+对应全链路意义：
+
+```text
+粘贴包安装 / Hub 下载重装
+  -> RecordMaclawAppInstall
+  -> 即时安装结果 package_sha256
+  -> ListMaclawAppInstalls package_sha256
+  -> DataSrv app_installations.metadata.package_sha256
+  -> GUI 回流 installEvidence.package_sha256
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "Test(RecordMaclawAppInstallPersistsNewestInstallAudit|InstallMaclawAppPackageFromHubDownloadsAndRecordsInstall|InstallSelectedMaclawAppPackageFromHubFiltersPackageApps)"
+```
+
+### 推进记录：DataSrv 注册与 GUI 回流保留 nested install_evidence（2026-06-28）
+
+前面已经把安装证据拆成可查询摘要字段，并能从 DataSrv 散字段合成 `installEvidence`。本轮继续收紧 Hub 下载重装、DataSrv 注册、GUI 冷启动回流之间的证据一致性：只靠散字段可以恢复运行态，但缺少一份“安装时 per-app evidence 原包”，后续审计、重装对照和外部系统同步时容易出现字段口径漂移。
+
+已落地调整：
+
+```text
+GUI 后端 RecordMaclawAppInstall -> DataSrv app_installations.metadata
+  -> 新增 install_evidence
+  -> 保存 per-app version_snapshot / dependencies / workspace_layout / workflow_mapping / workflow_contract / result_contract / test_evidence / dependency_verification
+
+GUI 前端 DataSrv 回流
+  -> dataSrvInstalledInstallEvidence 优先读取 metadata.install_evidence
+  -> 散字段继续作为旧记录兼容兜底
+  -> nested install_evidence.apps 可直接恢复到 AppEntry.installEvidence.apps
+
+DataSrv OpenAPI
+  -> app_installations.metadata.install_evidence 文档化为稳定字段
+```
+
+对应全链路意义：
+
+```text
+Hub 下载重装 / 粘贴包安装
+  -> RecordMaclawAppInstall 生成 per-app install_evidence
+  -> 注册 DataSrv app_installations.metadata.install_evidence
+  -> DataSrv capabilities 回流
+  -> GUI App 面板恢复同一份 installEvidence
+  -> 后续复测、依赖复检、发布治理和审计回放共享同一证据原包
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv"
+npm.cmd test -- AppsPage.test.tsx -t "turns DataSrv installed MaClaw apps into addable app candidates with layout metadata"
+npm.cmd run build
+go test ./structureddata -count=1 -timeout 60s -run "TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence"
+```
+
+### 推进记录：DataSrv 查询过滤纳入 nested install_evidence（2026-06-28）
+
+上一轮已经把 `metadata.install_evidence` 作为 per-app 安装证据原包写入 DataSrv，并让 GUI 回流优先读取它。本轮继续补齐 DataSrv 自身查询能力：如果外部系统或 Hub 安装记录只保留 nested `install_evidence`，而没有展开成顶层 `test_evidence / workflow_mapping / result_contract / dependency_verification`，DataSrv 的 app-installations 查询也必须能按审批实例、结果类型、工作流节点、定义指纹和依赖健康过滤。
+
+已落地调整：
+
+```text
+DataSrv app_installations metadata filter
+  -> appInstallationTestEvidenceMaps 读取 install_evidence.test_evidence / installEvidence.testEvidence
+  -> workflow_skill_id 过滤读取 nested approvalInstance 与 install_evidence.dependencies
+  -> workflow_node 过滤读取 install_evidence.workflow_mapping 与 nested approvalInstance
+  -> result_type 过滤读取 install_evidence.result_contract
+  -> has_blocking_dependency / has_missing_required_dependency 过滤读取 install_evidence.dependency_verification
+```
+
+对应全链路意义：
+
+```text
+Hub / GUI 后端安装注册
+  -> DataSrv metadata.install_evidence 保存证据原包
+  -> /api/v1/data/app-installations 可按 nested 证据查询
+  -> capabilities / GUI 回流不仅能显示证据，也能按审批、结果、依赖健康筛选已安装 App
+```
+
+已通过定向验证：
+
+```text
+go test ./structureddata -count=1 -timeout 60s -run "TestListAppInstallationsFilters(NestedInstallEvidence|ByDependencyHealth|ByApprovalInstanceEvidence)"
+```
+
+### 推进记录：审批发起 request 保留完整运行上下文（2026-06-28）
+
+前面已经让 DataSrv 和 GUI 都能从审批实例、业务记录和 nested install evidence 中恢复当前节点、处理人、结果包与依赖证据。本轮继续检查“发起审批 -> 创建 DataSrv RecordApproval”这一入口：创建审批时顶层 payload 已经有 current_assignee、workflow_node_id、result_payload、outputs、artifacts 等字段，但 `request` 业务上下文只保留了基础 app/object 信息。外部审批系统、DataSrv 回流或后续审计如果主要读取 `request`，会缺少当前节点状态和结果包。
+
+已落地调整：
+
+```text
+SyncMaclawAppApprovalInstanceToDataSrv create_record_approval request
+  -> 保留 submitted_by / assigned_to / current_assignee / currentAssignee
+  -> 保留 current_assignee_type / currentAssigneeType
+  -> 保留 workflow_skill_id / workflowSkillId
+  -> 保留 workflow_version / workflowVersion
+  -> 保留 workflow_node_id / workflowNodeId / workflow_node_ids / workflowNodeIds
+  -> 保留 from_status / fromStatus / to_status / toStatus
+  -> 保留 business_status / businessStatus / result_status / resultStatus
+  -> 保留 result_payload / resultPayload / outputs / artifacts
+```
+
+对应全链路意义：
+
+```text
+App 发起审批
+  -> GUI 本地 pending 实例
+  -> DataSrv create_record_approval
+  -> request 本身可独立恢复当前节点、当前处理人、状态迁移、结果包
+  -> GUI 后端/DataSrv/OpenAPI 的 request snake/camel 兼容读取有真实写入来源
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestSyncMaclawAppApprovalInstanceToDataSrv"
 ```
 
 ### 推进记录：DataSrv 审批泳道支持 request 业务身份别名（2026-06-28）

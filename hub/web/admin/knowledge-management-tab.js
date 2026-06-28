@@ -17,6 +17,8 @@
       knowledgeSortViews: 'Most viewed',
       knowledgeSortImports: 'Most imported',
       knowledgeSearch: 'Search',
+      knowledgeKeywordLabel: 'Keyword',
+      knowledgeKeywordPlaceholder: 'Search by title or description',
       knowledgePrivacyHint: 'This admin view shows only descriptions and metadata. It never displays exported knowledge body, cards, or facts.',
       knowledgeEmpty: 'No shared knowledge records match the current filters.',
       knowledgeLoadFailed: 'Load knowledge shares failed: {error}',
@@ -54,6 +56,8 @@
       knowledgeSortViews: '\u8bbf\u95ee\u91cf\u6700\u9ad8',
       knowledgeSortImports: '\u5bfc\u5165\u91cf\u6700\u9ad8',
       knowledgeSearch: '\u641c\u7d22',
+      knowledgeKeywordLabel: '\u5173\u952e\u5b57',
+      knowledgeKeywordPlaceholder: '\u6309\u6807\u9898\u6216\u63cf\u8ff0\u641c\u7d22',
       knowledgePrivacyHint: '\u6b64\u7ba1\u7406\u89c6\u56fe\u53ea\u663e\u793a\u63cf\u8ff0\u548c\u5143\u6570\u636e\uff0c\u4e0d\u663e\u793a\u5bfc\u51fa\u77e5\u8bc6\u7684\u6b63\u6587\u3001\u5361\u7247\u6216\u4e8b\u5b9e\u5185\u5bb9\u3002',
       knowledgeEmpty: '\u5f53\u524d\u8fc7\u6ee4\u6761\u4ef6\u4e0b\u6682\u65e0\u77e5\u8bc6\u5206\u4eab\u8bb0\u5f55\u3002',
       knowledgeLoadFailed: '\u52a0\u8f7d\u77e5\u8bc6\u5206\u4eab\u5931\u8d25\uff1a{error}',
@@ -84,9 +88,10 @@
     items: [],
     total: 0,
     page: 1,
-    pageSize: 50,
+    pageSize: 20,
     tenantID: '',
     user: '',
+    keyword: '',
     sort: 'published_at_desc'
   };
 
@@ -106,6 +111,7 @@
     params.set('limit', String(state.pageSize));
     params.set('sort', state.sort || 'published_at_desc');
     if (state.user) params.set('user', state.user);
+    if (state.keyword) params.set('keyword', state.keyword);
     if (!tenantScoped() && state.tenantID) params.set('tenant_id', state.tenantID);
     return params.toString();
   }
@@ -113,9 +119,11 @@
     const tenant = byID('knowledgeTenantFilter');
     const user = byID('knowledgeUserFilter');
     const sort = byID('knowledgeSortFilter');
+    const keyword = byID('knowledgeKeywordFilter');
     state.tenantID = tenant ? tenant.value.trim() : '';
     state.user = user ? user.value.trim() : '';
     state.sort = sort ? sort.value : 'published_at_desc';
+    state.keyword = keyword ? keyword.value.trim() : '';
   }
   function meta(label, value) {
     if (value === undefined || value === null || value === '') return '';
@@ -133,7 +141,7 @@
       pager.classList.add('hidden');
       return;
     }
-    root.innerHTML = '<div class="table" style="gap:8px">' + state.items.map(function(item) {
+    root.innerHTML = '<div class="table" style="gap:8px;grid-template-columns:repeat(2,minmax(0,1fr))">' + state.items.map(function(item) {
       const desc = item.description || tr('knowledgeNoDescription');
       const metrics = [
         meta(tr('knowledgeTenant'), item.tenant_id),
@@ -144,11 +152,11 @@
         meta(tr('knowledgePublishedAt'), formatTime(item.published_at)),
         meta(tr('knowledgeUpdatedAt'), formatTime(item.updated_at))
       ].filter(Boolean).join('<span style="color:rgba(31,34,48,.16)">|</span>');
-      return '<div class="item" style="gap:10px">'
-        + '<div class="item-head"><div style="min-width:0"><div class="item-title">' + escapeHtml(item.title || item.knowledge_id || '-') + '</div><div class="item-meta mono">' + escapeHtml(tr('knowledgeID')) + ': ' + escapeHtml(item.knowledge_id || '-') + '</div></div><div class="actions"><button class="btn-danger" type="button" style="height:32px;font-size:12px;padding:0 12px" onclick="forceDeleteKnowledgeShare(\'' + escapeHtml(String(item.knowledge_id || '').replace(/'/g, "\\'")) + '\')">' + escapeHtml(tr('knowledgeForceDelete')) + '</button></div></div>'
-        + '<div class="desc"><strong>' + escapeHtml(tr('knowledgeDescription')) + ':</strong> ' + escapeHtml(desc) + '</div>'
-        + '<div class="item-meta" style="display:flex;gap:6px;flex-wrap:wrap">' + metrics + '</div>'
-        + (item.share_url ? '<div class="mono" style="font-size:11px">' + escapeHtml(tr('knowledgeShareLink')) + ': ' + escapeHtml(item.share_url) + '</div>' : '')
+      return '<div class="item" style="gap:6px;padding:10px 12px">'
+        + '<div class="item-head"><div style="min-width:0"><div class="item-title" style="font-size:13px">' + escapeHtml(item.title || item.knowledge_id || '-') + '</div></div><div class="actions"><button class="btn-danger" type="button" style="height:28px;font-size:11px;padding:0 10px" onclick="forceDeleteKnowledgeShare(\'' + escapeHtml(String(item.knowledge_id || '').replace(/'/g, "\\'")) + '\')">' + escapeHtml(tr('knowledgeForceDelete')) + '</button></div></div>'
+        + '<div class="desc" style="font-size:11px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden"><strong>' + escapeHtml(tr('knowledgeDescription')) + ':</strong> ' + escapeHtml(desc) + '</div>'
+        + '<div class="item-meta" style="display:flex;gap:4px;flex-wrap:wrap;font-size:11px">' + metrics + '</div>'
+        + (item.share_url ? '<div class="mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(tr('knowledgeShareLink')) + ': ' + escapeHtml(item.share_url) + '</div>' : '')
         + '</div>';
     }).join('') + '</div>';
     const totalPages = pageCount();
@@ -164,14 +172,18 @@
     pager.classList.toggle('hidden', state.total <= state.pageSize);
   }
   function applyKnowledgeScopeUI() {
-    const tenant = byID('knowledgeTenantFilter');
-    if (!tenant) return;
-    tenant.disabled = tenantScoped();
-    tenant.closest('div').classList.toggle('hidden', tenantScoped());
+    const wrap = byID('knowledgeTenantFilterWrap');
+    if (!wrap) return;
+    const isTenantScope = tenantScoped();
+    const input = byID('knowledgeTenantFilter');
+    if (input) input.disabled = isTenantScope;
+    wrap.style.display = isTenantScope ? 'none' : '';
   }
   function applyKnowledgeI18n() {
     const options = global.document.querySelectorAll('#knowledgeSortFilter option[data-i18n]');
     options.forEach(function(option) { option.textContent = tr(option.getAttribute('data-i18n')); });
+    const keywordInput = byID('knowledgeKeywordFilter');
+    if (keywordInput) keywordInput.placeholder = tr('knowledgeKeywordPlaceholder');
     applyKnowledgeScopeUI();
     renderKnowledgeShares();
   }
@@ -196,7 +208,7 @@
     await global.loadKnowledgeShares();
   };
   global.resetKnowledgeShareFilters = async function resetKnowledgeShareFilters() {
-    ['knowledgeTenantFilter', 'knowledgeUserFilter'].forEach(function(id) { const el = byID(id); if (el) el.value = ''; });
+    ['knowledgeTenantFilter', 'knowledgeUserFilter', 'knowledgeKeywordFilter'].forEach(function(id) { const el = byID(id); if (el) el.value = ''; });
     const sort = byID('knowledgeSortFilter');
     if (sort) sort.value = 'published_at_desc';
     state.page = 1;
@@ -238,7 +250,7 @@
   }
   global.addEventListener('keydown', function(event) {
     if (event.key !== 'Enter') return;
-    if (event.target && (event.target.id === 'knowledgeTenantFilter' || event.target.id === 'knowledgeUserFilter')) global.searchKnowledgeShares();
+    if (event.target && (event.target.id === 'knowledgeTenantFilter' || event.target.id === 'knowledgeUserFilter' || event.target.id === 'knowledgeKeywordFilter')) global.searchKnowledgeShares();
   });
   applyKnowledgeI18n();
 })(window);

@@ -172,7 +172,9 @@ export const SidebarSystemStatus = ({
         switchingTimerRef.current = setTimeout(() => setSwitching(false), 2000);
     }, [onSwitchProvider, switching]);
 
-    const chevronTitle = textForLang(lang, 'Switch LLM provider', '\u5207\u6362\u670d\u52a1\u5546', '\u5207\u63db\u670d\u52d9\u5546');
+    const chevronTitle = availableProviders.length > 1
+        ? textForLang(lang, 'Switch LLM provider', '\u5207\u6362\u670d\u52a1\u5546', '\u5207\u63db\u670d\u52d9\u5546')
+        : textForLang(lang, 'LLM settings', '\u5927\u6a21\u578b\u8bbe\u7f6e', '\u5927\u6a21\u578b\u8a2d\u5b9a');
     const providerTitle = isOfficialProvider
         ? textForLang(lang, 'View or redeem MaClaw Official service', '\u67e5\u770b\u6216\u5151\u6362 MaClaw \u5b98\u65b9\u670d\u52a1', '\u67e5\u770b\u6216\u514c\u63db MaClaw \u5b98\u65b9\u670d\u52d9')
         : textForLang(lang, 'Configure LLM provider', '\u914d\u7f6e LLM \u670d\u52a1\u5546', '\u914d\u7f6e LLM \u670d\u52d9\u5546');
@@ -308,8 +310,7 @@ export const SidebarSystemStatus = ({
                             {providerLabel}
                         </span>
                     )}
-                    {/* Provider switch dropdown — only render when there are alternatives */}
-                    {availableProviders.length > 1 && (
+                    {/* Provider switch dropdown — always render (even with single provider, for quick access to settings) */}
                     <div className="sidebar-system-status__provider-switch">
                         <button
                             ref={chevronBtnRef}
@@ -319,6 +320,10 @@ export const SidebarSystemStatus = ({
                                 if (!dropdownOpen) {
                                     // Snapshot the switchable list at open time
                                     snapshotRef.current = availableProviders.filter(p => p.name !== providerLabel);
+                                    // Don't open if dropdown would be empty (no alternatives + no settings action)
+                                    const hasAlternatives = snapshotRef.current.length > 0;
+                                    const hasSettingsAction = !!(openLLMSettingsPage || openProviderTarget);
+                                    if (!hasAlternatives && !hasSettingsAction) return;
                                     // Calculate fixed position from chevron button
                                     if (chevronBtnRef.current) {
                                         const rect = chevronBtnRef.current.getBoundingClientRect();
@@ -347,11 +352,13 @@ export const SidebarSystemStatus = ({
                                 aria-label={textForLang(lang, 'Select provider', '\u9009\u62e9\u670d\u52a1\u5546', '\u9078\u64c7\u670d\u52d9\u5546')}
                                 style={{ position: 'fixed', bottom: dropdownPos.bottom, right: dropdownPos.right }}
                             >
-                                {/* Current provider (highlighted) */}
-                                <div className="sidebar-system-status__provider-dropdown-item sidebar-system-status__provider-dropdown-item--current" role="option" aria-selected="true">
-                                    <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true">✓</span>
-                                    <span>{providerLabel}</span>
-                                </div>
+                                {/* Current provider (highlighted) — only show when there are switchable alternatives */}
+                                {switchableProviders.length > 0 && (
+                                    <div className="sidebar-system-status__provider-dropdown-item sidebar-system-status__provider-dropdown-item--current" role="option" aria-selected="true">
+                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true">✓</span>
+                                        <span>{providerLabel}</span>
+                                    </div>
+                                )}
                                 {/* Switchable providers */}
                                 {switchableProviders.map(p => (
                                     <button
@@ -366,20 +373,21 @@ export const SidebarSystemStatus = ({
                                         <span>{p.name}</span>
                                     </button>
                                 ))}
-                                {/* Separator + settings link */}
-                                <div className="sidebar-system-status__provider-dropdown-sep" />
-                                <button
-                                    type="button"
-                                    className="sidebar-system-status__provider-dropdown-item sidebar-system-status__provider-dropdown-item--settings"
-                                    onClick={() => { setDropdownOpen(false); openLLMSettingsPage?.(); }}
-                                >
-                                    <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" style={{ visibility: 'hidden' }}>⚙</span>
-                                    <span>{textForLang(lang, 'LLM Settings...', 'LLM \u8bbe\u7f6e...', 'LLM \u8a2d\u5b9a...')}</span>
-                                </button>
+                                {/* Separator + settings link — separator only when there are items above */}
+                                {switchableProviders.length > 0 && <div className="sidebar-system-status__provider-dropdown-sep" />}
+                                {(openLLMSettingsPage || openProviderTarget) && (
+                                    <button
+                                        type="button"
+                                        className="sidebar-system-status__provider-dropdown-item sidebar-system-status__provider-dropdown-item--settings"
+                                        onClick={() => { setDropdownOpen(false); (openLLMSettingsPage || openProviderTarget)?.(); }}
+                                    >
+                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" style={{ visibility: 'hidden' }}>⚙</span>
+                                        <span>{textForLang(lang, 'LLM Settings...', '\u5927\u6a21\u578b\u8bbe\u7f6e...', '\u5927\u6a21\u578b\u8a2d\u5b9a...')}</span>
+                                    </button>
+                                )}
                             </div>
                         )}
                     </div>
-                    )}
                     {hubServicePeriodLimited && (
                         <button
                             type="button"

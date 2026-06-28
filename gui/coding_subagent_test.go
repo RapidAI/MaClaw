@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -455,7 +456,7 @@ func TestCodingSubAgentPromptCapsTitleAndDescription(t *testing.T) {
 	if strings.Contains(userMsg, strings.Repeat("very long title ", 20)) {
 		t.Fatalf("expected task title to be compacted, got %q", userMsg)
 	}
-	if len([]rune(userMsg)) > codingSubAgentTaskDescriptionMaxRunes+codingSubAgentTaskTitleMaxRunes+600 {
+	if len([]rune(userMsg)) > codingSubAgentTaskDescriptionMaxRunes+codingSubAgentTaskTitleMaxRunes+1000 {
 		t.Fatalf("task user message too long: %d", len([]rune(userMsg)))
 	}
 }
@@ -554,7 +555,7 @@ func TestBuildCodingToolDefinitions_ReadFileExposesLineRangeHints(t *testing.T) 
 				t.Fatalf("read_file offset description should explain tail reads, got %q", desc)
 			}
 			linesDesc := codingToolPropDescriptionForTest(props["lines"])
-			if !strings.Contains(linesDesc, "limit/num_lines/line_count") {
+			if !strings.Contains(linesDesc, "limit/num_lines/line_count") || !strings.Contains(linesDesc, "maximum 2000") {
 				t.Fatalf("read_file lines description should expose aliases, got %q", linesDesc)
 			}
 			startDesc := codingToolPropDescriptionForTest(props["start_line"])
@@ -1151,10 +1152,30 @@ func TestRemoteCodingSubAgentResolvePathKeepsRelativePathWhenProjectDirMissing(t
 	}
 }
 
+func TestRemoteCodingSubAgentDefaultWorkingDirFallsBackToWorkDir(t *testing.T) {
+	var nilCB *remoteCodingCallbacks
+	if got := nilCB.defaultRemoteWorkingDir(); got != "." {
+		t.Fatalf("nil callback default dir = %q, want .", got)
+	}
+
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{workDir: "/repo/work"}}
+	if got := cb.defaultRemoteWorkingDir(); got != "/repo/work" {
+		t.Fatalf("default dir should use workDir when projectDir is missing, got %q", got)
+	}
+	cb.agent.projectDir = "/repo/project"
+	if got := cb.defaultRemoteWorkingDir(); got != "/repo/project" {
+		t.Fatalf("default dir should prefer projectDir over workDir, got %q", got)
+	}
+}
+
 func TestRemoteWriteFileResultRequiresExplicitOK(t *testing.T) {
 	success := remoteWriteFileResult("/repo/main.py", 12, "OK\n", false)
-	if !strings.Contains(success, "✅ 已写入 /repo/main.py (12 bytes)") {
+	if !strings.Contains(success, "✅ 已写入 /repo/main.py") || !strings.Contains(success, "12 bytes") || !strings.Contains(success, "created=false") {
 		t.Fatalf("write result should report success when command prints OK, got %q", success)
+	}
+	created := remoteWriteFileResult("/repo/new.py", 8, "OK created=true\n", false)
+	if !strings.Contains(created, "created=true") {
+		t.Fatalf("write result should preserve created=true from explicit OK line, got %q", created)
 	}
 	chunked := remoteWriteFileResult("/repo/main.py", 40000, "OK\n", true)
 	if !strings.Contains(chunked, "chunked") {
@@ -1166,6 +1187,11 @@ func TestRemoteWriteFileResultRequiresExplicitOK(t *testing.T) {
 		"remote coding subagent: handler unavailable",
 		"python3: command not found",
 		"Traceback (most recent call last):",
+		"log: OK but write was skipped",
+		"prefix OK created=true",
+		"OK-ish",
+		"OK created=maybe",
+		"ok created=true",
 	} {
 		got := remoteWriteFileResult("/repo/main.py", 12, result, false)
 		if !strings.HasPrefix(got, "写入失败:") {
@@ -1186,6 +1212,10 @@ func TestRemoteEditFileResultRequiresExplicitOK(t *testing.T) {
 		"python3: command not found",
 		"Traceback (most recent call last):",
 		"replaced 1 occurrence",
+		"log OK: replaced 1 occurrence",
+		"OK: skipped replacement",
+		"OK: replaced 0 occurrences",
+		"OK: replaced 2 occurrences",
 	} {
 		got := remoteEditFileResult("/repo/main.py", result)
 		if !strings.HasPrefix(got, "编辑失败:") {
@@ -1227,9 +1257,588 @@ func TestRemoteCodingSubAgentResultFromLoopResultPreservesNonSuccessStates(t *te
 		t.Fatalf("empty remote loop summary should be failed, got %#v", result)
 	}
 
-	result = remoteCodingSubAgentResultFromLoopResult(agent.LoopResult{Text: "done"})
+	result = remoteCodingSubAgentResultFromLoopResult(agent.LoopResult{Text: "done", Iterations: 1})
+	if result.Status != "failed" || !strings.Contains(result.Error, "without using tools") {
+		t.Fatalf("remote loop result without tool evidence should fail, got %#v", result)
+	}
+
+	result = remoteCodingSubAgentResultFromLoopResult(agent.LoopResult{Text: "done", ToolCalls: 1})
 	if result.Status != "success" || result.Summary != "done" || result.Error != "" {
-		t.Fatalf("normal loop result should remain success, got %#v", result)
+		t.Fatalf("normal loop result with tool evidence should remain success, got %#v", result)
+	}
+}
+
+func TestRemoteCodingSubAgentVerificationGateRequiresPostEditVerification(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 2,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "verification command") || !strings.Contains(result.Summary, "## 验证状态") {
+		t.Fatalf("remote file changes without verification should fail, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.py | 2 +-", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 4,
+	})
+	if result.Status != "success" || result.Error != "" || !strings.Contains(result.Summary, "PASS") {
+		t.Fatalf("remote post-edit verification should pass, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 3,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "before the final edit") {
+		t.Fatalf("remote verification before final edit should fail, got %#v", result)
+	}
+}
+
+func TestRemoteCodingSubAgentNoChangeRequiresInspectionEvidence(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "nothing needed",
+		ToolCalls: 1,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "no file changes and no inspection") || !strings.Contains(result.Summary, "## 无改动证据") {
+		t.Fatalf("remote no-change result without evidence should fail, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/README.md")
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "inspected only",
+		ToolCalls: 1,
+	})
+	if result.Status != "success" || strings.Contains(result.Summary, "## 无改动证据") {
+		t.Fatalf("remote no-change result with read evidence should pass, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteSearch("ssh_list_dir", "ls -la /repo", "/repo", "total 8\n-rw-r--r-- README.md", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "listed only",
+		ToolCalls: 1,
+	})
+	if result.Status != "success" || strings.Contains(result.Summary, "## 无改动证据") {
+		t.Fatalf("remote no-change result with list/search evidence should pass, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteSearch("ssh_list_dir", "ls -la /repo", "/repo", "No results found", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "empty list only",
+		ToolCalls: 1,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "no file changes") {
+		t.Fatalf("remote no-change result with empty search evidence should fail, got %#v", result)
+	}
+}
+
+func TestRemoteCodingSubAgentQualityGateFailsUnresolvedPostEditCommands(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("cat missing.txt", "/repo", "cat: missing.txt: No such file or directory", false)
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.py | 2 +-", true)
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 6,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "cat missing.txt") || !strings.Contains(result.Summary, "## 命令状态") {
+		t.Fatalf("unresolved failed post-edit command should fail remote quality gate, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("cat missing.txt", "/repo", "cat: missing.txt: No such file or directory", false)
+	cb.trackRemoteCommand("cat missing.txt", "/repo", "now exists", true)
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.py | 2 +-", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 7,
+	})
+	if result.Status != "success" || strings.Contains(result.Summary, "## 命令状态") {
+		t.Fatalf("later successful equivalent command should resolve remote failure, got %#v", result)
+	}
+}
+
+func TestRemoteCodingSubAgentFailedResultStillIncludesCommandEvidence(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteCommand("cat missing.txt", "/repo", "cat: missing.txt: No such file or directory", false)
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "failed",
+		Error:     "model stopped",
+		Summary:   "partial work",
+		ToolCalls: 1,
+	})
+	if result.Status != "failed" || result.Error != "model stopped" || !strings.Contains(result.Summary, "## 命令状态") || !strings.Contains(result.Summary, "cat missing.txt") {
+		t.Fatalf("failed remote result should keep unresolved command evidence, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("npm run lint", "/repo", "lint failed", false)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.py | 2 +-", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 5,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Summary, "## 验证状态") || strings.Contains(result.Summary, "## 命令状态") {
+		t.Fatalf("verification failures should not duplicate command failure summary, got %#v", result)
+	}
+}
+
+func TestRemoteCodingSubAgentExplorationGateRequiresPreEditReadForExistingFiles(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 3,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "首次修改前") || !strings.Contains(result.Summary, "## 探索状态") {
+		t.Fatalf("remote existing-file edit without pre-read should fail exploration gate, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteCommand("rg 'func target' src", "/repo", "src/main.py:12:def target():", true)
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.py | 2 +-", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 5,
+	})
+	if result.Status != "success" || result.Error != "" || !strings.Contains(result.Summary, "EXPLORED") {
+		t.Fatalf("remote successful search before edit should satisfy exploration gate, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteSearch("ssh_list_dir", "ls -la /repo", "/repo", "main.py\nREADME.md", true)
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.py | 2 +-", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 5,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "首次修改前") {
+		t.Fatalf("remote directory listing alone should not satisfy exploration gate, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteCommand("rg 'missing' src", "/repo", "no matches", true)
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 4,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "首次修改前") {
+		t.Fatalf("remote empty search result should not satisfy exploration gate, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileChanged("/repo/new.py", true)
+	cb.trackRemoteFileRead("/repo/new.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " new.py | 1 +", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "created file",
+		ToolCalls: 4,
+	})
+	if result.Status != "success" || result.Error != "" || !strings.Contains(result.Summary, "NOT_NEEDED") {
+		t.Fatalf("remote created file should not require pre-edit read, got %#v", result)
+	}
+}
+
+func TestRemoteCodingSubAgentConfirmationGateRequiresPostEditRead(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 3,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "ssh_read_file") || !strings.Contains(result.Summary, "## 确认状态") {
+		t.Fatalf("remote file changes without post-edit read should fail confirmation gate, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/a.py")
+	cb.trackRemoteFileChanged("/repo/a.py", false)
+	cb.trackRemoteFileRead("/repo/a.py")
+	cb.trackRemoteFileChanged("/repo/b.py", true)
+	cb.trackRemoteFileRead("/repo/a.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed files",
+		ToolCalls: 6,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "/repo/b.py") {
+		t.Fatalf("each modified remote file should need post-edit read confirmation, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	if remoteReadFileResultHasUsefulEvidence("[remote read_file EOF: offset 999 is beyond scanned file length 20]") {
+		cb.trackRemoteFileRead("/repo/main.py")
+	}
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 4,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "/repo/main.py") {
+		t.Fatalf("wrong-offset EOF read should not satisfy post-edit confirmation, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/./main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.py | 2 +-", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 5,
+	})
+	if result.Status != "success" {
+		t.Fatalf("cleaned equivalent remote paths should satisfy post-edit confirmation, got %#v", result)
+	}
+}
+
+func TestRemoteDiffSelfCheckSummary(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.py | 2 +-", true)
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 5,
+	})
+	if result.Status != "success" || !strings.Contains(result.Summary, "## 远程 Diff 自检") || !strings.Contains(result.Summary, "CHECKED") {
+		t.Fatalf("remote diff self-check should be reported as checked, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 4,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "git diff/status") || !strings.Contains(result.Summary, "MISSING") {
+		t.Fatalf("missing post-edit remote diff self-check should fail the final quality gate, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("git diff --stat", "/repo", "no changes", true)
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 5,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "git diff/status") || !strings.Contains(result.Summary, "MISSING") {
+		t.Fatalf("pre-edit remote diff self-check should fail the final quality gate, got %#v", result)
+	}
+
+	status, summary := summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{Command: "git status --short", Succeeded: false, Summary: "fatal: not a git repository", seq: 2},
+	}, 1)
+	if status != codingSubAgentQualityFailed || !strings.Contains(summary, "fatal: not a git repository") {
+		t.Fatalf("failed remote diff self-check should be surfaced, got (%q, %q)", status, summary)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		command string
+		summary string
+	}{
+		{name: "empty diff", command: "git diff", summary: ""},
+		{name: "exit marker only", command: "git diff --stat", summary: "EXIT: 0"},
+		{name: "status clean", command: "git status", summary: "On branch main\nnothing to commit, working tree clean\nEXIT: 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, summary := summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+				{Command: tc.command, Succeeded: true, Summary: tc.summary, seq: 2},
+			}, 1)
+			if status != codingSubAgentQualityFailed || !strings.Contains(summary, "工作区干净") {
+				t.Fatalf("clean remote diff self-check should be suspicious, got (%q, %q)", status, summary)
+			}
+		})
+	}
+
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{Command: "git diff --stat", Succeeded: true, Summary: "EXIT: 0", seq: 2},
+		{Command: "git diff", Succeeded: true, Summary: "diff --git a/main.py b/main.py\n+print('ok')\nEXIT: 0", seq: 3},
+	}, 1)
+	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "已运行 2 条") {
+		t.Fatalf("non-empty remote diff self-check should still pass, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{Command: "git status", Succeeded: true, Summary: "Changes not staged for commit:\n\tmodified: main.py\n\nno changes added to commit\nEXIT: 0", seq: 2},
+	}, 1)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("dirty git status should not be treated as clean, got (%q, %q)", status, summary)
+	}
+}
+
+func TestRemoteDiffSelfCheckCommandClassifier(t *testing.T) {
+	positives := []string{
+		"git diff",
+		"git diff --stat",
+		"git status --short",
+		"bash -lc \"git diff -- src/main.py\"",
+	}
+	for _, command := range positives {
+		if !isRemoteDiffSelfCheckCommand(command) {
+			t.Fatalf("isRemoteDiffSelfCheckCommand(%q) = false, want true", command)
+		}
+	}
+	negatives := []string{
+		"git grep target",
+		"git log --oneline",
+		"pytest tests",
+		"rg target src",
+	}
+	for _, command := range negatives {
+		if isRemoteDiffSelfCheckCommand(command) {
+			t.Fatalf("isRemoteDiffSelfCheckCommand(%q) = true, want false", command)
+		}
+	}
+}
+
+func TestRemoteReadFileResultUsefulEvidence(t *testing.T) {
+	useful := []string{
+		"1\tpackage main\n2\tfunc main() {}\n",
+		"1\t\n",
+		"2\t   \n",
+		"3\t\r\n",
+		"25\tline\n\n[remote read_file truncated: showing lines 25-25; call again with offset=26]",
+		"[remote read_file EOF: offset 1 is beyond scanned file length 0]",
+	}
+	for _, result := range useful {
+		if !remoteReadFileResultHasUsefulEvidence(result) {
+			t.Fatalf("remoteReadFileResultHasUsefulEvidence(%q) = false, want true", result)
+		}
+	}
+
+	notUseful := []string{
+		"",
+		"[remote read_file binary/non-UTF8: 42 bytes; text line range unavailable for offset=1 limit=200]",
+		"[remote read_file EOF: offset 999 is beyond scanned file length 20]",
+		"[remote read_file truncated: showing lines 1-200; call again with offset=201]",
+	}
+	for _, result := range notUseful {
+		if remoteReadFileResultHasUsefulEvidence(result) {
+			t.Fatalf("remoteReadFileResultHasUsefulEvidence(%q) = true, want false", result)
+		}
+	}
+}
+
+func TestRemoteCodingExplorationCommandClassifier(t *testing.T) {
+	positives := []string{
+		"rg 'func target' src",
+		"ripgrep target src",
+		"grep -R target src",
+		"git grep target -- '*.go'",
+		"codegraph explore target flow",
+		"codegraph node gui/remote_coding_subagent.go",
+		"bash -lc \"rg target src\"",
+	}
+	for _, command := range positives {
+		if !isRemoteCodingExplorationCommand(command) {
+			t.Fatalf("isRemoteCodingExplorationCommand(%q) = false, want true", command)
+		}
+	}
+
+	negatives := []string{
+		"pytest tests",
+		"go test ./...",
+		"ls -la src",
+		"git status --short",
+		"codegraph init",
+	}
+	for _, command := range negatives {
+		if isRemoteCodingExplorationCommand(command) {
+			t.Fatalf("isRemoteCodingExplorationCommand(%q) = true, want false", command)
+		}
+	}
+}
+
+func TestRemoteCodingTaskStatusCommandAndWorkingDir(t *testing.T) {
+	command, workingDir := remoteCodingTaskStatusCommandAndWorkingDir("[completed] task bg_1\ncommand: cd /repo && pytest tests\nstatus: completed\nexit_code: 0\n")
+	if command != "pytest tests" || workingDir != "/repo" {
+		t.Fatalf("expected command and working dir split, got command=%q workingDir=%q", command, workingDir)
+	}
+
+	command, workingDir = remoteCodingTaskStatusCommandAndWorkingDir("[completed] task bg_1\ncommand: cd '/repo with spaces' && go test ./gui\nstatus: completed\nexit_code: 0\n")
+	if command != "go test ./gui" || workingDir != "/repo with spaces" {
+		t.Fatalf("expected quoted working dir split, got command=%q workingDir=%q", command, workingDir)
+	}
+
+	command, workingDir = remoteCodingTaskStatusCommandAndWorkingDir("[completed] task bg_1\ncommand: cd -- /repo && npm test\nstatus: completed\nexit_code: 0\n")
+	if command != "npm test" || workingDir != "/repo" {
+		t.Fatalf("expected cd -- working dir split, got command=%q workingDir=%q", command, workingDir)
+	}
+
+	command, workingDir = remoteCodingTaskStatusCommandAndWorkingDir("[completed] task bg_1\ncommand: cd /repo; pytest tests\nstatus: completed\nexit_code: 0\n")
+	if command != "cd /repo; pytest tests" || workingDir != "" {
+		t.Fatalf("non-&& cd command should be preserved, got command=%q workingDir=%q", command, workingDir)
+	}
+}
+
+func TestRemoteCodingTaskCheckResultCanSatisfyVerification(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteTaskCheckResult("[completed] task bg_1\ncommand: cd /repo && pytest tests\nstatus: completed\nexit_code: 0\nprocess_alive: false\n\n--- latest log ---\n1 passed")
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.py | 2 +-", true)
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 5,
+	})
+	if result.Status != "success" || !strings.Contains(result.Summary, "PASS") {
+		t.Fatalf("completed check_task with verifier command should satisfy verification, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteTaskCheckResult("[running] task bg_1\ncommand: cd /repo && pytest tests\nstatus: running\nexit_code: unknown\nprocess_alive: true\n\n--- latest log ---\ncollecting")
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 4,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "verification command") {
+		t.Fatalf("running check_task should not satisfy verification, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteTaskCheckResult("[running] task bg_1\ncommand: cd /repo && pytest tests\nstatus: running\nexit_code: unknown\nprocess_alive: true\n\n--- latest log ---\nstatus: completed\nexit_code: 0\n1 passed")
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 4,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "verification command") {
+		t.Fatalf("log-only completed status should not satisfy verification, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteTaskCheckResult("[completed] task bg_1\ncommand: cd /repo && pytest tests\nstatus: completed\nexit_code: unknown\nprocess_alive: false\n\n--- latest log ---\nexit_code: 0\n1 passed")
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.py | 2 +-", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 5,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "pytest tests") {
+		t.Fatalf("completed check_task with unknown header exit should not use log exit code, got %#v", result)
+	}
+}
+
+func TestRemoteCodingTaskCheckFailureResolvedBySameWorkingDirCommand(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteTaskCheckResult("[completed] task bg_1\ncommand: cd /repo && pytest tests\nstatus: failed\nexit_code: 1\nprocess_alive: false\n\n--- latest log ---\nFAILED tests/test_main.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.py | 2 +-", true)
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 6,
+	})
+	if result.Status != "success" || strings.Contains(result.Summary, "## 命令状态") {
+		t.Fatalf("same working dir rerun should resolve failed check_task command, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteTaskCheckResult("[completed] task bg_1\ncommand: cd /repo && pytest tests\nstatus: failed\nexit_code: 1\nprocess_alive: false\n\n--- latest log ---\nFAILED tests/test_main.py")
+	cb.trackRemoteCommand("pytest tests", "/other", "1 passed in 0.1s", true)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.py | 2 +-", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 6,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Summary, "## 验证状态") || !strings.Contains(result.Error, "pytest tests") {
+		t.Fatalf("different working dir rerun should not resolve failed check_task command, got %#v", result)
 	}
 }
 
@@ -1287,6 +1896,9 @@ func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T)
 	for _, want := range []string{
 		"file/file_path/filename/target_path",
 		"offset/limit",
+		"start/start_line/startLine",
+		"lines/num_lines/line_count",
+		"ssh_check_task(task_id, tail_lines?)",
 		"默认读取前 200 行",
 		"old_string/old_content/find/search -> old_str",
 		"new_string/new_content/replace/replacement -> new_str",
@@ -1294,6 +1906,9 @@ func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T)
 		"id/task -> task_id",
 		"再次 ssh_read_file",
 		"运行匹配任务的验证命令",
+		"git diff --stat",
+		"git status --short",
+		"diff/status 自检结果",
 		"实际运行的验证命令及结果",
 		"剩余风险或未验证项",
 	} {
@@ -1331,14 +1946,15 @@ func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T)
 	}
 
 	expectDescriptionContains("ssh_read_file.path", "file/file_path/filename/target_path")
-	expectDescriptionContains("ssh_read_file.offset", "start/start_line")
-	expectDescriptionContains("ssh_read_file.limit", "默认 200", "num_lines/line_count", "最大 2000")
+	expectDescriptionContains("ssh_read_file.offset", "start/start_line/startLine")
+	expectDescriptionContains("ssh_read_file.limit", "默认 200", "lines/num_lines/line_count", "最大 2000")
 	expectDescriptionContains("ssh_edit_file", "old_string/old_content/find/search", "new_string/new_content/replace/replacement")
 	expectDescriptionContains("ssh_edit_file.old_str", "old_string/old_content/find/search")
 	expectDescriptionContains("ssh_edit_file.new_str", "new_string/new_content/replace/replacement")
 	expectDescriptionContains("ssh_bash.working_dir", "cwd/work_dir")
 	expectDescriptionContains("ssh_list_dir.path", "dir/directory/root", "file/file_path/filename/target_path")
 	expectDescriptionContains("ssh_check_task.task_id", "id/task")
+	expectDescriptionContains("ssh_check_task.tail_lines", "默认 50", "tail/lines/limit", "1-1000")
 }
 
 func TestRemoteShellQuoteEscapesSingleQuotes(t *testing.T) {
@@ -1350,6 +1966,35 @@ func TestRemoteShellQuoteEscapesSingleQuotes(t *testing.T) {
 	command := fmt.Sprintf("cd %s && ls -la %s", got, remoteShellQuote("src's"))
 	if strings.Contains(command, "O'Reilly") || !strings.Contains(command, "'\\''") {
 		t.Fatalf("remote shell command should not contain unescaped single quote payload, got %q", command)
+	}
+}
+
+func TestRemoteBashCommandWithExitMarker(t *testing.T) {
+	command := remoteBashCommandWithExitMarker("/repo/O'Reilly/app", "pytest tests")
+	for _, want := range []string{
+		"cd '/repo/O'\\''Reilly/app'",
+		"sh -lc 'pytest tests'",
+		"EXIT: %s",
+		"__maclaw_cmd_status=$?",
+		"__maclaw_cd_status=$?",
+	} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("remote bash wrapper should contain %q, got %q", want, command)
+		}
+	}
+	exitCommand := remoteBashCommandWithExitMarker("/repo", "echo before; exit 7")
+	if !strings.Contains(exitCommand, "sh -lc 'echo before; exit 7'") || !strings.Contains(exitCommand, "printf '\\nEXIT: %s\\n'") {
+		t.Fatalf("remote bash wrapper should run user command in child shell and still print EXIT, got %q", exitCommand)
+	}
+	quotedCommand := remoteBashCommandWithExitMarker("/repo", "python -c 'print(1)'")
+	if !strings.Contains(quotedCommand, "python -c '\\''print(1)'\\'''") {
+		t.Fatalf("remote bash wrapper should shell-quote nested single quotes, got %q", quotedCommand)
+	}
+	if got := remoteCodingToolOutcome("pytest failed\nEXIT: 1"); got != "failed" {
+		t.Fatalf("remote bash EXIT marker should drive failed outcome, got %q", got)
+	}
+	if got := remoteCodingToolOutcome("1 passed\nEXIT: 0"); got != "success" {
+		t.Fatalf("remote bash EXIT 0 marker should remain success, got %q", got)
 	}
 }
 
@@ -1409,11 +2054,21 @@ func TestRemoteCodingToolOutcomeDetectsCommonFailureText(t *testing.T) {
 		"panic: runtime error",
 		"exit status 1",
 		"command exited with code 2",
+		"process exited with code 137",
+		"exit=1 accuracy=0.0",
 		"ls: cannot access 'missing': No such file or directory",
 		"bash: pytest: command not found",
 		"ERROR: file not found: /repo/missing.py",
 		"remote coding subagent: handler unavailable",
 		"unknown tool: ssh_delete_all",
+		"[failed] task task-123\nstatus: failed\nexit_code: 1\n--- latest log ---\npytest failed",
+		"task task-123\nstatus: completed\nexit_code: 2\n--- latest log ---\ncommand failed",
+		"task task-123\nstatus: killed\nexit_code: unknown",
+		"EXIT: 1\ntraining failed",
+		`{"status":"failed","exit_code":1}`,
+		`{"state": "cancelled", "returncode": null}`,
+		"exit code: 137\nkilled by oom",
+		"return_code = 2\npytest failed",
 	}
 	for _, result := range failures {
 		if got := remoteCodingToolOutcome(result); got != "failed" {
@@ -1424,8 +2079,16 @@ func TestRemoteCodingToolOutcomeDetectsCommonFailureText(t *testing.T) {
 	successes := []string{
 		"",
 		"OK: replaced 1 occurrence",
-		"✅ 已写入 /tmp/file.py (42 bytes)",
+		"✅ 已写入 /tmp/file.py (42 bytes, created=false)",
 		"0 errors and 0 warnings",
+		"[completed] task task-123\nstatus: completed\nexit_code: 0\n--- latest log ---\n1 passed",
+		"EXIT: 0\nall checks passed",
+		`{"status":"completed","exit_code":0}`,
+		"returncode = 0\nall checks passed",
+		"state: running\nexit_code: unknown",
+		"command exited with code 0\nall checks passed",
+		"exit status 0\nall checks passed",
+		"exit=0 accuracy=91.5",
 	}
 	for _, result := range successes {
 		if got := remoteCodingToolOutcome(result); got != "success" {
@@ -1584,6 +2247,9 @@ func TestRemoteCodingSubAgentPythonCommandsEncodePaths(t *testing.T) {
 	if !strings.Contains(writeCmd, "base64.b64decode") {
 		t.Fatalf("write command should decode path/content via base64, got %q", writeCmd)
 	}
+	if !strings.Contains(writeCmd, "created = not p.exists()") || !strings.Contains(writeCmd, "created=") {
+		t.Fatalf("write command should report whether it created or overwrote the file, got %q", writeCmd)
+	}
 
 	largeCmd := remoteWriteFileLargeDecodeCommand(path, "/tmp/maclaw_write_123")
 	if !strings.Contains(largeCmd, pathB64) {
@@ -1597,6 +2263,23 @@ func TestRemoteCodingSubAgentPythonCommandsEncodePaths(t *testing.T) {
 	}
 	if !strings.Contains(largeCmd, "rm -f '/tmp/maclaw_write_123'") {
 		t.Fatalf("large-write decode command should shell-quote tmp cleanup path, got %q", largeCmd)
+	}
+	if !strings.Contains(largeCmd, "created = not p.exists()") || !strings.Contains(largeCmd, "created=") {
+		t.Fatalf("large-write command should report whether it created or overwrote the file, got %q", largeCmd)
+	}
+
+	chunkCmd := remoteWriteFileLargeChunkCommand("/tmp/maclaw write '123'", "YWJjZA==", false)
+	for _, want := range []string{"printf %s 'YWJjZA==' > '/tmp/maclaw write '\\''123'\\'''", "printf %s"} {
+		if !strings.Contains(chunkCmd, want) {
+			t.Fatalf("large-write chunk command should contain %q, got %q", want, chunkCmd)
+		}
+	}
+	if strings.Contains(chunkCmd, "echo -n") {
+		t.Fatalf("large-write chunk command should use printf instead of echo -n, got %q", chunkCmd)
+	}
+	appendChunkCmd := remoteWriteFileLargeChunkCommand("/tmp/maclaw_write_123", "ZWY=", true)
+	if !strings.Contains(appendChunkCmd, " >> '/tmp/maclaw_write_123'") {
+		t.Fatalf("append chunk command should append to quoted tmp path, got %q", appendChunkCmd)
 	}
 
 	editCmd := remoteEditFilePythonCommand(path, "  old\n", "")
@@ -1625,10 +2308,13 @@ func TestRemoteCodingSubAgentReadFileRangeCommandAndArgs(t *testing.T) {
 	if strings.Contains(cmd, path) || strings.Contains(cmd, "pathlib.Path('/repo") {
 		t.Fatalf("read range command should not embed raw path in Python string, got %q", cmd)
 	}
-	for _, want := range []string{"start = 25", "limit = 40", "begin >= len(lines)", "enumerate(lines[begin:end], start=start)", "remote read_file EOF", "remote read_file truncated", "offset=%d"} {
+	for _, want := range []string{"start = 25", "limit = 40", "with p.open", "errors=", "for lineno, line in enumerate(f, start=1)", "shown >= limit", "remote read_file EOF", "remote read_file truncated", "offset=%d"} {
 		if !strings.Contains(cmd, want) {
 			t.Fatalf("read range command should contain %q, got %q", want, cmd)
 		}
+	}
+	if strings.Contains(cmd, "read_text(encoding='utf-8').splitlines") || strings.Contains(cmd, "lines[begin:end]") {
+		t.Fatalf("read range command should stream line ranges instead of loading the full file, got %q", cmd)
 	}
 	if strings.Contains(cmd, "sys.stdout.buffer.write(p.read_bytes())") {
 		t.Fatalf("read range command should not dump full binary/non-UTF8 files, got %q", cmd)
@@ -1649,13 +2335,13 @@ func TestRemoteCodingSubAgentReadFileRangeCommandAndArgs(t *testing.T) {
 	}
 
 	args := map[string]interface{}{
-		"start_line": "7",
-		"limit":      float64(9999),
+		"startLine": "7",
+		"lines":     float64(9999),
 	}
-	if got := remoteArgInt(args, 0, 0, 1000000, "offset", "start_line"); got != 7 {
-		t.Fatalf("remoteArgInt should read string alias start_line, got %d", got)
+	if got := remoteArgInt(args, 0, 0, 1000000, "offset", "start_line", "start", "startLine"); got != 7 {
+		t.Fatalf("remoteArgInt should read string alias startLine, got %d", got)
 	}
-	if got := remoteArgInt(args, 0, 0, 2000, "limit"); got != 2000 {
+	if got := remoteArgInt(args, 0, 0, 2000, "limit", "lines", "num_lines", "line_count"); got != 2000 {
 		t.Fatalf("remoteArgInt should clamp max value, got %d", got)
 	}
 	if got := remoteArgInt(map[string]interface{}{"offset": -5}, 10, 0, 2000, "offset"); got != 0 {
@@ -2661,6 +3347,25 @@ func TestCodingCommandExecutionResultClassifiesExitOneByCommand(t *testing.T) {
 	}
 }
 
+func TestFormatCodingCommandOutputTruncatesAtUTF8Boundary(t *testing.T) {
+	stdoutText := strings.Repeat("界", 3000)
+	stderrText := strings.Repeat("错", 2000)
+
+	output := formatCodingCommandOutput(stdoutText, stderrText)
+	if !utf8.ValidString(output) {
+		t.Fatalf("formatted command output should remain valid UTF-8 after truncation")
+	}
+	if !strings.Contains(output, "... (output truncated)") {
+		t.Fatalf("stdout truncation marker missing from %q", lastNRunesForTest(output, 300))
+	}
+	if !strings.Contains(output, "... (stderr truncated)") {
+		t.Fatalf("stderr truncation marker missing from %q", lastNRunesForTest(output, 300))
+	}
+	if !strings.Contains(output, "[stderr] ") {
+		t.Fatalf("stderr prefix missing from truncated output")
+	}
+}
+
 func TestFirstDiagnosticCodingToolResultLineRecognizesCommonCompilerFormats(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -3522,6 +4227,41 @@ func TestExecuteCodingReadFileHonorsIntegerArgumentTypes(t *testing.T) {
 	if !strings.Contains(tail.Text, "showing last 2 of 4 lines") || !strings.Contains(tail.Text, "three\nfour") {
 		t.Fatalf("expected int64 offset to return tail content, got %q", tail.Text)
 	}
+}
+
+func TestExecuteCodingReadFileCapsExplicitLineLimit(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "large.txt")
+	var b strings.Builder
+	for i := 1; i <= codingSubAgentReadFileExplicitMaxLines+105; i++ {
+		fmt.Fprintf(&b, "line-%04d\n", i)
+	}
+	if err := os.WriteFile(file, []byte(b.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := executeCodingReadFile(map[string]interface{}{
+		"path":       file,
+		"start_line": 1,
+		"lines":      codingSubAgentReadFileExplicitMaxLines + 10000,
+	})
+	if result.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("large explicit read outcome = %q, text=%q", result.Outcome, result.Text)
+	}
+	if !strings.Contains(result.Text, "line-2000") || strings.Contains(result.Text, "line-2001") {
+		t.Fatalf("explicit read should be capped at %d lines, got tail %q", codingSubAgentReadFileExplicitMaxLines, lastNRunesForTest(result.Text, 500))
+	}
+	if !strings.Contains(result.Text, "Next start_line=2001") {
+		t.Fatalf("capped explicit read should guide continuation, got %q", lastNRunesForTest(result.Text, 500))
+	}
+}
+
+func lastNRunesForTest(text string, n int) string {
+	runes := []rune(text)
+	if n <= 0 || len(runes) <= n {
+		return text
+	}
+	return string(runes[len(runes)-n:])
 }
 
 func TestExecuteCodingEditLinesHonorsIntegerArgumentTypes(t *testing.T) {
@@ -5316,7 +6056,7 @@ func TestSummarizeSubAgentCreatedFileContextEvidence(t *testing.T) {
 }
 
 func TestCreatedFileContextEvidenceAddsQualityFailure(t *testing.T) {
-	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityNotNeeded, codingSubAgentQualityPassed, true, []string{"src/new_handler.go"}, []string{"src/new_handler.go"}, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: true}}, 1, nil, nil)
+	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityNotNeeded, codingSubAgentQualityPassed, true, []string{"src/new_handler.go"}, []string{"src/new_handler.go"}, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: true, Summary: "ok", seq: 1}}, 0, nil, nil)
 	status, summary, count = appendSubAgentQualityFailure(status, summary, count, summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, nil))
 	if status != codingSubAgentQualityFailed || count != 1 || !strings.Contains(summary, "created files without inspection") {
 		t.Fatalf("created-file context gap should become a quality failure, got (%q, %q, %d)", status, summary, count)
@@ -5961,8 +6701,8 @@ func TestSummarizeSubAgentClaimedVerificationEvidence(t *testing.T) {
 }
 
 func TestClaimedVerificationEvidenceAddsQualityFailure(t *testing.T) {
-	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityExplored, codingSubAgentQualityPassed, true, []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./api", Succeeded: true}}, 1, nil, nil)
-	status, summary, count = appendSubAgentQualityFailure(status, summary, count, summarizeSubAgentClaimedVerificationEvidence("Verification: `go test ./gui` passed.", []CodingSubAgentCommandResult{{Command: "go test ./api", Succeeded: true}}))
+	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityExplored, codingSubAgentQualityPassed, true, []string{"src/settings.go"}, nil, []CodingSubAgentCommandResult{{Command: "go test ./api", Succeeded: true, Summary: "ok", seq: 1}}, 0, nil, nil)
+	status, summary, count = appendSubAgentQualityFailure(status, summary, count, summarizeSubAgentClaimedVerificationEvidence("Verification: `go test ./gui` passed.", []CodingSubAgentCommandResult{{Command: "go test ./api", Succeeded: true, Summary: "ok", seq: 1}}))
 	if status != codingSubAgentQualityFailed || count != 1 || !strings.Contains(summary, "claimed verification command not found") || !strings.Contains(summary, "go test ./gui") {
 		t.Fatalf("claimed missing verification command should become quality failure, got (%q, %q, %d)", status, summary, count)
 	}
@@ -6296,6 +7036,13 @@ func TestSummarizeSubAgentExploration(t *testing.T) {
 	if status != "explored" || !strings.Contains(summary, "1 次成功搜索") {
 		t.Fatalf("explored summary = (%q, %q)", status, summary)
 	}
+
+	status, summary = summarizeSubAgentExploration([]string{"main.go"}, nil, []CodingSubAgentSearchResult{
+		{Tool: "list_directory", Path: ".", Succeeded: true, Summary: "main.go\nREADME.md"},
+	}, true)
+	if status != codingSubAgentQualityMissing || !strings.Contains(summary, "没有记录") {
+		t.Fatalf("directory listing alone should not satisfy existing-file exploration, got (%q, %q)", status, summary)
+	}
 }
 
 func TestSummarizeSubAgentExplorationRequiresPreEditEvidence(t *testing.T) {
@@ -6341,8 +7088,15 @@ func TestCodingSubAgentExploredBeforeFirstEdit(t *testing.T) {
 	noMatchSearchFirst := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
 	noMatchSearchFirst.trackSearchResult("ripgrep", map[string]interface{}{"pattern": "removed symbol"}, "no matches", true)
 	noMatchSearchFirst.trackFile(file)
-	if !noMatchSearchFirst.exploredBeforeFirstEdit() {
-		t.Fatal("no-match search before edit should satisfy pre-edit exploration")
+	if noMatchSearchFirst.exploredBeforeFirstEdit() {
+		t.Fatal("no-match search before edit should not satisfy pre-edit exploration")
+	}
+
+	listDirFirst := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	listDirFirst.trackSearchResult("list_directory", map[string]interface{}{"path": "."}, "main.go\nREADME.md", true)
+	listDirFirst.trackFile(file)
+	if listDirFirst.exploredBeforeFirstEdit() {
+		t.Fatal("directory listing before edit should not satisfy pre-edit exploration for existing files")
 	}
 
 	successSearchFirst := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
@@ -6352,6 +7106,22 @@ func TestCodingSubAgentExploredBeforeFirstEdit(t *testing.T) {
 		t.Fatal("successful search before edit should satisfy pre-edit exploration")
 	}
 }
+
+func TestSubAgentPathEvidenceKeyCleansEquivalentPaths(t *testing.T) {
+	cases := map[string]string{
+		" /repo/./src//main.go ": "/repo/src/main.go",
+		"src/../src/main.go":     "src/main.go",
+		`C:\repo\src\main.go`:    "C:/repo/src/main.go",
+		".":                      "",
+		" ":                      "",
+	}
+	for input, want := range cases {
+		if got := subAgentPathEvidenceKey(input); got != want {
+			t.Fatalf("subAgentPathEvidenceKey(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestAppendSubAgentExplorationSummary(t *testing.T) {
 	summary := appendSubAgentExplorationSummary("完成", "read_only", "读取了 1 个文件后修改。")
 	if !strings.Contains(summary, "## 探索状态") || !strings.Contains(summary, "READ_ONLY") {
@@ -6448,6 +7218,8 @@ func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T)
 		{Command: "biome check src", Succeeded: true, Summary: "No files to check."},
 		{Command: "ruff check src", Succeeded: true, Summary: "Found 0 files."},
 		{Command: "mypy src", Succeeded: true, Summary: "There are no source files."},
+		{Command: "pnpm --filter missing-package test", Succeeded: true, Summary: "No projects matched the filters in \"D:\\work\\repo\""},
+		{Command: "npm test -- --testNamePattern missing", Succeeded: true, Summary: "No tests matching pattern \"missing\" were found."},
 	}
 	for _, command := range emptySuccessfulOutputs {
 		status, summary = summarizeSubAgentVerification([]string{"main.go"}, []CodingSubAgentCommandResult{command}, 0)
@@ -6506,6 +7278,32 @@ func TestCountSuccessfulSubAgentVerificationCommandsRejectsEmptySuccessfulOutput
 	})
 	if count != 1 {
 		t.Fatalf("expected only non-empty verification output to count, got %d", count)
+	}
+}
+
+func TestSummarizeSubAgentVerificationAllowsLaterEquivalentSuccess(t *testing.T) {
+	status, summary := summarizeSubAgentVerification([]string{"main.py"}, []CodingSubAgentCommandResult{
+		{Command: "pytest tests", WorkingDir: "/repo", Succeeded: false, Summary: "FAILED tests/test_main.py", seq: 2},
+		{Command: "pytest tests", WorkingDir: "/repo", Succeeded: true, Summary: "1 passed in 0.1s", seq: 3},
+	}, 1)
+	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "1 条有效") || strings.Contains(summary, "FAILED tests/test_main.py") {
+		t.Fatalf("later equivalent success should resolve verification failure, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeSubAgentVerification([]string{"main.py"}, []CodingSubAgentCommandResult{
+		{Command: "pytest tests", WorkingDir: "/repo", Succeeded: false, Summary: "FAILED tests/test_main.py", seq: 2},
+		{Command: "pytest tests", WorkingDir: "/other", Succeeded: true, Summary: "1 passed in 0.1s", seq: 3},
+	}, 1)
+	if status != codingSubAgentQualityFailed || !strings.Contains(summary, "FAILED tests/test_main.py") {
+		t.Fatalf("different working dir success should not resolve verification failure, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeSubAgentVerification([]string{"main.py"}, []CodingSubAgentCommandResult{
+		{Command: "pytest tests", WorkingDir: "/repo", Succeeded: false, Summary: "FAILED tests/test_main.py", seq: 2},
+		{Command: "pytest tests", WorkingDir: "/repo", Succeeded: true, Summary: "no tests collected", seq: 3},
+	}, 1)
+	if status != codingSubAgentQualityFailed || !strings.Contains(summary, "FAILED tests/test_main.py") {
+		t.Fatalf("empty equivalent success should not resolve verification failure, got (%q, %q)", status, summary)
 	}
 }
 

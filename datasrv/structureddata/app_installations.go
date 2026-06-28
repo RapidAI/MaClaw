@@ -856,10 +856,44 @@ func normalizeAppInstallationDependencyVerification(evidence, governance, out ma
 			out[pair.summary] = value
 		}
 	}
-	if dependencies := appInstallationMapList(verification["dependencies"]); len(dependencies) > 0 {
+	if dependencies := normalizeAppInstallationDependencies(verification["dependencies"]); len(dependencies) > 0 {
 		normalized["dependencies"] = dependencies
 	}
 	return normalized
+}
+
+func normalizeAppInstallationDependencies(value any) []any {
+	out := []any{}
+	for _, item := range appInstallationMapList(value) {
+		dependency := cloneJSONMap(item)
+		for _, pair := range []struct {
+			canonical string
+			aliases   []string
+		}{
+			{"id", []string{"ID"}},
+			{"version", []string{"Version"}},
+			{"kind", []string{"Kind"}},
+			{"source", []string{"Source"}},
+			{"install_ref", []string{"installRef", "InstallRef", "capability_id", "capabilityID", "hub_skill_id", "hubSkillID", "skill_id", "skillID", "raw_url", "rawURL", "repo_url", "repoURL"}},
+			{"installed_name", []string{"installedName", "InstalledName"}},
+			{"installed_dir", []string{"installedDir", "InstalledDir"}},
+			{"installed_status", []string{"installedStatus", "InstalledStatus"}},
+			{"app_ids", []string{"appIDs", "AppIDs"}},
+		} {
+			for _, alias := range pair.aliases {
+				if _, exists := dependency[pair.canonical]; exists {
+					delete(dependency, alias)
+					continue
+				}
+				if value, ok := dependency[alias]; ok {
+					dependency[pair.canonical] = value
+					delete(dependency, alias)
+				}
+			}
+		}
+		out = append(out, dependency)
+	}
+	return out
 }
 
 func appInstallationHasAny(values map[string]any, keys ...string) bool {
