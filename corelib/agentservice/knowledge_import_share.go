@@ -2,6 +2,7 @@ package agentservice
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,12 +13,18 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
-	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 // shareImportHTTPClient is a shared HTTP client for Hub knowledge share operations.
 // Uses TLS-skip transport because Hub servers commonly use self-signed certificates.
-var shareImportHTTPClient = remote.NewHubHTTPClient()
+// No client-level Timeout — we rely on per-request context.WithTimeout to control
+// deadlines, because package downloads for large knowledge bases may take much
+// longer than the 30s default in remote.NewHubHTTPClient().
+var shareImportHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	},
+}
 
 // executeKnowledgeImportShare handles the knowledge_import_share tool call
 // by resolving the share link, fetching the package, and importing it.
@@ -50,8 +57,8 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 		return fmt.Sprintf("Error: %v", err)
 	}
 
-	// Use separate timeouts: metadata fetch is fast, package download may be slow.
-	ctx, cancel := context.WithTimeout(c.parentContext(), 60*time.Second)
+	// 120s timeout covers metadata fetch + package download over potentially slow networks.
+	ctx, cancel := context.WithTimeout(c.parentContext(), 120*time.Second)
 	defer cancel()
 
 	authHeader := buildShareAuthHeader(hubToken)

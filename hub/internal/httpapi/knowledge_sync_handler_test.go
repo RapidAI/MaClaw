@@ -99,6 +99,80 @@ func TestKnowledgeSyncOfficialExpiredIsReadOnlyButDownloadable(t *testing.T) {
 	}
 }
 
+func TestKnowledgeSyncOfficialFutureExpiryIsActive(t *testing.T) {
+	_, identity, syncDir := newKnowledgeShareHandlerTestDeps(t)
+	viewerToken, _ := issueViewerToken(t, identity, "active-sync@example.com")
+	ac := llmservice.NewTenantLLMAccessControl(nil)
+	ac.UpdateFromHeartbeat("tenant_default", &llmservice.TenantAuthorizationStatus{
+		TenantID: "tenant_default",
+		Authorizations: []llmservice.AuthorizationSummary{{
+			ServiceGroupID:   llmservice.MaClawOfficialServiceGroupID,
+			Status:           "valid",
+			Active:           false,
+			CreditsTotal:     81001,
+			CreditsUsed:      16413,
+			CreditsRemaining: 64588,
+			ExpiresAt:        time.Now().AddDate(0, 0, 30).Format(time.RFC3339),
+		}},
+	})
+	previous := GetMaClawModule()
+	SetMaClawModule(&llmservice.MaClawModule{AccessCtrl: ac})
+	t.Cleanup(func() { SetMaClawModule(previous) })
+
+	statusRec := doKnowledgeShareJSON(t, KnowledgeSyncStatusHandler(identity, syncDir), http.MethodGet, "/api/knowledge/sync/status", viewerToken, nil)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+	var status KnowledgeSyncView
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.ServiceStatus != "official_active" || status.LimitBytes != knowledgeSyncOfficialLimitBytes || status.ReadonlyReason != "" {
+		t.Fatalf("future-expiry official status = %+v", status)
+	}
+
+	uploadRec := doKnowledgeShareJSON(t, UploadKnowledgeSyncPackageHandler(identity, syncDir), http.MethodPut, "/api/knowledge/sync/package", viewerToken, map[string]any{
+		"package_id":            "ksync_active",
+		"package_version":       1,
+		"compressed_size_bytes": 4,
+		"payload_base64":        base64.StdEncoding.EncodeToString([]byte("data")),
+		"encryption":            map[string]any{"algorithm": "AES-256-GCM"},
+	})
+	if uploadRec.Code != http.StatusOK {
+		t.Fatalf("active official upload = %d body=%s", uploadRec.Code, uploadRec.Body.String())
+	}
+}
+
+func TestKnowledgeSyncOfficialPastExpiryOverridesValidStatus(t *testing.T) {
+	_, identity, syncDir := newKnowledgeShareHandlerTestDeps(t)
+	viewerToken, _ := issueViewerToken(t, identity, "stale-valid-sync@example.com")
+	ac := llmservice.NewTenantLLMAccessControl(nil)
+	ac.UpdateFromHeartbeat("tenant_default", &llmservice.TenantAuthorizationStatus{
+		TenantID: "tenant_default",
+		Authorizations: []llmservice.AuthorizationSummary{{
+			ServiceGroupID: llmservice.MaClawOfficialServiceGroupID,
+			Status:         "valid",
+			Active:         true,
+			ExpiresAt:      time.Now().Add(-time.Hour).Format(time.RFC3339),
+		}},
+	})
+	previous := GetMaClawModule()
+	SetMaClawModule(&llmservice.MaClawModule{AccessCtrl: ac})
+	t.Cleanup(func() { SetMaClawModule(previous) })
+
+	statusRec := doKnowledgeShareJSON(t, KnowledgeSyncStatusHandler(identity, syncDir), http.MethodGet, "/api/knowledge/sync/status", viewerToken, nil)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+	var status KnowledgeSyncView
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.ServiceStatus != "official_expired" || status.ReadonlyReason == "" {
+		t.Fatalf("past-expiry official status = %+v", status)
+	}
+}
+
 func TestKnowledgeSyncUnrelatedAuthorizationStaysTemporary(t *testing.T) {
 	_, identity, syncDir := newKnowledgeShareHandlerTestDeps(t)
 	viewerToken, _ := issueViewerToken(t, identity, "ordinary-sync@example.com")

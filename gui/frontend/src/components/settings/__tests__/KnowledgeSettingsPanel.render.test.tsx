@@ -113,6 +113,11 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         'KnowledgeDeepCrawl',
         'KnowledgeDeepCrawlPreview',
         'KnowledgeDeepCrawlCancel',
+        'KnowledgeSyncDelete',
+        'KnowledgeSyncDownload',
+        'KnowledgeSyncStatus',
+        'KnowledgeSyncUpload',
+        'KnowledgeSyncVerifyPassword',
         'SelectKnowledgeDirectory',
         'SelectKnowledgeFiles',
     ];
@@ -154,6 +159,12 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
                 content_sources: 1,
                 warnings: ['source ksrc_big content truncated: package content byte limit reached'],
             },
+        })),
+        KnowledgeSyncStatus: vi.fn(async () => ({
+            service_status: 'official_active',
+            has_package: false,
+            limit_bytes: 524288000,
+            message: 'maclaw official service is active',
         })),
         OpenSystemUrl: vi.fn(async () => undefined),
         SelectKnowledgeFiles: vi.fn(async () => []),
@@ -236,6 +247,23 @@ describe('KnowledgeSettingsPanel component', () => {
 
         await waitFor(() => expect(OpenSystemUrl).toHaveBeenCalledWith(
             'https://hub.example/hub/knowledge/shares/mine#token=viewer%20token%2Fwith%20spaces',
+        ));
+    });
+
+    it('opens the tenant scoped Hub card store from the sync renewal action', async () => {
+        vi.mocked(LoadConfig).mockResolvedValueOnce({
+            remote_hub_url: 'https://hub.example/',
+            remote_tenant_id: 'tenant acme',
+            remote_email: 'dev@example.com',
+            remote_viewer_token: 'viewer token',
+        } as any);
+        render(<KnowledgeSettingsPanel lang="en" />);
+
+        fireEvent.click(screen.getByRole('tab', { name: 'Sync' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Renew maclaw official service' }));
+
+        await waitFor(() => expect(OpenSystemUrl).toHaveBeenCalledWith(
+            'https://hub.example/card_store?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token',
         ));
     });
 

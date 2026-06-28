@@ -8603,3 +8603,55 @@ npm.cmd test -- AppsPage.test.tsx --reporter=json --outputFile=apps-page-vitest.
 剩余失败集中在提交队列详情、App Studio 草稿编辑、运行 tab、运行历史、市场安装部分边界和少量仍未清理的旧中文断言。
 下一步继续按失败簇推进，而不是把整份测试失败混在一起处理。
 ```
+### 推进记录：收口 MaClaw App 安装/审批实例/DataSrv/Hub 验证（2026-06-28）
+本轮继续按“从 DataSrv 到 MaClaw App，再到 Hub 能力市场安装和运行”的全链路角度推进。重点修复 GUI 后端安装与审批实例管理的两个契约问题：
+
+```text
+安装错误优先级
+  -> 具体的审批工作流契约错误优先暴露，避免被缺依赖泛化错误掩盖
+  -> 纯 missing approval workflow contract 不覆盖 required Skill dependency blocked
+  -> 既保留依赖安装门禁，也让审批型 App 的工作流契约问题在该暴露时可定位
+
+审批实例列表
+  -> 本地未同步远端 ID 的 pending + assignee 实例可同时出现在“我的申请”和“我审批的”
+  -> DataSrv 返回项仍按提交人/审批人语义推断 lane，不盲信 requested lane
+  -> 本地运行态实例与 DataSrv 远端审批记录合并时，保留本地 pending_my_approval lane，避免远端身份补全把运行态审批列表抹掉
+
+IM 回归稳定性
+  -> ok/okay 短闲聊测试改为验证 immediate classifier，不再误入真实 LLM stream
+  -> 避免 GUI 包回归被外部网络请求卡住
+```
+
+本轮已通过验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestHandleIMMessageWithProgressAndStream_OkShortChitChatWithPunctuationIsNotDirectReply" -timeout 30s
+  -> ok github.com/RapidAI/CodeClaw/gui
+
+go test ./gui -count=1 -vet=off -run "TestPlanMaclawAppInstallBlocksInstalledInactiveRequiredDependency|TestListMaclawAppApprovalInstancesDoesNotTrustRequestedLaneForDataSrvItems|TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv|TestMaclawAppApprovalPendingRequestAlsoAppearsForApprover" -timeout 90s
+  -> ok github.com/RapidAI/CodeClaw/gui
+
+go test ./gui -count=1 -vet=off -run "MaclawApp|ApprovalPending|RecordMaclawAppInstall" -timeout 90s
+  -> ok github.com/RapidAI/CodeClaw/gui
+
+cd datasrv
+go test ./... -count=1 -vet=off
+  -> ok cmd/maclaw-data-srv
+  -> ok structureddata
+
+go test ./hub/internal/httpapi -count=1 -vet=off -run "MaclawApp|AppInstall|CapabilityMaclaw|Approval"
+  -> ok github.com/RapidAI/CodeClaw/hub/internal/httpapi
+```
+
+当前仍需继续跟进：
+
+```text
+go test ./gui -count=1 -vet=off -timeout 180s
+  -> 仍可能因整包体量/后台 goroutine/历史长测在包级超时，需要继续拆分治理
+
+go test ./hub/internal/store/... -count=1 -vet=off
+  -> hub/internal/store/sqlite 有 2 个 session duration 汇总测试失败：
+     TestSessionRepositorySummarizeUserDurationsMergesOverlapsAndRequiresEmail
+     TestSessionRepositorySummarizeUserDurationsIncludesLegacyBlankUpdatedAt
+  -> 当前判断为 Hub store 历史统计逻辑问题，非 MaClaw App 安装/审批链路直接阻塞，但发布前仍需单独修复或标注
+```

@@ -4,6 +4,7 @@ import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { DeepCrawlPanel } from './DeepCrawlPanel';
 import type { DeepCrawlConfig, DeepCrawlPreviewResult, DeepCrawlRunResult } from './DeepCrawlPanel';
+import { buildHubCardStoreURL } from '../../utils/hubCredits';
 import {
     KnowledgeCapabilities,
     KnowledgeBackfillSourceAutoLabels,
@@ -1360,7 +1361,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [exchangeForm, setExchangeForm] = useState({ redactSensitive: true, importPath: '', dryRun: true, overwrite: false, replaceAll: false });
     const [hubShareForm, setHubShareForm] = useState({ hubURL: '', hubToken: '', title: '', description: '', visibilityScope: 'hub', visibilityUsers: '', ttl: '7d', includeDisabled: false });
     const [hubImportForm, setHubImportForm] = useState({ hubURL: '', hubToken: '', knowledgeID: '', shareLink: '', dryRun: true });
-    const [syncForm, setSyncForm] = useState({ hubURL: '', hubToken: '', password: '', passwordConfirm: '', conflictStrategy: '' });
+    const [syncForm, setSyncForm] = useState({ hubURL: '', hubToken: '', tenantID: '', email: '', hubCenterURL: '', hubID: '', tenantName: '', password: '', passwordConfirm: '', conflictStrategy: '' });
     const [syncStatus, setSyncStatus] = useState<any>(null);
     const [syncConflictResult, setSyncConflictResult] = useState<any>(null);
     const [hubShareResult, setHubShareResult] = useState<any>(null);
@@ -1474,6 +1475,11 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                     ...prev,
                     hubURL: prev.hubURL || cfg.remote_hub_url || '',
                     hubToken: prev.hubToken || cfg.remote_viewer_token || '',
+                    tenantID: prev.tenantID || cfg.remote_tenant_id || '',
+                    email: prev.email || cfg.remote_email || '',
+                    hubCenterURL: prev.hubCenterURL || cfg.remote_hubcenter_url || '',
+                    hubID: prev.hubID || cfg.remote_hub_id || '',
+                    tenantName: prev.tenantName || cfg.remote_tenant_name || '',
                 }));
             })
             .catch(() => {});
@@ -1753,6 +1759,15 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         const token = hubShareForm.hubToken.trim();
         const tokenHash = token ? `#token=${encodeURIComponent(token)}` : '';
         await OpenSystemUrl(`${hubURL}/hub/knowledge/shares/mine${tokenHash}`);
+    };
+
+    const openKnowledgeSyncCardStore = async () => {
+        const storeURL = buildHubCardStoreURL(syncForm.hubURL, syncForm.tenantID, syncForm.email, syncForm.hubToken, syncForm.hubCenterURL, syncForm.hubID, undefined, syncForm.tenantName);
+        if (!storeURL) {
+            setError(t('Hub URL is required to open the maclaw service card store.', '需要 Hub 地址才能打开 maclaw 服务卡商店。'));
+            return;
+        }
+        await OpenSystemUrl(storeURL);
     };
 
     const syncPayload = () => ({
@@ -2568,7 +2583,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                             <button type="button" className="knowledge-button knowledge-button--danger" disabled={!!busy || !syncStatus?.has_package} onClick={deleteKnowledgeSync}>
                                 {busy === 'syncDelete' ? t('Deleting...', '删除中...') : t('Delete cloud package', '删除云端同步包')}
                             </button>
-                            <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy || !syncForm.hubURL.trim()} onClick={() => OpenSystemUrl(`${syncForm.hubURL.trim().replace(/\/+$/, '')}/hub/compute-store`)}>
+                            <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy || (!syncForm.hubURL.trim() && !syncForm.hubCenterURL.trim())} onClick={openKnowledgeSyncCardStore}>
                                 {t('Renew maclaw official service', '续费 maclaw 官方服务')}
                             </button>
                         </div>

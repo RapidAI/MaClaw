@@ -908,6 +908,9 @@ func (a *App) KnowledgeSyncDownload(req KnowledgeSyncRequest) (KnowledgeSyncResu
 	if strategy == "" {
 		strategy = "check"
 	}
+	if strategy != "check" && strategy != "skip" && strategy != "import" {
+		return KnowledgeSyncResult{}, fmt.Errorf("unsupported knowledge sync conflict strategy %q", strategy)
+	}
 	if strategy == "check" {
 		return KnowledgeSyncResult{
 			KnowledgeSyncStatus: status,
@@ -920,12 +923,30 @@ func (a *App) KnowledgeSyncDownload(req KnowledgeSyncRequest) (KnowledgeSyncResu
 		conflictRemoteIDs := map[string]struct{}{}
 		for _, conflict := range conflicts {
 			if strings.TrimSpace(conflict.RemoteID) != "" {
-				conflictRemoteIDs[strings.TrimSpace(conflict.RemoteID)] = struct{}{}
+				conflictRemoteIDs[normalizeKnowledgeSyncConflictKey(conflict.RemoteID)] = struct{}{}
+			}
+			if strings.TrimSpace(conflict.ConflictKey) != "" {
+				conflictRemoteIDs[normalizeKnowledgeSyncConflictKey(conflict.ConflictKey)] = struct{}{}
 			}
 		}
 		filtered := sources[:0]
 		for _, source := range sources {
-			if _, ok := conflictRemoteIDs[strings.TrimSpace(source.ID)]; ok {
+			sourceKeys := []string{
+				normalizeKnowledgeSyncConflictKey(source.ID),
+				normalizeKnowledgeSyncConflictKey(firstNonEmptyKnowledgeValue(source.CanonicalURI, source.URI)),
+				normalizeKnowledgeSyncConflictKey(source.Title),
+			}
+			conflicted := false
+			for _, key := range sourceKeys {
+				if key == "" {
+					continue
+				}
+				if _, ok := conflictRemoteIDs[key]; ok {
+					conflicted = true
+					break
+				}
+			}
+			if conflicted {
 				skippedConflicts++
 				continue
 			}

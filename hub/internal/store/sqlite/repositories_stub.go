@@ -1852,9 +1852,90 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 		return []store.UserDurationSummary{}, nil
 	}
 
-	// Step 1: Query heartbeat timestamps grouped by user_id.
-	// Uses the (tenant_id, user_id, heartbeat_at) index for efficient scan.
-	rows, err := r.readDB.QueryContext(ctx, `
+	type durationInterval struct {
+		start time.Time
+		end   time.Time
+	}
+	byUserID := map[string][]durationInterval{}
+	addInterval := func(userID string, intervalStart, intervalEnd time.Time) {
+		userID = strings.TrimSpace(userID)
+		if userID == "" || !intervalEnd.After(intervalStart) {
+			return
+		}
+		if intervalStart.Before(start) {
+			intervalStart = start
+		}
+		if intervalEnd.After(end) {
+			intervalEnd = end
+		}
+		if intervalEnd.After(intervalStart) {
+			byUserID[userID] = append(byUserID[userID], durationInterval{start: intervalStart, end: intervalEnd})
+		}
+	}
+
+	parseTime := func(raw string) (time.Time, bool) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return time.Time{}, false
+		}
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return time.Time{}, false
+		}
+		return parsed, true
+	}
+
+	// Sessions are the durable source for historical and legacy duration data.
+	sessionRows, err := r.readDB.QueryContext(ctx, `
+		SELECT user_id, status, host_online, started_at, updated_at, ended_at
+		  FROM sessions
+		 WHERE tenant_id = ?
+		   AND started_at < ?`,
+		tenantID, end.Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	defer sessionRows.Close()
+	for sessionRows.Next() {
+		var userID, status string
+		var hostOnline bool
+		var startedRaw string
+		var updatedRaw, endedRaw sql.NullString
+		if err := sessionRows.Scan(&userID, &status, &hostOnline, &startedRaw, &updatedRaw, &endedRaw); err != nil {
+			return nil, err
+		}
+		startedAt, ok := parseTime(startedRaw)
+		if !ok {
+			continue
+		}
+		var finishedAt time.Time
+		finishedOK := false
+		if endedRaw.Valid {
+			finishedAt, finishedOK = parseTime(endedRaw.String)
+		}
+		if !finishedOK {
+			if strings.EqualFold(strings.TrimSpace(status), "running") || hostOnline {
+				finishedAt = now
+				finishedOK = true
+			}
+		}
+		if !finishedOK && updatedRaw.Valid {
+			finishedAt, finishedOK = parseTime(updatedRaw.String)
+		}
+		if !finishedOK {
+			finishedAt = now
+		}
+		if finishedAt.After(start) {
+			addInterval(userID, startedAt, finishedAt)
+		}
+	}
+	if err := sessionRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Heartbeats cover newer telemetry and are merged with session intervals to
+	// avoid double-counting overlap for the same user.
+	heartbeatRows, err := r.readDB.QueryContext(ctx, `
 		SELECT user_id, heartbeat_at
 		  FROM machine_heartbeat_log
 		 WHERE tenant_id = ?
@@ -1865,86 +1946,101 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer heartbeatRows.Close()
 
-	// Merge consecutive heartbeats where gap <= maxHeartbeatGap into intervals.
-	// Each heartbeat represents at least baseHeartbeatDuration of online time
-	// (the interval since the previous heartbeat tick, or the tick itself for
-	// a single isolated point).
 	const maxHeartbeatGap = 5 * time.Minute
-	const baseHeartbeatDuration = 60 // seconds — assumed heartbeat interval
+	const baseHeartbeatDuration = time.Minute
 
-	type userState struct {
-		intervalStart time.Time
-		intervalEnd   time.Time
-		totalSeconds  int64
+	var currentUser string
+	var heartbeatStart, heartbeatEnd time.Time
+	flushHeartbeat := func() {
+		if currentUser == "" || heartbeatStart.IsZero() {
+			return
+		}
+		intervalEnd := heartbeatEnd
+		if intervalEnd.Sub(heartbeatStart) < baseHeartbeatDuration {
+			intervalEnd = heartbeatStart.Add(baseHeartbeatDuration)
+		}
+		addInterval(currentUser, heartbeatStart, intervalEnd)
 	}
-	byUserID := map[string]*userState{}
-
-	for rows.Next() {
+	for heartbeatRows.Next() {
 		var userID string
 		var atRaw string
-		if err := rows.Scan(&userID, &atRaw); err != nil {
+		if err := heartbeatRows.Scan(&userID, &atRaw); err != nil {
 			return nil, err
 		}
 		userID = strings.TrimSpace(userID)
 		if userID == "" {
 			continue
 		}
-		at, err := time.Parse(time.RFC3339, strings.TrimSpace(atRaw))
-		if err != nil {
+		at, ok := parseTime(atRaw)
+		if !ok {
 			continue
 		}
-
-		state := byUserID[userID]
-		if state == nil {
-			state = &userState{intervalStart: at, intervalEnd: at}
-			byUserID[userID] = state
+		if currentUser == "" {
+			currentUser = userID
+			heartbeatStart = at
+			heartbeatEnd = at
 			continue
 		}
-
-		gap := at.Sub(state.intervalEnd)
-		if gap <= maxHeartbeatGap {
-			// Extend current interval.
-			state.intervalEnd = at
+		if userID == currentUser && at.Sub(heartbeatEnd) <= maxHeartbeatGap {
+			heartbeatEnd = at
 		} else {
-			// Close current interval. For single-point intervals (start==end),
-			// count baseHeartbeatDuration.
-			dur := int64(state.intervalEnd.Sub(state.intervalStart).Seconds())
-			if dur < int64(baseHeartbeatDuration) {
-				dur = int64(baseHeartbeatDuration)
-			}
-			state.totalSeconds += dur
-			state.intervalStart = at
-			state.intervalEnd = at
+			flushHeartbeat()
+			currentUser = userID
+			heartbeatStart = at
+			heartbeatEnd = at
 		}
 	}
-	if err := rows.Err(); err != nil {
+	if err := heartbeatRows.Err(); err != nil {
 		return nil, err
 	}
+	flushHeartbeat()
 
-	// Close the last open interval for each user.
-	for _, state := range byUserID {
-		dur := int64(state.intervalEnd.Sub(state.intervalStart).Seconds())
-		if dur < int64(baseHeartbeatDuration) {
-			dur = int64(baseHeartbeatDuration)
+	durationByUserID := map[string]int64{}
+	for userID, intervals := range byUserID {
+		sort.Slice(intervals, func(i, j int) bool {
+			if intervals[i].start.Equal(intervals[j].start) {
+				return intervals[i].end.Before(intervals[j].end)
+			}
+			return intervals[i].start.Before(intervals[j].start)
+		})
+		var mergedStart, mergedEnd time.Time
+		var total int64
+		for _, interval := range intervals {
+			if mergedStart.IsZero() {
+				mergedStart = interval.start
+				mergedEnd = interval.end
+				continue
+			}
+			if !interval.start.After(mergedEnd) {
+				if interval.end.After(mergedEnd) {
+					mergedEnd = interval.end
+				}
+				continue
+			}
+			total += int64(mergedEnd.Sub(mergedStart).Seconds())
+			mergedStart = interval.start
+			mergedEnd = interval.end
 		}
-		state.totalSeconds += dur
+		if !mergedStart.IsZero() {
+			total += int64(mergedEnd.Sub(mergedStart).Seconds())
+		}
+		if total > 0 {
+			durationByUserID[userID] = total
+		}
 	}
 
-	// Step 2: Resolve user_id → email. Batch-load all relevant users once.
-	userIDs := make([]string, 0, len(byUserID))
-	for uid := range byUserID {
+	userIDs := make([]string, 0, len(durationByUserID))
+	for uid := range durationByUserID {
 		userIDs = append(userIDs, uid)
 	}
 	emailByUserID := r.resolveUserEmails(ctx, tenantID, userIDs)
 
-	// Step 3: Aggregate by email (multiple machines of same user → merge).
 	byEmail := map[string]int64{}
-	for userID, state := range byUserID {
+	for userID, seconds := range durationByUserID {
 		email := emailByUserID[userID]
 		if email == "" {
-			// Fallback: treat user_id as email if it looks like one.
 			if strings.Contains(userID, "@") {
 				email = strings.ToLower(strings.TrimSpace(userID))
 			}
@@ -1952,7 +2048,7 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 		if email == "" {
 			continue
 		}
-		byEmail[email] += state.totalSeconds
+		byEmail[email] += seconds
 	}
 
 	out := make([]store.UserDurationSummary, 0, len(byEmail))

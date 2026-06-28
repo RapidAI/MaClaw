@@ -443,11 +443,11 @@ func (a *App) InstallSelectedMaclawAppPackageFromHub(capabilityID string, appIDs
 	if err != nil {
 		return nil, err
 	}
+	if installPlan.HasWorkflowContractIssue && maclawAppWorkflowContractIssuesShouldPrecedeDependencyBlock(installPlan.WorkflowContractIssues, installPlan.HasMissingRequired || installPlan.HasBlockingDependency) {
+		return nil, fmt.Errorf("cannot install MaClaw App from Hub: approval workflow contract is invalid: %s", firstMaclawAppReviewIssueMessage(installPlan.WorkflowContractIssues, "approval workflow contract issue"))
+	}
 	if installPlan.HasMissingRequired || installPlan.HasBlockingDependency {
 		return nil, fmt.Errorf("cannot install MaClaw App from Hub: required Skill dependencies are missing or unavailable")
-	}
-	if installPlan.HasWorkflowContractIssue {
-		return nil, fmt.Errorf("cannot install MaClaw App from Hub: approval workflow contract is invalid: %s", firstMaclawAppReviewIssueMessage(installPlan.WorkflowContractIssues, "approval workflow contract issue"))
 	}
 	if installPlan.HasGovernanceReviewIssue {
 		return nil, fmt.Errorf("cannot install MaClaw App from Hub: package governance review failed: %s", firstMaclawAppReviewIssueMessage(installPlan.GovernanceReviewIssues, "governance review issue"))
@@ -706,11 +706,11 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 	if err != nil {
 		return nil, err
 	}
+	if plan.HasWorkflowContractIssue && maclawAppWorkflowContractIssuesShouldPrecedeDependencyBlock(plan.WorkflowContractIssues, plan.HasMissingRequired || plan.HasBlockingDependency) {
+		return nil, fmt.Errorf("cannot install MaClaw App: approval workflow contract is invalid: %s", firstMaclawAppReviewIssueMessage(plan.WorkflowContractIssues, "approval workflow contract issue"))
+	}
 	if plan.HasMissingRequired || plan.HasBlockingDependency {
 		return nil, fmt.Errorf("cannot install MaClaw App: required Skill dependencies are missing or unavailable")
-	}
-	if plan.HasWorkflowContractIssue {
-		return nil, fmt.Errorf("cannot install MaClaw App: approval workflow contract is invalid: %s", firstMaclawAppReviewIssueMessage(plan.WorkflowContractIssues, "approval workflow contract issue"))
 	}
 	var doc map[string]any
 	if err := json.Unmarshal([]byte(packageJSON), &doc); err != nil {
@@ -2049,7 +2049,8 @@ func maclawAppApprovalInstanceMatchesLane(instance maclawAppApprovalInstance, la
 	case "attention":
 		return status == "attention" || normalizeMaclawAppApprovalLane(instance.Lane) == "attention"
 	case "pending_my_approval":
-		return status == "pending" && normalizeMaclawAppApprovalLane(instance.Lane) == "pending_my_approval"
+		isLocalUnlinked := strings.TrimSpace(firstNonEmptyMaclawAppString(instance.RecordApprovalID, instance.ApprovalID)) == ""
+		return status == "pending" && (normalizeMaclawAppApprovalLane(instance.Lane) == "pending_my_approval" || (isLocalUnlinked && strings.TrimSpace(firstNonEmptyMaclawAppString(instance.CurrentAssignee, instance.Approver)) != ""))
 	case "my_requests":
 		return normalizeMaclawAppApprovalLane(instance.Lane) == "my_requests"
 	default:
@@ -4019,6 +4020,18 @@ func maclawAppWorkflowContractIssuesForEntries(entries []parsedMaclawAppEntry, i
 	}
 	return normalizeMaclawAppReviewIssues(issues)
 }
+
+func maclawAppWorkflowContractIssuesShouldPrecedeDependencyBlock(issues []maclawAppReviewIssue, hasDependencyBlock bool) bool {
+	if len(issues) == 0 {
+		return false
+	}
+	if !hasDependencyBlock {
+		return true
+	}
+	first := strings.ToLower(strings.TrimSpace(firstMaclawAppReviewIssueMessage(issues, "")))
+	return first != "" && !strings.Contains(first, "missing approval workflow contract")
+}
+
 func maclawAppWorkflowRuntimeContractReviewIssues(entry parsedMaclawAppEntry, installed map[string]NLSkillDefinition, appPath string) []maclawAppReviewIssue {
 	if normalizeMaclawAppKind(entry.Kind) != "enterprise_approval_app" {
 		return nil
@@ -5636,6 +5649,9 @@ func normalizeMaclawAppApprovalInstanceFields(instance maclawAppApprovalInstance
 }
 
 func mergeMaclawAppApprovalInstance(existing, incoming maclawAppApprovalInstance) maclawAppApprovalInstance {
+	if normalizeMaclawAppApprovalStatus(incoming.Status) == "pending" && normalizeMaclawAppApprovalLane(existing.Lane) == "pending_my_approval" && normalizeMaclawAppApprovalLane(incoming.Lane) == "my_requests" {
+		incoming.Lane = existing.Lane
+	}
 	incoming.AppName = firstNonEmptyMaclawAppString(incoming.AppName, existing.AppName)
 	incoming.BlueprintID = firstNonEmptyMaclawAppString(incoming.BlueprintID, existing.BlueprintID)
 	incoming.DatasetID = firstNonEmptyMaclawAppString(incoming.DatasetID, existing.DatasetID)

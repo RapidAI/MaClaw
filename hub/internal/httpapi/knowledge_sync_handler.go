@@ -223,7 +223,7 @@ func knowledgeSyncServiceStatus(r *http.Request, principal *auth.ViewerPrincipal
 			for _, grant := range status.Authorizations {
 				if strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), llmservice.MaClawOfficialServiceGroupID) || strings.Contains(strings.ToLower(grant.Source), "maclaw") {
 					hadOfficial = true
-					if grant.Active && strings.EqualFold(strings.TrimSpace(grant.Status), "active") {
+					if knowledgeSyncOfficialAuthorizationActive(grant, time.Now().UTC()) {
 						active = true
 						break
 					}
@@ -244,6 +244,37 @@ func knowledgeSyncServiceStatus(r *http.Request, principal *auth.ViewerPrincipal
 		}
 	}
 	return view
+}
+
+func knowledgeSyncOfficialAuthorizationActive(grant llmservice.AuthorizationSummary, now time.Time) bool {
+	status := strings.ToLower(strings.TrimSpace(grant.Status))
+	if status == "expired" || status == "exhausted" || status == "revoked" || status == "disabled" || status == "inactive" {
+		return false
+	}
+	hasFutureExpiry := false
+	if strings.TrimSpace(grant.ExpiresAt) != "" {
+		if expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(grant.ExpiresAt)); err == nil {
+			if !expiresAt.After(now) {
+				return false
+			}
+			hasFutureExpiry = true
+		}
+	}
+	if strings.TrimSpace(grant.StartsAt) != "" {
+		if startsAt, err := time.Parse(time.RFC3339, strings.TrimSpace(grant.StartsAt)); err == nil && startsAt.After(now) {
+			return false
+		}
+	}
+	if status == "active" || status == "valid" || status == "period_limited" || status == "limited" {
+		return true
+	}
+	if hasFutureExpiry {
+		return true
+	}
+	if grant.Active && status == "" {
+		return true
+	}
+	return false
 }
 
 func knowledgeSyncViewFromMeta(meta *knowledgeSyncMeta, principal *auth.ViewerPrincipal, status KnowledgeSyncView) KnowledgeSyncView {
