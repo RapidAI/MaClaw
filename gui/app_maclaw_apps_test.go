@@ -1597,10 +1597,31 @@ func TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall(t *testing.T) 
 						"description": "Install from Hub",
 						"kind": "enterprise_normal_app",
 						"version": 2,
+						"ui": {
+							"schema": "maclaw.app.ui.v1",
+							"entry": "normal_workspace",
+							"generated": true,
+							"layouts": {
+								"normal_workspace": {
+									"template": "classic_split",
+									"density": "compact",
+									"primaryRegion": "left",
+									"outputRegion": "right",
+									"navigation": ["records", "result"],
+									"list": {"columns": ["title", "status"]},
+									"regions": [
+										{"id": "input_form", "role": "input", "placement": "left", "visible": true},
+										{"id": "record_grid", "role": "record_list", "placement": "center", "visible": true},
+										{"id": "result_panel", "role": "output", "placement": "right", "visible": true}
+									]
+								}
+							}
+						},
 						"governance": {
 							"submission": {"channel": "hub", "status": "approved", "capability_id": "cap-hub-install-app"},
-	                        "resultContract": {"schema": "maclaw.app.result.v1", "primary": "content", "types": ["content"]},
-	                        "testProtocol": {"schema": "maclaw.app.test_protocol.v1", "sampleInput": {"text": "hello"}, "expectedOutput": {"type": "content"}, "fingerprint": "proto-hub-install"},
+							"workspaceLayout": {"schema": "maclaw.app.ui.v1", "entry": "normal_workspace", "template": "classic_split", "density": "compact", "primaryRegion": "left", "outputRegion": "right", "regionCount": 3, "regions": [{"id": "input_form", "role": "input", "placement": "left", "visible": true}, {"id": "record_grid", "role": "record_list", "placement": "center", "visible": true}, {"id": "result_panel", "role": "output", "placement": "right", "visible": true}]},
+							"resultContract": {"schema": "maclaw.app.result.v1", "primary": "content", "types": ["content"]},
+							"testProtocol": {"schema": "maclaw.app.test_protocol.v1", "sampleInput": {"text": "hello"}, "expectedOutput": {"type": "content"}, "fingerprint": "proto-hub-install"},
 	                        "testEvidence": {"runId": "run-hub-install", "verifiedAt": "2026-06-27T08:00:00Z", "testProtocolFingerprint": "proto-hub-install", "primaryResult": "content", "resultPayload": {"content": "done"}, "outputs": [{"kind": "text", "title": "Result", "text": "done", "status": "ready"}], "resultCoverage": {"ok": true, "primary": "content", "coveredTypes": ["content"], "missingTypes": []}}
 						},
 						"binding": {
@@ -1667,6 +1688,21 @@ func TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall(t *testing.T) 
 	}
 	if metadata["test_evidence_output_count"] != float64(1) || metadata["test_evidence_result_coverage_ok"] != true || metadata["test_evidence_result_coverage_primary"] != "content" {
 		t.Fatalf("DataSrv registration missing Hub result coverage summary: %#v", metadata)
+	}
+	workspaceLayout, ok := metadata["workspace_layout"].(map[string]interface{})
+	if !ok || workspaceLayout["entry"] != "normal_workspace" || workspaceLayout["template"] != "classic_split" || workspaceLayout["primary_region"] != "left" || workspaceLayout["output_region"] != "right" {
+		t.Fatalf("DataSrv registration missing Hub workspace layout: %#v", metadata)
+	}
+	if workspaceLayout["region_count"] != float64(3) {
+		t.Fatalf("DataSrv registration missing Hub workspace region count: %#v", workspaceLayout)
+	}
+	regions, ok := workspaceLayout["regions"].([]interface{})
+	if !ok || len(regions) != 3 {
+		t.Fatalf("DataSrv registration should preserve Hub workspace regions: %#v", workspaceLayout)
+	}
+	outputRegion, _ := regions[2].(map[string]interface{})
+	if outputRegion["id"] != "result_panel" || outputRegion["placement"] != "right" {
+		t.Fatalf("DataSrv registration should preserve Hub workspace region placement: %#v", regions)
 	}
 	resultPayload, ok := metadata["test_evidence_result_payload"].(map[string]interface{})
 	if !ok || resultPayload["content"] != "done" {

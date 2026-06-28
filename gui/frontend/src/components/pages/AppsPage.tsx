@@ -8928,7 +8928,7 @@ function manifestToAppEntry(raw: any): AppEntry | null {
             mis: normalizeAppMIS(app.binding?.mis),
             appSkill: app.binding?.appSkill,
             dependencies: normalizeAppDependencies(app.binding?.dependencies),
-            ui: normalizeAppWorkspaceLayout(app.binding?.ui, kind),
+            ui: normalizeAppWorkspaceLayout(app.ui || app.binding?.ui, kind),
             resultContract: normalizeAppResultContract(app.binding?.resultContract || app.governance?.resultContract, kind, app.binding?.skill?.outputModes || []),
             testProtocol: appTestProtocolWithFingerprint(normalizeAppTestProtocol(app.binding?.testProtocol || app.governance?.testProtocol || app.governance?.testEvidence?.testProtocol, kind, app.binding?.skill?.outputModes || [], normalizeAppResultContract(app.binding?.resultContract || app.governance?.resultContract, kind, app.binding?.skill?.outputModes || []))),
             workflow: normalizeAppWorkflowMapping(app.binding?.workflow || app.governance?.workflow, kind, app.binding?.datasrv?.domain || 'business', app.binding?.datasrv?.objectRole || app.binding?.datasrv?.domain || 'record'),

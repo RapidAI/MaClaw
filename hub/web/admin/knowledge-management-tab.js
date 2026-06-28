@@ -141,7 +141,7 @@
       pager.classList.add('hidden');
       return;
     }
-    root.innerHTML = '<div class="table" style="gap:8px;grid-template-columns:repeat(2,minmax(0,1fr))">' + state.items.map(function(item) {
+    root.innerHTML = '<div class="table" style="gap:8px;grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch">' + state.items.map(function(item) {
       const desc = item.description || tr('knowledgeNoDescription');
       const metrics = [
         meta(tr('knowledgeTenant'), item.tenant_id),

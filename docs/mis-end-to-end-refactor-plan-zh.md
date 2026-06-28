@@ -6149,6 +6149,121 @@ ExecuteMaclawAppBusinessOperation
 ```text
 go test ./gui -count=1 -vet=off -run "TestExecuteMaclawAppBusinessOperationRunsPreferred(Action|Report|Dashboard)|TestExecuteMaclawAppBusinessOperationQueriesPreferredView"
 ```
+
+### 推进记录：Hub 提交版本保留完整 MaClaw App 包体（2026-06-28）
+
+本轮继续检查“App Studio 测试上传 -> Hub 审核 -> 能力市场下载/安装 -> 冷启动再发布”的包体保真链路。Hub 下载端已经从 capability version 的 `ManifestJSON` 还原 `maclaw.app.v1` entry，并在下载时补入 review/submission metadata；但提交端原有测试主要验证 metadata 摘要，没有直接证明 version manifest 保存的是完整 App entry。
+
+已落地验证：
+
+```text
+CapabilityMaclawAppSubmitHandler
+  -> 解析 maclaw.app.pack.v1
+  -> 对每个 app 写入 capability version ManifestJSON
+  -> ManifestJSON 保留完整 maclaw.app.v1 entry
+
+提交后 version manifest 覆盖：
+  -> app.ui.layouts.*.regions 动态布局位置
+  -> binding.dependencies.skills Skill 依赖声明
+  -> binding.workflow 节点映射
+  -> governance.resultContract
+  -> governance.testEvidence.outputs / artifacts
+  -> governance.testEvidence.approvalInstance
+  -> approvalInstance.resultPayload / workflowSkillId / currentNode
+```
+
+对应全链路意义：
+
+```text
+App Studio 上传完整 MaClaw App
+  -> Hub 不把企业 App 降级成 metadata-only 能力摘要
+  -> 审核通过后下载包仍能恢复传统软件式动态 UI、依赖、审批 workflow、测试证据和结果包
+  -> GUI 安装/冷启动/二次发布可继续使用同一份完整 app manifest
+```
+
+已通过定向验证：
+
+```text
+go test ./hub/internal/httpapi -count=1 -run "TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability|TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack"
+```
+
+### 推进记录：GUI 从 Hub 安装时保留动态 UI layout 并注册到 DataSrv（2026-06-28）
+
+本轮继续顺着 Hub 下载包进入 GUI 安装链路检查。`InstallMaclawAppPackageFromHub` 已经会下载完整 `maclaw.app.pack.v1`，执行依赖安装计划和治理门禁，然后用同一份包体写入本地安装记录并注册到 DataSrv。此前测试覆盖了 Hub 下载、安装审计、DataSrv 注册和测试证据摘要，但安装样例缺少动态 UI layout，不能证明用户在 App Studio 调节过的界面布局会从 Hub 安装进入 DataSrv 安装元数据。
+
+已落地验证：
+
+```text
+Hub package app.ui.layouts
+  -> normal_workspace
+  -> classic_split / compact
+  -> primaryRegion=left
+  -> outputRegion=right
+  -> regions: input_form / record_grid / result_panel
+
+governance.workspaceLayout
+  -> 作为发布/安装治理证据
+  -> regionCount=3
+  -> roles 覆盖 enterprise_normal_app 必需的 input / record_list / output
+
+GUI InstallMaclawAppPackageFromHub
+  -> 下载完整 Hub package
+  -> 通过治理门禁
+  -> RecordMaclawAppInstall
+  -> registerMaclawAppInstallationsToDataSrv
+  -> DataSrv metadata.workspace_layout 保留 entry、template、primary/output region、region_count、regions
+```
+
+对应全链路意义：
+
+```text
+Hub 能力市场安装企业普通应用
+  -> GUI 不只安装 Skill 依赖和运行证据
+  -> 也把传统软件式动态界面布局写入 DataSrv app_installations metadata
+  -> DataSrv capabilities 回流后，App Studio / 应用面板可按用户设计的区域位置重建工作台
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall|TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps"
+```
+
+### 推进记录：前端 Hub 安装恢复标准 app.ui 动态布局（2026-06-28）
+
+本轮继续检查 Hub 安装结果进入 GUI 应用面板后的状态恢复。后端已经能从标准 `maclaw.app.v1` 的 `app.ui.layouts` 提取动态 UI layout，并注册到 DataSrv；但前端 `manifestToAppEntry` 读取市场包时只看旧式 `binding.ui`，如果 Hub 下载包使用标准顶层 `app.ui`，应用面板会退回默认布局，导致“用户在 App Studio 调节的位置”在前端本地 AppEntry 中丢失。
+
+已落地调整：
+
+```text
+manifestToAppEntry
+  -> ui 来源改为 app.ui || app.binding.ui
+  -> 标准 maclaw.app.v1 顶层 app.ui 优先
+  -> 旧包 binding.ui 继续兼容
+
+Hub 市场安装测试
+  -> Hub package.app.ui.layouts.approval_workspace 带 regions
+  -> install_evidence.workspace_layout 带 regions
+  -> 安装后 localStorage customApps[].manifest.ui 保留完整 layout
+  -> 安装后 customApps[].installEvidence.workspace_layout 保留完整 install evidence layout
+```
+
+对应全链路意义：
+
+```text
+App Studio 设计标准 app.ui
+  -> 上传 Hub
+  -> Hub 下载/安装
+  -> GUI 前端应用面板恢复 AppEntry.manifest.ui
+  -> GUI 后端/DataSrv 安装证据恢复 workspace_layout
+  -> 本地应用运行、二次发布、冷启动恢复都使用同一份动态界面布局
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "installs approved Hub MaClaw Apps from market search results"
+```
 ### 推进记录：企业普通应用实际运行结果进入发布证据包（2026-06-28）
 上一轮已经确认 DataSrv 和 GUI 后端会透传企业普通应用标准结果包。本轮继续补齐 App Studio 发布链路中的实际运行场景：不能只靠测试 helper 或安装回流证据证明发布包完整，用户在 GUI 内点击“执行”后产生的真实运行历史，也必须能直接满足“提交审核 / 上传能力市场”的治理证据要求。
 
@@ -6229,6 +6344,125 @@ npm.cmd run build
 ```text
 npm.cmd test -- AppsPage.test.tsx -t "uses the enterprise market bridge when submitting app packages"
 npm.cmd test -- AppsPage.test.tsx -t "uses the enterprise market bridge when submitting app packages|requires dependency verification to cover declared app Skill dependencies before publishing|publishes enterprise normal app evidence from an actual DataSrv business run"
+npm.cmd run build
+```
+### 推进记录：审批型应用实际 workflow 运行证据进入发布包（2026-06-28）
+上一轮补齐了工具型应用的真实运行证据发布链路。本轮继续把企业审批型应用的前端真实运行链路收口：审批型应用不能只靠 seed 的 approvalInstance 或安装回流证据通过发布门禁，用户在审批工作台点击执行、workflow Skill 完成、DataSrv 同步回填后的最终审批实例，也必须能直接进入 App Studio 提交审核包。
+
+已落地验证链路：
+
+```text
+本地企业审批型 App
+  -> 声明 app_skill 超级 Skill 依赖
+  -> 声明 workflow_skill 审批工作流依赖
+  -> 声明 datasrv / approvalBindings / workflow node mapping / resultContract
+  -> 运行前 PlanMaclawAppInstall 生成依赖验证
+  -> RunNLSkillAsync 启动审批 workflow skill
+  -> RecordMaclawAppApprovalInstance 先记录 pending 实例
+  -> SyncMaclawAppApprovalInstanceToDataSrv 同步 pending RecordApproval
+  -> GetNLSkillRunStatus 返回 approved 结果包
+  -> finalizeApprovalRunFromStatus 生成最终 approvalInstance
+  -> SyncMaclawAppApprovalInstanceToDataSrv 同步最终 RecordApproval
+  -> 运行历史保存 approvalInstance.resultPayload / outputs / artifacts
+  -> App Studio 发布包携带 governance.testEvidence.approvalInstance
+```
+
+测试覆盖已经明确验证：
+
+```text
+approvalInstance
+  -> approvalID 使用最终 DataSrv approval id
+  -> workflowSkillId / workflowVersion / approvalEvent 保留
+  -> currentNode / businessStatus / resultStatus 保留
+  -> recordID / datasetID / objectRole 保留
+  -> resultPayload 包含 approval_result / business_status / business_record
+  -> outputs 保留业务记录与通知输出
+  -> artifacts 保留审批 PDF / 结果包文件
+  -> approvalInstanceViewVerified = true
+
+governance
+  -> dependencyVerification 覆盖 app_skill 和 workflow_skill
+  -> testEvidence.resultPayload 与 approvalInstance.resultPayload 对齐
+  -> resultCoverage 覆盖 approval_result / business_status / business_record / document
+```
+
+对应全链路意义：
+
+```text
+企业审批型应用
+  -> 数据录入
+  -> 审批 workflow skill 运行
+  -> 审批实例数据管理
+  -> DataSrv RecordApproval 同步
+  -> 结果反馈
+  -> App Studio 提交审核
+  -> Hub / 能力市场获得可审计的审批实例证据
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "publishes approval app evidence from an actual workflow run"
+npm.cmd test -- AppsPage.test.tsx -t "records and completes an approval instance when running an approval app|publishes approval app evidence from an actual workflow run|requires approval instance evidence before publishing approval apps|blocks approval app publish submission when workflow contract verification fails"
+npm.cmd run build
+go test ./gui -count=1 -vet=off -run "TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv"
+```
+### 推进记录：Hub 重装审批型应用的安装证据可冷启动再发布（2026-06-28）
+上一轮已经验证企业审批型应用的真实 workflow 运行证据可以进入发布包。本轮继续补齐“Hub 下载重装 / DataSrv 安装回灌 / 冷启动再发布”这一段：安装后的审批型 App 可能没有本地 run history，但安装记录里的 `installEvidence.test_evidence` 已经是经过市场审核和安装审计保存的证据。只要这份证据绑定当前 App 定义指纹，就应该能在 App Studio 冷启动后用于再次提交审核。
+
+已落地验证链路：
+
+```text
+Hub / DataSrv 安装记录
+  -> installEvidence.dependency_verification
+  -> installEvidence.test_evidence
+  -> test_evidence.approval_instance
+  -> AppEntry.installEvidence
+  -> latestAppRunEvidence fallback
+  -> appGovernanceForManifest
+  -> governance.testEvidence
+  -> Submit for review
+```
+
+测试覆盖已经明确验证：
+
+```text
+冷启动审批型 App
+  -> 本地 run history 为空
+  -> importedRunEvidence 可为空
+  -> installEvidence.test_evidence.definition_fingerprint 匹配当前 App 定义
+  -> 发布门禁读取安装证据作为运行证据
+  -> approvalInstance 保留 instanceId / approvalID / workflowSkillId / workflowVersion / approvalEvent
+  -> resultPayload / outputs / artifacts 保留
+  -> resultCoverage 保留 approval_result 覆盖
+  -> dependencyVerification 覆盖 app_skill 和 workflow_skill
+```
+
+同时修正测试数据口径：
+
+```text
+工具型 App 若声明 appSkill
+  -> 发布门禁按 app_skill 超级 Skill 依赖检查
+  -> 冷启动安装证据中的 dependencyVerification 也必须使用 app_skill
+  -> 避免 runtime_skill 旧测试数据误绕过当前超级 Skill 依赖模型
+```
+
+对应全链路意义：
+
+```text
+能力市场安装 / Hub 重装
+  -> 安装记录保存审批实例测试证据
+  -> App Studio 冷启动恢复 App
+  -> 用户无需立即重新运行也能看到安装时测试证据
+  -> 若 App 定义未变化，可复用该证据再次提交审核
+  -> 若 App 定义变化，既有 definitionHash 门禁仍会要求重新测试
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "republishes cold-start approval apps from Hub install evidence"
+npm.cmd test -- AppsPage.test.tsx -t "installs approved Hub MaClaw Apps from market search results|republishes cold-start approval apps from Hub install evidence|uses install evidence test records when republishing cold-start app packages|restores single app install evidence from top-level market install records"
 npm.cmd run build
 ```
 

@@ -739,6 +739,52 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 	if artifacts, ok := approvalInstance["artifacts"].([]any); !ok || len(artifacts) != 1 {
 		t.Fatalf("test evidence should preserve approval instance artifacts: %+v", approvalInstance)
 	}
+	versions, err := svc.ListVersions(capability.WithTenant(context.Background(), "tenant_a"), item.ID)
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("submitted versions=%+v err=%v", versions, err)
+	}
+	var storedEntry map[string]any
+	if err := json.Unmarshal([]byte(versions[0].ManifestJSON), &storedEntry); err != nil {
+		t.Fatalf("decode stored manifest: %v", err)
+	}
+	if storedEntry["schema"] != "maclaw.app.v1" || storedEntry["privateMarker"] != "x_maclaw_apps" {
+		t.Fatalf("stored manifest should preserve app entry envelope: %+v", storedEntry)
+	}
+	storedApp, _ := storedEntry["app"].(map[string]any)
+	storedUI, _ := storedApp["ui"].(map[string]any)
+	storedLayouts, _ := storedUI["layouts"].(map[string]any)
+	storedLayout, _ := storedLayouts["tool_workspace"].(map[string]any)
+	if storedLayout["primaryRegion"] != "file_queue" || storedLayout["outputRegion"] != "output_panel" {
+		t.Fatalf("stored manifest should preserve workspace placement: %+v", storedLayout)
+	}
+	if storedRegions, ok := storedLayout["regions"].([]any); !ok || len(storedRegions) != 2 {
+		t.Fatalf("stored manifest should preserve workspace regions: %+v", storedLayout)
+	}
+	storedBinding, _ := storedApp["binding"].(map[string]any)
+	storedDependencies, _ := storedBinding["dependencies"].(map[string]any)
+	if storedSkills, ok := storedDependencies["skills"].([]any); !ok || len(storedSkills) != 2 {
+		t.Fatalf("stored manifest should preserve declared skill dependencies: %+v", storedDependencies)
+	}
+	storedWorkflow, _ := storedBinding["workflow"].(map[string]any)
+	if storedWorkflow["approvalNode"] != "contract.legal_review" || storedWorkflow["resultNode"] != "contract.result" {
+		t.Fatalf("stored manifest should preserve workflow mapping: %+v", storedWorkflow)
+	}
+	storedGovernance, _ := storedApp["governance"].(map[string]any)
+	storedResultContract, _ := storedGovernance["resultContract"].(map[string]any)
+	if storedResultContract["primary"] != "artifact" {
+		t.Fatalf("stored manifest should preserve result contract: %+v", storedResultContract)
+	}
+	storedTestEvidence, _ := storedGovernance["testEvidence"].(map[string]any)
+	if storedOutputs, ok := storedTestEvidence["outputs"].([]any); !ok || len(storedOutputs) != 1 {
+		t.Fatalf("stored manifest should preserve test evidence outputs: %+v", storedTestEvidence)
+	}
+	storedApprovalInstance, _ := storedTestEvidence["approvalInstance"].(map[string]any)
+	if storedApprovalInstance["currentNode"] != "contract.result" || storedApprovalInstance["workflowSkillId"] != "contract-approval" {
+		t.Fatalf("stored manifest should preserve approval instance workflow fields: %+v", storedApprovalInstance)
+	}
+	if storedPayload, ok := storedApprovalInstance["resultPayload"].(map[string]any); !ok || storedPayload["business_status"] != "archived" {
+		t.Fatalf("stored manifest should preserve approval instance result payload: %+v", storedApprovalInstance)
+	}
 	tenantBItems, err := svc.List(capability.WithTenant(context.Background(), "tenant_b"), corelib.CapabilityTypeSkill)
 	if err != nil || len(tenantBItems) != 0 {
 		t.Fatalf("tenant_b capabilities=%+v err=%v", tenantBItems, err)
