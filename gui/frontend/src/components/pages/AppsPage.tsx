@@ -8748,6 +8748,7 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission, governa
             source: app.source,
             importedRunEvidence: app.importedRunEvidence,
             launchMode: manifest?.launchMode || defaultLaunchModeForKind(app.kind),
+            ui: manifest?.ui,
             binding: {
                 datasrv: manifest?.datasrv,
                 mis: manifest?.mis,

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+﻿import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const executeMaclawAppBusinessOperationMock = vi.hoisted(() => vi.fn());
@@ -68,7 +68,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 
 import { AppsPage } from '../AppsPage';
 
-const marketManifestPlaceholder = '粘贴应用包 JSON（maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json）';
+const marketManifestPlaceholder = '绮樿创搴旂敤鍖?JSON锛坢aclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json锛?;
 const runHistoryStorageKey = 'maclaw:apps-run-history:v1';
 
 function stableStringify(value: any): string {
@@ -326,10 +326,10 @@ function latestStoredCustomApp(name: string) {
     return (panel.customApps || []).find((app) => app.name === name);
 }
 
-async function createAndRunLocalToolApp(name = '合同归档') {
-    fireEvent.click(screen.getByTitle('应用程序工作室'));
-    fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: name } });
-    fireEvent.click(screen.getAllByText('创建应用')[1]);
+async function createAndRunLocalToolApp(name = '鍚堝悓褰掓。') {
+    fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+    fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: name } });
+    fireEvent.click(screen.getAllByText('鍒涘缓搴旂敤')[1]);
     const createdApp = latestStoredCustomApp(name);
     if (createdApp?.id) {
         planMaclawAppInstallMock.mockImplementation(async () => {
@@ -353,7 +353,7 @@ async function createAndRunLocalToolApp(name = '合同归档') {
     const fileInput = document.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
     const file = new File(['demo'], 'sample.pdf', { type: 'application/pdf' });
     fireEvent.change(fileInput, { target: { files: [file] } });
-    fireEvent.click(screen.getByText('执行'));
+    fireEvent.click(screen.getByText('鎵ц'));
     await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalled());
     await waitFor(() => {
         const raw = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
@@ -374,7 +374,7 @@ async function createAndRunLocalToolApp(name = '合同归档') {
         window.localStorage.setItem(runHistoryStorageKey, JSON.stringify(raw));
     }
 }
-function seedSuccessfulSkillAppRun(skillID = 'invoice-review', name = '发票审核') {
+function seedSuccessfulSkillAppRun(skillID = 'invoice-review', name = '鍙戠エ瀹℃牳') {
 
     const appID = `skill-app-${skillID}-app-tool-app`;
     const panel = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}') as { customApps?: any[] };
@@ -391,8 +391,8 @@ function seedSuccessfulSkillAppRun(skillID = 'invoice-review', name = '发票审
     } : {
         id: appID,
         name,
-        description: '由应用程序工作室创建的应用入口。',
-        category: '文档处理',
+        description: '鐢卞簲鐢ㄧ▼搴忓伐浣滃鍒涘缓鐨勫簲鐢ㄥ叆鍙ｃ€?,
+        category: '鏂囨。澶勭悊',
         kind: 'tool_app',
         icon: 'shield',
         version: 1,
@@ -514,15 +514,15 @@ describe('AppsPage', () => {
     it('renders the app panel with search, category filter, pinned apps, and app studio entry', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        expect(screen.getByPlaceholderText('搜索应用')).not.toBeNull();
-        const studioEntry = screen.getByTitle('应用程序工作室');
+        expect(screen.getByPlaceholderText('鎼滅储搴旂敤')).not.toBeNull();
+        const studioEntry = screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?);
         expect(studioEntry).not.toBeNull();
         expect(studioEntry.textContent).toBe('');
         expect(container.querySelector('.apps-studio-button__icon svg:not(.apps-studio-button__plus)')).not.toBeNull();
         expect(container.querySelector('.apps-studio-button__plus')).not.toBeNull();
-        expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('文档处理 (2)')).not.toBeNull();
-        expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('全部应用 (10)')).not.toBeNull();
-        expect(screen.getAllByText('常用应用').length).toBeGreaterThan(0);
+        expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('鏂囨。澶勭悊 (2)')).not.toBeNull();
+        expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('鍏ㄩ儴搴旂敤 (10)')).not.toBeNull();
+        expect(screen.getAllByText('甯哥敤搴旂敤').length).toBeGreaterThan(0);
         expect(container.querySelectorAll('.apps-app-tile').length).toBeGreaterThan(6);
     });
 
@@ -566,9 +566,9 @@ describe('AppsPage', () => {
         expect(screen.getByText('\u5ba1\u6279\u5b9e\u4f8b\u7ba1\u7406')).not.toBeNull();
         expect(screen.getAllByText('Travel expense').length).toBeGreaterThan(0);
         const detail = document.querySelector('.apps-approval-detail') as HTMLElement;
-        expect(detail.getAttribute('aria-label')).toBe('审批实例详情');
-        expect(within(detail).getByText('审批实例详情')).not.toBeNull();
-        expect(within(detail).getByText('结果契约')).not.toBeNull();
+        expect(detail.getAttribute('aria-label')).toBe('瀹℃壒瀹炰緥璇︽儏');
+        expect(within(detail).getByText('瀹℃壒瀹炰緥璇︽儏')).not.toBeNull();
+        expect(within(detail).getByText('缁撴灉濂戠害')).not.toBeNull();
         expect(within(detail).getAllByText('approval_result').length).toBeGreaterThan(0);
         expect(within(detail).getByText('manager_approval / finance_review')).not.toBeNull();
         expect(within(detail).getAllByText('manager').length).toBeGreaterThan(0);
@@ -583,9 +583,9 @@ describe('AppsPage', () => {
 
         await waitFor(() => expect(listMaclawAppApprovalInstancesAllMock).toHaveBeenCalledWith('all', 200));
         const detail = document.querySelector('.apps-approval-detail') as HTMLElement;
-        expect(detail.getAttribute('aria-label')).toBe('审批实例详情');
-        expect(within(detail).getByText('审批实例详情')).not.toBeNull();
-        expect(within(detail).getByText('右侧是实例详情和处理动作区，请先在左侧选择一条审批实例。')).not.toBeNull();
+        expect(detail.getAttribute('aria-label')).toBe('瀹℃壒瀹炰緥璇︽儏');
+        expect(within(detail).getByText('瀹℃壒瀹炰緥璇︽儏')).not.toBeNull();
+        expect(within(detail).getByText('鍙充晶鏄疄渚嬭鎯呭拰澶勭悊鍔ㄤ綔鍖猴紝璇峰厛鍦ㄥ乏渚ч€夋嫨涓€鏉″鎵瑰疄渚嬨€?)).not.toBeNull();
         expect(detail.querySelector('.apps-approval-actions')).toBeNull();
     });
     it('shows DataSrv approval app summary with approval result filters', async () => {
@@ -671,9 +671,9 @@ describe('AppsPage', () => {
         expect(within(detail).getByText('approval-datasrv-document-1 / workflow-document-1 / record-document-1')).not.toBeNull();
         expect(within(detail).getByText('finance.expenses / expense_report')).not.toBeNull();
         expect(within(detail).getByText(/approval_result, document/)).not.toBeNull();
-        fireEvent.click(within(detail).getByRole('button', { name: '打开审批' }));
+        fireEvent.click(within(detail).getByRole('button', { name: '鎵撳紑瀹℃壒' }));
         expect(browserOpenURLMock).toHaveBeenCalledWith('http://datasrv.test/api/v1/data/approvals/approval-datasrv-document-1');
-        fireEvent.click(within(detail).getByRole('button', { name: '打开记录' }));
+        fireEvent.click(within(detail).getByRole('button', { name: '鎵撳紑璁板綍' }));
         expect(browserOpenURLMock).toHaveBeenCalledWith('http://datasrv.test/api/v1/data/datasets/finance.expenses/records/record-document-1');
         fireEvent.click(within(detail).getByRole('button', { name: /Approval PDF exporter/ }));
         await waitFor(() => expect(screen.getAllByText('Approval PDF instance').length).toBeGreaterThan(0));
@@ -691,10 +691,10 @@ describe('AppsPage', () => {
 
         const sections = document.querySelectorAll('.apps-section');
         expect(sections.length).toBe(2);
-        expect(within(sections[1] as HTMLElement).getByText('其他应用')).not.toBeNull();
-        expect(within(sections[0] as HTMLElement).getByText('报销申请')).not.toBeNull();
-        expect(within(sections[1] as HTMLElement).queryByText('报销申请')).toBeNull();
-        expect(within(sections[1] as HTMLElement).getByText('文档脱敏')).not.toBeNull();
+        expect(within(sections[1] as HTMLElement).getByText('鍏朵粬搴旂敤')).not.toBeNull();
+        expect(within(sections[0] as HTMLElement).getByText('鎶ラ攢鐢宠')).not.toBeNull();
+        expect(within(sections[1] as HTMLElement).queryByText('鎶ラ攢鐢宠')).toBeNull();
+        expect(within(sections[1] as HTMLElement).getByText('鏂囨。鑴辨晱')).not.toBeNull();
     });
 
     it('moves app tile focus with arrow keys', () => {
@@ -702,45 +702,45 @@ describe('AppsPage', () => {
 
         const tiles = Array.from(document.querySelectorAll<HTMLButtonElement>('.apps-app-tile'));
         tiles[0].focus();
-        expect(document.activeElement?.textContent).toContain('报销申请');
+        expect(document.activeElement?.textContent).toContain('鎶ラ攢鐢宠');
 
         fireEvent.keyDown(tiles[0], { key: 'ArrowRight' });
-        expect(document.activeElement?.textContent).toContain('采购入库');
+        expect(document.activeElement?.textContent).toContain('閲囪喘鍏ュ簱');
 
         fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' });
-        expect(document.activeElement?.textContent).toContain('PDF 转 Word');
+        expect(document.activeElement?.textContent).toContain('PDF 杞?Word');
 
         fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'End' });
-        expect(document.activeElement?.textContent).toContain('数据同步');
+        expect(document.activeElement?.textContent).toContain('鏁版嵁鍚屾');
     });
 
     it('shows pin actions from the app tile context menu', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        const fullRedactTile = screen.getAllByText('文档脱敏')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        const fullRedactTile = screen.getAllByText('鏂囨。鑴辨晱')[0].closest('.apps-app-tile') as HTMLButtonElement;
         fireEvent.contextMenu(fullRedactTile, { clientX: 90, clientY: 180 });
-        const firstPinAction = screen.getByRole('menuitem', { name: '设为常用' }) as HTMLButtonElement;
+        const firstPinAction = screen.getByRole('menuitem', { name: '璁句负甯哥敤' }) as HTMLButtonElement;
         expect(firstPinAction.disabled).toBe(false);
         fireEvent.click(firstPinAction);
 
-        const expenseTile = screen.getAllByText('报销申请')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        const expenseTile = screen.getAllByText('鎶ラ攢鐢宠')[0].closest('.apps-app-tile') as HTMLButtonElement;
         fireEvent.contextMenu(expenseTile, { clientX: 120, clientY: 140 });
-        const unpinAction = screen.getByRole('menuitem', { name: '移出常用' });
+        const unpinAction = screen.getByRole('menuitem', { name: '绉诲嚭甯哥敤' });
         fireEvent.click(unpinAction);
 
         let sections = document.querySelectorAll('.apps-section');
-        expect(within(sections[0] as HTMLElement).queryByText('报销申请')).toBeNull();
+        expect(within(sections[0] as HTMLElement).queryByText('鎶ラ攢鐢宠')).toBeNull();
 
-        const sheetTile = screen.getAllByText('表格分析')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        const sheetTile = screen.getAllByText('琛ㄦ牸鍒嗘瀽')[0].closest('.apps-app-tile') as HTMLButtonElement;
         fireEvent.keyDown(sheetTile, { key: 'F10', shiftKey: true });
-        const pinAction = screen.getByRole('menuitem', { name: '设为常用' });
+        const pinAction = screen.getByRole('menuitem', { name: '璁句负甯哥敤' });
         expect((pinAction as HTMLButtonElement).disabled).toBe(false);
         fireEvent.click(pinAction);
 
         sections = document.querySelectorAll('.apps-section');
-        expect(within(sections[0] as HTMLElement).getByText('表格分析')).not.toBeNull();
+        expect(within(sections[0] as HTMLElement).getByText('琛ㄦ牸鍒嗘瀽')).not.toBeNull();
 
-        const syncTile = screen.getAllByText('数据同步')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        const syncTile = screen.getAllByText('鏁版嵁鍚屾')[0].closest('.apps-app-tile') as HTMLButtonElement;
         fireEvent.contextMenu(syncTile, { clientX: 9999, clientY: 9999 });
         const menu = screen.getByRole('menu');
         expect(Number.parseFloat(menu.style.left)).toBeLessThan(9999);
@@ -750,21 +750,21 @@ describe('AppsPage', () => {
     it('shows app name, status, source, and recent usage in tile tooltips', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        const expenseTile = screen.getAllByText('报销申请')[0].closest('.apps-app-tile') as HTMLButtonElement;
-        expect(expenseTile.title).toContain('报销申请');
-        expect(expenseTile.title).toContain('企业审批型 · DataSrv');
-        expect(expenseTile.title).toContain('状态');
-        expect(expenseTile.title).toContain('最近使用: 尚未使用');
-        expect(expenseTile.getAttribute('aria-label')).toContain('报销申请, 企业审批型, DataSrv, 状态');
+        const expenseTile = screen.getAllByText('鎶ラ攢鐢宠')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        expect(expenseTile.title).toContain('鎶ラ攢鐢宠');
+        expect(expenseTile.title).toContain('浼佷笟瀹℃壒鍨?路 DataSrv');
+        expect(expenseTile.title).toContain('鐘舵€?);
+        expect(expenseTile.title).toContain('鏈€杩戜娇鐢? 灏氭湭浣跨敤');
+        expect(expenseTile.getAttribute('aria-label')).toContain('鎶ラ攢鐢宠, 浼佷笟瀹℃壒鍨? DataSrv, 鐘舵€?);
 
         fireEvent.click(expenseTile);
-        const updatedTile = screen.getAllByText('报销申请')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        const updatedTile = screen.getAllByText('鎶ラ攢鐢宠')[0].closest('.apps-app-tile') as HTMLButtonElement;
         expect(updatedTile.dataset.status).toBe('running');
         expect(updatedTile.querySelector('.apps-app-status-dot')).toBeNull();
-        expect(updatedTile.title).toContain('状态: 运行中');
-        expect(updatedTile.getAttribute('aria-label')).toContain('状态: 运行中');
-        expect(updatedTile.title).toContain('最近使用');
-        expect(updatedTile.title).not.toContain('最近使用: 尚未使用');
+        expect(updatedTile.title).toContain('鐘舵€? 杩愯涓?);
+        expect(updatedTile.getAttribute('aria-label')).toContain('鐘舵€? 杩愯涓?);
+        expect(updatedTile.title).toContain('鏈€杩戜娇鐢?);
+        expect(updatedTile.title).not.toContain('鏈€杩戜娇鐢? 灏氭湭浣跨敤');
     });
 
     it('places approval workspaces before right-side output so the center column starts at the top', async () => {
@@ -786,18 +786,18 @@ describe('AppsPage', () => {
         render(<AppsPage lang="zh-Hans" />);
 
         await waitFor(() => {
-            const expenseTile = screen.getAllByText('报销申请')[0].closest('.apps-app-tile') as HTMLButtonElement;
+            const expenseTile = screen.getAllByText('鎶ラ攢鐢宠')[0].closest('.apps-app-tile') as HTMLButtonElement;
             expect(expenseTile.dataset.status).toBe('disabled');
-            expect(expenseTile.title).toContain('状态: 未启用');
+            expect(expenseTile.title).toContain('鐘舵€? 鏈惎鐢?);
         });
     });
 
     it('shows one live draft manifest preview in app studio create tab', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
 
-        expect(screen.getAllByText('当前草稿 manifest').length).toBe(1);
+        expect(screen.getAllByText('褰撳墠鑽夌 manifest').length).toBe(1);
         expect(screen.getAllByText(/x_maclaw_apps/).length).toBeGreaterThan(0);
         expect(screen.queryByText(/document-redaction/)).toBeNull();
     });
@@ -870,7 +870,7 @@ describe('AppsPage', () => {
         expect(screen.getByText('1 app')).not.toBeNull();
         await waitFor(() => expect(screen.getByText('In panel')).not.toBeNull());
         expect(screen.queryByText('Add to panel')).toBeNull();
-        expect(screen.queryByText('maclaw.app.json / maclaw.apps.json · x_maclaw_apps')).toBeNull();
+        expect(screen.queryByText('maclaw.app.json / maclaw.apps.json 路 x_maclaw_apps')).toBeNull();
         expect(screen.queryByTitle(/maclaw\.app\.json/)).toBeNull();
     });
 
@@ -890,20 +890,20 @@ describe('AppsPage', () => {
 
     it('saves a tool app definition into an existing skill', async () => {
         listNLSkillsMock.mockResolvedValue([
-            { name: 'invoice-review', description: '审核发票' },
+            { name: 'invoice-review', description: '瀹℃牳鍙戠エ' },
             { name: 'already-app', is_maclaw_app: true },
             { name: 'already-app-camel', isMaclawApp: true },
         ]);
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
         const toolSkillPicker = screen.getByTestId('studio-tool-skill-picker');
         await waitFor(() => expect(within(toolSkillPicker).getAllByText('invoice-review').length).toBeGreaterThan(0));
         expect(within(toolSkillPicker).queryByText('already-app')).toBeNull();
         expect(within(toolSkillPicker).queryByText('already-app-camel')).toBeNull();
         fireEvent.click(within(toolSkillPicker).getByRole('option', { name: /invoice-review/ }) as HTMLButtonElement);
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '发票审核' } });
-        fireEvent.click(screen.getByText('保存到 Skill'));
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍙戠エ瀹℃牳' } });
+        fireEvent.click(screen.getByText('淇濆瓨鍒?Skill'));
 
         await waitFor(() => expect(saveMaclawAppDefinitionForSkillMock).toHaveBeenCalledTimes(1));
         expect(saveMaclawAppDefinitionForSkillMock.mock.calls[0][0]).toBe('invoice-review');
@@ -911,29 +911,29 @@ describe('AppsPage', () => {
         expect(payload.schema).toBe('maclaw.app.v1');
         expect(payload.privateMarker).toBe('x_maclaw_apps');
         expect(payload.installUnit).toBe('skill');
-        expect(payload.app.name).toBe('发票审核');
+        expect(payload.app.name).toBe('鍙戠エ瀹℃牳');
         expect(payload.app.kind).toBe('tool_app');
         expect(payload.app.binding.skill.id).toBe('invoice-review');
         expect(payload.app.binding.skill.appDefinitionFile).toBe('maclaw.app.json');
-        await waitFor(() => expect(screen.getAllByText('发票审核').length).toBeGreaterThan(0));
+        await waitFor(() => expect(screen.getAllByText('鍙戠エ瀹℃牳').length).toBeGreaterThan(0));
 
         seedSuccessfulSkillAppRun();
-        fireEvent.click(screen.getByText('上传到 SkillMarket'));
+        fireEvent.click(screen.getByText('涓婁紶鍒?SkillMarket'));
         await waitFor(() => expect(uploadNLSkillToMarketMock).toHaveBeenCalledWith('invoice-review'));
-        await waitFor(() => expect(screen.getByText('已提交到 SkillMarket: submission-app-1')).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('宸叉彁浜ゅ埌 SkillMarket: submission-app-1')).not.toBeNull());
     });
 
     it('saves a newly created enterprise approval app into its app skill definition', async () => {
         listNLSkillsMock.mockResolvedValue([
-            { name: 'expense-super-skill', description: '费用应用 Skill', capabilities: ['enterprise.app'] },
-            { name: 'expense-workflow', description: '费用审批流程', product_kind: 'workflow_skill', capabilities: ['approval.workflow'] },
+            { name: 'expense-super-skill', description: '璐圭敤搴旂敤 Skill', capabilities: ['enterprise.app'] },
+            { name: 'expense-workflow', description: '璐圭敤瀹℃壒娴佺▼', product_kind: 'workflow_skill', capabilities: ['approval.workflow'] },
         ]);
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        const kindPicker = screen.getByRole('group', { name: '应用类型' });
-        fireEvent.click(within(kindPicker).getByRole('button', { name: /企业审批型/ }));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '费用报销审批' } });
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        const kindPicker = screen.getByRole('group', { name: '搴旂敤绫诲瀷' });
+        fireEvent.click(within(kindPicker).getByRole('button', { name: /浼佷笟瀹℃壒鍨? }));
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '璐圭敤鎶ラ攢瀹℃壒' } });
 
         const appSkillPicker = screen.getByTestId('studio-app-skill-id');
         await waitFor(() => expect(within(appSkillPicker).getAllByText('expense-super-skill').length).toBeGreaterThan(0));
@@ -941,7 +941,7 @@ describe('AppsPage', () => {
         await waitFor(() => expect(within(workflowSkillPicker).getAllByText('expense-workflow').length).toBeGreaterThan(0));
         fireEvent.change(screen.getByTestId('studio-dependency-install-ref'), { target: { value: 'cap-hub-expense-workflow' } });
 
-        fireEvent.click(screen.getByText('保存到 Skill'));
+        fireEvent.click(screen.getByText('淇濆瓨鍒?Skill'));
 
         await waitFor(() => expect(saveMaclawAppDefinitionForSkillMock).toHaveBeenCalledTimes(1));
         const [skillID, manifestText] = saveMaclawAppDefinitionForSkillMock.mock.calls[0];
@@ -949,7 +949,7 @@ describe('AppsPage', () => {
         const payload = JSON.parse(String(manifestText));
         expect(payload.schema).toBe('maclaw.app.v1');
         expect(payload.privateMarker).toBe('x_maclaw_apps');
-        expect(payload.app.name).toBe('费用报销审批');
+        expect(payload.app.name).toBe('璐圭敤鎶ラ攢瀹℃壒');
         expect(payload.app.kind).toBe('enterprise_approval_app');
         expect(payload.app.launchMode).toBe('agent_dynamic_ui');
         expect(payload.app.binding.skill.id).toBe('expense-super-skill');
@@ -962,43 +962,43 @@ describe('AppsPage', () => {
         expect(payload.app.binding.ui.layouts.approval_workspace.regions.length).toBeGreaterThan(0);
         expect(payload.app.binding.resultContract.primary).toBe('approval_result');
         expect(payload.app.binding.testProtocol.fingerprint).toMatch(/^[0-9a-f]{8}$/);
-        await waitFor(() => expect(screen.getByText('已保存到 expense-super-skill/maclaw.app.json')).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('宸蹭繚瀛樺埌 expense-super-skill/maclaw.app.json')).not.toBeNull());
     });
 
     it('requires a successful current-version test before uploading a skill app', async () => {
-        listNLSkillsMock.mockResolvedValue([{ name: 'invoice-review', description: '审核发票' }]);
+        listNLSkillsMock.mockResolvedValue([{ name: 'invoice-review', description: '瀹℃牳鍙戠エ' }]);
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
         const toolSkillPicker = screen.getByTestId('studio-tool-skill-picker');
         await waitFor(() => expect(within(toolSkillPicker).getAllByText('invoice-review').length).toBeGreaterThan(0));
         fireEvent.click(within(toolSkillPicker).getByRole('option', { name: /invoice-review/ }) as HTMLButtonElement);
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '发票审核' } });
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍙戠エ瀹℃牳' } });
 
-        fireEvent.click(screen.getByText('上传到 SkillMarket'));
+        fireEvent.click(screen.getByText('涓婁紶鍒?SkillMarket'));
 
-        await waitFor(() => expect(screen.getByText('请先保存到 Skill，并在应用面板成功测试一次当前版本，再上传到 SkillMarket。')).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('璇峰厛淇濆瓨鍒?Skill锛屽苟鍦ㄥ簲鐢ㄩ潰鏉挎垚鍔熸祴璇曚竴娆″綋鍓嶇増鏈紝鍐嶄笂浼犲埌 SkillMarket銆?)).not.toBeNull());
         expect(saveMaclawAppDefinitionForSkillMock).not.toHaveBeenCalled();
         expect(uploadNLSkillToMarketMock).not.toHaveBeenCalled();
     });
 
     it('saves the latest tool app definition before uploading to SkillMarket', async () => {
-        listNLSkillsMock.mockResolvedValue([{ name: 'invoice-review', description: '审核发票' }]);
+        listNLSkillsMock.mockResolvedValue([{ name: 'invoice-review', description: '瀹℃牳鍙戠エ' }]);
         seedSuccessfulSkillAppRun();
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
         const toolSkillPicker = screen.getByTestId('studio-tool-skill-picker');
         await waitFor(() => expect(within(toolSkillPicker).getAllByText('invoice-review').length).toBeGreaterThan(0));
         fireEvent.click(within(toolSkillPicker).getByRole('option', { name: /invoice-review/ }) as HTMLButtonElement);
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '发票审核' } });
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍙戠エ瀹℃牳' } });
 
-        fireEvent.click(screen.getByText('上传到 SkillMarket'));
+        fireEvent.click(screen.getByText('涓婁紶鍒?SkillMarket'));
 
         await waitFor(() => expect(saveMaclawAppDefinitionForSkillMock).toHaveBeenCalledWith('invoice-review', expect.any(String)));
         await waitFor(() => expect(uploadNLSkillToMarketMock).toHaveBeenCalledWith('invoice-review'));
         const payload = JSON.parse(saveMaclawAppDefinitionForSkillMock.mock.calls[0][1]);
-        expect(payload.app.name).toBe('发票审核');
+        expect(payload.app.name).toBe('鍙戠エ瀹℃牳');
         expect(payload.app.binding.skill.appDefinitionFile).toBe('maclaw.app.json');
     });
 
@@ -1113,9 +1113,9 @@ describe('AppsPage', () => {
     it('exposes app studio sections as accessible tabs', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
 
-        const createTab = screen.getByRole('tab', { name: '创建应用' });
+        const createTab = screen.getByRole('tab', { name: '鍒涘缓搴旂敤' });
         expect(createTab.getAttribute('aria-selected')).toBe('true');
         expect(container.querySelector('.apps-preview--studio')).not.toBeNull();
         expect(container.querySelector('.apps-preview--studio > .apps-studio-panel')).not.toBeNull();
@@ -1123,38 +1123,38 @@ describe('AppsPage', () => {
 
         fireEvent.keyDown(createTab, { key: 'ArrowRight' });
 
-        const manageTab = screen.getByRole('tab', { name: '应用管理' });
+        const manageTab = screen.getByRole('tab', { name: '搴旂敤绠＄悊' });
         expect(manageTab.getAttribute('aria-selected')).toBe('true');
         expect(screen.getByRole('tabpanel').getAttribute('id')).toBe(manageTab.getAttribute('aria-controls'));
 
         fireEvent.keyDown(manageTab, { key: 'End' });
-        const publishTab = screen.getByRole('tab', { name: '审核/发布' });
+        const publishTab = screen.getByRole('tab', { name: '瀹℃牳/鍙戝竷' });
         expect(publishTab.getAttribute('aria-selected')).toBe('true');
-        expect(screen.getByText('暂无本地应用可发布')).not.toBeNull();
+        expect(screen.getByText('鏆傛棤鏈湴搴旂敤鍙彂甯?)).not.toBeNull();
     });
 
     it('shows local apps in the review and publish checklist', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
-        fireEvent.click(screen.getAllByText('创建应用')[1]);
-        fireEvent.click(screen.getByText('审核/发布'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍚堝悓褰掓。' } });
+        fireEvent.click(screen.getAllByText('鍒涘缓搴旂敤')[1]);
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
-        expect(screen.getByText('发布检查')).not.toBeNull();
-        expect(screen.getAllByText('合同归档').length).toBeGreaterThan(0);
-        expect(screen.getByText('需补齐')).not.toBeNull();
-        expect(screen.getByText('Manifest 结构')).not.toBeNull();
-        expect(screen.getByText('绑定能力')).not.toBeNull();
-        expect(screen.getByText('运行证据')).not.toBeNull();
-        expect(screen.getByText('提交包预览')).not.toBeNull();
+        expect(screen.getByText('鍙戝竷妫€鏌?)).not.toBeNull();
+        expect(screen.getAllByText('鍚堝悓褰掓。').length).toBeGreaterThan(0);
+        expect(screen.getByText('闇€琛ラ綈')).not.toBeNull();
+        expect(screen.getByText('Manifest 缁撴瀯')).not.toBeNull();
+        expect(screen.getByText('缁戝畾鑳藉姏')).not.toBeNull();
+        expect(screen.getByText('杩愯璇佹嵁')).not.toBeNull();
+        expect(screen.getByText('鎻愪氦鍖呴瑙?)).not.toBeNull();
         expect(screen.getByText(/maclaw.app.pack.v1/)).not.toBeNull();
         expect(screen.getByText(/"governance"/)).not.toBeNull();
         expect(screen.getByText(/"dependencies"/)).not.toBeNull();
         expect(screen.getByText('Workspace layout')).not.toBeNull();
         expect(screen.getByText(/"workspaceLayout"/)).not.toBeNull();
         expect(screen.getByText(/"entry": "tool_workspace"/)).not.toBeNull();
-        expect(screen.getByText('结果契约')).not.toBeNull();
+        expect(screen.getByText('缁撴灉濂戠害')).not.toBeNull();
         expect(screen.getByText(/"resultContract"/)).not.toBeNull();
         expect(screen.getByText(/"schema": "maclaw.app.result.v1"/)).not.toBeNull();
         expect(screen.getByText(/"testProtocol"/)).not.toBeNull();
@@ -1217,23 +1217,23 @@ describe('AppsPage', () => {
     it('submits ready local apps into local review state', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        await createAndRunLocalToolApp('合同归档');
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
+        await createAndRunLocalToolApp('鍚堝悓褰掓。');
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
-        expect(screen.getByText('可提交')).not.toBeNull();
-        fireEvent.click(screen.getByText('提交审核'));
+        expect(screen.getByText('鍙彁浜?)).not.toBeNull();
+        fireEvent.click(screen.getByText('鎻愪氦瀹℃牳'));
 
-        await waitFor(() => expect(screen.getAllByText('本地待同步').length).toBeGreaterThan(0));
-        expect(screen.getAllByText('已提交').length).toBeGreaterThan(0);
+        await waitFor(() => expect(screen.getAllByText('鏈湴寰呭悓姝?).length).toBeGreaterThan(0));
+        expect(screen.getAllByText('宸叉彁浜?).length).toBeGreaterThan(0);
         expect(screen.getAllByText(/local-review-/).length).toBeGreaterThan(0);
         expect(screen.getByText(/"status": "submitted"/)).not.toBeNull();
         expect(screen.getByText(/"channel": "local"/)).not.toBeNull();
         expect(window.localStorage.getItem('maclaw:apps-publish-submissions:v1')).toContain('local-review-');
 
-        fireEvent.click(screen.getByText('撤回提交'));
-        await waitFor(() => expect(screen.getByText('可提交')).not.toBeNull());
-        expect(screen.queryByText('等待企业市场审核')).toBeNull();
+        fireEvent.click(screen.getByText('鎾ゅ洖鎻愪氦'));
+        await waitFor(() => expect(screen.getByText('鍙彁浜?)).not.toBeNull());
+        expect(screen.queryByText('绛夊緟浼佷笟甯傚満瀹℃牳')).toBeNull();
         expect(screen.getByText(/"status": "local_tested"/)).not.toBeNull();
         expect(window.localStorage.getItem('maclaw:apps-publish-submissions:v1')).not.toContain('local-review-');
     });
@@ -1242,9 +1242,9 @@ describe('AppsPage', () => {
         const { approvalDecisions: _approvalDecisions, ...reviewedResultContract } = testToolAppResultContract(['docx', 'pdf']);
         const reviewedApp = {
             id: 'local-app-review-returned',
-            name: '审核回退应用',
-            description: '用于验证市场审核回写状态',
-            category: '法务',
+            name: '瀹℃牳鍥為€€搴旂敤',
+            description: '鐢ㄤ簬楠岃瘉甯傚満瀹℃牳鍥炲啓鐘舵€?,
+            category: '娉曞姟',
             kind: 'tool_app',
             icon: 'contract',
             accent: '#7c3f58',
@@ -1303,34 +1303,34 @@ describe('AppsPage', () => {
                 reviewedAt: '2026-06-17T00:10:00.000Z',
                 status: 'review_failed',
                 reviewer: 'market-reviewer',
-                message: '请补充运行证据',
-                reviewIssues: [{ path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缺少运行证据', suggestion: '先运行一次应用' }],
+                message: '璇疯ˉ鍏呰繍琛岃瘉鎹?,
+                reviewIssues: [{ path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缂哄皯杩愯璇佹嵁', suggestion: '鍏堣繍琛屼竴娆″簲鐢? }],
             },
         }));
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
-        expect(screen.getAllByText('审核需修改').length).toBeGreaterThan(0);
-        expect(screen.getByText('请补充运行证据')).not.toBeNull();
+        expect(screen.getAllByText('瀹℃牳闇€淇敼').length).toBeGreaterThan(0);
+        expect(screen.getByText('璇疯ˉ鍏呰繍琛岃瘉鎹?)).not.toBeNull();
         expect(screen.getByText('apps[0].app.governance.testEvidence')).not.toBeNull();
-        expect(screen.getByText('缺少运行证据')).not.toBeNull();
-        expect(screen.getByText('先运行一次应用')).not.toBeNull();
+        expect(screen.getByText('缂哄皯杩愯璇佹嵁')).not.toBeNull();
+        expect(screen.getByText('鍏堣繍琛屼竴娆″簲鐢?)).not.toBeNull();
         expect(screen.getByText(/"status": "review_failed"/)).not.toBeNull();
 
-        fireEvent.click(screen.getByText('提交审核'));
-        await waitFor(() => expect(screen.getAllByText('本地待同步').length).toBeGreaterThan(0));
+        fireEvent.click(screen.getByText('鎻愪氦瀹℃牳'));
+        await waitFor(() => expect(screen.getAllByText('鏈湴寰呭悓姝?).length).toBeGreaterThan(0));
         expect(screen.getByText(/"status": "submitted"/)).not.toBeNull();
     });
 
     it('opens market import with the current app manifest when review dependency issues need repair', async () => {
         const reviewedApp = {
             id: 'local-app-review-dependency',
-            name: '依赖回退应用',
-            description: '用于验证市场审核依赖修复入口',
-            category: '法务',
+            name: '渚濊禆鍥為€€搴旂敤',
+            description: '鐢ㄤ簬楠岃瘉甯傚満瀹℃牳渚濊禆淇鍏ュ彛',
+            category: '娉曞姟',
             kind: 'tool_app',
             icon: 'contract',
             accent: '#2f5f98',
@@ -1361,20 +1361,20 @@ describe('AppsPage', () => {
                 reviewedAt: '2026-06-17T00:10:00.000Z',
                 status: 'review_failed',
                 reviewer: 'market-reviewer',
-                message: '依赖验证过期',
-                reviewIssues: [{ path: 'apps[0].app.governance.dependencyVerification', severity: 'error', message: 'dependency verification is stale', suggestion: '安装或重新检查依赖' }],
+                message: '渚濊禆楠岃瘉杩囨湡',
+                reviewIssues: [{ path: 'apps[0].app.governance.dependencyVerification', severity: 'error', message: 'dependency verification is stale', suggestion: '瀹夎鎴栭噸鏂版鏌ヤ緷璧? }],
             },
         }));
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
-        fireEvent.click(screen.getByText('处理依赖'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
+        fireEvent.click(screen.getByText('澶勭悊渚濊禆'));
 
-        const marketTab = screen.getByRole('tab', { name: '从市场添加' });
+        const marketTab = screen.getByRole('tab', { name: '浠庡競鍦烘坊鍔? });
         expect(marketTab.getAttribute('aria-selected')).toBe('true');
-        const textarea = screen.getByLabelText('安装应用包') as HTMLTextAreaElement;
+        const textarea = screen.getByLabelText('瀹夎搴旂敤鍖?) as HTMLTextAreaElement;
         await waitFor(() => expect(textarea.value).toContain('maclaw.app.v1'));
         expect(textarea.value).toContain('local-app-review-dependency');
         expect(textarea.value).toContain('contract-review');
@@ -1383,9 +1383,9 @@ describe('AppsPage', () => {
     it('blocks app package review submission when required dependencies are unavailable', async () => {
         const app = {
             id: 'local-publish-blocked-dep',
-            name: '依赖阻断应用',
-            description: '用于验证发布依赖门禁',
-            category: '法务',
+            name: '渚濊禆闃绘柇搴旂敤',
+            description: '鐢ㄤ簬楠岃瘉鍙戝竷渚濊禆闂ㄧ',
+            category: '娉曞姟',
             kind: 'tool_app',
             icon: 'contract',
             accent: '#7c3f58',
@@ -1430,18 +1430,18 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
-        await waitFor(() => expect(screen.getByText('暂无本机待同步提交')).not.toBeNull());
-        const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('依赖阻断应用')) as HTMLElement;
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
+        await waitFor(() => expect(screen.getByText('鏆傛棤鏈満寰呭悓姝ユ彁浜?)).not.toBeNull());
+        const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('渚濊禆闃绘柇搴旂敤')) as HTMLElement;
         expect(card).toBeTruthy();
-        fireEvent.click(within(card).getByText('提交审核'));
+        fireEvent.click(within(card).getByText('鎻愪氦瀹℃牳'));
 
         await waitFor(() => expect(planMaclawAppInstallMock).toHaveBeenCalledTimes(1));
         expect(submitMaclawAppPackage).not.toHaveBeenCalled();
-        expect(within(card).getByText('依赖检查失败')).not.toBeNull();
-        expect(within(card).getByText('依赖阻断应用暂不可用：disabled-workflow 未安装或已停用。')).not.toBeNull();
-        expect(within(card).queryByText('等待企业市场审核')).toBeNull();
+        expect(within(card).getByText('渚濊禆妫€鏌ュけ璐?)).not.toBeNull();
+        expect(within(card).getByText('渚濊禆闃绘柇搴旂敤鏆備笉鍙敤锛歞isabled-workflow 鏈畨瑁呮垨宸插仠鐢ㄣ€?)).not.toBeNull();
+        expect(within(card).queryByText('绛夊緟浼佷笟甯傚満瀹℃牳')).toBeNull();
     });
 
     it('uses the enterprise market bridge when submitting app packages', async () => {
@@ -1468,8 +1468,8 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        await createAndRunLocalToolApp('合同归档');
-        const toolApp = latestStoredCustomApp('合同归档');
+        await createAndRunLocalToolApp('鍚堝悓褰掓。');
+        const toolApp = latestStoredCustomApp('鍚堝悓褰掓。');
         expect(toolApp).toBeTruthy();
         const history = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
         const toolSkillID = String(toolApp.manifest?.skill?.id || toolApp.manifest?.appSkill?.id || `${toolApp.id}-app`);
@@ -1510,17 +1510,17 @@ describe('AppsPage', () => {
                 missingTypes: [],
             },
         });
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
-        const publishCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('合同归档')) as HTMLElement;
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
+        const publishCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('鍚堝悓褰掓。')) as HTMLElement;
         expect(publishCard).toBeTruthy();
-        expect(within(publishCard).getByText('可提交')).not.toBeNull();
-        fireEvent.click(within(publishCard).getByText('提交审核'));
+        expect(within(publishCard).getByText('鍙彁浜?)).not.toBeNull();
+        fireEvent.click(within(publishCard).getByText('鎻愪氦瀹℃牳'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
         expect(payload.schema).toBe('maclaw.app.pack.v1');
-        expect(payload.apps[0].app.name).toBe('合同归档');
+        expect(payload.apps[0].app.name).toBe('鍚堝悓褰掓。');
         const layout = payload.apps[0].app.governance.workspaceLayout;
         expect(layout.schema).toBe('maclaw.app.ui.v1');
         expect(layout.entry).toBe('tool_workspace');
@@ -1561,7 +1561,7 @@ describe('AppsPage', () => {
             schema: 'maclaw.app.install_plan.v1',
             hasBlockingDependency: false,
         });
-        expect(screen.getAllByText('等待企业市场审核').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('绛夊緟浼佷笟甯傚満瀹℃牳').length).toBeGreaterThan(0);
         expect(screen.getAllByText(/market-review-123/).length).toBeGreaterThan(0);
         expect(screen.getByText(/"channel": "hub"/)).not.toBeNull();
     });
@@ -1996,7 +1996,7 @@ describe('AppsPage', () => {
     it('includes enterprise visual UI metadata in market submission packages', async () => {
         const app = {
             id: 'publish-enterprise-ui-app',
-            name: '客户续约工作台',
+            name: '瀹㈡埛缁害宸ヤ綔鍙?,
             description: 'Publish enterprise UI metadata',
             category: 'CRM',
             kind: 'enterprise_normal_app',
@@ -2033,7 +2033,7 @@ describe('AppsPage', () => {
             installEvidence: {
                 dependency_verification: {
                     schema: 'maclaw.app.install_plan.v1',
-                    dependencies: [{ id: 'customer-renewal-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: ['publish-enterprise-ui-app'] }],
+                    dependencies: [{ id: 'customer-renewal-skill', version: '1.0.0', kind: 'app_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: ['publish-enterprise-ui-app'] }],
                 },
             },
         };
@@ -2054,14 +2054,14 @@ describe('AppsPage', () => {
                 workflowContractIssueCount: 0,
                 hasGovernanceReviewIssue: false,
                 governanceReviewIssueCount: 0,
-                dependencies: [{ id: 'customer-renewal-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: [app.id] }],
+                dependencies: [{ id: 'customer-renewal-skill', version: '1.0.0', kind: 'app_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: [app.id] }],
             },
         });
         planMaclawAppInstallMock.mockResolvedValueOnce({
             schema: 'maclaw.app.install_plan.v1',
             apps: [{ id: app.id, name: app.name, kind: app.kind }, { id: 'other-blocked-app', name: 'Other blocked app', kind: 'tool_app' }],
             dependencies: [
-                { id: 'customer-renewal-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: [app.id] },
+                { id: 'customer-renewal-skill', version: '1.0.0', kind: 'app_skill', required: true, source: 'hub', installed: true, health: 'ready', action: 'skip', app_ids: [app.id] },
                 { id: 'other-blocked-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub', installed: false, health: 'missing', action: 'blocked', app_ids: ['other-blocked-app'] },
             ],
             has_missing_required: false,
@@ -2073,15 +2073,25 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
-        const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('客户续约工作台')) as HTMLElement;
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
+        const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('瀹㈡埛缁害宸ヤ綔鍙?)) as HTMLElement;
         expect(card).toBeTruthy();
-        expect(within(card).getByText('customer-renewal-skill@1.0.0 (runtime_skill, ready)')).not.toBeNull();
-        fireEvent.click(within(card).getByText('提交审核'));
+        expect(within(card).getByText('customer-renewal-skill@1.0.0 (app_skill, ready)')).not.toBeNull();
+        fireEvent.click(within(card).getByText('鎻愪氦瀹℃牳'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
+        expect(payload.apps[0].app.ui.entry).toBe('business_workspace');
+        expect(payload.apps[0].app.ui.layouts.business_workspace).toMatchObject({
+            template: 'classic_split',
+            density: 'compact',
+            primaryRegion: 'left',
+            outputRegion: 'right',
+        });
+        expect(payload.apps[0].app.ui.layouts.business_workspace.navigation).toEqual(['customers', 'renewals']);
+        expect(payload.apps[0].app.ui.layouts.business_workspace.list.columns).toEqual(['customer_name', 'status', 'updated_at']);
+        expect(payload.apps[0].app.binding.ui.layouts.business_workspace.navigation).toEqual(['customers', 'renewals']);
         const layout = payload.apps[0].app.governance.workspaceLayout;
         expect(layout.entry).toBe('business_workspace');
         expect(layout.navigation).toEqual(['customers', 'renewals']);
@@ -2663,13 +2673,13 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        await createAndRunLocalToolApp('合同归档');
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
-        fireEvent.click(screen.getByText('提交审核'));
+        await createAndRunLocalToolApp('鍚堝悓褰掓。');
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
+        fireEvent.click(screen.getByText('鎻愪氦瀹℃牳'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
-        expect(screen.getAllByText('本地待同步').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('鏈湴寰呭悓姝?).length).toBeGreaterThan(0);
         expect(screen.getAllByText(/queued locally for enterprise market sync/).length).toBeGreaterThan(0);
         expect(screen.getByText(/"channel": "local"/)).not.toBeNull();
     });
@@ -2691,17 +2701,17 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        await createAndRunLocalToolApp('合同归档');
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
-        fireEvent.click(screen.getByText('提交审核'));
+        await createAndRunLocalToolApp('鍚堝悓褰掓。');
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
+        fireEvent.click(screen.getByText('鎻愪氦瀹℃牳'));
 
-        await waitFor(() => expect(screen.getAllByText('本地待同步').length).toBeGreaterThan(0));
-        fireEvent.click(screen.getByText('撤回提交'));
+        await waitFor(() => expect(screen.getAllByText('鏈湴寰呭悓姝?).length).toBeGreaterThan(0));
+        fireEvent.click(screen.getByText('鎾ゅ洖鎻愪氦'));
 
         await waitFor(() => expect(withdrawMaclawAppPackageSubmission).toHaveBeenCalledWith('local-review-withdraw'));
-        expect(screen.getByText('可提交')).not.toBeNull();
-        await waitFor(() => expect(screen.getByText('暂无本机待同步提交')).not.toBeNull());
+        expect(screen.getByText('鍙彁浜?)).not.toBeNull();
+        await waitFor(() => expect(screen.getByText('鏆傛棤鏈満寰呭悓姝ユ彁浜?)).not.toBeNull());
     });
 
     it('shows local app package submission queue summaries', async () => {
@@ -2711,7 +2721,7 @@ describe('AppsPage', () => {
             status: 'submitted',
             channel: 'local',
             app_ids: ['queued-app'],
-            app_names: ['队列应用'],
+            app_names: ['闃熷垪搴旂敤'],
             package_sha: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
             package_bytes: 1536,
             dependencies: [{ id: 'queued-app-skill', required: true, installed: true }, { id: 'queued-workflow', kind: 'workflow_skill', required: true, installed: false }],
@@ -2731,25 +2741,25 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
         await waitFor(() => expect(listMaclawAppPackageSubmissions).toHaveBeenCalledWith(8));
-        expect(screen.getByText('本机提交队列')).not.toBeNull();
+        expect(screen.getByText('鏈満鎻愪氦闃熷垪')).not.toBeNull();
         expect(screen.getByText('local-review-existing')).not.toBeNull();
-        expect(screen.getByText(/队列应用/)).not.toBeNull();
+        expect(screen.getByText(/闃熷垪搴旂敤/)).not.toBeNull();
         expect(screen.getByText(/sha256:0123456789ab/)).not.toBeNull();
         expect(screen.getByText(/1.5 KB/)).not.toBeNull();
         expect(screen.getByText(/:2 .*:1/)).not.toBeNull();
-        expect(screen.getByText(/事件:2 2026-06-17T01:12:00Z/)).not.toBeNull();
+        expect(screen.getByText(/浜嬩欢:2 2026-06-17T01:12:00Z/)).not.toBeNull();
         expect(screen.getByText(/queued locally for enterprise market sync/)).not.toBeNull();
         const evidenceSnapshot = document.querySelector('.apps-install-evidence-snapshot') as HTMLElement;
         expect(evidenceSnapshot).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('界面布局')).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('enterprise_workspace · approval_console · compact')).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('结果契约')).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('approval_result · 3 types')).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('run-queued · proto-queued')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('鐣岄潰甯冨眬')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('enterprise_workspace 路 approval_console 路 compact')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('缁撴灉濂戠害')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('approval_result 路 3 types')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('run-queued 路 proto-queued')).not.toBeNull();
     });
 
     it('shows a loading state while reading the local submission queue', async () => {
@@ -2762,13 +2772,13 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
-        expect(screen.getByText('提交队列读取中')).not.toBeNull();
+        expect(screen.getByText('鎻愪氦闃熷垪璇诲彇涓?)).not.toBeNull();
 
         resolveQueue([]);
-        await waitFor(() => expect(screen.getByText('暂无本机待同步提交')).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('鏆傛棤鏈満寰呭悓姝ユ彁浜?)).not.toBeNull());
     });
 
     it('installs an approved Hub app directly from the publish queue', async () => {
@@ -2871,9 +2881,9 @@ describe('AppsPage', () => {
         expect(within(approvedRow).getByText('approved-app-skill')).not.toBeNull();
         expect(within(approvedRow).getByText('v7')).not.toBeNull();
         expect(within(approvedRow).getByText('Workspace layout')).not.toBeNull();
-        expect(within(approvedRow).getByText('business_workspace · dashboard · compact')).not.toBeNull();
+        expect(within(approvedRow).getByText('business_workspace 路 dashboard 路 compact')).not.toBeNull();
         expect(within(approvedRow).getByText('Test evidence')).not.toBeNull();
-        expect(within(approvedRow).getByText('run-approved-install · proto-approved-install')).not.toBeNull();
+        expect(within(approvedRow).getByText('run-approved-install 路 proto-approved-install')).not.toBeNull();
         expect(within(approvedRow).getByText('DataSrv')).not.toBeNull();
         expect(within(approvedRow).getByText('DataSrv bindings registered: 1/1')).not.toBeNull();
         fireEvent.click(screen.getByText('Manage apps'));
@@ -2913,23 +2923,23 @@ describe('AppsPage', () => {
                 status: 'published',
                 channel: 'hub',
                 app_ids: ['refreshed-app'],
-                app_names: ['刷新应用'],
+                app_names: ['鍒锋柊搴旂敤'],
                 message: 'published by enterprise market',
             }]);
         (window as any).go = { main: { App: { ListMaclawAppPackageSubmissions: listMaclawAppPackageSubmissions } } };
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
-        await waitFor(() => expect(screen.getByText('暂无本机待同步提交')).not.toBeNull());
-        fireEvent.click(screen.getByText('刷新'));
+        await waitFor(() => expect(screen.getByText('鏆傛棤鏈満寰呭悓姝ユ彁浜?)).not.toBeNull());
+        fireEvent.click(screen.getByText('鍒锋柊'));
 
         await waitFor(() => expect(listMaclawAppPackageSubmissions).toHaveBeenCalledTimes(2));
         expect(screen.getByText('local-review-refreshed')).not.toBeNull();
-        expect(screen.getByText(/最后刷新/)).not.toBeNull();
-        expect(screen.getByText(/刷新应用/)).not.toBeNull();
+        expect(screen.getByText(/鏈€鍚庡埛鏂?)).not.toBeNull();
+        expect(screen.getByText(/鍒锋柊搴旂敤/)).not.toBeNull();
         expect(screen.getByText(/published by enterprise market/)).not.toBeNull();
     });
 
@@ -2946,14 +2956,14 @@ describe('AppsPage', () => {
             submission_id: 'local-review-detail',
             status: 'review_failed',
             events: [{ at: '2026-06-17T01:10:00Z', status: 'submitted', channel: 'local', submission_id: 'local-review-detail' }],
-            review_issues: [{ path: 'apps[0]', severity: 'error', message: '缺少运行证据' }],
+            review_issues: [{ path: 'apps[0]', severity: 'error', message: '缂哄皯杩愯璇佹嵁' }],
             package: {
                 schema: 'maclaw.app.pack.v1',
                 privateMarker: 'x_maclaw_apps',
                 apps: [{
                     schema: 'maclaw.app.v1',
                     privateMarker: 'x_maclaw_apps',
-                    app: { id: 'queued-detail-app', name: '队列详情应用' },
+                    app: { id: 'queued-detail-app', name: '闃熷垪璇︽儏搴旂敤' },
                 }],
             },
         });
@@ -2961,27 +2971,27 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
         await waitFor(() => expect(screen.getByText('local-review-detail')).not.toBeNull());
-        fireEvent.click(screen.getByText('复制队列包'));
+        fireEvent.click(screen.getByText('澶嶅埗闃熷垪鍖?));
 
         await waitFor(() => expect(getMaclawAppPackageSubmission).toHaveBeenCalledWith('local-review-detail'));
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1));
         const copied = JSON.parse((navigator.clipboard.writeText as any).mock.calls[0][0]);
         expect(copied.schema).toBe('maclaw.app.pack.v1');
         expect(copied.apps[0].app.id).toBe('queued-detail-app');
-        expect(screen.getByText('已复制')).not.toBeNull();
+        expect(screen.getByText('宸插鍒?)).not.toBeNull();
 
-        fireEvent.click(screen.getByText('复制审计'));
+        fireEvent.click(screen.getByText('澶嶅埗瀹¤'));
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(2));
         const audit = JSON.parse((navigator.clipboard.writeText as any).mock.calls[1][0]);
         expect(audit.submission_id).toBe('local-review-detail');
         expect(audit.events[0].status).toBe('submitted');
-        expect(audit.review_issues[0].message).toBe('缺少运行证据');
+        expect(audit.review_issues[0].message).toBe('缂哄皯杩愯璇佹嵁');
         expect(audit.package.apps[0].app.id).toBe('queued-detail-app');
-        expect(screen.getByText('审计已复制')).not.toBeNull();
+        expect(screen.getByText('瀹¤宸插鍒?)).not.toBeNull();
     });
 
     it('shows inline queued app package audit details', async () => {
@@ -2991,10 +3001,10 @@ describe('AppsPage', () => {
             status: 'review_failed',
             channel: 'local',
             app_ids: ['queued-inline-app'],
-            app_names: ['队列内联应用'],
+            app_names: ['闃熷垪鍐呰仈搴旂敤'],
             reviewer: 'market-reviewer',
             risk_level: 'medium',
-            review_issues: [{ path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缺少运行证据' }],
+            review_issues: [{ path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缂哄皯杩愯璇佹嵁' }],
         }]);
         const getMaclawAppPackageSubmission = vi.fn().mockResolvedValue({
             submission_id: 'local-review-inline-detail',
@@ -3009,7 +3019,7 @@ describe('AppsPage', () => {
                 apps: [{
                     schema: 'maclaw.app.v1',
                     privateMarker: 'x_maclaw_apps',
-                    app: { id: 'queued-inline-app', name: '队列内联应用' },
+                    app: { id: 'queued-inline-app', name: '闃熷垪鍐呰仈搴旂敤' },
                 }],
             },
         });
@@ -3017,30 +3027,30 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
         await waitFor(() => expect(screen.getByText('local-review-inline-detail')).not.toBeNull());
-        fireEvent.click(screen.getByText('查看详情'));
+        fireEvent.click(screen.getByText('鏌ョ湅璇︽儏'));
 
         await waitFor(() => expect(getMaclawAppPackageSubmission).toHaveBeenCalledWith('local-review-inline-detail'));
-        expect(screen.getByText('提交详情')).not.toBeNull();
-        expect(screen.getByText(/审核人: market-reviewer/)).not.toBeNull();
-        expect(screen.getByText(/风险: medium/)).not.toBeNull();
-        expect(screen.getByText(/包含应用: 队列内联应用/)).not.toBeNull();
-        expect(screen.getByText(/审核问题: error · apps\[0\]\.app\.governance\.testEvidence · 缺少运行证据/)).not.toBeNull();
-        expect(screen.getByText(/审计事件: 2026-06-17T01:18:00Z · submitted · local/)).not.toBeNull();
+        expect(screen.getByText('鎻愪氦璇︽儏')).not.toBeNull();
+        expect(screen.getByText(/瀹℃牳浜? market-reviewer/)).not.toBeNull();
+        expect(screen.getByText(/椋庨櫓: medium/)).not.toBeNull();
+        expect(screen.getByText(/鍖呭惈搴旂敤: 闃熷垪鍐呰仈搴旂敤/)).not.toBeNull();
+        expect(screen.getByText(/瀹℃牳闂: error 路 apps\[0\]\.app\.governance\.testEvidence 路 缂哄皯杩愯璇佹嵁/)).not.toBeNull();
+        expect(screen.getByText(/瀹¤浜嬩欢: 2026-06-17T01:18:00Z 路 submitted 路 local/)).not.toBeNull();
 
-        fireEvent.click(screen.getByText('收起详情'));
-        expect(screen.queryByText('提交详情')).toBeNull();
+        fireEvent.click(screen.getByText('鏀惰捣璇︽儏'));
+        expect(screen.queryByText('鎻愪氦璇︽儏')).toBeNull();
     });
 
     it('merges durable queue review status into local publish cards', async () => {
         const reviewedApp = {
             id: 'local-app-queue-published',
-            name: '队列回写应用',
-            description: '用于验证队列状态回写',
-            category: '法务',
+            name: '闃熷垪鍥炲啓搴旂敤',
+            description: '鐢ㄤ簬楠岃瘉闃熷垪鐘舵€佸洖鍐?,
+            category: '娉曞姟',
             kind: 'tool_app',
             icon: 'contract',
             accent: '#7c3f58',
@@ -3074,10 +3084,10 @@ describe('AppsPage', () => {
             risk_level: 'high',
             approved_scopes: ['finance.expense_submit', 'finance.audit'],
             review_issues: [
-                { path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缺少运行证据', suggestion: '先运行一次应用' },
-                { path: 'apps[0].app.permissions', severity: 'warning', message: '权限范围偏宽', suggestion: '缩小到财务单据' },
-                { path: 'apps[0].app.support.owner', severity: 'info', message: '建议补充负责人' },
-                { path: 'apps[0].app.runtime', severity: 'info', message: '建议补充回滚说明' },
+                { path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缂哄皯杩愯璇佹嵁', suggestion: '鍏堣繍琛屼竴娆″簲鐢? },
+                { path: 'apps[0].app.permissions', severity: 'warning', message: '鏉冮檺鑼冨洿鍋忓', suggestion: '缂╁皬鍒拌储鍔″崟鎹? },
+                { path: 'apps[0].app.support.owner', severity: 'info', message: '寤鸿琛ュ厖璐熻矗浜? },
+                { path: 'apps[0].app.runtime', severity: 'info', message: '寤鸿琛ュ厖鍥炴粴璇存槑' },
             ],
             message: 'published by enterprise market',
         }]).mockResolvedValue([]);
@@ -3092,10 +3102,10 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
-        await waitFor(() => expect(screen.getAllByText('已发布').length).toBeGreaterThan(0));
+        await waitFor(() => expect(screen.getAllByText('宸插彂甯?).length).toBeGreaterThan(0));
         expect(screen.getAllByText(/market-review-published/).length).toBeGreaterThan(0);
         expect(screen.getAllByText(/published by enterprise market/).length).toBeGreaterThan(0);
         expect(screen.getByText(/"status": "published"/)).not.toBeNull();
@@ -3103,26 +3113,26 @@ describe('AppsPage', () => {
         expect(screen.getByText(/"reviewedAt": "2026-06-17T01:25:00Z"/)).not.toBeNull();
         expect(screen.getByText(/"publishedAt": "2026-06-17T01:30:00Z"/)).not.toBeNull();
         expect(screen.getByText(/"reviewer": "market-reviewer"/)).not.toBeNull();
-        expect(screen.getAllByText(/风险: high/).length).toBeGreaterThan(0);
-        expect(screen.getAllByText(/批准权限: finance\.expense_submit, finance\.audit/).length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/椋庨櫓: high/).length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/鎵瑰噯鏉冮檺: finance\.expense_submit, finance\.audit/).length).toBeGreaterThan(0);
         expect(screen.getByText(/"riskLevel": "high"/)).not.toBeNull();
         expect(screen.getByText(/"approvedScopes"/)).not.toBeNull();
-        expect(screen.getByText(/审核问题: error · apps\[0\]\.app\.governance\.testEvidence · 缺少运行证据 · 先运行一次应用/)).not.toBeNull();
-        expect(screen.getByText(/warning · apps\[0\]\.app\.permissions · 权限范围偏宽 · 缩小到财务单据/)).not.toBeNull();
-        expect(screen.getByText(/info · apps\[0\]\.app\.support\.owner · 建议补充负责人/)).not.toBeNull();
+        expect(screen.getByText(/瀹℃牳闂: error 路 apps\[0\]\.app\.governance\.testEvidence 路 缂哄皯杩愯璇佹嵁 路 鍏堣繍琛屼竴娆″簲鐢?)).not.toBeNull();
+        expect(screen.getByText(/warning 路 apps\[0\]\.app\.permissions 路 鏉冮檺鑼冨洿鍋忓 路 缂╁皬鍒拌储鍔″崟鎹?)).not.toBeNull();
+        expect(screen.getByText(/info 路 apps\[0\]\.app\.support\.owner 路 寤鸿琛ュ厖璐熻矗浜?)).not.toBeNull();
         expect(screen.getByText(/"reviewIssues"/)).not.toBeNull();
         expect(screen.getByText(/"reviewIssues"/)).not.toBeNull();
-        expect(screen.getByText(/"suggestion": "先运行一次应用/)).not.toBeNull();
-        expect(screen.getByText(/"message": "建议补充回滚说明"/)).not.toBeNull();
+        expect(screen.getByText(/"suggestion": "鍏堣繍琛屼竴娆″簲鐢?)).not.toBeNull();
+        expect(screen.getByText(/"message": "寤鸿琛ュ厖鍥炴粴璇存槑"/)).not.toBeNull();
 
-        fireEvent.click(screen.getByText('去修复'));
-        await waitFor(() => expect(screen.getByRole('tab', { name: '应用管理' }).getAttribute('aria-selected')).toBe('true'));
-        const nameInput = screen.getByDisplayValue('队列回写应用');
+        fireEvent.click(screen.getByText('鍘讳慨澶?));
+        await waitFor(() => expect(screen.getByRole('tab', { name: '搴旂敤绠＄悊' }).getAttribute('aria-selected')).toBe('true'));
+        const nameInput = screen.getByDisplayValue('闃熷垪鍥炲啓搴旂敤');
         expect(nameInput).not.toBeNull();
-        fireEvent.change(nameInput, { target: { value: '队列回写应用修正版' } });
-        fireEvent.click(screen.getByText('保存'));
-        await waitFor(() => expect(latestStoredCustomApp('队列回写应用修正版')).toBeTruthy());
-        const updatedQueueApp = latestStoredCustomApp('队列回写应用修正版');
+        fireEvent.change(nameInput, { target: { value: '闃熷垪鍥炲啓搴旂敤淇鐗? } });
+        fireEvent.click(screen.getByText('淇濆瓨'));
+        await waitFor(() => expect(latestStoredCustomApp('闃熷垪鍥炲啓搴旂敤淇鐗?)).toBeTruthy());
+        const updatedQueueApp = latestStoredCustomApp('闃熷垪鍥炲啓搴旂敤淇鐗?);
         seedSuccessfulLocalAppRun({
             ...updatedQueueApp,
             manifest: {
@@ -3137,12 +3147,12 @@ describe('AppsPage', () => {
             resultPayload: { status: 'ok' },
         });
 
-        fireEvent.click(screen.getByText('审核/发布'));
-        await waitFor(() => expect(screen.getAllByText('本地已修改，需重新提交').length).toBeGreaterThan(0));
-        expect(screen.getByText(/本地修改:/)).not.toBeNull();
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
+        await waitFor(() => expect(screen.getAllByText('鏈湴宸蹭慨鏀癸紝闇€閲嶆柊鎻愪氦').length).toBeGreaterThan(0));
+        expect(screen.getByText(/鏈湴淇敼:/)).not.toBeNull();
         expect(screen.getByText(/"modifiedAt"/)).not.toBeNull();
         expect(screen.getByText(/"version": 2/)).not.toBeNull();
-        const resubmitButton = screen.getByRole('button', { name: '提交审核' }) as HTMLButtonElement;
+        const resubmitButton = screen.getByRole('button', { name: '鎻愪氦瀹℃牳' }) as HTMLButtonElement;
         expect(resubmitButton.disabled).toBe(false);
 
         fireEvent.click(resubmitButton);
@@ -3151,19 +3161,19 @@ describe('AppsPage', () => {
         expect(JSON.stringify(submittedPackage)).not.toContain('modifiedAt');
         expect(JSON.stringify(submittedPackage)).not.toContain('reviewIssues');
         expect(submittedPackage.apps[0].app.version).toBe(2);
-        await waitFor(() => expect(screen.queryByText('本地已修改，需重新提交')).toBeNull());
-        expect(screen.getAllByText('等待企业市场审核').length).toBeGreaterThan(0);
-        expect(screen.getAllByText(/版本: v2/).length).toBeGreaterThan(0);
+        await waitFor(() => expect(screen.queryByText('鏈湴宸蹭慨鏀癸紝闇€閲嶆柊鎻愪氦')).toBeNull());
+        expect(screen.getAllByText('绛夊緟浼佷笟甯傚満瀹℃牳').length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/鐗堟湰: v2/).length).toBeGreaterThan(0);
         expect(screen.getAllByText(/market-review-resubmitted/).length).toBeGreaterThan(0);
     });
 
     it('updates the draft manifest preview while creating an app', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍚堝悓褰掓。' } });
 
-        expect(screen.getByText(/合同归档/)).not.toBeNull();
+        expect(screen.getByText(/鍚堝悓褰掓。/)).not.toBeNull();
         expect(screen.getByText(/fixed_skill_ui/)).not.toBeNull();
         expect(screen.getByText(/draft-app/)).not.toBeNull();
     });
@@ -3171,13 +3181,13 @@ describe('AppsPage', () => {
     it('offers expanded semantic app icons in app studio', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '自动巡检' } });
-        fireEvent.click(screen.getByTitle('Agent/自动化 (bot)'));
-        fireEvent.click(screen.getByTitle('靛蓝 #5b5ea6'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鑷姩宸℃' } });
+        fireEvent.click(screen.getByTitle('Agent/鑷姩鍖?(bot)'));
+        fireEvent.click(screen.getByTitle('闈涜摑 #5b5ea6'));
 
-        expect(screen.getByRole('button', { name: '付款/财务 (wallet)' })).not.toBeNull();
-        expect(screen.getByRole('button', { name: '看板/指标 (dashboard)' })).not.toBeNull();
+        expect(screen.getByRole('button', { name: '浠樻/璐㈠姟 (wallet)' })).not.toBeNull();
+        expect(screen.getByRole('button', { name: '鐪嬫澘/鎸囨爣 (dashboard)' })).not.toBeNull();
         expect(screen.getByText(/"icon": "bot"/)).not.toBeNull();
         expect(screen.getByText(/"accent": "#5b5ea6"/)).not.toBeNull();
     });
@@ -3185,26 +3195,26 @@ describe('AppsPage', () => {
     it('generates a draft app definition from a natural language prompt', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：做一个合同归档应用，上传 Word/PDF，输出归档编号和审核结果'), {
-            target: { value: '做一个合同归档应用，上传 Word/PDF，输出归档编号和审核结果' },
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍋氫竴涓悎鍚屽綊妗ｅ簲鐢紝涓婁紶 Word/PDF锛岃緭鍑哄綊妗ｇ紪鍙峰拰瀹℃牳缁撴灉'), {
+            target: { value: '鍋氫竴涓悎鍚屽綊妗ｅ簲鐢紝涓婁紶 Word/PDF锛岃緭鍑哄綊妗ｇ紪鍙峰拰瀹℃牳缁撴灉' },
         });
-        fireEvent.click(screen.getByText('生成草稿'));
+        fireEvent.click(screen.getByText('鐢熸垚鑽夌'));
 
-        expect(screen.getByDisplayValue('合同归档应用')).not.toBeNull();
-        expect(screen.getByDisplayValue('文档处理')).not.toBeNull();
+        expect(screen.getByDisplayValue('鍚堝悓褰掓。搴旂敤')).not.toBeNull();
+        expect(screen.getByDisplayValue('鏂囨。澶勭悊')).not.toBeNull();
         expect(screen.getByText(/fixed_skill_ui/)).not.toBeNull();
-        expect(screen.getAllByText(/合同归档应用/).length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/鍚堝悓褰掓。搴旂敤/).length).toBeGreaterThan(0);
     });
 
     it('uses studio type choices as create-form presets', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
         const kindPicker = document.querySelector('.apps-studio-kind') as HTMLElement;
-        const appCardButton = within(kindPicker).getByRole('button', { name: /企业审批型/ }) as HTMLButtonElement;
-        const toolCardButton = within(kindPicker).getByRole('button', { name: /工具应用/ }) as HTMLButtonElement;
-        const automationCardButton = within(kindPicker).getByRole('button', { name: /自动化/ }) as HTMLButtonElement;
+        const appCardButton = within(kindPicker).getByRole('button', { name: /浼佷笟瀹℃壒鍨? }) as HTMLButtonElement;
+        const toolCardButton = within(kindPicker).getByRole('button', { name: /宸ュ叿搴旂敤/ }) as HTMLButtonElement;
+        const automationCardButton = within(kindPicker).getByRole('button', { name: /鑷姩鍖? }) as HTMLButtonElement;
 
         expect(toolCardButton.getAttribute('aria-pressed')).toBe('true');
 
@@ -3216,7 +3226,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(automationCardButton);
         expect(automationCardButton.getAttribute('aria-pressed')).toBe('true');
-        expect(screen.getAllByDisplayValue('自动化').length).toBeGreaterThan(0);
+        expect(screen.getAllByDisplayValue('鑷姩鍖?).length).toBeGreaterThan(0);
         expect(screen.getByText(/"kind": "automation_app"/)).not.toBeNull();
         expect(screen.getByText(/"launchMode": "automation_console"/)).not.toBeNull();
     });
@@ -3254,14 +3264,14 @@ describe('AppsPage', () => {
         fireEvent.click(document.querySelector('.apps-studio-button') as HTMLElement);
         fireEvent.change(document.querySelector('.apps-create-form input[placeholder]') as HTMLInputElement, { target: { value: 'approval-workbench' } });
         const kindPicker = document.querySelector('.apps-studio-kind') as HTMLElement;
-        fireEvent.click(within(kindPicker).getByRole('button', { name: /企业审批型/ }));
+        fireEvent.click(within(kindPicker).getByRole('button', { name: /浼佷笟瀹℃壒鍨? }));
         const appSkillPicker = screen.getByTestId('studio-app-skill-id');
         await waitFor(() => expect(within(appSkillPicker).getAllByText('expense-super-app').length).toBeGreaterThan(0));
         expect(within(appSkillPicker).queryByText('installed-approval-flow')).toBeNull();
         fireEvent.click(within(appSkillPicker).getByRole('option', { name: /expense-super-app/ }) as HTMLButtonElement);
         const workflowSkillPicker = screen.getByTestId('studio-workflow-skill-id');
         fireEvent.change(workflowSkillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'expense approval' } });
-        fireEvent.click(within(workflowSkillPicker).getByRole('button', { name: /搜索/ }));
+        fireEvent.click(within(workflowSkillPicker).getByRole('button', { name: /鎼滅储/ }));
         await waitFor(() => expect(searchMixedSkillsMock).toHaveBeenCalledWith('expense approval'));
         fireEvent.click(within(workflowSkillPicker).getByText('Expense Approval Flow').closest('button') as HTMLButtonElement);
         fireEvent.change(screen.getByTestId('studio-workflow-skill-version'), { target: { value: '2.1.0' } });
@@ -3333,9 +3343,9 @@ describe('AppsPage', () => {
     it('includes tool app input and output modes in draft manifests', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '表格清洗' } });
-        fireEvent.change(screen.getByDisplayValue('文件上传'), { target: { value: 'mixed' } });
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '琛ㄦ牸娓呮礂' } });
+        fireEvent.change(screen.getByDisplayValue('鏂囦欢涓婁紶'), { target: { value: 'mixed' } });
         fireEvent.click(screen.getByText('Excel / XLSX'));
 
         expect(screen.getByText(/"inputMode": "mixed"/)).not.toBeNull();
@@ -3449,15 +3459,15 @@ describe('AppsPage', () => {
     it('creates draft tool apps with multiple file input enabled', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '批量合同归档' } });
-        fireEvent.click(screen.getByText('允许一次选择多个文件'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鎵归噺鍚堝悓褰掓。' } });
+        fireEvent.click(screen.getByText('鍏佽涓€娆￠€夋嫨澶氫釜鏂囦欢'));
 
         expect(screen.getByText(/"multipleFiles": true/)).not.toBeNull();
 
-        fireEvent.click(screen.getAllByText('创建应用')[1]);
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('批量合同归档')[0]);
+        fireEvent.click(screen.getAllByText('鍒涘缓搴旂敤')[1]);
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('鎵归噺鍚堝悓褰掓。')[0]);
 
         const fileInput = container.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
         expect(fileInput.multiple).toBe(true);
@@ -3466,14 +3476,14 @@ describe('AppsPage', () => {
     it('adds structured fields to draft tool app manifests', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
-        fireEvent.change(screen.getByDisplayValue('文件上传'), { target: { value: 'mixed' } });
-        fireEvent.click(screen.getByText('添加字段'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍚堝悓褰掓。' } });
+        fireEvent.change(screen.getByDisplayValue('鏂囦欢涓婁紶'), { target: { value: 'mixed' } });
+        fireEvent.click(screen.getByText('娣诲姞瀛楁'));
         const fieldEditor = document.querySelector('.apps-field-editor') as HTMLElement;
         fireEvent.change(within(fieldEditor).getByPlaceholderText('customer_id'), { target: { value: 'archive_no' } });
-        fireEvent.change(within(fieldEditor).getByPlaceholderText('显示名'), { target: { value: '归档编号' } });
-        fireEvent.click(within(fieldEditor).getByText('必填'));
+        fireEvent.change(within(fieldEditor).getByPlaceholderText('鏄剧ず鍚?), { target: { value: '褰掓。缂栧彿' } });
+        fireEvent.click(within(fieldEditor).getByText('蹇呭～'));
 
         expect(screen.getAllByText(/"fields"/).length).toBeGreaterThan(0);
         expect(screen.getByText(/"archive_no"/)).not.toBeNull();
@@ -3483,14 +3493,14 @@ describe('AppsPage', () => {
     it('generates an enterprise app draft from MIS-style prompts', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：做一个合同归档应用，上传 Word/PDF，输出归档编号和审核结果'), {
-            target: { value: '创建费用报销审批应用，录入发票和付款信息，生成财务报表' },
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍋氫竴涓悎鍚屽綊妗ｅ簲鐢紝涓婁紶 Word/PDF锛岃緭鍑哄綊妗ｇ紪鍙峰拰瀹℃牳缁撴灉'), {
+            target: { value: '鍒涘缓璐圭敤鎶ラ攢瀹℃壒搴旂敤锛屽綍鍏ュ彂绁ㄥ拰浠樻淇℃伅锛岀敓鎴愯储鍔℃姤琛? },
         });
-        fireEvent.click(screen.getByText('生成草稿'));
+        fireEvent.click(screen.getByText('鐢熸垚鑽夌'));
 
-        expect(screen.getByDisplayValue('费用报销审批应用')).not.toBeNull();
-        expect(screen.getByDisplayValue('财务')).not.toBeNull();
+        expect(screen.getByDisplayValue('璐圭敤鎶ラ攢瀹℃壒搴旂敤')).not.toBeNull();
+        expect(screen.getByDisplayValue('璐㈠姟')).not.toBeNull();
         expect(screen.getByText(/enterprise_approval_app/)).not.toBeNull();
         expect(screen.getByText(/agent_dynamic_ui/)).not.toBeNull();
     });
@@ -3560,14 +3570,14 @@ describe('AppsPage', () => {
     it('copies the draft manifest preview to clipboard', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
-        const copyButtons = screen.getAllByText('复制');
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍚堝悓褰掓。' } });
+        const copyButtons = screen.getAllByText('澶嶅埗');
         fireEvent.click(copyButtons[0]);
 
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
-        expect(String((navigator.clipboard.writeText as any).mock.calls[0][0])).toContain('合同归档');
-        expect(screen.getByText('已复制')).not.toBeNull();
+        expect(String((navigator.clipboard.writeText as any).mock.calls[0][0])).toContain('鍚堝悓褰掓。');
+        expect(screen.getByText('宸插鍒?)).not.toBeNull();
     });
 
     it('resets the draft manifest copy state after the draft changes', async () => {
@@ -3606,23 +3616,23 @@ describe('AppsPage', () => {
     it('creates a local app entry from app studio', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
-        fireEvent.click(screen.getAllByText('创建应用')[1]);
-        fireEvent.click(screen.getByText('关闭'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍚堝悓褰掓。' } });
+        fireEvent.click(screen.getAllByText('鍒涘缓搴旂敤')[1]);
+        fireEvent.click(screen.getByText('鍏抽棴'));
 
-        expect(screen.getAllByText('合同归档').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('鍚堝悓褰掓。').length).toBeGreaterThan(0);
     });
 
     it('creates schema-safe ascii ids for local apps with Chinese names', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.change(screen.getByPlaceholderText('例：合同归档'), { target: { value: '合同归档' } });
-        fireEvent.click(screen.getAllByText('创建应用')[1]);
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍚堝悓褰掓。' } });
+        fireEvent.click(screen.getAllByText('鍒涘缓搴旂敤')[1]);
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
-        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('合同归档')) as HTMLElement;
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('鍚堝悓褰掓。')) as HTMLElement;
         fireEvent.click(within(row).getByTitle('Manifest'));
         const manifestText = document.querySelector('.apps-manage-manifest')?.textContent || '';
         const manifest = JSON.parse(manifestText);
@@ -3630,7 +3640,7 @@ describe('AppsPage', () => {
         expect(manifest.app.id).toMatch(/^local-app-[a-z0-9]+-[a-z0-9]+-app$/);
         expect(manifest.app.id).toMatch(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/);
         expect(manifest.app.source).toBe('local');
-        expect(row.textContent).toContain('本地');
+        expect(row.textContent).toContain('鏈湴');
     });
 
     it('migrates legacy locally-created apps from Local/Market source to Local', () => {
@@ -3638,9 +3648,9 @@ describe('AppsPage', () => {
             customApps: [
                 {
                     id: 'local-app-legacy-app',
-                    name: '旧版本地应用',
+                    name: '鏃х増鏈湴搴旂敤',
                     description: 'Legacy local app',
-                    category: '文档处理',
+                    category: '鏂囨。澶勭悊',
                     kind: 'tool_app',
                     icon: 'shield',
                     accent: '#28705f',
@@ -3658,11 +3668,11 @@ describe('AppsPage', () => {
         }));
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
-        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('旧版本地应用')) as HTMLElement;
-        expect(row.textContent).toContain('本地');
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('鏃х増鏈湴搴旂敤')) as HTMLElement;
+        expect(row.textContent).toContain('鏈湴');
         fireEvent.click(within(row).getByTitle('Manifest'));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
         expect(manifest.app.source).toBe('local');
@@ -3671,110 +3681,110 @@ describe('AppsPage', () => {
     it('filters apps by category', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.change(screen.getByPlaceholderText('搜索应用'), { target: { value: '脱敏' } });
-        expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('全部应用 (1)')).not.toBeNull();
-        expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('文档处理 (1)')).not.toBeNull();
+        fireEvent.change(screen.getByPlaceholderText('鎼滅储搴旂敤'), { target: { value: '鑴辨晱' } });
+        expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('鍏ㄩ儴搴旂敤 (1)')).not.toBeNull();
+        expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('鏂囨。澶勭悊 (1)')).not.toBeNull();
         expect((within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('OA (0)') as HTMLOptionElement).disabled).toBe(true);
-        expect(screen.getByText('搜索“脱敏” · 1 个匹配')).not.toBeNull();
-        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('重置筛选'));
+        expect(screen.getByText('鎼滅储鈥滆劚鏁忊€?路 1 涓尮閰?)).not.toBeNull();
+        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€?));
 
         fireEvent.change(document.querySelector('.apps-category-select') as HTMLSelectElement, { target: { value: 'OA' } });
-        fireEvent.change(screen.getByPlaceholderText('搜索应用'), { target: { value: '脱敏' } });
+        fireEvent.change(screen.getByPlaceholderText('鎼滅储搴旂敤'), { target: { value: '鑴辨晱' } });
         expect((document.querySelector('.apps-category-select') as HTMLSelectElement).value).toBe('all');
-        expect(screen.getAllByText('文档脱敏').length).toBeGreaterThan(0);
-        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('重置筛选'));
+        expect(screen.getAllByText('鏂囨。鑴辨晱').length).toBeGreaterThan(0);
+        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€?));
 
-        fireEvent.change(document.querySelector('.apps-category-select') as HTMLSelectElement, { target: { value: '文档处理' } });
+        fireEvent.change(document.querySelector('.apps-category-select') as HTMLSelectElement, { target: { value: '鏂囨。澶勭悊' } });
 
-        expect(screen.getByText('文档处理 · 2 个应用')).not.toBeNull();
-        expect(screen.getAllByText('PDF 转 Word').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('文档脱敏').length).toBeGreaterThan(0);
-        expect(screen.queryByText('采购入库')).toBeNull();
+        expect(screen.getByText('鏂囨。澶勭悊 路 2 涓簲鐢?)).not.toBeNull();
+        expect(screen.getAllByText('PDF 杞?Word').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('鏂囨。鑴辨晱').length).toBeGreaterThan(0);
+        expect(screen.queryByText('閲囪喘鍏ュ簱')).toBeNull();
 
-        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('重置筛选'));
+        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€?));
         expect((document.querySelector('.apps-category-select') as HTMLSelectElement).value).toBe('all');
-        expect((within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('重置筛选') as HTMLButtonElement).disabled).toBe(true);
-        expect(screen.getAllByText('采购入库').length).toBeGreaterThan(0);
+        expect((within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€?) as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getAllByText('閲囪喘鍏ュ簱').length).toBeGreaterThan(0);
     });
 
     it('searches app bindings, source, type, and output modes', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        const search = screen.getByPlaceholderText('搜索应用');
+        const search = screen.getByPlaceholderText('鎼滅储搴旂敤');
         fireEvent.change(search, { target: { value: 'finance.expense_upsert' } });
-        expect(screen.getByText('搜索结果')).not.toBeNull();
-        expect(Array.from(document.querySelectorAll('.apps-section__title')).map((item) => item.textContent)).not.toContain('常用应用');
-        expect(screen.getAllByText('报销申请').length).toBeGreaterThan(0);
-        expect(screen.queryByText('采购入库')).toBeNull();
+        expect(screen.getByText('鎼滅储缁撴灉')).not.toBeNull();
+        expect(Array.from(document.querySelectorAll('.apps-section__title')).map((item) => item.textContent)).not.toContain('甯哥敤搴旂敤');
+        expect(screen.getAllByText('鎶ラ攢鐢宠').length).toBeGreaterThan(0);
+        expect(screen.queryByText('閲囪喘鍏ュ簱')).toBeNull();
 
-        fireEvent.click(screen.getByTitle('清空搜索'));
+        fireEvent.click(screen.getByTitle('娓呯┖鎼滅储'));
         expect((search as HTMLInputElement).value).toBe('');
-        expect(screen.getAllByText('常用应用').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('甯哥敤搴旂敤').length).toBeGreaterThan(0);
 
         fireEvent.change(search, { target: { value: 'skill' } });
-        expect(screen.getAllByText('PDF 转 Word').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('合同审查').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('PDF 杞?Word').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('鍚堝悓瀹℃煡').length).toBeGreaterThan(0);
 
         fireEvent.keyDown(search, { key: 'Escape' });
         expect((search as HTMLInputElement).value).toBe('');
 
         fireEvent.change(search, { target: { value: 'xlsx' } });
-        expect(screen.getAllByText('表格分析').length).toBeGreaterThan(0);
-        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('重置筛选'));
+        expect(screen.getAllByText('琛ㄦ牸鍒嗘瀽').length).toBeGreaterThan(0);
+        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€?));
         expect((search as HTMLInputElement).value).toBe('');
     });
 
     it('tracks recently used apps from opening and execution', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('采购入库')[0]);
+        fireEvent.click(screen.getAllByText('閲囪喘鍏ュ簱')[0]);
         fireEvent.change(document.querySelector('.apps-category-select') as HTMLSelectElement, { target: { value: 'recent' } });
 
-        expect(screen.getAllByText(/最近使用/).length).toBeGreaterThan(1);
-        expect(Array.from(document.querySelectorAll('.apps-section__title')).map((item) => item.textContent)).not.toContain('常用应用');
-        expect(screen.getAllByText('采购入库').length).toBeGreaterThan(0);
-        expect(screen.queryByText('报销申请')).toBeNull();
+        expect(screen.getAllByText(/鏈€杩戜娇鐢?).length).toBeGreaterThan(1);
+        expect(Array.from(document.querySelectorAll('.apps-section__title')).map((item) => item.textContent)).not.toContain('甯哥敤搴旂敤');
+        expect(screen.getAllByText('閲囪喘鍏ュ簱').length).toBeGreaterThan(0);
+        expect(screen.queryByText('鎶ラ攢鐢宠')).toBeNull();
 
         fireEvent.change(document.querySelector('.apps-category-select') as HTMLSelectElement, { target: { value: 'all' } });
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
+        fireEvent.click(screen.getByText('鎵ц'));
         fireEvent.change(document.querySelector('.apps-category-select') as HTMLSelectElement, { target: { value: 'recent' } });
 
         const recentTiles = Array.from(document.querySelectorAll('.apps-section:last-child .apps-app-name')).map((item) => item.textContent || '');
-        expect(recentTiles[0]).toBe('报销申请');
-        expect(recentTiles).toContain('采购入库');
+        expect(recentTiles[0]).toBe('鎶ラ攢鐢宠');
+        expect(recentTiles).toContain('閲囪喘鍏ュ簱');
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
         fireEvent.change(document.querySelector('.apps-category-select') as HTMLSelectElement, { target: { value: 'recent' } });
-        expect(screen.getAllByText('报销申请').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('采购入库').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('鎶ラ攢鐢宠').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('閲囪喘鍏ュ簱').length).toBeGreaterThan(0);
     });
 
     it('opens clicked apps as runtime tabs on the right', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
-        fireEvent.click(screen.getAllByText('采购入库')[0]);
+        fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
+        fireEvent.click(screen.getAllByText('閲囪喘鍏ュ簱')[0]);
 
         const tabs = container.querySelector('.apps-runtime-tabs') as HTMLElement;
         expect(tabs).not.toBeNull();
-        expect(within(tabs).getByText('报销申请')).not.toBeNull();
-        expect(within(tabs).getByText('采购入库')).not.toBeNull();
+        expect(within(tabs).getByText('鎶ラ攢鐢宠')).not.toBeNull();
+        expect(within(tabs).getByText('閲囪喘鍏ュ簱')).not.toBeNull();
         expect(container.querySelectorAll('.apps-runtime-tab').length).toBe(2);
-        expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('采购入库');
+        expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('閲囪喘鍏ュ簱');
     });
 
     it('exposes runtime tabs as accessible tabs with a labelled panel', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
-        fireEvent.click(screen.getAllByText('采购入库')[0]);
+        fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
+        fireEvent.click(screen.getAllByText('閲囪喘鍏ュ簱')[0]);
 
-        const expenseTab = screen.getByRole('tab', { name: '报销申请' });
-        const purchaseTab = screen.getByRole('tab', { name: '采购入库' });
+        const expenseTab = screen.getByRole('tab', { name: '鎶ラ攢鐢宠' });
+        const purchaseTab = screen.getByRole('tab', { name: '閲囪喘鍏ュ簱' });
         const panel = screen.getByRole('tabpanel');
-        const closePurchase = screen.getByRole('button', { name: '关闭 采购入库' });
+        const closePurchase = screen.getByRole('button', { name: '鍏抽棴 閲囪喘鍏ュ簱' });
 
         expect(expenseTab.getAttribute('aria-selected')).toBe('false');
         expect(purchaseTab.getAttribute('aria-selected')).toBe('true');
@@ -3786,13 +3796,13 @@ describe('AppsPage', () => {
     it('moves between runtime tabs from the keyboard', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
-        fireEvent.click(screen.getAllByText('采购入库')[0]);
+        fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
+        fireEvent.click(screen.getAllByText('閲囪喘鍏ュ簱')[0]);
 
-        fireEvent.keyDown(screen.getByRole('tab', { name: '采购入库' }), { key: 'ArrowLeft' });
+        fireEvent.keyDown(screen.getByRole('tab', { name: '閲囪喘鍏ュ簱' }), { key: 'ArrowLeft' });
 
-        expect(screen.getByRole('tab', { name: '报销申请' }).getAttribute('aria-selected')).toBe('true');
-        expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(screen.getByRole('tab', { name: '报销申请' }).id);
+        expect(screen.getByRole('tab', { name: '鎶ラ攢鐢宠' }).getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(screen.getByRole('tab', { name: '鎶ラ攢鐢宠' }).id);
     });
 
     it('records and completes an approval instance when running an approval app', async () => {
@@ -3827,8 +3837,8 @@ describe('AppsPage', () => {
             .mockResolvedValueOnce({ synced: true, approval_id: 'approval-remote-final', record_id: 'exp-1', dataset_id: 'finance.expenses' });
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
+        fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('expense-approval-workflow', expect.objectContaining({
             _maclaw_app: true,
@@ -4244,8 +4254,8 @@ describe('AppsPage', () => {
         runNLSkillAsyncMock.mockRejectedValueOnce(new Error('workflow unavailable'));
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
+        fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('expense-approval-workflow', expect.any(Object)));
         await waitFor(() => expect(screen.getByText('workflow unavailable')).not.toBeNull());
@@ -4261,8 +4271,8 @@ describe('AppsPage', () => {
         });
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
+        fireEvent.click(screen.getByText('鎵ц'));
 
 	        await waitFor(() => expect(recordMaclawAppApprovalInstanceMock.mock.calls.some((call) => call[0].status === 'attention')).toBe(true));
 	        const failedPayload = recordMaclawAppApprovalInstanceMock.mock.calls.map((call) => call[0]).find((payload) => payload.status === 'attention');
@@ -4523,7 +4533,7 @@ describe('AppsPage', () => {
     it('shows the approval instance workspace for approval apps', async () => {
         listMaclawAppApprovalInstancesMock.mockImplementation(async (_appID, lane) => [{
             app_id: 'expense',
-            app_name: '鎶ラ攢鐢宠',
+            app_name: '閹躲儵鏀㈤悽瀹狀嚞',
             instance_id: lane === 'pending_my_approval' ? 'approval-workspace-2' : 'approval-workspace-1',
             title: lane === 'pending_my_approval' ? 'Lane refreshed expense' : 'Travel expense summary',
             lane: 'pending_my_approval',
@@ -4546,24 +4556,24 @@ describe('AppsPage', () => {
         recordMaclawAppApprovalInstanceMock.mockImplementation(async (payload) => payload);
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
+        fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
         await waitFor(() => expect(listMaclawAppApprovalInstancesMock).toHaveBeenCalledWith('expense', 'all', 50));
         await waitFor(() => expect(document.querySelector('.apps-approval-workspace')).not.toBeNull());
-        fireEvent.click(screen.getByRole('button', { name: '执行' }));
+        fireEvent.click(screen.getByRole('button', { name: '鎵ц' }));
 
         await waitFor(() => expect(document.querySelector('.apps-approval-workspace')).not.toBeNull());
         const workspace = document.querySelector('.apps-approval-workspace') as HTMLElement;
-        expect(within(workspace).getByText('审批实例')).not.toBeNull();
-        expect(within(workspace).getByRole('button', { name: /我的申请/ })).not.toBeNull();
-        const pendingLane = within(workspace).getByRole('button', { name: /待我审批/ });
+        expect(within(workspace).getByText('瀹℃壒瀹炰緥')).not.toBeNull();
+        expect(within(workspace).getByRole('button', { name: /鎴戠殑鐢宠/ })).not.toBeNull();
+        const pendingLane = within(workspace).getByRole('button', { name: /寰呮垜瀹℃壒/ });
         expect(pendingLane).not.toBeNull();
-        expect(within(workspace).getByRole('button', { name: /已处理/ })).not.toBeNull();
-        expect(within(workspace).getByRole('button', { name: /^需关注/ })).not.toBeNull();
-        expect(within(workspace).getByRole('button', { name: /全部/ })).not.toBeNull();
+        expect(within(workspace).getByRole('button', { name: /宸插鐞? })).not.toBeNull();
+        expect(within(workspace).getByRole('button', { name: /^闇€鍏虫敞/ })).not.toBeNull();
+        expect(within(workspace).getByRole('button', { name: /鍏ㄩ儴/ })).not.toBeNull();
         fireEvent.click(pendingLane);
         await waitFor(() => expect(listMaclawAppApprovalInstancesMock).toHaveBeenCalledWith('expense', 'pending_my_approval', 50));
         await waitFor(() => expect(within(workspace).getAllByText('Lane refreshed expense').length).toBeGreaterThan(0));
-        expect(within(workspace).getByText('结果契约')).not.toBeNull();
+        expect(within(workspace).getByText('缁撴灉濂戠害')).not.toBeNull();
         expect(within(workspace).getAllByText('approval_result').length).toBeGreaterThan(0);
         expect(within(workspace).getAllByText(/finance_queue/).length).toBeGreaterThan(0);
         expect(within(workspace).getAllByText(/request_only_applicant/).length).toBeGreaterThan(0);
@@ -4584,7 +4594,7 @@ describe('AppsPage', () => {
     it('keeps handled approval workspace items read-only', async () => {
         listMaclawAppApprovalInstancesMock.mockImplementation(async () => [{
             app_id: 'expense',
-            app_name: '报销申请',
+            app_name: '鎶ラ攢鐢宠',
             instance_id: 'approval-workspace-handled',
             title: 'Handled expense decision',
             lane: 'handled',
@@ -4604,53 +4614,53 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
+        fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
         await waitFor(() => expect(document.querySelector('.apps-approval-workspace')).not.toBeNull());
         const workspace = document.querySelector('.apps-approval-workspace') as HTMLElement;
-        fireEvent.click(within(workspace).getByRole('button', { name: /已处理/ }));
+        fireEvent.click(within(workspace).getByRole('button', { name: /宸插鐞? }));
 
         await waitFor(() => expect(within(workspace).getAllByText('Handled expense decision').length).toBeGreaterThan(0));
         expect(within(workspace).getByText('approved by finance')).not.toBeNull();
         expect(within(workspace).getByText('Approval decision')).not.toBeNull();
-        expect((within(workspace).getByText('通过') as HTMLButtonElement).disabled).toBe(true);
-        expect((within(workspace).getByText('驳回') as HTMLButtonElement).disabled).toBe(true);
-        expect((within(workspace).getByText('标记关注') as HTMLButtonElement).disabled).toBe(true);
-        fireEvent.click(within(workspace).getByText('通过'));
+        expect((within(workspace).getByText('閫氳繃') as HTMLButtonElement).disabled).toBe(true);
+        expect((within(workspace).getByText('椹冲洖') as HTMLButtonElement).disabled).toBe(true);
+        expect((within(workspace).getByText('鏍囪鍏虫敞') as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.click(within(workspace).getByText('閫氳繃'));
         expect(recordMaclawAppApprovalInstanceMock).not.toHaveBeenCalled();
     });
     it('shows an empty runtime area until an app icon is clicked', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        expect(screen.getByText('选择应用')).not.toBeNull();
-        expect(screen.getByText('点击左侧应用图标，以打开应用。')).not.toBeNull();
-        expect(screen.queryByRole('button', { name: '打开应用' })).toBeNull();
+        expect(screen.getByText('閫夋嫨搴旂敤')).not.toBeNull();
+        expect(screen.getByText('鐐瑰嚮宸︿晶搴旂敤鍥炬爣锛屼互鎵撳紑搴旂敤銆?)).not.toBeNull();
+        expect(screen.queryByRole('button', { name: '鎵撳紑搴旂敤' })).toBeNull();
         expect(container.querySelector('.apps-runtime-tabs')).toBeNull();
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
+        fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
         expect(container.querySelector('.apps-runtime-tabs')).not.toBeNull();
-        expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('报销申请');
+        expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('鎶ラ攢鐢宠');
         expect(container.querySelector('.apps-preview__summary')).toBeNull();
-        expect(screen.queryByRole('button', { name: '打开应用' })).toBeNull();
+        expect(screen.queryByRole('button', { name: '鎵撳紑搴旂敤' })).toBeNull();
     });
 
     it('closes runtime tabs and activates the remaining app', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
-        fireEvent.click(screen.getAllByText('采购入库')[0]);
-        fireEvent.click(screen.getByLabelText('关闭 采购入库'));
+        fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
+        fireEvent.click(screen.getAllByText('閲囪喘鍏ュ簱')[0]);
+        fireEvent.click(screen.getByLabelText('鍏抽棴 閲囪喘鍏ュ簱'));
 
         expect(container.querySelectorAll('.apps-runtime-tab').length).toBe(1);
-        expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('报销申请');
+        expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('鎶ラ攢鐢宠');
     });
 
     it('returns to the empty runtime when the last app tab is closed', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
-        fireEvent.click(screen.getByLabelText('关闭 报销申请'));
+        fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
+        fireEvent.click(screen.getByLabelText('鍏抽棴 鎶ラ攢鐢宠'));
 
-        expect(screen.getByText('选择应用')).not.toBeNull();
+        expect(screen.getByText('閫夋嫨搴旂敤')).not.toBeNull();
         expect(container.querySelector('.apps-runtime-tabs')).toBeNull();
         expect(container.querySelector('.apps-app-tile.is-active')).toBeNull();
     });
@@ -4658,48 +4668,48 @@ describe('AppsPage', () => {
     it('runs a fixed skill app with file input and output mode', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('PDF 转 Word')[0]);
+        fireEvent.click(screen.getAllByText('PDF 杞?Word')[0]);
         const fileInput = container.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
         const file = new File(['demo'], 'demo.pdf', { type: 'application/pdf' });
         fireEvent.change(fileInput, { target: { files: [file] } });
         fireEvent.change(screen.getByDisplayValue('Word / DOCX'), { target: { value: 'pdf' } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getByText('鎵ц'));
 
-        await waitFor(() => expect(screen.getByText(/已生成输出/)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText(/宸茬敓鎴愯緭鍑?)).not.toBeNull());
         expect(screen.getByText(/demo.pdf -> PDF/)).not.toBeNull();
     });
 
     it('renders form-only tool apps without a file drop zone', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'form-tool', skill_id: 'form-tools', name: '参数工具', description: 'Form only', category: '工具', icon: 'sheet', input_mode: 'form', output_modes: ['json'] },
+                        { id: 'form-tool', skill_id: 'form-tools', name: '鍙傛暟宸ュ叿', description: 'Form only', category: '宸ュ叿', icon: 'sheet', input_mode: 'form', output_modes: ['json'] },
                     ],
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('参数工具')[0]);
+        fireEvent.click(screen.getByText('瀹夎'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('鍙傛暟宸ュ叿')[0]);
 
         expect(container.querySelector('.apps-drop-zone')).toBeNull();
-        fireEvent.change(screen.getByPlaceholderText('输入处理要求或表单参数。'), { target: { value: '生成 JSON 摘要' } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€?), { target: { value: '鐢熸垚 JSON 鎽樿' } });
+        fireEvent.click(screen.getByText('鎵ц'));
 
-        await waitFor(() => expect(screen.getByText(/生成 JSON 摘要 -> JSON/)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText(/鐢熸垚 JSON 鎽樿 -> JSON/)).not.toBeNull());
     });
 
     it('renders declared tool app fields as a structured form', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -4708,41 +4718,41 @@ describe('AppsPage', () => {
                         {
                             id: 'field-tool',
                             skill_id: 'field-tools',
-                            name: '字段工具',
+                            name: '瀛楁宸ュ叿',
                             description: 'Fields',
-                            category: '工具',
+                            category: '宸ュ叿',
                             icon: 'sheet',
                             input_mode: 'form',
                             output_modes: ['json'],
                             fields: [
-                                { name: 'title', label: '标题', type: 'text', required: true },
-                                { name: 'format', label: '格式', type: 'select', default: '摘要', options: ['摘要', '清单'] },
-                                { name: 'include_refs', label: '包含来源', type: 'boolean', default: true },
+                                { name: 'title', label: '鏍囬', type: 'text', required: true },
+                                { name: 'format', label: '鏍煎紡', type: 'select', default: '鎽樿', options: ['鎽樿', '娓呭崟'] },
+                                { name: 'include_refs', label: '鍖呭惈鏉ユ簮', type: 'boolean', default: true },
                             ],
                         },
                     ],
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('字段工具')[0]);
+        fireEvent.click(screen.getByText('瀹夎'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('瀛楁宸ュ叿')[0]);
 
         expect(container.querySelector('.apps-drop-zone')).toBeNull();
-        fireEvent.click(screen.getByText('执行'));
-        await waitFor(() => expect(screen.getByText('请补充必填输入')).not.toBeNull());
-        fireEvent.change(screen.getByLabelText('标题'), { target: { value: '季度报告' } });
-        fireEvent.change(screen.getByDisplayValue('摘要'), { target: { value: '清单' } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getByText('鎵ц'));
+        await waitFor(() => expect(screen.getByText('璇疯ˉ鍏呭繀濉緭鍏?)).not.toBeNull());
+        fireEvent.change(screen.getByLabelText('鏍囬'), { target: { value: '瀛ｅ害鎶ュ憡' } });
+        fireEvent.change(screen.getByDisplayValue('鎽樿'), { target: { value: '娓呭崟' } });
+        fireEvent.click(screen.getByText('鎵ц'));
 
-        await waitFor(() => expect(screen.getByText(/标题: 季度报告.*JSON/)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText(/鏍囬: 瀛ｅ害鎶ュ憡.*JSON/)).not.toBeNull());
     });
 
     it('uses the first select option as the default field value', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -4751,35 +4761,35 @@ describe('AppsPage', () => {
                         {
                             id: 'select-tool',
                             skill_id: 'select-tools',
-                            name: '选择工具',
+                            name: '閫夋嫨宸ュ叿',
                             description: 'Select fields',
-                            category: '工具',
+                            category: '宸ュ叿',
                             icon: 'sheet',
                             input_mode: 'form',
                             output_modes: ['json'],
                             fields: [
-                                { name: 'mode', label: '模式', type: 'select', required: true, options: ['快速', '完整'] },
+                                { name: 'mode', label: '妯″紡', type: 'select', required: true, options: ['蹇€?, '瀹屾暣'] },
                             ],
                         },
                     ],
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('选择工具')[0]);
+        fireEvent.click(screen.getByText('瀹夎'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('閫夋嫨宸ュ叿')[0]);
 
         expect(container.querySelector('.apps-drop-zone')).toBeNull();
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getByText('鎵ц'));
 
-        await waitFor(() => expect(screen.getByText(/模式: .*JSON/)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText(/妯″紡: .*JSON/)).not.toBeNull());
     });
 
     it('adds a select default value to field options when installing apps', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -4788,34 +4798,34 @@ describe('AppsPage', () => {
                         {
                             id: 'select-default-tool',
                             skill_id: 'select-default-tools',
-                            name: '默认选项工具',
+                            name: '榛樿閫夐」宸ュ叿',
                             description: 'Select default',
-                            category: '工具',
+                            category: '宸ュ叿',
                             icon: 'sheet',
                             input_mode: 'form',
                             output_modes: ['json'],
                             fields: [
-                                { name: 'mode', label: '模式', type: 'select', required: true, default: '快速', options: ['完整'] },
+                                { name: 'mode', label: '妯″紡', type: 'select', required: true, default: '蹇€?, options: ['瀹屾暣'] },
                             ],
                         },
                     ],
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('默认选项工具')[0]);
+        fireEvent.click(screen.getByText('瀹夎'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('榛樿閫夐」宸ュ叿')[0]);
 
-        const modeSelect = screen.getByDisplayValue('快速') as HTMLSelectElement;
-        expect(Array.from(modeSelect.options).map((option) => option.value)).toEqual(['完整', '快速']);
+        const modeSelect = screen.getByDisplayValue('蹇€?) as HTMLSelectElement;
+        expect(Array.from(modeSelect.options).map((option) => option.value)).toEqual(['瀹屾暣', '蹇€?]);
     });
 
     it('starts the bound skill when running a tool app', async () => {
         const customIconDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -4825,36 +4835,36 @@ describe('AppsPage', () => {
                             id: 'run-tool',
                             skill_id: 'run-tools',
                             custom_icon_data_url: customIconDataUrl,
-                            name: '运行工具',
+                            name: '杩愯宸ュ叿',
                             description: 'Run fields',
-                            category: '工具',
+                            category: '宸ュ叿',
                             icon: 'sheet',
                             input_mode: 'form',
                             output_modes: ['json'],
                             fields: [
-                                { name: 'title', label: '标题', type: 'text', required: true },
+                                { name: 'title', label: '鏍囬', type: 'text', required: true },
                             ],
                         },
                     ],
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('运行工具')[0]);
-        fireEvent.change(screen.getByLabelText('标题'), { target: { value: '季度报告' } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getByText('瀹夎'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('杩愯宸ュ叿')[0]);
+        fireEvent.change(screen.getByLabelText('鏍囬'), { target: { value: '瀛ｅ害鎶ュ憡' } });
+        fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('run-tools', expect.objectContaining({
             _maclaw_app: true,
             app_id: 'skill-app-run-tools-run-tool',
             output_mode: 'json',
-            fields: { title: '季度报告' },
+            fields: { title: '瀛ｅ害鎶ュ憡' },
             file: null,
         })));
-        expect(String(runNLSkillAsyncMock.mock.calls[0][1].prompt)).toContain('Run MaClaw tool app: 运行工具');
+        expect(String(runNLSkillAsyncMock.mock.calls[0][1].prompt)).toContain('Run MaClaw tool app: 杩愯宸ュ叿');
         expect(screen.getAllByText(/run-test-1/).length).toBeGreaterThan(0);
-        expect(screen.getByText('运行历史')).not.toBeNull();
+        expect(screen.getByText('杩愯鍘嗗彶')).not.toBeNull();
         expect(screen.getAllByText(/done/).length).toBeGreaterThan(0);
         const installedAppsState = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
         const installedApp = installedAppsState.customApps.find((item: any) => item.id === 'skill-app-run-tools-run-tool');
@@ -4864,36 +4874,36 @@ describe('AppsPage', () => {
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
-        fireEvent.click(screen.getAllByText('运行工具')[0]);
-        expect(screen.getByText('运行历史')).not.toBeNull();
+        fireEvent.click(screen.getAllByText('杩愯宸ュ叿')[0]);
+        expect(screen.getByText('杩愯鍘嗗彶')).not.toBeNull();
         expect(screen.getAllByText(/run-test-1/).length).toBeGreaterThan(0);
-        fireEvent.click(screen.getByText('清空历史'));
-        expect(screen.getByText('暂无运行记录')).not.toBeNull();
+        fireEvent.click(screen.getByText('娓呯┖鍘嗗彶'));
+        expect(screen.getByText('鏆傛棤杩愯璁板綍')).not.toBeNull();
         expect(screen.queryByText(/run-test-1/)).toBeNull();
     });
 
     it('checks bound skill dependencies before running installed tool apps', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'runtime-dep-tool', skill_id: 'disabled-runtime-tool', name: '运行依赖工具', description: 'Runtime dependency check', category: '工具', icon: 'sheet', input_mode: 'form', output_modes: ['json'] },
+                        { id: 'runtime-dep-tool', skill_id: 'disabled-runtime-tool', name: '杩愯渚濊禆宸ュ叿', description: 'Runtime dependency check', category: '宸ュ叿', icon: 'sheet', input_mode: 'form', output_modes: ['json'] },
                     ],
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('运行依赖工具')[0]);
+        fireEvent.click(screen.getByText('瀹夎'));
+        await waitFor(() => expect(screen.getByText('宸插畨瑁? 1 路 宸茶烦杩? 0')).not.toBeNull());
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('杩愯渚濊禆宸ュ叿')[0]);
         planMaclawAppInstallMock.mockResolvedValueOnce({
             schema: 'maclaw.app.install_plan.v1',
-            apps: [{ id: 'skill-app-disabled-runtime-tool-runtime-dep-tool', name: '运行依赖工具', kind: 'tool_app' }],
+            apps: [{ id: 'skill-app-disabled-runtime-tool-runtime-dep-tool', name: '杩愯渚濊禆宸ュ叿', kind: 'tool_app' }],
             dependencies: [{
                 id: 'disabled-runtime-tool',
                 version: '1.0.0',
@@ -4910,41 +4920,41 @@ describe('AppsPage', () => {
             has_blocking_dependency: true,
         });
 
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getByText('鎵ц'));
 
-        await waitFor(() => expect(screen.getAllByText('运行依赖工具暂不可用：disabled-runtime-tool 未安装或已停用。').length).toBeGreaterThan(0));
+        await waitFor(() => expect(screen.getAllByText('杩愯渚濊禆宸ュ叿鏆備笉鍙敤锛歞isabled-runtime-tool 鏈畨瑁呮垨宸插仠鐢ㄣ€?).length).toBeGreaterThan(0));
         const runtimeStatus = document.querySelector('.apps-runtime-status') as HTMLElement;
         const dependencyList = runtimeStatus.querySelector('.apps-install-record__deps') as HTMLElement;
         expect(dependencyList).not.toBeNull();
         const dependency = within(dependencyList).getByText('disabled-runtime-tool').closest('.apps-install-record__dep') as HTMLElement;
         expect(dependency.dataset.state).toBe('blocked');
-        expect(within(dependency).getByText('不可用')).not.toBeNull();
-        expect(dependency.textContent).toContain('runtime_skill · hub · v1.0.0 · disabled');
+        expect(within(dependency).getByText('涓嶅彲鐢?)).not.toBeNull();
+        expect(dependency.textContent).toContain('runtime_skill 路 hub 路 v1.0.0 路 disabled');
         expect(runNLSkillAsyncMock).not.toHaveBeenCalled();
     });
 
     it('installs missing runtime dependencies and continues the installed app run', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'runtime-dep-tool', skill_id: 'disabled-runtime-tool', name: '运行依赖工具', description: 'Runtime dependency check', category: '工具', icon: 'sheet', input_mode: 'form', output_modes: ['json'] },
+                        { id: 'runtime-dep-tool', skill_id: 'disabled-runtime-tool', name: '杩愯渚濊禆宸ュ叿', description: 'Runtime dependency check', category: '宸ュ叿', icon: 'sheet', input_mode: 'form', output_modes: ['json'] },
                     ],
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('运行依赖工具')[0]);
+        fireEvent.click(screen.getByText('瀹夎'));
+        await waitFor(() => expect(screen.getByText('宸插畨瑁? 1 路 宸茶烦杩? 0')).not.toBeNull());
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('杩愯渚濊禆宸ュ叿')[0]);
         planMaclawAppInstallMock.mockResolvedValueOnce({
             schema: 'maclaw.app.install_plan.v1',
-            apps: [{ id: 'skill-app-disabled-runtime-tool-runtime-dep-tool', name: '运行依赖工具', kind: 'tool_app' }],
+            apps: [{ id: 'skill-app-disabled-runtime-tool-runtime-dep-tool', name: '杩愯渚濊禆宸ュ叿', kind: 'tool_app' }],
             dependencies: [{
                 id: 'disabled-runtime-tool',
                 kind: 'runtime_skill',
@@ -4959,16 +4969,16 @@ describe('AppsPage', () => {
         });
         installMaclawAppDependenciesMock.mockResolvedValueOnce({
             schema: 'maclaw.app.install_plan.v1',
-            apps: [{ id: 'skill-app-disabled-runtime-tool-runtime-dep-tool', name: '运行依赖工具', kind: 'tool_app' }],
+            apps: [{ id: 'skill-app-disabled-runtime-tool-runtime-dep-tool', name: '杩愯渚濊禆宸ュ叿', kind: 'tool_app' }],
             dependencies: [{ id: 'disabled-runtime-tool', kind: 'runtime_skill', required: true, installed: true, action: 'installed', app_ids: ['skill-app-disabled-runtime-tool-runtime-dep-tool'] }],
             has_missing_required: false,
             has_blocking_dependency: false,
             has_governance_review_issue: false,
         });
 
-        fireEvent.click(screen.getByText('执行'));
-        await waitFor(() => expect(screen.getByText('安装依赖并执行')).not.toBeNull());
-        fireEvent.click(screen.getByText('安装依赖并执行'));
+        fireEvent.click(screen.getByText('鎵ц'));
+        await waitFor(() => expect(screen.getByText('瀹夎渚濊禆骞舵墽琛?)).not.toBeNull());
+        fireEvent.click(screen.getByText('瀹夎渚濊禆骞舵墽琛?));
 
         await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalled());
         await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('disabled-runtime-tool', expect.objectContaining({
@@ -5101,7 +5111,7 @@ describe('AppsPage', () => {
     });    it('installs missing workflow dependencies before starting approval app instances', async () => {
         const app = {
             id: 'local-approval-dep-app',
-            name: '依赖审批应用',
+            name: '渚濊禆瀹℃壒搴旂敤',
             description: 'Approval app dependency repair',
             category: 'OA',
             kind: 'enterprise_approval_app',
@@ -5143,10 +5153,10 @@ describe('AppsPage', () => {
         });
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('依赖审批应用')[0]);
-        fireEvent.click(screen.getByText('执行'));
-        await waitFor(() => expect(screen.getByText('安装依赖并执行')).not.toBeNull());
-        fireEvent.click(screen.getByText('安装依赖并执行'));
+        fireEvent.click(screen.getAllByText('渚濊禆瀹℃壒搴旂敤')[0]);
+        fireEvent.click(screen.getByText('鎵ц'));
+        await waitFor(() => expect(screen.getByText('瀹夎渚濊禆骞舵墽琛?)).not.toBeNull());
+        fireEvent.click(screen.getByText('瀹夎渚濊禆骞舵墽琛?));
 
         await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
         await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('missing-expense-workflow', expect.objectContaining({
@@ -5162,7 +5172,7 @@ describe('AppsPage', () => {
     it('blocks enterprise normal app MIS operations when only appSkill is unavailable', async () => {
         const app = {
             id: 'local-business-dep-app',
-            name: '依赖普通应用',
+            name: '渚濊禆鏅€氬簲鐢?,
             description: 'Business app dependency gate',
             category: 'CRM',
             kind: 'enterprise_normal_app',
@@ -5178,7 +5188,7 @@ describe('AppsPage', () => {
                 entryKind: 'enterprise_normal_app',
                 launchMode: 'business_workspace',
                 datasrv: { domain: 'crm', datasetID: 'crm.customers', objectRole: 'customer', preferredAction: 'crm.customer_upsert' },
-                appSkill: { id: 'disabled-crm-action', name: 'CRM 写入动作', version: '1.0.0' },
+                appSkill: { id: 'disabled-crm-action', name: 'CRM 鍐欏叆鍔ㄤ綔', version: '1.0.0' },
             },
         };
         window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
@@ -5206,10 +5216,10 @@ describe('AppsPage', () => {
         });
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('依赖普通应用')[0]);
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getAllByText('渚濊禆鏅€氬簲鐢?)[0]);
+        fireEvent.click(screen.getByText('鎵ц'));
 
-        await waitFor(() => expect(screen.getAllByText('依赖普通应用暂不可用：disabled-crm-action 未安装或已停用。').length).toBeGreaterThan(0));
+        await waitFor(() => expect(screen.getAllByText('渚濊禆鏅€氬簲鐢ㄦ殏涓嶅彲鐢細disabled-crm-action 鏈畨瑁呮垨宸插仠鐢ㄣ€?).length).toBeGreaterThan(0));
         const runtimeStatus = document.querySelector('.apps-runtime-status') as HTMLElement;
         const dependency = runtimeStatus.querySelector('.apps-result-panel .apps-install-record__dep[data-state="blocked"]') as HTMLElement;
         expect(dependency.textContent).toContain('disabled-crm-action');
@@ -5281,11 +5291,11 @@ describe('AppsPage', () => {
     it('passes selected file metadata to skill app runs', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('PDF 转 Word')[0]);
+        fireEvent.click(screen.getAllByText('PDF 杞?Word')[0]);
         const fileInput = container.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
         const file = new File(['demo'], 'demo.pdf', { type: 'application/pdf' });
         fireEvent.change(fileInput, { target: { files: [file] } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(stageSkillAppInputFileMock).toHaveBeenCalledWith('demo.pdf', 'application/pdf', expect.any(Number), 'ZGVtbw=='));
         await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('pdf-word', expect.objectContaining({
@@ -5307,41 +5317,41 @@ describe('AppsPage', () => {
         runNLSkillAsyncMock.mockResolvedValueOnce('');
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('PDF 转 Word')[0]);
+        fireEvent.click(screen.getAllByText('PDF 杞?Word')[0]);
         const fileInput = document.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
         const file = new File(['demo'], 'demo.pdf', { type: 'application/pdf' });
         fireEvent.change(fileInput, { target: { files: [file] } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getByText('鎵ц'));
 
-        await waitFor(() => expect(screen.getAllByText('Skill 执行失败').length).toBeGreaterThan(0));
-        expect(screen.queryByText('Skill 执行中')).toBeNull();
-        expect(screen.getByText('运行历史')).not.toBeNull();
+        await waitFor(() => expect(screen.getAllByText('Skill 鎵ц澶辫触').length).toBeGreaterThan(0));
+        expect(screen.queryByText('Skill 鎵ц涓?)).toBeNull();
+        expect(screen.getByText('杩愯鍘嗗彶')).not.toBeNull();
         expect(screen.getByText(/failed-/)).not.toBeNull();
     });
 
     it('passes multiple selected files to skill app runs when enabled', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'multi-doc', skill_id: 'multi-tools', name: '多文档处理', description: 'Multi files', category: '文档处理', icon: 'contract', input_mode: 'file', multiple_files: true, output_modes: ['pdf'] },
+                        { id: 'multi-doc', skill_id: 'multi-tools', name: '澶氭枃妗ｅ鐞?, description: 'Multi files', category: '鏂囨。澶勭悊', icon: 'contract', input_mode: 'file', multiple_files: true, output_modes: ['pdf'] },
                     ],
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('多文档处理')[0]);
+        fireEvent.click(screen.getByText('瀹夎'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('澶氭枃妗ｅ鐞?)[0]);
         const fileInput = container.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
         const first = new File(['one'], 'one.pdf', { type: 'application/pdf' });
         const second = new File(['two'], 'two.pdf', { type: 'application/pdf' });
         fireEvent.change(fileInput, { target: { files: [first, second] } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(stageSkillAppInputFileMock).toHaveBeenCalledTimes(2));
         await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('multi-tools', expect.objectContaining({
@@ -5358,14 +5368,14 @@ describe('AppsPage', () => {
     it('blocks oversized files before staging tool app runs', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('PDF 转 Word')[0]);
+        fireEvent.click(screen.getAllByText('PDF 杞?Word')[0]);
         const fileInput = container.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
         const file = new File(['x'], 'huge.pdf', { type: 'application/pdf' });
         Object.defineProperty(file, 'size', { value: 26 * 1024 * 1024 });
         fireEvent.change(fileInput, { target: { files: [file] } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getByText('鎵ц'));
 
-        await waitFor(() => expect(screen.getByText('文件超过 25MB，暂不支持此方式上传')).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('鏂囦欢瓒呰繃 25MB锛屾殏涓嶆敮鎸佹鏂瑰紡涓婁紶')).not.toBeNull());
         expect(stageSkillAppInputFileMock).not.toHaveBeenCalled();
         expect(runNLSkillAsyncMock).not.toHaveBeenCalled();
     });
@@ -5377,8 +5387,8 @@ describe('AppsPage', () => {
             total_steps: 2,
             expected_artifact: true,
             steps: [
-                { index: 0, name: '读取文件', action: 'read', status: 'success', output: 'loaded', duration_ms: 12 },
-                { index: 1, name: '生成文档', action: 'write', status: 'success', output: 'created', duration_ms: 34 },
+                { index: 0, name: '璇诲彇鏂囦欢', action: 'read', status: 'success', output: 'loaded', duration_ms: 12 },
+                { index: 1, name: '鐢熸垚鏂囨。', action: 'write', status: 'success', output: 'created', duration_ms: 34 },
             ],
             summary: { last_output_snippet: 'done', artifact_path: '/tmp/out.docx', artifact_status: 'ready' },
             artifacts: [
@@ -5386,51 +5396,51 @@ describe('AppsPage', () => {
                 { id: 'artifact-2', uri: 'artifact://skill-run/run-test-1/artifact-2', name: 'report.pdf', path: '/tmp/report.pdf', status: 'ready', mime_type: 'application/pdf', size_bytes: 2048 },
             ],
             outputs: [
-                { id: 'artifact-1', kind: 'artifact', title: '文件产物卡', artifact_id: 'artifact-1', artifact: { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' } },
-                { id: 'file-1', kind: 'file', title: '文件输出卡', artifact_id: 'artifact-1', artifact: { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' } },
-                { id: 'summary-1', kind: 'text', title: '摘要', text: '生成完成摘要', status: 'success' },
+                { id: 'artifact-1', kind: 'artifact', title: '鏂囦欢浜х墿鍗?, artifact_id: 'artifact-1', artifact: { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' } },
+                { id: 'file-1', kind: 'file', title: '鏂囦欢杈撳嚭鍗?, artifact_id: 'artifact-1', artifact: { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' } },
+                { id: 'summary-1', kind: 'text', title: '鎽樿', text: '鐢熸垚瀹屾垚鎽樿', status: 'success' },
             ],
         });
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'evidence-tool', skill_id: 'evidence-tools', name: '证据工具', description: 'Evidence', category: '工具', icon: 'sheet', input_mode: 'form', output_modes: ['docx'] },
+                        { id: 'evidence-tool', skill_id: 'evidence-tools', name: '璇佹嵁宸ュ叿', description: 'Evidence', category: '宸ュ叿', icon: 'sheet', input_mode: 'form', output_modes: ['docx'] },
                     ],
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('证据工具')[0]);
-        fireEvent.change(screen.getByPlaceholderText('输入处理要求或表单参数。'), { target: { value: '生成文档' } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getByText('瀹夎'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('璇佹嵁宸ュ叿')[0]);
+        fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€?), { target: { value: '鐢熸垚鏂囨。' } });
+        fireEvent.click(screen.getByText('鎵ц'));
 
-        await waitFor(() => expect(screen.getByText('执行步骤')).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('鎵ц姝ラ')).not.toBeNull());
         expect(screen.getByText('2/2')).not.toBeNull();
-        expect(screen.getByText('读取文件')).not.toBeNull();
-        expect(screen.getAllByText('生成文档').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('产物已生成').length).toBeGreaterThanOrEqual(2);
-        expect(screen.queryByText('文件产物卡')).toBeNull();
-        expect(screen.queryByText('文件输出卡')).toBeNull();
-        expect(screen.getByText('摘要')).not.toBeNull();
-        expect(screen.getAllByText('生成完成摘要').length).toBeGreaterThan(0);
+        expect(screen.getByText('璇诲彇鏂囦欢')).not.toBeNull();
+        expect(screen.getAllByText('鐢熸垚鏂囨。').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('浜х墿宸茬敓鎴?).length).toBeGreaterThanOrEqual(2);
+        expect(screen.queryByText('鏂囦欢浜х墿鍗?)).toBeNull();
+        expect(screen.queryByText('鏂囦欢杈撳嚭鍗?)).toBeNull();
+        expect(screen.getByText('鎽樿')).not.toBeNull();
+        expect(screen.getAllByText('鐢熸垚瀹屾垚鎽樿').length).toBeGreaterThan(0);
         expect(screen.getAllByText('artifact://skill-run/run-test-1/artifact-1').length).toBeGreaterThan(0);
         expect(screen.getByText('artifact://skill-run/run-test-1/artifact-2')).not.toBeNull();
-        expect(screen.getByText('report.pdf · application/pdf · 2048 bytes')).not.toBeNull();
-        fireEvent.click(screen.getAllByText('打开')[0]);
-        fireEvent.click(screen.getAllByText('定位')[0]);
+        expect(screen.getByText('report.pdf 路 application/pdf 路 2048 bytes')).not.toBeNull();
+        fireEvent.click(screen.getAllByText('鎵撳紑')[0]);
+        fireEvent.click(screen.getAllByText('瀹氫綅')[0]);
         expect(openSkillRunArtifactMock).toHaveBeenCalledWith('run-test-1', 'artifact-1');
         expect(revealSkillRunArtifactMock).toHaveBeenCalledWith('run-test-1', 'artifact-1');
         expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
         expect(showItemInFolderMock).not.toHaveBeenCalled();
 
-        expect(screen.getByText('运行历史')).not.toBeNull();
+        expect(screen.getByText('杩愯鍘嗗彶')).not.toBeNull();
     });
 
     it('downloads remote-only artifact before opening it', async () => {
@@ -5450,26 +5460,26 @@ describe('AppsPage', () => {
         });
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'remote-tool', skill_id: 'remote-tools', name: '远端产物工具', description: 'Remote', category: '工具', icon: 'sheet', input_mode: 'form', output_modes: ['pdf'] },
+                        { id: 'remote-tool', skill_id: 'remote-tools', name: '杩滅浜х墿宸ュ叿', description: 'Remote', category: '宸ュ叿', icon: 'sheet', input_mode: 'form', output_modes: ['pdf'] },
                     ],
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('远端产物工具')[0]);
-        fireEvent.change(screen.getByPlaceholderText('输入处理要求或表单参数。'), { target: { value: '生成 PDF' } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getByText('瀹夎'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('杩滅浜х墿宸ュ叿')[0]);
+        fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€?), { target: { value: '鐢熸垚 PDF' } });
+        fireEvent.click(screen.getByText('鎵ц'));
 
-        await waitFor(() => expect(screen.getAllByText('下载并打开').length).toBeGreaterThan(0));
-        fireEvent.click(screen.getAllByText('下载并打开')[0]);
+        await waitFor(() => expect(screen.getAllByText('涓嬭浇骞舵墦寮€').length).toBeGreaterThan(0));
+        fireEvent.click(screen.getAllByText('涓嬭浇骞舵墦寮€')[0]);
         await waitFor(() => expect(downloadSkillRunArtifactMock).toHaveBeenCalledWith('run-test-1', 'remote-1'));
         expect(openSkillRunArtifactMock).toHaveBeenCalledWith('run-test-1', 'remote-1');
         expect(recordMaclawAppRunEvidenceForSkillMock).toHaveBeenCalledWith('remote-tools', expect.any(String), expect.any(String), 'run-test-1', 'remote.pdf', expect.any(String));
@@ -5478,27 +5488,27 @@ describe('AppsPage', () => {
     it('keeps tool app run history capped at eight entries', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'history-tool', skill_id: 'history-tools', name: '历史工具', description: 'History', category: '工具', icon: 'sheet', input_mode: 'form', output_modes: ['txt'] },
+                        { id: 'history-tool', skill_id: 'history-tools', name: '鍘嗗彶宸ュ叿', description: 'History', category: '宸ュ叿', icon: 'sheet', input_mode: 'form', output_modes: ['txt'] },
                     ],
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('历史工具')[0]);
+        fireEvent.click(screen.getByText('瀹夎'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('鍘嗗彶宸ュ叿')[0]);
 
         for (let index = 0; index < 9; index += 1) {
             runNLSkillAsyncMock.mockResolvedValueOnce(`run-history-${index}`);
             getNLSkillRunStatusMock.mockResolvedValueOnce({ run_id: `run-history-${index}`, status: 'success', summary: { last_output_snippet: `done-${index}` } });
-            fireEvent.change(screen.getByPlaceholderText('输入处理要求或表单参数。'), { target: { value: `任务 ${index}` } });
-            fireEvent.click(screen.getByText('执行'));
+            fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€?), { target: { value: `浠诲姟 ${index}` } });
+            fireEvent.click(screen.getByText('鎵ц'));
             await waitFor(() => expect(screen.getByText(new RegExp(`run-history-${index}`))).not.toBeNull());
         }
 
@@ -5511,65 +5521,65 @@ describe('AppsPage', () => {
         getNLSkillRunStatusMock.mockReturnValue(new Promise(() => undefined));
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'long-tool', skill_id: 'long-tools', name: '长任务工具', description: 'Long run', category: '工具', icon: 'sync', input_mode: 'form', output_modes: ['txt'] },
+                        { id: 'long-tool', skill_id: 'long-tools', name: '闀夸换鍔″伐鍏?, description: 'Long run', category: '宸ュ叿', icon: 'sync', input_mode: 'form', output_modes: ['txt'] },
                     ],
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('长任务工具')[0]);
-        fireEvent.change(screen.getByPlaceholderText('输入处理要求或表单参数。'), { target: { value: '持续处理' } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getByText('瀹夎'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('闀夸换鍔″伐鍏?)[0]);
+        fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€?), { target: { value: '鎸佺画澶勭悊' } });
+        fireEvent.click(screen.getByText('鎵ц'));
 
-        const cancelButton = await screen.findByText('取消执行');
+        const cancelButton = await screen.findByText('鍙栨秷鎵ц');
         fireEvent.click(cancelButton);
 
         await waitFor(() => expect(cancelNLSkillRunMock).toHaveBeenCalledWith('run-test-1'));
-        expect(screen.getAllByText('Skill 已取消').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('Skill 宸插彇娑?).length).toBeGreaterThan(0);
     });
 
     it('renders mixed tool apps with file and parameter inputs', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'mixed-tool', skill_id: 'mixed-tools', name: '混合工具', description: 'Mixed input', category: '工具', icon: 'contract', input_mode: 'mixed', output_modes: ['pdf'] },
+                        { id: 'mixed-tool', skill_id: 'mixed-tools', name: '娣峰悎宸ュ叿', description: 'Mixed input', category: '宸ュ叿', icon: 'contract', input_mode: 'mixed', output_modes: ['pdf'] },
                     ],
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('混合工具')[0]);
+        fireEvent.click(screen.getByText('瀹夎'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('娣峰悎宸ュ叿')[0]);
 
         expect(container.querySelector('.apps-drop-zone')).not.toBeNull();
-        expect(screen.getByPlaceholderText('输入处理要求或表单参数。')).not.toBeNull();
+        expect(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€?)).not.toBeNull();
     });
 
     it('runs an enterprise app with dynamic DataSrv capability binding', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('报销申请')[0]);
-        fireEvent.change(screen.getByDisplayValue('OA'), { target: { value: '费用报销' } });
-        fireEvent.change(screen.getByDisplayValue('新建记录'), { target: { value: 'report' } });
-        fireEvent.change(container.querySelector('.apps-preview__mock textarea') as HTMLTextAreaElement, { target: { value: '生成本月报销汇总' } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
+        fireEvent.change(screen.getByDisplayValue('OA'), { target: { value: '璐圭敤鎶ラ攢' } });
+        fireEvent.change(screen.getByDisplayValue('鏂板缓璁板綍'), { target: { value: 'report' } });
+        fireEvent.change(container.querySelector('.apps-preview__mock textarea') as HTMLTextAreaElement, { target: { value: '鐢熸垚鏈湀鎶ラ攢姹囨€? } });
+        fireEvent.click(screen.getByText('鎵ц'));
 
-        await waitFor(() => expect(screen.getByText(/已提交/)).not.toBeNull());
-        expect(screen.getByText(/费用报销 · report · finance.expense_upsert/)).not.toBeNull();
+        await waitFor(() => expect(screen.getByText(/宸叉彁浜?)).not.toBeNull());
+        expect(screen.getByText(/璐圭敤鎶ラ攢 路 report 路 finance.expense_upsert/)).not.toBeNull();
     });
 
 	it('renders enterprise normal apps as business workspaces without approval instances', async () => {
@@ -5586,17 +5596,17 @@ describe('AppsPage', () => {
         });
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('采购入库')[0]);
+        fireEvent.click(screen.getAllByText('閲囪喘鍏ュ簱')[0]);
 
         expect(container.querySelector('.apps-business-workspace')).not.toBeNull();
         expect(container.querySelector('.apps-approval-workspace')).toBeNull();
-        expect(screen.getByText('业务工作台')).not.toBeNull();
+        expect(screen.getByText('涓氬姟宸ヤ綔鍙?)).not.toBeNull();
         expect(screen.getAllByText('procurement').length).toBeGreaterThan(0);
         expect(screen.getAllByText('procurement.purchase_orders').length).toBeGreaterThan(0);
         expect(screen.getAllByText('procurement.purchase_order_upsert').length).toBeGreaterThan(0);
 
-        fireEvent.change(screen.getByDisplayValue('新建记录'), { target: { value: 'query' } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.change(screen.getByDisplayValue('鏂板缓璁板綍'), { target: { value: 'query' } });
+        fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(executeMaclawAppBusinessOperationMock).toHaveBeenCalledWith(expect.objectContaining({
             app_id: 'purchase-inbound',
@@ -5607,12 +5617,12 @@ describe('AppsPage', () => {
             preferred_report: 'procurement.purchase_by_status',
             preferred_dashboard: 'procurement.overview',
         })));
-        await waitFor(() => expect(screen.getByText(/已完成/)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText(/宸插畬鎴?)).not.toBeNull());
         await waitFor(() => expect(screen.getByText('PO review ready')).not.toBeNull());
         expect(screen.getByText('business_view')).not.toBeNull();
-        expect(screen.getByText('结果类型')).not.toBeNull();
+        expect(screen.getByText('缁撴灉绫诲瀷')).not.toBeNull();
         expect(screen.getAllByText('business_record').length).toBeGreaterThan(0);
-        expect(screen.getByText('记录数')).not.toBeNull();
+        expect(screen.getByText('璁板綍鏁?)).not.toBeNull();
         expect(screen.getByText('PO-100')).not.toBeNull();
         expect(screen.queryByText('PO-101')).toBeNull();
 		expect(container.querySelector('.apps-run-history')).not.toBeNull();
@@ -5642,7 +5652,7 @@ describe('AppsPage', () => {
     it('publishes enterprise normal app evidence from an actual DataSrv business run', async () => {
         const app = {
             id: 'normal-run-publish-app',
-            name: '客户续约工作台',
+            name: '瀹㈡埛缁害宸ヤ綔鍙?,
             description: 'Run and publish a normal enterprise app with standard result package',
             category: 'CRM',
             kind: 'enterprise_normal_app',
@@ -5719,8 +5729,8 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('客户续约工作台')[0]);
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getAllByText('瀹㈡埛缁害宸ヤ綔鍙?)[0]);
+        fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(executeMaclawAppBusinessOperationMock).toHaveBeenCalled());
         await waitFor(() => {
@@ -5745,12 +5755,12 @@ describe('AppsPage', () => {
             });
         });
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('审核/发布'));
-        const readyCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('客户续约工作台')) as HTMLElement;
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
+        const readyCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('瀹㈡埛缁害宸ヤ綔鍙?)) as HTMLElement;
         expect(readyCard).toBeTruthy();
-        expect(within(readyCard).getByText('可提交')).not.toBeNull();
-        fireEvent.click(within(readyCard).getByText('提交审核'));
+        expect(within(readyCard).getByText('鍙彁浜?)).not.toBeNull();
+        fireEvent.click(within(readyCard).getByText('鎻愪氦瀹℃牳'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
@@ -5803,9 +5813,9 @@ describe('AppsPage', () => {
 		})));
 		render(<AppsPage lang="zh-Hans" />);
 
-		fireEvent.click(screen.getAllByText('采购入库')[0]);
-		fireEvent.change(screen.getByDisplayValue('新建记录'), { target: { value: 'query' } });
-		fireEvent.click(screen.getByText('执行'));
+		fireEvent.click(screen.getAllByText('閲囪喘鍏ュ簱')[0]);
+		fireEvent.change(screen.getByDisplayValue('鏂板缓璁板綍'), { target: { value: 'query' } });
+		fireEvent.click(screen.getByText('鎵ц'));
 
 		await waitFor(() => expect(screen.getByText('approval_not_pending')).not.toBeNull());
 		const runtimeStatus = document.querySelector('.apps-runtime-status') as HTMLElement;
@@ -5819,8 +5829,8 @@ describe('AppsPage', () => {
 	it('runs enterprise normal appSkills with MIS business payloads', async () => {
 		render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -5829,7 +5839,7 @@ describe('AppsPage', () => {
                     installUnit: 'enterprise_app_pack',
                     app: {
                         id: 'customer-op',
-                        name: '客户操作台',
+                        name: '瀹㈡埛鎿嶄綔鍙?,
                         description: 'Run customer operations through a business skill',
                         category: 'CRM',
                         kind: 'enterprise_normal_app',
@@ -5843,19 +5853,19 @@ describe('AppsPage', () => {
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('客户操作台')[0]);
-        fireEvent.change(screen.getByPlaceholderText('输入业务意图，Agent 生成动态界面并通过 DataSrv 执行。'), { target: { value: '补全客户联系人' } });
-        fireEvent.click(screen.getByText('执行'));
+        fireEvent.click(screen.getByText('瀹夎'));
+        await waitFor(() => expect(screen.getByText('宸插畨瑁? 1 路 宸茶烦杩? 0')).not.toBeNull());
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('瀹㈡埛鎿嶄綔鍙?)[0]);
+        fireEvent.change(screen.getByPlaceholderText('杈撳叆涓氬姟鎰忓浘锛孉gent 鐢熸垚鍔ㄦ€佺晫闈㈠苟閫氳繃 DataSrv 鎵ц銆?), { target: { value: '琛ュ叏瀹㈡埛鑱旂郴浜? } });
+        fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('customer-business-skill', expect.objectContaining({
             app_id: 'market-customer-op',
             app_kind: 'enterprise_normal_app',
             business_entity: 'CRM',
             business_action: 'create',
-            business_note: '补全客户联系人',
+            business_note: '琛ュ叏瀹㈡埛鑱旂郴浜?,
             object_role: 'customer',
             action_role: 'sales.customer_upsert',
             datasrv_domain: 'sales',
@@ -6125,92 +6135,92 @@ describe('AppsPage', () => {
     it('persists app order changes from app studio management', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const manageRows = document.querySelectorAll('.apps-manage-row');
-        expect(manageRows[0]?.textContent).toContain('报销申请');
-        expect(manageRows[1]?.textContent).toContain('采购入库');
-        fireEvent.click(within(manageRows[1] as HTMLElement).getByTitle('上移'));
+        expect(manageRows[0]?.textContent).toContain('鎶ラ攢鐢宠');
+        expect(manageRows[1]?.textContent).toContain('閲囪喘鍏ュ簱');
+        fireEvent.click(within(manageRows[1] as HTMLElement).getByTitle('涓婄Щ'));
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const nextRows = document.querySelectorAll('.apps-manage-row');
-        expect(nextRows[0]?.textContent).toContain('采购入库');
-        expect(nextRows[1]?.textContent).toContain('报销申请');
+        expect(nextRows[0]?.textContent).toContain('閲囪喘鍏ュ簱');
+        expect(nextRows[1]?.textContent).toContain('鎶ラ攢鐢宠');
     });
 
     it('moves apps directly to the top and bottom from app studio management', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
-        const inventoryRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('库存盘点')) as HTMLElement;
-        fireEvent.click(within(inventoryRow).getByTitle('移到顶部'));
+        const inventoryRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('搴撳瓨鐩樼偣')) as HTMLElement;
+        fireEvent.click(within(inventoryRow).getByTitle('绉诲埌椤堕儴'));
 
         let rows = document.querySelectorAll('.apps-manage-row');
-        expect(rows[0]?.textContent).toContain('库存盘点');
+        expect(rows[0]?.textContent).toContain('搴撳瓨鐩樼偣');
 
-        fireEvent.click(within(rows[0] as HTMLElement).getByTitle('移到底部'));
+        fireEvent.click(within(rows[0] as HTMLElement).getByTitle('绉诲埌搴曢儴'));
 
         rows = document.querySelectorAll('.apps-manage-row');
-        expect(rows[rows.length - 1]?.textContent).toContain('库存盘点');
+        expect(rows[rows.length - 1]?.textContent).toContain('搴撳瓨鐩樼偣');
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const persistedRows = document.querySelectorAll('.apps-manage-row');
-        expect(persistedRows[persistedRows.length - 1]?.textContent).toContain('库存盘点');
+        expect(persistedRows[persistedRows.length - 1]?.textContent).toContain('搴撳瓨鐩樼偣');
     });
 
     it('filters app studio management by search and category', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const manageSearch = document.querySelector('.apps-manage-filter .apps-search') as HTMLInputElement;
-        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('文档处理 (2)')).not.toBeNull();
+        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('鏂囨。澶勭悊 (2)')).not.toBeNull();
         fireEvent.change(manageSearch, { target: { value: 'pdf' } });
-        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('全部应用 (4)')).not.toBeNull();
-        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('文档处理 (2)')).not.toBeNull();
-        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('数据分析 (1)')).not.toBeNull();
-        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('法务 (1)')).not.toBeNull();
+        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('鍏ㄩ儴搴旂敤 (4)')).not.toBeNull();
+        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('鏂囨。澶勭悊 (2)')).not.toBeNull();
+        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('鏁版嵁鍒嗘瀽 (1)')).not.toBeNull();
+        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('娉曞姟 (1)')).not.toBeNull();
         expect((within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('OA (0)') as HTMLOptionElement).disabled).toBe(true);
-        expect(screen.getByText('搜索“pdf” · 4 个匹配')).not.toBeNull();
+        expect(screen.getByText('鎼滅储鈥減df鈥?路 4 涓尮閰?)).not.toBeNull();
 
-        expect(screen.getAllByText('PDF 转 Word').length).toBeGreaterThan(0);
-        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('报销申请'))).toBe(false);
-        const disabledSortButtons = within(document.querySelector('.apps-manage-row') as HTMLElement).getAllByTitle('清空筛选后调整顺序') as HTMLButtonElement[];
+        expect(screen.getAllByText('PDF 杞?Word').length).toBeGreaterThan(0);
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('鎶ラ攢鐢宠'))).toBe(false);
+        const disabledSortButtons = within(document.querySelector('.apps-manage-row') as HTMLElement).getAllByTitle('娓呯┖绛涢€夊悗璋冩暣椤哄簭') as HTMLButtonElement[];
         expect(disabledSortButtons.length).toBe(4);
         expect(disabledSortButtons.every((button) => button.disabled)).toBe(true);
 
-        fireEvent.click(screen.getByTitle('清空搜索'));
+        fireEvent.click(screen.getByTitle('娓呯┖鎼滅储'));
         expect(manageSearch.value).toBe('');
-        expect(within(document.querySelector('.apps-manage-row') as HTMLElement).queryByTitle('清空筛选后调整顺序')).toBeNull();
+        expect(within(document.querySelector('.apps-manage-row') as HTMLElement).queryByTitle('娓呯┖绛涢€夊悗璋冩暣椤哄簭')).toBeNull();
 
-        fireEvent.change(document.querySelector('.apps-manage-category-select') as HTMLSelectElement, { target: { value: '文档处理' } });
-        expect(screen.getByText('文档处理 · 2 个应用')).not.toBeNull();
-        expect(Array.from(document.querySelectorAll('.apps-manage-row')).map((row) => row.textContent || '').join('\n')).toContain('文档脱敏');
-        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('采购入库'))).toBe(false);
+        fireEvent.change(document.querySelector('.apps-manage-category-select') as HTMLSelectElement, { target: { value: '鏂囨。澶勭悊' } });
+        expect(screen.getByText('鏂囨。澶勭悊 路 2 涓簲鐢?)).not.toBeNull();
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).map((row) => row.textContent || '').join('\n')).toContain('鏂囨。鑴辨晱');
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('閲囪喘鍏ュ簱'))).toBe(false);
 
-        fireEvent.change(manageSearch, { target: { value: '采购' } });
+        fireEvent.change(manageSearch, { target: { value: '閲囪喘' } });
         expect((document.querySelector('.apps-manage-category-select') as HTMLSelectElement).value).toBe('all');
-        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('采购入库'))).toBe(true);
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('閲囪喘鍏ュ簱'))).toBe(true);
 
         fireEvent.change(manageSearch, { target: { value: 'no-such-app' } });
-        expect(screen.getByText('没有匹配的应用')).not.toBeNull();
-        fireEvent.click(within(document.querySelector('.apps-manage-filter') as HTMLElement).getByTitle('重置筛选'));
+        expect(screen.getByText('娌℃湁鍖归厤鐨勫簲鐢?)).not.toBeNull();
+        fireEvent.click(within(document.querySelector('.apps-manage-filter') as HTMLElement).getByTitle('閲嶇疆绛涢€?));
         expect(manageSearch.value).toBe('');
         expect((document.querySelector('.apps-manage-category-select') as HTMLSelectElement).value).toBe('all');
-        expect((within(document.querySelector('.apps-manage-filter') as HTMLElement).getByTitle('重置筛选') as HTMLButtonElement).disabled).toBe(true);
-        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('报销申请'))).toBe(true);
+        expect((within(document.querySelector('.apps-manage-filter') as HTMLElement).getByTitle('閲嶇疆绛涢€?) as HTMLButtonElement).disabled).toBe(true);
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('鎶ラ攢鐢宠'))).toBe(true);
         fireEvent.change(manageSearch, { target: { value: 'xlsx' } });
         fireEvent.keyDown(manageSearch, { key: 'Escape' });
         expect(manageSearch.value).toBe('');
@@ -6219,8 +6229,8 @@ describe('AppsPage', () => {
     it('shows app manifest definitions from app studio management', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const manageRows = document.querySelectorAll('.apps-manage-row');
         fireEvent.click(within(manageRows[0] as HTMLElement).getByTitle('Manifest'));
@@ -6266,81 +6276,81 @@ describe('AppsPage', () => {
     it('edits built-in app metadata from app studio management and persists it', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const manageRows = document.querySelectorAll('.apps-manage-row');
-        fireEvent.click(within(manageRows[0] as HTMLElement).getByTitle('编辑'));
-        fireEvent.change(screen.getByDisplayValue('报销申请'), { target: { value: '费用报销台' } });
-        fireEvent.change(screen.getByDisplayValue('OA'), { target: { value: '财务' } });
-        fireEvent.change(screen.getByDisplayValue('从发票、行程和政策自动生成报销单。'), { target: { value: '统一处理费用报销台' } });
-        expect(screen.getByRole('button', { name: '表格/数据 (sheet)' })).not.toBeNull();
-        fireEvent.click(screen.getByTitle('表格/数据 (sheet)'));
-        fireEvent.click(screen.getByTitle('琥珀 #b45309'));
-        fireEvent.click(screen.getByText('保存'));
+        fireEvent.click(within(manageRows[0] as HTMLElement).getByTitle('缂栬緫'));
+        fireEvent.change(screen.getByDisplayValue('鎶ラ攢鐢宠'), { target: { value: '璐圭敤鎶ラ攢鍙? } });
+        fireEvent.change(screen.getByDisplayValue('OA'), { target: { value: '璐㈠姟' } });
+        fireEvent.change(screen.getByDisplayValue('浠庡彂绁ㄣ€佽绋嬪拰鏀跨瓥鑷姩鐢熸垚鎶ラ攢鍗曘€?), { target: { value: '缁熶竴澶勭悊璐圭敤鎶ラ攢鍙? } });
+        expect(screen.getByRole('button', { name: '琛ㄦ牸/鏁版嵁 (sheet)' })).not.toBeNull();
+        fireEvent.click(screen.getByTitle('琛ㄦ牸/鏁版嵁 (sheet)'));
+        fireEvent.click(screen.getByTitle('鐞ョ弨 #b45309'));
+        fireEvent.click(screen.getByText('淇濆瓨'));
 
-        expect(screen.getAllByText('费用报销台').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('璐圭敤鎶ラ攢鍙?).length).toBeGreaterThan(0);
 
-        const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('费用报销台')) as HTMLElement;
-        expect(editedRow.textContent).toContain('财务');
+        const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('璐圭敤鎶ラ攢鍙?)) as HTMLElement;
+        expect(editedRow.textContent).toContain('璐㈠姟');
         fireEvent.click(within(editedRow).getByTitle('Manifest'));
         const manifest = document.querySelector('.apps-manage-manifest')?.textContent || '';
-        expect(manifest).toContain('"name": "费用报销台');
-        expect(manifest).toContain('"category": "财务"');
+        expect(manifest).toContain('"name": "璐圭敤鎶ラ攢鍙?);
+        expect(manifest).toContain('"category": "璐㈠姟"');
         expect(manifest).toContain('"icon": "sheet"');
         expect(manifest).toContain('"accent": "#b45309"');
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
 
-        expect(screen.getAllByText('费用报销台').length).toBeGreaterThan(0);
-        expect(screen.queryByText('报销申请')).toBeNull();
+        expect(screen.getAllByText('璐圭敤鎶ラ攢鍙?).length).toBeGreaterThan(0);
+        expect(screen.queryByText('鎶ラ攢鐢宠')).toBeNull();
     });
 
     it('duplicates an app from app studio management and keeps the source skill binding', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
-        const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
-        fireEvent.click(within(pdfWordRow).getByTitle('复制应用'));
+        const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word')) as HTMLElement;
+        fireEvent.click(within(pdfWordRow).getByTitle('澶嶅埗搴旂敤'));
 
-        const copiedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word 副本')) as HTMLElement;
+        const copiedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word 鍓湰')) as HTMLElement;
         expect(copiedRow).not.toBeNull();
-        expect(copiedRow.textContent).not.toContain('常用应用');
-        expect(copiedRow.textContent).toContain('本地');
-        expect(screen.getByDisplayValue('PDF 转 Word 副本')).not.toBeNull();
+        expect(copiedRow.textContent).not.toContain('甯哥敤搴旂敤');
+        expect(copiedRow.textContent).toContain('鏈湴');
+        expect(screen.getByDisplayValue('PDF 杞?Word 鍓湰')).not.toBeNull();
 
-        fireEvent.click(within(pdfWordRow).getByTitle('复制应用'));
-        expect(screen.getByDisplayValue('PDF 转 Word 副本 2')).not.toBeNull();
-        fireEvent.change(screen.getByDisplayValue('PDF 转 Word 副本 2'), { target: { value: 'PDF 转 Word 快速版' } });
-        fireEvent.click(screen.getByText('保存'));
+        fireEvent.click(within(pdfWordRow).getByTitle('澶嶅埗搴旂敤'));
+        expect(screen.getByDisplayValue('PDF 杞?Word 鍓湰 2')).not.toBeNull();
+        fireEvent.change(screen.getByDisplayValue('PDF 杞?Word 鍓湰 2'), { target: { value: 'PDF 杞?Word 蹇€熺増' } });
+        fireEvent.click(screen.getByText('淇濆瓨'));
 
-        const renamedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word 快速版')) as HTMLElement;
+        const renamedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word 蹇€熺増')) as HTMLElement;
         fireEvent.click(within(renamedRow).getByTitle('Manifest'));
         const manifest = document.querySelector('.apps-manage-manifest')?.textContent || '';
-        expect(manifest).toContain('"name": "PDF 转 Word 快速版"');
+        expect(manifest).toContain('"name": "PDF 杞?Word 蹇€熺増"');
         expect(manifest).toContain('"id": "pdf-word"');
         expect(manifest).toContain('"source": "local"');
-        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('PDF 转 Word 副本'))).toBe(true);
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('PDF 杞?Word 鍓湰'))).toBe(true);
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
-        expect(screen.getAllByText('PDF 转 Word 快速版').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('PDF 杞?Word 蹇€熺増').length).toBeGreaterThan(0);
     });
 
     it('deletes duplicated local apps and clears their run history', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
-        const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
-        fireEvent.click(within(pdfWordRow).getByTitle('复制应用'));
+        const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word')) as HTMLElement;
+        fireEvent.click(within(pdfWordRow).getByTitle('澶嶅埗搴旂敤'));
 
-        const copiedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word 副本')) as HTMLElement;
-        expect(within(copiedRow).getByTitle('移除')).not.toBeNull();
+        const copiedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word 鍓湰')) as HTMLElement;
+        expect(within(copiedRow).getByTitle('绉婚櫎')).not.toBeNull();
         fireEvent.click(within(copiedRow).getByTitle('Manifest'));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
         window.localStorage.setItem('maclaw:apps-run-history:v1', JSON.stringify({
@@ -6349,10 +6359,10 @@ describe('AppsPage', () => {
         window.localStorage.setItem('maclaw:apps-publish-submissions:v1', JSON.stringify({
             [manifest.app.id]: { id: 'local-review-copy-old', appID: manifest.app.id, submittedAt: new Date().toISOString(), status: 'submitted' },
         }));
-        fireEvent.click(within(copiedRow).getByTitle('移除'));
+        fireEvent.click(within(copiedRow).getByTitle('绉婚櫎'));
 
-        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('PDF 转 Word 副本'))).toBe(false);
-        expect(Array.from(document.querySelectorAll('.apps-manage-row--hidden')).some((row) => row.textContent?.includes('PDF 转 Word 副本'))).toBe(false);
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('PDF 杞?Word 鍓湰'))).toBe(false);
+        expect(Array.from(document.querySelectorAll('.apps-manage-row--hidden')).some((row) => row.textContent?.includes('PDF 杞?Word 鍓湰'))).toBe(false);
         expect(JSON.parse(window.localStorage.getItem('maclaw:apps-run-history:v1') || '{}')[manifest.app.id]).toBeUndefined();
         expect(JSON.parse(window.localStorage.getItem('maclaw:apps-publish-submissions:v1') || '{}')[manifest.app.id]).toBeUndefined();
     });
@@ -6360,25 +6370,25 @@ describe('AppsPage', () => {
     it('edits tool app runtime modes from app studio management', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
-        const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
-        fireEvent.click(within(pdfWordRow).getByTitle('编辑'));
+        const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word')) as HTMLElement;
+        fireEvent.click(within(pdfWordRow).getByTitle('缂栬緫'));
         const editPane = document.querySelector('.apps-manage-edit') as HTMLElement;
-        fireEvent.change(within(editPane).getByDisplayValue('文件上传'), { target: { value: 'mixed' } });
+        fireEvent.change(within(editPane).getByDisplayValue('鏂囦欢涓婁紶'), { target: { value: 'mixed' } });
         fireEvent.click(within(editPane).getByText('Excel / XLSX'));
-        fireEvent.click(within(editPane).getByText('保存'));
+        fireEvent.click(within(editPane).getByText('淇濆瓨'));
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
-        const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
+        const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word')) as HTMLElement;
         fireEvent.click(within(editedRow).getByTitle('Manifest'));
         const manifest = document.querySelector('.apps-manage-manifest')?.textContent || '';
         expect(manifest).toContain('"inputMode": "mixed"');
         expect(manifest).toContain('"xlsx"');
 
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('PDF 转 Word')[0]);
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('PDF 杞?Word')[0]);
         const outputSelect = container.querySelector('.apps-form-row select') as HTMLSelectElement;
         expect(Array.from(outputSelect.options).map((option) => option.value)).toContain('xlsx');
     });
@@ -6386,19 +6396,19 @@ describe('AppsPage', () => {
     it('edits app studio layout visually and persists it', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
-        const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
-        fireEvent.click(within(pdfWordRow).getByTitle('编辑'));
+        const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word')) as HTMLElement;
+        fireEvent.click(within(pdfWordRow).getByTitle('缂栬緫'));
         const dialog = screen.getByRole('dialog');
         fireEvent.click(within(dialog).getByTestId('edit-layout-template-left_nav'));
         fireEvent.click(within(dialog).getByTestId('edit-layout-slot-center'));
         fireEvent.click(within(dialog).getByTestId('edit-layout-output-bottom'));
-        fireEvent.click(within(dialog).getByText('保存'));
+        fireEvent.click(within(dialog).getByText('淇濆瓨'));
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
-        const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
+        const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word')) as HTMLElement;
         fireEvent.click(within(editedRow).getByTitle('Manifest'));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
         const layout = manifest.app.binding.ui.layouts.tool_workspace;
@@ -6411,8 +6421,8 @@ describe('AppsPage', () => {
         ]));
         expect(layout.studio.savedInManifest).toBe(true);
 
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('PDF 转 Word')[0]);
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('PDF 杞?Word')[0]);
         await waitFor(() => expect(container.querySelector('.apps-runtime-layout')).not.toBeNull());
         const runtimeLayout = container.querySelector('.apps-runtime-layout') as HTMLElement;
         expect(runtimeLayout.dataset.template).toBe('left_nav');
@@ -6731,24 +6741,24 @@ describe('AppsPage', () => {
     it('edits tool app structured fields from app studio management', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
-        const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
-        fireEvent.click(within(pdfWordRow).getByTitle('编辑'));
+        const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word')) as HTMLElement;
+        fireEvent.click(within(pdfWordRow).getByTitle('缂栬緫'));
         const editPane = document.querySelector('.apps-manage-edit') as HTMLElement;
-        fireEvent.change(within(editPane).getByDisplayValue('文件上传'), { target: { value: 'mixed' } });
-        fireEvent.click(within(editPane).getByText('添加字段'));
+        fireEvent.change(within(editPane).getByDisplayValue('鏂囦欢涓婁紶'), { target: { value: 'mixed' } });
+        fireEvent.click(within(editPane).getByText('娣诲姞瀛楁'));
         const fieldEditor = within(editPane).getByPlaceholderText('customer_id').closest('.apps-field-editor') as HTMLElement;
         fireEvent.change(within(fieldEditor).getByPlaceholderText('customer_id'), { target: { value: 'review_level' } });
-        fireEvent.change(within(fieldEditor).getByPlaceholderText('显示名'), { target: { value: '审核等级' } });
+        fireEvent.change(within(fieldEditor).getByPlaceholderText('鏄剧ず鍚?), { target: { value: '瀹℃牳绛夌骇' } });
         fireEvent.change(within(fieldEditor).getByDisplayValue('text'), { target: { value: 'select' } });
-        fireEvent.change(within(fieldEditor).getByPlaceholderText('A, B, C'), { target: { value: '普通 严格' } });
-        fireEvent.click(within(fieldEditor).getByText('必填'));
-        fireEvent.click(within(editPane).getByText('保存'));
+        fireEvent.change(within(fieldEditor).getByPlaceholderText('A, B, C'), { target: { value: '鏅€?涓ユ牸' } });
+        fireEvent.click(within(fieldEditor).getByText('蹇呭～'));
+        fireEvent.click(within(editPane).getByText('淇濆瓨'));
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
-        const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
+        const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word')) as HTMLElement;
         fireEvent.click(within(editedRow).getByTitle('Manifest'));
         const manifest = document.querySelector('.apps-manage-manifest')?.textContent || '';
         expect(manifest).toContain('"fields"');
@@ -6759,16 +6769,16 @@ describe('AppsPage', () => {
     it('copies the installed apps as an app pack manifest', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
-        fireEvent.click(screen.getByText('复制应用包'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
+        fireEvent.click(screen.getByText('澶嶅埗搴旂敤鍖?));
 
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
         const copied = String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || '');
         expect(copied).toContain('maclaw.app.pack.v1');
-        expect(copied).toContain('报销申请');
+        expect(copied).toContain('鎶ラ攢鐢宠');
         expect(copied).toContain('"governance"');
-        expect(screen.getByText('已复制')).not.toBeNull();
+        expect(screen.getByText('宸插鍒?)).not.toBeNull();
     });
 
     it('keeps explicit enterprise skill dependency metadata when exporting an app pack', async () => {
@@ -6808,9 +6818,9 @@ describe('AppsPage', () => {
         }));
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
-        fireEvent.click(screen.getByText('复制应用包'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
+        fireEvent.click(screen.getByText('澶嶅埗搴旂敤鍖?));
 
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
         const copied = JSON.parse(String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || '{}'));
@@ -6824,24 +6834,24 @@ describe('AppsPage', () => {
     it('shows market apps as a list and adds one to the panel', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
 
-        expect(screen.getByText('应用市场')).not.toBeNull();
-        expect(screen.getByText('合同归档')).not.toBeNull();
-        expect(screen.getByText('可添加 4 · 可升级 0')).not.toBeNull();
-        const importPackage = screen.getByText('导入应用包').closest('details') as HTMLDetailsElement;
+        expect(screen.getByText('搴旂敤甯傚満')).not.toBeNull();
+        expect(screen.getByText('鍚堝悓褰掓。')).not.toBeNull();
+        expect(screen.getByText('鍙坊鍔?4 路 鍙崌绾?0')).not.toBeNull();
+        const importPackage = screen.getByText('瀵煎叆搴旂敤鍖?).closest('details') as HTMLDetailsElement;
         expect(importPackage.open).toBe(false);
 
-        const row = screen.getByText('合同归档').closest('.apps-market-row') as HTMLElement;
-        fireEvent.click(within(row).getByRole('button', { name: '添加: 合同归档' }));
+        const row = screen.getByText('鍚堝悓褰掓。').closest('.apps-market-row') as HTMLElement;
+        fireEvent.click(within(row).getByRole('button', { name: '娣诲姞: 鍚堝悓褰掓。' }));
 
         await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
         expect(recordMaclawAppInstallMock).toHaveBeenCalledTimes(1);
-        await waitFor(() => expect((within(row).getByRole('button', { name: '已安装: 合同归档' }) as HTMLButtonElement).disabled).toBe(true));
-        expect(screen.getByText('可添加 3 · 可升级 0')).not.toBeNull();
-        fireEvent.click(screen.getByText('应用管理'));
-        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('合同归档'))).toBe(true);
+        await waitFor(() => expect((within(row).getByRole('button', { name: '宸插畨瑁? 鍚堝悓褰掓。' }) as HTMLButtonElement).disabled).toBe(true));
+        expect(screen.getByText('鍙坊鍔?3 路 鍙崌绾?0')).not.toBeNull();
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('鍚堝悓褰掓。'))).toBe(true);
     });
 
     it('installs approved Hub MaClaw Apps from market search results', async () => {
@@ -6997,7 +7007,7 @@ describe('AppsPage', () => {
         await waitFor(() => expect(installSelectedMaclawAppPackageFromHubMock).toHaveBeenCalledWith('cap-hub-contract-approval', ['market-contract-approval']));
         expect(installMaclawAppPackageFromHubMock).not.toHaveBeenCalled();
         expect(installMaclawAppDependenciesMock).not.toHaveBeenCalled();
-        await waitFor(() => expect(within(row).getByText('Already installed · Source package 2 · installed 1 · 1 dependencies')).not.toBeNull());
+        await waitFor(() => expect(within(row).getByText('Already installed 路 Source package 2 路 installed 1 路 1 dependencies')).not.toBeNull());
         fireEvent.click(screen.getByText('Manage apps'));
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('Contract Approval'))).toBe(true);
         const storedApp = latestStoredCustomApp('Contract Approval');
@@ -7081,7 +7091,7 @@ describe('AppsPage', () => {
     it('blocks one-click market install when a required dependency is unavailable', async () => {
         installMaclawAppDependenciesMock.mockResolvedValueOnce({
             schema: 'maclaw.app.install_plan.v1',
-            apps: [{ id: 'market-contract-archive', name: '合同归档', kind: 'tool_app' }],
+            apps: [{ id: 'market-contract-archive', name: '鍚堝悓褰掓。', kind: 'tool_app' }],
             dependencies: [{
                 id: 'contract-archive',
                 version: '1.2.0',
@@ -7100,30 +7110,30 @@ describe('AppsPage', () => {
         });
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
-        const row = screen.getByText('合同归档').closest('.apps-market-row') as HTMLElement;
-        fireEvent.click(within(row).getByRole('button', { name: '添加: 合同归档' }));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        const row = screen.getByText('鍚堝悓褰掓。').closest('.apps-market-row') as HTMLElement;
+        fireEvent.click(within(row).getByRole('button', { name: '娣诲姞: 鍚堝悓褰掓。' }));
 
         await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
         expect(recordMaclawAppInstallMock).not.toHaveBeenCalled();
-        expect(within(row).getByText('合同归档暂不可用：contract-archive 未安装或已停用。')).not.toBeNull();
+        expect(within(row).getByText('鍚堝悓褰掓。鏆備笉鍙敤锛歝ontract-archive 鏈畨瑁呮垨宸插仠鐢ㄣ€?)).not.toBeNull();
         const dependencyList = row.querySelector('.apps-install-record__deps') as HTMLElement;
         expect(dependencyList).not.toBeNull();
         const dependency = within(dependencyList).getByText('contract-archive').closest('.apps-install-record__dep') as HTMLElement;
         expect(dependency.dataset.state).toBe('blocked');
-        expect(within(dependency).getByText('不可用')).not.toBeNull();
-        expect(dependency.textContent).toContain('runtime_skill · hub · v1.2.0 · disabled');
+        expect(within(dependency).getByText('涓嶅彲鐢?)).not.toBeNull();
+        expect(dependency.textContent).toContain('runtime_skill 路 hub 路 v1.2.0 路 disabled');
         expect(row.getAttribute('data-state')).toBe('blocked');
-        fireEvent.click(screen.getByText('应用管理'));
-        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('合同归档'))).toBe(false);
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('鍚堝悓褰掓。'))).toBe(false);
     });
 
     it('installs an app from a pasted market manifest', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -7132,9 +7142,9 @@ describe('AppsPage', () => {
                     installUnit: 'skill',
                     app: {
                         id: 'market-doc-archive',
-                        name: '文档归档',
+                        name: '鏂囨。褰掓。',
                         description: 'Archive documents',
-                        category: '文档处理',
+                        category: '鏂囨。澶勭悊',
                         kind: 'tool_app',
                         icon: 'contract',
                         launchMode: 'fixed_skill_ui',
@@ -7143,12 +7153,12 @@ describe('AppsPage', () => {
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
+        fireEvent.click(screen.getByText('瀹夎'));
 
-        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
-        expect(screen.getAllByText('文档归档').length).toBeGreaterThan(0);
-        fireEvent.click(screen.getByText('关闭'));
-        expect(screen.getAllByText('文档归档').length).toBeGreaterThan(0);
+        await waitFor(() => expect(screen.getByText('宸插畨瑁? 1 路 宸茶烦杩? 0')).not.toBeNull());
+        expect(screen.getAllByText('鏂囨。褰掓。').length).toBeGreaterThan(0);
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        expect(screen.getAllByText('鏂囨。褰掓。').length).toBeGreaterThan(0);
     });
 
     it('shows DataSrv registration status after installing an enterprise normal DataSrv app manifest', async () => {
@@ -7165,8 +7175,8 @@ describe('AppsPage', () => {
         });
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -7175,7 +7185,7 @@ describe('AppsPage', () => {
                     installUnit: 'enterprise_app_pack',
                     app: {
                         id: 'customer-import',
-                        name: '客户导入',
+                        name: '瀹㈡埛瀵煎叆',
                         description: 'Import customer profiles',
                         category: 'CRM',
                         kind: 'enterprise_normal_app',
@@ -7188,12 +7198,12 @@ describe('AppsPage', () => {
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
+        fireEvent.click(screen.getByText('瀹夎'));
 
-        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('宸插畨瑁? 1 路 宸茶烦杩? 0')).not.toBeNull());
         const installResult = document.querySelector('.apps-install-result') as HTMLElement;
-        expect(within(installResult).getByText('客户导入')).not.toBeNull();
-        await waitFor(() => expect(within(installResult).getByText(/DataSrv 绑定已注册: 1/)).not.toBeNull());
+        expect(within(installResult).getByText('瀹㈡埛瀵煎叆')).not.toBeNull();
+        await waitFor(() => expect(within(installResult).getByText(/DataSrv 缁戝畾宸叉敞鍐? 1/)).not.toBeNull());
     });
     it('blocks enterprise app installation when install evidence cannot be saved', async () => {
         recordMaclawAppInstallMock.mockRejectedValueOnce(new Error('DataSrv registration failed'));
@@ -7227,7 +7237,7 @@ describe('AppsPage', () => {
 
         await waitFor(() => expect(recordMaclawAppInstallMock).toHaveBeenCalledTimes(1));
         await waitFor(() => expect(screen.getByText(/Invalid app package: DataSrv registration failed/)).not.toBeNull());
-        expect(screen.queryByText('Installed: 1 路 Skipped: 0')).toBeNull();
+        expect(screen.queryByText('Installed: 1 璺?Skipped: 0')).toBeNull();
         fireEvent.click(screen.getByText('Manage apps'));
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('Customer Import Audit Required'))).toBe(false);
     });
@@ -7235,14 +7245,14 @@ describe('AppsPage', () => {
     it('does not exceed the pinned app limit when installing pinned market apps', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        for (const name of ['文档脱敏', '表格分析']) {
+        for (const name of ['鏂囨。鑴辨晱', '琛ㄦ牸鍒嗘瀽']) {
             const tile = screen.getAllByText(name)[0].closest('.apps-app-tile') as HTMLButtonElement;
             fireEvent.contextMenu(tile, { clientX: 90, clientY: 180 });
-            fireEvent.click(screen.getByRole('menuitem', { name: '设为常用' }));
+            fireEvent.click(screen.getByRole('menuitem', { name: '璁句负甯哥敤' }));
         }
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -7251,9 +7261,9 @@ describe('AppsPage', () => {
                     installUnit: 'skill',
                     app: {
                         id: 'pinned-market-doc',
-                        name: '市场置顶文档',
+                        name: '甯傚満缃《鏂囨。',
                         description: 'Pinned market app',
-                        category: '文档处理',
+                        category: '鏂囨。澶勭悊',
                         kind: 'tool_app',
                         icon: 'contract',
                         launchMode: 'fixed_skill_ui',
@@ -7263,13 +7273,13 @@ describe('AppsPage', () => {
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByText('瀹夎'));
+        await waitFor(() => expect(screen.getByText('宸插畨瑁? 1 路 宸茶烦杩? 0')).not.toBeNull());
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         expect(screen.getByText('8/8')).not.toBeNull();
-        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('市场置顶文档')) as HTMLElement;
-        expect(within(row).getByTitle('常用应用已满 8 个，请先取消一个')).not.toBeNull();
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('甯傚満缃《鏂囨。')) as HTMLElement;
+        expect(within(row).getByTitle('甯哥敤搴旂敤宸叉弧 8 涓紝璇峰厛鍙栨秷涓€涓?)).not.toBeNull();
         fireEvent.click(within(row).getByTitle('Manifest'));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
         expect(manifest.app.panel.pinned).toBe(false);
@@ -7278,8 +7288,8 @@ describe('AppsPage', () => {
     it('installs tool apps from a pasted maclaw.apps.json manifest', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -7288,18 +7298,18 @@ describe('AppsPage', () => {
                         {
                             id: 'doc-stamp',
                             skill_id: 'doc-tools',
-                            name: '文档盖章',
+                            name: '鏂囨。鐩栫珷',
                             description: 'Stamp documents',
-                            category: '文档处理',
+                            category: '鏂囨。澶勭悊',
                             icon: 'contract',
                             input_mode: 'file',
                         },
                         {
                             id: 'doc-summary',
                             skill_id: 'doc-tools',
-                            name: '文档摘要',
+                            name: '鏂囨。鎽樿',
                             description: 'Summarize documents',
-                            category: '文档处理',
+                            category: '鏂囨。澶勭悊',
                             icon: 'sheet',
                             input_mode: 'file',
                         },
@@ -7307,21 +7317,21 @@ describe('AppsPage', () => {
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
+        fireEvent.click(screen.getByText('瀹夎'));
 
-        expect(screen.getByText('已安装: 2 · 已跳过: 0')).not.toBeNull();
-        expect(screen.getAllByText('文档盖章').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('文档摘要').length).toBeGreaterThan(0);
-        fireEvent.click(screen.getByText('关闭'));
-        expect(screen.getAllByText('文档盖章').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('文档摘要').length).toBeGreaterThan(0);
+        expect(screen.getByText('宸插畨瑁? 2 路 宸茶烦杩? 0')).not.toBeNull();
+        expect(screen.getAllByText('鏂囨。鐩栫珷').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('鏂囨。鎽樿').length).toBeGreaterThan(0);
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        expect(screen.getAllByText('鏂囨。鐩栫珷').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('鏂囨。鎽樿').length).toBeGreaterThan(0);
     });
 
     it('upgrades installed market apps when a higher manifest version is pasted', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -7330,10 +7340,10 @@ describe('AppsPage', () => {
                     installUnit: 'skill',
                     app: {
                         id: 'doc-redact',
-                        name: '文档脱敏增强版',
+                        name: '鏂囨。鑴辨晱澧炲己鐗?,
                         version: 2,
                         description: 'Updated redaction workflow',
-                        category: '市场分类',
+                        category: '甯傚満鍒嗙被',
                         kind: 'tool_app',
                         icon: 'pdf',
                         source: 'market',
@@ -7345,25 +7355,25 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText(/可安装 0 · 可升级 1 · 将跳过 0/)).not.toBeNull();
-        expect(screen.getByText(/将升级 v1 -> v2/)).not.toBeNull();
-        expect(screen.getByText(/权限变化: \+admin-doc-redact-v2 · 高风险: admin-doc-redact-v2/)).not.toBeNull();
-        fireEvent.click(screen.getByText('安装'));
-        await waitFor(() => expect(screen.getByText('选中的升级包包含高风险新权限，需再次确认。')).not.toBeNull());
-        expect(screen.getByText('选中的升级包包含高风险新权限，需再次确认。').closest('[role="alert"]')).not.toBeNull();
-        expect(screen.queryByText('已安装: 0 · 已升级: 1 · 已跳过: 0')).toBeNull();
-        fireEvent.click(screen.getByText('确认安装'));
-        expect(screen.getByText('已安装: 0 · 已升级: 1 · 已跳过: 0')).not.toBeNull();
+        expect(screen.getByText(/鍙畨瑁?0 路 鍙崌绾?1 路 灏嗚烦杩?0/)).not.toBeNull();
+        expect(screen.getByText(/灏嗗崌绾?v1 -> v2/)).not.toBeNull();
+        expect(screen.getByText(/鏉冮檺鍙樺寲: \+admin-doc-redact-v2 路 楂橀闄? admin-doc-redact-v2/)).not.toBeNull();
+        fireEvent.click(screen.getByText('瀹夎'));
+        await waitFor(() => expect(screen.getByText('閫変腑鐨勫崌绾у寘鍖呭惈楂橀闄╂柊鏉冮檺锛岄渶鍐嶆纭銆?)).not.toBeNull());
+        expect(screen.getByText('閫変腑鐨勫崌绾у寘鍖呭惈楂橀闄╂柊鏉冮檺锛岄渶鍐嶆纭銆?).closest('[role="alert"]')).not.toBeNull();
+        expect(screen.queryByText('宸插畨瑁? 0 路 宸插崌绾? 1 路 宸茶烦杩? 0')).toBeNull();
+        fireEvent.click(screen.getByText('纭瀹夎'));
+        expect(screen.getByText('宸插畨瑁? 0 路 宸插崌绾? 1 路 宸茶烦杩? 0')).not.toBeNull();
         expect(screen.getByRole('status').getAttribute('aria-live')).toBe('polite');
         const upgradeResult = document.querySelector('.apps-install-result') as HTMLElement;
-        expect(within(upgradeResult).getByText('文档脱敏增强版')).not.toBeNull();
-        expect(within(upgradeResult).getByText('已升级')).not.toBeNull();
-        expect(within(upgradeResult).getByText('已升级 v1 -> v2')).not.toBeNull();
+        expect(within(upgradeResult).getByText('鏂囨。鑴辨晱澧炲己鐗?)).not.toBeNull();
+        expect(within(upgradeResult).getByText('宸插崌绾?)).not.toBeNull();
+        expect(within(upgradeResult).getByText('宸插崌绾?v1 -> v2')).not.toBeNull();
 
-        fireEvent.click(screen.getByText('应用管理'));
-        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('文档脱敏增强版')) as HTMLElement;
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('鏂囨。鑴辨晱澧炲己鐗?)) as HTMLElement;
         expect(row).toBeTruthy();
-        expect(row.textContent).toContain('文档处理');
+        expect(row.textContent).toContain('鏂囨。澶勭悊');
         fireEvent.click(within(row).getByTitle('Manifest'));
         expect(screen.getByText(/"version": 2/)).not.toBeNull();
         expect(screen.getByText(/"id": "admin-doc-redact-v2"/)).not.toBeNull();
@@ -7417,7 +7427,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getByText('Install'));
 
-        await waitFor(() => expect(screen.getByText('Installed: 1 · Skipped: 0')).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('Installed: 1 路 Skipped: 0')).not.toBeNull());
         const resultPanel = document.querySelector('.apps-result-panel') as HTMLElement;
         expect(within(resultPanel).getByText('Dependency verification complete')).not.toBeNull();
         expect(within(resultPanel).getByText('dep-preview-skill')).not.toBeNull();
@@ -7428,44 +7438,44 @@ describe('AppsPage', () => {
     it('previews manifest apps before installing from market', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'preview-doc', skill_id: 'doc-tools', name: '预览文档', description: 'Preview doc', category: '文档处理', icon: 'contract', input_mode: 'file' },
-                        { id: 'preview-doc', skill_id: 'doc-tools', name: '预览文档副本', description: 'Preview duplicate', category: '文档处理', icon: 'contract', input_mode: 'file' },
+                        { id: 'preview-doc', skill_id: 'doc-tools', name: '棰勮鏂囨。', description: 'Preview doc', category: '鏂囨。澶勭悊', icon: 'contract', input_mode: 'file' },
+                        { id: 'preview-doc', skill_id: 'doc-tools', name: '棰勮鏂囨。鍓湰', description: 'Preview duplicate', category: '鏂囨。澶勭悊', icon: 'contract', input_mode: 'file' },
                     ],
                 }),
             },
         });
 
-        expect(screen.getByText('安装预览')).not.toBeNull();
+        expect(screen.getByText('瀹夎棰勮')).not.toBeNull();
         expect(screen.getByText('1/2')).not.toBeNull();
-        expect(screen.getByText('可安装 1 · 可升级 0 · 将跳过 1')).not.toBeNull();
-        expect(screen.getByText('预览文档')).not.toBeNull();
-        expect(screen.getByText('预览文档副本')).not.toBeNull();
-        expect(screen.getByText('将安装')).not.toBeNull();
-        expect(screen.getByText('将跳过 · 重复应用')).not.toBeNull();
-        const duplicateRow = screen.getByText('预览文档副本').closest('.apps-install-preview__row') as HTMLElement;
-        expect(duplicateRow.title).toBe('将跳过 · 重复应用');
-        expect(within(duplicateRow).getByRole('checkbox', { name: '预览文档副本 · 将跳过 · 重复应用' })).not.toBeNull();
+        expect(screen.getByText('鍙畨瑁?1 路 鍙崌绾?0 路 灏嗚烦杩?1')).not.toBeNull();
+        expect(screen.getByText('棰勮鏂囨。')).not.toBeNull();
+        expect(screen.getByText('棰勮鏂囨。鍓湰')).not.toBeNull();
+        expect(screen.getByText('灏嗗畨瑁?)).not.toBeNull();
+        expect(screen.getByText('灏嗚烦杩?路 閲嶅搴旂敤')).not.toBeNull();
+        const duplicateRow = screen.getByText('棰勮鏂囨。鍓湰').closest('.apps-install-preview__row') as HTMLElement;
+        expect(duplicateRow.title).toBe('灏嗚烦杩?路 閲嶅搴旂敤');
+        expect(within(duplicateRow).getByRole('checkbox', { name: '棰勮鏂囨。鍓湰 路 灏嗚烦杩?路 閲嶅搴旂敤' })).not.toBeNull();
     });
 
     it('installs only selected apps from the market preview', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'optional-doc', skill_id: 'doc-tools', name: '可选文档', description: 'Optional doc', category: '文档处理', icon: 'contract', input_mode: 'file' },
-                        { id: 'kept-doc', skill_id: 'doc-tools', name: '保留文档', description: 'Kept doc', category: '文档处理', icon: 'sheet', input_mode: 'file' },
+                        { id: 'optional-doc', skill_id: 'doc-tools', name: '鍙€夋枃妗?, description: 'Optional doc', category: '鏂囨。澶勭悊', icon: 'contract', input_mode: 'file' },
+                        { id: 'kept-doc', skill_id: 'doc-tools', name: '淇濈暀鏂囨。', description: 'Kept doc', category: '鏂囨。澶勭悊', icon: 'sheet', input_mode: 'file' },
                     ],
                 }),
             },
@@ -7474,19 +7484,19 @@ describe('AppsPage', () => {
         const preview = document.querySelector('.apps-install-preview') as HTMLElement;
         fireEvent.click(within(preview).getAllByRole('checkbox')[0]);
         expect(screen.getByText('1/2')).not.toBeNull();
-        expect(screen.getByText('可安装 2 · 可升级 0 · 将跳过 1')).not.toBeNull();
-        expect(screen.getByText('将跳过 · 未选择')).not.toBeNull();
-        fireEvent.click(screen.getByText('安装'));
+        expect(screen.getByText('鍙畨瑁?2 路 鍙崌绾?0 路 灏嗚烦杩?1')).not.toBeNull();
+        expect(screen.getByText('灏嗚烦杩?路 鏈€夋嫨')).not.toBeNull();
+        fireEvent.click(screen.getByText('瀹夎'));
 
-        expect(screen.getByText('已安装: 1 · 已跳过: 1')).not.toBeNull();
+        expect(screen.getByText('宸插畨瑁? 1 路 宸茶烦杩? 1')).not.toBeNull();
         const installResult = document.querySelector('.apps-install-result') as HTMLElement;
-        expect(within(installResult).getByText('可选文档')).not.toBeNull();
-        expect(within(installResult).getByText('已跳过')).not.toBeNull();
-        expect(within(installResult).getByText('未选择')).not.toBeNull();
-        expect(within(installResult).getByText('保留文档')).not.toBeNull();
-        fireEvent.click(screen.getByText('关闭'));
-        expect(screen.queryByText('可选文档')).toBeNull();
-        expect(screen.getAllByText('保留文档').length).toBeGreaterThan(0);
+        expect(within(installResult).getByText('鍙€夋枃妗?)).not.toBeNull();
+        expect(within(installResult).getByText('宸茶烦杩?)).not.toBeNull();
+        expect(within(installResult).getByText('鏈€夋嫨')).not.toBeNull();
+        expect(within(installResult).getByText('淇濈暀鏂囨。')).not.toBeNull();
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        expect(screen.queryByText('鍙€夋枃妗?)).toBeNull();
+        expect(screen.getAllByText('淇濈暀鏂囨。').length).toBeGreaterThan(0);
     });
 
     it('installs dependencies and records audit only for selected apps in a pasted pack', async () => {
@@ -7561,7 +7571,7 @@ describe('AppsPage', () => {
 
         await waitFor(() => expect(screen.getByText('Required Skill dependencies are missing or unavailable. Install or enable them first.')).not.toBeNull());
         const preview = document.querySelector('.apps-install-preview') as HTMLElement;
-        fireEvent.click(within(preview).getByRole('checkbox', { name: 'Unselected Pack App · Will install' }));
+        fireEvent.click(within(preview).getByRole('checkbox', { name: 'Unselected Pack App 路 Will install' }));
         fireEvent.click(screen.getByText('Install'));
 
         await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
@@ -7576,7 +7586,7 @@ describe('AppsPage', () => {
         expect(auditPackage.app.id).toBe('market-pack-kept');
         expect(JSON.stringify(auditPackage)).not.toContain('pack-unselected');
         expect(JSON.stringify(auditPackage)).not.toContain('market-pack-unselected');
-        expect(screen.getByText('Installed: 1 · Skipped: 1')).not.toBeNull();
+        expect(screen.getByText('Installed: 1 路 Skipped: 1')).not.toBeNull();
     });
 
     it('scopes pasted pack dependency verification to selected apps', async () => {
@@ -7642,7 +7652,7 @@ describe('AppsPage', () => {
 
         await waitFor(() => expect(screen.getByText('Required Skill dependencies are missing or unavailable. Install or enable them first.')).not.toBeNull());
         const preview = document.querySelector('.apps-install-preview') as HTMLElement;
-        fireEvent.click(within(preview).getByRole('checkbox', { name: 'Unselected Scoped App · Will install' }));
+        fireEvent.click(within(preview).getByRole('checkbox', { name: 'Unselected Scoped App 路 Will install' }));
 
         await waitFor(() => expect(within(preview).getByText('Dependency verification complete')).not.toBeNull());
         expect(within(preview).queryByText('Dependency verification found blocking items')).toBeNull();
@@ -7702,7 +7712,7 @@ describe('AppsPage', () => {
         expect(dependencyPackage.schema).toBe('maclaw.app.v1');
         expect(dependencyPackage.app.id).toBe('market-race-install');
         await waitFor(() => expect(recordMaclawAppInstallMock).toHaveBeenCalledTimes(1));
-        expect(screen.getByText('Installed: 1 · Skipped: 0')).not.toBeNull();
+        expect(screen.getByText('Installed: 1 路 Skipped: 0')).not.toBeNull();
 
         resolvePreviewPlan(selectedPlan);
     });
@@ -7710,7 +7720,7 @@ describe('AppsPage', () => {
     it('keeps dependency verification visible after single market app install', async () => {
         const installPlan = {
             schema: 'maclaw.app.install_plan.v1',
-            apps: [{ id: 'market-contract-archive', name: '合同归档', kind: 'tool_app' }],
+            apps: [{ id: 'market-contract-archive', name: '鍚堝悓褰掓。', kind: 'tool_app' }],
             dependencies: [{ id: 'contract-archive-skill', version: '1.0.0', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'skip', app_ids: ['market-contract-archive'] }],
             has_missing_required: false,
             has_blocking_dependency: false,
@@ -7740,7 +7750,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getByTitle('App Studio'));
         fireEvent.click(screen.getByText('Add from market'));
-        const row = Array.from(document.querySelectorAll('.apps-market-row')).find((item) => item.textContent?.includes('合同归档')) as HTMLElement;
+        const row = Array.from(document.querySelectorAll('.apps-market-row')).find((item) => item.textContent?.includes('鍚堝悓褰掓。')) as HTMLElement;
         expect(row).toBeTruthy();
         fireEvent.click(within(row).getByRole('button', { name: /Add:/ }));
 
@@ -7756,15 +7766,15 @@ describe('AppsPage', () => {
         expect(within(versionSnapshot).getByText('Version')).not.toBeNull();
         expect(within(versionSnapshot).getByText('v3')).not.toBeNull();
         expect(within(versionSnapshot).getByText('App Skill')).not.toBeNull();
-        expect(within(versionSnapshot).getByText('contract-archive-skill · app_skill · hub · v1.0.0')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('contract-archive-skill 路 app_skill 路 hub 路 v1.0.0')).not.toBeNull();
         const evidenceSnapshot = row.querySelector('.apps-install-evidence-snapshot') as HTMLElement;
         expect(evidenceSnapshot).not.toBeNull();
         expect(evidenceSnapshot.getAttribute('aria-label')).toBe('Test evidence');
         expect(within(evidenceSnapshot).getByText('Workspace layout')).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('tool_workspace · document_workspace · compact')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('tool_workspace 路 document_workspace 路 compact')).not.toBeNull();
         expect(within(evidenceSnapshot).getByText('Result contract')).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('artifact · 2 types')).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('run-contract-archive · proto-contract-archive')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('artifact 路 2 types')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('run-contract-archive 路 proto-contract-archive')).not.toBeNull();
         await waitFor(() => {
             const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
             const installed = (stored.customApps || []).find((item: any) => item.id === 'market-contract-archive');
@@ -7772,17 +7782,17 @@ describe('AppsPage', () => {
             expect(installed?.installEvidence?.dependencies?.[0]?.id).toBe('contract-archive-skill');
         });
         fireEvent.click(screen.getByText('Close'));
-        fireEvent.click(screen.getAllByText('合同归档')[0]);
+        fireEvent.click(screen.getAllByText('鍚堝悓褰掓。')[0]);
         await waitFor(() => expect(screen.getAllByText('Dependency verification complete').length).toBeGreaterThan(0));
         expect(screen.getAllByText('contract-archive-skill').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('run-contract-archive · proto-contract-archive').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('run-contract-archive 路 proto-contract-archive').length).toBeGreaterThan(0);
         expect(recordMaclawAppInstallMock).toHaveBeenCalledTimes(1);
     });
 
     it('blocks single market app install when backend governance review fails', async () => {
         const blockedPlan = {
             schema: 'maclaw.app.install_plan.v1',
-            apps: [{ id: 'market-contract-archive', name: '合同归档', kind: 'tool_app' }],
+            apps: [{ id: 'market-contract-archive', name: '鍚堝悓褰掓。', kind: 'tool_app' }],
             dependencies: [{ id: 'contract-archive-skill', version: '1.0.0', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'skip', app_ids: ['market-contract-archive'] }],
             has_missing_required: false,
             has_blocking_dependency: false,
@@ -7795,7 +7805,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getByTitle('App Studio'));
         fireEvent.click(screen.getByText('Add from market'));
-        const row = Array.from(document.querySelectorAll('.apps-market-row')).find((item) => item.textContent?.includes('合同归档')) as HTMLElement;
+        const row = Array.from(document.querySelectorAll('.apps-market-row')).find((item) => item.textContent?.includes('鍚堝悓褰掓。')) as HTMLElement;
         expect(row).toBeTruthy();
         fireEvent.click(within(row).getByRole('button', { name: /Add:/ }));
 
@@ -7808,7 +7818,7 @@ describe('AppsPage', () => {
     it('restores single app install evidence from top-level market install records', async () => {
         const installPlan = {
             schema: 'maclaw.app.install_plan.v1',
-            apps: [{ id: 'market-contract-archive', name: '合同归档', kind: 'tool_app' }],
+            apps: [{ id: 'market-contract-archive', name: '鍚堝悓褰掓。', kind: 'tool_app' }],
             dependencies: [
                 { id: 'contract-archive-skill', version: '1.0.0', kind: 'runtime_skill', source: 'hub', required: true, installed: true, health: 'ready', action: 'skip', app_ids: ['market-contract-archive'] },
                 { id: 'other-app-skill', version: '2.0.0', kind: 'runtime_skill', source: 'hub', required: true, installed: false, health: 'missing', action: 'blocked', app_ids: ['other-market-app'] },
@@ -7823,7 +7833,7 @@ describe('AppsPage', () => {
             source: 'market',
             installed_at: '2026-06-27T09:05:00Z',
             app_count: 1,
-            apps: [{ id: 'market-contract-archive', name: '鍚堝悓褰掓。', kind: 'tool_app' }],
+            apps: [{ id: 'market-contract-archive', name: '閸氬牆鎮撹ぐ鎺撱€?, kind: 'tool_app' }],
             dependencies: installPlan.dependencies,
             dependency_verification: {
                 schema: 'maclaw.app.install_plan.v1',
@@ -7856,15 +7866,15 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getByTitle('App Studio'));
         fireEvent.click(screen.getByText('Add from market'));
-        const row = Array.from(document.querySelectorAll('.apps-market-row')).find((item) => item.textContent?.includes('合同归档')) as HTMLElement;
+        const row = Array.from(document.querySelectorAll('.apps-market-row')).find((item) => item.textContent?.includes('鍚堝悓褰掓。')) as HTMLElement;
         expect(row).toBeTruthy();
         fireEvent.click(within(row).getByRole('button', { name: /Add:/ }));
 
         await waitFor(() => expect(within(row).getByText('Dependency verification complete')).not.toBeNull());
         const evidenceSnapshot = row.querySelector('.apps-install-evidence-snapshot') as HTMLElement;
         expect(evidenceSnapshot).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('run-top-level-install · proto-top-level-install')).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('Skill dependencies: 1 · Blocking deps: 0')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('run-top-level-install 路 proto-top-level-install')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('Skill dependencies: 1 路 Blocking deps: 0')).not.toBeNull();
         expect(row.textContent).not.toContain('other-app-skill');
         await waitFor(() => {
             const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
@@ -7874,7 +7884,7 @@ describe('AppsPage', () => {
             expect(installed?.installEvidence?.package_sha256).toBe('sha256-top-level-install');
             expect(installed?.installEvidence?.source).toBe('market');
             expect(installed?.installEvidence?.installed_at).toBe('2026-06-27T09:05:00Z');
-            expect(installed?.installEvidence?.apps).toEqual([{ id: 'market-contract-archive', name: '鍚堝悓褰掓。', kind: 'tool_app' }]);
+            expect(installed?.installEvidence?.apps).toEqual([{ id: 'market-contract-archive', name: '閸氬牆鎮撹ぐ鎺撱€?, kind: 'tool_app' }]);
             expect(installed?.installEvidence?.test_evidence?.run_id).toBe('run-top-level-install');
             expect(installed?.installEvidence?.dependency_verification?.dependencies).toHaveLength(1);
             expect(installed?.installEvidence?.dependency_verification?.dependencies?.[0]?.id).toBe('contract-archive-skill');
@@ -7952,8 +7962,8 @@ describe('AppsPage', () => {
 
         await waitFor(() => expect(screen.getAllByText('Dependency verification complete').length).toBeGreaterThan(0));
         expect(screen.getAllByText('cold-layout-skill').length).toBeGreaterThan(0);
-        expect(screen.getByText('tool_workspace · dashboard · compact')).not.toBeNull();
-        expect(screen.getByText('run-cold-start · proto-cold-start')).not.toBeNull();
+        expect(screen.getByText('tool_workspace 路 dashboard 路 compact')).not.toBeNull();
+        expect(screen.getByText('run-cold-start 路 proto-cold-start')).not.toBeNull();
     });
 
     it('shows recent app install records in the market pane', async () => {
@@ -8042,30 +8052,30 @@ describe('AppsPage', () => {
         expect(blockedDependency?.dataset.state).toBe('blocked');
         expect(within(readyDependency).getByText('Installed')).not.toBeNull();
         expect(within(blockedDependency).getByText('Missing')).not.toBeNull();
-        expect(readyDependency.textContent).toContain('runtime_skill · hub · v1.0.0');
-        expect(blockedDependency.textContent).toContain('workflow_skill · hub · v2.0.0');
+        expect(readyDependency.textContent).toContain('runtime_skill 路 hub 路 v1.0.0');
+        expect(blockedDependency.textContent).toContain('workflow_skill 路 hub 路 v2.0.0');
         const versionSnapshot = document.querySelector('.apps-install-version-snapshot') as HTMLElement;
         expect(versionSnapshot).not.toBeNull();
         expect(versionSnapshot.getAttribute('aria-label')).toBe('Version snapshot');
         expect(within(versionSnapshot).getByText('Version')).not.toBeNull();
         expect(within(versionSnapshot).getByText('v4')).not.toBeNull();
         expect(within(versionSnapshot).getByText('App Skill')).not.toBeNull();
-        expect(within(versionSnapshot).getByText('contract-super-app · app_skill · hub · v1.1.0')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('contract-super-app 路 app_skill 路 hub 路 v1.1.0')).not.toBeNull();
         expect(within(versionSnapshot).getByText('Approval workflow')).not.toBeNull();
-        expect(within(versionSnapshot).getByText('policy-skill · workflow_skill · hub · v2.0.0')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('policy-skill 路 workflow_skill 路 hub 路 v2.0.0')).not.toBeNull();
         expect(within(versionSnapshot).getByText('Approval binding')).not.toBeNull();
-        expect(within(versionSnapshot).getByText('contract.submitted · contract · policy-skill@v2.0.0')).not.toBeNull();
+        expect(within(versionSnapshot).getByText('contract.submitted 路 contract 路 policy-skill@v2.0.0')).not.toBeNull();
         const evidenceSnapshot = document.querySelector('.apps-install-evidence-snapshot') as HTMLElement;
         expect(evidenceSnapshot).not.toBeNull();
         expect(evidenceSnapshot.getAttribute('aria-label')).toBe('Test evidence');
         expect(within(evidenceSnapshot).getByText('Workspace layout')).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('tool_workspace · document_workspace · compact')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('tool_workspace 路 document_workspace 路 compact')).not.toBeNull();
         expect(within(evidenceSnapshot).getByText('Result contract')).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('content · 1 types')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('content 路 1 types')).not.toBeNull();
         expect(within(evidenceSnapshot).getByText('Test evidence')).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('run-contract-audit · proto-contract')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('run-contract-audit 路 proto-contract')).not.toBeNull();
         expect(within(evidenceSnapshot).getByText('Dependency verification')).not.toBeNull();
-        expect(within(evidenceSnapshot).getByText('Skill dependencies: 2 · Blocking deps: 1')).not.toBeNull();
+        expect(within(evidenceSnapshot).getByText('Skill dependencies: 2 路 Blocking deps: 1')).not.toBeNull();
         expect(listMaclawAppInstallsMock).toHaveBeenCalledWith(6);
 
         fireEvent.click(screen.getByText('Check dependencies'));
@@ -8102,8 +8112,8 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -8112,9 +8122,9 @@ describe('AppsPage', () => {
                     installUnit: 'skill',
                     app: {
                         id: 'inactive-market-app',
-                        name: '不可用依赖应用',
+                        name: '涓嶅彲鐢ㄤ緷璧栧簲鐢?,
                         description: 'Dependency is disabled',
-                        category: '文档处理',
+                        category: '鏂囨。澶勭悊',
                         kind: 'tool_app',
                         launchMode: 'fixed_skill_ui',
                         binding: { skill: { id: 'disabled-workflow', appDefinitionFile: 'maclaw.apps.json', inputMode: 'file' } },
@@ -8123,15 +8133,15 @@ describe('AppsPage', () => {
             },
         });
 
-        await waitFor(() => expect(screen.getByText('必需 Skill 依赖缺失或不可用，请先安装或启用依赖')).not.toBeNull());
-        expect(screen.getByText(/不可用: disabled-workflow \* \(disabled\)/)).not.toBeNull();
+        await waitFor(() => expect(screen.getByText('蹇呴渶 Skill 渚濊禆缂哄け鎴栦笉鍙敤锛岃鍏堝畨瑁呮垨鍚敤渚濊禆')).not.toBeNull());
+        expect(screen.getByText(/涓嶅彲鐢? disabled-workflow \* \(disabled\)/)).not.toBeNull();
         expect(document.querySelector('.apps-install-preview__row[data-dependency-state="blocked"]')).not.toBeNull();
 
-        fireEvent.click(screen.getByText('安装'));
+        fireEvent.click(screen.getByText('瀹夎'));
 
         await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
-        expect(screen.getByText(/应用包无效: 必需 Skill 依赖缺失或不可用/)).not.toBeNull();
-        expect(screen.queryByText('已安装: 1 · 已跳过: 0')).toBeNull();
+        expect(screen.getByText(/搴旂敤鍖呮棤鏁? 蹇呴渶 Skill 渚濊禆缂哄け鎴栦笉鍙敤/)).not.toBeNull();
+        expect(screen.queryByText('宸插畨瑁? 1 路 宸茶烦杩? 0')).toBeNull();
     });
     it('blocks pasted approval app installation when workflow contract verification fails', async () => {
         const contractIssuePlan = {
@@ -8193,7 +8203,7 @@ describe('AppsPage', () => {
 
         expect(installMaclawAppDependenciesMock).not.toHaveBeenCalled();
         expect(recordMaclawAppInstallMock).not.toHaveBeenCalled();
-        expect(screen.queryByText('Installed: 1 · Skipped: 0')).toBeNull();
+        expect(screen.queryByText('Installed: 1 路 Skipped: 0')).toBeNull();
         fireEvent.click(screen.getByText('Manage apps'));
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('Contract Drift Install'))).toBe(false);
     });
@@ -8257,37 +8267,37 @@ describe('AppsPage', () => {
 
         expect(installMaclawAppDependenciesMock).not.toHaveBeenCalled();
         expect(recordMaclawAppInstallMock).not.toHaveBeenCalled();
-        expect(screen.queryByText('Installed: 1 路 Skipped: 0')).toBeNull();
+        expect(screen.queryByText('Installed: 1 璺?Skipped: 0')).toBeNull();
         fireEvent.click(screen.getByText('Manage apps'));
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('Bad Layout Install'))).toBe(false);
     });
     it('supports select all and select none in market install preview', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'select-a', skill_id: 'doc-tools', name: '选择 A', description: 'Select A', category: '文档处理', icon: 'contract', input_mode: 'file' },
-                        { id: 'select-b', skill_id: 'doc-tools', name: '选择 B', description: 'Select B', category: '文档处理', icon: 'sheet', input_mode: 'file' },
+                        { id: 'select-a', skill_id: 'doc-tools', name: '閫夋嫨 A', description: 'Select A', category: '鏂囨。澶勭悊', icon: 'contract', input_mode: 'file' },
+                        { id: 'select-b', skill_id: 'doc-tools', name: '閫夋嫨 B', description: 'Select B', category: '鏂囨。澶勭悊', icon: 'sheet', input_mode: 'file' },
                     ],
                 }),
             },
         });
 
         expect(screen.getByText('2/2')).not.toBeNull();
-        expect(screen.getByText('可安装 2 · 可升级 0 · 将跳过 0')).not.toBeNull();
-        fireEvent.click(screen.getByText('全不选'));
+        expect(screen.getByText('鍙畨瑁?2 路 鍙崌绾?0 路 灏嗚烦杩?0')).not.toBeNull();
+        fireEvent.click(screen.getByText('鍏ㄤ笉閫?));
         expect(screen.getByText('0/2')).not.toBeNull();
-        expect(screen.getByText('可安装 2 · 可升级 0 · 将跳过 2')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
-        fireEvent.click(screen.getByText('全选'));
+        expect(screen.getByText('鍙畨瑁?2 路 鍙崌绾?0 路 灏嗚烦杩?2')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.click(screen.getByText('鍏ㄩ€?));
         expect(screen.getByText('2/2')).not.toBeNull();
-        expect(screen.getByText('可安装 2 · 可升级 0 · 将跳过 0')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(false);
+        expect(screen.getByText('鍙畨瑁?2 路 鍙崌绾?0 路 灏嗚烦杩?0')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(false);
     });
 
     it('preserves custom uploaded-style app icons from installed manifests', async () => {
@@ -8333,8 +8343,8 @@ describe('AppsPage', () => {
     it('uses installed skill app output modes in the runtime UI', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -8343,9 +8353,9 @@ describe('AppsPage', () => {
                         {
                             id: 'sheet-clean',
                             skill_id: 'sheet-tools',
-                            name: '表格清洗',
+                            name: '琛ㄦ牸娓呮礂',
                             description: 'Clean sheets',
-                            category: '数据分析',
+                            category: '鏁版嵁鍒嗘瀽',
                             icon: 'sheet',
                             input_mode: 'file',
                             output_modes: ['xlsx'],
@@ -8354,9 +8364,9 @@ describe('AppsPage', () => {
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getAllByText('表格清洗')[0]);
+        fireEvent.click(screen.getByText('瀹夎'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getAllByText('琛ㄦ牸娓呮礂')[0]);
 
         const outputSelect = container.querySelector('.apps-form-row select') as HTMLSelectElement;
         expect(Array.from(outputSelect.options).map((option) => option.value)).toEqual(['xlsx']);
@@ -8367,9 +8377,9 @@ describe('AppsPage', () => {
             {
                 id: 'invoice-review',
                 skill_id: 'invoice-app',
-                name: '发票审核',
+                name: '鍙戠エ瀹℃牳',
                 description: 'Review invoice files',
-                category: '财务',
+                category: '璐㈠姟',
                 icon: 'invoice',
                 input_mode: 'file',
                 output_modes: ['pdf'],
@@ -8378,10 +8388,10 @@ describe('AppsPage', () => {
         ]);
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        await waitFor(() => expect(screen.getAllByText('发票审核').length).toBeGreaterThan(0));
-        fireEvent.click(screen.getAllByText('发票审核')[0]);
+        await waitFor(() => expect(screen.getAllByText('鍙戠エ瀹℃牳').length).toBeGreaterThan(0));
+        fireEvent.click(screen.getAllByText('鍙戠エ瀹℃牳')[0]);
 
-        expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('发票审核');
+        expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('鍙戠エ瀹℃牳');
         const outputSelect = container.querySelector('.apps-form-row select') as HTMLSelectElement;
         expect(Array.from(outputSelect.options).map((option) => option.value)).toEqual(['pdf']);
     });
@@ -8391,9 +8401,9 @@ describe('AppsPage', () => {
             {
                 id: 'expense-approval',
                 skill_id: 'expense-super-skill',
-                name: '费用审批',
+                name: '璐圭敤瀹℃壒',
                 description: 'Submit and approve expenses',
-                category: '财务',
+                category: '璐㈠姟',
                 kind: 'enterprise_approval_app',
                 app_definition_file: 'maclaw.app.json',
                 app_definition: {
@@ -8402,7 +8412,7 @@ describe('AppsPage', () => {
                     installUnit: 'enterprise_app_pack',
                     app: {
                         id: 'expense-approval',
-                        name: '费用审批',
+                        name: '璐圭敤瀹℃壒',
                         description: 'Submit and approve expenses',
                         kind: 'enterprise_approval_app',
                         icon: 'receipt',
@@ -8455,7 +8465,7 @@ describe('AppsPage', () => {
         ]);
         render(<AppsPage lang="zh-Hans" />);
 
-        await waitFor(() => expect(screen.getAllByText('费用审批').length).toBeGreaterThan(0));
+        await waitFor(() => expect(screen.getAllByText('璐圭敤瀹℃壒').length).toBeGreaterThan(0));
         const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
         const restored = [...(stored.customApps || []), ...(stored.editedApps || [])].find((app: any) => app.id === 'expense-approval');
         expect(restored).toBeTruthy();
@@ -8481,8 +8491,8 @@ describe('AppsPage', () => {
     it('installs apps from a pasted app pack manifest', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -8495,9 +8505,9 @@ describe('AppsPage', () => {
                             installUnit: 'skill',
                             app: {
                                 id: 'pack-doc-check',
-                                name: '文档校验',
+                                name: '鏂囨。鏍￠獙',
                                 description: 'Check documents',
-                                category: '文档处理',
+                                category: '鏂囨。澶勭悊',
                                 kind: 'tool_app',
                                 icon: 'shield',
                                 launchMode: 'fixed_skill_ui',
@@ -8508,44 +8518,44 @@ describe('AppsPage', () => {
                 }),
             },
         });
-        fireEvent.click(screen.getByText('安装'));
+        fireEvent.click(screen.getByText('瀹夎'));
 
-        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
-        expect(screen.getAllByText('文档校验').length).toBeGreaterThan(0);
+        await waitFor(() => expect(screen.getByText('宸插畨瑁? 1 路 宸茶烦杩? 0')).not.toBeNull());
+        expect(screen.getAllByText('鏂囨。鏍￠獙').length).toBeGreaterThan(0);
     });
 
     it('skips duplicate apps when installing pasted manifests', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         const manifest = JSON.stringify({
             x_maclaw_apps: 'v1',
             apps: [
-                { id: 'doc-stamp', skill_id: 'doc-tools', name: '文档盖章', description: 'Stamp documents', category: '文档处理', icon: 'contract', input_mode: 'file' },
-                { id: 'doc-stamp', skill_id: 'doc-tools', name: '文档盖章', description: 'Stamp documents', category: '文档处理', icon: 'contract', input_mode: 'file' },
+                { id: 'doc-stamp', skill_id: 'doc-tools', name: '鏂囨。鐩栫珷', description: 'Stamp documents', category: '鏂囨。澶勭悊', icon: 'contract', input_mode: 'file' },
+                { id: 'doc-stamp', skill_id: 'doc-tools', name: '鏂囨。鐩栫珷', description: 'Stamp documents', category: '鏂囨。澶勭悊', icon: 'contract', input_mode: 'file' },
             ],
         });
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), { target: { value: manifest } });
-        fireEvent.click(screen.getByText('安装'));
+        fireEvent.click(screen.getByText('瀹夎'));
 
-        expect(screen.getByText('已安装: 1 · 已跳过: 1')).not.toBeNull();
+        expect(screen.getByText('宸插畨瑁? 1 路 宸茶烦杩? 1')).not.toBeNull();
 
-        fireEvent.click(screen.getByText('关闭'));
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), { target: { value: manifest } });
 
         expect(screen.getByText('0/2')).not.toBeNull();
-        expect(screen.getAllByText('将跳过 · 已安装').length).toBeGreaterThan(0);
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getAllByText('灏嗚烦杩?路 宸插畨瑁?).length).toBeGreaterThan(0);
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
     });
 
     it('treats market-prefixed and built-in app ids as the same install identity', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -8553,9 +8563,9 @@ describe('AppsPage', () => {
                     privateMarker: 'x_maclaw_apps',
                     app: {
                         id: 'pdf-word',
-                        name: 'PDF 转 Word',
+                        name: 'PDF 杞?Word',
                         description: 'Duplicate built-in app',
-                        category: '文档处理',
+                        category: '鏂囨。澶勭悊',
                         kind: 'tool_app',
                         icon: 'pdf',
                         launchMode: 'fixed_skill_ui',
@@ -8566,26 +8576,26 @@ describe('AppsPage', () => {
         });
 
         expect(screen.getByText('0/1')).not.toBeNull();
-        expect(screen.getByText('将跳过 · 已安装')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('灏嗚烦杩?路 宸插畨瑁?)).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
     });
 
     it('shows detailed errors for invalid pasted manifests', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
-        expect(screen.getByLabelText('安装应用包')).not.toBeNull();
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        expect(screen.getByLabelText('瀹夎搴旂敤鍖?)).not.toBeNull();
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), { target: { value: '{bad json' } });
 
-        expect(screen.getByText('应用包无效: JSON 解析失败')).not.toBeNull();
-        expect(screen.getByText('应用包无效: JSON 解析失败').closest('[role="alert"]')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('搴旂敤鍖呮棤鏁? JSON 瑙ｆ瀽澶辫触')).not.toBeNull();
+        expect(screen.getByText('搴旂敤鍖呮棤鏁? JSON 瑙ｆ瀽澶辫触').closest('[role="alert"]')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), { target: { value: JSON.stringify({ apps: [] }) } });
 
-        expect(screen.getByText('应用包无效: 未识别应用包格式')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('搴旂敤鍖呮棤鏁? 鏈瘑鍒簲鐢ㄥ寘鏍煎紡')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
@@ -8597,8 +8607,8 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('应用包无效: maclaw.app.v1 privateMarker must be x_maclaw_apps')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('搴旂敤鍖呮棤鏁? maclaw.app.v1 privateMarker must be x_maclaw_apps')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
@@ -8610,8 +8620,8 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('应用包无效: maclaw.app.v1 app.id is invalid')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('搴旂敤鍖呮棤鏁? maclaw.app.v1 app.id is invalid')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
@@ -8623,8 +8633,8 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('应用包无效: maclaw.app.v1 app.launchMode must be agent_dynamic_ui for enterprise_normal_app')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('搴旂敤鍖呮棤鏁? maclaw.app.v1 app.launchMode must be agent_dynamic_ui for enterprise_normal_app')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
@@ -8636,8 +8646,8 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('应用包无效: maclaw.app.v1 app.launchMode must be automation_console for automation_app')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('搴旂敤鍖呮棤鏁? maclaw.app.v1 app.launchMode must be automation_console for automation_app')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
@@ -8650,8 +8660,8 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('应用包无效: maclaw.app.v1 binding.datasrv is required for enterprise_normal_app')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('搴旂敤鍖呮棤鏁? maclaw.app.v1 binding.datasrv is required for enterprise_normal_app')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
@@ -8664,8 +8674,8 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('应用包无效: maclaw.app.v1 binding.skill is required for tool_app')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('搴旂敤鍖呮棤鏁? maclaw.app.v1 binding.skill is required for tool_app')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
@@ -8684,8 +8694,8 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('应用包无效: maclaw.app.v1 installUnit must be skill for tool_app')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('搴旂敤鍖呮棤鏁? maclaw.app.v1 installUnit must be skill for tool_app')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
@@ -8701,8 +8711,8 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('应用包无效: maclaw.app.v1 binding.skill.outputModes[0] is invalid')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('搴旂敤鍖呮棤鏁? maclaw.app.v1 binding.skill.outputModes[0] is invalid')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
 
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
@@ -8722,15 +8732,15 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('应用包无效: maclaw.apps.json apps[0].fields[0].type is invalid')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('搴旂敤鍖呮棤鏁? maclaw.apps.json apps[0].fields[0].type is invalid')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
     });
 
     it('shows detailed errors for invalid app pack manifests', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('从市场添加'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -8741,29 +8751,29 @@ describe('AppsPage', () => {
             },
         });
 
-        expect(screen.getByText('应用包无效: maclaw.app.pack.v1 apps[0] privateMarker must be x_maclaw_apps')).not.toBeNull();
-        expect((screen.getByText('安装') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('搴旂敤鍖呮棤鏁? maclaw.app.pack.v1 apps[0] privateMarker must be x_maclaw_apps')).not.toBeNull();
+        expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
     });
 
     it('removes apps from the panel, closes their runtime tabs, and persists hidden built-ins', () => {
         const { container, unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByText('数据同步'));
-        expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('数据同步');
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByText('鏁版嵁鍚屾'));
+        expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('鏁版嵁鍚屾');
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
-        const dataSyncRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('数据同步')) as HTMLElement;
-        fireEvent.click(within(dataSyncRow).getByTitle('隐藏'));
-        fireEvent.click(screen.getByText('关闭'));
+        const dataSyncRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('鏁版嵁鍚屾')) as HTMLElement;
+        fireEvent.click(within(dataSyncRow).getByTitle('闅愯棌'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
 
-        expect(container.querySelector('.apps-runtime-tab')?.textContent || '').not.toContain('数据同步');
-        expect(screen.queryByText('数据同步')).toBeNull();
+        expect(container.querySelector('.apps-runtime-tab')?.textContent || '').not.toContain('鏁版嵁鍚屾');
+        expect(screen.queryByText('鏁版嵁鍚屾')).toBeNull();
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
 
-        expect(screen.queryByText('数据同步')).toBeNull();
+        expect(screen.queryByText('鏁版嵁鍚屾')).toBeNull();
     });
 
     it('syncs Hub revoked and republished queue states into installed app availability', async () => {
@@ -8849,18 +8859,18 @@ describe('AppsPage', () => {
     it('disables apps without hiding entries, blocks launch, and persists the disabled state', () => {
         const { container, unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
-        const dataSyncRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('数据同步')) as HTMLElement;
-        fireEvent.click(within(dataSyncRow).getByTitle('停用'));
-        fireEvent.click(screen.getByText('关闭'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
+        const dataSyncRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('鏁版嵁鍚屾')) as HTMLElement;
+        fireEvent.click(within(dataSyncRow).getByTitle('鍋滅敤'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
 
-        const disabledTile = screen.getAllByText('数据同步')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        const disabledTile = screen.getAllByText('鏁版嵁鍚屾')[0].closest('.apps-app-tile') as HTMLButtonElement;
         expect(disabledTile).not.toBeNull();
         expect(disabledTile.getAttribute('data-status')).toBe('disabled');
-        expect(disabledTile.title).toContain('企业管理员已停用此应用');
+        expect(disabledTile.title).toContain('浼佷笟绠＄悊鍛樺凡鍋滅敤姝ゅ簲鐢?);
         fireEvent.click(disabledTile);
-        expect(container.querySelector('.apps-runtime-tab')?.textContent || '').not.toContain('数据同步');
+        expect(container.querySelector('.apps-runtime-tab')?.textContent || '').not.toContain('鏁版嵁鍚屾');
 
         const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
         expect(stored.disabledIds).toContain('data-sync');
@@ -8868,73 +8878,73 @@ describe('AppsPage', () => {
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
-        const persistedTile = screen.getAllByText('数据同步')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        const persistedTile = screen.getAllByText('鏁版嵁鍚屾')[0].closest('.apps-app-tile') as HTMLButtonElement;
         expect(persistedTile.getAttribute('data-status')).toBe('disabled');
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
-        const persistedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('数据同步')) as HTMLElement;
-        fireEvent.click(within(persistedRow).getByTitle('启用'));
-        fireEvent.click(screen.getByText('关闭'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
+        const persistedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('鏁版嵁鍚屾')) as HTMLElement;
+        fireEvent.click(within(persistedRow).getByTitle('鍚敤'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
 
-        const enabledTile = screen.getAllByText('数据同步')[0].closest('.apps-app-tile') as HTMLButtonElement;
+        const enabledTile = screen.getAllByText('鏁版嵁鍚屾')[0].closest('.apps-app-tile') as HTMLButtonElement;
         expect(enabledTile.getAttribute('data-status')).toBe('available');
         fireEvent.click(enabledTile);
-        expect(document.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('数据同步');
+        expect(document.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('鏁版嵁鍚屾');
     });
     it('restores hidden built-in apps from app studio management', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
-        const webCollectRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('网页采集')) as HTMLElement;
-        fireEvent.click(within(webCollectRow).getByTitle('隐藏'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
+        const webCollectRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('缃戦〉閲囬泦')) as HTMLElement;
+        fireEvent.click(within(webCollectRow).getByTitle('闅愯棌'));
 
-        expect(screen.getByText('已隐藏应用')).not.toBeNull();
-        const hiddenRow = Array.from(document.querySelectorAll('.apps-manage-row--hidden')).find((row) => row.textContent?.includes('网页采集')) as HTMLElement;
-        fireEvent.click(within(hiddenRow).getByTitle('恢复'));
-        fireEvent.click(screen.getByText('关闭'));
+        expect(screen.getByText('宸查殣钘忓簲鐢?)).not.toBeNull();
+        const hiddenRow = Array.from(document.querySelectorAll('.apps-manage-row--hidden')).find((row) => row.textContent?.includes('缃戦〉閲囬泦')) as HTMLElement;
+        fireEvent.click(within(hiddenRow).getByTitle('鎭㈠'));
+        fireEvent.click(screen.getByText('鍏抽棴'));
 
-        expect(screen.getAllByText('网页采集').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('缃戦〉閲囬泦').length).toBeGreaterThan(0);
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
 
-        expect(screen.getAllByText('网页采集').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('缃戦〉閲囬泦').length).toBeGreaterThan(0);
     });
 
     it('filters hidden apps in app studio management', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
-        const dataSyncRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('数据同步')) as HTMLElement;
-        fireEvent.click(within(dataSyncRow).getByTitle('隐藏'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
+        const dataSyncRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('鏁版嵁鍚屾')) as HTMLElement;
+        fireEvent.click(within(dataSyncRow).getByTitle('闅愯棌'));
 
         const manageSearch = document.querySelector('.apps-manage-filter .apps-search') as HTMLInputElement;
         fireEvent.change(manageSearch, { target: { value: 'sync' } });
 
-        expect(screen.getByText('已隐藏应用')).not.toBeNull();
-        expect(screen.queryByText('没有匹配的应用')).toBeNull();
+        expect(screen.getByText('宸查殣钘忓簲鐢?)).not.toBeNull();
+        expect(screen.queryByText('娌℃湁鍖归厤鐨勫簲鐢?)).toBeNull();
         expect(document.querySelector('.apps-manage-toolbar .apps-count')?.textContent).toBe('1/10');
-        expect(Array.from(document.querySelectorAll('.apps-manage-row--hidden')).some((row) => row.textContent?.includes('数据同步'))).toBe(true);
-        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('网页采集'))).toBe(false);
+        expect(Array.from(document.querySelectorAll('.apps-manage-row--hidden')).some((row) => row.textContent?.includes('鏁版嵁鍚屾'))).toBe(true);
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('缃戦〉閲囬泦'))).toBe(false);
 
-        fireEvent.click(screen.getByTitle('清空搜索'));
-        fireEvent.change(document.querySelector('.apps-manage-category-select') as HTMLSelectElement, { target: { value: '数据集成' } });
-        expect(Array.from(document.querySelectorAll('.apps-manage-row--hidden')).some((row) => row.textContent?.includes('数据同步'))).toBe(true);
+        fireEvent.click(screen.getByTitle('娓呯┖鎼滅储'));
+        fireEvent.change(document.querySelector('.apps-manage-category-select') as HTMLSelectElement, { target: { value: '鏁版嵁闆嗘垚' } });
+        expect(Array.from(document.querySelectorAll('.apps-manage-row--hidden')).some((row) => row.textContent?.includes('鏁版嵁鍚屾'))).toBe(true);
     });
 
     it('keeps pinned apps capped at two rows', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
-        fireEvent.click(screen.getByText('应用管理'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
-        fireEvent.click(within(document.querySelectorAll('.apps-manage-row')[6] as HTMLElement).getByTitle('置顶'));
-        fireEvent.click(within(document.querySelectorAll('.apps-manage-row')[7] as HTMLElement).getByTitle('置顶'));
+        fireEvent.click(within(document.querySelectorAll('.apps-manage-row')[6] as HTMLElement).getByTitle('缃《'));
+        fireEvent.click(within(document.querySelectorAll('.apps-manage-row')[7] as HTMLElement).getByTitle('缃《'));
 
-        const pinButton = within(document.querySelectorAll('.apps-manage-row')[8] as HTMLElement).getByTitle('常用应用已满 8 个，请先取消一个') as HTMLButtonElement;
+        const pinButton = within(document.querySelectorAll('.apps-manage-row')[8] as HTMLElement).getByTitle('甯哥敤搴旂敤宸叉弧 8 涓紝璇峰厛鍙栨秷涓€涓?) as HTMLButtonElement;
         expect(pinButton.disabled).toBe(true);
         fireEvent.click(pinButton);
 
@@ -8957,14 +8967,14 @@ describe('AppsPage', () => {
         vi.stubGlobal('fetch', fetchMock);
 
         render(<AppsPage lang="zh-Hans" />);
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
 
-        await waitFor(() => expect(screen.getByText('可生成应用')).not.toBeNull());
-        fireEvent.click(screen.getByText('加到面板'));
+        await waitFor(() => expect(screen.getByText('鍙敓鎴愬簲鐢?)).not.toBeNull());
+        fireEvent.click(screen.getByText('鍔犲埌闈㈡澘'));
 
-        expect(screen.getByText('已添加')).not.toBeNull();
-        fireEvent.click(screen.getByText('关闭'));
-        expect(screen.getAllByText('人事').length).toBeGreaterThan(0);
+        expect(screen.getByText('宸叉坊鍔?)).not.toBeNull();
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        expect(screen.getAllByText('浜轰簨').length).toBeGreaterThan(0);
     });
 
     it('restores DataSrv installed enterprise normal app run evidence into app candidates', async () => {
@@ -9350,11 +9360,11 @@ describe('AppsPage', () => {
         expect(within(runtimeVersionSnapshot).getByText('Version')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('v3')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('App Skill')).not.toBeNull();
-        expect(within(runtimeVersionSnapshot).getByText('expense-super-skill · app_skill · hub · v1.0.0')).not.toBeNull();
+        expect(within(runtimeVersionSnapshot).getByText('expense-super-skill 路 app_skill 路 hub 路 v1.0.0')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('Approval workflow')).not.toBeNull();
-        expect(within(runtimeVersionSnapshot).getByText('expense-workflow · workflow_skill · hub · v2.1.0')).not.toBeNull();
+        expect(within(runtimeVersionSnapshot).getByText('expense-workflow 路 workflow_skill 路 hub 路 v2.1.0')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('Approval binding')).not.toBeNull();
-        expect(within(runtimeVersionSnapshot).getByText('expense.submitted · expense_report · expense-workflow@v2.1.0')).not.toBeNull();
+        expect(within(runtimeVersionSnapshot).getByText('expense.submitted 路 expense_report 路 expense-workflow@v2.1.0')).not.toBeNull();
         const runtimeWorkflowContract = document.querySelector('.apps-detail__header .apps-workflow-contract-summary') as HTMLElement | null;
         expect(runtimeWorkflowContract).not.toBeNull();
         expect(runtimeWorkflowContract?.getAttribute('aria-label')).toBe('Runtime contract');
@@ -9450,16 +9460,17 @@ describe('AppsPage', () => {
     });
     it('turns skill maclaw.apps.json entries into registered tool apps', async () => {
         listSkillAppManifestsMock.mockResolvedValue([
-            { id: 'redact', skill_id: 'doc-tools', name: '文档脱敏 Plus', description: 'Redact files', category: '文档处理', icon: 'shield', input_mode: 'file' },
+            { id: 'redact', skill_id: 'doc-tools', name: '鏂囨。鑴辨晱 Plus', description: 'Redact files', category: '鏂囨。澶勭悊', icon: 'shield', input_mode: 'file' },
         ]);
 
         render(<AppsPage lang="zh-Hans" />);
-        fireEvent.click(screen.getByTitle('应用程序工作室'));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
 
-        await waitFor(() => expect(screen.getByText('文档脱敏 Plus')).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('鏂囨。鑴辨晱 Plus')).not.toBeNull());
         await waitFor(() => expect(screen.getByText('\u5df2\u52a0\u5165\u9762\u677f')).not.toBeNull());
         expect(screen.queryByText('\u52a0\u5230\u9762\u677f')).toBeNull();
-        fireEvent.click(screen.getByText('关闭'));
-        expect(screen.getAllByText('文档脱敏 Plus').length).toBeGreaterThan(0);
+        fireEvent.click(screen.getByText('鍏抽棴'));
+        expect(screen.getAllByText('鏂囨。鑴辨晱 Plus').length).toBeGreaterThan(0);
     });
 });
+
