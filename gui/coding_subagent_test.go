@@ -1695,7 +1695,7 @@ func TestSubAgentCommandSummarySoftensNonGitDiffSelfCheckFailure(t *testing.T) {
 	status, summary := summarizeSubAgentCommands([]CodingSubAgentCommandResult{
 		{Command: "git diff --stat", Succeeded: false, Summary: "fatal: not a git repository"},
 	})
-	if status != codingSubAgentQualityPassed || strings.Contains(summary, "failed") {
+	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "skipped diff self-check") || strings.Contains(summary, "failed") {
 		t.Fatalf("non-git diff self-check command should not be summarized as failed, got (%q, %q)", status, summary)
 	}
 
@@ -1705,6 +1705,13 @@ func TestSubAgentCommandSummarySoftensNonGitDiffSelfCheckFailure(t *testing.T) {
 	})
 	if len(failed) != 1 || failed[0].Command != "go test ./..." {
 		t.Fatalf("only real command failures should remain unresolved, got %#v", failed)
+	}
+
+	commandSummary := appendSubAgentCommandSummary("done", []CodingSubAgentCommandResult{
+		{Command: "git diff --stat", Succeeded: false, Summary: "fatal: not a git repository"},
+	})
+	if !strings.Contains(commandSummary, "SKIP: `git diff --stat`") || strings.Contains(commandSummary, "FAIL: `git diff --stat`") {
+		t.Fatalf("non-git diff self-check should be shown as skipped, got %q", commandSummary)
 	}
 }
 

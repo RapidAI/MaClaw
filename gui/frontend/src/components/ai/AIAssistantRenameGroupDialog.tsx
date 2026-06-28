@@ -72,7 +72,7 @@ export function AIAssistantRenameGroupDialog({
                         data-testid="rename-group-save"
                         onClick={onSubmit}
                         disabled={!canSave}
-                        style={{ border: `1px solid ${t.btnBorder}`, borderRadius: 6, background: t.btnColor, color: "#fff", padding: "7px 12px", cursor: canSave ? "pointer" : "not-allowed", opacity: canSave ? 1 : 0.55 }}
+                        style={{ border: `1px solid ${t.sendBtnBg}`, borderRadius: 6, background: t.sendBtnBg, color: t.sendBtnColor, padding: "7px 12px", cursor: canSave ? "pointer" : "not-allowed", opacity: canSave ? 1 : 0.55 }}
                     >
                         {localizeText(lang, "Save", "保存", "儲存")}
                     </button>

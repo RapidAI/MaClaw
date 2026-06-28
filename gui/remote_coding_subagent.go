@@ -302,13 +302,7 @@ func splitRemoteNonGitDiffSelfCheckFailures(commands []CodingSubAgentCommandResu
 	nonGit := make([]CodingSubAgentCommandResult, 0)
 	other := make([]CodingSubAgentCommandResult, 0)
 	for _, cmd := range commands {
-		text := strings.TrimSpace(cmd.Summary)
-		if text == "" {
-			text = cmd.Command
-		} else {
-			text = cmd.Command + "\n" + text
-		}
-		if subAgentGitDiffUnavailableBecauseNonGit(text) {
+		if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
 			nonGit = append(nonGit, cmd)
 			continue
 		}

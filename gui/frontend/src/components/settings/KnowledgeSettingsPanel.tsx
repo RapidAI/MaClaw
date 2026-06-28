@@ -1809,6 +1809,9 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             setSyncStatus(result || null);
             if (!conflictStrategy) {
                 setSyncConflictResult(result);
+                notifySuccess(result?.requires_resolution
+                    ? t('Knowledge sync package checked. Resolve conflicts before importing.', '知识库同步包已检查，请先解决冲突再导入。')
+                    : t('Knowledge sync package checked. No local conflicts found.', '知识库同步包已检查，未发现本地冲突。'));
                 return result;
             }
             return result;
@@ -1817,7 +1820,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             refreshHealth: conflictStrategy === 'skip' || conflictStrategy === 'import',
             successMessage: conflictStrategy
                 ? t('Encrypted knowledge sync package downloaded and imported.', '加密知识库同步包已下载并导入。')
-                : t('Knowledge sync package checked. Resolve conflicts before importing.', '知识库同步包已检查，请先解决冲突再导入。'),
+                : false,
         });
     };
 
@@ -2143,6 +2146,15 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         : syncServiceStatus === 'official_active'
             ? t('maclaw official service is active: sync data has no fixed expiry while the service is valid, with a 500MB server space limit.', 'maclaw 官方服务有效中：同步数据不设固定有效期，服务器空间上限 500MB。')
             : t('Temporary sync: sync data is deleted after 7 days, with a 100MB server space limit. Upgrade maclaw official service for 500MB and no fixed expiry while valid.', '当前为临时同步：同步数据将在 7 天后自动删除，服务器空间上限 100MB。升级 maclaw 官方服务后，可获得 500MB 同步空间，并在服务有效期内不设固定有效期。'));
+    const syncExpiryLine = syncStatus?.expires_at
+        ? `${t('Expires', '到期时间')}: ${syncStatus.expires_at}`
+        : syncStatus?.has_package && syncServiceStatus === 'official_active'
+            ? t('No fixed expiry while official service is valid.', '官方服务有效期内不设固定有效期。')
+            : syncStatus?.has_package && syncReadonly
+                ? t('Download is still available now. Renew within 7 days to keep update capability and avoid automatic deletion.', '当前仍可下载。请在 7 天内续费以恢复更新能力并避免自动删除。')
+                : syncStatus?.has_package
+                    ? t('Temporary package expires 7 days after upload.', '临时同步包会在上传 7 天后到期。')
+                    : t('No cloud sync package yet.', '暂无云端同步包。');
 
     return (
         <>
@@ -2534,7 +2546,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                 <KeyValueList values={[
                                     syncStatus?.package_id ? `${t('Package', '同步包')}: ${syncStatus.package_id}` : '',
                                     syncStatus?.updated_at ? `${t('Updated', '更新时间')}: ${syncStatus.updated_at}` : '',
-                                    syncStatus?.expires_at ? `${t('Expires', '到期时间')}: ${syncStatus.expires_at}` : t('No fixed expiry while official service is valid.', '官方服务有效期内不设固定有效期。'),
+                                    syncExpiryLine,
                                     syncStatus?.readonly_reason || '',
                                 ]} empty={t('Refresh sync status to view cloud state.', '刷新同步状态后查看云端状态。')} />
                             </div>

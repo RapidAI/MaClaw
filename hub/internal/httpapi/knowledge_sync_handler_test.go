@@ -99,6 +99,47 @@ func TestKnowledgeSyncOfficialExpiredIsReadOnlyButDownloadable(t *testing.T) {
 	}
 }
 
+func TestKnowledgeSyncUnrelatedAuthorizationStaysTemporary(t *testing.T) {
+	_, identity, syncDir := newKnowledgeShareHandlerTestDeps(t)
+	viewerToken, _ := issueViewerToken(t, identity, "ordinary-sync@example.com")
+	ac := llmservice.NewTenantLLMAccessControl(nil)
+	ac.UpdateFromHeartbeat("tenant_default", &llmservice.TenantAuthorizationStatus{
+		TenantID: "tenant_default",
+		Authorizations: []llmservice.AuthorizationSummary{{
+			ServiceGroupID: "other_service",
+			Status:         "active",
+			Active:         true,
+			Source:         "enterprise",
+		}},
+	})
+	previous := GetMaClawModule()
+	SetMaClawModule(&llmservice.MaClawModule{AccessCtrl: ac})
+	t.Cleanup(func() { SetMaClawModule(previous) })
+
+	statusRec := doKnowledgeShareJSON(t, KnowledgeSyncStatusHandler(identity, syncDir), http.MethodGet, "/api/knowledge/sync/status", viewerToken, nil)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+	var status KnowledgeSyncView
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.ServiceStatus != "normal" || status.LimitBytes != knowledgeSyncNormalLimitBytes || status.RetentionDays != knowledgeSyncNormalRetentionDays {
+		t.Fatalf("status with unrelated authorization = %+v", status)
+	}
+
+	uploadRec := doKnowledgeShareJSON(t, UploadKnowledgeSyncPackageHandler(identity, syncDir), http.MethodPut, "/api/knowledge/sync/package", viewerToken, map[string]any{
+		"package_id":            "ksync_normal_auth",
+		"package_version":       1,
+		"compressed_size_bytes": 4,
+		"payload_base64":        base64.StdEncoding.EncodeToString([]byte("data")),
+		"encryption":            map[string]any{"algorithm": "AES-256-GCM"},
+	})
+	if uploadRec.Code != http.StatusOK {
+		t.Fatalf("upload with unrelated authorization = %d body=%s", uploadRec.Code, uploadRec.Body.String())
+	}
+}
+
 func TestKnowledgeSyncUsesOnePackagePerEmail(t *testing.T) {
 	_, identity, syncDir := newKnowledgeShareHandlerTestDeps(t)
 	firstToken, _ := issueViewerToken(t, identity, "same-sync@example.com")

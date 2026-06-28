@@ -4067,12 +4067,7 @@ func appendSubAgentCommandSummary(summary string, commands []CodingSubAgentComma
 	b.WriteString("\n\n## 命令验证\n\n")
 	shownCommands := selectSubAgentCommandSummaryEntries(commands, codingSubAgentCommandSummaryMax)
 	for _, cmd := range shownCommands {
-		status := "PASS"
-		if !cmd.Succeeded {
-			status = "FAIL"
-		} else if subAgentCommandSuccessLooksEmpty(cmd) {
-			status = "EMPTY"
-		}
+		status := subAgentCommandSummaryStatus(cmd)
 		b.WriteString("- ")
 		b.WriteString(status)
 		b.WriteString(": `")
@@ -4175,7 +4170,23 @@ func subAgentCommandResultsAtIndexes(commands []CodingSubAgentCommandResult, ind
 }
 
 func subAgentCommandSummaryHasProblem(cmd CodingSubAgentCommandResult) bool {
+	if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
+		return false
+	}
 	return !cmd.Succeeded || subAgentCommandSuccessLooksEmpty(cmd)
+}
+
+func subAgentCommandSummaryStatus(cmd CodingSubAgentCommandResult) string {
+	if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
+		return "SKIP"
+	}
+	if !cmd.Succeeded {
+		return "FAIL"
+	}
+	if subAgentCommandSuccessLooksEmpty(cmd) {
+		return "EMPTY"
+	}
+	return "PASS"
 }
 
 func subAgentAuditSeq(seq uint64, index int) uint64 {
@@ -4306,10 +4317,18 @@ func summarizeSubAgentCommands(commands []CodingSubAgentCommandResult) (codingSu
 	if len(commands) == 0 {
 		return codingSubAgentQualityNone, "no bash commands run"
 	}
+	skippedDiffChecks := countSoftNonGitDiffSelfCheckFailures(commands)
 	failed := filterSoftNonGitDiffSelfCheckFailures(failedSubAgentCommands(commands))
 	emptySuccesses := emptySuccessSubAgentCommands(commands)
 	problems := append(append([]CodingSubAgentCommandResult{}, failed...), emptySuccesses...)
 	if len(problems) == 0 {
+		if skippedDiffChecks > 0 {
+			checkWord := "self-checks"
+			if skippedDiffChecks == 1 {
+				checkWord = "self-check"
+			}
+			return codingSubAgentQualityPassed, fmt.Sprintf("%d bash command(s) run, %d skipped diff %s, no blocking failures", len(commands), skippedDiffChecks, checkWord)
+		}
 		if len(commands) == 1 {
 			return codingSubAgentQualityPassed, "1 bash command run, no failures"
 		}
@@ -5994,6 +6013,16 @@ func filterSoftNonGitDiffSelfCheckFailures(commands []CodingSubAgentCommandResul
 		filtered = append(filtered, cmd)
 	}
 	return filtered
+}
+
+func countSoftNonGitDiffSelfCheckFailures(commands []CodingSubAgentCommandResult) int {
+	count := 0
+	for _, cmd := range commands {
+		if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
+			count++
+		}
+	}
+	return count
 }
 
 func subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd CodingSubAgentCommandResult) bool {

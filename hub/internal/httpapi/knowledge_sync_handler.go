@@ -234,7 +234,7 @@ func knowledgeSyncServiceStatus(r *http.Request, principal *auth.ViewerPrincipal
 				view.LimitBytes = knowledgeSyncOfficialLimitBytes
 				view.RetentionDays = 0
 				view.Message = "maclaw 官方服务有效中：同步数据不设固定有效期，空间上限 500MB。"
-			} else if hadOfficial || len(status.Authorizations) > 0 {
+			} else if hadOfficial {
 				view.ServiceStatus = "official_expired"
 				view.LimitBytes = knowledgeSyncOfficialLimitBytes
 				view.RetentionDays = knowledgeSyncNormalRetentionDays
@@ -317,6 +317,22 @@ func loadKnowledgeSyncMeta(baseDir string, principal *auth.ViewerPrincipal) (*kn
 	return &meta, packagePath
 }
 
+func removeKnowledgeSyncUserDirs(baseDir string, principal *auth.ViewerPrincipal) error {
+	if principal == nil {
+		return nil
+	}
+	var firstErr error
+	for _, dir := range []string{knowledgeSyncUserDir(baseDir, principal), legacyKnowledgeSyncUserDir(baseDir, principal)} {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func saveKnowledgeSyncPackage(baseDir string, principal *auth.ViewerPrincipal, payload []byte, meta *knowledgeSyncMeta) error {
 	dir := knowledgeSyncUserDir(baseDir, principal)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -341,10 +357,7 @@ func saveKnowledgeSyncPackageMeta(baseDir string, principal *auth.ViewerPrincipa
 }
 
 func deleteKnowledgeSyncPackage(baseDir string, principal *auth.ViewerPrincipal) error {
-	if principal == nil {
-		return nil
-	}
-	return os.RemoveAll(knowledgeSyncUserDir(baseDir, principal))
+	return removeKnowledgeSyncUserDirs(baseDir, principal)
 }
 
 func knowledgeSyncMetaExpired(meta *knowledgeSyncMeta, now time.Time) bool {

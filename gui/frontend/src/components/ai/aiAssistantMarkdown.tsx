@@ -498,9 +498,9 @@ function ActionButtons({ actions, executeAction, theme, lang = "en" }: {
                         }}
                         style={{
                             ...baseInputBtnStyle,
-                            background: isPrimary ? t.btnColor : "transparent",
-                            color: isPrimary ? "#fff" : (a.style === "danger" ? t.errorText : t.btnColor),
-                            borderColor: a.style === "danger" ? t.errorText : t.btnBorder,
+                            background: isPrimary ? t.sendBtnBg : "transparent",
+                            color: isPrimary ? t.sendBtnColor : (a.style === "danger" ? t.errorText : t.btnColor),
+                            borderColor: a.style === "danger" ? t.errorText : (isPrimary ? t.sendBtnBg : t.btnBorder),
                             fontSize: "12px",
                             padding: "4px 10px",
                             width: "auto",

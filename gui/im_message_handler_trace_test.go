@@ -2339,13 +2339,16 @@ func TestHandleIMMessageWithProgressAndStream_EnglishShortChitChatWithPunctuatio
 	}
 }
 
-func TestHandleIMMessageWithProgressAndStream_OkShortChitChatWithPunctuationReturnsDirectReply(t *testing.T) {
+func TestHandleIMMessageWithProgressAndStream_OkShortChitChatWithPunctuationIsNotDirectReply(t *testing.T) {
 	// "ok"/"okay" removed from short chitchat list to avoid intercepting
 	// workflow confirmation intents. Verify it no longer produces a canned response.
 	h := NewIMMessageHandler(&App{}, &RemoteSessionManager{app: &App{}, sessions: map[string]*RemoteSession{}})
-	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "okay.", Lang: "en"}, nil, nil, nil, nil)
-	if resp != nil && resp.Text == "Okay. I'm here if you need anything." {
-		t.Fatal("ok/okay should no longer be intercepted as short chitchat")
+	if isShortChitChatMessage("okay.") {
+		t.Fatal("ok/okay should no longer be classified as short chitchat")
+	}
+	resp, handled := h.handleImmediateIMCommand(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "okay.", Lang: "en"}, "okay.", nil, nil)
+	if handled || resp != nil {
+		t.Fatalf("ok/okay should no longer be intercepted as immediate short chitchat, handled=%v resp=%+v", handled, resp)
 	}
 }
 
