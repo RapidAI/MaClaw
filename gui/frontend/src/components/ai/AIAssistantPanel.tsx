@@ -157,7 +157,7 @@ function WorkflowReviewInlinePrompt({
                     <button
                         type="button"
                         onClick={onConfirm}
-                        style={{ ...baseButtonStyle, background: t.headingColor, borderColor: t.headingColor, color: "#fff" }}
+                        style={{ ...baseButtonStyle, background: t.sendBtnBg, borderColor: t.sendBtnBg, color: t.sendBtnColor }}
                     >
                         {confirmLabel}
                     </button>
@@ -2090,7 +2090,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         </div>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px 12px", borderTop: `1px solid ${t.titleBarBorder}` }}>
                             <button type="button" disabled={savingTask} onClick={() => setSaveTaskDialogOpen(false)} style={{ border: `1px solid ${t.titleBarBorder}`, borderRadius: 6, background: t.fieldBg, color: t.text, cursor: savingTask ? "default" : "pointer", fontSize: 12, padding: "5px 12px" }}>{localizeText(lang, "Cancel", "\u53d6\u6d88", "\u53d6\u6d88")}</button>
-                            <button type="submit" disabled={savingTask || !saveTaskName.trim()} style={{ border: `1px solid ${t.btnBorder}`, borderRadius: 6, background: t.headingColor, color: "#fff", cursor: savingTask || !saveTaskName.trim() ? "default" : "pointer", opacity: savingTask || !saveTaskName.trim() ? 0.62 : 1, fontSize: 12, padding: "5px 12px" }}>{savingTask ? localizeText(lang, "Saving...", "\u4fdd\u5b58\u4e2d...", "\u4fdd\u5b58\u4e2d...") : localizeText(lang, "Save", "\u4fdd\u5b58", "\u4fdd\u5b58")}</button>
+                            <button type="submit" disabled={savingTask || !saveTaskName.trim()} style={{ border: `1px solid ${t.btnBorder}`, borderRadius: 6, background: t.sendBtnBg, color: t.sendBtnColor, cursor: savingTask || !saveTaskName.trim() ? "default" : "pointer", opacity: savingTask || !saveTaskName.trim() ? 0.62 : 1, fontSize: 12, padding: "5px 12px" }}>{savingTask ? localizeText(lang, "Saving...", "\u4fdd\u5b58\u4e2d...", "\u4fdd\u5b58\u4e2d...") : localizeText(lang, "Save", "\u4fdd\u5b58", "\u4fdd\u5b58")}</button>
                         </div>
                     </form>
                 </div>
