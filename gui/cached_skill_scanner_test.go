@@ -109,10 +109,10 @@ func TestProperty6_StaleWhileRevalidatePattern(t *testing.T) {
 		// Set roots to empty so background scan completes quickly with empty result
 		scanner.roots = []string{}
 
-		// Simulate an expired cache (created > 30s ago)
+		// Simulate an expired cache.
 		expiredEntry := &skillCacheEntry{
 			skills:    skills,
-			createdAt: time.Now().Add(-31 * time.Second), // expired
+			createdAt: time.Now().Add(-(skillCacheTTL + time.Second)),
 			stale:     false,
 		}
 		scanner.cache.Store(expiredEntry)

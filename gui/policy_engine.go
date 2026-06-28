@@ -24,7 +24,7 @@ type PolicyEngine struct {
 // NewPolicyEngine creates a PolicyEngine initialised with the default policy rules.
 func NewPolicyEngine() *PolicyEngine {
 	return &PolicyEngine{
-		mode:    "relaxed",
+		mode:    "standard",
 		rules:   DefaultPolicyRules(),
 		reCache: make(map[string]*regexp.Regexp),
 	}
@@ -61,7 +61,7 @@ func normalizePolicyEngineMode(mode string) string {
 	case "permissive":
 		return "relaxed"
 	default:
-		return "relaxed"
+		return "standard"
 	}
 }
 
@@ -78,7 +78,7 @@ func (e *PolicyEngine) Mode() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	if strings.TrimSpace(e.mode) == "" {
-		return "relaxed"
+		return "standard"
 	}
 	return e.mode
 }
@@ -157,11 +157,11 @@ func (e *PolicyEngine) Rules() []security.PolicyRule {
 	return out
 }
 
-// DefaultPolicyRules returns the built-in policy rule set (relaxed mode).
+// DefaultPolicyRules returns the built-in policy rule set (standard mode).
 // Standard: critical/high ask, medium audit, low allow. Dangerous command
 // patterns are recorded through risk/audit paths instead of being denied here.
 func DefaultPolicyRules() []security.PolicyRule {
-	return PolicyRulesForMode("relaxed")
+	return PolicyRulesForMode("standard")
 }
 
 // PolicyRulesForMode returns the policy rules for the given security mode.

@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"encoding/json"
@@ -19,6 +19,9 @@ func classifyCraftAPIError(message string) craftAPIErrorKind {
 	payload, hasPayload := parseCraftAPIErrorPayload(message)
 	if hasPayload && payload.Code == "1234" {
 		if strings.Contains(message, "网络错误") {
+			return craftAPIErrorCode1234Transient
+		}
+		if strings.Contains(message, "缃戠粶閿欒") {
 			return craftAPIErrorCode1234Transient
 		}
 		return craftAPIErrorCode1234

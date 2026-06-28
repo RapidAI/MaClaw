@@ -3496,7 +3496,7 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 	wantProgress := []string{
 		"🛠️ 正在生成并执行脚本，准备继续完成交付...",
 		"🖥️ 正在执行命令处理文件，请稍候...",
-		"📤 正在整理并发送生成的文件...",
+		"📤 正在整理并发送文件...",
 	}
 	for _, want := range wantProgress {
 		found := false

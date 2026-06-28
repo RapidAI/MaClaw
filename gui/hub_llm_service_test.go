@@ -44,7 +44,12 @@ func TestEnsureViewerTokenThrottlesRecoveryWhenHubOmitsToken(t *testing.T) {
 	defer hub.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	cfg := corelib.AppConfig{RemoteHubURL: hub.URL, RemoteEmail: "user@example.com"}
+	cfg := corelib.AppConfig{
+		RemoteHubURL:       hub.URL,
+		RemoteEmail:        "user@example.com",
+		RemoteMachineID:    "m_existing",
+		RemoteMachineToken: "mt_existing",
+	}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}

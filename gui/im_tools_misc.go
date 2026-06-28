@@ -1643,6 +1643,16 @@ func (h *IMMessageHandler) toolListTemplates() string {
 }
 
 func (h *IMMessageHandler) toolLaunchTemplate(args map[string]interface{}) string {
+	name := stringVal(args, "template_name")
+	if name == "" {
+		return "\u7f3a\u5c11 template_name \u53c2\u6570"
+	}
+	if h.templateManager == nil {
+		return "\u6a21\u677f\u7ba1\u7406\u5668\u672a\u521d\u59cb\u5316"
+	}
+	if _, err := h.templateManager.Get(name); err != nil {
+		return fmt.Sprintf("\u83b7\u53d6\u6a21\u677f\u5931\u8d25: %s", err.Error())
+	}
 	return "[system rejected] launch_template is disabled for external coding sessions. Coding tasks must run through the internal CodingSubAgent."
 }
 

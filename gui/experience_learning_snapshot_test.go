@@ -20,10 +20,10 @@ func TestBuildExperienceLearningSnapshotIncludesToolAndMemorySignals(t *testing.
 	now := time.Now()
 	for i := 0; i < 5; i++ {
 		tracker.RecordExperience(coretool.ToolExperience{
-			ToolName:     "browser_observe",
-			QueryTokens:  []string{"browser", "button"},
-			TaskType:     "browser_automation",
-			ToolSequence: []string{"browser_observe", "browser_click"},
+			ToolName:     "read_file",
+			QueryTokens:  []string{"config", "verify"},
+			TaskType:     "code_review",
+			ToolSequence: []string{"read_file", "bash"},
 			Success:      true,
 			FinalOutcome: "completed",
 			Timestamp:    now,
@@ -31,13 +31,13 @@ func TestBuildExperienceLearningSnapshotIncludesToolAndMemorySignals(t *testing.
 	}
 	for i := 0; i < 4; i++ {
 		tracker.RecordExperience(coretool.ToolExperience{
-			ToolName:     "browser_click",
-			QueryTokens:  []string{"browser", "button"},
-			TaskType:     "browser_automation",
-			ToolSequence: []string{"browser_click", "browser_observe"},
+			ToolName:     "bash",
+			QueryTokens:  []string{"config", "verify"},
+			TaskType:     "code_review",
+			ToolSequence: []string{"bash", "read_file"},
 			Success:      false,
 			ErrorClass:   "element_missing",
-			RecoveryTool: "browser_observe",
+			RecoveryTool: "read_file",
 			FinalOutcome: "recovered",
 			Timestamp:    now,
 		})

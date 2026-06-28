@@ -22,7 +22,7 @@ func userFacingToolProgressTextWithArgs(toolName, argsJSON string) string {
 		return "🖥️ 正在执行命令处理文件，请稍候..."
 	}
 	if toolName == "send_file" {
-		return "📤 正在整理并发送生成的文件..."
+		return "📤 正在整理并发送文件..."
 	}
 	switch toolName {
 	case "craft_tool":

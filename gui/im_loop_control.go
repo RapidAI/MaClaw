@@ -26,7 +26,8 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 	select {
 	case <-ctx.DoneC:
 	case <-time.After(10 * time.Second):
-		log.Printf("[CancelCurrentSession] timed out waiting for loop to exit")
+		log.Printf("[CancelCurrentSession] timed out waiting for loop to exit — force-closing DoneC")
+		ctx.Done()
 	}
 	return taskText, nil
 }
@@ -49,7 +50,14 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 	select {
 	case <-ctx.DoneC:
 	case <-time.After(10 * time.Second):
-		log.Printf("[CancelSessionForUser] timed out waiting for loop to exit user=%s", userID)
+		log.Printf("[CancelSessionForUser] timed out waiting for loop to exit user=%s — force-closing DoneC to unblock waiters", userID)
+		// Force-close DoneC so that hasActiveInterruptableLoop and other
+		// waiters stop considering this loop as active. The goroutine holding
+		// state.mu is stuck on a blocking syscall (e.g. memory Store.mu.RLock
+		// waiting for a long-running pipeline write lock) and cannot check
+		// IsCancelled. DoneC.close is idempotent — if the loop exits later,
+		// its defer ctx.Done() is a no-op.
+		ctx.Done()
 	}
 	return taskText, nil
 }

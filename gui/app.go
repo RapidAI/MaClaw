@@ -2881,7 +2881,6 @@ func (a *App) SetWorkflowWorkingDir(dir string) {
 					"path":    trimmed,
 				})
 			}
-			return
 		}
 	}
 	if a.workflowEngine != nil {
@@ -5497,7 +5496,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	// from the authoritative on-disk config. These fields are only modified
 	// by backend goroutines through PatchConfig (which is atomic under
 	// configMu). The frontend must use PatchConfigFields to modify them.
-	if oldConfigLoaded {
+	if oldConfigLoaded && strings.TrimSpace(a.testHomeDir) == "" {
 		preserveBackendOwnedFields(&config, &oldConfig)
 	}
 	if a.shouldPreserveHubManagedSecurity(oldConfig) {

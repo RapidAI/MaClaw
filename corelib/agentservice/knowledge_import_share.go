@@ -2,10 +2,12 @@ package agentservice
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -54,8 +56,11 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 	// Resolve the API URL from the share link or knowledge_id + hub_url.
 	apiURL, resolvedKnowledgeID, err := resolveShareAPIURL(shareLink, knowledgeID, hubURL)
 	if err != nil {
+		log.Printf("[knowledge_import_share] resolve URL failed: %v (share_link=%q knowledge_id=%q)", err, shareLink, knowledgeID)
 		return fmt.Sprintf("Error: %v", err)
 	}
+
+	log.Printf("[knowledge_import_share] start knowledge_id=%s api_url=%s", resolvedKnowledgeID, apiURL)
 
 	// 120s timeout covers metadata fetch + package download over potentially slow networks.
 	ctx, cancel := context.WithTimeout(c.parentContext(), 120*time.Second)
@@ -66,12 +71,14 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 	// Step 1: Fetch share metadata.
 	shareMetadata, err := fetchShareMetadata(ctx, apiURL, authHeader)
 	if err != nil {
+		log.Printf("[knowledge_import_share] metadata fetch failed: %v", err)
 		return fmt.Sprintf("Error: failed to fetch share metadata: %v", err)
 	}
 
 	// Step 2: Resolve package URL from metadata.
 	packageURL := resolveSharePackageURL(apiURL, shareMetadata)
 	if packageURL == "" {
+		log.Printf("[knowledge_import_share] no package_url in metadata for %s", resolvedKnowledgeID)
 		// No package URL — return metadata so the agent can inform the user.
 		metaJSON, _ := json.Marshal(map[string]interface{}{
 			"status":       "resolved_metadata_only",
@@ -86,6 +93,7 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 	// Step 3: Download the package.
 	pkg, err := downloadSharePackage(ctx, packageURL, authHeader)
 	if err != nil {
+		log.Printf("[knowledge_import_share] package download failed: %v (url=%s)", err, packageURL)
 		return fmt.Sprintf("Error: failed to download knowledge package: %v", err)
 	}
 
@@ -97,21 +105,56 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 		return "Error: package has no sources"
 	}
 
+	// Step 4.1: Verify content integrity if checksum is provided.
+	if cs := strings.TrimSpace(pkg.Manifest.ContentChecksum); cs != "" {
+		actual := computePackageContentChecksum(pkg.Sources)
+		if !strings.EqualFold(actual, cs) {
+			return fmt.Sprintf("Error: package content integrity check failed (expected %s, got %s). The package may have been corrupted or truncated during transfer.", cs[:minInt(12, len(cs))], actual[:minInt(12, len(actual))])
+		}
+	}
+
+	// Step 4.2: Verify source count matches manifest declaration.
+	if pkg.Manifest.SourceCount > 0 && len(pkg.Sources) < pkg.Manifest.SourceCount {
+		return fmt.Sprintf("Error: package declares %d sources but only contains %d. The package may be incomplete.", pkg.Manifest.SourceCount, len(pkg.Sources))
+	}
+
 	// Step 5: Import into local knowledge store.
 	importResult := knowledge.ImportPackageSources(ctx, c.knowledgeStore, convertPkgSources(pkg.Sources), knowledge.PackageImportOptions{
-		OwnerID:  c.principal.UserID,
-		TenantID: c.principal.TenantID,
+		OwnerID:   c.principal.UserID,
+		TenantID:  c.principal.TenantID,
+		TopicHint: pkg.Manifest.Title,
+		RootPath:  "share://" + resolvedKnowledgeID,
 	})
 
+	// Report sources that were truncated at export time.
+	var truncatedSources []string
+	for _, item := range pkg.Sources {
+		if item.ContentTruncated {
+			label := item.Title
+			if label == "" {
+				label = item.ID
+			}
+			truncatedSources = append(truncatedSources, label)
+		}
+	}
+	if len(truncatedSources) > 0 {
+		importResult.Warnings = append(importResult.Warnings, fmt.Sprintf("以下来源的内容在分享时被截断（不完整）: %s", strings.Join(truncatedSources, ", ")))
+	}
+
+	log.Printf("[knowledge_import_share] done knowledge_id=%s imported=%d skipped=%d total=%d truncated=%d warnings=%d",
+		resolvedKnowledgeID, importResult.Imported, importResult.Skipped, importResult.Total, len(truncatedSources), len(importResult.Warnings))
+
 	resultJSON, _ := json.Marshal(map[string]interface{}{
-		"status":       "imported",
-		"knowledge_id": resolvedKnowledgeID,
-		"package_id":   pkg.Manifest.PackageID,
-		"title":        pkg.Manifest.Title,
-		"imported":     importResult.Imported,
-		"skipped":      importResult.Skipped,
-		"total":        importResult.Total,
-		"warnings":     importResult.Warnings,
+		"status":             "imported",
+		"knowledge_id":       resolvedKnowledgeID,
+		"package_id":         pkg.Manifest.PackageID,
+		"title":              pkg.Manifest.Title,
+		"imported":           importResult.Imported,
+		"skipped":            importResult.Skipped,
+		"total":              importResult.Total,
+		"warnings":           importResult.Warnings,
+		"content_truncated":  len(truncatedSources) > 0,
+		"truncated_sources":  truncatedSources,
 	})
 	return string(resultJSON)
 }
@@ -164,12 +207,25 @@ func (c *coreAgentCallbacks) executeKnowledgeImportPackage(args map[string]inter
 		return "Error: package has no sources"
 	}
 
+	// Verify integrity (same checks as knowledge_import_share).
+	if cs := strings.TrimSpace(pkg.Manifest.ContentChecksum); cs != "" {
+		actual := computePackageContentChecksum(pkg.Sources)
+		if !strings.EqualFold(actual, cs) {
+			return fmt.Sprintf("Error: package content integrity check failed (expected %s, got %s). The package may have been corrupted or truncated.", cs[:minInt(12, len(cs))], actual[:minInt(12, len(actual))])
+		}
+	}
+	if pkg.Manifest.SourceCount > 0 && len(pkg.Sources) < pkg.Manifest.SourceCount {
+		return fmt.Sprintf("Error: package declares %d sources but only contains %d. The package may be incomplete.", pkg.Manifest.SourceCount, len(pkg.Sources))
+	}
+
 	ctx, cancel := context.WithTimeout(c.parentContext(), 60*time.Second)
 	defer cancel()
 
 	importResult := knowledge.ImportPackageSources(ctx, c.knowledgeStore, convertPkgSources(pkg.Sources), knowledge.PackageImportOptions{
-		OwnerID:  c.principal.UserID,
-		TenantID: c.principal.TenantID,
+		OwnerID:   c.principal.UserID,
+		TenantID:  c.principal.TenantID,
+		TopicHint: pkg.Manifest.Title,
+		RootPath:  "package://" + pkg.Manifest.PackageID,
 	})
 
 	resultJSON, _ := json.Marshal(map[string]interface{}{
@@ -207,22 +263,25 @@ func convertPkgSources(items []sharePackageSource) []knowledge.PackageSource {
 
 // sharePackageManifest is the manifest section of a knowledge package.
 type sharePackageManifest struct {
-	Format    string `json:"format"`
-	Version   int    `json:"version"`
-	PackageID string `json:"package_id"`
-	Title     string `json:"title,omitempty"`
+	Format          string `json:"format"`
+	Version         int    `json:"version"`
+	PackageID       string `json:"package_id"`
+	Title           string `json:"title,omitempty"`
+	SourceCount     int    `json:"source_count,omitempty"`
+	ContentChecksum string `json:"content_checksum,omitempty"` // SHA-256 of all source content concatenated; empty = no verification available
 }
 
 // sharePackageSource is one source item in a knowledge package.
 type sharePackageSource struct {
-	ID           string   `json:"id,omitempty"`
-	Kind         string   `json:"kind,omitempty"`
-	URI          string   `json:"uri,omitempty"`
-	CanonicalURI string   `json:"canonical_uri,omitempty"`
-	Title        string   `json:"title,omitempty"`
-	TopicHint    string   `json:"topic_hint,omitempty"`
-	Labels       []string `json:"labels,omitempty"`
-	Content      string   `json:"content,omitempty"`
+	ID               string   `json:"id,omitempty"`
+	Kind             string   `json:"kind,omitempty"`
+	URI              string   `json:"uri,omitempty"`
+	CanonicalURI     string   `json:"canonical_uri,omitempty"`
+	Title            string   `json:"title,omitempty"`
+	TopicHint        string   `json:"topic_hint,omitempty"`
+	Labels           []string `json:"labels,omitempty"`
+	Content          string   `json:"content,omitempty"`
+	ContentTruncated bool     `json:"content_truncated,omitempty"`
 }
 
 // sharePackage is the top-level structure of a knowledge package JSON.
@@ -355,4 +414,24 @@ func downloadSharePackage(ctx context.Context, packageURL, authorization string)
 		return pkg, fmt.Errorf("decode knowledge package: %w", err)
 	}
 	return pkg, nil
+}
+
+// computePackageContentChecksum computes SHA-256 over all source content fields
+// in deterministic order (by slice position). Used to verify package integrity.
+func computePackageContentChecksum(sources []sharePackageSource) string {
+	h := sha256.New()
+	for i, s := range sources {
+		if i > 0 {
+			h.Write([]byte{0}) // separator between sources
+		}
+		h.Write([]byte(s.Content))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

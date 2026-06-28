@@ -59,6 +59,69 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 	if !json.Valid(body) {
 		return nil, 0, nil, fmt.Errorf("parse openai stream request body: invalid JSON")
 	}
+	return openAIHTTPChatStream(ctx, cfg, body, client, onToken, onReasoning)
+}
+
+func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback, onReasoning TokenCallback) (*Response, int, []byte, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	endpoint := BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(cfg.URL, cfg.UserAgent()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("User-Agent", cfg.UserAgent())
+	req.Header.Set("Cache-Control", "no-cache")
+	if cfg.Key != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Key)
+	}
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	defer resp.Body.Close()
+	status := resp.StatusCode
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if status != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+		return nil, status, raw, fmt.Errorf("HTTP %d", status)
+	}
+	if !strings.Contains(contentType, "text/event-stream") {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+		if json.Valid(raw) {
+			result, err := ParseNonStreamOpenAIResponseBody(raw)
+			if err != nil {
+				return nil, status, raw, err
+			}
+			if len(result.Choices) > 0 {
+				msg := result.Choices[0].Message
+				if onToken != nil && msg.Content != "" {
+					onToken(msg.Content)
+				}
+				if onReasoning != nil && msg.ReasoningContent != "" {
+					onReasoning(msg.ReasoningContent)
+				}
+			}
+			return result, status, nil, nil
+		}
+		return nil, status, raw, fmt.Errorf("parse openai stream response: expected SSE event stream or JSON body (body_len=%d)", len(raw))
+	}
+	result, err := parseSSEStream(resp.Body, onToken)
+	if err != nil {
+		return nil, status, nil, err
+	}
+	if onReasoning != nil && result != nil && len(result.Choices) > 0 && result.Choices[0].Message.ReasoningContent != "" {
+		onReasoning(result.Choices[0].Message.ReasoningContent)
+	}
+	return result, status, nil, nil
+}
+
+func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback, onReasoning TokenCallback) (*Response, int, []byte, error) {
 	capture := &openAISDKStreamCapture{limit: 512 * 1024}
 	streamClient := openAISDKClientWithRawBody(client, body, capture)
 	openaiClient := openai.NewClient(openAISDKOptions(cfg, streamClient)...)
@@ -68,7 +131,6 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 	var finishReason string
 	var usage *Usage
 	contentFilter := newContentToolCallDeltaFilter(onToken)
-	sawChunk := false
 
 	type toolCallAcc struct {
 		ID      string
@@ -81,8 +143,8 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 	legacyFunctionCallSeen := false
 
 	for stream.Next() {
-		sawChunk = true
 		chunk := stream.Current()
+		shouldStopAfterChunk := false
 		if chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
 			usage = &Usage{
 				PromptTokens:     int(chunk.Usage.PromptTokens),
@@ -114,6 +176,7 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 			if finishReason == "function_call" {
 				finishReason = "tool_calls"
 			}
+			shouldStopAfterChunk = true
 		}
 		if legacy := openAISDKChunkLegacyFunctionCall(chunk.RawJSON()); legacy != nil {
 			legacyFunctionCallSeen = true
@@ -156,6 +219,10 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 				}
 			}
 		}
+		if shouldStopAfterChunk {
+			_ = stream.Close()
+			break
+		}
 	}
 	if err := stream.Err(); err != nil {
 		if apiErr := openAISDKError(err); apiErr != nil {
@@ -165,7 +232,13 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 		return nil, 0, nil, err
 	}
 	contentFilter.Flush()
-	if !sawChunk && !capture.isEventStream() {
+	if raw := bytes.TrimSpace(capture.body()); len(raw) > 0 && !json.Valid(raw) && !bytes.Contains(raw, []byte("data:")) {
+		return nil, capture.statusCode(), capture.body(), fmt.Errorf("parse openai stream response: expected SSE event stream or JSON body (body_len=%d)", len(raw))
+	}
+	if !capture.isEventStream() {
+		if contentType := strings.ToLower(strings.TrimSpace(capture.responseContentType())); contentType != "" && !strings.Contains(contentType, "json") {
+			return nil, capture.statusCode(), capture.body(), fmt.Errorf("parse openai stream response: expected SSE event stream or JSON body (body_len=%d)", len(capture.body()))
+		}
 		if raw := capture.body(); len(raw) > 0 && json.Valid(raw) {
 			result, err := ParseNonStreamOpenAIResponseBody(raw)
 			if err != nil {
@@ -178,6 +251,8 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 				onReasoning(result.Choices[0].Message.ReasoningContent)
 			}
 			return result, capture.statusCode(), nil, nil
+		} else if len(raw) > 0 {
+			return nil, capture.statusCode(), raw, fmt.Errorf("parse openai stream response: expected SSE event stream or JSON body (body_len=%d)", len(raw))
 		}
 	}
 
@@ -225,6 +300,9 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 			msg.Content = MalformedContentToolCallErrorMsg
 			finishReason = "stop"
 		}
+	}
+	if msg.Content == "" && msg.ReasoningContent == "" && len(msg.ToolCalls) == 0 && finishReason == "" && usage == nil {
+		return nil, capture.statusCode(), capture.body(), fmt.Errorf("parse openai stream response: empty stream response (body_len=%d)", len(capture.body()))
 	}
 	var truncatedTools []string
 	if capture.isEventStream() {
@@ -387,6 +465,12 @@ func (c *openAISDKStreamCapture) statusCode() int {
 		return http.StatusOK
 	}
 	return c.status
+}
+
+func (c *openAISDKStreamCapture) responseContentType() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.contentType
 }
 
 func (c *openAISDKStreamCapture) isEventStream() bool {

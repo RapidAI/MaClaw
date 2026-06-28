@@ -1312,16 +1312,24 @@ func detectScriptLanguageWithRuntime(task string, runtimes craftRuntimeAvailabil
 	lower := strings.ToLower(task)
 	prefersPython := strings.Contains(lower, "python") || strings.Contains(lower, "pip") || strings.Contains(lower, "pandas") || strings.Contains(lower, "requests") || strings.Contains(lower, "csv") || strings.Contains(lower, "excel") || strings.Contains(lower, "xlsx") || strings.Contains(lower, "json") || strings.Contains(lower, "api")
 	prefersNode := strings.Contains(lower, "node") || strings.Contains(lower, "npm") || strings.Contains(lower, "javascript") || strings.Contains(lower, "typescript")
+	strongNode := prefersNode
 	for _, word := range strings.Fields(lower) {
 		if word == "js" {
 			prefersNode = true
+			strongNode = true
 		}
 	}
 	prefersShell := strings.Contains(lower, "shell") || strings.Contains(lower, "bash") || strings.Contains(lower, "powershell") || strings.Contains(lower, "command") || strings.Contains(lower, "目录") || strings.Contains(lower, "文件")
-	if prefersNode && runtimes.Node != "" {
+	if strongNode && runtimes.Node != "" {
 		return "node"
 	}
 	if prefersPython && runtimes.Python != "" {
+		return "python"
+	}
+	if strongNode {
+		return "node"
+	}
+	if prefersPython {
 		return "python"
 	}
 	if prefersShell {

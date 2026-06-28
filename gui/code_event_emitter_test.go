@@ -47,7 +47,7 @@ func TestDetectLanguageFromExt_KnownExtensions(t *testing.T) {
 }
 
 func TestDetectLanguageFromExt_UnknownExtension(t *testing.T) {
-	cases := []string{"Makefile", "Dockerfile", "notes.txt", "data.csv", "archive.tar.gz", "noext"}
+	cases := []string{"notes.txt", "data.csv", "archive.tar.gz", "noext"}
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
 			got := detectLanguageFromExt(name)

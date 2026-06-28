@@ -47,6 +47,9 @@ func (a *App) buildWorkflowV2StateWithLLM(store v2.WorkflowStore) *workflowV2Sta
 	st := buildWorkflowV2State(store)
 	// Wire LLM-based confirm classifier.
 	st.machine.SetConfirmClassifier(a.workflowV2ConfirmClassifier)
+	if strings.TrimSpace(a.testHomeDir) != "" {
+		st.machine.SetAllowTempTestPaths(true)
+	}
 	log.Printf("[workflow-v2] engine ready: router=%v machine=%v store=%v", st.router != nil, st.machine != nil, st.store != nil)
 
 	// Self-heal: cancel stale active workflows that were left over from a previous

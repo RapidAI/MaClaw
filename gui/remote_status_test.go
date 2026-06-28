@@ -35,16 +35,11 @@ func startDocOnlyCodingWorkflowForProject(t *testing.T, app *App, projectPath st
 	}
 }
 
-func waitForAIAssistantReadyForTest(t *testing.T, app *App, reason string) {
+func assertRemoteHubClientInitializedForTest(t *testing.T, app *App, reason string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if app.IsAIAssistantReady() {
-			return
-		}
-		time.Sleep(25 * time.Millisecond)
+	if app.remoteSessions == nil || app.remoteSessions.GetHubClient() == nil {
+		t.Fatalf("expected remote hub client to be initialized after %s", reason)
 	}
-	t.Fatalf("expected AI assistant to be ready after %s, status=%q", reason, app.GetAIAssistantInitStatus())
 }
 
 func startImplementationCodingWorkflowForOwner(t *testing.T, app *App, ownerID string) {
@@ -325,7 +320,12 @@ func TestMobileRemoteSessionDoesNotInheritDesktopWorkflowPolicy(t *testing.T) {
 	app := h.app
 	startDocOnlyCodingWorkflowForOwner(t, app, desktopUserID)
 
-	_, err := app.StartRemoteSessionForProject(RemoteStartSessionRequest{Tool: "codex", ProjectPath: t.TempDir(), LaunchSource: RemoteLaunchSourceMobile})
+	projectPath := t.TempDir()
+	ownerID := remoteLaunchPolicyOwnerIDForProject(RemoteLaunchSourceMobile, projectPath)
+	if ownerID == projectSessionOwnerID(projectPath) || ownerID == desktopUserID {
+		t.Fatalf("mobile remote launch owner = %q, must not inherit desktop/project workflow owner", ownerID)
+	}
+	err := app.ensureWorkflowAllowsRemoteToolCallForOwner(ownerID, remoteSessionStartPolicyToolName, map[string]interface{}{"tool": "codex", "project_path": projectPath, "launch_source": string(RemoteLaunchSourceMobile)})
 	if err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
 		t.Fatalf("mobile remote launch must not inherit desktop workflow policy: %v", err)
 	}
@@ -939,7 +939,7 @@ func TestStartRemoteSessionSupportsCodex(t *testing.T) {
 	if session.ModelID != "gpt-5.2-codex" {
 		t.Fatalf("session.ModelID = %q, want %q", session.ModelID, "gpt-5.2-codex")
 	}
-	waitForAIAssistantReadyForTest(t, app, "desktop remote start")
+	assertRemoteHubClientInitializedForTest(t, app, "desktop remote start")
 }
 
 func TestStartRemoteHandoffSessionInitializesAIAssistantWhenCreatingHubClient(t *testing.T) {
@@ -993,7 +993,7 @@ func TestStartRemoteHandoffSessionInitializesAIAssistantWhenCreatingHubClient(t 
 	if session.Tool != "codex" {
 		t.Fatalf("session.Tool = %q, want %q", session.Tool, "codex")
 	}
-	waitForAIAssistantReadyForTest(t, app, "handoff start")
+	assertRemoteHubClientInitializedForTest(t, app, "handoff start")
 }
 
 func TestBuildRemoteLaunchSpecSupportsOpencode(t *testing.T) {

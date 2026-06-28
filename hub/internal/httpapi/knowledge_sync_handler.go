@@ -76,11 +76,19 @@ func KnowledgeSyncStatusHandler(identity *auth.IdentityService, baseDir string, 
 		}
 		status := knowledgeSyncServiceStatus(r, principal, firstKnowledgeSyncCenterService(centerSvc...))
 		meta, _ := loadKnowledgeSyncMeta(baseDir, principal)
-		if meta != nil && status.ServiceStatus == "official_expired" && strings.TrimSpace(meta.OfficialExpiredAt) == "" {
-			meta.OfficialExpiredAt = time.Now().UTC().Format(time.RFC3339)
-			meta.ServiceStatus = "official_expired"
-			meta.ReadonlyReason = status.ReadonlyReason
-			_ = saveKnowledgeSyncPackageMeta(baseDir, principal, meta)
+		if meta != nil {
+			if status.ServiceStatus == "official_active" && (strings.TrimSpace(meta.ExpiresAt) != "" || meta.ServiceStatus != "official_active" || strings.TrimSpace(meta.OfficialExpiredAt) != "") {
+				meta.ExpiresAt = ""
+				meta.OfficialExpiredAt = ""
+				meta.ServiceStatus = "official_active"
+				meta.ReadonlyReason = ""
+				_ = saveKnowledgeSyncPackageMeta(baseDir, principal, meta)
+			} else if status.ServiceStatus == "official_expired" && strings.TrimSpace(meta.OfficialExpiredAt) == "" {
+				meta.OfficialExpiredAt = time.Now().UTC().Format(time.RFC3339)
+				meta.ServiceStatus = "official_expired"
+				meta.ReadonlyReason = status.ReadonlyReason
+				_ = saveKnowledgeSyncPackageMeta(baseDir, principal, meta)
+			}
 		}
 		view := knowledgeSyncViewFromMeta(meta, principal, status)
 		writeJSON(w, http.StatusOK, view)
@@ -260,7 +268,7 @@ func knowledgeSyncTenantAuthorizationStatus(r *http.Request, principal *auth.Vie
 	if r == nil || principal == nil {
 		return nil
 	}
-	tenantID := strings.TrimSpace(principal.TenantID)
+	tenantID := knowledgeSyncAuthorizationTenantID(r, principal)
 	ac := GetMaClawAccessControl()
 	var status *llmservice.TenantAuthorizationStatus
 	if ac != nil {
@@ -282,6 +290,23 @@ func knowledgeSyncTenantAuthorizationStatus(r *http.Request, principal *auth.Vie
 		}
 	}
 	return status
+}
+
+func knowledgeSyncAuthorizationTenantID(r *http.Request, principal *auth.ViewerPrincipal) string {
+	principalTenantID := ""
+	principalEmail := ""
+	if principal != nil {
+		principalTenantID = strings.TrimSpace(principal.TenantID)
+		principalEmail = strings.ToLower(strings.TrimSpace(principal.Email))
+	}
+	if r != nil {
+		tenantID := strings.TrimSpace(r.Header.Get("X-Maclaw-Tenant-ID"))
+		email := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Maclaw-User-Email")))
+		if tenantID != "" && (tenantID == principalTenantID || (email != "" && email == principalEmail)) {
+			return tenantID
+		}
+	}
+	return principalTenantID
 }
 
 func shouldRefreshKnowledgeSyncAuthorization(r *http.Request, status *llmservice.TenantAuthorizationStatus) bool {
@@ -354,12 +379,34 @@ func knowledgeSyncViewFromMeta(meta *knowledgeSyncMeta, principal *auth.ViewerPr
 	view.StoredSizeBytes = meta.StoredSizeBytes
 	view.CreatedAt = meta.CreatedAt
 	view.UpdatedAt = meta.UpdatedAt
-	view.ExpiresAt = meta.ExpiresAt
+	if view.ServiceStatus != "official_active" {
+		view.ExpiresAt = meta.ExpiresAt
+	}
 	view.Encryption = meta.Encryption
 	return view
 }
 
 func knowledgeSyncUserDir(baseDir string, principal *auth.ViewerPrincipal) string {
+	user := sanitizeKnowledgeSyncPathPart(knowledgeSyncUserStorageKey(principal))
+	return filepath.Join(baseDir, "_email", user)
+}
+
+func knowledgeSyncUserStorageKey(principal *auth.ViewerPrincipal) string {
+	if principal == nil {
+		return ""
+	}
+	if email := strings.ToLower(strings.TrimSpace(principal.Email)); email != "" {
+		return email
+	}
+	return principal.UserID
+}
+
+func legacyKnowledgeSyncEmailDir(baseDir string, principal *auth.ViewerPrincipal) string {
+	user := sanitizeKnowledgeSyncPathPart(firstNonEmptyKnowledgeShare(principal.Email, principal.UserID))
+	return filepath.Join(baseDir, "_email", user)
+}
+
+func legacyKnowledgeSyncTenantEmailDir(baseDir string, principal *auth.ViewerPrincipal) string {
 	tenant := sanitizeKnowledgeSyncPathPart(principal.TenantID)
 	user := sanitizeKnowledgeSyncPathPart(firstNonEmptyKnowledgeShare(principal.Email, principal.UserID))
 	return filepath.Join(baseDir, tenant, user)
@@ -384,7 +431,10 @@ func loadKnowledgeSyncMeta(baseDir string, principal *auth.ViewerPrincipal) (*kn
 		return nil, ""
 	}
 	dir := knowledgeSyncUserDir(baseDir, principal)
-	if legacy := legacyKnowledgeSyncUserDir(baseDir, principal); legacy != dir {
+	for _, legacy := range []string{legacyKnowledgeSyncEmailDir(baseDir, principal), legacyKnowledgeSyncTenantEmailDir(baseDir, principal), legacyKnowledgeSyncUserDir(baseDir, principal)} {
+		if legacy == dir {
+			continue
+		}
 		if _, err := os.Stat(filepath.Join(dir, "meta.json")); err != nil {
 			if _, legacyErr := os.Stat(filepath.Join(legacy, "meta.json")); legacyErr == nil {
 				_ = os.MkdirAll(filepath.Dir(dir), 0o755)
@@ -413,7 +463,7 @@ func removeKnowledgeSyncUserDirs(baseDir string, principal *auth.ViewerPrincipal
 		return nil
 	}
 	var firstErr error
-	for _, dir := range []string{knowledgeSyncUserDir(baseDir, principal), legacyKnowledgeSyncUserDir(baseDir, principal)} {
+	for _, dir := range []string{knowledgeSyncUserDir(baseDir, principal), legacyKnowledgeSyncEmailDir(baseDir, principal), legacyKnowledgeSyncTenantEmailDir(baseDir, principal), legacyKnowledgeSyncUserDir(baseDir, principal)} {
 		if strings.TrimSpace(dir) == "" {
 			continue
 		}

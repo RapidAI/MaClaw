@@ -183,6 +183,31 @@ func conversationExtensionHasUserMessage(current []agent.ConversationEntry, pref
 	return false
 }
 
+func formatPendingReplyHistoryExtension(current, prefix []agent.ConversationEntry) string {
+	if len(prefix) == 0 || !conversationHistoryHasPrefix(current, prefix) || len(current) <= len(prefix) {
+		return ""
+	}
+	var b strings.Builder
+	for _, entry := range current[len(prefix):] {
+		if entry.Role == "user" {
+			continue
+		}
+		text, ok := entry.Content.(string)
+		text = strings.TrimSpace(text)
+		if !ok || text == "" {
+			continue
+		}
+		if b.Len() == 0 {
+			b.WriteString("\nCurrent task context added after that question:\n")
+		}
+		b.WriteString(entry.Role)
+		b.WriteString(": ")
+		b.WriteString(truncateRunes(text, 500))
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func isPendingReplyBoundToCurrentHistory(pending []agent.ConversationEntry, current []agent.ConversationEntry, question string) bool {
 	if len(pending) == 0 {
 		return pendingQuestionIsAwaitingAnswer(question, current)
@@ -295,7 +320,8 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 				log.Printf("[PendingUserReply] restored bound question context for user=%s currentLen=%d restoredLen=%d answer_len=%d", msg.UserID, len(current), len(restored), len([]rune(trimmed)))
 			}
 		}
-		context := fmt.Sprintf("[Context hint] The user is answering the assistant question from the current task, not starting or resuming another task.\nAssistant question: %s\nUser answer: %s", pending.Question, trimmed)
+		extension := formatPendingReplyHistoryExtension(*entries, pending.History)
+		context := fmt.Sprintf("[Context hint] The user is answering the assistant question from the current task, not starting or resuming another task.\nAssistant question: %s\nUser answer: %s%s", pending.Question, trimmed, extension)
 		return context, true
 	}
 	if pendingFresh && (!classifiedPendingAnswer || trimmed == "") {

@@ -2067,7 +2067,15 @@ func TestSessionTaskGuardOwnerlessCurrentRuntimeDoesNotUseLegacyTaskText(t *test
 }
 
 func TestExternalCodingSessionFollowupToolsDisabled(t *testing.T) {
-	handler := &IMMessageHandler{app: &App{}}
+	dir := t.TempDir()
+	mgr, err := NewSessionTemplateManager(dir + "/templates.json")
+	if err != nil {
+		t.Fatalf("failed to create template manager: %v", err)
+	}
+	if err := mgr.Create(remote.SessionTemplate{Name: "t1", Tool: "claude", ProjectPath: dir}); err != nil {
+		t.Fatalf("failed to create template: %v", err)
+	}
+	handler := &IMMessageHandler{app: &App{}, templateManager: mgr}
 	for name, call := range map[string]func() string{
 		"send_input": func() string { return handler.toolSendInput(map[string]interface{}{"session_id": "s1", "text": "go"}) },
 		"send_and_observe": func() string {

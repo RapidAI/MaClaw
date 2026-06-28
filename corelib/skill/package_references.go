@@ -32,9 +32,6 @@ func CollectMissingPackageFileReferences(entry *corelib.NLSkillEntry) []string {
 		missing = append(missing, ref)
 	}
 
-	for _, ref := range CollectMissingStepFileReferences(entry) {
-		add(ref)
-	}
 	collectMissingPackageParamDefaults(entry.SkillDir, entry.Params, add)
 	collectMissingPackageCredentialRefs(entry.SkillDir, entry.RequiredCredentialFiles, add)
 	for _, step := range entry.Steps {
@@ -94,6 +91,7 @@ func collectMissingPackageStepParams(skillDir string, step corelib.NLSkillStep, 
 			add(workingDir)
 		}
 	}
+	collectMissingPackageStepCommandRefs(skillDir, step, workingDir, add)
 	for _, ref := range packageLocalPathRefsFromParams(step.Params) {
 		if missingRef, missing := missingPackageLocalRef(skillDir, ref, workingDir); missing {
 			add(missingRef)
@@ -105,6 +103,153 @@ func collectMissingPackageStepParams(skillDir string, step corelib.NLSkillStep, 
 			collectMissingPackageStepParams(skillDir, *step.FallbackStep, add, seenFallbacks)
 		}
 	}
+}
+
+func collectMissingPackageStepCommandRefs(skillDir string, step corelib.NLSkillStep, workingDir string, add func(string)) {
+	if len(step.Params) == 0 {
+		return
+	}
+	raw, ok := step.Params["command"]
+	if !ok {
+		return
+	}
+	switch command := raw.(type) {
+	case string:
+		baseDir := packageCommandBaseDir(skillDir, workingDir)
+		refs, _ := commandFileReferencesForPrecheck("", 0, command, baseDir, stepPreferredShell(step))
+		for _, ref := range refs {
+			displayRef, missing := missingPackageCommandRef(skillDir, ref.Path, ref.BaseDir)
+			if missing {
+				add(displayRef)
+			}
+		}
+	case map[string]interface{}:
+		collectMissingStructuredCommandRefs(skillDir, command, workingDir, add)
+	case map[interface{}]interface{}:
+		collectMissingStructuredCommandRefs(skillDir, packageInterfaceKeyMapToStringMap(command), workingDir, add)
+	}
+}
+
+func collectMissingStructuredCommandRefs(skillDir string, command map[string]interface{}, workingDir string, add func(string)) {
+	if len(command) == 0 {
+		return
+	}
+	for _, key := range []string{"script", "file", "path", "command_path"} {
+		if raw, ok := command[key]; ok {
+			for _, ref := range packageLocalPathRefsFromPathValue(raw) {
+				if missingRef, missing := missingPackageLocalRef(skillDir, ref, workingDir); missing {
+					add(missingRef)
+				}
+			}
+		}
+	}
+	if rawArgs, ok := command["args"]; ok {
+		for _, ref := range packageLocalPathRefsFromValue(rawArgs) {
+			if missingRef, missing := missingPackageLocalRef(skillDir, ref, workingDir); missing {
+				add(missingRef)
+			}
+		}
+	}
+}
+
+func packageCommandBaseDir(skillDir, workingDir string) string {
+	skillDir = strings.TrimSpace(skillDir)
+	if skillDir == "" {
+		return ""
+	}
+	if workingDir == "" {
+		return skillDir
+	}
+	if packagePathIsAbs(workingDir) {
+		return filepath.FromSlash(workingDir)
+	}
+	return filepath.Join(skillDir, filepath.FromSlash(workingDir))
+}
+
+func missingPackageCommandRef(skillDir, ref, baseDir string) (string, bool) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || packageRefShouldSkipRawString(ref) {
+		return "", false
+	}
+	displayRef := normalizePackageReferenceForReport(ref)
+	if displayRef == "" {
+		return "", false
+	}
+	if stripped, ok := stripPackageBaseDirRef(trimPackageRefDecorations(ref)); ok {
+		stripped = normalizePackageReferenceForReport(stripped)
+		if stripped == "" {
+			return "", false
+		}
+		if _, err := os.Stat(filepath.Join(skillDir, filepath.FromSlash(stripped))); err == nil {
+			return "", false
+		}
+		return stripped, true
+	}
+	if packageRefIsSkillDir(skillDir, ref) {
+		return "", false
+	}
+	fullPath, ok := resolveCommandFileReference(ref, baseDir)
+	if ok && packagePathWithinDir(skillDir, fullPath) {
+		if _, err := os.Stat(fullPath); err == nil {
+			return "", false
+		}
+		if rel := packageRelativePathFromAbs(skillDir, fullPath); rel != "" {
+			return rel, true
+		}
+	}
+	if _, invalid := invalidPackageLocalRef(displayRef); invalid {
+		return displayRef, true
+	}
+	if !ok {
+		if missingRef, missing := missingPackageLocalRef(skillDir, displayRef, ""); missing {
+			return missingRef, true
+		}
+		return "", false
+	}
+	return displayRef, true
+}
+
+func packagePathWithinDir(dir, path string) bool {
+	dir = strings.TrimSpace(dir)
+	path = strings.TrimSpace(path)
+	if dir == "" || path == "" {
+		return false
+	}
+	dirAbs, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	pathAbs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(dirAbs, pathAbs)
+	if err != nil || rel == "." {
+		return err == nil && rel == "."
+	}
+	relSlash := filepath.ToSlash(rel)
+	return relSlash != ".." && !strings.HasPrefix(relSlash, "../")
+}
+
+func packageRelativePathFromAbs(skillDir, path string) string {
+	skillDir = strings.TrimSpace(skillDir)
+	path = strings.TrimSpace(path)
+	if skillDir == "" || path == "" {
+		return ""
+	}
+	skillAbs, err := filepath.Abs(skillDir)
+	if err != nil {
+		return ""
+	}
+	pathAbs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(skillAbs, pathAbs)
+	if err != nil || rel == "." || strings.HasPrefix(filepath.ToSlash(rel), "../") {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
 func missingPackageLocalRef(skillDir, ref, workingDir string) (string, bool) {
@@ -362,7 +507,37 @@ func normalizePackageRelativePath(value string) string {
 	return filepath.ToSlash(filepath.Clean(value))
 }
 
+func normalizePackageReferenceForReport(value string) string {
+	value = strings.TrimSpace(value)
+	value = trimPackageRefDecorations(value)
+	value = strings.ReplaceAll(value, `\`, `/`)
+	if stripped, ok := stripPackageBaseDirRef(value); ok {
+		value = stripped
+	}
+	value = strings.TrimPrefix(value, "./")
+	if value == "" || value == "." {
+		return ""
+	}
+	if strings.HasPrefix(value, "//") {
+		return "//" + strings.TrimLeft(value, "/")
+	}
+	if strings.HasPrefix(value, "/") {
+		return filepath.ToSlash(filepath.Clean(value))
+	}
+	if len(value) >= 2 && value[1] == ':' {
+		drive := value[0]
+		if (drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z') {
+			if len(value) >= 3 && value[2] == '/' {
+				return filepath.ToSlash(filepath.Clean(value))
+			}
+			return value
+		}
+	}
+	return filepath.ToSlash(filepath.Clean(value))
+}
+
 func stripPackageBaseDirRef(value string) (string, bool) {
+	value = strings.ReplaceAll(strings.TrimSpace(value), `\`, `/`)
 	for _, marker := range []string{"{baseDir}", "$BASE_DIR", "${BASE_DIR}"} {
 		if value == marker {
 			return "", true

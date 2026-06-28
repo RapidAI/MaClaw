@@ -101,6 +101,9 @@ func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID strin
 		return policyOwnerID, v2.ToolFilterNone, false
 	}
 	if h != nil && h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.IsPhaseExecutionBlocked(policyOwnerID) {
+		if h.app.workflowEngine.IsAwaitingReview(policyOwnerID) {
+			return policyOwnerID, v2.ToolFilterDocOnly, true
+		}
 		return policyOwnerID, v2.ToolFilterNone, true
 	}
 	if h.shouldConstrainCodingWorkflowImplementationMainLoop(policyOwnerID) {
@@ -170,7 +173,7 @@ func requiredWorkflowToolNamesForPolicy(policy interface{}) []string {
 	case v2.ToolFilterOpsControlled:
 		return []string{"read_file", "list_directory", "send_file", "bash", "ssh"}
 	case v2.ToolFilterFull:
-		return []string{"read_file", "list_directory", "send_file", "write_file", "edit_file", "task"}
+		return []string{"read_file", "list_directory", "send_file", "bash", "write_file", "edit_file", "task"}
 	default:
 		return nil
 	}

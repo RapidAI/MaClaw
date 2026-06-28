@@ -100,7 +100,7 @@ When in doubt between "confirm" and "modify", prefer "confirm" if the response i
 
 	if err != nil {
 		log.Printf("[confirmation-intent] LLM classify failed for user %s: %v", userID, err)
-		return confirmationIntentUnknown
+		return classifyConfirmationIntentFallback(text)
 	}
 
 	intent := normalizeConfirmationIntent(result.Text)

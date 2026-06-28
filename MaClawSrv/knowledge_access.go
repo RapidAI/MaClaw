@@ -557,6 +557,16 @@ func (s *multiKnowledgeStore) ImportFiles(ctx context.Context, req knowledge.Dir
 	return s.store.ImportFiles(ctx, req, filePaths)
 }
 
+func (s *multiKnowledgeStore) CreateImportBatch(ctx context.Context, batch knowledge.ImportBatch) error {
+	return s.store.CreateImportBatch(ctx, batch)
+}
+func (s *multiKnowledgeStore) UpdateImportBatch(ctx context.Context, batch knowledge.ImportBatch) error {
+	return s.store.UpdateImportBatch(ctx, batch)
+}
+func (s *multiKnowledgeStore) CreateImportItem(ctx context.Context, item knowledge.ImportItem) error {
+	return s.store.CreateImportItem(ctx, item)
+}
+
 func knowledgeResultKey(r knowledge.SearchResult) string {
 	return strings.Join([]string{r.Source.ID, r.ResultType, r.NodeID, r.CardID, r.FactID, r.TableID, r.RowID, r.SheetName, r.RowRange, r.ColRange, r.Citation}, "\x00")
 }

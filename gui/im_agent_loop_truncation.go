@@ -410,7 +410,7 @@ func buildTruncationRetryHint(truncatedList string, tools []map[string]interface
 }
 
 func agentLoopInlinePayloadLimitInstruction() string {
-	return fmt.Sprintf("Respect inline payload limits: bash.command <= %d runes per call. write_file/edit_file/edit_lines have no content size limit, but their JSON arguments must still be complete within the model's output token budget; for very large content, split across multiple calls.", maxAgentLoopInlineBashCommandRunes)
+	return fmt.Sprintf("Respect inline payload limits: bash.command <= %d runes per call. write_file has no backend content limit; write_file/edit_file/edit_lines have no content size limit, but their JSON arguments must still be complete within the model's output token budget; for very large content, split across multiple calls.", maxAgentLoopInlineBashCommandRunes)
 }
 
 func buildTruncationBlockAlternativeInstructions(blocked []string, availableTools []map[string]interface{}) string {

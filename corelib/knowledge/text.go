@@ -98,6 +98,7 @@ func buildTextSourceAndNodes(req TextSaveRequest, existing Source) (Source, []Do
 		ProjectPath:  strings.TrimSpace(req.ProjectPath),
 		TopicHint:    strings.TrimSpace(req.TopicHint),
 		SourceTrust:  0.75,
+		BatchID:      strings.TrimSpace(req.BatchID),
 		Status:       StatusParsed,
 		CreatedAt:    now,
 		UpdatedAt:    now,

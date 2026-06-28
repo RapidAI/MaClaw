@@ -708,6 +708,7 @@ type URLSaveRequest struct {
 	AutoLabels  bool     `json:"auto_labels,omitempty"`
 	MaxBytes    int64    `json:"max_bytes,omitempty"`
 	TimeoutSec  int      `json:"timeout_sec,omitempty"`
+	BatchID     string   `json:"batch_id,omitempty"`
 
 	// PrefetchedHTML allows callers (e.g. deep crawl) to supply already-fetched HTML content.
 	// When non-empty, SaveURL skips the HTTP fetch and uses this content directly.
@@ -811,6 +812,7 @@ type TextSaveRequest struct {
 	DistillMode string   `json:"distill_mode,omitempty"`
 	Labels      []string `json:"labels,omitempty"`
 	AutoLabels  bool     `json:"auto_labels,omitempty"`
+	BatchID     string   `json:"batch_id,omitempty"`
 }
 
 type SourceUpdateRequest struct {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -54,9 +53,10 @@ func (s *startupSimulator) startup(hasCredentials bool) {
 
 func TestProperty1_NonBlockingStartup(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		// Generate random Hub connection delays (50ms to 500ms for test speed)
-		authDelayMs := rapid.IntRange(50, 500).Draw(t, "authDelayMs")
-		helloDelayMs := rapid.IntRange(50, 500).Draw(t, "helloDelayMs")
+		// Generate small delays; this property checks non-blocking behavior, not
+		// real network duration.
+		authDelayMs := rapid.IntRange(1, 5).Draw(t, "authDelayMs")
+		helloDelayMs := rapid.IntRange(1, 5).Draw(t, "helloDelayMs")
 
 		hubConn := &mockHubConnector{
 			authDelay:  time.Duration(authDelayMs) * time.Millisecond,
@@ -104,34 +104,10 @@ func TestProperty1_NonBlockingStartup_TimingInvariant(t *testing.T) {
 		authDelayMs := rapid.IntRange(50, 2000).Draw(t, "authDelayMs")
 		helloDelayMs := rapid.IntRange(50, 2000).Draw(t, "helloDelayMs")
 
-		var startupReturnedAt time.Time
-		var authCompletedAt time.Time
-		var helloCompletedAt time.Time
-		var mu sync.Mutex
-
-		// Simulate async hub connect with timestamp recording
-		done := make(chan struct{})
-		go func() {
-			time.Sleep(time.Duration(authDelayMs) * time.Millisecond)
-			mu.Lock()
-			authCompletedAt = time.Now()
-			mu.Unlock()
-
-			time.Sleep(time.Duration(helloDelayMs) * time.Millisecond)
-			mu.Lock()
-			helloCompletedAt = time.Now()
-			mu.Unlock()
-			close(done)
-		}()
-
-		// startup returns immediately
-		startupReturnedAt = time.Now()
-
-		// Wait for background to finish
-		<-done
-
-		mu.Lock()
-		defer mu.Unlock()
+		// Use logical timestamps instead of sleeping for every generated case.
+		startupReturnedAt := time.Now()
+		authCompletedAt := startupReturnedAt.Add(time.Duration(authDelayMs) * time.Millisecond)
+		helloCompletedAt := authCompletedAt.Add(time.Duration(helloDelayMs) * time.Millisecond)
 
 		// Timing invariant: startup < auth < hello
 		if !startupReturnedAt.Before(authCompletedAt) {

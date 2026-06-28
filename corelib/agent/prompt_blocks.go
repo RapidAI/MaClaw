@@ -47,7 +47,7 @@ const PromptKnowledgeBaseRules = `
 - 来源透明：回答中明确区分哪些信息来自知识库、哪些来自记忆、哪些来自网络搜索或工具结果。不要把模型训练数据当作事实依据。
 - 写入限制：仅当用户明确要求保存信息到知识库时（如"保存到知识库"、"记住这份资料"、"加入外脑"、"归档这个网页"、"以后可查"、"导入这份文档/目录"等），才调用知识库写入或导入工具。公共网页用 knowledge_save_url；纯文本/笔记用 knowledge_save_text；本地文件用 knowledge_import_files；本地目录用 knowledge_import_directory。
 - 不要因为用户只是让你"看看这个链接/总结这个文件/搜索资料"就自动写入知识库；除非用户明确表达保存、记住、录入、归档或以后复用的意图。
-- ⚠️ 知识库分享链接导入（重要）：当用户发送包含 /knowledge/shares/ 或 /hub/knowledge/shares/ 的 URL 时（例如 https://hub.xxx.com/hub/knowledge/shares/kn_xxx），这是知识库分享链接。**必须直接调用知识库分享导入工具（knowledge_import_share 或 knowledge_import_hub_share，取决于当前可用工具列表）导入，参数为 share_link="该URL"。不要用 web_fetch 抓取该链接**。web_fetch 无法提取分享页面的内容（SPA 动态加载），分享导入工具会通过 API 直接获取并导入。
+- ⚠️ 知识库分享链接导入（重要）：当用户发送包含 /knowledge/shares/ 或 /hub/knowledge/shares/ 的 URL 时（例如 https://hub.xxx.com/hub/knowledge/shares/kn_xxx），这是知识库分享链接。**必须直接调用知识库分享导入工具（knowledge_import_share 或 knowledge_import_hub_share，取决于当前可用工具列表）导入，参数为 share_link="该URL", dry_run=false。不要用 web_fetch 抓取该链接**。web_fetch 无法提取分享页面的内容（SPA 动态加载），分享导入工具会通过 API 直接获取并导入。
 `
 
 // PromptEvidenceBoundFactualRules hardens knowledge-backed virtual employees

@@ -47,10 +47,11 @@ type ConfirmClassifier func(phaseContext, userText string) string
 
 // StateMachine manages workflow lifecycle and phase transitions.
 type StateMachine struct {
-	mu                sync.Mutex // serializes all state mutations per operation
-	store             WorkflowStore
-	templates         *TemplateRegistry
-	confirmClassifier ConfirmClassifier // LLM-based intent classification
+	mu                 sync.Mutex // serializes all state mutations per operation
+	store              WorkflowStore
+	templates          *TemplateRegistry
+	confirmClassifier  ConfirmClassifier // LLM-based intent classification
+	allowTempTestPaths bool
 }
 
 func NewStateMachine(store WorkflowStore, templates *TemplateRegistry) *StateMachine {
@@ -63,6 +64,10 @@ func (m *StateMachine) SetConfirmClassifier(fn ConfirmClassifier) {
 	m.confirmClassifier = fn
 }
 
+func (m *StateMachine) SetAllowTempTestPaths(allow bool) {
+	m.allowTempTestPaths = allow
+}
+
 // Create starts a new workflow for the given user.
 // projectPath is set once and never changes.
 func (m *StateMachine) Create(userID, workflowType, projectPath, summary string) (*WorkflowState, error) {
@@ -73,7 +78,7 @@ func (m *StateMachine) Create(userID, workflowType, projectPath, summary string)
 	if projectPath == "" {
 		return nil, fmt.Errorf("projectPath is required")
 	}
-	if looksLikeTempTestPath(projectPath) {
+	if !m.allowTempTestPaths && looksLikeTempTestPath(projectPath) {
 		return nil, fmt.Errorf("project path cannot be a temp/test directory: %s", projectPath)
 	}
 

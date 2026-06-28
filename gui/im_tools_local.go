@@ -208,6 +208,11 @@ func (h *IMMessageHandler) resolveFileToolPathForOwner(path, ownerID string) (st
 		if dir := h.projectTabWorkDirForOwner(ownerID); dir != "" {
 			return dir
 		}
+		if h == nil || h.app == nil {
+			if wd, err := os.Getwd(); err == nil {
+				return wd
+			}
+		}
 		// Fall back to EffectiveWorkspaceDir, NOT os.Getwd() which is the
 		// maclaw installation directory on Windows.
 		return corelib.EffectiveWorkspaceDir()
@@ -240,6 +245,17 @@ func (h *IMMessageHandler) projectTabWorkDir() string {
 }
 
 func (h *IMMessageHandler) projectTabWorkDirForOwner(ownerID string) string {
+	rawProjectPath := projectPathFromUserID(ownerID)
+	if rawProjectPath != "" && h != nil && h.app != nil && h.app.isManagedRecentTaskWorkspacePath(rawProjectPath) {
+		if info, err := os.Stat(rawProjectPath); err != nil || !info.IsDir() {
+			if h.ensureRecentTaskWorkspaceForProjectPath(rawProjectPath) {
+				return rawProjectPath
+			}
+		}
+	}
+	if rawProjectPath != "" && h == nil {
+		return rawProjectPath
+	}
 	projectPath := h.executionProjectPathForOwner(ownerID)
 	if projectPath == "" {
 		return ""

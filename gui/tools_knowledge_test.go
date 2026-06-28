@@ -719,9 +719,9 @@ func TestKnowledgeSaveURLsAcceptsLinkAliases(t *testing.T) {
 	out := app.toolKnowledgeSaveURLs(map[string]interface{}{
 		"links":     []interface{}{"notaurl"},
 		"hrefs":     []interface{}{"http://127.0.0.1/private"},
-		"link_list": "https://example.com/a",
+		"link_list": "ftp://example.com/a",
 	})
-	if !strings.Contains(out, "\"ok\": true") || !strings.Contains(out, "\"requested\": 3") {
+	if !strings.Contains(out, "\"ok\": true") || !strings.Contains(out, "\"requested\": 3") || !strings.Contains(out, "\"failed\": 3") {
 		t.Fatalf("link aliases should feed batch URL save, got %s", out)
 	}
 }

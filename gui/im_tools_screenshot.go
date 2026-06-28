@@ -16,7 +16,11 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 	}
 	taskText := h.runtimeTaskTextForOwner(ownerID)
 	if !hasRuntimeOwner {
-		taskText, _ = h.currentRuntimeTaskTextOrLegacy()
+		if _, explicitRuntime := h.currentRuntimePolicyOwnerState(); explicitRuntime {
+			taskText = ""
+		} else if currentTaskText, _ := h.currentRuntimeTaskTextOrLegacy(); currentTaskText != "" {
+			taskText = currentTaskText
+		}
 	}
 	if msg := screenshotLocalImagePathGuardMessage(taskText); msg != "" {
 		return msg

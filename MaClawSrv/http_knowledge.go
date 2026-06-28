@@ -854,8 +854,10 @@ func (s *HTTPServer) startKnowledgePackageImportJob(kind string, p agentservice.
 			})
 		}
 		importResult := knowledge.ImportPackageSources(ctx, store, sources, knowledge.PackageImportOptions{
-			OwnerID:  p.UserID,
-			TenantID: p.TenantID,
+			OwnerID:   p.UserID,
+			TenantID:  p.TenantID,
+			TopicHint: pkg.Manifest.Title,
+			RootPath:  "share://" + pkg.Manifest.PackageID,
 		})
 		return map[string]interface{}{
 			"package_id": pkg.Manifest.PackageID,

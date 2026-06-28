@@ -319,6 +319,7 @@ func TestSkillRunnerStartRunDoesNotInheritWorkflowPolicy(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	app := h.app
 	app.testHomeDir = tempHome
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)

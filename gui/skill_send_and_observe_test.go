@@ -1000,7 +1000,7 @@ func TestSkillExecutorExecuteWithArgsUpdatesUsageWhenRunByDirName(t *testing.T) 
 		t.Fatalf("Register() error = %v", err)
 	}
 
-	output, err := exec.ExecuteWithArgs("weather-dir", skillExecutionRunArgs("weather Chengdu"))
+	output, err := exec.ExecuteWithArgs("weather-dir", skillExecutionRunArgs("city: Chengdu"))
 	if err != nil {
 		t.Fatalf("ExecuteWithArgs() error = %v, output = %s", err, output)
 	}

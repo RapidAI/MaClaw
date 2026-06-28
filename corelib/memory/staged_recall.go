@@ -134,7 +134,10 @@ func deadlineExceeded(ctx context.Context, deadline time.Time, nextStageBudget t
 
 // rankBM25 produces a ranked list of entries using only BM25 scores.
 func (p *StagedRecallPipeline) rankBM25(store *Store, bm25Scores map[string]float64, ownerID, projectPath string, queryTokens []string, maxEntries int) []Entry {
-	store.mu.RLock()
+	if !store.TryRLockWithTimeout(5 * time.Second) {
+		log.Printf("[staged_recall] rankBM25: RLock timeout — returning empty")
+		return nil
+	}
 	defer store.mu.RUnlock()
 
 	projectLower := semanticNormalizeProjectPath(projectPath)
@@ -172,7 +175,10 @@ func (p *StagedRecallPipeline) rankBM25(store *Store, bm25Scores map[string]floa
 
 // rankBM25Vec produces a ranked list fusing BM25 + Vector scores via RRF.
 func (p *StagedRecallPipeline) rankBM25Vec(store *Store, bm25Scores, vecScores map[string]float64, ownerID, projectPath string, queryTokens []string, maxEntries int) []Entry {
-	store.mu.RLock()
+	if !store.TryRLockWithTimeout(5 * time.Second) {
+		log.Printf("[staged_recall] rankBM25Vec: RLock timeout — returning empty")
+		return nil
+	}
 	defer store.mu.RUnlock()
 
 	projectLower := semanticNormalizeProjectPath(projectPath)
@@ -233,7 +239,10 @@ func (p *StagedRecallPipeline) rankBM25Vec(store *Store, bm25Scores, vecScores m
 // rankFull produces a ranked list using all available signals:
 // BM25 + Vector + Semantic Graph + Alias expansion.
 func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[string]float64, expanded ExpandResult, ownerID, projectPath string, maxEntries int, query string) []Entry {
-	store.mu.RLock()
+	if !store.TryRLockWithTimeout(5 * time.Second) {
+		log.Printf("[staged_recall] rankFull: RLock timeout — returning empty")
+		return nil
+	}
 	defer store.mu.RUnlock()
 
 	projectLower := semanticNormalizeProjectPath(projectPath)

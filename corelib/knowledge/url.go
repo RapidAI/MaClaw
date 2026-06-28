@@ -843,6 +843,7 @@ func buildURLSourceAndNodes(ctx context.Context, req URLSaveRequest, existing So
 		ProjectPath:  strings.TrimSpace(req.ProjectPath),
 		TopicHint:    strings.TrimSpace(req.TopicHint),
 		SourceTrust:  0.6,
+		BatchID:      strings.TrimSpace(req.BatchID),
 		Status:       StatusParsed,
 		CreatedAt:    now,
 		UpdatedAt:    now,

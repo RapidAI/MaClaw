@@ -111,9 +111,9 @@ func parseToolPayloadResult(result string) toolPayloadObservation {
 			message:   message,
 		}
 		if forwardIM {
-			obs.ToolContent = fmt.Sprintf("File %s is ready and will be sent through the IM channel.", parts[0])
+			obs.ToolContent = fmt.Sprintf("文件 %s 已准备好，将通过 IM 通道发送。", parts[0])
 		} else {
-			obs.ToolContent = fmt.Sprintf("File %s is ready and will be sent to the user.", parts[0])
+			obs.ToolContent = fmt.Sprintf("文件 %s 已准备好，将发送给用户。", parts[0])
 		}
 		obs.TraceResult = obs.ToolContent
 		return obs

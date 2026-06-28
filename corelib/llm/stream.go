@@ -201,8 +201,11 @@ func DoOpenAIRequestStreamWithReasoning(
 			}
 			log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), traceFields)
 		}
-		if statusCode != http.StatusOK {
-			return nil, fmt.Errorf("HTTP %d: body_len=%d", statusCode, len(body))
+		if err != nil {
+			if statusCode != http.StatusOK {
+				return nil, fmt.Errorf("HTTP %d: body_len=%d", statusCode, len(body))
+			}
+			return nil, fmt.Errorf("[%s] %w", endpoint, err)
 		}
 	}
 	log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), traceFields)
@@ -299,6 +302,7 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 				finishReason = "tool_calls"
 			}
 		}
+		shouldStopAfterChunk := finishReason == "stop"
 
 		if delta.FunctionCall != nil {
 			legacyFunctionCallSeen = true
@@ -339,6 +343,9 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 					return nil, fmt.Errorf("tool arguments too large for %s: %d bytes", acc.Name, acc.ArgsBuf.Len())
 				}
 			}
+		}
+		if shouldStopAfterChunk {
+			break
 		}
 	}
 	if err := scanner.Err(); err != nil {

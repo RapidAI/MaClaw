@@ -32,23 +32,23 @@ func normalizeShortChitChatToken(text string) string {
 	}
 	switch {
 	case shortChitChatChineseIdlePattern.MatchString(cleaned):
-		return "娌′簨"
+		return "没事"
 	case shortChitChatChineseThanksPattern.MatchString(cleaned):
-		return "璋㈣阿"
+		return "谢谢"
 	case shortChitChatChineseGreetingPattern.MatchString(cleaned):
-		return "浣犲ソ"
+		return "你好"
 	}
 	shortPhrases := map[string]struct{}{
 		"hi":        {},
 		"hello":     {},
 		"hey":       {},
-		"浣犲ソ":       {},
-		"娌′簨":       {},
+		"你好":        {},
+		"没事":        {},
 		"nothing":   {},
 		"none":      {},
 		"thanks":    {},
 		"thank you": {},
-		"璋㈣阿":       {},
+		"谢谢":        {},
 	}
 	if _, ok := shortPhrases[cleaned]; ok {
 		return cleaned
@@ -70,7 +70,7 @@ func buildShortChitChatResponse(text, lang string) string {
 			lang = "zh"
 		}
 	}
-	if lang == "en" {
+	if strings.HasPrefix(lang, "en") {
 		switch normalized {
 		case "thanks", "thank you":
 			return "You're welcome. I'm here if you want to continue."
@@ -81,11 +81,11 @@ func buildShortChitChatResponse(text, lang string) string {
 		}
 	}
 	switch normalized {
-	case "璋㈣阿":
-		return "You're welcome. I'm here if you need anything."
-	case "娌′簨", "nothing", "none":
-		return "No problem. I'm here if you need anything."
+	case "谢谢":
+		return "不客气。我在这，有需要随时叫我。"
+	case "没事", "nothing", "none":
+		return "好，没问题。我在这，有需要随时叫我。"
 	default:
-		return "Hi! I'm here if you need anything."
+		return "你好，我在。有需要随时叫我。"
 	}
 }

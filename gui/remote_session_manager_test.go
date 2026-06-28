@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -471,6 +472,7 @@ type fakeExecutionHandle struct {
 	writes         [][]byte
 	interruptCalls int
 	killCalls      int
+	closeOnce      sync.Once
 }
 
 func newFakeExecutionHandle(pid int) *fakeExecutionHandle {
@@ -488,10 +490,16 @@ func (f *fakeExecutionHandle) Write(data []byte) error {
 	return nil
 }
 func (f *fakeExecutionHandle) Interrupt() error      { f.interruptCalls++; return nil }
-func (f *fakeExecutionHandle) Kill() error           { f.killCalls++; return nil }
+func (f *fakeExecutionHandle) Kill() error           { f.killCalls++; f.close(); return nil }
 func (f *fakeExecutionHandle) Output() <-chan []byte { return f.outputCh }
 func (f *fakeExecutionHandle) Exit() <-chan PTYExit  { return f.exitCh }
-func (f *fakeExecutionHandle) Close() error          { return nil }
+func (f *fakeExecutionHandle) Close() error          { f.close(); return nil }
+func (f *fakeExecutionHandle) close() {
+	f.closeOnce.Do(func() {
+		close(f.outputCh)
+		close(f.exitCh)
+	})
+}
 
 type fakeSDKExecutionHandle struct {
 	*fakeExecutionHandle

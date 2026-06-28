@@ -93,6 +93,9 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 		}
 		docText, source := resolveWorkflowPhaseDocText(loopCtx, resp)
 		if docText != "" {
+			if !h.workflowPhaseDocCaptureAllowed(ownerID, completedPhaseID, docText) {
+				return
+			}
 			h.recordWorkflowV2Output(ownerID, docText)
 			if completedPhaseID != "" {
 				h.recordWorkflowPhaseCompletedExperience(msg, loopCtx, completedPhaseID)
@@ -148,6 +151,9 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 		if phase != nil {
 			phaseID = phase.ID
 		}
+		if !h.workflowPhaseDocCaptureAllowed(ownerID, phaseID, docText) {
+			return
+		}
 
 		// Record the output via V2 StateMachine.
 		if err := wf.machine.RecordOutput(ownerID, docText); err != nil {
@@ -185,6 +191,35 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 		}
 		log.Printf("[workflow] post-loop doc capture: user=%s phase=%s len=%d source=%s", ownerID, phaseID, len([]rune(docText)), source)
 	}
+}
+
+func (h *IMMessageHandler) workflowPhaseDocCaptureAllowed(ownerID, phaseID, docText string) bool {
+	phaseID = strings.TrimSpace(phaseID)
+	if phaseID != v2.PhaseCodingTaskBreakdown {
+		return true
+	}
+	if len(v2.ParseTaskList(docText)) > 0 {
+		return true
+	}
+	if h == nil || h.app == nil || h.app.workflowEngine == nil {
+		return false
+	}
+	h.app.workflowEngine.MarkPhasePendingReview(ownerID, phaseID, true)
+	if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+		if state := wf.machine.GetActive(ownerID); state != nil {
+			if p := state.ActivePhase(); p != nil && p.ID == phaseID {
+				p.Output = ""
+				p.Status = v2.PhaseRunning
+				_ = wf.machine.GetStore().Save(state)
+			}
+			if prompt := v2.BuildPhasePrompt(state); prompt != "" {
+				h.stashedPhasePrompt.Store(ownerID, prompt)
+				h.workflowAgentLoopMarker.Store(ownerID, true)
+			}
+		}
+	}
+	log.Printf("[workflow-v2] post-loop doc capture rejected: user=%s phase=%s reason=invalid_task_breakdown", ownerID, phaseID)
+	return false
 }
 
 func (h *IMMessageHandler) recordAgentLoopTerminalExperience(loopCtx *LoopContext, resp *IMAgentResponse) {

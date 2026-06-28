@@ -2048,12 +2048,9 @@ func groupDiscussionHistoryUnmentionedTargetIDs(detail a2a.HubDiscussionDetail, 
 	if detail.Session != nil {
 		for _, participant := range detail.Session.Participants {
 			id := strings.TrimSpace(participant.ID)
-			if id == "" || isGroupDiscussionHistoryLocalID(id, localID) || isGroupDiscussionHistoryLocalHumanParticipant(participant) {
+			if id == "" || isGroupDiscussionHistoryLocalID(id, localID) || isGroupDiscussionHistoryLocalAIID(id) || isGroupDiscussionHistoryLocalHumanParticipant(participant) {
 				continue
 			}
-			// NOTE: local AI (local-maclaw) is NOT excluded here. All non-human
-			// participants are included for broadcast visibility. Local AI dispatch
-			// is handled separately in the caller.
 			role := strings.ToLower(strings.TrimSpace(participant.RoleCode))
 			switch role {
 			case "", "speak", "speaker", "participant", "review":
@@ -2067,7 +2064,7 @@ func groupDiscussionHistoryUnmentionedTargetIDs(detail a2a.HubDiscussionDetail, 
 		if canonical := canonicalGroupDiscussionHistoryTargetID(id, participantIDs); canonical != "" {
 			id = canonical
 		}
-		if id == "" || isGroupDiscussionHistoryLocalID(id, localID) || isGroupDiscussionHistoryLocalHumanID(id) {
+		if id == "" || isGroupDiscussionHistoryLocalID(id, localID) || isGroupDiscussionHistoryLocalAIID(id) || isGroupDiscussionHistoryLocalHumanID(id) {
 			continue
 		}
 		candidates = append(candidates, id)

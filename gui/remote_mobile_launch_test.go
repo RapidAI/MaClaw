@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -35,6 +36,7 @@ func TestStartRemoteSessionForProjectResumeSessionIDPassThrough(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -70,9 +72,7 @@ func TestStartRemoteSessionForProjectResumeSessionIDPassThrough(t *testing.T) {
 	if provider.lastSpec.ResumeSessionID != "resume-123" {
 		t.Fatalf("ResumeSessionID = %q, want %q", provider.lastSpec.ResumeSessionID, "resume-123")
 	}
-	if !app.IsAIAssistantReady() {
-		t.Fatalf("expected AI assistant to be ready after mobile remote start, status=%q", app.GetAIAssistantInitStatus())
-	}
+	assertRemoteHubClientInitializedForTest(t, app, "mobile remote start")
 }
 
 func TestStartRemoteSessionForProjectCodexResumeSessionIDPassThrough(t *testing.T) {
@@ -100,6 +100,7 @@ func TestStartRemoteSessionForProjectCodexResumeSessionIDPassThrough(t *testing.
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -165,6 +166,7 @@ func TestStartRemoteSessionForProjectCarriesInjectResumePrompt(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -234,6 +236,7 @@ func TestStartRemoteSessionForProjectProviderField(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)

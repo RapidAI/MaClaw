@@ -854,7 +854,7 @@ func isCommandFileReference(token string) bool {
 	if token == "./" || token == `.\` || token == "../" || token == `..\` {
 		return false
 	}
-	if filepath.IsAbs(token) || strings.HasPrefix(token, "~/") || strings.HasPrefix(token, `~\`) {
+	if packagePathIsAbs(token) || strings.HasPrefix(token, "~/") || strings.HasPrefix(token, `~\`) {
 		return true
 	}
 	if strings.HasPrefix(token, "./") || strings.HasPrefix(token, "../") ||
@@ -894,6 +894,12 @@ func splitCommandFields(command string) []string {
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
 		if quote != 0 {
+			if quote != '\'' && r == '\\' && i+1 < len(runes) && runes[i+1] == '\\' {
+				b.WriteRune(r)
+				b.WriteRune(runes[i+1])
+				i++
+				continue
+			}
 			if quote != '\'' && r == '\\' && i+1 < len(runes) && isEscapableShellRune(runes[i+1]) {
 				b.WriteRune(runes[i+1])
 				i++
@@ -904,6 +910,12 @@ func splitCommandFields(command string) []string {
 				continue
 			}
 			b.WriteRune(r)
+			continue
+		}
+		if r == '\\' && i+1 < len(runes) && runes[i+1] == '\\' {
+			b.WriteRune(r)
+			b.WriteRune(runes[i+1])
+			i++
 			continue
 		}
 		if r == '\\' && i+1 < len(runes) && isEscapableShellRune(runes[i+1]) {
@@ -997,7 +1009,7 @@ func resolveCommandFileReference(ref, baseDir string) (string, bool) {
 		}
 		return filepath.Clean(filepath.Join(home, strings.TrimLeft(ref[1:], `/\`))), true
 	}
-	if filepath.IsAbs(ref) {
+	if packagePathIsAbs(ref) {
 		return filepath.Clean(ref), true
 	}
 	if strings.TrimSpace(baseDir) == "" {

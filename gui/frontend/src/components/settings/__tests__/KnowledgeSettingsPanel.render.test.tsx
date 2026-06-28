@@ -10,7 +10,10 @@ import {
     KnowledgeSaveText,
     KnowledgeShareToHub,
     KnowledgeSearchStructured,
+    KnowledgeSyncStatus,
+    KnowledgeSyncUpload,
     KnowledgeStructuredCatalog,
+    GetHubLLMServiceStatus,
     LoadConfig,
     OpenSystemUrl,
     SelectKnowledgeSnapshotExportPath,
@@ -118,6 +121,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         'KnowledgeSyncStatus',
         'KnowledgeSyncUpload',
         'KnowledgeSyncVerifyPassword',
+        'GetHubLLMServiceStatus',
         'SelectKnowledgeDirectory',
         'SelectKnowledgeFiles',
     ];
@@ -165,6 +169,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
             has_package: false,
             limit_bytes: 524288000,
             message: 'maclaw official service is active',
+        })),
+        GetHubLLMServiceStatus: vi.fn(async () => ({
+            active: true,
+            active_grants: [{ status: 'active', expires_at: '2099-01-01T00:00:00Z' }],
         })),
         OpenSystemUrl: vi.fn(async () => undefined),
         SelectKnowledgeFiles: vi.fn(async () => []),
@@ -265,6 +273,95 @@ describe('KnowledgeSettingsPanel component', () => {
         await waitFor(() => expect(OpenSystemUrl).toHaveBeenCalledWith(
             'https://hub.example/card_store?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token',
         ));
+    });
+
+    it('uses local official service status when Hub sync status still reports temporary quota', async () => {
+        vi.mocked(KnowledgeSyncStatus).mockResolvedValueOnce({
+            service_status: 'normal',
+            has_package: false,
+            limit_bytes: 104857600,
+            message: 'Temporary sync',
+        } as any);
+        vi.mocked(GetHubLLMServiceStatus).mockResolvedValueOnce({
+            active: true,
+            active_grants: [{ status: 'active', expires_at: '2099-01-01T00:00:00Z' }],
+        } as any);
+
+        render(<KnowledgeSettingsPanel lang="en" />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Sync' }));
+
+        expect(await screen.findByText('Official active')).toBeTruthy();
+        expect(screen.getByText('500.0 MB')).toBeTruthy();
+        expect(screen.getAllByText(/maclaw official service is active/i).length).toBeGreaterThan(0);
+        expect(screen.getByRole('button', { name: 'Sync' })).toBeTruthy();
+    });
+
+    it('refreshes sync status after configured tenant identity is loaded', async () => {
+        vi.mocked(LoadConfig).mockResolvedValueOnce({
+            remote_hub_url: 'https://hub.example',
+            remote_tenant_id: 'tenant-paid',
+            remote_email: 'paid@example.com',
+            remote_viewer_token: 'viewer-token',
+        } as any);
+        vi.mocked(KnowledgeSyncStatus)
+            .mockResolvedValueOnce({
+                service_status: 'normal',
+                has_package: false,
+                limit_bytes: 104857600,
+                message: 'Temporary sync',
+            } as any)
+            .mockResolvedValueOnce({
+                service_status: 'official_active',
+                has_package: false,
+                limit_bytes: 524288000,
+                message: 'maclaw official service is active',
+            } as any);
+
+        render(<KnowledgeSettingsPanel lang="en" />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Sync' }));
+
+        await waitFor(() => expect(KnowledgeSyncStatus).toHaveBeenCalledWith(expect.objectContaining({
+            tenant_id: 'tenant-paid',
+            email: 'paid@example.com',
+        })));
+        expect(await screen.findByText('Official active')).toBeTruthy();
+        expect(screen.getByText('500.0 MB')).toBeTruthy();
+    });
+
+    it('does not auto-retry sync status forever when the status request fails', async () => {
+        vi.mocked(KnowledgeSyncStatus).mockRejectedValueOnce(new Error('sync status unavailable'));
+
+        render(<KnowledgeSettingsPanel lang="en" />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Sync' }));
+
+        expect(await screen.findByText('sync status unavailable')).toBeTruthy();
+        await new Promise(resolve => setTimeout(resolve, 100));
+        expect(KnowledgeSyncStatus).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows completion feedback after first-time sync upload', async () => {
+        const showToastMessage = vi.fn();
+        vi.mocked(KnowledgeSyncStatus).mockResolvedValueOnce({
+            service_status: 'official_active',
+            has_package: false,
+            limit_bytes: 524288000,
+            message: 'maclaw official service is active',
+        } as any);
+        vi.mocked(KnowledgeSyncUpload).mockResolvedValueOnce({
+            service_status: 'official_active',
+            has_package: true,
+            package_id: 'ksync_new',
+            limit_bytes: 524288000,
+        } as any);
+
+        render(<KnowledgeSettingsPanel lang="en" showToastMessage={showToastMessage} />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Sync' }));
+        fireEvent.change(await screen.findByPlaceholderText('Sync password'), { target: { value: 'sync-secret' } });
+        fireEvent.change(screen.getByPlaceholderText('Confirm sync password'), { target: { value: 'sync-secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Sync' }));
+
+        await waitFor(() => expect(KnowledgeSyncUpload).toHaveBeenCalledTimes(1));
+        expect(showToastMessage).toHaveBeenCalledWith('Knowledge sync completed.', 3000);
     });
 
     it('does not auto-retry forever when export source loading fails and allows manual recovery', async () => {

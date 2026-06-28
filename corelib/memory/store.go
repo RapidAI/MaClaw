@@ -2082,7 +2082,16 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 			}
 		}
 	}
-	s.mu.RLock()
+	// Acquire read lock with timeout to prevent foreground recall from being
+	// permanently blocked by background pipeline write operations. If the lock
+	// cannot be acquired within 10 seconds (e.g. pipeline holding write lock with
+	// writer-starvation blocking readers), return empty results rather than
+	// blocking the agent loop indefinitely.
+	const recallRLockTimeout = 10 * time.Second
+	if !s.TryRLockWithTimeout(recallRLockTimeout) {
+		log.Printf("[memory_store] RecallDynamic: RLock timeout after %s — returning empty results (pipeline may be holding write lock)", recallRLockTimeout)
+		return nil
+	}
 
 	const maxEntries = 15
 	const maxTokens = 2500
@@ -3533,6 +3542,31 @@ func (s *Store) RLock() { s.mu.RLock() }
 
 // RUnlock releases the read lock.
 func (s *Store) RUnlock() { s.mu.RUnlock() }
+
+// TryRLockWithTimeout attempts to acquire a read lock within the given timeout.
+// Returns true if the lock was acquired, false if the timeout expired.
+// This prevents foreground operations (RecallDynamic) from being permanently
+// blocked by background pipeline write operations that hold the write lock for
+// extended periods or cause writer-starvation of readers.
+func (s *Store) TryRLockWithTimeout(timeout time.Duration) bool {
+	if s.mu.TryRLock() {
+		return true
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.C:
+			return false
+		case <-ticker.C:
+			if s.mu.TryRLock() {
+				return true
+			}
+		}
+	}
+}
 
 // Lock acquires a write lock on the store.
 func (s *Store) Lock() { s.mu.Lock() }

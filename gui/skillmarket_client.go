@@ -86,7 +86,7 @@ func (c *SkillMarketClient) SubmitSkillToConfiguredTargetsWithCompleted(ctx cont
 	if err != nil {
 		return "", err
 	}
-	hasEnterpriseHub := capabilityMarketBaseURL(cfg) != "" && capabilityMarketAuthToken(cfg) != ""
+	hasEnterpriseHub := strings.TrimSpace(cfg.RemoteHubURL) != "" && capabilityMarketAuthToken(cfg) != ""
 	targets := cfg.CapabilityMarketPolicy.UploadTargets(hasEnterpriseHub)
 	if len(targets) == 0 {
 		return "", fmt.Errorf("enterprise Hub upload is selected but marketplace URL or auth token is not configured")

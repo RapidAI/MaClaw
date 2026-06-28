@@ -233,7 +233,7 @@ func (h *IMMessageHandler) routeWorkflowIMMessage(msg IMUserMessage, trimmed str
 	// V2 StateMachine is the sole source of truth for active workflow state.
 	hasActiveWorkflow := wf.machine.GetActive(msg.UserID) != nil
 	if hasActiveWorkflow {
-		if resp, handled := h.submitWorkflowInputIfWaiting(nil, msg.UserID, trimmed, msg.Attachments, msg.Platform); handled {
+		if resp, handled := h.submitWorkflowInputIfWaiting(h.app.workflowEngine, msg.UserID, trimmed, msg.Attachments, msg.Platform); handled {
 			result.Response = resp
 			result.WorkflowAgentLoop = resp == nil
 			if state := wf.machine.GetActive(msg.UserID); state != nil {
@@ -600,12 +600,28 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform str
 		return h.handleActiveWorkflow(engine, userID, text, platform, atts)
 	}
 	if understanding := engine.GetUnderstanding(); understanding != nil && understanding.HasActiveSession(userID) {
+		if h.shouldEscapeActiveUnderstanding(userID, text) {
+			understanding.CancelSession(userID)
+			return nil
+		}
 		return h.handleActiveUnderstanding(engine, userID, text)
 	}
 	if h.shouldBypassWorkflowForIntent(userID, text, false) {
 		return nil
 	}
 	return h.handleNeedsUnderstanding(engine, userID, text, platform)
+}
+
+func (h *IMMessageHandler) shouldEscapeActiveUnderstanding(userID, text string) bool {
+	uic := h.getUnifiedClassifier()
+	if uic == nil || strings.TrimSpace(text) == "" {
+		return false
+	}
+	result := uic.Classify(intent.MessageContext{
+		Text:   text,
+		UserID: userID,
+	})
+	return shouldEscapeActiveUnderstandingForClassification(result, uic.IsWorkflowCandidate(result.Primary), uic.GetWorkflowRejectThreshold())
 }
 
 func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string, classifyShortMessages bool) bool {
@@ -897,7 +913,18 @@ func (h *IMMessageHandler) handleActiveWorkflow(engine *v2.WorkflowEngine, userI
 			_ = cb.SendTextToUser(userID, resp.Text)
 		}
 	}
-	return nil
+	responseText := resp.Text
+	if strings.TrimSpace(responseText) == "" {
+		responseText = resp.PhasePrompt
+		if ws := engine.GetActiveWorkflow(userID); ws != nil {
+			if tmpl := engine.GetRegistry().Match(ws.Type); tmpl != nil && ws.PhaseIndex >= 0 && ws.PhaseIndex < len(tmpl.Phases) {
+				if desc := strings.TrimSpace(tmpl.Phases[ws.PhaseIndex].Description); desc != "" {
+					responseText = desc
+				}
+			}
+		}
+	}
+	return &IMAgentResponse{Text: responseText}
 }
 
 func workflowPendingFormAllowsChatBypass(text string, attachments []MessageAttachment) bool {
@@ -1824,6 +1851,10 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalogV2Compat(userID str
 	}
 	if policy == v2.ToolFilterNone && h != nil && h.app != nil && h.app.workflowEngine != nil {
 		policy = h.app.workflowEngine.GetActivePhaseToolFilter(userID)
+	}
+	if h != nil && h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.IsAwaitingReview(userID) {
+		tools = ensureWorkflowRequiredToolsForNames([]string{"read_file", "list_directory", "send_file", "bash"}, tools, allTools)
+		return v2.FilterToolDefinitions(v2.ToolFilterDocOnly, tools)
 	}
 	if h != nil && h.isWorkflowArtifactPhase(userID) {
 		tools = ensureWorkflowRequiredToolsForNames(workflowArtifactPhaseRequiredTools(), tools, allTools)

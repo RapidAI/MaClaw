@@ -488,6 +488,9 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 	if workflowPolicyBlocksImplementationTool(policy, name) {
 		return false, fmt.Sprintf("%s is not allowed by the current workflow phase tool policy", strings.TrimSpace(name))
 	}
+	if reason := validateWorkflowPolicyManagedSkillCall(policy, name, args); reason != "" {
+		return false, reason
+	}
 	if h.isWorkflowArtifactPhase(policyUserID) {
 		if reason := validateWorkflowArtifactPhaseToolCall(name, args); reason != "" {
 			return false, reason
@@ -511,6 +514,41 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 		return false, err.Error()
 	}
 	return true, ""
+}
+
+func validateWorkflowPolicyManagedSkillCall(policy v2.ToolFilterPolicy, name string, args map[string]interface{}) string {
+	name = strings.TrimSpace(name)
+	if name != "manage_skill" {
+		return ""
+	}
+	switch policy {
+	case v2.ToolFilterDocOnly, v2.ToolFilterPlanning:
+	default:
+		return ""
+	}
+	action := strings.ToLower(strings.TrimSpace(nonEmptyStringFromAny(args["action"])))
+	if action == "" {
+		return ""
+	}
+	switch action {
+	case "run", "status", "list", "show", "search":
+		if action == "run" && workflowPolicyManagedSkillRunHasProjectPath(args) {
+			return "manage_skill is not allowed by the current workflow tool policy for project-scoped skill runs"
+		}
+		return ""
+	default:
+		return "manage_skill is not allowed by the current workflow tool policy for this action"
+	}
+}
+
+func workflowPolicyManagedSkillRunHasProjectPath(args map[string]interface{}) bool {
+	if skillRunProjectPath(args) != "" {
+		return true
+	}
+	if nested, _ := args["args"].(map[string]interface{}); nested != nil {
+		return skillRunProjectPath(nested) != ""
+	}
+	return false
 }
 
 func workflowPolicyBlocksImplementationTool(policy v2.ToolFilterPolicy, name string) bool {
@@ -699,6 +737,23 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 	log.Printf("[tool-call] name=%q args_len=%d summary=%s", name, len(argsJSON), summarizeToolArgsForLog(name, args))
 
 	h.trackSteeringFileFromArgs(name, args)
+
+	if name == "screenshot" {
+		taskText := userText
+		if strings.TrimSpace(taskText) == "" {
+			taskText = h.runtimeTaskTextForOwner(policyUserID)
+			if !hasRuntimeOwner {
+				if _, explicitRuntime := h.currentRuntimePolicyOwnerState(); explicitRuntime {
+					taskText = ""
+				} else if currentTaskText, _ := h.currentRuntimeTaskTextOrLegacy(); currentTaskText != "" {
+					taskText = currentTaskText
+				}
+			}
+		}
+		if msg := screenshotLocalImagePathGuardMessage(taskText); msg != "" {
+			return toolExecutionResult{Text: msg, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+		}
+	}
 
 	if allowed, reason := h.enforceHubSecurityToolPolicy(name, args); !allowed {
 		if reason == "" {
@@ -1012,6 +1067,10 @@ func preCheckAgentLoopInlinePayloadLimit(name, argsJSON string, iteration int) *
 	// exact opposite of the intended protection.
 	if name == "write_file" || name == "edit_file" || name == "edit_lines" {
 		log.Printf("[agent-loop] %s auto-pass: allowing oversized %s (%d runes > %d soft limit) to pass through to handler (iter=%d)", name, field, valueRunes, limit, iteration)
+		return nil
+	}
+	if name == "bash" && (bashCommandIsAutoSpillable(value) || valueRunes > limit+512) {
+		log.Printf("[agent-loop] bash auto-pass: allowing oversized command (%d runes > %d soft limit) to pass through to auto-spill handler (iter=%d)", valueRunes, limit, iteration)
 		return nil
 	}
 

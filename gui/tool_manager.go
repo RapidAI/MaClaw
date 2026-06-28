@@ -75,6 +75,14 @@ func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
 	toolsDir := remote.ToolsDir()
 	if tm.app != nil {
 		toolsDir = filepath.Join(tm.app.GetDataDir(), "tools")
+		if tm.app.testHomeDir == "" {
+			if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+				homeToolsDir := filepath.Join(home, ".maclaw", "data", "tools")
+				if filepath.Clean(homeToolsDir) != filepath.Clean(toolsDir) {
+					toolsDir = homeToolsDir
+				}
+			}
+		}
 	}
 	cacheKey := normalized + "\x00" + toolsDir
 
@@ -97,6 +105,19 @@ func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
 	tm.app.log(fmt.Sprintf("GetToolStatus: Checking tool '%s'", name))
 
 	path, found := remote.ResolveToolPathInDir(name, toolsDir)
+	if !found {
+		if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+			homeToolsDir := filepath.Join(home, ".maclaw", "data", "tools")
+			if filepath.Clean(homeToolsDir) != filepath.Clean(toolsDir) {
+				if fallbackPath, fallbackFound := remote.ResolveToolPathInDir(name, homeToolsDir); fallbackFound {
+					toolsDir = homeToolsDir
+					path = fallbackPath
+					found = true
+					cacheKey = normalized + "\x00" + toolsDir
+				}
+			}
+		}
+	}
 	if !found {
 		tm.app.log(fmt.Sprintf("GetToolStatus: Tool '%s' NOT found", name))
 		toolStatusCacheMu.Lock()

@@ -83,6 +83,7 @@ func setupWorkflowTestHandler(llmCaller v2.LLMCaller) (*IMMessageHandler, *mockE
 	v2Registry := v2.NewTemplateRegistry()
 	v2.RegisterBuiltinTemplates(v2Registry)
 	v2Machine := v2.NewStateMachine(v2Store, v2Registry)
+	v2Machine.SetAllowTempTestPaths(true)
 	v2Machine.SetConfirmClassifier(func(_, text string) string {
 		return v2.ClassifyConfirmIntentKeyword(text)
 	})

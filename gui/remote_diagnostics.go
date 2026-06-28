@@ -1,26 +1,17 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 var remotePTYCapabilityProbe = remotePTYCapability
 var remotePTYInteractiveProbe = remotePTYInteractiveSmokeProbe
 var remoteClaudeLaunchProbe = remoteClaudeLaunchSmokeProbe
-
-// ptyProbeCache caches the ConPTY probe result for the lifetime of the process.
-// ConPTY availability does not change during a single app session, so probing
-// once is sufficient. This eliminates the cmd.exe window flash that occurs
-// every time the "remote" tab is opened.
-var (
-	ptyProbeCacheOnce   sync.Once
-	ptyProbeCacheResult RemotePTYProbeResult
-)
 
 type RemoteToolLaunchProbeResult struct {
 	Tool        string `json:"tool"`
@@ -207,19 +198,23 @@ func (a *App) findSelectedModel(cfg corelib.AppConfig, toolName string) *corelib
 }
 
 func (a *App) CheckRemotePTYProbe() RemotePTYProbeResult {
-	ptyProbeCacheOnce.Do(func() {
-		supported, message := remotePTYCapabilityProbe()
-		// ConPTY capability is determined by API availability check alone
-		// (conpty.IsConPtyAvailable). No need to launch cmd.exe for an
-		// interactive smoke probe — it flashes a console window and provides
-		// no additional signal beyond what the API check already confirms.
-		ptyProbeCacheResult = RemotePTYProbeResult{
-			Supported: supported,
-			Ready:     supported,
+	supported, message := remotePTYCapabilityProbe()
+	if !supported {
+		return RemotePTYProbeResult{
+			Supported: false,
+			Ready:     false,
 			Message:   message,
 		}
-	})
-	return ptyProbeCacheResult
+	}
+	ready, interactiveMessage := remotePTYInteractiveProbe()
+	if strings.TrimSpace(interactiveMessage) != "" {
+		message = interactiveMessage
+	}
+	return RemotePTYProbeResult{
+		Supported: true,
+		Ready:     ready,
+		Message:   message,
+	}
 }
 
 func (a *App) CheckRemoteToolLaunchProbe(toolName, projectDir string, useProxy bool) RemoteToolLaunchProbeResult {

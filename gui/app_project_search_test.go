@@ -414,8 +414,9 @@ func TestCreateRecentTaskWithWorkingDirRejectsFilePath(t *testing.T) {
 	if got := app.recentTaskWorkingDir(created.ProjectPath); got != "" {
 		t.Fatalf("recentTaskWorkingDir = %q, want empty", got)
 	}
-	if got := app.recentTaskExecutionProjectPath(created.ProjectPath); got != created.ProjectPath {
-		t.Fatalf("recentTaskExecutionProjectPath = %q, want task path %q", got, created.ProjectPath)
+	wantExecutionPath := filepath.Join(created.ProjectPath, "workspace")
+	if got := app.recentTaskExecutionProjectPath(created.ProjectPath); got != wantExecutionPath {
+		t.Fatalf("recentTaskExecutionProjectPath = %q, want workspace path %q", got, wantExecutionPath)
 	}
 }
 
@@ -432,8 +433,9 @@ func TestCreateRecentTaskWithWorkingDirRejectsRelativePath(t *testing.T) {
 	if got := app.recentTaskWorkingDir(created.ProjectPath); got != "" {
 		t.Fatalf("recentTaskWorkingDir = %q, want empty", got)
 	}
-	if got := app.recentTaskExecutionProjectPath(created.ProjectPath); got != created.ProjectPath {
-		t.Fatalf("recentTaskExecutionProjectPath = %q, want task path %q", got, created.ProjectPath)
+	wantExecutionPath := filepath.Join(created.ProjectPath, "workspace")
+	if got := app.recentTaskExecutionProjectPath(created.ProjectPath); got != wantExecutionPath {
+		t.Fatalf("recentTaskExecutionProjectPath = %q, want workspace path %q", got, wantExecutionPath)
 	}
 }
 

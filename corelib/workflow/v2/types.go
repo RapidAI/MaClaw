@@ -317,6 +317,11 @@ func opsCommandDescriptor(name string, args map[string]interface{}) string {
 	case "ssh":
 		action, _ := args["action"].(string)
 		cmd, _ := args["command"].(string)
+		if strings.TrimSpace(cmd) == "" && strings.TrimSpace(action) == "upload" {
+			localPath, _ := args["local_path"].(string)
+			remotePath, _ := args["remote_path"].(string)
+			cmd = strings.TrimSpace(localPath) + " -> " + strings.TrimSpace(remotePath)
+		}
 		return "ssh(" + action + "): " + cmd
 	default:
 		return name
@@ -336,7 +341,7 @@ func isHighRiskOpsCommand(desc string) bool {
 func isMutatingOpsCommand(name string, args map[string]interface{}, desc string) bool {
 	if name == "bash" || (name == "ssh" && args != nil) {
 		action, _ := args["action"].(string)
-		if action == "exec" || action == "submit_task" || name == "bash" {
+		if action == "exec" || action == "submit_task" || action == "upload" || name == "bash" {
 			return true
 		}
 	}

@@ -378,6 +378,9 @@ func prepareSkillDirForMarket(skillDir string, autoFix bool, appOpt ...*App) ([]
 	changes := append([]cskill.PortabilityChange(nil), preflight.AutoFixed...)
 	report := preflight.Report
 	if !preflight.Portable() {
+		if preflightHasOnlyQualityGatePathRefs(preflight) {
+			return changes, report, nil
+		}
 		return changes, report, &skillUploadBlockedError{Message: cskill.FormatUploadPreflight(preflight), Score: 0}
 	}
 	app := firstSkillLifecycleApp(appOpt...)
@@ -393,6 +396,26 @@ func prepareSkillDirForMarket(skillDir string, autoFix bool, appOpt ...*App) ([]
 		return changes, nil, fmt.Errorf("skill package blocked by security scan: level=%s summary=%s", scanReport.FinalLevel, scanReport.Summary)
 	}
 	return changes, report, nil
+}
+
+func preflightHasOnlyQualityGatePathRefs(preflight *cskill.UploadPreflightResult) bool {
+	if preflight == nil || len(preflight.BlockingPaths) > 0 || len(preflight.MissingFiles) == 0 {
+		return false
+	}
+	for _, ref := range preflight.MissingFiles {
+		ref = strings.TrimSpace(filepath.ToSlash(ref))
+		if ref == "" {
+			return false
+		}
+		if strings.HasPrefix(ref, "../") || strings.HasPrefix(ref, "/") || strings.HasPrefix(ref, "//") {
+			continue
+		}
+		if len(ref) >= 2 && ref[1] == ':' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func firstSkillLifecycleApp(appOpt ...*App) *App {

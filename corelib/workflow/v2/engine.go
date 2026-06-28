@@ -10,6 +10,7 @@ package v2
 // in-process query layer that GUI code calls synchronously.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -120,10 +121,131 @@ func NewIntentUnderstandingManager(store PersistenceStore, llm LLMCaller, regist
 func (m *IntentUnderstandingManager) SetLanguage(lang string)             {}
 func (m *IntentUnderstandingManager) SetUserLanguage(userID, lang string) {}
 func (m *IntentUnderstandingManager) Start(userID, text string) (*StartResult, error) {
-	return &StartResult{Rejected: true}, nil
+	if m == nil || m.llm == nil {
+		return &StartResult{Rejected: true}, nil
+	}
+	result, err := m.callUnderstandingLLM(userID, text, nil)
+	if err != nil {
+		return nil, err
+	}
+	if result.Rejected || result.Ready {
+		return result, nil
+	}
+	if result.Intent == nil || result.Intent.Category == "" || result.Intent.Category == WorkflowNone {
+		result.Rejected = true
+		return result, nil
+	}
+	now := time.Now()
+	session := &UnderstandingSession{
+		ID:        fmt.Sprintf("understanding-%d", now.UnixNano()),
+		UserID:    userID,
+		Intent:    *result.Intent,
+		State:     UnderstandingActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Rounds: []UnderstandingRound{{
+			UserText:      text,
+			AssistantText: result.Reply,
+			Timestamp:     now,
+		}},
+	}
+	m.mu.Lock()
+	m.sessions[userID] = session
+	m.mu.Unlock()
+	if m.store != nil {
+		_ = m.store.SaveUnderstandingSession(session)
+	}
+	return result, nil
 }
 func (m *IntentUnderstandingManager) HandleInput(userID, text string) (string, bool, bool, *StructuredIntent, error) {
-	return "", false, false, nil, nil
+	if m == nil {
+		return "", false, false, nil, nil
+	}
+	session := m.GetSession(userID)
+	if session == nil || session.State != UnderstandingActive {
+		return "", false, false, nil, nil
+	}
+	result, err := m.callUnderstandingLLM(userID, text, session)
+	if err != nil {
+		return "", false, false, nil, err
+	}
+	now := time.Now()
+	session.Rounds = append(session.Rounds, UnderstandingRound{
+		UserText:      text,
+		AssistantText: result.Reply,
+		Timestamp:     now,
+	})
+	session.UpdatedAt = now
+	if result.Intent != nil {
+		session.Intent = *result.Intent
+	}
+	if result.Ready || result.Rejected {
+		session.State = UnderstandingConfirmed
+		m.mu.Lock()
+		delete(m.sessions, userID)
+		m.mu.Unlock()
+		if m.store != nil {
+			_ = m.store.DeleteUnderstandingSession(userID)
+		}
+		return result.Reply, result.Ready, false, result.Intent, nil
+	}
+	m.mu.Lock()
+	m.sessions[userID] = session
+	m.mu.Unlock()
+	if m.store != nil {
+		_ = m.store.SaveUnderstandingSession(session)
+	}
+	return result.Reply, false, false, result.Intent, nil
+}
+
+type intentUnderstandingLLMResponse struct {
+	Intent    *StructuredIntent `json:"intent"`
+	Reply     string            `json:"reply"`
+	Ready     bool              `json:"ready"`
+	Rejected  bool              `json:"rejected"`
+	Cancel    bool              `json:"cancel"`
+	Cancelled bool              `json:"cancelled"`
+}
+
+func (m *IntentUnderstandingManager) callUnderstandingLLM(userID, text string, session *UnderstandingSession) (*StartResult, error) {
+	messages := []interface{}{
+		map[string]string{
+			"role":    "system",
+			"content": "Classify whether the user request should start or continue a workflow. Reply as JSON with intent, reply, ready, and rejected fields.",
+		},
+	}
+	if session != nil {
+		messages = append(messages, map[string]string{"role": "system", "content": fmt.Sprintf("Current workflow intent: %s\nSummary: %s", session.Intent.Category, session.Intent.Summary)})
+		for _, round := range session.Rounds {
+			messages = append(messages,
+				map[string]string{"role": "user", "content": round.UserText},
+				map[string]string{"role": "assistant", "content": round.AssistantText},
+			)
+		}
+	}
+	messages = append(messages, map[string]string{"role": "user", "content": text})
+	raw, err := m.llm.DoSimpleLLMRequest(messages, 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var parsed intentUnderstandingLLMResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &parsed); err != nil {
+		return nil, ErrIntentUnderstandingContractBreach
+	}
+	ready := parsed.Ready
+	if parsed.Intent != nil && parsed.Intent.Ready {
+		ready = true
+	}
+	rejected := parsed.Rejected || parsed.Cancel || parsed.Cancelled
+	if parsed.Intent == nil && !ready {
+		rejected = true
+	}
+	return &StartResult{
+		Reply:    strings.TrimSpace(parsed.Reply),
+		Rejected: rejected,
+		Ready:    ready,
+		Intent:   parsed.Intent,
+	}, nil
 }
 func (m *IntentUnderstandingManager) GetSession(userID string) *UnderstandingSession {
 	m.mu.RLock()
@@ -934,12 +1056,16 @@ func (e *WorkflowEngine) GetActiveWorkflow(userID string) *EngineState {
 func (e *WorkflowEngine) ActiveWorkflowUserIDForPhase(phaseID string) (string, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	matched := ""
 	for uid, ws := range e.workflows {
 		if ws.Status == WorkflowActive && ws.CurrentPhase == phaseID {
-			return uid, true
+			if matched != "" {
+				return "", false
+			}
+			matched = uid
 		}
 	}
-	return "", false
+	return matched, matched != ""
 }
 func (e *WorkflowEngine) SingleActiveWorkflowUserID() (string, bool) { return "", false }
 func (e *WorkflowEngine) BuildPhasePrompt(userID string) string {

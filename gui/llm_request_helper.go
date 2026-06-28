@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -62,6 +63,14 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 
 	parsed, err := llm.DoOpenAIRequest(ctx, cfg, messages, nil, client)
 	if err != nil {
+		var httpErr *llm.HTTPStatusError
+		if errors.As(err, &httpErr) && httpErr != nil && len(httpErr.Body) > 0 {
+			body := strings.TrimSpace(string(httpErr.Body))
+			if len(body) > 512 {
+				body = body[:512]
+			}
+			return nil, fmt.Errorf("%w %s", err, body)
+		}
 		msg := err.Error()
 		if strings.HasPrefix(msg, "HTTP 500:") {
 			endpoint, data, buildErr := llm.BuildOpenAIChatRequestData(cfg, messages, llm.OpenAIChatRequestOptions{

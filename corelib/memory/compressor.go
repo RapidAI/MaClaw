@@ -119,7 +119,25 @@ func chatCallWithContext(ctx context.Context, llm LLMChatCaller, messages []map[
 	if contextual, ok := llm.(ContextualLLMChatCaller); ok {
 		return contextual.ChatCallContext(ctx, messages)
 	}
-	return llm.ChatCall(messages)
+	// Fallback for LLM callers that don't support context cancellation:
+	// run the blocking ChatCall in a goroutine so we can still respect ctx
+	// cancellation. This prevents a cancelled pipeline from being stuck
+	// waiting for an in-flight HTTP request to timeout naturally (60-120s).
+	type callResult struct {
+		text string
+		err  error
+	}
+	ch := make(chan callResult, 1)
+	go func() {
+		text, err := llm.ChatCall(messages)
+		ch <- callResult{text, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case r := <-ch:
+		return r.text, r.err
+	}
 }
 
 // LLMConfigRefresher optionally refreshes the LLM config. Implementations

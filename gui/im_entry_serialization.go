@@ -58,7 +58,36 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 	state.stateMu.RUnlock()
 	waitStartedAt := time.Now()
 	log.Printf("[IM serialization] acquire user=%q background=%v active=%v active_loop=%q active_request_id=%q", msg.UserID, msg.IsBackground, activeBeforeLock, activeLoopID, activeRequestID)
-	state.mu.Lock()
+
+	// Acquire state.mu with a timeout. If the previous loop is stuck on a
+	// blocking syscall (e.g. memory Store.mu.RLock waiting for pipeline write
+	// lock), we must not block the new message indefinitely. After timeout,
+	// return a recoverable error so the user can retry or restart.
+	const serializationLockTimeout = 60 * time.Second
+	acquired := false
+	deadline := time.NewTimer(serializationLockTimeout)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	for !acquired {
+		if state.mu.TryLock() {
+			acquired = true
+			break
+		}
+		select {
+		case <-deadline.C:
+			ticker.Stop()
+			log.Printf("[IM serialization] TIMEOUT acquiring state.mu user=%q after %v — previous loop may be stuck on a blocking lock", msg.UserID, serializationLockTimeout)
+			result.Handled = true
+			result.Response = &IMAgentResponse{
+				Text: "⚠️ 系统正在恢复中（上一个任务因内部锁等待超时未能正常退出），请稍后重试。如持续出现请重启程序。",
+			}
+			return result
+		case <-ticker.C:
+			// Spin with 200ms intervals to check TryLock.
+		}
+	}
+	deadline.Stop()
+	ticker.Stop()
+
 	waited := time.Since(waitStartedAt)
 	if waited > 500*time.Millisecond {
 		log.Printf("[IM serialization] waited user=%q duration=%v background=%v active_at_wait_start=%v active_loop=%q active_request_id=%q", msg.UserID, waited, msg.IsBackground, activeBeforeLock, activeLoopID, activeRequestID)

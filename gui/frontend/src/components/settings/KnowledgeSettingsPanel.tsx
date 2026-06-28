@@ -98,6 +98,7 @@ import {
     KnowledgeGetImageAssetPaths,
     KnowledgeOpenImageFile,
     LoadConfig,
+    GetHubLLMServiceStatus,
     OpenSystemUrl,
     SelectKnowledgeDirectory,
     SelectKnowledgeFiles,
@@ -1244,6 +1245,17 @@ type ExportSourceGroup = {
     sources: Source[];
 };
 
+function SyncIcon() {
+    return (
+        <svg className="knowledge-button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M21 12a9 9 0 0 1-15.4 6.4L3 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M3 16v5h5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M3 12A9 9 0 0 1 18.4 5.6L21 8" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M21 8V3h-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+    );
+}
+
 function basenameFromPath(value?: string) {
     const text = String(value || '').trim();
     if (!text) return '';
@@ -1334,6 +1346,25 @@ function knowledgeExportGroups(sources: Source[], batches: ImportBatch[], t: (en
     return groups;
 }
 
+function knowledgeSyncLocalOfficialActive(status: any) {
+    if (!status || typeof status !== 'object') return false;
+    if (status.active) return true;
+    const grants = [
+        ...(Array.isArray(status.active_grants) ? status.active_grants : []),
+        ...(Array.isArray(status.credit_grants) ? status.credit_grants : []),
+    ];
+    const now = Date.now();
+    return grants.some((grant: any) => {
+        const state = String(grant?.status || (grant?.active === false ? 'queued' : 'active')).toLowerCase();
+        if (['expired', 'revoked', 'disabled', 'inactive'].includes(state)) return false;
+        const startsAt = Date.parse(String(grant?.starts_at || ''));
+        if (Number.isFinite(startsAt) && startsAt > now) return false;
+        const expiresAt = Date.parse(String(grant?.expires_at || ''));
+        if (Number.isFinite(expiresAt)) return expiresAt > now;
+        return grant?.active === true || ['active', 'valid', 'period_limited', 'limited'].includes(state);
+    });
+}
+
 
 export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const t = (en: string, zhHans: string, zhHant: string = zhHans) => (
@@ -1364,6 +1395,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [syncForm, setSyncForm] = useState({ hubURL: '', hubToken: '', tenantID: '', email: '', hubCenterURL: '', hubID: '', tenantName: '', password: '', passwordConfirm: '', conflictStrategy: '' });
     const [syncStatus, setSyncStatus] = useState<any>(null);
     const [syncConflictResult, setSyncConflictResult] = useState<any>(null);
+    const [hubLLMServiceStatus, setHubLLMServiceStatus] = useState<any>(null);
     const [hubShareResult, setHubShareResult] = useState<any>(null);
     const [exportSources, setExportSources] = useState<Source[] | null>(null);
     const [exportBatches, setExportBatches] = useState<ImportBatch[] | null>(null);
@@ -1375,6 +1407,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const hubShareDialogRef = useRef<HTMLElement | null>(null);
     const hubShareDescriptionRef = useRef<HTMLTextAreaElement | null>(null);
     const busyRef = useRef(busy);
+    const syncStatusIdentityRef = useRef('');
     const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
     const [searchForm, setSearchForm] = useState({ query: '', resultType: 'all', sourceKind: 'all', domain: '', sourceID: '', labels: '', limit: 20, includeDisabled: false });
     const [searchMode, setSearchMode] = useState<'semantic' | 'structured'>('semantic');
@@ -1589,9 +1622,17 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     }, [activeTab, exportSources, exportListLoading, exportListAttempted, loadExportSelectionData]);
 
     useEffect(() => {
-        if (activeTab !== 'sync' || syncStatus || busy) return;
+        if (activeTab !== 'sync' || busy) return;
+        const identityKey = [
+            syncForm.hubURL.trim(),
+            syncForm.hubToken.trim(),
+            syncForm.tenantID.trim(),
+            syncForm.email.trim(),
+        ].join('\n');
+        if (syncStatusIdentityRef.current === identityKey) return;
+        syncStatusIdentityRef.current = identityKey;
         void refreshKnowledgeSyncStatus();
-    }, [activeTab]);
+    }, [activeTab, busy, syncForm.hubURL, syncForm.hubToken, syncForm.tenantID, syncForm.email, syncStatus]);
 
     useEffect(() => {
         busyRef.current = busy;
@@ -1773,69 +1814,121 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const syncPayload = () => ({
         hub_url: syncForm.hubURL.trim(),
         hub_token: syncForm.hubToken.trim(),
+        tenant_id: syncForm.tenantID.trim(),
+        email: syncForm.email.trim(),
         password: syncForm.password,
         conflict_strategy: syncForm.conflictStrategy,
     });
 
+    const normalizeSyncStatusWithLocalService = (status: any, serviceStatus = hubLLMServiceStatus) => {
+        if (!status || typeof status !== 'object') return status || null;
+        if (!knowledgeSyncLocalOfficialActive(serviceStatus)) return status;
+        return {
+            ...status,
+            service_status: 'official_active',
+            readonly_reason: '',
+            retention_days: 0,
+            limit_bytes: 500 * 1024 * 1024,
+            expires_at: '',
+            message: t('maclaw official service is active: sync data has no fixed expiry while the service is valid, with a 500MB server space limit.', 'maclaw 官方服务有效中：同步数据不设固定有效期，服务器空间上限 500MB。'),
+        };
+    };
+
     const refreshKnowledgeSyncStatus = async () => {
         await runTask('syncStatus', async () => {
-            const result = await KnowledgeSyncStatus(syncPayload());
-            setSyncStatus(result || null);
-            return result;
+            const [result, serviceStatus] = await Promise.all([
+                KnowledgeSyncStatus(syncPayload()),
+                GetHubLLMServiceStatus().catch(() => null),
+            ]);
+            setHubLLMServiceStatus(serviceStatus || null);
+            const normalized = normalizeSyncStatusWithLocalService(result, serviceStatus);
+            setSyncStatus(normalized || null);
+            return normalized;
         }, { successMessage: false });
     };
 
-    const uploadKnowledgeSync = async () => {
+    const ensureKnowledgeSyncCanWrite = (latestStatus: any) => {
+        if (String(latestStatus?.service_status || '') === 'official_expired') {
+            throw new Error(t('Upload failed: maclaw official service has expired. Renew maclaw official service before updating sync data.', '上传失败：当前服务已过期，请续费 maclaw 官方服务后再更新同步数据。'));
+        }
+    };
+
+    const uploadKnowledgeSyncPackage = async (latestStatus: any, verifyExistingPassword: boolean, serviceStatus = hubLLMServiceStatus) => {
+        ensureKnowledgeSyncCanWrite(latestStatus);
+        if (latestStatus?.has_package && verifyExistingPassword) {
+            await KnowledgeSyncVerifyPassword(syncPayload());
+        } else if (!latestStatus?.has_package && syncForm.password !== syncForm.passwordConfirm) {
+            throw new Error(t('The two sync passwords do not match.', '两次输入的同步密码不一致。'));
+        }
+        const result = await KnowledgeSyncUpload(syncPayload());
+        const normalized = normalizeSyncStatusWithLocalService(result, serviceStatus);
+        setSyncStatus(normalized || null);
+        return normalized;
+    };
+
+    const syncKnowledgeNow = async () => {
         if (!syncForm.password.trim()) {
-            setError(t('Set a sync password before uploading. Hub never stores this password.', '上传前请设置同步密码。Hub 不会保存该密码。'));
+            setError(t('Enter the sync password before syncing. Hub never stores this password.', '同步前请输入同步密码。Hub 不会保存该密码。'));
             return;
         }
-        if (syncReadonly) {
+        if (syncReadonly && !knowledgeSyncLocalOfficialActive(hubLLMServiceStatus)) {
             setError(t('Upload failed: maclaw official service has expired. Renew maclaw official service before updating sync data.', '上传失败：当前服务已过期，请续费 maclaw 官方服务后再更新同步数据。'));
             return;
         }
-        await runTask('syncUpload', async () => {
-            const latestStatus = await KnowledgeSyncStatus(syncPayload());
+        await runTask('syncNow', async () => {
+            setSyncConflictResult(null);
+            const [remoteStatus, serviceStatus] = await Promise.all([
+                KnowledgeSyncStatus(syncPayload()),
+                GetHubLLMServiceStatus().catch(() => null),
+            ]);
+            setHubLLMServiceStatus(serviceStatus || null);
+            const latestStatus = normalizeSyncStatusWithLocalService(remoteStatus, serviceStatus);
             setSyncStatus(latestStatus || null);
-            if (String(latestStatus?.service_status || '') === 'official_expired') {
-                throw new Error(t('Upload failed: maclaw official service has expired. Renew maclaw official service before updating sync data.', '上传失败：当前服务已过期，请续费 maclaw 官方服务后再更新同步数据。'));
+            ensureKnowledgeSyncCanWrite(latestStatus);
+            if (!latestStatus?.has_package) {
+                const uploadResult = await uploadKnowledgeSyncPackage(latestStatus, false, serviceStatus);
+                notifySuccess(t('Knowledge sync completed.', '知识库同步完成。'));
+                return uploadResult;
             }
-            if (latestStatus?.has_package) {
-                await KnowledgeSyncVerifyPassword(syncPayload());
-            } else if (syncForm.password !== syncForm.passwordConfirm) {
-                throw new Error(t('The two sync passwords do not match.', '两次输入的同步密码不一致。'));
+            const checkResult = await KnowledgeSyncDownload({ ...syncPayload(), conflict_strategy: 'check' });
+            setSyncStatus(normalizeSyncStatusWithLocalService(checkResult || latestStatus, serviceStatus) || null);
+            if (checkResult?.requires_resolution) {
+                setSyncConflictResult(checkResult);
+                notifySuccess(t('Knowledge sync checked. Resolve conflicts to continue syncing.', '已检查同步内容，请先处理冲突后继续同步。'));
+                return checkResult;
             }
-            const result = await KnowledgeSyncUpload(syncPayload());
-            setSyncStatus(result || null);
-            return result;
+            await KnowledgeSyncDownload({ ...syncPayload(), conflict_strategy: 'import' });
+            const uploadResult = await KnowledgeSyncUpload(syncPayload());
+            setSyncStatus(normalizeSyncStatusWithLocalService(uploadResult, serviceStatus) || null);
+            notifySuccess(t('Knowledge sync completed.', '知识库同步完成。'));
+            return uploadResult;
         }, {
-            successMessage: t('Encrypted knowledge sync package uploaded.', '加密知识库同步包已上传。'),
+            refreshSources: true,
+            refreshHealth: true,
+            successMessage: false,
         });
     };
 
-    const downloadKnowledgeSync = async (conflictStrategy = '') => {
+    const resolveKnowledgeSyncAndContinue = async (conflictStrategy: 'skip' | 'import') => {
         if (!syncForm.password.trim()) {
-            setError(t('Enter the sync password before downloading. Import will not start without it.', '下载前请输入同步密码。没有密码不会开始导入。'));
+            setError(t('Enter the sync password before syncing. Hub never stores this password.', '同步前请输入同步密码。Hub 不会保存该密码。'));
             return;
         }
-        await runTask('syncDownload', async () => {
+        await runTask('syncResolve', async () => {
+            const serviceStatus = await GetHubLLMServiceStatus().catch(() => hubLLMServiceStatus);
+            setHubLLMServiceStatus(serviceStatus || null);
+            const latestStatus = normalizeSyncStatusWithLocalService(syncStatus, serviceStatus);
+            ensureKnowledgeSyncCanWrite(latestStatus);
+            const importResult = await KnowledgeSyncDownload({ ...syncPayload(), conflict_strategy: conflictStrategy });
+            setSyncStatus(normalizeSyncStatusWithLocalService(importResult, serviceStatus) || null);
+            const uploadResult = await KnowledgeSyncUpload(syncPayload());
+            setSyncStatus(normalizeSyncStatusWithLocalService(uploadResult, serviceStatus) || null);
             setSyncConflictResult(null);
-            const result = await KnowledgeSyncDownload({ ...syncPayload(), conflict_strategy: conflictStrategy || 'check' });
-            setSyncStatus(result || null);
-            if (!conflictStrategy) {
-                setSyncConflictResult(result);
-                notifySuccess(result?.requires_resolution
-                    ? t('Knowledge sync package checked. Resolve conflicts before importing.', '知识库同步包已检查，请先解决冲突再导入。')
-                    : t('Knowledge sync package checked. No local conflicts found.', '知识库同步包已检查，未发现本地冲突。'));
-                return result;
-            }
-            return result;
+            return uploadResult;
         }, {
-            refreshSources: conflictStrategy === 'skip' || conflictStrategy === 'import',
-            refreshHealth: conflictStrategy === 'skip' || conflictStrategy === 'import',
-            successMessage: conflictStrategy
-                ? t('Encrypted knowledge sync package downloaded and imported.', '加密知识库同步包已下载并导入。')
-                : false,
+            refreshSources: true,
+            refreshHealth: true,
+            successMessage: t('Knowledge sync completed.', '知识库同步完成。'),
         });
     };
 
@@ -2155,7 +2248,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         return `${Math.max(1, Math.round(bytes / 1024))} KB`;
     };
     const syncServiceStatus = String(syncStatus?.service_status || 'normal');
-    const syncReadonly = syncServiceStatus === 'official_expired';
+    const syncReadonly = syncServiceStatus === 'official_expired' && !knowledgeSyncLocalOfficialActive(hubLLMServiceStatus);
     const syncMessage = syncStatus?.message || (syncReadonly
         ? t('maclaw official service has expired: you can still download existing sync data, but cannot upload a new version. If service is not restored for 7 consecutive days, sync data will be deleted automatically.', 'maclaw 官方服务已过期：你仍可下载已有同步数据，但无法上传新版本。若连续 7 天未恢复服务，同步数据将自动删除。')
         : syncServiceStatus === 'official_active'
@@ -2570,15 +2663,11 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                             <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={refreshKnowledgeSyncStatus}>
                                 {busy === 'syncStatus' ? t('Refreshing...', '刷新中...') : t('Refresh Status', '刷新状态')}
                             </button>
-                            <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy || syncReadonly} onClick={uploadKnowledgeSync}>
-                                {busy === 'syncUpload'
-                                    ? t('Uploading...', '上传中...')
-                                    : syncStatus?.has_package
-                                        ? t('Update encrypted sync package', '更新加密同步包')
-                                        : t('Upload encrypted sync package', '上传加密同步包')}
-                            </button>
-                            <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy || !syncStatus?.has_package} onClick={() => downloadKnowledgeSync('')}>
-                                {busy === 'syncDownload' ? t('Checking...', '检查中...') : t('Check conflicts', '检查冲突')}
+                            <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy || syncReadonly} onClick={syncKnowledgeNow}>
+                                <SyncIcon />
+                                {busy === 'syncNow' || busy === 'syncResolve'
+                                    ? t('Syncing...', '同步中...')
+                                    : t('Sync', '同步')}
                             </button>
                             <button type="button" className="knowledge-button knowledge-button--danger" disabled={!!busy || !syncStatus?.has_package} onClick={deleteKnowledgeSync}>
                                 {busy === 'syncDelete' ? t('Deleting...', '删除中...') : t('Delete cloud package', '删除云端同步包')}
@@ -2599,23 +2688,18 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                     ))}
                                 </ul>
                                 <div className="knowledge-panel-actions">
-                                    <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={() => downloadKnowledgeSync('skip')}>
-                                        {t('Skip conflicting sources', '跳过冲突来源')}
+                                    <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={() => resolveKnowledgeSyncAndContinue('skip')}>
+                                        {busy === 'syncResolve' ? t('Syncing...', '同步中...') : t('Skip conflicts and sync', '跳过冲突并同步')}
                                     </button>
-                                    <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={() => downloadKnowledgeSync('import')}>
-                                        {t('Import anyway', '仍然导入')}
+                                    <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={() => resolveKnowledgeSyncAndContinue('import')}>
+                                        {busy === 'syncResolve' ? t('Syncing...', '同步中...') : t('Import anyway and sync', '仍然导入并同步')}
                                     </button>
                                 </div>
                             </div>
                         ) : syncConflictResult ? (
                             <div className="knowledge-alert knowledge-alert--success">
-                                <strong>{t('No local conflicts found', '未发现本地冲突')}</strong>
-                                <span>{t('The cloud sync package can be imported safely.', '云端同步包可以安全导入。')}</span>
-                                <div className="knowledge-panel-actions">
-                                    <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={() => downloadKnowledgeSync('import')}>
-                                        {t('Import now', '立即导入')}
-                                    </button>
-                                </div>
+                                <strong>{t('Knowledge sync completed', '知识库同步完成')}</strong>
+                                <span>{t('Cloud data and local data have been synchronized.', '云端数据与本地数据已完成同步。')}</span>
                             </div>
                         ) : null}
                     </PanelBlock>

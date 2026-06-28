@@ -87,6 +87,8 @@ type KnowledgeHubShareImportResult struct {
 type KnowledgeSyncRequest struct {
 	HubURL           string `json:"hub_url"`
 	HubToken         string `json:"hub_token"`
+	TenantID         string `json:"tenant_id,omitempty"`
+	Email            string `json:"email,omitempty"`
 	Password         string `json:"password"`
 	ConflictStrategy string `json:"conflict_strategy,omitempty"`
 }
@@ -732,7 +734,9 @@ func (a *App) KnowledgeImportHubShare(req KnowledgeHubShareImportRequest) (Knowl
 	if req.DryRun {
 		// Dry-run uses the same classification logic as real import — no store needed.
 		importResult := knowledge.ImportPackageSources(ctx, nil, sources, knowledge.PackageImportOptions{
-			DryRun: true,
+			DryRun:    true,
+			TopicHint: pkg.Manifest.Title,
+			RootPath:  "share://" + knowledgeID,
 		})
 		result.Imported = importResult.Imported
 		result.Skipped = importResult.Skipped
@@ -752,6 +756,8 @@ func (a *App) KnowledgeImportHubShare(req KnowledgeHubShareImportRequest) (Knowl
 	defer store.Close()
 	importResult := knowledge.ImportPackageSources(ctx, store, sources, knowledge.PackageImportOptions{
 		SaveScope: knowledge.SaveScopePersonal,
+		TopicHint: pkg.Manifest.Title,
+		RootPath:  "share://" + knowledgeID,
 	})
 	result.Imported = importResult.Imported
 	result.Skipped = importResult.Skipped
@@ -772,6 +778,7 @@ func (a *App) KnowledgeSyncStatus(req KnowledgeSyncRequest) (KnowledgeSyncStatus
 	}
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("Authorization", knowledgeShareBearerToken(token))
+	setKnowledgeSyncIdentityHeaders(httpReq, req)
 	resp, err := hubHTTPClient.Do(httpReq)
 	if err != nil {
 		return KnowledgeSyncStatus{}, fmt.Errorf("query knowledge sync status: %w", err)
@@ -789,6 +796,18 @@ func (a *App) KnowledgeSyncStatus(req KnowledgeSyncRequest) (KnowledgeSyncStatus
 		return KnowledgeSyncStatus{}, fmt.Errorf("decode knowledge sync status: %w", err)
 	}
 	return status, nil
+}
+
+func setKnowledgeSyncIdentityHeaders(httpReq *http.Request, req KnowledgeSyncRequest) {
+	if httpReq == nil {
+		return
+	}
+	if tenantID := strings.TrimSpace(req.TenantID); tenantID != "" {
+		httpReq.Header.Set("X-Maclaw-Tenant-ID", tenantID)
+	}
+	if email := strings.TrimSpace(req.Email); email != "" {
+		httpReq.Header.Set("X-Maclaw-User-Email", email)
+	}
 }
 
 func (a *App) KnowledgeSyncUpload(req KnowledgeSyncRequest) (KnowledgeSyncResult, error) {
@@ -845,6 +864,7 @@ func (a *App) KnowledgeSyncUpload(req KnowledgeSyncRequest) (KnowledgeSyncResult
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("Authorization", knowledgeShareBearerToken(token))
+	setKnowledgeSyncIdentityHeaders(httpReq, req)
 	resp, err := hubHTTPClient.Do(httpReq)
 	if err != nil {
 		return KnowledgeSyncResult{}, fmt.Errorf("upload knowledge sync package: %w", err)
@@ -954,7 +974,11 @@ func (a *App) KnowledgeSyncDownload(req KnowledgeSyncRequest) (KnowledgeSyncResu
 		}
 		sources = filtered
 	}
-	importResult := knowledge.ImportPackageSources(ctx, store, sources, knowledge.PackageImportOptions{SaveScope: knowledge.SaveScopePersonal})
+	importResult := knowledge.ImportPackageSources(ctx, store, sources, knowledge.PackageImportOptions{
+		SaveScope: knowledge.SaveScopePersonal,
+		TopicHint: pkg.Manifest.Title,
+		RootPath:  "sync://" + pkg.Manifest.PackageID,
+	})
 	warnings := append([]string{}, importResult.Warnings...)
 	if len(conflicts) > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d conflicting source(s) handled with strategy %q", len(conflicts), firstNonEmptyKnowledgeValue(strategy, "import")))
@@ -999,6 +1023,7 @@ func (a *App) KnowledgeSyncDelete(req KnowledgeSyncRequest) (KnowledgeSyncStatus
 	}
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("Authorization", knowledgeShareBearerToken(token))
+	setKnowledgeSyncIdentityHeaders(httpReq, req)
 	resp, err := hubHTTPClient.Do(httpReq)
 	if err != nil {
 		return KnowledgeSyncStatus{}, fmt.Errorf("delete knowledge sync package: %w", err)
@@ -1038,6 +1063,7 @@ func (a *App) fetchAndDecryptKnowledgeSyncPackage(req KnowledgeSyncRequest) (Kno
 	}
 	httpReq.Header.Set("Accept", "application/octet-stream")
 	httpReq.Header.Set("Authorization", knowledgeShareBearerToken(token))
+	setKnowledgeSyncIdentityHeaders(httpReq, req)
 	resp, err := hubHTTPClient.Do(httpReq)
 	if err != nil {
 		return KnowledgeSyncStatus{}, nil, fmt.Errorf("download knowledge sync package: %w", err)

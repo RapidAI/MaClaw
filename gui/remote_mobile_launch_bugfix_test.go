@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -46,6 +47,7 @@ func TestBugCondition_NonDesktopSourceBlockedByRemoteEnabled(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)

@@ -4254,6 +4254,41 @@ func insertImportItem(ctx context.Context, tx *sql.Tx, item ImportItem) error {
 	return err
 }
 
+// CreateImportBatch implements BatchCreator by wrapping insertBatch in a transaction.
+func (s *SQLiteStore) CreateImportBatch(ctx context.Context, batch ImportBatch) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := insertBatch(ctx, tx, batch); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// UpdateImportBatch implements BatchCreator by executing an UPDATE on knowledge_import_batches.
+func (s *SQLiteStore) UpdateImportBatch(ctx context.Context, batch ImportBatch) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE knowledge_import_batches
+		SET status=?, imported_files=?, skipped_files=?, failed_files=?, total_files=?, updated_at=?
+		WHERE id=?`,
+		batch.Status, batch.Imported, batch.Skipped, batch.Failed, batch.TotalFiles, formatTime(batch.UpdatedAt), batch.ID)
+	return err
+}
+
+// CreateImportItem implements BatchCreator by wrapping insertImportItem in a transaction.
+func (s *SQLiteStore) CreateImportItem(ctx context.Context, item ImportItem) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := insertImportItem(ctx, tx, item); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func insertSourceVersionTx(ctx context.Context, tx *sql.Tx, source Source, reason string) error {
 	source = normalizeSource(source)
 	now := time.Now().UTC()

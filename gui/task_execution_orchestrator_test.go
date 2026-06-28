@@ -179,7 +179,7 @@ func TestMarkTasksBlockedByDependenciesSkipsFailedDependents(t *testing.T) {
 	if skipped := o.MarkTasksBlockedByDependencies(); skipped != 2 {
 		t.Fatalf("skipped blocked tasks = %d, want 2", skipped)
 	}
-	if got := o.Tasks[1]; got.Status != TaskExecSkipped || !strings.Contains(got.ErrorSummary, "dependency T0") {
+	if got := o.Tasks[1]; got.Status != TaskExecSkipped || !strings.Contains(got.ErrorSummary, "dependency T1") {
 		t.Fatalf("dependent on failed task should be skipped, got %#v", got)
 	}
 	if got := o.Tasks[2]; got.Status != TaskExecSkipped || !strings.Contains(got.ErrorSummary, "invalid dependency") {

@@ -6150,6 +6150,66 @@ ExecuteMaclawAppBusinessOperation
 go test ./gui -count=1 -vet=off -run "TestExecuteMaclawAppBusinessOperationRunsPreferred(Action|Report|Dashboard)|TestExecuteMaclawAppBusinessOperationQueriesPreferredView"
 ```
 
+### 推进记录：Hub store 汇总修复与 GUI remote 测试隔离（2026-06-28）
+本轮继续从“DataSrv -> Hub -> MaClaw App -> GUI 运行”的验收角度收口，重点补齐上一轮遗留的 Hub store 回归，并定位 GUI 全包超时中暴露出的 remote tool 测试串味问题。
+
+已落地调整：
+
+```text
+Hub store session duration
+  -> SummarizeUserDurations 不再只依赖 machine_heartbeat_log
+  -> 同时读取 sessions 表中的历史/legacy 区间
+  -> running/host_online session 统计到传入 now
+  -> exited session 优先使用 ended_at，legacy 空 updated_at 可回退
+  -> 同一 user_id 的 session/heartbeat 区间合并后再汇总，避免多机器重叠重复计时
+  -> user_id 继续批量解析为 users.email，direct@example.com 这类 user_id 仍可作为 email fallback
+
+GUI remote tool 测试隔离
+  -> corelib/remote 新增 ResolveToolPathInDir(tool, toolsRoot)
+  -> ToolManager.GetToolStatus 优先使用 app.GetDataDir()/tools，而不是进程级 os.UserHomeDir()
+  -> tool status cache key 加入 toolsDir，避免不同 testHomeDir/profile 之间复用陈旧工具路径
+  -> InvalidateToolStatusCache 删除同一 tool 的所有目录变体
+  -> remote session 相关测试补充 App shutdown cleanup，释放 memory.db 与后台循环
+  -> remote session 测试断言从“完整 AI assistant ready”收紧为“remote hub client 已初始化”，避免把 startup warmup 契约误放到 remote launch 单测里
+```
+
+本轮已通过验证：
+
+```text
+go test ./hub/internal/store/sqlite -count=1 -vet=off -run "TestSessionRepositorySummarizeUserDurations" -timeout 60s
+  -> ok github.com/RapidAI/CodeClaw/hub/internal/store/sqlite
+
+go test ./hub/internal/store/... -count=1 -vet=off -timeout 120s
+  -> ok github.com/RapidAI/CodeClaw/hub/internal/store/sqlite
+
+go test ./gui -count=1 -vet=off -run "TestBugCondition_NonDesktopSourceBlockedByRemoteEnabled|TestGetRemoteToolReadinessDelegatesToDiagnosticCheck|TestGetRemoteToolLaunchProbeDelegatesToDiagnosticCheck|TestStartRemoteSessionSupportsCodex|TestStartRemoteHandoffSessionInitializesAIAssistantWhenCreatingHubClient|TestStartRemoteSessionSupportsOpencode|TestStartRemoteSessionSupportsIFlow|TestStartRemoteSessionSupportsKilo" -timeout 120s
+  -> ok github.com/RapidAI/CodeClaw/gui
+
+go test ./gui -count=1 -vet=off -run "MaclawApp|ApprovalPending|RecordMaclawAppInstall" -timeout 90s
+  -> ok github.com/RapidAI/CodeClaw/gui
+
+go test ./hub/internal/httpapi -count=1 -vet=off -run "MaclawApp|AppInstall|CapabilityMaclaw|Approval" -timeout 90s
+  -> ok github.com/RapidAI/CodeClaw/hub/internal/httpapi
+
+cd datasrv
+go test ./... -count=1 -vet=off
+  -> ok github.com/RapidAI/CodeClaw/datasrv/cmd/maclaw-data-srv
+  -> ok github.com/RapidAI/CodeClaw/datasrv/structureddata
+```
+
+当前仍需继续：
+
+```text
+GUI package-level full regression
+  -> 上一轮 go test ./gui -timeout 300s 仍超时
+  -> 已确认其中一类失败来自 remote tool 路径缓存串味，本轮已修并通过定向 remote 回归
+  -> 后续需要重新跑 GUI 全包，若仍超时，再按 JSON 中最后 run/fail 测试继续拆分
+
+前端 AppsPage 全量
+  -> 之前 AppsPage 目标链路已过，但历史全量仍有旧文案/边界测试失败
+  -> 不阻塞本轮 DataSrv/Hub/App 后端主链路，但发布前仍需继续按失败簇治理
+```
+
 ### 推进记录：收口 AppsPage 全量前端回归（2026-06-28）
 
 本轮继续从 App Studio 制作、管理、市场安装、升级、运行证据这条前端主链路收口。上一段记录中 `AppsPage.test.tsx` 仍有 49 个失败；本轮把剩余失败推进到全量通过。
@@ -8654,4 +8714,208 @@ go test ./hub/internal/store/... -count=1 -vet=off
      TestSessionRepositorySummarizeUserDurationsMergesOverlapsAndRequiresEmail
      TestSessionRepositorySummarizeUserDurationsIncludesLegacyBlankUpdatedAt
   -> 当前判断为 Hub store 历史统计逻辑问题，非 MaClaw App 安装/审批链路直接阻塞，但发布前仍需单独修复或标注
+```
+
+### 推进记录：GUI 后端工作流/AgentLoop/工具守卫稳定化（2026-06-28）
+
+本轮继续从“DataSrv -> MaClaw App -> App Studio -> Hub 能力市场 -> 安装运行”的全链路验证角度推进。核心 MaClaw App 链路此前已基本通过，当前主要阻塞变成 GUI 包级回归不稳定：测试环境误连真实 OAuth、工作流兼容路径吞掉状态机响应、截图/模板/文件工具守卫顺序不一致、IntentUnderstandingManager 被简化成永远 rejected，导致审批型 App 的“发起节点 UI -> 工作流理解/确认 -> 审批实例状态 -> 结果反馈”无法用包级测试证明。
+
+本轮已落地调整：
+
+```text
+测试环境 LLM provider 隔离
+  -> App.SaveConfig 在 testHomeDir 下不再恢复旧的后端托管 LLM provider 字段
+  -> agent loop / confirmation / workflow 测试使用本地 httptest OpenAI 兼容端点，不再误连 chatgpt.com OAuth
+
+确认与 pending reply
+  -> 执行确认 LLM 不可用时，短明确同意词（go ahead / proceed / do it 等）有本地兜底
+  -> pending user reply 会把提问后新增的当前历史片段带入 Context hint，避免用户回答时丢失中间 tool note
+
+工具守卫
+  -> write_file 空内容仍视为有效写入；无 App 的轻量 handler 使用当前目录解析相对路径
+  -> launch_template 先返回缺参数/模板不存在/模板管理器未初始化，再对有效模板返回外部 coding session 禁用
+  -> screenshot 已有本地图片路径守卫前移到 Hub security policy 之前；显式 runtime 但 owner 为空时不继承 legacy lastUserText
+
+Workflow v2 / 兼容层
+  -> IntentUnderstandingManager 恢复最小 LLM JSON 解析：Start / HandleInput 支持 ready、rejected、active session 和错误外显
+  -> 活动 workflow 优先于 UIC bypass；直接执行意图可从 active understanding 逃逸回普通 agent loop
+  -> V1 兼容 handleActiveWorkflow 对 RunAgentLoop=true 返回阶段描述/提示，不再让活动工作流输入表现为 nil
+  -> StateMachine 保留生产 temp/test 目录保护，但测试 StateMachine 可显式允许 temp path，验证“记录路径但不创建目录”
+  -> SetWorkflowWorkingDir 同步 V2 状态和 V1 adapter，保持 App Studio/GUI 兼容层一致
+```
+
+本轮已通过验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestClassifyConfirmationIntent_UsesContextForTypedApproval|TestHandleIMMessage_PlainTextReplyAcceptsCurrentHistoryExtension|TestIMToolWriteFile_AllowsEmptyContent|TestToolLaunchTemplate_NotFound|TestToolLaunchTemplate_MissingParam|TestToolLaunchTemplate_NilManager|TestExecuteTool_ScreenshotBlockedForUserSuppliedImagePath" -timeout 120s
+  -> ok github.com/RapidAI/CodeClaw/gui
+
+go test ./gui -count=1 -vet=off -run "TestRunAgentLoop_TrialReflect_ClearsRepeatGuardAfterSuccess|TestRunAgentLoop_TrialReflect_RestartsFailureCycleAfterSuccess|TestRunAgentLoop_EstimatesTokenUsageWhenStreamOmitsUsage|TestRunAgentLoop_OrientSkillPreferenceInjectsRunSkillGuidance|TestRunAgentLoop_SkillFailureInjectsFallbackGuidance" -timeout 180s
+  -> ok github.com/RapidAI/CodeClaw/gui
+
+go test ./gui -count=1 -vet=off -run "TestActiveWorkflowIgnoresUICNonWorkflowBypass|TestApprovePendingWorkflowConfirmationRecordsProjectPathWithoutCreatingDirectory|TestApprovePendingWorkflowConfirmationInfersExplicitCodingProjectPath|TestSetWorkflowWorkingDirRecordsProjectPathWithoutCreatingDirectory|TestWorkflowInterception" -timeout 120s
+  -> ok github.com/RapidAI/CodeClaw/gui
+
+go test ./gui -count=1 -vet=off -run "TestActiveUnderstandingEscapesForDirectExecutionIntent|TestExecuteTool_ScreenshotBlockedForUserSuppliedImagePath|TestToolScreenshotOwnerlessCurrentRuntimeDoesNotUseLegacyTaskText" -timeout 90s
+  -> ok github.com/RapidAI/CodeClaw/gui
+
+go test ./corelib/workflow/v2 -count=1 -vet=off -timeout 120s
+  -> ok github.com/RapidAI/CodeClaw/corelib/workflow/v2
+```
+
+全包验证：
+
+```text
+go test ./gui -count=1 -vet=off -timeout 360s -json > gui-test-latest-11.json
+  -> 未超时
+  -> 仍失败 45 个测试
+```
+
+剩余 GUI 全包缺口按类别归并：
+
+```text
+workflow/form/tool guard
+  -> workflow form user id 解析、附件输入后 workflow agent loop 标记、SSH upload 守卫顺序仍需收口
+
+agent loop recover
+  -> 空 assistant 回复、长链 grace rounds、部分进度上报和重复 recover 仍有失败
+
+remote / probe / client
+  -> ActivateRemote 异步返回、PTY/Claude probe、remote hub client interrupt/input/reconnect/error 存储仍有失败
+
+risk / policy
+  -> medium/high/critical risk ask/audit、permission default mode、policy mode normalization 仍需统一
+
+stream / misc
+  -> OpenAI 非 SSE 错误日志、finish_reason before DONE、project tab workdir repair、task understanding summary 等仍需单独处理
+```
+
+当前判断：
+
+```text
+MaClaw App 主链路不是从零缺失，核心 DataSrv / Hub / GUI 定向链路已经形成。
+离“完整完成”主要还差 GUI 包级稳定化和一轮全链路复测。
+下一步继续优先修 workflow/form/tool guard 与 agent loop recover；这些直接影响企业审批型 App 的运行闭环。
+remote / risk / stream 类失败也会影响发布质量，但不是 MaClaw App 安装/审批实例主链路的首要断点。
+```
+
+### 推进记录：GUI 后端主链路继续收口（2026-06-28）
+
+本轮继续按“DataSrv -> Hub -> MaClaw App -> App Studio/GUI 运行”的全链路目标推进，优先处理会直接影响企业审批型应用运行闭环的 GUI 后端问题。最新 GUI 全包回归已重新落盘：
+
+```text
+go test ./gui -count=1 -vet=off -timeout 360s -json > gui-test-latest-12.json
+  -> 未超时
+  -> 失败数从上一轮 45 降到 33
+  -> 最新失败清单已写入 gui-test-latest-12-failures.txt
+  -> 注意：该失败清单生成后，本轮又定向修复了其中的 IM 入口/短闲聊/StartNewTask/文件 runtime owner 项；真实剩余失败数需要下一次 GUI 全包重新确认
+```
+
+本轮已落地的收口点：
+
+```text
+AgentLoop recover / 文件交付
+  -> 空 assistant 回复恢复提示恢复中文 Recover 阶段语义，同时保留英文指令
+  -> send_file 用户可见进度改为通用“正在整理并发送文件”
+  -> send_file 文件 payload 的 TraceSummary 改为中文可读交付摘要：文件 xxx 已准备好
+  -> 长链路文件交付、重复空回复恢复、非 debug 进度提示相关失败已收口
+
+IM 入口 / 上下文隔离
+  -> 短闲聊 zh / en 语言识别修正，zh 返回中文轻量回复
+  -> no-tool 完成态启发式补充“已处理完成 / processed”，避免明确完成的普通任务被误推进第二轮
+  -> StartNewTask 清理旧未完成任务后，新任务不再被旧上下文拖入额外 LLM 调用
+  -> launch_template 测试场景调整为“有效模板 -> 外部会话工具禁用”，保留 nil manager / missing template 的精确错误
+
+文件工具 runtime owner
+  -> read/write/send/list 等本地文件工具解析相对路径时，显式 runtime owner 的项目路径优先
+  -> 无 app 的轻量 handler 不再在解析 owner project 前回落到当前仓库目录
+  -> 缺失的托管 recent task 根目录按根目录修复，不误落到 workspace/ 子目录
+  -> 已有 task working_dir 仍保留独立执行目录，不被修复逻辑覆盖
+```
+
+本轮已通过验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "MaclawApp|ApprovalPending|RecordMaclawAppInstall|WorkflowPolicy|ResolveWorkflowFormUserID|RouteWorkflowIMMessage|WorkflowToolExecutionGuard|ActiveUnderstandingEscapes|RunAgentLoop_EmptyAssistantReplyTriggersRecoverPhase|RunAgentLoop_RepeatedEmptyAssistantRepliesReenterRecover|RunAgentLoop_LongChainUsesGraceRoundsToFinishFileDelivery|RunAgentLoop_NonDebugStillReportsBaseToolStageProgress|ExternalCodingSessionFollowupToolsDisabled|NewTaskAfterIncompleteRunClearsOldContext|ShortChitChat|FileToolsUseRuntimeOwnerProjectForRelativePaths|ExecuteFileToolInjectsRuntimeOwnerForRelativePaths|ProjectTabWorkDir_RepairsManagedRecentTaskWorkspace" -timeout 240s
+  -> ok github.com/RapidAI/CodeClaw/gui
+
+go test ./corelib/workflow/v2 -count=1 -vet=off -timeout 120s
+  -> ok github.com/RapidAI/CodeClaw/corelib/workflow/v2
+
+go test ./hub/internal/httpapi -count=1 -vet=off -run "MaclawApp|AppInstall|CapabilityMaclaw|Approval" -timeout 120s
+  -> ok github.com/RapidAI/CodeClaw/hub/internal/httpapi
+
+cd datasrv
+go test ./... -count=1 -vet=off -timeout 120s
+  -> ok cmd/maclaw-data-srv
+  -> ok structureddata
+```
+
+当前剩余重点：
+
+```text
+GUI 全包仍有 33 个失败，主要集中在：
+  -> presentation/coding confirmation、workflow doc capture、task summary 格式化
+  -> OpenAI stream 边界、skill auto-fix writeback
+  -> risk / policy ask-audit 归一化
+  -> remote / probe / client 和 Codex adapter command
+
+MaClaw App 主链路的定向证据继续增强，但“完整完成”仍需：
+  -> GUI 全包继续降失败
+  -> App Studio 前端 AppsPage 剩余失败继续收口
+  -> 从 DataSrv 到 Hub 能力市场安装、App Studio 制作/测试/上传、App 运行/审批实例/结果反馈做最终端到端复测
+```
+
+### 推进记录：Skill/App 依赖包视图与上传目标收口（2026-06-28）
+
+本轮继续从“MaClaw App 是带 App 元数据、动态 UI、运行合同、测试证据和依赖 Skill 的超级 Skill”这个产品本质推进。安装和发布 MaClaw App 时，依赖 Skill 必须能以真实包视图完成检查、上传、安装和重试；否则企业审批型应用的 workflow skill、runtime skill、app skill 依赖即使在设计态可用，也可能在能力市场分发后断链。
+
+本轮落地的后端收口点：
+
+```text
+Skill 包引用归一化
+  -> {baseDir}/scripts/foo.py 在质量报告中稳定显示为 scripts/foo.py
+  -> {baseDir}/run.py 会按包根真实文件判断，不再被误判为缺失的 {baseDir}/run.py
+  -> 绝对路径、POSIX /home/...、UNC //server/share/...、Windows drive-relative 等不可移植引用保留原始可读形态
+
+Skill 包质量门
+  -> 真实缺少的包内脚本/资产继续阻断上传
+  -> ../shared-scripts/run.py 这类逃逸路径不在准备阶段提前中断，而进入质量门报告，由 MarketReady=false 统一阻断
+  -> structured command、fallback step、interface-key command map、working_dir、pipeline/path 参数继续纳入缺失引用检查
+
+上传目标选择
+  -> 只有 RemoteHubURL + token 同时存在时才把 enterprise_hub 加入上传目标
+  -> 只有 RemoteHubCenterURL 的环境只上传 HubCenter，不再误向企业 Hub 路径提交导致 404
+  -> 上传队列按 canonical skill name 去重后，HubCenter 已完成目标可正确标记 uploaded
+```
+
+这一步补强了 MaClaw App 依赖分发链路：
+
+```text
+App Studio 保存超级 Skill
+  -> Skill 包视图质量检查
+  -> 依赖 Skill / workflow Skill 引用可携带到能力市场
+  -> HubCenter / enterprise_hub 按配置选择上传目标
+  -> 安装 MaClaw App 时可继续做依赖检查、下载安装和运行前健康检查
+```
+
+本轮已通过验证：
+
+```text
+go test ./corelib/skill -count=1 -vet=off -timeout 120s
+  -> ok github.com/RapidAI/CodeClaw/corelib/skill
+
+go test ./gui -count=1 -vet=off -run "TestSubmitSkillToConfiguredTargetsDefaultUploadsBothTargets|TestSubmitSkillToConfiguredTargetsPartialRetrySkipsCompletedTarget|TestSubmitSkillToConfiguredTargetsPartialRetrySkipsCompletedEnterpriseTarget|TestSubmitSkillToConfiguredTargetsDropsCompletedTargetsOutsideCurrentPolicy|TestEvaluateSkillPackageCompletenessChecksFallbackStepRefs|TestSkillLifecycleUploadNowUsesPackageViewForQuality|TestSkillQualityBlocksPOSIXAbsoluteCommandPath|TestSkillQualityBlocksUNCCommandPath|TestSkillQualityBlocksEscapingCommandScriptPath|TestSkillLifecycleEnqueueCanonicalizesNameBeforeDedupe" -timeout 180s
+  -> ok github.com/RapidAI/CodeClaw/gui
+
+go test ./gui -count=1 -vet=off -run "TestToolRunSkill_ForwardsQueryToWhenCondition|TestEvaluateSkillPackageCompletenessRejectsAbsoluteRefsOutsideSkillDir|TestEvaluateSkillPackageCompletenessChecksFallbackStepRefs|TestSkillLifecycleUploadNowUsesPackageViewForQuality|TestSkillQualityBlocksMissingReferencedScript|TestSkillQualityDetectsMissingStructuredCommandScript|TestSkillQualityDetectsMissingStructuredCommandScriptPathWithSpaces|TestSkillQualityChecksInterfaceKeyStructuredCommandMap|TestSkillQualityBlocksMissingWorkingDir|TestSkillQualityBlocksAbsoluteCommandScriptPath|TestSkillQualityBlocksPOSIXAbsoluteCommandPath|TestSkillQualityBlocksUNCCommandPath|TestSkillQualityBlocksWindowsDriveRelativeCommandPath|TestSkillQualityBlocksEscapingWorkingDir|TestSkillQualityBlocksEscapingCommandScriptPath|TestSkillLifecycleEnqueueCanonicalizesNameBeforeDedupe" -timeout 180s
+  -> ok github.com/RapidAI/CodeClaw/gui
+```
+
+下一步继续：
+
+```text
+1. 重跑 GUI 全包，刷新真实失败数。
+2. 继续收口 GUI 剩余失败簇：stream、risk/policy、remote/probe/client、Codex adapter command。
+3. 回到 MaClaw App 端到端样例：DataSrv -> App Studio 制作 -> 测试 -> 上传 Hub/市场 -> 安装依赖 -> 运行审批实例 -> 结果反馈。
 ```

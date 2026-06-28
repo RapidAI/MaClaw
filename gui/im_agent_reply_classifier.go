@@ -80,7 +80,8 @@ func classifyAgentNoToolReplyByHeuristic(text string) (agentNoToolReplyIntent, b
 		}
 	}
 	completeMarkers := []string{
-		"\u5df2\u5b8c\u6210", "\u5df2\u7ecf\u5b8c\u6210", "\u5b8c\u6210\u4e86",
+		"\u5df2\u5b8c\u6210", "\u5df2\u7ecf\u5b8c\u6210", "\u5b8c\u6210\u4e86", "\u5df2\u5904\u7406\u5b8c\u6210", "\u5904\u7406\u5b8c\u6210",
+		"completed", "has been processed",
 	}
 	for _, marker := range summaryCompleteMarkers {
 		completeMarkers = append(completeMarkers, marker)

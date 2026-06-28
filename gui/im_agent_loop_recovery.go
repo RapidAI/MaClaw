@@ -102,7 +102,7 @@ func buildDeliverableRecoverPrompt(skillName string, preferSkill bool, runID str
 // prompt. When pendingTaskHint is non-empty it is appended to guide the LLM
 // toward checking active background tasks instead of stalling.
 func buildEmptyResultRecoverPromptWithTasks(pendingTaskHint string) string {
-	base := "[Recover]\nThe previous round returned no visible result. Either provide a visible result or clearly explain the failure reason and current status. If more execution is needed, call a real tool immediately."
+	base := "[Recover 阶段]\n上一轮没有返回任何可展示结果。请立即补充可展示结果，或明确说明失败原因和当前状态；如果仍需执行，请立刻调用真实工具继续处理。\n[Recover]\nThe previous round returned no visible result. Either provide a visible result or clearly explain the failure reason and current status. If more execution is needed, call a real tool immediately."
 	if pendingTaskHint != "" {
 		base += "\n" + pendingTaskHint
 	}

@@ -44,3 +44,23 @@ func normalizeConfirmationIntent(text string) confirmationIntent {
 		return confirmationIntentUnknown
 	}
 }
+
+func classifyConfirmationIntentFallback(text string) confirmationIntent {
+	trimmed := strings.ToLower(strings.TrimSpace(text))
+	trimmed = strings.Trim(trimmed, " \t\r\n`\"'.,:;!?()[]{}")
+	if trimmed == "" {
+		return confirmationIntentUnknown
+	}
+	switch trimmed {
+	case "confirm", "yes", "y", "ok", "okay", "start", "go", "go ahead", "continue", "proceed", "approve", "approved", "do it", "run it":
+		return confirmationIntentConfirm
+	case "cancel", "no", "n", "stop", "abort", "reject", "rejected":
+		return confirmationIntentCancel
+	case "modify", "change", "revise", "edit":
+		return confirmationIntentModify
+	}
+	if strings.HasPrefix(trimmed, "go ahead") || strings.HasPrefix(trimmed, "please proceed") || strings.HasPrefix(trimmed, "let's go") {
+		return confirmationIntentConfirm
+	}
+	return confirmationIntentUnknown
+}

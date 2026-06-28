@@ -16,10 +16,6 @@ import (
 var skillHintWordBoundaryRe = regexp.MustCompile(`(?i)\bpaper\b|\breport\b`)
 
 func shouldPreferSkillForTask(text string) bool {
-	result := classifyTaskIntent(text)
-	if result.Intent == intentCoding || result.Intent == intentSSH {
-		return false
-	}
 	lower := strings.ToLower(strings.TrimSpace(text))
 	if lower == "" {
 		return false
