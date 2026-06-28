@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,6 +33,18 @@ func startDocOnlyCodingWorkflowForProject(t *testing.T, app *App, projectPath st
 	if err := app.workflowEngine.SkipPhaseForm(ownerID); err != nil {
 		t.Fatalf("SkipPhaseForm failed: %v", err)
 	}
+}
+
+func waitForAIAssistantReadyForTest(t *testing.T, app *App, reason string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if app.IsAIAssistantReady() {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("expected AI assistant to be ready after %s, status=%q", reason, app.GetAIAssistantInitStatus())
 }
 
 func startImplementationCodingWorkflowForOwner(t *testing.T, app *App, ownerID string) {
@@ -368,6 +381,7 @@ func TestGetRemoteClaudeReadinessDelegatesToDiagnosticCheck(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -425,6 +439,7 @@ func TestListRemoteToolMetadataReturnsKnownTools(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -566,6 +581,7 @@ func TestGetRemoteClaudeLaunchProbeDelegatesToDiagnosticCheck(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -626,6 +642,7 @@ func TestGetRemoteToolReadinessDelegatesToDiagnosticCheck(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -677,6 +694,7 @@ func TestGetRemoteToolLaunchProbeDelegatesToDiagnosticCheck(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -892,6 +910,7 @@ func TestStartRemoteSessionSupportsCodex(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -920,9 +939,7 @@ func TestStartRemoteSessionSupportsCodex(t *testing.T) {
 	if session.ModelID != "gpt-5.2-codex" {
 		t.Fatalf("session.ModelID = %q, want %q", session.ModelID, "gpt-5.2-codex")
 	}
-	if !app.IsAIAssistantReady() {
-		t.Fatalf("expected AI assistant to be ready after desktop remote start, status=%q", app.GetAIAssistantInitStatus())
-	}
+	waitForAIAssistantReadyForTest(t, app, "desktop remote start")
 }
 
 func TestStartRemoteHandoffSessionInitializesAIAssistantWhenCreatingHubClient(t *testing.T) {
@@ -950,6 +967,7 @@ func TestStartRemoteHandoffSessionInitializesAIAssistantWhenCreatingHubClient(t 
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -975,9 +993,7 @@ func TestStartRemoteHandoffSessionInitializesAIAssistantWhenCreatingHubClient(t 
 	if session.Tool != "codex" {
 		t.Fatalf("session.Tool = %q, want %q", session.Tool, "codex")
 	}
-	if !app.IsAIAssistantReady() {
-		t.Fatalf("expected AI assistant to be ready after handoff start, status=%q", app.GetAIAssistantInitStatus())
-	}
+	waitForAIAssistantReadyForTest(t, app, "handoff start")
 }
 
 func TestBuildRemoteLaunchSpecSupportsOpencode(t *testing.T) {
@@ -1037,6 +1053,7 @@ func TestStartRemoteSessionSupportsOpencode(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1124,6 +1141,7 @@ func TestStartRemoteSessionSupportsIFlow(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1211,6 +1229,7 @@ func TestStartRemoteSessionSupportsKilo(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)

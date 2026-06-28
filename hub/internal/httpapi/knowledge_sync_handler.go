@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 )
 
@@ -67,13 +68,13 @@ type knowledgeSyncUploadRequest struct {
 	PayloadBase64       string         `json:"payload_base64"`
 }
 
-func KnowledgeSyncStatusHandler(identity *auth.IdentityService, baseDir string) http.HandlerFunc {
+func KnowledgeSyncStatusHandler(identity *auth.IdentityService, baseDir string, centerSvc ...*center.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := requireKnowledgeShareViewer(w, r, identity)
 		if !ok {
 			return
 		}
-		status := knowledgeSyncServiceStatus(r, principal)
+		status := knowledgeSyncServiceStatus(r, principal, firstKnowledgeSyncCenterService(centerSvc...))
 		meta, _ := loadKnowledgeSyncMeta(baseDir, principal)
 		if meta != nil && status.ServiceStatus == "official_expired" && strings.TrimSpace(meta.OfficialExpiredAt) == "" {
 			meta.OfficialExpiredAt = time.Now().UTC().Format(time.RFC3339)
@@ -86,13 +87,13 @@ func KnowledgeSyncStatusHandler(identity *auth.IdentityService, baseDir string) 
 	}
 }
 
-func UploadKnowledgeSyncPackageHandler(identity *auth.IdentityService, baseDir string) http.HandlerFunc {
+func UploadKnowledgeSyncPackageHandler(identity *auth.IdentityService, baseDir string, centerSvc ...*center.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := requireKnowledgeShareViewer(w, r, identity)
 		if !ok {
 			return
 		}
-		status := knowledgeSyncServiceStatus(r, principal)
+		status := knowledgeSyncServiceStatus(r, principal, firstKnowledgeSyncCenterService(centerSvc...))
 		if status.ServiceStatus == "official_expired" {
 			writeError(w, http.StatusPaymentRequired, "KNOWLEDGE_SYNC_READONLY", "maclaw 官方服务已过期：你仍可下载已有同步数据，但无法上传新版本。续费后可继续更新。")
 			return
@@ -149,13 +150,13 @@ func UploadKnowledgeSyncPackageHandler(identity *auth.IdentityService, baseDir s
 	}
 }
 
-func DownloadKnowledgeSyncPackageHandler(identity *auth.IdentityService, baseDir string) http.HandlerFunc {
+func DownloadKnowledgeSyncPackageHandler(identity *auth.IdentityService, baseDir string, centerSvc ...*center.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := requireKnowledgeShareViewer(w, r, identity)
 		if !ok {
 			return
 		}
-		status := knowledgeSyncServiceStatus(r, principal)
+		status := knowledgeSyncServiceStatus(r, principal, firstKnowledgeSyncCenterService(centerSvc...))
 		meta, path := loadKnowledgeSyncMeta(baseDir, principal)
 		if meta == nil || strings.TrimSpace(path) == "" {
 			writeError(w, http.StatusNotFound, "KNOWLEDGE_SYNC_NOT_FOUND", "knowledge sync package not found")
@@ -176,6 +177,15 @@ func DownloadKnowledgeSyncPackageHandler(identity *auth.IdentityService, baseDir
 		w.Header().Set("Content-Disposition", "attachment; filename=\"knowledge-sync.mksync\"")
 		http.ServeFile(w, r, path)
 	}
+}
+
+func firstKnowledgeSyncCenterService(services ...*center.Service) *center.Service {
+	for _, svc := range services {
+		if svc != nil {
+			return svc
+		}
+	}
+	return nil
 }
 
 func DeleteKnowledgeSyncPackageHandler(identity *auth.IdentityService, baseDir string) http.HandlerFunc {
@@ -206,7 +216,7 @@ func StartKnowledgeSyncCleanup(baseDir string) {
 	}()
 }
 
-func knowledgeSyncServiceStatus(r *http.Request, principal *auth.ViewerPrincipal) KnowledgeSyncView {
+func knowledgeSyncServiceStatus(r *http.Request, principal *auth.ViewerPrincipal, centerSvc ...*center.Service) KnowledgeSyncView {
 	view := KnowledgeSyncView{
 		ServiceStatus: "normal",
 		LimitBytes:    knowledgeSyncNormalLimitBytes,
@@ -216,8 +226,8 @@ func knowledgeSyncServiceStatus(r *http.Request, principal *auth.ViewerPrincipal
 	if principal == nil {
 		return view
 	}
-	if ac := GetMaClawAccessControl(); ac != nil {
-		if status := ac.GetAuthorizationStatus(r.Context(), principal.TenantID); status != nil {
+	if status := knowledgeSyncTenantAuthorizationStatus(r, principal, firstKnowledgeSyncCenterService(centerSvc...)); status != nil {
+		{
 			active := false
 			hadOfficial := false
 			for _, grant := range status.Authorizations {
@@ -244,6 +254,56 @@ func knowledgeSyncServiceStatus(r *http.Request, principal *auth.ViewerPrincipal
 		}
 	}
 	return view
+}
+
+func knowledgeSyncTenantAuthorizationStatus(r *http.Request, principal *auth.ViewerPrincipal, centerSvc *center.Service) *llmservice.TenantAuthorizationStatus {
+	if r == nil || principal == nil {
+		return nil
+	}
+	tenantID := strings.TrimSpace(principal.TenantID)
+	ac := GetMaClawAccessControl()
+	var status *llmservice.TenantAuthorizationStatus
+	if ac != nil {
+		status = ac.GetAuthorizationStatus(r.Context(), tenantID)
+	}
+	if centerSvc != nil {
+		if centerStatus, err := centerSvc.Status(r.Context()); err == nil && centerStatus != nil {
+			if heartbeatStatus := llmComputeStatusFromCenterAuthorizationPayload(centerStatus, tenantID); heartbeatStatus != nil {
+				if ac != nil {
+					ac.UpdateFromHeartbeat(tenantID, heartbeatStatus)
+				}
+				status = heartbeatStatus
+			}
+		}
+	}
+	if ac != nil && shouldRefreshKnowledgeSyncAuthorization(r, status) {
+		if refreshed, err := ac.RefreshAuthorizationStatus(r.Context(), tenantID); err == nil && refreshed != nil {
+			status = refreshed
+		}
+	}
+	return status
+}
+
+func shouldRefreshKnowledgeSyncAuthorization(r *http.Request, status *llmservice.TenantAuthorizationStatus) bool {
+	if r != nil {
+		switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("refresh"))) {
+		case "1", "true", "yes":
+			return true
+		}
+	}
+	if status == nil || len(status.Authorizations) == 0 {
+		return true
+	}
+	hadOfficial := false
+	for _, grant := range status.Authorizations {
+		if strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), llmservice.MaClawOfficialServiceGroupID) || strings.Contains(strings.ToLower(grant.Source), "maclaw") {
+			hadOfficial = true
+			if knowledgeSyncOfficialAuthorizationActive(grant, time.Now().UTC()) {
+				return false
+			}
+		}
+	}
+	return hadOfficial
 }
 
 func knowledgeSyncOfficialAuthorizationActive(grant llmservice.AuthorizationSummary, now time.Time) bool {

@@ -38,15 +38,15 @@ type ToolManager struct {
 // processes (e.g. "claude --version") on every call. The cache is
 // invalidated by calling InvalidateToolStatusCache (after install/uninstall).
 var (
-	toolStatusCacheMu      sync.RWMutex
-	toolStatusCacheMap     = make(map[string]toolStatusCacheEntry)
-	toolStatusCacheTTL     = 10 * time.Minute // positive results (tool installed)
-	toolStatusCacheNegTTL  = 1 * time.Minute  // negative results (tool not found)
+	toolStatusCacheMu     sync.RWMutex
+	toolStatusCacheMap    = make(map[string]toolStatusCacheEntry)
+	toolStatusCacheTTL    = 10 * time.Minute // positive results (tool installed)
+	toolStatusCacheNegTTL = 1 * time.Minute  // negative results (tool not found)
 )
 
 type toolStatusCacheEntry struct {
-	status    ToolStatus
-	cachedAt  time.Time
+	status   ToolStatus
+	cachedAt time.Time
 }
 
 // InvalidateToolStatusCache clears the cached tool status for the given tool,
@@ -57,7 +57,12 @@ func InvalidateToolStatusCache(name string) {
 	if name == "" {
 		toolStatusCacheMap = make(map[string]toolStatusCacheEntry)
 	} else {
-		delete(toolStatusCacheMap, remote.NormalizeRemoteToolName(name))
+		prefix := remote.NormalizeRemoteToolName(name) + "\x00"
+		for key := range toolStatusCacheMap {
+			if key == remote.NormalizeRemoteToolName(name) || strings.HasPrefix(key, prefix) {
+				delete(toolStatusCacheMap, key)
+			}
+		}
 	}
 }
 
@@ -67,10 +72,15 @@ func NewToolManager(app *App) *ToolManager {
 
 func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
 	normalized := remote.NormalizeRemoteToolName(name)
+	toolsDir := remote.ToolsDir()
+	if tm.app != nil {
+		toolsDir = filepath.Join(tm.app.GetDataDir(), "tools")
+	}
+	cacheKey := normalized + "\x00" + toolsDir
 
 	// Check cache first — avoids spawning child processes on every UI tab switch.
 	toolStatusCacheMu.RLock()
-	if entry, ok := toolStatusCacheMap[normalized]; ok {
+	if entry, ok := toolStatusCacheMap[cacheKey]; ok {
 		ttl := toolStatusCacheTTL
 		if !entry.status.Installed {
 			ttl = toolStatusCacheNegTTL
@@ -86,11 +96,11 @@ func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
 
 	tm.app.log(fmt.Sprintf("GetToolStatus: Checking tool '%s'", name))
 
-	path, found := remote.ResolveToolPath(name)
+	path, found := remote.ResolveToolPathInDir(name, toolsDir)
 	if !found {
 		tm.app.log(fmt.Sprintf("GetToolStatus: Tool '%s' NOT found", name))
 		toolStatusCacheMu.Lock()
-		toolStatusCacheMap[normalized] = toolStatusCacheEntry{status: status, cachedAt: time.Now()}
+		toolStatusCacheMap[cacheKey] = toolStatusCacheEntry{status: status, cachedAt: time.Now()}
 		toolStatusCacheMu.Unlock()
 		return status
 	}
@@ -106,7 +116,7 @@ func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
 
 	// Cache positive result.
 	toolStatusCacheMu.Lock()
-	toolStatusCacheMap[normalized] = toolStatusCacheEntry{status: status, cachedAt: time.Now()}
+	toolStatusCacheMap[cacheKey] = toolStatusCacheEntry{status: status, cachedAt: time.Now()}
 	toolStatusCacheMu.Unlock()
 
 	return status

@@ -75,6 +75,13 @@ func BinaryNames(toolName string) []string {
 func ResolveToolPath(toolName string) (string, bool) {
 	name := NormalizeRemoteToolName(toolName)
 	toolsRoot := ToolsDir()
+	return ResolveToolPathInDir(name, toolsRoot)
+}
+
+// ResolveToolPathInDir finds a tool executable under an explicit tools root.
+// It is useful for app instances/tests that use a non-default MaClaw base dir.
+func ResolveToolPathInDir(toolName string, toolsRoot string) (string, bool) {
+	name := NormalizeRemoteToolName(toolName)
 	if toolsRoot == "" {
 		return "", false
 	}
