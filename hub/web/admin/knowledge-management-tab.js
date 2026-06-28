@@ -154,7 +154,7 @@
         meta(tr('knowledgePublishedAt'), formatTime(item.published_at)),
         meta(tr('knowledgeUpdatedAt'), formatTime(item.updated_at))
       ].filter(Boolean).join('<span style="color:rgba(31,34,48,.16)">|</span>');
-      return '<div class="item" style="gap:6px;padding:10px 12px">'
+      return '<div class="item" style="gap:6px;padding:10px 12px;margin-top:0">'
         + '<div class="item-head"><div style="min-width:0"><div class="item-title" style="font-size:13px">' + escapeHtml(item.title || item.knowledge_id || '-') + '</div></div><div class="actions"><button class="btn-danger" type="button" style="height:28px;font-size:11px;padding:0 10px" onclick="forceDeleteKnowledgeShare(\'' + escapeHtml(String(item.knowledge_id || '').replace(/'/g, "\\'")) + '\')">' + escapeHtml(tr('knowledgeForceDelete')) + '</button></div></div>'
         + '<div class="desc" style="font-size:11px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden"><strong>' + escapeHtml(tr('knowledgeDescription')) + ':</strong> ' + escapeHtml(desc) + '</div>'
         + '<div class="item-meta" style="display:flex;gap:4px;flex-wrap:wrap;font-size:11px">' + metrics + '</div>'

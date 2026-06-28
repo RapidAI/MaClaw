@@ -1,4 +1,4 @@
-﻿import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const executeMaclawAppBusinessOperationMock = vi.hoisted(() => vi.fn());
@@ -68,7 +68,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 
 import { AppsPage } from '../AppsPage';
 
-const marketManifestPlaceholder = '绮樿创搴旂敤鍖?JSON锛坢aclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json锛?;
+const marketManifestPlaceholder = 'Paste app package JSON (maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json)';
 const runHistoryStorageKey = 'maclaw:apps-run-history:v1';
 
 function stableStringify(value: any): string {
@@ -327,7 +327,7 @@ function latestStoredCustomApp(name: string) {
 }
 
 async function createAndRunLocalToolApp(name = '鍚堝悓褰掓。') {
-    fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+    fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
     fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: name } });
     fireEvent.click(screen.getAllByText('鍒涘缓搴旂敤')[1]);
     const createdApp = latestStoredCustomApp(name);
@@ -391,7 +391,7 @@ function seedSuccessfulSkillAppRun(skillID = 'invoice-review', name = '鍙戠エ
     } : {
         id: appID,
         name,
-        description: '鐢卞簲鐢ㄧ▼搴忓伐浣滃鍒涘缓鐨勫簲鐢ㄥ叆鍙ｃ€?,
+        description: '鐢卞簲鐢ㄧ▼搴忓伐浣滃鍒涘缓鐨勫簲鐢ㄥ叆鍙ｃ€',
         category: '鏂囨。澶勭悊',
         kind: 'tool_app',
         icon: 'shield',
@@ -515,7 +515,7 @@ describe('AppsPage', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
         expect(screen.getByPlaceholderText('鎼滅储搴旂敤')).not.toBeNull();
-        const studioEntry = screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?);
+        const studioEntry = screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹');
         expect(studioEntry).not.toBeNull();
         expect(studioEntry.textContent).toBe('');
         expect(container.querySelector('.apps-studio-button__icon svg:not(.apps-studio-button__plus)')).not.toBeNull();
@@ -585,7 +585,7 @@ describe('AppsPage', () => {
         const detail = document.querySelector('.apps-approval-detail') as HTMLElement;
         expect(detail.getAttribute('aria-label')).toBe('瀹℃壒瀹炰緥璇︽儏');
         expect(within(detail).getByText('瀹℃壒瀹炰緥璇︽儏')).not.toBeNull();
-        expect(within(detail).getByText('鍙充晶鏄疄渚嬭鎯呭拰澶勭悊鍔ㄤ綔鍖猴紝璇峰厛鍦ㄥ乏渚ч€夋嫨涓€鏉″鎵瑰疄渚嬨€?)).not.toBeNull();
+        expect(within(detail).getByText('鍙充晶鏄疄渚嬭鎯呭拰澶勭悊鍔ㄤ綔鍖猴紝璇峰厛鍦ㄥ乏渚ч€夋嫨涓€鏉″鎵瑰疄渚嬨€')).not.toBeNull();
         expect(detail.querySelector('.apps-approval-actions')).toBeNull();
     });
     it('shows DataSrv approval app summary with approval result filters', async () => {
@@ -753,17 +753,17 @@ describe('AppsPage', () => {
         const expenseTile = screen.getAllByText('鎶ラ攢鐢宠')[0].closest('.apps-app-tile') as HTMLButtonElement;
         expect(expenseTile.title).toContain('鎶ラ攢鐢宠');
         expect(expenseTile.title).toContain('浼佷笟瀹℃壒鍨?路 DataSrv');
-        expect(expenseTile.title).toContain('鐘舵€?);
+        expect(expenseTile.title).toContain('鐘舵€');
         expect(expenseTile.title).toContain('鏈€杩戜娇鐢? 灏氭湭浣跨敤');
-        expect(expenseTile.getAttribute('aria-label')).toContain('鎶ラ攢鐢宠, 浼佷笟瀹℃壒鍨? DataSrv, 鐘舵€?);
+        expect(expenseTile.getAttribute('aria-label')).toContain('鎶ラ攢鐢宠, 浼佷笟瀹℃壒鍨? DataSrv, 鐘舵€');
 
         fireEvent.click(expenseTile);
         const updatedTile = screen.getAllByText('鎶ラ攢鐢宠')[0].closest('.apps-app-tile') as HTMLButtonElement;
         expect(updatedTile.dataset.status).toBe('running');
         expect(updatedTile.querySelector('.apps-app-status-dot')).toBeNull();
-        expect(updatedTile.title).toContain('鐘舵€? 杩愯涓?);
-        expect(updatedTile.getAttribute('aria-label')).toContain('鐘舵€? 杩愯涓?);
-        expect(updatedTile.title).toContain('鏈€杩戜娇鐢?);
+        expect(updatedTile.title).toContain('鐘舵€? 杩愯涓');
+        expect(updatedTile.getAttribute('aria-label')).toContain('鐘舵€? 杩愯涓');
+        expect(updatedTile.title).toContain('鏈€杩戜娇鐢');
         expect(updatedTile.title).not.toContain('鏈€杩戜娇鐢? 灏氭湭浣跨敤');
     });
 
@@ -788,14 +788,14 @@ describe('AppsPage', () => {
         await waitFor(() => {
             const expenseTile = screen.getAllByText('鎶ラ攢鐢宠')[0].closest('.apps-app-tile') as HTMLButtonElement;
             expect(expenseTile.dataset.status).toBe('disabled');
-            expect(expenseTile.title).toContain('鐘舵€? 鏈惎鐢?);
+            expect(expenseTile.title).toContain('鐘舵€? 鏈惎鐢');
         });
     });
 
     it('shows one live draft manifest preview in app studio create tab', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
 
         expect(screen.getAllByText('褰撳墠鑽夌 manifest').length).toBe(1);
         expect(screen.getAllByText(/x_maclaw_apps/).length).toBeGreaterThan(0);
@@ -896,7 +896,7 @@ describe('AppsPage', () => {
         ]);
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         const toolSkillPicker = screen.getByTestId('studio-tool-skill-picker');
         await waitFor(() => expect(within(toolSkillPicker).getAllByText('invoice-review').length).toBeGreaterThan(0));
         expect(within(toolSkillPicker).queryByText('already-app')).toBeNull();
@@ -930,9 +930,9 @@ describe('AppsPage', () => {
         ]);
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         const kindPicker = screen.getByRole('group', { name: '搴旂敤绫诲瀷' });
-        fireEvent.click(within(kindPicker).getByRole('button', { name: /浼佷笟瀹℃壒鍨? }));
+        fireEvent.click(within(kindPicker).getByRole('button', { name: /浼佷笟瀹℃壒鍨/ }));
         fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '璐圭敤鎶ラ攢瀹℃壒' } });
 
         const appSkillPicker = screen.getByTestId('studio-app-skill-id');
@@ -969,7 +969,7 @@ describe('AppsPage', () => {
         listNLSkillsMock.mockResolvedValue([{ name: 'invoice-review', description: '瀹℃牳鍙戠エ' }]);
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         const toolSkillPicker = screen.getByTestId('studio-tool-skill-picker');
         await waitFor(() => expect(within(toolSkillPicker).getAllByText('invoice-review').length).toBeGreaterThan(0));
         fireEvent.click(within(toolSkillPicker).getByRole('option', { name: /invoice-review/ }) as HTMLButtonElement);
@@ -977,7 +977,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getByText('涓婁紶鍒?SkillMarket'));
 
-        await waitFor(() => expect(screen.getByText('璇峰厛淇濆瓨鍒?Skill锛屽苟鍦ㄥ簲鐢ㄩ潰鏉挎垚鍔熸祴璇曚竴娆″綋鍓嶇増鏈紝鍐嶄笂浼犲埌 SkillMarket銆?)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('璇峰厛淇濆瓨鍒?Skill锛屽苟鍦ㄥ簲鐢ㄩ潰鏉挎垚鍔熸祴璇曚竴娆″綋鍓嶇増鏈紝鍐嶄笂浼犲埌 SkillMarket銆')).not.toBeNull());
         expect(saveMaclawAppDefinitionForSkillMock).not.toHaveBeenCalled();
         expect(uploadNLSkillToMarketMock).not.toHaveBeenCalled();
     });
@@ -987,7 +987,7 @@ describe('AppsPage', () => {
         seedSuccessfulSkillAppRun();
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         const toolSkillPicker = screen.getByTestId('studio-tool-skill-picker');
         await waitFor(() => expect(within(toolSkillPicker).getAllByText('invoice-review').length).toBeGreaterThan(0));
         fireEvent.click(within(toolSkillPicker).getByRole('option', { name: /invoice-review/ }) as HTMLButtonElement);
@@ -1113,7 +1113,7 @@ describe('AppsPage', () => {
     it('exposes app studio sections as accessible tabs', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
 
         const createTab = screen.getByRole('tab', { name: '鍒涘缓搴旂敤' });
         expect(createTab.getAttribute('aria-selected')).toBe('true');
@@ -1130,24 +1130,24 @@ describe('AppsPage', () => {
         fireEvent.keyDown(manageTab, { key: 'End' });
         const publishTab = screen.getByRole('tab', { name: '瀹℃牳/鍙戝竷' });
         expect(publishTab.getAttribute('aria-selected')).toBe('true');
-        expect(screen.getByText('鏆傛棤鏈湴搴旂敤鍙彂甯?)).not.toBeNull();
+        expect(screen.getByText('鏆傛棤鏈湴搴旂敤鍙彂甯')).not.toBeNull();
     });
 
     it('shows local apps in the review and publish checklist', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍚堝悓褰掓。' } });
         fireEvent.click(screen.getAllByText('鍒涘缓搴旂敤')[1]);
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
-        expect(screen.getByText('鍙戝竷妫€鏌?)).not.toBeNull();
+        expect(screen.getByText('鍙戝竷妫€鏌')).not.toBeNull();
         expect(screen.getAllByText('鍚堝悓褰掓。').length).toBeGreaterThan(0);
         expect(screen.getByText('闇€琛ラ綈')).not.toBeNull();
         expect(screen.getByText('Manifest 缁撴瀯')).not.toBeNull();
         expect(screen.getByText('缁戝畾鑳藉姏')).not.toBeNull();
         expect(screen.getByText('杩愯璇佹嵁')).not.toBeNull();
-        expect(screen.getByText('鎻愪氦鍖呴瑙?)).not.toBeNull();
+        expect(screen.getByText('鎻愪氦鍖呴瑙')).not.toBeNull();
         expect(screen.getByText(/maclaw.app.pack.v1/)).not.toBeNull();
         expect(screen.getByText(/"governance"/)).not.toBeNull();
         expect(screen.getByText(/"dependencies"/)).not.toBeNull();
@@ -1218,21 +1218,21 @@ describe('AppsPage', () => {
         render(<AppsPage lang="zh-Hans" />);
 
         await createAndRunLocalToolApp('鍚堝悓褰掓。');
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
-        expect(screen.getByText('鍙彁浜?)).not.toBeNull();
+        expect(screen.getByText('鍙彁浜')).not.toBeNull();
         fireEvent.click(screen.getByText('鎻愪氦瀹℃牳'));
 
-        await waitFor(() => expect(screen.getAllByText('鏈湴寰呭悓姝?).length).toBeGreaterThan(0));
-        expect(screen.getAllByText('宸叉彁浜?).length).toBeGreaterThan(0);
+        await waitFor(() => expect(screen.getAllByText('鏈湴寰呭悓姝').length).toBeGreaterThan(0));
+        expect(screen.getAllByText('宸叉彁浜').length).toBeGreaterThan(0);
         expect(screen.getAllByText(/local-review-/).length).toBeGreaterThan(0);
         expect(screen.getByText(/"status": "submitted"/)).not.toBeNull();
         expect(screen.getByText(/"channel": "local"/)).not.toBeNull();
         expect(window.localStorage.getItem('maclaw:apps-publish-submissions:v1')).toContain('local-review-');
 
         fireEvent.click(screen.getByText('鎾ゅ洖鎻愪氦'));
-        await waitFor(() => expect(screen.getByText('鍙彁浜?)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('鍙彁浜')).not.toBeNull());
         expect(screen.queryByText('绛夊緟浼佷笟甯傚満瀹℃牳')).toBeNull();
         expect(screen.getByText(/"status": "local_tested"/)).not.toBeNull();
         expect(window.localStorage.getItem('maclaw:apps-publish-submissions:v1')).not.toContain('local-review-');
@@ -1243,7 +1243,7 @@ describe('AppsPage', () => {
         const reviewedApp = {
             id: 'local-app-review-returned',
             name: '瀹℃牳鍥為€€搴旂敤',
-            description: '鐢ㄤ簬楠岃瘉甯傚満瀹℃牳鍥炲啓鐘舵€?,
+            description: '鐢ㄤ簬楠岃瘉甯傚満瀹℃牳鍥炲啓鐘舵€',
             category: '娉曞姟',
             kind: 'tool_app',
             icon: 'contract',
@@ -1303,25 +1303,25 @@ describe('AppsPage', () => {
                 reviewedAt: '2026-06-17T00:10:00.000Z',
                 status: 'review_failed',
                 reviewer: 'market-reviewer',
-                message: '璇疯ˉ鍏呰繍琛岃瘉鎹?,
-                reviewIssues: [{ path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缂哄皯杩愯璇佹嵁', suggestion: '鍏堣繍琛屼竴娆″簲鐢? }],
+                message: '璇疯ˉ鍏呰繍琛岃瘉鎹',
+                reviewIssues: [{ path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缂哄皯杩愯璇佹嵁', suggestion: '鍏堣繍琛屼竴娆″簲鐢' }],
             },
         }));
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
         expect(screen.getAllByText('瀹℃牳闇€淇敼').length).toBeGreaterThan(0);
-        expect(screen.getByText('璇疯ˉ鍏呰繍琛岃瘉鎹?)).not.toBeNull();
+        expect(screen.getByText('璇疯ˉ鍏呰繍琛岃瘉鎹')).not.toBeNull();
         expect(screen.getByText('apps[0].app.governance.testEvidence')).not.toBeNull();
         expect(screen.getByText('缂哄皯杩愯璇佹嵁')).not.toBeNull();
-        expect(screen.getByText('鍏堣繍琛屼竴娆″簲鐢?)).not.toBeNull();
+        expect(screen.getByText('鍏堣繍琛屼竴娆″簲鐢')).not.toBeNull();
         expect(screen.getByText(/"status": "review_failed"/)).not.toBeNull();
 
         fireEvent.click(screen.getByText('鎻愪氦瀹℃牳'));
-        await waitFor(() => expect(screen.getAllByText('鏈湴寰呭悓姝?).length).toBeGreaterThan(0));
+        await waitFor(() => expect(screen.getAllByText('鏈湴寰呭悓姝').length).toBeGreaterThan(0));
         expect(screen.getByText(/"status": "submitted"/)).not.toBeNull();
     });
 
@@ -1362,19 +1362,19 @@ describe('AppsPage', () => {
                 status: 'review_failed',
                 reviewer: 'market-reviewer',
                 message: '渚濊禆楠岃瘉杩囨湡',
-                reviewIssues: [{ path: 'apps[0].app.governance.dependencyVerification', severity: 'error', message: 'dependency verification is stale', suggestion: '瀹夎鎴栭噸鏂版鏌ヤ緷璧? }],
+                reviewIssues: [{ path: 'apps[0].app.governance.dependencyVerification', severity: 'error', message: 'dependency verification is stale', suggestion: '瀹夎鎴栭噸鏂版鏌ヤ緷璧' }],
             },
         }));
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
         fireEvent.click(screen.getByText('澶勭悊渚濊禆'));
 
-        const marketTab = screen.getByRole('tab', { name: '浠庡競鍦烘坊鍔? });
+        const marketTab = screen.getByRole('tab', { name: '浠庡競鍦烘坊鍔' });
         expect(marketTab.getAttribute('aria-selected')).toBe('true');
-        const textarea = screen.getByLabelText('瀹夎搴旂敤鍖?) as HTMLTextAreaElement;
+        const textarea = screen.getByLabelText('瀹夎搴旂敤鍖') as HTMLTextAreaElement;
         await waitFor(() => expect(textarea.value).toContain('maclaw.app.v1'));
         expect(textarea.value).toContain('local-app-review-dependency');
         expect(textarea.value).toContain('contract-review');
@@ -1430,17 +1430,17 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
-        await waitFor(() => expect(screen.getByText('鏆傛棤鏈満寰呭悓姝ユ彁浜?)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('鏆傛棤鏈満寰呭悓姝ユ彁浜')).not.toBeNull());
         const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('渚濊禆闃绘柇搴旂敤')) as HTMLElement;
         expect(card).toBeTruthy();
         fireEvent.click(within(card).getByText('鎻愪氦瀹℃牳'));
 
         await waitFor(() => expect(planMaclawAppInstallMock).toHaveBeenCalledTimes(1));
         expect(submitMaclawAppPackage).not.toHaveBeenCalled();
-        expect(within(card).getByText('渚濊禆妫€鏌ュけ璐?)).not.toBeNull();
-        expect(within(card).getByText('渚濊禆闃绘柇搴旂敤鏆備笉鍙敤锛歞isabled-workflow 鏈畨瑁呮垨宸插仠鐢ㄣ€?)).not.toBeNull();
+        expect(within(card).getByText('渚濊禆妫€鏌ュけ璐')).not.toBeNull();
+        expect(within(card).getByText('渚濊禆闃绘柇搴旂敤鏆備笉鍙敤锛歞isabled-workflow 鏈畨瑁呮垨宸插仠鐢ㄣ€')).not.toBeNull();
         expect(within(card).queryByText('绛夊緟浼佷笟甯傚満瀹℃牳')).toBeNull();
     });
 
@@ -1510,11 +1510,11 @@ describe('AppsPage', () => {
                 missingTypes: [],
             },
         });
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
         const publishCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('鍚堝悓褰掓。')) as HTMLElement;
         expect(publishCard).toBeTruthy();
-        expect(within(publishCard).getByText('鍙彁浜?)).not.toBeNull();
+        expect(within(publishCard).getByText('鍙彁浜')).not.toBeNull();
         fireEvent.click(within(publishCard).getByText('鎻愪氦瀹℃牳'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
@@ -1996,7 +1996,7 @@ describe('AppsPage', () => {
     it('includes enterprise visual UI metadata in market submission packages', async () => {
         const app = {
             id: 'publish-enterprise-ui-app',
-            name: '瀹㈡埛缁害宸ヤ綔鍙?,
+            name: '瀹㈡埛缁害宸ヤ綔鍙',
             description: 'Publish enterprise UI metadata',
             category: 'CRM',
             kind: 'enterprise_normal_app',
@@ -2073,9 +2073,9 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
-        const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('瀹㈡埛缁害宸ヤ綔鍙?)) as HTMLElement;
+        const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('瀹㈡埛缁害宸ヤ綔鍙')) as HTMLElement;
         expect(card).toBeTruthy();
         expect(within(card).getByText('customer-renewal-skill@1.0.0 (app_skill, ready)')).not.toBeNull();
         fireEvent.click(within(card).getByText('鎻愪氦瀹℃牳'));
@@ -2674,12 +2674,12 @@ describe('AppsPage', () => {
         render(<AppsPage lang="zh-Hans" />);
 
         await createAndRunLocalToolApp('鍚堝悓褰掓。');
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
         fireEvent.click(screen.getByText('鎻愪氦瀹℃牳'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
-        expect(screen.getAllByText('鏈湴寰呭悓姝?).length).toBeGreaterThan(0);
+        expect(screen.getAllByText('鏈湴寰呭悓姝').length).toBeGreaterThan(0);
         expect(screen.getAllByText(/queued locally for enterprise market sync/).length).toBeGreaterThan(0);
         expect(screen.getByText(/"channel": "local"/)).not.toBeNull();
     });
@@ -2702,16 +2702,16 @@ describe('AppsPage', () => {
         render(<AppsPage lang="zh-Hans" />);
 
         await createAndRunLocalToolApp('鍚堝悓褰掓。');
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
         fireEvent.click(screen.getByText('鎻愪氦瀹℃牳'));
 
-        await waitFor(() => expect(screen.getAllByText('鏈湴寰呭悓姝?).length).toBeGreaterThan(0));
+        await waitFor(() => expect(screen.getAllByText('鏈湴寰呭悓姝').length).toBeGreaterThan(0));
         fireEvent.click(screen.getByText('鎾ゅ洖鎻愪氦'));
 
         await waitFor(() => expect(withdrawMaclawAppPackageSubmission).toHaveBeenCalledWith('local-review-withdraw'));
-        expect(screen.getByText('鍙彁浜?)).not.toBeNull();
-        await waitFor(() => expect(screen.getByText('鏆傛棤鏈満寰呭悓姝ユ彁浜?)).not.toBeNull());
+        expect(screen.getByText('鍙彁浜')).not.toBeNull();
+        await waitFor(() => expect(screen.getByText('鏆傛棤鏈満寰呭悓姝ユ彁浜')).not.toBeNull());
     });
 
     it('shows local app package submission queue summaries', async () => {
@@ -2741,7 +2741,7 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
         await waitFor(() => expect(listMaclawAppPackageSubmissions).toHaveBeenCalledWith(8));
@@ -2772,13 +2772,13 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
-        expect(screen.getByText('鎻愪氦闃熷垪璇诲彇涓?)).not.toBeNull();
+        expect(screen.getByText('鎻愪氦闃熷垪璇诲彇涓')).not.toBeNull();
 
         resolveQueue([]);
-        await waitFor(() => expect(screen.getByText('鏆傛棤鏈満寰呭悓姝ユ彁浜?)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('鏆傛棤鏈満寰呭悓姝ユ彁浜')).not.toBeNull());
     });
 
     it('installs an approved Hub app directly from the publish queue', async () => {
@@ -2930,10 +2930,10 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
-        await waitFor(() => expect(screen.getByText('鏆傛棤鏈満寰呭悓姝ユ彁浜?)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('鏆傛棤鏈満寰呭悓姝ユ彁浜')).not.toBeNull());
         fireEvent.click(screen.getByText('鍒锋柊'));
 
         await waitFor(() => expect(listMaclawAppPackageSubmissions).toHaveBeenCalledTimes(2));
@@ -2971,18 +2971,18 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
         await waitFor(() => expect(screen.getByText('local-review-detail')).not.toBeNull());
-        fireEvent.click(screen.getByText('澶嶅埗闃熷垪鍖?));
+        fireEvent.click(screen.getByText('澶嶅埗闃熷垪鍖'));
 
         await waitFor(() => expect(getMaclawAppPackageSubmission).toHaveBeenCalledWith('local-review-detail'));
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1));
         const copied = JSON.parse((navigator.clipboard.writeText as any).mock.calls[0][0]);
         expect(copied.schema).toBe('maclaw.app.pack.v1');
         expect(copied.apps[0].app.id).toBe('queued-detail-app');
-        expect(screen.getByText('宸插鍒?)).not.toBeNull();
+        expect(screen.getByText('宸插鍒')).not.toBeNull();
 
         fireEvent.click(screen.getByText('澶嶅埗瀹¤'));
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(2));
@@ -2991,7 +2991,7 @@ describe('AppsPage', () => {
         expect(audit.events[0].status).toBe('submitted');
         expect(audit.review_issues[0].message).toBe('缂哄皯杩愯璇佹嵁');
         expect(audit.package.apps[0].app.id).toBe('queued-detail-app');
-        expect(screen.getByText('瀹¤宸插鍒?)).not.toBeNull();
+        expect(screen.getByText('瀹¤宸插鍒')).not.toBeNull();
     });
 
     it('shows inline queued app package audit details', async () => {
@@ -3027,7 +3027,7 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
         await waitFor(() => expect(screen.getByText('local-review-inline-detail')).not.toBeNull());
@@ -3049,7 +3049,7 @@ describe('AppsPage', () => {
         const reviewedApp = {
             id: 'local-app-queue-published',
             name: '闃熷垪鍥炲啓搴旂敤',
-            description: '鐢ㄤ簬楠岃瘉闃熷垪鐘舵€佸洖鍐?,
+            description: '鐢ㄤ簬楠岃瘉闃熷垪鐘舵€佸洖鍐',
             category: '娉曞姟',
             kind: 'tool_app',
             icon: 'contract',
@@ -3084,9 +3084,9 @@ describe('AppsPage', () => {
             risk_level: 'high',
             approved_scopes: ['finance.expense_submit', 'finance.audit'],
             review_issues: [
-                { path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缂哄皯杩愯璇佹嵁', suggestion: '鍏堣繍琛屼竴娆″簲鐢? },
-                { path: 'apps[0].app.permissions', severity: 'warning', message: '鏉冮檺鑼冨洿鍋忓', suggestion: '缂╁皬鍒拌储鍔″崟鎹? },
-                { path: 'apps[0].app.support.owner', severity: 'info', message: '寤鸿琛ュ厖璐熻矗浜? },
+                { path: 'apps[0].app.governance.testEvidence', severity: 'error', message: '缂哄皯杩愯璇佹嵁', suggestion: '鍏堣繍琛屼竴娆″簲鐢' },
+                { path: 'apps[0].app.permissions', severity: 'warning', message: '鏉冮檺鑼冨洿鍋忓', suggestion: '缂╁皬鍒拌储鍔″崟鎹' },
+                { path: 'apps[0].app.support.owner', severity: 'info', message: '寤鸿琛ュ厖璐熻矗浜' },
                 { path: 'apps[0].app.runtime', severity: 'info', message: '寤鸿琛ュ厖鍥炴粴璇存槑' },
             ],
             message: 'published by enterprise market',
@@ -3102,10 +3102,10 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
 
-        await waitFor(() => expect(screen.getAllByText('宸插彂甯?).length).toBeGreaterThan(0));
+        await waitFor(() => expect(screen.getAllByText('宸插彂甯').length).toBeGreaterThan(0));
         expect(screen.getAllByText(/market-review-published/).length).toBeGreaterThan(0);
         expect(screen.getAllByText(/published by enterprise market/).length).toBeGreaterThan(0);
         expect(screen.getByText(/"status": "published"/)).not.toBeNull();
@@ -3125,14 +3125,14 @@ describe('AppsPage', () => {
         expect(screen.getByText(/"suggestion": "鍏堣繍琛屼竴娆″簲鐢?)).not.toBeNull();
         expect(screen.getByText(/"message": "寤鸿琛ュ厖鍥炴粴璇存槑"/)).not.toBeNull();
 
-        fireEvent.click(screen.getByText('鍘讳慨澶?));
+        fireEvent.click(screen.getByText('鍘讳慨澶'));
         await waitFor(() => expect(screen.getByRole('tab', { name: '搴旂敤绠＄悊' }).getAttribute('aria-selected')).toBe('true'));
         const nameInput = screen.getByDisplayValue('闃熷垪鍥炲啓搴旂敤');
         expect(nameInput).not.toBeNull();
-        fireEvent.change(nameInput, { target: { value: '闃熷垪鍥炲啓搴旂敤淇鐗? } });
+        fireEvent.change(nameInput, { target: { value: '闃熷垪鍥炲啓搴旂敤淇鐗' } });
         fireEvent.click(screen.getByText('淇濆瓨'));
-        await waitFor(() => expect(latestStoredCustomApp('闃熷垪鍥炲啓搴旂敤淇鐗?)).toBeTruthy());
-        const updatedQueueApp = latestStoredCustomApp('闃熷垪鍥炲啓搴旂敤淇鐗?);
+        await waitFor(() => expect(latestStoredCustomApp('闃熷垪鍥炲啓搴旂敤淇鐗')).toBeTruthy());
+        const updatedQueueApp = latestStoredCustomApp('闃熷垪鍥炲啓搴旂敤淇鐗');
         seedSuccessfulLocalAppRun({
             ...updatedQueueApp,
             manifest: {
@@ -3170,7 +3170,7 @@ describe('AppsPage', () => {
     it('updates the draft manifest preview while creating an app', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍚堝悓褰掓。' } });
 
         expect(screen.getByText(/鍚堝悓褰掓。/)).not.toBeNull();
@@ -3181,7 +3181,7 @@ describe('AppsPage', () => {
     it('offers expanded semantic app icons in app studio', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鑷姩宸℃' } });
         fireEvent.click(screen.getByTitle('Agent/鑷姩鍖?(bot)'));
         fireEvent.click(screen.getByTitle('闈涜摑 #5b5ea6'));
@@ -3195,7 +3195,7 @@ describe('AppsPage', () => {
     it('generates a draft app definition from a natural language prompt', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.change(screen.getByPlaceholderText('渚嬶細鍋氫竴涓悎鍚屽綊妗ｅ簲鐢紝涓婁紶 Word/PDF锛岃緭鍑哄綊妗ｇ紪鍙峰拰瀹℃牳缁撴灉'), {
             target: { value: '鍋氫竴涓悎鍚屽綊妗ｅ簲鐢紝涓婁紶 Word/PDF锛岃緭鍑哄綊妗ｇ紪鍙峰拰瀹℃牳缁撴灉' },
         });
@@ -3210,11 +3210,11 @@ describe('AppsPage', () => {
     it('uses studio type choices as create-form presets', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         const kindPicker = document.querySelector('.apps-studio-kind') as HTMLElement;
-        const appCardButton = within(kindPicker).getByRole('button', { name: /浼佷笟瀹℃壒鍨? }) as HTMLButtonElement;
+        const appCardButton = within(kindPicker).getByRole('button', { name: /浼佷笟瀹℃壒鍨/ }) as HTMLButtonElement;
         const toolCardButton = within(kindPicker).getByRole('button', { name: /宸ュ叿搴旂敤/ }) as HTMLButtonElement;
-        const automationCardButton = within(kindPicker).getByRole('button', { name: /鑷姩鍖? }) as HTMLButtonElement;
+        const automationCardButton = within(kindPicker).getByRole('button', { name: /鑷姩鍖/ }) as HTMLButtonElement;
 
         expect(toolCardButton.getAttribute('aria-pressed')).toBe('true');
 
@@ -3226,7 +3226,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(automationCardButton);
         expect(automationCardButton.getAttribute('aria-pressed')).toBe('true');
-        expect(screen.getAllByDisplayValue('鑷姩鍖?).length).toBeGreaterThan(0);
+        expect(screen.getAllByDisplayValue('鑷姩鍖').length).toBeGreaterThan(0);
         expect(screen.getByText(/"kind": "automation_app"/)).not.toBeNull();
         expect(screen.getByText(/"launchMode": "automation_console"/)).not.toBeNull();
     });
@@ -3264,7 +3264,7 @@ describe('AppsPage', () => {
         fireEvent.click(document.querySelector('.apps-studio-button') as HTMLElement);
         fireEvent.change(document.querySelector('.apps-create-form input[placeholder]') as HTMLInputElement, { target: { value: 'approval-workbench' } });
         const kindPicker = document.querySelector('.apps-studio-kind') as HTMLElement;
-        fireEvent.click(within(kindPicker).getByRole('button', { name: /浼佷笟瀹℃壒鍨? }));
+        fireEvent.click(within(kindPicker).getByRole('button', { name: /浼佷笟瀹℃壒鍨/ }));
         const appSkillPicker = screen.getByTestId('studio-app-skill-id');
         await waitFor(() => expect(within(appSkillPicker).getAllByText('expense-super-app').length).toBeGreaterThan(0));
         expect(within(appSkillPicker).queryByText('installed-approval-flow')).toBeNull();
@@ -3343,7 +3343,7 @@ describe('AppsPage', () => {
     it('includes tool app input and output modes in draft manifests', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '琛ㄦ牸娓呮礂' } });
         fireEvent.change(screen.getByDisplayValue('鏂囦欢涓婁紶'), { target: { value: 'mixed' } });
         fireEvent.click(screen.getByText('Excel / XLSX'));
@@ -3459,7 +3459,7 @@ describe('AppsPage', () => {
     it('creates draft tool apps with multiple file input enabled', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鎵归噺鍚堝悓褰掓。' } });
         fireEvent.click(screen.getByText('鍏佽涓€娆￠€夋嫨澶氫釜鏂囦欢'));
 
@@ -3476,13 +3476,13 @@ describe('AppsPage', () => {
     it('adds structured fields to draft tool app manifests', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍚堝悓褰掓。' } });
         fireEvent.change(screen.getByDisplayValue('鏂囦欢涓婁紶'), { target: { value: 'mixed' } });
         fireEvent.click(screen.getByText('娣诲姞瀛楁'));
         const fieldEditor = document.querySelector('.apps-field-editor') as HTMLElement;
         fireEvent.change(within(fieldEditor).getByPlaceholderText('customer_id'), { target: { value: 'archive_no' } });
-        fireEvent.change(within(fieldEditor).getByPlaceholderText('鏄剧ず鍚?), { target: { value: '褰掓。缂栧彿' } });
+        fireEvent.change(within(fieldEditor).getByPlaceholderText('鏄剧ず鍚'), { target: { value: '褰掓。缂栧彿' } });
         fireEvent.click(within(fieldEditor).getByText('蹇呭～'));
 
         expect(screen.getAllByText(/"fields"/).length).toBeGreaterThan(0);
@@ -3493,9 +3493,9 @@ describe('AppsPage', () => {
     it('generates an enterprise app draft from MIS-style prompts', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.change(screen.getByPlaceholderText('渚嬶細鍋氫竴涓悎鍚屽綊妗ｅ簲鐢紝涓婁紶 Word/PDF锛岃緭鍑哄綊妗ｇ紪鍙峰拰瀹℃牳缁撴灉'), {
-            target: { value: '鍒涘缓璐圭敤鎶ラ攢瀹℃壒搴旂敤锛屽綍鍏ュ彂绁ㄥ拰浠樻淇℃伅锛岀敓鎴愯储鍔℃姤琛? },
+            target: { value: '鍒涘缓璐圭敤鎶ラ攢瀹℃壒搴旂敤锛屽綍鍏ュ彂绁ㄥ拰浠樻淇℃伅锛岀敓鎴愯储鍔℃姤琛' },
         });
         fireEvent.click(screen.getByText('鐢熸垚鑽夌'));
 
@@ -3570,14 +3570,14 @@ describe('AppsPage', () => {
     it('copies the draft manifest preview to clipboard', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍚堝悓褰掓。' } });
         const copyButtons = screen.getAllByText('澶嶅埗');
         fireEvent.click(copyButtons[0]);
 
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
         expect(String((navigator.clipboard.writeText as any).mock.calls[0][0])).toContain('鍚堝悓褰掓。');
-        expect(screen.getByText('宸插鍒?)).not.toBeNull();
+        expect(screen.getByText('宸插鍒')).not.toBeNull();
     });
 
     it('resets the draft manifest copy state after the draft changes', async () => {
@@ -3616,7 +3616,7 @@ describe('AppsPage', () => {
     it('creates a local app entry from app studio', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍚堝悓褰掓。' } });
         fireEvent.click(screen.getAllByText('鍒涘缓搴旂敤')[1]);
         fireEvent.click(screen.getByText('鍏抽棴'));
@@ -3627,7 +3627,7 @@ describe('AppsPage', () => {
     it('creates schema-safe ascii ids for local apps with Chinese names', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.change(screen.getByPlaceholderText('渚嬶細鍚堝悓褰掓。'), { target: { value: '鍚堝悓褰掓。' } });
         fireEvent.click(screen.getAllByText('鍒涘缓搴旂敤')[1]);
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
@@ -3668,7 +3668,7 @@ describe('AppsPage', () => {
         }));
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('鏃х増鏈湴搴旂敤')) as HTMLElement;
@@ -3685,25 +3685,25 @@ describe('AppsPage', () => {
         expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('鍏ㄩ儴搴旂敤 (1)')).not.toBeNull();
         expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('鏂囨。澶勭悊 (1)')).not.toBeNull();
         expect((within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('OA (0)') as HTMLOptionElement).disabled).toBe(true);
-        expect(screen.getByText('鎼滅储鈥滆劚鏁忊€?路 1 涓尮閰?)).not.toBeNull();
-        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€?));
+        expect(screen.getByText('鎼滅储鈥滆劚鏁忊€?路 1 涓尮閰')).not.toBeNull();
+        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€'));
 
         fireEvent.change(document.querySelector('.apps-category-select') as HTMLSelectElement, { target: { value: 'OA' } });
         fireEvent.change(screen.getByPlaceholderText('鎼滅储搴旂敤'), { target: { value: '鑴辨晱' } });
         expect((document.querySelector('.apps-category-select') as HTMLSelectElement).value).toBe('all');
         expect(screen.getAllByText('鏂囨。鑴辨晱').length).toBeGreaterThan(0);
-        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€?));
+        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€'));
 
         fireEvent.change(document.querySelector('.apps-category-select') as HTMLSelectElement, { target: { value: '鏂囨。澶勭悊' } });
 
-        expect(screen.getByText('鏂囨。澶勭悊 路 2 涓簲鐢?)).not.toBeNull();
+        expect(screen.getByText('鏂囨。澶勭悊 路 2 涓簲鐢')).not.toBeNull();
         expect(screen.getAllByText('PDF 杞?Word').length).toBeGreaterThan(0);
         expect(screen.getAllByText('鏂囨。鑴辨晱').length).toBeGreaterThan(0);
         expect(screen.queryByText('閲囪喘鍏ュ簱')).toBeNull();
 
-        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€?));
+        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€'));
         expect((document.querySelector('.apps-category-select') as HTMLSelectElement).value).toBe('all');
-        expect((within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€?) as HTMLButtonElement).disabled).toBe(true);
+        expect((within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€') as HTMLButtonElement).disabled).toBe(true);
         expect(screen.getAllByText('閲囪喘鍏ュ簱').length).toBeGreaterThan(0);
     });
 
@@ -3730,7 +3730,7 @@ describe('AppsPage', () => {
 
         fireEvent.change(search, { target: { value: 'xlsx' } });
         expect(screen.getAllByText('琛ㄦ牸鍒嗘瀽').length).toBeGreaterThan(0);
-        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€?));
+        fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('閲嶇疆绛涢€'));
         expect((search as HTMLInputElement).value).toBe('');
     });
 
@@ -4567,7 +4567,7 @@ describe('AppsPage', () => {
         expect(within(workspace).getByRole('button', { name: /鎴戠殑鐢宠/ })).not.toBeNull();
         const pendingLane = within(workspace).getByRole('button', { name: /寰呮垜瀹℃壒/ });
         expect(pendingLane).not.toBeNull();
-        expect(within(workspace).getByRole('button', { name: /宸插鐞? })).not.toBeNull();
+        expect(within(workspace).getByRole('button', { name: /宸插鐞/ })).not.toBeNull();
         expect(within(workspace).getByRole('button', { name: /^闇€鍏虫敞/ })).not.toBeNull();
         expect(within(workspace).getByRole('button', { name: /鍏ㄩ儴/ })).not.toBeNull();
         fireEvent.click(pendingLane);
@@ -4617,7 +4617,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
         await waitFor(() => expect(document.querySelector('.apps-approval-workspace')).not.toBeNull());
         const workspace = document.querySelector('.apps-approval-workspace') as HTMLElement;
-        fireEvent.click(within(workspace).getByRole('button', { name: /宸插鐞? }));
+        fireEvent.click(within(workspace).getByRole('button', { name: /宸插鐞/ }));
 
         await waitFor(() => expect(within(workspace).getAllByText('Handled expense decision').length).toBeGreaterThan(0));
         expect(within(workspace).getByText('approved by finance')).not.toBeNull();
@@ -4632,7 +4632,7 @@ describe('AppsPage', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
         expect(screen.getByText('閫夋嫨搴旂敤')).not.toBeNull();
-        expect(screen.getByText('鐐瑰嚮宸︿晶搴旂敤鍥炬爣锛屼互鎵撳紑搴旂敤銆?)).not.toBeNull();
+        expect(screen.getByText('鐐瑰嚮宸︿晶搴旂敤鍥炬爣锛屼互鎵撳紑搴旂敤銆')).not.toBeNull();
         expect(screen.queryByRole('button', { name: '鎵撳紑搴旂敤' })).toBeNull();
         expect(container.querySelector('.apps-runtime-tabs')).toBeNull();
 
@@ -4682,8 +4682,8 @@ describe('AppsPage', () => {
     it('renders form-only tool apps without a file drop zone', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -4699,7 +4699,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getAllByText('鍙傛暟宸ュ叿')[0]);
 
         expect(container.querySelector('.apps-drop-zone')).toBeNull();
-        fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€?), { target: { value: '鐢熸垚 JSON 鎽樿' } });
+        fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€'), { target: { value: '鐢熸垚 JSON 鎽樿' } });
         fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(screen.getByText(/鐢熸垚 JSON 鎽樿 -> JSON/)).not.toBeNull());
@@ -4708,8 +4708,8 @@ describe('AppsPage', () => {
     it('renders declared tool app fields as a structured form', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -4740,7 +4740,7 @@ describe('AppsPage', () => {
 
         expect(container.querySelector('.apps-drop-zone')).toBeNull();
         fireEvent.click(screen.getByText('鎵ц'));
-        await waitFor(() => expect(screen.getByText('璇疯ˉ鍏呭繀濉緭鍏?)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('璇疯ˉ鍏呭繀濉緭鍏')).not.toBeNull());
         fireEvent.change(screen.getByLabelText('鏍囬'), { target: { value: '瀛ｅ害鎶ュ憡' } });
         fireEvent.change(screen.getByDisplayValue('鎽樿'), { target: { value: '娓呭崟' } });
         fireEvent.click(screen.getByText('鎵ц'));
@@ -4751,8 +4751,8 @@ describe('AppsPage', () => {
     it('uses the first select option as the default field value', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -4768,7 +4768,7 @@ describe('AppsPage', () => {
                             input_mode: 'form',
                             output_modes: ['json'],
                             fields: [
-                                { name: 'mode', label: '妯″紡', type: 'select', required: true, options: ['蹇€?, '瀹屾暣'] },
+                                { name: 'mode', label: '妯″紡', type: 'select', required: true, options: ['蹇€', '瀹屾暣'] },
                             ],
                         },
                     ],
@@ -4788,8 +4788,8 @@ describe('AppsPage', () => {
     it('adds a select default value to field options when installing apps', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -4805,7 +4805,7 @@ describe('AppsPage', () => {
                             input_mode: 'form',
                             output_modes: ['json'],
                             fields: [
-                                { name: 'mode', label: '妯″紡', type: 'select', required: true, default: '蹇€?, options: ['瀹屾暣'] },
+                                { name: 'mode', label: '妯″紡', type: 'select', required: true, default: '蹇€', options: ['瀹屾暣'] },
                             ],
                         },
                     ],
@@ -4816,16 +4816,16 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('鍏抽棴'));
         fireEvent.click(screen.getAllByText('榛樿閫夐」宸ュ叿')[0]);
 
-        const modeSelect = screen.getByDisplayValue('蹇€?) as HTMLSelectElement;
-        expect(Array.from(modeSelect.options).map((option) => option.value)).toEqual(['瀹屾暣', '蹇€?]);
+        const modeSelect = screen.getByDisplayValue('蹇€') as HTMLSelectElement;
+        expect(Array.from(modeSelect.options).map((option) => option.value)).toEqual(['瀹屾暣', '蹇€']);
     });
 
     it('starts the bound skill when running a tool app', async () => {
         const customIconDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -4885,8 +4885,8 @@ describe('AppsPage', () => {
     it('checks bound skill dependencies before running installed tool apps', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -4922,13 +4922,13 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getByText('鎵ц'));
 
-        await waitFor(() => expect(screen.getAllByText('杩愯渚濊禆宸ュ叿鏆備笉鍙敤锛歞isabled-runtime-tool 鏈畨瑁呮垨宸插仠鐢ㄣ€?).length).toBeGreaterThan(0));
+        await waitFor(() => expect(screen.getAllByText('杩愯渚濊禆宸ュ叿鏆備笉鍙敤锛歞isabled-runtime-tool 鏈畨瑁呮垨宸插仠鐢ㄣ€').length).toBeGreaterThan(0));
         const runtimeStatus = document.querySelector('.apps-runtime-status') as HTMLElement;
         const dependencyList = runtimeStatus.querySelector('.apps-install-record__deps') as HTMLElement;
         expect(dependencyList).not.toBeNull();
         const dependency = within(dependencyList).getByText('disabled-runtime-tool').closest('.apps-install-record__dep') as HTMLElement;
         expect(dependency.dataset.state).toBe('blocked');
-        expect(within(dependency).getByText('涓嶅彲鐢?)).not.toBeNull();
+        expect(within(dependency).getByText('涓嶅彲鐢')).not.toBeNull();
         expect(dependency.textContent).toContain('runtime_skill 路 hub 路 v1.0.0 路 disabled');
         expect(runNLSkillAsyncMock).not.toHaveBeenCalled();
     });
@@ -4936,8 +4936,8 @@ describe('AppsPage', () => {
     it('installs missing runtime dependencies and continues the installed app run', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -4977,8 +4977,8 @@ describe('AppsPage', () => {
         });
 
         fireEvent.click(screen.getByText('鎵ц'));
-        await waitFor(() => expect(screen.getByText('瀹夎渚濊禆骞舵墽琛?)).not.toBeNull());
-        fireEvent.click(screen.getByText('瀹夎渚濊禆骞舵墽琛?));
+        await waitFor(() => expect(screen.getByText('瀹夎渚濊禆骞舵墽琛')).not.toBeNull());
+        fireEvent.click(screen.getByText('瀹夎渚濊禆骞舵墽琛'));
 
         await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalled());
         await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('disabled-runtime-tool', expect.objectContaining({
@@ -5155,8 +5155,8 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getAllByText('渚濊禆瀹℃壒搴旂敤')[0]);
         fireEvent.click(screen.getByText('鎵ц'));
-        await waitFor(() => expect(screen.getByText('瀹夎渚濊禆骞舵墽琛?)).not.toBeNull());
-        fireEvent.click(screen.getByText('瀹夎渚濊禆骞舵墽琛?));
+        await waitFor(() => expect(screen.getByText('瀹夎渚濊禆骞舵墽琛')).not.toBeNull());
+        fireEvent.click(screen.getByText('瀹夎渚濊禆骞舵墽琛'));
 
         await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
         await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('missing-expense-workflow', expect.objectContaining({
@@ -5172,7 +5172,7 @@ describe('AppsPage', () => {
     it('blocks enterprise normal app MIS operations when only appSkill is unavailable', async () => {
         const app = {
             id: 'local-business-dep-app',
-            name: '渚濊禆鏅€氬簲鐢?,
+            name: '渚濊禆鏅€氬簲鐢',
             description: 'Business app dependency gate',
             category: 'CRM',
             kind: 'enterprise_normal_app',
@@ -5216,10 +5216,10 @@ describe('AppsPage', () => {
         });
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('渚濊禆鏅€氬簲鐢?)[0]);
+        fireEvent.click(screen.getAllByText('渚濊禆鏅€氬簲鐢')[0]);
         fireEvent.click(screen.getByText('鎵ц'));
 
-        await waitFor(() => expect(screen.getAllByText('渚濊禆鏅€氬簲鐢ㄦ殏涓嶅彲鐢細disabled-crm-action 鏈畨瑁呮垨宸插仠鐢ㄣ€?).length).toBeGreaterThan(0));
+        await waitFor(() => expect(screen.getAllByText('渚濊禆鏅€氬簲鐢ㄦ殏涓嶅彲鐢細disabled-crm-action 鏈畨瑁呮垨宸插仠鐢ㄣ€').length).toBeGreaterThan(0));
         const runtimeStatus = document.querySelector('.apps-runtime-status') as HTMLElement;
         const dependency = runtimeStatus.querySelector('.apps-result-panel .apps-install-record__dep[data-state="blocked"]') as HTMLElement;
         expect(dependency.textContent).toContain('disabled-crm-action');
@@ -5324,7 +5324,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(screen.getAllByText('Skill 鎵ц澶辫触').length).toBeGreaterThan(0));
-        expect(screen.queryByText('Skill 鎵ц涓?)).toBeNull();
+        expect(screen.queryByText('Skill 鎵ц涓')).toBeNull();
         expect(screen.getByText('杩愯鍘嗗彶')).not.toBeNull();
         expect(screen.getByText(/failed-/)).not.toBeNull();
     });
@@ -5332,21 +5332,21 @@ describe('AppsPage', () => {
     it('passes multiple selected files to skill app runs when enabled', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'multi-doc', skill_id: 'multi-tools', name: '澶氭枃妗ｅ鐞?, description: 'Multi files', category: '鏂囨。澶勭悊', icon: 'contract', input_mode: 'file', multiple_files: true, output_modes: ['pdf'] },
+                        { id: 'multi-doc', skill_id: 'multi-tools', name: '澶氭枃妗ｅ鐞', description: 'Multi files', category: '鏂囨。澶勭悊', icon: 'contract', input_mode: 'file', multiple_files: true, output_modes: ['pdf'] },
                     ],
                 }),
             },
         });
         fireEvent.click(screen.getByText('瀹夎'));
         fireEvent.click(screen.getByText('鍏抽棴'));
-        fireEvent.click(screen.getAllByText('澶氭枃妗ｅ鐞?)[0]);
+        fireEvent.click(screen.getAllByText('澶氭枃妗ｅ鐞')[0]);
         const fileInput = container.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
         const first = new File(['one'], 'one.pdf', { type: 'application/pdf' });
         const second = new File(['two'], 'two.pdf', { type: 'application/pdf' });
@@ -5396,15 +5396,15 @@ describe('AppsPage', () => {
                 { id: 'artifact-2', uri: 'artifact://skill-run/run-test-1/artifact-2', name: 'report.pdf', path: '/tmp/report.pdf', status: 'ready', mime_type: 'application/pdf', size_bytes: 2048 },
             ],
             outputs: [
-                { id: 'artifact-1', kind: 'artifact', title: '鏂囦欢浜х墿鍗?, artifact_id: 'artifact-1', artifact: { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' } },
-                { id: 'file-1', kind: 'file', title: '鏂囦欢杈撳嚭鍗?, artifact_id: 'artifact-1', artifact: { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' } },
+                { id: 'artifact-1', kind: 'artifact', title: '鏂囦欢浜х墿鍗', artifact_id: 'artifact-1', artifact: { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' } },
+                { id: 'file-1', kind: 'file', title: '鏂囦欢杈撳嚭鍗', artifact_id: 'artifact-1', artifact: { id: 'artifact-1', uri: 'artifact://skill-run/run-test-1/artifact-1', name: 'out.docx', path: '/tmp/out.docx', status: 'ready' } },
                 { id: 'summary-1', kind: 'text', title: '鎽樿', text: '鐢熸垚瀹屾垚鎽樿', status: 'success' },
             ],
         });
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -5418,16 +5418,16 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('瀹夎'));
         fireEvent.click(screen.getByText('鍏抽棴'));
         fireEvent.click(screen.getAllByText('璇佹嵁宸ュ叿')[0]);
-        fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€?), { target: { value: '鐢熸垚鏂囨。' } });
+        fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€'), { target: { value: '鐢熸垚鏂囨。' } });
         fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(screen.getByText('鎵ц姝ラ')).not.toBeNull());
         expect(screen.getByText('2/2')).not.toBeNull();
         expect(screen.getByText('璇诲彇鏂囦欢')).not.toBeNull();
         expect(screen.getAllByText('鐢熸垚鏂囨。').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('浜х墿宸茬敓鎴?).length).toBeGreaterThanOrEqual(2);
-        expect(screen.queryByText('鏂囦欢浜х墿鍗?)).toBeNull();
-        expect(screen.queryByText('鏂囦欢杈撳嚭鍗?)).toBeNull();
+        expect(screen.getAllByText('浜х墿宸茬敓鎴').length).toBeGreaterThanOrEqual(2);
+        expect(screen.queryByText('鏂囦欢浜х墿鍗')).toBeNull();
+        expect(screen.queryByText('鏂囦欢杈撳嚭鍗')).toBeNull();
         expect(screen.getByText('鎽樿')).not.toBeNull();
         expect(screen.getAllByText('鐢熸垚瀹屾垚鎽樿').length).toBeGreaterThan(0);
         expect(screen.getAllByText('artifact://skill-run/run-test-1/artifact-1').length).toBeGreaterThan(0);
@@ -5460,8 +5460,8 @@ describe('AppsPage', () => {
         });
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -5475,7 +5475,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('瀹夎'));
         fireEvent.click(screen.getByText('鍏抽棴'));
         fireEvent.click(screen.getAllByText('杩滅浜х墿宸ュ叿')[0]);
-        fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€?), { target: { value: '鐢熸垚 PDF' } });
+        fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€'), { target: { value: '鐢熸垚 PDF' } });
         fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(screen.getAllByText('涓嬭浇骞舵墦寮€').length).toBeGreaterThan(0));
@@ -5488,8 +5488,8 @@ describe('AppsPage', () => {
     it('keeps tool app run history capped at eight entries', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -5507,7 +5507,7 @@ describe('AppsPage', () => {
         for (let index = 0; index < 9; index += 1) {
             runNLSkillAsyncMock.mockResolvedValueOnce(`run-history-${index}`);
             getNLSkillRunStatusMock.mockResolvedValueOnce({ run_id: `run-history-${index}`, status: 'success', summary: { last_output_snippet: `done-${index}` } });
-            fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€?), { target: { value: `浠诲姟 ${index}` } });
+            fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€'), { target: { value: `浠诲姟 ${index}` } });
             fireEvent.click(screen.getByText('鎵ц'));
             await waitFor(() => expect(screen.getByText(new RegExp(`run-history-${index}`))).not.toBeNull());
         }
@@ -5521,36 +5521,36 @@ describe('AppsPage', () => {
         getNLSkillRunStatusMock.mockReturnValue(new Promise(() => undefined));
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'long-tool', skill_id: 'long-tools', name: '闀夸换鍔″伐鍏?, description: 'Long run', category: '宸ュ叿', icon: 'sync', input_mode: 'form', output_modes: ['txt'] },
+                        { id: 'long-tool', skill_id: 'long-tools', name: '闀夸换鍔″伐鍏', description: 'Long run', category: '宸ュ叿', icon: 'sync', input_mode: 'form', output_modes: ['txt'] },
                     ],
                 }),
             },
         });
         fireEvent.click(screen.getByText('瀹夎'));
         fireEvent.click(screen.getByText('鍏抽棴'));
-        fireEvent.click(screen.getAllByText('闀夸换鍔″伐鍏?)[0]);
-        fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€?), { target: { value: '鎸佺画澶勭悊' } });
+        fireEvent.click(screen.getAllByText('闀夸换鍔″伐鍏')[0]);
+        fireEvent.change(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€'), { target: { value: '鎸佺画澶勭悊' } });
         fireEvent.click(screen.getByText('鎵ц'));
 
         const cancelButton = await screen.findByText('鍙栨秷鎵ц');
         fireEvent.click(cancelButton);
 
         await waitFor(() => expect(cancelNLSkillRunMock).toHaveBeenCalledWith('run-test-1'));
-        expect(screen.getAllByText('Skill 宸插彇娑?).length).toBeGreaterThan(0);
+        expect(screen.getAllByText('Skill 宸插彇娑').length).toBeGreaterThan(0);
     });
 
     it('renders mixed tool apps with file and parameter inputs', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -5566,7 +5566,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getAllByText('娣峰悎宸ュ叿')[0]);
 
         expect(container.querySelector('.apps-drop-zone')).not.toBeNull();
-        expect(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€?)).not.toBeNull();
+        expect(screen.getByPlaceholderText('杈撳叆澶勭悊瑕佹眰鎴栬〃鍗曞弬鏁般€')).not.toBeNull();
     });
 
     it('runs an enterprise app with dynamic DataSrv capability binding', async () => {
@@ -5575,7 +5575,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getAllByText('鎶ラ攢鐢宠')[0]);
         fireEvent.change(screen.getByDisplayValue('OA'), { target: { value: '璐圭敤鎶ラ攢' } });
         fireEvent.change(screen.getByDisplayValue('鏂板缓璁板綍'), { target: { value: 'report' } });
-        fireEvent.change(container.querySelector('.apps-preview__mock textarea') as HTMLTextAreaElement, { target: { value: '鐢熸垚鏈湀鎶ラ攢姹囨€? } });
+        fireEvent.change(container.querySelector('.apps-preview__mock textarea') as HTMLTextAreaElement, { target: { value: '鐢熸垚鏈湀鎶ラ攢姹囨€' } });
         fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(screen.getByText(/宸叉彁浜?)).not.toBeNull());
@@ -5600,7 +5600,7 @@ describe('AppsPage', () => {
 
         expect(container.querySelector('.apps-business-workspace')).not.toBeNull();
         expect(container.querySelector('.apps-approval-workspace')).toBeNull();
-        expect(screen.getByText('涓氬姟宸ヤ綔鍙?)).not.toBeNull();
+        expect(screen.getByText('涓氬姟宸ヤ綔鍙')).not.toBeNull();
         expect(screen.getAllByText('procurement').length).toBeGreaterThan(0);
         expect(screen.getAllByText('procurement.purchase_orders').length).toBeGreaterThan(0);
         expect(screen.getAllByText('procurement.purchase_order_upsert').length).toBeGreaterThan(0);
@@ -5622,7 +5622,7 @@ describe('AppsPage', () => {
         expect(screen.getByText('business_view')).not.toBeNull();
         expect(screen.getByText('缁撴灉绫诲瀷')).not.toBeNull();
         expect(screen.getAllByText('business_record').length).toBeGreaterThan(0);
-        expect(screen.getByText('璁板綍鏁?)).not.toBeNull();
+        expect(screen.getByText('璁板綍鏁')).not.toBeNull();
         expect(screen.getByText('PO-100')).not.toBeNull();
         expect(screen.queryByText('PO-101')).toBeNull();
 		expect(container.querySelector('.apps-run-history')).not.toBeNull();
@@ -5652,7 +5652,7 @@ describe('AppsPage', () => {
     it('publishes enterprise normal app evidence from an actual DataSrv business run', async () => {
         const app = {
             id: 'normal-run-publish-app',
-            name: '瀹㈡埛缁害宸ヤ綔鍙?,
+            name: '瀹㈡埛缁害宸ヤ綔鍙',
             description: 'Run and publish a normal enterprise app with standard result package',
             category: 'CRM',
             kind: 'enterprise_normal_app',
@@ -5729,7 +5729,7 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getAllByText('瀹㈡埛缁害宸ヤ綔鍙?)[0]);
+        fireEvent.click(screen.getAllByText('瀹㈡埛缁害宸ヤ綔鍙')[0]);
         fireEvent.click(screen.getByText('鎵ц'));
 
         await waitFor(() => expect(executeMaclawAppBusinessOperationMock).toHaveBeenCalled());
@@ -5755,11 +5755,11 @@ describe('AppsPage', () => {
             });
         });
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('瀹℃牳/鍙戝竷'));
-        const readyCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('瀹㈡埛缁害宸ヤ綔鍙?)) as HTMLElement;
+        const readyCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('瀹㈡埛缁害宸ヤ綔鍙')) as HTMLElement;
         expect(readyCard).toBeTruthy();
-        expect(within(readyCard).getByText('鍙彁浜?)).not.toBeNull();
+        expect(within(readyCard).getByText('鍙彁浜')).not.toBeNull();
         fireEvent.click(within(readyCard).getByText('鎻愪氦瀹℃牳'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
@@ -5829,8 +5829,8 @@ describe('AppsPage', () => {
 	it('runs enterprise normal appSkills with MIS business payloads', async () => {
 		render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -5839,7 +5839,7 @@ describe('AppsPage', () => {
                     installUnit: 'enterprise_app_pack',
                     app: {
                         id: 'customer-op',
-                        name: '瀹㈡埛鎿嶄綔鍙?,
+                        name: '瀹㈡埛鎿嶄綔鍙',
                         description: 'Run customer operations through a business skill',
                         category: 'CRM',
                         kind: 'enterprise_normal_app',
@@ -5856,7 +5856,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('瀹夎'));
         await waitFor(() => expect(screen.getByText('宸插畨瑁? 1 路 宸茶烦杩? 0')).not.toBeNull());
         fireEvent.click(screen.getByText('鍏抽棴'));
-        fireEvent.click(screen.getAllByText('瀹㈡埛鎿嶄綔鍙?)[0]);
+        fireEvent.click(screen.getAllByText('瀹㈡埛鎿嶄綔鍙')[0]);
         fireEvent.change(screen.getByPlaceholderText('杈撳叆涓氬姟鎰忓浘锛孉gent 鐢熸垚鍔ㄦ€佺晫闈㈠苟閫氳繃 DataSrv 鎵ц銆?), { target: { value: '琛ュ叏瀹㈡埛鑱旂郴浜? } });
         fireEvent.click(screen.getByText('鎵ц'));
 
@@ -5865,7 +5865,7 @@ describe('AppsPage', () => {
             app_kind: 'enterprise_normal_app',
             business_entity: 'CRM',
             business_action: 'create',
-            business_note: '琛ュ叏瀹㈡埛鑱旂郴浜?,
+            business_note: '琛ュ叏瀹㈡埛鑱旂郴浜',
             object_role: 'customer',
             action_role: 'sales.customer_upsert',
             datasrv_domain: 'sales',
@@ -6135,7 +6135,7 @@ describe('AppsPage', () => {
     it('persists app order changes from app studio management', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const manageRows = document.querySelectorAll('.apps-manage-row');
@@ -6145,7 +6145,7 @@ describe('AppsPage', () => {
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const nextRows = document.querySelectorAll('.apps-manage-row');
@@ -6156,7 +6156,7 @@ describe('AppsPage', () => {
     it('moves apps directly to the top and bottom from app studio management', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const inventoryRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('搴撳瓨鐩樼偣')) as HTMLElement;
@@ -6172,7 +6172,7 @@ describe('AppsPage', () => {
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const persistedRows = document.querySelectorAll('.apps-manage-row');
@@ -6182,7 +6182,7 @@ describe('AppsPage', () => {
     it('filters app studio management by search and category', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const manageSearch = document.querySelector('.apps-manage-filter .apps-search') as HTMLInputElement;
@@ -6193,7 +6193,7 @@ describe('AppsPage', () => {
         expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('鏁版嵁鍒嗘瀽 (1)')).not.toBeNull();
         expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('娉曞姟 (1)')).not.toBeNull();
         expect((within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('OA (0)') as HTMLOptionElement).disabled).toBe(true);
-        expect(screen.getByText('鎼滅储鈥減df鈥?路 4 涓尮閰?)).not.toBeNull();
+        expect(screen.getByText('鎼滅储鈥減df鈥?路 4 涓尮閰')).not.toBeNull();
 
         expect(screen.getAllByText('PDF 杞?Word').length).toBeGreaterThan(0);
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('鎶ラ攢鐢宠'))).toBe(false);
@@ -6206,7 +6206,7 @@ describe('AppsPage', () => {
         expect(within(document.querySelector('.apps-manage-row') as HTMLElement).queryByTitle('娓呯┖绛涢€夊悗璋冩暣椤哄簭')).toBeNull();
 
         fireEvent.change(document.querySelector('.apps-manage-category-select') as HTMLSelectElement, { target: { value: '鏂囨。澶勭悊' } });
-        expect(screen.getByText('鏂囨。澶勭悊 路 2 涓簲鐢?)).not.toBeNull();
+        expect(screen.getByText('鏂囨。澶勭悊 路 2 涓簲鐢')).not.toBeNull();
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).map((row) => row.textContent || '').join('\n')).toContain('鏂囨。鑴辨晱');
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('閲囪喘鍏ュ簱'))).toBe(false);
 
@@ -6215,11 +6215,11 @@ describe('AppsPage', () => {
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('閲囪喘鍏ュ簱'))).toBe(true);
 
         fireEvent.change(manageSearch, { target: { value: 'no-such-app' } });
-        expect(screen.getByText('娌℃湁鍖归厤鐨勫簲鐢?)).not.toBeNull();
-        fireEvent.click(within(document.querySelector('.apps-manage-filter') as HTMLElement).getByTitle('閲嶇疆绛涢€?));
+        expect(screen.getByText('娌℃湁鍖归厤鐨勫簲鐢')).not.toBeNull();
+        fireEvent.click(within(document.querySelector('.apps-manage-filter') as HTMLElement).getByTitle('閲嶇疆绛涢€'));
         expect(manageSearch.value).toBe('');
         expect((document.querySelector('.apps-manage-category-select') as HTMLSelectElement).value).toBe('all');
-        expect((within(document.querySelector('.apps-manage-filter') as HTMLElement).getByTitle('閲嶇疆绛涢€?) as HTMLButtonElement).disabled).toBe(true);
+        expect((within(document.querySelector('.apps-manage-filter') as HTMLElement).getByTitle('閲嶇疆绛涢€') as HTMLButtonElement).disabled).toBe(true);
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('鎶ラ攢鐢宠'))).toBe(true);
         fireEvent.change(manageSearch, { target: { value: 'xlsx' } });
         fireEvent.keyDown(manageSearch, { key: 'Escape' });
@@ -6229,7 +6229,7 @@ describe('AppsPage', () => {
     it('shows app manifest definitions from app studio management', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const manageRows = document.querySelectorAll('.apps-manage-row');
@@ -6276,12 +6276,12 @@ describe('AppsPage', () => {
     it('edits built-in app metadata from app studio management and persists it', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const manageRows = document.querySelectorAll('.apps-manage-row');
         fireEvent.click(within(manageRows[0] as HTMLElement).getByTitle('缂栬緫'));
-        fireEvent.change(screen.getByDisplayValue('鎶ラ攢鐢宠'), { target: { value: '璐圭敤鎶ラ攢鍙? } });
+        fireEvent.change(screen.getByDisplayValue('鎶ラ攢鐢宠'), { target: { value: '璐圭敤鎶ラ攢鍙' } });
         fireEvent.change(screen.getByDisplayValue('OA'), { target: { value: '璐㈠姟' } });
         fireEvent.change(screen.getByDisplayValue('浠庡彂绁ㄣ€佽绋嬪拰鏀跨瓥鑷姩鐢熸垚鎶ラ攢鍗曘€?), { target: { value: '缁熶竴澶勭悊璐圭敤鎶ラ攢鍙? } });
         expect(screen.getByRole('button', { name: '琛ㄦ牸/鏁版嵁 (sheet)' })).not.toBeNull();
@@ -6289,13 +6289,13 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByTitle('鐞ョ弨 #b45309'));
         fireEvent.click(screen.getByText('淇濆瓨'));
 
-        expect(screen.getAllByText('璐圭敤鎶ラ攢鍙?).length).toBeGreaterThan(0);
+        expect(screen.getAllByText('璐圭敤鎶ラ攢鍙').length).toBeGreaterThan(0);
 
-        const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('璐圭敤鎶ラ攢鍙?)) as HTMLElement;
+        const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('璐圭敤鎶ラ攢鍙')) as HTMLElement;
         expect(editedRow.textContent).toContain('璐㈠姟');
         fireEvent.click(within(editedRow).getByTitle('Manifest'));
         const manifest = document.querySelector('.apps-manage-manifest')?.textContent || '';
-        expect(manifest).toContain('"name": "璐圭敤鎶ラ攢鍙?);
+        expect(manifest).toContain('"name": "璐圭敤鎶ラ攢鍙');
         expect(manifest).toContain('"category": "璐㈠姟"');
         expect(manifest).toContain('"icon": "sheet"');
         expect(manifest).toContain('"accent": "#b45309"');
@@ -6303,14 +6303,14 @@ describe('AppsPage', () => {
         unmount();
         render(<AppsPage lang="zh-Hans" />);
 
-        expect(screen.getAllByText('璐圭敤鎶ラ攢鍙?).length).toBeGreaterThan(0);
+        expect(screen.getAllByText('璐圭敤鎶ラ攢鍙').length).toBeGreaterThan(0);
         expect(screen.queryByText('鎶ラ攢鐢宠')).toBeNull();
     });
 
     it('duplicates an app from app studio management and keeps the source skill binding', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word')) as HTMLElement;
@@ -6343,7 +6343,7 @@ describe('AppsPage', () => {
     it('deletes duplicated local apps and clears their run history', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word')) as HTMLElement;
@@ -6370,7 +6370,7 @@ describe('AppsPage', () => {
     it('edits tool app runtime modes from app studio management', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word')) as HTMLElement;
@@ -6396,7 +6396,7 @@ describe('AppsPage', () => {
     it('edits app studio layout visually and persists it', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word')) as HTMLElement;
@@ -6741,7 +6741,7 @@ describe('AppsPage', () => {
     it('edits tool app structured fields from app studio management', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 杞?Word')) as HTMLElement;
@@ -6751,7 +6751,7 @@ describe('AppsPage', () => {
         fireEvent.click(within(editPane).getByText('娣诲姞瀛楁'));
         const fieldEditor = within(editPane).getByPlaceholderText('customer_id').closest('.apps-field-editor') as HTMLElement;
         fireEvent.change(within(fieldEditor).getByPlaceholderText('customer_id'), { target: { value: 'review_level' } });
-        fireEvent.change(within(fieldEditor).getByPlaceholderText('鏄剧ず鍚?), { target: { value: '瀹℃牳绛夌骇' } });
+        fireEvent.change(within(fieldEditor).getByPlaceholderText('鏄剧ず鍚'), { target: { value: '瀹℃牳绛夌骇' } });
         fireEvent.change(within(fieldEditor).getByDisplayValue('text'), { target: { value: 'select' } });
         fireEvent.change(within(fieldEditor).getByPlaceholderText('A, B, C'), { target: { value: '鏅€?涓ユ牸' } });
         fireEvent.click(within(fieldEditor).getByText('蹇呭～'));
@@ -6769,16 +6769,16 @@ describe('AppsPage', () => {
     it('copies the installed apps as an app pack manifest', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
-        fireEvent.click(screen.getByText('澶嶅埗搴旂敤鍖?));
+        fireEvent.click(screen.getByText('澶嶅埗搴旂敤鍖'));
 
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
         const copied = String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || '');
         expect(copied).toContain('maclaw.app.pack.v1');
         expect(copied).toContain('鎶ラ攢鐢宠');
         expect(copied).toContain('"governance"');
-        expect(screen.getByText('宸插鍒?)).not.toBeNull();
+        expect(screen.getByText('宸插鍒')).not.toBeNull();
     });
 
     it('keeps explicit enterprise skill dependency metadata when exporting an app pack', async () => {
@@ -6818,9 +6818,9 @@ describe('AppsPage', () => {
         }));
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
-        fireEvent.click(screen.getByText('澶嶅埗搴旂敤鍖?));
+        fireEvent.click(screen.getByText('澶嶅埗搴旂敤鍖'));
 
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
         const copied = JSON.parse(String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || '{}'));
@@ -6834,13 +6834,13 @@ describe('AppsPage', () => {
     it('shows market apps as a list and adds one to the panel', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
 
         expect(screen.getByText('搴旂敤甯傚満')).not.toBeNull();
         expect(screen.getByText('鍚堝悓褰掓。')).not.toBeNull();
         expect(screen.getByText('鍙坊鍔?4 路 鍙崌绾?0')).not.toBeNull();
-        const importPackage = screen.getByText('瀵煎叆搴旂敤鍖?).closest('details') as HTMLDetailsElement;
+        const importPackage = screen.getByText('瀵煎叆搴旂敤鍖').closest('details') as HTMLDetailsElement;
         expect(importPackage.open).toBe(false);
 
         const row = screen.getByText('鍚堝悓褰掓。').closest('.apps-market-row') as HTMLElement;
@@ -7110,19 +7110,19 @@ describe('AppsPage', () => {
         });
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         const row = screen.getByText('鍚堝悓褰掓。').closest('.apps-market-row') as HTMLElement;
         fireEvent.click(within(row).getByRole('button', { name: '娣诲姞: 鍚堝悓褰掓。' }));
 
         await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
         expect(recordMaclawAppInstallMock).not.toHaveBeenCalled();
-        expect(within(row).getByText('鍚堝悓褰掓。鏆備笉鍙敤锛歝ontract-archive 鏈畨瑁呮垨宸插仠鐢ㄣ€?)).not.toBeNull();
+        expect(within(row).getByText('鍚堝悓褰掓。鏆備笉鍙敤锛歝ontract-archive 鏈畨瑁呮垨宸插仠鐢ㄣ€')).not.toBeNull();
         const dependencyList = row.querySelector('.apps-install-record__deps') as HTMLElement;
         expect(dependencyList).not.toBeNull();
         const dependency = within(dependencyList).getByText('contract-archive').closest('.apps-install-record__dep') as HTMLElement;
         expect(dependency.dataset.state).toBe('blocked');
-        expect(within(dependency).getByText('涓嶅彲鐢?)).not.toBeNull();
+        expect(within(dependency).getByText('涓嶅彲鐢')).not.toBeNull();
         expect(dependency.textContent).toContain('runtime_skill 路 hub 路 v1.2.0 路 disabled');
         expect(row.getAttribute('data-state')).toBe('blocked');
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
@@ -7132,8 +7132,8 @@ describe('AppsPage', () => {
     it('installs an app from a pasted market manifest', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -7175,8 +7175,8 @@ describe('AppsPage', () => {
         });
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -7251,8 +7251,8 @@ describe('AppsPage', () => {
             fireEvent.click(screen.getByRole('menuitem', { name: '璁句负甯哥敤' }));
         }
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -7279,7 +7279,7 @@ describe('AppsPage', () => {
 
         expect(screen.getByText('8/8')).not.toBeNull();
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('甯傚満缃《鏂囨。')) as HTMLElement;
-        expect(within(row).getByTitle('甯哥敤搴旂敤宸叉弧 8 涓紝璇峰厛鍙栨秷涓€涓?)).not.toBeNull();
+        expect(within(row).getByTitle('甯哥敤搴旂敤宸叉弧 8 涓紝璇峰厛鍙栨秷涓€涓')).not.toBeNull();
         fireEvent.click(within(row).getByTitle('Manifest'));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
         expect(manifest.app.panel.pinned).toBe(false);
@@ -7288,8 +7288,8 @@ describe('AppsPage', () => {
     it('installs tool apps from a pasted maclaw.apps.json manifest', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -7330,8 +7330,8 @@ describe('AppsPage', () => {
     it('upgrades installed market apps when a higher manifest version is pasted', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -7340,7 +7340,7 @@ describe('AppsPage', () => {
                     installUnit: 'skill',
                     app: {
                         id: 'doc-redact',
-                        name: '鏂囨。鑴辨晱澧炲己鐗?,
+                        name: '鏂囨。鑴辨晱澧炲己鐗',
                         version: 2,
                         description: 'Updated redaction workflow',
                         category: '甯傚満鍒嗙被',
@@ -7359,19 +7359,19 @@ describe('AppsPage', () => {
         expect(screen.getByText(/灏嗗崌绾?v1 -> v2/)).not.toBeNull();
         expect(screen.getByText(/鏉冮檺鍙樺寲: \+admin-doc-redact-v2 路 楂橀闄? admin-doc-redact-v2/)).not.toBeNull();
         fireEvent.click(screen.getByText('瀹夎'));
-        await waitFor(() => expect(screen.getByText('閫変腑鐨勫崌绾у寘鍖呭惈楂橀闄╂柊鏉冮檺锛岄渶鍐嶆纭銆?)).not.toBeNull());
-        expect(screen.getByText('閫変腑鐨勫崌绾у寘鍖呭惈楂橀闄╂柊鏉冮檺锛岄渶鍐嶆纭銆?).closest('[role="alert"]')).not.toBeNull();
+        await waitFor(() => expect(screen.getByText('閫変腑鐨勫崌绾у寘鍖呭惈楂橀闄╂柊鏉冮檺锛岄渶鍐嶆纭銆')).not.toBeNull());
+        expect(screen.getByText('閫変腑鐨勫崌绾у寘鍖呭惈楂橀闄╂柊鏉冮檺锛岄渶鍐嶆纭銆').closest('[role="alert"]')).not.toBeNull();
         expect(screen.queryByText('宸插畨瑁? 0 路 宸插崌绾? 1 路 宸茶烦杩? 0')).toBeNull();
         fireEvent.click(screen.getByText('纭瀹夎'));
         expect(screen.getByText('宸插畨瑁? 0 路 宸插崌绾? 1 路 宸茶烦杩? 0')).not.toBeNull();
         expect(screen.getByRole('status').getAttribute('aria-live')).toBe('polite');
         const upgradeResult = document.querySelector('.apps-install-result') as HTMLElement;
-        expect(within(upgradeResult).getByText('鏂囨。鑴辨晱澧炲己鐗?)).not.toBeNull();
-        expect(within(upgradeResult).getByText('宸插崌绾?)).not.toBeNull();
+        expect(within(upgradeResult).getByText('鏂囨。鑴辨晱澧炲己鐗')).not.toBeNull();
+        expect(within(upgradeResult).getByText('宸插崌绾')).not.toBeNull();
         expect(within(upgradeResult).getByText('宸插崌绾?v1 -> v2')).not.toBeNull();
 
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
-        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('鏂囨。鑴辨晱澧炲己鐗?)) as HTMLElement;
+        const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('鏂囨。鑴辨晱澧炲己鐗')) as HTMLElement;
         expect(row).toBeTruthy();
         expect(row.textContent).toContain('鏂囨。澶勭悊');
         fireEvent.click(within(row).getByTitle('Manifest'));
@@ -7438,8 +7438,8 @@ describe('AppsPage', () => {
     it('previews manifest apps before installing from market', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -7457,7 +7457,7 @@ describe('AppsPage', () => {
         expect(screen.getByText('鍙畨瑁?1 路 鍙崌绾?0 路 灏嗚烦杩?1')).not.toBeNull();
         expect(screen.getByText('棰勮鏂囨。')).not.toBeNull();
         expect(screen.getByText('棰勮鏂囨。鍓湰')).not.toBeNull();
-        expect(screen.getByText('灏嗗畨瑁?)).not.toBeNull();
+        expect(screen.getByText('灏嗗畨瑁')).not.toBeNull();
         expect(screen.getByText('灏嗚烦杩?路 閲嶅搴旂敤')).not.toBeNull();
         const duplicateRow = screen.getByText('棰勮鏂囨。鍓湰').closest('.apps-install-preview__row') as HTMLElement;
         expect(duplicateRow.title).toBe('灏嗚烦杩?路 閲嶅搴旂敤');
@@ -7467,14 +7467,14 @@ describe('AppsPage', () => {
     it('installs only selected apps from the market preview', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
                     x_maclaw_apps: 'v1',
                     apps: [
-                        { id: 'optional-doc', skill_id: 'doc-tools', name: '鍙€夋枃妗?, description: 'Optional doc', category: '鏂囨。澶勭悊', icon: 'contract', input_mode: 'file' },
+                        { id: 'optional-doc', skill_id: 'doc-tools', name: '鍙€夋枃妗', description: 'Optional doc', category: '鏂囨。澶勭悊', icon: 'contract', input_mode: 'file' },
                         { id: 'kept-doc', skill_id: 'doc-tools', name: '淇濈暀鏂囨。', description: 'Kept doc', category: '鏂囨。澶勭悊', icon: 'sheet', input_mode: 'file' },
                     ],
                 }),
@@ -7490,12 +7490,12 @@ describe('AppsPage', () => {
 
         expect(screen.getByText('宸插畨瑁? 1 路 宸茶烦杩? 1')).not.toBeNull();
         const installResult = document.querySelector('.apps-install-result') as HTMLElement;
-        expect(within(installResult).getByText('鍙€夋枃妗?)).not.toBeNull();
-        expect(within(installResult).getByText('宸茶烦杩?)).not.toBeNull();
+        expect(within(installResult).getByText('鍙€夋枃妗')).not.toBeNull();
+        expect(within(installResult).getByText('宸茶烦杩')).not.toBeNull();
         expect(within(installResult).getByText('鏈€夋嫨')).not.toBeNull();
         expect(within(installResult).getByText('淇濈暀鏂囨。')).not.toBeNull();
         fireEvent.click(screen.getByText('鍏抽棴'));
-        expect(screen.queryByText('鍙€夋枃妗?)).toBeNull();
+        expect(screen.queryByText('鍙€夋枃妗')).toBeNull();
         expect(screen.getAllByText('淇濈暀鏂囨。').length).toBeGreaterThan(0);
     });
 
@@ -7833,7 +7833,7 @@ describe('AppsPage', () => {
             source: 'market',
             installed_at: '2026-06-27T09:05:00Z',
             app_count: 1,
-            apps: [{ id: 'market-contract-archive', name: '閸氬牆鎮撹ぐ鎺撱€?, kind: 'tool_app' }],
+            apps: [{ id: 'market-contract-archive', name: '閸氬牆鎮撹ぐ鎺撱€', kind: 'tool_app' }],
             dependencies: installPlan.dependencies,
             dependency_verification: {
                 schema: 'maclaw.app.install_plan.v1',
@@ -7884,7 +7884,7 @@ describe('AppsPage', () => {
             expect(installed?.installEvidence?.package_sha256).toBe('sha256-top-level-install');
             expect(installed?.installEvidence?.source).toBe('market');
             expect(installed?.installEvidence?.installed_at).toBe('2026-06-27T09:05:00Z');
-            expect(installed?.installEvidence?.apps).toEqual([{ id: 'market-contract-archive', name: '閸氬牆鎮撹ぐ鎺撱€?, kind: 'tool_app' }]);
+            expect(installed?.installEvidence?.apps).toEqual([{ id: 'market-contract-archive', name: '閸氬牆鎮撹ぐ鎺撱€', kind: 'tool_app' }]);
             expect(installed?.installEvidence?.test_evidence?.run_id).toBe('run-top-level-install');
             expect(installed?.installEvidence?.dependency_verification?.dependencies).toHaveLength(1);
             expect(installed?.installEvidence?.dependency_verification?.dependencies?.[0]?.id).toBe('contract-archive-skill');
@@ -8112,8 +8112,8 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -8122,7 +8122,7 @@ describe('AppsPage', () => {
                     installUnit: 'skill',
                     app: {
                         id: 'inactive-market-app',
-                        name: '涓嶅彲鐢ㄤ緷璧栧簲鐢?,
+                        name: '涓嶅彲鐢ㄤ緷璧栧簲鐢',
                         description: 'Dependency is disabled',
                         category: '鏂囨。澶勭悊',
                         kind: 'tool_app',
@@ -8274,8 +8274,8 @@ describe('AppsPage', () => {
     it('supports select all and select none in market install preview', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -8290,11 +8290,11 @@ describe('AppsPage', () => {
 
         expect(screen.getByText('2/2')).not.toBeNull();
         expect(screen.getByText('鍙畨瑁?2 路 鍙崌绾?0 路 灏嗚烦杩?0')).not.toBeNull();
-        fireEvent.click(screen.getByText('鍏ㄤ笉閫?));
+        fireEvent.click(screen.getByText('鍏ㄤ笉閫'));
         expect(screen.getByText('0/2')).not.toBeNull();
         expect(screen.getByText('鍙畨瑁?2 路 鍙崌绾?0 路 灏嗚烦杩?2')).not.toBeNull();
         expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
-        fireEvent.click(screen.getByText('鍏ㄩ€?));
+        fireEvent.click(screen.getByText('鍏ㄩ€'));
         expect(screen.getByText('2/2')).not.toBeNull();
         expect(screen.getByText('鍙畨瑁?2 路 鍙崌绾?0 路 灏嗚烦杩?0')).not.toBeNull();
         expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(false);
@@ -8343,8 +8343,8 @@ describe('AppsPage', () => {
     it('uses installed skill app output modes in the runtime UI', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -8491,8 +8491,8 @@ describe('AppsPage', () => {
     it('installs apps from a pasted app pack manifest', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -8527,8 +8527,8 @@ describe('AppsPage', () => {
     it('skips duplicate apps when installing pasted manifests', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         const manifest = JSON.stringify({
             x_maclaw_apps: 'v1',
             apps: [
@@ -8542,20 +8542,20 @@ describe('AppsPage', () => {
         expect(screen.getByText('宸插畨瑁? 1 路 宸茶烦杩? 1')).not.toBeNull();
 
         fireEvent.click(screen.getByText('鍏抽棴'));
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), { target: { value: manifest } });
 
         expect(screen.getByText('0/2')).not.toBeNull();
-        expect(screen.getAllByText('灏嗚烦杩?路 宸插畨瑁?).length).toBeGreaterThan(0);
+        expect(screen.getAllByText('灏嗚烦杩?路 宸插畨瑁').length).toBeGreaterThan(0);
         expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
     });
 
     it('treats market-prefixed and built-in app ids as the same install identity', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -8576,16 +8576,16 @@ describe('AppsPage', () => {
         });
 
         expect(screen.getByText('0/1')).not.toBeNull();
-        expect(screen.getByText('灏嗚烦杩?路 宸插畨瑁?)).not.toBeNull();
+        expect(screen.getByText('灏嗚烦杩?路 宸插畨瑁')).not.toBeNull();
         expect((screen.getByText('瀹夎') as HTMLButtonElement).disabled).toBe(true);
     });
 
     it('shows detailed errors for invalid pasted manifests', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
-        expect(screen.getByLabelText('瀹夎搴旂敤鍖?)).not.toBeNull();
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
+        expect(screen.getByLabelText('瀹夎搴旂敤鍖')).not.toBeNull();
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), { target: { value: '{bad json' } });
 
         expect(screen.getByText('搴旂敤鍖呮棤鏁? JSON 瑙ｆ瀽澶辫触')).not.toBeNull();
@@ -8739,8 +8739,8 @@ describe('AppsPage', () => {
     it('shows detailed errors for invalid app pack manifests', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
-        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
+        fireEvent.click(screen.getByText('浠庡競鍦烘坊鍔'));
         fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
             target: {
                 value: JSON.stringify({
@@ -8760,7 +8760,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getByText('鏁版嵁鍚屾'));
         expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('鏁版嵁鍚屾');
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         const dataSyncRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('鏁版嵁鍚屾')) as HTMLElement;
@@ -8859,7 +8859,7 @@ describe('AppsPage', () => {
     it('disables apps without hiding entries, blocks launch, and persists the disabled state', () => {
         const { container, unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
         const dataSyncRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('鏁版嵁鍚屾')) as HTMLElement;
         fireEvent.click(within(dataSyncRow).getByTitle('鍋滅敤'));
@@ -8868,7 +8868,7 @@ describe('AppsPage', () => {
         const disabledTile = screen.getAllByText('鏁版嵁鍚屾')[0].closest('.apps-app-tile') as HTMLButtonElement;
         expect(disabledTile).not.toBeNull();
         expect(disabledTile.getAttribute('data-status')).toBe('disabled');
-        expect(disabledTile.title).toContain('浼佷笟绠＄悊鍛樺凡鍋滅敤姝ゅ簲鐢?);
+        expect(disabledTile.title).toContain('浼佷笟绠＄悊鍛樺凡鍋滅敤姝ゅ簲鐢');
         fireEvent.click(disabledTile);
         expect(container.querySelector('.apps-runtime-tab')?.textContent || '').not.toContain('鏁版嵁鍚屾');
 
@@ -8881,7 +8881,7 @@ describe('AppsPage', () => {
         const persistedTile = screen.getAllByText('鏁版嵁鍚屾')[0].closest('.apps-app-tile') as HTMLButtonElement;
         expect(persistedTile.getAttribute('data-status')).toBe('disabled');
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
         const persistedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('鏁版嵁鍚屾')) as HTMLElement;
         fireEvent.click(within(persistedRow).getByTitle('鍚敤'));
@@ -8895,12 +8895,12 @@ describe('AppsPage', () => {
     it('restores hidden built-in apps from app studio management', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
         const webCollectRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('缃戦〉閲囬泦')) as HTMLElement;
         fireEvent.click(within(webCollectRow).getByTitle('闅愯棌'));
 
-        expect(screen.getByText('宸查殣钘忓簲鐢?)).not.toBeNull();
+        expect(screen.getByText('宸查殣钘忓簲鐢')).not.toBeNull();
         const hiddenRow = Array.from(document.querySelectorAll('.apps-manage-row--hidden')).find((row) => row.textContent?.includes('缃戦〉閲囬泦')) as HTMLElement;
         fireEvent.click(within(hiddenRow).getByTitle('鎭㈠'));
         fireEvent.click(screen.getByText('鍏抽棴'));
@@ -8916,7 +8916,7 @@ describe('AppsPage', () => {
     it('filters hidden apps in app studio management', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
         const dataSyncRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('鏁版嵁鍚屾')) as HTMLElement;
         fireEvent.click(within(dataSyncRow).getByTitle('闅愯棌'));
@@ -8924,8 +8924,8 @@ describe('AppsPage', () => {
         const manageSearch = document.querySelector('.apps-manage-filter .apps-search') as HTMLInputElement;
         fireEvent.change(manageSearch, { target: { value: 'sync' } });
 
-        expect(screen.getByText('宸查殣钘忓簲鐢?)).not.toBeNull();
-        expect(screen.queryByText('娌℃湁鍖归厤鐨勫簲鐢?)).toBeNull();
+        expect(screen.getByText('宸查殣钘忓簲鐢')).not.toBeNull();
+        expect(screen.queryByText('娌℃湁鍖归厤鐨勫簲鐢')).toBeNull();
         expect(document.querySelector('.apps-manage-toolbar .apps-count')?.textContent).toBe('1/10');
         expect(Array.from(document.querySelectorAll('.apps-manage-row--hidden')).some((row) => row.textContent?.includes('鏁版嵁鍚屾'))).toBe(true);
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('缃戦〉閲囬泦'))).toBe(false);
@@ -8938,13 +8938,13 @@ describe('AppsPage', () => {
     it('keeps pinned apps capped at two rows', () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
         fireEvent.click(screen.getByText('搴旂敤绠＄悊'));
 
         fireEvent.click(within(document.querySelectorAll('.apps-manage-row')[6] as HTMLElement).getByTitle('缃《'));
         fireEvent.click(within(document.querySelectorAll('.apps-manage-row')[7] as HTMLElement).getByTitle('缃《'));
 
-        const pinButton = within(document.querySelectorAll('.apps-manage-row')[8] as HTMLElement).getByTitle('甯哥敤搴旂敤宸叉弧 8 涓紝璇峰厛鍙栨秷涓€涓?) as HTMLButtonElement;
+        const pinButton = within(document.querySelectorAll('.apps-manage-row')[8] as HTMLElement).getByTitle('甯哥敤搴旂敤宸叉弧 8 涓紝璇峰厛鍙栨秷涓€涓') as HTMLButtonElement;
         expect(pinButton.disabled).toBe(true);
         fireEvent.click(pinButton);
 
@@ -8967,12 +8967,12 @@ describe('AppsPage', () => {
         vi.stubGlobal('fetch', fetchMock);
 
         render(<AppsPage lang="zh-Hans" />);
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
 
-        await waitFor(() => expect(screen.getByText('鍙敓鎴愬簲鐢?)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('鍙敓鎴愬簲鐢')).not.toBeNull());
         fireEvent.click(screen.getByText('鍔犲埌闈㈡澘'));
 
-        expect(screen.getByText('宸叉坊鍔?)).not.toBeNull();
+        expect(screen.getByText('宸叉坊鍔')).not.toBeNull();
         fireEvent.click(screen.getByText('鍏抽棴'));
         expect(screen.getAllByText('浜轰簨').length).toBeGreaterThan(0);
     });
@@ -9464,7 +9464,7 @@ describe('AppsPage', () => {
         ]);
 
         render(<AppsPage lang="zh-Hans" />);
-        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹?));
+        fireEvent.click(screen.getByTitle('搴旂敤绋嬪簭宸ヤ綔瀹'));
 
         await waitFor(() => expect(screen.getByText('鏂囨。鑴辨晱 Plus')).not.toBeNull());
         await waitFor(() => expect(screen.getByText('\u5df2\u52a0\u5165\u9762\u677f')).not.toBeNull());
@@ -9473,4 +9473,3 @@ describe('AppsPage', () => {
         expect(screen.getAllByText('鏂囨。鑴辨晱 Plus').length).toBeGreaterThan(0);
     });
 });
-
