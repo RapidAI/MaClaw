@@ -197,7 +197,9 @@ func (c *RemoteHubClient) Connect() error {
 	go c.SyncSessions()
 	go c.SyncLaunchProjects()
 	go c.SyncTools()
-	c.app.TriggerHubManagedCapabilitySync("hub-connect")
+	if c.app.shouldAutoSyncHubManagedCapabilitiesOnConnect() {
+		c.app.TriggerHubManagedCapabilitySync("hub-connect")
+	}
 	c.startPreviewFlusher()
 
 	// Re-send IM gateway claims for any already-connected gateways that are
@@ -576,7 +578,9 @@ func (c *RemoteHubClient) ConnectAuthOnly() error {
 	go c.SyncSessions()
 	go c.SyncLaunchProjects()
 	go c.SyncTools()
-	c.app.TriggerHubManagedCapabilitySync("hub-connect")
+	if c.app.shouldAutoSyncHubManagedCapabilitiesOnConnect() {
+		c.app.TriggerHubManagedCapabilitySync("hub-connect")
+	}
 	c.startPreviewFlusher()
 	go c.syncIMGatewayClaims()
 	log.Printf("[asyncHubConnect] ConnectAuthOnly total=%s", time.Since(start))

@@ -30,6 +30,13 @@ type CapabilitySyncStatus struct {
 	Errors            []string `json:"errors,omitempty"`
 }
 
+func (a *App) shouldAutoSyncHubManagedCapabilitiesOnConnect() bool {
+	if a == nil {
+		return false
+	}
+	return strings.TrimSpace(a.testHomeDir) == ""
+}
+
 func (a *App) TriggerHubManagedCapabilitySync(reason string) {
 	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(capabilityManagedSyncOwnerID, "manage_skill", map[string]interface{}{"action": "sync_capabilities", "reason": reason}); err != nil {
 		log.Printf("[capability-market] managed sync blocked by workflow policy reason=%s err=%v", reason, err)
