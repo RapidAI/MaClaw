@@ -284,6 +284,11 @@ func summarizeRemoteDiffSelfCheck(filesModified []string, commands []CodingSubAg
 	}
 	failed := failedSubAgentCommands(checks)
 	if len(failed) > 0 {
+		nonGit, other := splitRemoteNonGitDiffSelfCheckFailures(failed)
+		if len(other) == 0 && len(nonGit) > 0 {
+			return codingSubAgentQualityNotNeeded, fmt.Sprintf("远程目录不是 Git 仓库，跳过 git diff/status 自检；已使用文件审计记录作为改动证据：%s", compactSubAgentVerificationCommandList(nonGit))
+		}
+		failed = other
 		return codingSubAgentQualityFailed, fmt.Sprintf("远程 git diff/status 自检失败：%s", compactFailedVerificationCommandResults(failed))
 	}
 	clean := remoteCleanDiffSelfChecks(checks)
@@ -291,6 +296,25 @@ func summarizeRemoteDiffSelfCheck(filesModified []string, commands []CodingSubAg
 		return codingSubAgentQualityFailed, fmt.Sprintf("远程 git diff/status 自检显示工作区干净，但审计记录已有远程文件修改：%s", compactSubAgentVerificationCommandList(clean))
 	}
 	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条远程 diff/status 自检命令：%s", len(checks), compactSubAgentVerificationCommandList(checks))
+}
+
+func splitRemoteNonGitDiffSelfCheckFailures(commands []CodingSubAgentCommandResult) ([]CodingSubAgentCommandResult, []CodingSubAgentCommandResult) {
+	nonGit := make([]CodingSubAgentCommandResult, 0)
+	other := make([]CodingSubAgentCommandResult, 0)
+	for _, cmd := range commands {
+		text := strings.TrimSpace(cmd.Summary)
+		if text == "" {
+			text = cmd.Command
+		} else {
+			text = cmd.Command + "\n" + text
+		}
+		if subAgentGitDiffUnavailableBecauseNonGit(text) {
+			nonGit = append(nonGit, cmd)
+			continue
+		}
+		other = append(other, cmd)
+	}
+	return nonGit, other
 }
 
 func appendRemoteDiffSelfCheckSummary(summary string, status codingSubAgentQualityStatus, diffSummary string) string {
@@ -361,21 +385,7 @@ func remoteDiffSelfCheckLooksClean(cmd CodingSubAgentCommandResult) bool {
 }
 
 func isRemoteDiffSelfCheckCommand(command string) bool {
-	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
-	if normalized == "" {
-		return false
-	}
-	for _, segment := range shellCommandSegments(normalized) {
-		segment = stripVerificationCommandPrefixes(segment)
-		if len(segment) < 2 || commandNameBase(segment[0]) != "git" {
-			continue
-		}
-		switch segment[1] {
-		case "diff", "status":
-			return true
-		}
-	}
-	return false
+	return isSubAgentDiffSelfCheckCommand(command)
 }
 
 func appendRemoteConfirmationSummary(summary string, status codingSubAgentQualityStatus, confirmationSummary string) string {

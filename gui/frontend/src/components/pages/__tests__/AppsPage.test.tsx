@@ -4888,7 +4888,7 @@ describe('AppsPage', () => {
         expect(container.querySelector('.apps-drop-zone')).toBeNull();
         fireEvent.click(screen.getByText('执行'));
 
-        await waitFor(() => expect(screen.getByText(/妯″紡: .*JSON/)).not.toBeNull());
+        await waitFor(() => expect(screen.getByText(/模式: .*JSON/)).not.toBeNull());
     });
 
     it('adds a select default value to field options when installing apps', () => {
@@ -6946,7 +6946,7 @@ describe('AppsPage', () => {
 
         expect(screen.getByText('应用市场')).not.toBeNull();
         expect(screen.getByText('合同归档')).not.toBeNull();
-        expect(screen.getByText('可添加:4 · 可升级:0')).not.toBeNull();
+        expect(screen.getByText('可添加 4 · 可升级 0')).not.toBeNull();
         const importPackage = screen.getByText('导入应用包').closest('details') as HTMLDetailsElement;
         expect(importPackage.open).toBe(false);
 
@@ -6956,7 +6956,7 @@ describe('AppsPage', () => {
         await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalledTimes(1));
         expect(recordMaclawAppInstallMock).toHaveBeenCalledTimes(1);
         await waitFor(() => expect((within(row).getByRole('button', { name: '已安装: 合同归档' }) as HTMLButtonElement).disabled).toBe(true));
-        expect(screen.getByText('可添加:3 · 可升级:0')).not.toBeNull();
+        expect(screen.getByText('可添加 3 · 可升级 0')).not.toBeNull();
         fireEvent.click(getManageTab());
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((item) => item.textContent?.includes('合同归档'))).toBe(true);
     });
@@ -7464,18 +7464,20 @@ describe('AppsPage', () => {
 
         expect(screen.getByText(/v1 -> v2/)).not.toBeNull();
         expect(screen.getByText(/v1 -> v2/)).not.toBeNull();
-        expect(screen.getByText(/admin-doc-redact-v2/)).not.toBeNull();
-        fireEvent.click(screen.getByText('安装'));
-        await waitFor(() => expect(screen.getByText('选中的升级包包含高风险新权限，需要再次确认。')).not.toBeNull());
-        expect(screen.getByText('选中的升级包包含高风险新权限，需要再次确认。').closest('[role="alert"]')).not.toBeNull();
+        const upgradePreviewRow = screen.getByText('文档脱敏增强版').closest('.apps-install-preview__row') as HTMLElement;
+        expect(within(upgradePreviewRow).getAllByText(/admin-doc-redact-v2/).length).toBeGreaterThan(0);
+        const marketInstall = document.querySelector('.apps-market-install') as HTMLElement;
+        fireEvent.click(within(marketInstall).getByText('安装'));
+        await waitFor(() => expect(within(marketInstall).getByText('确认安装')).not.toBeNull());
+        expect(within(marketInstall).getByText('选中的升级包包含高风险新权限，需再次确认。').closest('[role="alert"]')).not.toBeNull();
         expect(screen.queryByText('已安装: 0 · 已升级: 1 · 已跳过: 0')).toBeNull();
-        fireEvent.click(screen.getByText('确认安装'));
+        fireEvent.click(within(marketInstall).getByText('确认安装'));
         expect(screen.getByText('已安装: 0 · 已升级: 1 · 已跳过: 0')).not.toBeNull();
         expect(screen.getByRole('status').getAttribute('aria-live')).toBe('polite');
         const upgradeResult = document.querySelector('.apps-install-result') as HTMLElement;
         expect(within(upgradeResult).getByText('文档脱敏增强版')).not.toBeNull();
         expect(within(upgradeResult).getByText('已升级')).not.toBeNull();
-        expect(within(upgradeResult).getByText('已升级: v1 -> v2')).not.toBeNull();
+        expect(within(upgradeResult).getByText('已升级 v1 -> v2')).not.toBeNull();
 
         fireEvent.click(getManageTab());
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('文档脱敏增强版')) as HTMLElement;
@@ -7561,7 +7563,7 @@ describe('AppsPage', () => {
 
         expect(screen.getByText('安装预览')).not.toBeNull();
         expect(screen.getByText('1/2')).not.toBeNull();
-        expect(screen.getByText('可安装:1 · 可升级:0 · 将跳过:1')).not.toBeNull();
+        expect(screen.getByText('可安装 1 · 可升级 0 · 将跳过 1')).not.toBeNull();
         expect(screen.getByText('预览文档')).not.toBeNull();
         expect(screen.getByText('预览文档副本')).not.toBeNull();
         expect(screen.getByText('将安装')).not.toBeNull();
@@ -7591,7 +7593,7 @@ describe('AppsPage', () => {
         const preview = document.querySelector('.apps-install-preview') as HTMLElement;
         fireEvent.click(within(preview).getAllByRole('checkbox')[0]);
         expect(screen.getByText('1/2')).not.toBeNull();
-        expect(screen.getByText('可安装:2 · 可升级:0 · 将跳过:1')).not.toBeNull();
+        expect(screen.getByText('可安装 2 · 可升级 0 · 将跳过 1')).not.toBeNull();
         expect(screen.getByText('将跳过 · 未选择')).not.toBeNull();
         fireEvent.click(screen.getByText('安装'));
 

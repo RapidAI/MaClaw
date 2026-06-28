@@ -6150,6 +6150,67 @@ ExecuteMaclawAppBusinessOperation
 go test ./gui -count=1 -vet=off -run "TestExecuteMaclawAppBusinessOperationRunsPreferred(Action|Report|Dashboard)|TestExecuteMaclawAppBusinessOperationQueriesPreferredView"
 ```
 
+### 推进记录：收口 AppsPage 全量前端回归（2026-06-28）
+
+本轮继续从 App Studio 制作、管理、市场安装、升级、运行证据这条前端主链路收口。上一段记录中 `AppsPage.test.tsx` 仍有 49 个失败；本轮把剩余失败推进到全量通过。
+
+已落地调整：
+
+```text
+App Studio 管理面板
+  -> 编辑弹窗的名称、分类、描述字段补稳定 data-testid
+  -> 测试限定在编辑弹窗内操作字段，避免命中页面上其它同名输入
+  -> 验证内置 App 元数据编辑后能写入 manifest，并在冷启动后恢复
+  -> 复制、删除、清空历史、结构化字段编辑链路恢复通过
+
+能力市场 / 安装预览
+  -> 市场列表统计断言对齐当前 UI：可添加 4 · 可升级 0
+  -> 安装预览统计断言对齐当前 UI：可安装 N · 可升级 N · 将跳过 N
+  -> 升级包测试限定到导入包区域点击“安装 / 确认安装”
+  -> 高风险新增权限升级进入二次确认态，确认后完成升级并保留版本变更明细
+  -> 安装结果中“未选择 / 已升级 v1 -> v2”等旧乱码或旧标点断言已修正
+
+前端回归噪声
+  -> 清理剩余旧中文乱码断言，例如“模式: JSON”
+  -> apps-page-vitest.json 更新为最新全量结果
+```
+
+已通过验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "edits built-in app metadata from app studio management and persists it|duplicates an app from app studio management and keeps the source skill binding|deletes duplicated local apps and clears their run history|edits tool app structured fields from app studio management"
+
+npm.cmd test -- AppsPage.test.tsx -t "shows market apps as a list and adds one to the panel|upgrades installed market apps when a higher manifest version is pasted|previews manifest apps before installing from market|installs only selected apps from the market preview"
+
+npm.cmd test -- AppsPage.test.tsx --reporter=json --outputFile=apps-page-vitest.json
+  -> 194 total
+  -> 194 passed
+  -> 0 failed
+```
+
+当前意义：
+
+```text
+App Studio 动态界面制作 / 管理
+  -> 内置 App 和本地复制 App 可编辑、保存、恢复
+
+MaClaw App 市场安装
+  -> 市场列表、粘贴 manifest 预览、选择安装、重复跳过、升级确认链路可验证
+
+超级 Skill 依赖与证据链
+  -> 安装预览仍展示依赖验证、版本快照、测试证据和风险提示
+  -> 发布/安装/冷启动相关前端主链路拥有一份全量通过的 AppsPage 回归基线
+```
+
+仍未宣称整套 MaClaw App 全链路完成。下一步继续扩大到 GUI Go 包、DataSrv、Hub 安装/上传/审批 workflow 设计与安装的端到端验证，尤其是：
+
+```text
+go test ./gui -count=1 -vet=off -timeout 150s
+DataSrv app-installations / approvals / capabilities HTTP 回归
+Hub app package submit / review / install / dependency gate 回归
+真实审批型应用：发起 -> workflow Skill -> 审批实例 -> DataSrv 同步 -> 我的申请/待我审批/已处理/需关注 -> 结果反馈
+```
+
 ### 推进记录：Hub 提交版本保留完整 MaClaw App 包体（2026-06-28）
 
 本轮继续检查“App Studio 测试上传 -> Hub 审核 -> 能力市场下载/安装 -> 冷启动再发布”的包体保真链路。Hub 下载端已经从 capability version 的 `ManifestJSON` 还原 `maclaw.app.v1` entry，并在下载时补入 review/submission metadata；但提交端原有测试主要验证 metadata 摘要，没有直接证明 version manifest 保存的是完整 App entry。

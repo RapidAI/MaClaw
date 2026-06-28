@@ -1601,11 +1601,34 @@ func TestRemoteDiffSelfCheckSummary(t *testing.T) {
 		t.Fatalf("pre-edit remote diff self-check should fail the final quality gate, got %#v", result)
 	}
 
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	cb.trackRemoteCommand("git status --short", "/repo", "fatal: not a git repository", false)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 5,
+	})
+	if result.Status != "success" || !strings.Contains(result.Summary, "NOT_NEEDED") || strings.Contains(result.Summary, "## 命令状态") {
+		t.Fatalf("non-git remote diff/status failure should not leave command failure, got %#v", result)
+	}
+
 	status, summary := summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
 		{Command: "git status --short", Succeeded: false, Summary: "fatal: not a git repository", seq: 2},
 	}, 1)
-	if status != codingSubAgentQualityFailed || !strings.Contains(summary, "fatal: not a git repository") {
-		t.Fatalf("failed remote diff self-check should be surfaced, got (%q, %q)", status, summary)
+	if status != codingSubAgentQualityNotNeeded || !strings.Contains(summary, "不是 Git 仓库") {
+		t.Fatalf("non-git remote diff self-check should be skipped softly, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{Command: "git status --short", Succeeded: false, Summary: "fatal: not a git repository", seq: 2},
+		{Command: "git diff --stat", Succeeded: false, Summary: "fatal: bad revision 'HEAD'", seq: 3},
+	}, 1)
+	if status != codingSubAgentQualityFailed || !strings.Contains(summary, "bad revision") {
+		t.Fatalf("mixed remote diff failures should still surface real git errors, got (%q, %q)", status, summary)
 	}
 
 	for _, tc := range []struct {
@@ -1665,6 +1688,23 @@ func TestRemoteDiffSelfCheckCommandClassifier(t *testing.T) {
 		if isRemoteDiffSelfCheckCommand(command) {
 			t.Fatalf("isRemoteDiffSelfCheckCommand(%q) = true, want false", command)
 		}
+	}
+}
+
+func TestSubAgentCommandSummarySoftensNonGitDiffSelfCheckFailure(t *testing.T) {
+	status, summary := summarizeSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: "git diff --stat", Succeeded: false, Summary: "fatal: not a git repository"},
+	})
+	if status != codingSubAgentQualityPassed || strings.Contains(summary, "failed") {
+		t.Fatalf("non-git diff self-check command should not be summarized as failed, got (%q, %q)", status, summary)
+	}
+
+	failed := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: "git diff --stat", Succeeded: false, Summary: "fatal: not a git repository"},
+		{Command: "go test ./...", Succeeded: false, Summary: "compile failed"},
+	})
+	if len(failed) != 1 || failed[0].Command != "go test ./..." {
+		t.Fatalf("only real command failures should remain unresolved, got %#v", failed)
 	}
 }
 
@@ -8526,7 +8566,26 @@ func TestCodingSubAgentEnsureFinalGitDiffRejectsStaleDiff(t *testing.T) {
 	}
 }
 
-func TestCodingSubAgentFinalGitDiffNonGitRepoDoesNotMarkChecked(t *testing.T) {
+func TestCodingSubAgentGitDiffNonGitRepoReturnsSoftSuccess(t *testing.T) {
+	project := t.TempDir()
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: &IMMessageHandler{}, projectPath: project},
+		task:     &TaskItem{Index: 3, Title: "diff non git repo"},
+	}
+
+	result := cb.executeToolWithOutcome("git_diff", `{}`)
+	if result.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("non-git git_diff outcome = %q, want success; text=%q", result.Outcome, result.Text)
+	}
+	if !strings.Contains(result.Text, "not a Git repository") || !strings.Contains(result.Text, "coding audit") {
+		t.Fatalf("non-git git_diff should explain soft skip, got %q", result.Text)
+	}
+	if !cb.gitDiffChecked {
+		t.Fatal("gitDiffChecked should be true after soft non-git git_diff")
+	}
+}
+
+func TestCodingSubAgentFinalGitDiffNonGitRepoMarksChecked(t *testing.T) {
 	project := t.TempDir()
 	cb := &codingSubAgentCallbacks{
 		subagent: &CodingSubAgent{handler: &IMMessageHandler{}, projectPath: project},
@@ -8534,14 +8593,14 @@ func TestCodingSubAgentFinalGitDiffNonGitRepoDoesNotMarkChecked(t *testing.T) {
 	}
 
 	checked, summary := cb.ensureFinalGitDiff([]string{"main.go"}, nil)
-	if checked {
-		t.Fatalf("non-git project should not mark diff checked; summary=%q", summary)
+	if !checked {
+		t.Fatalf("non-git project should mark diff self-check as softly handled; summary=%q", summary)
 	}
-	if !strings.Contains(summary, "not a git repository") {
-		t.Fatalf("non-git diff failure should explain the blocker, got %q", summary)
+	if !strings.Contains(summary, "not a Git repository") || !strings.Contains(summary, "coding audit") {
+		t.Fatalf("non-git diff soft skip should explain fallback evidence, got %q", summary)
 	}
-	if cb.gitDiffChecked {
-		t.Fatal("gitDiffChecked should remain false after non-git diff failure")
+	if !cb.gitDiffChecked {
+		t.Fatal("gitDiffChecked should be true after non-git soft diff self-check")
 	}
 }
 

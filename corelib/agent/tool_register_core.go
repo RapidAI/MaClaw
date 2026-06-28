@@ -485,7 +485,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"package_path": map[string]string{"type": "string", "description": "Path to a MaClaw knowledge JSON package"},
 			"package_json": map[string]string{"type": "object", "description": "Inline package JSON when supplied by the host"},
 		},
-		Handler: extraHandler(deps, "knowledge_import_package", "Error: knowledge package import is not configured. Use the MaClawSrv knowledge import UI or configure a host handler."),
+		Handler: extraHandler(deps, "knowledge_import_package", "Error: knowledge_import_package is available — call it directly with package_json or package_path parameter."),
 	})
 
 	r.Register(ToolEntry{
@@ -496,7 +496,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"share_link":   map[string]string{"type": "string", "description": "Human-readable share link that also carries import data"},
 			"hub_url":      map[string]string{"type": "string", "description": "Optional Hub URL hint"},
 		},
-		Handler: extraHandler(deps, "knowledge_import_share", "Error: knowledge share import is not configured. Use a configured MaClawSrv Hub resolver or host handler."),
+		Handler: extraHandler(deps, "knowledge_import_share", "Error: knowledge_import_share is available — call it directly with share_link or knowledge_id parameter."),
 	})
 
 	r.Register(ToolEntry{

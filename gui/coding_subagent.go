@@ -2810,6 +2810,12 @@ func (c *codingSubAgentCallbacks) toolGitDiffResult(args map[string]interface{})
 	}
 
 	if result := c.ensureGitWorkTree(workDir); result.Outcome != codingToolOutcomeSuccess {
+		if subAgentGitDiffUnavailableBecauseNonGit(result.Text) {
+			return codingToolExecutionResult{
+				Text:    subAgentGitDiffUnavailableNonGitSummary(workDir),
+				Outcome: codingToolOutcomeSuccess,
+			}
+		}
 		return result
 	}
 
@@ -2890,6 +2896,38 @@ func (c *codingSubAgentCallbacks) ensureGitWorkTree(workDir string) codingToolEx
 		}
 	}
 	return codingToolExecutionResult{Text: "git work tree detected", Outcome: codingToolOutcomeSuccess}
+}
+
+func subAgentGitDiffUnavailableBecauseNonGit(text string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(text), " "))
+	if normalized == "" {
+		return false
+	}
+	nonGitMarkers := []string{
+		"not a git repository",
+		"not a git work tree",
+		"not a git worktree",
+		"outside a work tree",
+		"must be run in a work tree",
+		"不是 git 仓库",
+		"不是一个 git 仓库",
+		"不是 git 工作树",
+		"不在工作树中",
+	}
+	for _, marker := range nonGitMarkers {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func subAgentGitDiffUnavailableNonGitSummary(workDir string) string {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" {
+		workDir = "."
+	}
+	return fmt.Sprintf("Git diff self-check unavailable: %s is not a Git repository. File changes were tracked by the coding audit instead.", workDir)
 }
 
 func (c *codingSubAgentCallbacks) projectPath() string {
@@ -3360,6 +3398,9 @@ func (c *codingSubAgentCallbacks) ensureFinalGitDiff(filesModified, filesCreated
 }
 
 func (c *codingSubAgentCallbacks) validateFinalGitDiffSummary(diffSummary string, filesCreated []string) (bool, string) {
+	if subAgentGitDiffUnavailableBecauseNonGit(diffSummary) {
+		return true, diffSummary
+	}
 	if subAgentDiffOnlyHasUntrackedFiles(diffSummary) && !subAgentFileListsIntersect(untrackedSubAgentDiffFiles(diffSummary), filesCreated) {
 		c.rejectEmptyFinalGitDiff()
 		return false, "git diff 只包含与本任务新建文件无关的未跟踪文件：已记录文件修改，但最终 diff 缺少本任务改动证据。请重新检查改动是否被还原，必要时重新编辑并再次运行 git_diff。"
@@ -4265,7 +4306,7 @@ func summarizeSubAgentCommands(commands []CodingSubAgentCommandResult) (codingSu
 	if len(commands) == 0 {
 		return codingSubAgentQualityNone, "no bash commands run"
 	}
-	failed := failedSubAgentCommands(commands)
+	failed := filterSoftNonGitDiffSelfCheckFailures(failedSubAgentCommands(commands))
 	emptySuccesses := emptySuccessSubAgentCommands(commands)
 	problems := append(append([]CodingSubAgentCommandResult{}, failed...), emptySuccesses...)
 	if len(problems) == 0 {
@@ -5941,6 +5982,28 @@ func failedSubAgentCommands(commands []CodingSubAgentCommandResult) []CodingSubA
 	return failed
 }
 
+func filterSoftNonGitDiffSelfCheckFailures(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
+	if len(commands) == 0 {
+		return commands
+	}
+	filtered := make([]CodingSubAgentCommandResult, 0, len(commands))
+	for _, cmd := range commands {
+		if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
+			continue
+		}
+		filtered = append(filtered, cmd)
+	}
+	return filtered
+}
+
+func subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd CodingSubAgentCommandResult) bool {
+	if cmd.Succeeded || !isSubAgentDiffSelfCheckCommand(cmd.Command) {
+		return false
+	}
+	text := strings.TrimSpace(cmd.Command + "\n" + cmd.Summary)
+	return subAgentGitDiffUnavailableBecauseNonGit(text)
+}
+
 func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
 	if len(commands) == 0 {
 		return nil
@@ -5951,7 +6014,7 @@ func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []
 		cmd := commands[i]
 		key := subAgentCommandFailureResolutionKey(cmd)
 		if key == "" {
-			if !cmd.Succeeded {
+			if !cmd.Succeeded && !subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
 				unresolvedReversed = append(unresolvedReversed, cmd)
 			}
 			continue
@@ -5960,7 +6023,7 @@ func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []
 			laterSucceeded[key] = true
 			continue
 		}
-		if !laterSucceeded[key] {
+		if !laterSucceeded[key] && !subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
 			unresolvedReversed = append(unresolvedReversed, cmd)
 		}
 	}
@@ -6101,6 +6164,24 @@ func compactSubAgentCommandList(commands []string, maxItems int) string {
 
 func compactSubAgentSearchText(query string) string {
 	return truncateRunesForSubAgent(strings.TrimSpace(query), codingSubAgentSearchTextMaxRunes)
+}
+
+func isSubAgentDiffSelfCheckCommand(command string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if normalized == "" {
+		return false
+	}
+	for _, segment := range shellCommandSegments(normalized) {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) < 2 || commandNameBase(segment[0]) != "git" {
+			continue
+		}
+		switch segment[1] {
+		case "diff", "status":
+			return true
+		}
+	}
+	return false
 }
 
 func escapeSubAgentInlineCode(s string) string {

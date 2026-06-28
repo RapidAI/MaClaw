@@ -600,7 +600,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "knowledge_import_package",
-			Description: "Import a MaClaw editable knowledge JSON package into the current user's knowledge base. URL entries may be refetched; text entries require a content field.",
+			Description: "Import a MaClaw knowledge JSON package into the local knowledge base. Accepts a file path, raw JSON string, or inline JSON object. Use when the user provides package JSON content or a package file path.",
 			Enabled:     c.knowledgeStore != nil,
 			DisabledReason: func() string {
 				if c.knowledgeStore == nil {
@@ -618,7 +618,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "knowledge_import_share",
-			Description: "Import shared knowledge by knowledge ID or by a human-readable, agent-importable share link. The host resolves the Hub and visibility permissions.",
+			Description: "Import shared knowledge into the local knowledge base by share link or knowledge_id. Supports Hub share URLs (e.g. https://hub.example.com/hub/knowledge/shares/kn_xxx). Call this tool directly when the user provides a knowledge share link — it will fetch and import the content automatically.",
 			Enabled:     c.knowledgeStore != nil,
 			DisabledReason: func() string {
 				if c.knowledgeStore == nil {
