@@ -8213,3 +8213,332 @@ DataSrv 标准结果包
 ```text
 go test ./gui -count=1 -vet=off -run "TestExecuteMaclawAppBusinessOperationRunsPreferred(Action|Report|Dashboard)|TestExecuteMaclawAppBusinessOperationQueriesPreferredView"
 ```
+### 推进记录：前端 App Studio / Hub 安装对齐标准 app.ui（2026-06-28）
+
+本轮收口 GUI 前端对标准 `maclaw.app.v1` 包体中顶层 `app.ui` 的读写验证，确保动态生成并由用户调整后的传统软件式工作区布局，不只保存在兼容字段 `binding.ui`，也能作为 MaClaw App 的标准界面契约进入发布包、Hub 安装包和本地安装恢复数据。
+
+已落地验证：
+
+```text
+manifestToAppEntry
+  -> 优先读取 app.ui
+  -> 兼容回退 binding.ui
+  -> Hub 安装后的 manifest.ui.entry / layouts / regions 保持完整
+
+appToManifest / 发布包导出
+  -> 写入标准 app.ui
+  -> 同步写入 binding.ui 作为旧消费端兼容
+  -> governance.workspaceLayout 继续保存可审计的布局摘要和完整导航/列表配置
+
+Hub 搜索安装
+  -> installSelectedMaclawAppPackageFromHub 只安装目标 app
+  -> 安装后 installEvidence.workspace_layout.regions 不丢失
+  -> 已安装反馈、依赖校验、版本快照和测试证据在前端可恢复
+```
+
+对应全链路意义：
+
+```text
+App Studio 可视化布局设计
+  -> maclaw.app.json / Hub package 标准 app.ui
+  -> Hub 搜索安装选定 App
+  -> GUI 本地应用面板恢复 manifest.ui
+  -> installEvidence.workspace_layout 回流动态布局 regions
+  -> 后续运行、再发布、冷启动恢复继续使用同一份界面契约
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "uses the enterprise market bridge when submitting app packages|installs approved Hub MaClaw Apps from market search results|includes enterprise visual UI metadata in market submission packages"
+go test ./hub/internal/httpapi -count=1 -run "TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability|TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack"
+go test ./gui -count=1 -vet=off -run "TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall|TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps"
+```
+
+### 推进记录：MaClaw App Skill 依赖版本冲突阻断（2026-06-28）
+
+本轮继续推进“MaClaw App 是带应用数据的超级 Skill，安装时必须检查并安装依赖 Skill”这条主线。此前安装计划已经能识别缺失、禁用、安装失败等依赖状态，但对于“本地已安装同名 Skill，版本不符合 App 要求”的情况，依赖项本身仍可能显示为已安装可用，只在 workflow contract review issue 中提示版本不匹配。这个反馈对安装决策不够直接。
+
+已落地调整：
+
+```text
+maclaw.app.install_plan.v1 dependencies[]
+  -> 新增 installed_version
+  -> 新增 required_version
+  -> 新增 version_status: matched / mismatch / unknown
+  -> required dependency 版本不匹配时 action=blocked
+  -> health=version_mismatch
+  -> has_blocking_dependency=true
+  -> has_missing_required=false（已安装但版本不符，不混同为缺失）
+
+GUI 依赖摘要
+  -> 版本不匹配显示为 Unavailable
+  -> 展示 installed -> required，例如 1.0.0 -> 2.1.0
+  -> 市场安装预览和安装失败结果都能看到同一份版本冲突证据
+
+依赖合并
+  -> 同一 Skill ID 在 appSkill / workflowSkill / dependencies.skills 中重复声明时，按 id/version/source/install_ref/required 合并
+  -> kind 不再把同一安装目标拆成多个依赖项
+```
+
+对应全链路意义：
+
+```text
+安装 MaClaw App
+  -> 解析 App 依赖 Skill
+  -> 检查本地已安装 Skill 版本
+  -> 版本不符时直接阻断安装
+  -> 前端显示版本冲突
+  -> installEvidence / dependencyVerification 保存可审计依赖事实
+  -> 后续发布、冷启动恢复、DataSrv 回流可继续复用同一依赖检查结果
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestPlanMaclawAppInstallChecksInstalledApprovalWorkflowVersion|TestInstallMaclawAppDependenciesSkipsInstalledAndBlocksUnsupportedSource|TestInstallMaclawAppDependenciesInstallsHubBackedSources|TestInstallMaclawAppDependenciesPreservesInstallRefFromDuplicateDependency|TestPlanMaclawAppInstallPackDedupesDependenciesAndNormalizesLegacyKind"
+npm.cmd test -- AppsPage.test.tsx -t "uses the enterprise market bridge when submitting app packages|installs approved Hub MaClaw Apps from market search results|includes enterprise visual UI metadata in market submission packages|blocks market install when a required dependency has a version mismatch"
+```
+
+### 推进记录：审批实例 DataSrv 回流按事实归类 lane（2026-06-28）
+
+本轮推进企业审批型应用的运行态闭环。审批型 App 不只是发起表单，还必须能恢复和查看审批实例状态，包括“我的申请 / 待我审批 / 已处理 / 需关注”。此前 GUI 从 DataSrv 读取审批实例时，会把请求参数中的 `lane` 优先写入返回实例；如果 DataSrv 返回混合数据或只做弱过滤，前端可能把不属于当前用户的记录错误归到“待我审批”。
+
+已落地调整：
+
+```text
+DataSrv approval 回流
+  -> 不再用请求参数 lane 覆盖实例 lane
+  -> 优先使用记录显式 lane / approval_lane
+  -> attention 状态进入需关注
+  -> submitted_by / created_by / applicant 命中当前用户 -> 我的申请
+  -> pending 且 assigned_to / current_assignee 命中当前用户 -> 待我审批
+  -> reviewed_by 命中当前用户或终态 -> 已处理
+  -> pending 但不属于当前用户 -> pending（只在 all 视图保留，不进入待我审批）
+
+GUI 审批中心
+  -> 切换“待我审批”时向后端请求 pending_my_approval
+  -> 后端按事实重新归类和过滤，避免请求 lane 污染实例事实
+```
+
+对应全链路意义：
+
+```text
+审批型 MaClaw App
+  -> 发起审批实例
+  -> DataSrv 保存/返回 RecordApproval
+  -> GUI 读取远端审批实例
+  -> 按当前用户和实例事实恢复 lane
+  -> 我的申请 / 待我审批 / 已处理 / 需关注 视图可信
+  -> 审批中心与单个审批型 App 的实例视图语义一致
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestListMaclawAppApprovalInstances(AllLoadsDataSrvLane|LoadsRequestOnlyRuntimeResult|MapsDataSrvAttentionStatus|AllInfersDataSrvLanesForCurrentUser|DoesNotTrustRequestedLaneForDataSrvItems|MergesDataSrvWithLocal|All)$|TestListMaclawAppApprovalInstancesLifecycle|TestListMaclawAppApprovalInstancesMyRequestsLane"
+npm.cmd test -- AppsPage.test.tsx -t "keeps approval instance detail scoped to the selected lane and row"
+```
+
+### 推进记录：审批决策默认生成可展示结果输出（2026-06-28）
+
+本轮继续收口企业审批型应用的“结果反馈”链路。此前人工审批和审批 workflow 完成后已经能写回 `result_payload`、业务状态、审批状态、远端审批 ID，并同步到 DataSrv；但如果 workflow 或待审批实例本身没有显式 `outputs`，最终审批实例可能只有状态字段和 result payload，没有可展示的结果输出块。这样会削弱 App Studio 发布证据、Hub 审核、DataSrv 回流和用户查看最终结果的一致性。
+
+已落地调整：
+
+```text
+GUI 前端审批结果输出
+  -> 新增 approval_result 默认输出块
+  -> workflow skill 完成/失败且没有显式 outputs 时，自动生成结果输出
+  -> App 内审批实例操作通过/拒绝/需关注时，若原实例没有 outputs，自动生成结果输出
+  -> 全局审批管理面板同样使用一致的默认结果输出
+  -> 默认输出 data 保留 approval_result / business_status / result_status 和 resultPayload 内容
+
+GUI 后端本地审批实例持久化
+  -> review 同步 DataSrv 后，再验证本地 handled 实例保留 WorkflowDecisionID
+  -> 保留 BusinessStatus / ResultStatus / FromStatus / ToStatus
+  -> 保留 ResultPayload / Outputs / Artifacts 最终结果包
+```
+
+对应全链路意义：
+
+```text
+审批型 MaClaw App
+  -> 发起审批实例
+  -> 人工审批或 workflow skill 产生最终决策
+  -> 即使 skill 未返回显式 outputs，也生成可展示结果内容
+  -> RecordMaclawAppApprovalInstance 本地保存完整最终实例
+  -> SyncMaclawAppApprovalInstanceToDataSrv 带完整结果包同步
+  -> 我的申请 / 待我审批 / 已处理 / 需关注 能看到状态和内容
+  -> App Studio 发布证据不再只有状态字段，具备 resultPayload + outputs/artifacts 的独立实例证据
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "records approval decisions with workflow result fields|keeps approval result package when a pending item is manually approved|marks approval workflow failures as attention results|records and completes an approval instance when running an approval app"
+go test ./gui -count=1 -vet=off -run "TestSyncMaclawAppApprovalInstanceToDataSrv$"
+```
+
+### 推进记录：App Studio 预览区直接调整动态布局区域（2026-06-28）
+
+本轮继续推进“所有 MaClaw App 的界面动态生成，应用程序设计时自动生成，用户调节位置，并保存到应用信息文件”这条主线。此前 App Studio 已经能选择布局模板、主操作区、输出区、隐藏区域，并把 `ui.layouts[entry].regions` 写入 manifest；但区域位置主要依赖右侧下拉框，预览区点击只调整主操作区，不够像传统软件的可视化布局配置。
+
+已落地调整：
+
+```text
+App Studio Layout Designer
+  -> 预览区每个区域胶囊新增位置快捷按钮
+  -> 支持直接把区域移动到 left / center / right / bottom / modal
+  -> 区域移动仍写入 manifest.ui.layouts[entry].regions
+  -> output 类型区域移动到 right / bottom / modal 时同步 outputRegion 摘要
+  -> input 类型区域移动到 left / center / right 时同步 primaryRegion 摘要
+  -> 预览 slot 改为可键盘操作的 role=button 容器，避免区域快捷按钮嵌套在 button 内
+```
+
+对应全链路意义：
+
+```text
+App Studio 自动生成动态 UI
+  -> 用户在预览区直接调整区域位置
+  -> 保存为 maclaw.app.ui.v1 的 canonical regions
+  -> 本地 AppEntry 运行时按 region placement 渲染传统软件式工作台
+  -> appToManifest / Hub 上传 / Hub 安装 / DataSrv 回流继续使用同一份布局契约
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "moves workspace regions from the visual layout preview into saved manifest regions|saves visual workspace region visibility and applies it in the runtime panel"
+```
+
+### 推进记录：发布门禁按标准 app.ui 计算界面定义指纹（2026-06-28）
+
+本轮继续收口 App Studio 测试证据、Hub 上传审核和安装回流之间的定义一致性。标准包体已经把动态界面保存到顶层 `app.ui`，`binding.ui` 只作为旧消费端兼容字段；因此发布治理中的 definitionHash 也必须按同一优先级计算，否则会出现“用户在 App Studio 调整了界面布局，但旧运行证据仍被认为可复用”的风险。
+
+已落地调整：
+
+```text
+GUI 后端 definitionHash
+  -> 计算 app 定义指纹时优先读取顶层 app.ui
+  -> 仅当顶层 app.ui 缺失时回退 legacy binding.ui
+  -> 与前端 appDefinitionFingerprint 的标准 manifest.ui 口径对齐
+
+workspace layout metadata
+  -> 治理摘要优先来自顶层 app.ui
+  -> legacy binding.ui-only 包仍可被归一化、审核和安装
+
+发布审核测试
+  -> 顶层 app.ui 变更会让旧 run evidence definitionHash 过期
+  -> legacy binding.ui-only 包在 UI 变更后同样会触发 stale evidence
+  -> 避免兼容字段掩盖标准界面契约变化
+```
+
+对应全链路意义：
+
+```text
+App Studio 可视化调整布局
+  -> 保存为标准 maclaw.app.v1 app.ui
+  -> 测试证据记录当前定义指纹
+  -> 上传 Hub 前后端共同校验 definitionHash
+  -> 界面布局、依赖、结果合同、测试协议任一核心定义变化后必须重新测试
+  -> Hub / DataSrv / GUI 回流不会复用过期证据
+```
+
+已通过定向验证：
+
+```text
+go test ./gui -count=1 -vet=off -run "TestSubmitMaclawAppPackageFlagsStaleRunEvidenceWhen(TopLevelUILayout|LegacyBindingUILayout|UILayout)Changes|TestSubmitMaclawAppPackagePersistsNormalizedWorkspaceLayout|TestPlanMaclawAppInstallPackNormalizesAppUI"
+```
+
+### 推进记录：恢复 App Studio / DataSrv 候选回流前端回归测试入口（2026-06-28）
+
+本轮继续清理全链路验收的测试可用性。`AppsPage.test.tsx` 中一批旧断言仍使用乱码中文 title/text 查找 App Studio、应用管理、搜索框、候选应用按钮和管理操作按钮；当前 UI 已经正常显示中文，导致整份 App 面板回归在进入真实业务断言前就失败。此问题会掩盖 MaClaw App 制作、DataSrv 能力候选回流、Skill manifest 注册和 App Studio 管理页的真实缺陷。
+
+已落地调整：
+
+```text
+前端测试入口
+  -> 新增 getStudioButton()，按 App Studio / 应用程序工作室稳定查找入口
+  -> 新增 getManageTab()，按 应用管理 / Manage 稳定查找管理页
+  -> 替换 85 处旧乱码 App Studio title 调用
+  -> 替换 26 处旧乱码 应用管理 tab 调用
+
+关键链路断言
+  -> 搜索框、分类、常用应用基础渲染断言改为正常 Unicode
+  -> DataSrv capabilities -> 可生成应用 -> 添加到面板 -> 已添加 -> 关闭 恢复正常中文断言
+  -> Skill maclaw.apps.json 候选注册测试恢复关闭按钮断言
+  -> App Studio 管理页隐藏/置顶/常用上限按钮 title 恢复正常中文断言
+  -> 安装版本快照使用实际 UI 分隔符 “·”，不再匹配乱码 “路”
+```
+
+对应全链路意义：
+
+```text
+App Studio 入口
+  -> DataSrv capabilities 生成候选 App
+  -> Skill maclaw.apps.json 生成工具 App
+  -> Hub/DataSrv installed MaClaw App 恢复 layout metadata / version snapshot
+  -> 管理页隐藏、置顶、常用上限等传统软件式面板操作
+  -> 前端回归测试能进入真实业务断言，而不是被历史编码噪声阻断
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "turns DataSrv capabilities into addable app candidates|turns skill maclaw.apps.json entries into registered tool apps|renders the app panel with search"
+npm.cmd test -- AppsPage.test.tsx -t "filters hidden apps in app studio management|keeps pinned apps capped at two rows|turns DataSrv installed MaClaw apps into addable app candidates with layout metadata"
+npm.cmd test -- AppsPage.test.tsx -t "treats imported run evidence as stale after dynamic UI layout changes|treats imported run evidence as stale after result contract changes|treats imported run evidence as stale after test protocol changes|includes enterprise visual UI metadata in market submission packages|moves workspace regions from the visual layout preview into saved manifest regions"
+```
+
+当前状态：
+
+```text
+整份 AppsPage.test.tsx 仍未宣称全绿；剩余失败主要仍是其它旧乱码中文断言和少量 act warning 噪声。
+本轮先恢复 App Studio / DataSrv 候选 / 管理页 / UI layout evidence 这些 MaClaw App 主链路定向回归。
+```
+
+### 推进记录：修复 App 发布依赖验证门禁与前端回归噪声（2026-06-28）
+
+本轮继续推进 MaClaw App 从本地测试到企业能力市场审核的闭环。之前 App Studio 发布页在运行证据已经新鲜的情况下，仍提示“依赖验证缺少声明 Skill”，导致本地已测试 App 不能进入提交审核状态。根因是依赖验证证据需要同时识别同一 App 的本地入口 ID、DataSrv manifest appID 和安装包装 ID；测试 helper 还把同名 `appSkill/local` 依赖错误合并成后面的 `runtime_skill/hub`，与产品侧 `appSkillDependencies` 合并规则不一致。
+
+已落地调整：
+
+```text
+App 发布依赖门禁
+  -> 新增 appDependencyVerificationAppIDs(app)
+  -> 发布检查同时接受 canonical manifest ID、本地 app.id、manifest.datasrv.appID
+  -> 保持依赖声明、依赖验证、阻断依赖三类门禁仍然严格校验
+
+运行证据 / 测试 helper
+  -> testAppManifestID 与 canonicalAppManifestID 对齐
+  -> dependencyVerification.dependencies[*].app_ids 写入完整 App 身份集合
+  -> testDeclaredSkillDependencies 合并同名依赖时保留 appSkill/local 语义，不再被 bound skill 覆盖成 runtime_skill/hub
+
+前端回归测试
+  -> 继续清理 AppsPage.test.tsx 历史乱码中文断言
+  -> 将市场安装、发布队列、审批视图、运行区、App Studio 创建器等高频文案恢复为当前 UI 文案
+  -> 安装包 textarea placeholder 支持中英文文案匹配
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "submits ready local apps into local review state|shows returned review status and allows resubmission"
+npm.cmd test -- AppsPage.test.tsx -t "opens global approval management|shows DataSrv approval app summary|does not repeat pinned apps|moves app tile focus|exposes app studio sections|shows local apps in the review and publish checklist|submits ready local apps into local review state|shows returned review status and allows resubmission|copies the draft manifest preview"
+npm.cmd test -- AppsPage.test.tsx -t "saves a newly created enterprise approval app into its app skill definition|requires a successful current-version test before uploading a skill app|opens market import with the current app manifest when review dependency issues need repair|does not bypass dependency installation when market preview plan is still loading|keeps dependency verification visible after single market app install"
+npm.cmd test -- AppsPage.test.tsx -t "shows app name, status, source, and recent usage in tile tooltips|opens global approval management|shows detailed errors for invalid pasted manifests|shows detailed errors for invalid app pack manifests|blocks app package review submission when required dependencies are unavailable"
+```
+
+当前全量前端回归状态：
+
+```text
+npm.cmd test -- AppsPage.test.tsx --reporter=json --outputFile=apps-page-vitest.json
+  -> 194 total
+  -> 49 failed
+
+失败数从本轮开始时的 101 个降到 49 个。
+已确认发布审核关键门禁、企业审批型 App 创建保存、市场安装依赖验证、无效安装包错误提示等代表链路通过。
+剩余失败集中在提交队列详情、App Studio 草稿编辑、运行 tab、运行历史、市场安装部分边界和少量仍未清理的旧中文断言。
+下一步继续按失败簇推进，而不是把整份测试失败混在一起处理。
+```

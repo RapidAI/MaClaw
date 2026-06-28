@@ -904,6 +904,16 @@ export function KnowledgeImportHubShare(arg1:any):Promise<any>;
 
 export function KnowledgeShareToHub(arg1:any):Promise<any>;
 
+export function KnowledgeSyncDelete(arg1:any):Promise<any>;
+
+export function KnowledgeSyncDownload(arg1:any):Promise<any>;
+
+export function KnowledgeSyncStatus(arg1:any):Promise<any>;
+
+export function KnowledgeSyncUpload(arg1:any):Promise<any>;
+
+export function KnowledgeSyncVerifyPassword(arg1:any):Promise<any>;
+
 export function KnowledgeListSources(arg1:any):Promise<Array<any>>;
 
 export function KnowledgeListSourceLabels(arg1:any):Promise<Array<any>>;

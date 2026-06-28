@@ -3584,6 +3584,8 @@ body {
 }
 
 .knowledge-alert {
+    display: grid;
+    gap: 4px;
     padding: 10px 12px;
     border-radius: var(--radius-sm);
     font-size: 0.82rem;
@@ -3601,6 +3603,18 @@ body {
     border: 1px solid rgba(79, 127, 111, 0.24);
     background: var(--theme-success-bg);
     color: var(--theme-success);
+}
+
+.knowledge-alert--warning {
+    border: 1px solid color-mix(in srgb, var(--theme-warning) 28%, transparent);
+    background: var(--theme-warning-bg);
+    color: var(--theme-warning);
+}
+
+.knowledge-alert--info {
+    border: 1px solid color-mix(in srgb, var(--theme-accent) 22%, transparent);
+    background: color-mix(in srgb, var(--theme-accent) 8%, var(--theme-surface));
+    color: var(--theme-text-primary);
 }
 
 .knowledge-stack,

@@ -1767,6 +1767,26 @@ export function KnowledgeShareToHub(arg1) {
   return window['go']['main']['App']['KnowledgeShareToHub'](arg1);
 }
 
+export function KnowledgeSyncDelete(arg1) {
+  return window['go']['main']['App']['KnowledgeSyncDelete'](arg1);
+}
+
+export function KnowledgeSyncDownload(arg1) {
+  return window['go']['main']['App']['KnowledgeSyncDownload'](arg1);
+}
+
+export function KnowledgeSyncStatus(arg1) {
+  return window['go']['main']['App']['KnowledgeSyncStatus'](arg1);
+}
+
+export function KnowledgeSyncUpload(arg1) {
+  return window['go']['main']['App']['KnowledgeSyncUpload'](arg1);
+}
+
+export function KnowledgeSyncVerifyPassword(arg1) {
+  return window['go']['main']['App']['KnowledgeSyncVerifyPassword'](arg1);
+}
+
 export function KnowledgeListSources(arg1) {
   return window['go']['main']['App']['KnowledgeListSources'](arg1);
 }

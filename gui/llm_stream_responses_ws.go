@@ -98,13 +98,23 @@ func buildResponsesWSFrame(
 	if convTools := llm.ConvertToResponsesTools(toolsInput); len(convTools) > 0 {
 		frame["tools"] = convTools
 	}
-	// Ensure max_output_tokens is set (same logic as BuildResponsesAPIRequestData)
-	limit := cfg.EffectiveMaxOutputTokens()
-	cacheKey := strings.ToLower(strings.TrimSpace(cfg.Model))
-	if cached, ok := llm.LoadMaxOutputTokensCache(cacheKey); ok && cached > 0 && cached < limit {
-		limit = cached
+	// Ensure max_output_tokens is set (same logic as BuildResponsesAPIRequestData).
+	// Skip for Codex subscription endpoints (chatgpt.com/backend-api) — they don't support this parameter.
+	if !llm.IsCodexSubscriptionEndpoint(cfg.URL) {
+		shouldInject := true
+		limit := cfg.EffectiveMaxOutputTokens()
+		cacheKey := strings.ToLower(strings.TrimSpace(cfg.Model))
+		if cached, ok := llm.LoadMaxOutputTokensCache(cacheKey); ok {
+			if cached == 0 {
+				shouldInject = false
+			} else if cached > 0 && cached < limit {
+				limit = cached
+			}
+		}
+		if shouldInject {
+			frame["max_output_tokens"] = limit
+		}
 	}
-	frame["max_output_tokens"] = limit
 	return json.Marshal(frame)
 }
 

@@ -1018,8 +1018,12 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		return agent.ToolExecutionResult{Result: c.executeKnowledgeSearch(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "knowledge_context_pack":
 		return agent.ToolExecutionResult{Result: c.executeKnowledgeContextPack(args), Outcome: agent.ToolExecutionOutcomeOK}
-	case "knowledge_export", "knowledge_import_package", "knowledge_import_share":
-		return agent.ToolExecutionResult{Result: "Error: this knowledge exchange tool must be handled by the MaClawSrv host API in this runtime", Outcome: agent.ToolExecutionOutcomeError}
+	case "knowledge_import_share":
+		return knowledgeToolResult(c.executeKnowledgeImportShare(args))
+	case "knowledge_import_package":
+		return knowledgeToolResult(c.executeKnowledgeImportPackage(args))
+	case "knowledge_export":
+		return agent.ToolExecutionResult{Result: "Error: knowledge_export must be handled by the MaClawSrv host API in this runtime", Outcome: agent.ToolExecutionOutcomeError}
 	case "knowledge_import_directory":
 		return knowledgeToolResult(c.executeKnowledgeImportDirectory(args))
 	case "knowledge_import_files":

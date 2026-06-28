@@ -75,6 +75,11 @@ import {
     KnowledgeSourcePath,
     KnowledgeSourceDigest,
     KnowledgeShareToHub,
+    KnowledgeSyncDelete,
+    KnowledgeSyncDownload,
+    KnowledgeSyncStatus,
+    KnowledgeSyncUpload,
+    KnowledgeSyncVerifyPassword,
     KnowledgeSourceTimeline,
     KnowledgeTopicRelevance,
     KnowledgeQualityMaintenancePolicies,
@@ -1229,7 +1234,7 @@ export function knowledgeHealthActionManualLabel(action: any) {
     return reason ? `Manual: ${reason}` : 'Manual';
 }
 
-type KnowledgeSubTab = 'overview' | 'ingest' | 'export' | 'search' | 'sources' | 'quality';
+type KnowledgeSubTab = 'overview' | 'ingest' | 'export' | 'sync' | 'search' | 'sources' | 'quality';
 
 type ExportSourceGroup = {
     id: string;
@@ -1355,6 +1360,9 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [exchangeForm, setExchangeForm] = useState({ redactSensitive: true, importPath: '', dryRun: true, overwrite: false, replaceAll: false });
     const [hubShareForm, setHubShareForm] = useState({ hubURL: '', hubToken: '', title: '', description: '', visibilityScope: 'hub', visibilityUsers: '', ttl: '7d', includeDisabled: false });
     const [hubImportForm, setHubImportForm] = useState({ hubURL: '', hubToken: '', knowledgeID: '', shareLink: '', dryRun: true });
+    const [syncForm, setSyncForm] = useState({ hubURL: '', hubToken: '', password: '', passwordConfirm: '', conflictStrategy: '' });
+    const [syncStatus, setSyncStatus] = useState<any>(null);
+    const [syncConflictResult, setSyncConflictResult] = useState<any>(null);
     const [hubShareResult, setHubShareResult] = useState<any>(null);
     const [exportSources, setExportSources] = useState<Source[] | null>(null);
     const [exportBatches, setExportBatches] = useState<ImportBatch[] | null>(null);
@@ -1462,6 +1470,11 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                     hubURL: prev.hubURL || cfg.remote_hub_url || '',
                     hubToken: prev.hubToken || cfg.remote_viewer_token || '',
                 }));
+                setSyncForm(prev => ({
+                    ...prev,
+                    hubURL: prev.hubURL || cfg.remote_hub_url || '',
+                    hubToken: prev.hubToken || cfg.remote_viewer_token || '',
+                }));
             })
             .catch(() => {});
         return () => { cancelled = true; };
@@ -1473,6 +1486,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         { id: 'overview' as const, label: t('Overview', '总览'), desc: t('Health, score, and capabilities', '健康、评分与能力') },
         { id: 'ingest' as const, label: t('Ingest', '导入'), desc: t('Text, URL, files, and crawl', '文本、URL、文件与抓取') },
         { id: 'export' as const, label: t('Export', '导出'), desc: t('Snapshots, Hub sharing, and share links', '快照、Hub 分享与分享链接') },
+        { id: 'sync' as const, label: t('Sync', '同步'), desc: t('Encrypted manual sync through Hub', '通过 Hub 中转的加密手动同步') },
         { id: 'search' as const, label: t('Search', '检索'), desc: t('Query and facets', '查询与分面') },
         { id: 'sources' as const, label: t('Sources', '来源'), desc: t('Inspect and manage source records', '查看并管理来源') },
         { id: 'quality' as const, label: t('Quality', '质量'), desc: t('Reports and maintenance plans', '报告与维护计划') },
@@ -1567,6 +1581,11 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         if (activeTab !== 'export' || exportSources !== null || exportListLoading || exportListAttempted) return;
         void loadExportSelectionData();
     }, [activeTab, exportSources, exportListLoading, exportListAttempted, loadExportSelectionData]);
+
+    useEffect(() => {
+        if (activeTab !== 'sync' || syncStatus || busy) return;
+        void refreshKnowledgeSyncStatus();
+    }, [activeTab]);
 
     useEffect(() => {
         busyRef.current = busy;
@@ -1734,6 +1753,82 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         const token = hubShareForm.hubToken.trim();
         const tokenHash = token ? `#token=${encodeURIComponent(token)}` : '';
         await OpenSystemUrl(`${hubURL}/hub/knowledge/shares/mine${tokenHash}`);
+    };
+
+    const syncPayload = () => ({
+        hub_url: syncForm.hubURL.trim(),
+        hub_token: syncForm.hubToken.trim(),
+        password: syncForm.password,
+        conflict_strategy: syncForm.conflictStrategy,
+    });
+
+    const refreshKnowledgeSyncStatus = async () => {
+        await runTask('syncStatus', async () => {
+            const result = await KnowledgeSyncStatus(syncPayload());
+            setSyncStatus(result || null);
+            return result;
+        }, { successMessage: false });
+    };
+
+    const uploadKnowledgeSync = async () => {
+        if (!syncForm.password.trim()) {
+            setError(t('Set a sync password before uploading. Hub never stores this password.', '上传前请设置同步密码。Hub 不会保存该密码。'));
+            return;
+        }
+        if (syncReadonly) {
+            setError(t('Upload failed: maclaw official service has expired. Renew maclaw official service before updating sync data.', '上传失败：当前服务已过期，请续费 maclaw 官方服务后再更新同步数据。'));
+            return;
+        }
+        await runTask('syncUpload', async () => {
+            const latestStatus = await KnowledgeSyncStatus(syncPayload());
+            setSyncStatus(latestStatus || null);
+            if (String(latestStatus?.service_status || '') === 'official_expired') {
+                throw new Error(t('Upload failed: maclaw official service has expired. Renew maclaw official service before updating sync data.', '上传失败：当前服务已过期，请续费 maclaw 官方服务后再更新同步数据。'));
+            }
+            if (latestStatus?.has_package) {
+                await KnowledgeSyncVerifyPassword(syncPayload());
+            } else if (syncForm.password !== syncForm.passwordConfirm) {
+                throw new Error(t('The two sync passwords do not match.', '两次输入的同步密码不一致。'));
+            }
+            const result = await KnowledgeSyncUpload(syncPayload());
+            setSyncStatus(result || null);
+            return result;
+        }, {
+            successMessage: t('Encrypted knowledge sync package uploaded.', '加密知识库同步包已上传。'),
+        });
+    };
+
+    const downloadKnowledgeSync = async (conflictStrategy = '') => {
+        if (!syncForm.password.trim()) {
+            setError(t('Enter the sync password before downloading. Import will not start without it.', '下载前请输入同步密码。没有密码不会开始导入。'));
+            return;
+        }
+        await runTask('syncDownload', async () => {
+            setSyncConflictResult(null);
+            const result = await KnowledgeSyncDownload({ ...syncPayload(), conflict_strategy: conflictStrategy || 'check' });
+            setSyncStatus(result || null);
+            if (!conflictStrategy) {
+                setSyncConflictResult(result);
+                return result;
+            }
+            return result;
+        }, {
+            refreshSources: conflictStrategy === 'skip' || conflictStrategy === 'import',
+            refreshHealth: conflictStrategy === 'skip' || conflictStrategy === 'import',
+            successMessage: conflictStrategy
+                ? t('Encrypted knowledge sync package downloaded and imported.', '加密知识库同步包已下载并导入。')
+                : t('Knowledge sync package checked. Resolve conflicts before importing.', '知识库同步包已检查，请先解决冲突再导入。'),
+        });
+    };
+
+    const deleteKnowledgeSync = async () => {
+        await runTask('syncDelete', async () => {
+            const result = await KnowledgeSyncDelete(syncPayload());
+            setSyncStatus(result || null);
+            return result;
+        }, {
+            successMessage: t('Cloud sync package deleted.', '云端同步包已删除。'),
+        });
     };
 
     const toggleExportSource = (sourceID?: string) => {
@@ -2035,6 +2130,19 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         ? hubShareSourceSummary.warnings.map((item: any) => String(item || '').trim()).filter(Boolean)
         : [];
     const hubShareContentSources = Number(hubShareResult?.content_sources || hubShareSourceSummary.content_sources || 0);
+    const formatSyncBytes = (value: any) => {
+        const bytes = Number(value || 0);
+        if (!Number.isFinite(bytes) || bytes <= 0) return '-';
+        if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+        return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+    };
+    const syncServiceStatus = String(syncStatus?.service_status || 'normal');
+    const syncReadonly = syncServiceStatus === 'official_expired';
+    const syncMessage = syncStatus?.message || (syncReadonly
+        ? t('maclaw official service has expired: you can still download existing sync data, but cannot upload a new version. If service is not restored for 7 consecutive days, sync data will be deleted automatically.', 'maclaw 官方服务已过期：你仍可下载已有同步数据，但无法上传新版本。若连续 7 天未恢复服务，同步数据将自动删除。')
+        : syncServiceStatus === 'official_active'
+            ? t('maclaw official service is active: sync data has no fixed expiry while the service is valid, with a 500MB server space limit.', 'maclaw 官方服务有效中：同步数据不设固定有效期，服务器空间上限 500MB。')
+            : t('Temporary sync: sync data is deleted after 7 days, with a 100MB server space limit. Upgrade maclaw official service for 500MB and no fixed expiry while valid.', '当前为临时同步：同步数据将在 7 天后自动删除，服务器空间上限 100MB。升级 maclaw 官方服务后，可获得 500MB 同步空间，并在服务有效期内不设固定有效期。'));
 
     return (
         <>
@@ -2389,6 +2497,101 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 />
                 </>
                 )}
+                </div>
+            )}
+
+            {activeTab === 'sync' && (
+                <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-sync" aria-labelledby="knowledge-tab-sync">
+                    <PanelBlock title={t('Hub Knowledge Sync', 'Hub 知识库同步')}>
+                        <div className={`knowledge-alert ${syncReadonly ? 'knowledge-alert--warning' : 'knowledge-alert--info'}`}>
+                            <strong>{syncReadonly ? t('Service expired: download only', '服务已过期：仅可下载') : t('Manual encrypted sync', '手动加密同步')}</strong>
+                            <span>{syncMessage}</span>
+                        </div>
+                        <div className="knowledge-stats-grid">
+                            <Stat label={t('Service', '服务状态')} value={syncServiceStatus === 'official_active' ? t('Official active', '官方服务有效') : syncReadonly ? t('Official expired', '官方服务过期') : t('Temporary', '临时同步')} />
+                            <Stat label={t('Cloud package', '云端同步包')} value={syncStatus?.has_package ? t('Available', '可下载') : t('None', '暂无')} />
+                            <Stat label={t('Used space', '已占空间')} value={formatSyncBytes(syncStatus?.stored_size_bytes)} />
+                            <Stat label={t('Limit', '空间上限')} value={formatSyncBytes(syncStatus?.limit_bytes)} />
+                        </div>
+                        <div className="knowledge-two-column">
+                            <div className="knowledge-exchange-box">
+                                <strong>{t('Connection and password', '连接与密码')}</strong>
+                                <span className="knowledge-muted-line">{t('The password encrypts and decrypts the package locally. Hub stores only encrypted bytes and cannot recover the password.', '密码只在本机用于加密和解密。Hub 只保存密文字节，无法找回密码。')}</span>
+                                <span className="knowledge-field-hint">
+                                    {syncStatus?.has_package
+                                        ? t('Updating requires the existing sync password. The old cloud package is decrypted for verification before it is replaced.', '更新时请输入原同步密码。替换前会先用该密码验证旧云端同步包。')
+                                        : t('First upload requires entering the sync password twice. If you forget it later, delete the cloud package and upload again.', '首次上传需要输入两次同步密码。以后如果忘记密码，可以删除云端同步包后重新上传。')}
+                                </span>
+                                <input className="knowledge-input" value={syncForm.hubURL} onChange={event => setSyncForm({ ...syncForm, hubURL: event.target.value })} placeholder={t('Hub URL (uses configured Hub if empty)', 'Hub 地址（为空则使用已配置 Hub）')} />
+                                <input className="knowledge-input" type="password" value={syncForm.hubToken} onChange={event => setSyncForm({ ...syncForm, hubToken: event.target.value })} placeholder={t('Hub token override (optional)', 'Hub 令牌覆盖（可选）')} />
+                                <input className="knowledge-input" type="password" value={syncForm.password} onChange={event => setSyncForm({ ...syncForm, password: event.target.value })} placeholder={t('Sync password', '同步密码')} />
+                                {!syncStatus?.has_package ? (
+                                    <input className="knowledge-input" type="password" value={syncForm.passwordConfirm} onChange={event => setSyncForm({ ...syncForm, passwordConfirm: event.target.value })} placeholder={t('Confirm sync password', '再次输入同步密码')} />
+                                ) : null}
+                            </div>
+                            <div className="knowledge-exchange-box">
+                                <strong>{t('Current cloud state', '当前云端状态')}</strong>
+                                <KeyValueList values={[
+                                    syncStatus?.package_id ? `${t('Package', '同步包')}: ${syncStatus.package_id}` : '',
+                                    syncStatus?.updated_at ? `${t('Updated', '更新时间')}: ${syncStatus.updated_at}` : '',
+                                    syncStatus?.expires_at ? `${t('Expires', '到期时间')}: ${syncStatus.expires_at}` : t('No fixed expiry while official service is valid.', '官方服务有效期内不设固定有效期。'),
+                                    syncStatus?.readonly_reason || '',
+                                ]} empty={t('Refresh sync status to view cloud state.', '刷新同步状态后查看云端状态。')} />
+                            </div>
+                        </div>
+                        <div className="knowledge-panel-actions">
+                            <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={refreshKnowledgeSyncStatus}>
+                                {busy === 'syncStatus' ? t('Refreshing...', '刷新中...') : t('Refresh Status', '刷新状态')}
+                            </button>
+                            <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy || syncReadonly} onClick={uploadKnowledgeSync}>
+                                {busy === 'syncUpload'
+                                    ? t('Uploading...', '上传中...')
+                                    : syncStatus?.has_package
+                                        ? t('Update encrypted sync package', '更新加密同步包')
+                                        : t('Upload encrypted sync package', '上传加密同步包')}
+                            </button>
+                            <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy || !syncStatus?.has_package} onClick={() => downloadKnowledgeSync('')}>
+                                {busy === 'syncDownload' ? t('Checking...', '检查中...') : t('Check conflicts', '检查冲突')}
+                            </button>
+                            <button type="button" className="knowledge-button knowledge-button--danger" disabled={!!busy || !syncStatus?.has_package} onClick={deleteKnowledgeSync}>
+                                {busy === 'syncDelete' ? t('Deleting...', '删除中...') : t('Delete cloud package', '删除云端同步包')}
+                            </button>
+                            <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy || !syncForm.hubURL.trim()} onClick={() => OpenSystemUrl(`${syncForm.hubURL.trim().replace(/\/+$/, '')}/hub/compute-store`)}>
+                                {t('Renew maclaw official service', '续费 maclaw 官方服务')}
+                            </button>
+                        </div>
+                        {syncConflictResult?.requires_resolution ? (
+                            <div className="knowledge-alert knowledge-alert--warning">
+                                <strong>{t('Local conflicts found', '发现本地冲突')}</strong>
+                                <span>{t('Choose how to resolve matching local sources before importing the cloud sync package.', '导入云端同步包前，请选择如何处理与本地已有来源匹配的内容。')}</span>
+                                <ul>
+                                    {(syncConflictResult.conflicts || []).slice(0, 8).map((conflict: any, index: number) => (
+                                        <li key={`${conflict.remote_id || conflict.title || index}`}>
+                                            {[conflict.title || conflict.uri || conflict.remote_id, conflict.reason].filter(Boolean).join(' · ')}
+                                        </li>
+                                    ))}
+                                </ul>
+                                <div className="knowledge-panel-actions">
+                                    <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={() => downloadKnowledgeSync('skip')}>
+                                        {t('Skip conflicting sources', '跳过冲突来源')}
+                                    </button>
+                                    <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={() => downloadKnowledgeSync('import')}>
+                                        {t('Import anyway', '仍然导入')}
+                                    </button>
+                                </div>
+                            </div>
+                        ) : syncConflictResult ? (
+                            <div className="knowledge-alert knowledge-alert--success">
+                                <strong>{t('No local conflicts found', '未发现本地冲突')}</strong>
+                                <span>{t('The cloud sync package can be imported safely.', '云端同步包可以安全导入。')}</span>
+                                <div className="knowledge-panel-actions">
+                                    <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={() => downloadKnowledgeSync('import')}>
+                                        {t('Import now', '立即导入')}
+                                    </button>
+                                </div>
+                            </div>
+                        ) : null}
+                    </PanelBlock>
                 </div>
             )}
 

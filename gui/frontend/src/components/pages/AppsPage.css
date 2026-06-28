@@ -5070,6 +5070,10 @@
     background: var(--theme-surface);
 }
 
+.apps-layout-designer__region {
+    gap: 5px;
+}
+
 .apps-layout-designer__region strong,
 .apps-layout-designer__region small {
     min-width: 0;
@@ -5089,6 +5093,36 @@
     color: var(--theme-text-secondary);
     font-size: 0.64rem;
     font-weight: 750;
+}
+
+.apps-layout-designer__region-actions {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 3px;
+}
+
+.apps-layout-designer__region-actions button {
+    min-width: 0;
+    min-height: 22px;
+    padding: 0;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 5px;
+    color: var(--theme-text-secondary);
+    background: var(--theme-surface-muted);
+    font: inherit;
+    font-size: 0.62rem;
+    font-weight: 850;
+    cursor: pointer;
+}
+
+.apps-layout-designer__region-actions button:hover,
+.apps-layout-designer__region-actions button:focus-visible,
+.apps-layout-designer__region-actions button[data-active='true'] {
+    color: var(--theme-primary-strong);
+    border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary-soft) 48%, var(--theme-surface));
+    outline: none;
 }
 
 .apps-manage-edit .apps-layout-designer {

@@ -149,20 +149,23 @@ type maclawAppInstallPlanApp struct {
 }
 
 type maclawAppInstallPlanDependency struct {
-	ID              string   `json:"id"`
-	Version         string   `json:"version,omitempty"`
-	Kind            string   `json:"kind,omitempty"`
-	Required        bool     `json:"required"`
-	Source          string   `json:"source,omitempty"`
-	InstallRef      string   `json:"install_ref,omitempty"`
-	AppIDs          []string `json:"app_ids,omitempty"`
-	Installed       bool     `json:"installed"`
-	InstalledName   string   `json:"installed_name,omitempty"`
-	InstalledDir    string   `json:"installed_dir,omitempty"`
-	InstalledStatus string   `json:"installed_status,omitempty"`
-	Health          string   `json:"health,omitempty"`
-	Action          string   `json:"action"`
-	Message         string   `json:"message,omitempty"`
+	ID               string   `json:"id"`
+	Version          string   `json:"version,omitempty"`
+	Kind             string   `json:"kind,omitempty"`
+	Required         bool     `json:"required"`
+	Source           string   `json:"source,omitempty"`
+	InstallRef       string   `json:"install_ref,omitempty"`
+	AppIDs           []string `json:"app_ids,omitempty"`
+	Installed        bool     `json:"installed"`
+	InstalledName    string   `json:"installed_name,omitempty"`
+	InstalledVersion string   `json:"installed_version,omitempty"`
+	RequiredVersion  string   `json:"required_version,omitempty"`
+	VersionStatus    string   `json:"version_status,omitempty"`
+	InstalledDir     string   `json:"installed_dir,omitempty"`
+	InstalledStatus  string   `json:"installed_status,omitempty"`
+	Health           string   `json:"health,omitempty"`
+	Action           string   `json:"action"`
+	Message          string   `json:"message,omitempty"`
 }
 
 type maclawAppInstallSkillVersionSnapshot struct {
@@ -660,6 +663,9 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 		}
 		dep.Installed = false
 		dep.InstalledName = ""
+		dep.InstalledVersion = ""
+		dep.RequiredVersion = strings.TrimSpace(dep.Version)
+		dep.VersionStatus = maclawAppDependencyVersionStatus(*dep)
 		dep.InstalledDir = ""
 		dep.InstalledStatus = ""
 		dep.Health = "missing"
@@ -1859,9 +1865,6 @@ func maclawAppApprovalInstanceFromRecordApproval(item contract.RecordApproval, r
 }
 
 func normalizeMaclawAppApprovalLaneForRecordApproval(item contract.RecordApproval, requestedLane string, status string, currentUserID string) string {
-	if lane := normalizeMaclawAppApprovalLaneFilter(requestedLane); lane != "" && lane != "all" {
-		return lane
-	}
 	request := cloneMapAny(item.Request)
 	if lane := normalizeMaclawAppApprovalLaneFilter(firstNonEmptyMaclawAppString(stringMapValue(request, "lane"), stringMapValue(request, "approval_lane"), stringMapValue(request, "approvalLane"))); lane != "" && lane != "all" {
 		return lane
@@ -1888,7 +1891,7 @@ func normalizeMaclawAppApprovalLaneForRecordApproval(item contract.RecordApprova
 	case "approved", "rejected", "cancelled", "timeout":
 		return "handled"
 	default:
-		return "pending_my_approval"
+		return "pending"
 	}
 }
 
@@ -2046,7 +2049,7 @@ func maclawAppApprovalInstanceMatchesLane(instance maclawAppApprovalInstance, la
 	case "attention":
 		return status == "attention" || normalizeMaclawAppApprovalLane(instance.Lane) == "attention"
 	case "pending_my_approval":
-		return status == "pending" && (normalizeMaclawAppApprovalLane(instance.Lane) == "pending_my_approval" || strings.TrimSpace(firstNonEmptyMaclawAppString(instance.CurrentAssignee, instance.Approver)) != "")
+		return status == "pending" && normalizeMaclawAppApprovalLane(instance.Lane) == "pending_my_approval"
 	case "my_requests":
 		return normalizeMaclawAppApprovalLane(instance.Lane) == "my_requests"
 	default:
@@ -2630,8 +2633,23 @@ func (a *App) installedMaclawAppSkillIndex() map[string]NLSkillDefinition {
 func applyMaclawAppInstalledSkillDependency(dep *maclawAppInstallPlanDependency, match NLSkillDefinition) {
 	dep.Installed = true
 	dep.InstalledName = match.Name
+	dep.RequiredVersion = strings.TrimSpace(dep.Version)
+	dep.InstalledVersion = strings.TrimSpace(match.HubVersion)
 	dep.InstalledDir = match.SkillDir
 	dep.InstalledStatus, dep.Health = maclawAppInstalledSkillStatus(match)
+	if maclawAppDependencyVersionMismatch(*dep) {
+		dep.VersionStatus = "mismatch"
+		dep.Health = "version_mismatch"
+		if dep.Required {
+			dep.Action = "blocked"
+			dep.Message = fmt.Sprintf("required skill dependency version %s is installed, but %s is required", dep.InstalledVersion, dep.RequiredVersion)
+			return
+		}
+		dep.Action = "optional_unhealthy"
+		dep.Message = fmt.Sprintf("optional skill dependency version %s is installed, but %s is required", dep.InstalledVersion, dep.RequiredVersion)
+		return
+	}
+	dep.VersionStatus = maclawAppDependencyVersionStatus(*dep)
 	if maclawAppDependencyIsReady(*dep) {
 		dep.Action = "skip"
 		dep.Message = "installed locally"
@@ -2661,6 +2679,28 @@ func maclawAppInstalledSkillStatus(match NLSkillDefinition) (string, string) {
 		}
 		return status, "unknown"
 	}
+}
+
+func maclawAppDependencyVersionStatus(dep maclawAppInstallPlanDependency) string {
+	required := strings.TrimSpace(dep.RequiredVersion)
+	if required == "" {
+		required = strings.TrimSpace(dep.Version)
+	}
+	if required == "" {
+		return ""
+	}
+	installed := strings.TrimSpace(dep.InstalledVersion)
+	if installed == "" {
+		return "unknown"
+	}
+	if installed == required {
+		return "matched"
+	}
+	return "mismatch"
+}
+
+func maclawAppDependencyVersionMismatch(dep maclawAppInstallPlanDependency) bool {
+	return maclawAppDependencyVersionStatus(dep) == "mismatch"
 }
 
 func maclawAppDependencyIsReady(dep maclawAppInstallPlanDependency) bool {
@@ -2697,7 +2737,6 @@ func maclawAppInstallPlanDependencyMergeKey(dep maclawAppInstallPlanDependency) 
 	return strings.Join([]string{
 		strings.ToLower(strings.TrimSpace(dep.ID)),
 		strings.ToLower(strings.TrimSpace(dep.Version)),
-		strings.ToLower(strings.TrimSpace(dep.Kind)),
 		strings.ToLower(strings.TrimSpace(dep.Source)),
 		strings.ToLower(strings.TrimSpace(dep.InstallRef)),
 		strconv.FormatBool(dep.Required),
@@ -3105,10 +3144,12 @@ func maclawAppDependencyVerificationMetadataForEntry(entry parsedMaclawAppEntry,
 }
 func maclawAppWorkspaceLayoutMetadataForEntry(entry parsedMaclawAppEntry) map[string]interface{} {
 	var ui map[string]any
-	for _, holder := range maclawAppBindingHolders(entry) {
-		if candidate := anyMap(holder["ui"]); candidate != nil {
-			ui = candidate
-			break
+	if entry.App != nil {
+		ui = anyMap(entry.App["ui"])
+	}
+	if ui == nil {
+		if binding := anyMap(entry.App["binding"]); binding != nil {
+			ui = anyMap(binding["ui"])
 		}
 	}
 	if ui == nil {
@@ -3741,6 +3782,9 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 		if dep.ID == "" {
 			return
 		}
+		dep.Version = strings.TrimSpace(dep.Version)
+		dep.RequiredVersion = dep.Version
+		dep.VersionStatus = maclawAppDependencyVersionStatus(dep)
 		if dep.Kind == "" {
 			dep.Kind = "skill"
 		}
@@ -4606,6 +4650,12 @@ func maclawAppDefinitionFingerprintForEntry(entry parsedMaclawAppEntry) string {
 			{"testProtocol", []string{"testProtocol", "test_protocol"}},
 			{"workflow", []string{"workflow"}},
 		} {
+			if pair.out == "ui" {
+				if value := entry.App["ui"]; value != nil {
+					runtimeManifest[pair.out] = value
+					continue
+				}
+			}
 			for _, key := range pair.keys {
 				if value := binding[key]; value != nil {
 					runtimeManifest[pair.out] = value
@@ -4930,6 +4980,8 @@ func maclawAppSubmissionDependenciesFromPackage(pkg map[string]any) []maclawAppI
 				}
 				if deps[idx].Version == "" {
 					deps[idx].Version = dep.Version
+					deps[idx].RequiredVersion = dep.RequiredVersion
+					deps[idx].VersionStatus = maclawAppDependencyVersionStatus(deps[idx])
 				}
 				if deps[idx].Kind == "skill" && dep.Kind != "" {
 					deps[idx].Kind = dep.Kind
@@ -5626,7 +5678,7 @@ func mergeMaclawAppApprovalInstance(existing, incoming maclawAppApprovalInstance
 
 func normalizeMaclawAppApprovalLane(lane string) string {
 	switch strings.TrimSpace(lane) {
-	case "pending_my_approval", "handled", "attention":
+	case "pending", "pending_my_approval", "handled", "attention":
 		return strings.TrimSpace(lane)
 	default:
 		return "my_requests"

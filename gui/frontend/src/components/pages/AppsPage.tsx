@@ -80,6 +80,9 @@ type BackendAppInstallDependency = {
     app_ids?: string[];
     installed?: boolean;
     installed_name?: string;
+    installed_version?: string;
+    required_version?: string;
+    version_status?: 'matched' | 'mismatch' | 'unknown' | string;
     installed_dir?: string;
     installed_status?: string;
     health?: 'ready' | 'missing' | 'disabled' | 'needs_setup' | 'unknown' | string;
@@ -1938,10 +1941,33 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
         onChange({ ...value, regions: regions.map((region) => region.id === regionID ? { ...region, visible: visible ? undefined : false } : region) });
     };
     const regionsForPlacement = (placement: StudioPrimaryRegion | 'bottom') => regions.filter((region) => region.visible !== false && (region.placement === placement || (placement === 'right' && region.placement === 'modal')));
+    const handleSlotKeyDown = (event: KeyboardEvent, action: () => void) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        action();
+    };
     const renderRegionPill = (region: { id: string; role: string; placement: string }) => (
         <span className="apps-layout-designer__region" data-role={region.role} key={region.id}>
             <strong>{studioLayoutRegionLabel(kind, region.id, lang)}</strong>
             <small>{studioLayoutRoleLabel(region.role, lang)}</small>
+            <span className="apps-layout-designer__region-actions" aria-label={zh ? '\u79fb\u52a8\u533a\u57df' : 'Move region'}>
+                {placementOptions.map((option) => (
+                    <button
+                        key={option.value}
+                        type="button"
+                        data-active={region.placement === option.value ? 'true' : undefined}
+                        data-testid={`${testIdPrefix}-layout-region-${region.id}-move-${option.value}`}
+                        aria-label={`${zh ? '\u79fb\u52a8' : 'Move'} ${studioLayoutRegionLabel(kind, region.id, lang)} ${zh ? '\u5230' : 'to'} ${option[zh ? 'zh' : 'en']}`}
+                        title={option[zh ? 'zh' : 'en']}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            updateRegionPlacement(region.id, option.value);
+                        }}
+                    >
+                        {option[zh ? 'zh' : 'en'].slice(0, 1)}
+                    </button>
+                ))}
+            </span>
         </span>
     );
     const renderSlot = (slot: typeof studioLayoutSlotIds[number]) => {
@@ -1949,16 +1975,18 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
         const isPrimary = value.primaryRegion === slot;
         const hasOutput = value.outputRegion === slot || (slot === 'right' && value.outputRegion === 'modal');
         return (
-            <button
+            <div
                 key={slot}
                 className="apps-layout-designer__slot"
                 data-slot={slot}
                 data-primary={isPrimary ? 'true' : undefined}
                 data-output={hasOutput ? value.outputRegion : undefined}
                 data-testid={`${testIdPrefix}-layout-slot-${slot}`}
-                type="button"
+                role="button"
+                tabIndex={0}
                 aria-pressed={isPrimary}
                 onClick={() => updateLayout({ primaryRegion: slot })}
+                onKeyDown={(event) => handleSlotKeyDown(event, () => updateLayout({ primaryRegion: slot }))}
             >
                 <span className="apps-layout-designer__slot-title">
                     {studioLayoutOptionLabel(studioPrimaryRegionOptions, slot, lang)}
@@ -1967,7 +1995,7 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                 <span className="apps-layout-designer__slot-body">
                     {slotRegions.length ? slotRegions.map(renderRegionPill) : <span className="apps-layout-designer__empty-slot">{zh ? '\u53ef\u653e\u7f6e\u533a\u57df' : 'Available region'}</span>}
                 </span>
-            </button>
+            </div>
         );
     };
     return (
@@ -1998,14 +2026,16 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                     </div>
                     <div className="apps-layout-designer__canvas" data-testid={`${testIdPrefix}-layout-canvas`} data-template={value.template} data-density={value.density}>
                         {studioLayoutSlotIds.map(renderSlot)}
-                        <button
+                        <div
                             className="apps-layout-designer__slot apps-layout-designer__slot--bottom"
                             data-slot="bottom"
                             data-output={value.outputRegion === 'bottom' ? 'bottom' : undefined}
                             data-testid={`${testIdPrefix}-layout-slot-bottom`}
-                            type="button"
+                            role="button"
+                            tabIndex={0}
                             aria-pressed={value.outputRegion === 'bottom'}
                             onClick={() => updateLayout({ outputRegion: 'bottom' })}
+                            onKeyDown={(event) => handleSlotKeyDown(event, () => updateLayout({ outputRegion: 'bottom' }))}
                         >
                             <span className="apps-layout-designer__slot-title">
                                 {zh ? '\u5e95\u90e8' : 'Bottom'}
@@ -2014,7 +2044,7 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                             <span className="apps-layout-designer__slot-body">
                                 {regionsForPlacement('bottom').length ? regionsForPlacement('bottom').map(renderRegionPill) : <span className="apps-layout-designer__empty-slot">{zh ? '\u7ed3\u679c\u533a\u6216\u65e5\u5fd7\u533a' : 'Results or log lane'}</span>}
                             </span>
-                        </button>
+                        </div>
                     </div>
                 </div>
                 <div className="apps-layout-designer__controls">
@@ -3874,6 +3904,42 @@ function approvalWorkflowOutputsFromStatus(status?: SkillRunStatusView | null): 
     return normalizeApprovalOutputs([...skillRunOutputBlocks(status), ...resultOutputs]);
 }
 
+function approvalResultOutput(
+    decision: 'approved' | 'rejected' | 'attention',
+    resultText: string,
+    businessStatus: string,
+    resultStatus: string,
+    resultPayload?: Record<string, unknown>,
+    title = 'Approval result',
+): ApprovalInstanceOutputView {
+    return {
+        type: 'content',
+        kind: 'approval_result',
+        title,
+        text: resultText,
+        status: resultStatus || decision,
+        data: {
+            ...(resultPayload || {}),
+            approval_result: decision,
+            business_status: businessStatus || decision,
+            result_status: resultStatus || decision,
+        },
+    };
+}
+
+function approvalOutputsOrDefault(
+    outputs: ApprovalInstanceOutputView[] | undefined,
+    decision: 'approved' | 'rejected' | 'attention',
+    resultText: string,
+    businessStatus: string,
+    resultStatus: string,
+    resultPayload?: Record<string, unknown>,
+    title = 'Approval result',
+): ApprovalInstanceOutputView[] {
+    const normalized = normalizeApprovalOutputs(outputs || []);
+    return normalized?.length ? normalized : [approvalResultOutput(decision, resultText, businessStatus, resultStatus, resultPayload, title)];
+}
+
 function appRunResultPayloadFromStatus(status?: SkillRunStatusView | null): Record<string, unknown> | undefined {
     const payload = approvalWorkflowResultPayloadFromObjects(skillRunApprovalObjects(status), status);
     if (payload) return payload;
@@ -3957,8 +4023,16 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
         workflow_lifecycle: lifecycle,
         ...(approvalWorkflowResultPayloadFromObjects(objects, status) || {}),
     };
-    const outputs = approvalWorkflowOutputsFromStatus(status);
     const artifacts = approvalWorkflowArtifactsFromStatus(status);
+    const outputs = approvalOutputsOrDefault(
+        approvalWorkflowOutputsFromStatus(status),
+        decision,
+        resultText,
+        businessStatus,
+        resultStatus,
+        resultPayload,
+        zh ? '\u5ba1\u6279\u7ed3\u679c' : 'Approval result',
+    );
     return {
         status: decision,
         lane: decision === 'attention' ? 'attention' : 'handled',
@@ -4646,7 +4720,8 @@ function latestAppRunEvidence(app: AppEntry): AppRunHistoryEntry | null {
 }
 
 function latestAvailableAppRunEvidence(app: AppEntry): AppRunHistoryEntry | null {
-    return loadAppRunHistory(app.id).find((item) => item.status === 'done')
+    return latestAppRunEvidence(app)
+        || loadAppRunHistory(app.id).find((item) => item.status === 'done')
         || normalizeImportedRunEvidence(app.importedRunEvidence)
         || installEvidenceImportedRunEvidence(app)
         || null;
@@ -4746,7 +4821,9 @@ function appInstallEvidenceDependencyVerificationPlan(app: AppEntry): BackendApp
         ? app.installEvidence.dependency_verification as Record<string, unknown>
         : undefined;
     return normalizeAppDependencyVerificationPlan(app, verification, app.installEvidence?.dependencies)
-        || normalizeAppDependencyVerificationPlan(app, latestAppRunEvidence(app)?.dependencyVerification);
+        || normalizeAppDependencyVerificationPlan(app, latestAppRunEvidence(app)?.dependencyVerification)
+        || normalizeAppDependencyVerificationPlan(app, normalizeImportedRunEvidence(app.importedRunEvidence)?.dependencyVerification)
+        || normalizeAppDependencyVerificationPlan(app, installEvidenceImportedRunEvidence(app)?.dependencyVerification);
 }
 
 function appInstallEvidenceDependencies(app: AppEntry): AppDependencyEvidence[] {
@@ -4784,7 +4861,8 @@ function backendDependencyMatchesDeclaredSkill(verified: BackendAppInstallDepend
     if (dependencyNormalizedText(verified.id) !== dependencyNormalizedText(declared.id)) return false;
     const declaredKind = dependencyNormalizedText(declared.kind);
     const verifiedKind = dependencyNormalizedText(verified.kind);
-    if (declaredKind && verifiedKind && declaredKind !== verifiedKind) return false;
+    const compatibleSkillKind = (declaredKind === 'app_skill' && verifiedKind === 'runtime_skill') || (declaredKind === 'runtime_skill' && verifiedKind === 'app_skill');
+    if (declaredKind && verifiedKind && declaredKind !== verifiedKind && !compatibleSkillKind) return false;
     const declaredSource = dependencyNormalizedText(declared.source);
     const verifiedSource = dependencyNormalizedText(verified.source);
     if (declaredSource && verifiedSource && declaredSource !== verifiedSource) return false;
@@ -4803,6 +4881,14 @@ function appDependencyPublishSummary(app: AppEntry, lang?: string) {
     }).join(', ');
 }
 
+function appDependencyVerificationAppIDs(app: AppEntry): string[] {
+    return Array.from(new Set([
+        canonicalAppManifestID(app),
+        app.id,
+        app.manifest?.datasrv?.appID,
+    ].map((id) => String(id || '').trim()).filter(Boolean)));
+}
+
 function appDependencyVerificationPublishCheck(app: AppEntry, lang?: string) {
     const zh = isZh(lang);
     const declared = appSkillDependencies(app).filter((dep) => String(dep.id || '').trim());
@@ -4816,7 +4902,7 @@ function appDependencyVerificationPublishCheck(app: AppEntry, lang?: string) {
     if (plan.schema && plan.schema !== 'maclaw.app.install_plan.v1') {
         return { ok: false, detail: zh ? '\u4f9d\u8d56\u9a8c\u8bc1 schema \u65e0\u6548' : 'Invalid dependency verification schema' };
     }
-    const appIDs = [canonicalAppManifestID(app)];
+    const appIDs = appDependencyVerificationAppIDs(app);
     const verifiedDependencies = parseBackendAppInstallDependencies(plan.dependencies).filter((dep) => backendDependencyMatchesAppIDs(dep, appIDs));
     if (plan.has_workflow_contract_issue || (plan.workflow_contract_issues || []).length > 0) {
         return { ok: false, detail: zh ? '\u5ba1\u6279 workflow \u5408\u540c\u9a8c\u8bc1\u672a\u901a\u8fc7' : 'Approval workflow contract verification failed' };
@@ -5458,7 +5544,7 @@ function appNeedsAutomaticRuntimeDependencyCheck(app: AppEntry) {
     return (app.source === 'market' || app.source === 'skill' || app.source === 'datasrv') && appDependencyEvidence(app).length > 0;
 }
 function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmission, overrides: AppGovernanceOverrides = {}) {
-    const evidence = latestAppRunEvidence(app);
+    const evidence = latestAppRunEvidence(app) || latestAvailableAppRunEvidence(app);
     const evidenceArtifacts = appRunHistoryArtifacts(evidence);
     const evidenceOutputs = normalizeApprovalOutputs(evidence?.outputs) || [];
     const resultContract = appResultContractForManifest(app);
@@ -7628,6 +7714,16 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 : (zh ? '\u9700\u5173\u6ce8' : 'Needs attention');
         const nextLane: ApprovalInstanceView['lane'] = decision === 'attention' ? 'attention' : 'handled';
         const nextNode = decision === 'attention' ? instance.currentNode : (zh ? '\u5df2\u5b8c\u6210' : 'Completed');
+        const resultPayload = approvalDecisionResultPayload(instance, decision);
+        const outputs = approvalOutputsOrDefault(
+            instance.outputs,
+            decision,
+            statusText,
+            decision,
+            decision,
+            resultPayload,
+            zh ? '\u5ba1\u6279\u7ed3\u679c' : 'Approval result',
+        );
         const payload: BackendApprovalInstance = {
             instance_id: instance.id,
             app_id: canonicalAppManifestID(app) || instance.appID || app.id,
@@ -7659,8 +7755,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             to_status: decision,
             record_id: instance.recordID,
             detail_url: instance.detailURL,
-            result_payload: approvalDecisionResultPayload(instance, decision),
-            outputs: instance.outputs,
+            result_payload: resultPayload,
+            outputs,
             artifacts: instance.artifacts,
             business_entity: businessEntity || app.category,
             business_action: businessAction || 'approve',
@@ -8114,6 +8210,16 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
         const statusText = decision === 'approved' ? (zh ? '\u5df2\u901a\u8fc7' : 'Approved') : decision === 'rejected' ? (zh ? '\u5df2\u9a73\u56de' : 'Rejected') : (zh ? '\u9700\u5173\u6ce8' : 'Needs attention');
         const nextLane: ApprovalInstanceView['lane'] = decision === 'attention' ? 'attention' : 'handled';
         const nextNode = decision === 'attention' ? instance.currentNode : (zh ? '\u5df2\u5b8c\u6210' : 'Completed');
+        const resultPayload = approvalDecisionResultPayload(instance, decision);
+        const outputs = approvalOutputsOrDefault(
+            instance.outputs,
+            decision,
+            statusText,
+            decision,
+            decision,
+            resultPayload,
+            zh ? '\u5ba1\u6279\u7ed3\u679c' : 'Approval result',
+        );
         const payload: BackendApprovalInstance = {
             instance_id: instance.id,
             app_id: instance.appID,
@@ -8145,8 +8251,8 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
             to_status: decision,
             record_id: instance.recordID,
             detail_url: instance.detailURL,
-            result_payload: approvalDecisionResultPayload(instance, decision),
-            outputs: instance.outputs,
+            result_payload: resultPayload,
+            outputs,
             artifacts: instance.artifacts,
             updated_at: now,
             events: [...(instance.events || []), { at: now, node: nextNode, actor: instance.approver || (zh ? '\u5ba1\u6279\u4eba' : 'Approver'), decision, message: statusText, action: decision }],
@@ -9097,15 +9203,23 @@ function backendDependencyUnavailableMessage(app: AppEntry, plan: BackendAppInst
 
 function backendDependencySummary(dep: BackendAppInstallDependency, text: typeof labels.zh) {
     const health = String(dep.health || '').trim();
-    const status = dep.installed && health && health !== 'ready'
+    const versionStatus = String(dep.version_status || '').trim();
+    const status = versionStatus === 'mismatch'
+        ? text.unavailableDependency
+        : dep.installed && health && health !== 'ready'
         ? text.unavailableDependency
         : dep.installed ? text.installedDependency : text.missingDependency;
     const version = dep.version ? `@${dep.version}` : '';
+    const installedVersion = String(dep.installed_version || '').trim();
+    const requiredVersion = String(dep.required_version || dep.version || '').trim();
+    const versionDetail = versionStatus === 'mismatch'
+        ? ` (${installedVersion || 'unknown'} -> ${requiredVersion || 'unknown'})`
+        : '';
     const installRef = backendDependencyInstallRef(dep);
     const ref = installRef ? ` ref:${installRef}` : '';
     const required = dep.required === false ? '' : ' *';
-    const healthDetail = dep.installed && health && health !== 'ready' ? ` (${dep.installed_status || health})` : '';
-    return `${status}: ${dep.id}${version}${ref}${required}${healthDetail}`;
+    const healthDetail = dep.installed && health && health !== 'ready' && versionStatus !== 'mismatch' ? ` (${dep.installed_status || health})` : '';
+    return `${status}: ${dep.id}${version}${ref}${required}${versionDetail}${healthDetail}`;
 }
 function installRecordMissingDependencyCount(record: BackendAppInstallRecord) {
     return (record.dependencies || []).filter(isBlockingBackendDependency).length;
@@ -9678,7 +9792,7 @@ function studioSkillSourceFromMixed(source?: string): AppSkillDependency['source
     const normalized = String(source || '').toLowerCase();
     if (normalized.includes('github')) return 'github';
     if (normalized.includes('enterprise_hub')) return 'enterprise_hub';
-    if (normalized.includes('skillmarket')) return 'skillmarket';
+    if (normalized.includes('skillmarket')) return 'market';
     if (normalized.includes('market')) return 'market';
     if (normalized.includes('hub')) return 'hub';
     if (normalized.includes('builtin')) return 'builtin';
@@ -10897,7 +11011,7 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
         : app.kind === 'tool_app'
             ? !!manifest?.skill?.id
             : true;
-    const evidence = latestAppRunEvidence(app);
+    const evidence = latestAppRunEvidence(app) || latestAvailableAppRunEvidence(app);
     const evidenceFreshness = appRunEvidenceFreshnessCheck(app, lang);
     const resultCoverage = appRunEvidenceContractCoverage(app, evidence, lang);
     const approvalInstanceEvidence = appRunEvidenceApprovalInstanceCheck(app, evidence, lang);
@@ -12024,11 +12138,11 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                         <div className="apps-manage-edit">
                             <div className="apps-form-row">
                                 <label>{isZh(lang) ? '\u540d\u79f0' : 'Name'}</label>
-                                <input ref={editNameInputRef} value={editDraft.name} onChange={(event) => setEditDraft((current) => ({ ...current, name: event.target.value }))} />
+                                <input data-testid="edit-app-name" ref={editNameInputRef} value={editDraft.name} onChange={(event) => setEditDraft((current) => ({ ...current, name: event.target.value }))} />
                             </div>
                             <div className="apps-form-row">
                                 <label>{text.category}</label>
-                                <input value={editDraft.category} onChange={(event) => setEditDraft((current) => ({ ...current, category: event.target.value }))} />
+                                <input data-testid="edit-app-category" value={editDraft.category} onChange={(event) => setEditDraft((current) => ({ ...current, category: event.target.value }))} />
                             </div>
                             <div className="apps-form-row">
                                 <label>{isZh(lang) ? '\u56fe\u6807' : 'Icon'}</label>
@@ -12089,7 +12203,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                             </div>
                             <div className="apps-form-row apps-form-row--wide apps-form-row--description">
                                 <label>{isZh(lang) ? '\u63cf\u8ff0' : 'Description'}</label>
-                                <textarea value={editDraft.description} onChange={(event) => setEditDraft((current) => ({ ...current, description: event.target.value }))} />
+                                <textarea data-testid="edit-app-description" value={editDraft.description} onChange={(event) => setEditDraft((current) => ({ ...current, description: event.target.value }))} />
                             </div>
                             <div className="apps-manage-edit__section-title">{isZh(lang) ? '\u80fd\u529b\u7ed1\u5b9a' : 'Capability binding'}</div>
                             {editingApp.kind === 'tool_app' && (

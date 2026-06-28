@@ -99,16 +99,30 @@ func BuildResponsesAPIRequestData(
 		}
 		reqBody[k] = v
 	}
-	// Ensure max_output_tokens is set for Responses API (analogous to ensureMaxOutputTokens for Chat API)
-	if _, ok := reqBody["max_output_tokens"]; !ok {
+	// Ensure max_output_tokens is set for Responses API (analogous to ensureMaxOutputTokens for Chat API).
+	// Skip for Codex subscription endpoints (chatgpt.com/backend-api) — they don't support this parameter;
+	// output length is controlled server-side.
+	if IsCodexSubscriptionEndpoint(cfg.URL) {
+		// Codex endpoints reject max_output_tokens entirely. Remove it even if
+		// ExtraBody or prior conversion logic injected it.
+		delete(reqBody, "max_output_tokens")
+	} else if _, ok := reqBody["max_output_tokens"]; !ok {
+		// A cached value of 0 means the endpoint rejects the parameter entirely — skip injection.
+		shouldInject := true
 		limit := cfg.EffectiveMaxOutputTokens()
 		cacheKey := strings.ToLower(strings.TrimSpace(cfg.Model))
 		if cached, ok := maxOutputTokensCache.Load(cacheKey); ok {
-			if cachedLimit, isInt := cached.(int); isInt && cachedLimit > 0 && cachedLimit < limit {
-				limit = cachedLimit
+			if cachedLimit, isInt := cached.(int); isInt {
+				if cachedLimit == 0 {
+					shouldInject = false
+				} else if cachedLimit < limit {
+					limit = cachedLimit
+				}
 			}
 		}
-		reqBody["max_output_tokens"] = limit
+		if shouldInject {
+			reqBody["max_output_tokens"] = limit
+		}
 	}
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
 		corelib.SanitizeCodeGenOpenAICompatBody(reqBody)

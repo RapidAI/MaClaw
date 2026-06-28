@@ -2,7 +2,11 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -18,6 +22,7 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/crypto/scrypt"
 
 	corelib "github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
@@ -77,6 +82,50 @@ type KnowledgeHubShareImportResult struct {
 	Skipped     int            `json:"skipped"`
 	Warnings    []string       `json:"warnings,omitempty"`
 	Share       map[string]any `json:"share,omitempty"`
+}
+
+type KnowledgeSyncRequest struct {
+	HubURL           string `json:"hub_url"`
+	HubToken         string `json:"hub_token"`
+	Password         string `json:"password"`
+	ConflictStrategy string `json:"conflict_strategy,omitempty"`
+}
+
+type KnowledgeSyncStatus struct {
+	OwnerUserID         string         `json:"owner_user_id,omitempty"`
+	TenantID            string         `json:"tenant_id,omitempty"`
+	PackageID           string         `json:"package_id,omitempty"`
+	PackageVersion      int            `json:"package_version,omitempty"`
+	CompressedSizeBytes int64          `json:"compressed_size_bytes,omitempty"`
+	StoredSizeBytes     int64          `json:"stored_size_bytes,omitempty"`
+	CreatedAt           string         `json:"created_at,omitempty"`
+	UpdatedAt           string         `json:"updated_at,omitempty"`
+	ExpiresAt           string         `json:"expires_at,omitempty"`
+	ServiceStatus       string         `json:"service_status"`
+	ReadonlyReason      string         `json:"readonly_reason,omitempty"`
+	LimitBytes          int64          `json:"limit_bytes"`
+	RetentionDays       int            `json:"retention_days,omitempty"`
+	Encryption          map[string]any `json:"encryption,omitempty"`
+	HasPackage          bool           `json:"has_package"`
+	Message             string         `json:"message,omitempty"`
+}
+
+type KnowledgeSyncResult struct {
+	KnowledgeSyncStatus
+	Imported           int                     `json:"imported,omitempty"`
+	Skipped            int                     `json:"skipped,omitempty"`
+	Warnings           []string                `json:"warnings,omitempty"`
+	Conflicts          []KnowledgeSyncConflict `json:"conflicts,omitempty"`
+	RequiresResolution bool                    `json:"requires_resolution,omitempty"`
+}
+
+type KnowledgeSyncConflict struct {
+	RemoteID    string `json:"remote_id,omitempty"`
+	LocalID     string `json:"local_id,omitempty"`
+	Title       string `json:"title,omitempty"`
+	URI         string `json:"uri,omitempty"`
+	ConflictKey string `json:"conflict_key,omitempty"`
+	Reason      string `json:"reason"`
 }
 
 type guiKnowledgePackageManifest struct {
@@ -710,6 +759,352 @@ func (a *App) KnowledgeImportHubShare(req KnowledgeHubShareImportRequest) (Knowl
 	return result, nil
 }
 
+func (a *App) KnowledgeSyncStatus(req KnowledgeSyncRequest) (KnowledgeSyncStatus, error) {
+	hubURL, token, err := a.resolveKnowledgeSyncHub(req)
+	if err != nil {
+		return KnowledgeSyncStatus{}, err
+	}
+	ctx, cancel := context.WithTimeout(a.knowledgeContext(), 20*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, hubURL+"/api/knowledge/sync/status", nil)
+	if err != nil {
+		return KnowledgeSyncStatus{}, err
+	}
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Authorization", knowledgeShareBearerToken(token))
+	resp, err := hubHTTPClient.Do(httpReq)
+	if err != nil {
+		return KnowledgeSyncStatus{}, fmt.Errorf("query knowledge sync status: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return KnowledgeSyncStatus{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return KnowledgeSyncStatus{}, fmt.Errorf("hub returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var status KnowledgeSyncStatus
+	if err := json.Unmarshal(body, &status); err != nil {
+		return KnowledgeSyncStatus{}, fmt.Errorf("decode knowledge sync status: %w", err)
+	}
+	return status, nil
+}
+
+func (a *App) KnowledgeSyncUpload(req KnowledgeSyncRequest) (KnowledgeSyncResult, error) {
+	password := strings.TrimSpace(req.Password)
+	if password == "" {
+		return KnowledgeSyncResult{}, fmt.Errorf("sync password is required")
+	}
+	hubURL, token, err := a.resolveKnowledgeSyncHub(req)
+	if err != nil {
+		return KnowledgeSyncResult{}, err
+	}
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return KnowledgeSyncResult{}, err
+	}
+	defer store.Close()
+	sources, err := store.ListSources(a.knowledgeContext(), knowledge.ListSourcesOptions{Limit: 5000})
+	if err != nil {
+		return KnowledgeSyncResult{}, err
+	}
+	if len(sources) == 0 {
+		return KnowledgeSyncResult{}, fmt.Errorf("no knowledge sources to sync")
+	}
+	cfg, _ := a.LoadConfig()
+	pkg, warnings, err := buildGUIKnowledgePackage(a.knowledgeContext(), store, cfg, "Knowledge Sync", "Encrypted manual knowledge sync package", sources, false)
+	if err != nil {
+		return KnowledgeSyncResult{}, err
+	}
+	rawPackage, err := json.Marshal(pkg)
+	if err != nil {
+		return KnowledgeSyncResult{}, err
+	}
+	encrypted, encryption, compressedSize, err := encryptKnowledgeSyncPackage(rawPackage, password)
+	if err != nil {
+		return KnowledgeSyncResult{}, err
+	}
+	payload := map[string]any{
+		"package_id":            pkg.Manifest.PackageID,
+		"package_version":       pkg.Manifest.Version,
+		"compressed_size_bytes": compressedSize,
+		"encryption":            encryption,
+		"payload_base64":        base64.StdEncoding.EncodeToString(encrypted),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return KnowledgeSyncResult{}, err
+	}
+	ctx, cancel := context.WithTimeout(a.knowledgeContext(), 90*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, hubURL+"/api/knowledge/sync/package", bytes.NewReader(body))
+	if err != nil {
+		return KnowledgeSyncResult{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Authorization", knowledgeShareBearerToken(token))
+	resp, err := hubHTTPClient.Do(httpReq)
+	if err != nil {
+		return KnowledgeSyncResult{}, fmt.Errorf("upload knowledge sync package: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return KnowledgeSyncResult{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return KnowledgeSyncResult{}, fmt.Errorf("hub returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	var status KnowledgeSyncStatus
+	if err := json.Unmarshal(respBody, &status); err != nil {
+		return KnowledgeSyncResult{}, fmt.Errorf("decode knowledge sync upload response: %w", err)
+	}
+	return KnowledgeSyncResult{KnowledgeSyncStatus: status, Warnings: warnings}, nil
+}
+
+func (a *App) KnowledgeSyncDownload(req KnowledgeSyncRequest) (KnowledgeSyncResult, error) {
+	password := strings.TrimSpace(req.Password)
+	if password == "" {
+		return KnowledgeSyncResult{}, fmt.Errorf("sync password is required")
+	}
+	status, rawPackage, err := a.fetchAndDecryptKnowledgeSyncPackage(req)
+	if err != nil {
+		return KnowledgeSyncResult{}, err
+	}
+	var pkg guiKnowledgePackage
+	if err := json.Unmarshal(rawPackage, &pkg); err != nil {
+		return KnowledgeSyncResult{}, fmt.Errorf("decode knowledge sync package: %w", err)
+	}
+	if strings.TrimSpace(pkg.Manifest.Format) != "maclaw.knowledge.package" {
+		return KnowledgeSyncResult{}, fmt.Errorf("unsupported knowledge package format")
+	}
+	sources := make([]knowledge.PackageSource, 0, len(pkg.Sources))
+	for _, item := range pkg.Sources {
+		sources = append(sources, knowledge.PackageSource{
+			ID:           item.ID,
+			Kind:         item.Kind,
+			URI:          item.URI,
+			CanonicalURI: item.CanonicalURI,
+			Title:        item.Title,
+			TopicHint:    item.TopicHint,
+			Labels:       item.Labels,
+			Content:      item.Content,
+		})
+	}
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return KnowledgeSyncResult{}, err
+	}
+	defer store.Close()
+	ctx := a.knowledgeContext()
+	conflicts, err := a.knowledgeSyncConflicts(ctx, store, pkg.Sources)
+	if err != nil {
+		return KnowledgeSyncResult{}, err
+	}
+	strategy := strings.ToLower(strings.TrimSpace(req.ConflictStrategy))
+	skippedConflicts := 0
+	if strategy == "" {
+		strategy = "check"
+	}
+	if strategy == "check" {
+		return KnowledgeSyncResult{
+			KnowledgeSyncStatus: status,
+			Conflicts:           conflicts,
+			RequiresResolution:  len(conflicts) > 0,
+			Warnings:            knowledgeSyncConflictWarnings(conflicts),
+		}, nil
+	}
+	if len(conflicts) > 0 && strategy == "skip" {
+		conflictRemoteIDs := map[string]struct{}{}
+		for _, conflict := range conflicts {
+			if strings.TrimSpace(conflict.RemoteID) != "" {
+				conflictRemoteIDs[strings.TrimSpace(conflict.RemoteID)] = struct{}{}
+			}
+		}
+		filtered := sources[:0]
+		for _, source := range sources {
+			if _, ok := conflictRemoteIDs[strings.TrimSpace(source.ID)]; ok {
+				skippedConflicts++
+				continue
+			}
+			filtered = append(filtered, source)
+		}
+		sources = filtered
+	}
+	importResult := knowledge.ImportPackageSources(ctx, store, sources, knowledge.PackageImportOptions{SaveScope: knowledge.SaveScopePersonal})
+	warnings := append([]string{}, importResult.Warnings...)
+	if len(conflicts) > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d conflicting source(s) handled with strategy %q", len(conflicts), firstNonEmptyKnowledgeValue(strategy, "import")))
+	}
+	return KnowledgeSyncResult{
+		KnowledgeSyncStatus: status,
+		Imported:            importResult.Imported,
+		Skipped:             importResult.Skipped + skippedConflicts,
+		Warnings:            warnings,
+		Conflicts:           conflicts,
+	}, nil
+}
+
+func (a *App) KnowledgeSyncVerifyPassword(req KnowledgeSyncRequest) (KnowledgeSyncStatus, error) {
+	if strings.TrimSpace(req.Password) == "" {
+		return KnowledgeSyncStatus{}, fmt.Errorf("sync password is required")
+	}
+	status, rawPackage, err := a.fetchAndDecryptKnowledgeSyncPackage(req)
+	if err != nil {
+		return KnowledgeSyncStatus{}, err
+	}
+	var pkg guiKnowledgePackage
+	if err := json.Unmarshal(rawPackage, &pkg); err != nil {
+		return KnowledgeSyncStatus{}, fmt.Errorf("decode knowledge sync package: %w", err)
+	}
+	if strings.TrimSpace(pkg.Manifest.Format) != "maclaw.knowledge.package" {
+		return KnowledgeSyncStatus{}, fmt.Errorf("unsupported knowledge package format")
+	}
+	return status, nil
+}
+
+func (a *App) KnowledgeSyncDelete(req KnowledgeSyncRequest) (KnowledgeSyncStatus, error) {
+	hubURL, token, err := a.resolveKnowledgeSyncHub(req)
+	if err != nil {
+		return KnowledgeSyncStatus{}, err
+	}
+	ctx, cancel := context.WithTimeout(a.knowledgeContext(), 20*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, hubURL+"/api/knowledge/sync/package", nil)
+	if err != nil {
+		return KnowledgeSyncStatus{}, err
+	}
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Authorization", knowledgeShareBearerToken(token))
+	resp, err := hubHTTPClient.Do(httpReq)
+	if err != nil {
+		return KnowledgeSyncStatus{}, fmt.Errorf("delete knowledge sync package: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return KnowledgeSyncStatus{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return KnowledgeSyncStatus{}, fmt.Errorf("hub returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return a.KnowledgeSyncStatus(req)
+}
+
+func (a *App) fetchAndDecryptKnowledgeSyncPackage(req KnowledgeSyncRequest) (KnowledgeSyncStatus, []byte, error) {
+	password := strings.TrimSpace(req.Password)
+	if password == "" {
+		return KnowledgeSyncStatus{}, nil, fmt.Errorf("sync password is required")
+	}
+	hubURL, token, err := a.resolveKnowledgeSyncHub(req)
+	if err != nil {
+		return KnowledgeSyncStatus{}, nil, err
+	}
+	status, err := a.KnowledgeSyncStatus(req)
+	if err != nil {
+		return KnowledgeSyncStatus{}, nil, err
+	}
+	if !status.HasPackage {
+		return KnowledgeSyncStatus{}, nil, fmt.Errorf("no cloud sync package is available")
+	}
+	ctx, cancel := context.WithTimeout(a.knowledgeContext(), 90*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, hubURL+"/api/knowledge/sync/package", nil)
+	if err != nil {
+		return KnowledgeSyncStatus{}, nil, err
+	}
+	httpReq.Header.Set("Accept", "application/octet-stream")
+	httpReq.Header.Set("Authorization", knowledgeShareBearerToken(token))
+	resp, err := hubHTTPClient.Do(httpReq)
+	if err != nil {
+		return KnowledgeSyncStatus{}, nil, fmt.Errorf("download knowledge sync package: %w", err)
+	}
+	defer resp.Body.Close()
+	encrypted, err := io.ReadAll(io.LimitReader(resp.Body, 520<<20))
+	if err != nil {
+		return KnowledgeSyncStatus{}, nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return KnowledgeSyncStatus{}, nil, fmt.Errorf("hub returned %d: %s", resp.StatusCode, strings.TrimSpace(string(encrypted)))
+	}
+	rawPackage, err := decryptKnowledgeSyncPackage(encrypted, password, status.Encryption)
+	if err != nil {
+		return KnowledgeSyncStatus{}, nil, err
+	}
+	return status, rawPackage, nil
+}
+
+func (a *App) knowledgeSyncConflicts(ctx context.Context, store *knowledge.SQLiteStore, remote []guiKnowledgePackageSource) ([]KnowledgeSyncConflict, error) {
+	local, err := store.ListSources(ctx, knowledge.ListSourcesOptions{Limit: 5000, Status: "all"})
+	if err != nil {
+		return nil, err
+	}
+	byID := map[string]knowledge.Source{}
+	byURI := map[string]knowledge.Source{}
+	byTitle := map[string]knowledge.Source{}
+	for _, source := range local {
+		if key := strings.TrimSpace(source.ID); key != "" {
+			byID[key] = source
+		}
+		if key := normalizeKnowledgeSyncConflictKey(firstNonEmptyKnowledgeValue(source.CanonicalURI, source.URI)); key != "" {
+			byURI[key] = source
+		}
+		if key := normalizeKnowledgeSyncConflictKey(source.Title); key != "" {
+			byTitle[key] = source
+		}
+	}
+	conflicts := make([]KnowledgeSyncConflict, 0)
+	seen := map[string]struct{}{}
+	add := func(remote guiKnowledgePackageSource, local knowledge.Source, reason, key string) {
+		remoteID := strings.TrimSpace(remote.ID)
+		localID := strings.TrimSpace(local.ID)
+		seenKey := remoteID + "\x00" + localID + "\x00" + reason
+		if _, ok := seen[seenKey]; ok {
+			return
+		}
+		seen[seenKey] = struct{}{}
+		conflicts = append(conflicts, KnowledgeSyncConflict{
+			RemoteID:    remoteID,
+			LocalID:     localID,
+			Title:       firstNonEmptyKnowledgeValue(remote.Title, local.Title),
+			URI:         firstNonEmptyKnowledgeValue(remote.CanonicalURI, remote.URI, local.CanonicalURI, local.URI),
+			ConflictKey: key,
+			Reason:      reason,
+		})
+	}
+	for _, item := range remote {
+		if local, ok := byID[strings.TrimSpace(item.ID)]; ok {
+			add(item, local, "same_source_id", strings.TrimSpace(item.ID))
+			continue
+		}
+		if key := normalizeKnowledgeSyncConflictKey(firstNonEmptyKnowledgeValue(item.CanonicalURI, item.URI)); key != "" {
+			if local, ok := byURI[key]; ok {
+				add(item, local, "same_uri", key)
+				continue
+			}
+		}
+		if key := normalizeKnowledgeSyncConflictKey(item.Title); key != "" {
+			if local, ok := byTitle[key]; ok {
+				add(item, local, "same_title", key)
+			}
+		}
+	}
+	return conflicts, nil
+}
+
+func normalizeKnowledgeSyncConflictKey(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func knowledgeSyncConflictWarnings(conflicts []KnowledgeSyncConflict) []string {
+	if len(conflicts) == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf("%d local knowledge conflict(s) found", len(conflicts))}
+}
+
 func (a *App) KnowledgeListSources(opts knowledge.ListSourcesOptions) ([]knowledge.Source, error) {
 	store, err := a.openKnowledgeStore()
 	if err != nil {
@@ -1006,6 +1401,123 @@ func knowledgeShareBearerToken(token string) string {
 		return token
 	}
 	return "Bearer " + token
+}
+
+func (a *App) resolveKnowledgeSyncHub(req KnowledgeSyncRequest) (string, string, error) {
+	cfg, _ := a.LoadConfig()
+	hubURL := strings.TrimRight(strings.TrimSpace(req.HubURL), "/")
+	if hubURL == "" {
+		hubURL = strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	}
+	if hubURL == "" {
+		return "", "", fmt.Errorf("hub_url is required")
+	}
+	if parsed, err := url.Parse(hubURL); err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", "", fmt.Errorf("hub_url must be an absolute URL")
+	}
+	token := strings.TrimSpace(req.HubToken)
+	if token == "" {
+		token = strings.TrimSpace(cfg.RemoteViewerToken)
+	}
+	if token == "" {
+		return "", "", fmt.Errorf("hub token is required")
+	}
+	return hubURL, token, nil
+}
+
+func encryptKnowledgeSyncPackage(raw []byte, password string) ([]byte, map[string]any, int64, error) {
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	if _, err := gz.Write(raw); err != nil {
+		_ = gz.Close()
+		return nil, nil, 0, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, nil, 0, err
+	}
+	salt := make([]byte, 16)
+	nonce := make([]byte, 12)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return nil, nil, 0, err
+	}
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, nil, 0, err
+	}
+	key, err := scrypt.Key([]byte(password), salt, 1<<15, 8, 1, 32)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	ciphertext := gcm.Seal(nil, nonce, compressed.Bytes(), []byte("maclaw.knowledge.sync.v1"))
+	encryption := map[string]any{
+		"algorithm": "AES-256-GCM",
+		"kdf":       "scrypt",
+		"n":         1 << 15,
+		"r":         8,
+		"p":         1,
+		"salt":      base64.StdEncoding.EncodeToString(salt),
+		"nonce":     base64.StdEncoding.EncodeToString(nonce),
+	}
+	return ciphertext, encryption, int64(compressed.Len()), nil
+}
+
+func decryptKnowledgeSyncPackage(encrypted []byte, password string, encryption map[string]any) ([]byte, error) {
+	if len(encryption) == 0 {
+		return nil, fmt.Errorf("sync package encryption metadata is missing")
+	}
+	salt, err := base64.StdEncoding.DecodeString(stringFromAny(encryption["salt"]))
+	if err != nil {
+		return nil, fmt.Errorf("invalid sync package salt")
+	}
+	nonce, err := base64.StdEncoding.DecodeString(stringFromAny(encryption["nonce"]))
+	if err != nil {
+		return nil, fmt.Errorf("invalid sync package nonce")
+	}
+	n := intFromAny(encryption["n"])
+	r := intFromAny(encryption["r"])
+	p := intFromAny(encryption["p"])
+	if n <= 0 {
+		n = 1 << 15
+	}
+	if r <= 0 {
+		r = 8
+	}
+	if p <= 0 {
+		p = 1
+	}
+	key, err := scrypt.Key([]byte(password), salt, n, r, p, 32)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	compressed, err := gcm.Open(nil, nonce, encrypted, []byte("maclaw.knowledge.sync.v1"))
+	if err != nil {
+		return nil, fmt.Errorf("decrypt sync package: password is incorrect or package is corrupted")
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return nil, fmt.Errorf("open compressed sync package: %w", err)
+	}
+	defer gz.Close()
+	raw, err := io.ReadAll(io.LimitReader(gz, maxGUIKnowledgePackageTotalContentBytes*4))
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 func stringFromAny(value any) string {

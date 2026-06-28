@@ -182,6 +182,10 @@ func ensureMaxOutputTokens(reqBody map[string]interface{}, cfg corelib.MaclawLLM
 	if reqBody == nil {
 		return
 	}
+	// Codex subscription endpoints (chatgpt.com/backend-api) don't support output length params.
+	if IsCodexSubscriptionEndpoint(cfg.URL) {
+		return
+	}
 	if _, ok := reqBody["max_tokens"]; ok {
 		return
 	}
@@ -189,14 +193,22 @@ func ensureMaxOutputTokens(reqBody map[string]interface{}, cfg corelib.MaclawLLM
 		return
 	}
 	// Use cached discovered limit if available (from prior binary-halving downgrade).
-	limit := cfg.EffectiveMaxOutputTokens()
+	// A cached value of 0 means the endpoint doesn't support max_tokens at all — skip injection.
 	cacheKey := strings.ToLower(strings.TrimSpace(cfg.Model))
 	if cached, ok := maxOutputTokensCache.Load(cacheKey); ok {
-		if cachedLimit, isInt := cached.(int); isInt && cachedLimit > 0 && cachedLimit < limit {
-			limit = cachedLimit
+		if cachedLimit, isInt := cached.(int); isInt {
+			if cachedLimit == 0 {
+				// Endpoint rejects max_tokens entirely (e.g., chatgpt.com/backend-api).
+				return
+			}
+			limit := cfg.EffectiveMaxOutputTokens()
+			if cachedLimit > 0 && cachedLimit < limit {
+				reqBody["max_tokens"] = cachedLimit
+				return
+			}
 		}
 	}
-	reqBody["max_tokens"] = limit
+	reqBody["max_tokens"] = cfg.EffectiveMaxOutputTokens()
 }
 
 func ShouldOmitOpenAIToolsForInitialRequest(cfg corelib.MaclawLLMConfig, messages []interface{}) bool {

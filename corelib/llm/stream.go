@@ -74,9 +74,31 @@ func DoOpenAIRequestStreamWithReasoning(
 	startedAt := time.Now()
 	result, statusCode, body, err := openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
 	if err != nil {
+		// Handle "unsupported parameter" — the endpoint doesn't accept max_tokens at all.
+		// Retry once without the parameter and cache so subsequent requests skip it.
+		if (statusCode == 400 || statusCode == 422) && looksLikeUnsupportedMaxTokensParam(string(body), err.Error()) {
+			log.Printf("[LLM-stream] max_tokens_unsupported model=%s — retrying without max_tokens/max_output_tokens %s",
+				cfg.Model, traceFields)
+			var reqMap map[string]interface{}
+			if json.Unmarshal(reqBody, &reqMap) == nil {
+				delete(reqMap, "max_tokens")
+				delete(reqMap, "max_output_tokens")
+				delete(reqMap, "max_completion_tokens")
+				if retryBody, marshalErr := json.Marshal(reqMap); marshalErr == nil {
+					result, statusCode, body, err = openAISDKChatStream(ctx, cfg, retryBody, client, onToken, onReasoning)
+					if err == nil {
+						// Cache 0 to signal "don't send max_tokens for this model"
+						cacheKey := strings.ToLower(strings.TrimSpace(cfg.Model))
+						maxOutputTokensCache.Store(cacheKey, 0)
+						log.Printf("[LLM-stream] max_tokens_unsupported succeeded model=%s — cached skip %s",
+							cfg.Model, traceFields)
+					}
+				}
+			}
+		}
 		// Auto-downgrade max_tokens via binary halving if API rejects it as too high.
 		// No parsing of error message numbers — just detect "is this about max_tokens?" and halve.
-		if (statusCode == 400 || statusCode == 422) && looksLikeMaxTokensError(string(body), err.Error()) {
+		if err != nil && (statusCode == 400 || statusCode == 422) && looksLikeMaxTokensError(string(body), err.Error()) {
 			currentLimit := cfg.EffectiveMaxOutputTokens()
 			const minOutputTokens = 1024
 			const maxDowngradeAttempts = 6 // 65536 → 32768 → 16384 → 8192 → 4096 → 2048 → 1024
@@ -627,6 +649,28 @@ func looksLikeMaxTokensError(body string, errMsg string) bool {
 				strings.Contains(text, "超出") || strings.Contains(text, "超过") ||
 				strings.Contains(text, "最大") || strings.Contains(text, "限制") ||
 				strings.Contains(text, "不能超过") || strings.Contains(text, "不得超过") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// looksLikeUnsupportedMaxTokensParam checks if an API error indicates that the
+// max_output_tokens / max_tokens parameter itself is not supported by the endpoint
+// (as opposed to the value being too high). This happens with ChatGPT backend-api
+// and some third-party providers that don't accept output length control.
+func looksLikeUnsupportedMaxTokensParam(body string, errMsg string) bool {
+	for _, text := range []string{body, errMsg} {
+		if text == "" {
+			continue
+		}
+		lower := strings.ToLower(text)
+		if strings.Contains(lower, "max_tokens") || strings.Contains(lower, "max_output_tokens") || strings.Contains(lower, "max_completion_tokens") {
+			if strings.Contains(lower, "unsupported") || strings.Contains(lower, "not supported") ||
+				strings.Contains(lower, "unknown parameter") || strings.Contains(lower, "unrecognized") ||
+				strings.Contains(lower, "unexpected parameter") ||
+				strings.Contains(lower, "不支持") || strings.Contains(lower, "未知参数") {
 				return true
 			}
 		}

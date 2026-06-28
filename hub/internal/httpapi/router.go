@@ -140,6 +140,8 @@ func NewRouter(
 	groupDiscussionHandler := NewGroupDiscussionHandler(groupDiscussionSvc, groupDiscussionSender)
 	runtimeDataDir := resolveHubRuntimeDataDir(hubCfg, configPath)
 	knowledgeSharePackageDir := filepath.Join(runtimeDataDir, "knowledge-packages")
+	knowledgeSyncPackageDir := filepath.Join(runtimeDataDir, "knowledge-sync")
+	StartKnowledgeSyncCleanup(knowledgeSyncPackageDir)
 	if hubDB != nil && identity != nil {
 		NewMigrationAPI(hubDB, runtimeDataDir, identity, identity.MachinesRepo(), system).RegisterRoutes(mux, requireTenantAdmin)
 	}
@@ -262,6 +264,10 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/knowledge/shares/{knowledgeID}", DeleteMyKnowledgeShareHandler(knowledgeShares, identity))
 	mux.HandleFunc("GET /api/knowledge/shares/{knowledgeID}/package", DownloadKnowledgeSharePackageHandler(knowledgeShares, identity, knowledgeSharePackageDir))
 	mux.HandleFunc("GET /hub/knowledge/shares/{knowledgeID}", KnowledgeSharePublicPageHandler(knowledgeShares, identity))
+	mux.HandleFunc("GET /api/knowledge/sync/status", KnowledgeSyncStatusHandler(identity, knowledgeSyncPackageDir))
+	mux.HandleFunc("PUT /api/knowledge/sync/package", UploadKnowledgeSyncPackageHandler(identity, knowledgeSyncPackageDir))
+	mux.HandleFunc("GET /api/knowledge/sync/package", DownloadKnowledgeSyncPackageHandler(identity, knowledgeSyncPackageDir))
+	mux.HandleFunc("DELETE /api/knowledge/sync/package", DeleteKnowledgeSyncPackageHandler(identity, knowledgeSyncPackageDir))
 	mux.HandleFunc("GET /api/admin/sessions/all", requireAdmin(AdminListAllSessionsHandler(sessionSvc, userLookup)))
 	mux.HandleFunc("POST /api/admin/users/manual-bind", requireAdmin(ManualBindHandler(identity)))
 	mux.HandleFunc("GET /api/admin/users", requireAdmin(ListUsersHandler(identity, system, securitySvc)))
