@@ -6187,6 +6187,50 @@ npm.cmd test -- AppsPage.test.tsx -t "publishes enterprise normal app evidence f
 npm.cmd test -- AppsPage.test.tsx -t "renders enterprise normal apps as business workspaces without approval instances|requires run evidence to cover the declared primary result contract|requires dependency verification to cover declared app Skill dependencies before publishing"
 npm.cmd run build
 ```
+### 推进记录：工具型应用实际运行证据进入发布证据包（2026-06-28）
+上一轮补齐了企业普通应用的实际运行证据闭环。本轮继续对齐工具型应用：工具型 App 不连接企业后台数据，但它仍是 MaClaw App 超级 Skill，需要把真实运行产生的文本内容、文档产物、输出块、结果覆盖和依赖验证一起进入 App Studio 发布包，不能只证明“有一个 artifact”。
+
+已落地调整：
+
+```text
+工具型 App 实际运行
+  -> RunNLSkillAsync / GetNLSkillRunStatus 返回 outputs / summary.output_blocks / artifacts
+  -> 运行历史保存 resultPayload / outputs / artifacts
+  -> recordRunHistory 自动补写 definitionHash / testProtocolFingerprint / dependencyVerification
+  -> appRunDependencyVerificationEvidence 将运行前依赖验证归属到当前 canonical App ID
+  -> appGovernanceForManifest 将工具型运行证据写入 governance.testEvidence
+```
+
+测试覆盖已经明确验证：
+
+```text
+工具型 App 真实执行
+  -> resultPayload.text 保留主要文档输出摘要
+  -> outputs 保留 document/content 输出块
+  -> artifacts 保留 docx/pdf 文件产物、mimeType、sizeBytes
+  -> resultCoverage 覆盖 artifact / document / content
+  -> dependencyVerification 覆盖声明的 app_skill / runtime skill 依赖
+  -> 提交审核包携带同一份 governance.testEvidence
+```
+
+对应全链路意义：
+
+```text
+工具型应用
+  -> 用户在传统软件式工具工作台执行
+  -> Skill 运行产出文本、文档、文件产物
+  -> GUI 运行历史保留完整结果包和依赖验证
+  -> App Studio 提交审核时复用同一份真实运行证据
+  -> Hub / 能力市场安装包具备可审计的工具输出合同
+```
+
+已通过定向验证：
+
+```text
+npm.cmd test -- AppsPage.test.tsx -t "uses the enterprise market bridge when submitting app packages"
+npm.cmd test -- AppsPage.test.tsx -t "uses the enterprise market bridge when submitting app packages|requires dependency verification to cover declared app Skill dependencies before publishing|publishes enterprise normal app evidence from an actual DataSrv business run"
+npm.cmd run build
+```
 
 ### 推进记录：DataSrv 审批 request OpenAPI 合同补齐运行上下文字段（2026-06-28）
 上一轮 GUI 后端已经在 `SyncMaclawAppApprovalInstanceToDataSrv` 的 `create_record_approval` 请求中保留完整审批运行上下文，包括当前节点、审批决策、状态流转、业务状态、结果状态、结构化结果包、输出块和文件产物。本轮把同一组字段补进 DataSrv OpenAPI，避免外部集成方、GUI 回流代码或后续 SDK 只看到旧的 request 摘要合同。

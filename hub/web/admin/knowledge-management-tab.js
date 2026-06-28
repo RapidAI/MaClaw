@@ -148,7 +148,9 @@
         meta(tr('knowledgeOwner'), item.owner_user_email || item.owner_user_id),
         meta(tr('knowledgeVisibility'), item.visibility_scope),
         meta(tr('knowledgeViews'), item.view_count || 0),
-        meta(tr('knowledgeImports'), item.import_count || 0),
+        meta(tr('knowledgeImports'), item.import_count || 0)
+      ].filter(Boolean).join('<span style="color:rgba(31,34,48,.16)">|</span>');
+      const timeLine = [
         meta(tr('knowledgePublishedAt'), formatTime(item.published_at)),
         meta(tr('knowledgeUpdatedAt'), formatTime(item.updated_at))
       ].filter(Boolean).join('<span style="color:rgba(31,34,48,.16)">|</span>');
@@ -156,6 +158,7 @@
         + '<div class="item-head"><div style="min-width:0"><div class="item-title" style="font-size:13px">' + escapeHtml(item.title || item.knowledge_id || '-') + '</div></div><div class="actions"><button class="btn-danger" type="button" style="height:28px;font-size:11px;padding:0 10px" onclick="forceDeleteKnowledgeShare(\'' + escapeHtml(String(item.knowledge_id || '').replace(/'/g, "\\'")) + '\')">' + escapeHtml(tr('knowledgeForceDelete')) + '</button></div></div>'
         + '<div class="desc" style="font-size:11px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden"><strong>' + escapeHtml(tr('knowledgeDescription')) + ':</strong> ' + escapeHtml(desc) + '</div>'
         + '<div class="item-meta" style="display:flex;gap:4px;flex-wrap:wrap;font-size:11px">' + metrics + '</div>'
+        + (timeLine ? '<div class="item-meta" style="display:flex;gap:4px;flex-wrap:wrap;font-size:11px">' + timeLine + '</div>' : '')
         + (item.share_url ? '<div class="mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(tr('knowledgeShareLink')) + ': ' + escapeHtml(item.share_url) + '</div>' : '')
         + '</div>';
     }).join('') + '</div>';
